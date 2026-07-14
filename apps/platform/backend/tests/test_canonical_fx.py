@@ -163,6 +163,7 @@ def _withdraw_current_fx_observation(
                 status="withdrawn",
                 source_published_at=None,
                 ingested_at=now,
+                ingestion_time_state="observed",
                 payload_hash=quote_revision_payload_hash(
                     value=None,
                     source_ref="test:withdrawn",

@@ -245,7 +245,7 @@ def test_source_migration_head_is_single_and_current() -> None:
     try:
         assert (
             readiness_service.expected_instrument_registry_migration_head()
-            == "20260714_0013"
+            == "20260714_0014"
         )
     finally:
         readiness_service.expected_instrument_registry_migration_head.cache_clear()

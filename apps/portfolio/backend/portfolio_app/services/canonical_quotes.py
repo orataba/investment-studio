@@ -243,6 +243,9 @@ def quote_resolution_payload(
         "payload_hash": resolution.payload_hash if is_point else None,
         "source_published_at": resolution.source_published_at if is_point else None,
         "ingested_at": resolution.ingested_at if is_point else None,
+        "ingestion_time_state": (
+            resolution.ingestion_time_state if is_point else None
+        ),
         "calculation_dependency": dependency,
         "window_calculation_dependency": (
             window.calculation_dependency.model_dump(mode="json")

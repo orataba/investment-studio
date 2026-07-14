@@ -125,10 +125,14 @@ run_infra_portable() {
     infra/tests/test_assert_junit_no_skips.sh
     infra/tests/test_bootstrap_local_database_permissions.sh
     infra/tests/test_launchd_control_local_services.sh
+    infra/tests/test_launchd_immutable_release_flow.sh
     infra/tests/test_launchd_market_data_refresh_runner.sh
     infra/tests/test_launchd_portfolio_worker_runner.sh
     infra/tests/test_launchd_plist_generation.sh
     infra/tests/test_launchd_runtime_env_loader.sh
+    infra/tests/test_launchd_runtime_snapshot.sh
+    infra/tests/test_launchd_status_refresh_summary.sh
+    infra/tests/test_wait_for_refresh_convergence.py
     infra/tests/test_migrate_all_env_precedence.sh
     infra/tests/test_runtime_readiness_lifecycle.sh
     infra/tests/test_systemd_app_services.sh
@@ -138,7 +142,11 @@ run_infra_portable() {
   local test_path
   for test_path in "${tests[@]}"; do
     echo "Running $test_path."
-    PYTHON_BIN="$PYTHON_BIN" "$PROJECT_ROOT/$test_path"
+    if [[ "$test_path" == *.py ]]; then
+      "$PYTHON_BIN" "$PROJECT_ROOT/$test_path"
+    else
+      PYTHON_BIN="$PYTHON_BIN" "$PROJECT_ROOT/$test_path"
+    fi
   done
 }
 

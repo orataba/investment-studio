@@ -230,6 +230,10 @@ def test_missing_portfolio_intent_is_terminalized_without_poisoning_queue(
         assert failed.status is IntentDispatchStatus.FAILED
         assert failed.intent_id == str(orphan_intent.intent_id)
         assert failed.reason_code == "manifest_capture_failed"
+        assert failed.failure_detail == (
+            "PortfolioDailyCommandError: portfolio valuation date is unavailable: "
+            "pd-dispatch-orphan"
+        )
 
         materialized = dispatch_next_portfolio_daily_intent(
             worker_engine,

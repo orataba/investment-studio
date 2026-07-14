@@ -106,6 +106,7 @@ def _install_quote_window(
         status="complete",
         source_published_at=datetime(2026, 7, 13, 8, tzinfo=UTC),
         ingested_at=ingested_at,
+        ingestion_time_state="observed" if ingested_at is not None else None,
         payload_hash="a" * 64,
     )
     window = SimpleNamespace(

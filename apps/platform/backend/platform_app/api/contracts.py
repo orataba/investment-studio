@@ -27,6 +27,7 @@ from portfolio_ops_instrument_core.models import (
     InstrumentType,
     MetricFamily,
     QuoteBasis,
+    QuoteIngestionTimeState,
     QuoteNumericScaleState,
     QuoteRole,
     QuoteFreshnessPolicy,
@@ -105,7 +106,8 @@ class PlatformMarketDataPoint(BaseModel):
     source_ref: str | None = None
     status: Literal["complete"] = "complete"
     source_published_at: datetime | None = None
-    ingested_at: datetime | None = None
+    ingested_at: datetime
+    ingestion_time_state: QuoteIngestionTimeState
     payload_hash: str = Field(min_length=1)
 
 
@@ -126,7 +128,8 @@ class PlatformQuoteObservationRevision(BaseModel):
     source_ref: str | None = None
     status: Literal["complete", "partial", "rejected", "withdrawn"]
     source_published_at: datetime | None = None
-    ingested_at: datetime | None = None
+    ingested_at: datetime
+    ingestion_time_state: QuoteIngestionTimeState
     payload_hash: str = Field(min_length=1)
     is_current: bool
     superseded_at: datetime | None = None

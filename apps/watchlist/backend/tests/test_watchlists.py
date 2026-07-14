@@ -2786,6 +2786,9 @@ def test_worker_retries_real_execution_failure_then_dead_letters_same_job(
     from watchlist_app.repositories.sqlalchemy.recalc_jobs import (
         SQLAlchemyRecalcJobRepository,
     )
+    from watchlist_app.repositories.sqlalchemy.recalc_invalidations import (
+        SQLAlchemyRecalcInvalidationRepository,
+    )
     from watchlist_app.services import recalc_worker
     from watchlist_app.services.recalc_job_ids import make_recalc_dedupe_key
 
@@ -2799,9 +2802,17 @@ def test_worker_retries_real_execution_failure_then_dead_letters_same_job(
     ).status_code == 200
 
     repository = SQLAlchemyRecalcJobRepository()
+    invalidation_repository = SQLAlchemyRecalcInvalidationRepository()
     session_factory = session_module.get_session_factory()
     job_id = "source-event-retry-same-job"
     with session_factory() as session:
+        invalidation_repository.record_supported_source_event(
+            session,
+            trigger_ref_type="instrument_registry_outbox",
+            trigger_ref_id="retry-source-event",
+            instrument_id="sxv264",
+            job_type="all",
+        )
         repository.create(
             session,
             recalc_job_id=job_id,
@@ -2873,6 +2884,9 @@ def test_failed_recalc_retry_api_extends_budget_without_resetting_attempts(
     from watchlist_app.repositories.sqlalchemy.recalc_jobs import (
         SQLAlchemyRecalcJobRepository,
     )
+    from watchlist_app.repositories.sqlalchemy.recalc_invalidations import (
+        SQLAlchemyRecalcInvalidationRepository,
+    )
 
     watchlist_id = client.post(
         "/api/watchlists",
@@ -2884,9 +2898,17 @@ def test_failed_recalc_retry_api_extends_budget_without_resetting_attempts(
     ).status_code == 200
 
     repository = SQLAlchemyRecalcJobRepository()
+    invalidation_repository = SQLAlchemyRecalcInvalidationRepository()
     session_factory = session_module.get_session_factory()
     job_id = "failed-source-event-manual-retry"
     with session_factory() as session:
+        inbox = invalidation_repository.record_supported_source_event(
+            session,
+            trigger_ref_type="instrument_registry_outbox",
+            trigger_ref_id="manual-retry-source-event",
+            instrument_id="sxv264",
+            job_type="all",
+        )
         failed = repository.create(
             session,
             recalc_job_id=job_id,
@@ -2904,6 +2926,7 @@ def test_failed_recalc_retry_api_extends_budget_without_resetting_attempts(
         )
         failed.error_message = "terminal calculation failure"
         failed.finished_at = datetime.now(UTC).replace(microsecond=0)
+        failed.claimed_generation = inbox.generation
         session.commit()
         assert repository.has_terminal_source_event_failure(session) is True
 
@@ -2966,6 +2989,106 @@ def test_failed_recalc_retry_api_extends_budget_without_resetting_attempts(
         assert conflicting_failed.job_status == "failed"
         assert conflicting_failed.attempt_count == 3
         assert conflicting_failed.max_attempts == 3
+
+
+def test_source_event_dead_letter_requires_inbox_claim_and_clears_on_completion(
+    client: TestClient,
+) -> None:
+    from watchlist_app.db import session as session_module
+    from watchlist_app.db.models.recalc import RecalcSourceEventInbox
+    from watchlist_app.repositories.sqlalchemy.recalc_invalidations import (
+        SQLAlchemyRecalcInvalidationRepository,
+    )
+    from watchlist_app.repositories.sqlalchemy.recalc_jobs import (
+        SQLAlchemyRecalcJobRepository,
+    )
+
+    watchlist_id = client.post(
+        "/api/watchlists",
+        json={"name": "Inbox-backed dead letter", "description": None},
+    ).json()["watchlist_id"]
+    assert client.post(
+        f"/api/watchlists/{watchlist_id}/items",
+        json={"instrument_ids": ["sxv264"]},
+    ).status_code == 200
+
+    repository = SQLAlchemyRecalcJobRepository()
+    invalidation_repository = SQLAlchemyRecalcInvalidationRepository()
+    session_factory = session_module.get_session_factory()
+    job_id = "inbox-backed-terminal-failure"
+    inbox_id: str
+    with session_factory() as session:
+        legacy = repository.create(
+            session,
+            recalc_job_id="legacy-source-looking-failure",
+            job_type="performance",
+            instrument_id="sxv264",
+            trigger_type="market_data_refresh",
+            trigger_ref_type="instrument_registry_outbox",
+            trigger_ref_id="legacy-event-without-inbox",
+            job_status="failed",
+            priority=85,
+            dedupe_key="legacy-source-looking-failure",
+            payload_json={"requested_by": "test"},
+            attempt_count=1,
+            max_attempts=1,
+        )
+        legacy.finished_at = datetime.now(UTC).replace(microsecond=0)
+        inbox = invalidation_repository.record_supported_source_event(
+            session,
+            trigger_ref_type="instrument_registry_outbox",
+            trigger_ref_id="durable-inbox-event",
+            instrument_id="sxv264",
+            job_type="all",
+        )
+        inbox_id = inbox.source_event_inbox_id
+        job = repository.create(
+            session,
+            recalc_job_id=job_id,
+            job_type="all",
+            instrument_id="sxv264",
+            trigger_type="market_data_refresh",
+            trigger_ref_type=None,
+            trigger_ref_id=None,
+            job_status="queued",
+            priority=100,
+            dedupe_key="inbox-backed-terminal-failure:all",
+            payload_json={"requested_by": "coalesced_event"},
+            max_attempts=1,
+        )
+        running = repository.mark_running(session, job)
+        assert running.claimed_generation == inbox.generation
+        assert repository.reschedule_after_failure(
+            session,
+            running,
+            lease_token=str(running.lease_token),
+            error_message="terminal inbox-backed failure",
+            retry_delay_seconds=1,
+        ) == "failed"
+        session.commit()
+
+    with session_factory() as session:
+        assert repository.has_terminal_source_event_failure(session) is True
+        retried = repository.requeue_failed_job(
+            session,
+            job_id=job_id,
+            additional_attempts=1,
+        )
+        assert retried is not None
+        running = repository.mark_running(session, retried)
+        assert repository.mark_completed(
+            session,
+            running,
+            lease_token=str(running.lease_token),
+        ) is True
+        assert repository.complete_claimed_generation(session, running) is None
+        session.commit()
+
+    with session_factory() as session:
+        assert repository.has_terminal_source_event_failure(session) is False
+        inbox = session.get(RecalcSourceEventInbox, inbox_id)
+        assert inbox is not None
+        assert inbox.consumed_at is not None
 
 
 def test_process_next_recalc_job_recovers_stale_running_job(

@@ -785,6 +785,12 @@ export type CanonicalQuoteSeriesObservation = {
   source_ref: string | null
   source_published_at: string | null
   ingested_at: string | null
+  ingestion_time_state:
+    | 'observed'
+    | 'legacy_series_upper_bound'
+    | 'legacy_instrument_upper_bound'
+    | 'legacy_migration_upper_bound'
+    | null
 }
 
 export type CanonicalQuoteSeriesPoint = Omit<CanonicalQuoteSeriesObservation, 'status'> & {

@@ -441,11 +441,14 @@ def _seed_subscriptions() -> None:
         INSERT INTO portfolio.portfolio_daily_dependency_subscription (
             scope_id, dependency_kind, dependency_key, source_reason_code
         )
+        -- Archived universe rows are retained historical tombstones, not live
+        -- calculation dependencies.  Transactions still subscribe their own
+        -- instruments independently, including instruments used historically.
         SELECT DISTINCT portfolio_id, 'instrument', instrument_id, 'migration_seed'
         FROM (
             SELECT portfolio_id, instrument_id
             FROM portfolio.portfolio_instrument_universe_record
-            WHERE instrument_id IS NOT NULL
+            WHERE instrument_id IS NOT NULL AND status = 'active'
             UNION
             SELECT portfolio_id, instrument_id
             FROM portfolio.transaction_revision_record
@@ -471,6 +474,7 @@ def _seed_subscriptions() -> None:
             UNION SELECT u.portfolio_id, i.currency
                   FROM portfolio.portfolio_instrument_universe_record AS u
                   JOIN instrument_registry.instrument AS i USING (instrument_id)
+                  WHERE u.status = 'active'
         ) AS currencies
         WHERE currency IS NOT NULL
         ON CONFLICT DO NOTHING;
@@ -601,11 +605,12 @@ def _create_source_trigger_functions() -> None:
                 INSERT INTO portfolio.portfolio_daily_dependency_subscription (
                     scope_id, dependency_kind, dependency_key, source_reason_code
                 ) SELECT DISTINCT portfolio_id, 'instrument', instrument_id, 'instrument_universe'
-                  FROM new_rows ON CONFLICT DO NOTHING;
+                  FROM new_rows WHERE status = 'active' ON CONFLICT DO NOTHING;
                 INSERT INTO portfolio.portfolio_daily_dependency_subscription (
                     scope_id, dependency_kind, dependency_key, source_reason_code
                 ) SELECT DISTINCT n.portfolio_id, 'currency', i.currency, 'instrument_universe'
                   FROM new_rows n JOIN instrument_registry.instrument i USING (instrument_id)
+                  WHERE n.status = 'active'
                   ON CONFLICT DO NOTHING;
             END IF;
             IF TG_OP = 'INSERT' THEN SELECT array_agg(DISTINCT portfolio_id) INTO v_scope_ids FROM new_rows;

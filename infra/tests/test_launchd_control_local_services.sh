@@ -3,7 +3,8 @@ set -euo pipefail
 
 REPOSITORY_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 TEST_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/portfolio-ops-launchd-control-test.XXXXXX")"
-trap 'rm -rf "$TEST_ROOT"' EXIT
+MANAGED_TEST_PID=""
+trap '[[ -z "$MANAGED_TEST_PID" ]] || kill "$MANAGED_TEST_PID" >/dev/null 2>&1 || true; rm -rf "$TEST_ROOT"' EXIT
 
 MOCK_BIN="$TEST_ROOT/bin"
 PLIST_ROOT="$TEST_ROOT/LaunchAgents"
@@ -19,9 +20,13 @@ printf '%s\n' \
   'printf "%s\n" "$*" >> "$CALL_LOG"' \
   'if [[ "$1" == "print" ]]; then' \
   '  case "$2" in' \
-  '    *.platform-api|*.watchlist-api|*.watchlist-worker|*.platform-outbox-worker|*.portfolio-worker|*.portfolio-web|*.market-data-refresh) exit 0 ;;' \
+  '    *.platform-api) printf "pid = %s\n" "$MANAGED_TEST_PID"; exit 0 ;;' \
+  '    *.watchlist-api|*.watchlist-worker|*.platform-outbox-worker|*.portfolio-worker|*.portfolio-web|*.market-data-refresh) exit 0 ;;' \
   '    *) exit 1 ;;' \
   '  esac' \
+  'fi' \
+  'if [[ "$1" == "bootout" && "$2" == *.platform-api ]]; then' \
+  '  (sleep 0.2; kill "$MANAGED_TEST_PID") >/dev/null 2>&1 &' \
   'fi' \
   'if [[ "$1" == "bootstrap" && "$*" == *"test.portfolio-ops.platform-api.plist" ]]; then' \
   '  attempt="$(($(cat "$BOOTSTRAP_ATTEMPT_FILE" 2>/dev/null || printf 0) + 1))"' \
@@ -36,7 +41,9 @@ for service in platform-api watchlist-api watchlist-worker platform-outbox-worke
   touch "$PLIST_ROOT/test.portfolio-ops.$service.plist"
 done
 
-export CALL_LOG BOOTSTRAP_ATTEMPT_FILE
+sleep 30 &
+MANAGED_TEST_PID="$!"
+export CALL_LOG BOOTSTRAP_ATTEMPT_FILE MANAGED_TEST_PID
 PATH="$MOCK_BIN:$PATH" \
 LABEL_PREFIX=test.portfolio-ops \
 LAUNCH_AGENTS_DIR="$PLIST_ROOT" \
@@ -51,6 +58,11 @@ grep -q 'bootout .*test.portfolio-ops.platform-outbox-worker' "$CALL_LOG"
 grep -q 'bootout .*test.portfolio-ops.portfolio-worker' "$CALL_LOG"
 grep -q 'bootout .*test.portfolio-ops.portfolio-web' "$CALL_LOG"
 grep -q 'bootout .*test.portfolio-ops.market-data-refresh' "$CALL_LOG"
+if kill -0 "$MANAGED_TEST_PID" 2>/dev/null; then
+  echo "launchd stop returned before the managed process exited." >&2
+  exit 1
+fi
+MANAGED_TEST_PID=""
 
 PATH="$MOCK_BIN:$PATH" \
 LABEL_PREFIX=test.portfolio-ops \

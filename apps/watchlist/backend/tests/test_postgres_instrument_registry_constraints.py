@@ -581,7 +581,7 @@ def test_recalc_instrument_advisory_lock_serializes_transactions(
         second.rollback()
 
 
-def test_postgres_recalc_source_event_identity_is_unique_after_terminal_status(
+def test_postgres_recalc_job_source_reference_is_nonunique_execution_audit(
     postgres_watchlist_env: dict[str, str],
 ) -> None:
     from watchlist_app.db import session as session_module
@@ -623,21 +623,20 @@ def test_postgres_recalc_source_event_identity_is_unique_after_terminal_status(
         session.commit()
 
     with session_factory() as session:
-        with pytest.raises(IntegrityError):
-            repository.create(
-                session,
-                recalc_job_id=f"source-event-duplicate-{uuid4().hex}",
-                job_type="all",
-                instrument_id=instrument_id,
-                trigger_type="market_data_refresh",
-                trigger_ref_type="instrument_registry_outbox",
-                trigger_ref_id=source_event_id,
-                job_status="failed",
-                priority=100,
-                dedupe_key=f"source-event-duplicate:{uuid4().hex}",
-                payload_json={"test": True},
-            )
-        session.rollback()
+        repository.create(
+            session,
+            recalc_job_id=f"source-event-duplicate-{uuid4().hex}",
+            job_type="all",
+            instrument_id=instrument_id,
+            trigger_type="market_data_refresh",
+            trigger_ref_type="instrument_registry_outbox",
+            trigger_ref_id=source_event_id,
+            job_status="failed",
+            priority=100,
+            dedupe_key=f"source-event-duplicate:{uuid4().hex}",
+            payload_json={"test": True},
+        )
+        session.commit()
 
     engine = create_engine(postgres_watchlist_env["database_url"])
     try:
@@ -649,13 +648,13 @@ def test_postgres_recalc_source_event_identity_is_unique_after_terminal_status(
                     FROM pg_indexes
                     WHERE schemaname = :schema
                       AND tablename = 'recalc_job'
-                      AND indexname = 'uq_recalc_job_source_event_identity'
+                      AND indexname = 'idx_recalc_job_source_reference'
                     """
                 ),
                 {"schema": postgres_watchlist_env["database_schema"]},
             ).scalar_one()
             normalized_definition = index_definition.lower()
-            assert "unique index" in normalized_definition
+            assert "unique index" not in normalized_definition
             for identity_column in (
                 "trigger_ref_type",
                 "trigger_ref_id",
@@ -686,7 +685,7 @@ def test_postgres_recalc_source_event_identity_is_unique_after_terminal_status(
                         "instrument_id": instrument_id,
                     },
                 ).scalar_one()
-                == 1
+                == 2
             )
     finally:
         engine.dispose()
@@ -789,11 +788,16 @@ def test_postgres_recalc_claim_uses_db_clock_and_accumulates_attempts(
     from watchlist_app.repositories.sqlalchemy.recalc_jobs import (
         SQLAlchemyRecalcJobRepository,
     )
+    from watchlist_app.repositories.sqlalchemy.recalc_invalidations import (
+        SQLAlchemyRecalcInvalidationRepository,
+    )
 
     repository = SQLAlchemyRecalcJobRepository()
+    invalidation_repository = SQLAlchemyRecalcInvalidationRepository()
     session_factory = session_module.get_session_factory()
     instrument_id = postgres_watchlist_env["instrument_id"]
     job_id = f"postgres-retry-{uuid4().hex}"
+    source_event_id = f"postgres-retry-event-{uuid4().hex}"
 
     with session_factory() as session:
         session.add(
@@ -808,6 +812,14 @@ def test_postgres_recalc_claim_uses_db_clock_and_accumulates_attempts(
                 metadata_json={},
             )
         )
+        session.flush()
+        invalidation_repository.record_supported_source_event(
+            session,
+            trigger_ref_type="instrument_registry_outbox",
+            trigger_ref_id=source_event_id,
+            instrument_id=instrument_id,
+            job_type="all",
+        )
         database_now = session.scalar(text("SELECT clock_timestamp()"))
         assert isinstance(database_now, datetime)
         repository.create(
@@ -817,7 +829,7 @@ def test_postgres_recalc_claim_uses_db_clock_and_accumulates_attempts(
             instrument_id=instrument_id,
             trigger_type="market_data_refresh",
             trigger_ref_type="instrument_registry_outbox",
-            trigger_ref_id=f"postgres-retry-event-{uuid4().hex}",
+            trigger_ref_id=source_event_id,
             job_status="queued",
             priority=100,
             dedupe_key=f"postgres-retry:{uuid4().hex}",

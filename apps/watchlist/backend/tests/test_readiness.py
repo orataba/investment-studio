@@ -219,8 +219,8 @@ def test_source_migration_heads_are_single_and_current() -> None:
     readiness_service.expected_migration_heads.cache_clear()
     try:
         assert readiness_service.expected_migration_heads() == {
-            "watchlist": "20260714_0034",
-            "instrument_registry": "20260714_0013",
+            "watchlist": "20260714_0035",
+            "instrument_registry": "20260714_0014",
         }
     finally:
         readiness_service.expected_migration_heads.cache_clear()

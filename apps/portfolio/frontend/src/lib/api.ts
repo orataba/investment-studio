@@ -374,7 +374,7 @@ export type PortfolioTransactionExecutionQuoteResponse = {
   status: DataStatus
   resolution_status: 'resolved' | 'unavailable'
   freshness_status: 'current' | 'late' | 'missing'
-  ingestion_status: 'current' | 'unknown'
+  ingestion_status: 'current' | 'bounded' | 'unknown'
   reliability_status: 'reliable' | 'qualified' | 'unavailable'
   reason_codes: string[]
   stale: boolean
@@ -389,6 +389,12 @@ export type PortfolioTransactionExecutionQuoteResponse = {
   payload_hash: string | null
   source_published_at: string | null
   ingested_at: string | null
+  ingestion_time_state:
+    | 'observed'
+    | 'legacy_series_upper_bound'
+    | 'legacy_instrument_upper_bound'
+    | 'legacy_migration_upper_bound'
+    | null
   calculation_dependency: Record<string, unknown>
 }
 
@@ -558,7 +564,7 @@ export type PortfolioHoldingRow = {
   quote_resolution_status?: 'resolved' | 'unavailable' | null
   quote_source_status?: 'complete' | 'partial' | 'rejected' | 'withdrawn' | null
   quote_freshness_status?: 'current' | 'late' | 'missing' | null
-  quote_ingestion_status?: 'current' | 'unknown' | null
+  quote_ingestion_status?: 'current' | 'bounded' | 'unknown' | null
   quote_reliability_status?: 'reliable' | 'qualified' | 'unavailable' | null
   quote_reason_codes?: string[]
   quote_canonical_instrument_type?: string | null
@@ -665,6 +671,9 @@ export type HoldingsWorkspaceResponse = {
   rows: PortfolioHoldingRow[]
   totals: {
     market_value: number | null
+    cash_balance: number | null
+    pending_settlement: number | null
+    nav: number | null
     day_change_pct: number | null
     day_change_value: number | null
     cost_basis: number | null
@@ -673,6 +682,9 @@ export type HoldingsWorkspaceResponse = {
     allocation: number | null
     exact_values?: {
       market_value: string | null
+      cash_balance: string | null
+      pending_settlement: string | null
+      nav: string | null
       day_change_pct: string | null
       day_change_value: string | null
       cost_basis: string | null
@@ -2090,6 +2102,33 @@ function fetchJson<T>(
   })
 }
 
+function fetchDecodedJson<TWire, TResult>(
+  baseUrl: string,
+  path: string,
+  decode: (wire: TWire) => TResult,
+): Promise<TResult> {
+  const cacheKey = `${baseUrl}${path}`
+  const attempt = () =>
+    fetchJson<TWire>(baseUrl, path).then((wire) => {
+      try {
+        return decode(wire)
+      } catch (error) {
+        // A valid HTTP response can still violate the exact-decimal wire
+        // contract. Never retain that raw payload in the GET cache.
+        getRequestCache.delete(cacheKey)
+        throw error
+      }
+    })
+
+  // Retry once from the network after evicting a stale or invalid response.
+  // This lets an already-open page recover when an atomic local release swaps
+  // the API underneath it, while a persistent contract failure still surfaces.
+  return attempt().catch(() => {
+    getRequestCache.delete(cacheKey)
+    return attempt()
+  })
+}
+
 function buildQuery(filters: Record<string, string | undefined>) {
   const searchParams = new URLSearchParams()
   Object.entries(filters).forEach(([key, value]) => {
@@ -2822,6 +2861,9 @@ type HoldingsWorkspaceWire = Omit<HoldingsWorkspaceResponse, 'rows' | 'totals'> 
   rows: PortfolioHoldingRowWire[]
   totals: {
     market_value: unknown
+    cash_balance: unknown
+    pending_settlement: unknown
+    nav: unknown
     day_change_pct: unknown
     day_change_value: unknown
     cost_basis: unknown
@@ -2845,6 +2887,12 @@ function normalizeHoldingsWorkspace(wire: HoldingsWorkspaceWire): HoldingsWorksp
   )
   const exactValues = {
     market_value: exactDecimalString(wire.totals.market_value, 'holdings.totals.market_value'),
+    cash_balance: exactDecimalString(wire.totals.cash_balance, 'holdings.totals.cash_balance'),
+    pending_settlement: exactDecimalString(
+      wire.totals.pending_settlement,
+      'holdings.totals.pending_settlement',
+    ),
+    nav: exactDecimalString(wire.totals.nav, 'holdings.totals.nav'),
     day_change_pct: exactDecimalString(wire.totals.day_change_pct, 'holdings.totals.day_change_pct'),
     day_change_value: exactDecimalString(wire.totals.day_change_value, 'holdings.totals.day_change_value'),
     cost_basis: exactDecimalString(wire.totals.cost_basis, 'holdings.totals.cost_basis'),
@@ -2867,6 +2915,12 @@ function normalizeHoldingsWorkspace(wire: HoldingsWorkspaceWire): HoldingsWorksp
     totals: {
       ...wire.totals,
       market_value: exactDecimalForDisplay(exactValues.market_value, 'holdings.totals.market_value'),
+      cash_balance: exactDecimalForDisplay(exactValues.cash_balance, 'holdings.totals.cash_balance'),
+      pending_settlement: exactDecimalForDisplay(
+        exactValues.pending_settlement,
+        'holdings.totals.pending_settlement',
+      ),
+      nav: exactDecimalForDisplay(exactValues.nav, 'holdings.totals.nav'),
       day_change_pct: exactDecimalForDisplay(exactValues.day_change_pct, 'holdings.totals.day_change_pct'),
       day_change_value: exactDecimalForDisplay(exactValues.day_change_value, 'holdings.totals.day_change_value'),
       cost_basis: exactDecimalForDisplay(exactValues.cost_basis, 'holdings.totals.cost_basis'),
@@ -2885,10 +2939,11 @@ function normalizeHoldingsWorkspace(wire: HoldingsWorkspaceWire): HoldingsWorksp
 }
 
 export function getWorkspaceSummaryForPortfolio(portfolioId: string) {
-  return fetchJson<PortfolioWorkspaceSummaryWire>(
+  return fetchDecodedJson<PortfolioWorkspaceSummaryWire, PortfolioWorkspaceSummary>(
     API_BASE_URL,
     `/api/workspace/summary?portfolio_id=${encodeURIComponent(portfolioId)}`,
-  ).then(normalizeWorkspaceSummary)
+    normalizeWorkspaceSummary,
+  )
 }
 
 export function getHoldingsWorkspace(
@@ -2899,7 +2954,9 @@ export function getHoldingsWorkspace(
     portfolio_id: portfolioId,
     as_of_date: filters.as_of_date,
   })
-  return fetchJson<HoldingsWorkspaceWire>(API_BASE_URL, `/api/workspace/holdings${query}`).then(
+  return fetchDecodedJson<HoldingsWorkspaceWire, HoldingsWorkspaceResponse>(
+    API_BASE_URL,
+    `/api/workspace/holdings${query}`,
     normalizeHoldingsWorkspace,
   )
 }
@@ -2914,25 +2971,29 @@ export function getPortfolioInstrumentHoldingProjection(
     instrument_id: instrumentId,
     as_of_date: filters.as_of_date,
   })
-  return fetchJson<
+  return fetchDecodedJson<
     Omit<PortfolioInstrumentHoldingProjectionResponse, 'row'> & {
       row: PortfolioHoldingRowWire | null
-    }
+    },
+    PortfolioInstrumentHoldingProjectionResponse
   >(
     API_BASE_URL,
     `/api/workspace/holdings/instrument${query}`,
-  ).then((wire) => ({
-    ...wire,
-    row: wire.row == null ? null : normalizeHoldingRow(wire.row),
-  }))
+    (wire) => ({
+      ...wire,
+      row: wire.row == null ? null : normalizeHoldingRow(wire.row),
+    }),
+  )
 }
 
 export function getPortfolios(options: { includeArchived?: boolean } = {}) {
   const query = buildQuery({
     include_archived: options.includeArchived ? 'true' : undefined,
   })
-  return fetchJson<PortfolioEntryWire[]>(API_BASE_URL, `/api/portfolios${query}`).then((rows) =>
-    rows.map(normalizePortfolioEntry),
+  return fetchDecodedJson<PortfolioEntryWire[], PortfolioEntryRecord[]>(
+    API_BASE_URL,
+    `/api/portfolios${query}`,
+    (rows) => rows.map(normalizePortfolioEntry),
   )
 }
 
@@ -3076,20 +3137,21 @@ export function getPortfolioPositionLots(
 }
 
 export function getPortfolioFxRates(portfolioId: string) {
-  return fetchJson<PortfolioSharedFxRatesResponse>(
+  return fetchDecodedJson<PortfolioSharedFxRatesResponse, PortfolioSharedFxRatesResponse>(
     API_BASE_URL,
     `/api/portfolios/${portfolioId}/fx-rates`,
-  ).then((response) => ({
-    ...response,
-    rates: response.rates.map((rate, index) => ({
-      ...rate,
-      rate:
-        exactDecimalString(rate.rate, `fx_rates.rates[${index}].rate`) ??
-        (() => {
-          throw new Error(`fx_rates.rates[${index}].rate is required.`)
-        })(),
-    })),
-  }))
+    (response) => ({
+      ...response,
+      rates: response.rates.map((rate, index) => ({
+        ...rate,
+        rate:
+          exactDecimalString(rate.rate, `fx_rates.rates[${index}].rate`) ??
+          (() => {
+            throw new Error(`fx_rates.rates[${index}].rate is required.`)
+          })(),
+      })),
+    }),
+  )
 }
 
 export function getPortfolioTransactions(portfolioId: string, filters: PortfolioTransactionFilters = {}) {
@@ -3106,17 +3168,21 @@ export function getPortfolioTransactionExecutionQuote(
   asOfDate: string,
 ) {
   const query = buildQuery({ instrument_id: instrumentId, as_of_date: asOfDate })
-  return fetchJson<PortfolioTransactionExecutionQuoteResponse>(
+  return fetchDecodedJson<
+    PortfolioTransactionExecutionQuoteResponse,
+    PortfolioTransactionExecutionQuoteResponse
+  >(
     API_BASE_URL,
     `/api/portfolios/${encodeURIComponent(portfolioId)}/transactions/execution-quote${query}`,
-  ).then((response) => ({
-    ...response,
-    value: exactDecimalString(response.value, 'execution_quote.value'),
-    suggested_transaction_price: exactDecimalString(
-      response.suggested_transaction_price,
-      'execution_quote.suggested_transaction_price',
-    ),
-  }))
+    (response) => ({
+      ...response,
+      value: exactDecimalString(response.value, 'execution_quote.value'),
+      suggested_transaction_price: exactDecimalString(
+        response.suggested_transaction_price,
+        'execution_quote.suggested_transaction_price',
+      ),
+    }),
+  )
 }
 
 export function getPortfolioInstrumentPriceChart(
@@ -3143,10 +3209,11 @@ export function getPortfolioPerformanceReport(
   } = {},
 ) {
   const query = buildQuery(filters)
-  return fetchJson<unknown>(
+  return fetchDecodedJson<unknown, PortfolioDailyPublishedPerformanceReportResponse>(
     API_BASE_URL,
     `/api/portfolios/${encodeURIComponent(portfolioId)}/performance/report${query}`,
-  ).then(normalizePublishedPerformanceReport)
+    normalizePublishedPerformanceReport,
+  )
 }
 
 export function getPortfolioRiskWorkspace(

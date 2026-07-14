@@ -958,10 +958,6 @@ def _capture_common_dependencies(
         str(row["currency"]).upper() for row in instrument_rows
     }
     currencies.add(str(portfolio["base_currency"]).upper())
-    # USD is the maintained canonical FX pivot.  Capturing its path explicitly
-    # makes the sealed currency universe self-contained even when every
-    # portfolio fact is currently denominated in another currency.
-    currencies.add("USD")
     acquisition_dates = {
         cast(date, row["acquisition_date"])
         for row in transaction_rows

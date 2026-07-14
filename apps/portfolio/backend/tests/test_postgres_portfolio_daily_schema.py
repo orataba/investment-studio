@@ -127,7 +127,8 @@ def _drop_test_database(admin_engine: Engine, database_name: str) -> None:
 def _postgres_database(
     monkeypatch: pytest.MonkeyPatch,
     *,
-    portfolio_target: str = "20260714_0039",
+    instrument_target: str = "head",
+    portfolio_target: str = "head",
 ) -> Iterator[tuple[Engine, Config]]:
     base_url = os.getenv("PORTFOLIO_OPS_TEST_POSTGRES_URL", DEFAULT_POSTGRES_URL)
     database_name = f"portfolio_ops_pd_{uuid4().hex[:10]}"
@@ -163,7 +164,7 @@ def _postgres_database(
         instrument_config, registry_config, portfolio_config = _migration_configs(
             database_url
         )
-        command.upgrade(instrument_config, "head")
+        command.upgrade(instrument_config, instrument_target)
         command.upgrade(registry_config, "head")
         command.upgrade(portfolio_config, portfolio_target)
         engine = create_engine(database_url)
@@ -179,20 +180,38 @@ def _postgres_database(
             admin_engine.dispose()
 
 
-def _assert_metadata_parity(engine: Engine) -> None:
+def _assert_metadata_parity(
+    engine: Engine,
+    *,
+    future_columns: dict[str, set[str]] | None = None,
+    future_nullable_changes: set[tuple[str, str]] | None = None,
+    require_column_order: bool = True,
+) -> None:
+    ignored = future_columns or {}
+    ignored_nullable = future_nullable_changes or set()
     inspector = inspect(engine)
     for model_table in ALL_TABLES:
         database_columns = {
             column["name"]: column
             for column in inspector.get_columns(model_table.name, schema="portfolio")
         }
-        assert list(database_columns) == list(model_table.c.keys()), model_table.name
-        for model_column in model_table.c:
+        model_columns = [
+            column
+            for column in model_table.c
+            if column.name not in ignored.get(model_table.name, set())
+        ]
+        model_column_names = [column.name for column in model_columns]
+        if require_column_order:
+            assert list(database_columns) == model_column_names, model_table.name
+        else:
+            assert set(database_columns) == set(model_column_names), model_table.name
+        for model_column in model_columns:
             database_column = database_columns[model_column.name]
-            assert database_column["nullable"] == model_column.nullable, (
-                model_table.name,
-                model_column.name,
-            )
+            if (model_table.name, model_column.name) not in ignored_nullable:
+                assert database_column["nullable"] == model_column.nullable, (
+                    model_table.name,
+                    model_column.name,
+                )
             if isinstance(model_column.type, Numeric):
                 assert isinstance(database_column["type"], Numeric)
                 assert database_column["type"].precision == model_column.type.precision
@@ -207,10 +226,1319 @@ def _assert_metadata_parity(engine: Engine) -> None:
         ] == [column.name for column in model_table.primary_key]
 
 
+def test_head_metadata_matches_models_independent_of_physical_column_order(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    with _postgres_database(monkeypatch) as (engine, _):
+        _assert_metadata_parity(engine, require_column_order=False)
+
+
 def _execute_batch(connection, sql: str, parameters: dict[str, object]) -> None:
     for statement in sql.split(";"):
         if statement.strip():
             connection.execute(text(statement), parameters)
+
+
+def test_0043_is_strict_noop_for_current_transaction_ledger(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    with _postgres_database(monkeypatch, portfolio_target="20260714_0042") as (
+        engine,
+        portfolio_config,
+    ):
+        contract_sql = text(
+            """
+            SELECT
+                relation.relfilenode,
+                pg_get_viewdef('portfolio.transaction_current'::regclass, true),
+                ARRAY(
+                    SELECT constraint_row.conname
+                    FROM pg_constraint AS constraint_row
+                    WHERE constraint_row.conrelid = relation.oid
+                      AND constraint_row.contype = 'c'
+                    ORDER BY constraint_row.conname
+                ),
+                ARRAY(
+                    SELECT trigger_row.tgname
+                    FROM pg_trigger AS trigger_row
+                    WHERE trigger_row.tgrelid = relation.oid
+                      AND NOT trigger_row.tgisinternal
+                    ORDER BY trigger_row.tgname
+                ),
+                ARRAY(
+                    SELECT pg_get_functiondef(procedure.oid)
+                    FROM pg_proc AS procedure
+                    JOIN pg_namespace AS namespace
+                      ON namespace.oid = procedure.pronamespace
+                    WHERE namespace.nspname = 'portfolio'
+                      AND procedure.proname IN (
+                          'canonical_transaction_revision_payload_v1',
+                          'transaction_revision_payload_hash_v1',
+                          'validate_transaction_revision_payload_insert_v1',
+                          'assert_internal_transfer_group_v1',
+                          'validate_internal_transfer_revision_deferred_v1'
+                      )
+                    ORDER BY procedure.proname
+                )
+            FROM pg_class AS relation
+            WHERE relation.oid =
+                'portfolio.transaction_revision_record'::regclass
+            """
+        )
+        with engine.connect() as connection:
+            before = connection.execute(contract_sql).one()
+
+        command.upgrade(portfolio_config, "20260714_0043")
+
+        with engine.connect() as connection:
+            after = connection.execute(contract_sql).one()
+            assert after == before
+            assert connection.scalar(
+                text("SELECT version_num FROM portfolio.alembic_version")
+            ) == "20260714_0043"
+
+
+@pytest.mark.parametrize(
+    ("tamper_sql", "error_pattern"),
+    (
+        (
+            """
+            CREATE OR REPLACE FUNCTION
+                portfolio.transaction_revision_payload_hash_v1(
+                    row_value portfolio.transaction_revision_record
+                )
+            RETURNS text
+            LANGUAGE sql
+            IMMUTABLE
+            STRICT
+            AS $function$
+                SELECT 'sha256:' || repeat('0', 64)
+            $function$
+            """,
+            "ledger function definitions",
+        ),
+        (
+            """
+            ALTER TABLE portfolio.transaction_revision_record
+            DISABLE TRIGGER trg_transaction_revision_record_payload_v1
+            """,
+            "trigger definitions, enabled events, or deferred semantics",
+        ),
+    ),
+    ids=("same-name-function", "disabled-trigger"),
+)
+def test_0043_current_shape_contract_drift_fails_closed(
+    monkeypatch: pytest.MonkeyPatch,
+    tamper_sql: str,
+    error_pattern: str,
+) -> None:
+    with _postgres_database(monkeypatch, portfolio_target="20260714_0042") as (
+        engine,
+        portfolio_config,
+    ):
+        with engine.begin() as connection:
+            connection.exec_driver_sql(tamper_sql)
+
+        with pytest.raises(RuntimeError, match=error_pattern):
+            command.upgrade(portfolio_config, "20260714_0043")
+
+        with engine.connect() as connection:
+            assert connection.scalar(
+                text("SELECT version_num FROM portfolio.alembic_version")
+            ) == "20260714_0042"
+
+
+@pytest.mark.parametrize(
+    "captured_daily_transaction",
+    (False, True),
+    ids=("converges-without-capture", "captured-input-rolls-back"),
+)
+def test_0043_converges_or_atomically_refuses_deployed_legacy_transaction_ledger(
+    monkeypatch: pytest.MonkeyPatch,
+    captured_daily_transaction: bool,
+) -> None:
+    with _postgres_database(monkeypatch, portfolio_target="20260714_0042") as (
+        engine,
+        portfolio_config,
+    ):
+        trade_at = datetime(2026, 7, 14, 12, tzinfo=UTC)
+        snapshot = {
+            "instrument_id": "legacy-ledger-fund",
+            "instrument_type": "fund",
+            "currency": "USD",
+        }
+        current_facts = TransactionFactPayload(
+            transaction_type="opening_balance",
+            trade_date=trade_at.date(),
+            trade_time=trade_at.timetz().replace(tzinfo=None),
+            trade_at=trade_at,
+            trade_timezone="UTC",
+            trade_time_is_estimated=False,
+            settlement_date=trade_at.date(),
+            acquisition_date=trade_at.date(),
+            account_id="legacy-ledger-account",
+            instrument_id="legacy-ledger-fund",
+            instrument_snapshot_json=snapshot,
+            quantity=Decimal("1.2300"),
+            gross_amount=Decimal("100.5000"),
+            consideration_basis="source_reported",
+            fees=Decimal("0.0000"),
+            taxes=Decimal("0"),
+            currency="USD",
+        )
+        with engine.begin() as connection:
+            _execute_batch(
+                connection,
+                """
+                INSERT INTO portfolio.portfolio_record (
+                    portfolio_id, portfolio_name, base_currency,
+                    valuation_timezone, valuation_cutoff_policy, sort_order,
+                    operating_profile
+                ) VALUES (
+                    'legacy-ledger-portfolio', 'Legacy Ledger', 'USD',
+                    'UTC', 'close', 0, 'standard_taxonomy'
+                );
+                INSERT INTO portfolio.account_record (
+                    account_id, portfolio_id, account_name, account_type,
+                    currency, status
+                ) VALUES (
+                    'legacy-ledger-account', 'legacy-ledger-portfolio',
+                    'Legacy Cash', 'deposit_account', 'USD', 'active'
+                );
+                INSERT INTO instrument_registry.instrument (
+                    instrument_id, instrument_name, instrument_type, currency,
+                    quote_selection_policy_json, source_settings_json,
+                    refresh_status_json, lifecycle_state_json
+                ) VALUES (
+                    'legacy-ledger-fund', 'Legacy Ledger Fund', 'fund', 'USD',
+                    '{}'::json, '{}'::json, '{}'::json, '{}'::json
+                );
+                INSERT INTO portfolio.transaction_identity_record (
+                    transaction_id, portfolio_id, created_at, created_by
+                ) VALUES (
+                    'legacy-ledger-transaction', 'legacy-ledger-portfolio',
+                    :trade_at, 'schema-test'
+                );
+                INSERT INTO portfolio.transaction_revision_group_record (
+                    revision_group_id, portfolio_id, source_kind,
+                    change_reason, actor_type, actor_id, actor_display_name,
+                    actor_source, recorded_at
+                ) VALUES (
+                    'legacy-ledger-group', 'legacy-ledger-portfolio', 'migration',
+                    'legacy convergence fixture', 'migration', 'schema-test',
+                    'Schema Test', 'migration', :trade_at
+                );
+                INSERT INTO portfolio.transaction_revision_record (
+                    revision_id, portfolio_id, transaction_id, revision_number,
+                    revision_group_id, revision_kind, is_tombstone,
+                    payload_schema_version, payload_hash, transaction_type,
+                    trade_date, trade_time, trade_at, trade_timezone,
+                    trade_time_is_estimated, settlement_date, acquisition_date,
+                    account_id, instrument_id, instrument_snapshot_json,
+                    quantity, gross_amount, fees, taxes, consideration_basis,
+                    numeric_scale_state, quantity_input_scale,
+                    gross_amount_input_scale, fees_input_scale,
+                    taxes_input_scale, currency
+                ) VALUES (
+                    'legacy-ledger-revision', 'legacy-ledger-portfolio',
+                    'legacy-ledger-transaction', 1, 'legacy-ledger-group',
+                    'baseline', false, 'transaction-revision.v1', :payload_hash,
+                    'opening_balance', DATE '2026-07-14', :trade_time, :trade_at,
+                    'UTC', false, DATE '2026-07-14', DATE '2026-07-14',
+                    'legacy-ledger-account', 'legacy-ledger-fund',
+                    CAST(:snapshot AS json), :quantity, :gross_amount, :fees,
+                    :taxes, 'source_reported', 'declared', 4, 4, 4, 0, 'USD'
+                )
+                """,
+                {
+                    "trade_at": trade_at,
+                    "trade_time": trade_at.timetz().replace(tzinfo=None),
+                    "payload_hash": transaction_payload_hash(current_facts),
+                    "snapshot": json.dumps(snapshot, separators=(",", ":")),
+                    "quantity": Decimal("1.2300"),
+                    "gross_amount": Decimal("100.5000"),
+                    "fees": Decimal("0.0000"),
+                    "taxes": Decimal("0"),
+                },
+            )
+
+        if captured_daily_transaction:
+            with engine.begin() as connection:
+                _execute_batch(
+                    connection,
+                    """
+                    INSERT INTO calculation_registry.calculation_scope_generation (
+                        calculation_kind, scope_kind, scope_id, generation
+                    ) VALUES (
+                        'portfolio_daily', 'portfolio',
+                        'legacy-ledger-portfolio', 0
+                    ) ON CONFLICT DO NOTHING;
+                    INSERT INTO calculation_registry.calculation_run (
+                        run_id, calculation_kind, scope_kind, scope_id,
+                        requested_as_of, effective_as_of, cutoff_at, timezone,
+                        methodology_version, input_schema_version,
+                        output_schema_version, captured_generation, dedupe_key,
+                        requested_by
+                    ) VALUES (
+                        '00000000-0000-0000-0000-000000004300',
+                        'portfolio_daily', 'portfolio',
+                        'legacy-ledger-portfolio', DATE '2026-07-14',
+                        DATE '2026-07-14', transaction_timestamp(), 'UTC',
+                        'portfolio-daily.exact.v1',
+                        'portfolio-daily-input.v1',
+                        'portfolio-daily-output.v1',
+                        (
+                            SELECT generation
+                            FROM calculation_registry.calculation_scope_generation
+                            WHERE calculation_kind = 'portfolio_daily'
+                              AND scope_kind = 'portfolio'
+                              AND scope_id = 'legacy-ledger-portfolio'
+                        ),
+                        :dedupe_key, 'schema-test'
+                    );
+                    INSERT INTO calculation_registry.calculation_input_manifest (
+                        manifest_id, run_id, captured_generation,
+                        schema_version
+                    ) VALUES (
+                        '00000000-0000-0000-0000-000000004301',
+                        '00000000-0000-0000-0000-000000004300',
+                        (
+                            SELECT generation
+                            FROM calculation_registry.calculation_scope_generation
+                            WHERE calculation_kind = 'portfolio_daily'
+                              AND scope_kind = 'portfolio'
+                              AND scope_id = 'legacy-ledger-portfolio'
+                        ),
+                        'portfolio-daily-input.v1'
+                    );
+                    INSERT INTO portfolio.portfolio_daily_transaction_input (
+                        manifest_id, run_id, portfolio_id, transaction_id,
+                        revision_id, revision_number, revision_group_id,
+                        group_recorded_at, revision_kind, is_tombstone,
+                        supersedes_revision_id, supersedes_revision_number,
+                        payload_schema_version, payload_hash, transaction_type,
+                        trade_date, trade_time, trade_at, trade_timezone,
+                        trade_time_is_estimated, settlement_date,
+                        entitlement_date, acquisition_date, account_id,
+                        settlement_cash_account_id, instrument_id,
+                        instrument_snapshot_json, quantity, price, gross_amount,
+                        counter_amount, quoted_fx_rate, fees, taxes,
+                        consideration_basis, numeric_scale_state,
+                        quantity_input_scale, price_input_scale,
+                        gross_amount_input_scale, counter_amount_input_scale,
+                        quoted_fx_rate_input_scale, fees_input_scale,
+                        taxes_input_scale, consideration_evidence_state,
+                        consideration_evidence_reason_codes,
+                        consideration_terms_difference_exact,
+                        fx_evidence_state, fx_evidence_reason_codes,
+                        effective_fx_rate_method50,
+                        quoted_terms_difference_exact, currency,
+                        transfer_scope, transfer_object_type, transfer_group_id,
+                        counterparty_account_id, note, selected_reason_code
+                    )
+                    SELECT
+                        '00000000-0000-0000-0000-000000004301',
+                        '00000000-0000-0000-0000-000000004300',
+                        revision.portfolio_id, revision.transaction_id,
+                        revision.revision_id, revision.revision_number,
+                        revision.revision_group_id, revision_group.recorded_at,
+                        revision.revision_kind, revision.is_tombstone,
+                        revision.supersedes_revision_id,
+                        revision.supersedes_revision_number,
+                        revision.payload_schema_version, revision.payload_hash,
+                        revision.transaction_type, revision.trade_date,
+                        revision.trade_time, revision.trade_at,
+                        revision.trade_timezone,
+                        revision.trade_time_is_estimated,
+                        revision.settlement_date, revision.entitlement_date,
+                        revision.acquisition_date, revision.account_id,
+                        revision.settlement_cash_account_id,
+                        revision.instrument_id,
+                        revision.instrument_snapshot_json, revision.quantity,
+                        revision.price, revision.gross_amount,
+                        revision.counter_amount, revision.quoted_fx_rate,
+                        revision.fees, revision.taxes,
+                        revision.consideration_basis,
+                        revision.numeric_scale_state,
+                        revision.quantity_input_scale,
+                        revision.price_input_scale,
+                        revision.gross_amount_input_scale,
+                        revision.counter_amount_input_scale,
+                        revision.quoted_fx_rate_input_scale,
+                        revision.fees_input_scale,
+                        revision.taxes_input_scale,
+                        'unavailable',
+                        ARRAY['price_unavailable']::varchar(64)[], NULL,
+                        'not_applicable', ARRAY[]::varchar(64)[], NULL, NULL,
+                        revision.currency, revision.transfer_scope,
+                        revision.transfer_object_type,
+                        revision.transfer_group_id,
+                        revision.counterparty_account_id, revision.note,
+                        'latest_at_knowledge_cutoff'
+                    FROM portfolio.transaction_revision_record AS revision
+                    JOIN portfolio.transaction_revision_group_record
+                        AS revision_group
+                      ON revision_group.revision_group_id =
+                            revision.revision_group_id
+                     AND revision_group.portfolio_id = revision.portfolio_id
+                    WHERE revision.revision_id = 'legacy-ledger-revision'
+                    """,
+                    {
+                        "dedupe_key": "43" * 32,
+                    },
+                )
+
+        # Reproduce the complete deployed 37-column shape.  The arbitrary old
+        # check name proves 0043 removes stale hashed/name-drifted constraints.
+        with engine.begin() as connection:
+            connection.exec_driver_sql(
+                "DROP VIEW portfolio.transaction_current"
+            )
+            for trigger_name in (
+                "trg_transaction_revision_record_transfer_v1",
+                "trg_transaction_revision_record_payload_v1",
+                "trg_transaction_revision_record_append_only",
+            ):
+                connection.exec_driver_sql(
+                    f"DROP TRIGGER {trigger_name} "
+                    "ON portfolio.transaction_revision_record"
+                )
+            for signature in (
+                "validate_internal_transfer_revision_deferred_v1()",
+                "assert_internal_transfer_group_v1(text, text)",
+                "validate_transaction_revision_payload_insert_v1()",
+                "transaction_revision_payload_hash_v1(portfolio.transaction_revision_record)",
+                "canonical_transaction_revision_payload_v1(portfolio.transaction_revision_record)",
+                "canonical_transaction_json_v1(json)",
+                "transaction_json_number_v1(text)",
+            ):
+                connection.exec_driver_sql(
+                    f"DROP FUNCTION portfolio.{signature}"
+                )
+            connection.exec_driver_sql(
+                """
+                DO $block$
+                DECLARE constraint_name text;
+                BEGIN
+                    FOR constraint_name IN
+                        SELECT constraint_row.conname
+                        FROM pg_constraint AS constraint_row
+                        WHERE constraint_row.conrelid =
+                            'portfolio.transaction_revision_record'::regclass
+                          AND constraint_row.contype = 'c'
+                    LOOP
+                        EXECUTE format(
+                            'ALTER TABLE portfolio.transaction_revision_record '
+                            'DROP CONSTRAINT %%I', constraint_name
+                        );
+                    END LOOP;
+                END
+                $block$
+                """
+            )
+            connection.exec_driver_sql(
+                """
+                ALTER TABLE portfolio.transaction_revision_record
+                    ALTER COLUMN quantity TYPE numeric(38, 12),
+                    ALTER COLUMN price TYPE numeric(38, 12),
+                    ALTER COLUMN gross_amount TYPE numeric(38, 8),
+                    ALTER COLUMN counter_amount TYPE numeric(38, 8),
+                    ALTER COLUMN quoted_fx_rate TYPE numeric(38, 18),
+                    ALTER COLUMN fees TYPE numeric(38, 8),
+                    ALTER COLUMN taxes TYPE numeric(38, 8)
+                """
+            )
+            connection.exec_driver_sql(
+                "ALTER TABLE portfolio.transaction_revision_record "
+                "RENAME COLUMN quoted_fx_rate TO fx_rate"
+            )
+            connection.exec_driver_sql(
+                """
+                ALTER TABLE portfolio.transaction_revision_record
+                    DROP COLUMN consideration_basis,
+                    DROP COLUMN numeric_scale_state,
+                    DROP COLUMN quantity_input_scale,
+                    DROP COLUMN price_input_scale,
+                    DROP COLUMN gross_amount_input_scale,
+                    DROP COLUMN counter_amount_input_scale,
+                    DROP COLUMN quoted_fx_rate_input_scale,
+                    DROP COLUMN fees_input_scale,
+                    DROP COLUMN taxes_input_scale
+                """
+            )
+            connection.exec_driver_sql(
+                "UPDATE portfolio.transaction_revision_record "
+                "SET payload_hash = 'sha256:' || repeat('0', 64)"
+            )
+            # Install old-signature functions/triggers as they existed in the
+            # deployed database.  The convergence must remove these row-type
+            # dependencies before renaming/adding ledger columns.
+            for function_ddl in (
+                """
+                CREATE FUNCTION portfolio.transaction_json_number_v1(text)
+                RETURNS text LANGUAGE sql IMMUTABLE STRICT
+                AS $function$ SELECT $1 $function$
+                """,
+                """
+                CREATE FUNCTION portfolio.canonical_transaction_json_v1(json)
+                RETURNS text LANGUAGE sql IMMUTABLE STRICT
+                AS $function$ SELECT $1::text $function$
+                """,
+                """
+                CREATE FUNCTION portfolio.canonical_transaction_revision_payload_v1(
+                    portfolio.transaction_revision_record
+                ) RETURNS text LANGUAGE sql IMMUTABLE STRICT
+                AS $function$
+                    SELECT coalesce(trim_scale(($1).fx_rate)::text, 'legacy')
+                $function$
+                """,
+                """
+                CREATE FUNCTION portfolio.transaction_revision_payload_hash_v1(
+                    portfolio.transaction_revision_record
+                ) RETURNS text LANGUAGE sql IMMUTABLE STRICT
+                AS $function$ SELECT 'sha256:' || repeat('0', 64) $function$
+                """,
+                """
+                CREATE FUNCTION portfolio.validate_transaction_revision_payload_insert_v1()
+                RETURNS trigger LANGUAGE plpgsql
+                AS $function$ BEGIN RETURN NEW; END $function$
+                """,
+                """
+                CREATE FUNCTION portfolio.assert_internal_transfer_group_v1(text, text)
+                RETURNS void LANGUAGE plpgsql
+                AS $function$ BEGIN RETURN; END $function$
+                """,
+                """
+                CREATE FUNCTION portfolio.validate_internal_transfer_revision_deferred_v1()
+                RETURNS trigger LANGUAGE plpgsql
+                AS $function$ BEGIN RETURN NEW; END $function$
+                """,
+            ):
+                connection.exec_driver_sql(function_ddl)
+            connection.exec_driver_sql(
+                """
+                CREATE TRIGGER trg_transaction_revision_record_payload_v1
+                BEFORE INSERT ON portfolio.transaction_revision_record
+                FOR EACH ROW EXECUTE FUNCTION
+                    portfolio.validate_transaction_revision_payload_insert_v1()
+                """
+            )
+            connection.exec_driver_sql(
+                """
+                CREATE CONSTRAINT TRIGGER trg_transaction_revision_record_transfer_v1
+                AFTER INSERT ON portfolio.transaction_revision_record
+                DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION
+                    portfolio.validate_internal_transfer_revision_deferred_v1()
+                """
+            )
+            connection.exec_driver_sql(
+                """
+                CREATE TRIGGER trg_transaction_revision_record_append_only
+                BEFORE UPDATE OR DELETE ON portfolio.transaction_revision_record
+                FOR EACH ROW EXECUTE FUNCTION
+                    portfolio.reject_transaction_ledger_mutation()
+                """
+            )
+            connection.exec_driver_sql(
+                """
+                ALTER TABLE portfolio.transaction_revision_record
+                ADD CONSTRAINT ck_transaction_revision_record_legacy_deadbeef
+                CHECK (fx_rate IS NULL OR fx_rate > 0)
+                """
+            )
+            connection.exec_driver_sql(
+                """
+                CREATE VIEW portfolio.transaction_current AS
+                SELECT revision_id, portfolio_id, transaction_id, fx_rate
+                FROM portfolio.transaction_revision_record
+                WHERE NOT is_tombstone
+                """
+            )
+
+        assert len(
+            inspect(engine).get_columns(
+                "transaction_revision_record", schema="portfolio"
+            )
+        ) == 37
+        if captured_daily_transaction:
+            with pytest.raises(
+                RuntimeError,
+                match="cannot rewrite transaction payload hashes after exact",
+            ):
+                command.upgrade(portfolio_config, "20260714_0043")
+            with engine.connect() as connection:
+                assert connection.scalar(
+                    text("SELECT version_num FROM portfolio.alembic_version")
+                ) == "20260714_0042"
+                assert connection.scalar(
+                    text(
+                        "SELECT count(*) FROM "
+                        "portfolio.portfolio_daily_transaction_input"
+                    )
+                ) == 1
+                assert connection.scalar(
+                    text(
+                        "SELECT payload_hash FROM "
+                        "portfolio.transaction_revision_record "
+                        "WHERE revision_id = 'legacy-ledger-revision'"
+                    )
+                ) == "sha256:" + ("0" * 64)
+                columns_after_failure = {
+                    column["name"]
+                    for column in inspect(connection).get_columns(
+                        "transaction_revision_record", schema="portfolio"
+                    )
+                }
+                assert "fx_rate" in columns_after_failure
+                assert "quoted_fx_rate" not in columns_after_failure
+                assert "consideration_basis" not in columns_after_failure
+            return
+
+        command.upgrade(portfolio_config, "20260714_0043")
+
+        expected_facts = TransactionFactPayload(
+            transaction_type="opening_balance",
+            trade_date=trade_at.date(),
+            trade_time=trade_at.timetz().replace(tzinfo=None),
+            trade_at=trade_at,
+            trade_timezone="UTC",
+            trade_time_is_estimated=False,
+            settlement_date=trade_at.date(),
+            acquisition_date=trade_at.date(),
+            account_id="legacy-ledger-account",
+            instrument_id="legacy-ledger-fund",
+            instrument_snapshot_json=snapshot,
+            quantity=Decimal("1.23"),
+            gross_amount=Decimal("100.5"),
+            consideration_basis="source_reported",
+            numeric_scale_state="legacy_inferred",
+            fees=Decimal("0"),
+            taxes=Decimal("0"),
+            currency="USD",
+        )
+        with engine.connect() as connection:
+            repaired = connection.execute(
+                text(
+                    """
+                    SELECT consideration_basis, numeric_scale_state,
+                           quantity_input_scale, gross_amount_input_scale,
+                           fees_input_scale, taxes_input_scale, payload_hash
+                    FROM portfolio.transaction_revision_record
+                    WHERE revision_id = 'legacy-ledger-revision'
+                    """
+                )
+            ).mappings().one()
+            assert repaired == {
+                "consideration_basis": "source_reported",
+                "numeric_scale_state": "legacy_inferred",
+                "quantity_input_scale": 2,
+                "gross_amount_input_scale": 1,
+                "fees_input_scale": 0,
+                "taxes_input_scale": 0,
+                "payload_hash": transaction_payload_hash(expected_facts),
+            }
+            check_names = set(
+                connection.scalars(
+                    text(
+                        """
+                        SELECT constraint_row.conname
+                        FROM pg_constraint AS constraint_row
+                        WHERE constraint_row.conrelid =
+                            'portfolio.transaction_revision_record'::regclass
+                          AND constraint_row.contype = 'c'
+                        """
+                    )
+                ).all()
+            )
+            assert len(check_names) == 42
+            assert "ck_transaction_revision_record_legacy_deadbeef" not in check_names
+            assert connection.scalar(
+                text("SELECT count(*) FROM portfolio.transaction_current")
+            ) == 1
+
+
+@pytest.mark.parametrize(
+    "start_revision",
+    ("20260714_0042", "20260714_0043"),
+    ids=("same-upgrade-after-0043", "already-stamped-0043"),
+)
+def test_0044_forward_converges_instrument_universe_invalidation(
+    monkeypatch: pytest.MonkeyPatch,
+    start_revision: str,
+) -> None:
+    with _postgres_database(monkeypatch, portfolio_target=start_revision) as (
+        engine,
+        portfolio_config,
+    ):
+        with engine.begin() as connection:
+            _execute_batch(
+                connection,
+                """
+                INSERT INTO portfolio.portfolio_record (
+                    portfolio_id, portfolio_name, base_currency,
+                    valuation_timezone, valuation_cutoff_policy, sort_order,
+                    operating_profile
+                ) VALUES (
+                    'migration-0044-portfolio', 'Migration 0044', 'USD',
+                    'UTC', 'close', 0, 'standard_taxonomy'
+                );
+                INSERT INTO instrument_registry.instrument (
+                    instrument_id, instrument_name, instrument_type, currency,
+                    quote_selection_policy_json, source_settings_json,
+                    refresh_status_json, lifecycle_state_json
+                ) VALUES (
+                    'migration-0044-active', 'Migration 0044 Active',
+                    'fund', 'HKD', '{}'::json, '{}'::json, '{}'::json, '{}'::json
+                )
+                """,
+                {},
+            )
+            for event in ("insert", "update", "delete"):
+                connection.exec_driver_sql(
+                    "ALTER TABLE portfolio.portfolio_instrument_universe_record "
+                    f"DISABLE TRIGGER trg_40_pd_trg_instrument_universe_{event}"
+                )
+            connection.execute(
+                text(
+                    """
+                    INSERT INTO portfolio.portfolio_instrument_universe_record (
+                        portfolio_id, instrument_id, instrument_ref_json,
+                        source, holding_state, first_transaction_date,
+                        last_transaction_date, transaction_count, status,
+                        created_at, updated_at
+                    ) VALUES (
+                        'migration-0044-portfolio', 'migration-0044-active',
+                        '{"instrument_id":"migration-0044-active"}'::json,
+                        'taxonomy', 'not_held', NULL, NULL, 0, 'active',
+                        '2026-07-14T00:00:00Z', '2026-07-14T00:00:00Z'
+                    ), (
+                        'migration-0044-portfolio', 'migration-0044-archived-orphan',
+                        '{"instrument_id":"migration-0044-archived-orphan"}'::json,
+                        'taxonomy', 'not_held', NULL, NULL, 0, 'archived',
+                        '2026-07-14T00:00:00Z', '2026-07-14T00:00:00Z'
+                    )
+                    """
+                )
+            )
+            # This is the originally deployed 0040 behavior: every non-delete
+            # row attempts to subscribe, including archived tombstones.
+            connection.execute(
+                text(
+                    r"""
+                    CREATE OR REPLACE FUNCTION
+                        portfolio.pd_trg_instrument_universe()
+                    RETURNS trigger LANGUAGE plpgsql SECURITY DEFINER
+                    SET search_path = pg_catalog AS $$
+                    DECLARE v_scope_ids varchar[];
+                    BEGIN
+                        PERFORM portfolio.pd_lock_dependency_invalidation_protocol();
+                        IF TG_OP <> 'DELETE' THEN
+                            INSERT INTO portfolio.portfolio_daily_dependency_subscription (
+                                scope_id, dependency_kind, dependency_key,
+                                source_reason_code
+                            ) SELECT DISTINCT portfolio_id, 'instrument',
+                                              instrument_id, 'instrument_universe'
+                              FROM new_rows ON CONFLICT DO NOTHING;
+                            INSERT INTO portfolio.portfolio_daily_dependency_subscription (
+                                scope_id, dependency_kind, dependency_key,
+                                source_reason_code
+                            ) SELECT DISTINCT n.portfolio_id, 'currency',
+                                              i.currency, 'instrument_universe'
+                              FROM new_rows AS n
+                              JOIN instrument_registry.instrument AS i
+                                USING (instrument_id)
+                              ON CONFLICT DO NOTHING;
+                        END IF;
+                        IF TG_OP = 'INSERT' THEN
+                            SELECT array_agg(DISTINCT portfolio_id)
+                              INTO v_scope_ids FROM new_rows;
+                        ELSIF TG_OP = 'DELETE' THEN
+                            SELECT array_agg(DISTINCT portfolio_id)
+                              INTO v_scope_ids FROM old_rows;
+                        ELSE
+                            SELECT array_agg(DISTINCT portfolio_id)
+                              INTO v_scope_ids FROM (
+                                SELECT portfolio_id FROM old_rows
+                                UNION SELECT portfolio_id FROM new_rows
+                              ) AS changed;
+                        END IF;
+                        PERFORM * FROM portfolio.pd_invalidate_scopes(
+                            v_scope_ids,
+                            'portfolio_daily_dependency_changed',
+                            jsonb_build_object(
+                                'source_relation',
+                                'portfolio.portfolio_instrument_universe_record',
+                                'operation', TG_OP
+                            )
+                        );
+                        RETURN NULL;
+                    END; $$
+                    """
+                )
+            )
+
+        command.upgrade(portfolio_config, "head")
+
+        with engine.connect() as connection:
+            assert connection.scalar(
+                text("SELECT version_num FROM portfolio.alembic_version")
+            ) == "20260714_0045"
+            subscriptions = set(
+                connection.execute(
+                    text(
+                        """
+                        SELECT dependency_kind, dependency_key
+                        FROM portfolio.portfolio_daily_dependency_subscription
+                        WHERE scope_id = 'migration-0044-portfolio'
+                        """
+                    )
+                ).all()
+            )
+            assert ("instrument", "migration-0044-active") in subscriptions
+            assert ("currency", "HKD") in subscriptions
+            assert (
+                "instrument",
+                "migration-0044-archived-orphan",
+            ) not in subscriptions
+            trigger_states = connection.execute(
+                text(
+                    """
+                    SELECT trigger_row.tgname, trigger_row.tgenabled
+                    FROM pg_trigger AS trigger_row
+                    WHERE trigger_row.tgrelid =
+                        'portfolio.portfolio_instrument_universe_record'::regclass
+                      AND trigger_row.tgname LIKE
+                          'trg_40_pd_trg_instrument_universe_%'
+                    ORDER BY trigger_row.tgname
+                    """
+                )
+            ).all()
+            assert len(trigger_states) == 3
+            assert {state for _, state in trigger_states} == {"O"}
+            function_owner = connection.scalar(
+                text(
+                    """
+                    SELECT pg_get_userbyid(procedure.proowner)
+                    FROM pg_proc AS procedure
+                    WHERE procedure.oid =
+                        'portfolio.pd_trg_instrument_universe()'::regprocedure
+                    """
+                )
+            )
+            assert function_owner == connection.scalar(text("SELECT current_user"))
+            assert not connection.scalar(
+                text(
+                    """
+                    SELECT has_function_privilege(
+                        'public',
+                        'portfolio.pd_trg_instrument_universe()',
+                        'EXECUTE'
+                    )
+                    """
+                )
+            )
+
+        # A new archived orphan must remain valid historical metadata and must
+        # not touch the Registry-backed subscription relation.
+        with engine.begin() as connection:
+            connection.execute(
+                text(
+                    """
+                    INSERT INTO portfolio.portfolio_instrument_universe_record (
+                        portfolio_id, instrument_id, instrument_ref_json,
+                        source, holding_state, first_transaction_date,
+                        last_transaction_date, transaction_count, status,
+                        created_at, updated_at
+                    ) VALUES (
+                        'migration-0044-portfolio',
+                        'migration-0044-post-archived-orphan',
+                        '{"instrument_id":"migration-0044-post-archived-orphan"}'::json,
+                        'taxonomy', 'not_held', NULL, NULL, 0, 'archived',
+                        '2026-07-14T00:00:00Z', '2026-07-14T00:00:00Z'
+                    )
+                    """
+                )
+            )
+        with engine.connect() as connection:
+            assert connection.scalar(
+                text(
+                    """
+                    SELECT count(*)
+                    FROM portfolio.portfolio_daily_dependency_subscription
+                    WHERE scope_id = 'migration-0044-portfolio'
+                      AND dependency_kind = 'instrument'
+                      AND dependency_key =
+                          'migration-0044-post-archived-orphan'
+                    """
+                )
+            ) == 0
+
+
+def test_0045_persists_and_enforces_ingestion_evidence_contract(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    with _postgres_database(monkeypatch, portfolio_target="20260714_0044") as (
+        engine,
+        portfolio_config,
+    ):
+        # A later Registry stamp remains compatible when the live source
+        # contract itself is unchanged; Portfolio must not pin an exact head.
+        with engine.begin() as connection:
+            connection.execute(
+                text(
+                    "UPDATE instrument_registry.alembic_version "
+                    "SET version_num = '20260714_0099'"
+                )
+            )
+        command.upgrade(portfolio_config, "20260714_0045")
+
+        with engine.connect() as connection:
+            columns = {
+                (row["table_name"], row["column_name"]): row["is_nullable"]
+                for row in connection.execute(
+                    text(
+                        """
+                        SELECT table_name, column_name, is_nullable
+                        FROM information_schema.columns
+                        WHERE table_schema = 'portfolio'
+                          AND (
+                              (table_name = 'portfolio_daily_quote_candidate'
+                               AND column_name IN (
+                                   'ingested_at', 'ingestion_time_state'
+                               ))
+                              OR
+                              (table_name = 'portfolio_daily_fx_leg'
+                               AND column_name = 'ingestion_time_state')
+                          )
+                        """
+                    )
+                ).mappings()
+            }
+            assert columns == {
+                ("portfolio_daily_quote_candidate", "ingested_at"): "NO",
+                (
+                    "portfolio_daily_quote_candidate",
+                    "ingestion_time_state",
+                ): "NO",
+                ("portfolio_daily_fx_leg", "ingestion_time_state"): "YES",
+            }
+            function_definitions = list(
+                connection.scalars(
+                    text(
+                        """
+                        SELECT pg_get_functiondef(procedure.oid)
+                        FROM pg_proc AS procedure
+                        JOIN pg_namespace AS namespace
+                          ON namespace.oid = procedure.pronamespace
+                        WHERE namespace.nspname = 'portfolio'
+                          AND procedure.proname IN (
+                              'pd_guard_quote_candidate_lineage',
+                              'pd_guard_fx_leg_lineage'
+                          )
+                        ORDER BY procedure.proname
+                        """
+                    )
+                )
+            )
+            assert len(function_definitions) == 2
+            assert all(
+                definition.count("ingestion_time_state") >= 3
+                for definition in function_definitions
+            )
+
+        with engine.begin() as connection:
+            run_id, manifest_id, portfolio_id, cutoff_at = (
+                _seed_building_fx_manifest(connection)
+            )
+            quote_series_id = str(uuid4())
+            observation_id = str(uuid4())
+            revision_id = str(uuid4())
+            quote_window_id = str(uuid4())
+            payload_hash = "sha256:" + "a" * 64
+            _execute_batch(
+                connection,
+                """
+                INSERT INTO instrument_registry.instrument (
+                    instrument_id, instrument_name, instrument_type, currency,
+                    quote_selection_policy_json, source_settings_json,
+                    refresh_status_json, lifecycle_state_json
+                ) VALUES (
+                    'migration-0045-quote', 'Migration 0045 Quote', 'fund',
+                    'USD', '{}'::json, '{}'::json, '{}'::json, '{}'::json
+                );
+                INSERT INTO instrument_registry.quote_series (
+                    quote_series_id, instrument_id, metric_family,
+                    quote_basis, currency
+                ) VALUES (
+                    :quote_series_id, 'migration-0045-quote', 'nav',
+                    'official_nav', 'USD'
+                );
+                INSERT INTO instrument_registry.quote_observation (
+                    observation_id, quote_series_id, as_of_date
+                ) VALUES (
+                    :observation_id, :quote_series_id, DATE '2026-07-14'
+                );
+                INSERT INTO instrument_registry.quote_observation_revision (
+                    revision_id, observation_id, revision_number, value,
+                    value_input_scale, numeric_scale_state,
+                    payload_schema_version, status, ingested_at,
+                    ingestion_time_state, payload_hash, is_current,
+                    superseded_at
+                ) VALUES (
+                    :revision_id, :observation_id, 1, 100, 0, 'declared', 2,
+                    'complete', :cutoff_at, 'observed', :payload_hash,
+                    true, NULL
+                );
+                INSERT INTO portfolio.portfolio_daily_quote_window (
+                    manifest_id, run_id, portfolio_id, quote_window_id,
+                    instrument_id, quote_role, valuation_date, quote_currency,
+                    window_start_at, window_end_at, selection_policy_version,
+                    selection_policy_revision, consumer_policy_version,
+                    freshness_policy_version, freshness_mode,
+                    freshness_max_age_days, resolver_strategy_version,
+                    freshness_limit_seconds, candidate_count, adopted_count,
+                    selection_status, coverage_state, reason_codes
+                ) VALUES (
+                    :manifest_id, :run_id, :portfolio_id, :quote_window_id,
+                    'migration-0045-quote', 'valuation', DATE '2026-07-14',
+                    'USD', :cutoff_at - INTERVAL '1 day', :cutoff_at,
+                    'quote-v1', :selection_revision, 'valuation-v1',
+                    'fresh-v1', 'calendar_days', 5, 'resolver-v1', 432000,
+                    1, 0, 'unavailable', 'unavailable',
+                    ARRAY['test_excluded']::varchar(64)[]
+                )
+                """,
+                {
+                    "run_id": run_id,
+                    "manifest_id": manifest_id,
+                    "portfolio_id": portfolio_id,
+                    "cutoff_at": cutoff_at,
+                    "quote_series_id": quote_series_id,
+                    "observation_id": observation_id,
+                    "revision_id": revision_id,
+                    "quote_window_id": quote_window_id,
+                    "payload_hash": payload_hash,
+                    "selection_revision": "sha256:" + "b" * 64,
+                },
+            )
+
+        candidate_sql = text(
+            """
+            INSERT INTO portfolio.portfolio_daily_quote_candidate (
+                manifest_id, run_id, portfolio_id, quote_window_id,
+                candidate_rank, quote_series_id, observation_id,
+                revision_id, revision_number, observation_date,
+                quote_value, quote_status, source_published_at, ingested_at,
+                ingestion_time_state, payload_hash, decision,
+                decision_reason_code
+            ) VALUES (
+                :manifest_id, :run_id, :portfolio_id, :quote_window_id,
+                1, :quote_series_id, :observation_id, :revision_id, 1,
+                DATE '2026-07-14', 100, 'complete', NULL, :cutoff_at,
+                :ingestion_time_state, :payload_hash, 'excluded',
+                'test_excluded'
+            )
+            """
+        )
+        candidate_params = {
+            "run_id": run_id,
+            "manifest_id": manifest_id,
+            "portfolio_id": portfolio_id,
+            "cutoff_at": cutoff_at,
+            "quote_series_id": quote_series_id,
+            "observation_id": observation_id,
+            "revision_id": revision_id,
+            "quote_window_id": quote_window_id,
+            "payload_hash": payload_hash,
+        }
+        with pytest.raises(
+            DBAPIError,
+            match="portfolio_daily_quote_revision_mismatch",
+        ):
+            with engine.begin() as connection:
+                connection.execute(
+                    candidate_sql,
+                    {
+                        **candidate_params,
+                        "ingestion_time_state": "legacy_series_upper_bound",
+                    },
+                )
+        with engine.begin() as connection:
+            connection.execute(
+                candidate_sql,
+                {**candidate_params, "ingestion_time_state": "observed"},
+            )
+        with engine.connect() as connection:
+            assert connection.scalar(
+                text(
+                    """
+                    SELECT ingestion_time_state
+                    FROM portfolio.portfolio_daily_quote_candidate
+                    WHERE manifest_id = :manifest_id
+                    """
+                ),
+                {"manifest_id": manifest_id},
+            ) == "observed"
+
+        fx_series_id = str(uuid4())
+        fx_observation_id = str(uuid4())
+        fx_revision_id = str(uuid4())
+        fx_path_id = str(uuid4())
+        fx_payload_hash = "sha256:" + "c" * 64
+        with engine.begin() as connection:
+            _execute_batch(
+                connection,
+                """
+                INSERT INTO instrument_registry.instrument (
+                    instrument_id, instrument_name, instrument_type, currency,
+                    quote_selection_policy_json, source_settings_json,
+                    refresh_status_json, lifecycle_state_json
+                ) VALUES (
+                    'migration-0045-fx', 'Migration 0045 FX', 'fx', 'CNY',
+                    '{}'::json, '{}'::json, '{}'::json, '{}'::json
+                );
+                INSERT INTO instrument_registry.quote_series (
+                    quote_series_id, instrument_id, metric_family,
+                    quote_basis, currency
+                ) VALUES (
+                    :fx_series_id, 'migration-0045-fx', 'fx', 'spot', 'CNY'
+                );
+                INSERT INTO instrument_registry.quote_observation (
+                    observation_id, quote_series_id, as_of_date
+                ) VALUES (
+                    :fx_observation_id, :fx_series_id, DATE '2026-07-14'
+                );
+                INSERT INTO instrument_registry.quote_observation_revision (
+                    revision_id, observation_id, revision_number, value,
+                    value_input_scale, numeric_scale_state,
+                    payload_schema_version, status, ingested_at,
+                    ingestion_time_state, payload_hash, is_current,
+                    superseded_at
+                ) VALUES (
+                    :fx_revision_id, :fx_observation_id, 1, 7.1, 1,
+                    'declared', 2, 'complete', :cutoff_at, 'observed',
+                    :fx_payload_hash, true, NULL
+                );
+                INSERT INTO portfolio.portfolio_daily_fx_path (
+                    manifest_id, run_id, portfolio_id, fx_path_id,
+                    valuation_date, from_currency, to_currency, path_kind,
+                    resolution_status, leg_count, resolved_rate,
+                    rate_derivation_residual_exact,
+                    selection_policy_version, consumer_policy_version,
+                    freshness_policy_version, freshness_mode,
+                    freshness_max_age_days, resolver_strategy_version,
+                    rate_math_precision, rate_rounding_mode, coverage_state,
+                    reason_codes
+                ) VALUES (
+                    :manifest_id, :run_id, :portfolio_id, :fx_path_id,
+                    DATE '2026-07-14', 'USD', 'CNY', 'direct', 'resolved', 1,
+                    7.1, 0, 'fx-select-v1', 'fx-v1', 'fresh-v1',
+                    'calendar_days', 5, 'resolver-v1', 50,
+                    'ROUND_HALF_EVEN', 'complete', ARRAY[]::varchar(64)[]
+                )
+                """,
+                {
+                    "run_id": run_id,
+                    "manifest_id": manifest_id,
+                    "portfolio_id": portfolio_id,
+                    "cutoff_at": cutoff_at,
+                    "fx_series_id": fx_series_id,
+                    "fx_observation_id": fx_observation_id,
+                    "fx_revision_id": fx_revision_id,
+                    "fx_path_id": fx_path_id,
+                    "fx_payload_hash": fx_payload_hash,
+                },
+            )
+
+        fx_leg_sql = text(
+            """
+            INSERT INTO portfolio.portfolio_daily_fx_leg (
+                manifest_id, run_id, portfolio_id, fx_path_id, leg_order,
+                from_currency, to_currency, is_inverted,
+                leg_resolution_status, reason_codes, quote_series_id,
+                observation_id, revision_id, revision_number,
+                observation_date, quoted_rate, effective_rate,
+                rate_derivation_residual_exact, quote_status,
+                source_published_at, ingested_at, ingestion_time_state,
+                payload_hash, consumer_policy_version,
+                freshness_policy_version, freshness_mode,
+                freshness_max_age_days, resolver_strategy_version,
+                rate_math_precision, rate_rounding_mode
+            ) VALUES (
+                :manifest_id, :run_id, :portfolio_id, :fx_path_id, 1,
+                'USD', 'CNY', false, 'resolved', ARRAY[]::varchar(64)[],
+                :fx_series_id, :fx_observation_id, :fx_revision_id, 1,
+                DATE '2026-07-14', 7.1, 7.1, 0, 'complete', NULL,
+                :cutoff_at, :ingestion_time_state, :fx_payload_hash,
+                'fx-v1', 'fresh-v1', 'calendar_days', 5, 'resolver-v1', 50,
+                'ROUND_HALF_EVEN'
+            )
+            """
+        )
+        fx_leg_params = {
+            "run_id": run_id,
+            "manifest_id": manifest_id,
+            "portfolio_id": portfolio_id,
+            "cutoff_at": cutoff_at,
+            "fx_series_id": fx_series_id,
+            "fx_observation_id": fx_observation_id,
+            "fx_revision_id": fx_revision_id,
+            "fx_path_id": fx_path_id,
+            "fx_payload_hash": fx_payload_hash,
+        }
+        with pytest.raises(
+            DBAPIError,
+            match="portfolio_daily_fx_leg_revision_mismatch",
+        ):
+            with engine.begin() as connection:
+                connection.execute(
+                    fx_leg_sql,
+                    {
+                        **fx_leg_params,
+                        "ingestion_time_state": "legacy_series_upper_bound",
+                    },
+                )
+        with engine.begin() as connection:
+            connection.execute(
+                fx_leg_sql,
+                {**fx_leg_params, "ingestion_time_state": "observed"},
+            )
+        with engine.connect() as connection:
+            assert connection.scalar(
+                text(
+                    """
+                    SELECT ingestion_time_state
+                    FROM portfolio.portfolio_daily_fx_leg
+                    WHERE manifest_id = :manifest_id
+                      AND fx_path_id = :fx_path_id
+                    """
+                ),
+                {"manifest_id": manifest_id, "fx_path_id": fx_path_id},
+            ) == "observed"
+
+
+@pytest.mark.parametrize(
+    ("instrument_target", "source_drift_sql"),
+    [
+        ("20260714_0013", None),
+        (
+            "head",
+            "ALTER TABLE instrument_registry.quote_observation_revision "
+            "DISABLE TRIGGER trg_quote_observation_revision_immutable",
+        ),
+    ],
+    ids=("registry-before-0014", "immutable-guard-disabled"),
+)
+def test_0045_source_contract_failure_is_atomic(
+    monkeypatch: pytest.MonkeyPatch,
+    instrument_target: str,
+    source_drift_sql: str | None,
+) -> None:
+    with _postgres_database(
+        monkeypatch,
+        instrument_target=instrument_target,
+        portfolio_target="20260714_0044",
+    ) as (engine, portfolio_config):
+        if source_drift_sql is not None:
+            with engine.begin() as connection:
+                connection.exec_driver_sql(source_drift_sql)
+
+        with pytest.raises(RuntimeError, match="requires the complete"):
+            command.upgrade(portfolio_config, "20260714_0045")
+        with engine.connect() as connection:
+            assert connection.scalar(
+                text("SELECT version_num FROM portfolio.alembic_version")
+            ) == "20260714_0044"
+            assert connection.scalar(
+                text(
+                    """
+                    SELECT count(*)
+                    FROM information_schema.columns
+                    WHERE table_schema = 'portfolio'
+                      AND table_name IN (
+                          'portfolio_daily_quote_candidate',
+                          'portfolio_daily_fx_leg'
+                      )
+                      AND column_name = 'ingestion_time_state'
+                    """
+                )
+            ) == 0
+
+
+def test_0045_refuses_to_reinterpret_preexisting_manifest_evidence_atomically(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    with _postgres_database(monkeypatch, portfolio_target="20260714_0044") as (
+        engine,
+        portfolio_config,
+    ):
+        with engine.begin() as connection:
+            run_id, manifest_id, portfolio_id, _ = _seed_building_fx_manifest(
+                connection
+            )
+            fx_path_id = str(uuid4())
+            _execute_batch(
+                connection,
+                """
+                INSERT INTO portfolio.portfolio_daily_fx_path (
+                    manifest_id, run_id, portfolio_id, fx_path_id,
+                    valuation_date, from_currency, to_currency, path_kind,
+                    resolution_status, leg_count, selection_policy_version,
+                    consumer_policy_version, freshness_policy_version,
+                    freshness_mode, freshness_max_age_days,
+                    resolver_strategy_version, rate_math_precision,
+                    rate_rounding_mode, coverage_state, reason_codes
+                ) VALUES (
+                    :manifest_id, :run_id, :portfolio_id, :fx_path_id,
+                    DATE '2026-07-14', 'USD', 'CNY', 'direct', 'unavailable',
+                    1, 'fx-select-v1', 'fx-v1', 'fresh-v1', 'calendar_days',
+                    5, 'resolver-v1', 50, 'ROUND_HALF_EVEN', 'unavailable',
+                    ARRAY['missing_fx_quote']::varchar(64)[]
+                );
+                INSERT INTO portfolio.portfolio_daily_fx_leg (
+                    manifest_id, run_id, portfolio_id, fx_path_id, leg_order,
+                    from_currency, to_currency, is_inverted,
+                    leg_resolution_status, reason_codes,
+                    consumer_policy_version, freshness_policy_version,
+                    freshness_mode, freshness_max_age_days,
+                    resolver_strategy_version, rate_math_precision,
+                    rate_rounding_mode
+                ) VALUES (
+                    :manifest_id, :run_id, :portfolio_id, :fx_path_id, 1,
+                    'USD', 'CNY', false, 'missing',
+                    ARRAY['missing_fx_quote']::varchar(64)[], 'fx-v1',
+                    'fresh-v1', 'calendar_days', 5, 'resolver-v1', 50,
+                    'ROUND_HALF_EVEN'
+                )
+                """,
+                {
+                    "run_id": run_id,
+                    "manifest_id": manifest_id,
+                    "portfolio_id": portfolio_id,
+                    "fx_path_id": fx_path_id,
+                },
+            )
+
+        with pytest.raises(RuntimeError, match="cannot reinterpret"):
+            command.upgrade(portfolio_config, "20260714_0045")
+        with engine.connect() as connection:
+            assert connection.scalar(
+                text("SELECT version_num FROM portfolio.alembic_version")
+            ) == "20260714_0044"
+            assert connection.scalar(
+                text(
+                    """
+                    SELECT count(*)
+                    FROM information_schema.columns
+                    WHERE table_schema = 'portfolio'
+                      AND table_name IN (
+                          'portfolio_daily_quote_candidate',
+                          'portfolio_daily_fx_leg'
+                      )
+                      AND column_name = 'ingestion_time_state'
+                    """
+                )
+            ) == 0
 
 
 def test_upgrade_metadata_parity_breaking_cutover_and_structural_downgrade(
@@ -236,9 +1564,42 @@ def test_upgrade_metadata_parity_breaking_cutover_and_structural_downgrade(
                     """
                 )
             )
+            connection.execute(
+                text(
+                    """
+                    INSERT INTO portfolio.portfolio_instrument_universe_record (
+                        portfolio_id, instrument_id, instrument_ref_json,
+                        source, holding_state, first_transaction_date,
+                        last_transaction_date, transaction_count, status,
+                        created_at, updated_at
+                    ) VALUES (
+                        'pre-0039', 'legacy-archived-orphan',
+                        '{"instrument_id":"legacy-archived-orphan"}'::json,
+                        'taxonomy', 'not_held', NULL, NULL, 0, 'archived',
+                        '2026-07-01T00:00:00Z', '2026-07-01T00:00:00Z'
+                    ), (
+                        'pre-0039', 'fx-usd-cny',
+                        '{"instrument_id":"fx-usd-cny"}'::json,
+                        'transaction', 'held', NULL, NULL, 0, 'active',
+                        '2026-07-01T00:00:00Z', '2026-07-01T00:00:00Z'
+                    )
+                    """
+                )
+            )
 
-        command.upgrade(portfolio_config, "head")
-        _assert_metadata_parity(engine)
+        # 0043 is intentionally irreversible.  Exercise the independently
+        # reversible Portfolio Daily cutover only through its 0042 boundary.
+        command.upgrade(portfolio_config, "20260714_0042")
+        _assert_metadata_parity(
+            engine,
+            future_columns={
+                "portfolio_daily_quote_candidate": {"ingestion_time_state"},
+                "portfolio_daily_fx_leg": {"ingestion_time_state"},
+            },
+            future_nullable_changes={
+                ("portfolio_daily_quote_candidate", "ingested_at")
+            },
+        )
         inspector = inspect(engine)
         lot_columns = {
             column["name"]: column
@@ -341,6 +1702,85 @@ def test_upgrade_metadata_parity_breaking_cutover_and_structural_downgrade(
                 "source_relation": "portfolio.portfolio_record",
             }
             assert seeded_intent["status"] == "pending"
+            assert connection.scalar(
+                text(
+                    """
+                    SELECT count(*)
+                    FROM portfolio.portfolio_daily_dependency_subscription
+                    WHERE scope_id = 'pre-0039'
+                      AND dependency_kind = 'instrument'
+                      AND dependency_key = 'legacy-archived-orphan'
+                    """
+                )
+            ) == 0
+            assert connection.scalar(
+                text(
+                    """
+                    SELECT status
+                    FROM portfolio.portfolio_instrument_universe_record
+                    WHERE portfolio_id = 'pre-0039'
+                      AND instrument_id = 'legacy-archived-orphan'
+                    """
+                )
+            ) == "archived"
+            assert connection.scalar(
+                text(
+                    """
+                    SELECT count(*)
+                    FROM portfolio.portfolio_daily_dependency_subscription
+                    WHERE scope_id = 'pre-0039'
+                      AND dependency_kind = 'instrument'
+                      AND dependency_key = 'fx-usd-cny'
+                    """
+                )
+            ) == 1
+
+        with engine.begin() as connection:
+            connection.execute(
+                text(
+                    """
+                    INSERT INTO portfolio.portfolio_instrument_universe_record (
+                        portfolio_id, instrument_id, instrument_ref_json,
+                        source, holding_state, first_transaction_date,
+                        last_transaction_date, transaction_count, status,
+                        created_at, updated_at
+                    ) VALUES (
+                        'pre-0039', 'post-upgrade-archived-orphan',
+                        '{"instrument_id":"post-upgrade-archived-orphan"}'::json,
+                        'taxonomy', 'not_held', NULL, NULL, 0, 'archived',
+                        '2026-07-01T00:00:00Z', '2026-07-01T00:00:00Z'
+                    )
+                    """
+                )
+            )
+
+        with pytest.raises(
+            IntegrityError,
+            match="portfolio_daily_instrument_subscription_target_missing",
+        ):
+            with engine.begin() as connection:
+                connection.execute(
+                    text(
+                        """
+                        UPDATE portfolio.portfolio_instrument_universe_record
+                        SET status = 'active'
+                        WHERE portfolio_id = 'pre-0039'
+                          AND instrument_id = 'post-upgrade-archived-orphan'
+                        """
+                    )
+                )
+
+        with engine.connect() as connection:
+            assert connection.scalar(
+                text(
+                    """
+                    SELECT status
+                    FROM portfolio.portfolio_instrument_universe_record
+                    WHERE portfolio_id = 'pre-0039'
+                      AND instrument_id = 'post-upgrade-archived-orphan'
+                    """
+                )
+            ) == "archived"
 
         command.downgrade(portfolio_config, "20260713_0038")
         inspector = inspect(engine)
@@ -606,13 +2046,16 @@ def _seed_building_fx_manifest(connection) -> tuple[str, str, str, datetime]:
         """
             INSERT INTO portfolio.portfolio_record (
                 portfolio_id, portfolio_name, base_currency,
-                valuation_timezone, valuation_cutoff_policy, sort_order
+                valuation_timezone, valuation_cutoff_policy, sort_order,
+                operating_profile
             ) VALUES (
-                :portfolio_id, 'FX Inverse Evidence', 'USD', 'UTC', 'close', 0
+                :portfolio_id, 'FX Inverse Evidence', 'USD', 'UTC', 'close', 0,
+                'standard_taxonomy'
             );
             INSERT INTO calculation_registry.calculation_scope_generation (
                 calculation_kind, scope_kind, scope_id, generation
-            ) VALUES ('portfolio_daily', 'portfolio', :portfolio_id, 0);
+            ) VALUES ('portfolio_daily', 'portfolio', :portfolio_id, 0)
+            ON CONFLICT DO NOTHING;
             INSERT INTO calculation_registry.calculation_run (
                 run_id, calculation_kind, scope_kind, scope_id,
                 requested_as_of, effective_as_of, cutoff_at, timezone,
@@ -746,11 +2189,12 @@ def _insert_resolved_fx_path(
                     revision_id, observation_id, revision_number, value,
                     value_input_scale, numeric_scale_state,
                     payload_schema_version,
-                    status, ingested_at, payload_hash, is_current, superseded_at
+                    status, ingested_at, ingestion_time_state, payload_hash,
+                    is_current, superseded_at
                 ) VALUES (
                     :revision_id, :observation_id, 1, :quoted_rate,
                     :value_input_scale, 'declared', 2, 'complete',
-                    :cutoff_at, :payload_hash, true, NULL
+                    :cutoff_at, 'observed', :payload_hash, true, NULL
                 );
                 INSERT INTO portfolio.portfolio_daily_fx_leg (
                     manifest_id, run_id, portfolio_id, fx_path_id, leg_order,
@@ -759,7 +2203,8 @@ def _insert_resolved_fx_path(
                     observation_id, revision_id, revision_number,
                     observation_date, quoted_rate, effective_rate,
                     rate_derivation_residual_exact, quote_status,
-                    source_published_at, ingested_at, payload_hash,
+                    source_published_at, ingested_at, ingestion_time_state,
+                    payload_hash,
                     consumer_policy_version, freshness_policy_version,
                     freshness_mode, freshness_max_age_days,
                     resolver_strategy_version, rate_math_precision,
@@ -770,7 +2215,8 @@ def _insert_resolved_fx_path(
                     ARRAY[]::varchar(64)[], :quote_series_id, :observation_id,
                     :revision_id, 1, DATE '2026-07-14', :quoted_rate,
                     :effective_rate, :residual, 'complete', NULL, :cutoff_at,
-                    :payload_hash, 'fx-v1', 'fresh-v1', 'calendar_days', 5,
+                    'observed', :payload_hash, 'fx-v1', 'fresh-v1',
+                    'calendar_days', 5,
                     'resolver-v1', 50, 'ROUND_HALF_EVEN'
                 );
             """,
@@ -801,7 +2247,7 @@ def _insert_resolved_fx_path(
 def _seed_sealed_manifest(
     connection,
     *,
-    operating_profile: str | None = None,
+    operating_profile: str = "standard_taxonomy",
     include_exact_cross_fx_path: bool = False,
     cross_resolved_rate_override: Decimal | None = None,
     include_missing_fx_path: bool = False,
@@ -817,26 +2263,16 @@ def _seed_sealed_manifest(
     job_id = str(uuid4())
     portfolio_id = "attempt-isolation"
     account_id = "attempt-isolation-cash"
-    if operating_profile is None:
-        portfolio_insert = """
-            INSERT INTO portfolio.portfolio_record (
-                portfolio_id, portfolio_name, base_currency,
-                valuation_timezone, valuation_cutoff_policy, sort_order
-            ) VALUES (
-                :portfolio_id, 'Attempt Isolation', 'USD', 'UTC', 'close', 0
-            );
-        """
-    else:
-        portfolio_insert = """
-            INSERT INTO portfolio.portfolio_record (
-                portfolio_id, portfolio_name, base_currency,
-                valuation_timezone, valuation_cutoff_policy, sort_order,
-                operating_profile
-            ) VALUES (
-                :portfolio_id, 'Attempt Isolation', 'USD', 'UTC', 'close', 0,
-                :operating_profile
-            );
-        """
+    portfolio_insert = """
+        INSERT INTO portfolio.portfolio_record (
+            portfolio_id, portfolio_name, base_currency,
+            valuation_timezone, valuation_cutoff_policy, sort_order,
+            operating_profile
+        ) VALUES (
+            :portfolio_id, 'Attempt Isolation', 'USD', 'UTC', 'close', 0,
+            :operating_profile
+        );
+    """
     _execute_batch(
         connection,
         portfolio_insert,
@@ -1102,12 +2538,12 @@ def _seed_sealed_manifest(
                     revision_id, observation_id, revision_number, value,
                     value_input_scale, numeric_scale_state,
                     payload_schema_version,
-                    status, ingested_at, payload_hash, is_current,
-                    superseded_at
+                    status, ingested_at, ingestion_time_state, payload_hash,
+                    is_current, superseded_at
                 ) VALUES (
                     :revision_id, :observation_id, 1, :quote_value,
                     :value_input_scale, 'declared', 2, 'rejected',
-                    :cutoff_at, :payload_hash, true, NULL
+                    :cutoff_at, 'observed', :payload_hash, true, NULL
                 );
                 INSERT INTO portfolio.portfolio_daily_instrument_input (
                     manifest_id, run_id, portfolio_id, instrument_id,
@@ -1167,12 +2603,14 @@ def _seed_sealed_manifest(
                     candidate_rank, quote_series_id, observation_id,
                     revision_id, revision_number, observation_date,
                     quote_value, quote_status, source_published_at, ingested_at,
-                    payload_hash, decision, decision_reason_code
+                    ingestion_time_state, payload_hash, decision,
+                    decision_reason_code
                 ) VALUES (
                     :manifest_id, :run_id, :portfolio_id, :quote_window_id,
                     1, :quote_series_id, :observation_id, :revision_id, 1,
                     DATE '2026-07-14', :quote_value, 'rejected', NULL,
-                    :cutoff_at, :payload_hash, :decision, 'provider_rejected'
+                    :cutoff_at, 'observed', :payload_hash, :decision,
+                    'provider_rejected'
                 );
             """,
             {
@@ -1419,12 +2857,12 @@ def _seed_sealed_manifest(
                     revision_id, observation_id, revision_number, value,
                     value_input_scale, numeric_scale_state,
                     payload_schema_version,
-                    status, ingested_at, payload_hash, is_current,
-                    superseded_at
+                    status, ingested_at, ingestion_time_state, payload_hash,
+                    is_current, superseded_at
                 ) VALUES (
                     :revision_id, :observation_id, 1, NULL,
                     NULL, NULL, 2, 'withdrawn',
-                    :cutoff_at, :payload_hash, true, NULL
+                    :cutoff_at, 'observed', :payload_hash, true, NULL
                 );
                 INSERT INTO portfolio.portfolio_daily_fx_path (
                     manifest_id, run_id, portfolio_id, fx_path_id,
@@ -1449,7 +2887,8 @@ def _seed_sealed_manifest(
                     observation_id, revision_id, revision_number,
                     observation_date, quoted_rate, effective_rate,
                     rate_derivation_residual_exact, quote_status,
-                    source_published_at, ingested_at, payload_hash,
+                    source_published_at, ingested_at, ingestion_time_state,
+                    payload_hash,
                     consumer_policy_version, freshness_policy_version,
                     freshness_mode, freshness_max_age_days,
                     resolver_strategy_version, rate_math_precision,
@@ -1460,7 +2899,7 @@ def _seed_sealed_manifest(
                     ARRAY['withdrawn_fx_quote']::varchar(64)[],
                     :quote_series_id, :observation_id, :revision_id, 1,
                     DATE '2026-07-14', NULL, NULL, NULL, 'withdrawn', NULL,
-                    :cutoff_at, :payload_hash, 'fx-v1', 'fresh-v1',
+                    :cutoff_at, 'observed', :payload_hash, 'fx-v1', 'fresh-v1',
                     'calendar_days', 5, 'resolver-v1', 50, 'ROUND_HALF_EVEN'
                 );
                 """,

@@ -2,10 +2,14 @@ from collections.abc import Sequence
 from datetime import datetime, timedelta
 from uuid import uuid4
 
-from sqlalchemy import case, exists, func, or_, select, text, update
+from sqlalchemy import case, exists, func, select, text, update
 from sqlalchemy.orm import Session, aliased
 
-from watchlist_app.db.models.recalc import RecalcInvalidationState, RecalcJob
+from watchlist_app.db.models.recalc import (
+    RecalcInvalidationState,
+    RecalcJob,
+    RecalcSourceEventInbox,
+)
 from watchlist_app.repositories.sqlalchemy.recalc_invalidations import (
     SQLAlchemyRecalcInvalidationRepository,
 )
@@ -419,6 +423,12 @@ class SQLAlchemyRecalcJobRepository:
         return session.get(RecalcJob, job_id)
 
     def has_terminal_source_event_failure(self, session: Session) -> bool:
+        inbox_backed_claim = exists().where(
+            RecalcSourceEventInbox.instrument_id == RecalcJob.instrument_id,
+            RecalcSourceEventInbox.job_type == RecalcJob.job_type,
+            RecalcSourceEventInbox.disposition == "recalc",
+            RecalcSourceEventInbox.generation == RecalcJob.claimed_generation,
+        )
         unresolved_generation = exists().where(
             RecalcInvalidationState.instrument_id == RecalcJob.instrument_id,
             RecalcInvalidationState.job_type == RecalcJob.job_type,
@@ -430,14 +440,9 @@ class SQLAlchemyRecalcJobRepository:
                 select(
                     exists().where(
                         RecalcJob.job_status == "failed",
-                        RecalcJob.trigger_ref_type.is_not(None),
-                        func.trim(RecalcJob.trigger_ref_type) != "",
-                        RecalcJob.trigger_ref_id.is_not(None),
-                        func.trim(RecalcJob.trigger_ref_id) != "",
-                        or_(
-                            RecalcJob.claimed_generation.is_(None),
-                            unresolved_generation,
-                        ),
+                        RecalcJob.claimed_generation.is_not(None),
+                        inbox_backed_claim,
+                        unresolved_generation,
                     )
                 )
             )

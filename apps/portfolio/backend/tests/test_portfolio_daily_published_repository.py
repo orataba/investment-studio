@@ -12,10 +12,12 @@ from sqlalchemy.sql.schema import Table
 from portfolio_app.calculations.portfolio_daily.published_repository import (
     PortfolioDailyCurrentPublicationChanged,
     PortfolioDailyPublishedReadIntegrityError,
+    read_current_portfolio_daily_latest_summary,
     read_current_portfolio_daily_publication,
 )
 from portfolio_app.calculations.portfolio_daily.db_models import (
     portfolio_daily_contribution_output,
+    portfolio_daily_holding_output,
     portfolio_daily_snapshot_output,
 )
 from portfolio_ops_calculation_core.state import CalculationRunStatus
@@ -295,6 +297,64 @@ def test_current_read_uses_pointer_run_and_fencing_token_for_every_output() -> N
         assert publication_id in compiled.params.values()
         assert run_id in compiled.params.values()
         assert token in compiled.params.values()
+
+
+def test_latest_summary_counts_distinct_instruments_only_on_latest_date() -> None:
+    publication_id = uuid4()
+    run_id = uuid4()
+    token = 23
+    metadata = _metadata_row(
+        publication_id=publication_id,
+        run_id=run_id,
+        manifest_id=uuid4(),
+        token=token,
+    )
+    snapshot = _output_row(
+        portfolio_daily_snapshot_output,
+        run_id=run_id,
+        token=token,
+    )
+    holdings = [
+        _output_row(
+            portfolio_daily_holding_output,
+            run_id=run_id,
+            token=token,
+            account_id="account-a",
+            instrument_id="instrument-a",
+        ),
+        _output_row(
+            portfolio_daily_holding_output,
+            run_id=run_id,
+            token=token,
+            account_id="account-b",
+            instrument_id="instrument-a",
+        ),
+        _output_row(
+            portfolio_daily_holding_output,
+            run_id=run_id,
+            token=token,
+            account_id="account-a",
+            instrument_id="instrument-b",
+        ),
+    ]
+    executor = _RecordingExecutor(
+        [
+            [metadata],
+            [snapshot],
+            holdings,
+            [_confirmation(publication_id=publication_id, run_id=run_id, token=token)],
+        ]
+    )
+
+    result = read_current_portfolio_daily_latest_summary(
+        executor,  # type: ignore[arg-type]
+        portfolio_id="portfolio-exact",
+    )
+
+    assert result is not None
+    assert result.instrument_count == 2
+    assert result.metadata.holding_count == 1
+    assert len(executor.statements) == 4
 
 
 def test_current_read_preserves_unmeasured_flow_nulls_and_coverage_evidence() -> None:

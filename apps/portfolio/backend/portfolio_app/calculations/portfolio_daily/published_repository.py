@@ -528,6 +528,7 @@ class PortfolioDailyLatestSummary:
 
     metadata: PortfolioDailyRunMetadata
     snapshot: PortfolioDailySnapshot | None
+    instrument_count: int
 
 
 _T = TypeVar("_T")
@@ -1237,12 +1238,17 @@ def read_current_portfolio_daily_latest_summary(
     *,
     portfolio_id: str,
 ) -> PortfolioDailyLatestSummary | None:
-    """Return current publication metadata and its latest published snapshot."""
+    """Return the latest snapshot and current distinct-instrument count.
+
+    ``PortfolioDailyRunMetadata.holding_count`` is the immutable row count for
+    the entire published output range.  It must not be exposed as a current
+    portfolio security count.
+    """
 
     publication = read_latest_current_portfolio_daily_publication(
         executor,
         portfolio_id=portfolio_id,
-        tables=("snapshots",),
+        tables=("snapshots", "holdings"),
     )
     if publication is None:
         return None
@@ -1253,6 +1259,9 @@ def read_current_portfolio_daily_latest_summary(
     return PortfolioDailyLatestSummary(
         metadata=publication.metadata,
         snapshot=publication.snapshots[0] if publication.snapshots else None,
+        instrument_count=len(
+            {holding.instrument_id for holding in publication.holdings}
+        ),
     )
 
 

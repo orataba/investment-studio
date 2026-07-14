@@ -157,6 +157,7 @@ def test_readiness_does_not_return_database_exception_details(
 def test_health_remains_database_independent_liveness(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.delenv("PORTFOLIO_OPS_LOCAL_RELEASE_ID", raising=False)
     monkeypatch.setattr(
         readiness_service,
         "_read_database_heads",
@@ -170,15 +171,17 @@ def test_health_remains_database_independent_liveness(
 
     assert response.status_code == 200
     assert response.json()["status"] == "ok"
+    assert response.json()["api_contract"] == "portfolio-api.exact-decimal.v1"
+    assert response.json()["release_id"] == "development"
 
 
 def test_source_migration_heads_are_single_and_current() -> None:
     readiness_service.expected_migration_heads.cache_clear()
     try:
         assert readiness_service.expected_migration_heads() == {
-            "portfolio": "20260714_0042",
+            "portfolio": "20260714_0045",
             "calculation_registry": "20260714_0001",
-            "instrument_registry": "20260714_0013",
+            "instrument_registry": "20260714_0014",
         }
     finally:
         readiness_service.expected_migration_heads.cache_clear()

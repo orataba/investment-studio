@@ -537,6 +537,9 @@ def _normalized_market_data(item: dict[str, object]) -> list[dict[str, object]]:
                     point.get("source_published_at")
                 ),
                 "ingested_at": canonical_timestamp(point.get("ingested_at")),
+                "ingestion_time_state": str(
+                    point.get("ingestion_time_state") or "observed"
+                ),
                 "payload_hash": point.get("payload_hash"),
             }
         )
@@ -678,6 +681,9 @@ def _save_store_to_db(session: Session, data: dict[str, object]) -> None:
 
     metadata_record = session.get(RegistryMetadata, "shared")
     reset_watermark = _utcnow_iso()
+    reset_ingested_at = datetime.fromisoformat(
+        reset_watermark.replace("Z", "+00:00")
+    )
     if metadata_record is None:
         metadata_record = RegistryMetadata(
             registry_key="shared",
@@ -840,8 +846,10 @@ def _save_store_to_db(session: Session, data: dict[str, object]) -> None:
                     source_ref=source_ref,
                     status=status,
                     source_published_at=source_published_at,
-                    # Reset/bootstrap payloads have no trustworthy ingestion event.
-                    ingested_at=None,
+                    # The source publication clock may be unknown, but the
+                    # canonical-registry ingestion event is observed here.
+                    ingested_at=reset_ingested_at,
+                    ingestion_time_state="observed",
                     payload_hash=quote_revision_payload_hash(
                         value=value,
                         source_ref=source_ref,
@@ -1074,6 +1082,7 @@ def _serialize_market_data_row(row: Any) -> dict[str, object]:
         "status": str(row["status"]),
         "source_published_at": canonical_timestamp(row["source_published_at"]),
         "ingested_at": canonical_timestamp(row["ingested_at"]),
+        "ingestion_time_state": str(row["ingestion_time_state"]),
         "payload_hash": str(row["payload_hash"]),
     }
 
@@ -1108,6 +1117,9 @@ def _market_data_for_instruments(
             QuoteObservationRevision.status.label("status"),
             QuoteObservationRevision.source_published_at.label("source_published_at"),
             QuoteObservationRevision.ingested_at.label("ingested_at"),
+            QuoteObservationRevision.ingestion_time_state.label(
+                "ingestion_time_state"
+            ),
             QuoteObservationRevision.payload_hash.label("payload_hash"),
         )
         .join(
@@ -1366,6 +1378,9 @@ def list_quote_observation_revisions(
                     "source_published_at"
                 ),
                 QuoteObservationRevision.ingested_at.label("ingested_at"),
+                QuoteObservationRevision.ingestion_time_state.label(
+                    "ingestion_time_state"
+                ),
                 QuoteObservationRevision.payload_hash.label("payload_hash"),
                 QuoteObservationRevision.is_current.label("is_current"),
                 QuoteObservationRevision.superseded_at.label("superseded_at"),
@@ -1418,6 +1433,7 @@ def list_quote_observation_revisions(
                 "status": str(row["status"]),
                 "source_published_at": canonical_timestamp(row["source_published_at"]),
                 "ingested_at": canonical_timestamp(row["ingested_at"]),
+                "ingestion_time_state": str(row["ingestion_time_state"]),
                 "payload_hash": str(row["payload_hash"]),
                 "is_current": bool(row["is_current"]),
                 "superseded_at": canonical_timestamp(row["superseded_at"]),
@@ -2088,6 +2104,7 @@ def _append_market_data_revisions(
                 status=str(payload["status"]),
                 source_published_at=payload["source_published_at"],
                 ingested_at=ingested_at,
+                ingestion_time_state="observed",
                 payload_hash=str(payload["payload_hash"]),
                 is_current=True,
                 superseded_at=None,

@@ -31,6 +31,14 @@ chmod +x "$MOCK_BIN/curl" "$MOCK_BIN/python"
 export CURL_CALLS PYTHON_CALLS
 
 source "$REPOSITORY_ROOT/infra/scripts/runtime_readiness.sh"
+grep -Fq '/api/workspace/summary?portfolio_id=' \
+  "$REPOSITORY_ROOT/infra/scripts/runtime_readiness.sh"
+grep -Fq '/api/workspace/holdings?portfolio_id=' \
+  "$REPOSITORY_ROOT/infra/scripts/runtime_readiness.sh"
+grep -Fq 'workspace_count' \
+  "$REPOSITORY_ROOT/infra/scripts/runtime_readiness.sh"
+grep -Fq 'holdings_count' \
+  "$REPOSITORY_ROOT/infra/scripts/runtime_readiness.sh"
 
 : > "$STATE_FILE"
 PATH="$MOCK_BIN:$PATH" \

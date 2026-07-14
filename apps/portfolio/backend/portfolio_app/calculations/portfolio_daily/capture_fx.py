@@ -137,6 +137,16 @@ def _require_known_before_cutoff(
             "canonical FX leg revision has unknown ingestion time: "
             + observation.revision_id
         )
+    if observation.ingestion_time_state not in {
+        "observed",
+        "legacy_series_upper_bound",
+        "legacy_instrument_upper_bound",
+        "legacy_migration_upper_bound",
+    }:
+        raise ManifestCaptureError(
+            "canonical FX leg revision has unknown ingestion evidence state: "
+            + observation.revision_id
+        )
     if observation.ingested_at > common.knowledge_cutoff_at:
         raise ManifestCaptureError(
             "canonical FX leg revision is after the manifest knowledge cutoff: "
@@ -232,6 +242,9 @@ def _leg_row(
         "quote_status": raw.status if raw is not None else None,
         "source_published_at": raw.source_published_at if raw is not None else None,
         "ingested_at": raw.ingested_at if raw is not None else None,
+        "ingestion_time_state": (
+            raw.ingestion_time_state if raw is not None else None
+        ),
         "payload_hash": raw.payload_hash if raw is not None else None,
         "consumer_policy_version": FX_CONSUMER_POLICY_VERSION,
         "freshness_policy_version": QUOTE_FRESHNESS_POLICY_VERSION,

@@ -155,6 +155,7 @@ def test_fx_capture_freezes_inverse_leg_and_acquisition_date(
         status="complete",
         source_published_at=datetime(2026, 7, 1, 8, tzinfo=UTC),
         ingested_at=datetime(2026, 7, 1, 9, tzinfo=UTC),
+        ingestion_time_state="observed",
         payload_hash="a" * 64,
     )
     quote_resolution = SimpleNamespace(

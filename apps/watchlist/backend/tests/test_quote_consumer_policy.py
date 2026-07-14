@@ -381,11 +381,16 @@ def test_late_recalc_preserves_last_good_snapshots_and_nulls_current_metrics(
         "reason_codes": [
             "late_observation",
             "freshness_limit_exceeded",
-            "unknown_ingestion_time",
         ],
     }
     assert performance_read_model.payload_json["calculation_state"] == (
         summary.payload_json["calculation_state"]
+    )
+    assert (
+        performance_read_model.payload_json["quote_resolution"][
+            "ingestion_status"
+        ]
+        == "current"
     )
     assert "legacy_unbounded_blob" not in performance_read_model.payload_json
     assert "legacy_unbounded_blob" not in risk_read_model.payload_json

@@ -30,12 +30,12 @@ class RecalcJob(Base):
             postgresql_where=text("job_status IN ('queued', 'running')"),
         ),
         Index(
-            "uq_recalc_job_source_event_identity",
+            "idx_recalc_job_source_reference",
             "trigger_ref_type",
             "trigger_ref_id",
             "instrument_id",
             "job_type",
-            unique=True,
+            unique=False,
             sqlite_where=text(
                 "trigger_ref_type IS NOT NULL AND TRIM(trigger_ref_type) <> '' "
                 "AND trigger_ref_id IS NOT NULL AND TRIM(trigger_ref_id) <> ''"

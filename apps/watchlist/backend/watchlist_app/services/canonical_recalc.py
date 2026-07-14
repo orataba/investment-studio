@@ -1136,6 +1136,7 @@ def _canonical_points(window: CanonicalQuoteSeriesResolution) -> list[dict[str, 
             "source_ref": point.source_ref,
             "source_published_at": point.source_published_at,
             "ingested_at": point.ingested_at,
+            "ingestion_time_state": point.ingestion_time_state,
         }
         for point in window.points
     ]
@@ -1484,6 +1485,7 @@ class CanonicalRecalcService:
                         if observation.ingested_at is not None
                         else None
                     ),
+                    "ingestion_time_state": observation.ingestion_time_state,
                     "status": observation.status,
                     "observation_id": observation.observation_id,
                     "revision_id": observation.revision_id,

@@ -471,9 +471,15 @@ export default function OverviewPage() {
   const annualizedDownsideDeviation = exactDecimalForDisplay(
     performanceReport?.statistics.annualized_downside_deviation?.method50,
   )
-  const reportedClosingNav = exactDecimalForDisplay(
-    performanceReport?.portfolio_bridge?.closing_nav_exact,
+  const currentPublishedNav = exactDecimalForDisplay(
+    holdingsWorkspace?.totals.exact_values?.nav,
   )
+  const returnPeriodLabel = [
+    performanceSummary?.effective_return_start_date,
+    performanceSummary?.effective_return_end_date,
+  ].every(Boolean)
+    ? `${performanceSummary?.effective_return_start_date} – ${performanceSummary?.effective_return_end_date}`
+    : 'the measured return period'
   const chartSummary = performanceSummary
     ? {
         start_date: performanceSummary.start_date,
@@ -547,12 +553,18 @@ export default function OverviewPage() {
     {
       label: 'Portfolio',
       rows: [
-        { label: 'Total NAV', value: formatCurrency(reportedClosingNav, performanceBaseCurrency), emphasis: true },
         {
-          label: 'Total P&L',
+          label: 'Total NAV',
+          value: formatCurrency(currentPublishedNav, resolvedBaseCurrency),
+          emphasis: true,
+          title: `Current immutable publication as of ${holdingsWorkspace?.as_of_date ?? '—'}.`,
+        },
+        {
+          label: 'Return-period P&L',
           value: formatSignedCurrency(portfolioEconomicPnl, performanceBaseCurrency),
           emphasis: true,
           toneClassName: signedValueClass(portfolioEconomicPnl),
+          title: `Economic P&L for ${returnPeriodLabel}; it is not the current NAV.`,
         },
         { label: 'Base Currency', value: performanceBaseCurrency || '—' },
         { label: 'Position Lines', value: formatNumber(nonCashHoldingsRows.length, 0) },

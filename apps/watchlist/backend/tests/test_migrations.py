@@ -55,9 +55,9 @@ def test_recalc_source_event_index_metadata_matches_migration_contract() -> None
     index = next(
         item
         for item in RecalcJob.__table__.indexes
-        if item.name == "uq_recalc_job_source_event_identity"
+        if item.name == "idx_recalc_job_source_reference"
     )
-    assert index.unique is True
+    assert index.unique is False
     assert [column.name for column in index.columns] == [
         "trigger_ref_type",
         "trigger_ref_id",
@@ -247,7 +247,6 @@ def test_watchlist_migrations_upgrade_an_empty_database(tmp_path, monkeypatch) -
 
     expected_unique_indexes = (
         ("recalc_job", "uq_recalc_job_running_instrument"),
-        ("recalc_job", "uq_recalc_job_source_event_identity"),
         ("performance_snapshot", "uq_performance_snapshot_current_instrument"),
         ("risk_snapshot", "uq_risk_snapshot_current_instrument"),
         ("instrument_research_rating", "uq_research_rating_current_instrument"),
@@ -255,9 +254,10 @@ def test_watchlist_migrations_upgrade_an_empty_database(tmp_path, monkeypatch) -
     for table_name, index_name in expected_unique_indexes:
         indexes = {index["name"]: index for index in inspector.get_indexes(table_name)}
         assert indexes[index_name]["unique"] == 1
+    assert recalc_indexes["idx_recalc_job_source_reference"]["unique"] == 0
 
 
-def test_recalc_retry_migration_backfills_existing_jobs_without_deleting_audit(
+def test_recalc_retry_and_forward_only_inbox_preserve_existing_job_audit(
     tmp_path,
     monkeypatch,
 ) -> None:
@@ -289,6 +289,7 @@ def test_recalc_retry_migration_backfills_existing_jobs_without_deleting_audit(
             )
         )
         for status in ("queued", "running", "completed", "failed"):
+            is_terminal = status in {"completed", "failed"}
             connection.execute(
                 text(
                     """
@@ -298,14 +299,15 @@ def test_recalc_retry_migration_backfills_existing_jobs_without_deleting_audit(
                         dedupe_key, payload_json, enqueued_at
                     ) VALUES (
                         :job_id, 'all', 'retry-migration-fund', 'migration',
-                        'migration_event', :trigger_ref_id, :status, 100,
+                        :trigger_ref_type, :trigger_ref_id, :status, 100,
                         :dedupe_key, '{}', '2026-07-14 03:00:00'
                     )
                     """
                 ),
                 {
                     "job_id": f"retry-{status}",
-                    "trigger_ref_id": f"retry-{status}",
+                    "trigger_ref_type": "migration_event" if is_terminal else None,
+                    "trigger_ref_id": f"retry-{status}" if is_terminal else None,
                     "status": status,
                     "dedupe_key": f"retry-migration:{status}",
                 },
@@ -325,26 +327,12 @@ def test_recalc_retry_migration_backfills_existing_jobs_without_deleting_audit(
                 """
             )
         ).mappings().all()
-        inbox_rows = connection.execute(
-            text(
-                """
-                SELECT source_event_inbox_id, generation, consumed_at
-                FROM recalc_source_event_inbox
-                WHERE instrument_id = 'retry-migration-fund'
-                ORDER BY generation
-                """
-            )
-        ).mappings().all()
-        state = connection.execute(
-            text(
-                """
-                SELECT requested_generation, completed_generation
-                FROM recalc_invalidation_state
-                WHERE instrument_id = 'retry-migration-fund'
-                  AND job_type = 'all'
-                """
-            )
-        ).one()
+        inbox_count = connection.scalar(
+            text("SELECT COUNT(*) FROM recalc_source_event_inbox")
+        )
+        state_count = connection.scalar(
+            text("SELECT COUNT(*) FROM recalc_invalidation_state")
+        )
     assert {row["recalc_job_id"] for row in rows} == {
         "retry-queued",
         "retry-running",
@@ -359,22 +347,85 @@ def test_recalc_retry_migration_backfills_existing_jobs_without_deleting_audit(
     }
     assert all(row["max_attempts"] == 3 for row in rows)
     assert all(row["available_at"] is not None for row in rows)
-    assert len(inbox_rows) == 4
-    assert [row["generation"] for row in inbox_rows] == [1, 2, 3, 4]
-    assert tuple(state) == (4, 1)
-    assert sum(row["consumed_at"] is not None for row in inbox_rows) == 1
-    assert {
-        row["recalc_job_id"]: row["claimed_generation"] for row in rows
-    } == {
-        "retry-completed": 1,
-        "retry-failed": 2,
-        "retry-queued": None,
-        "retry-running": 4,
-    }
+    assert inbox_count == 0
+    assert state_count == 0
+    assert all(row["claimed_generation"] is None for row in rows)
     get_settings.cache_clear()
 
 
-def test_source_event_idempotency_migration_rejects_historical_duplicates(
+@pytest.mark.parametrize("status", ["queued", "running"])
+def test_forward_only_inbox_migration_rejects_open_legacy_source_event_jobs(
+    tmp_path,
+    monkeypatch,
+    status: str,
+) -> None:
+    database_url = f"sqlite+pysqlite:///{tmp_path / f'watchlist-open-{status}.db'}"
+    monkeypatch.setenv("PORTFOLIO_OPS_WATCHLIST_DATABASE_URL", database_url)
+    monkeypatch.setenv("PORTFOLIO_OPS_WATCHLIST_DATABASE_SCHEMA", "")
+
+    from watchlist_app.core.settings import get_settings
+
+    get_settings.cache_clear()
+    config = Config(str(BACKEND_ROOT / "alembic.ini"))
+    config.set_main_option("script_location", str(BACKEND_ROOT / "alembic"))
+    config.set_main_option("sqlalchemy.url", database_url)
+    command.upgrade(config, "20260714_0032")
+
+    engine = create_engine(database_url)
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                """
+                INSERT INTO instrument_detail (
+                    instrument_id, instrument_type, detail_view_type,
+                    instrument_name, is_active, metadata_json
+                ) VALUES (
+                    'open-source-event', 'fund', 'fund',
+                    'Open Source Event', 1, '{}'
+                )
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO recalc_job (
+                    recalc_job_id, job_type, instrument_id, trigger_type,
+                    trigger_ref_type, trigger_ref_id, job_status, priority,
+                    dedupe_key, payload_json, enqueued_at
+                ) VALUES (
+                    'open-source-event-job', 'all', 'open-source-event',
+                    'market_data_refresh', 'instrument_registry_outbox',
+                    'open-event-1', :status, 100,
+                    'open-source-event:all', '{}', '2026-07-14 03:00:00'
+                )
+                """
+            ),
+            {"status": status},
+        )
+
+    with pytest.raises(RuntimeError, match="still queued or running"):
+        command.upgrade(config, "head")
+
+    with engine.connect() as connection:
+        assert connection.scalar(text("SELECT version_num FROM alembic_version")) == (
+            "20260714_0033"
+        )
+        columns = {
+            column["name"] for column in inspect(engine).get_columns("recalc_job")
+        }
+        assert "claimed_generation" not in columns
+        assert connection.scalar(
+            text(
+                "SELECT COUNT(*) FROM recalc_job "
+                "WHERE recalc_job_id = 'open-source-event-job'"
+            )
+        ) == 1
+
+    get_settings.cache_clear()
+
+
+def test_source_reference_migration_preserves_historical_duplicate_audit(
     tmp_path,
     monkeypatch,
 ) -> None:
@@ -405,9 +456,19 @@ def test_source_event_idempotency_migration_rejects_historical_duplicates(
                 """
             )
         )
-        for job_id, enqueued_at, status in (
-            ("source-event-earliest", "2026-07-14 01:00:00", "completed"),
-            ("source-event-later", "2026-07-14 02:00:00", "failed"),
+        for job_id, enqueued_at, status, payload in (
+            (
+                "source-event-earliest",
+                "2026-07-14 01:00:00",
+                "completed",
+                '{"execution": "earliest"}',
+            ),
+            (
+                "source-event-later",
+                "2026-07-14 02:00:00",
+                "failed",
+                '{"execution": "later"}',
+            ),
         ):
             connection.execute(
                 text(
@@ -420,7 +481,7 @@ def test_source_event_idempotency_migration_rejects_historical_duplicates(
                         :job_id, 'all', 'migration-source-event',
                         'market_data_refresh', 'instrument_registry_outbox',
                         'migration-event-1', :status, 100,
-                        :dedupe_key, '{}', :enqueued_at
+                        :dedupe_key, :payload, :enqueued_at
                     )
                     """
                 ),
@@ -429,36 +490,407 @@ def test_source_event_idempotency_migration_rejects_historical_duplicates(
                     "status": status,
                     "dedupe_key": f"migration-source-event:{job_id}",
                     "enqueued_at": enqueued_at,
+                    "payload": payload,
                 },
             )
 
-    with pytest.raises(
-        RuntimeError,
-        match="Cannot enforce recalc source-event idempotency",
-    ):
+    command.upgrade(config, "head")
+
+    with engine.connect() as connection:
+        rows = connection.execute(
+            text(
+                """
+                SELECT recalc_job_id, trigger_ref_type, trigger_ref_id,
+                       payload_json, claimed_generation
+                FROM recalc_job
+                WHERE recalc_job_id IN (
+                    'source-event-earliest', 'source-event-later'
+                )
+                ORDER BY enqueued_at, recalc_job_id
+                """
+            )
+        ).mappings().all()
+        assert [row["recalc_job_id"] for row in rows] == [
+            "source-event-earliest",
+            "source-event-later",
+        ]
+        assert rows[0]["trigger_ref_type"] == "instrument_registry_outbox"
+        assert rows[0]["trigger_ref_id"] == "migration-event-1"
+        assert rows[1]["trigger_ref_type"] == "instrument_registry_outbox"
+        assert rows[1]["trigger_ref_id"] == "migration-event-1"
+        assert [
+            json.loads(row["payload_json"])
+            if isinstance(row["payload_json"], str)
+            else row["payload_json"]
+            for row in rows
+        ] == [
+            {"execution": "earliest"},
+            {"execution": "later"},
+        ]
+        assert all(row["claimed_generation"] is None for row in rows)
+        assert connection.scalar(
+            text("SELECT COUNT(*) FROM recalc_source_event_inbox")
+        ) == 0
+        assert connection.scalar(
+            text("SELECT COUNT(*) FROM recalc_invalidation_state")
+        ) == 0
+        assert connection.scalar(text("SELECT version_num FROM alembic_version")) == (
+            "20260714_0035"
+        )
+
+    indexes = {
+        index["name"]: index for index in inspect(engine).get_indexes("recalc_job")
+    }
+    assert "uq_recalc_job_source_event_identity" not in indexes
+    assert indexes["idx_recalc_job_source_reference"]["unique"] == 0
+
+    get_settings.cache_clear()
+
+
+def test_execution_audit_convergence_removes_only_published_synthetic_inbox(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    database_url = f"sqlite+pysqlite:///{tmp_path / 'watchlist-convergence.db'}"
+    monkeypatch.setenv("PORTFOLIO_OPS_WATCHLIST_DATABASE_URL", database_url)
+    monkeypatch.setenv("PORTFOLIO_OPS_WATCHLIST_DATABASE_SCHEMA", "")
+
+    from watchlist_app.core.settings import get_settings
+
+    get_settings.cache_clear()
+    config = Config(str(BACKEND_ROOT / "alembic.ini"))
+    config.set_main_option("script_location", str(BACKEND_ROOT / "alembic"))
+    config.set_main_option("sqlalchemy.url", database_url)
+    command.upgrade(config, "20260714_0034")
+
+    engine = create_engine(database_url)
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                """
+                INSERT INTO instrument_detail (
+                    instrument_id, instrument_type, detail_view_type,
+                    instrument_name, is_active, metadata_json
+                ) VALUES (
+                    'convergence-fund', 'fund', 'fund',
+                    'Convergence Fund', 1, '{}'
+                )
+                """
+            )
+        )
+        connection.execute(text("DROP INDEX idx_recalc_job_source_reference"))
+        connection.execute(
+            text(
+                """
+                CREATE UNIQUE INDEX uq_recalc_job_source_event_identity
+                ON recalc_job (
+                    trigger_ref_type, trigger_ref_id, instrument_id, job_type
+                )
+                WHERE trigger_ref_type IS NOT NULL AND TRIM(trigger_ref_type) <> '' AND trigger_ref_id IS NOT NULL AND TRIM(trigger_ref_id) <> ''
+                """
+            )
+        )
+        for job_id, event_id, status, enqueued_at, claimed_generation in (
+            (
+                "synthetic-completed-job",
+                "historical-event-1",
+                "completed",
+                "2026-07-14 01:00:00",
+                1,
+            ),
+            (
+                "synthetic-failed-job",
+                "historical-event-2",
+                "failed",
+                "2026-07-14 02:00:00",
+                2,
+            ),
+            (
+                "real-inbox-execution-job",
+                "real-event-3",
+                "failed",
+                "2026-07-14 03:00:00",
+                3,
+            ),
+        ):
+            connection.execute(
+                text(
+                    """
+                    INSERT INTO recalc_job (
+                        recalc_job_id, job_type, instrument_id, trigger_type,
+                        trigger_ref_type, trigger_ref_id, job_status, priority,
+                        dedupe_key, payload_json, enqueued_at, attempt_count,
+                        max_attempts, available_at, claimed_generation
+                    ) VALUES (
+                        :job_id, 'all', 'convergence-fund',
+                        'market_data_refresh', 'instrument_registry_outbox',
+                        :event_id, :status, 100, :dedupe_key,
+                        :payload_json, :enqueued_at, 1, 3, :enqueued_at,
+                        :claimed_generation
+                    )
+                    """
+                ),
+                {
+                    "job_id": job_id,
+                    "event_id": event_id,
+                    "status": status,
+                    "dedupe_key": f"convergence:{job_id}",
+                    "payload_json": json.dumps({"execution": job_id}),
+                    "enqueued_at": enqueued_at,
+                    "claimed_generation": claimed_generation,
+                },
+            )
+        for inbox_id, event_id, generation, received_at, consumed_at in (
+            (
+                "synthetic-completed-job",
+                "historical-event-1",
+                1,
+                "2026-07-14 01:00:00",
+                "2026-07-14 01:00:00",
+            ),
+            (
+                "synthetic-failed-job",
+                "historical-event-2",
+                2,
+                "2026-07-14 02:00:00",
+                None,
+            ),
+            (
+                "real-durable-inbox-id",
+                "real-event-3",
+                3,
+                "2026-07-14 03:00:00",
+                None,
+            ),
+        ):
+            connection.execute(
+                text(
+                    """
+                    INSERT INTO recalc_source_event_inbox (
+                        source_event_inbox_id, trigger_ref_type, trigger_ref_id,
+                        instrument_id, job_type, disposition, generation,
+                        received_at, consumed_at
+                    ) VALUES (
+                        :inbox_id, 'instrument_registry_outbox', :event_id,
+                        'convergence-fund', 'all', 'recalc', :generation,
+                        :received_at, :consumed_at
+                    )
+                    """
+                ),
+                {
+                    "inbox_id": inbox_id,
+                    "event_id": event_id,
+                    "generation": generation,
+                    "received_at": received_at,
+                    "consumed_at": consumed_at,
+                },
+            )
+        connection.execute(
+            text(
+                """
+                INSERT INTO recalc_invalidation_state (
+                    instrument_id, job_type, requested_generation,
+                    completed_generation, updated_at
+                ) VALUES (
+                    'convergence-fund', 'all', 3, 1,
+                    '2026-07-14 03:00:00'
+                )
+                """
+            )
+        )
+
+    command.upgrade(config, "head")
+
+    with engine.begin() as connection:
+        jobs = connection.execute(
+            text(
+                """
+                SELECT recalc_job_id, trigger_ref_id, payload_json,
+                       claimed_generation
+                FROM recalc_job
+                WHERE instrument_id = 'convergence-fund'
+                ORDER BY enqueued_at, recalc_job_id
+                """
+            )
+        ).mappings().all()
+        assert [row["recalc_job_id"] for row in jobs] == [
+            "synthetic-completed-job",
+            "synthetic-failed-job",
+            "real-inbox-execution-job",
+        ]
+        assert [row["claimed_generation"] for row in jobs] == [None, None, 3]
+        assert [row["trigger_ref_id"] for row in jobs] == [
+            "historical-event-1",
+            "historical-event-2",
+            "real-event-3",
+        ]
+        assert [
+            json.loads(row["payload_json"])
+            if isinstance(row["payload_json"], str)
+            else row["payload_json"]
+            for row in jobs
+        ] == [
+            {"execution": "synthetic-completed-job"},
+            {"execution": "synthetic-failed-job"},
+            {"execution": "real-inbox-execution-job"},
+        ]
+        inbox = connection.execute(
+            text(
+                """
+                SELECT source_event_inbox_id, generation, consumed_at
+                FROM recalc_source_event_inbox
+                WHERE instrument_id = 'convergence-fund'
+                """
+            )
+        ).mappings().one()
+        assert inbox["source_event_inbox_id"] == "real-durable-inbox-id"
+        assert inbox["generation"] == 3
+        assert inbox["consumed_at"] is None
+        state = connection.execute(
+            text(
+                """
+                SELECT requested_generation, completed_generation
+                FROM recalc_invalidation_state
+                WHERE instrument_id = 'convergence-fund'
+                  AND job_type = 'all'
+                """
+            )
+        ).one()
+        assert tuple(state) == (3, 0)
+        connection.execute(
+            text(
+                """
+                INSERT INTO recalc_job (
+                    recalc_job_id, job_type, instrument_id, trigger_type,
+                    trigger_ref_type, trigger_ref_id, job_status, priority,
+                    dedupe_key, payload_json, enqueued_at
+                ) VALUES (
+                    'duplicate-execution-audit', 'all', 'convergence-fund',
+                    'maintenance', 'instrument_registry_outbox',
+                    'real-event-3', 'completed', 50,
+                    'duplicate-execution-audit', '{}',
+                    '2026-07-14 04:00:00'
+                )
+                """
+            )
+        )
+        assert connection.scalar(
+            text(
+                """
+                SELECT COUNT(*) FROM recalc_job
+                WHERE instrument_id = 'convergence-fund'
+                  AND job_type = 'all'
+                  AND trigger_ref_type = 'instrument_registry_outbox'
+                  AND trigger_ref_id = 'real-event-3'
+                """
+            )
+        ) == 2
+        assert connection.scalar(text("SELECT version_num FROM alembic_version")) == (
+            "20260714_0035"
+        )
+
+    indexes = {
+        index["name"]: index for index in inspect(engine).get_indexes("recalc_job")
+    }
+    assert "uq_recalc_job_source_event_identity" not in indexes
+    assert indexes["idx_recalc_job_source_reference"]["unique"] == 0
+    get_settings.cache_clear()
+
+
+def test_execution_audit_convergence_fails_closed_on_ambiguous_job_id_inbox(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    database_url = f"sqlite+pysqlite:///{tmp_path / 'watchlist-ambiguous.db'}"
+    monkeypatch.setenv("PORTFOLIO_OPS_WATCHLIST_DATABASE_URL", database_url)
+    monkeypatch.setenv("PORTFOLIO_OPS_WATCHLIST_DATABASE_SCHEMA", "")
+
+    from watchlist_app.core.settings import get_settings
+
+    get_settings.cache_clear()
+    config = Config(str(BACKEND_ROOT / "alembic.ini"))
+    config.set_main_option("script_location", str(BACKEND_ROOT / "alembic"))
+    config.set_main_option("sqlalchemy.url", database_url)
+    command.upgrade(config, "20260714_0034")
+
+    engine = create_engine(database_url)
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                """
+                INSERT INTO instrument_detail (
+                    instrument_id, instrument_type, detail_view_type,
+                    instrument_name, is_active, metadata_json
+                ) VALUES (
+                    'ambiguous-fund', 'fund', 'fund',
+                    'Ambiguous Fund', 1, '{}'
+                )
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO recalc_job (
+                    recalc_job_id, job_type, instrument_id, trigger_type,
+                    trigger_ref_type, trigger_ref_id, job_status, priority,
+                    dedupe_key, payload_json, enqueued_at, attempt_count,
+                    max_attempts, available_at, claimed_generation
+                ) VALUES (
+                    'ambiguous-job-id', 'all', 'ambiguous-fund',
+                    'market_data_refresh', 'instrument_registry_outbox',
+                    'ambiguous-event', 'failed', 100, 'ambiguous-job', '{}',
+                    '2026-07-14 01:00:00', 1, 3,
+                    '2026-07-14 01:00:00', 1
+                )
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO recalc_source_event_inbox (
+                    source_event_inbox_id, trigger_ref_type, trigger_ref_id,
+                    instrument_id, job_type, disposition, generation,
+                    received_at, consumed_at
+                ) VALUES (
+                    'ambiguous-job-id', 'instrument_registry_outbox',
+                    'ambiguous-event', 'ambiguous-fund', 'all', 'recalc', 1,
+                    '2026-07-14 01:00:01', NULL
+                )
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO recalc_invalidation_state (
+                    instrument_id, job_type, requested_generation,
+                    completed_generation, updated_at
+                ) VALUES (
+                    'ambiguous-fund', 'all', 1, 0,
+                    '2026-07-14 01:00:01'
+                )
+                """
+            )
+        )
+
+    with pytest.raises(RuntimeError, match="exact published-0034 synthetic shape"):
         command.upgrade(config, "head")
 
     with engine.connect() as connection:
-        assert connection.execute(
-            text(
-                """
-                SELECT recalc_job_id
-                FROM recalc_job
-                WHERE trigger_ref_type = 'instrument_registry_outbox'
-                  AND trigger_ref_id = 'migration-event-1'
-                  AND instrument_id = 'migration-source-event'
-                  AND job_type = 'all'
-                ORDER BY recalc_job_id
-                """
-            )
-        ).scalars().all() == ["source-event-earliest", "source-event-later"]
         assert connection.scalar(text("SELECT version_num FROM alembic_version")) == (
-            "20260714_0031"
+            "20260714_0034"
         )
-
-    assert "uq_recalc_job_source_event_identity" not in {
-        index["name"] for index in inspect(engine).get_indexes("recalc_job")
-    }
+        assert connection.scalar(
+            text("SELECT COUNT(*) FROM recalc_source_event_inbox")
+        ) == 1
+        assert connection.scalar(
+            text(
+                "SELECT claimed_generation FROM recalc_job "
+                "WHERE recalc_job_id = 'ambiguous-job-id'"
+            )
+        ) == 1
 
     get_settings.cache_clear()
 

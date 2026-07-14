@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 import os
@@ -60,6 +61,311 @@ def _server_unavailable(error: OperationalError) -> bool:
             "no route to host",
         )
     )
+
+
+@contextmanager
+def _postgres_migration_database(monkeypatch: pytest.MonkeyPatch):
+    base_url = os.getenv("PORTFOLIO_OPS_TEST_POSTGRES_URL", DEFAULT_POSTGRES_URL)
+    database_name = f"portfolio_ops_ingestion_migration_{uuid4().hex[:8]}"
+    database_url = (
+        make_url(base_url)
+        .set(database=database_name)
+        .render_as_string(hide_password=False)
+    )
+    admin_engine = create_engine(
+        _admin_database_url(base_url), isolation_level="AUTOCOMMIT"
+    )
+    created = False
+    try:
+        try:
+            with admin_engine.connect() as connection:
+                connection.execute(text(f'CREATE DATABASE "{database_name}"'))
+        except OperationalError as error:  # pragma: no cover - environment dependent
+            if _server_unavailable(error):
+                pytest.skip(f"PostgreSQL server is unavailable: {error}")
+            raise
+        created = True
+        monkeypatch.setenv("PORTFOLIO_OPS_MIGRATION_EXPECTED_DATABASE", database_name)
+        monkeypatch.setenv(
+            "PORTFOLIO_OPS_INSTRUMENT_REGISTRY_DATABASE_URL", database_url
+        )
+        monkeypatch.setenv(
+            "PORTFOLIO_OPS_INSTRUMENT_REGISTRY_ALEMBIC_DATABASE_URL", database_url
+        )
+        monkeypatch.setenv(
+            "PORTFOLIO_OPS_INSTRUMENT_REGISTRY_SCHEMA", "instrument_registry"
+        )
+        config = Config(
+            str(WORKSPACE_ROOT / "infra" / "instrument_registry" / "alembic.ini")
+        )
+        config.set_main_option(
+            "script_location",
+            str(WORKSPACE_ROOT / "infra" / "instrument_registry" / "alembic"),
+        )
+        yield database_url, config
+    finally:
+        admin_engine.dispose()
+        if created:
+            cleanup = create_engine(
+                _admin_database_url(base_url), isolation_level="AUTOCOMMIT"
+            )
+            try:
+                with cleanup.connect() as connection:
+                    connection.execute(
+                        text(f'DROP DATABASE IF EXISTS "{database_name}" WITH (FORCE)')
+                    )
+            finally:
+                cleanup.dispose()
+
+
+def _insert_revision_at_0013(
+    connection,
+    *,
+    suffix: int,
+    series_watermark: str | None,
+    instrument_watermark: str | None,
+    ingested_at: datetime | None,
+    payload_schema_version: int = 1,
+) -> None:
+    params = {
+        "instrument_id": f"ingestion-pg-{suffix}",
+        "series_id": f"00000000-0000-0000-0000-{suffix:012d}",
+        "observation_id": f"10000000-0000-0000-0000-{suffix:012d}",
+        "revision_id": f"20000000-0000-0000-0000-{suffix:012d}",
+        "series_watermark": series_watermark,
+        "instrument_watermark": instrument_watermark,
+        "ingested_at": ingested_at,
+        "payload_schema_version": payload_schema_version,
+        "scale_state": (
+            "legacy_inferred" if payload_schema_version == 1 else "declared"
+        ),
+        "payload_hash": f"sha256:{suffix:064x}",
+    }
+    for statement in (
+        """
+        INSERT INTO instrument_registry.instrument (
+            instrument_id, instrument_name, instrument_type, currency,
+            quote_selection_policy_json, source_settings_json,
+            refresh_status_json, lifecycle_state_json, market_data_updated_at
+        ) VALUES (
+            :instrument_id, :instrument_id, 'equity', 'USD', '{}', '{}', '{}',
+            '{"status":"active"}', :instrument_watermark
+        )
+        """,
+        """
+        INSERT INTO instrument_registry.quote_series (
+            quote_series_id, instrument_id, metric_family, quote_basis,
+            currency, data_updated_at
+        ) VALUES (
+            :series_id, :instrument_id, 'price', 'close', 'USD',
+            :series_watermark
+        )
+        """,
+        """
+        INSERT INTO instrument_registry.quote_observation (
+            observation_id, quote_series_id, as_of_date
+        ) VALUES (:observation_id, :series_id, '2026-07-01')
+        """,
+        """
+        INSERT INTO instrument_registry.quote_observation_revision (
+            revision_id, observation_id, revision_number, value,
+            value_input_scale, numeric_scale_state, payload_schema_version,
+            source_ref, status, source_published_at, ingested_at, payload_hash,
+            is_current, superseded_at
+        ) VALUES (
+            :revision_id, :observation_id, 1, 1.25, 2, :scale_state,
+            :payload_schema_version, 'pg-migration-test', 'complete', NULL,
+            :ingested_at, :payload_hash, TRUE, NULL
+        )
+        """,
+    ):
+        connection.execute(text(statement), params)
+
+
+def test_postgres_0014_backfills_all_ingestion_evidence_paths_and_guards(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    with _postgres_migration_database(monkeypatch) as (database_url, config):
+        command.upgrade(config, "20260714_0013")
+        engine = create_engine(database_url)
+        try:
+            with engine.begin() as connection:
+                _insert_revision_at_0013(
+                    connection,
+                    suffix=1,
+                    series_watermark="2026-07-10T01:02:03.000004Z",
+                    instrument_watermark="2026-07-11T01:02:03.000004Z",
+                    ingested_at=None,
+                )
+                _insert_revision_at_0013(
+                    connection,
+                    suffix=2,
+                    series_watermark=None,
+                    instrument_watermark="2026-07-11T02:03:04.000005Z",
+                    ingested_at=None,
+                )
+                _insert_revision_at_0013(
+                    connection,
+                    suffix=3,
+                    series_watermark=None,
+                    instrument_watermark=None,
+                    ingested_at=None,
+                )
+                _insert_revision_at_0013(
+                    connection,
+                    suffix=4,
+                    series_watermark="2026-07-10T04:05:06.000007Z",
+                    instrument_watermark=None,
+                    ingested_at=datetime(2026, 7, 9, 4, 5, 6, 7, tzinfo=UTC),
+                    payload_schema_version=2,
+                )
+                started_at = connection.scalar(text("SELECT clock_timestamp()"))
+
+            command.upgrade(config, "20260714_0014")
+
+            with engine.connect() as connection:
+                finished_at = connection.scalar(text("SELECT clock_timestamp()"))
+                rows = connection.execute(
+                    text(
+                        """
+                        SELECT revision_id::text, ingested_at,
+                               ingestion_time_state
+                        FROM instrument_registry.quote_observation_revision
+                        WHERE source_ref = 'pg-migration-test'
+                        ORDER BY revision_id
+                        """
+                    )
+                ).mappings().all()
+                nullability = connection.execute(
+                    text(
+                        """
+                        SELECT column_name, is_nullable
+                        FROM information_schema.columns
+                        WHERE table_schema = 'instrument_registry'
+                          AND table_name = 'quote_observation_revision'
+                          AND column_name IN (
+                              'ingested_at', 'ingestion_time_state'
+                          )
+                        """
+                    )
+                ).all()
+
+            assert [row["ingestion_time_state"] for row in rows] == [
+                "legacy_series_upper_bound",
+                "legacy_instrument_upper_bound",
+                "legacy_migration_upper_bound",
+                "observed",
+            ]
+            assert rows[0]["ingested_at"] == datetime(
+                2026, 7, 10, 1, 2, 3, 4, tzinfo=UTC
+            )
+            assert rows[1]["ingested_at"] == datetime(
+                2026, 7, 11, 2, 3, 4, 5, tzinfo=UTC
+            )
+            assert started_at <= rows[2]["ingested_at"] <= finished_at
+            assert rows[3]["ingested_at"] == datetime(
+                2026, 7, 9, 4, 5, 6, 7, tzinfo=UTC
+            )
+            assert set(nullability) == {
+                ("ingested_at", "NO"),
+                ("ingestion_time_state", "NO"),
+            }
+
+            with pytest.raises(DBAPIError, match="quote_revision_insert_violation"):
+                with engine.begin() as connection:
+                    connection.execute(
+                        text(
+                            """
+                            INSERT INTO instrument_registry.quote_observation (
+                                observation_id, quote_series_id, as_of_date
+                            ) VALUES (
+                                '30000000-0000-0000-0000-000000000001',
+                                '00000000-0000-0000-0000-000000000001',
+                                '2026-07-02'
+                            );
+                            INSERT INTO instrument_registry.quote_observation_revision (
+                                revision_id, observation_id, revision_number,
+                                value, value_input_scale, numeric_scale_state,
+                                payload_schema_version, source_ref, status,
+                                source_published_at, ingested_at,
+                                ingestion_time_state, payload_hash,
+                                is_current, superseded_at
+                            ) VALUES (
+                                '40000000-0000-0000-0000-000000000001',
+                                '30000000-0000-0000-0000-000000000001',
+                                1, 1.5, 1, 'legacy_inferred', 1,
+                                'forged-legacy', 'complete', NULL, NOW(),
+                                'legacy_series_upper_bound',
+                                'sha256:forged', TRUE, NULL
+                            )
+                            """
+                        )
+                    )
+
+            with pytest.raises(DBAPIError, match="quote_revision_immutable_violation"):
+                with engine.begin() as connection:
+                    connection.execute(
+                        text(
+                            """
+                            UPDATE instrument_registry.quote_observation_revision
+                            SET ingestion_time_state = 'observed'
+                            WHERE revision_id =
+                                '20000000-0000-0000-0000-000000000001'
+                            """
+                        )
+                    )
+        finally:
+            engine.dispose()
+
+
+@pytest.mark.parametrize(
+    ("series_watermark", "payload_schema_version", "error"),
+    [
+        ("not-a-timestamp", 1, "not a canonical UTC watermark"),
+        (None, 2, "Only schema-v1 revisions"),
+    ],
+)
+def test_postgres_0014_fails_atomically_on_corrupt_ingestion_lineage(
+    monkeypatch: pytest.MonkeyPatch,
+    series_watermark: str | None,
+    payload_schema_version: int,
+    error: str,
+) -> None:
+    with _postgres_migration_database(monkeypatch) as (database_url, config):
+        command.upgrade(config, "20260714_0013")
+        engine = create_engine(database_url)
+        try:
+            with engine.begin() as connection:
+                _insert_revision_at_0013(
+                    connection,
+                    suffix=9,
+                    series_watermark=series_watermark,
+                    instrument_watermark=None,
+                    ingested_at=None,
+                    payload_schema_version=payload_schema_version,
+                )
+            with pytest.raises(RuntimeError, match=error):
+                command.upgrade(config, "20260714_0014")
+            with engine.connect() as connection:
+                assert connection.scalar(
+                    text(
+                        "SELECT version_num FROM "
+                        "instrument_registry.alembic_version"
+                    )
+                ) == "20260714_0013"
+                assert connection.scalar(
+                    text(
+                        """
+                        SELECT count(*)
+                        FROM information_schema.columns
+                        WHERE table_schema = 'instrument_registry'
+                          AND table_name = 'quote_observation_revision'
+                          AND column_name = 'ingestion_time_state'
+                        """
+                    )
+                ) == 0
+        finally:
+            engine.dispose()
 
 
 @pytest.fixture
@@ -217,7 +523,11 @@ def test_postgres_allows_only_one_current_revision_per_observation(
     assert len(migrated) == 1
     assert migrated[0]["value"] == Decimal("99.5")
     assert migrated[0]["revision_number"] == 1
-    assert migrated[0]["ingested_at"] is None
+    assert migrated[0]["ingested_at"] is not None
+    assert (
+        migrated[0]["ingestion_time_state"]
+        == "legacy_series_upper_bound"
+    )
     assert migrated[0]["value_input_scale"] == 1
     assert migrated[0]["numeric_scale_state"] == "legacy_inferred"
     assert migrated[0]["payload_schema_version"] == 1
@@ -425,12 +735,12 @@ def test_postgres_allows_only_one_current_revision_per_observation(
                             value_input_scale, numeric_scale_state,
                             payload_schema_version,
                             source_ref, status, source_published_at, ingested_at,
-                            payload_hash, is_current, superseded_at
+                            ingestion_time_state, payload_hash, is_current, superseded_at
                         ) VALUES (
                             :revision_id, :observation_id, 3, '102',
                             0, 'declared', 2,
                             'unclosed', 'complete', NULL, NOW(),
-                            :payload_hash, TRUE, NULL
+                            'observed', :payload_hash, TRUE, NULL
                         )
                         """
                     ),
@@ -463,12 +773,12 @@ def test_postgres_allows_only_one_current_revision_per_observation(
                         value_input_scale, numeric_scale_state,
                         payload_schema_version,
                         source_ref, status, source_published_at, ingested_at,
-                        payload_hash, is_current, superseded_at
+                        ingestion_time_state, payload_hash, is_current, superseded_at
                     ) VALUES (
                         :revision_id, :observation_id, 3, :value,
                         39, 'declared', 2,
                         :source_ref, 'complete', NULL, NOW(),
-                        :payload_hash, TRUE, NULL
+                        'observed', :payload_hash, TRUE, NULL
                     )
                     """
                 ),
@@ -548,12 +858,12 @@ def test_postgres_allows_only_one_current_revision_per_observation(
                             value_input_scale, numeric_scale_state,
                             payload_schema_version,
                             source_ref, status, source_published_at, ingested_at,
-                            payload_hash, is_current, superseded_at
+                            ingestion_time_state, payload_hash, is_current, superseded_at
                         ) VALUES (
                             :revision_id, :observation_id, 4, 0,
                             0, 'declared', 2,
                             'zero', 'complete', NULL, NOW(),
-                            'sha256:zero', TRUE, NULL
+                            'observed', 'sha256:zero', TRUE, NULL
                         )
                         """
                     ),
@@ -790,12 +1100,12 @@ def test_postgres_outbox_trigger_is_atomic_changed_only_and_excludes_fx(
                         revision_id, observation_id, revision_number, value,
                         value_input_scale, numeric_scale_state,
                         payload_schema_version, source_ref, status,
-                        source_published_at, ingested_at, payload_hash,
+                        source_published_at, ingested_at, ingestion_time_state, payload_hash,
                         is_current, superseded_at
                     ) VALUES (
                         :revision_id, :observation_id, 1, 101,
                         0, 'declared', 2, 'rollback-probe', 'complete',
-                        NULL, NOW(), 'sha256:rollback-probe', TRUE, NULL
+                        NULL, NOW(), 'observed', 'sha256:rollback-probe', TRUE, NULL
                     )
                     """
                 ),
@@ -1686,7 +1996,7 @@ def test_postgres_migration_seeds_fx_identities_without_quote_facts(
         "chart": ["spot"],
         "reference": ["spot"],
     }
-    assert revision == "20260714_0013"
+    assert revision == "20260714_0014"
     assert [row["instrument_id"] for row in instruments] == [
         "fx-usd-cny",
         "fx-usd-hkd",

@@ -276,6 +276,19 @@ class QuoteObservationRevision(InstrumentRegistryBase):
             "AND numeric_scale_state IN ('declared', 'binary_inferred'))",
             name="numeric_evidence_schema",
         ),
+        CheckConstraint(
+            "ingestion_time_state IN ("
+            "'observed', "
+            "'legacy_series_upper_bound', "
+            "'legacy_instrument_upper_bound', "
+            "'legacy_migration_upper_bound'"
+            ")",
+            name="ingestion_time_state",
+        ),
+        CheckConstraint(
+            "ingestion_time_state = 'observed' OR payload_schema_version = 1",
+            name="legacy_ingestion_time_schema",
+        ),
         Index(
             "uq_quote_observation_revision_current",
             "observation_id",
@@ -304,7 +317,11 @@ class QuoteObservationRevision(InstrumentRegistryBase):
     source_published_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True)
     )
-    ingested_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    ingested_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+    )
+    ingestion_time_state: Mapped[str] = mapped_column(String, nullable=False)
     payload_hash: Mapped[str] = mapped_column(String, nullable=False)
     is_current: Mapped[bool] = mapped_column(Boolean, nullable=False)
     superseded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

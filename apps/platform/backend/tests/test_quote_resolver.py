@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from datetime import UTC, date, datetime
+from dataclasses import replace
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 
 import pytest
@@ -21,6 +22,7 @@ from portfolio_ops_instrument_core.quote_resolver import (
     QuoteResolverError,
     QuoteRevisionCandidate,
     QuoteSeriesDescriptor,
+    _series_dependency,
     canonical_quote_selection_policy_revision,
     canonicalize_quote_selection_policy,
     resolve_explicit_quote_candidate,
@@ -29,6 +31,7 @@ from portfolio_ops_instrument_core.quote_resolver import (
     resolve_role_quote,
     resolve_role_quote_series,
 )
+from portfolio_ops_instrument_core.models import QuoteFreshnessPolicy
 from portfolio_ops_instrument_core.quote_revisions import (
     QUOTE_REVISION_PAYLOAD_SCHEMA_V2,
     make_quote_observation_id,
@@ -166,6 +169,144 @@ def test_explicit_candidate_distinguishes_carry_ingestion_and_reliability() -> N
     ]
     assert resolution.source_ref == "issuer:statement"
     assert not hasattr(resolution, "provider")
+
+
+def test_legacy_ingestion_bound_is_qualified_and_time_bound_in_fingerprint() -> None:
+    series = QuoteSeriesDescriptor(
+        quote_series_id="series-legacy",
+        instrument_id="fund-legacy",
+        metric_family="nav",
+        quote_basis="official_nav",
+        currency="USD",
+    )
+    candidate = QuoteRevisionCandidate(
+        quote_series_id=series.quote_series_id,
+        observation_id="observation-legacy",
+        revision_id="revision-legacy",
+        revision_number=1,
+        payload_hash="sha256:legacy",
+        value=Decimal("100"),
+        value_input_scale=0,
+        numeric_scale_state="legacy_inferred",
+        payload_schema_version=1,
+        status="complete",
+        observation_date=date(2026, 7, 13),
+        source_ref="legacy-migration",
+        source_published_at=None,
+        ingested_at=datetime(2026, 7, 14, 1, 2, 3, 4, tzinfo=UTC),
+        ingestion_time_state="legacy_series_upper_bound",
+    )
+
+    resolution = resolve_explicit_quote_candidate(
+        resolver_strategy_version=CANONICAL_QUOTE_RESOLVER_STRATEGY_VERSION,
+        instrument_id=series.instrument_id,
+        metric_family=series.metric_family,
+        quote_basis=series.quote_basis,
+        currency=series.currency,
+        requested_as_of_date=date(2026, 7, 13),
+        freshness_policy=EXACT,
+        series=series,
+        candidate=candidate,
+    )
+    later_resolution = resolve_explicit_quote_candidate(
+        resolver_strategy_version=CANONICAL_QUOTE_RESOLVER_STRATEGY_VERSION,
+        instrument_id=series.instrument_id,
+        metric_family=series.metric_family,
+        quote_basis=series.quote_basis,
+        currency=series.currency,
+        requested_as_of_date=date(2026, 7, 13),
+        freshness_policy=EXACT,
+        series=series,
+        candidate=replace(candidate, ingested_at=candidate.ingested_at + timedelta(1)),
+    )
+    unknown_resolution = resolve_explicit_quote_candidate(
+        resolver_strategy_version=CANONICAL_QUOTE_RESOLVER_STRATEGY_VERSION,
+        instrument_id=series.instrument_id,
+        metric_family=series.metric_family,
+        quote_basis=series.quote_basis,
+        currency=series.currency,
+        requested_as_of_date=date(2026, 7, 13),
+        freshness_policy=EXACT,
+        series=series,
+        candidate=replace(candidate, ingestion_time_state=None),
+    )
+
+    assert resolution.ingestion_status == "bounded"
+    assert resolution.reliability_status == "qualified"
+    assert "legacy_ingestion_upper_bound" in resolution.reason_codes
+    assert (
+        resolution.calculation_dependency.fingerprint
+        != later_resolution.calculation_dependency.fingerprint
+    )
+    assert unknown_resolution.ingestion_status == "unknown"
+    assert "unknown_ingestion_time" in unknown_resolution.reason_codes
+    assert "legacy_ingestion_upper_bound" not in unknown_resolution.reason_codes
+
+
+def test_series_dependency_binds_included_and_excluded_ingestion_evidence() -> None:
+    series = QuoteSeriesDescriptor(
+        quote_series_id="series-dependency",
+        instrument_id="fund-dependency",
+        metric_family="nav",
+        quote_basis="official_nav",
+        currency="USD",
+    )
+    candidate = QuoteRevisionCandidate(
+        quote_series_id=series.quote_series_id,
+        observation_id="observation-dependency",
+        revision_id="revision-dependency",
+        revision_number=1,
+        payload_hash="sha256:dependency",
+        value=Decimal("100"),
+        value_input_scale=0,
+        numeric_scale_state="declared",
+        payload_schema_version=2,
+        status="partial",
+        observation_date=date(2026, 7, 13),
+        source_ref="test",
+        source_published_at=None,
+        ingested_at=datetime(2026, 7, 14, 1, tzinfo=UTC),
+        ingestion_time_state="observed",
+    )
+    policy = QuoteFreshnessPolicy.model_validate(EXACT)
+
+    def dependency(
+        *,
+        included: QuoteRevisionCandidate,
+        excluded: QuoteRevisionCandidate,
+    ):
+        return _series_dependency(
+            resolver_strategy_version=CANONICAL_QUOTE_RESOLVER_STRATEGY_VERSION,
+            freshness_policy=policy,
+            policy_revision="sha256:policy",
+            instrument_id=series.instrument_id,
+            role="chart",
+            currency=series.currency,
+            range_mode="bounded",
+            start_date=date(2026, 7, 13),
+            end_date=date(2026, 7, 13),
+            series=series,
+            candidates=[included],
+            excluded_candidates=[excluded],
+            reason_codes=["partial_series"],
+        )
+
+    baseline = dependency(included=candidate, excluded=candidate)
+    changed_included = dependency(
+        included=replace(candidate, ingested_at=candidate.ingested_at + timedelta(1)),
+        excluded=candidate,
+    )
+    changed_excluded = dependency(
+        included=candidate,
+        excluded=replace(
+            candidate,
+            ingestion_time_state="legacy_series_upper_bound",
+            ingested_at=candidate.ingested_at + timedelta(2),
+        ),
+    )
+
+    assert baseline.fingerprint != changed_included.fingerprint
+    assert baseline.fingerprint != changed_excluded.fingerprint
 
 
 def test_role_selects_one_series_before_observation_lookup_and_window_is_one_batch(
@@ -307,6 +448,62 @@ def test_window_exposes_all_current_states_and_applies_anchor_freshness(
     assert next_complete_day.value == Decimal("101")
 
 
+def test_series_window_qualifies_legacy_ingestion_bound_and_hashes_its_time(
+    quote_registry,
+) -> None:
+    _, factory = quote_registry
+    instrument_id = _create_fund(factory, policy=_policy(chart=["official_nav"]))
+    _upsert(
+        factory,
+        instrument_id=instrument_id,
+        quote_basis="official_nav",
+        point_date=date(2026, 7, 13),
+        value="100",
+    )
+    with factory.begin() as session:
+        revision = session.query(QuoteObservationRevision).one()
+        revision.payload_schema_version = 1
+        revision.numeric_scale_state = "legacy_inferred"
+        revision.ingestion_time_state = "legacy_series_upper_bound"
+
+    baseline = resolve_role_quote_series(
+        factory,
+        resolver_strategy_version=CANONICAL_QUOTE_RESOLVER_STRATEGY_VERSION,
+        quote_selection_policy_version=QUOTE_SELECTION_POLICY_VERSION,
+        instrument_id=instrument_id,
+        role="chart",
+        currency="USD",
+        range_mode="since_inception",
+        start_date=None,
+        end_date=date(2026, 7, 13),
+        freshness_policy=EXACT,
+    )
+    with factory.begin() as session:
+        revision = session.query(QuoteObservationRevision).one()
+        revision.ingested_at = revision.ingested_at + timedelta(seconds=1)
+    changed = resolve_role_quote_series(
+        factory,
+        resolver_strategy_version=CANONICAL_QUOTE_RESOLVER_STRATEGY_VERSION,
+        quote_selection_policy_version=QUOTE_SELECTION_POLICY_VERSION,
+        instrument_id=instrument_id,
+        role="chart",
+        currency="USD",
+        range_mode="since_inception",
+        start_date=None,
+        end_date=date(2026, 7, 13),
+        freshness_policy=EXACT,
+    )
+
+    assert baseline.resolution_status == "resolved"
+    assert baseline.ingestion_status == "bounded"
+    assert baseline.reliability_status == "qualified"
+    assert "legacy_ingestion_upper_bound" in baseline.reason_codes
+    assert (
+        baseline.calculation_dependency.fingerprint
+        != changed.calculation_dependency.fingerprint
+    )
+
+
 def test_since_inception_has_no_artificial_anchor_and_changes_fingerprint(
     quote_registry,
 ) -> None:
@@ -427,6 +624,7 @@ def test_in_session_resolver_reads_uncommitted_uow_state(quote_registry) -> None
                 status="complete",
                 source_published_at=None,
                 ingested_at=datetime.now(UTC),
+                ingestion_time_state="observed",
                 payload_hash=payload_hash,
                 is_current=True,
                 superseded_at=None,

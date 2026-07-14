@@ -51,9 +51,15 @@ DataStatus = Literal["complete", "partial", "unavailable"]
 SourceObservationStatus = Literal["complete", "partial", "rejected"]
 QuoteRevisionStatus = Literal["complete", "partial", "rejected", "withdrawn"]
 QuoteNumericScaleState = Literal["declared", "binary_inferred", "legacy_inferred"]
+QuoteIngestionTimeState = Literal[
+    "observed",
+    "legacy_series_upper_bound",
+    "legacy_instrument_upper_bound",
+    "legacy_migration_upper_bound",
+]
 QuoteFreshnessMode = Literal["exact_only", "calendar_day_carry_forward"]
 ObservationFreshnessStatus = Literal["current", "late", "missing"]
-QuoteIngestionStatus = Literal["current", "unknown"]
+QuoteIngestionStatus = Literal["current", "bounded", "unknown"]
 QuoteReliabilityStatus = Literal["reliable", "qualified", "unavailable"]
 QuoteResolutionStatus = Literal["resolved", "unavailable"]
 QuoteSeriesCoverageStatus = Literal["complete", "partial", "unavailable"]
@@ -76,6 +82,7 @@ QuoteResolverReasonCode = Literal[
     "carried_forward_observation",
     "freshness_limit_exceeded",
     "unknown_ingestion_time",
+    "legacy_ingestion_upper_bound",
     "missing_anchor",
     "insufficient_history",
 ]
@@ -200,7 +207,8 @@ class MarketDataPoint(BaseModel):
     source_ref: str | None = None
     status: Literal["complete"] = "complete"
     source_published_at: datetime | None = None
-    ingested_at: datetime | None = None
+    ingested_at: datetime
+    ingestion_time_state: QuoteIngestionTimeState
     payload_hash: str = Field(min_length=1)
 
 
@@ -250,6 +258,7 @@ class CanonicalQuoteResolution(BaseModel):
     source_ref: str | None = None
     source_published_at: datetime | None = None
     ingested_at: datetime | None = None
+    ingestion_time_state: QuoteIngestionTimeState | None = None
     carry_forward: bool
     age_days: int | None = Field(default=None, ge=0)
     freshness_status: ObservationFreshnessStatus
@@ -380,6 +389,7 @@ class CanonicalQuoteSeriesPoint(BaseModel):
     source_ref: str | None = None
     source_published_at: datetime | None = None
     ingested_at: datetime | None = None
+    ingestion_time_state: QuoteIngestionTimeState | None = None
 
 
 class CanonicalQuoteSeriesObservation(BaseModel):
@@ -397,6 +407,7 @@ class CanonicalQuoteSeriesObservation(BaseModel):
     source_ref: str | None = None
     source_published_at: datetime | None = None
     ingested_at: datetime | None = None
+    ingestion_time_state: QuoteIngestionTimeState | None = None
 
     @model_validator(mode="after")
     def validate_status_value(self) -> "CanonicalQuoteSeriesObservation":

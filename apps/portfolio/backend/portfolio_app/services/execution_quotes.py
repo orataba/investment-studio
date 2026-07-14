@@ -81,6 +81,7 @@ def get_execution_quote(
         "payload_hash": payload.get("payload_hash"),
         "source_published_at": payload.get("source_published_at"),
         "ingested_at": payload.get("ingested_at"),
+        "ingestion_time_state": payload.get("ingestion_time_state"),
         "calculation_dependency": payload.get("calculation_dependency"),
     }
 

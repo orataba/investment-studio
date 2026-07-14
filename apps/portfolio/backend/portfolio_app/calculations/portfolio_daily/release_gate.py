@@ -209,7 +209,8 @@ def drain_portfolio_daily_publications(
                 raise PortfolioDailyReleaseGateError(
                     "Portfolio Daily intent capture failed: "
                     f"portfolio={outcome.dispatch.portfolio_id!r} "
-                    f"reason={outcome.dispatch.reason_code!r}"
+                    f"reason={outcome.dispatch.reason_code!r} "
+                    f"detail={outcome.dispatch.failure_detail!r}"
                 )
             if outcome.status is WorkerCycleStatus.FAILED:
                 raise PortfolioDailyReleaseGateError(

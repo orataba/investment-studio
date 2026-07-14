@@ -409,16 +409,21 @@ export default function PerformancePage() {
       detail: xirr?.method_version,
     },
   ]
+  const bridgeStartDate = performance?.effective_return_start_date ?? '—'
+  const bridgeEndDate = performance?.effective_return_end_date ?? '—'
+  const bridgePeriodDetail = `Measured return period ${bridgeStartDate} – ${bridgeEndDate}; this bridge is not the latest selected-date NAV.`
   const bridgeRows: MetricRow[] = [
     {
-      label: 'Opening NAV',
+      label: `Opening NAV (${bridgeStartDate})`,
       value: formatCurrency(bridge?.opening_nav_exact, report?.base_currency),
       sourceValue: bridge?.opening_nav_exact,
+      detail: bridgePeriodDetail,
     },
     {
-      label: 'Closing NAV',
+      label: `Closing NAV (${bridgeEndDate})`,
       value: formatCurrency(bridge?.closing_nav_exact, report?.base_currency),
       sourceValue: bridge?.closing_nav_exact,
+      detail: bridgePeriodDetail,
     },
     {
       label: 'External flow in',
@@ -435,6 +440,7 @@ export default function PerformancePage() {
       value: formatSignedCurrency(bridge?.economic_pnl_exact, report?.base_currency),
       sourceValue: bridge?.economic_pnl_exact,
       tone: signedValueClass(bridge?.economic_pnl_exact),
+      detail: bridgePeriodDetail,
     },
     {
       label: 'Bridge closure residual',

@@ -54,6 +54,10 @@ describe('portfolio frontend calculation authority boundary', () => {
     expect(overviewSource).toContain(
       'performanceReport?.portfolio_bridge?.economic_pnl_exact',
     )
+    expect(overviewSource).toContain('holdingsWorkspace?.totals.exact_values?.nav')
+    expect(overviewSource).not.toContain(
+      'performanceReport?.portfolio_bridge?.closing_nav_exact',
+    )
     expect(overviewSource).toContain('exactDecimalToDisplayNumber')
     expect(overviewSource).not.toContain('buildTwrIndexPoints')
     expect(overviewSource).not.toContain("from '../lib/performanceSeries'")
@@ -108,6 +112,9 @@ describe('portfolio frontend calculation authority boundary', () => {
     expect(performanceSource).toContain('statistics?.annualized_volatility?.method50')
     expect(performanceSource).toContain('xirr.rate?.method50')
     expect(performanceSource).toContain('bridge?.economic_pnl_exact')
+    expect(performanceSource).toContain('performance?.effective_return_start_date')
+    expect(performanceSource).toContain('performance?.effective_return_end_date')
+    expect(performanceSource).toContain('this bridge is not the latest selected-date NAV')
     expect(performanceSource).toContain('exactDecimalToDisplayNumber')
     ;[
       'sampleStddev',

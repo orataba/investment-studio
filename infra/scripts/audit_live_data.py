@@ -22,10 +22,10 @@ DEFAULT_DATABASE_URL = (
 )
 
 EXPECTED_MIGRATION_HEADS = {
-    "instrument_registry": "20260714_0013",
+    "instrument_registry": "20260714_0014",
     "calculation_registry": "20260714_0001",
-    "portfolio": "20260714_0042",
-    "watchlist": "20260714_0034",
+    "portfolio": "20260714_0045",
+    "watchlist": "20260714_0035",
 }
 
 TRANSACTION_PAYLOAD_SCHEMA_VERSION = "transaction-revision.v1"
@@ -2740,11 +2740,22 @@ def run_audit(database_url: str) -> list[AuditCheck]:
                            OR (status = 'withdrawn' AND value IS NOT NULL)
                            OR (status <> 'withdrawn' AND value IS NULL)
                            OR payload_hash !~ '^sha256:[0-9a-f]{64}$'
-                           OR (revision_number > 1 AND ingested_at IS NULL)
+                           OR ingested_at IS NULL
+                           OR ingestion_time_state NOT IN (
+                               'observed',
+                               'legacy_series_upper_bound',
+                               'legacy_instrument_upper_bound',
+                               'legacy_migration_upper_bound'
+                           )
+                           OR (
+                               ingestion_time_state <> 'observed'
+                               AND payload_schema_version <> 1
+                           )
                     """,
                     detail=(
                         "Quote revisions must have valid state/value lifecycle, payload "
-                        "identity, and a real ingestion timestamp after the legacy backfill."
+                        "identity, a complete ingestion timestamp, and explicit observed "
+                        "or conservative legacy timing evidence."
                     ),
                 )
             )
@@ -3319,12 +3330,13 @@ def run_audit(database_url: str) -> list[AuditCheck]:
                                             50
                                         )
                                     OR snapshot.drawdown_method50
-                                        <> calculation_registry.round_significant_half_even(
+                                        <> calculation_registry.divide_significant_half_even(
                                             calculation_registry.round_significant_half_even(
                                                 snapshot.wealth_index_method50
                                                     - snapshot.peak_wealth_index_method50,
                                                 50
-                                            ) / snapshot.peak_wealth_index_method50,
+                                            ),
+                                            snapshot.peak_wealth_index_method50,
                                             50
                                         )
                                     OR snapshot.cumulative_twr_published IS DISTINCT FROM

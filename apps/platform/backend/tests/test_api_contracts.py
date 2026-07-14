@@ -99,7 +99,8 @@ def test_market_data_point_contract_requires_canonical_revision_identity() -> No
             "source_ref": "issuer-file",
             "status": "complete",
             "source_published_at": "2026-07-11T00:00:00Z",
-            "ingested_at": None,
+            "ingested_at": "2026-07-11T01:00:00Z",
+            "ingestion_time_state": "observed",
             "payload_hash": "sha256:abc",
         }
     )
@@ -108,6 +109,7 @@ def test_market_data_point_contract_requires_canonical_revision_identity() -> No
     assert point.revision_number == 2
     assert point.value_input_scale == 2
     assert point.numeric_scale_state == "declared"
+    assert point.ingestion_time_state == "observed"
 
 
 def test_currency_contract_normalizes_ingress_once_and_rejects_non_iso_shape() -> None:

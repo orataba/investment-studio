@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import ast
-from datetime import date, timedelta
+from datetime import UTC, date, datetime, timedelta
 import json
 from pathlib import Path
 from time import monotonic
@@ -58,6 +58,219 @@ def test_instrument_registry_revisions_do_not_import_runtime_modules() -> None:
         assert not offenders, (
             f"{migration_path.name} imports runtime packages: {offenders}"
         )
+
+
+def test_quote_numeric_evidence_backfill_is_linear_on_postgres() -> None:
+    source = (
+        VERSIONS_DIR / "20260714_0012_quote_numeric_evidence_scale.py"
+    ).read_text(encoding="utf-8")
+
+    assert "CAST(revision_id AS TEXT)" not in source
+    assert "ELSE scale(value)" in source
+    assert '"target_revision_id"' in source
+
+
+def _seed_quote_revision_at_0013(
+    connection,
+    *,
+    suffix: str,
+    series_watermark: str | None,
+    instrument_watermark: str | None,
+    ingested_at: str | None,
+    payload_schema_version: int = 1,
+) -> None:
+    instrument_id = f"ingestion-{suffix}"
+    series_id = f"00000000-0000-0000-0000-{int(suffix):012d}"
+    observation_id = f"10000000-0000-0000-0000-{int(suffix):012d}"
+    revision_id = f"20000000-0000-0000-0000-{int(suffix):012d}"
+    params = {
+        "instrument_id": instrument_id,
+        "series_id": series_id,
+        "observation_id": observation_id,
+        "revision_id": revision_id,
+        "series_watermark": series_watermark,
+        "instrument_watermark": instrument_watermark,
+        "ingested_at": ingested_at,
+        "payload_schema_version": payload_schema_version,
+        "payload_hash": f"sha256:{int(suffix):064x}",
+    }
+    statements = (
+        """
+            INSERT INTO instrument (
+                instrument_id, instrument_name, instrument_type, currency,
+                quote_selection_policy_json, source_settings_json,
+                refresh_status_json, lifecycle_state_json,
+                market_data_updated_at
+            ) VALUES (
+                :instrument_id, :instrument_id, 'equity', 'USD',
+                '{}', '{}', '{}', '{"status":"active"}',
+                :instrument_watermark
+            )
+        """,
+        """
+            INSERT INTO quote_series (
+                quote_series_id, instrument_id, metric_family, quote_basis,
+                currency, data_updated_at
+            ) VALUES (
+                :series_id, :instrument_id, 'price', 'close', 'USD',
+                :series_watermark
+            )
+        """,
+        """
+            INSERT INTO quote_observation (
+                observation_id, quote_series_id, as_of_date
+            ) VALUES (:observation_id, :series_id, '2026-07-01')
+        """,
+        """
+            INSERT INTO quote_observation_revision (
+                revision_id, observation_id, revision_number, value,
+                value_input_scale, numeric_scale_state,
+                payload_schema_version, source_ref, status,
+                source_published_at, ingested_at, payload_hash,
+                is_current, superseded_at
+            ) VALUES (
+                :revision_id, :observation_id, 1, '1.25', 2,
+                CASE WHEN :payload_schema_version = 1
+                     THEN 'legacy_inferred' ELSE 'declared' END,
+                :payload_schema_version, 'migration-test', 'complete',
+                NULL, :ingested_at, :payload_hash, 1, NULL
+            )
+        """,
+    )
+    for statement in statements:
+        connection.execute(text(statement), params)
+
+
+def test_quote_ingestion_evidence_migration_backfills_safe_upper_bounds(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    database_url = f"sqlite+pysqlite:///{tmp_path / 'quote-ingestion-evidence.db'}"
+    monkeypatch.setenv("PORTFOLIO_OPS_INSTRUMENT_REGISTRY_DATABASE_URL", database_url)
+    monkeypatch.setenv("PORTFOLIO_OPS_INSTRUMENT_REGISTRY_SCHEMA", "")
+    config = _migration_config(database_url)
+    command.upgrade(config, "20260714_0013")
+    engine = create_engine(database_url)
+    with engine.begin() as connection:
+        _seed_quote_revision_at_0013(
+            connection,
+            suffix="1",
+            series_watermark="2026-07-10T01:02:03.000004Z",
+            instrument_watermark="2026-07-11T01:02:03.000004Z",
+            ingested_at=None,
+        )
+        _seed_quote_revision_at_0013(
+            connection,
+            suffix="2",
+            series_watermark=None,
+            instrument_watermark="2026-07-11T02:03:04.000005Z",
+            ingested_at=None,
+        )
+        _seed_quote_revision_at_0013(
+            connection,
+            suffix="3",
+            series_watermark=None,
+            instrument_watermark=None,
+            ingested_at=None,
+        )
+        _seed_quote_revision_at_0013(
+            connection,
+            suffix="4",
+            series_watermark="2026-07-10T04:05:06.000007Z",
+            instrument_watermark=None,
+            ingested_at="2026-07-09 04:05:06.000007",
+        )
+
+    started_at = datetime.now(UTC)
+    command.upgrade(config, "head")
+    finished_at = datetime.now(UTC)
+    with engine.connect() as connection:
+        rows = connection.execute(
+            text(
+                """
+                SELECT revision_id, ingested_at, ingestion_time_state
+                FROM quote_observation_revision
+                WHERE source_ref = 'migration-test'
+                ORDER BY revision_id
+                """
+            )
+        ).mappings().all()
+        columns = {
+            column["name"]: column
+            for column in inspect(connection).get_columns(
+                "quote_observation_revision"
+            )
+        }
+
+    assert rows[0]["ingestion_time_state"] == "legacy_series_upper_bound"
+    assert str(rows[0]["ingested_at"]).startswith("2026-07-10 01:02:03.000004")
+    assert rows[1]["ingestion_time_state"] == "legacy_instrument_upper_bound"
+    assert str(rows[1]["ingested_at"]).startswith("2026-07-11 02:03:04.000005")
+    assert rows[2]["ingestion_time_state"] == "legacy_migration_upper_bound"
+    migration_time = datetime.fromisoformat(str(rows[2]["ingested_at"]))
+    assert started_at.replace(tzinfo=None) <= migration_time <= finished_at.replace(
+        tzinfo=None
+    )
+    assert rows[3]["ingestion_time_state"] == "observed"
+    assert str(rows[3]["ingested_at"]).startswith("2026-07-09 04:05:06.000007")
+    assert columns["ingested_at"]["nullable"] is False
+    assert columns["ingestion_time_state"]["nullable"] is False
+
+    with pytest.raises(DBAPIError, match="quote_revision_immutable_violation"):
+        with engine.begin() as connection:
+            connection.execute(
+                text(
+                    """
+                    UPDATE quote_observation_revision
+                    SET ingestion_time_state = 'observed'
+                    WHERE revision_id = '20000000-0000-0000-0000-000000000001'
+                    """
+                )
+            )
+
+
+@pytest.mark.parametrize(
+    ("series_watermark", "payload_schema_version", "error"),
+    [
+        ("not-a-timestamp", 1, "not a canonical UTC watermark"),
+        (None, 2, "Only schema-v1 revisions"),
+    ],
+)
+def test_quote_ingestion_evidence_migration_fails_closed_on_corrupt_lineage(
+    tmp_path,
+    monkeypatch,
+    series_watermark,
+    payload_schema_version,
+    error,
+) -> None:
+    database_url = f"sqlite+pysqlite:///{tmp_path / f'ingestion-corrupt-{payload_schema_version}.db'}"
+    monkeypatch.setenv("PORTFOLIO_OPS_INSTRUMENT_REGISTRY_DATABASE_URL", database_url)
+    monkeypatch.setenv("PORTFOLIO_OPS_INSTRUMENT_REGISTRY_SCHEMA", "")
+    config = _migration_config(database_url)
+    command.upgrade(config, "20260714_0013")
+    engine = create_engine(database_url)
+    with engine.begin() as connection:
+        _seed_quote_revision_at_0013(
+            connection,
+            suffix="9",
+            series_watermark=series_watermark,
+            instrument_watermark=None,
+            ingested_at=None,
+            payload_schema_version=payload_schema_version,
+        )
+
+    with pytest.raises(RuntimeError, match=error):
+        command.upgrade(config, "head")
+    with engine.connect() as connection:
+        assert connection.scalar(text("SELECT version_num FROM alembic_version")) == (
+            "20260714_0013"
+        )
+        assert "ingestion_time_state" not in {
+            column["name"]
+            for column in inspect(connection).get_columns(
+                "quote_observation_revision"
+            )
+        }
 
 
 def test_instrument_registry_migrations_upgrade_an_empty_database(
@@ -121,7 +334,7 @@ def test_instrument_registry_migrations_upgrade_an_empty_database(
             .one()
         )
 
-    assert revision == "20260714_0013"
+    assert revision == "20260714_0014"
     assert [row["instrument_id"] for row in instruments] == [
         "fx-usd-cny",
         "fx-usd-hkd",
@@ -509,6 +722,7 @@ def test_quote_revision_migration_backfills_deterministic_identity_and_unknown_i
                        o.observation_id, o.as_of_date,
                        r.revision_id, r.revision_number, r.value, r.source_ref,
                        r.status, r.source_published_at, r.ingested_at,
+                       r.ingestion_time_state,
                        r.payload_hash, r.is_current, r.superseded_at
                 FROM quote_series s
                 JOIN quote_observation o USING (quote_series_id)
@@ -531,7 +745,8 @@ def test_quote_revision_migration_backfills_deterministic_identity_and_unknown_i
     assert row["value"] == "100"
     assert row["source_ref"] == "legacy-provider"
     assert row["status"] == "complete"
-    assert row["ingested_at"] is None
+    assert str(row["ingested_at"]).startswith("2026-07-13 00:00:00")
+    assert row["ingestion_time_state"] == "legacy_series_upper_bound"
     assert row["source_published_at"] is None
     assert row["superseded_at"] is None
     assert bool(row["is_current"]) is True
@@ -834,13 +1049,13 @@ def test_sqlite_quote_schema_enforces_exact_numeric_identity_and_immutability(
                 """
                 INSERT INTO quote_observation_revision (
                     revision_id, observation_id, revision_number, value,
-                    value_input_scale, numeric_scale_state, payload_schema_version,
-                    source_ref, status, source_published_at, ingested_at,
-                    payload_hash, is_current, superseded_at
+                        value_input_scale, numeric_scale_state, payload_schema_version,
+                        source_ref, status, source_published_at, ingested_at,
+                        ingestion_time_state, payload_hash, is_current, superseded_at
                 ) VALUES (
                     '22222222222222222222222222222222', :observation_id, 2,
-                    :value, 100, 'declared', 2, :source_ref, 'complete', NULL,
-                    '2026-07-13T00:00:00Z', :payload_hash, 1, NULL
+                        :value, 100, 'declared', 2, :source_ref, 'complete', NULL,
+                        '2026-07-13T00:00:00Z', 'observed', :payload_hash, 1, NULL
                 )
                 """
             ),
@@ -1328,7 +1543,7 @@ def test_canonical_fx_identity_migration_is_idempotent_and_preserves_business_da
             )
         )
 
-    assert revision == "20260714_0013"
+    assert revision == "20260714_0014"
     assert [row["instrument_id"] for row in rows] == ["fx-usd-cny", "fx-usd-hkd"]
     hkd = rows[1]
     assert hkd["instrument_name"] == "Treasury USD/HKD Reference"

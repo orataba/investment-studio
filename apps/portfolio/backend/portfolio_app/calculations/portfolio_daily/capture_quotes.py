@@ -213,6 +213,16 @@ def capture_quote_dependencies(
                     "canonical quote revision has unknown ingestion time: "
                     + candidate.revision_id
                 )
+            if candidate.ingestion_time_state not in {
+                "observed",
+                "legacy_series_upper_bound",
+                "legacy_instrument_upper_bound",
+                "legacy_migration_upper_bound",
+            }:
+                raise ManifestCaptureError(
+                    "canonical quote revision has unknown ingestion evidence state: "
+                    + candidate.revision_id
+                )
             if candidate.ingested_at > common.knowledge_cutoff_at:
                 raise ManifestCaptureError(
                     "canonical quote revision is after the manifest knowledge cutoff: "
@@ -250,6 +260,7 @@ def capture_quote_dependencies(
                     "quote_status": candidate.status,
                     "source_published_at": candidate.source_published_at,
                     "ingested_at": candidate.ingested_at,
+                    "ingestion_time_state": candidate.ingestion_time_state,
                     "payload_hash": candidate.payload_hash,
                     "decision": "adopted" if selected else "excluded",
                     "decision_reason_code": decision_reason,

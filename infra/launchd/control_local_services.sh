@@ -79,7 +79,18 @@ bootstrap_service() {
 }
 
 stop_services() {
-  local service label plist
+  local service label plist details pid
+  local -a stopped_pids=()
+  local stop_timeout_seconds="${LAUNCHD_STOP_TIMEOUT_SECONDS:-30}"
+  local stop_poll_interval_seconds="${LAUNCHD_STOP_POLL_INTERVAL_SECONDS:-0.2}"
+  if [[ ! "$stop_timeout_seconds" =~ ^[1-9][0-9]*$ ]]; then
+    echo "LAUNCHD_STOP_TIMEOUT_SECONDS must be a positive integer." >&2
+    exit 64
+  fi
+  if [[ ! "$stop_poll_interval_seconds" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
+    echo "LAUNCHD_STOP_POLL_INTERVAL_SECONDS must be non-negative." >&2
+    exit 64
+  fi
   mkdir -p "$(dirname "$STATE_FILE")"
   : > "$STATE_FILE"
   chmod 600 "$STATE_FILE"
@@ -89,7 +100,7 @@ stop_services() {
   for service in "${services[@]}"; do
     label="$LABEL_PREFIX.$service"
     plist="$LAUNCH_AGENTS_DIR/$label.plist"
-    if ! launchctl print "$domain/$label" >/dev/null 2>&1; then
+    if ! details="$(launchctl print "$domain/$label" 2>/dev/null)"; then
       continue
     fi
     if [[ ! -f "$plist" ]]; then
@@ -97,6 +108,10 @@ stop_services() {
       exit 1
     fi
     printf '%s\n' "$service" >> "$STATE_FILE"
+    pid="$(awk '/^[[:space:]]*pid = / { print $3; exit }' <<<"$details")"
+    if [[ "$pid" =~ ^[1-9][0-9]*$ ]]; then
+      stopped_pids+=("$pid")
+    fi
   done
 
   while IFS= read -r service || [[ -n "$service" ]]; do
@@ -104,6 +119,30 @@ stop_services() {
     label="$LABEL_PREFIX.$service"
     launchctl bootout "$domain/$label"
   done < "$STATE_FILE"
+
+  # launchctl may acknowledge bootout before the process has actually exited.
+  # Every captured API and worker PID must be gone before a database release
+  # can safely assume that all writers are fenced.
+  if [[ ${#stopped_pids[@]} -gt 0 ]]; then
+    local deadline=$((SECONDS + stop_timeout_seconds))
+    local -a remaining_pids=()
+    while true; do
+      remaining_pids=()
+      for pid in "${stopped_pids[@]}"; do
+        if kill -0 "$pid" 2>/dev/null; then
+          remaining_pids+=("$pid")
+        fi
+      done
+      if [[ ${#remaining_pids[@]} -eq 0 ]]; then
+        break
+      fi
+      if (( SECONDS >= deadline )); then
+        echo "Timed out waiting for managed PID(s) to exit: ${remaining_pids[*]}" >&2
+        exit 1
+      fi
+      sleep "$stop_poll_interval_seconds"
+    done
+  fi
 }
 
 start_services() {

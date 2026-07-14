@@ -877,7 +877,8 @@ def test_quote_input_scale_is_revisioned_and_each_representation_is_idempotent(
     )
     assert len(before_revisions) == 1
     assert before_revisions[0]["value"] == Decimal("96.82")
-    assert before_revisions[0]["ingested_at"] is None
+    assert before_revisions[0]["ingested_at"] is not None
+    assert before_revisions[0]["ingestion_time_state"] == "observed"
 
     scale_changed = upsert_market_data(
         instrument_id="fund-us-agg",
@@ -1263,7 +1264,8 @@ def test_quote_revision_history_api_exposes_auditable_revisions(
     assert revision["revision_id"]
     assert revision["revision_number"] == 1
     assert revision["status"] == "complete"
-    assert revision["ingested_at"] is None
+    assert revision["ingested_at"] is not None
+    assert revision["ingestion_time_state"] == "observed"
 
     for value in ("97", "98"):
         upsert_market_data(

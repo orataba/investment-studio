@@ -692,7 +692,8 @@ portfolio_daily_quote_candidate = Table(
     Column("quote_value", RAW_CANONICAL_NUMERIC),
     Column("quote_status", String(16), nullable=False),
     Column("source_published_at", DateTime(timezone=True)),
-    Column("ingested_at", DateTime(timezone=True)),
+    Column("ingested_at", DateTime(timezone=True), nullable=False),
+    Column("ingestion_time_state", String(40), nullable=False),
     Column("payload_hash", String(128), nullable=False),
     Column("decision", String(16), nullable=False),
     Column("decision_reason_code", String(64), nullable=False),
@@ -743,6 +744,10 @@ portfolio_daily_quote_candidate = Table(
     CheckConstraint(
         "(quote_status = 'withdrawn' AND quote_value IS NULL) OR (quote_status <> 'withdrawn' AND quote_value > 0 AND quote_value::text NOT IN ('NaN', 'Infinity', '-Infinity'))",
         name="value",
+    ),
+    CheckConstraint(
+        "ingestion_time_state IN ('observed', 'legacy_series_upper_bound', 'legacy_instrument_upper_bound', 'legacy_migration_upper_bound')",
+        name="ingestion_time_state",
     ),
     schema=PORTFOLIO_SCHEMA,
 )
@@ -831,6 +836,7 @@ portfolio_daily_fx_leg = Table(
     Column("quote_status", String(16)),
     Column("source_published_at", DateTime(timezone=True)),
     Column("ingested_at", DateTime(timezone=True)),
+    Column("ingestion_time_state", String(40)),
     Column("payload_hash", String(128)),
     Column("consumer_policy_version", String(64), nullable=False),
     Column("freshness_policy_version", String(64), nullable=False),
@@ -869,6 +875,10 @@ portfolio_daily_fx_leg = Table(
     CheckConstraint(
         "(leg_resolution_status = 'missing' AND observation_id IS NULL AND revision_id IS NULL AND revision_number IS NULL AND observation_date IS NULL AND quoted_rate IS NULL AND effective_rate IS NULL AND rate_derivation_residual_exact IS NULL AND quote_status IS NULL AND source_published_at IS NULL AND ingested_at IS NULL AND payload_hash IS NULL) OR (leg_resolution_status = 'rejected' AND quote_series_id IS NOT NULL AND observation_id IS NOT NULL AND revision_id IS NOT NULL AND revision_number IS NOT NULL AND revision_number > 0 AND observation_date IS NOT NULL AND ((quote_status = 'withdrawn' AND quoted_rate IS NULL) OR (quote_status <> 'withdrawn' AND quoted_rate IS NOT NULL AND quoted_rate > 0 AND quoted_rate::text NOT IN ('NaN', 'Infinity', '-Infinity'))) AND quote_status IS NOT NULL AND ingested_at IS NOT NULL AND payload_hash IS NOT NULL AND effective_rate IS NULL AND rate_derivation_residual_exact IS NULL) OR (leg_resolution_status = 'resolved' AND quote_series_id IS NOT NULL AND observation_id IS NOT NULL AND revision_id IS NOT NULL AND revision_number IS NOT NULL AND revision_number > 0 AND observation_date IS NOT NULL AND quoted_rate IS NOT NULL AND effective_rate IS NOT NULL AND rate_derivation_residual_exact IS NOT NULL AND quote_status IS NOT NULL AND quote_status <> 'withdrawn' AND ingested_at IS NOT NULL AND payload_hash IS NOT NULL AND quoted_rate > 0 AND effective_rate > 0 AND quoted_rate::text NOT IN ('NaN', 'Infinity', '-Infinity') AND effective_rate::text NOT IN ('NaN', 'Infinity', '-Infinity') AND rate_derivation_residual_exact::text NOT IN ('NaN', 'Infinity', '-Infinity'))",
         name="evidence_shape",
+    ),
+    CheckConstraint(
+        "(leg_resolution_status = 'missing' AND ingestion_time_state IS NULL) OR (leg_resolution_status <> 'missing' AND ingestion_time_state IN ('observed', 'legacy_series_upper_bound', 'legacy_instrument_upper_bound', 'legacy_migration_upper_bound'))",
+        name="ingestion_time_state",
     ),
     CheckConstraint("freshness_max_age_days >= 0", name="freshness"),
     CheckConstraint(

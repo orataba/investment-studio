@@ -55,6 +55,42 @@ from portfolio_app.calculations.portfolio_daily.ledger_event_producer_contracts 
 from portfolio_ops_instrument_core.canonical_fx import effective_fx_leg_rate
 
 
+_INGESTION_TIME_STATES = frozenset(
+    {
+        "observed",
+        "legacy_series_upper_bound",
+        "legacy_instrument_upper_bound",
+        "legacy_migration_upper_bound",
+    }
+)
+
+
+def _validate_ingestion_time_state(
+    row: Mapping[str, object],
+    *,
+    record_id: str,
+) -> None:
+    state = _text(
+        _required(
+            row,
+            "ingestion_time_state",
+            table=FX_LEG_TABLE,
+            record_id=record_id,
+        ),
+        table=FX_LEG_TABLE,
+        record_id=record_id,
+        field="ingestion_time_state",
+    )
+    if state not in _INGESTION_TIME_STATES:
+        _fail(
+            "FX leg has an invalid ingestion evidence state",
+            code=LedgerEventBuildErrorCode.FX_EVIDENCE_INVALID,
+            table=FX_LEG_TABLE,
+            record_id=record_id,
+            field="ingestion_time_state",
+        )
+
+
 class _FxBook:
     def __init__(self, context: _BuildContext) -> None:
         self._context = context
@@ -544,6 +580,7 @@ class _FxBook:
             "quote_status",
             "source_published_at",
             "ingested_at",
+            "ingestion_time_state",
             "payload_hash",
         )
         if status == "missing":
@@ -616,6 +653,7 @@ class _FxBook:
                 record_id=record_id,
                 field="ingested_at",
             )
+        _validate_ingestion_time_state(row, record_id=record_id)
         quote_status = _text(
             _required(row, "quote_status", table=FX_LEG_TABLE, record_id=record_id),
             table=FX_LEG_TABLE,
@@ -826,6 +864,7 @@ class _FxBook:
                 record_id=record_id,
                 field="ingested_at",
             )
+        _validate_ingestion_time_state(row, record_id=record_id)
         _text(
             _required(row, "quote_status", table=FX_LEG_TABLE, record_id=record_id),
             table=FX_LEG_TABLE,

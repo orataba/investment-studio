@@ -54,6 +54,7 @@ class PortfolioDailyIntentDispatchOutcome:
     requested_generation: int | None = None
     run: PortfolioDailyRunHandle | None = None
     reason_code: str | None = None
+    failure_detail: str | None = None
 
 
 _DETERMINISTIC_CAPTURE_ERRORS = (
@@ -257,7 +258,7 @@ def dispatch_next_portfolio_daily_intent(
             if not _retryable_database_error(exc):
                 raise
             last_error = exc
-        except _DETERMINISTIC_CAPTURE_ERRORS:
+        except _DETERMINISTIC_CAPTURE_ERRORS as error:
             if locked_intent is not None:
                 _fail_pending_intent(
                     engine,
@@ -270,6 +271,9 @@ def dispatch_next_portfolio_daily_intent(
                     portfolio_id=locked_intent.scope.scope_id,
                     requested_generation=locked_intent.requested_generation,
                     reason_code="manifest_capture_failed",
+                    failure_detail=(
+                        f"{type(error).__name__}: {error}"
+                    )[:2_000],
                 )
             raise
         if attempt + 1 == transaction_attempts:

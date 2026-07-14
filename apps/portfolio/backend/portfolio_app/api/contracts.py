@@ -506,7 +506,7 @@ class TransactionExecutionQuoteResponse(BaseModel):
     status: CoverageState
     resolution_status: Literal["resolved", "unavailable"]
     freshness_status: Literal["current", "late", "missing"]
-    ingestion_status: Literal["current", "unknown"]
+    ingestion_status: Literal["current", "bounded", "unknown"]
     reliability_status: Literal["reliable", "qualified", "unavailable"]
     reason_codes: list[str] = Field(default_factory=list)
     stale: bool = False
@@ -521,6 +521,12 @@ class TransactionExecutionQuoteResponse(BaseModel):
     payload_hash: str | None = None
     source_published_at: datetime | None = None
     ingested_at: datetime | None = None
+    ingestion_time_state: Literal[
+        "observed",
+        "legacy_series_upper_bound",
+        "legacy_instrument_upper_bound",
+        "legacy_migration_upper_bound",
+    ] | None = None
     calculation_dependency: dict[str, object]
 
 

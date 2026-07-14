@@ -103,6 +103,107 @@ def _prepare_portfolio_database_at_0032(
     return portfolio_config, engine
 
 
+def _prepare_sqlite_exact_ledger_stamped_at_0042(
+    database_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> tuple[Config, Engine]:
+    portfolio_config, engine = _prepare_portfolio_database_at_0032(
+        database_path,
+        monkeypatch,
+    )
+    command.upgrade(portfolio_config, "20260713_0038")
+    # 0039-0042 are PostgreSQL-only production storage migrations.  Stamp past
+    # them to exercise 0043's explicitly supported SQLite shape gate.
+    command.stamp(portfolio_config, "20260714_0042")
+    return portfolio_config, engine
+
+
+def test_0043_sqlite_current_shape_is_noop(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from portfolio_app.core.settings import get_settings
+
+    portfolio_config, engine = _prepare_sqlite_exact_ledger_stamped_at_0042(
+        tmp_path / "portfolio-0043-current.db",
+        monkeypatch,
+    )
+    try:
+        with engine.connect() as connection:
+            before = connection.execute(
+                text(
+                    """
+                    SELECT type, name, sql
+                    FROM sqlite_master
+                    WHERE name = 'transaction_revision_record'
+                       OR tbl_name = 'transaction_revision_record'
+                       OR name = 'transaction_current'
+                    ORDER BY type, name
+                    """
+                )
+            ).all()
+
+        command.upgrade(portfolio_config, "20260714_0043")
+
+        with engine.connect() as connection:
+            after = connection.execute(
+                text(
+                    """
+                    SELECT type, name, sql
+                    FROM sqlite_master
+                    WHERE name = 'transaction_revision_record'
+                       OR tbl_name = 'transaction_revision_record'
+                       OR name = 'transaction_current'
+                    ORDER BY type, name
+                    """
+                )
+            ).all()
+            assert after == before
+            assert connection.scalar(
+                text("SELECT version_num FROM alembic_version")
+            ) == "20260714_0043"
+    finally:
+        engine.dispose()
+        get_settings.cache_clear()
+
+
+def test_0043_sqlite_partial_shape_fails_closed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from portfolio_app.core.settings import get_settings
+
+    portfolio_config, engine = _prepare_sqlite_exact_ledger_stamped_at_0042(
+        tmp_path / "portfolio-0043-partial.db",
+        monkeypatch,
+    )
+    try:
+        with engine.begin() as connection:
+            connection.execute(
+                text(
+                    "ALTER TABLE transaction_revision_record "
+                    "ADD COLUMN unreviewed_partial_drift TEXT"
+                )
+            )
+
+        with pytest.raises(RuntimeError, match="partial or unknown"):
+            command.upgrade(portfolio_config, "20260714_0043")
+
+        with engine.connect() as connection:
+            assert connection.scalar(
+                text("SELECT version_num FROM alembic_version")
+            ) == "20260714_0042"
+            assert "unreviewed_partial_drift" in {
+                column["name"]
+                for column in inspect(connection).get_columns(
+                    "transaction_revision_record"
+                )
+            }
+    finally:
+        engine.dispose()
+        get_settings.cache_clear()
+
+
 def _seed_minimal_taxonomy(connection) -> None:
     connection.execute(
         text(

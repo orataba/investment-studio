@@ -79,7 +79,90 @@ def _decimal_scale(value: object) -> int:
     return max(-resolved.as_tuple().exponent, 0)
 
 
+def _legacy_revision_update_statement() -> sa.Update:
+    """Build a cross-dialect update that keeps the revision PK sargable."""
+
+    revision = sa.table(
+        "quote_observation_revision",
+        sa.column("revision_id", sa.Uuid(as_uuid=False)),
+        sa.column("value_input_scale", sa.Integer()),
+        sa.column("numeric_scale_state", sa.String()),
+        sa.column("payload_schema_version", sa.Integer()),
+    )
+    return (
+        sa.update(revision)
+        .where(
+            revision.c.revision_id
+            == sa.bindparam(
+                "target_revision_id",
+                type_=sa.Uuid(as_uuid=False),
+            )
+        )
+        .values(
+            payload_schema_version=1,
+            value_input_scale=sa.bindparam(
+                "target_value_input_scale",
+                type_=sa.Integer(),
+            ),
+            numeric_scale_state=sa.bindparam(
+                "target_numeric_scale_state",
+                type_=sa.String(),
+            ),
+        )
+    )
+
+
+def _validate_legacy_numeric_lineage(connection: sa.Connection) -> None:
+    invalid = (
+        connection.execute(
+            sa.text(
+                """
+                SELECT revision_id, value, status
+                FROM quote_observation_revision
+                WHERE (status = 'withdrawn' AND value IS NOT NULL)
+                   OR (status <> 'withdrawn' AND value IS NULL)
+                LIMIT 1
+                """
+            )
+        )
+        .mappings()
+        .first()
+    )
+    if invalid is None:
+        return
+    if str(invalid["status"]) == "withdrawn":
+        raise RuntimeError(
+            "Withdrawn quote revision unexpectedly carries a numeric value."
+        )
+    raise RuntimeError(
+        "Non-withdrawn quote revision unexpectedly has no numeric value."
+    )
+
+
 def _backfill_legacy_numeric_lineage(connection: sa.Connection) -> None:
+    _validate_legacy_numeric_lineage(connection)
+    if connection.dialect.name == "postgresql":
+        # PostgreSQL stores the decimal scale on unconstrained NUMERIC values.
+        # Backfill the whole table in one scan instead of issuing one UPDATE per
+        # revision.  Besides being linear, this preserves values such as 1.2300.
+        connection.execute(
+            sa.text(
+                """
+                UPDATE quote_observation_revision
+                SET payload_schema_version = 1,
+                    value_input_scale = CASE
+                        WHEN status = 'withdrawn' THEN NULL
+                        ELSE scale(value)
+                    END,
+                    numeric_scale_state = CASE
+                        WHEN status = 'withdrawn' THEN NULL
+                        ELSE 'legacy_inferred'
+                    END
+                """
+            )
+        )
+        return
+
     rows = connection.execute(
         sa.text(
             """
@@ -92,50 +175,22 @@ def _backfill_legacy_numeric_lineage(connection: sa.Connection) -> None:
     updates: list[dict[str, object]] = []
     for row in rows:
         withdrawn = str(row["status"]) == "withdrawn"
-        if withdrawn and row["value"] is not None:
-            raise RuntimeError(
-                "Withdrawn quote revision unexpectedly carries a numeric value."
-            )
-        if not withdrawn and row["value"] is None:
-            raise RuntimeError(
-                "Non-withdrawn quote revision unexpectedly has no numeric value."
-            )
         updates.append(
             {
-                "revision_id": str(row["revision_id"]),
-                "value_input_scale": (
+                "target_revision_id": str(row["revision_id"]),
+                "target_value_input_scale": (
                     None if withdrawn else _decimal_scale(row["value"])
                 ),
-                "numeric_scale_state": (None if withdrawn else "legacy_inferred"),
+                "target_numeric_scale_state": (
+                    None if withdrawn else "legacy_inferred"
+                ),
             }
         )
         if len(updates) == 5_000:
-            connection.execute(
-                sa.text(
-                    """
-                    UPDATE quote_observation_revision
-                    SET payload_schema_version = 1,
-                        value_input_scale = :value_input_scale,
-                        numeric_scale_state = :numeric_scale_state
-                    WHERE CAST(revision_id AS TEXT) = :revision_id
-                    """
-                ),
-                updates,
-            )
+            connection.execute(_legacy_revision_update_statement(), updates)
             updates.clear()
     if updates:
-        connection.execute(
-            sa.text(
-                """
-                UPDATE quote_observation_revision
-                SET payload_schema_version = 1,
-                    value_input_scale = :value_input_scale,
-                    numeric_scale_state = :numeric_scale_state
-                WHERE CAST(revision_id AS TEXT) = :revision_id
-                """
-            ),
-            updates,
-        )
+        connection.execute(_legacy_revision_update_statement(), updates)
 
 
 def _create_revision_guards(connection: sa.Connection) -> None:

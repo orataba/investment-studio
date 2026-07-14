@@ -136,7 +136,7 @@ def _portfolio_entry(
             if snapshot is not None and snapshot.subperiod_twr_published is not None
             else None
         ),
-        "holding_count": metadata.holding_count,
+        "holding_count": published.instrument_count,
         "publication": {
             "publication_id": str(metadata.publication_id),
             "run_id": str(metadata.run_id),

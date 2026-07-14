@@ -187,6 +187,37 @@ describe('published workspace exact-decimal wire contract', () => {
     )
   })
 
+  it('evicts an invalid decoded GET and recovers from the corrected wire response', async () => {
+    const portfolio = (nav: number | string) => ({
+      portfolio_id: 'portfolio-1',
+      portfolio_name: 'Recoverable Portfolio',
+      base_currency: 'CNY',
+      operating_profile: 'standard_taxonomy',
+      sort_order: 0,
+      lifecycle_status: 'active',
+      default_planning_taxonomy_id: null,
+      calculation_status: 'published',
+      as_of_date: '2026-07-14',
+      nav,
+      economic_pnl: '0.1',
+      subperiod_twr_method50: '0.01',
+      subperiod_twr_published: '0.01',
+      holding_count: 1,
+      publication: publication(),
+    })
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify([portfolio(100.1)]), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify([portfolio('100.1')]), { status: 200 }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    const [result] = await getPortfolios()
+
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+    expect(result.nav_exact).toBe('100.1')
+    expect(result.nav).toBe(100.1)
+  })
+
   it('represents a portfolio without a publication as unavailable, never zero', async () => {
     vi.stubGlobal(
       'fetch',

@@ -7,6 +7,7 @@ LABEL_PREFIX="${LABEL_PREFIX:-com.orataba.portfolio-ops}"
 LAUNCH_AGENTS_DIR="${LAUNCH_AGENTS_DIR:-$HOME/Library/LaunchAgents}"
 LOG_DIR="${LOG_DIR:-$HOME/Library/Logs/portfolio-operations-workbench}"
 PYTHON_BIN="${PYTHON_BIN:-$PROJECT_ROOT/.venv/bin/python}"
+PLISTBUDDY_BIN="${PLISTBUDDY_BIN:-/usr/libexec/PlistBuddy}"
 domain="gui/$UID"
 source "$PROJECT_ROOT/infra/service_inventory.sh"
 
@@ -26,13 +27,36 @@ refresh_label="$LABEL_PREFIX.$refresh_service"
 refresh_plist="$LAUNCH_AGENTS_DIR/$refresh_label.plist"
 refresh_hour=21
 refresh_minute=0
-if [[ -f "$refresh_plist" && -x /usr/libexec/PlistBuddy ]]; then
-  refresh_hour="$(/usr/libexec/PlistBuddy -c 'Print :StartCalendarInterval:Hour' "$refresh_plist" 2>/dev/null || printf '21')"
-  refresh_minute="$(/usr/libexec/PlistBuddy -c 'Print :StartCalendarInterval:Minute' "$refresh_plist" 2>/dev/null || printf '0')"
+refresh_state_root="${PORTFOLIO_OPS_LOCAL_STATE_ROOT:-$PROJECT_ROOT}"
+if [[ -f "$refresh_plist" && -x "$PLISTBUDDY_BIN" ]]; then
+  refresh_hour="$("$PLISTBUDDY_BIN" -c 'Print :StartCalendarInterval:Hour' "$refresh_plist" 2>/dev/null || printf '21')"
+  refresh_minute="$("$PLISTBUDDY_BIN" -c 'Print :StartCalendarInterval:Minute' "$refresh_plist" 2>/dev/null || printf '0')"
+  installed_state_root="$(
+    "$PLISTBUDDY_BIN" \
+      -c 'Print :EnvironmentVariables:PORTFOLIO_OPS_LOCAL_STATE_ROOT' \
+      "$refresh_plist" 2>/dev/null || true
+  )"
+  if [[ -n "$installed_state_root" ]]; then
+    refresh_state_root="$installed_state_root"
+  else
+    installed_lock_file="$(
+      "$PLISTBUDDY_BIN" -c 'Print :ProgramArguments:3' \
+        "$refresh_plist" 2>/dev/null || true
+    )"
+    installed_var_dir="$(dirname "$installed_lock_file")"
+    if [[ \
+      "${installed_lock_file##*/}" == "market-data-refresh.lock" \
+      && "${installed_var_dir##*/}" == "var" \
+    ]]; then
+      refresh_state_root="$(dirname "$installed_var_dir")"
+    fi
+  fi
 fi
 printf -v refresh_schedule '%02d:%02d local' "$refresh_hour" "$refresh_minute"
+refresh_state=not-installed
+last_exit=not-installed
 if details="$(launchctl print "$domain/$refresh_label" 2>/dev/null)"; then
-  state="$(sed -n 's/^[[:space:]]*state = //p' <<<"$details" | head -n 1)"
+  refresh_state="$(sed -n 's/^[[:space:]]*state = //p' <<<"$details" | head -n 1)"
   pid="$(awk '/^[[:space:]]*pid = / { print $3; exit }' <<<"$details")"
   runs="$(awk '/^[[:space:]]*runs = / { print $3; exit }' <<<"$details")"
   last_exit="$(sed -n 's/^[[:space:]]*last exit code = //p' <<<"$details" | head -n 1)"
@@ -40,14 +64,14 @@ if details="$(launchctl print "$domain/$refresh_label" 2>/dev/null)"; then
     last_exit=never
   fi
   printf '%-20s state=%-11s pid=%-8s runs=%-5s last_exit=%-4s schedule=%s\n' \
-    "$refresh_service" "${state:-idle}" "${pid:--}" "${runs:-0}" "${last_exit:--}" "$refresh_schedule"
+    "$refresh_service" "${refresh_state:-idle}" "${pid:--}" "${runs:-0}" "${last_exit:--}" "$refresh_schedule"
 else
   printf '%-20s not installed (schedule=%s)\n' "$refresh_service" "$refresh_schedule"
 fi
 
-refresh_summary="$PROJECT_ROOT/var/market-data-refresh-summary.json"
+refresh_summary="$refresh_state_root/var/market-data-refresh-summary.json"
 if [[ -f "$refresh_summary" && -x "$PYTHON_BIN" ]]; then
-  "$PYTHON_BIN" - "$refresh_summary" <<'PY'
+  "$PYTHON_BIN" - "$refresh_summary" "${refresh_state:-unknown}" "${last_exit:--}" <<'PY'
 from __future__ import annotations
 
 import json
@@ -60,13 +84,60 @@ try:
 except (OSError, ValueError) as error:
     print(f"  latest summary is unreadable: {error}")
 else:
+    refresh_state = sys.argv[2]
+    launchd_exit = sys.argv[3]
+    recorded_status = str(summary.get("status") or "unknown")
+    ingestion_status = summary.get("ingestion_status", recorded_status)
+    if isinstance(ingestion_status, dict):
+        ingestion_status = ingestion_status.get("status")
+    ingestion_status = str(ingestion_status or "unknown")
+    downstream = summary.get("downstream_convergence")
+    if isinstance(downstream, dict):
+        downstream_status = str(downstream.get("status") or "unknown")
+        downstream_phase = str(downstream.get("phase") or "-")
+        reason_code = str(downstream.get("reason_code") or "-")
+    else:
+        downstream_status = "not_recorded"
+        downstream_phase = "-"
+        reason_code = "-"
+
+    if refresh_state == "running":
+        overall_status = "running"
+    elif launchd_exit not in {"0"}:
+        overall_status = (
+            "failed"
+            if launchd_exit.lstrip("-").isdigit() and launchd_exit != "0"
+            else "unverified"
+        )
+    elif (
+        ingestion_status == "succeeded"
+        and downstream_status == "converged"
+        and downstream_phase == "final"
+    ):
+        # The runner executes the strict audit after final convergence.  A zero
+        # LaunchAgent exit code therefore proves ingestion, convergence, rebuild,
+        # and audit all completed successfully.
+        overall_status = "succeeded"
+    elif (
+        recorded_status == "failed"
+        or ingestion_status == "failed"
+        or downstream_status in {"failed", "timed_out"}
+    ):
+        overall_status = "failed"
+    else:
+        overall_status = "incomplete"
+
     print(
         "  latest result: "
-        f"status={summary.get('status', 'unknown')} "
+        f"overall={overall_status} "
+        f"ingestion={ingestion_status} "
+        f"downstream={downstream_status} "
+        f"phase={downstream_phase} "
+        f"reason={reason_code} "
+        f"launchd_exit={launchd_exit} "
         f"finished_at={summary.get('finished_at', '-')} "
         f"updated={summary.get('updated_instrument_count', '-')} "
-        f"item_failures={summary.get('failed_item_count', '-')} "
-        f"downstream_failures={summary.get('downstream_failure_count', '-')}"
+        f"item_failures={summary.get('failed_item_count', '-')}"
     )
 PY
 elif [[ -f "$refresh_summary" ]]; then

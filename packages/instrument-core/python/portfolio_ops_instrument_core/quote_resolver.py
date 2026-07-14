@@ -33,6 +33,7 @@ from portfolio_ops_instrument_core.quote_revisions import (
     USABLE_CURRENT_STATUS,
     VALID_METRIC_FAMILIES,
     VALID_QUOTE_BASES,
+    canonical_timestamp,
 )
 
 
@@ -41,6 +42,13 @@ CANONICAL_QUOTE_FRESHNESS_POLICY_VERSION = "canonical_quote_freshness.v1"
 QUOTE_SELECTION_POLICY_VERSION = "quote_selection_policy.v1"
 QUOTE_POLICY_ROLES = ("trading", "valuation", "total_return", "chart", "reference")
 MAX_CALENDAR_CARRY_FORWARD_DAYS = 366
+LEGACY_INGESTION_TIME_STATES = frozenset(
+    {
+        "legacy_series_upper_bound",
+        "legacy_instrument_upper_bound",
+        "legacy_migration_upper_bound",
+    }
+)
 
 SessionFactory = Callable[[], Session]
 
@@ -78,6 +86,32 @@ class QuoteRevisionCandidate:
     source_ref: str | None
     source_published_at: datetime | None
     ingested_at: datetime | None
+    ingestion_time_state: str | None = None
+
+
+def _ingestion_status(candidate: QuoteRevisionCandidate | None) -> str:
+    if candidate is None or candidate.ingested_at is None:
+        return "unknown"
+    if candidate.ingestion_time_state == "observed":
+        return "current"
+    if candidate.ingestion_time_state in LEGACY_INGESTION_TIME_STATES:
+        return "bounded"
+    return "unknown"
+
+
+def _append_ingestion_reason(
+    reason_codes: list[str],
+    candidate: QuoteRevisionCandidate,
+) -> None:
+    if candidate.ingested_at is None:
+        if "unknown_ingestion_time" not in reason_codes:
+            reason_codes.append("unknown_ingestion_time")
+    elif candidate.ingestion_time_state in LEGACY_INGESTION_TIME_STATES:
+        if "legacy_ingestion_upper_bound" not in reason_codes:
+            reason_codes.append("legacy_ingestion_upper_bound")
+    elif candidate.ingestion_time_state != "observed":
+        if "unknown_ingestion_time" not in reason_codes:
+            reason_codes.append("unknown_ingestion_time")
 
 
 def _stable_hash(payload: Mapping[str, object]) -> str:
@@ -296,6 +330,12 @@ def _dependency(
         "observation_id": candidate.observation_id if candidate else None,
         "revision_id": candidate.revision_id if candidate else None,
         "payload_hash": candidate.payload_hash if candidate else None,
+        "ingestion_time_state": (
+            candidate.ingestion_time_state if candidate else None
+        ),
+        "ingested_at": (
+            canonical_timestamp(candidate.ingested_at) if candidate else None
+        ),
         "reason_codes": list(reason_codes),
     }
     return CanonicalQuoteCalculationDependency(
@@ -401,15 +441,15 @@ def resolve_explicit_quote_candidate(
             reason_codes = [status_reason]
             if age_days > 0:
                 reason_codes.insert(0, "late_observation")
-            if candidate.ingested_at is None:
-                reason_codes.append("unknown_ingestion_time")
+            _append_ingestion_reason(reason_codes, candidate)
         elif age_days == 0:
             resolution_status = "resolved"
             freshness_status = "current"
             reliability_status = "reliable"
-            reason_codes = (
-                [] if candidate.ingested_at is not None else ["unknown_ingestion_time"]
-            )
+            reason_codes = []
+            _append_ingestion_reason(reason_codes, candidate)
+            if candidate.ingestion_time_state != "observed":
+                reliability_status = "qualified"
             value = candidate.value
         elif (
             resolved_freshness.mode == "calendar_day_carry_forward"
@@ -420,16 +460,14 @@ def resolve_explicit_quote_candidate(
             reliability_status = "qualified"
             carry_forward = True
             reason_codes = ["carried_forward_observation"]
-            if candidate.ingested_at is None:
-                reason_codes.append("unknown_ingestion_time")
+            _append_ingestion_reason(reason_codes, candidate)
             value = candidate.value
         else:
             resolution_status = "unavailable"
             freshness_status = "late"
             reliability_status = "unavailable"
             reason_codes = ["late_observation", "freshness_limit_exceeded"]
-            if candidate.ingested_at is None:
-                reason_codes.append("unknown_ingestion_time")
+            _append_ingestion_reason(reason_codes, candidate)
 
     dependency = _dependency(
         resolution_kind=resolution_kind,
@@ -475,14 +513,13 @@ def resolve_explicit_quote_candidate(
         source_ref=candidate.source_ref if candidate else None,
         source_published_at=candidate.source_published_at if candidate else None,
         ingested_at=candidate.ingested_at if candidate else None,
+        ingestion_time_state=(
+            candidate.ingestion_time_state if candidate else None
+        ),
         carry_forward=carry_forward,
         age_days=age_days,
         freshness_status=freshness_status,
-        ingestion_status=(
-            "current"
-            if candidate is not None and candidate.ingested_at is not None
-            else "unknown"
-        ),
+        ingestion_status=_ingestion_status(candidate),
         reliability_status=reliability_status,
         reason_codes=reason_codes,
         calculation_dependency=dependency,
@@ -534,6 +571,7 @@ def _latest_current_candidate(
                 QuoteObservationRevision.status,
                 QuoteObservationRevision.source_published_at,
                 QuoteObservationRevision.ingested_at,
+                QuoteObservationRevision.ingestion_time_state,
                 QuoteObservationRevision.payload_hash,
             )
             .join(
@@ -573,6 +611,7 @@ def _latest_current_candidate(
         source_ref=row["source_ref"],
         source_published_at=row["source_published_at"],
         ingested_at=row["ingested_at"],
+        ingestion_time_state=row["ingestion_time_state"],
     )
 
 
@@ -969,6 +1008,7 @@ def _current_candidates_for_window(
             QuoteObservationRevision.status,
             QuoteObservationRevision.source_published_at,
             QuoteObservationRevision.ingested_at,
+            QuoteObservationRevision.ingestion_time_state,
             QuoteObservationRevision.payload_hash,
         )
         .join(
@@ -1025,6 +1065,7 @@ def _current_candidates_for_window(
             source_ref=row["source_ref"],
             source_published_at=row["source_published_at"],
             ingested_at=row["ingested_at"],
+            ingestion_time_state=row["ingestion_time_state"],
         )
         for row in rows
     ]
@@ -1050,6 +1091,7 @@ def _series_point(candidate: QuoteRevisionCandidate) -> CanonicalQuoteSeriesPoin
         source_ref=candidate.source_ref,
         source_published_at=candidate.source_published_at,
         ingested_at=candidate.ingested_at,
+        ingestion_time_state=candidate.ingestion_time_state,
     )
 
 
@@ -1071,6 +1113,7 @@ def _series_observation(
         source_ref=candidate.source_ref,
         source_published_at=candidate.source_published_at,
         ingested_at=candidate.ingested_at,
+        ingestion_time_state=candidate.ingestion_time_state,
     )
 
 
@@ -1092,14 +1135,25 @@ def _series_dependency(
 ) -> CanonicalQuoteSeriesCalculationDependency:
     revision_ids: list[str] = []
     payload_hashes: list[str] = []
+    ingestion_time_states: list[str | None] = []
+    ingested_ats: list[str | None] = []
     for candidate in candidates:
         if candidate.revision_id in revision_ids:
             continue
         revision_ids.append(candidate.revision_id)
         payload_hashes.append(candidate.payload_hash)
+        ingestion_time_states.append(candidate.ingestion_time_state)
+        ingested_ats.append(canonical_timestamp(candidate.ingested_at))
     excluded_revision_ids = [candidate.revision_id for candidate in excluded_candidates]
     excluded_payload_hashes = [
         candidate.payload_hash for candidate in excluded_candidates
+    ]
+    excluded_ingestion_time_states = [
+        candidate.ingestion_time_state for candidate in excluded_candidates
+    ]
+    excluded_ingested_ats = [
+        canonical_timestamp(candidate.ingested_at)
+        for candidate in excluded_candidates
     ]
     payload = {
         "resolver_strategy_version": resolver_strategy_version,
@@ -1115,8 +1169,12 @@ def _series_dependency(
         "quote_series_id": series.quote_series_id if series else None,
         "revision_ids": revision_ids,
         "payload_hashes": payload_hashes,
+        "ingestion_time_states": ingestion_time_states,
+        "ingested_ats": ingested_ats,
         "excluded_revision_ids": excluded_revision_ids,
         "excluded_payload_hashes": excluded_payload_hashes,
+        "excluded_ingestion_time_states": excluded_ingestion_time_states,
+        "excluded_ingested_ats": excluded_ingested_ats,
         "reason_codes": list(reason_codes),
     }
     return CanonicalQuoteSeriesCalculationDependency(
@@ -1432,9 +1490,19 @@ def resolve_role_quote_series(
                 else "reliable"
             )
 
-    if any(candidate.ingested_at is None for candidate in dependency_candidates):
+    dependency_ingestion_statuses = [
+        _ingestion_status(candidate) for candidate in dependency_candidates
+    ]
+    if "unknown" in dependency_ingestion_statuses:
         ingestion_status = "unknown"
         append_reason("unknown_ingestion_time")
+        if reliability_status == "reliable":
+            reliability_status = "qualified"
+    elif "bounded" in dependency_ingestion_statuses:
+        ingestion_status = "bounded"
+        append_reason("legacy_ingestion_upper_bound")
+        if reliability_status == "reliable":
+            reliability_status = "qualified"
     else:
         ingestion_status = "current" if dependency_candidates else "unknown"
     dependency = _series_dependency(
@@ -1550,6 +1618,7 @@ def resolve_quote_series_observation_at(
             source_ref=observation.source_ref,
             source_published_at=observation.source_published_at,
             ingested_at=observation.ingested_at,
+            ingestion_time_state=observation.ingestion_time_state,
         )
     candidate = max(
         candidates_by_revision.values(),

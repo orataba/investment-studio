@@ -51,6 +51,22 @@ def test_portfolio_daily_audit_uses_bounded_method50_return_schema() -> None:
     assert "snapshot.subperiod_twr_method50 < -1" in source
     assert "snapshot.wealth_chain_rounding_adjustment_exact" in source
     assert "round_significant_half_even" in source
+    assert (
+        "snapshot.drawdown_method50\n"
+        "                                        <> calculation_registry."
+        "divide_significant_half_even(" in source
+    )
+    assert ") / snapshot.peak_wealth_index_method50" not in source
+
+
+def test_live_audit_requires_explicit_quote_ingestion_evidence() -> None:
+    source = AUDIT_PATH.read_text(encoding="utf-8")
+
+    assert "OR ingested_at IS NULL" in source
+    assert "legacy_series_upper_bound" in source
+    assert "legacy_instrument_upper_bound" in source
+    assert "legacy_migration_upper_bound" in source
+    assert "revision_number > 1 AND ingested_at IS NULL" not in source
 
 
 def _transfer_leg(
@@ -274,7 +290,7 @@ class _SchemaGateCursor:
     def __init__(
         self,
         *,
-        portfolio_head: str = "20260714_0042",
+        portfolio_head: str = "20260714_0045",
         object_violations: int = 0,
         authority_violations: int = 0,
     ) -> None:
@@ -303,9 +319,9 @@ class _SchemaGateCursor:
         if "FROM instrument_registry.alembic_version" in query:
             self.rows = [
                 ("calculation_registry", 1, "20260714_0001"),
-                ("instrument_registry", 1, "20260714_0013"),
+                ("instrument_registry", 1, "20260714_0014"),
                 ("portfolio", 1, self.portfolio_head),
-                ("watchlist", 1, "20260714_0034"),
+                ("watchlist", 1, "20260714_0035"),
             ]
             return
         if "WITH expected(relation_name, relation_kind)" in query:

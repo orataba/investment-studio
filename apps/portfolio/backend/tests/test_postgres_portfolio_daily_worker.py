@@ -28,7 +28,7 @@ from tests.test_postgres_portfolio_daily_schema import (
 pytestmark = pytest.mark.postgresql_integration
 
 
-def test_worker_consumes_sealed_manifest_and_atomically_publishes_output(
+def test_cny_only_manifest_captures_required_fx_grid_and_worker_publishes(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     with _postgres_database(monkeypatch, portfolio_target="head") as (engine, _):
@@ -43,7 +43,7 @@ def test_worker_consumes_sealed_manifest_and_atomically_publishes_output(
                             valuation_timezone, valuation_cutoff_policy, sort_order,
                             operating_profile
                         ) VALUES (
-                            'worker-e2e', 'Worker E2E', 'USD', 'UTC', 'close', 0,
+                            'worker-e2e', 'Worker E2E', 'CNY', 'UTC', 'close', 0,
                             'standard_taxonomy'
                         )
                     """
@@ -57,7 +57,7 @@ def test_worker_consumes_sealed_manifest_and_atomically_publishes_output(
                         currency, status
                     ) VALUES (
                         'worker-e2e-cash', 'worker-e2e', 'Cash',
-                        'deposit_account', 'USD', 'active'
+                        'deposit_account', 'CNY', 'active'
                     )
                     """
                 )
@@ -70,6 +70,23 @@ def test_worker_consumes_sealed_manifest_and_atomically_publishes_output(
             requested_by="worker-e2e-test",
             settings=settings,
         )
+        with engine.connect() as connection:
+            fx_grid = connection.execute(
+                text(
+                    """
+                    SELECT from_currency, to_currency, path_kind,
+                           resolution_status, count(*) AS path_count
+                    FROM portfolio.portfolio_daily_fx_path
+                    WHERE run_id=:run_id
+                    GROUP BY from_currency, to_currency, path_kind,
+                             resolution_status
+                    ORDER BY from_currency, to_currency
+                    """
+                ),
+                {"run_id": queued.run_id},
+            ).all()
+        assert fx_grid == [("CNY", "CNY", "identity", "resolved", 1)]
+
         registration = WorkerRegistration(
             worker_id="portfolio-daily-worker-e2e",
             instance_id=uuid4(),

@@ -92,11 +92,12 @@ def _insert_revision(connection, observation_id: str, revision_id: str) -> None:
             INSERT INTO instrument_registry.quote_observation_revision (
                 revision_id, observation_id, revision_number, value,
                 value_input_scale, numeric_scale_state, payload_schema_version,
-                status, payload_hash, is_current
+                status, ingested_at, ingestion_time_state, payload_hash,
+                is_current
             ) VALUES (
                 :revision_id, :observation_id, 1, 100.25,
                 2, 'declared', 2,
-                'complete', :payload_hash, true
+                'complete', clock_timestamp(), 'observed', :payload_hash, true
             )
             """
         ),

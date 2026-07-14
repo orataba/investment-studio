@@ -33,6 +33,9 @@ function holdingsPayload() {
     rows: [],
     totals: {
       market_value: '0',
+      cash_balance: '12.5',
+      pending_settlement: '0',
+      nav: '12.5',
       day_change_pct: null,
       day_change_value: null,
       cost_basis: '0',
@@ -50,11 +53,28 @@ describe('holdings workspace request contract', () => {
     )
     vi.stubGlobal('fetch', fetchMock)
 
-    await getHoldingsWorkspace('portfolio-lightweight')
+    const response = await getHoldingsWorkspace('portfolio-lightweight')
 
     expect(fetchMock).toHaveBeenCalledWith(
       '/api/workspace/holdings?portfolio_id=portfolio-lightweight',
       expect.any(Object),
+    )
+    expect(response.totals.nav).toBe(12.5)
+    expect(response.totals.exact_values?.nav).toBe('12.5')
+  })
+
+  it('rejects a JSON number for current published NAV', async () => {
+    const payload = holdingsPayload()
+    payload.totals.nav = 12.5 as unknown as string
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(() =>
+        Promise.resolve(new Response(JSON.stringify(payload), { status: 200 })),
+      ),
+    )
+
+    await expect(getHoldingsWorkspace('portfolio-invalid-nav')).rejects.toThrow(
+      /holdings\.totals\.nav is not a canonical exact decimal string/,
     )
   })
 

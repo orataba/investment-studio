@@ -160,6 +160,7 @@ portfolio_ops_portfolio_api_base_for_service_state() {
 portfolio_ops_verify_portfolio_read_contract() {
   local python_bin="$1"
   local base_url="$2"
+  local expected_release_id="${3:-}"
 
   if [[ -z "$base_url" ]]; then
     echo "No active Portfolio API requires a read-contract smoke test."
@@ -170,10 +171,16 @@ portfolio_ops_verify_portfolio_read_contract() {
     return 1
   fi
 
-  "$python_bin" - "$base_url" <<'PY'
+  local python_args=(- "$base_url")
+  if [[ -n "$expected_release_id" ]]; then
+    python_args+=("$expected_release_id")
+  fi
+
+  "$python_bin" "${python_args[@]}" <<'PY'
 from __future__ import annotations
 
 import json
+import re
 import sys
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote
@@ -181,6 +188,7 @@ from urllib.request import ProxyHandler, build_opener
 
 
 base_url = sys.argv[1].rstrip("/")
+expected_release_id = sys.argv[2] if len(sys.argv) > 2 else ""
 opener = build_opener(ProxyHandler({}))
 
 
@@ -197,18 +205,145 @@ def get_json(path: str) -> object:
         raise SystemExit(f"Portfolio read smoke failed for {url}: {exc}") from exc
 
 
+health = get_json("/api/health")
+if not isinstance(health, dict) or health.get("api_contract") != (
+    "portfolio-api.exact-decimal.v1"
+):
+    raise SystemExit("Portfolio API contract identifier is missing or incompatible")
+if expected_release_id and health.get("release_id") != expected_release_id:
+    raise SystemExit(
+        "Portfolio API release identity does not match this install: "
+        f"expected={expected_release_id!r}, found={health.get('release_id')!r}"
+    )
+
 portfolios = get_json("/api/portfolios")
 if not isinstance(portfolios, list):
     raise SystemExit("Portfolio list response is not a JSON array")
 
+canonical_decimal = re.compile(
+    r"^(0|-?([1-9][0-9]*(\.[0-9]*[1-9])?|0\.[0-9]*[1-9]))$"
+)
+required_portfolio_fields = {
+    "portfolio_id",
+    "operating_profile",
+    "lifecycle_status",
+    "calculation_status",
+    "nav",
+    "economic_pnl",
+    "subperiod_twr_method50",
+    "subperiod_twr_published",
+    "holding_count",
+}
+exact_decimal_fields = (
+    "nav",
+    "economic_pnl",
+    "subperiod_twr_method50",
+    "subperiod_twr_published",
+)
+legacy_portfolio_fields = {
+    "day_change_value",
+    "day_change_pct",
+    "securities_count",
+}
+
 transaction_count = 0
 history_count = 0
+workspace_count = 0
+holdings_count = 0
 for portfolio in portfolios:
     if not isinstance(portfolio, dict) or not isinstance(
         portfolio.get("portfolio_id"), str
     ):
         raise SystemExit("Portfolio list contains an invalid portfolio identity")
+    missing_fields = required_portfolio_fields.difference(portfolio)
+    if missing_fields:
+        raise SystemExit(
+            "Portfolio list is missing current contract fields: "
+            + ", ".join(sorted(missing_fields))
+        )
+    unexpected_legacy_fields = legacy_portfolio_fields.intersection(portfolio)
+    if unexpected_legacy_fields:
+        raise SystemExit(
+            "Portfolio list still exposes legacy fields: "
+            + ", ".join(sorted(unexpected_legacy_fields))
+        )
+    for field_name in exact_decimal_fields:
+        value = portfolio[field_name]
+        if value is not None and (
+            not isinstance(value, str) or canonical_decimal.fullmatch(value) is None
+        ):
+            raise SystemExit(
+                f"Portfolio {field_name} is not a canonical exact decimal string"
+            )
+    holding_count = portfolio["holding_count"]
+    if (
+        isinstance(holding_count, bool)
+        or not isinstance(holding_count, int)
+        or holding_count < 0
+    ):
+        raise SystemExit("Portfolio holding_count is not a non-negative integer")
     portfolio_id = quote(portfolio["portfolio_id"], safe="")
+    if portfolio.get("publication") is not None:
+        workspace = get_json(
+            f"/api/workspace/summary?portfolio_id={portfolio_id}"
+        )
+        if not isinstance(workspace, dict) or workspace.get("portfolio_id") != (
+            portfolio["portfolio_id"]
+        ):
+            raise SystemExit(
+                "Portfolio workspace summary has an invalid identity"
+            )
+        for field_name in exact_decimal_fields:
+            if field_name not in workspace:
+                raise SystemExit(
+                    f"Portfolio workspace summary is missing {field_name}"
+                )
+            value = workspace[field_name]
+            if value is not None and (
+                not isinstance(value, str)
+                or canonical_decimal.fullmatch(value) is None
+            ):
+                raise SystemExit(
+                    "Portfolio workspace "
+                    f"{field_name} is not a canonical exact decimal string"
+                )
+        workspace_count += 1
+        holdings = get_json(
+            f"/api/workspace/holdings?portfolio_id={portfolio_id}"
+        )
+        if not isinstance(holdings, dict) or holdings.get("portfolio_id") != (
+            portfolio["portfolio_id"]
+        ):
+            raise SystemExit("Portfolio holdings workspace has an invalid identity")
+        totals = holdings.get("totals")
+        if not isinstance(totals, dict):
+            raise SystemExit("Portfolio holdings workspace totals are missing")
+        for field_name in (
+            "market_value",
+            "cash_balance",
+            "pending_settlement",
+            "nav",
+            "day_change_pct",
+            "day_change_value",
+            "cost_basis",
+            "unrealized_pnl_base",
+            "unrealized_return",
+            "allocation",
+        ):
+            if field_name not in totals:
+                raise SystemExit(
+                    f"Portfolio holdings totals are missing {field_name}"
+                )
+            value = totals[field_name]
+            if value is not None and (
+                not isinstance(value, str)
+                or canonical_decimal.fullmatch(value) is None
+            ):
+                raise SystemExit(
+                    "Portfolio holdings totals "
+                    f"{field_name} is not a canonical exact decimal string"
+                )
+        holdings_count += 1
     transaction_response = get_json(
         f"/api/portfolios/{portfolio_id}/transactions"
     )
@@ -247,8 +382,9 @@ for portfolio in portfolios:
 
 print(
     "Portfolio read-contract smoke passed: "
-    f"{len(portfolios)} portfolios, {transaction_count} current transactions, "
-    f"{history_count} revisions."
+    f"{len(portfolios)} portfolios, {workspace_count} workspaces, "
+    f"{holdings_count} holdings projections, "
+    f"{transaction_count} current transactions, {history_count} revisions."
 )
 PY
 }

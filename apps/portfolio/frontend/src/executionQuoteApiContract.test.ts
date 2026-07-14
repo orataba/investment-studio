@@ -46,6 +46,7 @@ describe('execution quote request contract', () => {
       payload_hash: 'payload-hash',
       source_published_at: null,
       ingested_at: '2026-03-27T10:00:00Z',
+      ingestion_time_state: 'observed',
       calculation_dependency: { fingerprint: 'dependency-hash' },
     }
     const fetchMock = vi.fn(() =>
@@ -103,6 +104,7 @@ describe('execution quote request contract', () => {
       payload_hash: 'hash',
       source_published_at: null,
       ingested_at: null,
+      ingestion_time_state: null,
       calculation_dependency: {},
     }
     vi.stubGlobal(

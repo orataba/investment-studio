@@ -492,6 +492,7 @@ def _resolved_cny_fx_evidence(
             "quote_status": "active",
             "source_published_at": datetime(2026, 7, 14, 10, tzinfo=UTC),
             "ingested_at": datetime(2026, 7, 14, 11, tzinfo=UTC),
+            "ingestion_time_state": "observed",
             "payload_hash": "sha256:" + "1" * 64,
             "consumer_policy_version": FX_CONSUMER_POLICY_VERSION,
             "freshness_policy_version": QUOTE_FRESHNESS_POLICY_VERSION,
@@ -835,9 +836,10 @@ def test_known_direct_fx_path_can_be_unavailable_with_sealed_missing_leg() -> No
             "effective_rate": None,
             "rate_derivation_residual_exact": None,
             "quote_status": None,
-            "source_published_at": None,
-            "ingested_at": None,
-            "payload_hash": None,
+                "source_published_at": None,
+                "ingested_at": None,
+                "ingestion_time_state": None,
+                "payload_hash": None,
         }
     )
     rows["portfolio_daily_fx_path"] = [path]
