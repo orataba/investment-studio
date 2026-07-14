@@ -17,6 +17,7 @@ class Settings(BaseSettings):
     watchlist_url: str = "http://127.0.0.1:5173"
     portfolio_url: str = "http://127.0.0.1:5174"
     watchlist_api_url: str = "http://127.0.0.1:8000"
+    portfolio_api_url: str = "http://127.0.0.1:8001"
     database_url: str = "postgresql+psycopg://portfolio_ops:portfolio_ops@127.0.0.1:5432/portfolio_ops"
     database_schema: str | None = "instrument_registry"
     sql_echo: bool = False
@@ -31,8 +32,6 @@ class Settings(BaseSettings):
     email_imap_max_messages: int = 500
     email_imap_mark_seen: bool = False
     market_data_batch_item_timeout_seconds: int = 300
-    market_data_outbox_worker_readiness_max_age_seconds: int = 90
-    market_data_outbox_event_readiness_max_age_seconds: int = 900
     tushare_token: str | None = None
     tushare_api_url: str = "https://fastapic.stockai888.top"
     tushare_timeout_seconds: int = 30
@@ -82,45 +81,11 @@ class Settings(BaseSettings):
             raise ValueError("tushare_batch_timeout_seconds must be between 60 and 21600.")
         return timeout
 
-    @field_validator("market_data_outbox_worker_readiness_max_age_seconds")
-    @classmethod
-    def _validate_outbox_worker_readiness_max_age(cls, value: int) -> int:
-        resolved = int(value)
-        if not 5 <= resolved <= 3_600:
-            raise ValueError(
-                "market-data outbox worker readiness max age must be between "
-                "5 and 3600 seconds"
-            )
-        return resolved
-
-    @field_validator("market_data_outbox_event_readiness_max_age_seconds")
-    @classmethod
-    def _validate_outbox_event_readiness_max_age(cls, value: int) -> int:
-        resolved = int(value)
-        if not 60 <= resolved <= 86_400:
-            raise ValueError(
-                "market-data outbox event readiness max age must be between "
-                "60 and 86400 seconds"
-            )
-        return resolved
-
     @model_validator(mode="after")
     def _validate_cors_policy(self) -> "Settings":
         environment = self.environment.strip().lower()
         if environment not in {"development", "dev", "local", "test"} and "*" in self.cors_origins:
             raise ValueError("cors_origins must not contain '*' outside development/test.")
-        return self
-
-    @model_validator(mode="after")
-    def _validate_outbox_readiness_timing(self) -> "Settings":
-        if (
-            self.market_data_outbox_event_readiness_max_age_seconds
-            < self.market_data_outbox_worker_readiness_max_age_seconds
-        ):
-            raise ValueError(
-                "market-data outbox event readiness max age must be greater "
-                "than or equal to worker readiness max age"
-            )
         return self
 
     @property

@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import importlib
 import sys
-from datetime import date
 from pathlib import Path
 
 from alembic import command
@@ -154,6 +153,7 @@ def client(tmp_path, monkeypatch: pytest.MonkeyPatch) -> TestClient:
     monkeypatch.setenv("PORTFOLIO_OPS_WATCHLIST_DATABASE_URL", f"sqlite+pysqlite:///{database_path}")
     monkeypatch.setenv("PORTFOLIO_OPS_WATCHLIST_DATABASE_SCHEMA", "")
     monkeypatch.setenv("PORTFOLIO_OPS_WATCHLIST_EMAIL_SYNC_ENABLED", "false")
+    monkeypatch.setenv("PORTFOLIO_OPS_WATCHLIST_RECALC_WORKER_ENABLED", "false")
     monkeypatch.setenv("PORTFOLIO_OPS_WATCHLIST_DOCUMENT_STORAGE_ROOT", str(tmp_path / "documents"))
 
     from watchlist_app.core import settings as settings_module
@@ -171,21 +171,6 @@ def client(tmp_path, monkeypatch: pytest.MonkeyPatch) -> TestClient:
             "registry_name": shared_store.DEFAULT_REGISTRY_NAME,
             "instruments": list(TEST_SHARED_INSTRUMENTS.values()),
         },
-    )
-
-    class FrozenValuationDate(date):
-        @classmethod
-        def today(cls) -> date:
-            return cls(2026, 4, 15)
-
-    from watchlist_app.api.routes import funds as funds_routes
-    from watchlist_app.services import canonical_recalc
-
-    monkeypatch.setattr(funds_routes, "date", FrozenValuationDate)
-    monkeypatch.setattr(
-        canonical_recalc,
-        "_current_valuation_date",
-        lambda: date(2026, 4, 15),
     )
 
     import watchlist_app.main as main_module

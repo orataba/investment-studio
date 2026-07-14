@@ -1,77 +1,51 @@
 const currencyFormatters = new Map<string, Intl.NumberFormat>()
 
-export type NumericValue = number | string
-
-export function toFiniteNumber(
-  value: NumericValue | null | undefined,
-): number | null {
-  if (value == null || value === '') {
-    return null
-  }
-  const resolved = typeof value === 'number' ? value : Number(value)
-  return Number.isFinite(resolved) ? resolved : null
-}
-
 function getCurrencyFormatter(currency: string, digits = 2) {
-  const normalizedCurrency = currency.trim().toUpperCase()
-  if (!/^[A-Z]{3}$/.test(normalizedCurrency)) {
-    return null
-  }
-  const key = `${normalizedCurrency}:${digits}`
+  const key = `${currency}:${digits}`
   if (!currencyFormatters.has(key)) {
-    try {
-      currencyFormatters.set(
-        key,
-        new Intl.NumberFormat('en-US', {
-          style: 'currency',
-          currency: normalizedCurrency,
-          minimumFractionDigits: digits,
-          maximumFractionDigits: digits,
-        }),
-      )
-    } catch {
-      return null
-    }
+    currencyFormatters.set(
+      key,
+      new Intl.NumberFormat('en-US', {
+        style: 'currency',
+        currency,
+        minimumFractionDigits: digits,
+        maximumFractionDigits: digits,
+      }),
+    )
   }
 
   return currencyFormatters.get(key)!
 }
 
-export function formatCurrency(
-  value: NumericValue | null | undefined,
-  currency: string | null | undefined,
-  digits = 2,
-) {
-  const resolved = toFiniteNumber(value)
-  if (resolved == null || !currency) {
+export function formatCurrency(value: number | null | undefined, currency = 'USD', digits = 2) {
+  if (value == null || Number.isNaN(value)) {
     return '—'
   }
 
-  return getCurrencyFormatter(currency, digits)?.format(resolved) ?? '—'
+  return getCurrencyFormatter(currency, digits).format(value)
 }
 
-export function formatNumber(value: NumericValue | null | undefined, digits = 3) {
-  const resolved = toFiniteNumber(value)
-  if (resolved == null) {
+export function formatNumber(value: number | null | undefined, digits = 3) {
+  if (value == null || Number.isNaN(value)) {
     return '—'
   }
 
   return new Intl.NumberFormat('en-US', {
     minimumFractionDigits: digits,
     maximumFractionDigits: digits,
-  }).format(resolved)
+  }).format(value)
 }
 
-export function formatQuantity(value: NumericValue | null | undefined) {
+export function formatQuantity(value: number | null | undefined) {
   return formatNumber(value, 2)
 }
 
-export function formatUnitPrice(value: NumericValue | null | undefined, currency: string | null | undefined) {
+export function formatUnitPrice(value: number | null | undefined, currency = 'USD') {
   return formatCurrency(value, currency, 4)
 }
 
 export function formatPercent(value: number | null | undefined, digits = 2) {
-  if (value == null || !Number.isFinite(value)) {
+  if (value == null || Number.isNaN(value)) {
     return '—'
   }
 
@@ -86,28 +60,23 @@ export function formatPercentInput(value: number | null | undefined, digits = 4)
   return String(Number((value * 100).toFixed(digits)))
 }
 
-export function formatSignedCurrency(value: NumericValue | null | undefined, currency: string | null | undefined) {
-  const resolved = toFiniteNumber(value)
-  if (resolved == null) {
+export function formatSignedCurrency(value: number | null | undefined, currency = 'USD') {
+  if (value == null || Number.isNaN(value)) {
     return '—'
   }
 
-  const absolute = formatCurrency(Math.abs(resolved), currency)
-  if (absolute === '—') {
-    return '—'
-  }
-  return resolved > 0 ? `+${absolute}` : resolved < 0 ? `-${absolute}` : absolute
+  const absolute = formatCurrency(Math.abs(value), currency)
+  return value > 0 ? `+${absolute}` : value < 0 ? `-${absolute}` : absolute
 }
 
-export function signedValueClass(value: NumericValue | null | undefined) {
-  const resolved = toFiniteNumber(value)
-  if (resolved == null) {
+export function signedValueClass(value: number | null | undefined) {
+  if (value == null || Number.isNaN(value)) {
     return ''
   }
-  if (resolved > 0) {
+  if (value > 0) {
     return 'positive-cell'
   }
-  if (resolved < 0) {
+  if (value < 0) {
     return 'negative-cell'
   }
   return 'neutral-cell'

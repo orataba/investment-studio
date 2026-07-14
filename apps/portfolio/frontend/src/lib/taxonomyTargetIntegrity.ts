@@ -20,5 +20,5 @@ export function formatTargetSetIntegrityNotice(issues: PortfolioTargetSetIntegri
   )
   const remainder = issues.length - previews.length
   const suffix = remainder > 0 ? ` (+${remainder} more)` : ''
-  return `${previews.join(' ')}${suffix} Use Edit Targets to complete the active configuration before running Allocation Research.`
+  return `${previews.join(' ')}${suffix} Use Edit Targets to complete the active configuration before running Research.`
 }

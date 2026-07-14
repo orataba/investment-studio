@@ -33,14 +33,14 @@ describe('detail request coordination', () => {
 
   it('rejects stale completions instead of letting them overwrite a retry', () => {
     const coordinator = createDetailRequestCoordinator('instrument-a:1')
-    const first = beginDetailRequest(coordinator, 'risk')!
+    const first = beginDetailRequest(coordinator, 'exposure')!
     completeDetailRequest(coordinator, first, false)
-    const retry = beginDetailRequest(coordinator, 'risk')!
+    const retry = beginDetailRequest(coordinator, 'exposure')!
 
     expect(completeDetailRequest(coordinator, first, true)).toBe(false)
-    expect(isDetailRequestLoaded(coordinator, 'risk')).toBe(false)
+    expect(isDetailRequestLoaded(coordinator, 'exposure')).toBe(false)
     expect(completeDetailRequest(coordinator, retry, true)).toBe(true)
-    expect(isDetailRequestLoaded(coordinator, 'risk')).toBe(true)
+    expect(isDetailRequestLoaded(coordinator, 'exposure')).toBe(true)
   })
 
   it('rejects responses from an older instrument generation', () => {

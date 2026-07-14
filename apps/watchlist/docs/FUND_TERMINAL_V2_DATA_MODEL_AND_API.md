@@ -95,16 +95,19 @@ shared instruments / manual ingest / facts ingest
 
 它已经不再只是“tag options 表”，而是完整的产品框架定义表。
 
-### 4.3 Canonical Quote Boundary
+### 4.3 Canonical Facts
 
-Watchlist 不再直接维护第二套 NAV facts，也不暴露行情写接口。Quote/NAV history 只通过共享
-canonical resolver 读取；导入、修订和刷新由 Database Dashboard 完成。Watchlist 负责保存计算
-dependency、quality、lineage 与可读的 `market_data_input_watermark_at`，但水位不是选值或 freshness
-权威。
+当前 watchlist app 内仍然直接维护的 canonical facts 主要包括：
 
-完整逐点 observation/revision/source 证据只由只读 `GET /api/instruments/{instrument_id}/nav-series`
-按需投影。它可以返回 `observations`、计算 `points` 以及纳入/排除的 revision id 和 payload hash，供排查
-和审计使用；这些数组不复制到持久化 read model。
+- NAV facts
+- holdings snapshots / positions
+
+facts 路由已经统一到 instrument 主语：
+
+- `GET /api/facts/instruments/{instrument_id}/nav`
+- `POST /api/facts/instruments/{instrument_id}/nav`
+- `GET /api/facts/instruments/{instrument_id}/holdings/current`
+- `POST /api/facts/instruments/{instrument_id}/holdings`
 
 ### 4.4 Manual Profiles
 
@@ -125,17 +128,8 @@ dependency、quality、lineage 与可读的 `market_data_input_watermark_at`，�
 当前已经落地的 read model 主要包括：
 
 - `watchlist_row_read_model`
-- summary / chart / performance / risk read models
-- append-only `instrument_research_rating` revisions; the current human rating is materialized into summary and watchlist rows
+- summary / chart / performance / risk / exposure / ratings read models
 - instrument summary payload
-
-summary / chart / performance / risk 的 quote-resolution 血缘只保存有界摘要，包括 series/policy 身份、
-质量状态、reason codes、首末日期、计数和 dependency fingerprint。Chart `resolution`、Summary
-`quote_resolution`、Performance/Risk 当前及历史 quote resolution 中不保存 `observations` 或 `points`；
-其中的 `calculation_dependency` 也不保存逐条 revision id/payload hash 数组。这样保留可复算、可判 stale
-的权威指纹，同时避免 read model 随历史长度无界增长。
-
-`watchlist_row_read_model` 不保存或输出 AUM。只有 amount 而没有 currency、as-of date、source/revision lineage 和明确 fund/share-class grain 的数值不是可用投资事实；未来接入时必须建立新的版本化事实边界，不能把裸金额重新塞回 read model。
 
 ### 4.6 Recalc Jobs
 
@@ -214,9 +208,9 @@ Monitoring 页面不再硬编码一张“所有 fund 必填 tags”清单。
 - `GET /api/instruments/{instrument_id}/chart`
 - `GET /api/instruments/{instrument_id}/performance`
 - `GET /api/instruments/{instrument_id}/risk`
-- `GET /api/instruments/{instrument_id}/research-rating`
-- `GET /api/instruments/{instrument_id}/research-ratings`
-- `PUT /api/instruments/{instrument_id}/research-rating`
+- `GET /api/instruments/{instrument_id}/exposure/summary`
+- `GET /api/instruments/{instrument_id}/exposure/holdings`
+- `GET /api/instruments/{instrument_id}/ratings`
 - `GET /api/instruments/{instrument_id}/people`
 - `PUT /api/instruments/{instrument_id}/people`
 - `GET /api/instruments/{instrument_id}/strategy`
@@ -272,11 +266,12 @@ Monitoring 页面不再硬编码一张“所有 fund 必填 tags”清单。
 
 - `POST /api/screener/query`
 
-### 6.8 Quote/NAV history
+### 6.8 Facts
 
-- `GET /api/instruments/{instrument_id}/nav-series`
-
-该接口是 canonical history 的只读投影；不存在 Watchlist 本地 facts 写接口。
+- `GET /api/facts/instruments/{instrument_id}/nav`
+- `POST /api/facts/instruments/{instrument_id}/nav`
+- `GET /api/facts/instruments/{instrument_id}/holdings/current`
+- `POST /api/facts/instruments/{instrument_id}/holdings`
 
 ### 6.9 Monitoring
 
@@ -293,6 +288,9 @@ Monitoring 页面不再硬编码一张“所有 fund 必填 tags”清单。
 ### 6.10 Recalc
 
 - `POST /api/recalc/instruments/{instrument_id}/performance`
+- `POST /api/recalc/instruments/{instrument_id}/exposure`
+- `POST /api/recalc/instruments/{instrument_id}/ratings`
+- `POST /api/recalc/instruments/{instrument_id}/all`
 - `POST /api/recalc/instruments/{instrument_id}/execute`
 - `GET /api/recalc/jobs`
 - `GET /api/recalc/jobs/{job_id}`

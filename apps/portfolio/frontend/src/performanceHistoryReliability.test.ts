@@ -1,109 +1,51 @@
 import { describe, expect, it } from 'vitest'
 
-import apiSource from './lib/api.ts?raw'
-import historyPresentationSource from './lib/performanceHistoryPresentation.ts?raw'
-import overviewPageSource from './pages/OverviewPage.tsx?raw'
+import {
+  MIN_ANNUALIZED_RETURN_HISTORY_DAYS,
+  buildPerformanceHistoryReliability,
+} from './lib/performanceHistoryReliability'
 import performancePageSource from './pages/PerformancePage.tsx?raw'
-import allocationLabPageSource from './pages/AllocationLabPage.tsx?raw'
 
-describe('performance history reliability authority boundary', () => {
-  it('requires method50, published, and rounding facts in the published metric contract', () => {
-    expect(apiSource).toContain('export type PortfolioDailyPublishedDecimalMetric = {')
-    expect(apiSource).toContain('annualized_twr: PortfolioDailyPublishedDecimalMetric | null')
-    expect(apiSource).toContain('annualized_volatility: PortfolioDailyPublishedDecimalMetric | null')
-    expect(apiSource).toContain('rate: PortfolioDailyPublishedDecimalMetric | null')
-    expect(apiSource).toContain('method50: string')
-    expect(apiSource).toContain('published: string')
-    expect(apiSource).toContain('rounding_adjustment_exact: string')
-    expect(apiSource).toContain('elapsed_days: number | null')
-    expect(apiSource).toContain('reason_codes: string[]')
-  })
-
-  it('renders backend-nullable annualized metrics without a browser eligibility engine', () => {
-    expect(performancePageSource).toContain('performance?.annualized_twr?.method50')
-    expect(performancePageSource).toContain('xirr.rate?.method50')
-    expect(performancePageSource).toContain('statistics?.annualized_volatility?.method50')
-    ;[
-      'selectPerformanceHistoryReliability',
-      'annualizedReturnDisplayEligible',
-      'buildPerformanceHistoryReliability',
-      'MIN_ANNUALIZED_RETURN_HISTORY_DAYS',
-      'MILLISECONDS_PER_DAY',
-      'Date.parse',
-      'annualizationMessage',
-      'sampleLabel',
-    ].forEach((forbidden) => expect(performancePageSource).not.toContain(forbidden))
-    ;[
-      'MIN_ANNUALIZED_RETURN_HISTORY_DAYS',
-      'MILLISECONDS_PER_DAY',
-      'Date.parse',
-    ].forEach((forbidden) => expect(historyPresentationSource).not.toContain(forbidden))
-  })
-
-  it('withholds Overview annualized TWR and XIRR when the published metric is null', () => {
-    expect(overviewPageSource).toContain(
-      'performanceSummary?.annualized_twr?.method50',
-    )
-    expect(overviewPageSource).toContain('performanceReport.xirr.rate?.method50')
-    expect(overviewPageSource).toContain('xirr.annualized_headline_eligible')
-    expect(overviewPageSource).toContain(
-      "value: annualizedTwr == null ? 'N/A' : signedPercent(annualizedTwr)",
-    )
-    expect(overviewPageSource).toContain(
-      "value: xirr == null ? 'N/A' : signedPercent(xirr)",
-    )
-    expect(overviewPageSource).not.toContain('annualizedReturnDisplayEligible')
-    expect(overviewPageSource).not.toContain('.calmar_ratio')
-  })
-
-  it('withholds benchmark and Calmar until they exist in the published report', () => {
-    expect(performancePageSource).not.toContain('getPortfolioPerformanceComparison')
-    expect(performancePageSource).not.toContain('benchmarkComparison')
-    expect(performancePageSource).not.toContain('calmar_ratio')
-    expect(performancePageSource).not.toContain('ratioToDrawdown')
-    expect(performancePageSource).not.toContain('buildBenchmarkPeriodMetrics')
-  })
-
-  it('fails closed policy replay annualized metrics against each column history contract', () => {
-    const rowSource = (label: string) => {
-      const start = allocationLabPageSource.indexOf(`label: '${label}'`)
-      const end = allocationLabPageSource.indexOf('\n    },', start)
-      expect(start).toBeGreaterThanOrEqual(0)
-      expect(end).toBeGreaterThan(start)
-      return allocationLabPageSource.slice(start, end)
-    }
-
-    expect(apiSource).toMatch(
-      /export type PortfolioPolicyReplayMetricsRecord = \{[\s\S]*?history_reliability: PortfolioPerformanceHistoryReliability/,
-    )
-    expect(rowSource('Annual Return')).toContain('requiresAnnualizedHistory: true')
-    expect(rowSource('Calmar')).toContain('requiresAnnualizedHistory: true')
-    ;['Period Return', 'Annual Volatility', 'Sharpe'].forEach((label) => {
-      expect(rowSource(label)).not.toContain('requiresAnnualizedHistory: true')
+describe('performance short-history reliability policy', () => {
+  it('marks a sub-year observed period as ineligible for annualized return headlines', () => {
+    const profile = buildPerformanceHistoryReliability({
+      start_date: '2026-03-31',
+      end_date: '2026-07-09',
+      snapshot_count: 101,
+      return_observation_count: 101,
+      risk_return_observation_count: 68,
     })
-    expect(
-      allocationLabPageSource.match(/requiresAnnualizedHistory: true/g),
-    ).toHaveLength(2)
-    expect(allocationLabPageSource).toMatch(
-      /row\.requiresAnnualizedHistory === true,\s*metrics,/,
-    )
-    expect(allocationLabPageSource).toMatch(
-      /row\.requiresAnnualizedHistory === true,\s*benchmarkMetrics,/,
-    )
-    expect(allocationLabPageSource).toMatch(
-      /row\.requiresAnnualizedHistory === true,\s*relative,/,
-    )
-    expect(allocationLabPageSource).toContain(
-      '!annualizedReturnDisplayEligible(record?.history_reliability)',
-    )
-    expect(allocationLabPageSource).toContain("return 'N/A'")
-    expect(allocationLabPageSource).toContain('reliability.sample_label')
-    expect(allocationLabPageSource).toContain('reliability.annualization_message')
-    ;[
-      'MIN_ANNUALIZED_RETURN_HISTORY_DAYS',
-      'MILLISECONDS_PER_DAY',
-      'Date.parse',
-      'minimum_history_days',
-    ].forEach((forbidden) => expect(allocationLabPageSource).not.toContain(forbidden))
+
+    expect(MIN_ANNUALIZED_RETURN_HISTORY_DAYS).toBe(365)
+    expect(profile.elapsedDays).toBe(100)
+    expect(profile.calendarSpanDays).toBe(101)
+    expect(profile.annualizedReturnEligible).toBe(false)
+    expect(profile.sampleLabel).toContain('2026-03-31 to 2026-07-09')
+    expect(profile.sampleLabel).toContain('101 snapshots')
+    expect(profile.sampleLabel).toContain('68 risk observations')
+    expect(profile.annualizationMessage).toContain('Period TWR remains the primary return')
+  })
+
+  it('allows annualized return presentation after a full year has elapsed', () => {
+    const profile = buildPerformanceHistoryReliability({
+      start_date: '2025-07-09',
+      end_date: '2026-07-09',
+      snapshot_count: 252,
+      return_observation_count: 252,
+      risk_return_observation_count: 251,
+    })
+
+    expect(profile.elapsedDays).toBe(365)
+    expect(profile.annualizedReturnEligible).toBe(true)
+    expect(profile.annualizationMessage).toBeNull()
+  })
+
+  it('wires period return, N/A annualization, and the observed-sample banner into Performance', () => {
+    expect(performancePageSource).toContain("metric: 'Period TWR'")
+    expect(performancePageSource).toContain("metric: 'Annualized TWR'")
+    expect(performancePageSource).toContain("metric: 'IRR / MWRR'")
+    expect(performancePageSource).toContain("annualizedReturnEligible ? signedPercent(summary.annualized_twr) : 'N/A'")
+    expect(performancePageSource).toContain('performance-history-reliability-warning')
+    expect(performancePageSource).toContain('performanceMetricsMeta')
   })
 })

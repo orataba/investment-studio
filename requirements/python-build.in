@@ -1,4 +1,0 @@
-# Build requirements for the five editable workspace packages.
-# Keep exact so --no-build-isolation never downloads an unreviewed backend.
-setuptools==80.9.0
-wheel==0.45.1

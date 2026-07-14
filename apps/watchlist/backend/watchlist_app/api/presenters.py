@@ -17,7 +17,8 @@ from watchlist_app.db.models.watchlists import (
 TAXONOMY_GROUP_BY_CODE = "taxonomy"
 GROUP_BY_FIELD_ORDER = (
     "management_firm_name",
-    "research_rating",
+    "overall_rating",
+    "analyst_stance",
     "data_freshness_status",
 )
 GROUP_BY_FIELD_ORDER_INDEX = {
@@ -156,10 +157,6 @@ def present_recalc_job(record: RecalcJob) -> dict[str, object]:
         "dedupe_key": record.dedupe_key,
         "payload_json": record.payload_json,
         "enqueued_at": record.enqueued_at.isoformat() if record.enqueued_at else None,
-        "attempt_count": record.attempt_count,
-        "max_attempts": record.max_attempts,
-        "available_at": record.available_at.isoformat() if record.available_at else None,
-        "claimed_generation": record.claimed_generation,
         "started_at": record.started_at.isoformat() if record.started_at else None,
         "finished_at": record.finished_at.isoformat() if record.finished_at else None,
         "error_message": record.error_message,

@@ -14,8 +14,6 @@
 - `currency`
 - `identifiers[]`
 
-`currency` 必须是显式的三位大写货币代码。Instrument Registry、QuoteSeries 与导入边界都不允许在缺失时默认成 USD；非 FX quote 的币种必须与 instrument currency 一致。
-
 ### `InstrumentIdentifier`
 
 - `identifier_type`
@@ -43,7 +41,7 @@ Supported `identifier_type` values:
 - `as_of_date`
 - `value`
 - `currency`
-- `source_ref`
+- `provider`
 - `status`
 
 ### `QuoteSelectionPolicy`
@@ -91,60 +89,26 @@ Supported `identifier_type` values:
 `quote role` 不直接固化到每条 market data point 上，而是放进 `QuoteSelectionPolicy`。
 原因是同一个 basis 往往会被多个读取场景复用；例如 `official_nav` 既可用于 valuation，也可作为 reference。
 
-默认 policy 约定（列表顺序是显式的 role 内优先级，不是应用层 fallback）：
+默认 selector 约定：
 
 - `fund`
-  - `trading`: `last -> close -> official_nav`
-  - `valuation`: `official_nav -> close -> last`
-  - `total_return`: `total_return_nav -> dividend_adjusted_nav -> reinvested_nav -> adjusted_close`
-  - `chart`: `total_return_nav -> dividend_adjusted_nav -> reinvested_nav -> adjusted_close -> official_nav -> close`
-- `etf`
-  - `trading`: `last -> close`
-  - `valuation`: `close -> last`
-  - `total_return`: `adjusted_close`
-  - `chart`: `adjusted_close -> close -> last`
+  - `valuation`: `official_nav -> close`
+  - `total_return/chart`: `total_return_nav -> adjusted_close -> official_nav -> close`
 - `equity`
   - `trading`: `last -> close`
   - `valuation`: `close -> last`
-  - `total_return`: `adjusted_close`
-  - `chart`: `adjusted_close -> close -> last`
+  - `total_return/chart`: `adjusted_close -> close -> last`
 - `index`
   - `trading`: `close -> last`
   - `valuation`: `close -> last`
-  - `total_return`: `adjusted_close`
-  - `chart`: `adjusted_close -> close -> last`
+  - `total_return/chart`: `adjusted_close -> close -> last`
 - `bond`
   - `trading`: `clean_price -> dirty_price`
   - `valuation`: `dirty_price -> clean_price`
-  - `total_return`: 空（未建立真实总回报序列时明确 unavailable）
-  - `chart`: `dirty_price -> clean_price`
 - `cash`
-  - `trading/valuation/chart/reference`: `par`
-  - `total_return`: 空
+  - `valuation/reference`: `par`
 - `fx`
-  - `trading/valuation/chart/reference`: `spot`
-  - `total_return`: 空
-
-`total_return` 只允许真实总回报 basis；`close`、`last`、`official_nav` 只能出现在其他适用 role，
-不得在收益、回撤或风险计算中代替总回报序列。Policy 缺失、候选冲突或选中序列不完整时，
-canonical resolver 返回 typed unavailable。
-
-## Canonical FX Window
-
-`canonical_fx.py` 是估值换汇的 canonical 读取边界：
-
-- registry migration `20260713_0010` 只预置 `fx-usd-hkd` 与 `fx-usd-cny` 的
-  canonical reference identity、严格 spot policy 和 primary ticker；它不伪造 series、
-  observation 或汇率。没有真实 spot observation 时，跨币种计算仍必须 unavailable。
-- 调用方必须传入已有 SQLAlchemy `Session`、显式版本化 freshness policy、consumer policy version、币种对和日期窗口。
-- source series 只通过 canonical quote resolver 的 `valuation` role 锁定一次，并强校验 `metric_family=fx`、`quote_basis=spot`、instrument type 与 quote currency。
-- 当前支持 `USD/HKD/CNY` 的 direct、inverse、USD-cross 与同币种 identity；交叉腿可按 `USD/CCY` 或 `CCY/USD` 方向维护。
-- `rate_at()` 只读取锁定窗口，不发 SQL、不切 series、不读取 flat instrument detail，也不使用系统当前日期。
-- 较新的 `partial/rejected/withdrawn` current revision 会阻断较老的 complete observation；任何交叉腿 late、missing 或 unavailable，整个 cross 都 unavailable。
-- 结果保留 `Decimal rate`、effective as-of、freshness/reliability/reason codes，以及每条腿的 point/window/policy/revision dependency。
-- fingerprint 包含 requested as-of、consumer/freshness policy、路径顺序、运算方向和每条腿 dependency；`source_ref` 是 observation provenance，不是 FX series/path identity，但正式的 `revision_id/payload_hash` lineage 必须进入计算依赖。
-
-Instrument Core 不替 Portfolio 决定 freshness 阈值。Portfolio 的估值 consumer 固定显式使用 5 个日历日，并以独立 consumer policy version 进入依赖指纹。
+  - `valuation/trading/reference`: `spot`
 
 ## Non-goals
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from datetime import date, datetime
 from decimal import Decimal
+from typing import Any
 
 from watchlist_app.db.models.read_models import InstrumentChartReadModel, WatchlistRowReadModel
 from watchlist_app.db.models.watchlists import InstrumentAttributeValue, WatchlistView
@@ -57,9 +58,9 @@ def watchlist_row_to_dict(record: WatchlistRowReadModel) -> dict[str, object]:
         "share_class": record.share_class,
         "ticker_or_isin": record.ticker_or_isin,
         "management_firm_name": record.management_firm_name,
-        "research_rating": _serialize_scalar(record.research_rating),
-        "research_rating_as_of": _serialize_scalar(record.research_rating_as_of),
-        "research_rating_updated_at": _serialize_scalar(record.research_rating_updated_at),
+        "overall_rating": _serialize_scalar(record.overall_rating),
+        "analyst_stance": record.analyst_stance,
+        "aum": _serialize_scalar(record.aum),
         "return_ytd": _serialize_scalar(record.return_ytd),
         "return_1w": _serialize_scalar(record.return_1w),
         "return_mtd": _serialize_scalar(record.return_mtd),
@@ -71,12 +72,14 @@ def watchlist_row_to_dict(record: WatchlistRowReadModel) -> dict[str, object]:
         "max_drawdown": _serialize_scalar(record.max_drawdown),
         "volatility": _serialize_scalar(record.volatility),
         "sharpe_ratio": _serialize_scalar(record.sharpe_ratio),
+        "duration": _serialize_scalar(record.duration),
+        "yield_to_worst": _serialize_scalar(record.yield_to_worst),
+        "avg_credit_rating": record.avg_credit_rating,
         "attributes": serialize_payload(record.attributes_json),
+        "exposure_updated_at": _serialize_scalar(record.exposure_updated_at),
         "last_nav_date": _serialize_scalar(record.last_nav_date),
         "data_freshness_status": record.data_freshness_status,
-        "market_data_input_watermark_at": _serialize_scalar(
-            record.market_data_input_watermark_at
-        ),
+        "last_fact_update_at": _serialize_scalar(record.last_fact_update_at),
         "last_recalculated_at": _serialize_scalar(record.last_recalculated_at),
         "last_successful_snapshot_at": _serialize_scalar(
             record.last_successful_snapshot_at
@@ -88,24 +91,11 @@ def watchlist_row_to_dict(record: WatchlistRowReadModel) -> dict[str, object]:
 def _extract_latest_quote(payload: object) -> dict[str, object] | None:
     if not isinstance(payload, dict):
         return None
-    calculation_state = payload.get("calculation_state")
-    if (
-        not isinstance(calculation_state, dict)
-        or calculation_state.get("current_endpoint_state") != "resolved"
-    ):
-        return None
-    endpoint_observation_date = calculation_state.get(
-        "current_endpoint_observation_date"
-    )
-    if not isinstance(endpoint_observation_date, str) or not endpoint_observation_date:
-        return None
     series = payload.get("series")
     if not isinstance(series, list):
         return None
     for candidate in series:
         if not isinstance(candidate, dict):
-            continue
-        if candidate.get("role") != "chart":
             continue
         points = candidate.get("points")
         if not isinstance(points, list) or not points:
@@ -115,11 +105,6 @@ def _extract_latest_quote(payload: object) -> dict[str, object] | None:
             continue
         value = latest_point.get("value")
         quote_date = latest_point.get("date")
-        if (
-            not isinstance(quote_date, str)
-            or quote_date[:10] != endpoint_observation_date[:10]
-        ):
-            continue
         if isinstance(value, bool) or not isinstance(value, (int, float)):
             continue
         return {
@@ -231,25 +216,24 @@ def build_watchlist_row_materialization(
     share_class: str | None,
     ticker_or_isin: str | None,
     management_firm_name: str | None,
-    research_rating: int | None,
-    research_rating_as_of: date | None,
-    research_rating_updated_at: datetime | None,
+    overall_rating: int | None,
+    analyst_stance: str | None,
     attributes: dict[str, object],
     freshness_status: str,
-    market_data_input_watermark_at: datetime | None,
+    last_fact_update_at: datetime | None,
     last_recalculated_at: datetime | None,
     last_successful_snapshot_at: datetime | None,
     staleness_reason: str | None,
-) -> dict[str, object]:
+    ) -> dict[str, object]:
     if source_row is None:
         payload: dict[str, object] = {
             "instrument_name": display_name or instrument_id.upper(),
             "share_class": share_class,
             "ticker_or_isin": ticker_or_isin,
             "management_firm_name": management_firm_name,
-            "research_rating": research_rating,
-            "research_rating_as_of": research_rating_as_of,
-            "research_rating_updated_at": research_rating_updated_at,
+            "overall_rating": overall_rating,
+            "analyst_stance": analyst_stance or "Unrated",
+            "aum": None,
             "return_ytd": None,
             "return_1w": None,
             "return_mtd": None,
@@ -261,6 +245,10 @@ def build_watchlist_row_materialization(
             "max_drawdown": None,
             "volatility": None,
             "sharpe_ratio": None,
+            "duration": None,
+            "yield_to_worst": None,
+            "avg_credit_rating": None,
+            "exposure_updated_at": None,
             "last_nav_date": None,
         }
     else:
@@ -269,9 +257,9 @@ def build_watchlist_row_materialization(
             "share_class": source_row.share_class,
             "ticker_or_isin": source_row.ticker_or_isin,
             "management_firm_name": source_row.management_firm_name,
-            "research_rating": source_row.research_rating,
-            "research_rating_as_of": source_row.research_rating_as_of,
-            "research_rating_updated_at": source_row.research_rating_updated_at,
+            "overall_rating": source_row.overall_rating,
+            "analyst_stance": source_row.analyst_stance,
+            "aum": source_row.aum,
             "return_ytd": source_row.return_ytd,
             "return_1w": source_row.return_1w,
             "return_mtd": source_row.return_mtd,
@@ -283,6 +271,10 @@ def build_watchlist_row_materialization(
             "max_drawdown": source_row.max_drawdown,
             "volatility": source_row.volatility,
             "sharpe_ratio": source_row.sharpe_ratio,
+            "duration": source_row.duration,
+            "yield_to_worst": source_row.yield_to_worst,
+            "avg_credit_rating": source_row.avg_credit_rating,
+            "exposure_updated_at": source_row.exposure_updated_at,
             "last_nav_date": source_row.last_nav_date,
         }
 
@@ -293,15 +285,12 @@ def build_watchlist_row_materialization(
     payload["share_class"] = share_class or payload.get("share_class")
     payload["ticker_or_isin"] = ticker_or_isin or payload.get("ticker_or_isin")
     payload["management_firm_name"] = management_firm_name or payload.get("management_firm_name")
-    # Research ratings are human judgements, not calculation outputs. Always
-    # replace materialized values from the current rating revision so a market
-    # data recalculation can never resurrect an older judgement.
-    payload["research_rating"] = research_rating
-    payload["research_rating_as_of"] = research_rating_as_of
-    payload["research_rating_updated_at"] = research_rating_updated_at
+    if payload.get("overall_rating") is None:
+        payload["overall_rating"] = overall_rating
+    payload["analyst_stance"] = payload.get("analyst_stance") or analyst_stance or "Unrated"
     payload["attributes"] = attributes
     payload["data_freshness_status"] = freshness_status
-    payload["market_data_input_watermark_at"] = market_data_input_watermark_at
+    payload["last_fact_update_at"] = last_fact_update_at
     payload["last_recalculated_at"] = last_recalculated_at
     payload["last_successful_snapshot_at"] = last_successful_snapshot_at
     payload["staleness_reason"] = staleness_reason
@@ -476,14 +465,14 @@ def _apply_sort(
     return sorted_rows
 
 
-def _latest_datetime(
-    rows: Sequence[dict[str, object]],
-    *,
-    keys: tuple[str, ...],
-) -> datetime | None:
+def _latest_datetime(rows: Sequence[dict[str, object]]) -> datetime | None:
     candidates = []
     for row in rows:
-        for key in keys:
+        for key in (
+            "last_successful_snapshot_at",
+            "last_recalculated_at",
+            "last_fact_update_at",
+        ):
             value = row.get(key)
             if isinstance(value, datetime):
                 candidates.append(value)
@@ -567,7 +556,7 @@ def execute_watchlist_query(
             if column.is_visible
         ]
     if not selected_fields:
-        selected_fields = ["instrument_name", "research_rating", "attr.fund_taxonomy_path"]
+        selected_fields = ["instrument_name", "overall_rating", "attr.fund_taxonomy_path"]
     if group_by == TAXONOMY_GROUP_BY_CODE:
         for field in TAXONOMY_GROUP_FIELDS:
             if field not in selected_fields:
@@ -622,18 +611,7 @@ def execute_watchlist_query(
         "snapshot_metadata": {
             "as_of_date": _serialize_scalar(_latest_date(filtered_rows)),
             "methodology_version": "watchlist-row/v1",
-            "market_data_input_watermark_at": _serialize_scalar(
-                _latest_datetime(
-                    filtered_rows,
-                    keys=("market_data_input_watermark_at",),
-                )
-            ),
-            "last_recalculated_at": _serialize_scalar(
-                _latest_datetime(
-                    filtered_rows,
-                    keys=("last_recalculated_at",),
-                )
-            ),
+            "source_cutoff_at": _serialize_scalar(_latest_datetime(filtered_rows)),
             "is_current": True,
             "advanced_filter_applied": advanced_filters is not None,
         },
@@ -648,8 +626,10 @@ def default_fund_summary_payload(
         "instrument_id": instrument_id,
         "fund_name": "Sample Fund",
         "ticker_or_isin": instrument_id.upper(),
+        "rating_as_of": "2026-04-10",
         "management_firm_name": None,
-        "research_rating": None,
+        "overall_rating": None,
+        "analyst_stance": "Unrated",
         "instrument_attributes": instrument_attributes or {},
         "taxonomy": {
             "taxonomy_code": "fund_taxonomy",
@@ -663,14 +643,9 @@ def default_fund_summary_payload(
         "key_stats": [],
         "freshness": {
             "data_freshness_status": "unavailable",
+            "last_fact_update_at": None,
             "last_recalculated_at": None,
             "last_successful_snapshot_at": None,
-            "market_data_input_watermark_at": None,
-            "market_data_input_watermark_status": "unknown",
-            "market_data_input_watermark_reason_code": (
-                "no_read_model_materialized"
-            ),
-            "staleness_reason_codes": ["no_read_model_materialized"],
             "staleness_reason": "No read model materialized yet.",
         },
         "quick_monitoring_items": [],
@@ -691,7 +666,7 @@ def default_fund_chart_payload(instrument_id: str) -> dict[str, object]:
             "label": None,
             "date_label": None,
         },
-        "currency": None,
+        "currency": "USD",
         "date_range": None,
         "series": [],
         "available_compare_targets": [],
@@ -721,6 +696,32 @@ def default_fund_risk_payload() -> dict[str, object]:
         "change_monitor": {"rows": [], "note": None},
         "calculation_frequency_profile": None,
         "snapshot_metadata": None,
+    }
+
+
+def default_fund_exposure_summary_payload() -> dict[str, object]:
+    return {
+        "allocation_blocks": {},
+        "style_box": None,
+        "liquidity_leverage": None,
+        "valuation_statistics": None,
+        "holdings_summary": None,
+        "snapshot_metadata": None,
+    }
+
+
+def default_fund_exposure_holdings_payload() -> dict[str, object]:
+    return {"rows": [], "page": 1, "page_size": 0, "total_rows": 0}
+
+
+def default_fund_rating_payload() -> dict[str, object]:
+    return {
+        "overall_rating": None,
+        "overall_score": None,
+        "analyst_stance": "Unrated",
+        "methodology_version": "house-rating/v1",
+        "dimension_scores": [],
+        "override_info": None,
     }
 
 

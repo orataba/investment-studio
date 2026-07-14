@@ -1,41 +1,14 @@
 from base64 import b64decode
-from datetime import date, datetime
+from datetime import date
 from decimal import Decimal
 import binascii
-import re
-from typing import Annotated, Literal
+from typing import Literal
 
-from pydantic import (
-    BaseModel,
-    BeforeValidator,
-    ConfigDict,
-    Field,
-    WithJsonSchema,
-    field_validator,
-    model_validator,
-)
-from portfolio_ops_instrument_core.models import (
-    InstrumentIdentifier as PlatformInstrumentIdentifier,
-)
-from portfolio_ops_instrument_core.models import (
-    CorporateActionEvent as PlatformCorporateActionEvent,
-)
-from portfolio_ops_instrument_core.models import (
-    CanonicalCurrencyCode,
-    CanonicalQuoteResolution,
-    DataStatus,
-    InstrumentType,
-    MetricFamily,
-    QuoteBasis,
-    QuoteIngestionTimeState,
-    QuoteNumericScaleState,
-    QuoteRole,
-    QuoteFreshnessPolicy,
-    SourceObservationStatus,
-)
-from portfolio_ops_instrument_core.models import (
-    QuoteSelectionPolicy as PlatformQuoteSelectionPolicy,
-)
+from pydantic import BaseModel, Field, field_validator, model_validator
+from portfolio_ops_instrument_core.models import InstrumentIdentifier as PlatformInstrumentIdentifier
+from portfolio_ops_instrument_core.models import CorporateActionEvent as PlatformCorporateActionEvent
+from portfolio_ops_instrument_core.models import InstrumentType, DataStatus, IdentifierType, MetricFamily, QuoteBasis, QuoteRole
+from portfolio_ops_instrument_core.models import QuoteSelectionPolicy as PlatformQuoteSelectionPolicy
 
 
 class PlatformAppCard(BaseModel):
@@ -52,7 +25,6 @@ class PlatformAppsResponse(BaseModel):
     platform_name: str
     apps: list[PlatformAppCard]
 
-
 SourceMode = Literal["manual", "email", "api"]
 RefreshChannel = Literal["configured", "email", "tushare", "all"]
 SupportedCurrency = Literal["USD", "HKD", "CNY"]
@@ -66,108 +38,16 @@ EmailParserProfile = Literal[
 SUPPORTED_FX_CURRENCIES: tuple[SupportedCurrency, ...] = ("USD", "HKD", "CNY")
 MAX_NAV_IMPORT_BYTES = 25 * 1024 * 1024
 MAX_NAV_IMPORT_BASE64_CHARS = ((MAX_NAV_IMPORT_BYTES + 2) // 3) * 4
-PLAIN_DECIMAL_INPUT_PATTERN = r"^[+-]?(?:0|[1-9]\d*)(?:\.\d+)?$"
-
-
-def _require_plain_decimal_json_string(value: object) -> object:
-    if not isinstance(value, str):
-        raise ValueError("Decimal inputs must be JSON strings.")
-    normalized = value.strip()
-    if not re.fullmatch(PLAIN_DECIMAL_INPUT_PATTERN, normalized):
-        raise ValueError("Decimal inputs must use plain decimal notation.")
-    return normalized
-
-
-PlainDecimalInput = Annotated[
-    Decimal,
-    BeforeValidator(_require_plain_decimal_json_string),
-    WithJsonSchema(
-        {"type": "string", "pattern": PLAIN_DECIMAL_INPUT_PATTERN},
-        mode="validation",
-    ),
-]
 
 
 class PlatformMarketDataPoint(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    quote_series_id: str = Field(min_length=1)
-    observation_id: str = Field(min_length=1)
-    revision_id: str = Field(min_length=1)
-    revision_number: int = Field(ge=1)
     metric_family: MetricFamily
     quote_basis: QuoteBasis
     as_of_date: date
     value: Decimal
-    value_input_scale: int = Field(ge=0)
-    numeric_scale_state: QuoteNumericScaleState
-    payload_schema_version: Literal[1, 2]
-    currency: CanonicalCurrencyCode
-    source_ref: str | None = None
-    status: Literal["complete"] = "complete"
-    source_published_at: datetime | None = None
-    ingested_at: datetime
-    ingestion_time_state: QuoteIngestionTimeState
-    payload_hash: str = Field(min_length=1)
-
-
-class PlatformQuoteObservationRevision(BaseModel):
-    instrument_id: str = Field(min_length=1)
-    quote_series_id: str = Field(min_length=1)
-    metric_family: MetricFamily
-    quote_basis: QuoteBasis
-    currency: CanonicalCurrencyCode
-    observation_id: str = Field(min_length=1)
-    as_of_date: date
-    revision_id: str = Field(min_length=1)
-    revision_number: int = Field(ge=1)
-    value: Decimal | None = None
-    value_input_scale: int | None = Field(default=None, ge=0)
-    numeric_scale_state: QuoteNumericScaleState | None = None
-    payload_schema_version: Literal[1, 2]
-    source_ref: str | None = None
-    status: Literal["complete", "partial", "rejected", "withdrawn"]
-    source_published_at: datetime | None = None
-    ingested_at: datetime
-    ingestion_time_state: QuoteIngestionTimeState
-    payload_hash: str = Field(min_length=1)
-    is_current: bool
-    superseded_at: datetime | None = None
-
-
-class PlatformQuoteObservationRevisionsResponse(BaseModel):
-    instrument_id: str = Field(min_length=1)
-    limit: int = Field(ge=1, le=5000)
-    truncated: bool
-    revisions: list[PlatformQuoteObservationRevision]
-
-
-class PlatformExplicitQuoteResolveRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    resolver_strategy_version: Literal["canonical_quote_resolver.v1"]
-    instrument_id: str = Field(min_length=1)
-    metric_family: MetricFamily
-    quote_basis: QuoteBasis
-    currency: CanonicalCurrencyCode
-    requested_as_of_date: date
-    freshness_policy: QuoteFreshnessPolicy
-
-
-class PlatformRoleQuoteResolveRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    resolver_strategy_version: Literal["canonical_quote_resolver.v1"]
-    quote_selection_policy_version: Literal["quote_selection_policy.v1"]
-    instrument_id: str = Field(min_length=1)
-    role: QuoteRole
-    currency: CanonicalCurrencyCode
-    requested_as_of_date: date
-    freshness_policy: QuoteFreshnessPolicy
-
-
-class PlatformCanonicalQuoteResolution(CanonicalQuoteResolution):
-    pass
+    currency: str = Field(min_length=1, max_length=8)
+    provider: str | None = None
+    status: DataStatus = "complete"
 
 
 class PlatformEmailRule(BaseModel):
@@ -252,12 +132,10 @@ class PlatformInstrumentRecord(BaseModel):
     instrument_id: str
     instrument_name: str
     instrument_type: InstrumentType
-    currency: CanonicalCurrencyCode
+    currency: str
     identifiers: list[PlatformInstrumentIdentifier]
     latest_market_data: list[PlatformMarketDataPoint]
     quote_selection_policy: PlatformQuoteSelectionPolicy
-    quote_selection_policy_version: Literal["quote_selection_policy.v1"]
-    quote_selection_policy_revision: str = Field(min_length=1)
     coverage_state: DataStatus
     source_settings: PlatformSourceSettings
     refresh_status: PlatformRefreshStatus
@@ -278,7 +156,7 @@ class PlatformInstrumentsResponse(BaseModel):
 class PlatformInstrumentCreateRequest(BaseModel):
     instrument_name: str = Field(min_length=1)
     instrument_type: InstrumentType
-    currency: CanonicalCurrencyCode
+    currency: str = Field(min_length=1, max_length=8)
     identifiers: list[PlatformInstrumentIdentifier] = Field(min_length=1)
     quote_selection_policy: PlatformQuoteSelectionPolicy | None = None
 
@@ -314,28 +192,18 @@ class PlatformQuoteSelectionPolicyUpdateRequest(BaseModel):
 
 
 class PlatformMarketDataUpsertRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
     metric_family: MetricFamily
     quote_basis: QuoteBasis
     as_of_date: date
-    value: PlainDecimalInput
-    currency: CanonicalCurrencyCode
-    source_ref: str | None = None
-    status: SourceObservationStatus = "complete"
-    source_published_at: datetime | None = None
+    value: Decimal
+    currency: str = Field(min_length=1, max_length=8)
+    provider: str | None = None
+    status: DataStatus = "complete"
 
     @model_validator(mode="after")
     def validate_quote_basis(self) -> "PlatformMarketDataUpsertRequest":
         allowed_bases: dict[str, set[str]] = {
-            "price": {
-                "last",
-                "close",
-                "adjusted_close",
-                "clean_price",
-                "dirty_price",
-                "par",
-            },
+            "price": {"last", "close", "adjusted_close", "clean_price", "dirty_price", "par"},
             "nav": {"official_nav", "total_return_nav"},
             "fx": {"spot"},
         }
@@ -352,7 +220,7 @@ class PlatformFxRateRecord(BaseModel):
     source_kind: FxRateSourceKind
     instrument_id: str | None = None
     source_instrument_ids: list[str] = Field(default_factory=list)
-    source_ref: str | None = None
+    provider: str | None = None
     status: DataStatus = "complete"
 
 
@@ -363,13 +231,11 @@ class PlatformFxRatesResponse(BaseModel):
 
 
 class PlatformFxRateUpsertRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
     base_currency: SupportedCurrency
     quote_currency: SupportedCurrency
-    rate: PlainDecimalInput = Field(gt=0)
+    rate: Decimal = Field(gt=0)
     as_of_date: date
-    source_ref: str | None = None
+    provider: str | None = None
     status: DataStatus = "complete"
 
     @field_validator("base_currency", "quote_currency", mode="before")
@@ -429,23 +295,19 @@ class PlatformLifecycleTransitionRequest(BaseModel):
 
 
 class PlatformNavImportRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
     raw_text: str = Field(min_length=1, max_length=MAX_NAV_IMPORT_BYTES)
-    source_ref: str | None = None
+    provider: str | None = None
     status: DataStatus = "complete"
     updated_by: str | None = None
 
 
 class PlatformNavImportFileRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
     file_name: str = Field(min_length=1, max_length=255)
     file_content_base64: str = Field(
         min_length=1,
         max_length=MAX_NAV_IMPORT_BASE64_CHARS,
     )
-    source_ref: str | None = None
+    provider: str | None = None
     status: DataStatus = "complete"
     updated_by: str | None = None
 
@@ -486,9 +348,7 @@ class PlatformNavImportPreviewRequest(BaseModel):
             (self.file_content_base64 or "").strip()
         )
         if has_text == has_file:
-            raise ValueError(
-                "Provide either raw_text or file_name + file_content_base64."
-            )
+            raise ValueError("Provide either raw_text or file_name + file_content_base64.")
         return self
 
     def decoded_bytes(self) -> bytes | None:
@@ -510,7 +370,7 @@ class PlatformNavImportPreviewRow(BaseModel):
     nav: Decimal | None = None
     cumulative_nav: Decimal | None = None
     nav_with_dividend: Decimal | None = None
-    currency: CanonicalCurrencyCode
+    currency: str = Field(min_length=1, max_length=8)
     frequency: str = Field(min_length=1)
     instrument_code: str | None = None
     instrument_name: str | None = None

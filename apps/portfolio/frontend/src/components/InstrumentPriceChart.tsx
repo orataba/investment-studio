@@ -49,12 +49,9 @@ export default function InstrumentPriceChart({
 }: InstrumentPriceChartProps) {
   const [hoverIndex, setHoverIndex] = useState<number | null>(null)
   const points = chart?.points ?? []
+  const firstPoint = points[0] ?? null
   const activePoint = points[hoverIndex ?? points.length - 1] ?? null
-  const reportedChangeValue = chart?.summary.change_value ?? null
-  const reportedChangePct = chart?.summary.change_pct ?? null
-  const reportedHigh = chart?.summary.high ?? null
-  const reportedLow = chart?.summary.low ?? null
-  const currency = chart?.currency ?? chart?.instrument_core.currency ?? ''
+  const currency = chart?.currency ?? chart?.instrument_core.currency ?? 'USD'
   const width = variant === 'instrument' ? 900 : 760
   const height = variant === 'instrument' ? 340 : 240
   const paddingLeft = variant === 'instrument' ? 58 : 10
@@ -68,8 +65,8 @@ export default function InstrumentPriceChart({
     }
 
     const values = points.map((point) => point.value)
-    const minValue = reportedLow != null && Number.isFinite(reportedLow) ? reportedLow : Math.min(...values)
-    const maxValue = reportedHigh != null && Number.isFinite(reportedHigh) ? reportedHigh : Math.max(...values)
+    const minValue = Math.min(...values)
+    const maxValue = Math.max(...values)
     const span = maxValue - minValue || Math.max(Math.abs(maxValue) * 0.02, 1)
     const innerWidth = width - paddingLeft - paddingRight
     const innerHeight = height - paddingTop - paddingBottom
@@ -104,12 +101,21 @@ export default function InstrumentPriceChart({
       gridValues,
       bands,
     }
-  }, [currency, height, paddingBottom, paddingLeft, paddingRight, paddingTop, points, reportedHigh, reportedLow, width])
+  }, [currency, height, paddingBottom, paddingLeft, paddingRight, paddingTop, points, width])
 
   const activeProjectedPoint =
     chartGeometry && activePoint
       ? chartGeometry.projectedPoints[Math.max(0, hoverIndex ?? chartGeometry.projectedPoints.length - 1)]
       : null
+  const activeChangeValue =
+    firstPoint && activePoint
+      ? activePoint.value - firstPoint.value
+      : null
+  const activeChangePct =
+    firstPoint && activePoint && Math.abs(firstPoint.value) > 1e-9
+      ? (activePoint.value - firstPoint.value) / firstPoint.value
+      : null
+
   return (
     <section className={`instrument-price-chart ${variant === 'instrument' ? 'instrument-price-chart-instrument' : ''}`}>
       <div className="instrument-price-chart-toolbar">
@@ -121,8 +127,8 @@ export default function InstrumentPriceChart({
               {chart.metric_family ? ` · ${performanceSeriesLabel(chart.metric_family)} family` : ''}
             </span>
             <em>
-              {reportedChangeValue != null
-                ? `Range ${formatSignedCurrency(reportedChangeValue, currency)} · ${formatPercent(reportedChangePct)}`
+              {activeChangeValue != null
+                ? `${formatSignedCurrency(activeChangeValue, currency)} · ${formatPercent(activeChangePct)}`
                 : '—'}
             </em>
           </div>
@@ -131,8 +137,8 @@ export default function InstrumentPriceChart({
           <strong>{activePoint ? formatUnitPrice(activePoint.value, currency) : '—'}</strong>
           <span>{activePoint ? formatChartDate(activePoint.date) : chart ? `As of ${chart.as_of_date}` : 'No data'}</span>
           <span>
-            {reportedChangeValue != null
-              ? `Range ${formatSignedCurrency(reportedChangeValue, currency)} · ${formatPercent(reportedChangePct)}`
+            {activeChangeValue != null
+              ? `${formatSignedCurrency(activeChangeValue, currency)} · ${formatPercent(activeChangePct)}`
               : '—'}
           </span>
         </div>
@@ -224,9 +230,6 @@ export default function InstrumentPriceChart({
             <span>{points[0] ? formatChartDate(points[0].date) : '—'}</span>
             <span>
               {chart ? `Series: ${performanceSeriesLabel(chart.chart_basis ?? chart.metric_family)}` : 'Series: —'}
-            </span>
-            <span>
-              Range high {formatUnitPrice(reportedHigh, currency)} · low {formatUnitPrice(reportedLow, currency)}
             </span>
             <span>{points[points.length - 1] ? formatChartDate(points[points.length - 1].date) : '—'}</span>
           </div>

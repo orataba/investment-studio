@@ -46,6 +46,7 @@ import Sparkline from '../../../../../packages/ui/src/Sparkline'
 import { downloadTable, type TableCell, type TableExportFormat } from '../../../../../packages/ui/src/tableExport'
 import {
   formatBoolean,
+  formatCompactCurrency,
   formatDate,
   formatDateTime,
   formatLabel,
@@ -68,6 +69,7 @@ type WatchlistRowGroup = {
   key: string
   label: string | null
   rows: Array<Record<string, unknown>>
+  summaryRows: Array<Record<string, unknown>>
   rowCount: number
   depth: number
   taxonomyPath?: string[]
@@ -78,6 +80,11 @@ type GroupDropTarget = {
   value: unknown
   taxonomyNodeId?: string | null
   rowPatch: Record<string, unknown>
+}
+type GroupAverageCell = {
+  value: number
+  count: number
+  total: number
 }
 type ActiveFilterEntry = {
   fieldKey: string
@@ -377,12 +384,12 @@ function statusClass(value: unknown) {
 }
 
 function asNumber(value: unknown) {
-  if (typeof value === 'number' && Number.isFinite(value)) {
+  if (typeof value === 'number' && !Number.isNaN(value)) {
     return value
   }
   if (typeof value === 'string' && value.trim()) {
     const parsed = Number(value)
-    if (Number.isFinite(parsed)) {
+    if (!Number.isNaN(parsed)) {
       return parsed
     }
   }
@@ -443,13 +450,56 @@ function isChartFieldKey(fieldKey: string) {
   return fieldKey.startsWith('price_chart_') || fieldKey.includes('sparkline')
 }
 
-function formatStarRating(value: unknown) {
-  const rating = asNumber(value)
-  if (rating == null) {
-    return '—'
+function isAverageSummaryField(fieldKey: string, field: FieldRegistryRecord | undefined) {
+  if (!field || !['number', 'integer'].includes(field.data_type)) {
+    return false
   }
-  const normalized = Math.max(0, Math.min(5, Math.round(rating)))
-  return `${'★'.repeat(normalized)}${'☆'.repeat(5 - normalized)}`
+  if (
+    fieldKey === 'aum' ||
+    fieldKey === 'latest_quote' ||
+    fieldKey === 'attr.peer_sample_count' ||
+    field.formatter_code === 'currency_compact'
+  ) {
+    return false
+  }
+  return field.sort_mode === 'numeric' || field.formatter_code === 'percent' || field.formatter_code === 'decimal'
+}
+
+function buildGroupAverageCell(
+  fieldKey: string,
+  field: FieldRegistryRecord | undefined,
+  rows: Array<Record<string, unknown>>,
+): GroupAverageCell | null {
+  if (!isAverageSummaryField(fieldKey, field) || !rows.length) {
+    return null
+  }
+  const values = rows
+    .map((row) => asNumber(row[fieldKey]))
+    .filter((value): value is number => value != null)
+  if (!values.length) {
+    return null
+  }
+  return {
+    value: values.reduce((sum, value) => sum + value, 0) / values.length,
+    count: values.length,
+    total: rows.length,
+  }
+}
+
+function formatGroupAverageCell(fieldKey: string, field: FieldRegistryRecord | undefined, value: number) {
+  if (fieldKey.includes('_percentile')) {
+    return `${formatNumber(value, 0)} pct`
+  }
+  if (fieldKey === 'overall_rating') {
+    return formatNumber(value, 1)
+  }
+  if (field?.formatter_code === 'percent' || isReturnMetricField(fieldKey)) {
+    return formatPercent(value)
+  }
+  if (field?.formatter_code === 'decimal' || field?.data_type === 'integer') {
+    return formatNumber(value, field.data_type === 'integer' ? 1 : 2)
+  }
+  return formatNumber(value)
 }
 
 function priceChartMaxPoints(fieldKey: string) {
@@ -487,8 +537,8 @@ function renderCell(
     return <span className="ticker-pill">{String(value || '—')}</span>
   }
 
-  if (fieldKey === 'research_rating') {
-    return value == null ? '—' : <span className="rating-pill">{formatStarRating(value)}</span>
+  if (fieldKey === 'overall_rating') {
+    return value == null ? '—' : <span className="rating-pill">{String(value)}</span>
   }
 
   if (fieldKey === 'attr.coverage_status') {
@@ -501,6 +551,10 @@ function renderCell(
 
   if (isChartFieldKey(fieldKey)) {
     return <Sparkline values={sparklinePoints} maxPoints={priceChartMaxPoints(fieldKey)} />
+  }
+
+  if (fieldKey === 'aum') {
+    return formatCompactCurrency(asNumber(value))
   }
 
   if (fieldKey === 'latest_quote') {
@@ -525,7 +579,7 @@ function renderCell(
     )
   }
 
-  if (fieldKey === 'volatility' || fieldKey === 'sharpe_ratio') {
+  if (fieldKey === 'duration' || fieldKey === 'volatility' || fieldKey === 'sharpe_ratio') {
     return formatNumber(asNumber(value))
   }
 
@@ -1824,7 +1878,7 @@ export default function WatchlistsPage() {
   const groupedRows = useMemo(() => {
     const rows = searchedRows
     if (!activeGroupBy) {
-      return [{ key: 'all', label: null, rows, rowCount: rows.length, depth: 0 }]
+      return [{ key: 'all', label: null, rows, summaryRows: rows, rowCount: rows.length, depth: 0 }]
     }
     if (activeGroupBy === TAXONOMY_GROUP_BY_CODE) {
       type TreeNode = {
@@ -1833,6 +1887,7 @@ export default function WatchlistsPage() {
         depth: number
         rowCount: number
         rows: Array<Record<string, unknown>>
+        summaryRows: Array<Record<string, unknown>>
         children: Map<string, TreeNode>
       }
       const root = new Map<string, TreeNode>()
@@ -1853,6 +1908,7 @@ export default function WatchlistsPage() {
           depth,
           rowCount: 0,
           rows: [],
+          summaryRows: [],
           children: new Map<string, TreeNode>(),
         }
         map.set(key, node)
@@ -1865,6 +1921,7 @@ export default function WatchlistsPage() {
           const node = getOrCreate(root, ['Unspecified'], 'Unspecified', 0)
           node.rowCount += 1
           node.rows.push(row)
+          node.summaryRows.push(row)
           return
         }
         let currentMap = root
@@ -1872,6 +1929,7 @@ export default function WatchlistsPage() {
         for (const [index, label] of path.entries()) {
           currentNode = getOrCreate(currentMap, path.slice(0, index + 1), label, index)
           currentNode.rowCount += 1
+          currentNode.summaryRows.push(row)
           currentMap = currentNode.children
         }
         currentNode?.rows.push(row)
@@ -1890,6 +1948,7 @@ export default function WatchlistsPage() {
             key: node.key,
             label: node.label,
             rows: node.children.size ? [] : node.rows,
+            summaryRows: node.summaryRows,
             rowCount: node.rowCount,
             depth: node.depth,
             taxonomyPath: node.key === 'Unspecified' ? [] : node.key.split(' / '),
@@ -1900,6 +1959,7 @@ export default function WatchlistsPage() {
               key: `${node.key}::direct`,
               label: `${node.label} · Direct`,
               rows: node.rows,
+              summaryRows: node.rows,
               rowCount: node.rows.length,
               depth: node.depth + 1,
               taxonomyPath: node.key === 'Unspecified' ? [] : node.key.split(' / '),
@@ -1910,7 +1970,7 @@ export default function WatchlistsPage() {
       visit([...root.values()])
       return flattened.length
         ? flattened
-        : [{ key: 'all', label: null, rows, rowCount: rows.length, depth: 0 }]
+        : [{ key: 'all', label: null, rows, summaryRows: rows, rowCount: rows.length, depth: 0 }]
     }
     const bucketMap = new Map<string, Array<Record<string, unknown>>>()
     rows.forEach((row) => {
@@ -1936,12 +1996,13 @@ export default function WatchlistsPage() {
         key,
         label: key,
         rows: bucketMap.get(key) || [],
+        summaryRows: bucketMap.get(key) || [],
         rowCount: bucketMap.get(key)?.length || 0,
         depth: 0,
       }))
     bucketMap.forEach((value, key) => {
       if (!seen.has(key)) {
-        groups.push({ key, label: key, rows: value, rowCount: value.length, depth: 0 })
+        groups.push({ key, label: key, rows: value, summaryRows: value, rowCount: value.length, depth: 0 })
       }
     })
     return groups
@@ -2943,6 +3004,8 @@ export default function WatchlistsPage() {
                                 </td>
                               )
                             }
+                            const field = fieldByKey.get(column)
+                            const average = buildGroupAverageCell(column, field, group.summaryRows)
                             return (
                               <td
                                 key={column}
@@ -2953,7 +3016,19 @@ export default function WatchlistsPage() {
                                   .filter(Boolean)
                                   .join(' ')}
                               >
-                                <span className="watchlists-group-summary-empty">—</span>
+                                {average ? (
+                                  <span
+                                    className="watchlists-group-summary-value"
+                                    title={`Equal-weight average of ${average.count}/${average.total} rows`}
+                                  >
+                                    <span>{formatGroupAverageCell(column, field, average.value)}</span>
+                                    {average.count !== average.total ? (
+                                      <small>{average.count}/{average.total}</small>
+                                    ) : null}
+                                  </span>
+                                ) : (
+                                  <span className="watchlists-group-summary-empty">—</span>
+                                )}
                               </td>
                             )
                           })}

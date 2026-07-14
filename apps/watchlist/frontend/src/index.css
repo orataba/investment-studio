@@ -2142,6 +2142,34 @@ th {
   font-size: 20px;
 }
 
+.stack-list {
+  display: grid;
+  gap: 0;
+}
+
+.stack-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 14px 18px;
+  border-top: 1px solid #ecebe5;
+}
+
+.stack-item:first-child {
+  border-top: none;
+}
+
+.stack-item span {
+  color: #6b7280;
+  font-size: 13px;
+}
+
+.stack-item strong {
+  font-size: 15px;
+  text-align: right;
+}
+
 .panel-note {
   padding: 0 18px 18px;
 }
@@ -4068,7 +4096,8 @@ td:last-child {
 .instrument-strategy-section-header .panel-title,
 .instrument-documents-section-header .panel-title,
 .instrument-research-section-header .panel-title,
-.instrument-monitoring-section-header .panel-title {
+.instrument-monitoring-section-header .panel-title,
+.detail-grid > .panel > .instrument-section-header .panel-title {
   display: none;
 }
 
@@ -4533,21 +4562,6 @@ td:last-child {
 
 .instrument-rolling-risk-chart-head .instrument-series-label strong {
   font-size: 13px;
-}
-
-.instrument-rolling-risk-quality {
-  display: grid;
-  justify-items: end;
-  gap: 2px;
-  max-width: min(58%, 560px);
-  color: #64748b;
-  font-size: 10px;
-  line-height: 1.35;
-  text-align: right;
-}
-
-.instrument-rolling-risk-quality span {
-  overflow-wrap: anywhere;
 }
 
 .instrument-rolling-risk-chart-plot {
@@ -5735,36 +5749,6 @@ td:last-child {
 
 .instrument-research-table tbody tr:last-child td {
   border-bottom: none;
-}
-
-.instrument-research-rating-history-table {
-  min-width: 1120px;
-}
-
-.instrument-research-rating-history-stack {
-  display: grid;
-  gap: 5px;
-  line-height: 1.4;
-}
-
-.instrument-research-rating-history-stack > span:not(.status-badge) {
-  color: #4b5563;
-  font-size: 12px;
-}
-
-.instrument-research-rating-history-revision {
-  max-width: 230px;
-}
-
-.instrument-research-rating-history-revision span {
-  overflow-wrap: anywhere;
-}
-
-.instrument-research-rating-history-rationale {
-  min-width: 260px;
-  max-width: 420px;
-  white-space: pre-wrap;
-  line-height: 1.58;
 }
 
 .instrument-research-table-textarea {
@@ -7143,7 +7127,8 @@ input[type='checkbox'] {
   .instrument-strategy-shell,
   .instrument-documents-shell,
   .instrument-research-shell,
-  .instrument-monitoring-shell
+  .instrument-monitoring-shell,
+  .detail-grid
 ) {
   width: 100%;
 }

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from datetime import date
 from decimal import Decimal
 
 from portfolio_ops_instrument_core import fx_rates as shared_fx_rates
@@ -26,7 +25,7 @@ def upsert_fx_rate(
     quote_currency: str,
     rate: Decimal,
     as_of_date: date,
-    source_ref: str | None,
+    provider: str | None,
     status: str,
 ) -> dict[str, object]:
     return shared_fx_rates.upsert_fx_rate(
@@ -35,6 +34,6 @@ def upsert_fx_rate(
         quote_currency=quote_currency,
         rate=rate,
         as_of_date=as_of_date,
-        source_ref=source_ref,
+        provider=provider,
         status=status,
     )

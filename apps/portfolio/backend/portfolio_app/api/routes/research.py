@@ -1,0 +1,158 @@
+from __future__ import annotations
+
+from fastapi import APIRouter, HTTPException, Query
+
+from portfolio_app.api.contracts import (
+    ResearchArtifactContentResponse,
+    ResearchBacktestBenchmarkComparisonResponse,
+    ResearchRunCreateRequest,
+    ResearchRunRecord,
+    ResearchSettingsRecord,
+    ResearchSettingsUpdateRequest,
+    ResearchWorkbenchResponse,
+)
+from portfolio_app.services.instrument_registry import InstrumentRegistryError
+from portfolio_app.services.portfolio_store import get_portfolio
+from portfolio_app.services.research import (
+    get_research_backtest_benchmark_comparison,
+    get_research_run,
+    get_research_workbench,
+    read_research_artifact_content,
+    run_portfolio_research,
+    update_research_settings,
+)
+
+
+router = APIRouter()
+
+
+@router.get("/{portfolio_id}/research/workbench", response_model=ResearchWorkbenchResponse)
+def get_portfolio_research_workbench(
+    portfolio_id: str,
+    selected_run_id: str | None = Query(default=None),
+) -> ResearchWorkbenchResponse:
+    try:
+        workbench = get_research_workbench(portfolio_id, selected_run_id=selected_run_id)
+    except InstrumentRegistryError as error:
+        raise HTTPException(status_code=502, detail=str(error)) from error
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    if workbench is None:
+        raise HTTPException(status_code=404, detail="Portfolio not found")
+    return ResearchWorkbenchResponse.model_validate(workbench)
+
+
+@router.put("/{portfolio_id}/research/settings", response_model=ResearchSettingsRecord)
+def update_portfolio_research_settings(
+    portfolio_id: str,
+    payload: ResearchSettingsUpdateRequest,
+) -> ResearchSettingsRecord:
+    if get_portfolio(portfolio_id) is None:
+        raise HTTPException(status_code=404, detail="Portfolio not found")
+    try:
+        settings = update_research_settings(
+            portfolio_id,
+            planning_taxonomy_id=payload.planning_taxonomy_id,
+            comparator_taxonomy_node_id=payload.comparator_taxonomy_node_id,
+            as_of_mode=payload.as_of_mode,
+            as_of_date=payload.as_of_date,
+            lookback_days=payload.lookback_days,
+            calculation_frequency=payload.calculation_frequency,
+            missing_return_policy=payload.missing_return_policy,
+            covariance_model_id=payload.covariance_model_id,
+            contribution_mode=payload.contribution_mode,
+            target_dimension=payload.target_dimension,
+            capital_mode=payload.capital_mode,
+            gross_exposure=payload.gross_exposure,
+            target_volatility=payload.target_volatility,
+            max_gross_exposure=payload.max_gross_exposure,
+            frozen_taxonomy_node_ids=payload.frozen_taxonomy_node_ids,
+            top_sleeve_weight_bounds=(
+                [item.model_dump() for item in payload.top_sleeve_weight_bounds]
+                if payload.top_sleeve_weight_bounds is not None
+                else None
+            ),
+            backtest_rebalance_frequency=payload.backtest_rebalance_frequency,
+            backtest_benchmark_instrument_id=payload.backtest_benchmark_instrument_id,
+            notes=payload.notes,
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    if settings is None:
+        raise HTTPException(status_code=404, detail="Portfolio not found")
+    return ResearchSettingsRecord.model_validate(settings)
+
+
+@router.post("/{portfolio_id}/research/runs", response_model=ResearchRunRecord)
+def create_portfolio_research_run(
+    portfolio_id: str,
+    payload: ResearchRunCreateRequest,
+) -> ResearchRunRecord:
+    if get_portfolio(portfolio_id) is None:
+        raise HTTPException(status_code=404, detail="Portfolio not found")
+    try:
+        run = run_portfolio_research(
+            portfolio_id,
+            requested_by=payload.requested_by,
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    except InstrumentRegistryError as error:
+        raise HTTPException(status_code=502, detail=str(error)) from error
+    if run is None:
+        raise HTTPException(status_code=404, detail="Portfolio not found")
+    return ResearchRunRecord.model_validate(run)
+
+
+@router.get("/{portfolio_id}/research/runs/{research_run_id}", response_model=ResearchRunRecord)
+def get_portfolio_research_run(
+    portfolio_id: str,
+    research_run_id: str,
+) -> ResearchRunRecord:
+    run = get_research_run(
+        portfolio_id,
+        research_run_id=research_run_id,
+    )
+    if run is None:
+        raise HTTPException(status_code=404, detail="Research run not found")
+    return ResearchRunRecord.model_validate(run)
+
+
+@router.get(
+    "/{portfolio_id}/research/runs/{research_run_id}/benchmark-comparison",
+    response_model=ResearchBacktestBenchmarkComparisonResponse,
+)
+def get_portfolio_research_run_benchmark_comparison(
+    portfolio_id: str,
+    research_run_id: str,
+    benchmark_instrument_id: str = Query(..., min_length=1),
+) -> ResearchBacktestBenchmarkComparisonResponse:
+    if get_portfolio(portfolio_id) is None:
+        raise HTTPException(status_code=404, detail="Portfolio not found")
+    try:
+        payload = get_research_backtest_benchmark_comparison(
+            portfolio_id,
+            research_run_id=research_run_id,
+            benchmark_instrument_id=benchmark_instrument_id,
+        )
+    except InstrumentRegistryError as error:
+        raise HTTPException(status_code=502, detail=str(error)) from error
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    if payload is None:
+        raise HTTPException(status_code=404, detail="Research run not found")
+    return ResearchBacktestBenchmarkComparisonResponse.model_validate(payload)
+
+
+@router.get("/{portfolio_id}/research/artifacts/content", response_model=ResearchArtifactContentResponse)
+def get_portfolio_research_artifact_content(
+    portfolio_id: str,
+    path: str = Query(..., min_length=1),
+) -> ResearchArtifactContentResponse:
+    if get_portfolio(portfolio_id) is None:
+        raise HTTPException(status_code=404, detail="Portfolio not found")
+    try:
+        payload = read_research_artifact_content(portfolio_id, path=path)
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    return ResearchArtifactContentResponse.model_validate(payload)

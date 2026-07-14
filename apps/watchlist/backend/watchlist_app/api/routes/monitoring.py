@@ -110,9 +110,9 @@ def _freshness_priority(status: str | None) -> int:
 
 def _row_latest_activity(record: WatchlistRowReadModel) -> datetime | None:
     candidates = [
-        record.market_data_input_watermark_at,
         record.last_successful_snapshot_at,
         record.last_recalculated_at,
+        record.last_fact_update_at,
     ]
     valid = [value for value in candidates if value is not None]
     return max(valid) if valid else None
@@ -184,9 +184,6 @@ def get_monitoring_dashboard(
                 "management_firm_name": row_record.management_firm_name,
                 "data_freshness_status": row_record.data_freshness_status,
                 "latest_quote_date": latest_quote_date,
-                "market_data_input_watermark_at": (
-                    row_record.market_data_input_watermark_at
-                ),
                 "last_recalculated_at": row_record.last_recalculated_at,
                 "last_activity_at": row_activity,
                 "staleness_reason": row_record.staleness_reason,
@@ -204,17 +201,6 @@ def get_monitoring_dashboard(
 
         if instrument_summary["latest_quote_date"] is None and latest_quote_date is not None:
             instrument_summary["latest_quote_date"] = latest_quote_date
-        if (
-            row_record.market_data_input_watermark_at is not None
-            and (
-                instrument_summary["market_data_input_watermark_at"] is None
-                or row_record.market_data_input_watermark_at
-                > instrument_summary["market_data_input_watermark_at"]
-            )
-        ):
-            instrument_summary["market_data_input_watermark_at"] = (
-                row_record.market_data_input_watermark_at
-            )
         if (
             row_record.last_recalculated_at is not None
             and (
@@ -288,9 +274,6 @@ def get_monitoring_dashboard(
         instrument_summary["missing_attribute_count"] = len(missing_attribute_keys)
         instrument_summary["last_recalculated_at"] = _serialize_datetime(
             instrument_summary["last_recalculated_at"]
-        )
-        instrument_summary["market_data_input_watermark_at"] = _serialize_datetime(
-            instrument_summary["market_data_input_watermark_at"]
         )
         instrument_summary["last_activity_at"] = _serialize_datetime(
             instrument_summary["last_activity_at"]

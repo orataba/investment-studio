@@ -33,7 +33,9 @@ import {
   getPortfolioTableViewStore,
   getPortfolioTaxonomyCatalog,
   savePortfolioTableViewStore,
+  type HoldingReturnSeries,
   type HoldingsWorkspaceResponse,
+  type PortfolioCalculationFrequency,
   type PortfolioHoldingRow,
   type PortfolioTaxonomyAssignmentRecord,
   type PortfolioTaxonomyCatalogResponse,
@@ -55,7 +57,7 @@ type HoldingsColumnKey =
   | 'last_price'
   | 'quote_date'
   | 'quote_basis'
-  | 'quote_source_ref'
+  | 'quote_provider'
   | 'quote_status'
   | 'market_value'
   | 'market_value_base'
@@ -126,6 +128,43 @@ type HoldingsDisplayItem =
   | { kind: 'holding'; row: PortfolioHoldingRow }
   | { kind: 'noncash-total' }
 
+type GroupVolatilityRangeKey = '1m' | '3m' | '6m' | '1y'
+type GroupVolatilitySeries = {
+  dates: string[]
+  returns: number[]
+  firstReturnStartDate: string | null
+}
+
+const DAYS_PER_YEAR = 365.25
+const GROUP_METRIC_MIN_VALUE_COVERAGE = 0.8
+const GROUP_VOL_WINDOW_DAYS: Record<GroupVolatilityRangeKey, number> = {
+  '1m': 31,
+  '3m': 92,
+  '6m': 183,
+  '1y': 366,
+}
+const GROUP_VOL_MIN_WINDOW_COVERAGE_RATIO = 0.8
+const GROUP_VOL_MIN_RETURN_OBSERVATIONS: Record<PortfolioCalculationFrequency, Record<GroupVolatilityRangeKey, number>> = {
+  daily: {
+    '1m': 10,
+    '3m': 30,
+    '6m': 60,
+    '1y': 120,
+  },
+  weekly: {
+    '1m': 3,
+    '3m': 6,
+    '6m': 12,
+    '1y': 24,
+  },
+  monthly: {
+    '1m': 2,
+    '3m': 2,
+    '6m': 4,
+    '1y': 6,
+  },
+}
+
 type HoldingsViewState = {
   columns: HoldingsColumnKey[]
   columnWidths: Partial<Record<HoldingsColumnKey, number>>
@@ -159,7 +198,7 @@ const HOLDINGS_COLUMN_GROUPS: Array<{ label: string; columns: HoldingsColumnKey[
   },
   {
     label: 'Quote',
-    columns: ['last_price', 'quote_date', 'quote_basis', 'quote_source_ref', 'quote_status'],
+    columns: ['last_price', 'quote_date', 'quote_basis', 'quote_provider', 'quote_status'],
   },
   {
     label: 'Instrument Trend',
@@ -245,7 +284,7 @@ const DEFAULT_HOLDINGS_COLUMN_WIDTHS: Record<HoldingsColumnKey, number> = {
   last_price: 120,
   quote_date: 126,
   quote_basis: 126,
-  quote_source_ref: 132,
+  quote_provider: 132,
   quote_status: 120,
   market_value: 148,
   market_value_base: 164,
@@ -291,7 +330,7 @@ const COMPACT_HOLDINGS_COLUMN_MIN_WIDTHS: Partial<Record<HoldingsColumnKey, numb
   last_price: 92,
   quote_date: 104,
   quote_basis: 104,
-  quote_source_ref: 104,
+  quote_provider: 104,
   quote_status: 104,
   market_value: 108,
   market_value_base: 116,
@@ -390,7 +429,7 @@ const TEXT_HOLDINGS_SORT_FIELDS = new Set<HoldingsColumnKey>([
   'cost_method',
   'quote_date',
   'quote_basis',
-  'quote_source_ref',
+  'quote_provider',
   'quote_status',
   'coverage',
 ])
@@ -528,6 +567,10 @@ function isCashHoldingRow(row: PortfolioHoldingRow) {
   )
 }
 
+function isBaseCashHoldingRow(row: PortfolioHoldingRow, workspace: HoldingsWorkspaceResponse) {
+  return isCashHoldingRow(row) && normalizedCurrency(row.instrument_core.currency) === normalizedCurrency(workspace.base_currency)
+}
+
 function nonCashHoldingRows(rows: PortfolioHoldingRow[]) {
   return rows.filter((row) => !isCashHoldingRow(row))
 }
@@ -548,10 +591,9 @@ function dayChangeBaseForRow(row: PortfolioHoldingRow, workspace: HoldingsWorksp
 }
 
 function dayChangeDisplayValue(row: PortfolioHoldingRow, workspace: HoldingsWorkspaceResponse) {
-  const baseValue = dayChangeBaseForRow(row, workspace)
-  if (baseValue != null) {
+  if (isCashHoldingRow(row)) {
     return {
-      value: baseValue,
+      value: dayChangeBaseForRow(row, workspace),
       currency: workspace.base_currency,
     }
   }
@@ -603,24 +645,70 @@ function holdingsAlignmentClass(column: HoldingsColumnDefinition) {
   return ''
 }
 
+function chartReturnForColumn(row: PortfolioHoldingRow, column: HoldingsColumnKey) {
+  const points = chartPointsForColumn(row, column)
+  if (points.length < 2) {
+    return null
+  }
+  const firstPoint = points.find((point) => Number.isFinite(point.value) && point.value !== 0)
+  const lastPoint = points[points.length - 1]
+  if (!firstPoint || !lastPoint || !Number.isFinite(lastPoint.value)) {
+    return null
+  }
+  return (lastPoint.value - firstPoint.value) / Math.abs(firstPoint.value)
+}
+
 function unrealizedValue(row: PortfolioHoldingRow) {
-  return finiteNumber(row.unrealized_pnl)
+  const marketValue = finiteNumber(row.market_value)
+  const costBasis = finiteNumber(row.cost_basis)
+  return marketValue == null || costBasis == null ? null : marketValue - costBasis
 }
 
 function unrealizedPct(row: PortfolioHoldingRow) {
-  return finiteNumber(row.unrealized_return)
+  const costBasis = finiteNumber(row.cost_basis)
+  const unrealized = unrealizedValue(row)
+  if (costBasis == null || Math.abs(costBasis) <= 1e-12 || unrealized == null) {
+    return null
+  }
+  return unrealized / Math.abs(costBasis)
 }
 
-function unrealizedBaseValue(row: PortfolioHoldingRow) {
-  return finiteNumber(row.unrealized_pnl_base)
+function unrealizedBaseValueForWorkspace(row: PortfolioHoldingRow, workspace: HoldingsWorkspaceResponse) {
+  const marketValue = baseAmountForRow(row, workspace.base_currency, row.market_value_base, row.market_value)
+  const costBasis = baseAmountForRow(row, workspace.base_currency, row.cost_basis_base, row.cost_basis)
+  return marketValue == null || costBasis == null ? null : marketValue - costBasis
 }
 
 function totalUnrealizedBase(rows: PortfolioHoldingRow[], workspace: HoldingsWorkspaceResponse) {
-  return rowsCoverWorkspace(rows, workspace) ? finiteNumber(workspace.totals.unrealized_pnl_base) : null
+  const nonCashRows = nonCashHoldingRows(rows)
+  const marketValue = sumCompleteNumbers(nonCashRows, (row) =>
+    baseAmountForRow(row, workspace.base_currency, row.market_value_base, row.market_value),
+  )
+  const costBasis = sumCompleteNumbers(nonCashRows, (row) =>
+    baseAmountForRow(row, workspace.base_currency, row.cost_basis_base, row.cost_basis),
+  )
+  return marketValue == null || costBasis == null ? null : marketValue - costBasis
 }
 
 function totalUnrealizedPct(rows: PortfolioHoldingRow[], workspace: HoldingsWorkspaceResponse) {
-  return rowsCoverWorkspace(rows, workspace) ? finiteNumber(workspace.totals.unrealized_return) : null
+  const nonCashRows = nonCashHoldingRows(rows)
+  const costBasis = sumCompleteNumbers(nonCashRows, (row) =>
+    baseAmountForRow(row, workspace.base_currency, row.cost_basis_base, row.cost_basis),
+  )
+  const unrealized = totalUnrealizedBase(rows, workspace)
+  if (costBasis == null || unrealized == null) {
+    return null
+  }
+  const cashRows = rows.filter((row) => isCashHoldingRow(row))
+  const cashBasis = cashRows.length ? sumCompleteNumbers(cashRows, (row) => rowMarketValueBase(row, workspace)) : 0
+  if (cashBasis == null) {
+    return null
+  }
+  const denominator = costBasis + cashBasis
+  if (Math.abs(denominator) <= 1e-12) {
+    return null
+  }
+  return unrealized / Math.abs(denominator)
 }
 
 function totalMarketValueBase(rows: PortfolioHoldingRow[], workspace: HoldingsWorkspaceResponse) {
@@ -648,11 +736,274 @@ function totalDayChangeBase(rows: PortfolioHoldingRow[], workspace: HoldingsWork
 }
 
 function totalDayChangePct(rows: PortfolioHoldingRow[], workspace: HoldingsWorkspaceResponse) {
-  return rowsCoverWorkspace(rows, workspace) ? finiteNumber(workspace.totals.day_change_pct) : null
+  const explicit = rowsCoverWorkspace(rows, workspace) ? finiteNumber(workspace.totals.day_change_pct) : null
+  if (explicit != null) {
+    return explicit
+  }
+  const dayChange = totalDayChangeBase(rows, workspace)
+  const marketValue = totalMarketValueBase(rows, workspace)
+  const priorMarketValue = marketValue != null && dayChange != null ? marketValue - dayChange : null
+  return dayChange == null || priorMarketValue == null || Math.abs(priorMarketValue) <= 1e-12
+    ? null
+    : dayChange / priorMarketValue
 }
 
 function rowMarketValueBase(row: PortfolioHoldingRow, workspace: HoldingsWorkspaceResponse) {
   return baseAmountForRow(row, workspace.base_currency, row.market_value_base, row.market_value)
+}
+
+function weightedHoldingMetric(
+  rows: PortfolioHoldingRow[],
+  workspace: HoldingsWorkspaceResponse,
+  accessor: (row: PortfolioHoldingRow) => number | null | undefined,
+) {
+  const totalAbsValue = rows.reduce((sum, row) => sum + Math.abs(rowMarketValueBase(row, workspace) ?? 0), 0)
+  if (totalAbsValue <= 1e-12) {
+    return null
+  }
+  let eligibleAbsValue = 0
+  let weightedTotal = 0
+  let denominator = 0
+  for (const row of rows) {
+    const value = rowMarketValueBase(row, workspace)
+    const rawMetric = finiteNumber(accessor(row))
+    const metric = rawMetric ?? (isBaseCashHoldingRow(row, workspace) ? 0 : null)
+    if (value == null || metric == null) {
+      continue
+    }
+    eligibleAbsValue += Math.abs(value)
+    weightedTotal += value * metric
+    denominator += value
+  }
+  if (eligibleAbsValue / totalAbsValue < GROUP_METRIC_MIN_VALUE_COVERAGE || Math.abs(denominator) <= 1e-12) {
+    return null
+  }
+  return weightedTotal / denominator
+}
+
+function dayDiff(left: string, right: string) {
+  const leftTime = Date.parse(`${left}T00:00:00`)
+  const rightTime = Date.parse(`${right}T00:00:00`)
+  if (Number.isNaN(leftTime) || Number.isNaN(rightTime)) {
+    return null
+  }
+  return Math.max(0, (rightTime - leftTime) / 86_400_000)
+}
+
+function sampleStddev(values: number[]) {
+  if (values.length < 2) {
+    return null
+  }
+  const mean = values.reduce((sum, value) => sum + value, 0) / values.length
+  const variance = values.reduce((sum, value) => sum + (value - mean) ** 2, 0) / (values.length - 1)
+  return Math.sqrt(Math.max(0, variance))
+}
+
+function returnSeriesForVolatilityRange(row: PortfolioHoldingRow, rangeKey: GroupVolatilityRangeKey) {
+  switch (rangeKey) {
+    case '1m':
+      return row.instrument_return_series_1m
+    case '3m':
+      return row.instrument_return_series_3m
+    case '6m':
+      return row.instrument_return_series_6m
+    case '1y':
+      return row.instrument_return_series_1y
+    default:
+      return null
+  }
+}
+
+function normalizedReturnSeries(series: HoldingReturnSeries | null | undefined) {
+  const points = Array.isArray(series?.points) ? series.points : []
+  return points
+    .map((point) => ({
+      startDate: point.start_date || null,
+      date: point.date,
+      value: finiteNumber(point.value),
+    }))
+    .filter(
+      (point): point is { startDate: string | null; date: string; value: number } =>
+        Boolean(point.date) && point.value != null,
+    )
+    .sort((left, right) => `${left.startDate || ''}|${left.date}`.localeCompare(`${right.startDate || ''}|${right.date}`))
+}
+
+function calculationFrequencyForRows(rows: PortfolioHoldingRow[]): PortfolioCalculationFrequency {
+  const frequency = rows.find((row) => row.instrument_risk_frequency)?.instrument_risk_frequency
+  return frequency === 'weekly' || frequency === 'monthly' ? frequency : 'daily'
+}
+
+function groupedReturnSeries(
+  rows: PortfolioHoldingRow[],
+  workspace: HoldingsWorkspaceResponse,
+  seriesAccessor: (row: PortfolioHoldingRow) => HoldingReturnSeries | null | undefined,
+): GroupVolatilitySeries | null {
+  const totalAbsValue = rows.reduce((sum, row) => sum + Math.abs(rowMarketValueBase(row, workspace) ?? 0), 0)
+  if (totalAbsValue <= 1e-12) {
+    return null
+  }
+
+  const valuedRows = rows
+    .map((row) => ({
+      row,
+      value: rowMarketValueBase(row, workspace),
+      points: normalizedReturnSeries(seriesAccessor(row)),
+    }))
+    .filter((item) => item.value != null)
+  const returnRows = valuedRows.filter((item) => item.points.length >= 2)
+  const zeroReturnRows = valuedRows.filter((item) => item.points.length < 2 && isBaseCashHoldingRow(item.row, workspace))
+  const eligibleRows = [...returnRows, ...zeroReturnRows]
+
+  const eligibleAbsValue = eligibleRows.reduce((sum, item) => sum + Math.abs(item.value ?? 0), 0)
+  const denominator = eligibleRows.reduce((sum, item) => sum + (item.value ?? 0), 0)
+  if (
+    eligibleAbsValue / totalAbsValue < GROUP_METRIC_MIN_VALUE_COVERAGE ||
+    Math.abs(denominator) <= 1e-12
+  ) {
+    return null
+  }
+  if (!returnRows.length) {
+    return zeroReturnRows.length ? { dates: [], returns: [], firstReturnStartDate: null } : null
+  }
+
+  const pointMaps = eligibleRows.map((item) => ({
+    weight: (item.value ?? 0) / denominator,
+    zeroReturn: item.points.length < 2 && isBaseCashHoldingRow(item.row, workspace),
+    byPeriod: new Map(item.points.map((point) => [`${point.startDate || ''}|${point.date}`, point.value])),
+  }))
+  const periodCounts = new Map<string, number>()
+  for (const item of returnRows) {
+    for (const point of item.points) {
+      const periodKey = `${point.startDate || ''}|${point.date}`
+      periodCounts.set(periodKey, (periodCounts.get(periodKey) ?? 0) + 1)
+    }
+  }
+  const periodKeys = [...periodCounts.entries()]
+    .filter(([, count]) => count === returnRows.length)
+    .map(([periodKey]) => periodKey)
+    .sort()
+  const returns: number[] = []
+  const returnDates: string[] = []
+
+  for (const periodKey of periodKeys) {
+    const [, dateKey] = periodKey.split('|', 2)
+    if (!dateKey) {
+      continue
+    }
+    const portfolioReturn = pointMaps.reduce((sum, item) => {
+      if (item.zeroReturn) {
+        return sum
+      }
+      const itemReturn = item.byPeriod.get(periodKey)
+      if (itemReturn == null) {
+        return sum
+      }
+      return sum + item.weight * itemReturn
+    }, 0)
+    if (Number.isFinite(portfolioReturn)) {
+      returns.push(portfolioReturn)
+      returnDates.push(dateKey)
+    }
+  }
+
+  const firstReturnDate = returnDates[0]
+  const firstReturnStartDate =
+    periodKeys.find((periodKey) => periodKey.endsWith(`|${firstReturnDate}`))?.split('|', 2)[0] || null
+
+  return { dates: returnDates, returns, firstReturnStartDate }
+}
+
+function allValuedRowsAreBaseCash(rows: PortfolioHoldingRow[], workspace: HoldingsWorkspaceResponse) {
+  const valuedRows = rows.filter((row) => {
+    const value = rowMarketValueBase(row, workspace)
+    return value != null && Math.abs(value) > 1e-12
+  })
+  return valuedRows.length > 0 && valuedRows.every((row) => isBaseCashHoldingRow(row, workspace))
+}
+
+function groupedVolatilitySeries(
+  rows: PortfolioHoldingRow[],
+  workspace: HoldingsWorkspaceResponse,
+  rangeKey: GroupVolatilityRangeKey,
+) {
+  return groupedReturnSeries(rows, workspace, (row) => returnSeriesForVolatilityRange(row, rangeKey))
+}
+
+function groupedAnnualizedVolatility(
+  rows: PortfolioHoldingRow[],
+  workspace: HoldingsWorkspaceResponse,
+  rangeKey: GroupVolatilityRangeKey,
+) {
+  const series = groupedVolatilitySeries(rows, workspace, rangeKey)
+  const calculationFrequency = calculationFrequencyForRows(rows)
+  if (
+    !series ||
+    series.returns.length < GROUP_VOL_MIN_RETURN_OBSERVATIONS[calculationFrequency][rangeKey] ||
+    series.firstReturnStartDate == null
+  ) {
+    if (allValuedRowsAreBaseCash(rows, workspace)) {
+      return 0
+    }
+    return null
+  }
+  const lastDate = series.dates[series.dates.length - 1]
+  if (!lastDate) {
+    return null
+  }
+  const elapsedDays = dayDiff(series.firstReturnStartDate, lastDate)
+  if (elapsedDays == null || elapsedDays <= 0) {
+    return null
+  }
+  if (elapsedDays < Math.floor(GROUP_VOL_WINDOW_DAYS[rangeKey] * GROUP_VOL_MIN_WINDOW_COVERAGE_RATIO)) {
+    return null
+  }
+  const stddev = sampleStddev(series.returns)
+  return stddev == null ? null : stddev * Math.sqrt((series.returns.length / elapsedDays) * DAYS_PER_YEAR)
+}
+
+function drawdownFromReturns(returns: number[]) {
+  if (!returns.length) {
+    return null
+  }
+  let value = 1
+  let peak = 1
+  let maxDrawdown = 0
+  for (const periodReturn of returns) {
+    value *= 1 + periodReturn
+    peak = Math.max(peak, value)
+    if (peak > 1e-12) {
+      maxDrawdown = Math.min(maxDrawdown, value / peak - 1)
+    }
+  }
+  return {
+    currentDrawdown: peak > 1e-12 ? value / peak - 1 : null,
+    maxDrawdown,
+  }
+}
+
+function groupedDrawdownSeries(rows: PortfolioHoldingRow[], workspace: HoldingsWorkspaceResponse, scope: 'all' | 'holding') {
+  return groupedReturnSeries(rows, workspace, (row) =>
+    scope === 'holding' ? row.instrument_holding_return_series : row.instrument_return_series_all,
+  )
+}
+
+function groupedCurrentDrawdown(rows: PortfolioHoldingRow[], workspace: HoldingsWorkspaceResponse) {
+  const series = groupedDrawdownSeries(rows, workspace, 'all')
+  if ((!series || !series.returns.length) && allValuedRowsAreBaseCash(rows, workspace)) {
+    return 0
+  }
+  const drawdown = series ? drawdownFromReturns(series.returns) : null
+  return drawdown?.currentDrawdown ?? null
+}
+
+function groupedMaxDrawdown(rows: PortfolioHoldingRow[], workspace: HoldingsWorkspaceResponse, scope: 'all' | 'holding') {
+  const series = groupedDrawdownSeries(rows, workspace, scope)
+  if ((!series || !series.returns.length) && allValuedRowsAreBaseCash(rows, workspace)) {
+    return 0
+  }
+  const drawdown = series ? drawdownFromReturns(series.returns) : null
+  return drawdown?.maxDrawdown ?? null
 }
 
 function rowsCoverWorkspace(rows: PortfolioHoldingRow[], workspace: HoldingsWorkspaceResponse) {
@@ -1082,8 +1433,8 @@ function holdingColumnExportValue(
       return quoteDate(row)
     case 'quote_basis':
       return row.quote_basis ?? null
-    case 'quote_source_ref':
-      return row.quote_source_ref ?? null
+    case 'quote_provider':
+      return row.quote_provider ?? null
     case 'quote_status':
       return row.quote_status ?? null
     case 'market_value':
@@ -1173,19 +1524,29 @@ function holdingColumnTotalExportValue(
     case 'unrealized_pct':
       return totalUnrealizedPct(rows, context.workspace)
     case 'instrument_return_1w':
+      return weightedHoldingMetric(rows, context.workspace, (row) => row.instrument_return_1w)
     case 'instrument_return_mtd':
+      return weightedHoldingMetric(rows, context.workspace, (row) => row.instrument_return_mtd)
     case 'instrument_return_ytd':
+      return weightedHoldingMetric(rows, context.workspace, (row) => row.instrument_return_ytd)
     case 'instrument_return_1y':
+      return weightedHoldingMetric(rows, context.workspace, (row) => row.instrument_return_1y)
     case 'instrument_current_drawdown':
+      return groupedCurrentDrawdown(rows, context.workspace)
     case 'instrument_volatility_1m':
+      return groupedAnnualizedVolatility(rows, context.workspace, '1m')
     case 'instrument_volatility_3m':
+      return groupedAnnualizedVolatility(rows, context.workspace, '3m')
     case 'instrument_volatility_6m':
+      return groupedAnnualizedVolatility(rows, context.workspace, '6m')
     case 'instrument_volatility_1y':
-    case 'instrument_max_drawdown':
-    case 'instrument_holding_max_drawdown':
-      return null
+      return groupedAnnualizedVolatility(rows, context.workspace, '1y')
     case 'forward_risk_share':
       return sumNumbers(rows, (row) => row.forward_risk_share)
+    case 'instrument_max_drawdown':
+      return groupedMaxDrawdown(rows, context.workspace, 'all')
+    case 'instrument_holding_max_drawdown':
+      return groupedMaxDrawdown(rows, context.workspace, 'holding')
     default:
       return null
   }
@@ -1303,12 +1664,12 @@ const HOLDINGS_COLUMN_DEFINITIONS: Record<HoldingsColumnKey, HoldingsColumnDefin
     render: (row) => (row.quote_basis ? formatLabel(row.quote_basis) : '—'),
     sortValue: (row) => row.quote_basis,
   },
-  quote_source_ref: {
-    key: 'quote_source_ref',
-    label: 'Source',
+  quote_provider: {
+    key: 'quote_provider',
+    label: 'Provider',
     align: 'center',
-    render: (row) => row.quote_source_ref ?? '—',
-    sortValue: (row) => row.quote_source_ref,
+    render: (row) => row.quote_provider ?? '—',
+    sortValue: (row) => row.quote_provider,
   },
   quote_status: {
     key: 'quote_status',
@@ -1402,7 +1763,7 @@ const HOLDINGS_COLUMN_DEFINITIONS: Record<HoldingsColumnKey, HoldingsColumnDefin
     label: 'Unrealized P&L',
     align: 'right',
     render: (row) => signedCurrency(unrealizedValue(row), row.instrument_core.currency),
-    sortValue: (row) => unrealizedBaseValue(row),
+    sortValue: (row, context) => unrealizedBaseValueForWorkspace(row, context.workspace),
     className: (row) => signedValueClass(unrealizedValue(row)),
     total: (rows, context) => signedCurrency(totalUnrealizedBase(rows, context.workspace), context.workspace.base_currency),
     totalClassName: (rows, context) => signedValueClass(totalUnrealizedBase(rows, context.workspace)),
@@ -1424,7 +1785,8 @@ const HOLDINGS_COLUMN_DEFINITIONS: Record<HoldingsColumnKey, HoldingsColumnDefin
     render: (row) => signedPercent(row.instrument_return_1w),
     sortValue: (row) => row.instrument_return_1w,
     className: (row) => signedValueClass(row.instrument_return_1w),
-    total: () => '—',
+    total: (rows, context) => signedPercent(weightedHoldingMetric(rows, context.workspace, (row) => row.instrument_return_1w)),
+    totalClassName: (rows, context) => signedValueClass(weightedHoldingMetric(rows, context.workspace, (row) => row.instrument_return_1w)),
   },
   instrument_return_mtd: {
     key: 'instrument_return_mtd',
@@ -1433,7 +1795,8 @@ const HOLDINGS_COLUMN_DEFINITIONS: Record<HoldingsColumnKey, HoldingsColumnDefin
     render: (row) => signedPercent(row.instrument_return_mtd),
     sortValue: (row) => row.instrument_return_mtd,
     className: (row) => signedValueClass(row.instrument_return_mtd),
-    total: () => '—',
+    total: (rows, context) => signedPercent(weightedHoldingMetric(rows, context.workspace, (row) => row.instrument_return_mtd)),
+    totalClassName: (rows, context) => signedValueClass(weightedHoldingMetric(rows, context.workspace, (row) => row.instrument_return_mtd)),
   },
   instrument_return_ytd: {
     key: 'instrument_return_ytd',
@@ -1442,7 +1805,8 @@ const HOLDINGS_COLUMN_DEFINITIONS: Record<HoldingsColumnKey, HoldingsColumnDefin
     render: (row) => signedPercent(row.instrument_return_ytd),
     sortValue: (row) => row.instrument_return_ytd,
     className: (row) => signedValueClass(row.instrument_return_ytd),
-    total: () => '—',
+    total: (rows, context) => signedPercent(weightedHoldingMetric(rows, context.workspace, (row) => row.instrument_return_ytd)),
+    totalClassName: (rows, context) => signedValueClass(weightedHoldingMetric(rows, context.workspace, (row) => row.instrument_return_ytd)),
   },
   instrument_return_1y: {
     key: 'instrument_return_1y',
@@ -1451,7 +1815,8 @@ const HOLDINGS_COLUMN_DEFINITIONS: Record<HoldingsColumnKey, HoldingsColumnDefin
     render: (row) => signedPercent(row.instrument_return_1y),
     sortValue: (row) => row.instrument_return_1y,
     className: (row) => signedValueClass(row.instrument_return_1y),
-    total: () => '—',
+    total: (rows, context) => signedPercent(weightedHoldingMetric(rows, context.workspace, (row) => row.instrument_return_1y)),
+    totalClassName: (rows, context) => signedValueClass(weightedHoldingMetric(rows, context.workspace, (row) => row.instrument_return_1y)),
   },
   instrument_current_drawdown: {
     key: 'instrument_current_drawdown',
@@ -1460,7 +1825,8 @@ const HOLDINGS_COLUMN_DEFINITIONS: Record<HoldingsColumnKey, HoldingsColumnDefin
     render: (row) => signedPercent(row.instrument_current_drawdown),
     sortValue: (row) => row.instrument_current_drawdown,
     className: (row) => signedValueClass(row.instrument_current_drawdown),
-    total: () => '—',
+    total: (rows, context) => signedPercent(groupedCurrentDrawdown(rows, context.workspace)),
+    totalClassName: (rows, context) => signedValueClass(groupedCurrentDrawdown(rows, context.workspace)),
   },
   instrument_volatility_1m: {
     key: 'instrument_volatility_1m',
@@ -1468,7 +1834,7 @@ const HOLDINGS_COLUMN_DEFINITIONS: Record<HoldingsColumnKey, HoldingsColumnDefin
     align: 'right',
     render: (row) => formatPercent(row.instrument_volatility_1m),
     sortValue: (row) => row.instrument_volatility_1m,
-    total: () => '—',
+    total: (rows, context) => formatPercent(groupedAnnualizedVolatility(rows, context.workspace, '1m')),
   },
   instrument_volatility_3m: {
     key: 'instrument_volatility_3m',
@@ -1476,7 +1842,7 @@ const HOLDINGS_COLUMN_DEFINITIONS: Record<HoldingsColumnKey, HoldingsColumnDefin
     align: 'right',
     render: (row) => formatPercent(row.instrument_volatility_3m),
     sortValue: (row) => row.instrument_volatility_3m,
-    total: () => '—',
+    total: (rows, context) => formatPercent(groupedAnnualizedVolatility(rows, context.workspace, '3m')),
   },
   instrument_volatility_6m: {
     key: 'instrument_volatility_6m',
@@ -1484,7 +1850,7 @@ const HOLDINGS_COLUMN_DEFINITIONS: Record<HoldingsColumnKey, HoldingsColumnDefin
     align: 'right',
     render: (row) => formatPercent(row.instrument_volatility_6m),
     sortValue: (row) => row.instrument_volatility_6m,
-    total: () => '—',
+    total: (rows, context) => formatPercent(groupedAnnualizedVolatility(rows, context.workspace, '6m')),
   },
   instrument_volatility_1y: {
     key: 'instrument_volatility_1y',
@@ -1492,7 +1858,7 @@ const HOLDINGS_COLUMN_DEFINITIONS: Record<HoldingsColumnKey, HoldingsColumnDefin
     align: 'right',
     render: (row) => formatPercent(row.instrument_volatility_1y),
     sortValue: (row) => row.instrument_volatility_1y,
-    total: () => '—',
+    total: (rows, context) => formatPercent(groupedAnnualizedVolatility(rows, context.workspace, '1y')),
   },
   forward_risk_share: {
     key: 'forward_risk_share',
@@ -1513,7 +1879,8 @@ const HOLDINGS_COLUMN_DEFINITIONS: Record<HoldingsColumnKey, HoldingsColumnDefin
     render: (row) => signedPercent(row.instrument_max_drawdown),
     sortValue: (row) => row.instrument_max_drawdown,
     className: (row) => signedValueClass(row.instrument_max_drawdown),
-    total: () => '—',
+    total: (rows, context) => signedPercent(groupedMaxDrawdown(rows, context.workspace, 'all')),
+    totalClassName: (rows, context) => signedValueClass(groupedMaxDrawdown(rows, context.workspace, 'all')),
   },
   instrument_holding_max_drawdown: {
     key: 'instrument_holding_max_drawdown',
@@ -1522,31 +1889,32 @@ const HOLDINGS_COLUMN_DEFINITIONS: Record<HoldingsColumnKey, HoldingsColumnDefin
     render: (row) => signedPercent(row.instrument_holding_max_drawdown),
     sortValue: (row) => row.instrument_holding_max_drawdown,
     className: (row) => signedValueClass(row.instrument_holding_max_drawdown),
-    total: () => '—',
+    total: (rows, context) => signedPercent(groupedMaxDrawdown(rows, context.workspace, 'holding')),
+    totalClassName: (rows, context) => signedValueClass(groupedMaxDrawdown(rows, context.workspace, 'holding')),
   },
   price_chart_1m: {
     key: 'price_chart_1m',
     label: 'Chart 1M',
     render: (row) => <Sparkline values={row.price_chart_1m} />,
-    sortValue: () => null,
+    sortValue: (row) => chartReturnForColumn(row, 'price_chart_1m'),
   },
   price_chart_3m: {
     key: 'price_chart_3m',
     label: 'Chart 3M',
     render: (row) => <Sparkline values={row.price_chart_3m} />,
-    sortValue: () => null,
+    sortValue: (row) => chartReturnForColumn(row, 'price_chart_3m'),
   },
   price_chart_6m: {
     key: 'price_chart_6m',
     label: 'Chart 6M',
     render: (row) => <Sparkline values={row.price_chart_6m} />,
-    sortValue: () => null,
+    sortValue: (row) => chartReturnForColumn(row, 'price_chart_6m'),
   },
   price_chart_1y: {
     key: 'price_chart_1y',
     label: 'Chart 1Y',
     render: (row) => <Sparkline values={row.price_chart_1y} />,
-    sortValue: () => null,
+    sortValue: (row) => chartReturnForColumn(row, 'price_chart_1y'),
   },
   coverage: {
     key: 'coverage',
@@ -2369,7 +2737,7 @@ export default function PortfolioHomePage() {
     setLoading(true)
 
     Promise.allSettled([
-      getHoldingsWorkspace(portfolioId, {
+      getHoldingsWorkspace(portfolioId || undefined, {
         as_of_date: requestedAsOfDate || undefined,
       }),
       getPortfolioTaxonomyCatalog(portfolioId),

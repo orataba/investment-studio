@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from datetime import date
-from decimal import Decimal, InvalidOperation
 
 from fastapi import HTTPException
 
@@ -21,36 +20,11 @@ def resolve_transaction_flow_scope(transaction_type: str) -> str:
     return "internal_portfolio"
 
 
-def _decimal_fact(value: object, *, field_name: str) -> Decimal:
-    try:
-        resolved = value if isinstance(value, Decimal) else Decimal(str(value))
-    except (InvalidOperation, TypeError, ValueError) as error:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Persisted transaction {field_name} is not a valid decimal.",
-        ) from error
-    if not resolved.is_finite():
-        raise HTTPException(
-            status_code=500,
-            detail=f"Persisted transaction {field_name} must be finite.",
-        )
-    return resolved
-
-
-def _optional_decimal_fact(value: object, *, field_name: str) -> Decimal | None:
-    if value is None:
-        return None
-    return _decimal_fact(value, field_name=field_name)
-
-
-def resolve_transaction_net_cash_effect(record: dict[str, object]) -> Decimal | None:
+def resolve_transaction_net_cash_effect(record: dict[str, object]) -> float | None:
     transaction_type = str(record.get("transaction_type") or "")
-    gross_amount = _decimal_fact(
-        record.get("gross_amount", Decimal("0")),
-        field_name="gross_amount",
-    )
-    fees = _decimal_fact(record.get("fees", Decimal("0")), field_name="fees")
-    taxes = _decimal_fact(record.get("taxes", Decimal("0")), field_name="taxes")
+    gross_amount = float(record.get("gross_amount") or 0.0)
+    fees = float(record.get("fees") or 0.0)
+    taxes = float(record.get("taxes") or 0.0)
     if transaction_type == "buy":
         return -(gross_amount + fees + taxes)
     if transaction_type == "sell":
@@ -60,7 +34,7 @@ def resolve_transaction_net_cash_effect(record: dict[str, object]) -> Decimal | 
     if transaction_type == "interest":
         return gross_amount
     if transaction_type == "dividend_reinvestment":
-        return Decimal("0")
+        return 0.0
     if transaction_type in {"fee", "tax"}:
         return -gross_amount
     if transaction_type == "deposit":
@@ -119,32 +93,13 @@ def serialize_transaction(
         ),
         instrument_id=str(record.get("instrument_id")) if record.get("instrument_id") else None,
         instrument_ref=InstrumentCoreContract.model_validate(instrument_ref) if instrument_ref else None,
-        quantity=_optional_decimal_fact(record.get("quantity"), field_name="quantity"),
-        price=_optional_decimal_fact(record.get("price"), field_name="price"),
-        gross_amount=_decimal_fact(record.get("gross_amount"), field_name="gross_amount"),
-        counter_amount=_optional_decimal_fact(
-            record.get("counter_amount"),
-            field_name="counter_amount",
-        ),
-        quoted_fx_rate=_optional_decimal_fact(
-            record.get("quoted_fx_rate"),
-            field_name="quoted_fx_rate",
-        ),
-        fees=_decimal_fact(record.get("fees", Decimal("0")), field_name="fees"),
-        taxes=_decimal_fact(record.get("taxes", Decimal("0")), field_name="taxes"),
-        consideration_basis=(
-            str(record.get("consideration_basis"))
-            if record.get("consideration_basis") is not None
-            else None
-        ),
-        numeric_scale_state=str(record.get("numeric_scale_state") or ""),
-        quantity_input_scale=record.get("quantity_input_scale"),
-        price_input_scale=record.get("price_input_scale"),
-        gross_amount_input_scale=record.get("gross_amount_input_scale"),
-        counter_amount_input_scale=record.get("counter_amount_input_scale"),
-        quoted_fx_rate_input_scale=record.get("quoted_fx_rate_input_scale"),
-        fees_input_scale=record.get("fees_input_scale"),
-        taxes_input_scale=record.get("taxes_input_scale"),
+        quantity=float(record["quantity"]) if record.get("quantity") is not None else None,
+        price=float(record["price"]) if record.get("price") is not None else None,
+        gross_amount=float(record.get("gross_amount") or 0.0),
+        counter_amount=float(record["counter_amount"]) if record.get("counter_amount") is not None else None,
+        fx_rate=float(record["fx_rate"]) if record.get("fx_rate") is not None else None,
+        fees=float(record.get("fees") or 0.0),
+        taxes=float(record.get("taxes") or 0.0),
         currency=str(record.get("currency") or ""),
         transfer_scope=str(record.get("transfer_scope")) if record.get("transfer_scope") else None,
         transfer_object_type=(
@@ -157,17 +112,6 @@ def serialize_transaction(
         net_cash_effect=resolve_transaction_net_cash_effect(record),
         note=str(record.get("note")) if record.get("note") else None,
         created_at=str(record.get("created_at")) if record.get("created_at") else None,
-        revision_id=str(record.get("revision_id") or ""),
-        revision_number=int(record.get("revision_number") or 0),
-        lifecycle_status=str(record.get("lifecycle_status") or "active"),
-        last_mutation_id=str(record.get("last_mutation_id") or ""),
-        last_changed_at=record.get("last_changed_at"),
-        last_actor=record.get("last_actor"),
-        last_change_reason=(
-            str(record.get("last_change_reason"))
-            if record.get("last_change_reason")
-            else None
-        ),
     )
 
 

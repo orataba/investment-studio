@@ -7,7 +7,7 @@ from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
-from sqlalchemy import delete, func, or_, select, text
+from sqlalchemy import delete, func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload
 
@@ -15,39 +15,13 @@ from portfolio_ops_instrument_core.db_models import (
     CorporateActionEvent,
     Instrument,
     InstrumentIdentifier,
-    MarketDataOutboxEvent,
-    MarketDataOutboxWorkerHeartbeat,
-    QuoteObservation,
-    QuoteObservationRevision,
-    QuoteSeries,
+    InstrumentMarketData,
     RegistryMetadata,
 )
 from portfolio_ops_instrument_core.models import (
     CASH_CUMULATIVE_NAV_BASES,
     CorporateActionEvent as CorporateActionEventModel,
-    TOTAL_RETURN_QUOTE_BASES,
     VALUATION_PROHIBITED_TOTAL_RETURN_BASES,
-)
-from portfolio_ops_instrument_core.quote_revisions import (
-    QUOTE_REVISION_PAYLOAD_SCHEMA_V2,
-    SOURCE_OBSERVATION_STATUSES,
-    USABLE_CURRENT_STATUS,
-    WITHDRAWN_STATUS,
-    canonical_timestamp,
-    make_quote_observation_id,
-    make_quote_revision_id,
-    make_quote_series_id,
-    normalize_optional_timestamp,
-    normalize_revision_status,
-    normalize_source_ref,
-    quote_revision_payload_hash,
-    quote_numeric_evidence,
-    VALID_METRIC_FAMILIES,
-    VALID_QUOTE_BASES,
-)
-from portfolio_ops_instrument_core.quote_resolver import (
-    QUOTE_SELECTION_POLICY_VERSION,
-    canonical_quote_selection_policy_revision,
 )
 
 
@@ -59,29 +33,14 @@ EMPTY_STORE: dict[str, object] = {
 
 SessionFactory = Callable[[], Session]
 EMAIL_REFRESH_SUCCESS_STATUSES = frozenset({"imported", "no_match", "no_new_data"})
-_CURRENCY_CODE_PATTERN = re.compile(r"^[A-Z]{3}$")
-
-
-def _normalize_required_currency(value: object, *, context: str) -> str:
-    if not isinstance(value, str):
-        raise ValueError(f"{context} requires an explicit three-letter currency code.")
-    normalized = value.strip().upper()
-    if not _CURRENCY_CODE_PATTERN.fullmatch(normalized):
-        raise ValueError(f"{context} requires an explicit three-letter currency code.")
-    return normalized
 
 
 def _utcnow_iso() -> str:
     return datetime.now(UTC).isoformat(timespec="microseconds").replace("+00:00", "Z")
 
 
-def _utcnow() -> datetime:
-    return datetime.now(UTC)
-
-
 def _decimal_text(value: Decimal) -> str:
-    fixed = format(value, "f")
-    return fixed.rstrip("0").rstrip(".") if "." in fixed else fixed
+    return format(value.normalize(), "f")
 
 
 def _parse_utc_iso(value: object) -> datetime | None:
@@ -152,14 +111,10 @@ def _updated_refresh_status(
     previous_mode_fallback: str,
 ) -> dict[str, object]:
     normalized_mode = str(mode or "manual").strip().lower() or "manual"
-    previous_cursor = (
-        str(previous.get("last_successful_requested_at") or "").strip() or None
-    )
+    previous_cursor = str(previous.get("last_successful_requested_at") or "").strip() or None
     if previous_cursor is None:
         previous_status = str(previous.get("status") or "").strip().lower()
-        previous_mode = (
-            str(previous.get("mode") or previous_mode_fallback).strip().lower()
-        )
+        previous_mode = str(previous.get("mode") or previous_mode_fallback).strip().lower()
         previous_requested_at = str(previous.get("requested_at") or "").strip() or None
         if (
             previous_mode == "email"
@@ -169,10 +124,7 @@ def _updated_refresh_status(
             previous_cursor = previous_requested_at
 
     last_successful_requested_at = previous_cursor
-    if (
-        normalized_mode == "email"
-        and status.strip().lower() in EMAIL_REFRESH_SUCCESS_STATUSES
-    ):
+    if normalized_mode == "email" and status.strip().lower() in EMAIL_REFRESH_SUCCESS_STATUSES:
         last_successful_requested_at = requested_at
 
     return {
@@ -212,6 +164,8 @@ QUOTE_SELECTION_POLICY_DEFAULTS: dict[str, dict[str, list[str]]] = {
             "dividend_adjusted_nav",
             "reinvested_nav",
             "adjusted_close",
+            "official_nav",
+            "close",
         ],
         "chart": [
             "total_return_nav",
@@ -226,7 +180,7 @@ QUOTE_SELECTION_POLICY_DEFAULTS: dict[str, dict[str, list[str]]] = {
     "etf": {
         "trading": ["last", "close"],
         "valuation": ["close", "last"],
-        "total_return": ["adjusted_close"],
+        "total_return": ["adjusted_close", "close", "last"],
         "chart": ["adjusted_close", "close", "last"],
         "reference": ["close", "last"],
     },
@@ -236,79 +190,72 @@ QUOTE_SELECTION_POLICY_DEFAULTS: dict[str, dict[str, list[str]]] = {
         # price. Adjusted close is a synthetic total-return series and must
         # never silently substitute for a missing market price.
         "valuation": ["close", "last"],
-        "total_return": ["adjusted_close"],
+        "total_return": ["adjusted_close", "close", "last"],
         "chart": ["adjusted_close", "close", "last"],
         "reference": ["close", "last"],
     },
     "index": {
         "trading": ["close", "last"],
         "valuation": ["close", "last"],
-        "total_return": ["adjusted_close"],
+        "total_return": ["adjusted_close", "close", "last"],
         "chart": ["adjusted_close", "close", "last"],
         "reference": ["close", "last"],
     },
     "bond": {
         "trading": ["clean_price", "dirty_price"],
         "valuation": ["dirty_price", "clean_price"],
-        "total_return": [],
+        "total_return": ["dirty_price", "clean_price"],
         "chart": ["dirty_price", "clean_price"],
         "reference": ["clean_price", "dirty_price"],
     },
     "cash": {
         "trading": ["par"],
         "valuation": ["par"],
-        "total_return": [],
+        "total_return": ["par"],
         "chart": ["par"],
         "reference": ["par"],
     },
     "fx": {
         "trading": ["spot"],
         "valuation": ["spot"],
-        "total_return": [],
+        "total_return": ["spot"],
         "chart": ["spot"],
         "reference": ["spot"],
     },
     "other": {
         "trading": ["last", "close"],
         "valuation": ["close", "last"],
-        "total_return": ["adjusted_close"],
+        "total_return": ["adjusted_close", "close", "last"],
         "chart": ["adjusted_close", "close", "last"],
         "reference": ["close", "last"],
     },
 }
 
+VALID_METRIC_FAMILIES = {"price", "nav", "fx"}
+VALID_QUOTE_BASES = {
+    "last": "price",
+    "close": "price",
+    "adjusted_close": "price",
+    "official_nav": "nav",
+    "total_return_nav": "nav",
+    "cumulative_nav": "nav",
+    "accumulated_nav": "nav",
+    "cum_nav": "nav",
+    "dividend_adjusted_nav": "nav",
+    "reinvested_nav": "nav",
+    "spot": "fx",
+    "clean_price": "price",
+    "dirty_price": "price",
+    "par": "price",
+}
+
 
 def _default_quote_selection_policy(instrument_type: str) -> dict[str, object]:
-    normalized_instrument_type = (
-        instrument_type
-        if instrument_type in QUOTE_SELECTION_POLICY_DEFAULTS
-        else "other"
-    )
+    normalized_instrument_type = instrument_type if instrument_type in QUOTE_SELECTION_POLICY_DEFAULTS else "other"
     return deepcopy(QUOTE_SELECTION_POLICY_DEFAULTS[normalized_instrument_type])
 
 
 def validate_quote_selection_policy(quote_selection_policy: dict[str, object]) -> None:
-    for role in ("trading", "valuation", "total_return", "chart", "reference"):
-        if role not in quote_selection_policy:
-            raise ValueError(
-                f"quote_selection_policy must explicitly define role {role}."
-            )
-        raw_values = quote_selection_policy.get(role)
-        if not isinstance(raw_values, list):
-            raise ValueError(f"quote_selection_policy.{role} must be a list.")
-        normalized_values = [str(value or "").strip().lower() for value in raw_values]
-        unsupported = sorted(
-            basis for basis in normalized_values if basis not in VALID_QUOTE_BASES
-        )
-        if unsupported:
-            raise ValueError(
-                f"quote_selection_policy.{role} contains unsupported bases: "
-                + ", ".join(unsupported)
-            )
-        if len(normalized_values) != len(set(normalized_values)):
-            raise ValueError(
-                f"quote_selection_policy.{role} must not contain duplicate bases."
-            )
     raw_valuation = quote_selection_policy.get("valuation", [])
     if not isinstance(raw_valuation, list):
         raise ValueError("quote_selection_policy.valuation must be a list.")
@@ -325,22 +272,6 @@ def validate_quote_selection_policy(quote_selection_policy: dict[str, object]) -
             + ", ".join(invalid)
             + ". Use an unadjusted trading/valuation quote such as close, last, or official_nav."
         )
-    raw_total_return = quote_selection_policy.get("total_return", [])
-    if not isinstance(raw_total_return, list):
-        raise ValueError("quote_selection_policy.total_return must be a list.")
-    invalid_total_return = sorted(
-        {
-            str(value or "").strip()
-            for value in raw_total_return
-            if str(value or "").strip() not in TOTAL_RETURN_QUOTE_BASES
-        }
-    )
-    if invalid_total_return:
-        raise ValueError(
-            "Total-return policy requires a true total-return quote basis: "
-            + ", ".join(invalid_total_return)
-            + ". Price/NAV trend bases belong in chart, not total_return."
-        )
     for role in ("total_return", "chart"):
         raw_values = quote_selection_policy.get(role, [])
         if not isinstance(raw_values, list):
@@ -356,7 +287,7 @@ def validate_quote_selection_policy(quote_selection_policy: dict[str, object]) -
             raise ValueError(
                 f"{role} policy cannot use cash-cumulative NAV as total return: "
                 + ", ".join(invalid_cumulative)
-                + ". Use a true total-return basis; ordinary price/NAV trends belong in chart."
+                + ". Use total_return_nav/dividend_adjusted_nav, or explicitly fall back to official_nav as an ordinary price-return series."
             )
 
 
@@ -367,18 +298,19 @@ def _normalized_quote_selection_policy(item: dict[str, object]) -> dict[str, obj
     if not isinstance(raw_policy, dict):
         return policy
 
-    for role in policy:
-        if role not in raw_policy:
-            continue
+    for role, fallback_bases in policy.items():
         raw_values = raw_policy.get(role)
         if not isinstance(raw_values, list):
-            raise ValueError(f"quote_selection_policy.{role} must be a list.")
+            continue
         normalized_values: list[str] = []
         for raw_value in raw_values:
-            quote_basis = str(raw_value or "").strip().lower()
-            normalized_values.append(quote_basis)
-        policy[role] = normalized_values
-    validate_quote_selection_policy(policy)
+            quote_basis = str(raw_value or "").strip()
+            if quote_basis in VALID_QUOTE_BASES and quote_basis not in normalized_values:
+                normalized_values.append(quote_basis)
+        if normalized_values:
+            policy[role] = normalized_values
+        else:
+            policy[role] = list(fallback_bases)
     return policy
 
 
@@ -390,7 +322,6 @@ def _sort_market_data(points: list[dict[str, object]]) -> list[dict[str, object]
             str(item.get("metric_family") or ""),
             str(item.get("quote_basis") or ""),
             str(item.get("currency") or ""),
-            str(item.get("quote_series_id") or ""),
         ),
     )
 
@@ -419,17 +350,7 @@ def _normalized_corporate_actions(item: dict[str, object]) -> list[dict[str, obj
         new_units = str(event.get("new_units") or "").strip()
         old_units = str(event.get("old_units") or "").strip()
         source = str(event.get("source") or "").strip()
-        if not all(
-            (
-                event_id,
-                instrument_id,
-                action_type,
-                effective_date,
-                new_units,
-                old_units,
-                source,
-            )
-        ):
+        if not all((event_id, instrument_id, action_type, effective_date, new_units, old_units, source)):
             continue
         normalized.append(
             {
@@ -444,9 +365,7 @@ def _normalized_corporate_actions(item: dict[str, object]) -> list[dict[str, obj
                 "old_units": old_units,
                 "quantity_rounding": str(event.get("quantity_rounding") or "exact"),
                 "quantity_precision": int(event.get("quantity_precision") or 0),
-                "cost_basis_treatment": str(
-                    event.get("cost_basis_treatment") or "carry"
-                ),
+                "cost_basis_treatment": str(event.get("cost_basis_treatment") or "carry"),
                 "source": source,
                 "external_event_id": event.get("external_event_id"),
                 "status": str(event.get("status") or "confirmed"),
@@ -459,18 +378,10 @@ def _normalized_corporate_actions(item: dict[str, object]) -> list[dict[str, obj
 
 
 def _normalized_market_data(item: dict[str, object]) -> list[dict[str, object]]:
-    instrument_id = str(item.get("instrument_id") or "<unknown>").strip()
-    instrument_currency = _normalize_required_currency(
-        item.get("currency"),
-        context=f"Instrument '{instrument_id}'",
-    )
+    instrument_currency = str(item.get("currency") or "USD").strip().upper() or "USD"
     normalized_points: list[dict[str, object]] = []
     for raw_point in list(item.get("market_data", [])):
         point = dict(raw_point)
-        if "provider" in point:
-            raise ValueError(
-                "market-data provider was removed; use source_ref for quote provenance"
-            )
         metric_family = str(point.get("metric_family") or "").strip()
         quote_basis = str(point.get("quote_basis") or "").strip()
         if metric_family not in VALID_METRIC_FAMILIES:
@@ -479,68 +390,15 @@ def _normalized_market_data(item: dict[str, object]) -> list[dict[str, object]]:
             continue
         if VALID_QUOTE_BASES[quote_basis] != metric_family:
             continue
-        try:
-            status = normalize_revision_status(point.get("status"))
-            numeric_evidence = (
-                None
-                if status == WITHDRAWN_STATUS
-                else quote_numeric_evidence(point.get("value"))
-            )
-            value = numeric_evidence.value if numeric_evidence is not None else None
-            if value is not None and Decimal(value) <= 0:
-                raise ValueError("quote value must be positive")
-            stored_scale = point.get("value_input_scale")
-            stored_scale_state = point.get("numeric_scale_state")
-            stored_payload_version = point.get("payload_schema_version")
-            if numeric_evidence is None:
-                value_input_scale = None
-                numeric_scale_state = None
-            elif stored_scale is not None and stored_scale_state is not None:
-                value_input_scale = int(stored_scale)
-                numeric_scale_state = str(stored_scale_state)
-                if value_input_scale < 0 or numeric_scale_state not in {
-                    "declared",
-                    "binary_inferred",
-                    "legacy_inferred",
-                }:
-                    raise ValueError("invalid persisted quote numeric evidence")
-            else:
-                value_input_scale = numeric_evidence.value_input_scale
-                numeric_scale_state = numeric_evidence.numeric_scale_state
-            payload_schema_version = int(
-                stored_payload_version or QUOTE_REVISION_PAYLOAD_SCHEMA_V2
-            )
-            if payload_schema_version not in {1, 2}:
-                raise ValueError("invalid quote payload schema version")
-        except ValueError:
-            continue
         normalized_points.append(
             {
-                "quote_series_id": point.get("quote_series_id"),
-                "observation_id": point.get("observation_id"),
-                "revision_id": point.get("revision_id"),
-                "revision_number": point.get("revision_number"),
                 "metric_family": metric_family,
                 "quote_basis": quote_basis,
                 "as_of_date": str(point.get("as_of_date") or ""),
-                "value": value,
-                "value_input_scale": value_input_scale,
-                "numeric_scale_state": numeric_scale_state,
-                "payload_schema_version": payload_schema_version,
-                "currency": _normalize_required_currency(
-                    point.get("currency") or instrument_currency,
-                    context=f"Instrument '{instrument_id}' market-data point",
-                ),
-                "source_ref": normalize_source_ref(point.get("source_ref")),
-                "status": status,
-                "source_published_at": canonical_timestamp(
-                    point.get("source_published_at")
-                ),
-                "ingested_at": canonical_timestamp(point.get("ingested_at")),
-                "ingestion_time_state": str(
-                    point.get("ingestion_time_state") or "observed"
-                ),
-                "payload_hash": point.get("payload_hash"),
+                "value": "" if point.get("value") is None else str(point.get("value")),
+                "currency": str(point.get("currency") or instrument_currency).strip().upper() or instrument_currency,
+                "provider": point.get("provider"),
+                "status": str(point.get("status") or "complete"),
             }
         )
     return _sort_market_data(normalized_points)
@@ -563,12 +421,6 @@ def reset_store(
     session_factory: SessionFactory,
     data: dict[str, object] | None = None,
 ) -> None:
-    """Destructively replace the whole registry for tests/bootstrap only.
-
-    Runtime write paths must use the granular commands below; this boundary
-    intentionally discards durable outbox delivery and worker-heartbeat state.
-    """
-
     payload = data if data is not None else EMPTY_STORE
     normalized = _normalize_store(deepcopy(payload))
     with session_factory() as session:
@@ -601,20 +453,29 @@ def _instrument_to_store_dict(
     market_data: list[dict[str, object]] | None = None,
 ) -> dict[str, object]:
     identifiers = _serialize_identifier_rows(item)
-    resolved_market_data = market_data or []
+    resolved_market_data = market_data
+    if resolved_market_data is None:
+        resolved_market_data = [
+            {
+                "metric_family": point.metric_family,
+                "quote_basis": point.quote_basis,
+                "as_of_date": point.as_of_date.isoformat(),
+                "value": point.value,
+                "currency": point.currency,
+                "provider": point.provider,
+                "status": point.status,
+            }
+            for point in item.market_data_points
+        ]
     corporate_actions = [
         {
             "corporate_action_event_id": event.corporate_action_event_id,
             "instrument_id": event.instrument_id,
             "action_type": event.action_type,
-            "announcement_date": event.announcement_date.isoformat()
-            if event.announcement_date
-            else None,
+            "announcement_date": event.announcement_date.isoformat() if event.announcement_date else None,
             "record_date": event.record_date.isoformat() if event.record_date else None,
             "effective_date": event.effective_date.isoformat(),
-            "payable_date": event.payable_date.isoformat()
-            if event.payable_date
-            else None,
+            "payable_date": event.payable_date.isoformat() if event.payable_date else None,
             "new_units": event.new_units,
             "old_units": event.old_units,
             "quantity_rounding": event.quantity_rounding,
@@ -648,42 +509,13 @@ def _instrument_to_store_dict(
 def _save_store_to_db(session: Session, data: dict[str, object]) -> None:
     normalized = _normalize_store(data)
 
-    if session.get_bind().dialect.name == "postgresql":
-        # The controlled full-reset boundary must bypass immutable revision row
-        # triggers. All registry-owned dependents are truncated together; new
-        # seed revisions then create fresh outbox events through the normal
-        # trigger. Callers must run this before installing cross-schema facts.
-        session.execute(
-            text(
-                """
-                TRUNCATE TABLE
-                    market_data_outbox_worker_heartbeat,
-                    market_data_outbox_event,
-                    corporate_action_event,
-                    quote_observation_revision,
-                    quote_observation,
-                    quote_series,
-                    instrument_identifier,
-                    instrument
-                RESTART IDENTITY
-                """
-            )
-        )
-    else:
-        session.execute(delete(MarketDataOutboxWorkerHeartbeat))
-        session.execute(delete(MarketDataOutboxEvent))
-        session.execute(delete(CorporateActionEvent))
-        session.execute(delete(QuoteObservationRevision))
-        session.execute(delete(QuoteObservation))
-        session.execute(delete(QuoteSeries))
-        session.execute(delete(InstrumentIdentifier))
-        session.execute(delete(Instrument))
+    session.execute(delete(CorporateActionEvent))
+    session.execute(delete(InstrumentMarketData))
+    session.execute(delete(InstrumentIdentifier))
+    session.execute(delete(Instrument))
 
     metadata_record = session.get(RegistryMetadata, "shared")
     reset_watermark = _utcnow_iso()
-    reset_ingested_at = datetime.fromisoformat(
-        reset_watermark.replace("Z", "+00:00")
-    )
     if metadata_record is None:
         metadata_record = RegistryMetadata(
             registry_key="shared",
@@ -692,9 +524,7 @@ def _save_store_to_db(session: Session, data: dict[str, object]) -> None:
         )
         session.add(metadata_record)
     else:
-        metadata_record.registry_name = str(
-            normalized.get("registry_name") or DEFAULT_REGISTRY_NAME
-        )
+        metadata_record.registry_name = str(normalized.get("registry_name") or DEFAULT_REGISTRY_NAME)
         metadata_record.market_data_updated_at = reset_watermark
 
     for raw_item in list(normalized.get("instruments", [])):
@@ -705,13 +535,7 @@ def _save_store_to_db(session: Session, data: dict[str, object]) -> None:
             instrument_id=str(item.get("instrument_id") or "").strip(),
             instrument_name=str(item.get("instrument_name") or "").strip(),
             instrument_type=str(item.get("instrument_type") or "").strip() or "other",
-            currency=_normalize_required_currency(
-                item.get("currency"),
-                context=(
-                    "Instrument "
-                    f"'{str(item.get('instrument_id') or '<unknown>').strip()}'"
-                ),
-            ),
+            currency=str(item.get("currency") or "USD").strip().upper() or "USD",
             quote_selection_policy_json=_normalized_quote_selection_policy(item),
             source_settings_json=_normalized_source_settings(item),
             refresh_status_json=_normalized_refresh_status(item),
@@ -743,132 +567,26 @@ def _save_store_to_db(session: Session, data: dict[str, object]) -> None:
                 )
             )
 
-        normalized_points: dict[tuple[str, str, date, str], dict[str, object]] = {}
         for raw_point in _normalized_market_data(item):
             try:
-                point_date = date.fromisoformat(str(raw_point.get("as_of_date") or ""))
+                as_of_date = date.fromisoformat(str(raw_point.get("as_of_date") or ""))
             except ValueError:
                 continue
-            key = (
-                str(raw_point.get("metric_family") or "").strip(),
-                str(raw_point.get("quote_basis") or "").strip(),
-                point_date,
-                _normalize_required_currency(
-                    raw_point.get("currency") or instrument.currency,
-                    context=f"Instrument '{instrument.instrument_id}' market-data point",
-                ),
-            )
-            normalized_points[key] = raw_point
-
-        quote_series_by_key: dict[tuple[str, str, str], QuoteSeries] = {}
-        for (
-            metric_family,
-            quote_basis,
-            point_date,
-            currency,
-        ), raw_point in normalized_points.items():
-            series_key = (metric_family, quote_basis, currency)
-            quote_series = quote_series_by_key.get(series_key)
-            if quote_series is None:
-                series_id = make_quote_series_id(
-                    instrument_id=instrument.instrument_id,
-                    metric_family=metric_family,
-                    quote_basis=quote_basis,
-                    currency=currency,
-                )
-                quote_series = QuoteSeries(
-                    quote_series_id=series_id,
-                    instrument_id=instrument.instrument_id,
-                    metric_family=metric_family,
-                    quote_basis=quote_basis,
-                    currency=currency,
-                    data_updated_at=instrument.market_data_updated_at,
-                )
-                quote_series_by_key[series_key] = quote_series
-                session.add(quote_series)
-
-            observation_id = make_quote_observation_id(
-                quote_series_id=quote_series.quote_series_id,
-                as_of_date=point_date,
-            )
-            status = normalize_revision_status(raw_point.get("status"))
-            numeric_evidence = (
-                None
-                if status == WITHDRAWN_STATUS
-                else quote_numeric_evidence(raw_point.get("value"))
-            )
-            # A destructive reset is a new v2 ingestion event.  It may copy an
-            # exact v2 representation, but legacy-inferred metadata cannot be
-            # promoted to declared evidence merely by replaying a fixture.
-            if (
-                numeric_evidence is not None
-                and raw_point.get("payload_schema_version") == 2
-                and raw_point.get("numeric_scale_state")
-                in {"declared", "binary_inferred"}
-            ):
-                numeric_evidence = type(numeric_evidence)(
-                    value=numeric_evidence.value,
-                    value_input_scale=int(raw_point["value_input_scale"]),
-                    numeric_scale_state=str(raw_point["numeric_scale_state"]),
-                )
-            value = numeric_evidence.value if numeric_evidence is not None else None
-            source_ref = normalize_source_ref(raw_point.get("source_ref"))
-            source_published_at = normalize_optional_timestamp(
-                raw_point.get("source_published_at")
-            )
             session.add(
-                QuoteObservation(
-                    observation_id=observation_id,
-                    quote_series_id=quote_series.quote_series_id,
-                    as_of_date=point_date,
-                )
-            )
-            session.add(
-                QuoteObservationRevision(
-                    revision_id=make_quote_revision_id(
-                        observation_id=observation_id,
-                        revision_number=1,
-                    ),
-                    observation_id=observation_id,
-                    revision_number=1,
-                    value=value,
-                    value_input_scale=(
-                        numeric_evidence.value_input_scale
-                        if numeric_evidence is not None
+                InstrumentMarketData(
+                    instrument_id=instrument.instrument_id,
+                    metric_family=str(raw_point.get("metric_family") or "").strip(),
+                    quote_basis=str(raw_point.get("quote_basis") or "").strip(),
+                    as_of_date=as_of_date,
+                    value=str(raw_point.get("value") or ""),
+                    currency=str(raw_point.get("currency") or instrument.currency).strip().upper()
+                    or instrument.currency,
+                    provider=(
+                        str(raw_point.get("provider")).strip()
+                        if raw_point.get("provider") is not None
                         else None
                     ),
-                    numeric_scale_state=(
-                        numeric_evidence.numeric_scale_state
-                        if numeric_evidence is not None
-                        else None
-                    ),
-                    payload_schema_version=QUOTE_REVISION_PAYLOAD_SCHEMA_V2,
-                    source_ref=source_ref,
-                    status=status,
-                    source_published_at=source_published_at,
-                    # The source publication clock may be unknown, but the
-                    # canonical-registry ingestion event is observed here.
-                    ingested_at=reset_ingested_at,
-                    ingestion_time_state="observed",
-                    payload_hash=quote_revision_payload_hash(
-                        value=value,
-                        source_ref=source_ref,
-                        status=status,
-                        source_published_at=source_published_at,
-                        payload_schema_version=QUOTE_REVISION_PAYLOAD_SCHEMA_V2,
-                        value_input_scale=(
-                            numeric_evidence.value_input_scale
-                            if numeric_evidence is not None
-                            else None
-                        ),
-                        numeric_scale_state=(
-                            numeric_evidence.numeric_scale_state
-                            if numeric_evidence is not None
-                            else None
-                        ),
-                    ),
-                    is_current=True,
-                    superseded_at=None,
+                    status=str(raw_point.get("status") or "complete").strip() or "complete",
                 )
             )
 
@@ -894,9 +612,7 @@ def _save_store_to_db(session: Session, data: dict[str, object]) -> None:
                 continue
             session.add(
                 CorporateActionEvent(
-                    corporate_action_event_id=str(
-                        raw_event["corporate_action_event_id"]
-                    ),
+                    corporate_action_event_id=str(raw_event["corporate_action_event_id"]),
                     instrument_id=instrument.instrument_id,
                     action_type=str(raw_event["action_type"]),
                     announcement_date=announcement_date,
@@ -929,19 +645,17 @@ def _slugify(value: str) -> str:
 
 
 def _latest_market_data(points: list[dict[str, object]]) -> list[dict[str, object]]:
-    latest_by_series: dict[tuple[str, str, str, str], dict[str, object]] = {}
+    latest_by_basis: dict[tuple[str, str], dict[str, object]] = {}
     for point in points:
-        series_key = (
-            str(point.get("quote_series_id") or ""),
+        basis_key = (
             str(point.get("metric_family") or ""),
             str(point.get("quote_basis") or ""),
-            str(point.get("currency") or ""),
         )
         as_of_date = str(point.get("as_of_date") or "")
-        current = latest_by_series.get(series_key)
+        current = latest_by_basis.get(basis_key)
         if current is None or as_of_date >= str(current.get("as_of_date") or ""):
-            latest_by_series[series_key] = point
-    return [latest_by_series[key] for key in sorted(latest_by_series.keys())]
+            latest_by_basis[basis_key] = point
+    return [latest_by_basis[key] for key in sorted(latest_by_basis.keys())]
 
 
 def _coverage_state(points: list[dict[str, object]]) -> str:
@@ -969,13 +683,9 @@ def _normalized_source_settings(item: dict[str, object]) -> dict[str, object]:
 
 def _normalized_refresh_status(item: dict[str, object]) -> dict[str, object]:
     source_settings = _normalized_source_settings(item)
-    refresh_status = dict(
-        _default_refresh_status(str(source_settings.get("source_mode") or "manual"))
-    )
+    refresh_status = dict(_default_refresh_status(str(source_settings.get("source_mode") or "manual")))
     refresh_status.update(dict(item.get("refresh_status", {})))
-    refresh_status["mode"] = str(
-        refresh_status.get("mode") or source_settings.get("source_mode") or "manual"
-    )
+    refresh_status["mode"] = str(refresh_status.get("mode") or source_settings.get("source_mode") or "manual")
     return refresh_status
 
 
@@ -987,9 +697,7 @@ def _normalized_lifecycle_state(item: dict[str, object]) -> dict[str, object]:
     canonical_instrument_id: str | None = None
 
     if isinstance(raw_lifecycle, dict):
-        status = (
-            str(raw_lifecycle.get("status") or "active").strip().lower() or "active"
-        )
+        status = str(raw_lifecycle.get("status") or "active").strip().lower() or "active"
         raw_changed_at = raw_lifecycle.get("changed_at")
         raw_changed_by = raw_lifecycle.get("changed_by")
         raw_canonical_id = raw_lifecycle.get("canonical_instrument_id")
@@ -1014,13 +722,7 @@ def _is_active(item: dict[str, object]) -> bool:
 
 
 def _serialize_record(item: dict[str, object]) -> dict[str, object]:
-    market_data = [
-        point
-        for point in _normalized_market_data(item)
-        if point.get("status") == USABLE_CURRENT_STATUS
-        and point.get("value") is not None
-    ]
-    quote_selection_policy = _normalized_quote_selection_policy(item)
+    market_data = _normalized_market_data(item)
     return {
         "instrument_id": item["instrument_id"],
         "instrument_name": item["instrument_name"],
@@ -1028,11 +730,7 @@ def _serialize_record(item: dict[str, object]) -> dict[str, object]:
         "currency": item["currency"],
         "identifiers": deepcopy(item.get("identifiers", [])),
         "latest_market_data": _latest_market_data(market_data),
-        "quote_selection_policy": quote_selection_policy,
-        "quote_selection_policy_version": QUOTE_SELECTION_POLICY_VERSION,
-        "quote_selection_policy_revision": canonical_quote_selection_policy_revision(
-            quote_selection_policy
-        ),
+        "quote_selection_policy": _normalized_quote_selection_policy(item),
         "coverage_state": _coverage_state(market_data),
         "market_data_updated_at": item.get("market_data_updated_at"),
         "source_settings": _normalized_source_settings(item),
@@ -1044,121 +742,73 @@ def _serialize_record(item: dict[str, object]) -> dict[str, object]:
 
 def _serialize_detail_record(item: dict[str, object]) -> dict[str, object]:
     record = _serialize_record(item)
-    record["market_data"] = deepcopy(
-        [
-            point
-            for point in _normalized_market_data(item)
-            if point.get("status") == USABLE_CURRENT_STATUS
-            and point.get("value") is not None
-        ]
-    )
+    record["market_data"] = deepcopy(_normalized_market_data(item))
     return record
 
 
 def _instrument_query(*, include_market_data: bool = True):
-    del include_market_data
     eager_loads = [
         selectinload(Instrument.identifiers),
         selectinload(Instrument.corporate_action_events),
     ]
-    return select(Instrument).options(*eager_loads)
+    if include_market_data:
+        eager_loads.append(selectinload(Instrument.market_data_points))
+    return (
+        select(Instrument)
+        .options(*eager_loads)
+    )
 
 
-def _serialize_market_data_row(row: Any) -> dict[str, object]:
-    return {
-        "quote_series_id": str(row["quote_series_id"]),
-        "observation_id": str(row["observation_id"]),
-        "revision_id": str(row["revision_id"]),
-        "revision_number": int(row["revision_number"]),
-        "metric_family": str(row["metric_family"]),
-        "quote_basis": str(row["quote_basis"]),
-        "as_of_date": row["as_of_date"].isoformat(),
-        "value": str(row["value"]),
-        "value_input_scale": int(row["value_input_scale"]),
-        "numeric_scale_state": str(row["numeric_scale_state"]),
-        "payload_schema_version": int(row["payload_schema_version"]),
-        "currency": str(row["currency"]),
-        "source_ref": row["source_ref"],
-        "status": str(row["status"]),
-        "source_published_at": canonical_timestamp(row["source_published_at"]),
-        "ingested_at": canonical_timestamp(row["ingested_at"]),
-        "ingestion_time_state": str(row["ingestion_time_state"]),
-        "payload_hash": str(row["payload_hash"]),
-    }
-
-
-def _market_data_for_instruments(
+def _latest_market_data_for_instruments(
     session: Session,
     instrument_ids: list[str],
-    *,
-    latest_only: bool,
 ) -> dict[str, list[dict[str, object]]]:
     if not instrument_ids:
         return {}
 
-    current_points = (
+    ranked = (
         select(
-            QuoteSeries.instrument_id.label("instrument_id"),
-            QuoteSeries.quote_series_id.label("quote_series_id"),
-            QuoteSeries.metric_family.label("metric_family"),
-            QuoteSeries.quote_basis.label("quote_basis"),
-            QuoteSeries.currency.label("currency"),
-            QuoteObservation.observation_id.label("observation_id"),
-            QuoteObservation.as_of_date.label("as_of_date"),
-            QuoteObservationRevision.revision_id.label("revision_id"),
-            QuoteObservationRevision.revision_number.label("revision_number"),
-            QuoteObservationRevision.value.label("value"),
-            QuoteObservationRevision.value_input_scale.label("value_input_scale"),
-            QuoteObservationRevision.numeric_scale_state.label("numeric_scale_state"),
-            QuoteObservationRevision.payload_schema_version.label(
-                "payload_schema_version"
-            ),
-            QuoteObservationRevision.source_ref.label("source_ref"),
-            QuoteObservationRevision.status.label("status"),
-            QuoteObservationRevision.source_published_at.label("source_published_at"),
-            QuoteObservationRevision.ingested_at.label("ingested_at"),
-            QuoteObservationRevision.ingestion_time_state.label(
-                "ingestion_time_state"
-            ),
-            QuoteObservationRevision.payload_hash.label("payload_hash"),
-        )
-        .join(
-            QuoteObservation,
-            QuoteObservation.quote_series_id == QuoteSeries.quote_series_id,
-        )
-        .join(
-            QuoteObservationRevision,
-            QuoteObservationRevision.observation_id == QuoteObservation.observation_id,
-        )
-        .where(
-            QuoteSeries.instrument_id.in_(instrument_ids),
-            QuoteObservationRevision.is_current.is_(True),
-            QuoteObservationRevision.status == USABLE_CURRENT_STATUS,
-            QuoteObservationRevision.value.is_not(None),
-        )
-    )
-    statement = current_points
-    if latest_only:
-        ranked = current_points.add_columns(
+            InstrumentMarketData.instrument_id.label("instrument_id"),
+            InstrumentMarketData.metric_family.label("metric_family"),
+            InstrumentMarketData.quote_basis.label("quote_basis"),
+            InstrumentMarketData.as_of_date.label("as_of_date"),
+            InstrumentMarketData.value.label("value"),
+            InstrumentMarketData.currency.label("currency"),
+            InstrumentMarketData.provider.label("provider"),
+            InstrumentMarketData.status.label("status"),
             func.row_number()
             .over(
-                partition_by=QuoteSeries.quote_series_id,
+                partition_by=(
+                    InstrumentMarketData.instrument_id,
+                    InstrumentMarketData.metric_family,
+                    InstrumentMarketData.quote_basis,
+                ),
                 order_by=(
-                    QuoteObservation.as_of_date.desc(),
-                    QuoteObservationRevision.revision_number.desc(),
+                    InstrumentMarketData.as_of_date.desc(),
+                    InstrumentMarketData.instrument_market_data_id.desc(),
                 ),
             )
             .label("row_number"),
-        ).subquery()
-        statement = select(ranked).where(ranked.c.row_number == 1)
-    rows = session.execute(statement).mappings()
-    result: dict[str, list[dict[str, object]]] = {
-        instrument_id: [] for instrument_id in instrument_ids
-    }
+        )
+        .where(InstrumentMarketData.instrument_id.in_(instrument_ids))
+        .subquery()
+    )
+    rows = session.execute(
+        select(ranked).where(ranked.c.row_number == 1)
+    ).mappings()
+    result: dict[str, list[dict[str, object]]] = {instrument_id: [] for instrument_id in instrument_ids}
     for row in rows:
-        result[str(row["instrument_id"])].append(_serialize_market_data_row(row))
-    for points in result.values():
-        points[:] = _sort_market_data(points)
+        result[str(row["instrument_id"])].append(
+            {
+                "metric_family": row["metric_family"],
+                "quote_basis": row["quote_basis"],
+                "as_of_date": row["as_of_date"].isoformat(),
+                "value": row["value"],
+                "currency": row["currency"],
+                "provider": row["provider"],
+                "status": row["status"],
+            }
+        )
     return result
 
 
@@ -1171,21 +821,15 @@ def list_instruments(
     include_inactive: bool = False,
 ) -> list[dict[str, object]]:
     normalized_search = search.strip().lower() if search else ""
-    normalized_instrument_type = (
-        instrument_type.strip().lower() if instrument_type else None
-    )
+    normalized_instrument_type = instrument_type.strip().lower() if instrument_type else None
 
     with session_factory() as session:
         statement = _instrument_query(include_market_data=False)
         if not include_inactive:
             lifecycle_status = Instrument.lifecycle_state_json["status"].as_string()
-            statement = statement.where(
-                func.coalesce(lifecycle_status, "active") != "archived"
-            )
+            statement = statement.where(func.coalesce(lifecycle_status, "active") != "archived")
         if normalized_instrument_type:
-            statement = statement.where(
-                func.lower(Instrument.instrument_type) == normalized_instrument_type
-            )
+            statement = statement.where(func.lower(Instrument.instrument_type) == normalized_instrument_type)
         if normalized_search:
             pattern = f"%{normalized_search}%"
             statement = statement.where(
@@ -1196,28 +840,18 @@ def list_instruments(
                     func.lower(Instrument.currency).like(pattern),
                     Instrument.identifiers.any(
                         or_(
-                            func.lower(InstrumentIdentifier.identifier_type).like(
-                                pattern
-                            ),
-                            func.lower(InstrumentIdentifier.identifier_value).like(
-                                pattern
-                            ),
+                            func.lower(InstrumentIdentifier.identifier_type).like(pattern),
+                            func.lower(InstrumentIdentifier.identifier_value).like(pattern),
                         )
                     ),
                 )
             )
-        statement = statement.order_by(
-            Instrument.instrument_name, Instrument.instrument_id
-        )
+        statement = statement.order_by(Instrument.instrument_name, Instrument.instrument_id)
         if limit is not None:
             statement = statement.limit(limit)
         instrument_rows = list(session.scalars(statement).all())
         instrument_ids = [item.instrument_id for item in instrument_rows]
-        latest_market_data = _market_data_for_instruments(
-            session,
-            instrument_ids,
-            latest_only=True,
-        )
+        latest_market_data = _latest_market_data_for_instruments(session, instrument_ids)
         return [
             _serialize_record(
                 _instrument_to_store_dict(
@@ -1259,46 +893,18 @@ def list_active_instrument_ids(
                 func.lower(Instrument.instrument_type).in_(normalized_types)
             )
         statement = statement.order_by(Instrument.instrument_id)
-        return [
-            str(instrument_id) for instrument_id in session.scalars(statement).all()
-        ]
+        return [str(instrument_id) for instrument_id in session.scalars(statement).all()]
 
 
-def get_instrument(
-    session_factory: SessionFactory, instrument_id: str
-) -> dict[str, object] | None:
+def get_instrument(session_factory: SessionFactory, instrument_id: str) -> dict[str, object] | None:
     with session_factory() as session:
         target = session.scalar(
-            _instrument_query().where(Instrument.instrument_id == instrument_id)
+            _instrument_query()
+            .where(Instrument.instrument_id == instrument_id)
         )
         if target is None:
             return None
-        market_data = _market_data_for_instruments(
-            session,
-            [target.instrument_id],
-            latest_only=False,
-        )
-        return _serialize_detail_record(
-            _instrument_to_store_dict(
-                target,
-                market_data=market_data.get(target.instrument_id, []),
-            )
-        )
-
-
-def instrument_exists(session_factory: SessionFactory, instrument_id: str) -> bool:
-    normalized_id = instrument_id.strip()
-    if not normalized_id:
-        return False
-    with session_factory() as session:
-        return (
-            session.scalar(
-                select(Instrument.instrument_id).where(
-                    Instrument.instrument_id == normalized_id
-                )
-            )
-            is not None
-        )
+        return _serialize_detail_record(_instrument_to_store_dict(target))
 
 
 def get_instrument_details(
@@ -1323,123 +929,14 @@ def get_instrument_details(
         targets = session.scalars(
             _instrument_query().where(Instrument.instrument_id.in_(normalized_ids))
         ).all()
-        market_data = _market_data_for_instruments(
-            session,
-            [target.instrument_id for target in targets],
-            latest_only=False,
-        )
         details_by_id = {
-            target.instrument_id: _serialize_detail_record(
-                _instrument_to_store_dict(
-                    target,
-                    market_data=market_data.get(target.instrument_id, []),
-                )
-            )
+            target.instrument_id: _serialize_detail_record(_instrument_to_store_dict(target))
             for target in targets
         }
     return {
         instrument_id: details_by_id.get(instrument_id)
         for instrument_id in normalized_ids
     }
-
-
-def list_quote_observation_revisions(
-    session_factory: SessionFactory,
-    *,
-    instrument_id: str,
-    quote_series_id: str | None = None,
-    as_of_date: date | None = None,
-    limit: int | None = None,
-) -> list[dict[str, object]]:
-    """Return the immutable revision audit trail for one instrument."""
-    with session_factory() as session:
-        statement = (
-            select(
-                QuoteSeries.instrument_id.label("instrument_id"),
-                QuoteSeries.quote_series_id.label("quote_series_id"),
-                QuoteSeries.metric_family.label("metric_family"),
-                QuoteSeries.quote_basis.label("quote_basis"),
-                QuoteSeries.currency.label("currency"),
-                QuoteObservation.observation_id.label("observation_id"),
-                QuoteObservation.as_of_date.label("as_of_date"),
-                QuoteObservationRevision.revision_id.label("revision_id"),
-                QuoteObservationRevision.revision_number.label("revision_number"),
-                QuoteObservationRevision.value.label("value"),
-                QuoteObservationRevision.value_input_scale.label("value_input_scale"),
-                QuoteObservationRevision.numeric_scale_state.label(
-                    "numeric_scale_state"
-                ),
-                QuoteObservationRevision.payload_schema_version.label(
-                    "payload_schema_version"
-                ),
-                QuoteObservationRevision.source_ref.label("source_ref"),
-                QuoteObservationRevision.status.label("status"),
-                QuoteObservationRevision.source_published_at.label(
-                    "source_published_at"
-                ),
-                QuoteObservationRevision.ingested_at.label("ingested_at"),
-                QuoteObservationRevision.ingestion_time_state.label(
-                    "ingestion_time_state"
-                ),
-                QuoteObservationRevision.payload_hash.label("payload_hash"),
-                QuoteObservationRevision.is_current.label("is_current"),
-                QuoteObservationRevision.superseded_at.label("superseded_at"),
-            )
-            .join(
-                QuoteObservation,
-                QuoteObservation.quote_series_id == QuoteSeries.quote_series_id,
-            )
-            .join(
-                QuoteObservationRevision,
-                QuoteObservationRevision.observation_id
-                == QuoteObservation.observation_id,
-            )
-            .where(QuoteSeries.instrument_id == instrument_id)
-        )
-        if quote_series_id:
-            statement = statement.where(
-                QuoteSeries.quote_series_id == quote_series_id.strip()
-            )
-        if as_of_date is not None:
-            statement = statement.where(QuoteObservation.as_of_date == as_of_date)
-        statement = statement.order_by(
-            QuoteObservation.as_of_date.desc(),
-            QuoteObservationRevision.revision_number.desc(),
-            QuoteSeries.quote_series_id,
-        )
-        if limit is not None:
-            statement = statement.limit(max(int(limit), 0))
-        rows = session.execute(statement).mappings()
-        return [
-            {
-                "instrument_id": str(row["instrument_id"]),
-                "quote_series_id": str(row["quote_series_id"]),
-                "metric_family": str(row["metric_family"]),
-                "quote_basis": str(row["quote_basis"]),
-                "currency": str(row["currency"]),
-                "observation_id": str(row["observation_id"]),
-                "as_of_date": row["as_of_date"].isoformat(),
-                "revision_id": str(row["revision_id"]),
-                "revision_number": int(row["revision_number"]),
-                "value": row["value"],
-                "value_input_scale": (
-                    int(row["value_input_scale"])
-                    if row["value_input_scale"] is not None
-                    else None
-                ),
-                "numeric_scale_state": row["numeric_scale_state"],
-                "payload_schema_version": int(row["payload_schema_version"]),
-                "source_ref": row["source_ref"],
-                "status": str(row["status"]),
-                "source_published_at": canonical_timestamp(row["source_published_at"]),
-                "ingested_at": canonical_timestamp(row["ingested_at"]),
-                "ingestion_time_state": str(row["ingestion_time_state"]),
-                "payload_hash": str(row["payload_hash"]),
-                "is_current": bool(row["is_current"]),
-                "superseded_at": canonical_timestamp(row["superseded_at"]),
-            }
-            for row in rows
-        ]
 
 
 def list_corporate_actions(
@@ -1482,16 +979,10 @@ def list_corporate_actions(
                 "corporate_action_event_id": event.corporate_action_event_id,
                 "instrument_id": event.instrument_id,
                 "action_type": event.action_type,
-                "announcement_date": event.announcement_date.isoformat()
-                if event.announcement_date
-                else None,
-                "record_date": event.record_date.isoformat()
-                if event.record_date
-                else None,
+                "announcement_date": event.announcement_date.isoformat() if event.announcement_date else None,
+                "record_date": event.record_date.isoformat() if event.record_date else None,
                 "effective_date": event.effective_date.isoformat(),
-                "payable_date": event.payable_date.isoformat()
-                if event.payable_date
-                else None,
+                "payable_date": event.payable_date.isoformat() if event.payable_date else None,
                 "new_units": event.new_units,
                 "old_units": event.old_units,
                 "quantity_rounding": event.quantity_rounding,
@@ -1541,9 +1032,7 @@ def upsert_corporate_action_event(
         ratio_new = Decimal(str(new_units))
         ratio_old = Decimal(str(old_units))
     except (InvalidOperation, ValueError) as error:
-        raise ValueError(
-            "Corporate-action ratio must contain valid decimals."
-        ) from error
+        raise ValueError("Corporate-action ratio must contain valid decimals.") from error
     now = _utcnow_iso()
     candidate_payload = {
         "corporate_action_event_id": (
@@ -1584,9 +1073,7 @@ def upsert_corporate_action_event(
         incoming_provenance = deepcopy(provenance or {})
         if event is None:
             event = CorporateActionEvent(
-                corporate_action_event_id=str(
-                    candidate_payload["corporate_action_event_id"]
-                ),
+                corporate_action_event_id=str(candidate_payload["corporate_action_event_id"]),
                 instrument_id=normalized_instrument_id,
                 action_type=action_type,
                 announcement_date=announcement_date,
@@ -1676,9 +1163,7 @@ def find_instrument_by_identifier(
             func.lower(InstrumentIdentifier.identifier_value) == normalized_value,
         ]
         if normalized_type:
-            identifier_filters.append(
-                func.lower(InstrumentIdentifier.identifier_type) == normalized_type
-            )
+            identifier_filters.append(func.lower(InstrumentIdentifier.identifier_type) == normalized_type)
         candidates = session.scalars(
             _instrument_query()
             .join(InstrumentIdentifier)
@@ -1686,25 +1171,13 @@ def find_instrument_by_identifier(
             .order_by(Instrument.instrument_name, Instrument.instrument_id)
         ).all()
         for candidate in candidates:
-            market_data = _market_data_for_instruments(
-                session,
-                [candidate.instrument_id],
-                latest_only=False,
-            )
-            item = _instrument_to_store_dict(
-                candidate,
-                market_data=market_data.get(candidate.instrument_id, []),
-            )
+            item = _instrument_to_store_dict(candidate)
             if not include_inactive and not _is_active(item):
                 continue
             identifiers = list(item.get("identifiers", []))
             for identifier in identifiers:
-                current_value = (
-                    str(identifier.get("identifier_value") or "").strip().lower()
-                )
-                current_type = (
-                    str(identifier.get("identifier_type") or "").strip().lower()
-                )
+                current_value = str(identifier.get("identifier_value") or "").strip().lower()
+                current_type = str(identifier.get("identifier_type") or "").strip().lower()
                 if current_value != normalized_value:
                     continue
                 if normalized_type and current_type != normalized_type:
@@ -1723,10 +1196,7 @@ def create_instrument(
     quote_selection_policy: dict[str, object] | None = None,
 ) -> dict[str, object]:
     normalized_name = instrument_name.strip()
-    normalized_currency = _normalize_required_currency(
-        currency,
-        context="New instrument",
-    )
+    normalized_currency = currency.strip().upper()
     normalized_identifiers = [
         {
             **identifier,
@@ -1737,13 +1207,13 @@ def create_instrument(
     ]
     if not normalized_name:
         raise ValueError("Instrument name must not be blank.")
+    if not normalized_currency:
+        raise ValueError("Instrument currency must not be blank.")
     if not normalized_identifiers or any(
         not item["identifier_type"] or not item["identifier_value"]
         for item in normalized_identifiers
     ):
-        raise ValueError(
-            "Every instrument identifier requires a non-blank type and value."
-        )
+        raise ValueError("Every instrument identifier requires a non-blank type and value.")
     if sum(1 for item in normalized_identifiers if bool(item.get("is_primary"))) != 1:
         raise ValueError("Exactly one instrument identifier must be primary.")
 
@@ -1756,9 +1226,7 @@ def create_instrument(
             continue
         normalized_identifier = (identifier_type.lower(), identifier_value.lower())
         if normalized_identifier in seen_identifiers:
-            raise ValueError(
-                f'Duplicate identifier "{identifier_type}:{identifier_value}" in request.'
-            )
+            raise ValueError(f'Duplicate identifier "{identifier_type}:{identifier_value}" in request.')
         seen_identifiers.add(normalized_identifier)
 
         existing = find_instrument_by_identifier(
@@ -1774,9 +1242,7 @@ def create_instrument(
             )
 
     with session_factory() as session:
-        existing_ids = {
-            item for item in session.scalars(select(Instrument.instrument_id)).all()
-        }
+        existing_ids = {item for item in session.scalars(select(Instrument.instrument_id)).all()}
         primary_identifier = next(
             (
                 str(item.get("identifier_value") or "")
@@ -1852,277 +1318,8 @@ def create_instrument(
             session.commit()
         except IntegrityError as error:
             session.rollback()
-            raise ValueError(
-                "Instrument identifiers or generated id conflict with an existing instrument."
-            ) from error
+            raise ValueError("Instrument identifiers or generated id conflict with an existing instrument.") from error
         return _serialize_record(record)
-
-
-MarketDataKey = tuple[str, str, date, str]
-
-
-def _normalize_market_data_upserts(
-    rows: Iterable[dict[str, object]],
-    *,
-    allow_withdrawn: bool = False,
-) -> dict[MarketDataKey, dict[str, object]]:
-    raw_rows = list(rows)
-    if not raw_rows:
-        raise ValueError("market-data batch must contain at least one row")
-    normalized_by_key: dict[MarketDataKey, dict[str, object]] = {}
-    for row_number, row in enumerate(raw_rows, start=1):
-        if not isinstance(row, dict):
-            raise ValueError(f"market-data row {row_number} must be an object")
-        if "provider" in row:
-            raise ValueError(
-                "market-data provider was removed; use source_ref for quote provenance"
-            )
-        raw_date = row.get("as_of_date")
-        if isinstance(raw_date, datetime):
-            point_date = raw_date.date()
-        elif isinstance(raw_date, date):
-            point_date = raw_date
-        else:
-            try:
-                point_date = date.fromisoformat(str(raw_date or "").strip())
-            except ValueError as error:
-                raise ValueError(
-                    f"market-data row {row_number} has an invalid as_of_date"
-                ) from error
-        metric_family = str(row.get("metric_family") or "").strip().lower()
-        quote_basis = str(row.get("quote_basis") or "").strip().lower()
-        currency = _normalize_required_currency(
-            row.get("currency"),
-            context=f"Market-data row {row_number}",
-        )
-        if (
-            metric_family not in VALID_METRIC_FAMILIES
-            or quote_basis not in VALID_QUOTE_BASES
-            or VALID_QUOTE_BASES[quote_basis] != metric_family
-        ):
-            raise ValueError(
-                f"market-data row {row_number} has an invalid canonical quote identity"
-            )
-        status = normalize_revision_status(row.get("status"))
-        if status == WITHDRAWN_STATUS and not allow_withdrawn:
-            raise ValueError(
-                "withdrawn revisions may only be created by replacement workflows"
-            )
-        if status != WITHDRAWN_STATUS and status not in SOURCE_OBSERVATION_STATUSES:
-            raise ValueError(f'unsupported source observation status "{status}"')
-        numeric_evidence = (
-            None
-            if status == WITHDRAWN_STATUS
-            else quote_numeric_evidence(
-                row.get("value"),
-                value_input_scale=row.get("value_input_scale"),
-                numeric_scale_state=row.get("numeric_scale_state"),
-            )
-        )
-        value = numeric_evidence.value if numeric_evidence is not None else None
-        if value is not None and Decimal(value) <= 0:
-            raise ValueError("quote value must be positive")
-        source_ref = normalize_source_ref(row.get("source_ref"))
-        source_published_at = normalize_optional_timestamp(
-            row.get("source_published_at")
-        )
-        key = (metric_family, quote_basis, point_date, currency)
-        if key in normalized_by_key:
-            raise ValueError(
-                "market-data batch contains a duplicate canonical observation: "
-                f"{metric_family}/{quote_basis}/{point_date.isoformat()}/{currency}"
-            )
-        normalized_by_key[key] = {
-            "value": value,
-            "value_input_scale": (
-                numeric_evidence.value_input_scale
-                if numeric_evidence is not None
-                else None
-            ),
-            "numeric_scale_state": (
-                numeric_evidence.numeric_scale_state
-                if numeric_evidence is not None
-                else None
-            ),
-            "payload_schema_version": QUOTE_REVISION_PAYLOAD_SCHEMA_V2,
-            "source_ref": source_ref,
-            "status": status,
-            "source_published_at": source_published_at,
-            "payload_hash": quote_revision_payload_hash(
-                value=value,
-                source_ref=source_ref,
-                status=status,
-                source_published_at=source_published_at,
-                payload_schema_version=QUOTE_REVISION_PAYLOAD_SCHEMA_V2,
-                value_input_scale=(
-                    numeric_evidence.value_input_scale
-                    if numeric_evidence is not None
-                    else None
-                ),
-                numeric_scale_state=(
-                    numeric_evidence.numeric_scale_state
-                    if numeric_evidence is not None
-                    else None
-                ),
-            ),
-        }
-    return normalized_by_key
-
-
-def _append_market_data_revisions(
-    session: Session,
-    *,
-    target: Instrument,
-    normalized_by_key: dict[MarketDataKey, dict[str, object]],
-    ingested_at: datetime,
-) -> int:
-    if not normalized_by_key:
-        return 0
-
-    series_by_key = {
-        (series.metric_family, series.quote_basis, series.currency): series
-        for series in session.scalars(
-            select(QuoteSeries).where(QuoteSeries.instrument_id == target.instrument_id)
-        ).all()
-    }
-    for metric_family, quote_basis, _, currency in normalized_by_key:
-        series_key = (metric_family, quote_basis, currency)
-        if series_key in series_by_key:
-            continue
-        series = QuoteSeries(
-            quote_series_id=make_quote_series_id(
-                instrument_id=target.instrument_id,
-                metric_family=metric_family,
-                quote_basis=quote_basis,
-                currency=currency,
-            ),
-            instrument_id=target.instrument_id,
-            metric_family=metric_family,
-            quote_basis=quote_basis,
-            currency=currency,
-            data_updated_at=None,
-        )
-        series_by_key[series_key] = series
-        session.add(series)
-    session.flush()
-
-    desired_observation_keys = {
-        (
-            series_by_key[(metric_family, quote_basis, currency)].quote_series_id,
-            point_date,
-        )
-        for metric_family, quote_basis, point_date, currency in normalized_by_key
-    }
-    relevant_series_ids = sorted({key[0] for key in desired_observation_keys})
-    relevant_dates = sorted({key[1] for key in desired_observation_keys})
-    observations_by_key = {
-        (observation.quote_series_id, observation.as_of_date): observation
-        for observation in session.scalars(
-            select(QuoteObservation).where(
-                QuoteObservation.quote_series_id.in_(relevant_series_ids),
-                QuoteObservation.as_of_date.in_(relevant_dates),
-            )
-        ).all()
-        if (observation.quote_series_id, observation.as_of_date)
-        in desired_observation_keys
-    }
-    for series_id, point_date in desired_observation_keys:
-        observation_key = (series_id, point_date)
-        if observation_key in observations_by_key:
-            continue
-        observation = QuoteObservation(
-            observation_id=make_quote_observation_id(
-                quote_series_id=series_id,
-                as_of_date=point_date,
-            ),
-            quote_series_id=series_id,
-            as_of_date=point_date,
-        )
-        observations_by_key[observation_key] = observation
-        session.add(observation)
-    session.flush()
-
-    observation_ids = sorted(
-        observation.observation_id for observation in observations_by_key.values()
-    )
-    current_by_observation_id = {
-        revision.observation_id: revision
-        for revision in session.scalars(
-            select(QuoteObservationRevision).where(
-                QuoteObservationRevision.observation_id.in_(observation_ids),
-                QuoteObservationRevision.is_current.is_(True),
-            )
-        ).all()
-    }
-    max_revision_by_observation_id = {
-        str(observation_id): int(max_revision_number)
-        for observation_id, max_revision_number in session.execute(
-            select(
-                QuoteObservationRevision.observation_id,
-                func.max(QuoteObservationRevision.revision_number),
-            )
-            .where(QuoteObservationRevision.observation_id.in_(observation_ids))
-            .group_by(QuoteObservationRevision.observation_id)
-        ).all()
-    }
-
-    changed_count = 0
-    changed_series: dict[str, QuoteSeries] = {}
-    pending_revisions: list[QuoteObservationRevision] = []
-    for (
-        metric_family,
-        quote_basis,
-        point_date,
-        currency,
-    ), payload in normalized_by_key.items():
-        series = series_by_key[(metric_family, quote_basis, currency)]
-        observation = observations_by_key[(series.quote_series_id, point_date)]
-        current = current_by_observation_id.get(observation.observation_id)
-        if current is not None and current.payload_hash == payload["payload_hash"]:
-            continue
-        if current is not None:
-            # Payload/provenance is immutable. Only revision lifecycle is closed.
-            current.is_current = False
-            current.superseded_at = ingested_at
-        revision_number = (
-            max_revision_by_observation_id.get(observation.observation_id, 0) + 1
-        )
-        max_revision_by_observation_id[observation.observation_id] = revision_number
-        pending_revisions.append(
-            QuoteObservationRevision(
-                revision_id=make_quote_revision_id(
-                    observation_id=observation.observation_id,
-                    revision_number=revision_number,
-                ),
-                observation_id=observation.observation_id,
-                revision_number=revision_number,
-                value=payload["value"],
-                value_input_scale=payload["value_input_scale"],
-                numeric_scale_state=payload["numeric_scale_state"],
-                payload_schema_version=int(payload["payload_schema_version"]),
-                source_ref=payload["source_ref"],
-                status=str(payload["status"]),
-                source_published_at=payload["source_published_at"],
-                ingested_at=ingested_at,
-                ingestion_time_state="observed",
-                payload_hash=str(payload["payload_hash"]),
-                is_current=True,
-                superseded_at=None,
-            )
-        )
-        changed_count += 1
-        changed_series[series.quote_series_id] = series
-
-    if changed_count:
-        # Close all prior currents before inserting replacements so the partial
-        # unique current index is never transiently violated.
-        session.flush()
-        session.add_all(pending_revisions)
-        watermark = _next_market_data_watermark(session)
-        target.market_data_updated_at = watermark
-        for series in changed_series.values():
-            series.data_updated_at = watermark
-    return changed_count
 
 
 def upsert_market_data(
@@ -2132,42 +1329,49 @@ def upsert_market_data(
     metric_family: str,
     quote_basis: str,
     as_of_date: date,
-    value: object,
+    value: str,
     currency: str,
-    source_ref: str | None,
+    provider: str | None,
     status: str,
-    source_published_at: datetime | str | None = None,
 ) -> dict[str, object] | None:
-    normalized_by_key = _normalize_market_data_upserts(
-        [
-            {
-                "metric_family": metric_family,
-                "quote_basis": quote_basis,
-                "as_of_date": as_of_date,
-                "value": value,
-                "currency": currency,
-                "source_ref": source_ref,
-                "status": status,
-                "source_published_at": source_published_at,
-            }
-        ]
-    )
-    if not normalized_by_key:
-        raise ValueError("market-data point is invalid")
     with session_factory() as session:
         target = session.scalar(
-            select(Instrument)
+            _instrument_query()
             .where(Instrument.instrument_id == instrument_id)
             .with_for_update()
         )
         if target is None:
             return None
-        _append_market_data_revisions(
-            session,
-            target=target,
-            normalized_by_key=normalized_by_key,
-            ingested_at=_utcnow(),
+
+        existing = session.scalar(
+            select(InstrumentMarketData).where(
+                InstrumentMarketData.instrument_id == instrument_id,
+                InstrumentMarketData.metric_family == metric_family,
+                InstrumentMarketData.quote_basis == quote_basis,
+                InstrumentMarketData.as_of_date == as_of_date,
+                InstrumentMarketData.currency == currency.upper(),
+            )
         )
+        if existing is None:
+            session.add(
+                InstrumentMarketData(
+                    instrument_id=instrument_id,
+                    metric_family=metric_family,
+                    quote_basis=quote_basis,
+                    as_of_date=as_of_date,
+                    value=value,
+                    currency=currency.upper(),
+                    provider=provider,
+                    status=status,
+                )
+            )
+        else:
+            existing.value = value
+            existing.provider = provider
+            existing.status = status
+
+        target.market_data_updated_at = _next_market_data_watermark(session)
+
         session.commit()
     refreshed = get_instrument(session_factory, instrument_id)
     return _serialize_record(refreshed) if refreshed is not None else None
@@ -2179,8 +1383,44 @@ def upsert_market_data_points(
     instrument_id: str,
     rows: list[dict[str, object]],
 ) -> int | None:
-    """Append changed source observations in one instrument-serialized transaction."""
-    normalized_by_key = _normalize_market_data_upserts(rows)
+    """Upsert a homogeneous or mixed market-data batch in one transaction.
+
+    Importers should use this path for histories instead of opening a transaction,
+    advancing the registry watermark, and reloading the full instrument once per
+    observation.
+    """
+    normalized_by_key: dict[
+        tuple[str, str, date, str], dict[str, object]
+    ] = {}
+    for row in rows:
+        raw_date = row.get("as_of_date")
+        if isinstance(raw_date, datetime):
+            point_date = raw_date.date()
+        elif isinstance(raw_date, date):
+            point_date = raw_date
+        else:
+            try:
+                point_date = date.fromisoformat(str(raw_date or "").strip())
+            except ValueError:
+                continue
+        metric_family = str(row.get("metric_family") or "").strip()
+        quote_basis = str(row.get("quote_basis") or "").strip()
+        currency = str(row.get("currency") or "").strip().upper()
+        value = row.get("value")
+        if not metric_family or not quote_basis or not currency or value is None:
+            continue
+        normalized_by_key[(metric_family, quote_basis, point_date, currency)] = {
+            "value": str(value),
+            "provider": (
+                str(row.get("provider")).strip()
+                if row.get("provider") is not None
+                else None
+            ),
+            "status": str(row.get("status") or "complete").strip() or "complete",
+        }
+    if not normalized_by_key:
+        return 0
+
     with session_factory() as session:
         target = session.scalar(
             select(Instrument)
@@ -2189,12 +1429,53 @@ def upsert_market_data_points(
         )
         if target is None:
             return None
-        changed_count = _append_market_data_revisions(
-            session,
-            target=target,
-            normalized_by_key=normalized_by_key,
-            ingested_at=_utcnow(),
-        )
+        relevant_dates = sorted({key[2] for key in normalized_by_key})
+        existing_by_key = {
+            (
+                point.metric_family,
+                point.quote_basis,
+                point.as_of_date,
+                point.currency,
+            ): point
+            for point in session.scalars(
+                select(InstrumentMarketData).where(
+                    InstrumentMarketData.instrument_id == instrument_id,
+                    InstrumentMarketData.as_of_date.in_(relevant_dates),
+                )
+            ).all()
+        }
+        changed_count = 0
+        for (metric_family, quote_basis, point_date, currency), payload in normalized_by_key.items():
+            existing = existing_by_key.get(
+                (metric_family, quote_basis, point_date, currency)
+            )
+            if existing is None:
+                changed_count += 1
+                session.add(
+                    InstrumentMarketData(
+                        instrument_id=instrument_id,
+                        metric_family=metric_family,
+                        quote_basis=quote_basis,
+                        as_of_date=point_date,
+                        value=str(payload["value"]),
+                        currency=currency,
+                        provider=payload["provider"],
+                        status=str(payload["status"]),
+                    )
+                )
+            else:
+                if (
+                    existing.value == str(payload["value"])
+                    and existing.provider == payload["provider"]
+                    and existing.status == str(payload["status"])
+                ):
+                    continue
+                changed_count += 1
+                existing.value = str(payload["value"])
+                existing.provider = payload["provider"]
+                existing.status = str(payload["status"])
+        if changed_count:
+            target.market_data_updated_at = _next_market_data_watermark(session)
         session.commit()
     return changed_count
 
@@ -2220,9 +1501,7 @@ def upsert_source_settings(
         if source_email is not None:
             source_settings["source_email"] = source_email.strip()
         if source_location is not None:
-            source_settings["source_location"] = (
-                source_location.strip() or "Shared data ops"
-            )
+            source_settings["source_location"] = source_location.strip() or "Shared data ops"
         if source_api_profile is not None:
             source_settings["source_api_profile"] = source_api_profile.strip()
         if source_email_rules is not None:
@@ -2250,16 +1529,9 @@ def upsert_quote_selection_policy(
         if target is None:
             return None
 
-        current_store_item = _instrument_to_store_dict(target)
-        current_policy = _normalized_quote_selection_policy(current_store_item)
-        incoming_store_item = dict(current_store_item)
-        incoming_store_item["quote_selection_policy"] = quote_selection_policy
-        incoming_policy = _normalized_quote_selection_policy(incoming_store_item)
-        if canonical_quote_selection_policy_revision(
-            current_policy
-        ) != canonical_quote_selection_policy_revision(incoming_policy):
-            target.quote_selection_policy_json = incoming_policy
-            target.market_data_updated_at = _next_market_data_watermark(session)
+        store_item = _instrument_to_store_dict(target)
+        store_item["quote_selection_policy"] = quote_selection_policy
+        target.quote_selection_policy_json = _normalized_quote_selection_policy(store_item)
         session.commit()
     refreshed = get_instrument(session_factory, instrument_id)
     return _serialize_record(refreshed) if refreshed is not None else None
@@ -2270,13 +1542,12 @@ def replace_nav_history(
     *,
     instrument_id: str,
     rows: list[dict[str, object]],
-    source_ref: str | None,
+    provider: str | None,
     point_status: str,
     refresh_status: str,
     updated_by: str | None,
     message: str,
     mode: str | None = None,
-    replace_all: bool = False,
 ) -> dict[str, object] | None:
     with session_factory() as session:
         target = session.scalar(
@@ -2287,30 +1558,48 @@ def replace_nav_history(
         if target is None:
             return None
 
-        default_currency = target.currency.upper()
-        point_source_ref = normalize_source_ref(source_ref)
-        if not rows:
-            raise ValueError("NAV replacement batch must contain at least one row")
-        source_rows: list[dict[str, object]] = []
-        for row_number, row in enumerate(rows, start=1):
-            if not isinstance(row, dict):
-                raise ValueError(f"NAV replacement row {row_number} must be an object")
+        replaced_dates: set[date] = set()
+        for row in rows:
             raw_date = str(row.get("as_of_date") or "").strip()
             if not raw_date:
-                raise ValueError(
-                    f"NAV replacement row {row_number} is missing as_of_date"
-                )
+                continue
             try:
                 point_date = date.fromisoformat(raw_date)
-            except ValueError as error:
-                raise ValueError(
-                    f"NAV replacement row {row_number} has an invalid as_of_date"
-                ) from error
-            row_currency = _normalize_required_currency(
-                row.get("currency") or default_currency,
-                context=f"NAV replacement row {row_number}",
+            except ValueError:
+                continue
+            replaced_dates.add(point_date)
+
+        if replaced_dates:
+            session.execute(
+                delete(InstrumentMarketData).where(
+                    InstrumentMarketData.instrument_id == instrument_id,
+                    InstrumentMarketData.metric_family == "nav",
+                    InstrumentMarketData.quote_basis.in_(
+                        [
+                            "official_nav",
+                            "total_return_nav",
+                            "cumulative_nav",
+                            "accumulated_nav",
+                            "cum_nav",
+                            "dividend_adjusted_nav",
+                            "reinvested_nav",
+                        ]
+                    ),
+                    InstrumentMarketData.as_of_date.in_(sorted(replaced_dates)),
+                )
             )
-            row_observation_count = 0
+
+        default_currency = target.currency.upper()
+        point_provider = (provider or "shared_nav_import").strip() or "shared_nav_import"
+        for row in rows:
+            raw_date = str(row.get("as_of_date") or "").strip()
+            if not raw_date:
+                continue
+            try:
+                point_date = date.fromisoformat(raw_date)
+            except ValueError:
+                continue
+            row_currency = str(row.get("currency") or default_currency).strip().upper() or default_currency
             for row_key, quote_basis in (
                 ("nav", "official_nav"),
                 ("cumulative_nav", "cumulative_nav"),
@@ -2319,99 +1608,18 @@ def replace_nav_history(
                 row_value = row.get(row_key)
                 if row_value is None:
                     continue
-                row_observation_count += 1
-                source_rows.append(
-                    {
-                        "metric_family": "nav",
-                        "quote_basis": quote_basis,
-                        "as_of_date": point_date,
-                        "value": row_value,
-                        "value_input_scale": row.get(f"{row_key}_input_scale"),
-                        "numeric_scale_state": row.get(
-                            f"{row_key}_numeric_scale_state"
-                        ),
-                        "currency": row_currency,
-                        "source_ref": point_source_ref,
-                        "status": point_status,
-                        "source_published_at": row.get("source_published_at"),
-                    }
+                session.add(
+                    InstrumentMarketData(
+                        instrument_id=instrument_id,
+                        metric_family="nav",
+                        quote_basis=quote_basis,
+                        as_of_date=point_date,
+                        value=str(row_value),
+                        currency=row_currency,
+                        provider=point_provider,
+                        status=point_status,
+                    )
                 )
-            if row_observation_count == 0:
-                raise ValueError(
-                    f"NAV replacement row {row_number} contains no NAV observation"
-                )
-
-        normalized_by_key = _normalize_market_data_upserts(source_rows)
-        replacement_dates = {key[2] for key in normalized_by_key}
-        nav_replace_bases = frozenset(
-            {
-                "official_nav",
-                "total_return_nav",
-                "cumulative_nav",
-                "accumulated_nav",
-                "cum_nav",
-                "dividend_adjusted_nav",
-                "reinvested_nav",
-            }
-        )
-        existing_current_rows = session.execute(
-            select(
-                QuoteSeries.metric_family,
-                QuoteSeries.quote_basis,
-                QuoteObservation.as_of_date,
-                QuoteSeries.currency,
-            )
-            .join(
-                QuoteObservation,
-                QuoteObservation.quote_series_id == QuoteSeries.quote_series_id,
-            )
-            .join(
-                QuoteObservationRevision,
-                QuoteObservationRevision.observation_id
-                == QuoteObservation.observation_id,
-            )
-            .where(
-                QuoteSeries.instrument_id == instrument_id,
-                QuoteSeries.metric_family == "nav",
-                QuoteSeries.quote_basis.in_(nav_replace_bases),
-                QuoteObservationRevision.is_current.is_(True),
-                QuoteObservationRevision.status != WITHDRAWN_STATUS,
-            )
-        ).all()
-        incoming_keys = set(normalized_by_key)
-        for metric_family, quote_basis, point_date, currency in existing_current_rows:
-            existing_key: MarketDataKey = (
-                str(metric_family),
-                str(quote_basis),
-                point_date,
-                str(currency),
-            )
-            in_replacement_scope = replace_all or point_date in replacement_dates
-            if not in_replacement_scope or existing_key in incoming_keys:
-                continue
-            normalized_by_key.update(
-                _normalize_market_data_upserts(
-                    [
-                        {
-                            "metric_family": metric_family,
-                            "quote_basis": quote_basis,
-                            "as_of_date": point_date,
-                            "value": None,
-                            "currency": currency,
-                            "source_ref": point_source_ref,
-                            "status": WITHDRAWN_STATUS,
-                        }
-                    ],
-                    allow_withdrawn=True,
-                )
-            )
-
-        _append_market_data_revisions(
-            session,
-            target=target,
-            normalized_by_key=normalized_by_key,
-            ingested_at=_utcnow(),
-        )
 
         store_item = _instrument_to_store_dict(target)
         source_settings = _normalized_source_settings(store_item)
@@ -2426,6 +1634,7 @@ def replace_nav_history(
             requested_at=requested_at,
             previous_mode_fallback=source_mode,
         )
+        target.market_data_updated_at = _next_market_data_watermark(session)
         session.commit()
     refreshed = get_instrument(session_factory, instrument_id)
     return _serialize_record(refreshed) if refreshed is not None else None

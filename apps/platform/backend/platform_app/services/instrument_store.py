@@ -10,6 +10,10 @@ EMPTY_STORE = shared_store.EMPTY_STORE
 _normalize_store = shared_store._normalize_store
 
 
+def reset_store(data: dict[str, object] | None = None) -> None:
+    shared_store.reset_store(get_session_factory(), data)
+
+
 def list_instruments(
     *,
     search: str | None = None,
@@ -28,26 +32,6 @@ def list_instruments(
 
 def get_instrument(instrument_id: str) -> dict[str, object] | None:
     return shared_store.get_instrument(get_session_factory(), instrument_id)
-
-
-def instrument_exists(instrument_id: str) -> bool:
-    return shared_store.instrument_exists(get_session_factory(), instrument_id)
-
-
-def list_quote_observation_revisions(
-    *,
-    instrument_id: str,
-    quote_series_id: str | None = None,
-    as_of_date=None,
-    limit: int | None = None,
-) -> list[dict[str, object]]:
-    return shared_store.list_quote_observation_revisions(
-        get_session_factory(),
-        instrument_id=instrument_id,
-        quote_series_id=quote_series_id,
-        as_of_date=as_of_date,
-        limit=limit,
-    )
 
 
 def find_instrument_by_identifier(
@@ -88,11 +72,10 @@ def upsert_market_data(
     metric_family: str,
     quote_basis: str,
     as_of_date,
-    value: object,
+    value: str,
     currency: str,
-    source_ref: str | None,
+    provider: str | None,
     status: str,
-    source_published_at=None,
 ) -> dict[str, object] | None:
     return shared_store.upsert_market_data(
         get_session_factory(),
@@ -102,9 +85,8 @@ def upsert_market_data(
         as_of_date=as_of_date,
         value=value,
         currency=currency,
-        source_ref=source_ref,
+        provider=provider,
         status=status,
-        source_published_at=source_published_at,
     )
 
 
@@ -163,25 +145,23 @@ def replace_nav_history(
     *,
     instrument_id: str,
     rows: list[dict[str, object]],
-    source_ref: str | None,
+    provider: str | None,
     point_status: str,
     refresh_status: str,
     updated_by: str | None,
     message: str,
     mode: str | None = None,
-    replace_all: bool = False,
 ) -> dict[str, object] | None:
     return shared_store.replace_nav_history(
         get_session_factory(),
         instrument_id=instrument_id,
         rows=rows,
-        source_ref=source_ref,
+        provider=provider,
         point_status=point_status,
         refresh_status=refresh_status,
         updated_by=updated_by,
         message=message,
         mode=mode,
-        replace_all=replace_all,
     )
 
 

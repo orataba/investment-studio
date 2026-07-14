@@ -1,8 +1,5 @@
 from __future__ import annotations
 
-# Direct execution bootstraps the backend package path before application imports.
-# ruff: noqa: E402
-
 import argparse
 import csv
 import re
@@ -18,20 +15,12 @@ BACKEND_ROOT = Path(__file__).resolve().parents[1]
 if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
-from portfolio_app.core.operating_profiles import SUPPORTED_PORTFOLIO_OPERATING_PROFILES
-from portfolio_app.db.models import AccountRecordModel, PortfolioRecordModel
+from portfolio_app.db.models import AccountRecordModel, PortfolioRecordModel, TransactionRecordModel
 from portfolio_app.db.session import get_session_factory
+from portfolio_app.services.performance import build_holdings_report
 from portfolio_app.services.portfolio_store import _allocate_transaction_ids, resolve_trade_timing
-from portfolio_app.services.transaction_revisions import (
-    CreateTransactionRevision,
-    TransactionFactPayload,
-    TransactionRevisionContext,
-    append_transaction_revision_batch_unchecked,
-)
-from portfolio_app.services.transaction_command_validator import (
-    validate_prospective_transaction_history,
-)
 
+DEFAULT_VALUATION_DATE = date.today()
 PRICE_DISPLAY_QUANTUM = Decimal("0.0001")
 
 
@@ -60,11 +49,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--csv-path", type=Path, required=True)
     parser.add_argument("--portfolio-id", required=True)
     parser.add_argument("--portfolio-name")
-    parser.add_argument(
-        "--operating-profile",
-        choices=SUPPORTED_PORTFOLIO_OPERATING_PROFILES,
-        required=True,
-    )
+    parser.add_argument("--valuation-date", type=date.fromisoformat, default=DEFAULT_VALUATION_DATE)
     return parser.parse_args()
 
 
@@ -177,9 +162,16 @@ def resolve_instrument(row: ParsedTradeRow, instrument_lookup: dict[str, Instrum
     raise ValueError(f"Instrument not found in shared registry: {row.instrument_name}")
 
 
-def transaction_revision_command(
+def decimal_to_float(value: Decimal | None) -> float | None:
+    if value is None:
+        return None
+    return float(value)
+
+
+def trade_payload(
     *,
     transaction_id: str,
+    portfolio_id: str,
     transaction_type: str,
     trade_date: date,
     trade_time: str,
@@ -193,16 +185,16 @@ def transaction_revision_command(
     gross_amount: Decimal,
     currency: str,
     note: str | None,
-    created_at: datetime,
-) -> CreateTransactionRevision:
+    created_at: str,
+) -> tuple[TransactionRecordModel, dict[str, object]]:
     resolved_timing = resolve_trade_timing(trade_date=trade_date, trade_time=trade_time)
-    facts = TransactionFactPayload(
+    transaction_record = TransactionRecordModel(
+        transaction_id=transaction_id,
+        portfolio_id=portfolio_id,
         transaction_type=transaction_type,
         trade_date=trade_date,
-        trade_time=datetime.strptime(str(resolved_timing["trade_time"]), "%H:%M").time(),
-        trade_at=datetime.fromisoformat(
-            str(resolved_timing["trade_at"]).replace("Z", "+00:00")
-        ),
+        trade_time=str(resolved_timing["trade_time"]),
+        trade_at=str(resolved_timing["trade_at"]),
         trade_timezone=str(resolved_timing["trade_timezone"]),
         trade_time_is_estimated=bool(resolved_timing["trade_time_is_estimated"]),
         settlement_date=settlement_date,
@@ -210,32 +202,53 @@ def transaction_revision_command(
         account_id=account_id,
         settlement_cash_account_id=settlement_cash_account_id,
         instrument_id=instrument_id,
-        instrument_snapshot_json=instrument_ref,
-        quantity=quantity,
-        price=price,
-        gross_amount=gross_amount,
+        instrument_ref_json=instrument_ref,
+        quantity=decimal_to_float(quantity),
+        price=decimal_to_float(price),
+        gross_amount=float(gross_amount),
         counter_amount=None,
-        quoted_fx_rate=None,
-        consideration_basis=(
-            "source_reported"
-            if instrument_id is not None
-            and transaction_type in {"buy", "sell", "dividend_reinvestment", "opening_balance"}
-            else None
-        ),
-        fees=Decimal("0"),
-        taxes=Decimal("0"),
+        fx_rate=None,
+        fees=0.0,
+        taxes=0.0,
         currency=currency,
         transfer_scope=None,
         transfer_object_type=None,
         transfer_group_id=None,
         counterparty_account_id=None,
         note=note,
-    )
-    return CreateTransactionRevision(
-        transaction_id=transaction_id,
-        facts=facts,
         created_at=created_at,
     )
+    transaction_payload = {
+        "transaction_id": transaction_id,
+        "portfolio_id": portfolio_id,
+        "transaction_type": transaction_type,
+        "trade_date": trade_date.isoformat(),
+        "trade_time": transaction_record.trade_time,
+        "trade_at": transaction_record.trade_at,
+        "trade_timezone": transaction_record.trade_timezone,
+        "trade_time_is_estimated": transaction_record.trade_time_is_estimated,
+        "settlement_date": settlement_date.isoformat(),
+        "entitlement_date": None,
+        "account_id": account_id,
+        "settlement_cash_account_id": settlement_cash_account_id,
+        "instrument_id": instrument_id,
+        "instrument_ref": instrument_ref,
+        "quantity": decimal_to_float(quantity),
+        "price": decimal_to_float(price),
+        "gross_amount": float(gross_amount),
+        "counter_amount": None,
+        "fx_rate": None,
+        "fees": 0.0,
+        "taxes": 0.0,
+        "currency": currency,
+        "transfer_scope": None,
+        "transfer_object_type": None,
+        "transfer_group_id": None,
+        "counterparty_account_id": None,
+        "note": note,
+        "created_at": created_at,
+    }
+    return transaction_record, transaction_payload
 
 
 def main() -> None:
@@ -265,9 +278,13 @@ def main() -> None:
             portfolio_id=args.portfolio_id,
             portfolio_name=portfolio_name,
             base_currency="CNY",
-            operating_profile=args.operating_profile,
             valuation_timezone="Asia/Shanghai",
             valuation_cutoff_policy="latest_complete_eod",
+            as_of_date=args.valuation_date,
+            nav=0.0,
+            day_change_value=0.0,
+            day_change_pct=0.0,
+            securities_count=0,
             sort_order=next_sort_order,
         )
         session.add(portfolio_record)
@@ -309,15 +326,46 @@ def main() -> None:
         session.add(cash_account)
         session.add(securities_account)
 
+        account_payloads = [
+            {
+                "account_id": cash_account.account_id,
+                "portfolio_id": cash_account.portfolio_id,
+                "account_name": cash_account.account_name,
+                "account_type": cash_account.account_type,
+                "currency": cash_account.currency,
+                "institution": cash_account.institution,
+                "default_settlement_cash_account_id": cash_account.default_settlement_cash_account_id,
+                "cost_basis_method": cash_account.cost_basis_method,
+                "allowed_instrument_types": None,
+                "opened_at": cash_account.opened_at.isoformat() if cash_account.opened_at else None,
+                "closed_at": None,
+                "status": cash_account.status,
+            },
+            {
+                "account_id": securities_account.account_id,
+                "portfolio_id": securities_account.portfolio_id,
+                "account_name": securities_account.account_name,
+                "account_type": securities_account.account_type,
+                "currency": securities_account.currency,
+                "institution": securities_account.institution,
+                "default_settlement_cash_account_id": securities_account.default_settlement_cash_account_id,
+                "cost_basis_method": securities_account.cost_basis_method,
+                "allowed_instrument_types": ["fund", "etf"],
+                "opened_at": securities_account.opened_at.isoformat() if securities_account.opened_at else None,
+                "closed_at": None,
+                "status": securities_account.status,
+            },
+        ]
+
         transaction_ids = iter(_allocate_transaction_ids(session, len(rows) + 1))
         current_created_at = datetime.now(UTC).replace(microsecond=0)
-        revision_commands: list[CreateTransactionRevision] = []
+        transaction_payloads: list[dict[str, object]] = []
         imported_trade_date = min(row.trade_date for row in rows)
         total_gross_amount = sum(row.gross_amount for row in rows)
 
-        session.flush()
-        deposit_command = transaction_revision_command(
+        deposit_record, deposit_payload = trade_payload(
             transaction_id=next(transaction_ids),
+            portfolio_id=args.portfolio_id,
             transaction_type="deposit",
             trade_date=imported_trade_date,
             trade_time="09:00",
@@ -331,9 +379,10 @@ def main() -> None:
             gross_amount=total_gross_amount,
             currency="CNY",
             note=f"Imported funding from {csv_path.name}.",
-            created_at=current_created_at,
+            created_at=current_created_at.isoformat().replace("+00:00", "Z"),
         )
-        revision_commands.append(deposit_command)
+        session.add(deposit_record)
+        transaction_payloads.append(deposit_payload)
         for index, row in enumerate(rows, start=1):
             instrument = resolve_instrument(row, instrument_lookup)
             if row.instrument_type and row.instrument_type != instrument.instrument_type:
@@ -363,8 +412,9 @@ def main() -> None:
                 f"Imported from {csv_path.name}; CSV display price={row.display_price}; "
                 f"authoritative quantity/gross_amount preserved."
             )
-            transaction_command = transaction_revision_command(
+            transaction_record, transaction_payload = trade_payload(
                 transaction_id=next(transaction_ids),
+                portfolio_id=args.portfolio_id,
                 transaction_type=row.transaction_type,
                 trade_date=row.trade_date,
                 trade_time=f"09:{9 + index:02d}",
@@ -384,36 +434,65 @@ def main() -> None:
                 gross_amount=row.gross_amount,
                 currency=instrument.currency,
                 note=note,
-                created_at=current_created_at,
+                created_at=current_created_at.isoformat().replace("+00:00", "Z"),
             )
-            revision_commands.append(transaction_command)
+            session.add(transaction_record)
+            transaction_payloads.append(transaction_payload)
+        portfolio_payload = {
+            "portfolio_id": args.portfolio_id,
+            "portfolio_name": portfolio_name,
+            "base_currency": "CNY",
+            "valuation_timezone": "Asia/Shanghai",
+            "valuation_cutoff_policy": "latest_complete_eod",
+        }
+        current_report = build_holdings_report(
+            portfolio_payload,
+            account_payloads,
+            transaction_payloads,
+            as_of_date=args.valuation_date,
+        )
+        previous_report = build_holdings_report(
+            portfolio_payload,
+            account_payloads,
+            transaction_payloads,
+            as_of_date=args.valuation_date - timedelta(days=1),
+        )
+        current_nav = current_report.get("total_market_value_base")
+        previous_nav = previous_report.get("total_market_value_base")
+        resolved_current_nav = float(current_nav) if current_nav is not None else None
+        resolved_previous_nav = float(previous_nav) if previous_nav is not None else None
+        day_change_value = (
+            resolved_current_nav - resolved_previous_nav
+            if resolved_current_nav is not None and resolved_previous_nav is not None
+            else None
+        )
+        day_change_pct = (
+            day_change_value / resolved_previous_nav
+            if day_change_value is not None
+            and resolved_previous_nav is not None
+            and abs(resolved_previous_nav) > 1e-9
+            else None
+        )
 
-        append_transaction_revision_batch_unchecked(
-            session,
-            portfolio_id=args.portfolio_id,
-            context=TransactionRevisionContext(
-                source_kind="import",
-                change_reason=f"Imported verified trade blotter {csv_path.name}",
-                actor_type="service",
-                actor_id="service:csv-import",
-                actor_display_name="CSV portfolio importer",
-                actor_source="trusted_service",
-                source_ref=str(csv_path),
-            ),
-            mutations=revision_commands,
-        )
-        validate_prospective_transaction_history(
-            session,
-            portfolio_id=args.portfolio_id,
-        )
+        portfolio_record.as_of_date = args.valuation_date
+        portfolio_record.nav = resolved_current_nav
+        portfolio_record.day_change_value = day_change_value
+        portfolio_record.day_change_pct = day_change_pct
+        portfolio_record.securities_count = len(list(current_report.get("positions") or []))
+
         session.commit()
 
     print(f"Imported portfolio {args.portfolio_id} ({portfolio_name}) from {csv_path}")
     print(f"Trade date: {imported_trade_date.isoformat()}")
     print(f"Transactions imported: {len(rows) + 1}")
     print(f"Seed cash: {float(total_gross_amount):,.2f} CNY")
-    print("Portfolio Daily recomputation was requested by the committed fact changes.")
-    print("NAV, daily change, and holdings become available only after worker publication.")
+    print(f"As of: {args.valuation_date.isoformat()}")
+    print(f"NAV: {resolved_current_nav:,.2f} CNY" if resolved_current_nav is not None else "NAV: unavailable")
+    print(
+        f"Day change: {day_change_value:,.2f} CNY ({day_change_pct:.4%})"
+        if day_change_value is not None and day_change_pct is not None
+        else "Day change: unavailable"
+    )
 
 
 if __name__ == "__main__":

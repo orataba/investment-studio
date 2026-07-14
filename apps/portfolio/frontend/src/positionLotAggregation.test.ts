@@ -2,43 +2,51 @@ import { describe, expect, it } from 'vitest'
 
 import { aggregatePositionLotAccountSlices } from './lib/positionLotAggregation'
 
-describe('published position-lot account slice aggregation', () => {
-  it('sums quantity and local cost without binary floating-point arithmetic', () => {
+describe('position-lot account slice aggregation', () => {
+  it('marks a slice unavailable when any non-zero open quantity is unpriced', () => {
     const [slice] = aggregatePositionLotAccountSlices([
       {
         account_id: 'broker-cny',
-        open_quantity_exact: '0.1',
-        cost_basis_local_exact: '100000000000000000000.00000001',
+        remaining_quantity: 100,
+        remaining_cost_basis: 90,
+        current_market_value: 110,
+        status: 'open',
       },
       {
         account_id: 'broker-cny',
-        open_quantity_exact: '0.2',
-        cost_basis_local_exact: '0.00000001',
+        remaining_quantity: 50,
+        remaining_cost_basis: 40,
+        current_market_value: null,
+        status: 'open',
       },
     ])
 
-    expect(slice).toEqual({
-      accountId: 'broker-cny',
-      quantityExact: '0.3',
-      costBasisLocalExact: '100000000000000000000.00000002',
+    expect(slice).toMatchObject({
+      quantity: 150,
+      remainingCost: 130,
+      marketValue: null,
       openPositionLotCount: 2,
     })
   })
 
-  it('keeps account custody buckets separate', () => {
-    const slices = aggregatePositionLotAccountSlices([
+  it('ignores an unpriced closed zero-quantity lot when open valuation is complete', () => {
+    const [slice] = aggregatePositionLotAccountSlices([
       {
-        account_id: 'broker-b',
-        open_quantity_exact: '2',
-        cost_basis_local_exact: '20',
+        account_id: 'broker-cny',
+        remaining_quantity: 25,
+        remaining_cost_basis: 20,
+        current_market_value: 30,
+        status: 'open',
       },
       {
-        account_id: 'broker-a',
-        open_quantity_exact: '1',
-        cost_basis_local_exact: '10',
+        account_id: 'broker-cny',
+        remaining_quantity: 0,
+        remaining_cost_basis: 0,
+        current_market_value: null,
+        status: 'closed',
       },
     ])
 
-    expect(slices.map((slice) => slice.accountId)).toEqual(['broker-a', 'broker-b'])
+    expect(slice?.marketValue).toBe(30)
   })
 })

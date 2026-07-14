@@ -1,11 +1,9 @@
 from __future__ import annotations
 
 from datetime import UTC, date, datetime
-from decimal import Decimal
-from typing import NoReturn
 from uuid import uuid4
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, BackgroundTasks, HTTPException, Query
 
 from portfolio_app.api.assemblers import (
     resolve_transaction_flow_scope,
@@ -13,31 +11,40 @@ from portfolio_app.api.assemblers import (
     serialize_transaction,
     summarize_transactions,
 )
-from portfolio_app.api.transaction_command_errors import (
-    raise_transaction_command_validation_error,
-)
 from portfolio_app.api.contracts import (
+    AccountRecord,
+    InstrumentCoreContract,
+    DerivationBoundaryStatus,
     InternalTransferCreateRequest,
     SharedInstrumentListResponse,
+    LedgerPostingListSummary,
+    PositionLotListSummary,
     TransactionBatchResponse,
     TransactionCreateRequest,
-    TransactionDeleteRequest,
     TransactionDeleteResponse,
     TransactionExecutionQuoteResponse,
     TransactionListResponse,
     TransactionListSummary,
+    TransactionPositionPreviewResponse,
     TransactionRecord,
-    TransactionRevisionHistoryResponse,
-    TransactionRevisionRecord,
-    TransactionUpdateRequest,
     TransactionWorkspaceResponse,
+)
+from portfolio_app.services.ledger import (
+    build_position_lots,
+    estimate_position_cost_basis,
+    estimate_position_quantity,
+    estimate_position_remaining_cost_basis,
+    list_ledger_postings,
+    summarize_ledger_postings,
+    summarize_position_lots,
 )
 from portfolio_app.services.instrument_registry import (
     InstrumentRegistryError,
     get_registry_instrument,
     list_registry_instruments,
 )
-from portfolio_app.services.execution_quotes import get_execution_quote
+from portfolio_app.services.daily_snapshots import refresh_portfolio_daily_snapshots
+from portfolio_app.services.execution_quotes import get_execution_quote_on_or_before
 from portfolio_app.services.portfolio_store import (
     create_transaction,
     create_transactions,
@@ -45,18 +52,10 @@ from portfolio_app.services.portfolio_store import (
     get_account,
     get_portfolio,
     get_transaction,
-    get_transaction_revision_history,
     list_accounts,
     list_transactions,
+    resolve_trade_timing,
     update_transaction,
-)
-from portfolio_app.services.transaction_revisions import (
-    TransactionRevisionConflictError,
-    TransactionRevisionNoOpError,
-    TransactionRevisionPayloadError,
-)
-from portfolio_app.services.transaction_command_validator import (
-    TransactionCommandValidationError,
 )
 
 
@@ -73,58 +72,17 @@ INCOME_ASSET_TYPES: dict[str, set[str]] = {
 }
 
 
+def _queue_daily_snapshot_refresh(background_tasks: BackgroundTasks | None, portfolio_id: str) -> None:
+    if background_tasks is not None:
+        background_tasks.add_task(refresh_portfolio_daily_snapshots, portfolio_id)
+
+
 def _resolve_flow_scope(transaction_type: str) -> str:
     return resolve_transaction_flow_scope(transaction_type)
 
 
-def _resolve_net_cash_effect(record: dict[str, object]) -> Decimal | None:
+def _resolve_net_cash_effect(record: dict[str, object]) -> float | None:
     return resolve_transaction_net_cash_effect(record)
-
-
-def _raise_transaction_revision_error(error: Exception, *, portfolio_id: str) -> NoReturn:
-    if isinstance(error, TransactionRevisionConflictError):
-        lifecycle_status = "active"
-        if error.transaction_id:
-            history = get_transaction_revision_history(
-                portfolio_id,
-                error.transaction_id,
-            )
-            if history is not None:
-                lifecycle_status = str(history.get("lifecycle_status") or "active")
-        raise HTTPException(
-            status_code=409,
-            detail={
-                "code": "transaction_revision_conflict",
-                "message": str(error),
-                "reason_code": error.code,
-                "transaction_id": error.transaction_id,
-                "expected_revision_id": error.expected_revision_id,
-                "expected_revision_number": error.expected_revision_number,
-                "actual_revision_id": error.actual_revision_id,
-                "actual_revision_number": error.actual_revision_number,
-                "lifecycle_status": lifecycle_status,
-            },
-        ) from error
-    if isinstance(error, TransactionRevisionNoOpError):
-        raise HTTPException(
-            status_code=422,
-            detail={
-                "code": "transaction_revision_no_op",
-                "message": str(error),
-                "transaction_id": error.transaction_id,
-                "revision_id": error.revision_id,
-                "revision_number": error.revision_number,
-            },
-        ) from error
-    if isinstance(error, TransactionRevisionPayloadError):
-        raise HTTPException(
-            status_code=422,
-            detail={
-                "code": "transaction_revision_invalid",
-                "message": str(error),
-            },
-        ) from error
-    raise error
 
 
 def _serialize_transaction(
@@ -221,6 +179,118 @@ def _validate_account_fact_window(
                 status_code=400,
                 detail=f"{role_label} '{account_label}' is closed on {event_date.isoformat()}.",
             )
+
+
+def _exclude_transactions(
+    records: list[dict[str, object]],
+    *,
+    transaction_ids: set[str] | None = None,
+) -> list[dict[str, object]]:
+    if not transaction_ids:
+        return records
+    return [
+        record
+        for record in records
+        if str(record.get("transaction_id") or "") not in transaction_ids
+    ]
+
+
+def _list_transactions_as_of_trade_date(
+    portfolio_id: str,
+    trade_date: date,
+    *,
+    exclude_transaction_ids: set[str] | None = None,
+) -> list[dict[str, object]]:
+    return _exclude_transactions(
+        list_transactions(portfolio_id, end_date=trade_date),
+        transaction_ids=exclude_transaction_ids,
+    )
+
+
+def _transaction_sort_key(record: dict[str, object]) -> tuple[str, str, str, str, str]:
+    return (
+        str(record.get("trade_date") or ""),
+        str(record.get("trade_at") or ""),
+        str(record.get("created_at") or ""),
+        str(record.get("transaction_id") or ""),
+        str(record.get("settlement_date") or ""),
+    )
+
+
+def _pending_transaction_sort_key(
+    *,
+    trade_date: date,
+    trade_at: str,
+    created_at: str,
+    settlement_date: date,
+) -> tuple[str, str, str, str, str]:
+    return (
+        trade_date.isoformat(),
+        trade_at,
+        created_at,
+        "~pending",
+        settlement_date.isoformat(),
+    )
+
+
+def _list_transactions_as_of_trade_moment(
+    portfolio_id: str,
+    *,
+    trade_date: date,
+    trade_at: str,
+    created_at: str,
+    settlement_date: date,
+    exclude_transaction_ids: set[str] | None = None,
+) -> list[dict[str, object]]:
+    pending_sort_key = _pending_transaction_sort_key(
+        trade_date=trade_date,
+        trade_at=trade_at,
+        created_at=created_at,
+        settlement_date=settlement_date,
+    )
+    return [
+        record
+        for record in _list_transactions_as_of_trade_date(
+            portfolio_id,
+            trade_date,
+            exclude_transaction_ids=exclude_transaction_ids,
+        )
+        if _transaction_sort_key(record) <= pending_sort_key
+    ]
+
+
+def _list_transactions_as_of_entitlement_moment(
+    portfolio_id: str,
+    *,
+    entitlement_date: date,
+    trade_date: date,
+    trade_at: str,
+    created_at: str,
+    settlement_date: date,
+    exclude_transaction_ids: set[str] | None = None,
+) -> list[dict[str, object]]:
+    if entitlement_date < trade_date:
+        return _list_transactions_as_of_trade_date(
+            portfolio_id,
+            entitlement_date,
+            exclude_transaction_ids=exclude_transaction_ids,
+        )
+    return _list_transactions_as_of_trade_moment(
+        portfolio_id,
+        trade_date=trade_date,
+        trade_at=trade_at,
+        created_at=created_at,
+        settlement_date=settlement_date,
+        exclude_transaction_ids=exclude_transaction_ids,
+    )
+
+
+def _account_cost_methods(portfolio_id: str) -> dict[str, str]:
+    return {
+        str(account_item.get("account_id") or ""): str(account_item.get("cost_basis_method") or "fifo")
+        for account_item in list_accounts(portfolio_id)
+        if account_item.get("account_type") == "securities_account"
+    }
 
 
 def _transfer_group_transaction_ids(portfolio_id: str, transfer_group_id: str) -> list[str]:
@@ -397,6 +467,15 @@ def _validate_fx_conversion(
     if payload.currency.upper() != source_currency:
         raise HTTPException(status_code=400, detail="FX conversion transaction currency must match source account.")
 
+    source_amount = float(payload.gross_amount or 0.0)
+    target_amount = float(payload.counter_amount or 0.0)
+    fx_rate = float(payload.fx_rate or 0.0)
+    if source_amount <= 0:
+        raise HTTPException(status_code=400, detail="FX conversion requires positive source amount.")
+    implied_rate = target_amount / source_amount if source_amount > 0 else 0.0
+    if abs(implied_rate - fx_rate) > 1e-4:
+        raise HTTPException(status_code=400, detail="counter_amount must match gross_amount multiplied by fx_rate.")
+
     return counterparty_account
 
 
@@ -441,6 +520,7 @@ def list_transaction_records(
     return TransactionListResponse(
         portfolio_id=portfolio_id,
         summary=_build_summary(records),
+        derivation_boundary=DerivationBoundaryStatus(),
         transactions=[_serialize_transaction(portfolio_id, item, account_lookup) for item in records],
     )
 
@@ -477,12 +557,116 @@ def get_transaction_workspace(
     )
     selected_transaction_id = selected_transaction.transaction_id if selected_transaction else None
 
+    all_transactions = list_transactions(portfolio_id)
+    account_cost_methods = {
+        str(account.get("account_id") or ""): str(account.get("cost_basis_method") or "fifo")
+        for account in accounts
+        if account.get("account_type") == "securities_account"
+    }
+    account_currency_map = {
+        str(account.get("account_id") or ""): str(account.get("currency") or "")
+        for account in accounts
+    }
+    ledger_postings_raw = (
+        list_ledger_postings(
+            portfolio_id,
+            all_transactions,
+            account_cost_methods=account_cost_methods,
+            account_currency_map=account_currency_map,
+            transaction_id=selected_transaction_id,
+        )
+        if selected_transaction_id
+        else []
+    )
+
+    related_position_lots_raw: list[dict[str, object]] = []
+    if selected_transaction and selected_transaction.instrument_id:
+        candidate_position_lots = build_position_lots(
+            portfolio_id,
+            accounts,
+            all_transactions,
+            account_id=selected_transaction.account.account_id,
+            instrument_id=selected_transaction.instrument_id,
+        )
+        related_position_lots_raw = [
+            item
+            for item in candidate_position_lots
+            if item.get("opened_by_transaction_id") == selected_transaction.transaction_id
+            or any(
+                realization.get("transaction_id") == selected_transaction.transaction_id
+                for realization in item.get("realizations", [])
+            )
+        ]
+        if not related_position_lots_raw:
+            related_position_lots_raw = candidate_position_lots
+
     return TransactionWorkspaceResponse(
         portfolio_id=portfolio_id,
         summary=_build_summary(filtered_records),
+        derivation_boundary=DerivationBoundaryStatus(
+            ledger_postings="next_layer",
+            positions="next_layer",
+            position_lots="next_layer",
+            holdings="not_started",
+            snapshot="not_started",
+        ),
         selected_transaction_id=selected_transaction_id,
         transactions=serialized_transactions,
         selected_transaction=selected_transaction,
+        ledger_summary=LedgerPostingListSummary.model_validate(summarize_ledger_postings(ledger_postings_raw)),
+        ledger_postings=ledger_postings_raw,
+        related_position_lot_summary=PositionLotListSummary.model_validate(
+            summarize_position_lots(related_position_lots_raw)
+        ),
+        related_position_lots=related_position_lots_raw,
+    )
+
+
+@router.get("/{portfolio_id}/transactions/position-preview", response_model=TransactionPositionPreviewResponse)
+def get_transaction_position_preview(
+    portfolio_id: str,
+    account_id: str,
+    instrument_id: str,
+    as_of_date: date = Query(...),
+    trade_time: str | None = None,
+    exclude_transaction_id: str | None = None,
+) -> TransactionPositionPreviewResponse:
+    if get_portfolio(portfolio_id) is None:
+        raise HTTPException(status_code=404, detail="Portfolio not found")
+
+    if get_account(portfolio_id, account_id) is None:
+        raise HTTPException(status_code=400, detail="Account not found")
+
+    _load_instrument_ref(instrument_id)
+    resolved_trade_timing = resolve_trade_timing(
+        trade_date=as_of_date,
+        trade_time=trade_time,
+    )
+    pending_created_at = datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    excluded_transaction_ids = {exclude_transaction_id} if exclude_transaction_id else None
+    transactions_as_of_trade_date = _list_transactions_as_of_trade_moment(
+        portfolio_id,
+        trade_date=as_of_date,
+        trade_at=str(resolved_trade_timing["trade_at"]),
+        created_at=pending_created_at,
+        settlement_date=as_of_date,
+        exclude_transaction_ids=excluded_transaction_ids,
+    )
+    quantity = estimate_position_quantity(
+        portfolio_id,
+        transactions_as_of_trade_date,
+        account_id=account_id,
+        instrument_id=instrument_id,
+        account_cost_methods=_account_cost_methods(portfolio_id),
+        as_of_date=as_of_date,
+    )
+    return TransactionPositionPreviewResponse(
+        portfolio_id=portfolio_id,
+        account_id=account_id,
+        instrument_id=instrument_id,
+        as_of_date=as_of_date,
+        trade_at=str(resolved_trade_timing["trade_at"]),
+        quantity=quantity,
     )
 
 
@@ -495,16 +679,16 @@ def get_transaction_execution_quote(
     instrument_id: str,
     as_of_date: date = Query(...),
 ) -> TransactionExecutionQuoteResponse:
-    """Resolve a canonical same-date trading reference for transaction entry.
+    """Resolve an unadjusted price for a transaction form on or before a date.
 
-    The shared trading role is authoritative and uses exact-only freshness, so
-    a prior observation is reported with lineage but never proposed as price.
+    Trading policy takes precedence over valuation policy. Performance/chart
+    series such as adjusted_close and total_return_nav are never eligible.
     """
 
     if get_portfolio(portfolio_id) is None:
         raise HTTPException(status_code=404, detail="Portfolio not found")
     try:
-        quote = get_execution_quote(
+        quote = get_execution_quote_on_or_before(
             instrument_id,
             as_of_date=as_of_date,
         )
@@ -524,8 +708,9 @@ def get_transaction_execution_quote(
 def _persist_transaction_record(
     *,
     portfolio_id: str,
-    payload: TransactionCreateRequest | TransactionUpdateRequest,
+    payload: TransactionCreateRequest,
     existing_transaction: dict[str, object] | None = None,
+    background_tasks: BackgroundTasks | None = None,
 ) -> TransactionRecord:
     portfolio = get_portfolio(portfolio_id)
     if portfolio is None:
@@ -534,17 +719,27 @@ def _persist_transaction_record(
     account = get_account(portfolio_id, payload.account_id)
     if account is None:
         raise HTTPException(status_code=400, detail="Account not found")
-    settlement_date = payload.settlement_date
-    if settlement_date is None:
-        raise RuntimeError("Validated transaction request is missing settlement_date.")
+    settlement_date = payload.settlement_date or payload.trade_date
+    entitlement_date = payload.entitlement_date or payload.trade_date
+    resolved_trade_timing = resolve_trade_timing(
+        trade_date=payload.trade_date,
+        trade_time=payload.trade_time,
+    )
     pending_created_at = str(existing_transaction.get("created_at") or "").strip() if existing_transaction else ""
     if not pending_created_at:
         pending_created_at = datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    excluded_transaction_ids = (
+        {str(existing_transaction.get("transaction_id") or "").strip()}
+        if existing_transaction is not None
+        else None
+    )
     _validate_account_fact_window(
         account,
         event_dates=[payload.trade_date, settlement_date],
         role_label="Account",
     )
+    account_cost_methods = _account_cost_methods(portfolio_id)
+
     transaction_type = payload.transaction_type
     account_type = str(account.get("account_type") or "")
     transfer_object_type = payload.transfer_object_type
@@ -661,6 +856,93 @@ def _persist_transaction_record(
         transaction_type=transaction_type,
     )
 
+    transactions_as_of_trade_date: list[dict[str, object]] | None = None
+    if transaction_type in {"sell", "maturity_redemption", "dividend_reinvestment"} and instrument_id:
+        transactions_as_of_trade_date = _list_transactions_as_of_trade_moment(
+            portfolio_id,
+            trade_date=payload.trade_date,
+            trade_at=str(resolved_trade_timing["trade_at"]),
+            created_at=pending_created_at,
+            settlement_date=settlement_date,
+            exclude_transaction_ids=excluded_transaction_ids,
+        )
+
+    transactions_as_of_entitlement_date: list[dict[str, object]] | None = None
+    if transaction_type in {"dividend", "coupon"} or (transaction_type in {"fee", "tax"} and instrument_id):
+        if instrument_id:
+            transactions_as_of_entitlement_date = _list_transactions_as_of_entitlement_moment(
+                portfolio_id,
+                entitlement_date=entitlement_date,
+                trade_date=payload.trade_date,
+                trade_at=str(resolved_trade_timing["trade_at"]),
+                created_at=pending_created_at,
+                settlement_date=settlement_date,
+                exclude_transaction_ids=excluded_transaction_ids,
+            )
+
+    if transaction_type in {"sell", "maturity_redemption"} and instrument_id:
+        available_quantity = estimate_position_quantity(
+            portfolio_id,
+            transactions_as_of_trade_date or [],
+            account_id=payload.account_id,
+            instrument_id=instrument_id,
+            account_cost_methods=account_cost_methods,
+        )
+        requested_quantity = float(payload.quantity or 0.0)
+        if requested_quantity > available_quantity + 1e-9:
+            raise HTTPException(status_code=400, detail="Transaction quantity exceeds account position as of trade_date.")
+
+    if transaction_type in {"dividend", "coupon"} or (transaction_type in {"fee", "tax"} and instrument_id):
+        if instrument_id:
+            available_quantity = estimate_position_quantity(
+                portfolio_id,
+                transactions_as_of_entitlement_date or [],
+                account_id=payload.account_id,
+                instrument_id=instrument_id,
+                account_cost_methods=account_cost_methods,
+            )
+            if available_quantity <= 1e-9:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Instrument-linked income and expense requires account position as of entitlement_date.",
+                )
+
+    if transaction_type == "dividend_reinvestment" and instrument_id:
+        available_quantity = estimate_position_quantity(
+            portfolio_id,
+            transactions_as_of_trade_date or [],
+            account_id=payload.account_id,
+            instrument_id=instrument_id,
+            account_cost_methods=account_cost_methods,
+        )
+        if available_quantity <= 1e-9:
+            raise HTTPException(
+                status_code=400,
+                detail="Dividend reinvestment requires account position as of trade_date.",
+            )
+
+    if transaction_type == "return_of_capital" and instrument_id:
+        transactions_as_of_trade_date = _list_transactions_as_of_trade_moment(
+            portfolio_id,
+            trade_date=payload.trade_date,
+            trade_at=str(resolved_trade_timing["trade_at"]),
+            created_at=pending_created_at,
+            settlement_date=settlement_date,
+            exclude_transaction_ids=excluded_transaction_ids,
+        )
+        available_cost_basis = estimate_position_remaining_cost_basis(
+            portfolio_id,
+            transactions_as_of_trade_date or [],
+            account_id=payload.account_id,
+            instrument_id=instrument_id,
+            account_cost_methods=account_cost_methods,
+        )
+        if float(payload.gross_amount or 0.0) > available_cost_basis + 1e-9:
+            raise HTTPException(
+                status_code=400,
+                detail="Return of capital exceeds account position cost basis as of trade_date.",
+            )
+
     _validate_transaction_currency(
         transaction_type=transaction_type,
         transaction_currency=payload.currency.upper(),
@@ -689,8 +971,7 @@ def _persist_transaction_record(
         "price": payload.price,
         "gross_amount": payload.gross_amount,
         "counter_amount": payload.counter_amount,
-        "quoted_fx_rate": payload.quoted_fx_rate,
-        "consideration_basis": payload.consideration_basis,
+        "fx_rate": payload.fx_rate,
         "fees": payload.fees,
         "taxes": payload.taxes,
         "currency": payload.currency,
@@ -703,36 +984,20 @@ def _persist_transaction_record(
             else payload.counterparty_account_id
         ),
         "note": payload.note,
+        "created_at": pending_created_at,
     }
     try:
         if existing_transaction is not None:
-            if not isinstance(payload, TransactionUpdateRequest):
-                raise RuntimeError("Transaction update requires revision metadata.")
             persisted_record = update_transaction(
                 portfolio_id,
                 str(existing_transaction.get("transaction_id") or ""),
-                expected_revision_id=payload.expected_revision_id,
-                expected_revision_number=payload.expected_revision_number,
-                actor=payload.actor.model_dump(),
-                change_reason=payload.change_reason,
                 **transaction_values,
             )
         else:
             persisted_record = create_transaction(
                 portfolio_id=portfolio_id,
-                actor=payload.actor.model_dump(),
-                change_reason=payload.change_reason,
-                created_at=pending_created_at,
                 **transaction_values,
             )
-    except (
-        TransactionRevisionConflictError,
-        TransactionRevisionNoOpError,
-        TransactionRevisionPayloadError,
-    ) as error:
-        _raise_transaction_revision_error(error, portfolio_id=portfolio_id)
-    except TransactionCommandValidationError as error:
-        raise_transaction_command_validation_error(error)
     except ValueError as error:
         raise HTTPException(
             status_code=409,
@@ -740,6 +1005,7 @@ def _persist_transaction_record(
         ) from error
     if persisted_record is None:
         raise HTTPException(status_code=404, detail="Transaction not found")
+    _queue_daily_snapshot_refresh(background_tasks, portfolio_id)
     account_lookup = {item["account_id"]: item for item in list_accounts(portfolio_id)}
     return _serialize_transaction(portfolio_id, persisted_record, account_lookup)
 
@@ -748,10 +1014,12 @@ def _persist_transaction_record(
 def create_transaction_record(
     portfolio_id: str,
     payload: TransactionCreateRequest,
+    background_tasks: BackgroundTasks,
 ) -> TransactionRecord:
     return _persist_transaction_record(
         portfolio_id=portfolio_id,
         payload=payload,
+        background_tasks=background_tasks,
     )
 
 
@@ -759,7 +1027,8 @@ def create_transaction_record(
 def update_transaction_record(
     portfolio_id: str,
     transaction_id: str,
-    payload: TransactionUpdateRequest,
+    payload: TransactionCreateRequest,
+    background_tasks: BackgroundTasks,
 ) -> TransactionRecord:
     existing_transaction = get_transaction(portfolio_id, transaction_id)
     if existing_transaction is None:
@@ -778,28 +1047,15 @@ def update_transaction_record(
         portfolio_id=portfolio_id,
         payload=payload,
         existing_transaction=existing_transaction,
+        background_tasks=background_tasks,
     )
-
-
-@router.get(
-    "/{portfolio_id}/transactions/{transaction_id}/revisions",
-    response_model=TransactionRevisionHistoryResponse,
-)
-def get_transaction_revision_records(
-    portfolio_id: str,
-    transaction_id: str,
-) -> TransactionRevisionHistoryResponse:
-    history = get_transaction_revision_history(portfolio_id, transaction_id)
-    if history is None:
-        raise HTTPException(status_code=404, detail="Transaction history not found")
-    return TransactionRevisionHistoryResponse.model_validate(history)
 
 
 @router.delete("/{portfolio_id}/transactions/{transaction_id}", response_model=TransactionDeleteResponse)
 def delete_transaction_record(
     portfolio_id: str,
     transaction_id: str,
-    payload: TransactionDeleteRequest,
+    background_tasks: BackgroundTasks,
 ) -> TransactionDeleteResponse:
     existing_transaction = get_transaction(portfolio_id, transaction_id)
     if existing_transaction is None:
@@ -811,67 +1067,25 @@ def delete_transaction_record(
         if transfer_group_id
         else [transaction_id]
     )
-    current_records = {
-        str(record.get("transaction_id") or ""): record
-        for record in list_transactions(portfolio_id)
-        if str(record.get("transaction_id") or "") in set(transaction_ids)
-    }
-    expected_revisions = {
-        current_transaction_id: (
-            str(record.get("revision_id") or ""),
-            int(record.get("revision_number") or 0),
-        )
-        for current_transaction_id, record in current_records.items()
-    }
-    expected_revisions[transaction_id] = (
-        payload.expected_revision_id,
-        payload.expected_revision_number,
-    )
     try:
         deleted_records = delete_transactions(
             portfolio_id,
             transaction_ids=transaction_ids,
-            expected_revisions=expected_revisions,
-            actor=payload.actor.model_dump(),
-            change_reason=payload.change_reason,
         )
-    except (
-        TransactionRevisionConflictError,
-        TransactionRevisionNoOpError,
-        TransactionRevisionPayloadError,
-    ) as error:
-        _raise_transaction_revision_error(error, portfolio_id=portfolio_id)
-    except TransactionCommandValidationError as error:
-        raise_transaction_command_validation_error(error)
     except ValueError as error:
         raise HTTPException(
             status_code=409,
             detail=f"Deleting this fact would invalidate later position history. {error}",
         ) from error
-    revision_records: list[TransactionRevisionRecord] = []
-    for deleted_transaction_id in transaction_ids:
-        history = get_transaction_revision_history(portfolio_id, deleted_transaction_id)
-        if history is None or not history.get("revisions"):
-            raise RuntimeError(
-                f"Deleted transaction '{deleted_transaction_id}' has no revision history."
-            )
-        revisions = history["revisions"]
-        if not isinstance(revisions, list) or not isinstance(revisions[-1], dict):
-            raise RuntimeError(
-                f"Deleted transaction '{deleted_transaction_id}' has invalid revision history."
-            )
-        revision_records.append(TransactionRevisionRecord.model_validate(revisions[-1]))
-    mutation_id = str(deleted_records[0].get("last_mutation_id") or "") if deleted_records else ""
+    _queue_daily_snapshot_refresh(background_tasks, portfolio_id)
     return TransactionDeleteResponse(
         portfolio_id=portfolio_id,
-        mutation_id=mutation_id,
         deleted_count=len(deleted_records),
         deleted_transaction_ids=[
             str(record.get("transaction_id") or "")
             for record in deleted_records
         ],
         transfer_group_id=transfer_group_id,
-        revisions=revision_records,
     )
 
 
@@ -879,6 +1093,7 @@ def delete_transaction_record(
 def create_internal_transfer_records(
     portfolio_id: str,
     payload: InternalTransferCreateRequest,
+    background_tasks: BackgroundTasks,
 ) -> TransactionBatchResponse:
     if get_portfolio(portfolio_id) is None:
         raise HTTPException(status_code=404, detail="Portfolio not found")
@@ -888,6 +1103,10 @@ def create_internal_transfer_records(
     if from_account is None or to_account is None:
         raise HTTPException(status_code=400, detail="Transfer accounts not found.")
     settlement_date = payload.settlement_date or payload.trade_date
+    resolved_trade_timing = resolve_trade_timing(
+        trade_date=payload.trade_date,
+        trade_time=payload.trade_time,
+    )
     pending_created_at = datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
     _validate_account_fact_window(
         from_account,
@@ -931,9 +1150,51 @@ def create_internal_transfer_records(
                 status_code=400,
                 detail="Position transfer accounts must share the same currency as the instrument.",
             )
+        account_cost_methods = {
+            str(account_item.get("account_id") or ""): str(account_item.get("cost_basis_method") or "fifo")
+            for account_item in list_accounts(portfolio_id)
+            if account_item.get("account_type") == "securities_account"
+        }
+        transactions_as_of_trade_date = _list_transactions_as_of_trade_moment(
+            portfolio_id,
+            trade_date=payload.trade_date,
+            trade_at=str(resolved_trade_timing["trade_at"]),
+            created_at=pending_created_at,
+            settlement_date=settlement_date,
+        )
+        available_quantity = estimate_position_quantity(
+            portfolio_id,
+            transactions_as_of_trade_date,
+            account_id=payload.from_account_id,
+            instrument_id=instrument_id,
+            account_cost_methods=account_cost_methods,
+        )
+        requested_quantity = float(payload.quantity or 0.0)
+        if requested_quantity > available_quantity + 1e-9:
+            raise HTTPException(status_code=400, detail="Transfer quantity exceeds source position as of trade_date.")
+
     transferred_amount = payload.gross_amount
-    if transferred_amount is None:
-        raise RuntimeError("Validated internal transfer is missing gross_amount.")
+    if transfer_object_type == "position":
+        estimated_transferred_amount = estimate_position_cost_basis(
+            portfolio_id,
+            transactions_as_of_trade_date,
+            account_id=payload.from_account_id,
+            instrument_id=instrument_id or "",
+            quantity=float(payload.quantity or 0.0),
+            account_cost_methods=account_cost_methods,
+        )
+        if estimated_transferred_amount < -1e-9:
+            raise HTTPException(
+                status_code=400,
+                detail="Unable to derive transferred cost basis from current source position.",
+            )
+        if transferred_amount is not None and transferred_amount > 0:
+            if abs(float(transferred_amount) - estimated_transferred_amount) > 1e-6:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Position transfer gross_amount must match source cost basis as of trade_date.",
+                )
+        transferred_amount = estimated_transferred_amount
 
     transfer_group_id = payload.transfer_group_id or f"trf-{uuid4().hex[:12]}"
     trade_date = payload.trade_date
@@ -955,12 +1216,11 @@ def create_internal_transfer_records(
                     "instrument_ref": instrument_ref,
                     "quantity": payload.quantity,
                     "price": None,
-                    "gross_amount": transferred_amount,
+                    "gross_amount": float(transferred_amount or 0.0),
                     "counter_amount": None,
-                    "quoted_fx_rate": None,
-                    "consideration_basis": None,
-                    "fees": Decimal("0"),
-                    "taxes": Decimal("0"),
+                    "fx_rate": None,
+                    "fees": 0,
+                    "taxes": 0,
                     "currency": transfer_currency,
                     "transfer_scope": "internal_portfolio",
                     "transfer_object_type": transfer_object_type,
@@ -982,12 +1242,11 @@ def create_internal_transfer_records(
                     "instrument_ref": instrument_ref,
                     "quantity": payload.quantity,
                     "price": None,
-                    "gross_amount": transferred_amount,
+                    "gross_amount": float(transferred_amount or 0.0),
                     "counter_amount": None,
-                    "quoted_fx_rate": None,
-                    "consideration_basis": None,
-                    "fees": Decimal("0"),
-                    "taxes": Decimal("0"),
+                    "fx_rate": None,
+                    "fees": 0,
+                    "taxes": 0,
                     "currency": transfer_currency,
                     "transfer_scope": "internal_portfolio",
                     "transfer_object_type": transfer_object_type,
@@ -997,30 +1256,16 @@ def create_internal_transfer_records(
                     "created_at": pending_created_at,
                 },
             ],
-            actor=payload.actor.model_dump(),
-            change_reason=payload.change_reason or "Internal transfer recorded",
         )
-    except (
-        TransactionRevisionConflictError,
-        TransactionRevisionNoOpError,
-        TransactionRevisionPayloadError,
-    ) as error:
-        _raise_transaction_revision_error(error, portfolio_id=portfolio_id)
-    except TransactionCommandValidationError as error:
-        raise_transaction_command_validation_error(error)
     except ValueError as error:
         raise HTTPException(
             status_code=409,
             detail=f"Transaction history changed; reload and retry. {error}",
         ) from error
+    _queue_daily_snapshot_refresh(background_tasks, portfolio_id)
     account_lookup = {item["account_id"]: item for item in list_accounts(portfolio_id)}
     return TransactionBatchResponse(
         portfolio_id=portfolio_id,
-        mutation_id=(
-            str(created_records[0].get("last_mutation_id") or "")
-            if created_records
-            else ""
-        ),
         created_count=len(created_records),
         transfer_group_id=transfer_group_id,
         transactions=[_serialize_transaction(portfolio_id, item, account_lookup) for item in created_records],

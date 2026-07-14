@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from datetime import UTC, datetime
 from statistics import mean
+from typing import Any
 
 from sqlalchemy.orm import Session
 
@@ -17,6 +18,7 @@ from watchlist_app.repositories.sqlalchemy.read_models import SQLAlchemyReadMode
 from watchlist_app.repositories.sqlalchemy.watchlists import SQLAlchemyWatchlistRepository
 from watchlist_app.services.read_models import (
     collapse_latest_attribute_values,
+    default_fund_exposure_summary_payload,
     default_fund_performance_payload,
     default_fund_risk_payload,
     default_fund_summary_payload,
@@ -129,6 +131,7 @@ def _default_research_payload() -> dict[str, object]:
             "next_review_date": None,
             "primary_analyst": "",
         },
+        "manual_rating": None,
         "timeline_notes": [],
     }
 
@@ -158,7 +161,7 @@ class StubCopilotProvider:
         stale_rows = _pick_stale_rows(rows)
         best_return_row = _pick_best_row(rows, "return_1y", reverse=True)
         worst_drawdown_row = _pick_best_row(rows, "max_drawdown", reverse=False)
-        highest_rating_row = _pick_best_row(rows, "research_rating", reverse=True)
+        highest_rating_row = _pick_best_row(rows, "overall_rating", reverse=True)
         avg_one_year = _mean_field(rows, "return_1y")
         groups = list(query_result.get("groups") or [])
         largest_group = (
@@ -175,18 +178,12 @@ class StubCopilotProvider:
         elif any(keyword in question for keyword in ("评级", "观点", "rating")):
             focus = "评级"
 
-        grouping_summary = (
-            f"按 {group_by} 分组，最大组是 {largest_group.get('group_value')}"
-            f"（{largest_group.get('row_count')} 条）。"
-            if group_by and group_by != "none" and largest_group
-            else "当前未分组。"
-        )
         answer_lines = [
             f"基于当前 Watchlist「{watchlist_name}」的 {total_rows} 条可见记录，我先按{focus}给出摘要。",
-            f"当前视图是「{view_name or '当前视图'}」；{grouping_summary}",
+            f"当前视图是「{view_name or '当前视图'}」；{f'按 {group_by} 分组，最大组是 {largest_group.get('group_value')}（{largest_group.get('row_count')} 条）。' if group_by and group_by != 'none' and largest_group else '当前未分组。'}",
             f"数据新鲜度方面，需优先关注 {len(stale_rows)} 条记录；最近需要核查的对象包括 {_list_join([str(row.get('ticker_or_isin') or row.get('instrument_name') or '') for row in stale_rows[:3]])}。",
             f"表现上，1Y 平均回报约 {_format_percent(avg_one_year)}；最好的是 {best_return_row.get('ticker_or_isin') if best_return_row else '—'}（{_format_percent(best_return_row.get('return_1y')) if best_return_row else '—'}）。",
-            f"风险上，最大回撤最深的是 {worst_drawdown_row.get('ticker_or_isin') if worst_drawdown_row else '—'}（{_format_percent(worst_drawdown_row.get('max_drawdown')) if worst_drawdown_row else '—'}）；当前最高人工研究评级的是 {highest_rating_row.get('ticker_or_isin') if highest_rating_row else '—'}（{_format_number(highest_rating_row.get('research_rating'), 0) if highest_rating_row else '—'}）。",
+            f"风险上，最大回撤最深的是 {worst_drawdown_row.get('ticker_or_isin') if worst_drawdown_row else '—'}（{_format_percent(worst_drawdown_row.get('max_drawdown')) if worst_drawdown_row else '—'}）；当前最高内部评分的是 {highest_rating_row.get('ticker_or_isin') if highest_rating_row else '—'}（{_format_number(highest_rating_row.get('overall_rating'), 0) if highest_rating_row else '—'}）。",
         ]
 
         return {
@@ -247,6 +244,7 @@ class StubCopilotProvider:
         question: str,
         active_tab: str | None,
         summary: dict[str, object],
+        exposure: dict[str, object],
         performance: dict[str, object],
         risk: dict[str, object],
         people: dict[str, object],
@@ -275,12 +273,7 @@ class StubCopilotProvider:
         document_rows = list(documents.get("current_documents") or [])
         research_notes = list(research.get("timeline_notes") or [])
         research_overview = research.get("overview") if isinstance(research.get("overview"), dict) else {}
-        research_rating = summary.get("research_rating")
-        rating_value = (
-            research_rating.get("value")
-            if isinstance(research_rating, dict)
-            else None
-        )
+        manual_rating = research.get("manual_rating")
         price_overview = price.get("overview") if isinstance(price.get("overview"), dict) else {}
 
         if active_tab == "performance":
@@ -293,6 +286,13 @@ class StubCopilotProvider:
             body = [
                 f"Risk 视角下，最大回撤约 {_format_percent(risk.get('drawdown_summary', {}).get('maximum') if isinstance(risk.get('drawdown_summary'), dict) else None)}，波动率约 {_format_number(metric_map.get('standard_deviation', {}).get('investment'))}，Sharpe 约 {_format_number(metric_map.get('sharpe_ratio', {}).get('investment'))}.",
                 f"当前 freshness 状态为 {summary.get('freshness', {}).get('data_freshness_status') if isinstance(summary.get('freshness'), dict) else '—'}，我建议把风险读数和最近净值更新一起看。",
+            ]
+        elif active_tab == "exposure":
+            holdings_summary = exposure.get("holdings_summary") if isinstance(exposure.get("holdings_summary"), dict) else {}
+            style_box = exposure.get("style_box") if isinstance(exposure.get("style_box"), dict) else {}
+            body = [
+                f"Exposure 视角下，当前披露持仓数约 {holdings_summary.get('total_holdings') or '—'}，Top 10 集中度约 {_format_percent(holdings_summary.get('top10_concentration'))}。",
+                f"组合久期约 {_format_number(style_box.get('weighted_duration'))}，YTW 约 {_format_percent(style_box.get('yield_to_worst'))}。",
             ]
         elif active_tab == "price":
             body = [
@@ -316,7 +316,7 @@ class StubCopilotProvider:
             ]
         elif active_tab == "research":
             body = [
-                f"Research 视角下，当前 Research View 是 {research_overview.get('research_view') or '未填写'}，人工 rating 是 {rating_value if rating_value is not None else '未打分'}。",
+                f"Research 视角下，当前 Research View 是 {research_overview.get('research_view') or '未填写'}，人工 rating 是 {manual_rating if manual_rating is not None else '未打分'}。",
                 f"当前已有 {len(research_notes)} 条 research notes；如果要继续，我可以把 Documents、Quote、Monitoring 一起压成一版研究摘要。",
             ]
         elif active_tab == "monitoring":
@@ -327,7 +327,7 @@ class StubCopilotProvider:
             ]
         else:
             body = [
-                f"{fund_name}（{ticker}）当前最新总回报序列日期是 {_format_date(latest_nav_date)}，计算口径由 canonical quote policy 决定。",
+                f"{fund_name}（{ticker}）当前最新净值日期是 {_format_date(latest_nav_date)}，研究主口径是 {nav_series.get('nav_basis_preference') or 'auto'}。",
                 f"1Y 回报约 {_format_percent(one_year.get('investment') if one_year else None)}，最大回撤约 {_format_percent(risk.get('drawdown_summary', {}).get('maximum') if isinstance(risk.get('drawdown_summary'), dict) else None)}。",
                 f"当前 adopted documents {len(document_rows)} 份、research notes {len(research_notes)} 条、管理团队记录 {len(team_rows)} 人。",
             ]
@@ -414,7 +414,8 @@ class CopilotService:
             "instrument_name",
             "ticker_or_isin",
             "attr.fund_taxonomy_path",
-            "research_rating",
+            "overall_rating",
+            "analyst_stance",
             "return_1y",
             "max_drawdown",
             "data_freshness_status",
@@ -452,6 +453,7 @@ class CopilotService:
         summary_record = self.read_model_repository.get_summary(session, instrument_id)
         performance_record = self.read_model_repository.get_performance(session, instrument_id)
         risk_record = self.read_model_repository.get_risk(session, instrument_id)
+        exposure_record = self.read_model_repository.get_exposure_summary(session, instrument_id)
         manual_profile = self.manual_profile_repository.get(session, instrument_id)
         attributes = collapse_latest_attribute_values(
             self.attribute_repository.get_values_for_asset(session, instrument_id)
@@ -467,10 +469,20 @@ class CopilotService:
             if performance_record is not None
             else default_fund_performance_payload()
         )
+        exposure_payload = (
+            serialize_payload(exposure_record.payload_json)
+            if exposure_record is not None
+            else default_fund_exposure_summary_payload()
+        )
         risk_payload = (
             serialize_payload(risk_record.payload_json)
             if risk_record is not None
             else default_fund_risk_payload()
+        )
+        nav_settings = (
+            serialize_payload(manual_profile.nav_settings_json)
+            if manual_profile is not None
+            else {}
         )
         nav_rows = []
         chart_record = self.read_model_repository.get_chart(session, instrument_id)
@@ -512,6 +524,7 @@ class CopilotService:
             question=question,
             active_tab=active_tab,
             summary=summary_payload,
+            exposure=exposure_payload,
             performance=performance_payload,
             risk=risk_payload,
             people=people_payload,
@@ -521,5 +534,6 @@ class CopilotService:
             research=research_payload,
             nav_series={
                 "rows": nav_rows,
+                "nav_basis_preference": nav_settings.get("nav_basis_preference"),
             },
         )

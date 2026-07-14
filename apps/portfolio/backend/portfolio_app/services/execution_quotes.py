@@ -1,89 +1,146 @@
 from __future__ import annotations
 
 from datetime import date
-from decimal import Decimal
+from math import isfinite
 
-from portfolio_app.calculations.numeric import PRICE_SCALE, quantize_decimal
-from portfolio_app.db.session import get_session_factory
-from portfolio_app.services.canonical_quotes import resolve_single_role_quote_in_session
+from portfolio_app.services.instrument_registry import get_registry_instrument_detail
+from portfolio_app.services.market_data import is_usable_market_data_point, market_data_status
 
 
-def get_execution_quote(
+# Execution and position valuation must use an observable, unadjusted quote.
+# Keep this as an allow-list so newly introduced adjusted or cumulative bases
+# cannot silently become eligible without an explicit accounting decision.
+UNADJUSTED_EXECUTION_QUOTE_BASES = frozenset(
+    {
+        "last",
+        "close",
+        "official_nav",
+        "spot",
+        "clean_price",
+        "dirty_price",
+        "par",
+    }
+)
+EXECUTION_QUOTE_POLICY_ROLES = ("trading", "valuation")
+
+
+def _parse_iso_date(value: object) -> date | None:
+    if isinstance(value, date):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip()
+        if normalized:
+            try:
+                return date.fromisoformat(normalized[:10])
+            except ValueError:
+                return None
+    return None
+
+
+def _positive_float(value: object) -> float | None:
+    try:
+        resolved = float(value) if value is not None else None
+    except (TypeError, ValueError):
+        return None
+    if resolved is None or not isfinite(resolved) or resolved <= 0:
+        return None
+    return resolved
+
+
+def _execution_quote_candidates(detail: dict[str, object]) -> list[tuple[str, str]]:
+    policy = detail.get("quote_selection_policy")
+    if not isinstance(policy, dict):
+        return []
+
+    candidates: list[tuple[str, str]] = []
+    seen_bases: set[str] = set()
+    for role in EXECUTION_QUOTE_POLICY_ROLES:
+        raw_bases = policy.get(role)
+        if not isinstance(raw_bases, list):
+            continue
+        for raw_basis in raw_bases:
+            quote_basis = str(raw_basis or "").strip().lower()
+            if (
+                not quote_basis
+                or quote_basis in seen_bases
+                or quote_basis not in UNADJUSTED_EXECUTION_QUOTE_BASES
+            ):
+                continue
+            seen_bases.add(quote_basis)
+            candidates.append((role, quote_basis))
+    return candidates
+
+
+def build_execution_quote_from_detail(
+    detail: dict[str, object],
+    *,
+    instrument_id: str,
+    as_of_date: date,
+) -> dict[str, object]:
+    candidates = _execution_quote_candidates(detail)
+    candidate_bases = {quote_basis for _, quote_basis in candidates}
+    latest_by_basis: dict[str, tuple[date, dict[str, object], float]] = {}
+    market_data = detail.get("market_data")
+
+    if isinstance(market_data, list) and candidate_bases:
+        for point in market_data:
+            if not is_usable_market_data_point(point):
+                continue
+            quote_basis = str(point.get("quote_basis") or "").strip().lower()
+            if quote_basis not in candidate_bases:
+                continue
+            quote_date = _parse_iso_date(point.get("as_of_date"))
+            value = _positive_float(point.get("value"))
+            if quote_date is None or quote_date > as_of_date or value is None:
+                continue
+            current = latest_by_basis.get(quote_basis)
+            if current is None or quote_date >= current[0]:
+                latest_by_basis[quote_basis] = (quote_date, point, value)
+
+    for selection_role, quote_basis in candidates:
+        selected = latest_by_basis.get(quote_basis)
+        if selected is None:
+            continue
+        quote_date, point, value = selected
+        return {
+            "instrument_id": str(detail.get("instrument_id") or instrument_id),
+            "requested_as_of_date": as_of_date,
+            "selection_role": selection_role,
+            "value": value,
+            "quote_date": quote_date,
+            "quote_basis": quote_basis,
+            "metric_family": str(point.get("metric_family") or "").strip() or None,
+            "currency": str(point.get("currency") or detail.get("currency") or "USD"),
+            "provider": str(point.get("provider")) if point.get("provider") is not None else None,
+            "status": market_data_status(point),
+            "stale": quote_date < as_of_date,
+        }
+
+    return {
+        "instrument_id": str(detail.get("instrument_id") or instrument_id),
+        "requested_as_of_date": as_of_date,
+        "selection_role": None,
+        "value": None,
+        "quote_date": None,
+        "quote_basis": None,
+        "metric_family": None,
+        "currency": str(detail.get("currency") or "USD"),
+        "provider": None,
+        "status": "unavailable",
+        "stale": False,
+    }
+
+
+def get_execution_quote_on_or_before(
     instrument_id: str,
     *,
     as_of_date: date,
 ) -> dict[str, object] | None:
-    """Resolve the canonical same-date trading reference for transaction entry.
-
-    Execution assistance intentionally uses ``exact_only``.  A previous close
-    remains visible elsewhere as market history, but is not silently proposed
-    as the execution price for a different business date.
-    """
-
-    session_factory = get_session_factory()
-    with session_factory() as session:
-        payload = resolve_single_role_quote_in_session(
-            session,
-            instrument_id=instrument_id,
-            role="trading",
-            as_of_date=as_of_date,
-        )
-    if payload is None:
+    detail = get_registry_instrument_detail(instrument_id)
+    if not isinstance(detail, dict):
         return None
-    source_value = payload.get("value")
-    if source_value is not None and not isinstance(source_value, Decimal):
-        raise TypeError("canonical execution quote value must be Decimal")
-    suggested_price = (
-        quantize_decimal(
-            source_value,
-            scale=PRICE_SCALE,
-            field_name="suggested transaction price",
-        )
-        if source_value is not None
-        else None
+    return build_execution_quote_from_detail(
+        detail,
+        instrument_id=instrument_id,
+        as_of_date=as_of_date,
     )
-    return {
-        "instrument_id": str(payload["instrument_id"]),
-        "requested_as_of_date": as_of_date,
-        "selection_role": payload.get("role"),
-        "value": source_value,
-        "suggested_transaction_price": suggested_price,
-        "suggested_transaction_price_scale": PRICE_SCALE,
-        "suggested_transaction_price_rounding": "ROUND_HALF_EVEN",
-        "suggested_transaction_price_was_rounded": (
-            source_value != suggested_price if source_value is not None else False
-        ),
-        "quote_date": payload.get("as_of_date"),
-        "quote_basis": payload.get("quote_basis"),
-        "metric_family": payload.get("metric_family"),
-        "currency": payload.get("currency"),
-        "source_ref": payload.get("source_ref"),
-        "source_status": payload.get("source_status"),
-        "status": payload.get("status"),
-        "resolution_status": payload.get("resolution_status"),
-        "freshness_status": payload.get("freshness_status"),
-        "ingestion_status": payload.get("ingestion_status"),
-        "reliability_status": payload.get("reliability_status"),
-        "reason_codes": list(payload.get("reason_codes") or []),
-        "stale": bool(payload.get("stale")),
-        "carry_forward": bool(payload.get("carry_forward")),
-        "age_days": payload.get("age_days"),
-        "quote_selection_policy_version": payload.get(
-            "quote_selection_policy_version"
-        ),
-        "quote_selection_policy_revision": payload.get(
-            "quote_selection_policy_revision"
-        ),
-        "quote_series_id": payload.get("quote_series_id"),
-        "observation_id": payload.get("observation_id"),
-        "revision_id": payload.get("revision_id"),
-        "revision_number": payload.get("revision_number"),
-        "payload_hash": payload.get("payload_hash"),
-        "source_published_at": payload.get("source_published_at"),
-        "ingested_at": payload.get("ingested_at"),
-        "ingestion_time_state": payload.get("ingestion_time_state"),
-        "calculation_dependency": payload.get("calculation_dependency"),
-    }
-
-
-__all__ = ["get_execution_quote"]

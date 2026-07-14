@@ -1,26 +1,13 @@
 from __future__ import annotations
 
-import sys
 from logging.config import fileConfig
-from pathlib import Path
 
 from alembic import context
 from sqlalchemy import engine_from_config, pool, text
 
-
-WORKSPACE_ROOT = Path(__file__).resolve().parents[4]
-INFRA_PYTHON = WORKSPACE_ROOT / "infra" / "python"
-infra_python_path = str(INFRA_PYTHON)
-if infra_python_path not in sys.path:
-    sys.path.insert(0, infra_python_path)
-
 from watchlist_app.core.settings import get_settings
 from watchlist_app.db.base import Base
 import watchlist_app.db.models  # noqa: F401
-from portfolio_ops_infra import (
-    require_expected_postgresql_database,
-    verify_postgresql_connection_database,
-)
 
 
 config = context.config
@@ -29,12 +16,7 @@ if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
 settings = get_settings()
-migration_database_url = settings.migration_database_url
-config.set_main_option("sqlalchemy.url", migration_database_url)
-expected_database = require_expected_postgresql_database(
-    migration_database_url,
-    component="watchlist",
-)
+config.set_main_option("sqlalchemy.url", settings.migration_database_url)
 target_metadata = Base.metadata
 
 
@@ -71,11 +53,6 @@ def run_migrations_online() -> None:
     )
 
     with connectable.connect() as connection:
-        verify_postgresql_connection_database(
-            connection,
-            expected_database=expected_database,
-            component="watchlist",
-        )
         version_table_schema = None
         if settings.database_schema and connection.dialect.name == "postgresql":
             connection.execute(text(f'CREATE SCHEMA IF NOT EXISTS "{settings.database_schema}"'))

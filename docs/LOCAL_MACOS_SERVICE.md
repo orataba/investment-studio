@@ -1,9 +1,6 @@
 # macOS 本地后台服务
 
-项目提供九个用户级 `launchd` 常驻服务，在登录后自动启动三个 API、三个前端、
-Portfolio Daily 计算 worker、Watchlist recalc worker 与 Platform market-data outbox worker；另有一个独立的一次性 LaunchAgent，每天本地时间
-`21:00` 刷新行情并触发 Watchlist 与 Portfolio 下游重算。所有端口只绑定到
-`127.0.0.1`，不会暴露给局域网。
+项目提供六个用户级 `launchd` 常驻服务，在登录后自动启动三个 API 与三个前端；另有一个独立的一次性 LaunchAgent，每天本地时间 `21:00` 刷新行情并触发 Watchlist 与 Portfolio 下游重算。所有端口只绑定到 `127.0.0.1`，不会暴露给局域网。
 
 ## 依赖
 
@@ -23,28 +20,17 @@ brew services start postgresql@17
 在项目根目录运行：
 
 ```bash
-CONFIRM_RELEASE='portfolio_ops@127.0.0.1:5432' \
-PORTFOLIO_OPS_LOCAL_DATABASE_URL='postgresql+psycopg://portfolio_ops:portfolio_ops@127.0.0.1:5432/portfolio_ops' \
-PORTFOLIO_OPS_RELEASE_AS_OF_DATE=YYYY-MM-DD \
-  infra/launchd/install_local_services.sh
+infra/launchd/install_local_services.sh
 ```
 
-`CONFIRM_RELEASE` 必须与 URL 解析出的 `database@host:port` 完全一致；日期必须是本次
-Portfolio/Watchlist 全量重建采用的显式估值日期。安装器会校验并初始化本地数据库，
-停止九个常驻 job 和定时刷新 job，再调用安全发布编排器创建已校验的发布前备份、
-执行全部 Alembic 迁移、重建 Portfolio/Watchlist、通过零失败零告警审计并创建已校验的
-发布后备份。随后才重建三个前端、更新并启动 `launchd` 服务。服务停止后的任一步失败
-都会保持全部托管服务停止，供人工检查。安全数据库发布本身若在变更后失败，会先尝试
-恢复发布前备份，且回滚成功也不会自动恢复服务；若数据库发布已经通过、随后前端构建或
-LaunchAgent 更新/启动失败，则保留已审计的新数据库并继续停服。定时任务只在完整成功后
-加载，且不会在安装时立即执行。
+安装器会依次校验并初始化本地数据库，停止并等待旧服务退出，执行全部
+Alembic 迁移，重建三个前端，然后更新并启动 `launchd` 服务。这样旧 worker
+无法跨越新迁移继续写入；任一迁移或构建失败时，安装器会恢复此前加载的服务，
+不会用不完整版本替换它们。定时任务会被加载但不会在安装时立即执行。
 
 默认调度时间可以在安装时覆盖，例如：
 
 ```bash
-CONFIRM_RELEASE='portfolio_ops@127.0.0.1:5432' \
-PORTFOLIO_OPS_LOCAL_DATABASE_URL='postgresql+psycopg://portfolio_ops:portfolio_ops@127.0.0.1:5432/portfolio_ops' \
-PORTFOLIO_OPS_RELEASE_AS_OF_DATE=YYYY-MM-DD \
 PORTFOLIO_OPS_LOCAL_REFRESH_HOUR=22 \
 PORTFOLIO_OPS_LOCAL_REFRESH_MINUTE=30 \
   infra/launchd/install_local_services.sh
@@ -70,7 +56,7 @@ Platform API 和定时任务都会读取当前
 `PORTFOLIO_OPS_PLATFORM_*` 赋值，把值作为纯文本导入，不会执行 `$()`、反引号
 等 shell 语法。安装器不会把 Tushare token、邮件密码等秘密复制进 plist；plist
 只保存环境文件目录和本地数据库连接覆盖值。为了避免 Pydantic 再从第二来源补入
-配置，安装器、三个 API runner、三个 worker runner 和定时 runner 都会拒绝任一 backend 目录中存在
+配置，安装器、三个 API runner 和定时 runner 都会拒绝任一 backend 目录中存在
 `.env` 文件或软链接；先把其中的值迁移到外部秘密目录并删除该文件后再安装。
 
 入口地址：
@@ -97,11 +83,7 @@ infra/launchd/uninstall_local_services.sh
 - 最近一次运行摘要：`var/market-data-refresh-summary.json`
 
 `status_local_services.sh` 会把定时任务的实际 plist 时间、运行次数、最近退出码及
-摘要状态一起显示；三个 API 的 `/api/health` 都只表示进程存活。Platform 的
-`/api/readiness` 会检查 instrument registry migration head、fresh outbox worker、dead event
-以及 oldest pending/processing event 的端到端滞留上限；Watchlist 与 Portfolio 的
-`/api/readiness` 分别验证各自数据库依赖、migration head 和 worker 心跳。需要立即手工执行
-同一任务时，可以运行：
+摘要状态一起显示。需要立即手工执行同一任务时，可以运行：
 
 ```bash
 launchctl kickstart "gui/$UID/com.orataba.portfolio-ops.market-data-refresh"
@@ -112,24 +94,8 @@ launchctl kickstart "gui/$UID/com.orataba.portfolio-ops.market-data-refresh"
 执行。Database Dashboard 的 UI 批量刷新是另一条入口，不受这个 scheduled-script
 锁约束。
 
-恢复项目 dump 时也必须显式声明目标和重建日期；该脚本不接受数据库 URL，而是使用
-下列 `PORTFOLIO_OPS_DB_*` 参数：
-
-```bash
-PORTFOLIO_OPS_DB_HOST=127.0.0.1 \
-PORTFOLIO_OPS_DB_PORT=5432 \
-PORTFOLIO_OPS_DB_NAME=portfolio_ops \
-PORTFOLIO_OPS_DB_USER=portfolio_ops \
-CONFIRM_RESTORE=portfolio_ops \
-PORTFOLIO_OPS_RESTORE_AS_OF_DATE=YYYY-MM-DD \
-  infra/postgres/restore_project_dump.sh
-```
-
-恢复脚本会临时卸载当前已加载的九个常驻 job 和定时刷新 job，校验 checksum、archive
-和实际数据库身份，创建恢复前安全备份，恢复 legacy 三-schema 或当前四-schema dump，
-再执行四条迁移链、
-Portfolio/Watchlist 全量重建和零失败零告警审计。完整成功后才重新加载原先运行的 job；
-重新加载后还必须通过三个 API readiness、原先运行的前端页面 smoke 和 Portfolio 读契约；
-恢复定时 job 时只重新注册日历计划，不会立即触发刷新。恢复、迁移、重建或审计失败会
-先自动回滚数据库；回滚成功后恢复先前服务，回滚本身失败时服务保持停止并打印恢复
-备份路径，避免在半恢复数据库上继续写入。
+执行 `infra/postgres/restore_project_dump.sh` 时，恢复脚本会临时卸载当前已
+加载的六个常驻 job 和定时刷新 job，完成安全备份和数据库恢复/迁移后再加载。
+恢复定时 job 时只重新注册日历计划，不会立即触发刷新。恢复失败会先自动回滚
+数据库，再恢复这些服务；回滚本身失败时服务保持停止，避免在半恢复数据库上
+继续写入。

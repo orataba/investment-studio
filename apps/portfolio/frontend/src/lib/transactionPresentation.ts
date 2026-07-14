@@ -1,9 +1,6 @@
 import type { TableCell } from '../../../../../packages/ui/src/tableExport'
 
-import {
-  restorePortfolioTransactionInputScale,
-  type PortfolioTransactionRecord,
-} from './api'
+import type { PortfolioTransactionRecord } from './api'
 
 export const TRANSACTION_EXPORT_HEADERS: TableCell[] = [
   'Transaction ID',
@@ -19,8 +16,6 @@ export const TRANSACTION_EXPORT_HEADERS: TableCell[] = [
   'Quantity',
   'Price',
   'Gross Amount',
-  'Counter Amount',
-  'Quoted FX Rate',
   'Fees',
   'Taxes',
   'Net Cash Effect',
@@ -42,81 +37,16 @@ export function buildTransactionExportRows(transactions: PortfolioTransactionRec
       transaction.account.account_name,
       transaction.instrument_id ?? '',
       transaction.instrument_ref?.instrument_name ?? '',
-      restorePortfolioTransactionInputScale(
-        transaction.quantity,
-        transaction.quantity_input_scale,
-      ),
-      restorePortfolioTransactionInputScale(
-        transaction.price,
-        transaction.price_input_scale,
-      ),
-      restorePortfolioTransactionInputScale(
-        transaction.gross_amount,
-        transaction.gross_amount_input_scale,
-      ),
-      restorePortfolioTransactionInputScale(
-        transaction.counter_amount,
-        transaction.counter_amount_input_scale,
-      ),
-      restorePortfolioTransactionInputScale(
-        transaction.quoted_fx_rate,
-        transaction.quoted_fx_rate_input_scale,
-      ),
-      restorePortfolioTransactionInputScale(
-        transaction.fees,
-        transaction.fees_input_scale,
-      ),
-      restorePortfolioTransactionInputScale(
-        transaction.taxes,
-        transaction.taxes_input_scale,
-      ),
-      transaction.net_cash_effect ?? '',
+      transaction.quantity,
+      transaction.price,
+      transaction.gross_amount,
+      transaction.fees,
+      transaction.taxes,
+      transaction.net_cash_effect,
       transaction.currency,
       transaction.note ?? '',
     ]),
   ]
-}
-
-const TRANSACTION_DECIMAL_DRAFT_FIELDS = new Set([
-  'quantity',
-  'price',
-  'gross_amount',
-  'counter_amount',
-  'quoted_fx_rate',
-  'fees',
-  'taxes',
-])
-
-export function normalizeTransactionDecimalDraft(value: string): string {
-  const normalized = value.trim()
-  const match = /^([+-]?)(\d+)(?:\.(\d*))?$/.exec(normalized)
-  if (!match) {
-    return normalized
-  }
-  const sign = match[1] === '-' ? '-' : ''
-  const integer = match[2].replace(/^0+(?=\d)/, '')
-  const fraction = match[3]
-  const resolvedSign = integer === '0' && (!fraction || /^0*$/.test(fraction)) ? '' : sign
-  return `${resolvedSign}${integer}${fraction ? `.${fraction}` : ''}`
-}
-
-export function transactionDraftHasChanges(
-  current: Record<string, string>,
-  base: Record<string, string>,
-): boolean {
-  const keys = new Set([...Object.keys(current), ...Object.keys(base)])
-  keys.delete('instrument_search')
-  for (const key of keys) {
-    const currentValue = current[key] ?? ''
-    const baseValue = base[key] ?? ''
-    const normalize = TRANSACTION_DECIMAL_DRAFT_FIELDS.has(key)
-      ? normalizeTransactionDecimalDraft
-      : (value: string) => value.trim()
-    if (normalize(currentValue) !== normalize(baseValue)) {
-      return true
-    }
-  }
-  return false
 }
 
 export function countActiveTransactionFilters(filters: {

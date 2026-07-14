@@ -4,17 +4,16 @@ import { Link, useNavigate, useParams } from 'react-router-dom'
 import { formatCurrency, formatPercent, formatSignedCurrency, signedValueClass } from '../lib/format'
 import {
   copyPortfolio,
-  archivePortfolio,
+  deletePortfolio,
   getPortfolios,
   getPortfolioRiskPolicy,
   getWorkspaceSummaryForPortfolio,
   updatePortfolioRiskPolicy,
-  type PortfolioRiskMissingReturnPolicy,
+  type PortfolioResearchMissingReturnPolicy,
   type PortfolioRiskCalculationFrequency,
   type PortfolioRiskContributionMode,
   type PortfolioRiskCovarianceModel,
   type PortfolioRiskPolicyRecord,
-  type PortfolioOperatingProfile,
   type PortfolioWorkspaceSummary,
 } from '../lib/api'
 import {
@@ -42,7 +41,6 @@ type PortfolioWorkspaceLayoutProps = {
 type PortfolioSelectorOption = {
   portfolio_id: string
   portfolio_name: string
-  operating_profile: PortfolioOperatingProfile
 }
 
 const portfolioTabs: WorkspaceTab[] = [...workspacePrimaryNavigation]
@@ -60,7 +58,7 @@ const RISK_FREQUENCY_OPTIONS: Array<{ value: PortfolioRiskCalculationFrequency; 
   { value: 'weekly', label: 'Weekly' },
   { value: 'monthly', label: 'Monthly' },
 ]
-const RISK_MISSING_RETURN_POLICY_OPTIONS: Array<{ value: PortfolioRiskMissingReturnPolicy; label: string }> = [
+const RISK_MISSING_RETURN_POLICY_OPTIONS: Array<{ value: PortfolioResearchMissingReturnPolicy; label: string }> = [
   { value: 'strict', label: 'Strict' },
   { value: 'complete_case_drop', label: 'Complete Case Drop' },
 ]
@@ -78,16 +76,11 @@ const SUPPORTED_RISK_POLICY_WINDOW_DAYS = new Set<number>(RISK_WINDOW_OPTIONS.ma
 const FALLBACK_SUMMARY: PortfolioWorkspaceSummary = {
   portfolio_id: '',
   portfolio_name: 'Portfolio',
-  base_currency: '',
-  operating_profile: 'external_etf_rotation',
+  base_currency: 'USD',
   as_of_date: '—',
-  nav: Number.NaN,
-  nav_exact: null,
-  day_change_value: null,
-  day_change_value_exact: null,
-  day_change_pct: null,
-  day_change_pct_method50: null,
-  day_change_pct_published: null,
+  nav: 0,
+  day_change_value: 0,
+  day_change_pct: 0,
   toolbar_label: 'View: Portfolio Summary',
   badges: [],
   sections: [],
@@ -110,8 +103,8 @@ export default function PortfolioWorkspaceLayout({
   const [portfolioOptions, setPortfolioOptions] = useState<PortfolioSelectorOption[]>([])
   const [selectorMenuOpen, setSelectorMenuOpen] = useState(false)
   const [selectorNotice, setSelectorNotice] = useState<string | null>(null)
-  const [pendingPortfolioArchive, setPendingPortfolioArchive] = useState<PortfolioSelectorOption | null>(null)
-  const [archivingPortfolio, setArchivingPortfolio] = useState(false)
+  const [pendingPortfolioDelete, setPendingPortfolioDelete] = useState<PortfolioSelectorOption | null>(null)
+  const [deletingPortfolio, setDeletingPortfolio] = useState(false)
   const [riskSettingsOpen, setRiskSettingsOpen] = useState(false)
   const [riskSettingsLoading, setRiskSettingsLoading] = useState(false)
   const [riskSettingsSaving, setRiskSettingsSaving] = useState(false)
@@ -119,7 +112,7 @@ export default function PortfolioWorkspaceLayout({
   const [riskPolicyLookbackDays, setRiskPolicyLookbackDays] = useState(String(DEFAULT_RISK_POLICY_WINDOW_DAYS))
   const [riskPolicyFrequency, setRiskPolicyFrequency] = useState<PortfolioRiskCalculationFrequency>('auto')
   const [riskPolicyMissingReturnPolicy, setRiskPolicyMissingReturnPolicy] =
-    useState<PortfolioRiskMissingReturnPolicy>('strict')
+    useState<PortfolioResearchMissingReturnPolicy>('strict')
   const [riskPolicyModelId, setRiskPolicyModelId] =
     useState<PortfolioRiskCovarianceModel>('ewma_vol_shrinkage_corr_covariance')
   const [riskPolicyContributionMode, setRiskPolicyContributionMode] =
@@ -179,7 +172,6 @@ export default function PortfolioWorkspaceLayout({
             response.map((portfolio) => ({
               portfolio_id: portfolio.portfolio_id,
               portfolio_name: portfolio.portfolio_name,
-              operating_profile: portfolio.operating_profile,
             })),
           )
         }
@@ -238,18 +230,10 @@ export default function PortfolioWorkspaceLayout({
           {
             portfolio_id: resolvedPortfolioId,
             portfolio_name: resolvedSummary.portfolio_name,
-            operating_profile: resolvedSummary.operating_profile,
           },
           ...portfolioOptions,
         ]
       : portfolioOptions
-  const currentOperatingProfile =
-    portfolioOptions.find((portfolio) => portfolio.portfolio_id === resolvedPortfolioId)
-      ?.operating_profile ?? summary?.operating_profile ?? null
-  const availablePortfolioTabs = portfolioTabs.filter(
-    (tab) =>
-      tab.label !== 'Allocation Lab' || currentOperatingProfile === 'standard_taxonomy',
-  )
 
   function cancelNavigationPreload() {
     if (navigationPreloadTimerRef.current != null) {
@@ -273,13 +257,12 @@ export default function PortfolioWorkspaceLayout({
     }, 140)
   }
 
-  async function handleSelectorAction(action: 'copy' | 'archive') {
-    if (action === 'archive') {
+  async function handleSelectorAction(action: 'copy' | 'delete') {
+    if (action === 'delete') {
       setSelectorMenuOpen(false)
-      setPendingPortfolioArchive({
+      setPendingPortfolioDelete({
         portfolio_id: resolvedPortfolioId,
         portfolio_name: resolvedSummary.portfolio_name,
-        operating_profile: currentOperatingProfile ?? resolvedSummary.operating_profile,
       })
       return
     }
@@ -290,7 +273,6 @@ export default function PortfolioWorkspaceLayout({
         {
           portfolio_id: copied.portfolio_id,
           portfolio_name: copied.portfolio_name,
-          operating_profile: copied.operating_profile,
         },
       ])
       setSelectorNotice(`Copied portfolio "${resolvedSummary.portfolio_name}".`)
@@ -304,25 +286,25 @@ export default function PortfolioWorkspaceLayout({
     }
   }
 
-  async function handleConfirmedArchive() {
-    if (!pendingPortfolioArchive || archivingPortfolio) {
+  async function handleConfirmedDelete() {
+    if (!pendingPortfolioDelete || deletingPortfolio) {
       return
     }
-    const target = pendingPortfolioArchive
-    setArchivingPortfolio(true)
+    const target = pendingPortfolioDelete
+    setDeletingPortfolio(true)
     try {
-      await archivePortfolio(target.portfolio_id)
+      await deletePortfolio(target.portfolio_id)
       setPortfolioOptions((current) =>
         current.filter((portfolio) => portfolio.portfolio_id !== target.portfolio_id),
       )
-      setPendingPortfolioArchive(null)
+      setPendingPortfolioDelete(null)
       navigate('/portfolios')
     } catch (requestError) {
       setSelectorNotice(
-        requestError instanceof Error ? requestError.message : 'Failed to archive portfolio.',
+        requestError instanceof Error ? requestError.message : 'Failed to delete portfolio.',
       )
     } finally {
-      setArchivingPortfolio(false)
+      setDeletingPortfolio(false)
     }
   }
 
@@ -454,10 +436,10 @@ export default function PortfolioWorkspaceLayout({
                       <button
                         type="button"
                         onClick={() => {
-                          void handleSelectorAction('archive')
+                          void handleSelectorAction('delete')
                         }}
                       >
-                        Archive Portfolio
+                        Delete Portfolio
                       </button>
                     </div>
                   ) : null}
@@ -591,7 +573,7 @@ export default function PortfolioWorkspaceLayout({
                         <select
                           value={riskPolicyMissingReturnPolicy}
                           onChange={(event) =>
-                            setRiskPolicyMissingReturnPolicy(event.target.value as PortfolioRiskMissingReturnPolicy)
+                            setRiskPolicyMissingReturnPolicy(event.target.value as PortfolioResearchMissingReturnPolicy)
                           }
                           disabled={riskSettingsSaving}
                         >
@@ -651,7 +633,7 @@ export default function PortfolioWorkspaceLayout({
             </div>
           ) : null}
           <nav className="portfolio-tabs" aria-label="Portfolio sections">
-            {availablePortfolioTabs.map((item) => (
+            {portfolioTabs.map((item) => (
               <Link
                 key={item.label}
                 className={`portfolio-tab ${activeSection === item.label ? 'portfolio-tab-active' : ''}`}
@@ -674,14 +656,14 @@ export default function PortfolioWorkspaceLayout({
 
       {children}
       <ConfirmDialog
-        open={Boolean(pendingPortfolioArchive)}
-        title="Archive Portfolio"
-        description="This removes the portfolio from active workspaces while preserving its accounts, transactions, classifications, and published calculation history. It can be restored."
-        confirmLabel="Archive Portfolio"
-        confirmationText={pendingPortfolioArchive?.portfolio_name}
-        busy={archivingPortfolio}
-        onCancel={() => setPendingPortfolioArchive(null)}
-        onConfirm={handleConfirmedArchive}
+        open={Boolean(pendingPortfolioDelete)}
+        title="Delete Portfolio"
+        description="This permanently deletes the portfolio and all of its accounts, transactions, classifications, and snapshots. This action cannot be undone."
+        confirmLabel="Delete Portfolio"
+        confirmationText={pendingPortfolioDelete?.portfolio_name}
+        busy={deletingPortfolio}
+        onCancel={() => setPendingPortfolioDelete(null)}
+        onConfirm={handleConfirmedDelete}
       />
     </section>
   )

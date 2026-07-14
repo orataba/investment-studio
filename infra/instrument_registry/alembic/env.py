@@ -11,19 +11,11 @@ from sqlalchemy import engine_from_config, pool, text
 
 WORKSPACE_ROOT = Path(__file__).resolve().parents[3]
 INSTRUMENT_CORE_PYTHON = WORKSPACE_ROOT / "packages" / "instrument-core" / "python"
-INFRA_PYTHON = WORKSPACE_ROOT / "infra" / "python"
 instrument_core_path = str(INSTRUMENT_CORE_PYTHON)
 if instrument_core_path not in sys.path:
     sys.path.insert(0, instrument_core_path)
-infra_python_path = str(INFRA_PYTHON)
-if infra_python_path not in sys.path:
-    sys.path.insert(0, infra_python_path)
 
 from portfolio_ops_instrument_core.db_models import InstrumentRegistryBase
-from portfolio_ops_infra import (
-    require_expected_postgresql_database,
-    verify_postgresql_connection_database,
-)
 
 
 config = context.config
@@ -35,11 +27,6 @@ database_url = (
 )
 if database_url:
     config.set_main_option("sqlalchemy.url", database_url)
-resolved_database_url = config.get_main_option("sqlalchemy.url")
-expected_database = require_expected_postgresql_database(
-    resolved_database_url,
-    component="instrument registry",
-)
 
 raw_schema = os.getenv("PORTFOLIO_OPS_INSTRUMENT_REGISTRY_SCHEMA", "instrument_registry")
 schema = raw_schema.strip() if raw_schema and raw_schema.strip() else None
@@ -72,11 +59,6 @@ def run_migrations_online() -> None:
     )
 
     with connectable.connect() as connection:
-        verify_postgresql_connection_database(
-            connection,
-            expected_database=expected_database,
-            component="instrument registry",
-        )
         version_table_schema = None
         if schema and connection.dialect.name == "postgresql":
             connection.execute(text(f'CREATE SCHEMA IF NOT EXISTS "{schema}"'))

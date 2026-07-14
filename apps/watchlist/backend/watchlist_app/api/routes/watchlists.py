@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import date, datetime
+from datetime import datetime
 import re
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -118,12 +118,6 @@ def _parse_datetime(value: str | None) -> datetime | None:
     if not value:
         return None
     return datetime.fromisoformat(value.replace("Z", "+00:00"))
-
-
-def _parse_date(value: str | None) -> date | None:
-    if not value:
-        return None
-    return date.fromisoformat(value)
 
 
 def _require_watchlist(session: Session, watchlist_id: str):
@@ -463,10 +457,6 @@ def _materialize_watchlist_rows(
                 else canonical_instrument_id
             )
         )
-        research_rating = summary_payload.get("research_rating")
-        research_rating_payload = (
-            research_rating if isinstance(research_rating, dict) else {}
-        )
         read_model_repository.upsert_watchlist_row(
             session,
             watchlist_id=watchlist_id,
@@ -488,17 +478,8 @@ def _materialize_watchlist_rows(
                     )
                 ),
                 management_firm_name=None,
-                research_rating=research_rating_payload.get("rating"),
-                research_rating_as_of=_parse_date(
-                    research_rating_payload.get("as_of_date")
-                    if isinstance(research_rating_payload.get("as_of_date"), str)
-                    else None
-                ),
-                research_rating_updated_at=_parse_datetime(
-                    research_rating_payload.get("created_at")
-                    if isinstance(research_rating_payload.get("created_at"), str)
-                    else None
-                ),
+                overall_rating=summary_payload.get("overall_rating"),
+                analyst_stance=summary_payload.get("analyst_stance"),
                 attributes=row_attributes,
                 freshness_status=str(
                     (
@@ -509,16 +490,9 @@ def _materialize_watchlist_rows(
                     or (source_row.data_freshness_status if source_row is not None else None)
                     or "pending_recalc"
                 ),
-                market_data_input_watermark_at=(
-                    _parse_datetime(
-                        freshness.get("market_data_input_watermark_at")
-                    )
+                last_fact_update_at=(
+                    _parse_datetime(freshness.get("last_fact_update_at"))
                     if isinstance(freshness, dict)
-                    else None
-                )
-                or (
-                    source_row.market_data_input_watermark_at
-                    if source_row is not None
                     else None
                 ),
                 last_recalculated_at=(

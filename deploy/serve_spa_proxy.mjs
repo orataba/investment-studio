@@ -31,17 +31,8 @@ const contentTypes = new Map([
 ])
 
 function sendFile(response, filePath) {
-  const extension = extname(filePath).toLowerCase()
-  const type = contentTypes.get(extension) || 'application/octet-stream'
-  const cacheControl = extension === '.html'
-    ? 'no-store'
-    : filePath.startsWith(join(distRoot, 'assets') + sep)
-      ? 'public, max-age=31536000, immutable'
-      : 'no-cache'
-  response.writeHead(200, {
-    'Cache-Control': cacheControl,
-    'Content-Type': type,
-  })
+  const type = contentTypes.get(extname(filePath).toLowerCase()) || 'application/octet-stream'
+  response.writeHead(200, { 'Content-Type': type })
   createReadStream(filePath).pipe(response)
 }
 
@@ -59,9 +50,6 @@ function resolveStaticPath(pathname) {
   }
   if (existsSync(candidate) && statSync(candidate).isFile()) {
     return candidate
-  }
-  if (decoded.startsWith('/assets/') || extname(decoded)) {
-    return undefined
   }
   return indexPath
 }
@@ -99,14 +87,6 @@ createServer((request, response) => {
   if (staticPath === null) {
     response.writeHead(400, { 'Content-Type': 'text/plain; charset=utf-8' })
     response.end('Malformed request path')
-    return
-  }
-  if (staticPath === undefined) {
-    response.writeHead(404, {
-      'Cache-Control': 'no-store',
-      'Content-Type': 'text/plain; charset=utf-8',
-    })
-    response.end('Static asset not found')
     return
   }
   sendFile(response, staticPath)

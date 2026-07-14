@@ -2,42 +2,28 @@ from __future__ import annotations
 
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
-from hashlib import sha256
+from hashlib import sha1
 import json
 import math
 import statistics
-from typing import Any, Mapping
-
-from pydantic import ValidationError
+from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from portfolio_ops_instrument_core.db_models import (
-    Instrument as CanonicalInstrument,
-    InstrumentIdentifier as CanonicalInstrumentIdentifier,
-)
-from portfolio_ops_instrument_core.models import (
-    CanonicalQuoteResolution,
-    CanonicalQuoteSeriesResolution,
-)
-from portfolio_ops_instrument_core.quote_resolver import (
-    CANONICAL_QUOTE_RESOLVER_STRATEGY_VERSION,
-    QUOTE_SELECTION_POLICY_VERSION,
-    resolve_quote_series_observation_at,
-    resolve_role_quote_series_in_session,
-)
-
 from watchlist_app.db.models.instruments import InstrumentDetail
 from watchlist_app.db.models.read_models import (
     InstrumentChartReadModel,
+    InstrumentExposureHoldingsReadModel,
+    InstrumentExposureReadModel,
     InstrumentPerformanceReadModel,
+    InstrumentRatingReadModel,
     InstrumentRiskReadModel,
     InstrumentSummaryReadModel,
-    WatchlistRowReadModel,
 )
 from watchlist_app.repositories.sqlalchemy.instruments import SQLAlchemyInstrumentRepository
+from watchlist_app.repositories.sqlalchemy.facts import SQLAlchemyFactsRepository
 from watchlist_app.repositories.sqlalchemy.instrument_attributes import (
     SQLAlchemyInstrumentAttributeRepository,
 )
@@ -46,7 +32,6 @@ from watchlist_app.repositories.sqlalchemy.manual_profiles import (
 )
 from watchlist_app.repositories.sqlalchemy.read_models import SQLAlchemyReadModelRepository
 from watchlist_app.repositories.sqlalchemy.recalc_jobs import SQLAlchemyRecalcJobRepository
-from watchlist_app.repositories.sqlalchemy.research_ratings import SQLAlchemyResearchRatingRepository
 from watchlist_app.repositories.sqlalchemy.snapshots import SQLAlchemySnapshotRepository
 from watchlist_app.repositories.sqlalchemy.taxonomy import SQLAlchemyTaxonomyRepository
 from watchlist_app.reference_data.fund_taxonomy import FUND_TAXONOMY_CODE
@@ -56,34 +41,18 @@ from watchlist_app.services.fund_taxonomy import (
 )
 from watchlist_app.services.calculation_frequency import (
     build_calculation_frequency_context,
-)
-from watchlist_app.services.investment_analytics import (
-    build_investment_analytics_payload as _investment_analytics_payload,
-    compute_annualized_return as _annualized_return,
-    compute_calmar_ratio as _compute_calmar_ratio,
-    compute_downside_deviation as _compute_downside_deviation,
-    compute_sharpe as _compute_sharpe,
-    compute_sortino as _compute_sortino,
-    compute_volatility as _compute_volatility,
-    monthly_return_series as _monthly_return_series,
-    trailing_negative_month_count as _trailing_negative_month_count,
+    normalize_frequency,
 )
 from watchlist_app.services.read_models import (
     build_watchlist_row_materialization,
     collapse_latest_attribute_values,
     serialize_payload,
 )
-from watchlist_app.services.quote_consumer_policy import (
-    ConsumerFreshnessProfile,
-    quote_consumer_dependency,
-    watchlist_freshness_profile,
-)
-from watchlist_app.services.quote_resolution_summary import (
-    CanonicalQuoteSeriesResolutionSummary,
-)
-from watchlist_app.services.research_ratings import serialize_research_rating
 from watchlist_app.services.recalc_job_ids import make_recalc_dedupe_key, make_recalc_job_id
-from watchlist_app.services.shared_instrument_registry import list_shared_instruments
+from watchlist_app.services.shared_instrument_registry import (
+    get_shared_instrument,
+    list_shared_instruments,
+)
 
 
 DEFAULT_TABS = [
@@ -92,6 +61,7 @@ DEFAULT_TABS = [
     "performance",
     "risk",
     "price",
+    "exposure",
     "people",
     "strategy",
     "documents",
@@ -108,6 +78,81 @@ class RecalcJobAlreadyRunningError(RuntimeError):
     """Raised when synchronous work would overlap an active instrument job."""
 
 
+ORDINARY_NAV_QUOTE_BASIS_PRIORITY = (
+    "official_nav",
+    "nav",
+    "unit_nav",
+    "net_asset_value",
+    "close",
+    "last",
+)
+TOTAL_RETURN_NAV_QUOTE_BASIS_PRIORITY = (
+    "total_return_nav",
+    "nav_with_dividend",
+    "dividend_adjusted_nav",
+    "reinvested_nav",
+    "adjusted_close",
+)
+ORDINARY_NAV_QUOTE_BASES = {
+    "close",
+    "last",
+    "official_nav",
+    "nav",
+    "unit_nav",
+    "net_asset_value",
+}
+TOTAL_RETURN_NAV_QUOTE_BASES = {
+    "total_return_nav",
+    "nav_with_dividend",
+    "dividend_adjusted_nav",
+    "reinvested_nav",
+    "adjusted_close",
+}
+QUOTE_BASIS_ROW_SLOT = {
+    "official_nav": "nav",
+    "nav": "nav",
+    "unit_nav": "nav",
+    "net_asset_value": "nav",
+    "close": "nav",
+    "last": "nav",
+    "total_return_nav": "nav_with_dividend",
+    "nav_with_dividend": "nav_with_dividend",
+    "dividend_adjusted_nav": "nav_with_dividend",
+    "reinvested_nav": "nav_with_dividend",
+    "adjusted_close": "nav_with_dividend",
+}
+QUOTE_BASIS_METRIC_FAMILY = {
+    "official_nav": "nav",
+    "nav": "nav",
+    "unit_nav": "nav",
+    "net_asset_value": "nav",
+    "total_return_nav": "nav",
+    "nav_with_dividend": "nav",
+    "cumulative_nav": "nav",
+    "accumulated_nav": "nav",
+    "cum_nav": "nav",
+    "dividend_adjusted_nav": "nav",
+    "reinvested_nav": "nav",
+    "close": "price",
+    "last": "price",
+    "adjusted_close": "price",
+}
+QUOTE_BASIS_LABELS = {
+    "official_nav": "Official NAV",
+    "nav": "NAV",
+    "unit_nav": "Unit NAV",
+    "net_asset_value": "NAV",
+    "close": "Close",
+    "last": "Last Price",
+    "total_return_nav": "Total Return NAV",
+    "nav_with_dividend": "NAV with Dividends",
+    "cumulative_nav": "Cumulative NAV",
+    "accumulated_nav": "Accumulated NAV",
+    "cum_nav": "Cumulative NAV",
+    "dividend_adjusted_nav": "Dividend-Adjusted NAV",
+    "reinvested_nav": "Reinvested NAV",
+    "adjusted_close": "Adjusted Close",
+}
 PEER_METRIC_MIN_SAMPLE = 2
 PEER_COMPARISON_METRICS = [
     {
@@ -250,20 +295,19 @@ PEER_COMPARISON_METRICS = [
 
 def _default_nav_settings() -> dict[str, Any]:
     return {
+        "nav_basis_preference": "auto",
         "default_benchmark_instrument_id": None,
         "peer_baseline_instrument_ids": [],
     }
 
 
 def _normalize_nav_settings(payload: dict[str, Any] | None) -> dict[str, Any]:
-    source = payload or {}
-    normalized = _default_nav_settings()
-    normalized["default_benchmark_instrument_id"] = source.get(
-        "default_benchmark_instrument_id"
-    )
-    normalized["peer_baseline_instrument_ids"] = source.get(
-        "peer_baseline_instrument_ids"
-    ) or []
+    normalized = {
+        **_default_nav_settings(),
+        **(payload or {}),
+    }
+    if normalized.get("nav_basis_preference") not in {"auto", "nav_with_dividend"}:
+        normalized["nav_basis_preference"] = "auto"
     normalized["default_benchmark_instrument_id"] = (
         str(normalized.get("default_benchmark_instrument_id")).strip() or None
         if normalized.get("default_benchmark_instrument_id") is not None
@@ -277,12 +321,67 @@ def _normalize_nav_settings(payload: dict[str, Any] | None) -> dict[str, Any]:
     return normalized
 
 
+def _allows_ordinary_return_basis(instrument_type: object) -> bool:
+    return str(instrument_type or "").strip().lower() == "index"
+
+
+def _quote_policy_prefers_ordinary_nav(
+    shared_instrument: dict[str, object] | None,
+    *,
+    role: str,
+) -> bool:
+    if not isinstance(shared_instrument, dict):
+        return False
+    raw_policy = shared_instrument.get("quote_selection_policy")
+    if not isinstance(raw_policy, dict):
+        return False
+    raw_values = raw_policy.get(role)
+    if not isinstance(raw_values, list):
+        return False
+    for raw_value in raw_values:
+        value = str(raw_value or "").strip().lower()
+        if value in ORDINARY_NAV_QUOTE_BASES:
+            return True
+        if value in TOTAL_RETURN_NAV_QUOTE_BASES:
+            return False
+    return False
+
+
+def _normalize_quote_basis(value: object) -> str:
+    return str(value or "").strip().lower()
+
+
+def _quote_basis_row_slot(quote_basis: object) -> str | None:
+    return QUOTE_BASIS_ROW_SLOT.get(_normalize_quote_basis(quote_basis))
+
+
+def _quote_basis_metric_family(quote_basis: object, fallback: object = None) -> str:
+    normalized = _normalize_quote_basis(quote_basis)
+    return str(QUOTE_BASIS_METRIC_FAMILY.get(normalized) or fallback or "").strip().lower()
+
+
+def _quote_basis_label(quote_basis: object) -> str:
+    normalized = _normalize_quote_basis(quote_basis)
+    return QUOTE_BASIS_LABELS.get(normalized, normalized.replace("_", " ").title() or "Quote")
+
+
+def _quote_basis_date_label(quote_basis: object) -> str:
+    metric_family = _quote_basis_metric_family(quote_basis)
+    return "Last Price Date" if metric_family == "price" else "Last NAV Date"
+
+
+def _quote_basis_series_type(quote_basis: object) -> str:
+    normalized = _normalize_quote_basis(quote_basis)
+    metric_family = _quote_basis_metric_family(normalized)
+    if metric_family == "price":
+        return "price"
+    if normalized in TOTAL_RETURN_NAV_QUOTE_BASES:
+        return "total_return_nav"
+    return "nav"
+
+
 def _utcnow() -> datetime:
     return datetime.now(UTC).replace(microsecond=0)
-
-
-def _current_valuation_date() -> date:
-    return date.today()
 
 
 def _coerce_utc(value: datetime | None) -> datetime | None:
@@ -293,19 +392,16 @@ def _coerce_utc(value: datetime | None) -> datetime | None:
     return value.astimezone(UTC)
 
 
-def _parse_market_data_input_watermark(value: object) -> datetime | None:
-    """Parse canonical registry lineage without inventing a calculation time."""
-
-    if value is None:
-        return None
-    normalized = str(value).strip()
+def _parse_source_watermark(value: object) -> datetime | None:
+    if isinstance(value, datetime):
+        return _coerce_utc(value)
+    normalized = str(value or "").strip()
     if not normalized:
         return None
     try:
-        parsed = datetime.fromisoformat(normalized.replace("Z", "+00:00"))
-    except (TypeError, ValueError):
+        return _coerce_utc(datetime.fromisoformat(normalized.replace("Z", "+00:00")))
+    except ValueError:
         return None
-    return _coerce_utc(parsed)
 
 
 def _safe_decimal(value: object) -> Decimal | None:
@@ -469,15 +565,6 @@ PEER_WATCHLIST_PERCENTILE_ATTRIBUTE_KEYS = {
     "sharpe_ratio": "peer_sharpe_percentile",
     "calmar": "peer_calmar_percentile",
 }
-PEER_WATCHLIST_MATERIALIZED_ATTRIBUTE_KEYS = {
-    *PEER_WATCHLIST_PERCENTILE_ATTRIBUTE_KEYS.values(),
-    "peer_overall_percentile",
-    "peer_return_percentile",
-    "peer_risk_percentile",
-    "peer_risk_adjusted_percentile",
-    "peer_sample_count",
-    "peer_group",
-}
 
 
 def _peer_watchlist_attributes(peer_comparison: dict[str, object] | None) -> dict[str, object]:
@@ -531,7 +618,7 @@ def _hash_payload(payload: object) -> str:
         sort_keys=True,
         separators=(",", ":"),
     )
-    return f"sha256:{sha256(serialized.encode('utf-8')).hexdigest()}"
+    return sha1(serialized.encode("utf-8")).hexdigest()
 
 
 def _primary_identifier(shared_instrument: dict[str, object] | None) -> str | None:
@@ -557,12 +644,18 @@ def _primary_identifier(shared_instrument: dict[str, object] | None) -> str | No
 
 
 def _window_return(latest_value: float, base_value: float, days: int) -> float | None:
-    if latest_value <= 0 or base_value <= 0 or days <= 0:
+    if base_value <= 0:
         return None
     raw = latest_value / base_value - 1
     if days > 366:
         return (pow(1 + raw, 365.25 / max(days, 1)) - 1) * 100
     return raw * 100
+
+
+def _annualized_return(latest_value: float, base_value: float, days: int) -> float | None:
+    if latest_value <= 0 or base_value <= 0 or days <= 0:
+        return None
+    return (pow(latest_value / base_value, 365.25 / max(days, 1)) - 1) * 100
 
 
 def _value_at_or_before(nav_points: list[dict[str, Any]], target_date: date) -> dict[str, Any] | None:
@@ -575,21 +668,8 @@ def _value_before(nav_points: list[dict[str, Any]], target_date: date) -> dict[s
     return candidates[-1] if candidates else None
 
 
-def _has_valid_nav_values(nav_points: list[dict[str, Any]]) -> bool:
-    observation_dates = [point.get("as_of_date") for point in nav_points]
-    return (
-        len(observation_dates) == len(set(observation_dates))
-        and all(isinstance(observation_date, date) for observation_date in observation_dates)
-        and all(
-            _safe_float(point.get("value")) is not None
-            and float(point["value"]) > 0
-            for point in nav_points
-        )
-    )
-
-
 def _compute_drawdown(nav_points: list[dict[str, Any]]) -> float | None:
-    if len(nav_points) < 2 or not _has_valid_nav_values(nav_points):
+    if len(nav_points) < 2:
         return None
     peak_value = nav_points[0]["value"]
     max_drawdown = 0.0
@@ -605,7 +685,7 @@ def _compute_drawdown(nav_points: list[dict[str, Any]]) -> float | None:
 
 
 def _current_drawdown(nav_points: list[dict[str, Any]]) -> float | None:
-    if len(nav_points) < 2 or not _has_valid_nav_values(nav_points):
+    if len(nav_points) < 2:
         return None
     peak_value = nav_points[0]["value"]
     current_drawdown = 0.0
@@ -620,7 +700,7 @@ def _current_drawdown(nav_points: list[dict[str, Any]]) -> float | None:
 
 
 def _compute_drawdown_summary(nav_points: list[dict[str, Any]]) -> dict[str, Any] | None:
-    if len(nav_points) < 2 or not _has_valid_nav_values(nav_points):
+    if len(nav_points) < 2:
         return None
 
     peak_point = nav_points[0]
@@ -655,8 +735,96 @@ def _compute_drawdown_summary(nav_points: list[dict[str, Any]]) -> dict[str, Any
     }
 
 
+def _compute_volatility(nav_points: list[dict[str, Any]]) -> float | None:
+    returns = _periodic_returns(nav_points)
+    if len(returns) < 2:
+        return None
+    periods_per_year = _annualization_periods_per_year(nav_points, len(returns))
+    if periods_per_year is None:
+        return None
+    return statistics.stdev(returns) * math.sqrt(periods_per_year) * 100
+
+
+def _compute_sharpe(nav_points: list[dict[str, Any]]) -> float | None:
+    returns = _periodic_returns(nav_points)
+    if len(returns) < 2:
+        return None
+    stdev = statistics.stdev(returns)
+    periods_per_year = _annualization_periods_per_year(nav_points, len(returns))
+    if stdev == 0 or periods_per_year is None:
+        return None
+    mean_return = statistics.fmean(returns)
+    return (mean_return / stdev) * math.sqrt(periods_per_year)
+
+
+def _periodic_returns(nav_points: list[dict[str, Any]]) -> list[float]:
+    returns: list[float] = []
+    for previous, current in zip(nav_points, nav_points[1:]):
+        if previous["value"] <= 0:
+            continue
+        returns.append(current["value"] / previous["value"] - 1)
+    return returns
+
+
+def _annualization_periods_per_year(nav_points: list[dict[str, Any]], return_count: int) -> float | None:
+    if len(nav_points) < 2 or return_count < 1:
+        return None
+    elapsed_days = (nav_points[-1]["as_of_date"] - nav_points[0]["as_of_date"]).days
+    if elapsed_days <= 0:
+        return None
+    return return_count / elapsed_days * 365.25
+
+
+def _compute_downside_deviation(nav_points: list[dict[str, Any]]) -> float | None:
+    periodic_returns = _periodic_returns(nav_points)
+    downside_returns = [value for value in periodic_returns if value < 0]
+    if len(periodic_returns) < 2 or not downside_returns:
+        return None
+    periods_per_year = _annualization_periods_per_year(nav_points, len(periodic_returns))
+    if periods_per_year is None:
+        return None
+    downside_variance = sum(value ** 2 for value in downside_returns) / len(downside_returns)
+    return math.sqrt(max(downside_variance, 0)) * math.sqrt(periods_per_year) * 100
+
+
+def _compute_sortino(nav_points: list[dict[str, Any]]) -> float | None:
+    periodic_returns = _periodic_returns(nav_points)
+    downside_returns = [value for value in periodic_returns if value < 0]
+    if len(periodic_returns) < 2 or not downside_returns:
+        return None
+    periods_per_year = _annualization_periods_per_year(nav_points, len(periodic_returns))
+    if periods_per_year is None:
+        return None
+    downside_variance = sum(value ** 2 for value in downside_returns) / len(downside_returns)
+    downside_deviation = math.sqrt(max(downside_variance, 0))
+    if downside_deviation == 0:
+        return None
+    mean_return = statistics.fmean(periodic_returns)
+    return (mean_return / downside_deviation) * math.sqrt(periods_per_year)
+
+
+def _monthly_close_points(nav_points: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    monthly: dict[tuple[int, int], dict[str, Any]] = {}
+    for point in nav_points:
+        monthly[(point["as_of_date"].year, point["as_of_date"].month)] = point
+    return [monthly[key] for key in sorted(monthly)]
+
+
+def _monthly_return_series(nav_points: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    closes = _monthly_close_points(nav_points)
+    returns: list[dict[str, Any]] = []
+    for previous, current in zip(closes, closes[1:]):
+        if previous["value"] <= 0:
+            continue
+        returns.append({
+            "as_of_date": current["as_of_date"],
+            "value": (current["value"] / previous["value"] - 1) * 100,
+        })
+    return returns
+
+
 def _monthly_drawdown_series(nav_points: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    if len(nav_points) < 2 or not _has_valid_nav_values(nav_points):
+    if len(nav_points) < 2:
         return []
     peak_value = nav_points[0]["value"]
     monthly_minimums: dict[tuple[int, int], dict[str, Any]] = {}
@@ -709,6 +877,15 @@ def _percentile_rank(values: list[float], current: float) -> float | None:
         return None
     below_or_equal = sum(1 for value in values if value <= current)
     return below_or_equal / len(values) * 100
+
+
+def _trailing_negative_month_count(monthly_returns: list[dict[str, Any]]) -> int:
+    count = 0
+    for row in reversed(monthly_returns):
+        if row["value"] >= 0:
+            break
+        count += 1
+    return count
 
 
 def _format_percent(value: float | None, digits: int = 1) -> str:
@@ -1008,67 +1185,10 @@ def _compute_calendar_year_returns(nav_points: list[dict[str, Any]]) -> list[dic
 def _snapshot_metadata(snapshot) -> dict[str, object] | None:
     if snapshot is None:
         return None
-    watermark = _coerce_utc(snapshot.market_data_input_watermark_at)
     return {
         "as_of_date": snapshot.as_of_date.isoformat(),
         "methodology_version": snapshot.methodology_version,
-        "calculated_at": _coerce_utc(snapshot.calculated_at).isoformat().replace("+00:00", "Z"),
-        "market_data_input_watermark_at": (
-            watermark.isoformat().replace("+00:00", "Z")
-            if watermark is not None
-            else None
-        ),
-    }
-
-
-def _snapshot_pair_lineage(
-    performance_snapshot,
-    risk_snapshot,
-) -> dict[str, object] | None:
-    """Return the shared lineage of one atomic performance/risk pair.
-
-    A one-sided, cross-date, cross-watermark, or separately calculated pair is
-    damaged state.  It may remain available as historical evidence, but it is
-    not eligible for current metrics or peer ranking.
-    """
-
-    if performance_snapshot is None or risk_snapshot is None:
-        return None
-    performance_as_of = getattr(performance_snapshot, "as_of_date", None)
-    risk_as_of = getattr(risk_snapshot, "as_of_date", None)
-    if not isinstance(performance_as_of, date) or performance_as_of != risk_as_of:
-        return None
-    performance_calculated_at = _coerce_utc(
-        getattr(performance_snapshot, "calculated_at", None)
-    )
-    risk_calculated_at = _coerce_utc(getattr(risk_snapshot, "calculated_at", None))
-    if (
-        performance_calculated_at is None
-        or performance_calculated_at != risk_calculated_at
-    ):
-        return None
-    performance_watermark = _coerce_utc(
-        getattr(performance_snapshot, "market_data_input_watermark_at", None)
-    )
-    risk_watermark = _coerce_utc(
-        getattr(risk_snapshot, "market_data_input_watermark_at", None)
-    )
-    if performance_watermark is None or performance_watermark != risk_watermark:
-        return None
-    performance_methodology = str(
-        getattr(performance_snapshot, "methodology_version", "") or ""
-    ).strip()
-    risk_methodology = str(
-        getattr(risk_snapshot, "methodology_version", "") or ""
-    ).strip()
-    if not performance_methodology or not risk_methodology:
-        return None
-    return {
-        "as_of_date": performance_as_of,
-        "calculated_at": performance_calculated_at,
-        "market_data_input_watermark_at": performance_watermark,
-        "performance_methodology_version": performance_methodology,
-        "risk_methodology_version": risk_methodology,
+        "source_cutoff_at": _coerce_utc(snapshot.source_cutoff_at).isoformat().replace("+00:00", "Z"),
     }
 
 
@@ -1088,271 +1208,312 @@ def _risk_level_label(volatility: float | None) -> str | None:
     return "high"
 
 
-def _canonical_instrument(session: Session, instrument_id: str) -> CanonicalInstrument:
-    instrument = session.get(CanonicalInstrument, instrument_id)
-    if instrument is None:
-        raise ValueError(f"Canonical instrument not found: {instrument_id}")
-    return instrument
-
-
-def _resolve_canonical_series(
-    session: Session,
-    *,
-    instrument_id: str,
-    role: str,
-    valuation_date: date,
-    range_mode: str = "since_inception",
-    start_date: date | None = None,
-    instrument: CanonicalInstrument | None = None,
-    consumer_profile: ConsumerFreshnessProfile | None = None,
-) -> CanonicalQuoteSeriesResolution:
-    instrument = instrument or _canonical_instrument(session, instrument_id)
-    consumer_profile = consumer_profile or watchlist_freshness_profile(
-        instrument.instrument_type
-    )
-    return resolve_role_quote_series_in_session(
-        session,
-        resolver_strategy_version=CANONICAL_QUOTE_RESOLVER_STRATEGY_VERSION,
-        instrument_id=instrument_id,
-        role=role,
-        currency=instrument.currency,
-        range_mode=range_mode,
-        start_date=start_date,
-        end_date=valuation_date,
-        freshness_policy=consumer_profile.resolver_policy,
-        quote_selection_policy_version=QUOTE_SELECTION_POLICY_VERSION,
-    )
-
-
-def _canonical_points(window: CanonicalQuoteSeriesResolution) -> list[dict[str, Any]]:
-    return [
-        {
-            "as_of_date": point.observation_date,
-            "value": float(point.value),
-            "observation_id": point.observation_id,
-            "revision_id": point.revision_id,
-            "revision_number": point.revision_number,
-            "payload_hash": point.payload_hash,
-            "source_ref": point.source_ref,
-            "source_published_at": point.source_published_at,
-            "ingested_at": point.ingested_at,
-            "ingestion_time_state": point.ingestion_time_state,
+def _group_shared_nav_rows(market_data: list[dict[str, object]]) -> list[dict[str, Any]]:
+    grouped: dict[date, dict[str, Any]] = {}
+    for item in market_data:
+        if not isinstance(item, dict):
+            continue
+        quote_basis = _normalize_quote_basis(item.get("quote_basis"))
+        target_key = _quote_basis_row_slot(quote_basis)
+        value = _safe_decimal(item.get("value"))
+        as_of_date_raw = str(item.get("as_of_date") or "").strip()
+        if target_key is None or value is None or not as_of_date_raw:
+            continue
+        try:
+            as_of_date = date.fromisoformat(as_of_date_raw)
+        except ValueError:
+            continue
+        row = grouped.setdefault(
+            as_of_date,
+            {
+                "as_of_date": as_of_date,
+                "currency": str(item.get("currency") or "USD"),
+                "frequency": normalize_frequency(
+                    item.get("frequency") or item.get("observation_frequency")
+                ),
+                "adopted_at": None,
+                "nav": None,
+                "nav_with_dividend": None,
+                "basis_metadata": {},
+            },
+        )
+        if row.get("frequency") is None:
+            row["frequency"] = normalize_frequency(
+                item.get("frequency") or item.get("observation_frequency")
+            )
+        row[target_key] = value
+        row["basis_metadata"][target_key] = {
+            "metric_family": _quote_basis_metric_family(quote_basis, item.get("metric_family")),
+            "quote_basis": quote_basis,
+            "provider": item.get("provider"),
+            "status": item.get("status"),
         }
-        for point in window.points
-    ]
+    return [grouped[key] for key in sorted(grouped)]
 
 
-def _full_quote_resolution_payload(
-    window: CanonicalQuoteSeriesResolution,
-    consumer_profile: ConsumerFreshnessProfile,
-) -> dict[str, object]:
-    return {
-        **window.model_dump(mode="json"),
-        "consumer_freshness_profile": consumer_profile.payload(),
-        "consumer_dependency": quote_consumer_dependency(
-            canonical_dependency_fingerprint=(
-                window.calculation_dependency.fingerprint
-            ),
-            consumer_profile=consumer_profile,
-        ),
-    }
+def _group_local_nav_rows(nav_facts) -> list[dict[str, Any]]:
+    grouped: dict[date, dict[str, Any]] = {}
+    for item in nav_facts:
+        row = grouped.setdefault(
+            item.as_of_date,
+            {
+                "as_of_date": item.as_of_date,
+                "currency": item.currency,
+                "frequency": item.frequency,
+                "adopted_at": item.adopted_at,
+                "nav": None,
+                "nav_with_dividend": None,
+                "basis_metadata": {},
+            },
+        )
+        if item.nav_type == "nav":
+            row["nav"] = item.value
+            row["basis_metadata"]["nav"] = {
+                "metric_family": "nav",
+                "quote_basis": "official_nav",
+                "provider": item.source_record_id,
+                "status": "complete",
+            }
+        elif item.nav_type == "nav_with_dividend":
+            row["nav_with_dividend"] = item.value
+            row["basis_metadata"]["nav_with_dividend"] = {
+                "metric_family": "nav",
+                "quote_basis": "total_return_nav",
+                "provider": item.source_record_id,
+                "status": "complete",
+            }
+    return [grouped[key] for key in sorted(grouped)]
 
 
-def _quote_resolution_summary_payload(
-    window: CanonicalQuoteSeriesResolution,
-    consumer_profile: ConsumerFreshnessProfile,
-) -> dict[str, object]:
-    """Return bounded lineage for persisted and presentation read models.
-
-    The canonical resolver's full observation series and revision manifest are
-    calculation inputs.  Duplicating them into every read model makes storage
-    and response size grow with both history length and projection count.  The
-    summary preserves the contract, quality state, counts, and fingerprints
-    required to explain and invalidate a projection without copying those
-    unbounded inputs.
-    """
-
-    return CanonicalQuoteSeriesResolutionSummary.from_resolution(
-        window,
-        consumer_profile,
-    ).model_dump(mode="json")
-
-
-_PERFORMANCE_LAST_GOOD_FIELDS = frozenset(
-    {
-        "growth_chart_series",
-        "annual_returns",
-        "trailing_returns",
-        "ranking",
-        "peer_comparison",
-        "calculation_frequency_profile",
-        "snapshot_metadata",
-    }
-)
-_RISK_LAST_GOOD_FIELDS = frozenset(
-    {
-        "risk_overview",
-        "scatter_points",
-        "risk_metrics",
-        "drawdown_summary",
-        "current_drawdown",
-        "risk_structure",
-        "current_watch",
-        "change_monitor",
-        "calculation_frequency_profile",
-        "snapshot_metadata",
-    }
-)
+def _shared_quote_points_by_basis(
+    market_data: list[dict[str, object]],
+) -> dict[str, list[dict[str, Any]]]:
+    points_by_basis: dict[str, list[dict[str, Any]]] = {}
+    for item in market_data:
+        if not isinstance(item, dict):
+            continue
+        quote_basis = _normalize_quote_basis(item.get("quote_basis"))
+        if _quote_basis_row_slot(quote_basis) is None:
+            continue
+        value = _safe_decimal(item.get("value"))
+        as_of_date_raw = str(item.get("as_of_date") or "").strip()
+        if value is None or not as_of_date_raw:
+            continue
+        try:
+            as_of_date = date.fromisoformat(as_of_date_raw)
+        except ValueError:
+            continue
+        points_by_basis.setdefault(quote_basis, []).append(
+            {
+                "as_of_date": as_of_date,
+                "value": float(value),
+                "currency": str(item.get("currency") or "USD"),
+                "frequency": normalize_frequency(
+                    item.get("frequency") or item.get("observation_frequency")
+                ),
+                "adopted_at": None,
+                "metric_family": _quote_basis_metric_family(quote_basis, item.get("metric_family")),
+                "quote_basis": quote_basis,
+                "provider": item.get("provider"),
+                "status": item.get("status"),
+                "source": "shared",
+            }
+        )
+    for points in points_by_basis.values():
+        points.sort(key=lambda point: point["as_of_date"])
+    return points_by_basis
 
 
-def _project_persisted_analytics_payload(
-    payload: object,
+def _local_quote_points_by_basis(nav_facts) -> dict[str, list[dict[str, Any]]]:
+    points_by_basis: dict[str, list[dict[str, Any]]] = {}
+    for item in nav_facts:
+        if item.nav_type == "nav":
+            quote_basis = "official_nav"
+        elif item.nav_type == "nav_with_dividend":
+            quote_basis = "total_return_nav"
+        else:
+            continue
+        points_by_basis.setdefault(quote_basis, []).append(
+            {
+                "as_of_date": item.as_of_date,
+                "value": float(item.value),
+                "currency": item.currency,
+                "frequency": item.frequency,
+                "adopted_at": item.adopted_at,
+                "metric_family": "nav",
+                "quote_basis": quote_basis,
+                "provider": item.source_record_id,
+                "status": "complete",
+                "source": "local",
+            }
+        )
+    for points in points_by_basis.values():
+        points.sort(key=lambda point: point["as_of_date"])
+    return points_by_basis
+
+
+def _quote_policy_candidates(
+    shared_instrument: dict[str, object] | None,
     *,
-    allowed_fields: frozenset[str],
-) -> dict[str, object]:
-    """Project a last-good artifact through an explicit positive allowlist."""
+    role: str,
+) -> list[str]:
+    if not isinstance(shared_instrument, dict):
+        return []
+    raw_policy = shared_instrument.get("quote_selection_policy")
+    if not isinstance(raw_policy, dict):
+        return []
+    raw_values = raw_policy.get(role)
+    if not isinstance(raw_values, list):
+        return []
+    candidates: list[str] = []
+    for raw_value in raw_values:
+        quote_basis = _normalize_quote_basis(raw_value)
+        if _quote_basis_row_slot(quote_basis) is not None and quote_basis not in candidates:
+            candidates.append(quote_basis)
+    return candidates
 
-    if not isinstance(payload, Mapping):
-        return {}
+
+def _selection_candidates(
+    shared_instrument: dict[str, object] | None,
+    *,
+    role: str,
+    preference: str,
+    allow_ordinary_nav: bool,
+) -> list[str]:
+    normalized_preference = (preference or "auto").strip().lower()
+    if normalized_preference == "nav_with_dividend":
+        return list(TOTAL_RETURN_NAV_QUOTE_BASIS_PRIORITY)
+    if normalized_preference == "nav":
+        return list(ORDINARY_NAV_QUOTE_BASIS_PRIORITY) if allow_ordinary_nav else []
+
+    candidates = _quote_policy_candidates(shared_instrument, role=role)
+    if not candidates:
+        candidates = (
+            list(TOTAL_RETURN_NAV_QUOTE_BASIS_PRIORITY)
+            + list(ORDINARY_NAV_QUOTE_BASIS_PRIORITY)
+        )
+    if allow_ordinary_nav:
+        return candidates
+    return [basis for basis in candidates if basis in TOTAL_RETURN_NAV_QUOTE_BASES]
+
+
+def _select_quote_series(
+    points_by_basis: dict[str, list[dict[str, Any]]],
+    *,
+    shared_instrument: dict[str, object] | None,
+    role: str,
+    preference: str,
+    allow_ordinary_nav: bool = False,
+) -> dict[str, object]:
+    for quote_basis in _selection_candidates(
+        shared_instrument,
+        role=role,
+        preference=preference,
+        allow_ordinary_nav=allow_ordinary_nav,
+    ):
+        points = list(points_by_basis.get(quote_basis) or [])
+        if not points:
+            continue
+        row_slot = _quote_basis_row_slot(quote_basis)
+        metric_family = _quote_basis_metric_family(quote_basis, points[-1].get("metric_family"))
+        return {
+            "nav_basis_type": row_slot,
+            "nav_basis_source": str(points[-1].get("source") or "shared"),
+            "nav_basis_status": "ready",
+            "points": points,
+            "rows": [],
+            "selected_role": role,
+            "selected_metric_family": metric_family,
+            "selected_quote_basis": quote_basis,
+            "selected_series_type": _quote_basis_series_type(quote_basis),
+            "selected_series_label": _quote_basis_label(quote_basis),
+            "selected_date_label": _quote_basis_date_label(quote_basis),
+        }
+
     return {
-        field_name: payload[field_name]
-        for field_name in sorted(allowed_fields)
-        if field_name in payload
+        "nav_basis_type": None,
+        "nav_basis_source": "unavailable",
+        "nav_basis_status": "unavailable",
+        "points": [],
+        "rows": [],
+        "selected_role": role,
+        "selected_metric_family": None,
+        "selected_quote_basis": None,
+        "selected_series_type": None,
+        "selected_series_label": None,
+        "selected_date_label": None,
     }
 
 
-def _persisted_historical_quote_resolution(
-    payload: object,
-) -> CanonicalQuoteSeriesResolutionSummary | None:
-    """Accept only the current bounded schema as preserved snapshot lineage."""
+def _rows_with_selected_series(
+    rows: list[dict[str, Any]],
+    selection: dict[str, object],
+) -> list[dict[str, Any]]:
+    row_slot = selection.get("nav_basis_type")
+    points = selection.get("points")
+    if row_slot not in {"nav", "nav_with_dividend"} or not isinstance(points, list):
+        return rows
 
-    if not isinstance(payload, Mapping):
-        return None
-    candidate = payload.get("historical_quote_resolution")
-    try:
-        return CanonicalQuoteSeriesResolutionSummary.model_validate(candidate)
-    except ValidationError:
-        return None
+    grouped: dict[date, dict[str, Any]] = {row["as_of_date"]: dict(row) for row in rows}
+    for row in grouped.values():
+        row["basis_metadata"] = dict(row.get("basis_metadata") or {})
 
+    for point in points:
+        if not isinstance(point, dict) or not isinstance(point.get("as_of_date"), date):
+            continue
+        point_date = point["as_of_date"]
+        row = grouped.setdefault(
+            point_date,
+            {
+                "as_of_date": point_date,
+                "currency": str(point.get("currency") or "USD"),
+                "frequency": point.get("frequency"),
+                "adopted_at": point.get("adopted_at"),
+                "nav": None,
+                "nav_with_dividend": None,
+                "basis_metadata": {},
+            },
+        )
+        row[row_slot] = _safe_decimal(point.get("value"))
+        row["currency"] = str(point.get("currency") or row.get("currency") or "USD")
+        if row.get("frequency") is None:
+            row["frequency"] = point.get("frequency")
+        row["basis_metadata"][row_slot] = {
+            "metric_family": point.get("metric_family"),
+            "quote_basis": point.get("quote_basis"),
+            "provider": point.get("provider"),
+            "status": point.get("status"),
+        }
 
-def _aligned_historical_quote_resolutions(
-    performance_payload: object,
-    risk_payload: object,
-) -> tuple[dict[str, object] | None, dict[str, object] | None]:
-    performance_resolution = _persisted_historical_quote_resolution(
-        performance_payload
-    )
-    risk_resolution = _persisted_historical_quote_resolution(risk_payload)
-    if performance_resolution is None or risk_resolution is None:
-        return None, None
-    if (
-        performance_resolution.instrument_id != risk_resolution.instrument_id
-        or performance_resolution.role != risk_resolution.role
-        or performance_resolution.calculation_dependency.fingerprint
-        != risk_resolution.calculation_dependency.fingerprint
-        or performance_resolution.consumer_dependency.fingerprint
-        != risk_resolution.consumer_dependency.fingerprint
-    ):
-        return None, None
-    return (
-        performance_resolution.model_dump(mode="json"),
-        risk_resolution.model_dump(mode="json"),
-    )
-
-
-def _endpoint_is_resolved(
-    endpoint: CanonicalQuoteResolution | None,
-) -> bool:
-    return bool(
-        endpoint is not None
-        and endpoint.resolution_status == "resolved"
-        and endpoint.value is not None
-    )
+    return [grouped[key] for key in sorted(grouped)]
 
 
-def _stable_reason_codes(
-    window: CanonicalQuoteSeriesResolution,
-    endpoint: CanonicalQuoteResolution | None,
-) -> list[str]:
-    result: list[str] = []
-    for reason_code in [
-        *(endpoint.reason_codes if endpoint is not None else []),
-        *window.reason_codes,
-    ]:
-        normalized = str(reason_code).strip()
-        if normalized and normalized not in result:
-            result.append(normalized)
-    return result
-
-
-def _endpoint_state(
-    window: CanonicalQuoteSeriesResolution,
-    endpoint: CanonicalQuoteResolution | None,
-) -> str:
-    if _endpoint_is_resolved(endpoint):
-        return "resolved"
-    reason_codes = set(_stable_reason_codes(window, endpoint))
-    if window.freshness_status == "late" or (
-        endpoint is not None and endpoint.freshness_status == "late"
-    ):
-        return "stale"
-    if reason_codes.intersection(
-        {"partial_series", "rejected_observation", "withdrawn_observation"}
-    ):
-        return "partial"
-    return "unavailable"
-
-
-def _last_successful_snapshot_at(performance_snapshot, risk_snapshot) -> datetime | None:
-    performance_time = _coerce_utc(
-        getattr(performance_snapshot, "calculated_at", None)
-    )
-    risk_time = _coerce_utc(getattr(risk_snapshot, "calculated_at", None))
-    if performance_time is not None and risk_time is not None:
-        return min(performance_time, risk_time)
-    # The Watchlist analytics materialization is an atomic performance+risk
-    # pair. A one-sided row indicates damaged/incomplete state, not success.
-    return None
-
-
-def _selection_metadata(window: CanonicalQuoteSeriesResolution) -> dict[str, object]:
-    quote_basis = window.quote_basis
-    metric_family = window.metric_family
-    label = quote_basis.replace("_", " ").title() if quote_basis else None
-    series_type = (
-        "total_return_nav"
-        if window.role == "total_return" and metric_family == "nav"
-        else metric_family
-    )
+def _selection_metadata(selection: dict[str, object]) -> dict[str, object]:
     return {
-        "role": window.role,
-        "metric_family": metric_family,
-        "quote_basis": quote_basis,
-        "series_type": series_type,
-        "basis_type": "nav_with_dividend" if window.role == "total_return" else None,
-        "label": label,
-        "date_label": "Last Price Date" if metric_family == "price" else "Last NAV Date",
-        "quote_series_id": window.quote_series_id,
-        "policy_version": window.quote_selection_policy_version,
-        "policy_revision": window.quote_selection_policy_revision,
+        "role": selection.get("selected_role"),
+        "metric_family": selection.get("selected_metric_family"),
+        "quote_basis": selection.get("selected_quote_basis"),
+        "series_type": selection.get("selected_series_type"),
+        "basis_type": selection.get("nav_basis_type"),
+        "label": selection.get("selected_series_label"),
+        "date_label": selection.get("selected_date_label"),
     }
 
 
 def _build_chart_payload(
     instrument_id: str,
-    window: CanonicalQuoteSeriesResolution,
-    consumer_profile: ConsumerFreshnessProfile,
+    nav_points: list[dict[str, Any]],
+    currency: str,
+    *,
+    selection: dict[str, object] | None = None,
 ) -> dict[str, object]:
-    nav_points = _canonical_points(window)
-    metadata = _selection_metadata(window)
+    metadata = _selection_metadata(selection or {})
     series_label = str(metadata.get("label") or "Quote")
     return {
         "instrument_id": instrument_id,
         "base_series_type": str(metadata.get("series_type") or "quote"),
         "selected_series": metadata,
-        "currency": window.currency,
-        "resolution": _quote_resolution_summary_payload(window, consumer_profile),
-        "consumer_freshness_profile": consumer_profile.payload(),
+        "currency": currency,
         "date_range": (
             {
                 "start": nav_points[0]["as_of_date"].isoformat(),
@@ -1380,11 +1541,11 @@ def _build_chart_payload(
 class CanonicalRecalcService:
     def __init__(self) -> None:
         self.instrument_repository = SQLAlchemyInstrumentRepository()
+        self.facts_repository = SQLAlchemyFactsRepository()
         self.attribute_repository = SQLAlchemyInstrumentAttributeRepository()
         self.manual_profile_repository = SQLAlchemyInstrumentManualProfileRepository()
         self.read_model_repository = SQLAlchemyReadModelRepository()
         self.recalc_repository = SQLAlchemyRecalcJobRepository()
-        self.research_rating_repository = SQLAlchemyResearchRatingRepository()
         self.snapshot_repository = SQLAlchemySnapshotRepository()
         self.taxonomy_repository = SQLAlchemyTaxonomyRepository()
 
@@ -1393,241 +1554,158 @@ class CanonicalRecalcService:
         session: Session,
         *,
         instrument_id: str,
-        valuation_date: date,
     ) -> dict[str, object]:
         manual_profile = self.manual_profile_repository.get(session, instrument_id)
         nav_settings = _normalize_nav_settings(
             manual_profile.nav_settings_json if manual_profile is not None else None
         )
-        canonical_instrument = _canonical_instrument(session, instrument_id)
-        consumer_profile = watchlist_freshness_profile(
-            canonical_instrument.instrument_type
+        shared_instrument = get_shared_instrument(instrument_id)
+        shared_instrument_type = (
+            str(shared_instrument.get("instrument_type") or "").strip().lower()
+            if isinstance(shared_instrument, dict)
+            else ""
         )
-        window = _resolve_canonical_series(
-            session,
-            instrument_id=instrument_id,
+        local_instrument = self.instrument_repository.get(session, instrument_id)
+        instrument_type = shared_instrument_type or getattr(
+            local_instrument,
+            "instrument_type",
+            None,
+        )
+        nav_rows = (
+            _group_shared_nav_rows(list(shared_instrument.get("market_data", [])))
+            if isinstance(shared_instrument, dict)
+            else []
+        )
+        quote_points_by_basis = (
+            _shared_quote_points_by_basis(list(shared_instrument.get("market_data", [])))
+            if isinstance(shared_instrument, dict)
+            else {}
+        )
+        if not nav_rows:
+            local_nav_facts = self.facts_repository.list_nav_facts(
+                session,
+                instrument_id=instrument_id,
+                nav_type=None,
+                primary_only=True,
+            )
+            nav_rows = _group_local_nav_rows(local_nav_facts)
+            quote_points_by_basis = _local_quote_points_by_basis(local_nav_facts)
+        nav_basis_preference = str(nav_settings.get("nav_basis_preference", "auto"))
+        selection = _select_quote_series(
+            quote_points_by_basis,
+            shared_instrument=shared_instrument,
             role="total_return",
-            valuation_date=valuation_date,
-            instrument=canonical_instrument,
-            consumer_profile=consumer_profile,
+            preference=nav_basis_preference,
+            allow_ordinary_nav=(
+                _allows_ordinary_return_basis(instrument_type)
+                or _quote_policy_prefers_ordinary_nav(shared_instrument, role="total_return")
+            ),
         )
-        selection = _selection_metadata(window)
-        resolved_points = _canonical_points(window)
-        frequency_context = build_calculation_frequency_context(resolved_points)
+        nav_rows = _rows_with_selected_series(nav_rows, selection)
+        selection["rows"] = nav_rows
+        frequency_context = build_calculation_frequency_context(selection["points"])
         calculation_dates = {
             point["as_of_date"]
             for point in frequency_context["points"]
             if isinstance(point, dict) and isinstance(point.get("as_of_date"), date)
         }
-        latest_point = resolved_points[-1] if resolved_points else None
-        previous_point = resolved_points[-2] if len(resolved_points) >= 2 else None
-        latest_value = latest_point["value"] if latest_point is not None else None
-        previous_value = previous_point["value"] if previous_point is not None else None
-        empty_statistics = {
-            "latest_date": None,
-            "latest_value": None,
-            "latest_change": None,
-            "latest_change_percent": None,
-        }
-        selected_statistics = {
-            "latest_date": (
-                latest_point["as_of_date"].isoformat() if latest_point is not None else None
-            ),
-            "latest_value": latest_value,
-            "latest_change": (
-                latest_value - previous_value
-                if latest_value is not None and previous_value is not None
-                else None
-            ),
-            "latest_change_percent": (
-                (latest_value / previous_value - 1) * 100
-                if latest_value is not None and previous_value not in {None, 0}
-                else None
-            ),
-        }
         return {
             "instrument_id": instrument_id,
-            "valuation_date": valuation_date.isoformat(),
-            "count": window.observation_count,
-            "nav_basis_type": selection["basis_type"],
-            "nav_basis_source": "canonical_resolver",
-            "nav_basis_status": window.resolution_status,
-            "selected_role": selection["role"],
-            "selected_metric_family": selection["metric_family"],
-            "selected_quote_basis": selection["quote_basis"],
-            "selected_series_type": selection["series_type"],
-            "selected_series_label": selection["label"],
-            "selected_date_label": selection["date_label"],
-            "resolution": _full_quote_resolution_payload(window, consumer_profile),
-            "consumer_freshness_profile": consumer_profile.payload(),
+            "count": len(selection["rows"]),
+            "nav_basis_preference": nav_basis_preference,
+            "nav_basis_type": selection["nav_basis_type"],
+            "nav_basis_source": selection["nav_basis_source"],
+            "nav_basis_status": selection["nav_basis_status"],
+            "selected_role": selection.get("selected_role"),
+            "selected_metric_family": selection.get("selected_metric_family"),
+            "selected_quote_basis": selection.get("selected_quote_basis"),
+            "selected_series_type": selection.get("selected_series_type"),
+            "selected_series_label": selection.get("selected_series_label"),
+            "selected_date_label": selection.get("selected_date_label"),
             "calculation_frequency_profile": frequency_context["profile"],
-            "basis_statistics": {
-                "nav": empty_statistics,
-                "nav_with_dividend": selected_statistics,
-            },
             "compare_settings": {
                 "default_benchmark_instrument_id": nav_settings.get("default_benchmark_instrument_id"),
                 "peer_instrument_ids": list(nav_settings.get("peer_baseline_instrument_ids") or []),
             },
             "rows": [
                 {
-                    "date": observation.observation_date.isoformat(),
-                    "nav": None,
+                    "date": row["as_of_date"].isoformat(),
+                    "nav": float(row["nav"]) if row["nav"] is not None else None,
                     "nav_with_dividend": (
-                        float(observation.value)
-                        if observation.status == "complete" and observation.value is not None
+                        float(row["nav_with_dividend"])
+                        if row["nav_with_dividend"] is not None
                         else None
                     ),
-                    "currency": window.currency,
-                    "frequency": None,
+                    "currency": row["currency"],
+                    "frequency": row["frequency"],
                     "adopted_at": (
-                        _coerce_utc(observation.ingested_at).isoformat().replace("+00:00", "Z")
-                        if observation.ingested_at is not None
+                        _coerce_utc(row.get("adopted_at")).isoformat().replace("+00:00", "Z")
+                        if row.get("adopted_at") is not None
                         else None
                     ),
-                    "ingestion_time_state": observation.ingestion_time_state,
-                    "status": observation.status,
-                    "observation_id": observation.observation_id,
-                    "revision_id": observation.revision_id,
-                    "revision_number": observation.revision_number,
-                    "payload_hash": observation.payload_hash,
-                    "source_ref": observation.source_ref,
-                    "source_published_at": (
-                        _coerce_utc(observation.source_published_at).isoformat().replace("+00:00", "Z")
-                        if observation.source_published_at is not None
-                        else None
-                    ),
-                    "selected_basis_type": selection["basis_type"],
+                    "selected_basis_type": selection.get("nav_basis_type"),
                     "selected_value": (
-                        float(observation.value)
-                        if observation.status == "complete" and observation.value is not None
+                        float(row.get(selection["nav_basis_type"]))
+                        if selection.get("nav_basis_type") in {"nav", "nav_with_dividend"}
+                        and row.get(selection["nav_basis_type"]) is not None
                         else None
                     ),
-                    "calculation_included": (
-                        window.resolution_status == "resolved"
-                        and observation.status == "complete"
-                        and observation.observation_date in calculation_dates
-                    ),
+                    "calculation_included": row["as_of_date"] in calculation_dates,
                 }
-                for observation in window.observations
+                for row in selection["rows"]
             ],
         }
 
-    def build_investment_analytics_payload(
+    def ingest_instrument_holding_snapshot(
         self,
         session: Session,
         *,
         instrument_id: str,
-        benchmark_instrument_id: str | None,
-        rolling_window_months: int,
-        valuation_date: date,
+        as_of_date: date,
+        source_cutoff_at: datetime,
+        methodology_version: str,
+        source_record_id: str | None,
+        positions: list[dict[str, Any]],
+        auto_recalculate: bool,
     ) -> dict[str, object]:
-        def _calculation_window(
-            target_instrument_id: str,
-        ) -> tuple[
-            CanonicalQuoteSeriesResolution,
-            list[dict[str, Any]],
-            ConsumerFreshnessProfile,
-            CanonicalQuoteResolution | None,
-        ]:
-            canonical_instrument = _canonical_instrument(
-                session, target_instrument_id
-            )
-            consumer_profile = watchlist_freshness_profile(
-                canonical_instrument.instrument_type
-            )
-            window = _resolve_canonical_series(
-                session,
-                instrument_id=target_instrument_id,
-                role="total_return",
-                valuation_date=valuation_date,
-                instrument=canonical_instrument,
-                consumer_profile=consumer_profile,
-            )
-            frequency_context = build_calculation_frequency_context(_canonical_points(window))
-            endpoint = (
-                resolve_quote_series_observation_at(
-                    window, requested_as_of_date=valuation_date
-                )
-                if window.quote_series_id is not None
-                else None
-            )
-            return (
-                window,
-                list(frequency_context["points"]),
-                consumer_profile,
-                endpoint,
-            )
+        payload_hash = _hash_payload(
+            {
+                "instrument_id": instrument_id,
+                "as_of_date": as_of_date.isoformat(),
+                "source_cutoff_at": source_cutoff_at.isoformat(),
+                "positions": positions,
+            }
+        )
+        record = self.facts_repository.replace_current_holding_snapshot(
+            session,
+            holding_snapshot_id=f"holding:{instrument_id}:{as_of_date.isoformat()}",
+            instrument_id=instrument_id,
+            as_of_date=as_of_date,
+            source_cutoff_at=source_cutoff_at,
+            methodology_version=methodology_version,
+            input_hash=payload_hash,
+            source_record_id=source_record_id,
+            positions=positions,
+        )
 
-        (
-            fund_window,
-            fund_points,
-            fund_consumer_profile,
-            fund_endpoint,
-        ) = _calculation_window(instrument_id)
-        (
-            benchmark_window,
-            benchmark_points,
-            benchmark_consumer_profile,
-            benchmark_endpoint,
-        ) = (
-            _calculation_window(benchmark_instrument_id)
-            if benchmark_instrument_id is not None
-            else (None, [], None, None)
-        )
-        payload = _investment_analytics_payload(
-            fund_points,
-            benchmark_points=benchmark_points,
-            benchmark_instrument_id=benchmark_instrument_id,
-            rolling_window_months=rolling_window_months,
-        )
-        payload["valuation_date"] = valuation_date.isoformat()
-        payload["quote_resolutions"] = {
-            "fund": _quote_resolution_summary_payload(
-                fund_window, fund_consumer_profile
-            ),
-            "benchmark": (
-                _quote_resolution_summary_payload(
-                    benchmark_window, benchmark_consumer_profile
-                )
-                if benchmark_window is not None
-                and benchmark_consumer_profile is not None
-                else None
-            ),
+        execution = None
+        if auto_recalculate:
+            execution = self.execute_recalc(
+                session,
+                instrument_id=instrument_id,
+                job_type="exposure",
+                trigger_type="fact_adopted",
+                trigger_ref_type="holding_snapshot",
+                trigger_ref_id=record.holding_snapshot_id,
+            )
+        return {
+            "instrument_id": instrument_id,
+            "holding_snapshot_id": record.holding_snapshot_id,
+            "position_count": len(record.positions),
+            "as_of_date": record.as_of_date.isoformat(),
+            "auto_recalculated": execution is not None,
+            "execution": execution,
         }
-        payload["calculation_states"] = {
-            "fund": {
-                "current_endpoint_state": _endpoint_state(
-                    fund_window, fund_endpoint
-                ),
-                "analysis_as_of_date": (
-                    fund_points[-1]["as_of_date"].isoformat()
-                    if fund_points
-                    else None
-                ),
-                "reason_codes": _stable_reason_codes(
-                    fund_window, fund_endpoint
-                ),
-            },
-            "benchmark": (
-                {
-                    "current_endpoint_state": _endpoint_state(
-                        benchmark_window, benchmark_endpoint
-                    ),
-                    "analysis_as_of_date": (
-                        benchmark_points[-1]["as_of_date"].isoformat()
-                        if benchmark_points
-                        else None
-                    ),
-                    "reason_codes": _stable_reason_codes(
-                        benchmark_window, benchmark_endpoint
-                    ),
-                }
-                if benchmark_window is not None
-                else None
-            ),
-        }
-        return payload
 
     def execute_recalc(
         self,
@@ -1638,10 +1716,8 @@ class CanonicalRecalcService:
         trigger_type: str,
         trigger_ref_type: str | None,
         trigger_ref_id: str | None,
-        valuation_date: date | None = None,
         commit: bool = False,
     ) -> dict[str, object]:
-        resolved_valuation_date = valuation_date or _current_valuation_date()
         try:
             with session.begin_nested():
                 self.recalc_repository.acquire_instrument_lock(
@@ -1700,7 +1776,6 @@ class CanonicalRecalcService:
                     session,
                     instrument_id=instrument_id,
                     job_type=job_type,
-                    valuation_date=resolved_valuation_date,
                 )
                 if not self.recalc_repository.mark_completed(
                     session,
@@ -1710,18 +1785,6 @@ class CanonicalRecalcService:
                 ):
                     raise RecalcJobLeaseLostError(
                         f"Recalc lease lost before completion: {record.recalc_job_id}"
-                    )
-                pending_generation = (
-                    self.recalc_repository.complete_claimed_generation(
-                        session,
-                        record,
-                    )
-                )
-                if pending_generation is not None:
-                    self._enqueue_invalidation_follow_up(
-                        session,
-                        record=record,
-                        requested_generation=pending_generation,
                     )
                 self._enqueue_source_change_follow_up(session, record=record, result=result)
             if commit:
@@ -1760,7 +1823,6 @@ class CanonicalRecalcService:
         record,
         commit: bool = False,
     ) -> dict[str, object]:
-        valuation_date = _current_valuation_date()
         lease_token = str(record.lease_token or "")
         try:
             with session.begin_nested():
@@ -1768,7 +1830,6 @@ class CanonicalRecalcService:
                     session,
                     instrument_id=record.instrument_id,
                     job_type=record.job_type,
-                    valuation_date=valuation_date,
                 )
                 if not self.recalc_repository.mark_completed(
                     session,
@@ -1778,18 +1839,6 @@ class CanonicalRecalcService:
                 ):
                     raise RecalcJobLeaseLostError(
                         f"Recalc lease lost before completion: {record.recalc_job_id}"
-                    )
-                pending_generation = (
-                    self.recalc_repository.complete_claimed_generation(
-                        session,
-                        record,
-                    )
-                )
-                if pending_generation is not None:
-                    self._enqueue_invalidation_follow_up(
-                        session,
-                        record=record,
-                        requested_generation=pending_generation,
                     )
                 self._enqueue_source_change_follow_up(session, record=record, result=result)
             if commit:
@@ -1804,58 +1853,22 @@ class CanonicalRecalcService:
         except RecalcJobLeaseLostError:
             session.rollback()
             raise
-        except Exception:
-            # The durable worker owns retry/dead-letter state transitions. Keep
-            # this boundary responsible only for rolling back materialization.
-            session.rollback()
-            raise
-
-    def _enqueue_invalidation_follow_up(
-        self,
-        session: Session,
-        *,
-        record,
-        requested_generation: int,
-    ) -> None:
-        existing = self.recalc_repository.find_open_job(
-            session,
-            instrument_id=record.instrument_id,
-            job_type=record.job_type,
-        )
-        if existing is not None:
-            return
-        trigger_ref_id = (
-            f"{record.instrument_id}:{record.job_type}:{requested_generation}"
-        )
-        try:
-            with session.begin_nested():
-                self.recalc_repository.create(
-                    session,
-                    recalc_job_id=make_recalc_job_id(),
-                    job_type=record.job_type,
-                    instrument_id=record.instrument_id,
-                    trigger_type="coalesced_source_event_follow_up",
-                    trigger_ref_type="recalc_invalidation_generation",
-                    trigger_ref_id=trigger_ref_id,
-                    job_status="queued",
-                    priority=100 if record.job_type == "all" else 90,
-                    dedupe_key=make_recalc_dedupe_key(
-                        job_type=record.job_type,
-                        instrument_id=record.instrument_id,
-                    ),
-                    payload_json={
-                        "requested_by": "coalesced_source_event_follow_up",
-                        "requested_generation": requested_generation,
-                    },
-                )
-        except IntegrityError:
-            existing = self.recalc_repository.find_open_job(
+        except Exception as exc:
+            if not self.recalc_repository.mark_failed(
                 session,
-                instrument_id=record.instrument_id,
-                job_type=record.job_type,
-            )
-            if existing is None:
-                raise
+                record,
+                lease_token=lease_token,
+                error_message=str(exc),
+            ):
+                session.rollback()
+                raise RecalcJobLeaseLostError(
+                    f"Recalc lease lost while recording failure: {record.recalc_job_id}"
+                ) from exc
+            if commit:
+                session.commit()
+            else:
+                session.flush()
+            raise
 
     def _enqueue_source_change_follow_up(
         self,
@@ -1866,9 +1879,7 @@ class CanonicalRecalcService:
     ) -> None:
         if not bool(result.get("source_changed_during_recalc")):
             return
-        dependency_fingerprint = str(
-            result.get("source_dependency_fingerprint_at_end") or ""
-        ).strip() or None
+        source_watermark = str(result.get("source_watermark_at_end") or "").strip() or None
         existing = self.recalc_repository.find_open_job(
             session,
             instrument_id=record.instrument_id,
@@ -1884,8 +1895,8 @@ class CanonicalRecalcService:
                     job_type="all",
                     instrument_id=record.instrument_id,
                     trigger_type="source_changed_during_recalc",
-                    trigger_ref_type="canonical_quote_dependency",
-                    trigger_ref_id=dependency_fingerprint,
+                    trigger_ref_type="market_data_updated_at",
+                    trigger_ref_id=source_watermark,
                     job_status="queued",
                     priority=100,
                     dedupe_key=make_recalc_dedupe_key(
@@ -1904,87 +1915,94 @@ class CanonicalRecalcService:
         *,
         instrument_id: str,
         job_type: str,
-        valuation_date: date,
     ) -> dict[str, object]:
         instrument = self.instrument_repository.get(session, instrument_id)
         if instrument is None:
             raise ValueError(f"Instrument not found: {instrument_id}")
-        canonical_instrument = _canonical_instrument(session, instrument_id)
-        instrument.instrument_name = canonical_instrument.instrument_name
-        instrument.instrument_type = canonical_instrument.instrument_type
-        primary_identifier = session.scalar(
-            select(CanonicalInstrumentIdentifier)
-            .where(CanonicalInstrumentIdentifier.instrument_id == instrument_id)
-            .order_by(
-                CanonicalInstrumentIdentifier.is_primary.desc(),
-                CanonicalInstrumentIdentifier.instrument_identifier_id,
+
+        shared_instrument = get_shared_instrument(instrument_id)
+        source_watermark_at_start = _parse_source_watermark(
+            (shared_instrument or {}).get("market_data_updated_at")
+        )
+        shared_instrument_type = (
+            str(shared_instrument.get("instrument_type") or "").strip().lower()
+            if isinstance(shared_instrument, dict)
+            else ""
+        )
+        if (
+            shared_instrument is not None
+            and shared_instrument_type in {"fund", "etf", "index"}
+        ):
+            instrument = self.instrument_repository.upsert_from_shared_instrument(
+                session,
+                shared_instrument=shared_instrument,
+                detail_view_type=instrument.detail_view_type or shared_instrument_type,
             )
-            .limit(1)
-        )
-        instrument.primary_identifier_type = (
-            primary_identifier.identifier_type if primary_identifier is not None else None
-        )
-        instrument.primary_identifier_value = (
-            primary_identifier.identifier_value if primary_identifier is not None else None
-        )
-        if canonical_instrument.instrument_type in {"fund", "etf", "index"}:
-            instrument.detail_view_type = canonical_instrument.instrument_type
+
         now = _utcnow()
-        market_data_input_watermark_at = _parse_market_data_input_watermark(
-            canonical_instrument.market_data_updated_at
-        )
-        market_data_input_watermark_status = (
-            "known" if market_data_input_watermark_at is not None else "unknown"
-        )
-        market_data_input_watermark_reason_code = (
-            "canonical_instrument_market_data_updated_at"
-            if market_data_input_watermark_at is not None
-            else "missing_or_invalid_canonical_market_data_updated_at"
-        )
-        consumer_profile = watchlist_freshness_profile(
-            canonical_instrument.instrument_type
-        )
-        total_return_window = _resolve_canonical_series(
+        nav_facts = self.facts_repository.list_nav_facts(
             session,
             instrument_id=instrument_id,
+            nav_type=None,
+            primary_only=True,
+        )
+        manual_profile = self.manual_profile_repository.get(session, instrument_id)
+        nav_settings = _normalize_nav_settings(
+            manual_profile.nav_settings_json if manual_profile is not None else None
+        )
+        shared_market_data = list((shared_instrument or {}).get("market_data", []))
+        shared_nav_rows = _group_shared_nav_rows(shared_market_data)
+        shared_quote_points_by_basis = _shared_quote_points_by_basis(shared_market_data)
+        nav_rows = shared_nav_rows or _group_local_nav_rows(nav_facts)
+        quote_points_by_basis = (
+            shared_quote_points_by_basis or _local_quote_points_by_basis(nav_facts)
+        )
+        uses_shared_market_data = bool(shared_quote_points_by_basis)
+        nav_basis_preference = str(nav_settings.get("nav_basis_preference", "auto"))
+        nav_selection = _select_quote_series(
+            quote_points_by_basis,
+            shared_instrument=shared_instrument,
             role="total_return",
-            valuation_date=valuation_date,
-            instrument=canonical_instrument,
-            consumer_profile=consumer_profile,
+            preference=nav_basis_preference,
+            allow_ordinary_nav=(
+                _allows_ordinary_return_basis(instrument.instrument_type)
+                or _quote_policy_prefers_ordinary_nav(shared_instrument, role="total_return")
+            ),
         )
-        chart_window = _resolve_canonical_series(
-            session,
-            instrument_id=instrument_id,
-            role="chart",
-            valuation_date=valuation_date,
-            instrument=canonical_instrument,
-            consumer_profile=consumer_profile,
-        )
-        total_return_endpoint = (
-            resolve_quote_series_observation_at(
-                total_return_window,
-                requested_as_of_date=valuation_date,
-            )
-            if total_return_window.quote_series_id is not None
-            else None
-        )
-        canonical_nav_points = _canonical_points(total_return_window)
-        frequency_context = build_calculation_frequency_context(canonical_nav_points)
+        nav_rows = _rows_with_selected_series(nav_rows, nav_selection)
+        nav_selection["rows"] = nav_rows
+        frequency_context = build_calculation_frequency_context(nav_selection["points"])
         calculation_nav_points = frequency_context["points"]
         calculation_frequency_profile = frequency_context["profile"]
-        nav_metadata = _selection_metadata(total_return_window)
-        nav_selection = {
-            "nav_basis_type": nav_metadata["basis_type"],
-            "nav_basis_source": "canonical_resolver",
-            "nav_basis_status": total_return_window.resolution_status,
-            "points": calculation_nav_points,
-            "selected_role": nav_metadata["role"],
-            "selected_metric_family": nav_metadata["metric_family"],
-            "selected_quote_basis": nav_metadata["quote_basis"],
-            "selected_series_type": nav_metadata["series_type"],
-            "selected_series_label": nav_metadata["label"],
-            "selected_date_label": nav_metadata["date_label"],
-        }
+        quote_selection = _select_quote_series(
+            quote_points_by_basis,
+            shared_instrument=shared_instrument,
+            role="chart",
+            preference=nav_basis_preference,
+            allow_ordinary_nav=(
+                _allows_ordinary_return_basis(instrument.instrument_type)
+                or _quote_policy_prefers_ordinary_nav(shared_instrument, role="chart")
+            ),
+        )
+        local_source_cutoffs = [
+            cutoff
+            for cutoff in (
+                _coerce_utc(point.get("adopted_at"))
+                for points in quote_points_by_basis.values()
+                for point in points
+                if isinstance(point.get("adopted_at"), datetime)
+            )
+            if cutoff is not None
+        ]
+        market_data_source_cutoff = (
+            source_watermark_at_start
+            if uses_shared_market_data and source_watermark_at_start is not None
+            else max(local_source_cutoffs, default=now)
+        )
+        holding_snapshot = self.facts_repository.get_current_holding_snapshot(
+            session,
+            instrument_id=instrument_id,
+        )
         raw_attributes = collapse_latest_attribute_values(
             self.attribute_repository.get_values_for_asset(session, instrument_id)
         )
@@ -1999,44 +2017,23 @@ class CanonicalRecalcService:
             taxonomy_context=taxonomy_context,
             instrument_attributes=raw_attributes,
         )
-        current_endpoint_resolved = _endpoint_is_resolved(total_return_endpoint)
         current_drawdown = _current_drawdown(calculation_nav_points)
-        if current_endpoint_resolved and current_drawdown is not None:
+        if current_drawdown is not None:
             watchlist_attributes["current_drawdown"] = current_drawdown
 
         performance_snapshot = self.snapshot_repository.get_current_performance(session, instrument_id)
         risk_snapshot = self.snapshot_repository.get_current_risk(session, instrument_id)
-        existing_performance_read_model = self.read_model_repository.get_performance(
-            session, instrument_id
-        )
-        existing_risk_read_model = self.read_model_repository.get_risk(
-            session, instrument_id
-        )
-        research_rating = self.research_rating_repository.get_current(session, instrument_id)
-
-        analysis_window = total_return_window
-        analysis_nav_points = calculation_nav_points
-        analysis_frequency_profile = calculation_frequency_profile
-        snapshot_pair_complete = (
-            _snapshot_pair_lineage(performance_snapshot, risk_snapshot) is not None
-        )
-        historical_calculation_state = (
-            "last_good_preserved" if snapshot_pair_complete else "unavailable"
-        )
-        snapshot_replaced = False
+        exposure_snapshot = self.snapshot_repository.get_current_exposure(session, instrument_id)
+        score_snapshot = self.snapshot_repository.get_current_score(session, instrument_id)
 
         if job_type in {"performance", "all"}:
-            if calculation_nav_points and current_endpoint_resolved:
+            if calculation_nav_points:
                 performance_snapshot = self._replace_performance_snapshot(
                     session,
                     instrument_id=instrument_id,
                     nav_points=calculation_nav_points,
-                    quote_window=total_return_window,
-                    consumer_profile=consumer_profile,
                     calculation_frequency_profile=calculation_frequency_profile,
-                    market_data_input_watermark_at=(
-                        market_data_input_watermark_at
-                    ),
+                    source_cutoff_at=market_data_source_cutoff,
                     now=now,
                 )
                 risk_snapshot = self._replace_risk_snapshot(
@@ -2044,367 +2041,99 @@ class CanonicalRecalcService:
                     instrument_id=instrument_id,
                     nav_points=calculation_nav_points,
                     calculation_frequency_profile=calculation_frequency_profile,
-                    quote_dependency=quote_consumer_dependency(
-                        canonical_dependency_fingerprint=(
-                            total_return_window.calculation_dependency.fingerprint
-                        ),
-                        consumer_profile=consumer_profile,
-                    ),
-                    market_data_input_watermark_at=(
-                        market_data_input_watermark_at
-                    ),
+                    source_cutoff_at=market_data_source_cutoff,
                     now=now,
                 )
-                historical_calculation_state = "current_endpoint"
-                snapshot_replaced = True
-            elif (
-                calculation_nav_points
-                and not snapshot_pair_complete
-            ):
-                historical_as_of_date = calculation_nav_points[-1]["as_of_date"]
-                historical_window = _resolve_canonical_series(
-                    session,
-                    instrument_id=instrument_id,
-                    role="total_return",
-                    valuation_date=historical_as_of_date,
-                    instrument=canonical_instrument,
-                    consumer_profile=consumer_profile,
-                )
-                historical_endpoint = (
-                    resolve_quote_series_observation_at(
-                        historical_window,
-                        requested_as_of_date=historical_as_of_date,
-                    )
-                    if historical_window.quote_series_id is not None
-                    else None
-                )
-                if _endpoint_is_resolved(historical_endpoint):
-                    historical_points = _canonical_points(historical_window)
-                    historical_frequency_context = (
-                        build_calculation_frequency_context(historical_points)
-                    )
-                    analysis_window = historical_window
-                    analysis_nav_points = historical_frequency_context["points"]
-                    analysis_frequency_profile = historical_frequency_context[
-                        "profile"
-                    ]
-                    performance_snapshot = self._replace_performance_snapshot(
-                        session,
-                        instrument_id=instrument_id,
-                        nav_points=analysis_nav_points,
-                        quote_window=historical_window,
-                        consumer_profile=consumer_profile,
-                        calculation_frequency_profile=(
-                            analysis_frequency_profile
-                        ),
-                        market_data_input_watermark_at=(
-                            market_data_input_watermark_at
-                        ),
-                        now=now,
-                    )
-                    risk_snapshot = self._replace_risk_snapshot(
-                        session,
-                        instrument_id=instrument_id,
-                        nav_points=analysis_nav_points,
-                        calculation_frequency_profile=(
-                            analysis_frequency_profile
-                        ),
-                        quote_dependency=quote_consumer_dependency(
-                            canonical_dependency_fingerprint=(
-                                historical_window.calculation_dependency.fingerprint
-                            ),
-                            consumer_profile=consumer_profile,
-                        ),
-                        market_data_input_watermark_at=(
-                            market_data_input_watermark_at
-                        ),
-                        now=now,
-                    )
-                    historical_calculation_state = (
-                        "historical_as_of_last_observation"
-                    )
-                    snapshot_replaced = True
+            else:
+                self.snapshot_repository.clear_performance(session, instrument_id=instrument_id)
+                self.snapshot_repository.clear_risk(session, instrument_id=instrument_id)
+                performance_snapshot = None
+                risk_snapshot = None
 
-        snapshot_pair_lineage = _snapshot_pair_lineage(
-            performance_snapshot, risk_snapshot
-        )
-        preserve_last_good = bool(
-            not snapshot_replaced
-            and historical_calculation_state == "last_good_preserved"
-            and snapshot_pair_lineage is not None
-        )
-        preserved_performance_resolution: dict[str, object] | None = None
-        preserved_risk_resolution: dict[str, object] | None = None
-        if preserve_last_good:
-            (
-                preserved_performance_resolution,
-                preserved_risk_resolution,
-            ) = _aligned_historical_quote_resolutions(
-                (
-                    existing_performance_read_model.payload_json
-                    if existing_performance_read_model is not None
-                    else None
-                ),
-                (
-                    existing_risk_read_model.payload_json
-                    if existing_risk_read_model is not None
-                    else None
-                ),
+        if job_type in {"exposure", "all"} and holding_snapshot is not None:
+            exposure_snapshot = self._replace_exposure_snapshot(
+                session,
+                instrument_id=instrument_id,
+                holding_snapshot=holding_snapshot,
+                now=now,
             )
-        endpoint_observation_date = (
-            total_return_endpoint.observation_date
-            if total_return_endpoint is not None
-            else None
+
+        materialized_market_source_cutoff = (
+            _coerce_utc(getattr(performance_snapshot, "source_cutoff_at", None))
+            or _coerce_utc(getattr(risk_snapshot, "source_cutoff_at", None))
+            or market_data_source_cutoff
         )
-        pair_reason_codes: list[str] = []
-        if snapshot_pair_lineage is None:
-            pair_reason_codes.append("analytics_snapshot_pair_unaligned")
-        else:
-            if (
-                endpoint_observation_date is not None
-                and snapshot_pair_lineage["as_of_date"]
-                != endpoint_observation_date
-            ):
-                pair_reason_codes.append("analytics_snapshot_endpoint_date_mismatch")
-            if (
-                snapshot_pair_lineage["market_data_input_watermark_at"]
-                != market_data_input_watermark_at
-            ):
-                pair_reason_codes.append("analytics_snapshot_watermark_mismatch")
-        if (
-            preserve_last_good
-            and (
-                preserved_performance_resolution is None
-                or preserved_risk_resolution is None
+
+        if job_type in {"ratings", "performance", "exposure", "all"}:
+            score_snapshot = self._replace_score_snapshot(
+                session,
+                instrument_id=instrument_id,
+                performance_snapshot=performance_snapshot,
+                risk_snapshot=risk_snapshot,
+                exposure_snapshot=exposure_snapshot,
+                source_cutoff_at=materialized_market_source_cutoff,
+                now=now,
             )
-        ):
-            pair_reason_codes.append(
-                "analytics_historical_dependency_manifest_unavailable"
-            )
-        publish_current_metrics = bool(
-            current_endpoint_resolved
-            and snapshot_pair_lineage is not None
-            and not pair_reason_codes
-        )
-        calculation_state = {
-            "current_endpoint_state": _endpoint_state(
-                total_return_window, total_return_endpoint
-            ),
-            "historical_calculation_state": historical_calculation_state,
-            "analytics_snapshot_state": (
-                "current_aligned" if publish_current_metrics else "unqualified"
-            ),
-            "history_as_of_date": (
-                snapshot_pair_lineage["as_of_date"].isoformat()
-                if snapshot_pair_lineage is not None
-                else None
-            ),
-            "reason_codes": list(
-                dict.fromkeys(
-                    [
-                        *_stable_reason_codes(
-                            total_return_window, total_return_endpoint
-                        ),
-                        *pair_reason_codes,
-                    ]
-                )
-            ),
-        }
 
         summary_payload = self._summary_payload(
             instrument=instrument,
             nav_selection=nav_selection,
-            quote_window=total_return_window,
-            endpoint_resolution=total_return_endpoint,
             performance_snapshot=performance_snapshot,
             risk_snapshot=risk_snapshot,
-            research_rating=research_rating,
+            exposure_snapshot=exposure_snapshot,
+            score_snapshot=score_snapshot,
             attributes=raw_attributes,
             taxonomy_context=taxonomy_context,
-            consumer_profile=consumer_profile,
-            calculation_state=calculation_state,
-            publish_current_metrics=publish_current_metrics,
-            market_data_input_watermark_at=(
-                market_data_input_watermark_at
-            ),
-            market_data_input_watermark_status=(
-                market_data_input_watermark_status
-            ),
-            market_data_input_watermark_reason_code=(
-                market_data_input_watermark_reason_code
-            ),
+            source_cutoff_at=materialized_market_source_cutoff,
             now=now,
         )
         chart_payload = _build_chart_payload(
-            instrument_id, chart_window, consumer_profile
+            instrument_id,
+            quote_selection["points"],
+            quote_selection["points"][-1]["currency"] if quote_selection["points"] else "USD",
+            selection=quote_selection,
         )
-        chart_endpoint = (
-            resolve_quote_series_observation_at(
-                chart_window,
-                requested_as_of_date=valuation_date,
-            )
-            if chart_window.quote_series_id is not None
-            else None
-        )
-        chart_endpoint_state = _endpoint_state(chart_window, chart_endpoint)
-        chart_payload["calculation_state"] = {
-            "current_endpoint_state": chart_endpoint_state,
-            "current_endpoint_observation_date": (
-                chart_endpoint.observation_date.isoformat()
-                if chart_endpoint is not None
-                and chart_endpoint.resolution_status == "resolved"
-                else None
-            ),
-            "reason_codes": _stable_reason_codes(
-                chart_window, chart_endpoint
-            ),
-        }
         peer_comparison = self._peer_comparison_payload(
             session,
             instrument_id=instrument_id,
             taxonomy_node=taxonomy_node,
             performance_snapshot=performance_snapshot,
             risk_snapshot=risk_snapshot,
-            publish_current_metrics=publish_current_metrics,
-            target_frequency_profile=analysis_frequency_profile,
-            target_pair_lineage=snapshot_pair_lineage,
         )
-        if preserve_last_good and existing_performance_read_model is not None:
-            performance_payload = _project_persisted_analytics_payload(
-                existing_performance_read_model.payload_json,
-                allowed_fields=_PERFORMANCE_LAST_GOOD_FIELDS,
-            )
-        else:
-            performance_payload = self._performance_payload(
-                performance_snapshot=performance_snapshot,
-                peer_comparison=peer_comparison,
-                nav_points=([] if preserve_last_good else analysis_nav_points),
-                calculation_frequency_profile=(
-                    build_calculation_frequency_context([])["profile"]
-                    if preserve_last_good
-                    else analysis_frequency_profile
-                ),
-            )
-        performance_payload["quote_resolution"] = _quote_resolution_summary_payload(
-            total_return_window, consumer_profile
+        performance_payload = self._performance_payload(
+            performance_snapshot=performance_snapshot,
+            peer_comparison=peer_comparison,
+            nav_points=calculation_nav_points,
+            calculation_frequency_profile=calculation_frequency_profile,
         )
-        performance_payload["historical_quote_resolution"] = (
-            preserved_performance_resolution
-            if preserve_last_good
-            else _quote_resolution_summary_payload(
-                analysis_window, consumer_profile
-            )
+        risk_payload = self._risk_payload(
+            risk_snapshot=risk_snapshot,
+            performance_snapshot=performance_snapshot,
+            peer_comparison=peer_comparison,
+            nav_points=calculation_nav_points,
+            calculation_frequency_profile=calculation_frequency_profile,
         )
-        performance_payload["endpoint_resolution"] = (
-            total_return_endpoint.model_dump(mode="json")
-            if total_return_endpoint is not None
-            else None
-        )
-        performance_payload["calculation_state"] = calculation_state
-        performance_payload["peer_comparison"] = peer_comparison
-        performance_payload["ranking"] = _primary_peer_ranking(peer_comparison)
-        if peer_comparison.get("status") != "ready":
-            trailing_returns = performance_payload.get("trailing_returns")
-            if isinstance(trailing_returns, list):
-                performance_payload["trailing_returns"] = [
-                    {**row, "category_nav": None}
-                    if isinstance(row, dict)
-                    else row
-                    for row in trailing_returns
-                ]
-        if preserve_last_good and existing_risk_read_model is not None:
-            risk_payload = _project_persisted_analytics_payload(
-                existing_risk_read_model.payload_json,
-                allowed_fields=_RISK_LAST_GOOD_FIELDS,
-            )
-        else:
-            risk_payload = self._risk_payload(
-                risk_snapshot=risk_snapshot,
-                performance_snapshot=performance_snapshot,
-                peer_comparison=peer_comparison,
-                nav_points=([] if preserve_last_good else analysis_nav_points),
-                calculation_frequency_profile=(
-                    build_calculation_frequency_context([])["profile"]
-                    if preserve_last_good
-                    else analysis_frequency_profile
-                ),
-            )
-        risk_payload["quote_resolution"] = _quote_resolution_summary_payload(
-            total_return_window, consumer_profile
-        )
-        risk_payload["historical_quote_resolution"] = (
-            preserved_risk_resolution
-            if preserve_last_good
-            else _quote_resolution_summary_payload(
-                analysis_window, consumer_profile
-            )
-        )
-        risk_payload["endpoint_resolution"] = (
-            total_return_endpoint.model_dump(mode="json")
-            if total_return_endpoint is not None
-            else None
-        )
-        risk_payload["calculation_state"] = calculation_state
-        if peer_comparison.get("status") != "ready":
-            risk_overview = risk_payload.get("risk_overview")
-            if isinstance(risk_overview, dict):
-                risk_payload["risk_overview"] = {
-                    **risk_overview,
-                    "risk_vs_category": None,
-                    "return_vs_category": None,
-                }
-            risk_metrics = risk_payload.get("risk_metrics")
-            if isinstance(risk_metrics, list):
-                risk_payload["risk_metrics"] = [
-                    {**row, "category": None}
-                    if isinstance(row, dict)
-                    else row
-                    for row in risk_metrics
-                ]
-        summary_freshness_status = str(
-            summary_payload["freshness"]["data_freshness_status"]
-        )
-        chart_freshness_status = (
-            (
-                "partial"
-                if chart_window.coverage_status == "partial"
-                else "fresh"
-            )
-            if chart_endpoint_state == "resolved"
-            else (
-                chart_endpoint_state
-                if chart_endpoint_state in {"stale", "partial"}
-                else "unavailable"
-            )
-        )
-        for model_class, payload, freshness_status in (
-            (
-                InstrumentSummaryReadModel,
-                summary_payload,
-                summary_freshness_status,
-            ),
-            (InstrumentChartReadModel, chart_payload, chart_freshness_status),
-            (
-                InstrumentPerformanceReadModel,
-                performance_payload,
-                summary_freshness_status,
-            ),
-            (
-                InstrumentRiskReadModel,
-                risk_payload,
-                summary_freshness_status,
-            ),
+        exposure_payload = self._exposure_payload(exposure_snapshot)
+        holdings_payload = self._holdings_payload(holding_snapshot)
+        rating_payload = self._rating_payload(score_snapshot)
+
+        for model_class, payload in (
+            (InstrumentSummaryReadModel, summary_payload),
+            (InstrumentChartReadModel, chart_payload),
+            (InstrumentPerformanceReadModel, performance_payload),
+            (InstrumentRiskReadModel, risk_payload),
+            (InstrumentExposureReadModel, exposure_payload),
+            (InstrumentExposureHoldingsReadModel, holdings_payload),
+            (InstrumentRatingReadModel, rating_payload),
         ):
             self.read_model_repository.upsert_payload_read_model(
                 session,
                 model_class=model_class,
                 instrument_id=instrument_id,
                 payload_json=payload,
-                data_freshness_status=freshness_status,
+                data_freshness_status=summary_payload["freshness"]["data_freshness_status"],
                 last_recalculated_at=now,
-                market_data_input_watermark_at=(
-                    market_data_input_watermark_at
-                ),
+                source_cutoff_at=materialized_market_source_cutoff,
             )
 
         self._refresh_watchlist_rows(
@@ -2415,78 +2144,38 @@ class CanonicalRecalcService:
             peer_comparison=peer_comparison,
             performance_snapshot=performance_snapshot,
             risk_snapshot=risk_snapshot,
-            research_rating=research_rating,
-            publish_current_metrics=publish_current_metrics,
-            market_data_input_watermark_at=(
-                market_data_input_watermark_at
-            ),
+            exposure_snapshot=exposure_snapshot,
+            score_snapshot=score_snapshot,
             now=now,
         )
-        self._invalidate_changed_peer_cohorts(
-            session,
-            changed_instrument_id=instrument_id,
-            current_peer_comparison=peer_comparison,
-            invalidated_at=now,
-        )
 
-        start_fingerprint = _hash_payload(
-            {
-                "total_return": quote_consumer_dependency(
-                    canonical_dependency_fingerprint=(
-                        total_return_window.calculation_dependency.fingerprint
-                    ),
-                    consumer_profile=consumer_profile,
-                )["fingerprint"],
-                "chart": quote_consumer_dependency(
-                    canonical_dependency_fingerprint=(
-                        chart_window.calculation_dependency.fingerprint
-                    ),
-                    consumer_profile=consumer_profile,
-                )["fingerprint"],
-            }
+        shared_instrument_at_end = (
+            get_shared_instrument(instrument_id) if uses_shared_market_data else shared_instrument
         )
-        total_return_window_at_end = _resolve_canonical_series(
-            session,
-            instrument_id=instrument_id,
-            role="total_return",
-            valuation_date=valuation_date,
-            instrument=canonical_instrument,
-            consumer_profile=consumer_profile,
+        source_watermark_at_end = _parse_source_watermark(
+            (shared_instrument_at_end or {}).get("market_data_updated_at")
         )
-        chart_window_at_end = _resolve_canonical_series(
-            session,
-            instrument_id=instrument_id,
-            role="chart",
-            valuation_date=valuation_date,
-            instrument=canonical_instrument,
-            consumer_profile=consumer_profile,
+        source_changed_during_recalc = bool(
+            uses_shared_market_data and source_watermark_at_end != source_watermark_at_start
         )
-        end_fingerprint = _hash_payload(
-            {
-                "total_return": quote_consumer_dependency(
-                    canonical_dependency_fingerprint=(
-                        total_return_window_at_end.calculation_dependency.fingerprint
-                    ),
-                    consumer_profile=consumer_profile,
-                )["fingerprint"],
-                "chart": quote_consumer_dependency(
-                    canonical_dependency_fingerprint=(
-                        chart_window_at_end.calculation_dependency.fingerprint
-                    ),
-                    consumer_profile=consumer_profile,
-                )["fingerprint"],
-            }
-        )
-        source_changed_during_recalc = end_fingerprint != start_fingerprint
 
         return {
             "instrument_id": instrument_id,
             "job_type": job_type,
-            "valuation_date": valuation_date.isoformat(),
             "performance_snapshot_id": getattr(performance_snapshot, "snapshot_id", None),
             "risk_snapshot_id": getattr(risk_snapshot, "snapshot_id", None),
-            "source_dependency_fingerprint_at_start": start_fingerprint,
-            "source_dependency_fingerprint_at_end": end_fingerprint,
+            "exposure_snapshot_id": getattr(exposure_snapshot, "snapshot_id", None),
+            "score_snapshot_id": getattr(score_snapshot, "snapshot_id", None),
+            "source_watermark_at_start": (
+                source_watermark_at_start.isoformat().replace("+00:00", "Z")
+                if source_watermark_at_start is not None
+                else None
+            ),
+            "source_watermark_at_end": (
+                source_watermark_at_end.isoformat().replace("+00:00", "Z")
+                if source_watermark_at_end is not None
+                else None
+            ),
             "source_changed_during_recalc": source_changed_during_recalc,
             "completed_at": now.isoformat(),
         }
@@ -2497,40 +2186,33 @@ class CanonicalRecalcService:
         *,
         instrument_id: str,
         nav_points: list[dict[str, Any]],
-        quote_window: CanonicalQuoteSeriesResolution,
-        consumer_profile: ConsumerFreshnessProfile,
         calculation_frequency_profile: dict[str, object],
-        market_data_input_watermark_at: datetime | None,
+        source_cutoff_at: datetime,
         now: datetime,
     ):
         latest = nav_points[-1]
         as_of_date = latest["as_of_date"]
         windows = {
-            "return_ytd": date(as_of_date.year, 1, 1) - timedelta(days=1),
+            "return_ytd": date(as_of_date.year, 1, 1),
             "return_1w": as_of_date - timedelta(days=7),
-            "return_mtd": date(as_of_date.year, as_of_date.month, 1) - timedelta(days=1),
+            "return_mtd": date(as_of_date.year, as_of_date.month, 1),
             "return_1m": as_of_date - timedelta(days=30),
             "return_3m": as_of_date - timedelta(days=90),
             "return_6m": as_of_date - timedelta(days=180),
             "return_1y": as_of_date - timedelta(days=365),
         }
         returns: dict[str, Decimal | None] = {}
-        boundary_resolutions: dict[str, object] = {}
         for key, target_date in windows.items():
-            boundary = resolve_quote_series_observation_at(
-                quote_window,
-                requested_as_of_date=target_date,
+            base = (
+                _value_before(nav_points, target_date)
+                if key in {"return_ytd", "return_mtd"}
+                else _value_at_or_before(nav_points, target_date)
             )
-            boundary_resolutions[key] = boundary.model_dump(mode="json")
-            if boundary.resolution_status != "resolved" or boundary.value is None:
+            if base is None:
                 returns[key] = None
                 continue
             returns[key] = _safe_decimal(
-                _window_return(
-                    latest["value"],
-                    float(boundary.value),
-                    max((as_of_date - boundary.observation_date).days, 1),
-                )
+                _window_return(latest["value"], base["value"], max((as_of_date - base["as_of_date"]).days, 1))
             )
 
         first = nav_points[0]
@@ -2546,48 +2228,31 @@ class CanonicalRecalcService:
         }
         annualized_window_returns: dict[str, Decimal | None] = {}
         for key, lookback_days in annualized_windows.items():
-            boundary = resolve_quote_series_observation_at(
-                quote_window,
-                requested_as_of_date=as_of_date - timedelta(days=lookback_days),
-            )
-            boundary_resolutions[key] = boundary.model_dump(mode="json")
-            if boundary.resolution_status != "resolved" or boundary.value is None:
+            base = _value_at_or_before(nav_points, as_of_date - timedelta(days=lookback_days))
+            if base is None:
                 annualized_window_returns[key] = None
                 continue
             annualized_window_returns[key] = _safe_decimal(
                 _annualized_return(
                     latest["value"],
-                    float(boundary.value),
-                    max((as_of_date - boundary.observation_date).days, 1),
+                    base["value"],
+                    max((as_of_date - base["as_of_date"]).days, 1),
                 )
             )
         max_drawdown = _compute_drawdown(nav_points)
-        calmar = _compute_calmar_ratio(
-            annualized_return,
-            max_drawdown,
-            max((as_of_date - first["as_of_date"]).days, 1),
-        )
+        calmar = annualized_return / abs(max_drawdown) if annualized_return is not None and max_drawdown not in {None, 0} else None
         return self.snapshot_repository.replace_performance(
             session,
             snapshot_id=f"perf:{instrument_id}:{as_of_date.isoformat()}:{make_recalc_job_id()}",
             instrument_id=instrument_id,
             data={
                 "as_of_date": as_of_date,
-                "market_data_input_watermark_at": (
-                    market_data_input_watermark_at
-                ),
-                "methodology_version": "canonical-performance/v6",
+                "source_cutoff_at": source_cutoff_at,
+                "methodology_version": "canonical-performance/v3",
                 "input_hash": _hash_payload(
                     {
                         "nav_points": nav_points,
                         "calculation_frequency_profile": calculation_frequency_profile,
-                        "quote_dependency": quote_consumer_dependency(
-                            canonical_dependency_fingerprint=(
-                                quote_window.calculation_dependency.fingerprint
-                            ),
-                            consumer_profile=consumer_profile,
-                        ),
-                        "boundary_resolutions": boundary_resolutions,
                     }
                 ),
                 "calculated_at": now,
@@ -2616,8 +2281,7 @@ class CanonicalRecalcService:
         instrument_id: str,
         nav_points: list[dict[str, Any]],
         calculation_frequency_profile: dict[str, object],
-        quote_dependency: dict[str, object],
-        market_data_input_watermark_at: datetime | None,
+        source_cutoff_at: datetime,
         now: datetime,
     ):
         latest = nav_points[-1]
@@ -2631,15 +2295,12 @@ class CanonicalRecalcService:
             instrument_id=instrument_id,
             data={
                 "as_of_date": latest["as_of_date"],
-                "market_data_input_watermark_at": (
-                    market_data_input_watermark_at
-                ),
-                "methodology_version": "canonical-risk/v6",
+                "source_cutoff_at": source_cutoff_at,
+                "methodology_version": "canonical-risk/v3",
                 "input_hash": _hash_payload(
                     {
                         "nav_points": nav_points,
                         "calculation_frequency_profile": calculation_frequency_profile,
-                        "quote_dependency": quote_dependency,
                     }
                 ),
                 "calculated_at": now,
@@ -2659,24 +2320,135 @@ class CanonicalRecalcService:
             },
         )
 
+    def _replace_exposure_snapshot(
+        self,
+        session: Session,
+        *,
+        instrument_id: str,
+        holding_snapshot,
+        now: datetime,
+    ):
+        top10 = sorted(
+            (float(item.portfolio_weight or 0) for item in holding_snapshot.positions),
+            reverse=True,
+        )[:10]
+        avg_duration_candidates = [
+            float(item.effective_duration)
+            for item in holding_snapshot.positions
+            if item.effective_duration is not None
+        ]
+        avg_ytw_candidates = [
+            float(item.yield_to_worst)
+            for item in holding_snapshot.positions
+            if item.yield_to_worst is not None
+        ]
+        return self.snapshot_repository.replace_exposure(
+            session,
+            snapshot_id=f"exposure:{instrument_id}:{holding_snapshot.as_of_date.isoformat()}:{make_recalc_job_id()}",
+            instrument_id=instrument_id,
+            data={
+                "as_of_date": holding_snapshot.as_of_date,
+                "source_cutoff_at": holding_snapshot.source_cutoff_at,
+                "methodology_version": "canonical-exposure/v2",
+                "input_hash": _hash_payload({"positions": len(holding_snapshot.positions)}),
+                "calculated_at": now,
+                "superseded_at": None,
+                "is_current": True,
+                "asset_allocation_json": [],
+                "sector_allocation_json": [],
+                "country_allocation_json": [],
+                "currency_allocation_json": [],
+                "credit_rating_allocation_json": [],
+                "duration_bucket_json": [],
+                "maturity_bucket_json": [],
+                "yield_bucket_json": [],
+                "top10_concentration": _safe_decimal(sum(top10)),
+                "holding_count": len(holding_snapshot.positions),
+                "bond_count": None,
+                "equity_count": None,
+                "other_count": None,
+                "cash_ratio": None,
+                "leverage_ratio": None,
+                "weighted_duration": _safe_decimal(statistics.mean(avg_duration_candidates)) if avg_duration_candidates else None,
+                "weighted_maturity": None,
+                "weighted_yield_to_worst": _safe_decimal(statistics.mean(avg_ytw_candidates)) if avg_ytw_candidates else None,
+                "avg_credit_rating": None,
+                "reported_turnover": None,
+                "style_box_code": None,
+            },
+        )
+
+    def _replace_score_snapshot(
+        self,
+        session: Session,
+        *,
+        instrument_id: str,
+        performance_snapshot,
+        risk_snapshot,
+        exposure_snapshot,
+        source_cutoff_at: datetime,
+        now: datetime,
+    ):
+        scores = [
+            _safe_float(getattr(performance_snapshot, "return_1y", None)),
+            _safe_float(getattr(risk_snapshot, "sharpe_ratio", None)),
+            _safe_float(getattr(exposure_snapshot, "weighted_yield_to_worst", None)),
+        ]
+        valid_scores = [value for value in scores if value is not None]
+        overall_score = statistics.mean(valid_scores) if valid_scores else None
+        if overall_score is None:
+            overall_rating = None
+            analyst_stance = "Unrated"
+        elif overall_score >= 10:
+            overall_rating = 5
+            analyst_stance = "High Conviction"
+        elif overall_score >= 6:
+            overall_rating = 4
+            analyst_stance = "Positive"
+        elif overall_score >= 2:
+            overall_rating = 3
+            analyst_stance = "Watch"
+        else:
+            overall_rating = 2
+            analyst_stance = "Cautious"
+        return self.snapshot_repository.replace_score(
+            session,
+            snapshot_id=f"score:{instrument_id}:{now.date().isoformat()}:{make_recalc_job_id()}",
+            instrument_id=instrument_id,
+            data={
+                "as_of_date": now.date(),
+                "source_cutoff_at": source_cutoff_at,
+                "methodology_version": "canonical-score/v2",
+                "input_hash": _hash_payload({"score": overall_score}),
+                "calculated_at": now,
+                "superseded_at": None,
+                "is_current": True,
+                "overall_score": _safe_decimal(overall_score),
+                "overall_rating": overall_rating,
+                "analyst_stance": analyst_stance,
+                "people_score": None,
+                "process_score": None,
+                "exposure_score": _safe_decimal(_safe_float(getattr(exposure_snapshot, "weighted_yield_to_worst", None))),
+                "risk_score": _safe_decimal(_safe_float(getattr(risk_snapshot, "sharpe_ratio", None))),
+                "price_score": _safe_decimal(_safe_float(getattr(performance_snapshot, "return_1y", None))),
+                "operations_score": None,
+                "fit_score": None,
+                "confidence_score": None,
+            },
+        )
+
     def _summary_payload(
         self,
         *,
         instrument,
         nav_selection: dict[str, object],
-        quote_window: CanonicalQuoteSeriesResolution,
-        endpoint_resolution: CanonicalQuoteResolution | None,
         performance_snapshot,
         risk_snapshot,
-        research_rating,
+        exposure_snapshot,
+        score_snapshot,
         attributes: dict[str, object],
         taxonomy_context: dict[str, object],
-        consumer_profile: ConsumerFreshnessProfile,
-        calculation_state: dict[str, object],
-        publish_current_metrics: bool,
-        market_data_input_watermark_at: datetime | None,
-        market_data_input_watermark_status: str,
-        market_data_input_watermark_reason_code: str,
+        source_cutoff_at: datetime,
         now: datetime,
     ) -> dict[str, object]:
         last_nav_date = (
@@ -2684,56 +2456,20 @@ class CanonicalRecalcService:
             if nav_selection["points"]
             else None
         )
-        selected_series = _selection_metadata(quote_window)
+        selected_series = _selection_metadata(nav_selection)
         date_label = str(selected_series.get("date_label") or "Last Quote Date")
-        endpoint_state = str(
-            calculation_state.get("current_endpoint_state") or "unavailable"
-        )
-        has_historical_snapshot = bool(
-            performance_snapshot is not None and risk_snapshot is not None
-        )
-        if endpoint_state == "resolved" and publish_current_metrics:
-            freshness_status = (
-                "partial"
-                if quote_window.coverage_status == "partial"
-                else "fresh"
-            )
-        elif endpoint_state == "resolved" and has_historical_snapshot:
-            freshness_status = "partial"
-        elif endpoint_state == "stale" and has_historical_snapshot:
-            freshness_status = "stale"
-        elif endpoint_state == "partial" and has_historical_snapshot:
-            freshness_status = "partial"
-        else:
-            freshness_status = "unavailable"
-        reason_codes = list(calculation_state.get("reason_codes") or [])
-        if freshness_status != "fresh" and not reason_codes:
-            reason_codes = [f"current_endpoint_{endpoint_state}"]
-        last_successful_snapshot_at = _last_successful_snapshot_at(
-            performance_snapshot, risk_snapshot
-        )
-        watermark_iso = (
-            market_data_input_watermark_at.isoformat().replace("+00:00", "Z")
-            if market_data_input_watermark_at is not None
-            else None
-        )
+        freshness_status = "fresh" if nav_selection["points"] else "pending_recalc"
         return {
             "instrument_id": instrument.instrument_id,
             "fund_name": instrument.instrument_name,
             "ticker_or_isin": instrument.primary_identifier_value or instrument.instrument_id.upper(),
+            "rating_as_of": now.date().isoformat(),
             "management_firm_name": str(instrument.metadata_json.get("management_firm_name") or "") or None,
-            "research_rating": serialize_research_rating(research_rating),
+            "overall_rating": getattr(score_snapshot, "overall_rating", None),
+            "analyst_stance": getattr(score_snapshot, "analyst_stance", "Unrated"),
             "instrument_attributes": attributes,
             "taxonomy": taxonomy_context,
             "selected_series": selected_series,
-            "quote_resolution": _quote_resolution_summary_payload(
-                quote_window, consumer_profile
-            ),
-            "endpoint_resolution": (
-                endpoint_resolution.model_dump(mode="json")
-                if endpoint_resolution is not None
-                else None
-            ),
             "nav_snapshot": {
                 "nav_basis_type": nav_selection.get("nav_basis_type"),
                 "nav_basis_source": nav_selection.get("nav_basis_source"),
@@ -2745,16 +2481,12 @@ class CanonicalRecalcService:
                 "selected_date_label": nav_selection.get("selected_date_label"),
                 "latest_nav": (
                     nav_selection["points"][-1]["value"]
-                    if publish_current_metrics
-                    and nav_selection.get("nav_basis_type") == "nav"
-                    and nav_selection["points"]
+                    if nav_selection.get("nav_basis_type") == "nav" and nav_selection["points"]
                     else None
                 ),
                 "latest_nav_with_dividend": (
                     nav_selection["points"][-1]["value"]
-                    if publish_current_metrics
-                    and nav_selection.get("nav_basis_type") == "nav_with_dividend"
-                    and nav_selection["points"]
+                    if nav_selection.get("nav_basis_type") == "nav_with_dividend" and nav_selection["points"]
                     else None
                 ),
             },
@@ -2764,8 +2496,7 @@ class CanonicalRecalcService:
                     "label": "MTD Return",
                     "value": (
                         f"{float(performance_snapshot.return_mtd):.2f}%"
-                        if publish_current_metrics
-                        and getattr(performance_snapshot, "return_mtd", None) is not None
+                        if getattr(performance_snapshot, "return_mtd", None) is not None
                         else "—"
                     ),
                 },
@@ -2773,8 +2504,7 @@ class CanonicalRecalcService:
                     "label": "Annualized Return",
                     "value": (
                         f"{float(performance_snapshot.annualized_return):.2f}%"
-                        if publish_current_metrics
-                        and getattr(performance_snapshot, "annualized_return", None) is not None
+                        if getattr(performance_snapshot, "annualized_return", None) is not None
                         else "—"
                     ),
                 },
@@ -2782,33 +2512,22 @@ class CanonicalRecalcService:
                     "label": "Volatility",
                     "value": (
                         f"{float(risk_snapshot.volatility):.2f}%"
-                        if publish_current_metrics
-                        and getattr(risk_snapshot, "volatility", None) is not None
+                        if getattr(risk_snapshot, "volatility", None) is not None
                         else "—"
                     ),
+                },
+                {
+                    "label": "Holdings",
+                    "value": str(getattr(exposure_snapshot, "holding_count", "—") or "—"),
                 },
             ],
             "freshness": {
                 "data_freshness_status": freshness_status,
+                "last_fact_update_at": source_cutoff_at.isoformat().replace("+00:00", "Z"),
                 "last_recalculated_at": now.isoformat().replace("+00:00", "Z"),
-                "last_successful_snapshot_at": (
-                    last_successful_snapshot_at.isoformat().replace("+00:00", "Z")
-                    if last_successful_snapshot_at is not None
-                    else None
-                ),
-                "staleness_reason_codes": reason_codes,
-                "staleness_reason": ", ".join(reason_codes) or None,
-                "market_data_input_watermark_at": watermark_iso,
-                "market_data_input_watermark_status": (
-                    market_data_input_watermark_status
-                ),
-                "market_data_input_watermark_reason_code": (
-                    market_data_input_watermark_reason_code
-                ),
-                "knowledge_cutoff_at": None,
+                "last_successful_snapshot_at": now.isoformat().replace("+00:00", "Z"),
+                "staleness_reason": None if nav_selection["points"] else "No canonical series available.",
             },
-            "consumer_freshness_profile": consumer_profile.payload(),
-            "calculation_state": calculation_state,
             "quick_monitoring_items": [],
             "tabs": DEFAULT_TABS,
         }
@@ -2821,9 +2540,6 @@ class CanonicalRecalcService:
         taxonomy_node,
         performance_snapshot,
         risk_snapshot,
-        publish_current_metrics: bool,
-        target_frequency_profile: dict[str, object],
-        target_pair_lineage: dict[str, object] | None,
     ) -> dict[str, object]:
         assigned_path_node_ids = _node_path_node_ids(taxonomy_node)
         if taxonomy_node is None or not assigned_path_node_ids:
@@ -2840,35 +2556,6 @@ class CanonicalRecalcService:
                 "summary": {},
             }
 
-        target_frequency = str(
-            target_frequency_profile.get("resolved_frequency") or "unresolved"
-        ).strip()
-        if (
-            not publish_current_metrics
-            or target_pair_lineage is None
-        ):
-            return {
-                "status": "target_not_current",
-                "taxonomy_code": FUND_TAXONOMY_CODE,
-                "assigned_node_id": getattr(taxonomy_node, "node_id", None),
-                "assigned_path": _node_path_labels(taxonomy_node),
-                "peer_node_id": None,
-                "peer_path": [],
-                "fallback_levels": 0,
-                "sample_count": 0,
-                "metrics": [],
-                "summary": {},
-                "cohort": {
-                    "coverage_status": "unavailable",
-                    "as_of_date": None,
-                    "resolved_frequency": target_frequency or None,
-                    "eligible_instrument_count": 0,
-                    "excluded_reason_counts": {
-                        "target_not_current": 1,
-                    },
-                },
-            }
-
         nodes = self.taxonomy_repository.list_nodes(session, taxonomy_code=FUND_TAXONOMY_CODE)
         node_by_id = {str(node.node_id): node for node in nodes}
         assignments = self.taxonomy_repository.list_assignments(
@@ -2881,123 +2568,22 @@ class CanonicalRecalcService:
             for assignment in assignments
             if assignment.node_id and str(assignment.instrument_id) in active_peer_instrument_ids
         }
-        raw_performance_by_asset = {}
+        performance_by_asset = {}
         for snapshot in self.snapshot_repository.list_current_performance(
             session,
             instrument_ids=sorted(active_peer_instrument_ids),
         ):
-            raw_performance_by_asset.setdefault(str(snapshot.instrument_id), snapshot)
+            performance_by_asset.setdefault(str(snapshot.instrument_id), snapshot)
         if performance_snapshot is not None and instrument_id in active_peer_instrument_ids:
-            raw_performance_by_asset[str(instrument_id)] = performance_snapshot
-        raw_risk_by_asset = {}
+            performance_by_asset[str(instrument_id)] = performance_snapshot
+        risk_by_asset = {}
         for snapshot in self.snapshot_repository.list_current_risk(
             session,
             instrument_ids=sorted(active_peer_instrument_ids),
         ):
-            raw_risk_by_asset.setdefault(str(snapshot.instrument_id), snapshot)
+            risk_by_asset.setdefault(str(snapshot.instrument_id), snapshot)
         if risk_snapshot is not None and instrument_id in active_peer_instrument_ids:
-            raw_risk_by_asset[str(instrument_id)] = risk_snapshot
-
-        performance_read_model_by_asset = {
-            str(read_model.instrument_id): read_model
-            for read_model in session.scalars(
-                select(InstrumentPerformanceReadModel).where(
-                    InstrumentPerformanceReadModel.instrument_id.in_(
-                        sorted(active_peer_instrument_ids)
-                    )
-                )
-            ).all()
-        }
-        target_as_of_date = target_pair_lineage["as_of_date"]
-        target_performance_methodology = str(
-            target_pair_lineage["performance_methodology_version"]
-        )
-        target_risk_methodology = str(
-            target_pair_lineage["risk_methodology_version"]
-        )
-        performance_by_asset: dict[str, object] = {}
-        risk_by_asset: dict[str, object] = {}
-        excluded_reason_counts: dict[str, int] = {}
-
-        def exclude(reason_code: str) -> None:
-            excluded_reason_counts[reason_code] = (
-                excluded_reason_counts.get(reason_code, 0) + 1
-            )
-
-        for candidate_instrument_id in sorted(active_peer_instrument_ids):
-            candidate_performance = raw_performance_by_asset.get(
-                candidate_instrument_id
-            )
-            candidate_risk = raw_risk_by_asset.get(candidate_instrument_id)
-            candidate_lineage = _snapshot_pair_lineage(
-                candidate_performance, candidate_risk
-            )
-            if candidate_lineage is None:
-                exclude("snapshot_pair_unaligned")
-                continue
-            if candidate_lineage["as_of_date"] != target_as_of_date:
-                exclude("as_of_date_mismatch")
-                continue
-            if (
-                candidate_lineage["performance_methodology_version"]
-                != target_performance_methodology
-                or candidate_lineage["risk_methodology_version"]
-                != target_risk_methodology
-            ):
-                exclude("methodology_mismatch")
-                continue
-
-            if candidate_instrument_id == instrument_id:
-                performance_by_asset[candidate_instrument_id] = candidate_performance
-                risk_by_asset[candidate_instrument_id] = candidate_risk
-                continue
-
-            read_model = performance_read_model_by_asset.get(
-                candidate_instrument_id
-            )
-            if read_model is None:
-                exclude("missing_performance_read_model")
-                continue
-            calculation_state = (
-                read_model.payload_json.get("calculation_state", {})
-                if isinstance(read_model.payload_json, dict)
-                else {}
-            )
-            frequency_profile = (
-                read_model.payload_json.get("calculation_frequency_profile", {})
-                if isinstance(read_model.payload_json, dict)
-                else {}
-            )
-            if (
-                read_model.data_freshness_status != "fresh"
-                or not isinstance(calculation_state, dict)
-                or calculation_state.get("current_endpoint_state") != "resolved"
-                or calculation_state.get("analytics_snapshot_state")
-                != "current_aligned"
-                or calculation_state.get("historical_calculation_state")
-                != "current_endpoint"
-            ):
-                exclude("endpoint_not_current")
-                continue
-            if (
-                not isinstance(frequency_profile, dict)
-                or str(
-                    frequency_profile.get("resolved_frequency") or "unresolved"
-                ).strip()
-                != target_frequency
-            ):
-                exclude("calculation_frequency_mismatch")
-                continue
-            if (
-                _coerce_utc(read_model.market_data_input_watermark_at)
-                != candidate_lineage["market_data_input_watermark_at"]
-                or _coerce_utc(read_model.last_recalculated_at)
-                != candidate_lineage["calculated_at"]
-            ):
-                exclude("read_model_lineage_mismatch")
-                continue
-            performance_by_asset[candidate_instrument_id] = candidate_performance
-            risk_by_asset[candidate_instrument_id] = candidate_risk
+            risk_by_asset[str(instrument_id)] = risk_snapshot
 
         selected_peer_node_id = assigned_path_node_ids[-1]
         selected_instrument_ids: list[str] = []
@@ -3024,39 +2610,6 @@ class CanonicalRecalcService:
         fallback_levels = max(
             0,
             len(assigned_path_node_ids) - 1 - assigned_path_node_ids.index(selected_peer_node_id),
-        )
-        cohort_source_fingerprint = _hash_payload(
-            {
-                "taxonomy_code": FUND_TAXONOMY_CODE,
-                "peer_node_id": selected_peer_node_id,
-                "as_of_date": target_as_of_date,
-                "resolved_frequency": target_frequency,
-                "performance_methodology_version": (
-                    target_performance_methodology
-                ),
-                "risk_methodology_version": target_risk_methodology,
-                "members": [
-                    {
-                        "instrument_id": candidate_instrument_id,
-                        "assigned_node_id": getattr(
-                            assigned_node_by_asset.get(candidate_instrument_id),
-                            "node_id",
-                            None,
-                        ),
-                        "performance_input_hash": getattr(
-                            performance_by_asset.get(candidate_instrument_id),
-                            "input_hash",
-                            None,
-                        ),
-                        "risk_input_hash": getattr(
-                            risk_by_asset.get(candidate_instrument_id),
-                            "input_hash",
-                            None,
-                        ),
-                    }
-                    for candidate_instrument_id in selected_instrument_ids
-                ],
-            }
         )
         metric_rows: list[dict[str, object]] = []
         for definition in PEER_COMPARISON_METRICS:
@@ -3104,8 +2657,6 @@ class CanonicalRecalcService:
                     "peer_p25": _quantile(peer_values, 0.25),
                     "peer_p75": _quantile(peer_values, 0.75),
                     "peer_sample_count": len(peer_values),
-                    "cohort_as_of_date": target_as_of_date.isoformat(),
-                    "cohort_frequency": target_frequency,
                     **ranking,
                 }
             )
@@ -3140,178 +2691,7 @@ class CanonicalRecalcService:
                     [return_percentile, risk_percentile, risk_adjusted_percentile]
                 ),
             },
-            "cohort": {
-                "coverage_status": (
-                    "qualified" if status == "ready" else "insufficient_data"
-                ),
-                "as_of_date": target_as_of_date.isoformat(),
-                "resolved_frequency": target_frequency,
-                "performance_methodology_version": (
-                    target_performance_methodology
-                ),
-                "risk_methodology_version": target_risk_methodology,
-                "eligible_instrument_count": len(performance_by_asset),
-                "selected_instrument_count": len(selected_instrument_ids),
-                "member_instrument_ids": selected_instrument_ids,
-                "source_fingerprint": cohort_source_fingerprint,
-                "excluded_reason_counts": {
-                    key: excluded_reason_counts[key]
-                    for key in sorted(excluded_reason_counts)
-                },
-            },
         }
-
-    def _invalidate_changed_peer_cohorts(
-        self,
-        session: Session,
-        *,
-        changed_instrument_id: str,
-        current_peer_comparison: dict[str, object] | None,
-        invalidated_at: datetime,
-    ) -> None:
-        """Invalidate every persisted peer view touched by a source change.
-
-        Peer ranks are cross-sectional.  Updating one member cannot leave the
-        other members marked ready against an older cohort fingerprint.  This
-        method runs in the same transaction as the changed member's recalc;
-        matching members from the new cohort remain valid, while older cohort
-        views and screener attributes are cleared atomically.
-        """
-
-        current_peer = (
-            current_peer_comparison
-            if isinstance(current_peer_comparison, dict)
-            else {}
-        )
-        current_cohort = (
-            current_peer.get("cohort")
-            if isinstance(current_peer.get("cohort"), dict)
-            else {}
-        )
-        current_fingerprint = str(
-            current_cohort.get("source_fingerprint") or ""
-        )
-        current_peer_node_id = str(current_peer.get("peer_node_id") or "")
-        affected_instrument_ids: set[str] = set()
-        performance_models = session.scalars(
-            select(InstrumentPerformanceReadModel)
-        ).all()
-        for read_model in performance_models:
-            candidate_instrument_id = str(read_model.instrument_id)
-            if candidate_instrument_id == changed_instrument_id:
-                continue
-            payload = (
-                dict(read_model.payload_json)
-                if isinstance(read_model.payload_json, dict)
-                else {}
-            )
-            stored_peer = payload.get("peer_comparison")
-            if not isinstance(stored_peer, dict):
-                continue
-            stored_cohort = stored_peer.get("cohort")
-            if not isinstance(stored_cohort, dict):
-                continue
-            stored_members = {
-                str(member_id)
-                for member_id in stored_cohort.get("member_instrument_ids", [])
-                if str(member_id).strip()
-            }
-            stored_peer_node_id = str(stored_peer.get("peer_node_id") or "")
-            is_affected = (
-                changed_instrument_id in stored_members
-                or bool(
-                    current_peer_node_id
-                    and stored_peer_node_id == current_peer_node_id
-                )
-            )
-            if not is_affected:
-                continue
-            stored_fingerprint = str(
-                stored_cohort.get("source_fingerprint") or ""
-            )
-            if (
-                current_fingerprint
-                and stored_fingerprint == current_fingerprint
-                and stored_peer.get("status") == "ready"
-            ):
-                continue
-
-            stale_peer = {
-                "status": "cohort_stale",
-                "taxonomy_code": stored_peer.get("taxonomy_code"),
-                "assigned_node_id": stored_peer.get("assigned_node_id"),
-                "assigned_path": list(stored_peer.get("assigned_path") or []),
-                "peer_node_id": stored_peer.get("peer_node_id"),
-                "peer_path": list(stored_peer.get("peer_path") or []),
-                "fallback_levels": stored_peer.get("fallback_levels", 0),
-                "sample_count": 0,
-                "metrics": [],
-                "summary": {},
-                "cohort": {
-                    **stored_cohort,
-                    "coverage_status": "stale",
-                    "invalidated_at": invalidated_at.isoformat().replace(
-                        "+00:00", "Z"
-                    ),
-                    "invalidation_reason": "peer_source_membership_or_snapshot_changed",
-                    "changed_instrument_id": changed_instrument_id,
-                },
-            }
-            payload["peer_comparison"] = stale_peer
-            payload["ranking"] = None
-            trailing_returns = payload.get("trailing_returns")
-            if isinstance(trailing_returns, list):
-                payload["trailing_returns"] = [
-                    {
-                        **row,
-                        "category_nav": None,
-                    }
-                    if isinstance(row, dict)
-                    else row
-                    for row in trailing_returns
-                ]
-            read_model.payload_json = payload
-            affected_instrument_ids.add(candidate_instrument_id)
-
-            risk_read_model = session.get(
-                InstrumentRiskReadModel, candidate_instrument_id
-            )
-            if risk_read_model is not None and isinstance(
-                risk_read_model.payload_json, dict
-            ):
-                risk_payload = dict(risk_read_model.payload_json)
-                risk_overview = risk_payload.get("risk_overview")
-                if isinstance(risk_overview, dict):
-                    risk_payload["risk_overview"] = {
-                        **risk_overview,
-                        "risk_vs_category": None,
-                        "return_vs_category": None,
-                    }
-                risk_metrics = risk_payload.get("risk_metrics")
-                if isinstance(risk_metrics, list):
-                    risk_payload["risk_metrics"] = [
-                        {**row, "category": None}
-                        if isinstance(row, dict)
-                        else row
-                        for row in risk_metrics
-                    ]
-                risk_read_model.payload_json = risk_payload
-
-        if affected_instrument_ids:
-            for row in session.scalars(
-                select(WatchlistRowReadModel).where(
-                    WatchlistRowReadModel.instrument_id.in_(
-                        sorted(affected_instrument_ids)
-                    )
-                )
-            ).all():
-                attributes = dict(row.attributes_json or {})
-                row.attributes_json = {
-                    key: value
-                    for key, value in attributes.items()
-                    if key not in PEER_WATCHLIST_MATERIALIZED_ATTRIBUTE_KEYS
-                }
-        session.flush()
 
     def _performance_payload(
         self,
@@ -3398,6 +2778,7 @@ class CanonicalRecalcService:
         )
         return {
             "risk_overview": {
+                "exposure_risk_score": None,
                 "risk_level": _risk_level_label(volatility),
                 "risk_vs_category": risk_percentile,
                 "return_vs_category": return_percentile,
@@ -3431,6 +2812,52 @@ class CanonicalRecalcService:
             "snapshot_metadata": _snapshot_metadata(risk_snapshot),
         }
 
+    def _exposure_payload(self, exposure_snapshot) -> dict[str, object]:
+        return {
+            "allocation_blocks": {},
+            "style_box": {
+                "weighted_duration": _safe_float(getattr(exposure_snapshot, "weighted_duration", None)),
+                "yield_to_worst": _safe_float(getattr(exposure_snapshot, "weighted_yield_to_worst", None)),
+            } if exposure_snapshot is not None else None,
+            "liquidity_leverage": None,
+            "valuation_statistics": None,
+            "holdings_summary": {
+                "total_holdings": getattr(exposure_snapshot, "holding_count", None),
+                "top10_concentration": _safe_float(getattr(exposure_snapshot, "top10_concentration", None)),
+            } if exposure_snapshot is not None else None,
+            "snapshot_metadata": None,
+        }
+
+    def _holdings_payload(self, holding_snapshot) -> dict[str, object]:
+        rows = []
+        if holding_snapshot is not None:
+            rows = [
+                {
+                    "holding_name": item.holding_name,
+                    "holding_type": item.holding_type,
+                    "portfolio_weight": _safe_float(item.portfolio_weight),
+                    "market_value": _safe_float(item.market_value),
+                    "quantity": _safe_float(item.quantity),
+                    "currency": item.currency,
+                    "market_price": _safe_float(item.market_price),
+                    "yield_to_worst": _safe_float(item.yield_to_worst),
+                    "effective_duration": _safe_float(item.effective_duration),
+                    "credit_rating": item.credit_rating,
+                }
+                for item in holding_snapshot.positions
+            ]
+        return {"rows": rows, "page": 1, "page_size": len(rows), "total_rows": len(rows)}
+
+    def _rating_payload(self, score_snapshot) -> dict[str, object]:
+        return {
+            "overall_rating": getattr(score_snapshot, "overall_rating", None),
+            "overall_score": _safe_float(getattr(score_snapshot, "overall_score", None)),
+            "analyst_stance": getattr(score_snapshot, "analyst_stance", "Unrated"),
+            "methodology_version": "house-rating/v2",
+            "dimension_scores": [],
+            "override_info": None,
+        }
+
     def _refresh_watchlist_rows(
         self,
         session: Session,
@@ -3441,9 +2868,8 @@ class CanonicalRecalcService:
         peer_comparison: dict[str, object] | None,
         performance_snapshot,
         risk_snapshot,
-        research_rating,
-        publish_current_metrics: bool,
-        market_data_input_watermark_at: datetime | None,
+        exposure_snapshot,
+        score_snapshot,
         now: datetime,
     ) -> None:
         existing_rows = self.read_model_repository.list_watchlist_rows_for_instrument(session, instrument.instrument_id)
@@ -3465,34 +2891,34 @@ class CanonicalRecalcService:
                     share_class=None,
                     ticker_or_isin=instrument.primary_identifier_value,
                     management_firm_name=str(instrument.metadata_json.get("management_firm_name") or "") or None,
-                    research_rating=getattr(research_rating, "rating_value", None),
-                    research_rating_as_of=getattr(research_rating, "as_of_date", None),
-                    research_rating_updated_at=getattr(research_rating, "created_at", None),
+                    overall_rating=getattr(score_snapshot, "overall_rating", None),
+                    analyst_stance=getattr(score_snapshot, "analyst_stance", None),
                     attributes=row_attributes,
                     freshness_status=str(freshness.get("data_freshness_status") or "fresh"),
-                    market_data_input_watermark_at=(
-                        market_data_input_watermark_at
-                    ),
+                    last_fact_update_at=_coerce_utc(
+                        datetime.fromisoformat(str(freshness["last_fact_update_at"]).replace("Z", "+00:00"))
+                    ) if freshness.get("last_fact_update_at") else None,
                     last_recalculated_at=now,
-                    last_successful_snapshot_at=(
-                        _last_successful_snapshot_at(
-                            performance_snapshot, risk_snapshot
-                        )
-                    ),
+                    last_successful_snapshot_at=now,
                     staleness_reason=freshness.get("staleness_reason"),
                 )
                 | {
-                    "return_ytd": getattr(performance_snapshot, "return_ytd", None) if publish_current_metrics else None,
-                    "return_1w": getattr(performance_snapshot, "return_1w", None) if publish_current_metrics else None,
-                    "return_mtd": getattr(performance_snapshot, "return_mtd", None) if publish_current_metrics else None,
-                    "return_1m": getattr(performance_snapshot, "return_1m", None) if publish_current_metrics else None,
-                    "return_1y": getattr(performance_snapshot, "return_1y", None) if publish_current_metrics else None,
-                    "annualized_return": getattr(performance_snapshot, "annualized_return", None) if publish_current_metrics else None,
-                    "return_3y": getattr(performance_snapshot, "return_3y_annualized", None) if publish_current_metrics else None,
-                    "return_5y": getattr(performance_snapshot, "return_5y_annualized", None) if publish_current_metrics else None,
-                    "max_drawdown": getattr(performance_snapshot, "max_drawdown", None) if publish_current_metrics else None,
-                    "volatility": getattr(risk_snapshot, "volatility", None) if publish_current_metrics else None,
-                    "sharpe_ratio": getattr(risk_snapshot, "sharpe_ratio", None) if publish_current_metrics else None,
+                    "return_ytd": getattr(performance_snapshot, "return_ytd", None),
+                    "return_1w": getattr(performance_snapshot, "return_1w", None),
+                    "return_mtd": getattr(performance_snapshot, "return_mtd", None),
+                    "return_1m": getattr(performance_snapshot, "return_1m", None),
+                    "return_1y": getattr(performance_snapshot, "return_1y", None),
+                    "annualized_return": getattr(performance_snapshot, "annualized_return", None),
+                    "return_3y": getattr(performance_snapshot, "return_3y_annualized", None),
+                    "return_5y": getattr(performance_snapshot, "return_5y_annualized", None),
+                    "max_drawdown": getattr(performance_snapshot, "max_drawdown", None),
+                    "volatility": getattr(risk_snapshot, "volatility", None),
+                    "sharpe_ratio": getattr(risk_snapshot, "sharpe_ratio", None),
+                    "duration": getattr(exposure_snapshot, "weighted_duration", None),
+                    "yield_to_worst": getattr(exposure_snapshot, "weighted_yield_to_worst", None),
+                    "aum": None,
+                    "avg_credit_rating": getattr(exposure_snapshot, "avg_credit_rating", None),
+                    "exposure_updated_at": getattr(exposure_snapshot, "calculated_at", None),
                     "last_nav_date": (
                         date.fromisoformat(str(summary_payload["key_stats"][0]["value"]))
                         if summary_payload.get("key_stats")

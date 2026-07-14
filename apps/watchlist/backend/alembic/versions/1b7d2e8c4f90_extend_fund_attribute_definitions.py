@@ -427,6 +427,11 @@ def upgrade() -> None:
         sa.column("is_visible", sa.Boolean()),
         sa.column("pin_side", sa.String()),
     )
+    instrument_table = sa.table(
+        "instrument_detail",
+        sa.column("instrument_id", sa.String()),
+        sa.column("instrument_type", sa.String()),
+    )
     _upsert_attribute_definitions(bind, definition_table, field_table)
     _refresh_private_screening_views(bind, view_table, column_table)
 

@@ -35,16 +35,12 @@ def _with_broken_dimension(file_bytes: bytes) -> bytes:
         for info in reader.infolist():
             payload = reader.read(info.filename)
             if info.filename == "xl/worksheets/sheet1.xml":
-                payload = payload.replace(
-                    b'dimension ref="A1:E2"', b'dimension ref="A1"'
-                )
+                payload = payload.replace(b'dimension ref="A1:E2"', b'dimension ref="A1"')
             writer.writestr(info, payload)
     return output.getvalue()
 
 
-def _nav_email_bytes(
-    *, subject: str, attachment_name: str, rows: list[list[object]]
-) -> bytes:
+def _nav_email_bytes(*, subject: str, attachment_name: str, rows: list[list[object]]) -> bytes:
     message = EmailMessage()
     message["Subject"] = subject
     message["From"] = "yywbfa@cmschina.com.cn"
@@ -64,9 +60,7 @@ class _FakeMailbox:
 
     def uid(self, command: str, *args: object) -> tuple[str, list[object]]:
         if command == "search":
-            return "OK", [
-                b" ".join(str(uid).encode("ascii") for uid in sorted(self.messages))
-            ]
+            return "OK", [b" ".join(str(uid).encode("ascii") for uid in sorted(self.messages))]
         if command == "fetch":
             uid = int(str(args[0]))
             payload = self.messages.get(uid)
@@ -122,13 +116,7 @@ def _zb945a_existing_nav_instrument() -> dict[str, object]:
 def test_parse_nav_rows_from_xlsx_supports_chinese_headers() -> None:
     rows = [
         ["净值日期", "产品代码", "产品名称", "单位净值", "累计单位净值"],
-        [
-            "2026-04-14",
-            "SBCJ69",
-            "国泰君安期货CTA因子组合2号集合资产管理计划",
-            "1.1002",
-            "1.1002",
-        ],
+        ["2026-04-14", "SBCJ69", "国泰君安期货CTA因子组合2号集合资产管理计划", "1.1002", "1.1002"],
     ]
 
     parsed = _parse_nav_rows_from_xlsx(_workbook_bytes(rows))
@@ -144,18 +132,10 @@ def test_parse_nav_rows_from_xlsx_supports_chinese_headers() -> None:
     assert parsed[0]["frequency"] == "daily"
 
 
-def test_parse_nav_rows_from_xlsx_supports_product_code_and_trade_date_aliases() -> (
-    None
-):
+def test_parse_nav_rows_from_xlsx_supports_product_code_and_trade_date_aliases() -> None:
     rows = [
         ["产品编码", "产品名称", "交易日期", "单位净值", "累计净值"],
-        [
-            "SBMM07",
-            "国泰君安期货CTA因子组合3号集合资产管理计划",
-            "20260529",
-            "1.0148",
-            "1.0148",
-        ],
+        ["SBMM07", "国泰君安期货CTA因子组合3号集合资产管理计划", "20260529", "1.0148", "1.0148"],
     ]
 
     parsed = _parse_nav_rows_from_xlsx(_workbook_bytes(rows))
@@ -171,13 +151,7 @@ def test_parse_nav_rows_from_xlsx_supports_product_code_and_trade_date_aliases()
 def test_parse_nav_rows_from_xlsx_ignores_broken_dimension_metadata() -> None:
     rows = [
         ["净值日期", "产品代码", "产品名称", "单位净值", "累计单位净值"],
-        [
-            "2026-04-14",
-            "B3935B",
-            "孝庸市场中性一号私募证券投资基金B",
-            "1.3699",
-            "1.3699",
-        ],
+        ["2026-04-14", "B3935B", "孝庸市场中性一号私募证券投资基金B", "1.3699", "1.3699"],
     ]
 
     parsed = _parse_nav_rows_from_xlsx(_with_broken_dimension(_workbook_bytes(rows)))
@@ -188,18 +162,10 @@ def test_parse_nav_rows_from_xlsx_ignores_broken_dimension_metadata() -> None:
     assert str(parsed[0]["cumulative_nav"]) == "1.3699"
 
 
-def test_parse_nav_rows_from_xlsx_supports_total_nav_aliases_and_datetime_values() -> (
-    None
-):
+def test_parse_nav_rows_from_xlsx_supports_total_nav_aliases_and_datetime_values() -> None:
     rows = [
         ["产品代码", "产品名称", "净值日期", "单位净值  (元)", "累计净值  (元)"],
-        [
-            "ANZ73A(A级)",
-            "盈怀香柏树1号私募证券投资基金A类",
-            "2024-09-05 00:00:00",
-            "1",
-            "1",
-        ],
+        ["ANZ73A(A级)", "盈怀香柏树1号私募证券投资基金A类", "2024-09-05 00:00:00", "1", "1"],
     ]
 
     parsed = _parse_nav_rows_from_xlsx(_workbook_bytes(rows))
@@ -216,13 +182,7 @@ def test_parse_nav_rows_from_xlsx_supports_yuan_per_share_headers() -> None:
     rows = [
         ["产品基金净值数据"],
         ["产品代码", "产品名称", "净值日期", "单位净值(元/份)", "累计单位净值(元/份)"],
-        [
-            "SAZN63",
-            "孝庸混合策略配置一号私募证券投资基金",
-            "2026-06-01",
-            "1.0147",
-            "1.0147",
-        ],
+        ["SAZN63", "孝庸混合策略配置一号私募证券投资基金", "2026-06-01", "1.0147", "1.0147"],
     ]
 
     parsed = _parse_nav_rows_from_xlsx(_workbook_bytes(rows))
@@ -235,9 +195,7 @@ def test_parse_nav_rows_from_xlsx_supports_yuan_per_share_headers() -> None:
     assert parsed[0]["instrument_name"] == "孝庸混合策略配置一号私募证券投资基金"
 
 
-def test_parse_nav_rows_from_xlsx_supports_chinese_date_strings_after_title_rows() -> (
-    None
-):
+def test_parse_nav_rows_from_xlsx_supports_chinese_date_strings_after_title_rows() -> None:
     rows = [
         ["每日净值表"],
         ["日期：2024年12月05日至2025年10月12日"],
@@ -363,9 +321,7 @@ def test_reinvested_total_return_correction_uses_existing_anchor(monkeypatch) ->
     assert str(rows[1]["nav_with_dividend"]) == "1.1550000000000000"
 
 
-def test_reinvested_total_return_correction_keeps_full_precision_between_dividends(
-    monkeypatch,
-) -> None:
+def test_reinvested_total_return_correction_keeps_full_precision_between_dividends(monkeypatch) -> None:
     monkeypatch.setattr(market_data_ops, "get_instrument", lambda instrument_id: None)
 
     rows, applied = _apply_reinvested_total_return_correction(
@@ -417,9 +373,7 @@ def test_reinvested_total_return_correction_ignores_rounding_noise(monkeypatch) 
     assert str(rows[1]["nav_with_dividend"]) == "1.0605000000000000"
 
 
-def test_reinvested_total_return_correction_leaves_other_instruments_unchanged(
-    monkeypatch,
-) -> None:
+def test_reinvested_total_return_correction_leaves_other_instruments_unchanged(monkeypatch) -> None:
     monkeypatch.setattr(market_data_ops, "get_instrument", lambda instrument_id: None)
 
     rows, applied = _apply_reinvested_total_return_correction(
@@ -437,9 +391,7 @@ def test_reinvested_total_return_correction_leaves_other_instruments_unchanged(
     assert rows[0]["nav_with_dividend"] == "1.0500"
 
 
-def test_incremental_email_import_uses_prior_rows_as_dividend_context(
-    monkeypatch,
-) -> None:
+def test_incremental_email_import_uses_prior_rows_as_dividend_context(monkeypatch) -> None:
     source_settings = {
         "source_email_rules": [
             {
@@ -458,27 +410,9 @@ def test_incremental_email_import_uses_prior_rows_as_dividend_context(
             attachment_name="九慕稳健3号净值序列.xlsx",
             rows=[
                 header,
-                [
-                    "SAVF63",
-                    "九慕稳健3号私募证券投资基金",
-                    "20260324",
-                    "1.0218",
-                    "1.0218",
-                ],
-                [
-                    "SAVF63",
-                    "九慕稳健3号私募证券投资基金",
-                    "20260325",
-                    "0.9976",
-                    "1.0295",
-                ],
-                [
-                    "SAVF63",
-                    "九慕稳健3号私募证券投资基金",
-                    "20260326",
-                    "0.9922",
-                    "1.0241",
-                ],
+                ["SAVF63", "九慕稳健3号私募证券投资基金", "20260324", "1.0218", "1.0218"],
+                ["SAVF63", "九慕稳健3号私募证券投资基金", "20260325", "0.9976", "1.0295"],
+                ["SAVF63", "九慕稳健3号私募证券投资基金", "20260326", "0.9922", "1.0241"],
             ],
         )
     }
@@ -514,9 +448,7 @@ def test_incremental_email_import_uses_prior_rows_as_dividend_context(
             ]
         },
     )
-    monkeypatch.setattr(
-        market_data_ops, "replace_nav_history", fake_replace_nav_history
-    )
+    monkeypatch.setattr(market_data_ops, "replace_nav_history", fake_replace_nav_history)
 
     record = _import_rows_from_email_rules(
         instrument_id="savf63",
@@ -557,13 +489,7 @@ def test_incremental_email_import_requires_reinvested_anchor_row(monkeypatch) ->
             attachment_name="九慕稳健3号净值序列.xlsx",
             rows=[
                 header,
-                [
-                    "SAVF63",
-                    "九慕稳健3号私募证券投资基金",
-                    "20260326",
-                    "0.9922",
-                    "1.0241",
-                ],
+                ["SAVF63", "九慕稳健3号私募证券投资基金", "20260326", "0.9922", "1.0241"],
             ],
         )
     }
@@ -571,25 +497,14 @@ def test_incremental_email_import_requires_reinvested_anchor_row(monkeypatch) ->
 
     def fake_update_refresh_status(**kwargs: object) -> dict[str, object]:
         captured.update(kwargs)
-        return {
-            "instrument_id": kwargs["instrument_id"],
-            "refresh_status": kwargs["status"],
-        }
+        return {"instrument_id": kwargs["instrument_id"], "refresh_status": kwargs["status"]}
 
     def fail_replace_nav_history(**_: object) -> dict[str, object]:
-        raise AssertionError(
-            "replace_nav_history should not run without a reinvestment anchor"
-        )
+        raise AssertionError("replace_nav_history should not run without a reinvestment anchor")
 
-    monkeypatch.setattr(
-        market_data_ops, "replace_nav_history", fail_replace_nav_history
-    )
-    monkeypatch.setattr(
-        market_data_ops, "update_refresh_status", fake_update_refresh_status
-    )
-    monkeypatch.setattr(
-        market_data_ops, "_existing_nav_history_by_date", lambda _instrument_id: {}
-    )
+    monkeypatch.setattr(market_data_ops, "replace_nav_history", fail_replace_nav_history)
+    monkeypatch.setattr(market_data_ops, "update_refresh_status", fake_update_refresh_status)
+    monkeypatch.setattr(market_data_ops, "_existing_nav_history_by_date", lambda _instrument_id: {})
 
     record = _import_rows_from_email_rules(
         instrument_id="savf63",
@@ -616,10 +531,7 @@ def test_incremental_email_import_uses_attachment_nav_dates_not_latest_received_
             {
                 "sender_equals": ["yywbfa@cmschina.com.cn"],
                 "subject_contains": ["润洲正行11号私募证券投资基金a", "虚拟计提净值表"],
-                "attachment_name_contains": [
-                    "润洲正行11号私募证券投资基金a",
-                    "虚拟计提后净值表",
-                ],
+                "attachment_name_contains": ["润洲正行11号私募证券投资基金a", "虚拟计提后净值表"],
                 "attachment_extensions": ["xlsx"],
                 "row_code_equals": ["ZB945A"],
                 "row_name_equals": ["润洲正行11号私募证券投资基金A"],
@@ -633,13 +545,7 @@ def test_incremental_email_import_uses_attachment_nav_dates_not_latest_received_
             attachment_name="20260403_润洲正行11号私募证券投资基金A_九慕稳健3号私募证券投资基金_TA虚拟计提后净值表.xlsx",
             rows=[
                 header,
-                [
-                    "ZB945A",
-                    "润洲正行11号私募证券投资基金A",
-                    "20260403",
-                    "0.9352",
-                    "1.4915",
-                ],
+                ["ZB945A", "润洲正行11号私募证券投资基金A", "20260403", "0.9352", "1.4915"],
             ],
         ),
         2: _nav_email_bytes(
@@ -647,13 +553,7 @@ def test_incremental_email_import_uses_attachment_nav_dates_not_latest_received_
             attachment_name="20260402_润洲正行11号私募证券投资基金A_九慕稳健3号私募证券投资基金_TA虚拟计提后净值表.xlsx",
             rows=[
                 header,
-                [
-                    "ZB945A",
-                    "润洲正行11号私募证券投资基金A",
-                    "20260402",
-                    "0.9334",
-                    "1.4897",
-                ],
+                ["ZB945A", "润洲正行11号私募证券投资基金A", "20260402", "0.9334", "1.4897"],
             ],
         ),
     }
@@ -668,9 +568,7 @@ def test_incremental_email_import_uses_attachment_nav_dates_not_latest_received_
         return _zb945a_existing_nav_instrument()
 
     monkeypatch.setattr(market_data_ops, "get_instrument", fake_get_instrument)
-    monkeypatch.setattr(
-        market_data_ops, "replace_nav_history", fake_replace_nav_history
-    )
+    monkeypatch.setattr(market_data_ops, "replace_nav_history", fake_replace_nav_history)
 
     record = _import_rows_from_email_rules(
         instrument_id="zb945a",
@@ -684,7 +582,7 @@ def test_incremental_email_import_uses_attachment_nav_dates_not_latest_received_
     assert record == {"instrument_id": "zb945a"}
     rows = captured["rows"]
     assert [row["as_of_date"] for row in rows] == ["2026-04-02", "2026-04-03"]
-    assert captured["source_ref"] == "email:recent_window"
+    assert captured["provider"] == "email:recent_window"
     assert (
         captured["message"]
         == "Imported 2 NAV rows from 2 recent email attachments. Recalculated total_return_nav using dividend reinvestment."
@@ -699,10 +597,7 @@ def test_email_refresh_uses_success_cursor_and_does_not_reimport_unchanged_lates
             {
                 "sender_equals": ["yywbfa@cmschina.com.cn"],
                 "subject_contains": ["润洲正行11号私募证券投资基金a", "虚拟计提净值表"],
-                "attachment_name_contains": [
-                    "润洲正行11号私募证券投资基金a",
-                    "虚拟计提后净值表",
-                ],
+                "attachment_name_contains": ["润洲正行11号私募证券投资基金a", "虚拟计提后净值表"],
                 "attachment_extensions": ["xlsx"],
                 "row_code_equals": ["ZB945A"],
                 "row_name_equals": ["润洲正行11号私募证券投资基金A"],
@@ -716,13 +611,7 @@ def test_email_refresh_uses_success_cursor_and_does_not_reimport_unchanged_lates
             attachment_name="20260402_润洲正行11号私募证券投资基金A_九慕稳健3号私募证券投资基金_TA虚拟计提后净值表.xlsx",
             rows=[
                 header,
-                [
-                    "ZB945A",
-                    "润洲正行11号私募证券投资基金A",
-                    "20260402",
-                    "0.9334",
-                    "1.4897",
-                ],
+                ["ZB945A", "润洲正行11号私募证券投资基金A", "20260402", "0.9334", "1.4897"],
             ],
         ),
         2: _nav_email_bytes(
@@ -730,13 +619,7 @@ def test_email_refresh_uses_success_cursor_and_does_not_reimport_unchanged_lates
             attachment_name="20260403_润洲正行11号私募证券投资基金A_九慕稳健3号私募证券投资基金_TA虚拟计提后净值表.xlsx",
             rows=[
                 header,
-                [
-                    "ZB945A",
-                    "润洲正行11号私募证券投资基金A",
-                    "20260403",
-                    "0.9352",
-                    "1.4915",
-                ],
+                ["ZB945A", "润洲正行11号私募证券投资基金A", "20260403", "0.9352", "1.4915"],
             ],
         ),
     }
@@ -769,9 +652,7 @@ def test_email_refresh_uses_success_cursor_and_does_not_reimport_unchanged_lates
             del username, password
             return "OK", []
 
-        def select(
-            self, folder: str, readonly: bool = True
-        ) -> tuple[str, list[object]]:
+        def select(self, folder: str, readonly: bool = True) -> tuple[str, list[object]]:
             del folder, readonly
             return "OK", []
 
@@ -803,12 +684,8 @@ def test_email_refresh_uses_success_cursor_and_does_not_reimport_unchanged_lates
     monkeypatch.setattr(market_data_ops, "get_settings", lambda: FakeSettings())
     monkeypatch.setattr(market_data_ops, "get_instrument", fake_get_instrument)
     monkeypatch.setattr(market_data_ops.imaplib, "IMAP4_SSL", FakeRefreshMailbox)
-    monkeypatch.setattr(
-        market_data_ops, "replace_nav_history", fake_replace_nav_history
-    )
-    monkeypatch.setattr(
-        market_data_ops, "update_refresh_status", fake_update_refresh_status
-    )
+    monkeypatch.setattr(market_data_ops, "replace_nav_history", fake_replace_nav_history)
+    monkeypatch.setattr(market_data_ops, "update_refresh_status", fake_update_refresh_status)
 
     record = market_data_ops._refresh_from_email(
         instrument_id="zb945a",
@@ -820,7 +697,7 @@ def test_email_refresh_uses_success_cursor_and_does_not_reimport_unchanged_lates
                     "as_of_date": "2026-04-03",
                     "value": "0.9352",
                     "currency": "CNY",
-                    "source_ref": "email:previous",
+                    "provider": "email:previous",
                     "status": "complete",
                 }
             ],
@@ -850,16 +727,10 @@ def test_email_refresh_uses_success_cursor_and_does_not_reimport_unchanged_lates
     )
 
 
-def test_email_search_cursor_does_not_advance_after_failed_blocked_or_non_email_refresh() -> (
-    None
-):
+def test_email_search_cursor_does_not_advance_after_failed_blocked_or_non_email_refresh() -> None:
     nav_since_date = market_data_ops.date(2026, 4, 3)
 
-    for status, mode in (
-        ("failed", "email"),
-        ("blocked", "email"),
-        ("imported", "manual"),
-    ):
+    for status, mode in (("failed", "email"), ("blocked", "email"), ("imported", "manual")):
         assert market_data_ops._email_search_since_date(
             instrument={
                 "refresh_status": {
@@ -893,13 +764,7 @@ def test_incremental_email_import_replaces_changed_latest_date(monkeypatch) -> N
             attachment_name="CTA因子组合2号净值.xlsx",
             rows=[
                 ["产品代码", "产品名称", "净值日期", "单位净值", "累计净值"],
-                [
-                    "SBCJ69",
-                    "国泰君安期货CTA因子组合2号",
-                    "20260403",
-                    "1.1002",
-                    "1.1002",
-                ],
+                ["SBCJ69", "国泰君安期货CTA因子组合2号", "20260403", "1.1002", "1.1002"],
             ],
         )
     }
@@ -928,9 +793,7 @@ def test_incremental_email_import_replaces_changed_latest_date(monkeypatch) -> N
     monkeypatch.setattr(
         market_data_ops,
         "replace_nav_history",
-        lambda **kwargs: (
-            captured.update(kwargs) or {"instrument_id": kwargs["instrument_id"]}
-        ),
+        lambda **kwargs: captured.update(kwargs) or {"instrument_id": kwargs["instrument_id"]},
     )
 
     record = _import_rows_from_email_rules(
@@ -994,9 +857,7 @@ def test_email_batch_reuses_one_login_and_logout_across_folders(monkeypatch) -> 
             self.login_count += 1
             return "OK", []
 
-        def select(
-            self, folder: str, readonly: bool = True
-        ) -> tuple[str, list[object]]:
+        def select(self, folder: str, readonly: bool = True) -> tuple[str, list[object]]:
             del readonly
             self.selected_folders.append(folder)
             return "OK", []
@@ -1042,17 +903,9 @@ def test_email_batch_reuses_one_login_and_logout_across_folders(monkeypatch) -> 
         return record
 
     monkeypatch.setattr(market_data_ops, "get_settings", lambda: FakeSettings())
-    monkeypatch.setattr(
-        market_data_ops, "list_instruments", lambda **kwargs: list(instruments.values())
-    )
-    monkeypatch.setattr(
-        market_data_ops,
-        "get_instrument",
-        lambda instrument_id: instruments[instrument_id],
-    )
-    monkeypatch.setattr(
-        market_data_ops, "update_refresh_status", fake_update_refresh_status
-    )
+    monkeypatch.setattr(market_data_ops, "list_instruments", lambda **kwargs: list(instruments.values()))
+    monkeypatch.setattr(market_data_ops, "get_instrument", lambda instrument_id: instruments[instrument_id])
+    monkeypatch.setattr(market_data_ops, "update_refresh_status", fake_update_refresh_status)
     monkeypatch.setattr(market_data_ops.imaplib, "IMAP4_SSL", FakeBatchMailbox)
 
     result = market_data_ops.refresh_market_data_batch(
@@ -1100,9 +953,7 @@ def test_email_batch_reconnects_after_imap_abort(monkeypatch) -> None:
             del username, password
             return "OK", []
 
-        def select(
-            self, folder: str, readonly: bool = True
-        ) -> tuple[str, list[object]]:
+        def select(self, folder: str, readonly: bool = True) -> tuple[str, list[object]]:
             del folder, readonly
             return "OK", []
 
@@ -1143,20 +994,12 @@ def test_email_batch_reconnects_after_imap_abort(monkeypatch) -> None:
         }
 
     monkeypatch.setattr(market_data_ops, "get_settings", lambda: FakeSettings())
-    monkeypatch.setattr(
-        market_data_ops, "list_instruments", lambda **kwargs: [instrument]
-    )
-    monkeypatch.setattr(
-        market_data_ops, "get_instrument", lambda instrument_id: instrument
-    )
-    monkeypatch.setattr(
-        market_data_ops, "update_refresh_status", fake_update_refresh_status
-    )
+    monkeypatch.setattr(market_data_ops, "list_instruments", lambda **kwargs: [instrument])
+    monkeypatch.setattr(market_data_ops, "get_instrument", lambda instrument_id: instrument)
+    monkeypatch.setattr(market_data_ops, "update_refresh_status", fake_update_refresh_status)
     monkeypatch.setattr(market_data_ops.imaplib, "IMAP4_SSL", FlakyMailbox)
 
-    result = market_data_ops.refresh_market_data_batch(
-        source="email", updated_by="test"
-    )
+    result = market_data_ops.refresh_market_data_batch(source="email", updated_by="test")
 
     assert result["results"][0]["status"] == "no_match"
     assert len(mailboxes) == 2
@@ -1164,9 +1007,7 @@ def test_email_batch_reconnects_after_imap_abort(monkeypatch) -> None:
     assert mailboxes[1].logout_count == 1
 
 
-def test_public_item_timeout_uses_configured_limit_and_returns_failed_status(
-    monkeypatch,
-) -> None:
+def test_public_item_timeout_uses_configured_limit_and_returns_failed_status(monkeypatch) -> None:
     captured: dict[str, object] = {}
 
     class FakeSettings:
@@ -1195,9 +1036,7 @@ def test_public_item_timeout_uses_configured_limit_and_returns_failed_status(
     monkeypatch.setattr(market_data_ops, "get_settings", lambda: FakeSettings())
     monkeypatch.setattr(market_data_ops, "_BatchItemTimeout", ImmediateTimeout)
     monkeypatch.setattr(market_data_ops, "refresh_market_data", fail_unwrapped_refresh)
-    monkeypatch.setattr(
-        market_data_ops, "update_refresh_status", fake_update_refresh_status
-    )
+    monkeypatch.setattr(market_data_ops, "update_refresh_status", fake_update_refresh_status)
 
     record = market_data_ops.refresh_market_data_with_timeout(
         instrument_id="fund-a",
@@ -1228,9 +1067,7 @@ def test_tushare_api_uses_sdk_with_configured_proxy_url(monkeypatch) -> None:
     class FakeFrame:
         def to_dict(self, orient: str) -> list[dict[str, object]]:
             assert orient == "records"
-            return [
-                {"ts_code": "000300.SH", "trade_date": "20260615", "close": "4200.12"}
-            ]
+            return [{"ts_code": "000300.SH", "trade_date": "20260615", "close": "4200.12"}]
 
     class FakePro:
         def __init__(self) -> None:
@@ -1266,9 +1103,7 @@ def test_tushare_api_uses_sdk_with_configured_proxy_url(monkeypatch) -> None:
         "ts_code": "000300.SH",
         "fields": "ts_code,trade_date,close",
     }
-    assert rows == [
-        {"ts_code": "000300.SH", "trade_date": "20260615", "close": "4200.12"}
-    ]
+    assert rows == [{"ts_code": "000300.SH", "trade_date": "20260615", "close": "4200.12"}]
 
 
 def test_tushare_refresh_imports_public_fund_nav(monkeypatch) -> None:
@@ -1329,9 +1164,7 @@ def test_tushare_refresh_imports_public_fund_nav(monkeypatch) -> None:
             ],
         },
     )
-    monkeypatch.setattr(
-        market_data_ops, "replace_nav_history", fake_replace_nav_history
-    )
+    monkeypatch.setattr(market_data_ops, "replace_nav_history", fake_replace_nav_history)
 
     record = market_data_ops._refresh_from_tushare(
         instrument_id="018654-of",
@@ -1339,11 +1172,7 @@ def test_tushare_refresh_imports_public_fund_nav(monkeypatch) -> None:
             "instrument_id": "018654-of",
             "instrument_type": "fund",
             "identifiers": [
-                {
-                    "identifier_type": "ticker",
-                    "identifier_value": "018654.OF",
-                    "is_primary": True,
-                }
+                {"identifier_type": "ticker", "identifier_value": "018654.OF", "is_primary": True}
             ],
             "market_data": [
                 {
@@ -1373,25 +1202,16 @@ def test_tushare_refresh_imports_public_fund_nav(monkeypatch) -> None:
     assert record == {"instrument_id": "018654-of"}
     assert captured["api_call"]["api_name"] == "fund_nav"
     assert captured["api_call"]["params"] == {"ts_code": "018654.OF"}
-    assert (
-        captured["api_call"]["fields"]
-        == "ts_code,ann_date,end_date,nav_date,unit_nav,accum_nav,adj_nav,update_flag"
-    )
+    assert captured["api_call"]["fields"] == "ts_code,ann_date,end_date,nav_date,unit_nav,accum_nav,adj_nav,update_flag"
     replace_payload = captured["replace"]
-    assert replace_payload["source_ref"] == "tushare:fund_nav"
+    assert replace_payload["provider"] == "tushare:fund_nav"
     assert replace_payload["mode"] == "api"
     assert replace_payload["rows"] == [
         {
             "as_of_date": "2026-06-15",
             "nav": market_data_ops.Decimal("1.2345"),
-            "nav_input_scale": 4,
-            "nav_numeric_scale_state": "declared",
             "cumulative_nav": market_data_ops.Decimal("1.3456"),
-            "cumulative_nav_input_scale": 4,
-            "cumulative_nav_numeric_scale_state": "declared",
             "nav_with_dividend": market_data_ops.Decimal("1.4567"),
-            "nav_with_dividend_input_scale": 4,
-            "nav_with_dividend_numeric_scale_state": "declared",
             "currency": "CNY",
             "frequency": "daily",
         }
@@ -1422,9 +1242,7 @@ def test_tushare_refresh_imports_index_close(monkeypatch) -> None:
         "upsert_market_data_points",
         fake_upsert_market_data_points,
     )
-    monkeypatch.setattr(
-        market_data_ops, "update_refresh_status", fake_update_refresh_status
-    )
+    monkeypatch.setattr(market_data_ops, "update_refresh_status", fake_update_refresh_status)
 
     record = market_data_ops._refresh_from_tushare(
         instrument_id="000300-sh",
@@ -1432,11 +1250,7 @@ def test_tushare_refresh_imports_index_close(monkeypatch) -> None:
             "instrument_id": "000300-sh",
             "instrument_type": "index",
             "identifiers": [
-                {
-                    "identifier_type": "ticker",
-                    "identifier_value": "000300.SH",
-                    "is_primary": True,
-                }
+                {"identifier_type": "ticker", "identifier_value": "000300.SH", "is_primary": True}
             ],
             "market_data": [
                 {
@@ -1463,10 +1277,8 @@ def test_tushare_refresh_imports_index_close(monkeypatch) -> None:
                 "quote_basis": "close",
                 "as_of_date": market_data_ops.date(2026, 6, 15),
                 "value": market_data_ops.Decimal("4200.12"),
-                "value_input_scale": 2,
-                "numeric_scale_state": "declared",
                 "currency": "CNY",
-                "source_ref": "tushare:index_daily",
+                "provider": "tushare:index_daily",
                 "status": "complete",
             }
         ],
@@ -1475,25 +1287,7 @@ def test_tushare_refresh_imports_index_close(monkeypatch) -> None:
     assert captured["refresh_status"]["mode"] == "api"
 
 
-def test_tushare_float_quote_is_explicitly_binary_inferred() -> None:
-    rows = market_data_ops._tushare_price_rows(
-        [{"trade_date": "20260615", "close": 4200.12}],
-        latest_date=None,
-    )
-
-    assert rows == [
-        {
-            "as_of_date": market_data_ops.date(2026, 6, 15),
-            "value": market_data_ops.Decimal("4200.12"),
-            "value_input_scale": 2,
-            "numeric_scale_state": "binary_inferred",
-        }
-    ]
-
-
-def test_tushare_price_refresh_starts_at_2024_when_no_existing_history(
-    monkeypatch,
-) -> None:
+def test_tushare_price_refresh_starts_at_2024_when_no_existing_history(monkeypatch) -> None:
     captured: dict[str, object] = {}
 
     def fake_call_tushare_api(**kwargs: object) -> list[dict[str, object]]:
@@ -1525,9 +1319,7 @@ def test_tushare_price_refresh_starts_at_2024_when_no_existing_history(
         "upsert_market_data_points",
         fake_upsert_market_data_points,
     )
-    monkeypatch.setattr(
-        market_data_ops, "update_refresh_status", fake_update_refresh_status
-    )
+    monkeypatch.setattr(market_data_ops, "update_refresh_status", fake_update_refresh_status)
     monkeypatch.setattr(
         market_data_ops,
         "upsert_quote_selection_policy",
@@ -1540,11 +1332,7 @@ def test_tushare_price_refresh_starts_at_2024_when_no_existing_history(
             "instrument_id": "513050-sh",
             "instrument_type": "fund",
             "identifiers": [
-                {
-                    "identifier_type": "ticker",
-                    "identifier_value": "513050.SH",
-                    "is_primary": True,
-                }
+                {"identifier_type": "ticker", "identifier_value": "513050.SH", "is_primary": True}
             ],
             "market_data": [],
         },
@@ -1559,7 +1347,7 @@ def test_tushare_price_refresh_starts_at_2024_when_no_existing_history(
         "quote_selection_policy": {
             "trading": ["last", "close"],
             "valuation": ["close", "last"],
-            "total_return": ["adjusted_close"],
+            "total_return": ["adjusted_close", "close", "last"],
             "chart": ["adjusted_close", "close", "last"],
             "reference": ["close", "last"],
         },
@@ -1571,10 +1359,8 @@ def test_tushare_price_refresh_starts_at_2024_when_no_existing_history(
             "quote_basis": "close",
             "as_of_date": market_data_ops.date(2024, 1, 2),
             "value": market_data_ops.Decimal("0.91"),
-            "value_input_scale": 2,
-            "numeric_scale_state": "declared",
             "currency": "CNY",
-            "source_ref": "tushare:fund_daily",
+            "provider": "tushare:fund_daily",
             "status": "complete",
         },
         {
@@ -1583,15 +1369,13 @@ def test_tushare_price_refresh_starts_at_2024_when_no_existing_history(
             "as_of_date": market_data_ops.date(2024, 1, 2),
             "value": "0.91",
             "currency": "CNY",
-            "source_ref": "tushare:fund_adj:qfq:latest_factor=1",
+            "provider": "tushare:fund_adj:qfq:latest_factor=1",
             "status": "complete",
         },
     ]
 
 
-def test_tushare_share_split_detection_is_review_only_until_issuer_confirmation() -> (
-    None
-):
+def test_tushare_share_split_detection_is_review_only_until_issuer_confirmation() -> None:
     candidates = market_data_ops._detect_tushare_share_splits(
         factors={
             market_data_ops.date(2026, 3, 27): market_data_ops.Decimal("1"),
@@ -1608,10 +1392,7 @@ def test_tushare_share_split_detection_is_review_only_until_issuer_confirmation(
     assert candidates[0]["new_units"] == "2"
     assert candidates[0]["old_units"] == "1"
     assert candidates[0]["status"] == "detected"
-    assert (
-        candidates[0]["provenance"]["detection_method"]
-        == "tushare_factor_price_continuity/v1"
-    )
+    assert candidates[0]["provenance"]["detection_method"] == "tushare_factor_price_continuity/v1"
 
 
 def test_tushare_factor_change_without_inverse_raw_price_move_is_not_a_split() -> None:
@@ -1641,9 +1422,7 @@ def test_tushare_full_history_is_capped_at_2024(monkeypatch) -> None:
         return {"instrument_id": kwargs["instrument_id"]}
 
     monkeypatch.setattr(market_data_ops, "_call_tushare_api", fake_call_tushare_api)
-    monkeypatch.setattr(
-        market_data_ops, "update_refresh_status", fake_update_refresh_status
-    )
+    monkeypatch.setattr(market_data_ops, "update_refresh_status", fake_update_refresh_status)
 
     market_data_ops._refresh_from_tushare(
         instrument_id="000300-sh",
@@ -1651,11 +1430,7 @@ def test_tushare_full_history_is_capped_at_2024(monkeypatch) -> None:
             "instrument_id": "000300-sh",
             "instrument_type": "index",
             "identifiers": [
-                {
-                    "identifier_type": "ticker",
-                    "identifier_value": "000300.SH",
-                    "is_primary": True,
-                }
+                {"identifier_type": "ticker", "identifier_value": "000300.SH", "is_primary": True}
             ],
             "market_data": [
                 {

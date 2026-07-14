@@ -339,7 +339,7 @@ function extractErrorMessage(error: unknown) {
 const PLANNING_BUDGETING_LEVEL = 'weight_and_risk_budget'
 
 function percentInputFromDecimal(value?: number | null) {
-  if (value == null || !Number.isFinite(value)) {
+  if (value == null || Number.isNaN(value)) {
     return ''
   }
   return String(Number((value * 100).toFixed(2)))
@@ -493,7 +493,7 @@ function validateTargetSetDraft(
       const parsedWeight = parsePercentInput(lineDraft.target_weight)
       if (parsedWeight == null) {
         errors.push(`Missing target weight for ${member.label}.`)
-      } else if (!Number.isFinite(parsedWeight) || parsedWeight < 0) {
+      } else if (Number.isNaN(parsedWeight) || parsedWeight < 0) {
         errors.push(`Invalid target weight for ${member.label}.`)
       } else {
         weightSum += parsedWeight
@@ -504,7 +504,7 @@ function validateTargetSetDraft(
       const parsedRisk = parsePercentInput(lineDraft.target_risk_share)
       if (parsedRisk == null) {
         errors.push(`Missing target risk budget for ${member.label}.`)
-      } else if (!Number.isFinite(parsedRisk) || parsedRisk < 0) {
+      } else if (Number.isNaN(parsedRisk) || parsedRisk < 0) {
         errors.push(`Invalid target risk budget for ${member.label}.`)
       } else if (isSyntheticCashTargetMember(member)) {
         if (Math.abs(parsedRisk) > 0.0005) {
@@ -980,10 +980,7 @@ export default function TaxonomiesPage() {
       const totalEntityValueBase =
         holdingRowsForEntities.reduce((total, row) => total + (row.market_value_base ?? 0), 0) +
         (includeCashBuckets
-          ? visibleCashAccounts.reduce(
-              (total, accountRow) => total + Number(accountRow.settled_cash_base_exact ?? 0),
-              0,
-            )
+          ? visibleCashAccounts.reduce((total, accountRow) => total + (accountRow.derived_cash_balance_base ?? 0), 0)
           : 0)
 
       const holdingEntities = holdingRowsForEntities.map((row) => {
@@ -1086,19 +1083,16 @@ export default function TaxonomiesPage() {
       }
 
       const cashEntities = visibleCashAccounts.map((accountRow) => {
-        const settledCashBase = accountRow.settled_cash_base_exact == null
-          ? null
-          : Number(accountRow.settled_cash_base_exact)
         return {
           entity_id: accountRow.account.account_id,
           target_scope: 'cash_bucket' as const,
           label: accountRow.account.account_name,
           supporting_label: accountRow.account.currency,
           allocation:
-            settledCashBase != null && totalEntityValueBase > 1e-9
-              ? settledCashBase / totalEntityValueBase
+            accountRow.derived_cash_balance_base != null && totalEntityValueBase > 1e-9
+              ? accountRow.derived_cash_balance_base / totalEntityValueBase
               : null,
-          market_value_base: settledCashBase,
+          market_value_base: accountRow.derived_cash_balance_base ?? null,
           current_assignment: null,
           current_node: null,
           holding_state: 'held',
@@ -1134,10 +1128,7 @@ export default function TaxonomiesPage() {
             label: `${accountRow.account.account_name} · Cash`,
             supporting_label: accountRow.account.currency,
             allocation: null,
-            market_value_base:
-              accountRow.settled_cash_base_exact == null
-                ? null
-                : Number(accountRow.settled_cash_base_exact),
+            market_value_base: accountRow.derived_cash_balance_base ?? null,
             current_assignment: assignment,
             current_node: currentNode,
             holding_state: 'held',

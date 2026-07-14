@@ -1,4 +1,4 @@
-from datetime import date, datetime, timezone
+from datetime import datetime, timezone
 from pathlib import Path
 import re
 from typing import Any
@@ -6,19 +6,12 @@ from uuid import uuid4
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse
-from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from watchlist_app.api.contracts import (
-    FundChartResponse,
-    FundPerformanceResponse,
-    FundRiskResponse,
-    FundSummaryResponse,
     ManualProfileUpsertRequest,
     ManualFundCreateRequest,
     NavSettingsUpsertRequest,
-    ResearchProfileUpdateRequest,
-    ResearchRatingUpdateRequest,
 )
 from watchlist_app.core.settings import get_settings
 from watchlist_app.db.session import get_db_session
@@ -30,10 +23,6 @@ from watchlist_app.repositories.sqlalchemy.manual_profiles import (
     SQLAlchemyInstrumentManualProfileRepository,
 )
 from watchlist_app.repositories.sqlalchemy.read_models import SQLAlchemyReadModelRepository
-from watchlist_app.repositories.sqlalchemy.research_ratings import (
-    ResearchRatingConflictError,
-    SQLAlchemyResearchRatingRepository,
-)
 from watchlist_app.repositories.sqlalchemy.taxonomy import SQLAlchemyTaxonomyRepository
 from watchlist_app.services.canonical_recalc import CanonicalRecalcService
 from watchlist_app.services.fund_taxonomy import (
@@ -44,19 +33,17 @@ from watchlist_app.services.read_models import (
     collapse_latest_attribute_values,
     default_fund_chart_payload,
     default_fund_performance_payload,
+    default_fund_exposure_holdings_payload,
+    default_fund_exposure_summary_payload,
+    default_fund_rating_payload,
     default_fund_risk_payload,
     default_fund_summary_payload,
     merge_summary_attributes,
     serialize_payload,
 )
 from watchlist_app.services.read_model_freshness import (
-    quote_dependency_fingerprint,
+    latest_local_market_data_date,
     schedule_instrument_refresh_if_stale,
-)
-from watchlist_app.services.research_ratings import (
-    empty_research_rating,
-    materialize_research_rating,
-    serialize_research_rating,
 )
 
 
@@ -66,7 +53,6 @@ read_model_repository = SQLAlchemyReadModelRepository()
 taxonomy_repository = SQLAlchemyTaxonomyRepository()
 attribute_repository = SQLAlchemyInstrumentAttributeRepository()
 manual_profile_repository = SQLAlchemyInstrumentManualProfileRepository()
-research_rating_repository = SQLAlchemyResearchRatingRepository()
 instrument_repository = SQLAlchemyInstrumentRepository()
 canonical_recalc_service = CanonicalRecalcService()
 
@@ -113,18 +99,21 @@ def _schedule_instrument_refresh(
     session: Session,
     *,
     instrument_id: str,
-    role: str,
-    read_model_payload: object | None,
     trigger_ref_type: str,
-    current_dependency_fingerprint: str | None = None,
 ) -> None:
+    chart_record = read_model_repository.get_chart(session, instrument_id)
+    source_row = read_model_repository.find_any_watchlist_row_for_asset(session, instrument_id)
     schedule_instrument_refresh_if_stale(
-        session,
         instrument_id=instrument_id,
-        role=role,
-        local_dependency_fingerprint=quote_dependency_fingerprint(read_model_payload),
-        current_dependency_fingerprint=current_dependency_fingerprint,
-        valuation_date=date.today(),
+        local_latest_date=latest_local_market_data_date(
+            chart_payload=chart_record.payload_json if chart_record is not None else None,
+            fallback_values=((source_row.last_nav_date if source_row is not None else None),),
+        ),
+        local_source_cutoff_at=(
+            chart_record.source_cutoff_at
+            if chart_record is not None
+            else (source_row.last_recalculated_at if source_row is not None else None)
+        ),
         trigger_ref_type=trigger_ref_type,
         trigger_ref_id=instrument_id,
     )
@@ -177,6 +166,7 @@ def _default_documents_payload() -> dict[str, object]:
 def _default_research_payload() -> dict[str, object]:
     return {
         "overview": {
+            "current_view": "",
             "research_view": "",
             "dd_status": "",
             "odd_status": "",
@@ -185,8 +175,17 @@ def _default_research_payload() -> dict[str, object]:
             "next_review_date": None,
             "primary_analyst": "",
         },
+        "manual_rating": None,
         "timeline_notes": [],
     }
+
+
+def _normalize_manual_rating(value: Any) -> int | None:
+    if value is None:
+        return None
+    if not isinstance(value, int) or isinstance(value, bool):
+        return None
+    return max(1, min(5, value))
 
 
 def _normalize_research_payload(payload: dict[str, Any] | None) -> dict[str, object]:
@@ -204,26 +203,26 @@ def _normalize_research_payload(payload: dict[str, Any] | None) -> dict[str, obj
 
     return {
         "overview": overview,
+        "manual_rating": _normalize_manual_rating(source.get("manual_rating")),
         "timeline_notes": timeline_notes if isinstance(timeline_notes, list) else [],
     }
 
 
 def _default_nav_settings_payload() -> dict[str, object]:
     return {
+        "nav_basis_preference": "auto",
         "default_benchmark_instrument_id": None,
         "peer_baseline_instrument_ids": [],
     }
 
 
 def _normalize_nav_settings_payload(payload: dict[str, object] | None) -> dict[str, object]:
-    source = payload or {}
-    normalized = _default_nav_settings_payload()
-    normalized["default_benchmark_instrument_id"] = source.get(
-        "default_benchmark_instrument_id"
-    )
-    normalized["peer_baseline_instrument_ids"] = source.get(
-        "peer_baseline_instrument_ids"
-    ) or []
+    normalized = {
+        **_default_nav_settings_payload(),
+        **(payload or {}),
+    }
+    if normalized.get("nav_basis_preference") not in {"auto", "nav_with_dividend"}:
+        normalized["nav_basis_preference"] = "auto"
     normalized["default_benchmark_instrument_id"] = (
         str(normalized.get("default_benchmark_instrument_id")).strip() or None
         if normalized.get("default_benchmark_instrument_id") is not None
@@ -267,24 +266,14 @@ def _ensure_instrument_exists(session: Session, instrument_id: str) -> None:
         raise HTTPException(status_code=404, detail="Instrument not found")
 
 
-@router.get(
-    "/{instrument_id}/summary",
-    response_model=FundSummaryResponse,
-    response_model_exclude_unset=True,
-)
+@router.get("/{instrument_id}/summary")
 def get_fund_summary(
     instrument_id: str,
     session: Session = Depends(get_db_session),
 ) -> dict[str, object]:
     _ensure_instrument_exists(session, instrument_id)
+    _schedule_instrument_refresh(session, instrument_id=instrument_id, trigger_ref_type="instrument_summary_read")
     record = read_model_repository.get_summary(session, instrument_id)
-    _schedule_instrument_refresh(
-        session,
-        instrument_id=instrument_id,
-        role="total_return",
-        read_model_payload=record.payload_json if record is not None else None,
-        trigger_ref_type="instrument_summary_read",
-    )
     attributes = collapse_latest_attribute_values(
         attribute_repository.get_values_for_asset(session, instrument_id)
     )
@@ -333,183 +322,82 @@ def list_fund_library(
     return instrument_repository.list_library(session)
 
 
-@router.get(
-    "/{instrument_id}/chart",
-    response_model=FundChartResponse,
-    response_model_exclude_unset=True,
-)
+@router.get("/{instrument_id}/chart")
 def get_fund_chart_data(
     instrument_id: str,
     session: Session = Depends(get_db_session),
 ) -> dict[str, object]:
     _ensure_instrument_exists(session, instrument_id)
+    _schedule_instrument_refresh(session, instrument_id=instrument_id, trigger_ref_type="instrument_chart_read")
     record = read_model_repository.get_chart(session, instrument_id)
-    _schedule_instrument_refresh(
-        session,
-        instrument_id=instrument_id,
-        role="chart",
-        read_model_payload=record.payload_json if record is not None else None,
-        trigger_ref_type="instrument_chart_read",
-    )
     if record is None:
         return default_fund_chart_payload(instrument_id)
     return serialize_payload(record.payload_json)
 
 
-@router.get(
-    "/{instrument_id}/performance",
-    response_model=FundPerformanceResponse,
-    response_model_exclude_unset=True,
-)
+@router.get("/{instrument_id}/performance")
 def get_fund_performance_data(
     instrument_id: str,
-    benchmark_instrument_id: str | None = None,
-    rolling_window_months: int = 12,
     session: Session = Depends(get_db_session),
 ) -> dict[str, object]:
     _ensure_instrument_exists(session, instrument_id)
-    if rolling_window_months not in {1, 3, 6, 12}:
-        raise HTTPException(
-            status_code=422,
-            detail="Rolling window must be one of 1, 3, 6, or 12 months.",
-        )
-    if benchmark_instrument_id == instrument_id:
-        raise HTTPException(
-            status_code=422,
-            detail="Benchmark instrument must differ from the investment instrument.",
-        )
-    if benchmark_instrument_id is not None:
-        _ensure_instrument_exists(session, benchmark_instrument_id)
+    _schedule_instrument_refresh(session, instrument_id=instrument_id, trigger_ref_type="instrument_performance_read")
     record = read_model_repository.get_performance(session, instrument_id)
-    payload = (
-        serialize_payload(record.payload_json)
-        if record is not None
-        else default_fund_performance_payload()
-    )
-    analytics = canonical_recalc_service.build_investment_analytics_payload(
-        session,
-        instrument_id=instrument_id,
-        benchmark_instrument_id=benchmark_instrument_id,
-        rolling_window_months=rolling_window_months,
-        valuation_date=date.today(),
-    )
-    payload["analytics"] = analytics
-    quote_resolutions = analytics.get("quote_resolutions")
-    fund_resolution = (
-        quote_resolutions.get("fund") if isinstance(quote_resolutions, dict) else None
-    )
-    _schedule_instrument_refresh(
-        session,
-        instrument_id=instrument_id,
-        role="total_return",
-        read_model_payload=record.payload_json if record is not None else None,
-        current_dependency_fingerprint=quote_dependency_fingerprint(
-            {"quote_resolution": fund_resolution}
-        ),
-        trigger_ref_type="instrument_performance_read",
-    )
-    return payload
+    if record is None:
+        return default_fund_performance_payload()
+    return serialize_payload(record.payload_json)
 
 
-@router.get(
-    "/{instrument_id}/risk",
-    response_model=FundRiskResponse,
-    response_model_exclude_unset=True,
-)
+@router.get("/{instrument_id}/risk")
 def get_fund_risk_data(
     instrument_id: str,
     session: Session = Depends(get_db_session),
 ) -> dict[str, object]:
     _ensure_instrument_exists(session, instrument_id)
+    _schedule_instrument_refresh(session, instrument_id=instrument_id, trigger_ref_type="instrument_risk_read")
     record = read_model_repository.get_risk(session, instrument_id)
-    _schedule_instrument_refresh(
-        session,
-        instrument_id=instrument_id,
-        role="total_return",
-        read_model_payload=record.payload_json if record is not None else None,
-        trigger_ref_type="instrument_risk_read",
-    )
     if record is None:
         return default_fund_risk_payload()
     return serialize_payload(record.payload_json)
 
 
-@router.get("/{instrument_id}/research-rating")
-def get_current_research_rating(
+@router.get("/{instrument_id}/exposure/summary")
+def get_fund_exposure_summary_data(
     instrument_id: str,
     session: Session = Depends(get_db_session),
 ) -> dict[str, object]:
     _ensure_instrument_exists(session, instrument_id)
-    record = research_rating_repository.get_current(session, instrument_id)
-    return serialize_payload(
-        serialize_research_rating(record) or empty_research_rating(instrument_id)
-    )
+    _schedule_instrument_refresh(session, instrument_id=instrument_id, trigger_ref_type="instrument_exposure_summary_read")
+    record = read_model_repository.get_exposure_summary(session, instrument_id)
+    if record is None:
+        return default_fund_exposure_summary_payload()
+    return serialize_payload(record.payload_json)
 
 
-@router.get("/{instrument_id}/research-ratings")
-def list_research_rating_history(
+@router.get("/{instrument_id}/exposure/holdings")
+def get_fund_exposure_holdings_data(
     instrument_id: str,
     session: Session = Depends(get_db_session),
 ) -> dict[str, object]:
     _ensure_instrument_exists(session, instrument_id)
-    records = research_rating_repository.list_history(session, instrument_id)
-    return serialize_payload(
-        {
-            "instrument_id": instrument_id,
-            "items": [
-                serialize_research_rating(record)
-                for record in records
-            ],
-        }
-    )
+    _schedule_instrument_refresh(session, instrument_id=instrument_id, trigger_ref_type="instrument_exposure_holdings_read")
+    record = read_model_repository.get_exposure_holdings(session, instrument_id)
+    if record is None:
+        return default_fund_exposure_holdings_payload()
+    return serialize_payload(record.payload_json)
 
 
-@router.put("/{instrument_id}/research-rating")
-def replace_current_research_rating(
+@router.get("/{instrument_id}/ratings")
+def get_fund_rating_data(
     instrument_id: str,
-    payload: ResearchRatingUpdateRequest,
     session: Session = Depends(get_db_session),
 ) -> dict[str, object]:
     _ensure_instrument_exists(session, instrument_id)
-    try:
-        record = research_rating_repository.append_revision(
-            session,
-            instrument_id=instrument_id,
-            rating_value=payload.rating,
-            confidence=payload.confidence,
-            rationale=payload.rationale,
-            as_of_date=payload.as_of_date,
-            next_review_date=payload.next_review_date,
-            author=payload.author,
-            expected_current_revision_id=payload.expected_current_revision_id,
-        )
-        response_payload = materialize_research_rating(
-            session,
-            record=record,
-            read_model_repository=read_model_repository,
-        )
-        session.commit()
-    except ResearchRatingConflictError as exc:
-        session.rollback()
-        raise HTTPException(
-            status_code=409,
-            detail={
-                "code": "research_rating_revision_conflict",
-                "message": str(exc),
-                "expected_current_revision_id": exc.expected_revision_id,
-                "actual_current_revision_id": exc.actual_revision_id,
-            },
-        ) from exc
-    except IntegrityError as exc:
-        session.rollback()
-        raise HTTPException(
-            status_code=409,
-            detail={
-                "code": "research_rating_concurrent_update",
-                "message": "A concurrent research rating update was committed first.",
-            },
-        ) from exc
-    return serialize_payload(response_payload)
+    _schedule_instrument_refresh(session, instrument_id=instrument_id, trigger_ref_type="instrument_ratings_read")
+    record = read_model_repository.get_rating(session, instrument_id)
+    if record is None:
+        return default_fund_rating_payload()
+    return serialize_payload(record.payload_json)
 
 
 @router.get("/{instrument_id}/people")
@@ -733,13 +621,11 @@ def get_fund_research_profile(
 @router.put("/{instrument_id}/research")
 def upsert_fund_research_profile(
     instrument_id: str,
-    payload: ResearchProfileUpdateRequest,
+    payload: ManualProfileUpsertRequest,
     session: Session = Depends(get_db_session),
 ) -> dict[str, object]:
     _ensure_instrument_exists(session, instrument_id)
-    normalized_payload = _normalize_research_payload(
-        payload.payload.model_dump(mode="json")
-    )
+    normalized_payload = _normalize_research_payload(payload.payload)
     record = manual_profile_repository.upsert(
         session,
         instrument_id=instrument_id,
@@ -756,11 +642,7 @@ def get_fund_nav_series(
     session: Session = Depends(get_db_session),
 ) -> dict[str, object]:
     _ensure_instrument_exists(session, instrument_id)
-    return canonical_recalc_service.build_nav_series_payload(
-        session,
-        instrument_id=instrument_id,
-        valuation_date=date.today(),
-    )
+    return canonical_recalc_service.build_nav_series_payload(session, instrument_id=instrument_id)
 
 
 @router.put("/{instrument_id}/nav-series")
@@ -804,6 +686,8 @@ def upsert_fund_nav_settings(
 
     next_payload = dict(current_payload)
     provided_fields = payload.model_fields_set
+    if "nav_basis_preference" in provided_fields:
+        next_payload["nav_basis_preference"] = payload.nav_basis_preference
     if "default_benchmark_instrument_id" in provided_fields:
         next_payload["default_benchmark_instrument_id"] = payload.default_benchmark_instrument_id
     if "peer_baseline_instrument_ids" in provided_fields:

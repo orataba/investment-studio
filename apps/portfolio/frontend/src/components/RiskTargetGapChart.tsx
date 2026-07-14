@@ -19,7 +19,7 @@ type RiskTargetGapChartProps = {
 }
 
 function pctWidth(value: number | null | undefined, maxValue: number) {
-  if (value == null || !Number.isFinite(value) || !Number.isFinite(maxValue) || maxValue <= 0) {
+  if (value == null || Number.isNaN(value) || maxValue <= 0) {
     return 0
   }
   return Math.min(100, (Math.abs(value) / maxValue) * 100)
