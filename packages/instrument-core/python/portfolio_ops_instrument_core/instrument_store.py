@@ -18,10 +18,20 @@ from portfolio_ops_instrument_core.db_models import (
     InstrumentMarketData,
     RegistryMetadata,
 )
+from portfolio_ops_instrument_core.fx_contract import (
+    fx_instrument_identity,
+    validate_fx_market_data_contract,
+)
 from portfolio_ops_instrument_core.models import (
-    CASH_CUMULATIVE_NAV_BASES,
     CorporateActionEvent as CorporateActionEventModel,
-    VALUATION_PROHIBITED_TOTAL_RETURN_BASES,
+    QuoteSelectionPolicy,
+    SourceSettings,
+    canonical_price_contract,
+    normalize_instrument_type,
+    normalize_market_data_currency,
+    parse_persisted_price_contract,
+    parse_positive_market_data_value,
+    validate_nav_history_instrument_type,
 )
 
 
@@ -33,6 +43,22 @@ EMPTY_STORE: dict[str, object] = {
 
 SessionFactory = Callable[[], Session]
 EMAIL_REFRESH_SUCCESS_STATUSES = frozenset({"imported", "no_match", "no_new_data"})
+_SOURCE_SETTING_UNSET = object()
+SOURCE_SCHEDULE_DEFAULTS: dict[str, tuple[str, int]] = {
+    "fund": ("daily", 1),
+    "etf": ("daily", 0),
+    "index": ("daily", 0),
+    "bond": ("daily", 0),
+    "equity": ("daily", 0),
+    "fx": ("daily", 0),
+    "cash": ("event_driven", 0),
+    "other": ("event_driven", 0),
+}
+MARKET_CALENDAR_SUFFIXES = {
+    ".SH": "XSHG",
+    ".SZ": "XSHE",
+    ".HK": "XHKG",
+}
 
 
 def _utcnow_iso() -> str:
@@ -79,13 +105,44 @@ def _next_market_data_watermark(session: Session) -> str:
     return watermark
 
 
-def _default_source_settings() -> dict[str, object]:
+def _inferred_market_calendar(
+    identifiers: Iterable[dict[str, object]] | None,
+) -> str | None:
+    ordered_identifiers = sorted(
+        [identifier for identifier in (identifiers or []) if isinstance(identifier, dict)],
+        key=lambda identifier: 0 if bool(identifier.get("is_primary")) else 1,
+    )
+    for identifier in ordered_identifiers:
+        identifier_value = str(identifier.get("identifier_value") or "").strip().upper()
+        for suffix, calendar in MARKET_CALENDAR_SUFFIXES.items():
+            if identifier_value.endswith(suffix):
+                return calendar
+    return None
+
+
+def _default_source_settings(
+    *,
+    instrument_type: str = "other",
+    identifiers: Iterable[dict[str, object]] | None = None,
+) -> dict[str, object]:
+    normalized_instrument_type = instrument_type.strip().lower()
+    expected_frequency, release_lag_days = SOURCE_SCHEDULE_DEFAULTS.get(
+        normalized_instrument_type,
+        SOURCE_SCHEDULE_DEFAULTS["other"],
+    )
     return {
         "source_mode": "manual",
         "source_email": "",
         "source_location": "Shared data ops",
         "source_api_profile": "",
         "source_email_rules": [],
+        "expected_frequency": expected_frequency,
+        "market_calendar": (
+            _inferred_market_calendar(identifiers)
+            if expected_frequency != "event_driven"
+            else None
+        ),
+        "release_lag_days": release_lag_days,
     }
 
 
@@ -108,20 +165,9 @@ def _updated_refresh_status(
     updated_by: str | None,
     mode: str,
     requested_at: str,
-    previous_mode_fallback: str,
 ) -> dict[str, object]:
     normalized_mode = str(mode or "manual").strip().lower() or "manual"
     previous_cursor = str(previous.get("last_successful_requested_at") or "").strip() or None
-    if previous_cursor is None:
-        previous_status = str(previous.get("status") or "").strip().lower()
-        previous_mode = str(previous.get("mode") or previous_mode_fallback).strip().lower()
-        previous_requested_at = str(previous.get("requested_at") or "").strip() or None
-        if (
-            previous_mode == "email"
-            and previous_status in EMAIL_REFRESH_SUCCESS_STATUSES
-            and previous_requested_at is not None
-        ):
-            previous_cursor = previous_requested_at
 
     last_successful_requested_at = previous_cursor
     if normalized_mode == "email" and status.strip().lower() in EMAIL_REFRESH_SUCCESS_STATUSES:
@@ -231,87 +277,67 @@ QUOTE_SELECTION_POLICY_DEFAULTS: dict[str, dict[str, list[str]]] = {
     },
 }
 
-VALID_METRIC_FAMILIES = {"price", "nav", "fx"}
-VALID_QUOTE_BASES = {
-    "last": "price",
-    "close": "price",
-    "adjusted_close": "price",
-    "official_nav": "nav",
-    "total_return_nav": "nav",
-    "cumulative_nav": "nav",
-    "accumulated_nav": "nav",
-    "cum_nav": "nav",
-    "dividend_adjusted_nav": "nav",
-    "reinvested_nav": "nav",
-    "spot": "fx",
-    "clean_price": "price",
-    "dirty_price": "price",
-    "par": "price",
-}
+VALID_DATA_STATUSES = {"complete", "partial", "unavailable"}
+
+
+def _validated_market_data_observation(
+    *,
+    instrument_id: object,
+    instrument_type: object,
+    instrument_currency: object,
+    metric_family: object,
+    quote_basis: object,
+    point_currency: object,
+    value: object,
+    status: object,
+) -> tuple[str, str, Decimal]:
+    normalized_instrument_type = normalize_instrument_type(instrument_type)
+    normalized_instrument_currency = normalize_market_data_currency(instrument_currency)
+    normalized_point_currency = normalize_market_data_currency(point_currency)
+    if normalized_point_currency != normalized_instrument_currency:
+        raise ValueError(
+            f'Market-data currency "{normalized_point_currency}" does not match '
+            f'instrument currency "{normalized_instrument_currency}".'
+        )
+
+    normalized_status = str(status or "").strip().lower()
+    if normalized_status not in VALID_DATA_STATUSES:
+        raise ValueError(f'Unsupported market-data status "{normalized_status}".')
+
+    normalized_metric_family = str(metric_family or "").strip().lower()
+    normalized_quote_basis = str(quote_basis or "").strip().lower()
+    normalized_value = parse_positive_market_data_value(value)
+    validated_fx = validate_fx_market_data_contract(
+        instrument_id=instrument_id,
+        instrument_type=normalized_instrument_type,
+        instrument_currency=normalized_instrument_currency,
+        metric_family=normalized_metric_family,
+        quote_basis=normalized_quote_basis,
+        point_currency=normalized_point_currency,
+        value=normalized_value,
+        status=normalized_status,
+    )
+    return (
+        normalized_point_currency,
+        normalized_status,
+        validated_fx.rate if validated_fx is not None else normalized_value,
+    )
 
 
 def _default_quote_selection_policy(instrument_type: str) -> dict[str, object]:
-    normalized_instrument_type = instrument_type if instrument_type in QUOTE_SELECTION_POLICY_DEFAULTS else "other"
+    normalized_instrument_type = normalize_instrument_type(instrument_type)
     return deepcopy(QUOTE_SELECTION_POLICY_DEFAULTS[normalized_instrument_type])
 
 
 def validate_quote_selection_policy(quote_selection_policy: dict[str, object]) -> None:
-    raw_valuation = quote_selection_policy.get("valuation", [])
-    if not isinstance(raw_valuation, list):
-        raise ValueError("quote_selection_policy.valuation must be a list.")
-    invalid = sorted(
-        {
-            str(value or "").strip()
-            for value in raw_valuation
-            if str(value or "").strip() in VALUATION_PROHIBITED_TOTAL_RETURN_BASES
-        }
-    )
-    if invalid:
-        raise ValueError(
-            "Valuation policy cannot use total-return quote bases: "
-            + ", ".join(invalid)
-            + ". Use an unadjusted trading/valuation quote such as close, last, or official_nav."
-        )
-    for role in ("total_return", "chart"):
-        raw_values = quote_selection_policy.get(role, [])
-        if not isinstance(raw_values, list):
-            raise ValueError(f"quote_selection_policy.{role} must be a list.")
-        invalid_cumulative = sorted(
-            {
-                str(value or "").strip()
-                for value in raw_values
-                if str(value or "").strip() in CASH_CUMULATIVE_NAV_BASES
-            }
-        )
-        if invalid_cumulative:
-            raise ValueError(
-                f"{role} policy cannot use cash-cumulative NAV as total return: "
-                + ", ".join(invalid_cumulative)
-                + ". Use total_return_nav/dividend_adjusted_nav, or explicitly fall back to official_nav as an ordinary price-return series."
-            )
+    QuoteSelectionPolicy.model_validate(quote_selection_policy)
 
 
 def _normalized_quote_selection_policy(item: dict[str, object]) -> dict[str, object]:
-    instrument_type = str(item.get("instrument_type") or "other")
-    policy = _default_quote_selection_policy(instrument_type)
-    raw_policy = item.get("quote_selection_policy", {})
+    raw_policy = item.get("quote_selection_policy")
     if not isinstance(raw_policy, dict):
-        return policy
-
-    for role, fallback_bases in policy.items():
-        raw_values = raw_policy.get(role)
-        if not isinstance(raw_values, list):
-            continue
-        normalized_values: list[str] = []
-        for raw_value in raw_values:
-            quote_basis = str(raw_value or "").strip()
-            if quote_basis in VALID_QUOTE_BASES and quote_basis not in normalized_values:
-                normalized_values.append(quote_basis)
-        if normalized_values:
-            policy[role] = normalized_values
-        else:
-            policy[role] = list(fallback_bases)
-    return policy
+        raise ValueError("quote_selection_policy must be an object.")
+    return QuoteSelectionPolicy.model_validate(raw_policy).model_dump()
 
 
 def _sort_market_data(points: list[dict[str, object]]) -> list[dict[str, object]]:
@@ -378,27 +404,67 @@ def _normalized_corporate_actions(item: dict[str, object]) -> list[dict[str, obj
 
 
 def _normalized_market_data(item: dict[str, object]) -> list[dict[str, object]]:
-    instrument_currency = str(item.get("currency") or "USD").strip().upper() or "USD"
+    instrument_id = str(item.get("instrument_id") or "").strip()
+    if not instrument_id:
+        raise ValueError("Instrument id must not be blank.")
+    instrument_currency = normalize_market_data_currency(item.get("currency"))
+    instrument_type = normalize_instrument_type(item.get("instrument_type"))
     normalized_points: list[dict[str, object]] = []
-    for raw_point in list(item.get("market_data", [])):
+    raw_points = item.get("market_data", [])
+    if not isinstance(raw_points, list):
+        raise ValueError("market_data must be a list.")
+    for point_index, raw_point in enumerate(raw_points, start=1):
+        if not isinstance(raw_point, dict):
+            raise ValueError(f"Market-data row {point_index} must be an object.")
         point = dict(raw_point)
-        metric_family = str(point.get("metric_family") or "").strip()
-        quote_basis = str(point.get("quote_basis") or "").strip()
-        if metric_family not in VALID_METRIC_FAMILIES:
-            continue
-        if quote_basis not in VALID_QUOTE_BASES:
-            continue
-        if VALID_QUOTE_BASES[quote_basis] != metric_family:
-            continue
+        metric_family = str(point.get("metric_family") or "").strip().lower()
+        quote_basis = str(point.get("quote_basis") or "").strip().lower()
+        price_unit, price_scale = parse_persisted_price_contract(
+            price_unit=point.get("price_unit"),
+            price_scale=point.get("price_scale"),
+        )
+        canonical_unit, canonical_scale = canonical_price_contract(
+            instrument_type=instrument_type,
+            metric_family=metric_family,
+            quote_basis=quote_basis,
+        )
+        if (price_unit, price_scale) != (canonical_unit, canonical_scale):
+            raise ValueError(
+                "Persisted market-data price contract does not match its canonical "
+                f"instrument identity: {instrument_type}/{metric_family}/{quote_basis}."
+            )
+        point_currency, point_status, point_value = _validated_market_data_observation(
+            instrument_id=instrument_id,
+            instrument_type=instrument_type,
+            instrument_currency=instrument_currency,
+            metric_family=metric_family,
+            quote_basis=quote_basis,
+            point_currency=point.get("currency"),
+            value=point.get("value"),
+            status=point.get("status"),
+        )
+        raw_date = str(point.get("as_of_date") or "").strip()
+        try:
+            point_date = date.fromisoformat(raw_date)
+        except ValueError as error:
+            raise ValueError(
+                f"Market-data row {point_index} has an invalid as_of_date."
+            ) from error
         normalized_points.append(
             {
                 "metric_family": metric_family,
                 "quote_basis": quote_basis,
-                "as_of_date": str(point.get("as_of_date") or ""),
-                "value": "" if point.get("value") is None else str(point.get("value")),
-                "currency": str(point.get("currency") or instrument_currency).strip().upper() or instrument_currency,
+                "as_of_date": point_date.isoformat(),
+                "value": (
+                    _decimal_text(point_value)
+                    if instrument_type == "fx"
+                    else str(point["value"]).strip()
+                ),
+                "currency": point_currency,
+                "price_unit": price_unit,
+                "price_scale": _decimal_text(price_scale),
                 "provider": point.get("provider"),
-                "status": str(point.get("status") or "complete"),
+                "status": point_status,
             }
         )
     return _sort_market_data(normalized_points)
@@ -462,6 +528,8 @@ def _instrument_to_store_dict(
                 "as_of_date": point.as_of_date.isoformat(),
                 "value": point.value,
                 "currency": point.currency,
+                "price_unit": point.price_unit,
+                "price_scale": point.price_scale,
                 "provider": point.provider,
                 "status": point.status,
             }
@@ -529,13 +597,19 @@ def _save_store_to_db(session: Session, data: dict[str, object]) -> None:
 
     for raw_item in list(normalized.get("instruments", [])):
         if not isinstance(raw_item, dict):
-            continue
+            raise ValueError("Every instrument payload must be an object.")
         item = dict(raw_item)
+        instrument_id = str(item.get("instrument_id") or "").strip()
+        instrument_name = str(item.get("instrument_name") or "").strip()
+        if not instrument_id or not instrument_name:
+            raise ValueError("Every instrument requires a non-blank id and name.")
+        instrument_type = normalize_instrument_type(item.get("instrument_type"))
+        instrument_currency = normalize_market_data_currency(item.get("currency"))
         instrument = Instrument(
-            instrument_id=str(item.get("instrument_id") or "").strip(),
-            instrument_name=str(item.get("instrument_name") or "").strip(),
-            instrument_type=str(item.get("instrument_type") or "").strip() or "other",
-            currency=str(item.get("currency") or "USD").strip().upper() or "USD",
+            instrument_id=instrument_id,
+            instrument_name=instrument_name,
+            instrument_type=instrument_type,
+            currency=instrument_currency,
             quote_selection_policy_json=_normalized_quote_selection_policy(item),
             source_settings_json=_normalized_source_settings(item),
             refresh_status_json=_normalized_refresh_status(item),
@@ -546,18 +620,20 @@ def _save_store_to_db(session: Session, data: dict[str, object]) -> None:
                 else (reset_watermark if _normalized_market_data(item) else None)
             ),
         )
-        if not instrument.instrument_id or not instrument.instrument_name:
-            continue
         session.add(instrument)
         session.flush()
 
         for raw_identifier in list(item.get("identifiers", [])):
             if not isinstance(raw_identifier, dict):
-                continue
+                raise ValueError(
+                    f'Instrument "{instrument.instrument_id}" has a non-object identifier.'
+                )
             identifier_value = str(raw_identifier.get("identifier_value") or "").strip()
             identifier_type = str(raw_identifier.get("identifier_type") or "").strip()
             if not identifier_value or not identifier_type:
-                continue
+                raise ValueError(
+                    f'Instrument "{instrument.instrument_id}" has an incomplete identifier.'
+                )
             session.add(
                 InstrumentIdentifier(
                     instrument_id=instrument.instrument_id,
@@ -570,23 +646,26 @@ def _save_store_to_db(session: Session, data: dict[str, object]) -> None:
         for raw_point in _normalized_market_data(item):
             try:
                 as_of_date = date.fromisoformat(str(raw_point.get("as_of_date") or ""))
-            except ValueError:
-                continue
+            except ValueError as error:
+                raise ValueError(
+                    f'Instrument "{instrument.instrument_id}" has an invalid market-data date.'
+                ) from error
             session.add(
                 InstrumentMarketData(
                     instrument_id=instrument.instrument_id,
                     metric_family=str(raw_point.get("metric_family") or "").strip(),
                     quote_basis=str(raw_point.get("quote_basis") or "").strip(),
                     as_of_date=as_of_date,
-                    value=str(raw_point.get("value") or ""),
-                    currency=str(raw_point.get("currency") or instrument.currency).strip().upper()
-                    or instrument.currency,
+                    value=str(raw_point["value"]),
+                    currency=str(raw_point["currency"]),
+                    price_unit=str(raw_point["price_unit"]),
+                    price_scale=Decimal(str(raw_point["price_scale"])),
                     provider=(
                         str(raw_point.get("provider")).strip()
                         if raw_point.get("provider") is not None
                         else None
                     ),
-                    status=str(raw_point.get("status") or "complete").strip() or "complete",
+                    status=str(raw_point["status"]),
                 )
             )
 
@@ -645,21 +724,26 @@ def _slugify(value: str) -> str:
 
 
 def _latest_market_data(points: list[dict[str, object]]) -> list[dict[str, object]]:
-    latest_by_basis: dict[tuple[str, str], dict[str, object]] = {}
+    latest_by_identity: dict[tuple[str, str, str, str, str], dict[str, object]] = {}
     for point in points:
-        basis_key = (
+        identity_key = (
             str(point.get("metric_family") or ""),
             str(point.get("quote_basis") or ""),
+            str(point.get("currency") or "").strip().upper(),
+            str(point.get("price_unit") or "").strip().lower(),
+            str(point.get("price_scale") or "").strip(),
         )
         as_of_date = str(point.get("as_of_date") or "")
-        current = latest_by_basis.get(basis_key)
+        current = latest_by_identity.get(identity_key)
         if current is None or as_of_date >= str(current.get("as_of_date") or ""):
-            latest_by_basis[basis_key] = point
-    return [latest_by_basis[key] for key in sorted(latest_by_basis.keys())]
+            latest_by_identity[identity_key] = point
+    return [latest_by_identity[key] for key in sorted(latest_by_identity.keys())]
 
 
 def _coverage_state(points: list[dict[str, object]]) -> str:
     if not points:
+        return "unavailable"
+    if all(str(point.get("status") or "") == "unavailable" for point in points):
         return "unavailable"
     if any(str(point.get("status") or "") == "partial" for point in points):
         return "partial"
@@ -669,7 +753,16 @@ def _coverage_state(points: list[dict[str, object]]) -> str:
 
 
 def _normalized_source_settings(item: dict[str, object]) -> dict[str, object]:
-    source_settings = dict(_default_source_settings())
+    source_settings = dict(
+        _default_source_settings(
+            instrument_type=str(item.get("instrument_type") or "other"),
+            identifiers=(
+                identifier
+                for identifier in list(item.get("identifiers", []))
+                if isinstance(identifier, dict)
+            ),
+        )
+    )
     source_settings.update(dict(item.get("source_settings", {})))
     raw_rules = source_settings.get("source_email_rules", [])
     if isinstance(raw_rules, list):
@@ -678,7 +771,7 @@ def _normalized_source_settings(item: dict[str, object]) -> dict[str, object]:
         ]
     else:
         source_settings["source_email_rules"] = []
-    return source_settings
+    return SourceSettings.model_validate(source_settings).model_dump()
 
 
 def _normalized_refresh_status(item: dict[str, object]) -> dict[str, object]:
@@ -774,6 +867,8 @@ def _latest_market_data_for_instruments(
             InstrumentMarketData.as_of_date.label("as_of_date"),
             InstrumentMarketData.value.label("value"),
             InstrumentMarketData.currency.label("currency"),
+            InstrumentMarketData.price_unit.label("price_unit"),
+            InstrumentMarketData.price_scale.label("price_scale"),
             InstrumentMarketData.provider.label("provider"),
             InstrumentMarketData.status.label("status"),
             func.row_number()
@@ -782,6 +877,9 @@ def _latest_market_data_for_instruments(
                     InstrumentMarketData.instrument_id,
                     InstrumentMarketData.metric_family,
                     InstrumentMarketData.quote_basis,
+                    InstrumentMarketData.currency,
+                    InstrumentMarketData.price_unit,
+                    InstrumentMarketData.price_scale,
                 ),
                 order_by=(
                     InstrumentMarketData.as_of_date.desc(),
@@ -805,6 +903,8 @@ def _latest_market_data_for_instruments(
                 "as_of_date": row["as_of_date"].isoformat(),
                 "value": row["value"],
                 "currency": row["currency"],
+                "price_unit": row["price_unit"],
+                "price_scale": row["price_scale"],
                 "provider": row["provider"],
                 "status": row["status"],
             }
@@ -1196,7 +1296,8 @@ def create_instrument(
     quote_selection_policy: dict[str, object] | None = None,
 ) -> dict[str, object]:
     normalized_name = instrument_name.strip()
-    normalized_currency = currency.strip().upper()
+    normalized_instrument_type = normalize_instrument_type(instrument_type)
+    normalized_currency = normalize_market_data_currency(currency)
     normalized_identifiers = [
         {
             **identifier,
@@ -1207,8 +1308,6 @@ def create_instrument(
     ]
     if not normalized_name:
         raise ValueError("Instrument name must not be blank.")
-    if not normalized_currency:
-        raise ValueError("Instrument currency must not be blank.")
     if not normalized_identifiers or any(
         not item["identifier_type"] or not item["identifier_value"]
         for item in normalized_identifiers
@@ -1258,24 +1357,44 @@ def create_instrument(
             candidate = f"{base_id}-{suffix}"
             suffix += 1
 
-        target_quote_policy = quote_selection_policy or _default_quote_selection_policy(
-            instrument_type
+        fx_identity = fx_instrument_identity(candidate)
+        if normalized_instrument_type == "fx":
+            if fx_identity is None:
+                raise ValueError(
+                    f'FX instrument "{candidate}" has no maintained identity.'
+                )
+            if normalized_currency != fx_identity.quote_currency:
+                raise ValueError(
+                    f'FX instrument "{candidate}" requires master currency '
+                    f'"{fx_identity.quote_currency}".'
+                )
+        elif fx_identity is not None:
+            raise ValueError(
+                f'Maintained FX instrument id "{candidate}" must use instrument_type "fx".'
+            )
+
+        target_quote_policy = (
+            quote_selection_policy
+            if quote_selection_policy is not None
+            else _default_quote_selection_policy(normalized_instrument_type)
         )
-        validate_quote_selection_policy(target_quote_policy)
         record = {
             "instrument_id": candidate,
             "instrument_name": normalized_name,
-            "instrument_type": instrument_type,
+            "instrument_type": normalized_instrument_type,
             "currency": normalized_currency,
             "identifiers": identifiers,
             "market_data": [],
             "quote_selection_policy": _normalized_quote_selection_policy(
                 {
-                    "instrument_type": instrument_type,
+                    "instrument_type": normalized_instrument_type,
                     "quote_selection_policy": target_quote_policy,
                 }
             ),
-            "source_settings": _default_source_settings(),
+            "source_settings": _default_source_settings(
+                instrument_type=normalized_instrument_type,
+                identifiers=identifiers,
+            ),
             "refresh_status": _default_refresh_status(),
             "lifecycle_state": _default_lifecycle_state(),
         }
@@ -1342,33 +1461,61 @@ def upsert_market_data(
         )
         if target is None:
             return None
+        normalized_metric_family = metric_family.strip().lower()
+        normalized_quote_basis = quote_basis.strip().lower()
+        derived_price_unit, derived_price_scale = canonical_price_contract(
+            instrument_type=target.instrument_type,
+            metric_family=normalized_metric_family,
+            quote_basis=normalized_quote_basis,
+        )
+        normalized_currency, normalized_status, numeric_value = (
+            _validated_market_data_observation(
+                instrument_id=target.instrument_id,
+                instrument_type=target.instrument_type,
+                instrument_currency=target.currency,
+                metric_family=normalized_metric_family,
+                quote_basis=normalized_quote_basis,
+                point_currency=currency,
+                value=value,
+                status=status,
+            )
+        )
+        normalized_value = (
+            _decimal_text(numeric_value)
+            if normalize_instrument_type(target.instrument_type) == "fx"
+            else str(value).strip()
+        )
 
         existing = session.scalar(
             select(InstrumentMarketData).where(
                 InstrumentMarketData.instrument_id == instrument_id,
-                InstrumentMarketData.metric_family == metric_family,
-                InstrumentMarketData.quote_basis == quote_basis,
+                InstrumentMarketData.metric_family == normalized_metric_family,
+                InstrumentMarketData.quote_basis == normalized_quote_basis,
                 InstrumentMarketData.as_of_date == as_of_date,
-                InstrumentMarketData.currency == currency.upper(),
+                InstrumentMarketData.currency == normalized_currency,
             )
         )
         if existing is None:
             session.add(
                 InstrumentMarketData(
                     instrument_id=instrument_id,
-                    metric_family=metric_family,
-                    quote_basis=quote_basis,
+                    metric_family=normalized_metric_family,
+                    quote_basis=normalized_quote_basis,
                     as_of_date=as_of_date,
-                    value=value,
-                    currency=currency.upper(),
+                    value=normalized_value,
+                    currency=normalized_currency,
+                    price_unit=derived_price_unit,
+                    price_scale=derived_price_scale,
                     provider=provider,
-                    status=status,
+                    status=normalized_status,
                 )
             )
         else:
-            existing.value = value
+            existing.value = normalized_value
+            existing.price_unit = derived_price_unit
+            existing.price_scale = derived_price_scale
             existing.provider = provider
-            existing.status = status
+            existing.status = normalized_status
 
         target.market_data_updated_at = _next_market_data_watermark(session)
 
@@ -1389,10 +1536,22 @@ def upsert_market_data_points(
     advancing the registry watermark, and reloading the full instrument once per
     observation.
     """
-    normalized_by_key: dict[
-        tuple[str, str, date, str], dict[str, object]
-    ] = {}
-    for row in rows:
+    normalized_rows: list[
+        tuple[tuple[str, str, date, str], dict[str, object]]
+    ] = []
+    seen_keys: set[tuple[str, str, date, str]] = set()
+    for row_index, row in enumerate(rows, start=1):
+        if not isinstance(row, dict):
+            raise ValueError(f"Market-data row {row_index} must be an object.")
+        supplied_derived_fields = sorted(
+            {"price_unit", "price_scale"}.intersection(row)
+        )
+        if supplied_derived_fields:
+            raise ValueError(
+                f"Market-data row {row_index} must not supply derived field(s): "
+                + ", ".join(supplied_derived_fields)
+                + "."
+            )
         raw_date = row.get("as_of_date")
         if isinstance(raw_date, datetime):
             point_date = raw_date.date()
@@ -1401,24 +1560,71 @@ def upsert_market_data_points(
         else:
             try:
                 point_date = date.fromisoformat(str(raw_date or "").strip())
-            except ValueError:
-                continue
-        metric_family = str(row.get("metric_family") or "").strip()
-        quote_basis = str(row.get("quote_basis") or "").strip()
+            except ValueError as error:
+                raise ValueError(
+                    f"Market-data row {row_index} has an invalid as_of_date."
+                ) from error
+        metric_family = str(row.get("metric_family") or "").strip().lower()
+        quote_basis = str(row.get("quote_basis") or "").strip().lower()
         currency = str(row.get("currency") or "").strip().upper()
         value = row.get("value")
-        if not metric_family or not quote_basis or not currency or value is None:
-            continue
-        normalized_by_key[(metric_family, quote_basis, point_date, currency)] = {
-            "value": str(value),
-            "provider": (
-                str(row.get("provider")).strip()
-                if row.get("provider") is not None
-                else None
-            ),
-            "status": str(row.get("status") or "complete").strip() or "complete",
-        }
-    if not normalized_by_key:
+        status = str(row.get("status") or "").strip().lower()
+        missing_fields = [
+            field_name
+            for field_name, field_value in (
+                ("metric_family", metric_family),
+                ("quote_basis", quote_basis),
+                ("currency", currency),
+                ("value", value),
+                ("status", status),
+            )
+            if field_value is None
+            or (isinstance(field_value, str) and not field_value.strip())
+        ]
+        if missing_fields:
+            raise ValueError(
+                f"Market-data row {row_index} is missing required field(s): "
+                + ", ".join(missing_fields)
+                + "."
+            )
+        if len(currency) > 8:
+            raise ValueError(
+                f"Market-data row {row_index} has an invalid currency."
+            )
+        try:
+            numeric_value = parse_positive_market_data_value(value)
+        except ValueError as error:
+            raise ValueError(
+                f"Market-data row {row_index}: {error}"
+            ) from error
+        if status not in VALID_DATA_STATUSES:
+            raise ValueError(
+                f'Market-data row {row_index} has unsupported status "{status}".'
+            )
+        key = (metric_family, quote_basis, point_date, currency)
+        if key in seen_keys:
+            raise ValueError(
+                "Duplicate market-data row key for "
+                f"{metric_family}/{quote_basis}/{point_date.isoformat()}/{currency}."
+            )
+        seen_keys.add(key)
+        normalized_rows.append(
+            (
+                key,
+                {
+                    "value": numeric_value,
+                    "value_text": str(value).strip(),
+                    "provider": (
+                        str(row.get("provider")).strip()
+                        if row.get("provider") is not None
+                        else None
+                    ),
+                    "status": status,
+                    "row_index": row_index,
+                },
+            )
+        )
+    if not normalized_rows:
         return 0
 
     with session_factory() as session:
@@ -1429,6 +1635,45 @@ def upsert_market_data_points(
         )
         if target is None:
             return None
+        normalized_by_key: dict[
+            tuple[str, str, date, str], dict[str, object]
+        ] = {}
+        for key, payload in normalized_rows:
+            metric_family, quote_basis, _, currency = key
+            price_unit, price_scale = canonical_price_contract(
+                instrument_type=target.instrument_type,
+                metric_family=metric_family,
+                quote_basis=quote_basis,
+            )
+            try:
+                normalized_currency, normalized_status, normalized_value = (
+                    _validated_market_data_observation(
+                        instrument_id=target.instrument_id,
+                        instrument_type=target.instrument_type,
+                        instrument_currency=target.currency,
+                        metric_family=metric_family,
+                        quote_basis=quote_basis,
+                        point_currency=currency,
+                        value=payload["value"],
+                        status=payload["status"],
+                    )
+                )
+            except ValueError as error:
+                raise ValueError(
+                    f'Market-data row {int(payload["row_index"])}: {error}'
+                ) from error
+            normalized_key = (metric_family, quote_basis, key[2], normalized_currency)
+            normalized_by_key[normalized_key] = {
+                "value": (
+                    _decimal_text(normalized_value)
+                    if normalize_instrument_type(target.instrument_type) == "fx"
+                    else str(payload["value_text"])
+                ),
+                "provider": payload["provider"],
+                "status": normalized_status,
+                "price_unit": price_unit,
+                "price_scale": price_scale,
+            }
         relevant_dates = sorted({key[2] for key in normalized_by_key})
         existing_by_key = {
             (
@@ -1459,6 +1704,8 @@ def upsert_market_data_points(
                         as_of_date=point_date,
                         value=str(payload["value"]),
                         currency=currency,
+                        price_unit=str(payload["price_unit"]),
+                        price_scale=payload["price_scale"],
                         provider=payload["provider"],
                         status=str(payload["status"]),
                     )
@@ -1466,12 +1713,16 @@ def upsert_market_data_points(
             else:
                 if (
                     existing.value == str(payload["value"])
+                    and existing.price_unit == str(payload["price_unit"])
+                    and existing.price_scale == payload["price_scale"]
                     and existing.provider == payload["provider"]
                     and existing.status == str(payload["status"])
                 ):
                     continue
                 changed_count += 1
                 existing.value = str(payload["value"])
+                existing.price_unit = str(payload["price_unit"])
+                existing.price_scale = payload["price_scale"]
                 existing.provider = payload["provider"]
                 existing.status = str(payload["status"])
         if changed_count:
@@ -1489,6 +1740,9 @@ def upsert_source_settings(
     source_location: str | None,
     source_api_profile: str | None,
     source_email_rules: list[dict[str, object]] | None,
+    expected_frequency: str | None = None,
+    market_calendar: object = _SOURCE_SETTING_UNSET,
+    release_lag_days: int | None = None,
 ) -> dict[str, object] | None:
     with session_factory() as session:
         target = session.get(Instrument, instrument_id)
@@ -1508,6 +1762,18 @@ def upsert_source_settings(
             source_settings["source_email_rules"] = [
                 dict(rule) for rule in source_email_rules if isinstance(rule, dict)
             ]
+        if expected_frequency is not None:
+            source_settings["expected_frequency"] = expected_frequency
+        if market_calendar is not _SOURCE_SETTING_UNSET:
+            source_settings["market_calendar"] = market_calendar
+        if release_lag_days is not None:
+            source_settings["release_lag_days"] = release_lag_days
+        source_settings = _normalized_source_settings(
+            {
+                **store_item,
+                "source_settings": source_settings,
+            }
+        )
         refresh_status = _normalized_refresh_status(store_item)
         refresh_status["mode"] = source_mode
         target.source_settings_json = source_settings
@@ -1557,17 +1823,65 @@ def replace_nav_history(
         )
         if target is None:
             return None
+        instrument_type = target.instrument_type.strip().lower()
+        validate_nav_history_instrument_type(
+            instrument_type=instrument_type,
+            instrument_id=instrument_id,
+        )
 
-        replaced_dates: set[date] = set()
-        for row in rows:
+        normalized_status = str(point_status or "").strip().lower()
+        if normalized_status not in VALID_DATA_STATUSES:
+            raise ValueError(f'Unsupported market-data status "{normalized_status}".')
+        instrument_currency = normalize_market_data_currency(target.currency)
+        normalized_rows: list[tuple[date, str, str, str]] = []
+        seen_keys: set[tuple[date, str]] = set()
+        for row_index, row in enumerate(rows, start=1):
+            if not isinstance(row, dict):
+                raise ValueError(f"NAV row {row_index} must be an object.")
             raw_date = str(row.get("as_of_date") or "").strip()
             if not raw_date:
-                continue
+                raise ValueError(f"NAV row {row_index} requires as_of_date.")
             try:
                 point_date = date.fromisoformat(raw_date)
-            except ValueError:
-                continue
-            replaced_dates.add(point_date)
+            except ValueError as error:
+                raise ValueError(f"NAV row {row_index} has an invalid as_of_date.") from error
+            try:
+                row_currency = normalize_market_data_currency(row.get("currency"))
+            except ValueError as error:
+                raise ValueError(f"NAV row {row_index}: {error}") from error
+            if row_currency != instrument_currency:
+                raise ValueError(
+                    f'NAV row {row_index} currency "{row_currency}" does not match '
+                    f'instrument currency "{instrument_currency}".'
+                )
+            value_count = 0
+            for row_key, quote_basis in (
+                ("nav", "official_nav"),
+                ("cumulative_nav", "cumulative_nav"),
+                ("nav_with_dividend", "total_return_nav"),
+            ):
+                row_value = row.get(row_key)
+                if row_value is None:
+                    continue
+                value_count += 1
+                try:
+                    parse_positive_market_data_value(row_value)
+                except ValueError as error:
+                    raise ValueError(f"NAV row {row_index} {row_key}: {error}") from error
+                key = (point_date, quote_basis)
+                if key in seen_keys:
+                    raise ValueError(
+                        "Duplicate NAV row key for "
+                        f"{point_date.isoformat()}/{quote_basis}."
+                    )
+                seen_keys.add(key)
+                normalized_rows.append(
+                    (point_date, row_currency, quote_basis, str(row_value).strip())
+                )
+            if value_count == 0:
+                raise ValueError(f"NAV row {row_index} has no NAV observation.")
+
+        replaced_dates = {point_date for point_date, _, _, _ in normalized_rows}
 
         if replaced_dates:
             session.execute(
@@ -1589,37 +1903,27 @@ def replace_nav_history(
                 )
             )
 
-        default_currency = target.currency.upper()
         point_provider = (provider or "shared_nav_import").strip() or "shared_nav_import"
-        for row in rows:
-            raw_date = str(row.get("as_of_date") or "").strip()
-            if not raw_date:
-                continue
-            try:
-                point_date = date.fromisoformat(raw_date)
-            except ValueError:
-                continue
-            row_currency = str(row.get("currency") or default_currency).strip().upper() or default_currency
-            for row_key, quote_basis in (
-                ("nav", "official_nav"),
-                ("cumulative_nav", "cumulative_nav"),
-                ("nav_with_dividend", "total_return_nav"),
-            ):
-                row_value = row.get(row_key)
-                if row_value is None:
-                    continue
-                session.add(
-                    InstrumentMarketData(
-                        instrument_id=instrument_id,
-                        metric_family="nav",
-                        quote_basis=quote_basis,
-                        as_of_date=point_date,
-                        value=str(row_value),
-                        currency=row_currency,
-                        provider=point_provider,
-                        status=point_status,
-                    )
+        for point_date, row_currency, quote_basis, row_value in normalized_rows:
+            price_unit, price_scale = canonical_price_contract(
+                instrument_type=instrument_type,
+                metric_family="nav",
+                quote_basis=quote_basis,
+            )
+            session.add(
+                InstrumentMarketData(
+                    instrument_id=instrument_id,
+                    metric_family="nav",
+                    quote_basis=quote_basis,
+                    as_of_date=point_date,
+                    value=row_value,
+                    currency=row_currency,
+                    price_unit=price_unit,
+                    price_scale=price_scale,
+                    provider=point_provider,
+                    status=normalized_status,
                 )
+            )
 
         store_item = _instrument_to_store_dict(target)
         source_settings = _normalized_source_settings(store_item)
@@ -1632,7 +1936,6 @@ def replace_nav_history(
             updated_by=updated_by,
             mode=mode or source_mode,
             requested_at=requested_at,
-            previous_mode_fallback=source_mode,
         )
         target.market_data_updated_at = _next_market_data_watermark(session)
         session.commit()
@@ -1665,7 +1968,6 @@ def update_refresh_status(
             updated_by=updated_by,
             mode=source_mode,
             requested_at=_utcnow_iso(),
-            previous_mode_fallback=configured_source_mode,
         )
         session.commit()
     refreshed = get_instrument(session_factory, instrument_id)

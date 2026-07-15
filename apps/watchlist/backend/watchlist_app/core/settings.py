@@ -13,7 +13,7 @@ class Settings(BaseSettings):
     app_version: str = "0.1.0"
     environment: str = "development"
     frontend_url: str = "http://127.0.0.1:5173"
-    database_url: str = "postgresql+psycopg://portfolio_ops:portfolio_ops@127.0.0.1:5432/portfolio_ops"
+    database_url: str
     alembic_database_url: str | None = None
     database_schema: str | None = "watchlist"
     sql_echo: bool = False
@@ -31,9 +31,15 @@ class Settings(BaseSettings):
 
     model_config = SettingsConfigDict(
         env_prefix="PORTFOLIO_OPS_WATCHLIST_",
-        env_file=WORKSPACE_ROOT / "backend" / ".env",
         extra="ignore",
     )
+
+    @field_validator("database_url", mode="before")
+    @classmethod
+    def _validate_database_url(cls, value: object) -> object:
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError("database_url must be explicitly configured.")
+        return value.strip()
 
     @field_validator("cors_origins", mode="before")
     @classmethod

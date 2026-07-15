@@ -14,7 +14,8 @@
 - `currency`
 - typed `market_data`
   - `metric_family`: `price | nav | fx`
-  - `quote_basis`: `last | close | adjusted_close | official_nav | total_return_nav | spot | clean_price | dirty_price | par`
+  - `quote_basis`: `last | close | adjusted_close | official_nav | total_return_nav | spot | clean_price | dirty_price | par | accrued_interest`
+  - source cadence: `expected_frequency`, optional `market_calendar`, and non-negative `release_lag_days`
 - `quote_selection_policy`
   - `trading`
   - `valuation`
@@ -48,8 +49,14 @@
 
 ## 原则
 
+- Python runtime 要求 Instrument Registry 已迁移到 `20260715_0011`；不兼容缺少数据库级 observation/FX 合同约束与 per-instrument 并发互斥的旧物理 schema。
+- market-data 写入命令只提交 instrument identity、metric/basis 与观测值；共享 store 唯一负责派生并持久化必填的 `price_unit / price_scale`，读取响应不得省略它们。
+- 每条 market-data observation 必须显式提交 canonical `currency / status` 与有限正数 value；API、批量写入和 restore 都不推断缺失 status 或 currency。
+- `quote_selection_policy` 的五个 role 都必须完整、非空持久化；0011 一次性物化历史缺口，此后运行时不再补 role。类型默认只在创建新 instrument 时显式写入。
+- FX instrument/pair/quote-currency mapping 只在 Python `fx_contract` 中维护；FX 仅允许 canonical `fx/spot` 有限正数 observation，读取不修补错误币种或无效 rate。
+- NAV history 批量导入只面向 `fund`；非基金在文件解析和持久化前统一拒绝，不提供兼容路径。
 - `instrument-core` 只负责“资产身份 + typed market facts + 最小 quote selector policy + canonical corporate action facts”。
 - 上层 app 必须自己 materialize 自己的 read models。
 - `Watchlist` 和 `Portfolio` 都可以消费 `instrument-core`，但不能把自身业务对象塞回共享层。
 - selector role 放在共享层，是因为不同资产类别读取 `valuation / trading / total_return / chart` 时需要稳定约定。
-- corporate action 是共享 security master 事实；具体持仓调整、成本结转和现金替代仍由 Portfolio 账本负责。accrued interest、yield/spread 暂不进入共享 contract。
+- corporate action 是共享 security master 事实；具体持仓调整、成本结转和现金替代仍由 Portfolio 账本负责。accrued interest 仅作为 bond price component 进入共享行情 contract；yield/spread 暂不进入共享 contract。

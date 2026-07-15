@@ -2,12 +2,31 @@ from base64 import b64decode
 from datetime import date
 from decimal import Decimal
 import binascii
-from typing import Literal
+from typing import Annotated, Literal
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, field_validator, model_validator
+from portfolio_ops_instrument_core.fx_contract import (
+    SUPPORTED_FX_CURRENCIES,
+    normalize_fx_currency,
+    parse_positive_fx_rate,
+)
 from portfolio_ops_instrument_core.models import InstrumentIdentifier as PlatformInstrumentIdentifier
 from portfolio_ops_instrument_core.models import CorporateActionEvent as PlatformCorporateActionEvent
-from portfolio_ops_instrument_core.models import InstrumentType, DataStatus, IdentifierType, MetricFamily, QuoteBasis, QuoteRole
+from portfolio_ops_instrument_core.models import (
+    DataStatus,
+    ExpectedFrequency,
+    IdentifierType,
+    InstrumentType,
+    MetricFamily,
+    PriceUnit,
+    QuoteBasis,
+    QuoteRole,
+    SourceSettings as SharedSourceSettings,
+    canonical_price_contract,
+    parse_persisted_price_contract,
+    parse_positive_market_data_value,
+    validate_market_data_identity,
+)
 from portfolio_ops_instrument_core.models import QuoteSelectionPolicy as PlatformQuoteSelectionPolicy
 
 
@@ -27,7 +46,6 @@ class PlatformAppsResponse(BaseModel):
 
 SourceMode = Literal["manual", "email", "api"]
 RefreshChannel = Literal["configured", "email", "tushare", "all"]
-SupportedCurrency = Literal["USD", "HKD", "CNY"]
 FxRateSourceKind = Literal["direct", "inverse", "cross"]
 InstrumentLifecycleStatus = Literal["active", "archived"]
 EmailParserProfile = Literal[
@@ -35,9 +53,21 @@ EmailParserProfile = Literal[
     "label_nav_snapshot",
 ]
 
-SUPPORTED_FX_CURRENCIES: tuple[SupportedCurrency, ...] = ("USD", "HKD", "CNY")
 MAX_NAV_IMPORT_BYTES = 25 * 1024 * 1024
 MAX_NAV_IMPORT_BASE64_CHARS = ((MAX_NAV_IMPORT_BYTES + 2) // 3) * 4
+
+
+def _validate_supported_fx_currency(value: object) -> str:
+    normalized = normalize_fx_currency(value)
+    if normalized not in SUPPORTED_FX_CURRENCIES:
+        raise ValueError(
+            "currency must be one of " + ", ".join(SUPPORTED_FX_CURRENCIES) + "."
+        )
+    return normalized
+
+
+SupportedCurrency = Annotated[str, BeforeValidator(_validate_supported_fx_currency)]
+PositiveFxRate = Annotated[Decimal, BeforeValidator(parse_positive_fx_rate)]
 
 
 class PlatformMarketDataPoint(BaseModel):
@@ -46,8 +76,27 @@ class PlatformMarketDataPoint(BaseModel):
     as_of_date: date
     value: Decimal
     currency: str = Field(min_length=1, max_length=8)
+    price_unit: PriceUnit
+    price_scale: Decimal = Field(gt=0)
     provider: str | None = None
-    status: DataStatus = "complete"
+    status: DataStatus
+
+    @field_validator("value", mode="before")
+    @classmethod
+    def validate_positive_value(cls, value: object) -> Decimal:
+        return parse_positive_market_data_value(value)
+
+    @model_validator(mode="after")
+    def validate_price_identity(self) -> "PlatformMarketDataPoint":
+        validate_market_data_identity(
+            metric_family=self.metric_family,
+            quote_basis=self.quote_basis,
+        )
+        parse_persisted_price_contract(
+            price_unit=self.price_unit,
+            price_scale=self.price_scale,
+        )
+        return self
 
 
 class PlatformEmailRule(BaseModel):
@@ -104,11 +153,8 @@ class PlatformEmailRule(BaseModel):
         return value
 
 
-class PlatformSourceSettings(BaseModel):
-    source_mode: SourceMode = "manual"
-    source_email: str = ""
+class PlatformSourceSettings(SharedSourceSettings):
     source_location: str = "Database Dashboard"
-    source_api_profile: str = ""
     source_email_rules: list[PlatformEmailRule] = Field(default_factory=list)
 
 
@@ -142,6 +188,29 @@ class PlatformInstrumentRecord(BaseModel):
     lifecycle_state: PlatformLifecycleState
     market_data_updated_at: str | None = None
     corporate_actions: list[PlatformCorporateActionEvent] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def validate_market_data_contracts(self) -> "PlatformInstrumentRecord":
+        expected_currency = self.currency.strip().upper()
+        points = [*self.latest_market_data]
+        detail_points = getattr(self, "market_data", None)
+        if isinstance(detail_points, list):
+            points.extend(detail_points)
+        for point in points:
+            expected_unit, expected_scale = canonical_price_contract(
+                instrument_type=self.instrument_type,
+                metric_family=point.metric_family,
+                quote_basis=point.quote_basis,
+            )
+            if (point.price_unit, point.price_scale) != (expected_unit, expected_scale):
+                raise ValueError(
+                    "Market-data price contract does not match the parent instrument type."
+                )
+            if point.currency.strip().upper() != expected_currency:
+                raise ValueError(
+                    "Market-data currency does not match the parent instrument currency."
+                )
+        return self
 
 
 class PlatformInstrumentDetail(PlatformInstrumentRecord):
@@ -192,36 +261,55 @@ class PlatformQuoteSelectionPolicyUpdateRequest(BaseModel):
 
 
 class PlatformMarketDataUpsertRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     metric_family: MetricFamily
     quote_basis: QuoteBasis
     as_of_date: date
     value: Decimal
     currency: str = Field(min_length=1, max_length=8)
     provider: str | None = None
-    status: DataStatus = "complete"
+    status: DataStatus
+
+    @field_validator("value", mode="before")
+    @classmethod
+    def validate_positive_value(cls, value: object) -> Decimal:
+        return parse_positive_market_data_value(value)
+
+    @field_validator("currency", mode="before")
+    @classmethod
+    def normalize_currency(cls, value: object) -> object:
+        if isinstance(value, str):
+            return normalize_fx_currency(value)
+        return value
 
     @model_validator(mode="after")
     def validate_quote_basis(self) -> "PlatformMarketDataUpsertRequest":
-        allowed_bases: dict[str, set[str]] = {
-            "price": {"last", "close", "adjusted_close", "clean_price", "dirty_price", "par"},
-            "nav": {"official_nav", "total_return_nav"},
-            "fx": {"spot"},
-        }
-        if self.quote_basis not in allowed_bases[self.metric_family]:
-            raise ValueError("quote_basis does not match metric_family.")
+        validate_market_data_identity(
+            metric_family=self.metric_family,
+            quote_basis=self.quote_basis,
+        )
+        if self.metric_family == "fx":
+            parse_positive_fx_rate(self.value)
+            if self.currency not in SUPPORTED_FX_CURRENCIES:
+                raise ValueError(
+                    "FX spot currency must be one of "
+                    + ", ".join(SUPPORTED_FX_CURRENCIES)
+                    + "."
+                )
         return self
 
 
 class PlatformFxRateRecord(BaseModel):
     base_currency: SupportedCurrency
     quote_currency: SupportedCurrency
-    rate: Decimal
+    rate: PositiveFxRate
     as_of_date: date
     source_kind: FxRateSourceKind
     instrument_id: str | None = None
     source_instrument_ids: list[str] = Field(default_factory=list)
     provider: str | None = None
-    status: DataStatus = "complete"
+    status: DataStatus
 
 
 class PlatformFxRatesResponse(BaseModel):
@@ -233,17 +321,10 @@ class PlatformFxRatesResponse(BaseModel):
 class PlatformFxRateUpsertRequest(BaseModel):
     base_currency: SupportedCurrency
     quote_currency: SupportedCurrency
-    rate: Decimal = Field(gt=0)
+    rate: PositiveFxRate
     as_of_date: date
     provider: str | None = None
-    status: DataStatus = "complete"
-
-    @field_validator("base_currency", "quote_currency", mode="before")
-    @classmethod
-    def uppercase_currency(cls, value: object) -> object:
-        if isinstance(value, str):
-            return value.strip().upper()
-        return value
+    status: DataStatus
 
     @model_validator(mode="after")
     def validate_pair(self) -> "PlatformFxRateUpsertRequest":
@@ -258,6 +339,28 @@ class PlatformSourceSettingsUpdateRequest(BaseModel):
     source_location: str | None = None
     source_api_profile: str | None = None
     source_email_rules: list[PlatformEmailRule] | None = None
+    expected_frequency: ExpectedFrequency | None = None
+    market_calendar: str | None = Field(default=None, min_length=1)
+    release_lag_days: int | None = Field(default=None, ge=0)
+
+    @field_validator("market_calendar", mode="before")
+    @classmethod
+    def normalize_market_calendar(cls, value: object) -> object:
+        if value is None:
+            return None
+        if isinstance(value, str):
+            normalized = value.strip()
+            if not normalized:
+                raise ValueError("market_calendar must be a non-empty string or null.")
+            return normalized
+        return value
+
+    @field_validator("release_lag_days", mode="before")
+    @classmethod
+    def reject_boolean_release_lag(cls, value: object) -> object:
+        if isinstance(value, bool):
+            raise ValueError("release_lag_days must be a non-negative integer.")
+        return value
 
 
 class PlatformRefreshTriggerRequest(BaseModel):
@@ -297,7 +400,7 @@ class PlatformLifecycleTransitionRequest(BaseModel):
 class PlatformNavImportRequest(BaseModel):
     raw_text: str = Field(min_length=1, max_length=MAX_NAV_IMPORT_BYTES)
     provider: str | None = None
-    status: DataStatus = "complete"
+    status: DataStatus
     updated_by: str | None = None
 
 
@@ -308,7 +411,7 @@ class PlatformNavImportFileRequest(BaseModel):
         max_length=MAX_NAV_IMPORT_BASE64_CHARS,
     )
     provider: str | None = None
-    status: DataStatus = "complete"
+    status: DataStatus
     updated_by: str | None = None
 
     @field_validator("file_name")

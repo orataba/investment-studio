@@ -8,11 +8,13 @@
 (cd infra/instrument_registry && alembic upgrade head)
 ```
 
-可选环境变量：
+数据库目标必须显式配置；`.env.example` 仅是键名模板，backend 目录不创建 `.env` 文件或软链接。迁移只读取显式进程环境或仓库外 secrets，连接 URL 必须与三个 app 使用同一个 canonical PostgreSQL。
+
+环境变量：
 
 - `PORTFOLIO_OPS_INSTRUMENT_REGISTRY_DATABASE_URL`
-  运行迁移使用的数据库连接串。
+  运行迁移使用的显式 canonical 数据库连接串。
 - `PORTFOLIO_OPS_INSTRUMENT_REGISTRY_ALEMBIC_DATABASE_URL`
-  仅迁移专用连接串，优先级高于 `PORTFOLIO_OPS_INSTRUMENT_REGISTRY_DATABASE_URL`。
+  仅迁移专用连接串；如设置，必须与 `PORTFOLIO_OPS_INSTRUMENT_REGISTRY_DATABASE_URL` 保持同一目标。
 - `PORTFOLIO_OPS_INSTRUMENT_REGISTRY_SCHEMA`
   目标 schema，默认是 `instrument_registry`。

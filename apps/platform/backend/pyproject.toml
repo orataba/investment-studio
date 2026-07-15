@@ -31,3 +31,6 @@ include = ["platform_app*"]
 [tool.pytest.ini_options]
 addopts = "-ra"
 testpaths = ["tests"]
+markers = [
+  "postgresql_integration: exercises PostgreSQL-only migration and constraint behavior",
+]

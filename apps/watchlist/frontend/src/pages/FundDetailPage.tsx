@@ -74,6 +74,13 @@ import {
   createDetailRequestCoordinator,
 } from '../lib/detailRequestCoordinator'
 import { rejectedLabels, settledValue } from '../lib/settled'
+import {
+  buildNavQuoteBasisContext,
+  buildNavQuoteBasisSeries,
+  filterNavQuoteRowsByCurrency,
+  normalizeNavQuoteCurrency,
+  type NavQuoteBasis,
+} from '../lib/navQuoteBasis'
 
 type FundDetailBundle = {
   summary: FundSummaryResponse
@@ -239,7 +246,7 @@ type DetailTab =
 
 type DetailKind = 'fund' | 'index'
 type ChartRange = '1M' | '3M' | '6M' | 'YTD' | '1Y' | '3Y' | '5Y' | '10Y' | 'MAX' | 'CUSTOM'
-type QuoteBasis = 'nav' | 'nav_with_dividend'
+type QuoteBasis = NavQuoteBasis
 type ChartFrequency = 'daily' | 'weekly' | 'monthly'
 type ChartDisplayStyle = 'mountain' | 'line' | 'dot'
 type ChartScale = 'linear' | 'logarithmic'
@@ -2049,18 +2056,7 @@ function filterChartPoints(points: FundChartPoint[], range: ChartRange) {
 }
 
 function buildBasisSeries(rows: FundNavSeriesResponse['rows'], basis: QuoteBasis) {
-  return [...rows]
-    .sort((left, right) => left.as_of_date.localeCompare(right.as_of_date))
-    .map((row) => {
-      const value =
-        row.selected_basis_type === basis
-          ? row.selected_value ?? (basis === 'nav' ? row.nav : row.nav_with_dividend)
-          : basis === 'nav'
-            ? row.nav
-            : row.nav_with_dividend
-      return value == null ? null : { date: row.as_of_date, value }
-    })
-    .filter((point): point is FundChartPoint => point !== null)
+  return buildNavQuoteBasisSeries(rows, basis)
 }
 
 function getAvailableQuoteBases(rows: FundNavSeriesResponse['rows']) {
@@ -2069,8 +2065,10 @@ function getAvailableQuoteBases(rows: FundNavSeriesResponse['rows']) {
   )
 }
 
-function getRowsForCurrency(rows: FundNavSeriesResponse['rows'], currency: string) {
-  return rows.filter((row) => !currency || !row.currency || row.currency === currency)
+function getAvailableQuoteCurrencies(rows: FundNavSeriesResponse['rows']) {
+  return Array.from(
+    new Set(rows.map((row) => normalizeNavQuoteCurrency(row.currency)).filter(Boolean)),
+  )
 }
 
 function resolvePreferredQuoteBasis(value: string | null | undefined): QuoteBasis | null {
@@ -2097,31 +2095,17 @@ function buildQuoteSeriesContext(
   {
     currency,
     requestedBasis,
-    preferredBasis,
   }: {
     currency: string
     requestedBasis: QuoteBasis
-    preferredBasis: string | null | undefined
   },
 ) {
-  const preferred = resolvePreferredQuoteBasis(preferredBasis)
-  const currencyFilteredRows = getRowsForCurrency(rows, currency)
-  const scopedRows = currencyFilteredRows.length ? currencyFilteredRows : rows
-  const availableBases = getAvailableQuoteBases(scopedRows)
-  const activeBasis =
-    availableBases.includes(requestedBasis)
-      ? requestedBasis
-      : preferred && availableBases.includes(preferred)
-        ? preferred
-        : availableBases[0] || null
-  const seriesFromRows = activeBasis ? buildBasisSeries(scopedRows, activeBasis) : []
+  const scopedRows = filterNavQuoteRowsByCurrency(rows, currency) as FundNavSeriesResponse['rows']
+  const basisContext = buildNavQuoteBasisContext(scopedRows, requestedBasis)
 
   return {
     rows: scopedRows,
-    availableBases,
-    activeBasis,
-    basisSeries: seriesFromRows,
-    latestRow: scopedRows[scopedRows.length - 1],
+    ...basisContext,
   }
 }
 
@@ -3466,7 +3450,7 @@ function resampleSeries(points: FundChartPoint[], frequency: ChartFrequency) {
 
 function buildCalculationPointSeries(series: FundNavSeriesResponse['calculation_series']) {
   return series
-    .map((point) => ({ date: point.date, value: point.value ?? point.nav }))
+    .map((point) => ({ date: point.date, value: point.value }))
     .sort((left, right) => left.date.localeCompare(right.date))
 }
 
@@ -4500,24 +4484,9 @@ export default function FundDetailPage({
     if (!bundle) {
       return
     }
-    const currencies = Array.from(
-      new Set(
-        bundle.navSeries.rows.map((row) => row.currency || '')
-          .map((value) => value || '')
-          .filter(Boolean),
-      ),
-    )
-    const effectiveCurrency =
-      currencies.includes(selectedCurrency) ? selectedCurrency : currencies[0] || 'USD'
-    const quoteContext = buildQuoteSeriesContext(bundle.navSeries.rows, {
-      currency: effectiveCurrency,
-      requestedBasis: quoteBasis,
-      preferredBasis: bundle.navSeries.nav_basis_type,
-    })
-    if (quoteContext.activeBasis && quoteContext.activeBasis !== quoteBasis) {
-      setQuoteBasis(quoteContext.activeBasis)
-    }
-  }, [bundle, quoteBasis, selectedCurrency])
+    const preferredBasis = resolvePreferredQuoteBasis(bundle.navSeries.nav_basis_type)
+    setQuoteBasis(preferredBasis ?? 'nav_with_dividend')
+  }, [bundle?.navSeries.nav_basis_type, fundId])
 
   useEffect(() => {
     setChartHoverIndex(null)
@@ -4542,18 +4511,12 @@ export default function FundDetailPage({
     if (!bundle) {
       return
     }
-    const currencies = Array.from(
-      new Set(
-        bundle.navSeries.rows.map((row) => row.currency || '')
-          .map((value) => value || '')
-          .filter(Boolean),
-      ),
-    )
+    const currencies = getAvailableQuoteCurrencies(bundle.navSeries.rows)
     if (currencies.length && !currencies.includes(selectedCurrency)) {
       setSelectedCurrency(currencies[0])
     }
-    if (!currencies.length && selectedCurrency !== 'USD') {
-      setSelectedCurrency('USD')
+    if (!currencies.length && selectedCurrency) {
+      setSelectedCurrency('')
     }
   }, [bundle, selectedCurrency])
 
@@ -4600,19 +4563,12 @@ export default function FundDetailPage({
       return
     }
 
-    const currencies = Array.from(
-      new Set(
-        bundle.navSeries.rows.map((row) => row.currency || '')
-          .map((value) => value || '')
-          .filter(Boolean),
-      ),
-    )
+    const currencies = getAvailableQuoteCurrencies(bundle.navSeries.rows)
     const effectiveCurrency =
-      currencies.includes(selectedCurrency) ? selectedCurrency : currencies[0] || 'USD'
+      currencies.includes(selectedCurrency) ? selectedCurrency : currencies[0] || ''
     const quoteContext = buildQuoteSeriesContext(bundle.navSeries.rows, {
       currency: effectiveCurrency,
       requestedBasis: quoteBasis,
-      preferredBasis: bundle.navSeries.nav_basis_type,
     })
     const navBasisSeries = quoteContext.basisSeries
     const defaultWindow = getRangeWindow(navBasisSeries, chartRange)
@@ -5122,32 +5078,25 @@ export default function FundDetailPage({
 
   const { summary, performance, risk, portfolio, holdings, ratings, people, strategy, price, documents, research, navSeries } = bundle
   const timelineNotes = normalizeResearchTimelineNotes(research.timeline_notes)
-  const availableCurrencies = Array.from(
-    new Set(
-      navSeries.rows.map((row) => row.currency || '')
-        .map((value) => value || '')
-        .filter(Boolean),
-    ),
-  )
+  const availableCurrencies = getAvailableQuoteCurrencies(navSeries.rows)
   const effectiveCurrency = availableCurrencies.includes(selectedCurrency)
     ? selectedCurrency
-    : availableCurrencies[0] || 'USD'
+    : availableCurrencies[0] || ''
   const quoteSeriesContext = buildQuoteSeriesContext(navSeries.rows, {
     currency: effectiveCurrency,
     requestedBasis: quoteBasis,
-    preferredBasis: navSeries.nav_basis_type,
   })
   const currencyFilteredRows = quoteSeriesContext.rows
   const availableQuoteBases = quoteSeriesContext.availableBases
-  const activeQuoteBasis = quoteSeriesContext.activeBasis || resolvePreferredQuoteBasis(navSeries.nav_basis_type) || 'nav'
+  const activeQuoteBasis = quoteSeriesContext.activeBasis
   const returnQuoteBasis = resolveReturnQuoteBasis(currencyFilteredRows, navSeries.nav_basis_type)
-  const latestQuoteRow = quoteSeriesContext.latestRow || navSeries.rows[navSeries.rows.length - 1]
   const navBasisSeries = quoteSeriesContext.basisSeries
   const returnBasisSeries = returnQuoteBasis ? buildBasisSeries(currencyFilteredRows, returnQuoteBasis) : []
   const calculationFrequencyProfile = navSeries.calculation_frequency_profile
   const calculationFrequencyStatus = calculationFrequencyProfile.status_label
   // Metrics use the backend-selected calculation series, never the zoomed or downsampled chart display series.
   const calculationBasisSeries = buildCalculationPointSeries(navSeries.calculation_series)
+  const selectedCalculationBasis = resolvePreferredQuoteBasis(navSeries.nav_basis_type)
   const defaultWindow = getRangeWindow(navBasisSeries, chartRange)
   const effectiveStartDate = chartRange === 'CUSTOM' ? chartStartDate : defaultWindow.start
   const effectiveEndDate = chartRange === 'CUSTOM' ? chartEndDate : defaultWindow.end
@@ -5170,18 +5119,35 @@ export default function FundDetailPage({
   const zoomSelectionLeftPct = zoomMaxIndex > 0 ? (zoomStartIndex / zoomMaxIndex) * 100 : 0
   const zoomSelectionRightPct =
     zoomMaxIndex > 0 ? ((zoomMaxIndex - zoomEndIndex) / zoomMaxIndex) * 100 : 0
-  const benchmarkRowsByCurrency =
-    getRowsForCurrency(benchmarkNavSeries?.rows || [], effectiveCurrency)
-  const benchmarkSourceRows = benchmarkRowsByCurrency.length > 0 ? benchmarkRowsByCurrency : benchmarkNavSeries?.rows || []
+  const benchmarkSourceRows = filterNavQuoteRowsByCurrency(
+    benchmarkNavSeries?.rows || [],
+    effectiveCurrency,
+  ) as FundNavSeriesResponse['rows']
   const benchmarkAvailableBases = getAvailableQuoteBases(benchmarkSourceRows)
   const activeBenchmarkBasis = benchmarkAvailableBases.includes(activeQuoteBasis)
     ? activeQuoteBasis
-    : benchmarkAvailableBases[0] || null
+    : null
   const benchmarkNavBasisSeries = activeBenchmarkBasis ? buildBasisSeries(benchmarkSourceRows, activeBenchmarkBasis) : []
-  const benchmarkCalculationSeries = benchmarkNavSeries
-    ? buildCalculationPointSeries(benchmarkNavSeries.calculation_series)
+  const benchmarkSelectedCalculationBasis = resolvePreferredQuoteBasis(
+    benchmarkNavSeries?.nav_basis_type,
+  )
+  const benchmarkCalculationSeries =
+    selectedCalculationBasis && benchmarkSelectedCalculationBasis === selectedCalculationBasis
+    ? buildBasisSeries(
+        benchmarkSourceRows.filter((row) => row.calculation_included),
+        selectedCalculationBasis,
+      )
     : []
   const hasBenchmarkSelection = Boolean(selectedBenchmark)
+  const benchmarkCurrencyUnavailable =
+    hasBenchmarkSelection && (!effectiveCurrency || benchmarkSourceRows.length === 0)
+  const benchmarkBasisUnavailable =
+    hasBenchmarkSelection && !benchmarkCurrencyUnavailable && activeBenchmarkBasis == null
+  const benchmarkCalculationUnavailable =
+    hasBenchmarkSelection &&
+    !benchmarkCurrencyUnavailable &&
+    (benchmarkSelectedCalculationBasis !== selectedCalculationBasis ||
+      benchmarkCalculationSeries.length === 0)
   const rawCompareDateWindow = hasBenchmarkSelection
     ? buildCommonDateWindow(navBasisSeries, benchmarkNavBasisSeries)
     : null
@@ -5266,24 +5232,19 @@ export default function FundDetailPage({
   const navBasisLabel = selectedSeriesLabel || (NAV_BASIS_LABELS[navBasisType]
     ? localize(language, NAV_BASIS_LABELS[navBasisType])
     : toTitleCase(navBasisType))
-  const quoteBasisLabel = selectedSeriesLabel || localize(language, QUOTE_BASIS_LABELS[activeQuoteBasis])
+  const selectedNavBasis = resolvePreferredQuoteBasis(navSeries.nav_basis_type)
+  const quoteBasisLabel =
+    activeQuoteBasis === selectedNavBasis && selectedSeriesLabel
+      ? selectedSeriesLabel
+      : localize(language, QUOTE_BASIS_LABELS[activeQuoteBasis])
   const chartSeriesBasisLabel = shouldIndexCompareSeries
     ? localize(language, SYSTEM_LABELS.indexed)
     : quoteBasisLabel
-  const quoteBasisOptions = availableQuoteBases.length
-    ? availableQuoteBases
-    : [activeQuoteBasis]
-  const basisValue =
-    latestQuoteRow?.selected_value ??
-    (activeQuoteBasis === 'nav_with_dividend'
-      ? latestQuoteRow?.nav_with_dividend ??
-        latestSeriesPoint?.value ??
-        summary.nav_snapshot?.latest_nav_with_dividend ??
-        latestQuoteRow?.nav
-      : latestQuoteRow?.nav ??
-        latestSeriesPoint?.value ??
-        summary.nav_snapshot?.latest_nav ??
-        latestQuoteRow?.nav_with_dividend)
+  const quoteBasisOptions = [
+    activeQuoteBasis,
+    ...availableQuoteBases.filter((basis) => basis !== activeQuoteBasis),
+  ]
+  const basisValue = latestSeriesPoint?.value ?? null
   const quoteToneClass =
     quoteChange == null
       ? ''
@@ -6139,9 +6100,9 @@ export default function FundDetailPage({
       value: `${formatNumber(calculationFrequencyProfile.gap_count, 0)} gaps`,
     },
     { label: 'Basis Source', value: formatNavBasisSource(navSeries.nav_basis_source) },
-    { label: 'Series Count', value: String(navSeries.count || navSeries.rows.length || 0) },
-    { label: selectedDateLabel.replace(/^Last\\s+/, ''), value: formatDate(latestQuoteRow?.as_of_date || navSeries.rows[navSeries.rows.length - 1]?.as_of_date) },
-    { label: 'Currency', value: getString(navSeries.rows[navSeries.rows.length - 1]?.currency || 'USD') },
+    { label: 'Series Count', value: String(navSeries.count) },
+    { label: 'Quote Date', value: formatDate(latestSeriesPoint?.date) },
+    { label: 'Currency', value: effectiveCurrency || '—' },
   ]
   const distributionRowsSummary = [
     {
@@ -7451,7 +7412,7 @@ export default function FundDetailPage({
           <section className="instrument-chart-settings-block">
             <div className="instrument-chart-settings-block-head">
               <span>Display</span>
-              <strong>{effectiveCurrency}</strong>
+              <strong>{effectiveCurrency || 'Unavailable'}</strong>
             </div>
             <div className="instrument-chart-settings-field-grid">
               <label className="instrument-chart-settings-field">
@@ -7467,10 +7428,14 @@ export default function FundDetailPage({
               </label>
               <label className="instrument-chart-settings-field">
                 <span>Currency</span>
-                <select value={effectiveCurrency} onChange={(event) => setSelectedCurrency(event.target.value)}>
-                  {(availableCurrencies.length ? availableCurrencies : [effectiveCurrency]).map((currency) => (
+                <select
+                  value={effectiveCurrency}
+                  disabled={!availableCurrencies.length}
+                  onChange={(event) => setSelectedCurrency(event.target.value)}
+                >
+                  {(availableCurrencies.length ? availableCurrencies : ['']).map((currency) => (
                     <option key={currency} value={currency}>
-                      {currency}
+                      {currency || 'Unavailable'}
                     </option>
                   ))}
                 </select>
@@ -7890,7 +7855,7 @@ export default function FundDetailPage({
                   </div>
                   <div className="instrument-quote-meta">
                     <div className="instrument-quote-asof">
-                      As of {formatDate(latestSeriesPoint?.date || navSeries.rows[navSeries.rows.length - 1]?.as_of_date)}
+                      As of {formatDate(latestSeriesPoint?.date)}
                     </div>
                   </div>
                 </div>
@@ -7915,6 +7880,21 @@ export default function FundDetailPage({
                 </div>
 
                 {quoteActionNotice ? <div className="instrument-quote-action-notice">{quoteActionNotice}</div> : null}
+                {benchmarkCurrencyUnavailable ? (
+                  <div className="instrument-quote-action-notice" role="status">
+                    Benchmark unavailable because its NAV series does not provide {effectiveCurrency || 'a usable currency'}.
+                  </div>
+                ) : null}
+                {benchmarkBasisUnavailable ? (
+                  <div className="instrument-quote-action-notice" role="status">
+                    Benchmark unavailable for {quoteBasisLabel}; select a basis present in both series.
+                  </div>
+                ) : null}
+                {benchmarkCalculationUnavailable && !benchmarkBasisUnavailable ? (
+                  <div className="instrument-quote-action-notice" role="status">
+                    Benchmark calculation unavailable because its selected NAV basis does not match the fund calculation basis.
+                  </div>
+                ) : null}
 
                 <div className="instrument-chart-stage instrument-chart-stage-interactive">
                   {scaledVisibleSeries.length > 1 ? (
@@ -7939,7 +7919,7 @@ export default function FundDetailPage({
                         ) : null}
                       </div>
                       <div className="instrument-chart-series-meta">
-                        <span>{effectiveCurrency}</span>
+                        <span>{effectiveCurrency || 'Currency unavailable'}</span>
                         <div className="instrument-chart-menu instrument-chart-settings-menu" ref={quoteChartMenuRef}>
                           <button
                             type="button"

@@ -23,10 +23,13 @@ config = context.config
 database_url = (
     os.getenv("PORTFOLIO_OPS_INSTRUMENT_REGISTRY_ALEMBIC_DATABASE_URL")
     or os.getenv("PORTFOLIO_OPS_INSTRUMENT_REGISTRY_DATABASE_URL")
-    or config.get_main_option("sqlalchemy.url")
 )
 if database_url:
     config.set_main_option("sqlalchemy.url", database_url)
+elif not config.get_main_option("sqlalchemy.url").strip():
+    raise RuntimeError(
+        "Instrument Registry migration database URL must be explicitly configured."
+    )
 
 raw_schema = os.getenv("PORTFOLIO_OPS_INSTRUMENT_REGISTRY_SCHEMA", "instrument_registry")
 schema = raw_schema.strip() if raw_schema and raw_schema.strip() else None

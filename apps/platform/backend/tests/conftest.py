@@ -1,10 +1,15 @@
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 
 
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
+os.environ.setdefault(
+    "PORTFOLIO_OPS_PLATFORM_DATABASE_URL",
+    "sqlite+pysqlite:///:memory:",
+)
 BACKEND_ROOT_STR = str(BACKEND_ROOT)
 
 if BACKEND_ROOT_STR in sys.path:

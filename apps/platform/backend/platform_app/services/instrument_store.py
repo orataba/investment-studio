@@ -8,6 +8,7 @@ from platform_app.db.session import get_session_factory
 DEFAULT_REGISTRY_NAME = shared_store.DEFAULT_REGISTRY_NAME
 EMPTY_STORE = shared_store.EMPTY_STORE
 _normalize_store = shared_store._normalize_store
+_SOURCE_SETTING_UNSET = object()
 
 
 def reset_store(data: dict[str, object] | None = None) -> None:
@@ -117,7 +118,17 @@ def upsert_source_settings(
     source_location: str | None,
     source_api_profile: str | None,
     source_email_rules: list[dict[str, object]] | None,
+    expected_frequency: str | None = None,
+    market_calendar: object = _SOURCE_SETTING_UNSET,
+    release_lag_days: int | None = None,
 ) -> dict[str, object] | None:
+    optional_semantics: dict[str, object] = {}
+    if expected_frequency is not None:
+        optional_semantics["expected_frequency"] = expected_frequency
+    if market_calendar is not _SOURCE_SETTING_UNSET:
+        optional_semantics["market_calendar"] = market_calendar
+    if release_lag_days is not None:
+        optional_semantics["release_lag_days"] = release_lag_days
     return shared_store.upsert_source_settings(
         get_session_factory(),
         instrument_id=instrument_id,
@@ -126,6 +137,7 @@ def upsert_source_settings(
         source_location=source_location,
         source_api_profile=source_api_profile,
         source_email_rules=source_email_rules,
+        **optional_semantics,
     )
 
 

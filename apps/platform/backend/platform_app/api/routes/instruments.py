@@ -159,16 +159,19 @@ def upsert_instrument_market_data(
     payload: PlatformMarketDataUpsertRequest,
     background_tasks: BackgroundTasks,
 ) -> PlatformInstrumentRecord:
-    record = upsert_market_data(
-        instrument_id=instrument_id,
-        metric_family=payload.metric_family,
-        quote_basis=payload.quote_basis,
-        as_of_date=payload.as_of_date,
-        value=str(payload.value),
-        currency=payload.currency,
-        provider=payload.provider,
-        status=payload.status,
-    )
+    try:
+        record = upsert_market_data(
+            instrument_id=instrument_id,
+            metric_family=payload.metric_family,
+            quote_basis=payload.quote_basis,
+            as_of_date=payload.as_of_date,
+            value=str(payload.value),
+            currency=payload.currency,
+            provider=payload.provider,
+            status=payload.status,
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
     if record is None:
         raise HTTPException(status_code=404, detail="Instrument not found")
     queue_market_data_downstream_refresh(
@@ -185,18 +188,29 @@ def update_instrument_source_settings(
     instrument_id: str,
     payload: PlatformSourceSettingsUpdateRequest,
 ) -> PlatformInstrumentRecord:
-    record = upsert_source_settings(
-        instrument_id=instrument_id,
-        source_mode=payload.source_mode,
-        source_email=payload.source_email,
-        source_location=payload.source_location,
-        source_api_profile=payload.source_api_profile,
-        source_email_rules=(
-            [item.model_dump() for item in payload.source_email_rules]
-            if payload.source_email_rules is not None
-            else None
-        ),
-    )
+    optional_semantics: dict[str, object] = {}
+    if payload.expected_frequency is not None:
+        optional_semantics["expected_frequency"] = payload.expected_frequency
+    if "market_calendar" in payload.model_fields_set:
+        optional_semantics["market_calendar"] = payload.market_calendar
+    if payload.release_lag_days is not None:
+        optional_semantics["release_lag_days"] = payload.release_lag_days
+    try:
+        record = upsert_source_settings(
+            instrument_id=instrument_id,
+            source_mode=payload.source_mode,
+            source_email=payload.source_email,
+            source_location=payload.source_location,
+            source_api_profile=payload.source_api_profile,
+            source_email_rules=(
+                [item.model_dump() for item in payload.source_email_rules]
+                if payload.source_email_rules is not None
+                else None
+            ),
+            **optional_semantics,
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
     if record is None:
         raise HTTPException(status_code=404, detail="Instrument not found")
     return PlatformInstrumentRecord.model_validate(record)

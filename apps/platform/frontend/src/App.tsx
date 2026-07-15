@@ -9,13 +9,30 @@ import type {
   InstrumentIdentifier as PlatformInstrumentIdentifier,
   InstrumentType,
   DataStatus,
+  ExpectedFrequency,
   IdentifierType,
   MetricFamily,
+  PriceUnit,
   QuoteBasis,
   QuoteRole,
   QuoteSelectionPolicy as PlatformQuoteSelectionPolicy,
+  SourceSettings as SharedSourceSettings,
+} from '../../../../packages/instrument-core/ts/src'
+import {
+  canonicalPriceContract,
+  supportsNavHistoryImport,
 } from '../../../../packages/instrument-core/ts/src'
 import { detailForSelection, instrumentsForVisibility } from './instrumentVisibility'
+import { NavImportButton } from './NavImportButton'
+import { PriceContractFields } from './PriceContractFields'
+import { SourceScheduleFields } from './SourceScheduleFields'
+import {
+  defaultMarketDataSelection,
+  formatPriceContract,
+  formatPriceUnit,
+  quoteBasisOptionsForInstrument,
+} from './marketDataContract'
+import { resolveQuoteBasis, resolveRoleQuote, summarizeRoleQuotes } from './quoteRoleResolution'
 import DataOperationsDashboard from './DataOperationsDashboard'
 
 type SourceMode = 'manual' | 'email' | 'api'
@@ -28,6 +45,8 @@ type PlatformMarketDataPoint = {
   as_of_date: string
   value: string
   currency: string
+  price_unit: PriceUnit
+  price_scale: string
   provider?: string | null
   status: DataStatus
 }
@@ -48,12 +67,7 @@ type PlatformInstrumentRecord = {
   latest_market_data: PlatformMarketDataPoint[]
   quote_selection_policy: PlatformQuoteSelectionPolicy
   coverage_state: DataStatus
-  source_settings: {
-    source_mode: SourceMode
-    source_email: string
-    source_location: string
-    source_api_profile: string
-  }
+  source_settings: SharedSourceSettings
   refresh_status: {
     status: string
     message: string
@@ -98,12 +112,12 @@ type PlatformRegistrySummary = {
   fund_with_quote_count: number
 }
 
-type SupportedCurrency = 'USD' | 'HKD' | 'CNY'
+type CurrencyCode = string
 type FxRateSourceKind = 'direct' | 'inverse' | 'cross'
 
 type PlatformFxRateRecord = {
-  base_currency: SupportedCurrency
-  quote_currency: SupportedCurrency
+  base_currency: CurrencyCode
+  quote_currency: CurrencyCode
   rate: string
   as_of_date: string
   source_kind: FxRateSourceKind
@@ -114,7 +128,7 @@ type PlatformFxRateRecord = {
 }
 
 type PlatformFxRatesResponse = {
-  supported_currencies: SupportedCurrency[]
+  supported_currencies: CurrencyCode[]
   maintained_pairs: string[]
   rates: PlatformFxRateRecord[]
 }
@@ -137,33 +151,7 @@ type PlatformNavImportPreviewResponse = {
 
 const PLATFORM_API_BASE = (import.meta.env.VITE_API_BASE_URL || '').replace(/\/$/, '')
 const INSTRUMENT_REGISTRY_PATH = '/instruments'
-const FX_PANEL_PAIRS: Array<[SupportedCurrency, SupportedCurrency]> = [
-  ['USD', 'HKD'],
-  ['USD', 'CNY'],
-  ['HKD', 'CNY'],
-]
-const EDITABLE_FX_PAIRS: Array<[SupportedCurrency, SupportedCurrency]> = [
-  ['USD', 'HKD'],
-  ['USD', 'CNY'],
-]
 
-const QUOTE_BASIS_OPTIONS: Record<MetricFamily, Array<{ value: QuoteBasis; label: string }>> = {
-  price: [
-    { value: 'last', label: 'Last Trade' },
-    { value: 'close', label: 'Close' },
-    { value: 'adjusted_close', label: 'Adjusted Close' },
-    { value: 'clean_price', label: 'Clean Price' },
-    { value: 'dirty_price', label: 'Dirty Price' },
-    { value: 'par', label: 'Par' },
-  ],
-  nav: [
-    { value: 'official_nav', label: 'Official NAV' },
-    { value: 'total_return_nav', label: 'Total Return NAV' },
-  ],
-  fx: [{ value: 'spot', label: 'Spot' }],
-}
-
-const ROLE_ORDER: QuoteRole[] = ['valuation', 'trading', 'total_return']
 const ROLE_LABELS: Record<QuoteRole, string> = {
   trading: 'Trading',
   valuation: 'Valuation',
@@ -195,29 +183,7 @@ function allowedFamiliesForInstrument(instrumentType: InstrumentType): MetricFam
   if (instrumentType === 'fund') {
     return ['nav', 'price']
   }
-  return ['price', 'nav', 'fx']
-}
-
-function defaultQuoteInput(instrumentType: InstrumentType): { metric_family: MetricFamily; quote_basis: QuoteBasis } {
-  if (instrumentType === 'fx') {
-    return { metric_family: 'fx', quote_basis: 'spot' }
-  }
-  if (instrumentType === 'cash') {
-    return { metric_family: 'price', quote_basis: 'par' }
-  }
-  if (instrumentType === 'bond') {
-    return { metric_family: 'price', quote_basis: 'dirty_price' }
-  }
-  if (instrumentType === 'fund') {
-    return { metric_family: 'nav', quote_basis: 'official_nav' }
-  }
-  if (instrumentType === 'etf') {
-    return { metric_family: 'price', quote_basis: 'close' }
-  }
-  if (instrumentType === 'index') {
-    return { metric_family: 'price', quote_basis: 'close' }
-  }
-  return { metric_family: 'price', quote_basis: 'close' }
+  return ['price', 'nav']
 }
 
 function formatBasisLabel(quoteBasis: QuoteBasis) {
@@ -236,6 +202,9 @@ function formatBasisLabel(quoteBasis: QuoteBasis) {
   if (quoteBasis === 'dirty_price') {
     return 'Dirty Price'
   }
+  if (quoteBasis === 'accrued_interest') {
+    return 'Accrued Interest'
+  }
   if (quoteBasis === 'last') {
     return 'Last Trade'
   }
@@ -252,69 +221,14 @@ function formatPolicyPath(policy: QuoteBasis[]) {
   return policy.map((value) => formatBasisLabel(value)).join(' -> ') || '—'
 }
 
-function resolveRoleQuote(
-  record: PlatformInstrumentRecord,
-  role: QuoteRole,
-): PlatformMarketDataPoint | null {
-  const latestByBasis = new Map<QuoteBasis, PlatformMarketDataPoint>()
-  record.latest_market_data.forEach((point) => {
-    const current = latestByBasis.get(point.quote_basis)
-    if (!current || point.as_of_date >= current.as_of_date) {
-      latestByBasis.set(point.quote_basis, point)
-    }
-  })
-
-  const bases = [...(record.quote_selection_policy[role] || []), ...(record.quote_selection_policy.reference || [])]
-  for (const basis of bases) {
-    const point = latestByBasis.get(basis)
-    if (point) {
-      return point
-    }
-  }
-
-  return record.latest_market_data[0] ?? null
-}
-
 function summaryQuoteChips(record: PlatformInstrumentRecord) {
-  const seenBases = new Set<QuoteBasis>()
-  return ROLE_ORDER.map((role) => {
-    const point = resolveRoleQuote(record, role)
-    if (!point || seenBases.has(point.quote_basis)) {
-      return null
-    }
-    seenBases.add(point.quote_basis)
-    return {
-      role,
-      point,
-    }
-  }).filter((value): value is { role: QuoteRole; point: PlatformMarketDataPoint } => value !== null)
-}
-
-function latestMarketPoint(
-  record: PlatformInstrumentRecord,
-  metricFamily: MetricFamily,
-  quoteBasis: QuoteBasis,
-) {
-  return (
-    record.latest_market_data.find(
-      (point) => point.metric_family === metricFamily && point.quote_basis === quoteBasis,
-    ) ?? null
-  )
-}
-
-function latestAnyMarketPoint(record: PlatformInstrumentRecord) {
-  return record.latest_market_data.reduce<PlatformMarketDataPoint | null>((latest, point) => {
-    if (!latest || point.as_of_date > latest.as_of_date) {
-      return point
-    }
-    return latest
-  }, null)
+  return summarizeRoleQuotes(record)
 }
 
 function latestQuoteSnapshot(record: PlatformInstrumentRecord) {
-  const officialNav = latestMarketPoint(record, 'nav', 'official_nav')
-  const totalReturnNav = latestMarketPoint(record, 'nav', 'total_return_nav')
-  const selectedQuote = resolveRoleQuote(record, 'valuation') ?? latestAnyMarketPoint(record)
+  const officialNav = resolveQuoteBasis(record, 'official_nav')
+  const totalReturnNav = resolveQuoteBasis(record, 'total_return_nav')
+  const selectedQuote = resolveRoleQuote(record, 'valuation')
   return {
     officialNav,
     totalReturnNav,
@@ -390,6 +304,26 @@ function formatFxPairLabel(baseCurrency: string, quoteCurrency: string) {
   return `${baseCurrency}/${quoteCurrency}`
 }
 
+function parseFxPairLabel(
+  pairLabel: string,
+  supportedCurrencies: CurrencyCode[],
+): [CurrencyCode, CurrencyCode] | null {
+  const [rawBase, rawQuote, ...remainder] = pairLabel.split('/')
+  const baseCurrency = rawBase?.trim().toUpperCase()
+  const quoteCurrency = rawQuote?.trim().toUpperCase()
+  if (
+    remainder.length > 0 ||
+    !baseCurrency ||
+    !quoteCurrency ||
+    baseCurrency === quoteCurrency ||
+    !supportedCurrencies.includes(baseCurrency) ||
+    !supportedCurrencies.includes(quoteCurrency)
+  ) {
+    return null
+  }
+  return [baseCurrency, quoteCurrency]
+}
+
 function formatFxSourceKind(sourceKind: FxRateSourceKind) {
   if (sourceKind === 'cross') {
     return 'Cross'
@@ -418,8 +352,8 @@ function bytesToBase64(bytes: Uint8Array) {
 
 function findFxRate(
   rates: PlatformFxRateRecord[],
-  baseCurrency: SupportedCurrency,
-  quoteCurrency: SupportedCurrency,
+  baseCurrency: CurrencyCode,
+  quoteCurrency: CurrencyCode,
 ) {
   return (
     rates.find(
@@ -481,8 +415,8 @@ function InstrumentsPage({
     identifiers: PlatformInstrumentIdentifier[]
   }) => Promise<void>
   onUpsertFxRate: (payload: {
-    base_currency: SupportedCurrency
-    quote_currency: SupportedCurrency
+    base_currency: CurrencyCode
+    quote_currency: CurrencyCode
     rate: string
     as_of_date: string
     provider?: string | null
@@ -504,6 +438,9 @@ function InstrumentsPage({
     source_email: string
     source_location: string
     source_api_profile: string
+    expected_frequency: ExpectedFrequency
+    market_calendar: string | null
+    release_lag_days: number
   }) => Promise<void>
   onTriggerRefresh: (payload: {
     instrument_id: string
@@ -549,6 +486,9 @@ function InstrumentsPage({
   const [sourceEmail, setSourceEmail] = useState('')
   const [sourceLocation, setSourceLocation] = useState('Database Dashboard')
   const [sourceApiProfile, setSourceApiProfile] = useState('')
+  const [expectedFrequency, setExpectedFrequency] = useState<ExpectedFrequency>('event_driven')
+  const [marketCalendar, setMarketCalendar] = useState('')
+  const [releaseLagDays, setReleaseLagDays] = useState(0)
   const [navImportText, setNavImportText] = useState('')
   const [navImportFileName, setNavImportFileName] = useState('')
   const [navImportFileContent, setNavImportFileContent] = useState('')
@@ -558,7 +498,7 @@ function InstrumentsPage({
   const [selectedInstrumentDetail, setSelectedInstrumentDetail] = useState<PlatformInstrumentDetail | null>(null)
   const [selectedInstrumentDetailError, setSelectedInstrumentDetailError] = useState<string | null>(null)
   const [selectedInstrumentDetailLoading, setSelectedInstrumentDetailLoading] = useState(false)
-  const [editableFxPair, setEditableFxPair] = useState('USD/HKD')
+  const [editableFxPair, setEditableFxPair] = useState('')
   const [fxRateValue, setFxRateValue] = useState('')
   const [fxRateDate, setFxRateDate] = useState(() => currentLocalDate())
   const [fxRateStatus, setFxRateStatus] = useState<DataStatus>('complete')
@@ -577,30 +517,44 @@ function InstrumentsPage({
 
   selectedInstrumentIdRef.current = selectedInstrumentId
 
+  const editableFxPairs = useMemo(
+    () =>
+      (fxRates?.maintained_pairs ?? [])
+        .map((pairLabel) => parseFxPairLabel(pairLabel, fxRates?.supported_currencies ?? []))
+        .filter((pair): pair is [CurrencyCode, CurrencyCode] => pair !== null),
+    [fxRates],
+  )
   const selectedEditableFxPair = useMemo(() => {
-    const [baseCurrency = 'USD', quoteCurrency = 'HKD'] = editableFxPair.split('/')
-    return {
-      baseCurrency: baseCurrency as SupportedCurrency,
-      quoteCurrency: quoteCurrency as SupportedCurrency,
+    const pair = parseFxPairLabel(editableFxPair, fxRates?.supported_currencies ?? [])
+    if (!pair) {
+      return null
     }
-  }, [editableFxPair])
+    return {
+      baseCurrency: pair[0],
+      quoteCurrency: pair[1],
+    }
+  }, [editableFxPair, fxRates?.supported_currencies])
   const selectedEditableFxRate = useMemo(
     () =>
-      fxRates
+      fxRates && selectedEditableFxPair
         ? findFxRate(
             fxRates.rates,
             selectedEditableFxPair.baseCurrency,
             selectedEditableFxPair.quoteCurrency,
           )
         : null,
-    [fxRates, selectedEditableFxPair.baseCurrency, selectedEditableFxPair.quoteCurrency],
+    [fxRates, selectedEditableFxPair],
   )
   const fxPanelRates = useMemo(
-    () =>
-      FX_PANEL_PAIRS.map(([baseCurrency, quoteCurrency]) => ({
-        pairLabel: formatFxPairLabel(baseCurrency, quoteCurrency),
-        record: fxRates ? findFxRate(fxRates.rates, baseCurrency, quoteCurrency) : null,
-      })),
+    () => {
+      const supportedCurrencies = fxRates?.supported_currencies ?? []
+      return supportedCurrencies.flatMap((baseCurrency, baseIndex) =>
+        supportedCurrencies.slice(baseIndex + 1).map((quoteCurrency) => ({
+          pairLabel: formatFxPairLabel(baseCurrency, quoteCurrency),
+          record: fxRates ? findFxRate(fxRates.rates, baseCurrency, quoteCurrency) : null,
+        })),
+      )
+    },
     [fxRates],
   )
   const activeInstrumentCount = useMemo(
@@ -613,6 +567,10 @@ function InstrumentsPage({
   )
 
   const selectedInstrument = instruments.find((item) => item.instrument_id === selectedInstrumentId) ?? null
+  const priceContract = canonicalPriceContract(
+    selectedInstrument?.instrument_type ?? 'other',
+    metricFamily,
+  )
   const allowedMetricFamilies = useMemo(
     () =>
       selectedInstrument
@@ -620,7 +578,14 @@ function InstrumentsPage({
         : (['price', 'nav', 'fx'] as MetricFamily[]),
     [selectedInstrument],
   )
-  const availableQuoteBases = useMemo(() => QUOTE_BASIS_OPTIONS[metricFamily], [metricFamily])
+  const availableQuoteBases = useMemo(
+    () =>
+      quoteBasisOptionsForInstrument(
+        selectedInstrument?.instrument_type ?? 'other',
+        metricFamily,
+      ),
+    [metricFamily, selectedInstrument?.instrument_type],
+  )
   const selectedQuoteSummary = useMemo(
     () => (selectedInstrument ? summaryQuoteChips(selectedInstrument) : []),
     [selectedInstrument],
@@ -793,7 +758,10 @@ function InstrumentsPage({
     if (!selected) {
       return
     }
-    const defaults = defaultQuoteInput(selected.instrument_type)
+    if (!supportsNavHistoryImport(selected.instrument_type)) {
+      setActivePanel((current) => (current === 'nav' ? null : current))
+    }
+    const defaults = defaultMarketDataSelection(selected.instrument_type)
     setMetricFamily(defaults.metric_family)
     setQuoteBasis(defaults.quote_basis)
     setMetricCurrency(selected.currency)
@@ -879,19 +847,48 @@ function InstrumentsPage({
     setSourceEmail(selectedInstrument.source_settings.source_email)
     setSourceLocation(selectedInstrument.source_settings.source_location)
     setSourceApiProfile(selectedInstrument.source_settings.source_api_profile)
+    setExpectedFrequency(selectedInstrument.source_settings.expected_frequency)
+    setMarketCalendar(selectedInstrument.source_settings.market_calendar || '')
+    setReleaseLagDays(selectedInstrument.source_settings.release_lag_days)
   }, [selectedInstrument])
 
   useEffect(() => {
     if (!allowedMetricFamilies.includes(metricFamily)) {
       const nextFamily = allowedMetricFamilies[0]
       setMetricFamily(nextFamily)
-      setQuoteBasis(QUOTE_BASIS_OPTIONS[nextFamily][0].value)
+      setQuoteBasis(
+        quoteBasisOptionsForInstrument(
+          selectedInstrument?.instrument_type ?? 'other',
+          nextFamily,
+        )[0].value,
+      )
       return
     }
     if (!availableQuoteBases.some((item) => item.value === quoteBasis)) {
       setQuoteBasis(availableQuoteBases[0].value)
     }
-  }, [allowedMetricFamilies, availableQuoteBases, metricFamily, quoteBasis])
+  }, [
+    allowedMetricFamilies,
+    availableQuoteBases,
+    metricFamily,
+    quoteBasis,
+    selectedInstrument?.instrument_type,
+  ])
+
+  useEffect(() => {
+    const maintainedPairLabels = editableFxPairs.map(([baseCurrency, quoteCurrency]) =>
+      formatFxPairLabel(baseCurrency, quoteCurrency),
+    )
+    if (!maintainedPairLabels.length) {
+      if (editableFxPair) {
+        setEditableFxPair('')
+      }
+      return
+    }
+    if (!maintainedPairLabels.includes(editableFxPair)) {
+      setEditableFxPair(maintainedPairLabels[0])
+    }
+  }, [editableFxPair, editableFxPairs])
 
   useEffect(() => {
     if (!selectedEditableFxRate) {
@@ -925,6 +922,9 @@ function InstrumentsPage({
 
   async function handleFxSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
+    if (!selectedEditableFxPair) {
+      return
+    }
     await onUpsertFxRate({
       base_currency: selectedEditableFxPair.baseCurrency,
       quote_currency: selectedEditableFxPair.quoteCurrency,
@@ -962,6 +962,9 @@ function InstrumentsPage({
       source_email: sourceEmail.trim(),
       source_location: sourceLocation.trim(),
       source_api_profile: sourceApiProfile.trim(),
+      expected_frequency: expectedFrequency,
+      market_calendar: marketCalendar.trim() || null,
+      release_lag_days: releaseLagDays,
     })
     await refreshSelectedInstrumentDetail(selectedInstrumentId)
   }
@@ -1111,6 +1114,15 @@ function InstrumentsPage({
   }
 
   function openActionPanel(panel: 'create' | 'quote' | 'source' | 'nav' | 'fx', instrumentId?: string) {
+    const targetInstrument = instrumentId
+      ? instruments.find((item) => item.instrument_id === instrumentId)
+      : selectedInstrument
+    if (
+      panel === 'nav' &&
+      (!targetInstrument || !supportsNavHistoryImport(targetInstrument.instrument_type))
+    ) {
+      return
+    }
     if (instrumentId) {
       syncSelectedInstrument(instrumentId)
     }
@@ -1333,9 +1345,12 @@ function InstrumentsPage({
                   <button type="button" className="registry-submit secondary" onClick={() => openActionPanel('quote', selectedInstrument.instrument_id)}>
                     Add Quote
                   </button>
-                  <button type="button" className="registry-submit secondary" onClick={() => openActionPanel('nav', selectedInstrument.instrument_id)}>
-                    Import NAV
-                  </button>
+                  <NavImportButton
+                    instrumentType={selectedInstrument.instrument_type}
+                    type="button"
+                    className="registry-submit secondary"
+                    onClick={() => openActionPanel('nav', selectedInstrument.instrument_id)}
+                  />
                   <button type="button" className="registry-submit secondary" onClick={() => void handleRefreshClick()}>
                     Refresh
                   </button>
@@ -1384,14 +1399,14 @@ function InstrumentsPage({
             >
               Source Settings
             </button>
-            <button
-              type="button"
-              className={panelButtonClass('nav')}
-              disabled={!selectedInstrument}
-              onClick={() => openActionPanel('nav')}
-            >
-              Import NAV
-            </button>
+            {selectedInstrument ? (
+              <NavImportButton
+                instrumentType={selectedInstrument.instrument_type}
+                type="button"
+                className={panelButtonClass('nav')}
+                onClick={() => openActionPanel('nav')}
+              />
+            ) : null}
             <button type="button" className={panelButtonClass('fx')} onClick={() => openActionPanel('fx')}>
               Update FX
             </button>
@@ -1508,7 +1523,12 @@ function InstrumentsPage({
                         onChange={(event) => {
                           const nextFamily = event.target.value as MetricFamily
                           setMetricFamily(nextFamily)
-                          setQuoteBasis(QUOTE_BASIS_OPTIONS[nextFamily][0].value)
+                          setQuoteBasis(
+                            quoteBasisOptionsForInstrument(
+                              selectedInstrument.instrument_type,
+                              nextFamily,
+                            )[0].value,
+                          )
                         }}
                       >
                         {allowedMetricFamilies.map((family) => (
@@ -1528,6 +1548,10 @@ function InstrumentsPage({
                         ))}
                       </select>
                     </label>
+                    <PriceContractFields
+                      instrumentType={selectedInstrument.instrument_type}
+                      metricFamily={metricFamily}
+                    />
                     <label>
                       <span>Value</span>
                       <input value={metricValue} onChange={(event) => setMetricValue(event.target.value)} required />
@@ -1537,6 +1561,7 @@ function InstrumentsPage({
                       <input
                         value={metricCurrency}
                         onChange={(event) => setMetricCurrency(event.target.value)}
+                        readOnly={selectedInstrument.instrument_type === 'fx'}
                         required
                       />
                     </label>
@@ -1564,6 +1589,8 @@ function InstrumentsPage({
                     </button>
                   </div>
                   <div className="registry-form-note">
+                    Price contract: {formatPriceContract(priceContract.price_unit, priceContract.price_scale)}
+                    {' · '}
                     Valuation path: {formatPolicyPath(selectedInstrument.quote_selection_policy.valuation)}
                     {' · '}
                     Total return path: {formatPolicyPath(selectedInstrument.quote_selection_policy.total_return)}
@@ -1599,6 +1626,14 @@ function InstrumentsPage({
                         <option value="api">API</option>
                       </select>
                     </label>
+                    <SourceScheduleFields
+                      expectedFrequency={expectedFrequency}
+                      marketCalendar={marketCalendar}
+                      releaseLagDays={releaseLagDays}
+                      onExpectedFrequencyChange={setExpectedFrequency}
+                      onMarketCalendarChange={setMarketCalendar}
+                      onReleaseLagDaysChange={setReleaseLagDays}
+                    />
                     <label>
                       <span>Email Source</span>
                       <input
@@ -1641,7 +1676,7 @@ function InstrumentsPage({
             ) : null}
 
             {activePanel === 'nav' ? (
-              selectedInstrument ? (
+              selectedInstrument && supportsNavHistoryImport(selectedInstrument.instrument_type) ? (
                 <form className="registry-form registry-action-form" onSubmit={(event) => void handleNavImportSubmit(event)}>
                   <div className="registry-action-form-grid">
                     <label className="registry-field-wide">
@@ -1772,7 +1807,7 @@ function InstrumentsPage({
                     <label>
                       <span>Pair</span>
                       <select value={editableFxPair} onChange={(event) => setEditableFxPair(event.target.value)}>
-                        {EDITABLE_FX_PAIRS.map(([baseCurrency, quoteCurrency]) => {
+                        {editableFxPairs.map(([baseCurrency, quoteCurrency]) => {
                           const value = formatFxPairLabel(baseCurrency, quoteCurrency)
                           return (
                             <option key={value} value={value}>
@@ -1800,12 +1835,15 @@ function InstrumentsPage({
                     </label>
                   </div>
                   <div className="registry-form-actions">
-                    <button type="submit" className="registry-submit">
+                    <button type="submit" className="registry-submit" disabled={!selectedEditableFxPair}>
                       Save FX Rate
                     </button>
                   </div>
                   <div className="registry-form-note">
-                    Supported settlement currencies: {(fxRates?.supported_currencies ?? ['USD', 'HKD', 'CNY']).join(' / ')}.
+                    Supported settlement currencies:{' '}
+                    {fxRates?.supported_currencies.length
+                      ? fxRates.supported_currencies.join(' / ')
+                      : 'Unavailable'}.
                   </div>
                 </form>
               </div>
@@ -1861,7 +1899,7 @@ function InstrumentsPage({
                 const detailRowId = `registry-detail-${encodeURIComponent(item.instrument_id)}`
                 const quoteSummary = summaryQuoteChips(item)
                 const { officialNav, totalReturnNav, selectedQuote, latestQuoteDate } = latestQuoteSnapshot(item)
-                const primaryQuote = selectedQuote ?? officialNav ?? totalReturnNav
+                const primaryQuote = selectedQuote
                 return (
                   <Fragment key={item.instrument_id}>
                     <tr
@@ -1989,9 +2027,12 @@ function InstrumentsPage({
                                 <button type="button" className="registry-submit secondary" onClick={() => openActionPanel('quote', item.instrument_id)}>
                                   Add Quote
                                 </button>
-                                <button type="button" className="registry-submit secondary" onClick={() => openActionPanel('nav', item.instrument_id)}>
-                                  Import NAV
-                                </button>
+                                <NavImportButton
+                                  instrumentType={item.instrument_type}
+                                  type="button"
+                                  className="registry-submit secondary"
+                                  onClick={() => openActionPanel('nav', item.instrument_id)}
+                                />
                                 <button type="button" className="registry-submit secondary" onClick={() => openActionPanel('source', item.instrument_id)}>
                                   Source Settings
                                 </button>
@@ -2028,6 +2069,18 @@ function InstrumentsPage({
                                         <td>{formatSourceMode(item.source_settings.source_mode)}</td>
                                       </tr>
                                       <tr>
+                                        <td>Expected Frequency</td>
+                                        <td>{item.source_settings.expected_frequency.replace('_', ' ')}</td>
+                                      </tr>
+                                      <tr>
+                                        <td>Market Calendar</td>
+                                        <td>{item.source_settings.market_calendar || 'Not configured'}</td>
+                                      </tr>
+                                      <tr>
+                                        <td>Release Lag</td>
+                                        <td>{item.source_settings.release_lag_days} day(s)</td>
+                                      </tr>
+                                      <tr>
                                         <td>Coverage</td>
                                         <td>{formatCoverageLabel(item.coverage_state)}</td>
                                       </tr>
@@ -2061,6 +2114,8 @@ function InstrumentsPage({
                                         <th>Role</th>
                                         <th>Basis</th>
                                         <th>Value</th>
+                                        <th>Unit</th>
+                                        <th>Scale</th>
                                         <th>Date</th>
                                       </tr>
                                     </thead>
@@ -2071,12 +2126,14 @@ function InstrumentsPage({
                                             <td>{ROLE_LABELS[role]}</td>
                                             <td>{formatBasisLabel(point.quote_basis)}</td>
                                             <td>{point.value} {point.currency}</td>
+                                            <td>{formatPriceUnit(point.price_unit)}</td>
+                                            <td>{point.price_scale}</td>
                                             <td>{point.as_of_date}</td>
                                           </tr>
                                         ))
                                       ) : (
                                         <tr>
-                                          <td colSpan={4}>No selected quotes for this instrument.</td>
+                                          <td colSpan={6}>No selected quotes for this instrument.</td>
                                         </tr>
                                       )}
                                     </tbody>
@@ -2153,6 +2210,8 @@ function InstrumentsPage({
                                         <th>Basis</th>
                                         <th>Value</th>
                                         <th>Currency</th>
+                                        <th>Unit</th>
+                                        <th>Scale</th>
                                         <th>Status</th>
                                         <th>Provider</th>
                                       </tr>
@@ -2166,13 +2225,15 @@ function InstrumentsPage({
                                             <td>{formatBasisLabel(point.quote_basis)}</td>
                                             <td>{point.value}</td>
                                             <td>{point.currency}</td>
+                                            <td>{formatPriceUnit(point.price_unit)}</td>
+                                            <td>{point.price_scale}</td>
                                             <td>{point.status}</td>
                                             <td>{point.provider || '—'}</td>
                                           </tr>
                                         ))
                                       ) : (
                                         <tr>
-                                          <td colSpan={7}>No shared market data loaded for this instrument.</td>
+                                          <td colSpan={9}>No shared market data loaded for this instrument.</td>
                                         </tr>
                                       )}
                                     </tbody>
@@ -2316,8 +2377,8 @@ export default function App() {
   }
 
   async function handleUpsertFxRate(payload: {
-    base_currency: SupportedCurrency
-    quote_currency: SupportedCurrency
+    base_currency: CurrencyCode
+    quote_currency: CurrencyCode
     rate: string
     as_of_date: string
     provider?: string | null
@@ -2395,6 +2456,9 @@ export default function App() {
     source_email: string
     source_location: string
     source_api_profile: string
+    expected_frequency: ExpectedFrequency
+    market_calendar: string | null
+    release_lag_days: number
   }) {
     try {
       const updated = await fetchJson<PlatformInstrumentRecord>(

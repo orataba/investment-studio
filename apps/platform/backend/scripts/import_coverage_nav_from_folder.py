@@ -132,7 +132,15 @@ def _ensure_instrument(instrument_data: dict[str, str]) -> None:
                 instrument_type=instrument_data["instrument_type"],
                 currency=instrument_data["currency"],
                 quote_selection_policy_json=_default_quote_selection_policy(instrument_data["instrument_type"]),
-                source_settings_json=_default_source_settings(),
+                source_settings_json=_default_source_settings(
+                    instrument_type=instrument_data["instrument_type"],
+                    identifiers=[
+                        {
+                            "identifier_value": instrument_data["identifier_value"],
+                            "is_primary": True,
+                        }
+                    ],
+                ),
                 refresh_status_json=_default_refresh_status(),
                 lifecycle_state_json=_default_lifecycle_state(),
             )

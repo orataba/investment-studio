@@ -6,6 +6,7 @@ from io import BytesIO
 import zipfile
 
 from openpyxl import Workbook
+import pytest
 
 from platform_app.services import market_data_ops
 from platform_app.services.market_data_ops import (
@@ -26,6 +27,42 @@ def _workbook_bytes(rows: list[list[object]]) -> bytes:
     buffer = BytesIO()
     workbook.save(buffer)
     return buffer.getvalue()
+
+
+def test_non_fund_nav_preview_and_file_import_fail_before_parsing_or_persistence(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        market_data_ops,
+        "get_instrument",
+        lambda instrument_id: {
+            "instrument_id": instrument_id,
+            "instrument_type": "fx",
+        },
+    )
+
+    def fail_if_called(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("NAV parsing or persistence must not run for a non-fund instrument")
+
+    monkeypatch.setattr(market_data_ops, "_parse_nav_rows_from_text", fail_if_called)
+    monkeypatch.setattr(market_data_ops, "_parse_nav_rows_from_uploaded_file", fail_if_called)
+    monkeypatch.setattr(market_data_ops, "replace_nav_history", fail_if_called)
+
+    with pytest.raises(ValueError, match="only supported for fund instruments"):
+        market_data_ops.preview_nav_import(
+            instrument_id="fx-usd-cny",
+            raw_text="not-a-nav-row",
+        )
+
+    with pytest.raises(ValueError, match="only supported for fund instruments"):
+        market_data_ops.import_nav_file(
+            instrument_id="fx-usd-cny",
+            file_name="not-a-workbook.xlsx",
+            file_bytes=b"not-a-workbook",
+            provider=None,
+            status="complete",
+            updated_by="pytest",
+        )
 
 
 def _with_broken_dimension(file_bytes: bytes) -> bytes:
@@ -78,36 +115,42 @@ def _zb945a_existing_nav_instrument() -> dict[str, object]:
                 "quote_basis": "official_nav",
                 "as_of_date": "2026-04-02",
                 "value": "0.9334",
+                "status": "complete",
             },
             {
                 "metric_family": "nav",
                 "quote_basis": "total_return_nav",
                 "as_of_date": "2026-04-02",
                 "value": "1.4897",
+                "status": "complete",
             },
             {
                 "metric_family": "nav",
                 "quote_basis": "cumulative_nav",
                 "as_of_date": "2026-04-02",
                 "value": "1.4897",
+                "status": "complete",
             },
             {
                 "metric_family": "nav",
                 "quote_basis": "official_nav",
                 "as_of_date": "2026-04-03",
                 "value": "0.9352",
+                "status": "complete",
             },
             {
                 "metric_family": "nav",
                 "quote_basis": "total_return_nav",
                 "as_of_date": "2026-04-03",
                 "value": "1.4925727876580244",
+                "status": "complete",
             },
             {
                 "metric_family": "nav",
                 "quote_basis": "cumulative_nav",
                 "as_of_date": "2026-04-03",
                 "value": "1.4915",
+                "status": "complete",
             },
         ]
     }
@@ -128,8 +171,38 @@ def test_parse_nav_rows_from_xlsx_supports_chinese_headers() -> None:
     assert parsed[0].get("nav_with_dividend") is None
     assert parsed[0]["instrument_code"] == "SBCJ69"
     assert parsed[0]["instrument_name"] == "国泰君安期货CTA因子组合2号集合资产管理计划"
-    assert parsed[0]["currency"] == "CNY"
+    assert "currency" not in parsed[0]
     assert parsed[0]["frequency"] == "daily"
+
+
+def test_prepare_nav_rows_uses_selected_fund_currency_and_rejects_mismatch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        market_data_ops,
+        "_existing_nav_history_by_date",
+        lambda _instrument_id: {},
+    )
+    instrument = {"currency": "HKD"}
+    source_row = {
+        "as_of_date": "2026-04-14",
+        "nav": "1.1002",
+        "frequency": "daily",
+    }
+
+    prepared = market_data_ops._prepare_nav_rows_for_instrument(
+        instrument=instrument,
+        instrument_id="fund-hkd",
+        rows=[source_row],
+    )
+
+    assert prepared[0]["currency"] == "HKD"
+    with pytest.raises(ValueError, match="does not match the selected fund currency"):
+        market_data_ops._prepare_nav_rows_for_instrument(
+            instrument=instrument,
+            instrument_id="fund-hkd",
+            rows=[{**source_row, "currency": "USD"}],
+        )
 
 
 def test_parse_nav_rows_from_xlsx_supports_product_code_and_trade_date_aliases() -> None:
@@ -280,20 +353,23 @@ def test_reinvested_total_return_correction_uses_existing_anchor(monkeypatch) ->
                 {
                     "metric_family": "nav",
                     "quote_basis": "official_nav",
-                    "as_of_date": "2026-05-27",
-                    "value": "1.0000",
+                        "as_of_date": "2026-05-27",
+                        "value": "1.0000",
+                        "status": "complete",
                 },
                 {
                     "metric_family": "nav",
                     "quote_basis": "total_return_nav",
-                    "as_of_date": "2026-05-27",
-                    "value": "1.1000",
+                        "as_of_date": "2026-05-27",
+                        "value": "1.1000",
+                        "status": "complete",
                 },
                 {
                     "metric_family": "nav",
                     "quote_basis": "cumulative_nav",
-                    "as_of_date": "2026-05-27",
-                    "value": "1.0500",
+                        "as_of_date": "2026-05-27",
+                        "value": "1.0500",
+                        "status": "complete",
                 },
             ]
         }
@@ -430,20 +506,23 @@ def test_incremental_email_import_uses_prior_rows_as_dividend_context(monkeypatc
                 {
                     "metric_family": "nav",
                     "quote_basis": "official_nav",
-                    "as_of_date": "2026-03-25",
-                    "value": "0.9976",
+                        "as_of_date": "2026-03-25",
+                        "value": "0.9976",
+                        "status": "complete",
                 },
                 {
                     "metric_family": "nav",
                     "quote_basis": "total_return_nav",
-                    "as_of_date": "2026-03-25",
-                    "value": "1.0295",
+                        "as_of_date": "2026-03-25",
+                        "value": "1.0295",
+                        "status": "complete",
                 },
                 {
                     "metric_family": "nav",
                     "quote_basis": "cumulative_nav",
-                    "as_of_date": "2026-03-25",
-                    "value": "1.0295",
+                        "as_of_date": "2026-03-25",
+                        "value": "1.0295",
+                        "status": "complete",
                 },
             ]
         },
@@ -452,6 +531,7 @@ def test_incremental_email_import_uses_prior_rows_as_dividend_context(monkeypatc
 
     record = _import_rows_from_email_rules(
         instrument_id="savf63",
+        instrument_currency="CNY",
         rules=_normalized_email_rules(source_settings),
         mailbox=_FakeMailbox(messages),
         pending_uids=[1],
@@ -508,6 +588,7 @@ def test_incremental_email_import_requires_reinvested_anchor_row(monkeypatch) ->
 
     record = _import_rows_from_email_rules(
         instrument_id="savf63",
+        instrument_currency="CNY",
         rules=_normalized_email_rules(source_settings),
         mailbox=_FakeMailbox(messages),
         pending_uids=[1],
@@ -572,6 +653,7 @@ def test_incremental_email_import_uses_attachment_nav_dates_not_latest_received_
 
     record = _import_rows_from_email_rules(
         instrument_id="zb945a",
+        instrument_currency="CNY",
         rules=_normalized_email_rules(source_settings),
         mailbox=_FakeMailbox(messages),
         pending_uids=[1, 2],
@@ -690,6 +772,7 @@ def test_email_refresh_uses_success_cursor_and_does_not_reimport_unchanged_lates
     record = market_data_ops._refresh_from_email(
         instrument_id="zb945a",
         instrument={
+            "currency": "CNY",
             "market_data": [
                 {
                     "metric_family": "nav",
@@ -701,10 +784,11 @@ def test_email_refresh_uses_success_cursor_and_does_not_reimport_unchanged_lates
                     "status": "complete",
                 }
             ],
-            "refresh_status": {
-                "status": "imported",
-                "requested_at": "2026-04-10T12:00:00Z",
-            },
+                "refresh_status": {
+                    "status": "imported",
+                    "requested_at": "2026-04-10T12:00:00Z",
+                    "last_successful_requested_at": "2026-04-10T12:00:00Z",
+                },
         },
         source_settings=source_settings,
         updated_by="test",
@@ -798,6 +882,7 @@ def test_incremental_email_import_replaces_changed_latest_date(monkeypatch) -> N
 
     record = _import_rows_from_email_rules(
         instrument_id="sbcj69",
+        instrument_currency="CNY",
         rules=_normalized_email_rules(
             {
                 "source_email_rules": [
@@ -1142,24 +1227,28 @@ def test_tushare_refresh_imports_public_fund_nav(monkeypatch) -> None:
         "get_instrument",
         lambda instrument_id: {
             "instrument_id": instrument_id,
+            "currency": "CNY",
             "market_data": [
                 {
                     "metric_family": "nav",
                     "quote_basis": "official_nav",
                     "as_of_date": "2026-06-12",
                     "value": "1.2000",
+                    "status": "complete",
                 },
                 {
                     "metric_family": "nav",
                     "quote_basis": "cumulative_nav",
                     "as_of_date": "2026-06-12",
                     "value": "1.3000",
+                    "status": "complete",
                 },
                 {
                     "metric_family": "nav",
                     "quote_basis": "total_return_nav",
                     "as_of_date": "2026-06-12",
                     "value": "1.4000",
+                    "status": "complete",
                 },
             ],
         },
@@ -1171,6 +1260,7 @@ def test_tushare_refresh_imports_public_fund_nav(monkeypatch) -> None:
         instrument={
             "instrument_id": "018654-of",
             "instrument_type": "fund",
+            "currency": "CNY",
             "identifiers": [
                 {"identifier_type": "ticker", "identifier_value": "018654.OF", "is_primary": True}
             ],
@@ -1180,18 +1270,21 @@ def test_tushare_refresh_imports_public_fund_nav(monkeypatch) -> None:
                     "quote_basis": "official_nav",
                     "as_of_date": "2026-06-12",
                     "value": "1.2000",
+                    "status": "complete",
                 },
                 {
                     "metric_family": "nav",
                     "quote_basis": "cumulative_nav",
                     "as_of_date": "2026-06-12",
                     "value": "1.3000",
+                    "status": "complete",
                 },
                 {
                     "metric_family": "nav",
                     "quote_basis": "total_return_nav",
                     "as_of_date": "2026-06-12",
                     "value": "1.4000",
+                    "status": "complete",
                 },
             ],
         },
@@ -1249,6 +1342,7 @@ def test_tushare_refresh_imports_index_close(monkeypatch) -> None:
         instrument={
             "instrument_id": "000300-sh",
             "instrument_type": "index",
+            "currency": "CNY",
             "identifiers": [
                 {"identifier_type": "ticker", "identifier_value": "000300.SH", "is_primary": True}
             ],
@@ -1258,6 +1352,7 @@ def test_tushare_refresh_imports_index_close(monkeypatch) -> None:
                     "quote_basis": "close",
                     "as_of_date": "2026-06-12",
                     "value": "4190.00",
+                    "status": "complete",
                 }
             ],
         },
@@ -1331,6 +1426,7 @@ def test_tushare_price_refresh_starts_at_2024_when_no_existing_history(monkeypat
         instrument={
             "instrument_id": "513050-sh",
             "instrument_type": "fund",
+            "currency": "CNY",
             "identifiers": [
                 {"identifier_type": "ticker", "identifier_value": "513050.SH", "is_primary": True}
             ],
@@ -1373,6 +1469,86 @@ def test_tushare_price_refresh_starts_at_2024_when_no_existing_history(monkeypat
             "status": "complete",
         },
     ]
+
+
+def test_tushare_listed_security_never_persists_complete_close_without_adjusted_close(
+    monkeypatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_call_tushare_api(**kwargs: object) -> list[dict[str, object]]:
+        if kwargs["api_name"] == "adj_factor":
+            return [
+                {"ts_code": "600000.SH", "trade_date": "20260714", "adj_factor": "1"},
+            ]
+        return [
+            {"ts_code": "600000.SH", "trade_date": "20260714", "close": "10.00"},
+            {"ts_code": "600000.SH", "trade_date": "20260715", "close": "10.10"},
+        ]
+
+    def fake_upsert_market_data_points(**kwargs: object) -> int:
+        captured["upsert"] = kwargs
+        return len(kwargs["rows"])
+
+    def fake_update_refresh_status(**kwargs: object) -> dict[str, object]:
+        captured["refresh_status"] = kwargs
+        return {"instrument_id": kwargs["instrument_id"]}
+
+    monkeypatch.setattr(market_data_ops, "_call_tushare_api", fake_call_tushare_api)
+    monkeypatch.setattr(
+        market_data_ops,
+        "upsert_market_data_points",
+        fake_upsert_market_data_points,
+    )
+    monkeypatch.setattr(market_data_ops, "update_refresh_status", fake_update_refresh_status)
+
+    market_data_ops._refresh_from_tushare(
+        instrument_id="600000-sh",
+        instrument={
+            "instrument_id": "600000-sh",
+            "instrument_type": "equity",
+            "currency": "CNY",
+            "identifiers": [
+                {
+                    "identifier_type": "ticker",
+                    "identifier_value": "600000.SH",
+                    "is_primary": True,
+                }
+            ],
+            "market_data": [],
+            "quote_selection_policy": {
+                "trading": ["last", "close"],
+                "valuation": ["close", "last"],
+                "total_return": ["adjusted_close", "close", "last"],
+                "chart": ["adjusted_close", "close", "last"],
+                "reference": ["close", "last"],
+            },
+        },
+        updated_by="test",
+        full_history=False,
+    )
+
+    points = captured["upsert"]["rows"]
+    complete_close_dates = {
+        point["as_of_date"]
+        for point in points
+        if point["quote_basis"] == "close" and point["status"] == "complete"
+    }
+    adjusted_close_dates = {
+        point["as_of_date"]
+        for point in points
+        if point["quote_basis"] == "adjusted_close" and point["status"] == "complete"
+    }
+    assert complete_close_dates <= adjusted_close_dates
+    assert next(
+        point
+        for point in points
+        if point["quote_basis"] == "close"
+        and point["as_of_date"] == market_data_ops.date(2026, 7, 15)
+    )["status"] == "partial"
+    assert captured["refresh_status"]["status"] == "partial"
+    assert "missing adjustment factor" in captured["refresh_status"]["message"]
+    assert "2026-07-15" in captured["refresh_status"]["message"]
 
 
 def test_tushare_share_split_detection_is_review_only_until_issuer_confirmation() -> None:
@@ -1429,6 +1605,7 @@ def test_tushare_full_history_is_capped_at_2024(monkeypatch) -> None:
         instrument={
             "instrument_id": "000300-sh",
             "instrument_type": "index",
+            "currency": "CNY",
             "identifiers": [
                 {"identifier_type": "ticker", "identifier_value": "000300.SH", "is_primary": True}
             ],
@@ -1438,6 +1615,7 @@ def test_tushare_full_history_is_capped_at_2024(monkeypatch) -> None:
                     "quote_basis": "close",
                     "as_of_date": "2026-06-12",
                     "value": "4190.00",
+                    "status": "complete",
                 }
             ],
         },
@@ -1465,5 +1643,5 @@ def test_parse_nav_rows_from_label_snapshot_matrix_extracts_nav_values() -> None
     assert parsed[0]["as_of_date"] == "2026-04-14"
     assert str(parsed[0]["nav"]) == "1.1135"
     assert str(parsed[0]["cumulative_nav"]) == "1.1135"
-    assert parsed[0]["currency"] == "CNY"
+    assert "currency" not in parsed[0]
     assert parsed[0]["frequency"] == "daily"

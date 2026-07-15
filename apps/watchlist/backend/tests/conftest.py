@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import importlib
+import os
 import sys
+from copy import deepcopy
 from pathlib import Path
 
 from alembic import command
@@ -11,6 +13,10 @@ from fastapi.testclient import TestClient
 
 
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
+os.environ.setdefault(
+    "PORTFOLIO_OPS_WATCHLIST_DATABASE_URL",
+    "sqlite+pysqlite:///:memory:",
+)
 BACKEND_ROOT_STR = str(BACKEND_ROOT)
 if BACKEND_ROOT_STR in sys.path:
     sys.path.remove(BACKEND_ROOT_STR)
@@ -25,12 +31,54 @@ sys.path.insert(0, INSTRUMENT_CORE_PYTHON_STR)
 from portfolio_ops_instrument_core.db_models import InstrumentRegistryBase
 from portfolio_ops_instrument_core import instrument_store as shared_store
 
+
+def canonical_quote_policy(instrument_type: str) -> dict[str, list[str]]:
+    policies = {
+        "fund": {
+            "trading": ["last", "close", "official_nav"],
+            "valuation": ["official_nav", "close", "last"],
+            "total_return": [
+                "total_return_nav",
+                "dividend_adjusted_nav",
+                "reinvested_nav",
+                "adjusted_close",
+                "official_nav",
+                "close",
+            ],
+            "chart": [
+                "total_return_nav",
+                "dividend_adjusted_nav",
+                "reinvested_nav",
+                "adjusted_close",
+                "official_nav",
+                "close",
+            ],
+            "reference": ["official_nav", "close", "last"],
+        },
+        "index": {
+            "trading": ["close", "last"],
+            "valuation": ["close", "last"],
+            "total_return": ["adjusted_close", "close", "last"],
+            "chart": ["adjusted_close", "close", "last"],
+            "reference": ["close", "last"],
+        },
+        "equity": {
+            "trading": ["last", "close"],
+            "valuation": ["close", "last"],
+            "total_return": ["adjusted_close", "close", "last"],
+            "chart": ["adjusted_close", "close", "last"],
+            "reference": ["close", "last"],
+        },
+    }
+    return deepcopy(policies[instrument_type])
+
 TEST_SHARED_INSTRUMENTS = {
     "fund-us-agg": {
         "instrument_id": "fund-us-agg",
         "instrument_name": "iShares Core U.S. Aggregate Bond ETF",
         "instrument_type": "fund",
         "currency": "USD",
+        "quote_selection_policy": canonical_quote_policy("fund"),
         "identifiers": [
             {"identifier_type": "ticker", "identifier_value": "AGG", "is_primary": True},
         ],
@@ -41,6 +89,8 @@ TEST_SHARED_INSTRUMENTS = {
                 "as_of_date": "2026-04-15",
                 "value": "96.8200",
                 "currency": "USD",
+                "price_unit": "per_unit",
+                "price_scale": "1",
                 "status": "complete",
             }
         ],
@@ -51,6 +101,7 @@ TEST_SHARED_INSTRUMENTS = {
         "instrument_name": "SXV264 Total Return Fund",
         "instrument_type": "fund",
         "currency": "USD",
+        "quote_selection_policy": canonical_quote_policy("fund"),
         "identifiers": [
             {"identifier_type": "ticker", "identifier_value": "SXV264", "is_primary": True},
         ],
@@ -61,6 +112,8 @@ TEST_SHARED_INSTRUMENTS = {
                 "as_of_date": "2025-12-31",
                 "value": "97.500000",
                 "currency": "USD",
+                "price_unit": "per_unit",
+                "price_scale": "1",
                 "status": "complete",
             },
             {
@@ -69,6 +122,8 @@ TEST_SHARED_INSTRUMENTS = {
                 "as_of_date": "2026-03-14",
                 "value": "99.000000",
                 "currency": "USD",
+                "price_unit": "per_unit",
+                "price_scale": "1",
                 "status": "complete",
             },
             {
@@ -77,6 +132,8 @@ TEST_SHARED_INSTRUMENTS = {
                 "as_of_date": "2026-04-07",
                 "value": "100.000000",
                 "currency": "USD",
+                "price_unit": "per_unit",
+                "price_scale": "1",
                 "status": "complete",
             },
             {
@@ -85,6 +142,8 @@ TEST_SHARED_INSTRUMENTS = {
                 "as_of_date": "2026-04-14",
                 "value": "101.236476",
                 "currency": "USD",
+                "price_unit": "per_unit",
+                "price_scale": "1",
                 "status": "complete",
             },
         ],
@@ -95,6 +154,7 @@ TEST_SHARED_INSTRUMENTS = {
         "instrument_name": "SAVF63 Short Duration Income Fund",
         "instrument_type": "fund",
         "currency": "USD",
+        "quote_selection_policy": canonical_quote_policy("fund"),
         "identifiers": [
             {"identifier_type": "ticker", "identifier_value": "SAVF63", "is_primary": True},
         ],
@@ -105,6 +165,8 @@ TEST_SHARED_INSTRUMENTS = {
                 "as_of_date": "2026-04-14",
                 "value": "99.870000",
                 "currency": "USD",
+                "price_unit": "per_unit",
+                "price_scale": "1",
                 "status": "complete",
             },
         ],

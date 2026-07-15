@@ -1,11 +1,7 @@
 from functools import lru_cache
-from pathlib import Path
 
 from pydantic import field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
-
-
-WORKSPACE_ROOT = Path(__file__).resolve().parents[3]
 
 
 class Settings(BaseSettings):
@@ -18,7 +14,7 @@ class Settings(BaseSettings):
     portfolio_url: str = "http://127.0.0.1:5174"
     watchlist_api_url: str = "http://127.0.0.1:8000"
     portfolio_api_url: str = "http://127.0.0.1:8001"
-    database_url: str = "postgresql+psycopg://portfolio_ops:portfolio_ops@127.0.0.1:5432/portfolio_ops"
+    database_url: str
     database_schema: str | None = "instrument_registry"
     sql_echo: bool = False
     email_sync_enabled: bool = False
@@ -40,9 +36,15 @@ class Settings(BaseSettings):
 
     model_config = SettingsConfigDict(
         env_prefix="PORTFOLIO_OPS_PLATFORM_",
-        env_file=WORKSPACE_ROOT / "backend" / ".env",
         extra="ignore",
     )
+
+    @field_validator("database_url", mode="before")
+    @classmethod
+    def _validate_database_url(cls, value: object) -> object:
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError("database_url must be explicitly configured.")
+        return value.strip()
 
     @field_validator("cors_origins", mode="before")
     @classmethod

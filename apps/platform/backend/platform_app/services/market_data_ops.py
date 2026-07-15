@@ -17,6 +17,11 @@ import threading
 import time
 from typing import Any
 
+from portfolio_ops_instrument_core import (
+    parse_positive_market_data_value,
+    validate_nav_history_instrument_type,
+)
+
 from platform_app.core.settings import get_settings
 from platform_app.services.instrument_store import (
     get_instrument,
@@ -225,16 +230,12 @@ def _parse_nav_date(value: object) -> date | None:
 def _parse_nav_decimal(value: object) -> Decimal | None:
     if value is None:
         return None
-    if isinstance(value, Decimal):
-        return value
-    if isinstance(value, (int, float)):
-        return Decimal(str(value))
     normalized = str(value).strip().replace(",", "")
     if not normalized:
         return None
     try:
-        return Decimal(normalized)
-    except Exception:
+        return parse_positive_market_data_value(normalized)
+    except ValueError:
         return None
 
 
@@ -332,7 +333,6 @@ def _parse_nav_rows_from_matrix(matrix: list[list[object]]) -> list[dict[str, ob
         if not any(values):
             continue
         row_data: dict[str, object] = {
-            "currency": "CNY",
             "frequency": "daily",
         }
         for index, column in enumerate(header):
@@ -418,7 +418,6 @@ def _parse_nav_rows_from_label_snapshot_matrix(matrix: list[list[object]]) -> li
     row: dict[str, object] = {
         "as_of_date": found_date.isoformat(),
         "nav": found_nav,
-        "currency": "CNY",
         "frequency": "daily",
     }
     if found_cumulative_nav is not None:
@@ -678,8 +677,7 @@ def _attachment_matches_rule(
 
 
 def _normalize_import_status(rows: list[dict[str, object]], fallback: str) -> str:
-    if any(row.get("nav") is None or row.get("nav_with_dividend") is None for row in rows):
-        return "partial"
+    del rows
     return fallback
 
 
@@ -703,6 +701,8 @@ def _existing_nav_history_by_date(instrument_id: str) -> dict[date, dict[str, De
         if not isinstance(point, dict):
             continue
         if str(point.get("metric_family") or "").strip() != "nav":
+            continue
+        if str(point.get("status") or "").strip().lower() != "complete":
             continue
         point_date = _parse_nav_date(point.get("as_of_date"))
         point_value = _parse_nav_decimal(point.get("value"))
@@ -881,15 +881,44 @@ def _filter_rows_for_instrument(
     return filtered
 
 
-def _prepare_nav_rows_for_instrument(
+def _apply_nav_row_currency(
     *,
-    instrument_id: str,
     rows: list[dict[str, object]],
-) -> tuple[dict[str, object] | None, list[dict[str, object]]]:
+    instrument_currency: object,
+) -> list[dict[str, object]]:
+    expected_currency = str(instrument_currency or "").strip().upper()
+    if not expected_currency:
+        raise ValueError("The selected fund has no canonical currency.")
+
+    normalized_rows: list[dict[str, object]] = []
+    for row in rows:
+        supplied_currency = str(row.get("currency") or "").strip().upper()
+        if supplied_currency and supplied_currency != expected_currency:
+            raise ValueError(
+                f'NAV row currency "{supplied_currency}" does not match the selected '
+                f'fund currency "{expected_currency}".'
+            )
+        normalized_rows.append({**row, "currency": expected_currency})
+    return normalized_rows
+
+
+def _nav_import_instrument(instrument_id: str) -> dict[str, object] | None:
     instrument = get_instrument(instrument_id)
     if instrument is None:
-        return None, []
+        return None
+    validate_nav_history_instrument_type(
+        instrument_type=str(instrument.get("instrument_type") or ""),
+        instrument_id=instrument_id,
+    )
+    return instrument
 
+
+def _prepare_nav_rows_for_instrument(
+    *,
+    instrument: dict[str, object],
+    instrument_id: str,
+    rows: list[dict[str, object]],
+) -> list[dict[str, object]]:
     filtered_rows = _filter_rows_for_instrument(instrument=instrument, rows=rows)
     if not filtered_rows:
         has_row_identity = any(
@@ -903,12 +932,16 @@ def _prepare_nav_rows_for_instrument(
             )
         raise ValueError("No NAV rows detected.")
 
-    merged_rows = _merge_rows_by_date(filtered_rows)
+    currency_rows = _apply_nav_row_currency(
+        rows=filtered_rows,
+        instrument_currency=instrument.get("currency"),
+    )
+    merged_rows = _merge_rows_by_date(currency_rows)
     prepared_rows, _ = _apply_reinvested_total_return_correction(
         instrument_id=instrument_id,
         rows=merged_rows,
     )
-    return instrument, prepared_rows
+    return prepared_rows
 
 
 def _search_uids_for_rule(
@@ -943,6 +976,8 @@ def _latest_nav_date_from_instrument(instrument: dict[str, object]) -> date | No
             continue
         if str(point.get("metric_family") or "").strip() != "nav":
             continue
+        if str(point.get("status") or "").strip().lower() != "complete":
+            continue
         current_date = _parse_nav_date(point.get("as_of_date"))
         if current_date is None:
             continue
@@ -964,6 +999,8 @@ def _latest_market_data_date_from_instrument(
         if str(point.get("metric_family") or "").strip() != metric_family:
             continue
         if str(point.get("quote_basis") or "").strip() not in quote_bases:
+            continue
+        if str(point.get("status") or "").strip().lower() != "complete":
             continue
         current_date = _parse_nav_date(point.get("as_of_date"))
         if current_date is None:
@@ -1104,8 +1141,12 @@ def _tushare_nav_rows(
     rows: list[dict[str, object]],
     *,
     instrument_id: str,
+    instrument_currency: object,
     latest_date: date | None,
 ) -> list[dict[str, object]]:
+    normalized_currency = str(instrument_currency or "").strip().upper()
+    if not normalized_currency:
+        raise ValueError("The selected fund has no canonical currency.")
     prepared_rows: list[dict[str, object]] = []
     for row in rows:
         point_date = _parse_nav_date(row.get("nav_date") or row.get("end_date") or row.get("ann_date"))
@@ -1128,7 +1169,7 @@ def _tushare_nav_rows(
                 "nav": nav,
                 "cumulative_nav": cumulative_nav,
                 "nav_with_dividend": total_return_nav,
-                "currency": "CNY",
+                "currency": normalized_currency,
                 "frequency": "daily",
             }
         )
@@ -1288,11 +1329,34 @@ def _existing_price_values(
             continue
         if str(point.get("quote_basis") or "").strip() != quote_basis:
             continue
+        if str(point.get("status") or "").strip().lower() == "unavailable":
+            continue
         point_date = _parse_nav_date(point.get("as_of_date"))
         value = _parse_nav_decimal(point.get("value"))
         if point_date is not None and value is not None:
             values[point_date] = value
     return values
+
+
+def _existing_complete_price_dates(
+    instrument: dict[str, object],
+    *,
+    quote_basis: str,
+) -> set[date]:
+    dates: set[date] = set()
+    for point in list(instrument.get("market_data", [])):
+        if not isinstance(point, dict):
+            continue
+        if str(point.get("metric_family") or "").strip() != "price":
+            continue
+        if str(point.get("quote_basis") or "").strip() != quote_basis:
+            continue
+        if str(point.get("status") or "").strip() != "complete":
+            continue
+        point_date = _parse_nav_date(point.get("as_of_date"))
+        if point_date is not None:
+            dates.add(point_date)
+    return dates
 
 
 QFQ_FACTOR_PATTERN = re.compile(r"(?:^|:)latest_factor=([0-9]+(?:\.[0-9]+)?)$")
@@ -1304,6 +1368,8 @@ def _stored_qfq_latest_factor(instrument: dict[str, object]) -> Decimal | None:
         if not isinstance(point, dict):
             continue
         if str(point.get("quote_basis") or "").strip() != "adjusted_close":
+            continue
+        if str(point.get("status") or "").strip() != "complete":
             continue
         provider = str(point.get("provider") or "")
         match = QFQ_FACTOR_PATTERN.search(provider)
@@ -1345,17 +1411,6 @@ def _latest_successful_email_refresh_date(instrument: dict[str, object]) -> date
     raw_requested_at = str(
         refresh_status.get("last_successful_requested_at") or ""
     ).strip()
-    if not raw_requested_at:
-        refresh_mode = str(refresh_status.get("mode") or "").strip().lower()
-        if refresh_mode not in {"", "email"}:
-            return None
-        if str(refresh_status.get("status") or "").strip().lower() not in {
-            "imported",
-            "no_match",
-            "no_new_data",
-        }:
-            return None
-        raw_requested_at = str(refresh_status.get("requested_at") or "").strip()
     if not raw_requested_at:
         return None
     try:
@@ -1439,6 +1494,7 @@ def _changed_nav_rows_since_date(
 def _import_rows_from_email_rules(
     *,
     instrument_id: str,
+    instrument_currency: object,
     rules: list[dict[str, object]],
     mailbox,
     pending_uids: list[int],
@@ -1515,7 +1571,12 @@ def _import_rows_from_email_rules(
                 matched_batches.append((f"{uid}:{attachment_name}", attachment_name, rows))
                 break
 
-    merged_rows = _merge_rows_by_date(matched_rows)
+    merged_rows = _merge_rows_by_date(
+        _apply_nav_row_currency(
+            rows=matched_rows,
+            instrument_currency=instrument_currency,
+        )
+    )
     if not merged_rows:
         return None
     if not full_history and nav_since_date is not None and not _filter_rows_since_nav_date(
@@ -1634,8 +1695,15 @@ def import_nav_text(
     status: str,
     updated_by: str | None,
 ) -> dict[str, object] | None:
+    instrument = _nav_import_instrument(instrument_id)
+    if instrument is None:
+        return None
     rows = _parse_nav_rows_from_text(raw_text)
-    _, prepared_rows = _prepare_nav_rows_for_instrument(instrument_id=instrument_id, rows=rows)
+    prepared_rows = _prepare_nav_rows_for_instrument(
+        instrument=instrument,
+        instrument_id=instrument_id,
+        rows=rows,
+    )
     normalized_status = _normalize_import_status(prepared_rows, status)
     return replace_nav_history(
         instrument_id=instrument_id,
@@ -1656,6 +1724,9 @@ def preview_nav_import(
     file_name: str | None = None,
     file_bytes: bytes | None = None,
 ) -> list[dict[str, object]] | None:
+    instrument = _nav_import_instrument(instrument_id)
+    if instrument is None:
+        return None
     if raw_text is not None:
         rows = _parse_nav_rows_from_text(raw_text)
     elif file_name is not None and file_bytes is not None:
@@ -1663,10 +1734,11 @@ def preview_nav_import(
     else:
         raise ValueError("Provide NAV import text or a NAV file payload.")
 
-    instrument, prepared_rows = _prepare_nav_rows_for_instrument(instrument_id=instrument_id, rows=rows)
-    if instrument is None:
-        return None
-    return prepared_rows
+    return _prepare_nav_rows_for_instrument(
+        instrument=instrument,
+        instrument_id=instrument_id,
+        rows=rows,
+    )
 
 
 def import_nav_file(
@@ -1678,8 +1750,15 @@ def import_nav_file(
     status: str,
     updated_by: str | None,
 ) -> dict[str, object] | None:
+    instrument = _nav_import_instrument(instrument_id)
+    if instrument is None:
+        return None
     rows = _parse_nav_rows_from_uploaded_file(file_name=file_name, file_bytes=file_bytes)
-    _, prepared_rows = _prepare_nav_rows_for_instrument(instrument_id=instrument_id, rows=rows)
+    prepared_rows = _prepare_nav_rows_for_instrument(
+        instrument=instrument,
+        instrument_id=instrument_id,
+        rows=rows,
+    )
     normalized_status = _normalize_import_status(prepared_rows, status)
     return replace_nav_history(
         instrument_id=instrument_id,
@@ -1814,6 +1893,10 @@ def _refresh_tushare_listed_security(
     returns reflect distributions and share adjustments. If the latest factor
     changes, all available history is recomputed from canonical raw closes.
     """
+    if str(instrument.get("currency") or "").strip().upper() != "CNY":
+        raise TushareRefreshError(
+            f"Tushare listed-security price data for {ts_code} requires a CNY instrument."
+        )
     _ensure_tushare_listed_security_quote_policy(
         instrument_id=instrument_id,
         instrument=instrument,
@@ -1850,6 +1933,22 @@ def _refresh_tushare_listed_security(
         fields="ts_code,trade_date,adj_factor",
     )
     factors = _tushare_adjustment_factors(factor_rows)
+    close_by_date = _existing_price_values(instrument, quote_basis="close")
+    existing_adjusted_by_date = _existing_price_values(
+        instrument,
+        quote_basis="adjusted_close",
+    )
+    existing_adjusted_dates = _existing_complete_price_dates(
+        instrument,
+        quote_basis="adjusted_close",
+    )
+    fetched_close_by_date = {
+        row["as_of_date"]: Decimal(str(row["value"]))
+        for row in close_rows
+        if isinstance(row.get("as_of_date"), date)
+    }
+    close_by_date.update(fetched_close_by_date)
+    unpaired_existing_dates = set(close_by_date).difference(existing_adjusted_dates)
     previous_latest_factor = _stored_qfq_latest_factor(instrument)
     current_latest_factor = factors[max(factors)] if factors else previous_latest_factor
     factor_changed = (
@@ -1859,7 +1958,15 @@ def _refresh_tushare_listed_security(
             or current_latest_factor != previous_latest_factor
         )
     )
-    if current_latest_factor is not None and (full_history or factor_changed) and query_start > TUSHARE_HISTORY_START_DATE:
+    candidate_adjusted_dates = (
+        set(close_by_date)
+        if full_history or factor_changed
+        else set(fetched_close_by_date).union(unpaired_existing_dates)
+    )
+    missing_candidate_factors = candidate_adjusted_dates.difference(factors)
+    if query_start > TUSHARE_HISTORY_START_DATE and (
+        full_history or factor_changed or missing_candidate_factors
+    ):
         full_factor_rows = _call_tushare_api(
             api_name=factor_api_name,
             params={
@@ -1872,40 +1979,30 @@ def _refresh_tushare_listed_security(
         factors = _tushare_adjustment_factors(full_factor_rows)
         if factors:
             current_latest_factor = factors[max(factors)]
+            factor_changed = (
+                previous_latest_factor is None
+                or current_latest_factor != previous_latest_factor
+            )
 
-    close_by_date = _existing_price_values(instrument, quote_basis="close")
-    fetched_close_by_date = {
-        row["as_of_date"]: Decimal(str(row["value"]))
-        for row in close_rows
-        if isinstance(row.get("as_of_date"), date)
-    }
-    close_by_date.update(fetched_close_by_date)
-    points: list[dict[str, object]] = [
-        {
-            "metric_family": "price",
-            "quote_basis": "close",
-            "as_of_date": point_date,
-            "value": value,
-            "currency": "CNY",
-            "provider": f"tushare:{price_api_name}",
-            "status": "complete",
-        }
-        for point_date, value in fetched_close_by_date.items()
-    ]
+    adjusted_dates = (
+        sorted(close_by_date)
+        if full_history or factor_changed
+        else sorted(set(fetched_close_by_date).union(unpaired_existing_dates))
+    )
+    adjusted_points: list[dict[str, object]] = []
+    adjusted_complete_dates: set[date] = set()
+    missing_adjustment_dates: set[date] = set()
     if current_latest_factor is not None:
-        adjusted_dates = (
-            sorted(close_by_date)
-            if full_history or factor_changed
-            else sorted(fetched_close_by_date)
-        )
         factor_text = _decimal_text(current_latest_factor)
         for point_date in adjusted_dates:
             factor = factors.get(point_date)
             close_value = close_by_date.get(point_date)
             if factor is None or close_value is None:
+                missing_adjustment_dates.add(point_date)
                 continue
             adjusted_close = close_value * factor / current_latest_factor
-            points.append(
+            adjusted_complete_dates.add(point_date)
+            adjusted_points.append(
                 {
                     "metric_family": "price",
                     "quote_basis": "adjusted_close",
@@ -1918,6 +2015,70 @@ def _refresh_tushare_listed_security(
                     "status": "complete",
                 }
             )
+    else:
+        missing_adjustment_dates.update(adjusted_dates)
+
+    points: list[dict[str, object]] = [
+        {
+            "metric_family": "price",
+            "quote_basis": "close",
+            "as_of_date": point_date,
+            "value": value,
+            "currency": "CNY",
+            "provider": f"tushare:{price_api_name}",
+            "status": (
+                "complete" if point_date in adjusted_complete_dates else "partial"
+            ),
+        }
+        for point_date, value in fetched_close_by_date.items()
+    ]
+    for point_date in sorted(
+        adjusted_complete_dates.intersection(unpaired_existing_dates).difference(
+            fetched_close_by_date
+        )
+    ):
+        close_value = close_by_date.get(point_date)
+        if close_value is None:
+            continue
+        points.append(
+            {
+                "metric_family": "price",
+                "quote_basis": "close",
+                "as_of_date": point_date,
+                "value": close_value,
+                "currency": "CNY",
+                "provider": f"tushare:{price_api_name}",
+                "status": "complete",
+            }
+        )
+    for point_date in sorted(missing_adjustment_dates.difference(fetched_close_by_date)):
+        close_value = close_by_date.get(point_date)
+        if close_value is None:
+            continue
+        points.append(
+            {
+                "metric_family": "price",
+                "quote_basis": "close",
+                "as_of_date": point_date,
+                "value": close_value,
+                "currency": "CNY",
+                "provider": f"tushare:{price_api_name}",
+                "status": "partial",
+            }
+        )
+    for point_date in sorted(missing_adjustment_dates.intersection(existing_adjusted_by_date)):
+        points.append(
+            {
+                "metric_family": "price",
+                "quote_basis": "adjusted_close",
+                "as_of_date": point_date,
+                "value": existing_adjusted_by_date[point_date],
+                "currency": "CNY",
+                "provider": f"tushare:{factor_api_name}:stale_missing_factor",
+                "status": "partial",
+            }
+        )
+    points.extend(adjusted_points)
 
     changed_count = upsert_market_data_points(
         instrument_id=instrument_id,
@@ -1948,6 +2109,25 @@ def _refresh_tushare_listed_security(
         )
         if isinstance(persisted_action, dict):
             persisted_actions.append(persisted_action)
+    if missing_adjustment_dates:
+        missing_dates_text = ", ".join(
+            point_date.isoformat()
+            for point_date in sorted(missing_adjustment_dates)[:10]
+        )
+        if len(missing_adjustment_dates) > 10:
+            missing_dates_text += f", +{len(missing_adjustment_dates) - 10} more"
+        return update_refresh_status(
+            instrument_id=instrument_id,
+            status="partial",
+            message=(
+                f"Tushare listed-security refresh is partial for {ts_code}: "
+                f"missing adjustment factor for {missing_dates_text}. "
+                "Affected raw closes were stored as partial; no complete close was "
+                "stored without a same-date adjusted_close."
+            ),
+            updated_by=updated_by,
+            mode="api",
+        )
     if changed_count == 0:
         return update_refresh_status(
             instrument_id=instrument_id,
@@ -2010,6 +2190,7 @@ def _refresh_from_tushare(
             nav_rows = _tushare_nav_rows(
                 rows,
                 instrument_id=instrument_id,
+                instrument_currency=instrument.get("currency"),
                 latest_date=latest_date,
             )
             if not nav_rows:
@@ -2055,6 +2236,10 @@ def _refresh_from_tushare(
             )
 
         if instrument_type == "index" and suffix in TUSHARE_INDEX_SUFFIXES:
+            if str(instrument.get("currency") or "").strip().upper() != "CNY":
+                raise TushareRefreshError(
+                    f"Tushare index price data for {ts_code} requires a CNY instrument."
+                )
             latest_date = None if full_history else _latest_market_data_date_from_instrument(
                 instrument,
                 metric_family="price",
@@ -2834,6 +3019,7 @@ def _refresh_from_email(
 
                 record = _import_rows_from_email_rules(
                     instrument_id=instrument_id,
+                    instrument_currency=instrument.get("currency"),
                     rules=email_rules,
                     mailbox=mailbox,
                     pending_uids=pending_uids,

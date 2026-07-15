@@ -9,7 +9,11 @@ from fastapi.testclient import TestClient
 from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 
-from .conftest import TEST_SHARED_INSTRUMENTS, seed_shared_instrument
+from .conftest import (
+    TEST_SHARED_INSTRUMENTS,
+    canonical_quote_policy,
+    seed_shared_instrument,
+)
 
 
 def test_peer_metric_percentile_uses_midrank_for_ties() -> None:
@@ -89,30 +93,39 @@ def test_return_nav_basis_does_not_treat_cash_cumulative_nav_as_total_return() -
     points_by_basis = _shared_quote_points_by_basis(
         [
             {
+                "metric_family": "nav",
                 "quote_basis": "official_nav",
                 "as_of_date": "2026-01-01",
                 "value": "1.000000",
                 "currency": "CNY",
+                "status": "complete",
             },
             {
+                "metric_family": "nav",
                 "quote_basis": "CUMULATIVE_NAV",
                 "as_of_date": "2026-01-01",
                 "value": "1.250000",
                 "currency": "CNY",
+                "status": "complete",
             },
             {
+                "metric_family": "nav",
                 "quote_basis": "official_nav",
                 "as_of_date": "2026-01-08",
                 "value": "1.010000",
                 "currency": "CNY",
+                "status": "complete",
             },
             {
+                "metric_family": "nav",
                 "quote_basis": "CUMULATIVE_NAV",
                 "as_of_date": "2026-01-08",
                 "value": "1.262500",
                 "currency": "CNY",
+                "status": "complete",
             },
-        ]
+        ],
+        expected_currency="CNY",
     )
 
     selection = _select_quote_series(
@@ -133,35 +146,46 @@ def test_return_nav_basis_does_not_fallback_to_ordinary_nav() -> None:
     points_by_basis = _shared_quote_points_by_basis(
         [
             {
+                "metric_family": "nav",
                 "quote_basis": "official_nav",
                 "as_of_date": "2026-01-01",
                 "value": "1.000000",
                 "currency": "CNY",
+                "status": "complete",
             },
             {
+                "metric_family": "nav",
                 "quote_basis": "official_nav",
                 "as_of_date": "2026-01-08",
                 "value": "1.010000",
                 "currency": "CNY",
+                "status": "complete",
             },
-        ]
+        ],
+        expected_currency="CNY",
     )
 
+    shared_instrument = {
+        "quote_selection_policy": {
+            "total_return": ["total_return_nav"],
+            "chart": ["official_nav"],
+        }
+    }
     auto_selection = _select_quote_series(
         points_by_basis,
-        shared_instrument=None,
+        shared_instrument=shared_instrument,
         role="total_return",
         preference="auto",
     )
     explicit_nav_selection = _select_quote_series(
         points_by_basis,
-        shared_instrument=None,
+        shared_instrument=shared_instrument,
         role="total_return",
         preference="nav",
     )
     quote_selection = _select_quote_series(
         points_by_basis,
-        shared_instrument=None,
+        shared_instrument=shared_instrument,
         role="chart",
         preference="auto",
         allow_ordinary_nav=True,
@@ -193,24 +217,31 @@ def test_quote_policy_can_select_close_series_over_stale_cumulative_nav() -> Non
     rows = _group_shared_nav_rows(
         [
             {
+                "metric_family": "nav",
                 "quote_basis": "total_return_nav",
                 "as_of_date": "2026-06-15",
                 "value": "1.7993",
                 "currency": "CNY",
+                "status": "complete",
             },
             {
+                "metric_family": "price",
                 "quote_basis": "close",
                 "as_of_date": "2026-06-15",
                 "value": "1.8000",
                 "currency": "CNY",
+                "status": "complete",
             },
             {
+                "metric_family": "price",
                 "quote_basis": "close",
                 "as_of_date": "2026-06-25",
                 "value": "1.8670",
                 "currency": "CNY",
+                "status": "complete",
             },
-        ]
+        ],
+        expected_currency="CNY",
     )
     points_by_basis = _shared_quote_points_by_basis(
         [
@@ -220,13 +251,15 @@ def test_quote_policy_can_select_close_series_over_stale_cumulative_nav() -> Non
                 "as_of_date": "2026-06-15",
                 "value": "1.7993",
                 "currency": "CNY",
+                "status": "complete",
             },
             {
-                "metric_family": "nav",
+                "metric_family": "price",
                 "quote_basis": "close",
                 "as_of_date": "2026-06-15",
                 "value": "1.8000",
                 "currency": "CNY",
+                "status": "complete",
             },
             {
                 "metric_family": "price",
@@ -234,8 +267,10 @@ def test_quote_policy_can_select_close_series_over_stale_cumulative_nav() -> Non
                 "as_of_date": "2026-06-25",
                 "value": "1.8670",
                 "currency": "CNY",
+                "status": "complete",
             },
-        ]
+        ],
+        expected_currency="CNY",
     )
 
     assert _quote_policy_prefers_ordinary_nav(shared_instrument, role="total_return")
@@ -259,6 +294,87 @@ def test_quote_policy_can_select_close_series_over_stale_cumulative_nav() -> Non
         date(2026, 6, 25),
     ]
     assert [point["value"] for point in selection["points"]] == [1.8, 1.867]
+
+
+def test_quote_selection_rejects_partial_and_identity_mismatched_points() -> None:
+    from watchlist_app.services.canonical_recalc import (
+        _select_quote_series,
+        _shared_quote_points_by_basis,
+    )
+
+    points_by_basis = _shared_quote_points_by_basis(
+        [
+            {
+                "metric_family": "nav",
+                "quote_basis": "total_return_nav",
+                "as_of_date": "2026-06-25",
+                "value": "1.8670",
+                "currency": "CNY",
+                "status": "partial",
+            },
+            {
+                "metric_family": "nav",
+                "quote_basis": "close",
+                "as_of_date": "2026-06-25",
+                "value": "1.8670",
+                "currency": "CNY",
+                "status": "complete",
+            },
+        ],
+        expected_currency="CNY",
+    )
+
+    selection = _select_quote_series(
+        points_by_basis,
+        shared_instrument=None,
+        role="total_return",
+        preference="auto",
+    )
+
+    assert points_by_basis == {}
+    assert selection["nav_basis_status"] == "unavailable"
+    assert selection["points"] == []
+
+
+def test_quote_selection_rejects_noncanonical_currency_and_missing_policy() -> None:
+    from watchlist_app.services.canonical_recalc import (
+        _select_quote_series,
+        _shared_quote_points_by_basis,
+    )
+
+    points_by_basis = _shared_quote_points_by_basis(
+        [
+            {
+                "metric_family": "nav",
+                "quote_basis": "total_return_nav",
+                "as_of_date": "2026-06-24",
+                "value": "1.8",
+                "currency": "USD",
+                "status": "complete",
+            },
+            {
+                "metric_family": "nav",
+                "quote_basis": "total_return_nav",
+                "as_of_date": "2026-06-25",
+                "value": "1.9",
+                "currency": "CNY",
+                "status": "complete",
+            },
+        ],
+        expected_currency="CNY",
+    )
+
+    assert [point["currency"] for point in points_by_basis["total_return_nav"]] == [
+        "CNY"
+    ]
+    selection = _select_quote_series(
+        points_by_basis,
+        shared_instrument={"currency": "CNY"},
+        role="total_return",
+        preference="auto",
+    )
+    assert selection["nav_basis_status"] == "unavailable"
+    assert selection["points"] == []
 
 
 def test_create_watchlist_generates_unique_ids_and_required_columns(
@@ -383,6 +499,7 @@ def test_adding_index_shared_registry_instrument_is_supported(
             "instrument_name": "CSI 300 Index",
             "instrument_type": "index",
             "currency": "CNY",
+            "quote_selection_policy": canonical_quote_policy("index"),
             "identifiers": [
                 {"identifier_type": "ticker", "identifier_value": "000300", "is_primary": True},
             ],
@@ -393,6 +510,8 @@ def test_adding_index_shared_registry_instrument_is_supported(
                     "as_of_date": "2026-04-15",
                     "value": "3600.1200",
                     "currency": "CNY",
+                    "price_unit": "per_unit",
+                    "price_scale": "1",
                     "status": "complete",
                 }
             ],
@@ -470,6 +589,7 @@ def test_archived_shared_alias_resolves_to_canonical_without_recreating_duplicat
             "instrument_name": "龙旗巨星一号私募投资基金",
             "instrument_type": "fund",
             "currency": "CNY",
+            "quote_selection_policy": canonical_quote_policy("fund"),
             "identifiers": [
                 {"identifier_type": "ticker", "identifier_value": "SH7639", "is_primary": True},
             ],
@@ -483,6 +603,7 @@ def test_archived_shared_alias_resolves_to_canonical_without_recreating_duplicat
             "instrument_name": "龙旗巨星一号",
             "instrument_type": "fund",
             "currency": "CNY",
+            "quote_selection_policy": canonical_quote_policy("fund"),
             "identifiers": [
                 {"identifier_type": "internal", "identifier_value": "legacy-longqi", "is_primary": True},
             ],
@@ -518,6 +639,7 @@ def test_adding_unsupported_shared_registry_instrument_is_rejected(
             "instrument_name": "Demo Equity",
             "instrument_type": "equity",
             "currency": "USD",
+            "quote_selection_policy": canonical_quote_policy("equity"),
             "identifiers": [
                 {"identifier_type": "ticker", "identifier_value": "DEMO", "is_primary": True},
             ],
@@ -528,6 +650,8 @@ def test_adding_unsupported_shared_registry_instrument_is_rejected(
                     "as_of_date": "2026-04-15",
                     "value": "12.3400",
                     "currency": "USD",
+                    "price_unit": "per_unit",
+                    "price_scale": "1",
                     "status": "complete",
                 }
             ],
@@ -856,6 +980,7 @@ def test_screener_sort_keeps_missing_values_last_for_descending_metrics(
             "instrument_name": "No Return Fund",
             "instrument_type": "fund",
             "currency": "USD",
+            "quote_selection_policy": canonical_quote_policy("fund"),
             "identifiers": [
                 {"identifier_type": "ticker", "identifier_value": "NORET", "is_primary": True},
             ],
@@ -903,6 +1028,7 @@ def test_calendar_period_returns_use_prior_close_as_base(
             "instrument_name": "Calendar Boundary Fund",
             "instrument_type": "fund",
             "currency": "USD",
+            "quote_selection_policy": canonical_quote_policy("fund"),
             "identifiers": [
                 {"identifier_type": "ticker", "identifier_value": "CBF", "is_primary": True},
             ],
@@ -913,6 +1039,8 @@ def test_calendar_period_returns_use_prior_close_as_base(
                     "as_of_date": as_of_date,
                     "value": value,
                     "currency": "USD",
+                    "price_unit": "per_unit",
+                    "price_scale": "1",
                     "status": "complete",
                 }
                 for as_of_date, value in (
@@ -965,6 +1093,7 @@ def test_index_close_series_calculates_watchlist_performance_metrics(
             "instrument_name": "Close Only Index",
             "instrument_type": "index",
             "currency": "USD",
+            "quote_selection_policy": canonical_quote_policy("index"),
             "identifiers": [
                 {
                     "identifier_type": "ticker",
@@ -979,6 +1108,8 @@ def test_index_close_series_calculates_watchlist_performance_metrics(
                     "as_of_date": as_of_date,
                     "value": value,
                     "currency": "USD",
+                    "price_unit": "per_unit",
+                    "price_scale": "1",
                     "status": "complete",
                 }
                 for as_of_date, value in (
@@ -1116,6 +1247,7 @@ def test_instrument_detail_payload_exposes_weekly_calculation_frequency(
             "instrument_name": "Weekly Risk Fund",
             "instrument_type": "fund",
             "currency": "USD",
+            "quote_selection_policy": canonical_quote_policy("fund"),
             "identifiers": [
                 {"identifier_type": "ticker", "identifier_value": "WRF", "is_primary": True},
             ],
@@ -1126,6 +1258,8 @@ def test_instrument_detail_payload_exposes_weekly_calculation_frequency(
                     "as_of_date": as_of_date,
                     "value": value,
                     "currency": "USD",
+                    "price_unit": "per_unit",
+                    "price_scale": "1",
                     "frequency": "weekly",
                     "status": "complete",
                 }
@@ -1203,6 +1337,7 @@ def test_instrument_performance_payload_includes_taxonomy_peer_ranking(
                 "instrument_name": instrument_name,
                 "instrument_type": "fund",
                 "currency": "USD",
+                "quote_selection_policy": canonical_quote_policy("fund"),
                 "identifiers": [
                     {"identifier_type": "ticker", "identifier_value": ticker, "is_primary": True},
                 ],
@@ -1213,6 +1348,8 @@ def test_instrument_performance_payload_includes_taxonomy_peer_ranking(
                         "as_of_date": as_of_date,
                         "value": value,
                         "currency": "USD",
+                        "price_unit": "per_unit",
+                        "price_scale": "1",
                         "status": "complete",
                     }
                     for as_of_date, value in zip(
@@ -2803,6 +2940,7 @@ def test_default_all_coverage_watchlist_syncs_active_shared_indexes(
             "instrument_name": "CSI 300 Index",
             "instrument_type": "index",
             "currency": "CNY",
+            "quote_selection_policy": canonical_quote_policy("index"),
             "identifiers": [
                 {"identifier_type": "ticker", "identifier_value": "000300.SH", "is_primary": True},
             ],
@@ -2813,6 +2951,8 @@ def test_default_all_coverage_watchlist_syncs_active_shared_indexes(
                     "as_of_date": "2026-04-15",
                     "value": "3600.1200",
                     "currency": "CNY",
+                    "price_unit": "per_unit",
+                    "price_scale": "1",
                     "status": "complete",
                 }
             ],
@@ -3985,6 +4125,7 @@ def test_monitoring_dashboard_surfaces_missing_labels_quotes_and_open_recalc_job
         "instrument_name": "No Data Fund",
         "instrument_type": "fund",
         "currency": "USD",
+        "quote_selection_policy": canonical_quote_policy("fund"),
         "identifiers": [
             {
                 "identifier_type": "ticker",

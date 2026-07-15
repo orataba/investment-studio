@@ -432,7 +432,6 @@ export type SelectedQuoteSeriesMetadata = {
 export type SelectedQuotePoint = {
   date: string
   value: number
-  nav: number
   metric_family?: string | null
   quote_basis?: string | null
   series_type?: string | null
@@ -631,13 +630,13 @@ export type FundNavSeriesResponse = {
     as_of_date: string
     nav: number | null
     nav_with_dividend: number | null
-    selected_basis_type?: string | null
-    selected_value?: number | null
+    selected_basis_type: string | null
+    selected_value: number | null
     selected_metric_family?: string | null
     selected_quote_basis?: string | null
     selected_series_type?: string | null
     selected_series_label?: string | null
-    calculation_included?: boolean
+    calculation_included: boolean
     cumulative_distribution: number | null
     distribution_amount: number | null
     currency: string | null
@@ -671,19 +670,17 @@ type RawFundNavSeriesResponse = {
     requested_by: string | null
     mode: string
   }
-  series?: Array<Partial<SelectedQuotePoint> & { date: string; nav?: number; value?: number }>
-  calculation_series?: Array<Partial<SelectedQuotePoint> & { date: string; nav?: number; value?: number }>
   rows: Array<{
     date: string
     nav: number | null
     nav_with_dividend: number | null
-    selected_basis_type?: string | null
-    selected_value?: number | null
+    selected_basis_type: string | null
+    selected_value: number | null
     selected_metric_family?: string | null
     selected_quote_basis?: string | null
     selected_series_type?: string | null
     selected_series_label?: string | null
-    calculation_included?: boolean
+    calculation_included: boolean
     cumulative_distribution?: number | null
     distribution_amount?: number | null
     currency: string | null
@@ -763,21 +760,6 @@ function normalizeFundLibraryItem(item: RawFundLibraryItem): FundLibraryItem {
 }
 
 function normalizeFundNavSeriesResponse(response: RawFundNavSeriesResponse): FundNavSeriesResponse {
-  const normalizeQuotePoints = (
-    points: Array<Partial<SelectedQuotePoint> & { date: string; nav?: number; value?: number }>,
-  ): SelectedQuotePoint[] =>
-    points.map((point) => {
-      const value = point.value ?? point.nav ?? 0
-      return {
-        date: point.date,
-        value,
-        nav: point.nav ?? value,
-        metric_family: point.metric_family,
-        quote_basis: point.quote_basis,
-        series_type: point.series_type,
-      }
-    })
-
   const rows: FundNavSeriesResponse['rows'] = response.rows.map((row) => ({
     as_of_date: row.date,
     nav: row.nav,
@@ -800,20 +782,13 @@ function normalizeFundNavSeriesResponse(response: RawFundNavSeriesResponse): Fun
       if (calculationOnly && row.calculation_included === false) {
         return []
       }
-      const fallbackValue =
-        row.selected_basis_type === 'nav'
-          ? row.nav
-          : row.selected_basis_type === 'nav_with_dividend'
-            ? row.nav_with_dividend
-            : null
-      const value = row.selected_value ?? fallbackValue
-      if (value == null) {
+      const value = row.selected_value
+      if (value == null || !Number.isFinite(value)) {
         return []
       }
       return [{
         date: row.as_of_date,
         value,
-        nav: value,
         metric_family: response.selected_metric_family ?? undefined,
         quote_basis: response.selected_quote_basis ?? undefined,
         series_type: response.selected_series_type ?? undefined,
@@ -836,10 +811,8 @@ function normalizeFundNavSeriesResponse(response: RawFundNavSeriesResponse): Fun
     calculation_frequency_profile: response.calculation_frequency_profile,
     compare_settings: response.compare_settings,
     refresh_status: response.refresh_status,
-    series: response.series ? normalizeQuotePoints(response.series) : pointsFromRows(false),
-    calculation_series: response.calculation_series
-      ? normalizeQuotePoints(response.calculation_series)
-      : pointsFromRows(true),
+    series: pointsFromRows(false),
+    calculation_series: pointsFromRows(true),
     rows,
   }
 }

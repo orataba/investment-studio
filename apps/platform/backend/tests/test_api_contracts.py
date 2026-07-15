@@ -18,9 +18,13 @@ def test_nav_file_requests_enforce_decoded_size_limit(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(contracts, "MAX_NAV_IMPORT_BYTES", 4)
+    request_kwargs = {
+        "status": "complete",
+    } if request_type is contracts.PlatformNavImportFileRequest else {}
     payload = request_type(
         file_name="nav.csv",
         file_content_base64=b64encode(b"12345").decode("ascii"),
+        **request_kwargs,
     )
 
     with pytest.raises(ValueError, match="exceeds the 4-byte limit"):

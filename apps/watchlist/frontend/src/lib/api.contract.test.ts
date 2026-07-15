@@ -1,0 +1,73 @@
+import { afterEach, describe, expect, it, vi } from 'vitest'
+
+import { getInstrumentNavSeries } from './api'
+
+describe('instrument NAV series API contract', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  it('fails closed when the canonical selected value is null', async () => {
+    const payload = {
+      instrument_id: 'fund-a',
+      count: 1,
+      nav_basis_preference: 'auto',
+      nav_basis_type: 'nav_with_dividend',
+      nav_basis_source: 'quote_policy',
+      nav_basis_status: 'selected',
+      selected_role: 'total_return',
+      selected_metric_family: 'nav',
+      selected_quote_basis: 'total_return',
+      selected_series_type: 'nav_with_dividend',
+      selected_series_label: 'NAV with dividend',
+      selected_date_label: 'NAV date',
+      calculation_frequency_profile: {
+        requested_frequency: 'auto',
+        resolved_frequency: 'daily',
+        inferred_frequency: 'daily',
+        source_frequency_counts: { daily: 1, weekly: 0, monthly: 0, unknown: 0 },
+        raw_observation_count: 1,
+        observation_count: 1,
+        start_date: '2026-07-15',
+        end_date: '2026-07-15',
+        annualization_periods_per_year: null,
+        largest_gap_days: null,
+        gap_count: 0,
+        gap_status: 'aligned',
+        status_label: 'Daily',
+      },
+      compare_settings: {
+        default_benchmark_instrument_id: null,
+        peer_instrument_ids: [],
+      },
+      rows: [
+        {
+          date: '2026-07-15',
+          nav: 1.01,
+          nav_with_dividend: 1.23,
+          selected_basis_type: 'nav_with_dividend',
+          selected_value: null,
+          calculation_included: true,
+          currency: 'CNY',
+          frequency: 'daily',
+          adopted_at: null,
+        },
+      ],
+    }
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => payload,
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    const response = await getInstrumentNavSeries('fund-a')
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/api/instruments/fund-a/nav-series',
+      expect.objectContaining({ headers: { 'Content-Type': 'application/json' } }),
+    )
+    expect(response.rows[0].selected_value).toBeNull()
+    expect(response.series).toEqual([])
+    expect(response.calculation_series).toEqual([])
+  })
+})

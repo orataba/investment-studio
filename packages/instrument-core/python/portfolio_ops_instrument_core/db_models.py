@@ -1,8 +1,22 @@
 from __future__ import annotations
 
 from datetime import date
+from decimal import Decimal
 
-from sqlalchemy import Boolean, Date, ForeignKey, Integer, JSON, MetaData, String, Text, UniqueConstraint
+from sqlalchemy import (
+    Boolean,
+    CheckConstraint,
+    Date,
+    ForeignKey,
+    Index,
+    Integer,
+    JSON,
+    MetaData,
+    Numeric,
+    String,
+    Text,
+    UniqueConstraint,
+)
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 
@@ -29,6 +43,17 @@ class RegistryMetadata(InstrumentRegistryBase):
 
 class Instrument(InstrumentRegistryBase):
     __tablename__ = "instrument"
+    __table_args__ = (
+        CheckConstraint(
+            "instrument_type IN ('fund', 'etf', 'index', 'bond', 'equity', "
+            "'cash', 'fx', 'other')",
+            name="instrument_type_contract",
+        ),
+        CheckConstraint(
+            "currency = upper(trim(currency)) AND length(currency) BETWEEN 1 AND 8",
+            name="instrument_currency_contract",
+        ),
+    )
 
     instrument_id: Mapped[str] = mapped_column(String, primary_key=True)
     instrument_name: Mapped[str] = mapped_column(String, nullable=False)
@@ -37,7 +62,6 @@ class Instrument(InstrumentRegistryBase):
     quote_selection_policy_json: Mapped[dict[str, object]] = mapped_column(
         JSON,
         nullable=False,
-        default=dict,
     )
     source_settings_json: Mapped[dict[str, object]] = mapped_column(
         JSON,
@@ -95,6 +119,27 @@ class InstrumentIdentifier(InstrumentRegistryBase):
 class InstrumentMarketData(InstrumentRegistryBase):
     __tablename__ = "instrument_market_data"
     __table_args__ = (
+        CheckConstraint(
+            "(metric_family = 'price' AND quote_basis IN "
+            "('last', 'close', 'adjusted_close', 'clean_price', 'dirty_price', "
+            "'par', 'accrued_interest')) OR "
+            "(metric_family = 'nav' AND quote_basis IN "
+            "('official_nav', 'total_return_nav', 'cumulative_nav', "
+            "'accumulated_nav', 'cum_nav', 'dividend_adjusted_nav', "
+            "'reinvested_nav')) OR "
+            "(metric_family = 'fx' AND quote_basis = 'spot')",
+            name="quote_identity_contract",
+        ),
+        CheckConstraint(
+            "(price_unit = 'per_unit' AND price_scale = 1) OR "
+            "(price_unit = 'percent_of_par' AND price_scale = 0.01) OR "
+            "(price_unit = 'rate' AND price_scale = 1)",
+            name="price_unit_scale_contract",
+        ),
+        CheckConstraint(
+            "status IN ('complete', 'partial', 'unavailable')",
+            name="market_data_status_contract",
+        ),
         UniqueConstraint(
             "instrument_id",
             "metric_family",
@@ -115,8 +160,10 @@ class InstrumentMarketData(InstrumentRegistryBase):
     as_of_date: Mapped[date] = mapped_column(Date, nullable=False)
     value: Mapped[str] = mapped_column(Text, nullable=False)
     currency: Mapped[str] = mapped_column(String, nullable=False)
+    price_unit: Mapped[str] = mapped_column(String, nullable=False)
+    price_scale: Mapped[Decimal] = mapped_column(Numeric(28, 12), nullable=False)
     provider: Mapped[str | None] = mapped_column(String)
-    status: Mapped[str] = mapped_column(String, nullable=False, default="complete")
+    status: Mapped[str] = mapped_column(String, nullable=False)
 
     instrument: Mapped[Instrument] = relationship(back_populates="market_data_points")
 
@@ -132,6 +179,11 @@ class CorporateActionEvent(InstrumentRegistryBase):
 
     __tablename__ = "corporate_action_event"
     __table_args__ = (
+        Index(
+            "ix_corporate_action_instrument_effective_date",
+            "instrument_id",
+            "effective_date",
+        ),
         UniqueConstraint(
             "instrument_id",
             "action_type",

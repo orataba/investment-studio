@@ -3,6 +3,16 @@ from __future__ import annotations
 from datetime import date
 from decimal import Decimal
 
+from portfolio_ops_instrument_core.fx_contract import (
+    FX_INSTRUMENT_IDENTITIES,
+    PIVOT_CURRENCY,
+    SUPPORTED_FX_CURRENCIES,
+    fx_instrument_identity,
+    fx_instrument_identity_for_pair,
+    normalize_fx_currency,
+    parse_positive_fx_rate,
+    validate_fx_market_data_contract,
+)
 from portfolio_ops_instrument_core.instrument_store import (
     SessionFactory,
     get_instrument,
@@ -10,24 +20,32 @@ from portfolio_ops_instrument_core.instrument_store import (
 )
 
 
-SUPPORTED_FX_CURRENCIES: tuple[str, ...] = ("USD", "HKD", "CNY")
-PIVOT_CURRENCY = "USD"
-MAINTAINED_FX_INSTRUMENTS: dict[tuple[str, str], str] = {
-    ("USD", "HKD"): "fx-usd-hkd",
-    ("USD", "CNY"): "fx-usd-cny",
-}
-
-
 def supported_fx_currencies() -> list[str]:
     return list(SUPPORTED_FX_CURRENCIES)
 
 
 def maintained_fx_pairs() -> list[str]:
-    return [f"{base}/{quote}" for base, quote in MAINTAINED_FX_INSTRUMENTS]
+    return [
+        f"{identity.base_currency}/{identity.quote_currency}"
+        for identity in FX_INSTRUMENT_IDENTITIES
+    ]
+
+
+def _positive_decimal(value: object) -> Decimal | None:
+    try:
+        return parse_positive_fx_rate(value)
+    except ValueError:
+        return None
 
 
 def _latest_spot_point(session_factory: SessionFactory, instrument_id: str) -> dict[str, object] | None:
-    instrument = get_instrument(session_factory, instrument_id)
+    identity = fx_instrument_identity(instrument_id)
+    if identity is None:
+        return None
+    try:
+        instrument = get_instrument(session_factory, identity.instrument_id)
+    except ValueError:
+        return None
     if instrument is None:
         return None
 
@@ -35,16 +53,50 @@ def _latest_spot_point(session_factory: SessionFactory, instrument_id: str) -> d
     if not isinstance(market_data, list):
         return None
 
-    points = [
+    raw_points = [
         item
         for item in market_data
+        if isinstance(item, dict)
         if str(item.get("metric_family") or "") == "fx"
         and str(item.get("quote_basis") or "") == "spot"
     ]
-    if not points:
+    if not raw_points:
         return None
 
-    return max(points, key=lambda item: str(item.get("as_of_date") or ""))
+    points: list[dict[str, object]] = []
+    for raw_point in raw_points:
+        try:
+            point_date = date.fromisoformat(str(raw_point.get("as_of_date") or ""))
+            validated = validate_fx_market_data_contract(
+                instrument_id=instrument.get("instrument_id"),
+                instrument_type=instrument.get("instrument_type"),
+                instrument_currency=instrument.get("currency"),
+                metric_family=raw_point.get("metric_family"),
+                quote_basis=raw_point.get("quote_basis"),
+                point_currency=raw_point.get("currency"),
+                value=raw_point.get("value"),
+                status=raw_point.get("status"),
+            )
+        except ValueError:
+            return None
+        if validated is None:
+            return None
+        point = dict(raw_point)
+        point.update(
+            {
+                "as_of_date": point_date,
+                "value": validated.rate,
+                "currency": validated.identity.quote_currency,
+                "status": validated.status,
+            }
+        )
+        points.append(point)
+
+    latest_date = max(point["as_of_date"] for point in points)
+    latest_points = [point for point in points if point["as_of_date"] == latest_date]
+    if len(latest_points) != 1:
+        return None
+    return latest_points[0]
 
 
 def _direct_rate_record(
@@ -52,24 +104,24 @@ def _direct_rate_record(
     base_currency: str,
     quote_currency: str,
 ) -> dict[str, object] | None:
-    instrument_id = MAINTAINED_FX_INSTRUMENTS.get((base_currency, quote_currency))
-    if instrument_id is None:
+    identity = fx_instrument_identity_for_pair(base_currency, quote_currency)
+    if identity is None:
         return None
 
-    point = _latest_spot_point(session_factory, instrument_id)
+    point = _latest_spot_point(session_factory, identity.instrument_id)
     if point is None:
         return None
 
     return {
-        "base_currency": base_currency,
-        "quote_currency": quote_currency,
-        "rate": Decimal(str(point.get("value") or "0")),
-        "as_of_date": date.fromisoformat(str(point.get("as_of_date") or date.today().isoformat())),
+        "base_currency": identity.base_currency,
+        "quote_currency": identity.quote_currency,
+        "rate": point["value"],
+        "as_of_date": point["as_of_date"],
         "source_kind": "direct",
-        "instrument_id": instrument_id,
-        "source_instrument_ids": [instrument_id],
+        "instrument_id": identity.instrument_id,
+        "source_instrument_ids": [identity.instrument_id],
         "provider": point.get("provider"),
-        "status": str(point.get("status") or "complete"),
+        "status": point["status"],
     }
 
 
@@ -82,7 +134,10 @@ def _inverse_rate_record(
     if direct_record is None:
         return None
 
-    rate = Decimal("1") / Decimal(str(direct_record["rate"]))
+    direct_rate = _positive_decimal(direct_record.get("rate"))
+    if direct_rate is None:
+        return None
+    rate = Decimal("1") / direct_rate
     return {
         "base_currency": base_currency,
         "quote_currency": quote_currency,
@@ -109,8 +164,21 @@ def _cross_rate_record(
     if usd_to_base is None or usd_to_quote is None:
         return None
 
-    rate = Decimal(str(usd_to_quote["rate"])) / Decimal(str(usd_to_base["rate"]))
-    status = "partial" if "partial" in {usd_to_base["status"], usd_to_quote["status"]} else "complete"
+    base_rate = _positive_decimal(usd_to_base.get("rate"))
+    quote_rate = _positive_decimal(usd_to_quote.get("rate"))
+    if base_rate is None or quote_rate is None:
+        return None
+    rate = quote_rate / base_rate
+    leg_statuses = {
+        str(usd_to_base.get("status") or "").strip().lower(),
+        str(usd_to_quote.get("status") or "").strip().lower(),
+    }
+    if leg_statuses == {"complete"}:
+        status = "complete"
+    elif leg_statuses.issubset({"complete", "partial"}):
+        status = "partial"
+    else:
+        status = "unavailable"
     as_of_date = min(usd_to_base["as_of_date"], usd_to_quote["as_of_date"])
     provider_parts = [part for part in [usd_to_base.get("provider"), usd_to_quote.get("provider")] if part]
     provider = " + ".join(dict.fromkeys(provider_parts)) or None
@@ -133,8 +201,8 @@ def get_fx_rate(
     base_currency: str,
     quote_currency: str,
 ) -> dict[str, object] | None:
-    normalized_base = base_currency.strip().upper()
-    normalized_quote = quote_currency.strip().upper()
+    normalized_base = normalize_fx_currency(base_currency)
+    normalized_quote = normalize_fx_currency(quote_currency)
     if normalized_base not in SUPPORTED_FX_CURRENCIES or normalized_quote not in SUPPORTED_FX_CURRENCIES:
         return None
     if normalized_base == normalized_quote:
@@ -192,27 +260,41 @@ def upsert_fx_rate(
     provider: str | None,
     status: str,
 ) -> dict[str, object]:
-    normalized_base = base_currency.strip().upper()
-    normalized_quote = quote_currency.strip().upper()
-    instrument_id = MAINTAINED_FX_INSTRUMENTS.get((normalized_base, normalized_quote))
-    if instrument_id is None:
+    identity = fx_instrument_identity_for_pair(base_currency, quote_currency)
+    if identity is None:
         raise ValueError("Only USD/HKD and USD/CNY are maintained directly in this MVP.")
+    validated = validate_fx_market_data_contract(
+        instrument_id=identity.instrument_id,
+        instrument_type="fx",
+        instrument_currency=identity.quote_currency,
+        metric_family="fx",
+        quote_basis="spot",
+        point_currency=identity.quote_currency,
+        value=rate,
+        status=status,
+    )
+    if validated is None:
+        raise ValueError("FX rate did not resolve to a maintained spot contract.")
 
     record = upsert_market_data(
         session_factory,
-        instrument_id=instrument_id,
+        instrument_id=identity.instrument_id,
         metric_family="fx",
         quote_basis="spot",
         as_of_date=as_of_date,
-        value=str(rate),
-        currency=normalized_quote,
+        value=str(validated.rate),
+        currency=identity.quote_currency,
         provider=provider,
         status=status,
     )
     if record is None:
         raise ValueError("FX instrument not found in shared instrument registry.")
 
-    refreshed = _direct_rate_record(session_factory, normalized_base, normalized_quote)
+    refreshed = _direct_rate_record(
+        session_factory,
+        identity.base_currency,
+        identity.quote_currency,
+    )
     if refreshed is None:
         raise ValueError("Failed to refresh FX rate after update.")
     return refreshed
