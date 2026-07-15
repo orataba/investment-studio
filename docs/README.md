@@ -1,6 +1,6 @@
 # Portfolio Operations Workbench Docs
 
-活动文档只保留当前工程边界、数据库工作流、运行手册、设计基线，以及一个临时执行 handoff。完成使命但仍有溯源价值的记录放在 [`archive/`](./archive/)，不参与当前合同。
+活动文档只保留当前工程边界、数据库工作流、运行手册和设计基线。完成使命但仍有溯源价值的记录放在 [`archive/`](./archive/)，不参与当前合同。
 
 建议阅读顺序：
 
@@ -26,8 +26,8 @@
 - [apps/platform/README.md](../apps/platform/README.md)
 - [apps/watchlist/README.md](../apps/watchlist/README.md)
 - [apps/portfolio/README.md](../apps/portfolio/README.md)
-- [apps/portfolio/docs/03_OPTIMIZATION_HANDOFF.md](../apps/portfolio/docs/03_OPTIMIZATION_HANDOFF.md)
-  当前仅针对 `apps/portfolio` 的下一轮优化临时执行入口；不得与 Watchlist fund/instrument detail 的同名页面混用，完成后按文档内规则退役。
+- [apps/portfolio/docs/archive/2026-07-15_OPTIMIZATION_HANDOFF_COMPLETED.md](../apps/portfolio/docs/archive/2026-07-15_OPTIMIZATION_HANDOFF_COMPLETED.md)
+  已完成的 Portfolio 优化轮次历史记录；不作为当前实现入口或第二份永久规格。
 
 历史归档：
 
@@ -35,12 +35,12 @@
 
 当前约束：
 
-- 描述“当前已实现”时以仓库实现为证据，不维护不存在的兼容路径；canonical 目标合同和 active handoff 已明确列出的实现偏差，不能因当前错误实现而被反向改写。
+- 描述“当前已实现”时以仓库实现为证据，不维护不存在的兼容路径；canonical 目标合同不能因当前错误实现而被反向改写。
 - 描述当前真实运行方式，不保留过程复盘、临时排查记录或旧架构兼容说明。
-- 不把归档记录或 Git 历史中的失败蓝图恢复成活动规格；仍有效的待办只写入一个 active handoff。
+- 不把归档记录或 Git 历史中的失败蓝图恢复成活动规格；新的跨轮次工作需要单独、限时的执行计划，完成后归档或删除。
 - `packages/ui` 已经进入当前路径，先承载语言选择与跨 app 前端共享上下文；不是纯占位目录。
 - 前端视觉调整以 [FRONTEND_DESIGN_BASELINE.md](./FRONTEND_DESIGN_BASELINE.md) 为准；不要再引入米黄、沙色或暖灰页面背景。
-- `nav/`、`data/migration/` 和 `.env.example` 是仓库恢复资产；真实 backend `.env` 位于本机受限秘密目录，runtime DB、构建产物、依赖目录和缓存仍按本地工作产物处理。
+- `nav/` 和 `.env.example` 是仓库恢复资产；`data/migration/` 只记录恢复制品政策。真实数据库 dump、backend `.env`、runtime DB、构建产物、依赖目录和缓存均不得进入 Git。
 
 提交前快速检查：
 

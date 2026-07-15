@@ -46,13 +46,15 @@ is_scheduled_service() {
 }
 
 stop_services() {
-  local service label plist
-  mkdir -p "$(dirname "$STATE_FILE")"
-  : > "$STATE_FILE"
-  chmod 600 "$STATE_FILE"
+  local service label plist state_dir temporary_state
+  state_dir="$(dirname "$STATE_FILE")"
+  mkdir -p "$state_dir"
+  temporary_state="$(mktemp "$state_dir/.portfolio-ops-service-state.XXXXXX")"
+  chmod 600 "$temporary_state"
 
-  # Record and validate the complete restart set before unloading anything.
-  # That lets the caller recover cleanly even if a later bootout fails.
+  # Build and validate the complete restart set privately. Publishing it with
+  # one rename ensures callers never mistake a partial preflight result for a
+  # complete recovery manifest.
   for service in "${services[@]}"; do
     label="$LABEL_PREFIX.$service"
     plist="$LAUNCH_AGENTS_DIR/$label.plist"
@@ -61,10 +63,12 @@ stop_services() {
     fi
     if [[ ! -f "$plist" ]]; then
       echo "Cannot safely stop $label: missing plist $plist" >&2
-      exit 1
+      rm -f "$temporary_state"
+      return 1
     fi
-    printf '%s\n' "$service" >> "$STATE_FILE"
+    printf '%s\n' "$service" >> "$temporary_state"
   done
+  mv -f "$temporary_state" "$STATE_FILE"
 
   while IFS= read -r service || [[ -n "$service" ]]; do
     [[ -n "$service" ]] || continue

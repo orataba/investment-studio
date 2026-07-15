@@ -13,26 +13,41 @@
 ```bash
 brew install postgresql@17
 brew services start postgresql@17
+createuser --login --pwprompt portfolio_ops
+createdb --owner portfolio_ops portfolio_ops
 ```
+
+`createuser` 会交互读取密码，不把密码写进 shell history。也可以使用仓库的
+`infra/postgres/docker-compose.yml`；该 profile 会创建同名角色与数据库。
 
 ## 安装或更新
 
 在项目根目录运行：
 
 ```bash
-infra/launchd/install_local_services.sh
+PORTFOLIO_OPS_LOCAL_DATABASE_URL='postgresql+psycopg://portfolio_ops@127.0.0.1:5432/portfolio_ops' \
+  infra/launchd/install_local_services.sh
 ```
 
-安装器会依次校验并初始化本地数据库，停止并等待旧服务退出，执行全部
-Alembic 迁移，重建三个前端，然后更新并启动 `launchd` 服务。这样旧 worker
-无法跨越新迁移继续写入；任一迁移或构建失败时，安装器会恢复此前加载的服务，
-不会用不完整版本替换它们。定时任务会被加载但不会在安装时立即执行。
+`PORTFOLIO_OPS_LOCAL_DATABASE_URL` 必须显式传入，目标数据库与登录角色必须已存在；
+安装器不会猜测或创建另一套默认数据库，也不会重置角色密码。URL 不得包含密码；
+先通过交互方式把认证信息配置到当前用户权限为 `0600` 的 `.pgpass`，避免 shell
+history 和进程参数暴露凭据。
+
+安装器会停止并等待旧服务退出，创建并校验三个项目 schema 的迁移前 custom-format
+备份，执行全部 Alembic 迁移，重建三个前端，然后以原子文件替换更新各 plist 并启动 `launchd`
+服务。任一迁移、构建、plist 安装或健康检查失败时，会先卸载新服务、恢复数据库备份
+和旧 plist，再恢复此前加载的服务；数据库或 plist 回滚失败时所有托管服务保持停止。
+校验后的迁移前备份默认保留在
+`~/Library/Application Support/portfolio-operations-workbench/backups/`。定时任务会被
+加载但不会在安装时立即执行。
 
 默认调度时间可以在安装时覆盖，例如：
 
 ```bash
 PORTFOLIO_OPS_LOCAL_REFRESH_HOUR=22 \
 PORTFOLIO_OPS_LOCAL_REFRESH_MINUTE=30 \
+PORTFOLIO_OPS_LOCAL_DATABASE_URL='postgresql+psycopg://portfolio_ops@127.0.0.1:5432/portfolio_ops' \
   infra/launchd/install_local_services.sh
 ```
 
@@ -54,9 +69,10 @@ Platform API 和定时任务都会读取当前
 内的 runtime `.env`。秘密目录必须由当前用户拥有且权限为 `0700`，文件必须由
 当前用户拥有且权限为 `0600`。安全加载器只接受
 `PORTFOLIO_OPS_PLATFORM_*` 赋值，把值作为纯文本导入，不会执行 `$()`、反引号
-等 shell 语法。安装器不会把 Tushare token、邮件密码等秘密复制进 plist；plist
-只保存环境文件目录和本地数据库连接覆盖值。为了避免 Pydantic 再从第二来源补入
-配置，安装器、三个 API runner 和定时 runner 都会拒绝任一 backend 目录中存在
+等 shell 语法。安装器不会把 Tushare token、邮件密码等秘密复制进 plist；数据库
+连接只写入确实需要它的三个 API 与定时刷新 plist，三个纯 web job 不携带数据库
+凭据。为了避免 Pydantic 再从第二来源补入配置，安装器、三个 API runner 和定时
+runner 都会拒绝任一 backend 目录中存在
 `.env` 文件或软链接；先把其中的值迁移到外部秘密目录并删除该文件后再安装。
 
 入口地址：
@@ -98,4 +114,6 @@ launchctl kickstart "gui/$UID/com.orataba.portfolio-ops.market-data-refresh"
 加载的六个常驻 job 和定时刷新 job，完成安全备份和数据库恢复/迁移后再加载。
 恢复定时 job 时只重新注册日历计划，不会立即触发刷新。恢复失败会先自动回滚
 数据库，再恢复这些服务；回滚本身失败时服务保持停止，避免在半恢复数据库上
-继续写入。
+继续写入。incoming dump 必须具有通过校验的 SHA-256 文件，不能跳过；停服后若
+仍有客户端连接无法终止，恢复会在备份或 schema 删除前硬失败。恢复脚本与安装器
+共用同一个 project-schema backup/rollback 原语。

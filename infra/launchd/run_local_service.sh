@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-if [[ $# -ne 4 && $# -ne 5 ]]; then
-  echo "Usage: $0 <service> <project-root> <python-bin> <node-bin> [external-env-root]" >&2
+if [[ $# -ne 5 ]]; then
+  echo "Usage: $0 <service> <project-root> <python-bin> <node-bin> <external-env-root>" >&2
   exit 64
 fi
 
@@ -10,8 +10,25 @@ SERVICE="$1"
 PROJECT_ROOT="$(cd "$2" && pwd)"
 PYTHON_BIN="$3"
 NODE_BIN="$4"
-EXTERNAL_ENV_ROOT="${5:-${PORTFOLIO_OPS_LOCAL_ENV_ROOT:-$HOME/.config/orataba/secrets/portfolio-operations-workbench}}"
-DATABASE_URL="${PORTFOLIO_OPS_LOCAL_DATABASE_URL:-postgresql+psycopg://portfolio_ops:portfolio_ops@127.0.0.1:5432/portfolio_ops}"
+EXTERNAL_ENV_ROOT="$5"
+DATABASE_URL=""
+
+case "$SERVICE" in
+  platform-api|watchlist-api|portfolio-api)
+    DATABASE_URL="${PORTFOLIO_OPS_LOCAL_DATABASE_URL:-}"
+    if [[ -z "$DATABASE_URL" ]]; then
+      echo "PORTFOLIO_OPS_LOCAL_DATABASE_URL is required for API services." >&2
+      exit 64
+    fi
+    case "$DATABASE_URL" in
+      postgresql://*|postgresql+psycopg://*) ;;
+      *)
+        echo "PORTFOLIO_OPS_LOCAL_DATABASE_URL must use postgresql:// or postgresql+psycopg://." >&2
+        exit 64
+        ;;
+    esac
+    ;;
+esac
 
 # Load only namespaced dotenv assignments as data.  This preserves the current
 # external secret file without copying secrets into a plist or evaluating shell

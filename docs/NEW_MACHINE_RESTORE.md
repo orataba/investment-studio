@@ -2,13 +2,15 @@
 
 本文档用于在新电脑上从私有 GitHub 仓库恢复 `Portfolio Operations Workbench`。
 
-恢复目标不是复制旧机器的运行时目录，而是用 Git 中的代码、配置、NAV 附件和当前项目级数据库 dump 重建一套可运行环境。
+恢复目标不是复制旧机器的运行时目录，而是用 Git 中的代码、配置、NAV 附件，以及从受控私有存储取得的项目级数据库 dump 重建一套可运行环境。
 
 ## 0. 前置假设
 
 - 仓库已从私有 GitHub clone 到本机。
 - 本机可以访问 GitHub、PyPI/npm registry、Docker/PostgreSQL。
-- backend `.env` 不随仓库分发；真实值应从受控秘密存储恢复到 `~/.config/orataba/secrets/portfolio-operations-workbench/`，目录权限设为 `0700`、文件权限设为 `0600`。开发态可临时建立 backend 软链接，但安装 macOS 后台服务前必须移除。
+- backend `.env` 不随仓库分发，也不要在仓库内建立文件或软链接。真实值应从受控秘密存储恢复到 `~/.config/orataba/secrets/portfolio-operations-workbench/`，目录权限设为 `0700`、文件权限设为 `0600`；下方手动启动命令通过只解析 namespaced dotenv assignment 的 loader 直接读取这一唯一来源。
+- 数据库 dump 与 SHA-256 文件不随仓库分发；必须从批准的加密、受控存储取得，并在本机保持 `0600` 权限。
+- PostgreSQL 密码通过交互方式写入当前用户权限为 `0600` 的 `.pgpass`；命令、URL 和 shell history 中不出现明文密码。
 - 所有 backend 运行时环境变量统一使用 `PORTFOLIO_OPS_*` 前缀；本地数据库名、用户和密码统一为 `portfolio_ops`。
 
 ## 1. 安装系统工具
@@ -36,15 +38,17 @@ cd portfolio-operations-workbench
 git status --short --branch
 ```
 
-确认工作区干净，且 `data/migration/`、`nav/` 和三个 backend `.env.example` 都存在。真实 `.env` 由本机秘密存储单独提供：
+确认工作区干净，且 `nav/` 和三个 backend `.env.example` 都存在。外部 runtime env 与数据库恢复制品由受控存储单独提供：
 
 ```bash
-ls data/migration
-test -f data/migration/portfolio_ops_2026-07-09_current.pgdump
-test -f data/migration/portfolio_ops_2026-07-09_current.sha256
 test -f apps/platform/backend/.env.example
 test -f apps/watchlist/backend/.env.example
 test -f apps/portfolio/backend/.env.example
+
+export RESTORE_DUMP=/absolute/secure/path/portfolio-operations-workbench.pgdump
+export RESTORE_CHECKSUM=/absolute/secure/path/portfolio-operations-workbench.sha256
+test -r "$RESTORE_DUMP"
+test -r "$RESTORE_CHECKSUM"
 ```
 
 ## 3. 启动 PostgreSQL
@@ -61,37 +65,48 @@ done
 
 ## 4. 恢复数据库快照
 
-当前 Git 恢复点是 `2026-07-09 16:53 Asia/Shanghai` 的项目级快照，来自本地 `portfolio_ops` PostgreSQL 数据库，已包含 A 股 ETF 核心池导入、初始行情补数、All Covered watchlist 物化和本地数据库改名清理后的 Portfolio Operations 数据。它只包含 `instrument_registry`、`portfolio`、`watchlist` 三个 schema，不包含 `public` 或其他非项目 schema。
+从批准的私有制品存储取得同目录下的 custom-format dump 与 SHA-256 文件。制品只允许包含 `instrument_registry`、`portfolio`、`watchlist` 三个 schema，不得包含 `public`、其他项目 schema 或 PostgreSQL raw data directory。Git 仓库不分发业务数据库快照。
 
 先校验 dump：
 
 ```bash
-sha256sum -c data/migration/portfolio_ops_2026-07-09_current.sha256
+(cd "$(dirname "$RESTORE_DUMP")" && \
+  sha256sum -c "$(basename "$RESTORE_CHECKSUM")")
 ```
 
 macOS 如果没有 `sha256sum`，使用：
 
 ```bash
-shasum -a 256 -c data/migration/portfolio_ops_2026-07-09_current.sha256
+(cd "$(dirname "$RESTORE_DUMP")" && \
+  shasum -a 256 -c "$(basename "$RESTORE_CHECKSUM")")
 ```
 
 恢复：
 
 ```bash
-CONFIRM_RESTORE=portfolio_ops infra/postgres/restore_project_dump.sh
+PORTFOLIO_OPS_DUMP_CHECKSUM_PATH="$RESTORE_CHECKSUM" \
+PORTFOLIO_OPS_LOCAL_DATABASE_URL='postgresql+psycopg://portfolio_ops@127.0.0.1:5432/portfolio_ops' \
+CONFIRM_RESTORE=portfolio_ops \
+  infra/postgres/restore_project_dump.sh "$RESTORE_DUMP"
 ```
 
-恢复脚本会再次校验 checksum 和目标数据库，停止已安装的 launchd/systemd
+恢复脚本只接受 `PORTFOLIO_OPS_LOCAL_DATABASE_URL` 指定的单一显式目标，不读取另一组
+默认 host/port/user/password。它会再次校验 checksum 和目标数据库，停止已安装的 launchd/systemd
 应用服务，断开残留连接，并在破坏性操作前把当前三个 schema 备份到
 `${XDG_STATE_HOME:-~/.local/state}/portfolio-operations-workbench/postgres-backups/`。
 恢复或 Alembic 升级任一步失败时，脚本会自动清理半恢复状态、还原该备份，
 然后再启动原先运行的服务。若自动回滚本身失败，服务会保持停止，且日志会
 打印需要人工恢复的备份路径。
 
+incoming dump 的 SHA-256 文件是强制输入，没有跳过校验的开关。停服并请求终止
+客户端连接后，只要仍有任何其他连接，恢复就会在备份或删除 schema 之前硬失败。
+迁移前备份和失败回滚与 launchd 安装器共用同一个 archive/manifest/checksum 原语，
+避免两套恢复实现产生行为漂移。
+
 快速核对：
 
 ```bash
-PGPASSWORD=portfolio_ops psql -h 127.0.0.1 -U portfolio_ops -d portfolio_ops -c "
+psql -h 127.0.0.1 -U portfolio_ops -d portfolio_ops -c "
 select 'instrument_registry.instrument' as table_name, count(*) from instrument_registry.instrument
 union all
 select 'portfolio.portfolio_record', count(*) from portfolio.portfolio_record
@@ -123,21 +138,45 @@ npm --prefix apps/portfolio/frontend install
 
 ## 7. 启动后端
 
-三个终端分别运行，均使用第 5 步的 venv：
+三个终端分别从仓库根目录运行，均使用第 5 步的 venv，并显式、安全地加载对应的外部 secrets 文件。loader 会校验目录/文件所有者和权限，把 dotenv 当数据解析而不会执行其中的 shell 内容，同时拒绝仓库内 `.env` 文件或软链接。
 
 ```bash
-source .venv/bin/activate
-(cd apps/platform/backend && uvicorn platform_app.main:app --host 127.0.0.1 --port 8002 --reload)
+PROJECT_ROOT="$PWD"
+RUNTIME_ENV_ROOT="$HOME/.config/orataba/secrets/portfolio-operations-workbench"
+source "$PROJECT_ROOT/infra/launchd/load_runtime_env.sh"
+portfolio_ops_reject_repository_env_files "$PROJECT_ROOT"
+portfolio_ops_load_env_file \
+  "$(portfolio_ops_runtime_env_file platform "$RUNTIME_ENV_ROOT")" \
+  PORTFOLIO_OPS_PLATFORM_
+source "$PROJECT_ROOT/.venv/bin/activate"
+(cd "$PROJECT_ROOT/apps/platform/backend" && \
+  uvicorn platform_app.main:app --host 127.0.0.1 --port 8002 --reload)
 ```
 
 ```bash
-source .venv/bin/activate
-(cd apps/watchlist/backend && uvicorn watchlist_app.main:app --host 127.0.0.1 --port 8000 --reload)
+PROJECT_ROOT="$PWD"
+RUNTIME_ENV_ROOT="$HOME/.config/orataba/secrets/portfolio-operations-workbench"
+source "$PROJECT_ROOT/infra/launchd/load_runtime_env.sh"
+portfolio_ops_reject_repository_env_files "$PROJECT_ROOT"
+portfolio_ops_load_env_file \
+  "$(portfolio_ops_runtime_env_file watchlist "$RUNTIME_ENV_ROOT")" \
+  PORTFOLIO_OPS_WATCHLIST_
+source "$PROJECT_ROOT/.venv/bin/activate"
+(cd "$PROJECT_ROOT/apps/watchlist/backend" && \
+  uvicorn watchlist_app.main:app --host 127.0.0.1 --port 8000 --reload)
 ```
 
 ```bash
-source .venv/bin/activate
-(cd apps/portfolio/backend && uvicorn portfolio_app.main:app --host 127.0.0.1 --port 8001 --reload)
+PROJECT_ROOT="$PWD"
+RUNTIME_ENV_ROOT="$HOME/.config/orataba/secrets/portfolio-operations-workbench"
+source "$PROJECT_ROOT/infra/launchd/load_runtime_env.sh"
+portfolio_ops_reject_repository_env_files "$PROJECT_ROOT"
+portfolio_ops_load_env_file \
+  "$(portfolio_ops_runtime_env_file portfolio "$RUNTIME_ENV_ROOT")" \
+  PORTFOLIO_OPS_PORTFOLIO_
+source "$PROJECT_ROOT/.venv/bin/activate"
+(cd "$PROJECT_ROOT/apps/portfolio/backend" && \
+  uvicorn portfolio_app.main:app --host 127.0.0.1 --port 8001 --reload)
 ```
 
 ## 8. 启动前端
@@ -166,16 +205,23 @@ curl --noproxy '*' http://127.0.0.1:8000/api/health
 curl --noproxy '*' http://127.0.0.1:8001/api/health
 ```
 
-如果健康检查失败，先看对应 backend 的 `.env`、数据库连接和 venv 依赖。
+如果健康检查失败，先检查外部 secrets 目录中对应的 runtime env、数据库连接和 venv 依赖；不要在 backend 目录补建 `.env`。
 
 ## 10. 刷新快照之后的新数据
 
-数据库 dump 是 `2026-07-09 16:12 Asia/Shanghai` 的恢复点。如果你在更晚日期恢复，恢复完成后可以手动跑一次全量调度入口，让行情、净值和下游物化读模型追到恢复当天：
+恢复点以取得的批准制品及其校验记录为准。恢复完成后，如果数据库中的最新行情日期早于当前可用数据日期，可以手动跑一次全量调度入口，让行情、净值和下游物化读模型追到恢复当天：
 
 ```bash
-PYTHONPATH=/path/to/pm/apps/platform/backend:/path/to/pm/packages/instrument-core/python \
-/path/to/pm/.venv/bin/python \
-  /path/to/pm/apps/platform/backend/scripts/refresh_market_data_scheduled.py \
+PROJECT_ROOT="$PWD"
+RUNTIME_ENV_ROOT="$HOME/.config/orataba/secrets/portfolio-operations-workbench"
+source "$PROJECT_ROOT/infra/launchd/load_runtime_env.sh"
+portfolio_ops_reject_repository_env_files "$PROJECT_ROOT"
+portfolio_ops_load_env_file \
+  "$(portfolio_ops_runtime_env_file platform "$RUNTIME_ENV_ROOT")" \
+  PORTFOLIO_OPS_PLATFORM_
+PYTHONPATH="$PROJECT_ROOT/apps/platform/backend:$PROJECT_ROOT/packages/instrument-core/python" \
+"$PROJECT_ROOT/.venv/bin/python" \
+  "$PROJECT_ROOT/apps/platform/backend/scripts/refresh_market_data_scheduled.py" \
   --channel all \
   --updated-by restore \
   --retry-failed-attempts 2 \
@@ -184,17 +230,21 @@ PYTHONPATH=/path/to/pm/apps/platform/backend:/path/to/pm/packages/instrument-cor
   --json
 ```
 
-将 `/path/to/pm` 替换为新电脑上的仓库绝对路径。
-
 ## 11. 重建后台服务与定时任务
 
 macOS 在仓库根目录执行统一安装器。它会安装六个常驻 LaunchAgent，并注册每天
 本地时间 `21:00` 的独立行情刷新/自动重算任务；安装过程不会立即触发定时任务：
 
 ```bash
-infra/launchd/install_local_services.sh
+PORTFOLIO_OPS_LOCAL_DATABASE_URL='postgresql+psycopg://portfolio_ops@127.0.0.1:5432/portfolio_ops' \
+  infra/launchd/install_local_services.sh
 infra/launchd/status_local_services.sh
 ```
+
+安装器只使用这里显式指定、且已经在前述步骤创建并恢复完成的数据库。迁移前会先
+停止旧服务并保留一份经过 archive/checksum 校验的三个项目 schema 备份；后续迁移、
+构建、plist 安装或健康检查失败时会先回滚数据库与旧 plist，再恢复原服务集合。
+自动回滚失败时服务保持停止。
 
 安装器会直接、安全地解析权限为 `0600` 的
 `~/.config/orataba/secrets/portfolio-operations-workbench/platform.env`，同时供

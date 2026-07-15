@@ -8,6 +8,7 @@ trap 'rm -rf "$TEST_ROOT"' EXIT
 ENV_ROOT="$TEST_ROOT/secure env"
 MOCK_BIN="$TEST_ROOT/bin"
 CAPTURE_PATH="$TEST_ROOT/captured-environment"
+WEB_CAPTURE_PATH="$TEST_ROOT/captured-web-environment"
 SENTINEL_PATH="$TEST_ROOT/unsafe-env-executed"
 mkdir -p "$ENV_ROOT" "$MOCK_BIN"
 chmod 700 "$ENV_ROOT"
@@ -25,10 +26,14 @@ printf '%s\n' \
   'set -euo pipefail' \
   'printf "%s\n" "${PORTFOLIO_OPS_PLATFORM_TUSHARE_TOKEN:-}" "${PORTFOLIO_OPS_PLATFORM_EMAIL_SYNC_ENABLED:-}" "${PORTFOLIO_OPS_PLATFORM_EMAIL_IMAP_PASSWORD:-}" "${PORTFOLIO_OPS_PLATFORM_DATABASE_URL:-}" "$*" > "$CAPTURE_PATH"' \
   > "$MOCK_BIN/python"
-printf '%s\n' '#!/usr/bin/env bash' 'exit 0' > "$MOCK_BIN/node"
+printf '%s\n' \
+  '#!/usr/bin/env bash' \
+  'set -euo pipefail' \
+  'printf "%s\n%s\n" "${PORTFOLIO_OPS_LOCAL_DATABASE_URL:-}" "$*" > "$WEB_CAPTURE_PATH"' \
+  > "$MOCK_BIN/node"
 chmod +x "$MOCK_BIN/python" "$MOCK_BIN/node"
 
-export CAPTURE_PATH
+export CAPTURE_PATH WEB_CAPTURE_PATH
 PORTFOLIO_OPS_LOCAL_DATABASE_URL="postgresql+psycopg://explicit/local" \
   "$REPOSITORY_ROOT/infra/launchd/run_local_service.sh" \
   platform-api "$REPOSITORY_ROOT" "$MOCK_BIN/python" "$MOCK_BIN/node" "$ENV_ROOT"
@@ -42,6 +47,23 @@ fi
 [[ "$(sed -n '3p' "$CAPTURE_PATH")" == '$(touch "'$SENTINEL_PATH'")' ]]
 [[ "$(sed -n '4p' "$CAPTURE_PATH")" == "postgresql+psycopg://explicit/local" ]]
 [[ "$(sed -n '5p' "$CAPTURE_PATH")" == "-m uvicorn platform_app.main:app --host 127.0.0.1 --port 8002" ]]
+
+set +e
+"$REPOSITORY_ROOT/infra/launchd/run_local_service.sh" \
+  platform-api "$REPOSITORY_ROOT" "$MOCK_BIN/python" "$MOCK_BIN/node" "$ENV_ROOT" \
+  > "$TEST_ROOT/missing-database-url.out" 2>&1
+missing_database_status=$?
+set -e
+if [[ $missing_database_status -ne 64 ]]; then
+  echo "The API runner accepted an invocation without an explicit database URL." >&2
+  exit 1
+fi
+grep -q 'PORTFOLIO_OPS_LOCAL_DATABASE_URL is required' "$TEST_ROOT/missing-database-url.out"
+
+"$REPOSITORY_ROOT/infra/launchd/run_local_service.sh" \
+  platform-web "$REPOSITORY_ROOT" "$MOCK_BIN/python" "$MOCK_BIN/node" "$ENV_ROOT"
+[[ -z "$(sed -n '1p' "$WEB_CAPTURE_PATH")" ]]
+[[ "$(sed -n '2p' "$WEB_CAPTURE_PATH")" == *"--port 5172"* ]]
 
 chmod 644 "$ENV_ROOT/platform.env"
 set +e
@@ -93,22 +115,20 @@ if [[ $repository_env_status -eq 0 ]]; then
   echo "The API runner accepted a repository-local .env symlink." >&2
   exit 1
 fi
-grep -q 'Repository runtime environment files are not allowed for launchd' "$TEST_ROOT/repository-env.out"
+grep -q 'Repository runtime environment files are not allowed for managed services' "$TEST_ROOT/repository-env.out"
 grep -q 'apps/portfolio/backend/.env' "$TEST_ROOT/repository-env.out"
 
-# Old six-service plists used the four-argument runner interface.  The fallback
-# keeps install-failure restoration viable until the new five-argument plists
-# have been written and loaded.
-LEGACY_HOME="$TEST_ROOT/legacy-home"
-LEGACY_ENV_ROOT="$LEGACY_HOME/.config/orataba/secrets/portfolio-operations-workbench"
-mkdir -p "$LEGACY_ENV_ROOT"
-chmod 700 "$LEGACY_ENV_ROOT"
-printf '%s\n' 'PORTFOLIO_OPS_PLATFORM_TUSHARE_TOKEN=legacy-plist-token' > "$LEGACY_ENV_ROOT/platform.env"
-chmod 600 "$LEGACY_ENV_ROOT/platform.env"
-HOME="$LEGACY_HOME" \
+set +e
 PORTFOLIO_OPS_LOCAL_DATABASE_URL="postgresql+psycopg://explicit/local" \
   "$REPOSITORY_ROOT/infra/launchd/run_local_service.sh" \
-  platform-api "$REPOSITORY_ROOT" "$MOCK_BIN/python" "$MOCK_BIN/node"
-[[ "$(sed -n '1p' "$CAPTURE_PATH")" == "legacy-plist-token" ]]
+  platform-api "$REPOSITORY_ROOT" "$MOCK_BIN/python" "$MOCK_BIN/node" \
+  > "$TEST_ROOT/missing-env-root.out" 2>&1
+missing_env_root_status=$?
+set -e
+if [[ $missing_env_root_status -ne 64 ]]; then
+  echo "The service runner accepted an invocation without an explicit environment root." >&2
+  exit 1
+fi
+grep -q '<external-env-root>' "$TEST_ROOT/missing-env-root.out"
 
 echo "launchd safe runtime environment loader test passed."

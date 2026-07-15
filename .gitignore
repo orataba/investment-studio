@@ -3,6 +3,10 @@ __pycache__/
 *.pyc
 .pytest_cache/
 .ruff_cache/
+.mypy_cache/
+.coverage
+coverage/
+htmlcov/
 .venv/
 .env
 .env.*
@@ -15,6 +19,13 @@ build/
 *.db
 *.sqlite
 *.sqlite3
+*.pgdump
+*.dump
+*.backup
+*.pem
+*.key
+*.p12
+*.pfx
 apps/portfolio/backend/research_outputs/
 apps/watchlist/backups/
 ref/

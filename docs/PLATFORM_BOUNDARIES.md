@@ -114,12 +114,25 @@ Watchlist 与 Portfolio 会使用相同的投资术语，但这些页面不是�
 2. 数据写入 `instrument_registry`
 3. `Watchlist` 和 `Portfolio` 直接从 `instrument_registry` 读取
 
+Registry 行情合同在数据库与 shared store 两层一致执行：point currency 必须等于 instrument
+master currency，value 必须有限且大于零，status 必须 canonical；FX 还必须匹配维护中的
+pair id、`fx/spot` identity 与 pair quote currency。消费者不得用 USD/base currency、另一币种
+序列或本地旧行情替代不合格的 canonical observation。
+
+Registry 的 `quote_selection_policy` 必须显式持久化五个非空 role。0011 只在迁移时一次性
+物化历史缺口；迁移后 shared store 读取、更新和各消费者都不得动态补默认 role。类型默认
+policy 仅是新建 instrument 时完整写入的领域规则。
+
 ### Watchlist Read Models
 
 1. 用户把共享资产加入 watchlist
 2. `watchlist` 持有自己的本地镜像和 read models
 3. stale 检查发现 canonical 数据变化时，写 durable `recalc_job`
 4. 后台 worker 消费 job，刷新本地 read model 和 canonical metadata mirror
+
+Watchlist 的历史价格/NAV 计算只接受 Registry 中符合 master currency 且 status=complete 的
+序列，并严格按持久化 `quote_selection_policy` 选取；Registry 无序列或无 policy 时结果为
+unavailable，不读取 Watchlist 旧 `nav_fact` 作为行情 fallback。
 
 ### Portfolio Facts
 
@@ -140,11 +153,11 @@ Watchlist 与 Portfolio 会使用相同的投资术语，但这些页面不是�
 - ledger postings / lots
 - target sets / research runs
 
-共享的是“资产身份和市场事实”，不是 app 业务语义。
+共享的是资产身份、市场事实，以及解释这些事实何时应到达、来自何处所必需的非秘密 source descriptor / schedule；不是 app 业务语义。`SourceSettings` 中的 source mode、位置/profile、email rule 描述、expected frequency、market calendar 和 release lag 属于 Registry 合同，因为所有消费者都需要同一 freshness/provenance 口径。真实邮箱口令、API token、抓取进程、解析器、重试状态和操作 UI 仍属于 Platform 私域，不得写入共享 Registry 记录。
 
 ## Operational Rule
 
 如果未来再新增功能，默认遵守这条判断：
 
-- 如果是共享资产身份或共享市场事实，优先放 `instrument-core + instrument_registry`
+- 如果是共享资产身份、共享市场事实，或这些事实的非秘密 provenance / 到达日程合同，优先放 `instrument-core + instrument_registry`
 - 如果是某个 app 的工作流、派生读模型、研究判断、展示状态，必须留在 app 私域

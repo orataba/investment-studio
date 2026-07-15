@@ -12,11 +12,11 @@ ENV_ROOT="$TEST_ROOT/secure env"
 mkdir -p "$PROJECT_ROOT" "$PLIST_ROOT" "$LOG_ROOT" "$ENV_ROOT"
 chmod 700 "$ENV_ROOT"
 
-python3 "$REPOSITORY_ROOT/infra/launchd/generate_local_service_plists.py" \
+PORTFOLIO_OPS_LOCAL_DATABASE_URL="postgresql+psycopg://local@127.0.0.1:5432/test" \
+  python3 "$REPOSITORY_ROOT/infra/launchd/generate_local_service_plists.py" \
   --project-root "$PROJECT_ROOT" \
   --python-bin "/runtime/python with spaces" \
   --node-bin "/runtime/node with spaces" \
-  --database-url "postgresql+psycopg://local/test" \
   --label-prefix "test.portfolio-ops" \
   --launch-agents-dir "$PLIST_ROOT" \
   --log-dir "$LOG_ROOT" \
@@ -56,6 +56,13 @@ assert api["RunAtLoad"] is True
 assert api["Umask"] == 0o077
 assert api["ProgramArguments"][2] == project_root
 assert api["ProgramArguments"][5] == env_root
+assert api["EnvironmentVariables"] == {
+    "PORTFOLIO_OPS_LOCAL_DATABASE_URL": "postgresql+psycopg://local@127.0.0.1:5432/test"
+}
+
+with (plist_root / "test.portfolio-ops.platform-web.plist").open("rb") as source:
+    web = plistlib.load(source)
+assert "EnvironmentVariables" not in web
 
 refresh_path = plist_root / "test.portfolio-ops.market-data-refresh.plist"
 with refresh_path.open("rb") as source:

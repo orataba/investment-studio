@@ -23,7 +23,6 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--project-root", type=Path, required=True)
     parser.add_argument("--python-bin", required=True)
     parser.add_argument("--node-bin", required=True)
-    parser.add_argument("--database-url", required=True)
     parser.add_argument("--label-prefix", required=True)
     parser.add_argument("--launch-agents-dir", type=Path, required=True)
     parser.add_argument("--log-dir", type=Path, required=True)
@@ -51,6 +50,11 @@ def _write_plist(target: Path, payload: dict[str, object]) -> None:
 
 def main() -> int:
     args = _parse_args()
+    database_url = os.environ.get("PORTFOLIO_OPS_LOCAL_DATABASE_URL", "").strip()
+    if not database_url.startswith(("postgresql://", "postgresql+psycopg://")):
+        raise SystemExit(
+            "PORTFOLIO_OPS_LOCAL_DATABASE_URL must be an explicit PostgreSQL URL"
+        )
     if not 0 <= args.refresh_hour <= 23:
         raise SystemExit("--refresh-hour must be between 0 and 23")
     if not 0 <= args.refresh_minute <= 59:
@@ -81,12 +85,13 @@ def main() -> int:
             "ProcessType": "Interactive",
             "ThrottleInterval": 5,
             "Umask": 0o077,
-            "EnvironmentVariables": {
-                "PORTFOLIO_OPS_LOCAL_DATABASE_URL": args.database_url,
-            },
             "StandardOutPath": str(log_dir / f"{service}.log"),
             "StandardErrorPath": str(log_dir / f"{service}.error.log"),
         }
+        if service.endswith("-api"):
+            payload["EnvironmentVariables"] = {
+                "PORTFOLIO_OPS_LOCAL_DATABASE_URL": database_url,
+            }
         _write_plist(launch_agents_dir / f"{label}.plist", payload)
 
     refresh_label = f"{args.label_prefix}.{MARKET_DATA_REFRESH_SERVICE}"
@@ -111,7 +116,7 @@ def main() -> int:
         "ThrottleInterval": 60,
         "Umask": 0o077,
         "EnvironmentVariables": {
-            "PORTFOLIO_OPS_LOCAL_DATABASE_URL": args.database_url,
+            "PORTFOLIO_OPS_LOCAL_DATABASE_URL": database_url,
         },
         "StandardOutPath": str(log_dir / f"{MARKET_DATA_REFRESH_SERVICE}.log"),
         "StandardErrorPath": str(log_dir / f"{MARKET_DATA_REFRESH_SERVICE}.error.log"),

@@ -38,7 +38,7 @@ export PORTFOLIO_OPS_PLATFORM_DATABASE_URL="postgresql://explicit/platform"
 export PORTFOLIO_OPS_PORTFOLIO_DATABASE_URL="postgresql://explicit/portfolio"
 export PORTFOLIO_OPS_PORTFOLIO_ALEMBIC_DATABASE_URL="postgresql://explicit/portfolio-alembic"
 export PORTFOLIO_OPS_WATCHLIST_DATABASE_URL="postgresql://explicit/watchlist"
-export PORTFOLIO_OPS_WATCHLIST_ALEMBIC_DATABASE_URL="postgresql://explicit/watchlist-alembic"
+unset PORTFOLIO_OPS_WATCHLIST_ALEMBIC_DATABASE_URL
 
 PROJECT_ROOT="$TEST_ROOT" PYTHON_BIN="$FAKE_PYTHON" ENV_ROOT="" \
   "$REPOSITORY_ROOT/infra/scripts/migrate_all.sh"
@@ -52,6 +52,17 @@ grep -q 'postgresql://explicit/instrument-alembic' "$CAPTURE_PATH"
 grep -q 'postgresql://explicit/portfolio' "$CAPTURE_PATH"
 grep -q 'postgresql://explicit/portfolio-alembic' "$CAPTURE_PATH"
 grep -q 'postgresql://explicit/watchlist' "$CAPTURE_PATH"
-grep -q 'postgresql://explicit/watchlist-alembic' "$CAPTURE_PATH"
+
+captured_line_count="$(wc -l < "$CAPTURE_PATH" | tr -d '[:space:]')"
+unset PORTFOLIO_OPS_WATCHLIST_DATABASE_URL
+if PROJECT_ROOT="$TEST_ROOT" PYTHON_BIN="$FAKE_PYTHON" ENV_ROOT="" \
+  "$REPOSITORY_ROOT/infra/scripts/migrate_all.sh" >/dev/null 2>&1; then
+  echo "migrate_all accepted a missing explicit Watchlist database target." >&2
+  exit 1
+fi
+if [[ "$(wc -l < "$CAPTURE_PATH" | tr -d '[:space:]')" != "$captured_line_count" ]]; then
+  echo "migrate_all started migrations before validating every database target." >&2
+  exit 1
+fi
 
 echo "migrate_all explicit-environment precedence test passed."

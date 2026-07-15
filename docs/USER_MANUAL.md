@@ -207,6 +207,8 @@ Accounts 管理组合内账户。账户类型通常包括证券账户和现金/�
 
 Transactions 是组合事实入口。新增交易前确认账户、资产、币种、trade date、settlement date、数量、价格、费用和税费。交易保存后会生成 ledger postings，并影响持仓、现金、成本和组合快照。
 
+日期用途不同：证券头寸通常在 trade date 生效，结算现金在 settlement date 生效；dividend / coupon 可在 entitlement date 确认收益；deposit / withdrawal 在实际收付日进入 TWR 外部现金流。页面会分别展示这些日期，不能为了让绩效落到预期日期而改写另一种日期。
+
 支持的交易类型：
 
 - `buy`：买入证券。需要证券账户、instrument、quantity、price、gross amount，可填写 fee / tax，需要结算现金账户。
@@ -227,6 +229,8 @@ Transactions 是组合事实入口。新增交易前确认账户、资产、币�
 
 买入、卖出和证券期初持仓要求 gross amount 与 quantity × price 一致。卖出、到期兑付和仓位转移会校验可用数量。分红、票息、费用、税费等若带 entitlement date，日期不能晚于 trade date。settlement date 不能早于 trade date。
 
+债券交易的 quantity 是 face quantity，percent-of-par price 按 `0.01` scale 计算；例如 face `1000`、price `98.5` 的 gross amount 是 `985`。费用应选择可证明的 fee category；来源无法分类时保留 `Unknown`，不要猜测。重复提交会通过 idempotency key 去重；若页面提示记录版本冲突，说明事实已在别处更新，应刷新后重新核对，不能覆盖较新版本。
+
 内部转账用于组合内账户之间移动现金或持仓。现金转账填写金额；持仓转账填写 instrument、quantity，必要时填写 transferred cost basis。内部转账会生成 transfer in/out 配对记录，不应手工分别录入两边。
 
 删除交易会影响由该交易派生的现金、持仓、成本和绩效。删除内部转账配对时，系统会按 transfer group 处理对应记录。删除前应确认该交易不是后续复盘口径的一部分。
@@ -235,9 +239,13 @@ Transactions 是组合事实入口。新增交易前确认账户、资产、币�
 
 Holdings 展示当前或指定 as-of 的持仓、数量、价格、市值、权重、成本和未实现盈亏。持仓来自交易、行情和账户计算，不手工录入。若持仓数量不对，优先检查 Transactions；若市值不对，优先检查 Platform 行情和 FX；若成本不对，检查账户成本法和历史交易顺序。
 
+默认列表使用 compact payload；sparkline 是有界采样，打开 Security Detail 后再加载 lots、交易和完整图表。子资源尚未返回时显示 Loading/skeleton，不把 `$0.00` 当成真实数据。`Portfolio Total` 只汇总当前持仓状态，其 instrument trend return 显示 `—`，组合 TWR 请到 Performance 查看。
+
 ### 6.5 Overview
 
 Overview 是组合默认首页，展示组合市值、TWR index、回撤、sleeve 结构、top holdings 和 benchmark 对比。页面只在数据完整时展示计算结果；缺少 fresh snapshot、关键行情或 FX 时，不会用部分数据硬算。
+
+Overview 的质量提示只在检测到实际问题时出现，并给出受影响的资产/日期和处理方向。没有检测到 corporate action 问题时不会显示通用警告。若请求日期晚于最后一个可靠估值日，页面会使用后端返回的 effective as-of，并解释 clamp 原因。
 
 常见使用方式：
 
@@ -259,6 +267,8 @@ Performance 用于真实组合区间复盘。核心口径是日频 TWR、期间 
 - Boundary holdings：检查区间开始和结束持仓。
 - Entries / drilldown：追踪计算条目。
 
+期间工具栏提供 Latest、Reset 以及 MTD、QTD、YTD、1Y、SI 快捷项。一次选择会同时作用于 scorecard、chart、Calculation 和 Groups；切换期间后无需在各区块重复设置。少于一年仍可看 period TWR，但 annualized TWR/MWR 和 Calmar 显示不可用。XIRR 只有唯一有效解时才显示；无解、多解或现金流非法会显示对应原因，不显示 0。
+
 Performance 反映真实历史组合，不是当前权重假设。若与 Risk 或 Research 结果不同，先确认三者口径：Performance 是历史事实，Risk 是当前持仓风险，Research 是规划求解和假设回测。
 
 ### 6.7 Risk
@@ -267,17 +277,17 @@ Risk 是当前权重口径的风险工作台，使用当前非现金持仓权重
 
 现金会进入组合 NAV 和 Weight Target / Current Drift 的资本权重，但不设置 Risk Target。`Risk Target Gap` 只比较承担市场风险的非现金 sleeve：现金不显示 risk-target row，不进入风险预算 100% 分母，默认风险贡献为 0。
 
-> 当前版本已知偏差：Taxonomies / Research 仍可能生成或要求现金 `0%` risk 占位，Risk 页面也可能因此显示 unsupported member。这个占位不代表正确业务口径；在 [Portfolio optimization handoff](../apps/portfolio/docs/03_OPTIMIZATION_HANDOFF.md#32-risk-target-excludes-cash) 的 Phase 1A 完成前，不要把现金 `0%` 当作需要维护的风险目标。
-
 常用内容：
 
 - rolling volatility / Sharpe：看风险和风险调整收益随时间变化。
-- correlation matrix：看资产间相关性。
+- correlation matrix：默认查看 Current Holdings；需要研究未持有资产时可显式切到 Full Universe。
 - current drift：看当前权重相对目标或分类的偏离。
 - risk contribution：看各资产或分组对组合风险的贡献。
 - benchmark：选择可用 benchmark 后比较风险曲线。
 
 风险结果依赖资产收益序列。缺少历史行情、日期不重叠或缺少 FX 时，结果可能为空或覆盖不足。
+
+Correlation Matrix 要求所有 scope members 使用完全一致的 period start/end 与日期序列。缺少成员、缺少日期、日期逆序、常数收益或窗口覆盖不足时，页面列出具体成员与日期并保持 unavailable；不会补 0，也不会用每对资产不同的日期拼出矩阵。
 
 ### 6.8 Taxonomies
 
@@ -308,13 +318,15 @@ TargetSet 的两个维度必须分开维护：
 - 不要为现金建立 `0%` risk target 占位行；
 - Research 在 risk-budget solve 完成后可以把 capital overlay 的剩余权重放入系统现金，但这是求解结果，不是现金风险目标。
 
-当前版本关于现金 risk 占位的实现偏差见上方提示；目标维护时仍以“现金无 Risk Target”为准。
-
 若 Research 报 scope 无成员、目标缺失或 top sleeve bounds 无法满足，通常要回到 Taxonomies 检查 assignment、TargetSet 和树结构。
+
+Assignment 的键盘提交只在编辑区域内使用 `Ctrl/Cmd + Enter`；Tab 保持浏览器正常焦点导航，裸 Enter 不执行全局 mutation。
 
 ### 6.9 Research
 
 Research 用于 target solve 和假设回测。它不改变真实持仓，结果用于研究和调仓建议。
+
+研究资产有三种 lifecycle：`Held` 是当前持仓，`Observed` 是研究池成员，`Former` 是历史持有但已退出。页面同时显示 research eligibility。Former instrument 如果得到正目标，必须由 PM 显式批准；未批准时 run 可保留研究结果，但 execution readiness 显示 `PM review required`，不得把它当成已批准调仓建议。
 
 运行前需要确认：
 
@@ -343,6 +355,8 @@ Research 用于 target solve 和假设回测。它不改变真实持仓，结果
 - relative metrics：组合相对 benchmark 的收益、波动和信息比率。
 
 Research 失败不会覆盖上一轮成功结果。失败后先看页面上的失败原因，再检查 Taxonomies、TargetSet、缺失收益政策、行情覆盖、benchmark 和 top sleeve bounds。不要为通过求解而随意放宽约束；约束应反映真实投资纪律。
+
+Research 列表默认只取 compact run summary；选择某一 run 后再加载完整结果。快速切换时以最后一次选择为准，旧请求不会覆盖新 run，加载期间也不会把上一 run 的明细误放到当前选择下。
 
 ## 7. 典型工作流
 

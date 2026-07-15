@@ -14,7 +14,6 @@ SUMMARY_FILE="$PROJECT_ROOT/var/market-data-refresh-summary.json"
 BACKEND_ROOT="$PROJECT_ROOT/apps/platform/backend"
 REFRESH_SCRIPT="$BACKEND_ROOT/scripts/refresh_market_data_scheduled.py"
 AUDIT_SCRIPT="$PROJECT_ROOT/infra/scripts/audit_live_data.py"
-DATABASE_URL="${PORTFOLIO_OPS_LOCAL_DATABASE_URL:-postgresql+psycopg://portfolio_ops:portfolio_ops@127.0.0.1:5432/portfolio_ops}"
 CHANNEL="${PORTFOLIO_OPS_LOCAL_REFRESH_CHANNEL:-all}"
 RETRY_FAILED_ATTEMPTS="${PORTFOLIO_OPS_LOCAL_REFRESH_RETRY_FAILED_ATTEMPTS:-2}"
 FAIL_ON_ITEM_FAILURE="${PORTFOLIO_OPS_LOCAL_REFRESH_FAIL_ON_ITEM_FAILURE:-true}"
@@ -23,6 +22,19 @@ source "$PROJECT_ROOT/infra/launchd/load_runtime_env.sh"
 portfolio_ops_reject_repository_env_files "$PROJECT_ROOT"
 ENV_FILE="$(portfolio_ops_runtime_env_file platform "$EXTERNAL_ENV_ROOT")"
 portfolio_ops_load_env_file "$ENV_FILE" PORTFOLIO_OPS_PLATFORM_
+
+DATABASE_URL="${PORTFOLIO_OPS_LOCAL_DATABASE_URL:-}"
+if [[ -z "$DATABASE_URL" ]]; then
+  echo "PORTFOLIO_OPS_LOCAL_DATABASE_URL is required for scheduled refresh." >&2
+  exit 64
+fi
+case "$DATABASE_URL" in
+  postgresql://*|postgresql+psycopg://*) ;;
+  *)
+    echo "PORTFOLIO_OPS_LOCAL_DATABASE_URL must use postgresql:// or postgresql+psycopg://." >&2
+    exit 64
+    ;;
+esac
 
 if [[ ! -x "$PYTHON_BIN" ]]; then
   echo "Python executable is missing: $PYTHON_BIN" >&2

@@ -7,7 +7,7 @@
 当前 app 已经包含：
 
 - `backend/`
-  FastAPI + SQLAlchemy + Alembic 的后端实现，默认目标数据库为 PostgreSQL
+  FastAPI + SQLAlchemy + Alembic 的后端实现，运行时目标是显式配置的 canonical PostgreSQL
 - `frontend/`
   React + Vite + TypeScript 的终端前端
 - `docs/`
@@ -55,6 +55,14 @@
 ### 1. 后端
 
 ```bash
+PROJECT_ROOT="$PWD"
+RUNTIME_ENV_ROOT="$HOME/.config/orataba/secrets/portfolio-operations-workbench"
+source "$PROJECT_ROOT/infra/launchd/load_runtime_env.sh"
+portfolio_ops_reject_repository_env_files "$PROJECT_ROOT"
+portfolio_ops_load_env_file \
+  "$(portfolio_ops_runtime_env_file watchlist "$RUNTIME_ENV_ROOT")" \
+  PORTFOLIO_OPS_WATCHLIST_
+: "${PORTFOLIO_OPS_WATCHLIST_DATABASE_URL:?external watchlist.env must set the canonical database URL}"
 cd apps/watchlist/backend
 python3 -m venv .venv
 source .venv/bin/activate
@@ -65,9 +73,9 @@ uvicorn watchlist_app.main:app --reload --host 127.0.0.1 --port 8000
 
 说明：
 
-- 运行时数据库连接以 `PORTFOLIO_OPS_WATCHLIST_DATABASE_URL` 为准；如迁移需要单独连接，可设置 `PORTFOLIO_OPS_WATCHLIST_ALEMBIC_DATABASE_URL`
+- 运行时必须由仓库外的 `watchlist.env` 显式设置 `PORTFOLIO_OPS_WATCHLIST_DATABASE_URL`，并与 Platform、Portfolio 指向同一个 canonical PostgreSQL；如迁移需要单独变量，`PORTFOLIO_OPS_WATCHLIST_ALEMBIC_DATABASE_URL` 必须保持同一目标
 - schema 以 `PORTFOLIO_OPS_WATCHLIST_DATABASE_SCHEMA` 为准
-- settings 默认值仍指向本地 PostgreSQL，但实际运行应以你当前 `.env` / shell 环境为准
+- backend 目录只保留 `.env.example` 键名模板，不创建 `.env` 文件或软链接；真实 secrets 只位于仓库外
 - 数据库结构只通过 `alembic upgrade head` 管理；如果要清空旧数据，使用仓库根目录的 `./infra/postgres/rebuild_local_schemas.sh`
 - FastAPI 根路径会重定向到前端 `watchlists`
 - backend 顶层包名现在是 `watchlist_app`
@@ -110,6 +118,7 @@ npm --prefix apps/watchlist/frontend run build
 - 示例基金标签值不再在 migration 或 add-to-watchlist 运行时自动注入；产品框架赋值只来自显式录入和后续真实数据链路
 - 后端主语已经统一到 `instrument`，当前只暴露 `/api/instruments/...` 明确接口；旧 `/api/funds/...` 兼容路由已移除
 - Instrument Detail 里的 canonical quote/NAV history 现在是只读视图；导入、编辑、刷新共享行情/净值要去 `Database Dashboard`，这里只保留本地 basis / benchmark 设置。派生层必须保留真实 `metric_family / quote_basis / role`，不能把 `close`、`official_nav`、`total_return_nav` 混成一个无来源的 NAV 字段。
+- canonical recalc 只消费 Registry 中 `status=complete`、currency 与 instrument master currency 一致的 quote/NAV，并严格使用 Registry `quote_selection_policy` 的顺序。Registry 无有效序列或缺 policy 时明确产出 unavailable；旧 Watchlist `nav_fact` 仅可审计读取，不再参与行情、收益、风险或图表计算。
 - Instrument Detail 的 benchmark 选择在 Quote / Performance / Risk 三个工作面共用同一状态；Performance matrix 和 Risk rolling charts 使用同一 benchmark calculation series，不再维护第二套 metric benchmark。Quote / Performance 图表在比较 benchmark 时只绘制双方重叠日期窗口，并按真实日期比例投影横轴，不按样本序号拉伸。Rolling risk chart 支持 1M / 3M / 6M / 12M / 24M / 36M 窗口；benchmark 曲线只在存在重叠 calculation series 时展示，不补齐缺失序列。
 - `return_ytd / return_mtd / return_1w / return_1m / return_1y / annualized_return / return_3y / return_5y / max_drawdown / current_drawdown / volatility / sharpe_ratio` 当前对 fund 与 index 都可见；普通 fund 默认用 `total_return_nav`，场内 ETF/指数按 `quote_selection_policy` 可用 `close`，read model 会记录实际选中的 quote basis。
 

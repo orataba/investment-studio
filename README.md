@@ -55,8 +55,8 @@ portfolio-operations-workbench/
   Watchlist app 的当前实现基线、启动方式和行为边界。
 - [apps/portfolio/README.md](./apps/portfolio/README.md)
   Portfolio app 的领域范围、启动方式和导入/校验说明。
-- [apps/portfolio/docs/03_OPTIMIZATION_HANDOFF.md](./apps/portfolio/docs/03_OPTIMIZATION_HANDOFF.md)
-  当前仅针对 `apps/portfolio` 的下一轮优化临时执行 handoff；Watchlist 不在本 handoff 范围内，完成后按文档内规则退役。
+- [apps/portfolio/docs/archive/2026-07-15_OPTIMIZATION_HANDOFF_COMPLETED.md](./apps/portfolio/docs/archive/2026-07-15_OPTIMIZATION_HANDOFF_COMPLETED.md)
+  已完成的 2026-07-15 Portfolio 优化轮次历史记录；当前口径以 canonical 计算、GIPS、设计和用户文档为准。
 
 ## 当前边界
 
@@ -84,7 +84,7 @@ portfolio-operations-workbench/
 
 ## 开发工作流
 
-以下命令默认从仓库根目录执行；如果你在其他目录，先进入自己的本地 clone。真实 backend `.env` 不进入 Git；本机统一从 `~/.config/orataba/secrets/portfolio-operations-workbench/` 提供。纯开发态可在各 backend 目录建立被 Git 忽略的 `.env` 软链接；macOS 后台服务只从外部秘密目录安全加载，安装前必须移除这些仓库内 `.env` 文件或链接。不要把密钥值粘贴到聊天、issue、PR 描述或提交信息里。
+以下命令默认从仓库根目录执行；如果你在其他目录，先进入自己的本地 clone。真实 backend `.env` 不进入仓库，也不要在 backend 目录建立文件或软链接；本机统一从 `~/.config/orataba/secrets/portfolio-operations-workbench/` 安全加载。不要把密钥值粘贴到 shell 命令、聊天、issue、PR 描述或提交信息里。
 
 ### 数据库
 
@@ -92,7 +92,10 @@ portfolio-operations-workbench/
 (cd infra/postgres && docker compose up -d)
 ```
 
-新电脑从零恢复时，优先按 [docs/NEW_MACHINE_RESTORE.md](./docs/NEW_MACHINE_RESTORE.md) 执行：先启动 PostgreSQL，再校验并 `pg_restore` `data/migration/` 里的当前项目级 dump。不要在恢复后运行 `./infra/postgres/rebuild_local_schemas.sh`，除非明确要清空恢复数据并重建空 schema。
+新电脑从零恢复时，优先按 [docs/NEW_MACHINE_RESTORE.md](./docs/NEW_MACHINE_RESTORE.md) 执行：先通过受控私有渠道取得项目级 dump 与校验文件，再把绝对路径显式交给恢复脚本。原始数据库备份不得进入 Git。不要在恢复后运行 `./infra/postgres/rebuild_local_schemas.sh`，除非明确要清空恢复数据并重建空 schema。
+
+下方数据库 URL 都故意不含密码；先通过交互方式配置当前用户权限为 `0600` 的
+`.pgpass`，不要把明文密码写进 URL 或 shell history。
 
 默认单库 schema 划分：
 
@@ -106,23 +109,27 @@ portfolio-operations-workbench/
 ### 后端迁移
 
 ```bash
-(cd infra/instrument_registry && alembic upgrade head)
-(cd apps/portfolio/backend && PYTHONPATH=. alembic upgrade head)
-(cd apps/watchlist/backend && PYTHONPATH=. alembic upgrade head)
+ENV_ROOT="$HOME/.config/orataba/secrets/portfolio-operations-workbench" \
+  infra/scripts/migrate_all.sh
 ```
 
 说明：
 
+- 统一迁移入口只读取显式进程环境或上述仓库外目录中的
+  `platform.env / portfolio.env / watchlist.env`；Platform、Instrument Registry、Portfolio、Watchlist 的 database URL 必须显式存在并指向同一个 canonical PostgreSQL。
 - `instrument_registry` schema 由 `infra/instrument_registry` 统一管理。
 - `platform` backend 直接使用这套共享表，但不再拥有 instrument registry schema 的迁移入口。
 
 如果本地库已经跑脏或迁移链断过，直接执行：
 
 ```bash
-./infra/postgres/rebuild_local_schemas.sh
+PORTFOLIO_OPS_LOCAL_DATABASE_URL='postgresql://portfolio_ops@127.0.0.1:5432/portfolio_ops' \
+  ./infra/postgres/rebuild_local_schemas.sh --confirm-destroy-project-schemas
 ```
 
-这个脚本会销毁并重建 `instrument_registry / portfolio / watchlist` 三个 schema。
+这个脚本会销毁并重建 `instrument_registry / portfolio / watchlist` 三个 schema；必须
+显式给出目标 URL 与破坏性确认 flag。它会把同一 URL 交给 `psql` 和三条 migration
+chain，并在破坏性阶段失败时保持托管服务停止。
 
 重建完成后：
 
@@ -164,8 +171,13 @@ npm --prefix apps/watchlist/frontend run build
 常驻服务及每日 `21:00` 刷新/重算任务的安装或更新：
 
 ```bash
-infra/launchd/install_local_services.sh
+PORTFOLIO_OPS_LOCAL_DATABASE_URL='postgresql+psycopg://portfolio_ops@127.0.0.1:5432/portfolio_ops' \
+  infra/launchd/install_local_services.sh
 ```
+
+安装器要求数据库与角色已经存在。它会在迁移前停服并创建可校验的项目 schema
+备份；迁移、构建、plist 安装或健康检查失败时先回滚数据库和旧 plist，再恢复原服务，
+回滚失败则保持全部托管服务停止。
 
 安装后从 `http://127.0.0.1:5172` 进入 Platform；详细状态、日志和卸载命令见
 [docs/LOCAL_MACOS_SERVICE.md](./docs/LOCAL_MACOS_SERVICE.md)。
@@ -173,8 +185,8 @@ infra/launchd/install_local_services.sh
 ## 仓库卫生
 
 - `nav/` 是冻结迁移要保留的 NAV 附件图片数据，已纳入 Git；后续新增大批量原始材料前先确认是否应进入仓库。
-- `data/migration/` 存放可恢复的当前项目级数据库 dump 与校验文件；dump 只覆盖 `instrument_registry`、`portfolio`、`watchlist`，不要把 raw PostgreSQL data directory 或其他项目的共享基础库数据放进 Git。
-- `apps/platform/backend/.env`、`apps/watchlist/backend/.env`、`apps/portfolio/backend/.env` 是本机秘密配置，必须保持 Git ignored；仓库只保留 `.env.example`，真实值放在 `~/.config/orataba/secrets/portfolio-operations-workbench/`。
+- `data/migration/` 只记录恢复制品政策；真实 dump 与校验文件必须保存在 Git 外的加密、受控存储中，且 dump 只允许覆盖 `instrument_registry`、`portfolio`、`watchlist`。
+- 三个 backend 目录只保留 `.env.example` 作为键名模板，不创建 `.env` 文件或软链接；真实 secrets 位于仓库外的 `~/.config/orataba/secrets/portfolio-operations-workbench/`，运行时必须显式提供指向同一 PostgreSQL 的 canonical database URL。
 - `node_modules/`、`dist/`、`*.db`、`*.sqlite*`、`__pycache__/`、`.pytest_cache/` 都是本地产物，不应进入提交。
 - `.local-pg/`、`ref/`、虚拟环境和用户级 `systemd --user` unit 都是本机状态，不作为跨机器 Git 迁移载体；`.env.example` 模板仍保留在 Git 里用于说明配置项。
 - 提交前至少跑一次三个后端测试和三个前端 build；PostgreSQL cross-schema 行为按需补跑 [docs/DATABASE_WORKFLOW.md](./docs/DATABASE_WORKFLOW.md) 里的 integration tests。

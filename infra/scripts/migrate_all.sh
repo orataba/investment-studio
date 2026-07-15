@@ -48,7 +48,7 @@ load_env_file() {
     fi
 
     # Values that are already present in the process environment are an
-    # explicit caller decision.  Never let a repository-local .env file
+    # explicit caller decision. Never let an optional external env file
     # redirect a release migration to a different database.
     if [[ ${!key+x} ]]; then
       continue
@@ -67,22 +67,22 @@ load_env_file() {
   done < "$env_file"
 }
 
-for app in platform portfolio watchlist; do
-  if [[ -n "$ENV_ROOT" ]]; then
+if [[ -n "$ENV_ROOT" ]]; then
+  for app in platform portfolio watchlist; do
     load_env_file "$ENV_ROOT/$app.env" true
-  else
-    load_env_file "$PROJECT_ROOT/apps/$app/backend/.env" false
-  fi
-done
+  done
+fi
 
-if [[ -z "${PORTFOLIO_OPS_INSTRUMENT_REGISTRY_DATABASE_URL:-}" ]]; then
-  if [[ -z "${PORTFOLIO_OPS_PLATFORM_DATABASE_URL:-}" ]]; then
-    echo "Set PORTFOLIO_OPS_INSTRUMENT_REGISTRY_DATABASE_URL or PORTFOLIO_OPS_PLATFORM_DATABASE_URL." >&2
+for required_database_variable in \
+  PORTFOLIO_OPS_INSTRUMENT_REGISTRY_DATABASE_URL \
+  PORTFOLIO_OPS_PORTFOLIO_DATABASE_URL \
+  PORTFOLIO_OPS_WATCHLIST_DATABASE_URL; do
+  if [[ -z "${!required_database_variable:-}" ]]; then
+    echo "Set $required_database_variable explicitly before running migrations." >&2
     exit 1
   fi
-  export PORTFOLIO_OPS_INSTRUMENT_REGISTRY_DATABASE_URL="$PORTFOLIO_OPS_PLATFORM_DATABASE_URL"
-fi
-export PORTFOLIO_OPS_INSTRUMENT_REGISTRY_SCHEMA="${PORTFOLIO_OPS_INSTRUMENT_REGISTRY_SCHEMA:-${PORTFOLIO_OPS_PLATFORM_DATABASE_SCHEMA:-instrument_registry}}"
+done
+export PORTFOLIO_OPS_INSTRUMENT_REGISTRY_SCHEMA="${PORTFOLIO_OPS_INSTRUMENT_REGISTRY_SCHEMA:-instrument_registry}"
 
 run_migration() {
   local label="$1"

@@ -4,6 +4,8 @@
 
 > Security update (2026-07-10): the three real backend `.env` files were removed from the current tree and all reachable Git history. Statements below that describe committed secrets are superseded by this note. Git keeps only `.env.example`; real values live in a machine-local protected secret store.
 
+> Data-security update (2026-07-15): the unencrypted database dump and checksum described below were retired from the current tree and moved to restricted external storage. The commands below are historical and must not be used as current restore instructions. Earlier Git objects still require a coordinated repository-history purge; until that happens, access to repository history must be treated as access to the retired business-data snapshot.
+
 Freeze date: 2026-07-09
 
 This repository is the durable project handoff for moving `Portfolio Operations Workbench` from WSL to macOS. Git carries code, docs, migration-safe data, configuration templates, and reproducible setup notes. Secrets and machine-local runtime state stay out of Git and must be restored separately.
@@ -97,7 +99,7 @@ before the jobs are restarted. The retained backup path is printed at the end.
 Check that the restored schemas are populated:
 
 ```bash
-PGPASSWORD=portfolio_ops psql -h 127.0.0.1 -U portfolio_ops -d portfolio_ops -c "
+psql -h 127.0.0.1 -U portfolio_ops -d portfolio_ops -c "
 select 'instrument_registry.instrument' as table_name, count(*) from instrument_registry.instrument
 union all
 select 'portfolio.portfolio_record', count(*) from portfolio.portfolio_record

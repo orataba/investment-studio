@@ -12,7 +12,6 @@ PYTHON_BIN="${PYTHON_BIN:-$DEFAULT_PYTHON_BIN}"
 UNIT_NAME="${UNIT_NAME:-portfolio-ops-market-data-refresh}"
 ON_CALENDAR="${ON_CALENDAR:-*-*-* 21:00 Asia/Shanghai}"
 ENV_ROOT="${ENV_ROOT:-}"
-ENV_FILE="${ENV_FILE:-}"
 STATE_DIR="${STATE_DIR:-$HOME/.local/state/portfolio-ops}"
 LOG_DIR="${LOG_DIR:-$STATE_DIR/logs}"
 LOG_FILE="${LOG_FILE:-$LOG_DIR/market-data-refresh.log}"
@@ -39,6 +38,53 @@ if [[ ! -f "$BACKEND_ROOT/scripts/refresh_market_data_scheduled.py" ]]; then
   echo "Cannot find refresh script under BACKEND_ROOT: $BACKEND_ROOT" >&2
   exit 1
 fi
+
+RUNTIME_ENV_HELPER="$PROJECT_ROOT/infra/launchd/load_runtime_env.sh"
+if [[ ! -f "$RUNTIME_ENV_HELPER" ]]; then
+  echo "Cannot find runtime environment helper: $RUNTIME_ENV_HELPER" >&2
+  exit 1
+fi
+source "$RUNTIME_ENV_HELPER"
+if [[ -z "$ENV_ROOT" ]]; then
+  echo "ENV_ROOT must explicitly name the external runtime environment directory." >&2
+  exit 64
+fi
+portfolio_ops_reject_repository_env_files "$PROJECT_ROOT"
+ENV_ROOT="$(portfolio_ops_resolve_external_env_root "$PROJECT_ROOT" "$ENV_ROOT")"
+ENV_FILE="$ENV_ROOT/platform.env"
+portfolio_ops_validate_env_file \
+  "$ENV_FILE" \
+  PORTFOLIO_OPS_PLATFORM_ \
+  PORTFOLIO_OPS_INSTRUMENT_REGISTRY_
+(
+  unset PORTFOLIO_OPS_PLATFORM_DATABASE_URL
+  portfolio_ops_load_env_file \
+    "$ENV_FILE" \
+    PORTFOLIO_OPS_PLATFORM_ \
+    PORTFOLIO_OPS_INSTRUMENT_REGISTRY_
+  if [[ -z "${PORTFOLIO_OPS_PLATFORM_DATABASE_URL:-}" ]]; then
+    echo "External platform environment is missing PORTFOLIO_OPS_PLATFORM_DATABASE_URL." >&2
+    exit 1
+  fi
+  PORTFOLIO_OPS_RUNTIME_DATABASE_URL="$PORTFOLIO_OPS_PLATFORM_DATABASE_URL" \
+    "$PYTHON_BIN" - <<'PY'
+from __future__ import annotations
+
+import os
+from urllib.parse import parse_qs, urlsplit
+
+raw_value = os.environ.pop("PORTFOLIO_OPS_RUNTIME_DATABASE_URL").strip()
+normalized = raw_value.replace("postgresql+psycopg://", "postgresql://", 1)
+parsed = urlsplit(normalized)
+query = parse_qs(parsed.query, keep_blank_values=True)
+if parsed.scheme != "postgresql" or not parsed.username or not parsed.path.removeprefix("/"):
+    raise SystemExit("PORTFOLIO_OPS_PLATFORM_DATABASE_URL must be an explicit PostgreSQL URL.")
+if parsed.password is not None or query.get("password"):
+    raise SystemExit(
+        "PORTFOLIO_OPS_PLATFORM_DATABASE_URL must not contain a password; use a 0600 passfile."
+    )
+PY
+)
 if [[ ! "$RETRY_FAILED_ATTEMPTS" =~ ^[0-9]+$ ]]; then
   echo "RETRY_FAILED_ATTEMPTS must be a non-negative integer: $RETRY_FAILED_ATTEMPTS" >&2
   exit 64
@@ -50,15 +96,6 @@ for boolean_name in FAIL_ON_ITEM_FAILURE REQUIRE_DOWNSTREAM_SUCCESS RESTART_ON_F
     exit 64
   fi
 done
-
-if [[ -z "$ENV_FILE" && -n "$ENV_ROOT" ]]; then
-  ENV_FILE="$ENV_ROOT/platform.env"
-fi
-
-if [[ -n "$ENV_FILE" && ! -f "$ENV_FILE" ]]; then
-  echo "ENV_FILE does not exist: $ENV_FILE" >&2
-  exit 1
-fi
 
 PROJECT_INSTRUMENT_CORE="$PROJECT_ROOT/packages/instrument-core/python"
 PYTHONPATH_VALUE="$BACKEND_ROOT"
@@ -93,10 +130,7 @@ restart_policy="no"
 if [[ "$RESTART_ON_FAILURE" == "true" ]]; then
   restart_policy="on-failure"
 fi
-environment_file_line=""
-if [[ -n "$ENV_FILE" ]]; then
-  environment_file_line="EnvironmentFile=$(printf '%q' "$ENV_FILE")"
-fi
+environment_file_line="EnvironmentFile=$(printf '%q' "$ENV_FILE")"
 
 cat > "$SERVICE_FILE" <<EOF
 [Unit]

@@ -50,9 +50,14 @@ printf '%s\n' \
   > "$REFRESH_SCRIPT"
 
 printf '%s\n' \
+  'import json' \
   'from pathlib import Path' \
   'import os' \
-  'Path(os.environ["AUDIT_CAPTURE_PATH"]).write_text("ok", encoding="utf-8")' \
+  'import sys' \
+  'Path(os.environ["AUDIT_CAPTURE_PATH"]).write_text(json.dumps({' \
+  '    "argv": sys.argv[1:],' \
+  '    "database_url": os.environ.get("PORTFOLIO_OPS_PLATFORM_DATABASE_URL"),' \
+  '}), encoding="utf-8")' \
   > "$AUDIT_SCRIPT"
 
 export CAPTURE_PATH
@@ -78,6 +83,10 @@ from pathlib import Path
 
 payload = json.loads(Path(os.environ["CAPTURE_PATH"]).read_text(encoding="utf-8"))
 arguments = payload["argv"]
+audit_payload = json.loads(
+    Path(os.environ["AUDIT_CAPTURE_PATH"]).read_text(encoding="utf-8")
+)
+audit_arguments = audit_payload["argv"]
 assert arguments[arguments.index("--channel") + 1] == "all"
 assert arguments[arguments.index("--updated-by") + 1] == "launchd-scheduler"
 assert arguments[arguments.index("--retry-failed-attempts") + 1] == "2"
@@ -96,12 +105,31 @@ assert payload["portfolio_api_url"] == "http://127.0.0.1:8001"
 assert payload["tushare_token"] == "test-token-loaded"
 assert payload["email_sync_enabled"] == "true"
 assert payload["email_password"].startswith("$(touch ")
+assert audit_payload["database_url"] == "postgresql+psycopg://explicit/local"
+assert "--database-url" not in audit_arguments
+assert "postgresql+psycopg://explicit/local" not in audit_arguments
+assert "--json" in audit_arguments
 normalized_project_root = os.path.normpath(os.environ["PROJECT_ROOT"])
 assert payload["pythonpath"] == (
     f"{normalized_project_root}/apps/platform/backend:"
     f"{normalized_project_root}/packages/instrument-core/python"
 )
 PY
+
+set +e
+env \
+  -u PORTFOLIO_OPS_LOCAL_DATABASE_URL \
+  PORTFOLIO_OPS_PLATFORM_DATABASE_URL=postgresql+psycopg://must-not-be-used/other \
+  "$REPOSITORY_ROOT/infra/launchd/run_market_data_refresh.sh" \
+  "$PROJECT_ROOT" "$(command -v python3)" "$LOCK_PATH" "$ENV_ROOT" \
+  > "$TEST_ROOT/missing-database-url.out" 2>&1
+missing_database_url_status=$?
+set -e
+if [[ $missing_database_url_status -eq 0 ]]; then
+  echo "The scheduled runner accepted a missing database URL." >&2
+  exit 1
+fi
+grep -q 'PORTFOLIO_OPS_LOCAL_DATABASE_URL is required' "$TEST_ROOT/missing-database-url.out"
 
 mkdir -p "$PROJECT_ROOT/apps/watchlist/backend"
 ln -s "$TEST_ROOT/missing-watchlist-env" "$PROJECT_ROOT/apps/watchlist/backend/.env"

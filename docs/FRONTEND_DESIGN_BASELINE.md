@@ -36,6 +36,7 @@
 ## UI Copy
 
 - Loading 状态统一显示 `Loading`，不解释正在加载哪些资源或计算链路。
+- 页面首载与 detail 子资源加载使用 skeleton 并设置 `aria-busy`; 未返回事实前不得用 `$0.00`、`0.00%` 或空图伪装已加载结果。刷新可以保留上一份已确认数据，但较旧请求不得覆盖较新选择；
 - 空态使用短句，例如 `No data.`、`No rows.`、`No holdings.`；只有会阻塞用户决策的状态才展示更具体原因。
 - 选项、modal、表格视图和字段选择器默认只显示名称；不展示解释性小字、备注提示或长 tooltip，除非缺少它会导致错误操作。
 - 错误、校验失败、不可用原因可以保留，但必须是可执行或可诊断的信息。
@@ -48,6 +49,10 @@
 - Weight Target / Current Drift 可以展示现金资本权重；Risk Target Gap 完全排除现金。若同一布局为上下文保留现金行，Risk Target 单元格显示 `— / N/A`，不能显示可配置的 `0.00%`。
 - Performance 主页面保留 scorecard、风险摘要、区间图和 Calculation attribution。逐日计算审计、publication lineage、rounding trace 等内部诊断不得作为主页面常驻内容；必要时进入受控 drilldown、日志或开发诊断面。
 - Overview、Holdings、Performance、Risk、Taxonomies、Research 等成熟页面发生结构或指标改动时，必须有真实渲染的 DOM/browser contract test；只读取 TSX 源码并做字符串断言不能作为页面回归保护。
+- Holdings 的 `Portfolio Total` 是当前持仓状态合计，不是 portfolio TWR。总行的 instrument trend return 默认显示 `—`，并通过 title 指向 Performance TWR；若未来展示 current-weight blended instrument return，必须显式命名并携带 coverage；
+- Performance 的 Latest / Reset 与 MTD / QTD / YTD / 1Y / SI 是同一期间选择器的便捷入口；summary、chart、Calculation 和 Groups 必须共享同一个 resolved window，不能各自解释日期；
+- Overview 的质量提示只在检测到真实问题时出现，并包含受影响对象/日期及可执行修复方向；不显示没有事实依据的通用 corporate-action 警告；
+- Research 列表区分 `Held / Observed / Former` 与 eligibility。Former instrument 的正目标在未经 PM approval 时必须显示人工复核状态，不能作为普通已批准建议。
 
 ## Tabs And Content Rhythm
 
@@ -61,6 +66,7 @@
 - Portfolio overview 主图使用 `Portfolio Value / TWR Index` 口径；drawdown 是主图下方的附属区，并固定基于 TWR，不和资产规模曲线混为同级。
 - 组合价值、fund quote、performance、risk 等图表优先保持可扫读，不使用渐变背景或装饰性卡片。
 - Benchmark 对比曲线只在双方有重叠日期窗口时展示；图表横轴按真实日期比例定位，不把缺口期压缩成等距样本。
+- Risk correlation 默认 scope 为 `Current Holdings`，`Full Universe` 是显式可选分析。矩阵只在成员、period start/end、日期顺序与完整窗口全部一致时渲染；常数序列、缺成员或缺日期显示结构化 unavailable reason，不能 zero-fill 或 pairwise fallback；
 - 数据 palette 避免棕色、橙色、米黄色作为主视觉；必要的警示含义用文字色或边框表达。
 
 ## Data Tables
@@ -68,6 +74,8 @@
 - 宽表的首列如果承载主要对象名称，应在横向滚动时冻结；冻结列需要显式背景和右侧细线，避免透出后方单元格。
 - 被锁定的对象名称列不应在 column picker 中再次作为普通 checkbox 字段出现；列配置应用前必须去重并保留锁定列顺序。
 - 短列名优先，例如 `YTD`、`1M VOL`、`3M VOL`；缺少窗口锚点等不可用原因放在 hover title 或诊断状态里，不拉长表头。
+- Holdings 与 Research 的列表请求默认返回 compact rows。图表 sparkline 只保留有界采样点，重型 return/detail arrays 通过显式 detail 请求懒加载；切换选中项不得把旧 detail 短暂显示到新对象上。
+- Taxonomies 不得注册全局 Tab 或裸 Enter mutation。键盘变更只在对应编辑 scope 获得焦点时生效，并使用 `Ctrl/Cmd + Enter` 等带 modifier 的提交组合；浏览器和辅助技术的默认 Tab 导航必须保留。
 
 ## Shared UI Boundary
 
