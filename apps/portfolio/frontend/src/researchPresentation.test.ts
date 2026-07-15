@@ -9,11 +9,13 @@ describe('research result presentation', () => {
     expect(researchPageSource).not.toContain('<th>Forward RC</th>')
   })
 
-  it('does not present stale runs or zero-target current holdings as executable', () => {
+  it('does not present stale runs or manual-review targets as executable', () => {
     expect(researchPageSource).toContain('Historical result — not current or execution-ready.')
     expect(researchPageSource).toContain(
-      'A 0% solved target for a currently held instrument is not an executable liquidation instruction.',
+      'Review each flagged target and its execution note before translating the solved result into orders.',
     )
+    expect(researchPageSource).toContain('Research Eligibility')
+    expect(researchPageSource).toContain('PM review required')
     expect(researchPageSource).toContain("row.execution_status === 'manual_review_required'")
   })
 })

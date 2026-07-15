@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type ReactNode } from 'react'
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react'
 import { useParams, useSearchParams } from 'react-router-dom'
 
 import BenchmarkSearchBox, { benchmarkInstrumentLabel } from '../components/BenchmarkSearchBox'
@@ -25,8 +25,6 @@ import {
   type PortfolioContributionAxis,
   type PortfolioDailyPerformancePoint,
   type PortfolioPerformanceCalculationGroupsResponse,
-  type PortfolioPerformanceCalculationResponse,
-  type PortfolioPerformanceResponse,
   type PortfolioPerformanceSummary,
   type PortfolioWorkspaceSummary,
   type SharedInstrumentRecord,
@@ -40,8 +38,25 @@ import {
   formatSignedCurrency,
   signedValueClass,
 } from '../lib/format'
+import {
+  assessBenchmarkComparisonGuard,
+  normalizeBenchmarkCurrency,
+} from '../lib/benchmarkComparisonGuard'
 import { buildPerformanceHistoryReliability } from '../lib/performanceHistoryReliability'
-import { assessPerformanceBenchmarkBasis } from '../lib/performanceBenchmarkBasis'
+import usePerformanceResource from '../hooks/usePerformanceResource'
+import {
+  buildPerformanceWindowFilters,
+  localDateIso,
+  normalizePerformanceWindowSelection,
+  PERFORMANCE_PERIOD_PRESETS,
+  performancePresetStartDate,
+  resolvePerformanceWindow,
+  shiftIsoDate,
+  validIsoDate,
+  type PerformancePeriodPreset,
+  type PerformanceWindowMode,
+  type PerformanceWindowSelection,
+} from '../lib/performanceWindow'
 import {
   realizedRiskContributionResidual,
   realizedRiskMetricsAvailable,
@@ -119,6 +134,7 @@ type CalculationColumnKey =
   | 'fees'
   | 'taxes'
   | 'fx_pnl'
+  | 'pending_settlement_fx'
   | 'period_return'
   | 'return_contribution'
   | 'own_vol'
@@ -146,11 +162,6 @@ type CalculationTableView = PortfolioTableViewOption & {
 type CalculationTableViewStore = {
   activeViewId: string
   views: CalculationTableView[]
-}
-
-type PerformanceWindowSelection = {
-  startDate: string
-  endDate: string
 }
 
 type CalculationSyntheticRowKind =
@@ -185,7 +196,6 @@ type CalculationTableRow =
 
 const LOCKED_CALCULATION_COLUMN: CalculationColumnKey = 'line'
 const PERFORMANCE_WINDOW_STORAGE_KEY = 'portfolio_ops.portfolio.performance.window.v1'
-const CALCULATION_TABLE_VIEWS_STORAGE_KEY = 'portfolio_ops.portfolio.performance.calculation.views.v1'
 
 const RISK_ATTRIBUTION_COLUMNS: CalculationColumnKey[] = [
   'line',
@@ -215,6 +225,7 @@ const FULL_CALCULATION_COLUMNS: CalculationColumnKey[] = [
   'fees',
   'taxes',
   'fx_pnl',
+  'pending_settlement_fx',
   'period_return',
   'return_contribution',
 ]
@@ -233,6 +244,7 @@ const CALCULATION_COLUMN_GROUPS: Array<{ label: string; columns: CalculationColu
       'fees',
       'taxes',
       'fx_pnl',
+      'pending_settlement_fx',
     ],
   },
   {
@@ -250,6 +262,7 @@ const SIGNED_CALCULATION_COLUMN_KEYS = new Set<CalculationColumnKey>([
   'fees',
   'taxes',
   'fx_pnl',
+  'pending_settlement_fx',
   'period_return',
   'return_contribution',
   'own_corr',
@@ -271,6 +284,7 @@ const CALCULATION_COLUMN_LABELS: Record<CalculationColumnKey, string> = {
   fees: 'Fees',
   taxes: 'Taxes',
   fx_pnl: 'FX P&L',
+  pending_settlement_fx: 'Pending Settlement Monetary FX',
   period_return: 'Period Return',
   return_contribution: 'Return Contribution',
   own_vol: 'Vol',
@@ -324,6 +338,7 @@ const SYSTEM_CALCULATION_TABLE_VIEWS: CalculationTableView[] = [
         'fees',
         'taxes',
         'fx_pnl',
+        'pending_settlement_fx',
         'return_contribution',
       ],
       mode: 'calculation',
@@ -334,34 +349,6 @@ const SYSTEM_CALCULATION_TABLE_VIEWS: CalculationTableView[] = [
   },
 ]
 const SYSTEM_CALCULATION_TABLE_VIEW_IDS = new Set(SYSTEM_CALCULATION_TABLE_VIEWS.map((view) => view.id))
-
-function localDateIso(input = new Date()) {
-  const year = input.getFullYear()
-  const month = `${input.getMonth() + 1}`.padStart(2, '0')
-  const day = `${input.getDate()}`.padStart(2, '0')
-  return `${year}-${month}-${day}`
-}
-
-function shiftIsoDate(isoDate: string, days: number) {
-  const [year, month, day] = isoDate.split('-').map(Number)
-  const nextDate = new Date(year, (month || 1) - 1, day || 1)
-  nextDate.setDate(nextDate.getDate() + days)
-  return localDateIso(nextDate)
-}
-
-function validIsoDate(value: string | null | undefined) {
-  return typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value) ? value : ''
-}
-
-function normalizePerformanceWindowSelection(value: unknown): PerformanceWindowSelection | null {
-  if (!value || typeof value !== 'object') {
-    return null
-  }
-  const record = value as { startDate?: unknown; endDate?: unknown }
-  const startDate = typeof record.startDate === 'string' ? validIsoDate(record.startDate) : ''
-  const endDate = typeof record.endDate === 'string' ? validIsoDate(record.endDate) : ''
-  return startDate || endDate ? { startDate, endDate } : null
-}
 
 function loadPerformanceWindowStore() {
   const store: Record<string, PerformanceWindowSelection> = {}
@@ -393,13 +380,18 @@ function loadPerformanceWindowSelection(portfolioId: string) {
   return loadPerformanceWindowStore()[portfolioId] ?? null
 }
 
-function savePerformanceWindowSelection(portfolioId: string, startDate: string | null, endDate: string | null) {
+function savePerformanceWindowSelection(
+  portfolioId: string,
+  startDate: string | null,
+  endDate: string | null,
+  mode: PerformanceWindowMode = 'dates',
+) {
   if (typeof window === 'undefined') {
     return
   }
   try {
     const store = loadPerformanceWindowStore()
-    const selection = normalizePerformanceWindowSelection({ startDate, endDate })
+    const selection = normalizePerformanceWindowSelection({ startDate, endDate, mode })
     if (selection) {
       store[portfolioId] = selection
     } else {
@@ -427,10 +419,6 @@ function signedPercent(value: number | null | undefined, digits = 2) {
 
 function finiteNumber(value: number | null | undefined) {
   return typeof value === 'number' && Number.isFinite(value) ? value : null
-}
-
-function normalizedCurrency(value: string | null | undefined) {
-  return String(value ?? '').trim().toUpperCase()
 }
 
 function csvNumber(value: number | null | undefined) {
@@ -489,6 +477,8 @@ function calculationDisplayMetricValue(source: CalculationDisplayRow, column: Ca
       return finiteNumber(expenseImpact(source.taxes))
     case 'fx_pnl':
       return finiteNumber(fxPnlAmount(source))
+    case 'pending_settlement_fx':
+      return finiteNumber(source.pending_settlement_currency_gains)
     case 'period_return':
       return finiteNumber(source.period_return)
     case 'return_contribution':
@@ -735,13 +725,9 @@ function normalizeCalculationTableViewStore(value: unknown): CalculationTableVie
     const storedView = storedViewById.get(defaultView.id)
     return storedView ? { ...storedView, readonly: true } : defaultView
   })
-  const customViews = storedViews
-    ? storedViews.filter((view) => !SYSTEM_CALCULATION_TABLE_VIEW_IDS.has(view.id)).map((view) => ({ ...view, readonly: false }))
-    : Array.isArray((record as { customViews?: unknown }).customViews)
-      ? ((record as { customViews: unknown[] }).customViews)
-          .map((view) => normalizeCalculationTableView(view, false))
-          .filter((view): view is CalculationTableView => Boolean(view))
-      : []
+  const customViews = (storedViews || [])
+    .filter((view) => !SYSTEM_CALCULATION_TABLE_VIEW_IDS.has(view.id))
+    .map((view) => ({ ...view, readonly: false }))
   const views = [...systemViews, ...customViews]
   const knownViewIds = new Set(views.map((view) => view.id))
   const activeViewId =
@@ -751,34 +737,8 @@ function normalizeCalculationTableViewStore(value: unknown): CalculationTableVie
   return { activeViewId, views }
 }
 
-function loadCalculationTableViewStore(): CalculationTableViewStore {
-  if (typeof window === 'undefined') {
-    return normalizeCalculationTableViewStore(null)
-  }
-  try {
-    const rawValue = window.localStorage.getItem(CALCULATION_TABLE_VIEWS_STORAGE_KEY)
-    if (rawValue) {
-      return normalizeCalculationTableViewStore(JSON.parse(rawValue))
-    }
-  } catch {
-    return normalizeCalculationTableViewStore(null)
-  }
-  return normalizeCalculationTableViewStore(null)
-}
-
-function saveCalculationTableViewStore(store: CalculationTableViewStore) {
-  if (typeof window === 'undefined') {
-    return
-  }
-  try {
-    window.localStorage.setItem(CALCULATION_TABLE_VIEWS_STORAGE_KEY, JSON.stringify(store))
-  } catch {
-    return
-  }
-}
-
 function getCalculationTableViews(store: CalculationTableViewStore) {
-  return store.views.length ? store.views : SYSTEM_CALCULATION_TABLE_VIEWS
+  return store.views
 }
 
 function getCalculationTableViewById(store: CalculationTableViewStore, viewId: string) {
@@ -1165,6 +1125,27 @@ function benchmarkMetricClassName(
   return selected && !loading ? signedValueClass(value) : undefined
 }
 
+function performanceUnavailableReason(reason: string | null | undefined) {
+  switch (reason) {
+    case 'multiple_roots_or_non_unique':
+      return 'Multiple or non-unique XIRR roots'
+    case 'invalid_cash_flows':
+      return 'Invalid cash-flow pattern'
+    case 'no_root':
+      return 'No valid XIRR root'
+    case 'return_coverage_incomplete':
+      return 'Return coverage is incomplete'
+    case 'cash_flow_window_unavailable':
+      return 'Cash-flow window is unavailable'
+    case 'risk_observation_frequency_unavailable':
+      return 'Risk observation frequency is unavailable'
+    case 'risk_metric_calculation_unavailable':
+      return 'Risk calculation is unavailable'
+    default:
+      return reason ? reason.replace(/_/g, ' ') : null
+  }
+}
+
 function buildPerformanceMetricRows(
   summary: PortfolioPerformanceSummary,
   dailySeries: PortfolioDailyPerformancePoint[],
@@ -1178,6 +1159,17 @@ function buildPerformanceMetricRows(
   const relativeMetrics = buildRelativePerformanceMetrics(dailySeries, benchmarkMetrics)
   const showComparison = selectedBenchmarkInstrument != null || benchmarkLoading
   const irr = finiteNumber(summary.irr) ?? finiteNumber(summary.mwror)
+  const irrReliabilityNote = !annualizedReturnEligible
+    ? 'Requires ≥ 1 year'
+    : irr == null
+      ? performanceUnavailableReason(summary.irr_unavailable_reason) ?? 'IRR / MWRR unavailable'
+      : undefined
+  const riskReliabilityNote =
+    summary.risk_result_status === 'available'
+      ? undefined
+      : summary.risk_unavailable_reason === 'insufficient_return_samples'
+        ? `Requires ≥ ${summary.risk_minimum_sample_count} ${summary.risk_calculation_frequency} return samples (${summary.risk_sample_count} available)`
+        : performanceUnavailableReason(summary.risk_unavailable_reason) ?? 'Risk metrics unavailable'
   const calmarRatio = annualizedReturnEligible
     ? ratioToDrawdown(summary.annualized_twr, summary.max_drawdown)
     : null
@@ -1252,9 +1244,10 @@ function buildPerformanceMetricRows(
     },
     {
       metric: 'IRR / MWRR',
-      value: annualizedReturnEligible ? signedPercent(irr) : 'N/A',
-      valueClassName: annualizedReturnEligible ? signedValueClass(irr) : 'performance-cell-muted',
-      reliabilityNote: annualizedReturnEligible ? undefined : 'Requires ≥ 1 year',
+      value: annualizedReturnEligible && irr != null ? signedPercent(irr) : 'N/A',
+      valueClassName:
+        annualizedReturnEligible && irr != null ? signedValueClass(irr) : 'performance-cell-muted',
+      reliabilityNote: irrReliabilityNote,
     },
     {
       metric: 'Total P&L',
@@ -1289,6 +1282,7 @@ function buildPerformanceMetricRows(
     {
       metric: 'Volatility',
       value: formatPercent(summary.annualized_volatility),
+      reliabilityNote: riskReliabilityNote,
       benchmark: benchmarkMetricText(
         selectedBenchmarkInstrument,
         benchmarkLoading,
@@ -1303,6 +1297,7 @@ function buildPerformanceMetricRows(
     {
       metric: 'Downside Volatility',
       value: formatPercent(summary.annualized_downside_volatility),
+      reliabilityNote: riskReliabilityNote,
       benchmark: benchmarkMetricText(
         selectedBenchmarkInstrument,
         benchmarkLoading,
@@ -1320,6 +1315,7 @@ function buildPerformanceMetricRows(
     {
       metric: 'Sharpe Ratio',
       value: formatRatio(summary.sharpe_ratio),
+      reliabilityNote: riskReliabilityNote,
       benchmark: benchmarkMetricText(selectedBenchmarkInstrument, benchmarkLoading, benchmarkMetrics?.sharpe, formatRatio),
       difference: benchmarkMetricText(selectedBenchmarkInstrument, benchmarkLoading, sharpeDifference, signedRatio),
       differenceClassName: benchmarkMetricClassName(selectedBenchmarkInstrument, benchmarkLoading, sharpeDifference),
@@ -1328,6 +1324,7 @@ function buildPerformanceMetricRows(
     {
       metric: 'Sortino Ratio',
       value: formatRatio(summary.sortino_ratio),
+      reliabilityNote: riskReliabilityNote,
       benchmark: benchmarkMetricText(selectedBenchmarkInstrument, benchmarkLoading, benchmarkMetrics?.sortino, formatRatio),
       difference: benchmarkMetricText(selectedBenchmarkInstrument, benchmarkLoading, sortinoDifference, signedRatio),
       differenceClassName: benchmarkMetricClassName(selectedBenchmarkInstrument, benchmarkLoading, sortinoDifference),
@@ -1458,37 +1455,84 @@ function PerformancePage() {
   const todayDate = useMemo(() => localDateIso(), [])
   const queryStartDate = validIsoDate(searchParams.get('start_date'))
   const queryEndDate = validIsoDate(searchParams.get('end_date'))
-  const hasDateWindowParams = searchParams.has('start_date') || searchParams.has('end_date')
+  const querySinceInception = searchParams.get('period') === 'si'
+  const hasDateWindowParams = searchParams.has('start_date') || searchParams.has('end_date') || querySinceInception
   const storedPerformanceWindow = useMemo(
     () => (!hasDateWindowParams && portfolioId ? loadPerformanceWindowSelection(portfolioId) : null),
     [hasDateWindowParams, portfolioId],
   )
-  const appliedStartDate = queryStartDate || storedPerformanceWindow?.startDate || ''
-  const appliedEndDate = queryEndDate || storedPerformanceWindow?.endDate || ''
   const [portfolioSummary, setPortfolioSummary] = useState<PortfolioWorkspaceSummary | null>(null)
   const [portfolioSummaryReadyPortfolioId, setPortfolioSummaryReadyPortfolioId] = useState<string | null>(null)
   const portfolioSummarySettled = Boolean(portfolioId && portfolioSummaryReadyPortfolioId === portfolioId)
   const portfolioAsOfDate =
     portfolioSummary && portfolioSummary.portfolio_id === portfolioId ? validIsoDate(portfolioSummary.as_of_date) : ''
-  const waitingForDefaultEndDate = Boolean(portfolioId && !appliedEndDate && !portfolioSummarySettled)
-  const effectiveEndDate = appliedEndDate || portfolioAsOfDate || todayDate
-  const defaultStartDate = useMemo(
-    () => shiftIsoDate(effectiveEndDate, -(DEFAULT_PERFORMANCE_LOOKBACK_DAYS - 1)),
-    [effectiveEndDate],
+  const {
+    appliedSinceInception,
+    appliedStartDate,
+    appliedEndDate,
+    waitingForDefaultEndDate: unresolvedDefaultEndDate,
+    effectiveEndDate,
+    effectiveStartDate,
+  } = useMemo(
+    () =>
+      resolvePerformanceWindow({
+        queryStartDate,
+        queryEndDate,
+        querySinceInception,
+        storedSelection: storedPerformanceWindow,
+        portfolioAsOfDate,
+        todayDate,
+        portfolioSummarySettled,
+        defaultLookbackDays: DEFAULT_PERFORMANCE_LOOKBACK_DAYS,
+      }),
+    [
+      portfolioAsOfDate,
+      portfolioSummarySettled,
+      queryEndDate,
+      querySinceInception,
+      queryStartDate,
+      storedPerformanceWindow,
+      todayDate,
+    ],
   )
-  const effectiveStartDate = appliedStartDate || defaultStartDate
+  const waitingForDefaultEndDate = Boolean(portfolioId && unresolvedDefaultEndDate)
+  const performanceWindowFilters = useMemo(
+    () => buildPerformanceWindowFilters(effectiveStartDate, effectiveEndDate),
+    [effectiveEndDate, effectiveStartDate],
+  )
+  const loadPerformanceWorkspace = useCallback(
+    () => getPortfolioPerformance(portfolioId ?? '', performanceWindowFilters),
+    [performanceWindowFilters, portfolioId],
+  )
+  const {
+    data: workspace,
+    loading,
+    error,
+  } = usePerformanceResource({
+    enabled: Boolean(portfolioId && !waitingForDefaultEndDate),
+    resourceKey: portfolioId ?? '',
+    load: loadPerformanceWorkspace,
+    fallbackError: 'Failed to load performance workspace.',
+  })
+  const loadCalculationWorkspace = useCallback(
+    () => getPortfolioPerformanceCalculation(portfolioId ?? '', performanceWindowFilters),
+    [performanceWindowFilters, portfolioId],
+  )
+  const {
+    data: calculationWorkspace,
+    loading: calculationLoading,
+    error: calculationError,
+  } = usePerformanceResource({
+    enabled: Boolean(portfolioId && !waitingForDefaultEndDate),
+    resourceKey: portfolioId ?? '',
+    load: loadCalculationWorkspace,
+    fallbackError: 'Failed to load period calculation.',
+  })
 
-  const [workspace, setWorkspace] = useState<PortfolioPerformanceResponse | null>(null)
-  const [loading, setLoading] = useState(false)
-  const [error, setError] = useState<string | null>(null)
-  const [calculationWorkspace, setCalculationWorkspace] = useState<PortfolioPerformanceCalculationResponse | null>(null)
-  const [calculationLoading, setCalculationLoading] = useState(false)
-  const [calculationError, setCalculationError] = useState<string | null>(null)
-  const [calculationGroupsWorkspace, setCalculationGroupsWorkspace] =
-    useState<PortfolioPerformanceCalculationGroupsResponse | null>(null)
-  const [calculationGroupsLoading, setCalculationGroupsLoading] = useState(false)
-  const [calculationGroupsError, setCalculationGroupsError] = useState<string | null>(null)
-  const initialCalculationTableViewStore = useMemo(() => loadCalculationTableViewStore(), [])
+  const initialCalculationTableViewStore = useMemo(
+    () => normalizeCalculationTableViewStore(null),
+    [],
+  )
   const initialCalculationTableViewState = useMemo(
     () => resolveCalculationTableViewState(initialCalculationTableViewStore, initialCalculationTableViewStore.activeViewId),
     [initialCalculationTableViewStore],
@@ -1500,7 +1544,9 @@ function PerformancePage() {
   const [calculationTableViewStore, setCalculationTableViewStore] = useState<CalculationTableViewStore>(
     () => initialCalculationTableViewStore,
   )
-  const [calculationTableViewStoreRemoteReady, setCalculationTableViewStoreRemoteReady] = useState(false)
+  const [calculationTableViewStoreReadyPortfolioId, setCalculationTableViewStoreReadyPortfolioId] =
+    useState<string | null>(null)
+  const [calculationTableViewStoreError, setCalculationTableViewStoreError] = useState<string | null>(null)
   const [activeCalculationTableViewId, setActiveCalculationTableViewId] = useState(
     initialCalculationTableViewStore.activeViewId,
   )
@@ -1557,6 +1603,39 @@ function PerformancePage() {
     calculationGroupBy === 'taxonomy' && !defaultPlanningTaxonomy ? 'none' : calculationGroupBy
   const resolvedCalculationGroupBy: PortfolioContributionAxis =
     effectiveCalculationGroupBy === 'none' ? 'instrument' : effectiveCalculationGroupBy
+  const calculationGroupsFilters = useMemo(
+    () => ({
+      ...performanceWindowFilters,
+      axis: resolvedCalculationGroupBy,
+      taxonomy_id:
+        resolvedCalculationGroupBy === 'taxonomy'
+          ? defaultPlanningTaxonomy?.taxonomy_id ?? undefined
+          : undefined,
+    }),
+    [
+      defaultPlanningTaxonomy?.taxonomy_id,
+      performanceWindowFilters,
+      resolvedCalculationGroupBy,
+    ],
+  )
+  const loadCalculationGroupsWorkspace = useCallback(
+    () =>
+      getPortfolioPerformanceCalculationGroups(
+        portfolioId ?? '',
+        calculationGroupsFilters,
+      ),
+    [calculationGroupsFilters, portfolioId],
+  )
+  const {
+    data: calculationGroupsWorkspace,
+    loading: calculationGroupsLoading,
+    error: calculationGroupsError,
+  } = usePerformanceResource({
+    enabled: Boolean(portfolioId && !waitingForDefaultEndDate),
+    resourceKey: portfolioId ?? '',
+    load: loadCalculationGroupsWorkspace,
+    fallbackError: 'Failed to load calculation groups.',
+  })
   const calculationGroupByOptions = useMemo<CalculationGroupByOption[]>(
     () => [
       {
@@ -1762,12 +1841,20 @@ function PerformancePage() {
 
   useEffect(() => {
     if (!portfolioId) {
-      setCalculationTableViewStoreRemoteReady(false)
+      setCalculationTableViewStoreReadyPortfolioId(null)
+      setCalculationTableViewStoreError(null)
       return
     }
 
     let cancelled = false
-    setCalculationTableViewStoreRemoteReady(false)
+    const defaultStore = normalizeCalculationTableViewStore(null)
+    setCalculationTableViewStoreReadyPortfolioId(null)
+    setCalculationTableViewStoreError(null)
+    setCalculationTableViewStore(defaultStore)
+    setActiveCalculationTableViewId(defaultStore.activeViewId)
+    applyCalculationTableViewState(
+      resolveCalculationTableViewState(defaultStore, defaultStore.activeViewId),
+    )
     getPortfolioTableViewStore<CalculationTableViewStore>(portfolioId, 'performance_calculation')
       .then((response) => {
         if (cancelled) {
@@ -1775,15 +1862,19 @@ function PerformancePage() {
         }
         const nextStore = response.store
           ? normalizeCalculationTableViewStore(response.store)
-          : normalizeCalculationTableViewStore(loadCalculationTableViewStore())
+          : defaultStore
         setCalculationTableViewStore(nextStore)
         setActiveCalculationTableViewId(nextStore.activeViewId)
         applyCalculationTableViewState(resolveCalculationTableViewState(nextStore, nextStore.activeViewId))
-        setCalculationTableViewStoreRemoteReady(true)
+        setCalculationTableViewStoreReadyPortfolioId(portfolioId)
       })
       .catch((requestError: unknown) => {
         if (!cancelled) {
-          console.warn('Failed to load persisted calculation views.', requestError)
+          setCalculationTableViewStoreError(
+            `Calculation table views unavailable: ${
+              requestError instanceof Error ? requestError.message : 'backend read failed.'
+            }`,
+          )
         }
       })
 
@@ -1793,84 +1884,19 @@ function PerformancePage() {
   }, [portfolioId])
 
   useEffect(() => {
-    saveCalculationTableViewStore(calculationTableViewStore)
-    if (!portfolioId || !calculationTableViewStoreRemoteReady) {
+    if (!portfolioId || calculationTableViewStoreReadyPortfolioId !== portfolioId) {
       return
     }
     savePortfolioTableViewStore(portfolioId, 'performance_calculation', calculationTableViewStore).catch(
       (requestError: unknown) => {
-        console.warn('Failed to persist calculation views.', requestError)
+        setCalculationTableViewStoreError(
+          `Failed to save calculation table views: ${
+            requestError instanceof Error ? requestError.message : 'backend write failed.'
+          }`,
+        )
       },
     )
-  }, [calculationTableViewStore, calculationTableViewStoreRemoteReady, portfolioId])
-
-  useEffect(() => {
-    if (!portfolioId || waitingForDefaultEndDate) {
-      setWorkspace(null)
-      setLoading(false)
-      setError(null)
-      return
-    }
-
-    let cancelled = false
-    setLoading(true)
-    setError(null)
-    getPortfolioPerformance(portfolioId, { start_date: effectiveStartDate, end_date: effectiveEndDate })
-      .then((response) => {
-        if (!cancelled) {
-          setWorkspace(response)
-        }
-      })
-      .catch((requestError: unknown) => {
-        if (!cancelled) {
-          setWorkspace(null)
-          setError(requestError instanceof Error ? requestError.message : 'Failed to load performance workspace.')
-        }
-      })
-      .finally(() => {
-        if (!cancelled) {
-          setLoading(false)
-        }
-      })
-
-    return () => {
-      cancelled = true
-    }
-  }, [portfolioId, effectiveStartDate, effectiveEndDate, waitingForDefaultEndDate])
-
-  useEffect(() => {
-    if (!portfolioId || waitingForDefaultEndDate) {
-      setCalculationWorkspace(null)
-      setCalculationLoading(false)
-      setCalculationError(null)
-      return
-    }
-
-    let cancelled = false
-    setCalculationLoading(true)
-    setCalculationError(null)
-    getPortfolioPerformanceCalculation(portfolioId, { start_date: effectiveStartDate, end_date: effectiveEndDate })
-      .then((response) => {
-        if (!cancelled) {
-          setCalculationWorkspace(response)
-        }
-      })
-      .catch((requestError: unknown) => {
-        if (!cancelled) {
-          setCalculationWorkspace(null)
-          setCalculationError(requestError instanceof Error ? requestError.message : 'Failed to load period calculation.')
-        }
-      })
-      .finally(() => {
-        if (!cancelled) {
-          setCalculationLoading(false)
-        }
-      })
-
-    return () => {
-      cancelled = true
-    }
-  }, [portfolioId, effectiveStartDate, effectiveEndDate, waitingForDefaultEndDate])
+  }, [calculationTableViewStore, calculationTableViewStoreReadyPortfolioId, portfolioId])
 
   useEffect(() => {
     if (!portfolioId) {
@@ -1902,54 +1928,8 @@ function PerformancePage() {
     }
   }, [portfolioId])
 
-  useEffect(() => {
-    if (!portfolioId || waitingForDefaultEndDate) {
-      setCalculationGroupsWorkspace(null)
-      setCalculationGroupsLoading(false)
-      setCalculationGroupsError(null)
-      return
-    }
-
-    let cancelled = false
-    setCalculationGroupsLoading(true)
-    setCalculationGroupsError(null)
-    getPortfolioPerformanceCalculationGroups(portfolioId, {
-      start_date: effectiveStartDate,
-      end_date: effectiveEndDate,
-      axis: resolvedCalculationGroupBy,
-      taxonomy_id:
-        resolvedCalculationGroupBy === 'taxonomy' ? defaultPlanningTaxonomy?.taxonomy_id ?? undefined : undefined,
-    })
-      .then((response) => {
-        if (!cancelled) {
-          setCalculationGroupsWorkspace(response)
-        }
-      })
-      .catch((requestError: unknown) => {
-        if (!cancelled) {
-          setCalculationGroupsWorkspace(null)
-          setCalculationGroupsError(
-            requestError instanceof Error ? requestError.message : 'Failed to load calculation groups.',
-          )
-        }
-      })
-      .finally(() => {
-        if (!cancelled) {
-          setCalculationGroupsLoading(false)
-        }
-      })
-
-    return () => {
-      cancelled = true
-    }
-  }, [
-    portfolioId,
-    effectiveStartDate,
-    effectiveEndDate,
-    resolvedCalculationGroupBy,
-    defaultPlanningTaxonomy?.taxonomy_id,
-    waitingForDefaultEndDate,
-  ])
+  const benchmarkAsOfDate =
+    validIsoDate(workspace?.summary.effective_end_date) || effectiveEndDate
 
   useEffect(() => {
     if (!portfolioId || !benchmarkInstrumentId || waitingForDefaultEndDate) {
@@ -1965,7 +1945,7 @@ function PerformancePage() {
     setBenchmarkChart(null)
 
     getPortfolioInstrumentPriceChart(portfolioId, benchmarkInstrumentId, {
-      as_of_date: effectiveEndDate,
+      as_of_date: benchmarkAsOfDate,
       range: 'all',
     })
       .then((response) => {
@@ -1988,9 +1968,13 @@ function PerformancePage() {
     return () => {
       cancelled = true
     }
-  }, [benchmarkInstrumentId, effectiveEndDate, portfolioId, waitingForDefaultEndDate])
+  }, [benchmarkAsOfDate, benchmarkInstrumentId, portfolioId, waitingForDefaultEndDate])
 
-  function updateWindowParams(nextStartDate: string | null, nextEndDate: string | null) {
+  function updateWindowParams(
+    nextStartDate: string | null,
+    nextEndDate: string | null,
+    mode: PerformanceWindowMode = 'dates',
+  ) {
     const normalizedStartDate = validIsoDate(nextStartDate)
     const normalizedEndDate = validIsoDate(nextEndDate)
     const nextParams = new URLSearchParams(searchParams)
@@ -2004,18 +1988,44 @@ function PerformancePage() {
     } else {
       nextParams.delete('end_date')
     }
+    if (mode === 'since_inception') {
+      nextParams.set('period', 'si')
+    } else {
+      nextParams.delete('period')
+    }
     if (portfolioId) {
-      savePerformanceWindowSelection(portfolioId, normalizedStartDate, normalizedEndDate)
+      savePerformanceWindowSelection(portfolioId, normalizedStartDate, normalizedEndDate, mode)
     }
     setSearchParams(nextParams)
   }
 
+  function handlePerformancePeriodPreset(preset: PerformancePeriodPreset) {
+    if (preset === 'si') {
+      updateWindowParams(null, appliedEndDate || null, 'since_inception')
+      return
+    }
+    updateWindowParams(performancePresetStartDate(preset, effectiveEndDate), appliedEndDate || null)
+  }
+
+  const selectedPerformancePeriodPreset = useMemo<PerformancePeriodPreset | null>(() => {
+    if (appliedSinceInception) {
+      return 'si'
+    }
+    return (
+      PERFORMANCE_PERIOD_PRESETS.find(
+        (preset) =>
+          preset.key !== 'si' && performancePresetStartDate(preset.key, effectiveEndDate) === effectiveStartDate,
+      )?.key ?? null
+    )
+  }, [appliedSinceInception, effectiveEndDate, effectiveStartDate])
+
   const summary = workspace?.summary ?? null
   const baseCurrency = workspace?.base_currency ?? calculationWorkspace?.base_currency ?? calculationGroupsWorkspace?.base_currency ?? 'USD'
-  const periodLabel =
-    summary?.start_date && summary.end_date
-      ? `${summary.start_date} to ${summary.end_date}`
-      : `${effectiveStartDate} to ${effectiveEndDate}`
+  const reportStartDate =
+    validIsoDate(summary?.effective_start_date) || validIsoDate(summary?.start_date) || effectiveStartDate
+  const reportEndDate =
+    validIsoDate(summary?.effective_end_date) || validIsoDate(summary?.end_date) || effectiveEndDate
+  const periodLabel = `${reportStartDate} to ${reportEndDate}`
   const performanceHistoryReliability = useMemo(
     () => (summary ? buildPerformanceHistoryReliability(summary) : null),
     [summary],
@@ -2024,35 +2034,48 @@ function PerformancePage() {
 
   const selectedBenchmarkInstrument =
     benchmarkInstruments.find((instrument) => instrument.instrument_id === benchmarkInstrumentId) ?? null
-  const benchmarkCurrencyMismatch =
-    selectedBenchmarkInstrument != null &&
-    benchmarkChart != null &&
-    normalizedCurrency(benchmarkChart.currency) !== '' &&
-    normalizedCurrency(baseCurrency) !== '' &&
-    normalizedCurrency(benchmarkChart.currency) !== normalizedCurrency(baseCurrency)
-  const benchmarkBasisAssessment = useMemo(
+  const benchmarkStartBoundaryDate = shiftIsoDate(reportStartDate, -1)
+  const benchmarkEligibleDates = useMemo(
+    () => eligiblePortfolioReturnDates(workspace?.daily_series ?? [], reportStartDate, reportEndDate),
+    [reportEndDate, reportStartDate, workspace?.daily_series],
+  )
+  const benchmarkGuard = useMemo(
     () =>
       selectedBenchmarkInstrument && benchmarkChart
-        ? assessPerformanceBenchmarkBasis(benchmarkChart.chart_basis)
+        ? assessBenchmarkComparisonGuard({
+            chartBasis: benchmarkChart.chart_basis,
+            benchmarkCurrency: benchmarkChart.currency,
+            portfolioCurrency: baseCurrency,
+            points: benchmarkChart.points,
+            startBoundaryDate: benchmarkStartBoundaryDate,
+            eligiblePortfolioDates: benchmarkEligibleDates,
+          })
         : null,
-    [benchmarkChart, selectedBenchmarkInstrument],
+    [
+      baseCurrency,
+      benchmarkChart,
+      benchmarkEligibleDates,
+      benchmarkStartBoundaryDate,
+      selectedBenchmarkInstrument,
+    ],
   )
+  const benchmarkCurrencyMismatch = benchmarkGuard?.reason === 'benchmark_currency_mismatch'
+  const benchmarkBasisAssessment = benchmarkGuard?.basisAssessment ?? null
   const benchmarkMetrics = useMemo(
     () =>
-      benchmarkCurrencyMismatch || !benchmarkBasisAssessment?.comparisonEligible
+      benchmarkGuard?.mode !== 'canonical'
         ? null
         : buildBenchmarkPeriodMetrics(
             benchmarkChart?.points ?? [],
-            effectiveStartDate,
-            effectiveEndDate,
+            reportStartDate,
+            reportEndDate,
             workspace?.daily_series ?? [],
           ),
     [
-      benchmarkBasisAssessment?.comparisonEligible,
       benchmarkChart,
-      benchmarkCurrencyMismatch,
-      effectiveStartDate,
-      effectiveEndDate,
+      benchmarkGuard?.mode,
+      reportEndDate,
+      reportStartDate,
       workspace?.daily_series,
     ],
   )
@@ -2105,6 +2128,12 @@ function PerformancePage() {
   const portfolioUnrealizedGain = calculationSummary?.unrealized_capital_gains ?? null
   const portfolioIncome = calculationSummary?.earnings ?? summary?.income_cash_amount ?? null
   const portfolioFxPnl = sumNullable(calculationSummary?.cash_currency_gains, calculationSummary?.instrument_currency_gains)
+  const portfolioPendingSettlementFx = calculationSummary?.pending_settlement_currency_gains ?? null
+  const pendingSettlementFxUnavailable = Boolean(
+    calculationSummary &&
+      calculationSummary.coverage_state !== 'complete' &&
+      calculationSummary.pending_settlement_currency_gains == null,
+  )
   const portfolioFees = expenseImpact(calculationSummary?.fees)
   const portfolioTaxes = expenseImpact(calculationSummary?.taxes)
   const portfolioPeriodPnl = calculationSummary?.delta ?? summary?.delta ?? summary?.total_pnl ?? null
@@ -2300,6 +2329,8 @@ function PerformancePage() {
               return finiteNumber(portfolioTaxes)
             case 'fx_pnl':
               return finiteNumber(portfolioFxPnl)
+            case 'pending_settlement_fx':
+              return finiteNumber(portfolioPendingSettlementFx)
             case 'period_return':
               return finiteNumber(summary?.cumulative_twr)
             case 'return_contribution':
@@ -2348,6 +2379,7 @@ function PerformancePage() {
       case 'fees':
       case 'taxes':
       case 'fx_pnl':
+      case 'pending_settlement_fx':
         return formatSignedCurrency(value, baseCurrency)
       case 'start_value':
       case 'end_value':
@@ -2430,7 +2462,7 @@ function PerformancePage() {
       .replace(/[^a-z0-9]+/g, '-')
       .replace(/^-|-$/g, '')
     downloadTable(
-      `performance-calculation-${viewSlug || 'view'}-${portfolioId}-${effectiveStartDate}-${effectiveEndDate}-${effectiveCalculationGroupBy}`,
+      `performance-calculation-${viewSlug || 'view'}-${portfolioId}-${reportStartDate}-${reportEndDate}-${effectiveCalculationGroupBy}`,
       rows,
       format,
       'Calculation',
@@ -2440,7 +2472,11 @@ function PerformancePage() {
   return (
     <>
       <NoticeToast notice={viewToast} onDismiss={() => setViewToast(null)} />
-      <PortfolioWorkspaceLayout activeSection="Performance" toolbarLabel="View: Performance">
+      <PortfolioWorkspaceLayout
+        activeSection="Performance"
+        toolbarLabel="View: Performance"
+        busy={loading || waitingForDefaultEndDate}
+      >
       <section className="portfolio-detail-surface performance-surface">
         <div className="transaction-filter-bar performance-window-bar">
           <div className="performance-filter-group performance-window-group">
@@ -2459,9 +2495,53 @@ function PerformancePage() {
                 className="transaction-filter-input"
                 type="date"
                 value={effectiveEndDate}
-                onChange={(event) => updateWindowParams(effectiveStartDate || null, event.target.value || null)}
+                onChange={(event) =>
+                  updateWindowParams(
+                    appliedSinceInception ? null : effectiveStartDate || null,
+                    event.target.value || null,
+                    appliedSinceInception ? 'since_inception' : 'dates',
+                  )
+                }
               />
             </label>
+          </div>
+          <div className="performance-window-actions" aria-label="Performance period controls">
+            <button
+              type="button"
+              className={`performance-window-action${!appliedEndDate ? ' performance-window-action-active' : ''}`}
+              aria-pressed={!appliedEndDate}
+              disabled={waitingForDefaultEndDate}
+              onClick={() =>
+                updateWindowParams(
+                  appliedSinceInception ? null : effectiveStartDate || null,
+                  null,
+                  appliedSinceInception ? 'since_inception' : 'dates',
+                )
+              }
+            >
+              Latest
+            </button>
+            <button
+              type="button"
+              className="performance-window-action"
+              onClick={() => updateWindowParams(null, null)}
+            >
+              Reset
+            </button>
+            {PERFORMANCE_PERIOD_PRESETS.map((preset) => (
+              <button
+                key={preset.key}
+                type="button"
+                className={`performance-window-action${
+                  selectedPerformancePeriodPreset === preset.key ? ' performance-window-action-active' : ''
+                }`}
+                aria-pressed={selectedPerformancePeriodPreset === preset.key}
+                disabled={waitingForDefaultEndDate}
+                onClick={() => handlePerformancePeriodPreset(preset.key)}
+              >
+                {preset.label}
+              </button>
+            ))}
           </div>
           <BenchmarkSearchBox
             className="performance-benchmark-search"
@@ -2472,6 +2552,7 @@ function PerformancePage() {
             onSelectInstrument={(instrument) => {
               setBenchmarkInstrumentId(instrument.instrument_id)
               setBenchmarkSearch(benchmarkInstrumentLabel(instrument))
+              setBenchmarkChart(null)
               setBenchmarkError(null)
             }}
             onClear={() => {
@@ -2485,29 +2566,46 @@ function PerformancePage() {
         </div>
 
         {error ? <div className="inline-notice inline-notice-error">{error}</div> : null}
+        {calculationTableViewStoreError ? (
+          <div className="inline-notice inline-notice-error" role="alert">
+            {calculationTableViewStoreError}
+          </div>
+        ) : null}
+        {summary?.as_of_clamp_reason ? (
+          <div className="inline-notice inline-notice-warning" role="status">
+            Performance requested through {summary.requested_end_date ?? effectiveEndDate}; reliable results end on{' '}
+            {summary.effective_end_date ?? summary.end_date ?? '—'} ({summary.as_of_clamp_reason}).
+          </div>
+        ) : null}
         {benchmarkError ? <div className="inline-notice inline-notice-error">{benchmarkError}</div> : null}
         {!benchmarkError && benchmarkCurrencyMismatch ? (
           <div className="inline-notice inline-notice-error">
-            Benchmark currency {normalizedCurrency(benchmarkChart?.currency)} does not match portfolio base{' '}
-            {normalizedCurrency(baseCurrency)}.
+            Benchmark currency {normalizeBenchmarkCurrency(benchmarkChart?.currency)} does not match portfolio base{' '}
+            {normalizeBenchmarkCurrency(baseCurrency)}.
           </div>
         ) : null}
-        {benchmarkBasisAssessment ? (
+        {benchmarkGuard && benchmarkBasisAssessment ? (
           <div
             className={`performance-benchmark-basis-status ${
-              benchmarkBasisAssessment.comparisonEligible
+              benchmarkGuard.mode === 'canonical'
                 ? 'performance-benchmark-basis-status-comparable'
                 : 'performance-benchmark-basis-status-fallback'
             }`}
           >
-            <span>Benchmark basis</span>
+            <span>
+              {benchmarkGuard.mode === 'canonical'
+                ? 'Manual comparator · canonical'
+                : benchmarkGuard.mode === 'exploratory'
+                  ? 'Manual comparator · exploratory'
+                  : 'Manual comparator unavailable'}
+            </span>
             <code>{benchmarkBasisAssessment.basis ?? 'unavailable'}</code>
             <span>{benchmarkBasisAssessment.label}</span>
           </div>
         ) : null}
-        {!benchmarkError && benchmarkBasisAssessment?.warning ? (
+        {!benchmarkError && !benchmarkCurrencyMismatch && benchmarkGuard?.warning ? (
           <div className="inline-notice inline-notice-warning performance-benchmark-basis-warning" role="status">
-            {benchmarkBasisAssessment.warning}
+            {benchmarkGuard.warning}
           </div>
         ) : null}
         <QualityWarningsNotice warnings={summary?.quality_warnings} />
@@ -2543,17 +2641,23 @@ function PerformancePage() {
                     <div className="portfolio-detail-meta">{calculationMeta}</div>
                   </div>
                   <div className="transaction-filter-actions holdings-filter-actions performance-calculation-actions">
-                    <PortfolioTableViewControls
-                      views={calculationTableViews}
-                      activeViewId={activeCalculationTableViewId}
-                      edited={calculationTableViewEdited}
-                      canSave
-                      canDelete
-                      onSelect={handleSelectCalculationTableView}
-                      onSave={handleSaveCalculationTableView}
-                      onSaveAs={handleSaveCalculationTableViewAs}
-                      onDelete={handleDeleteCalculationTableView}
-                    />
+                    {calculationTableViewStoreReadyPortfolioId === portfolioId ? (
+                      <PortfolioTableViewControls
+                        views={calculationTableViews}
+                        activeViewId={activeCalculationTableViewId}
+                        edited={calculationTableViewEdited}
+                        canSave
+                        canDelete
+                        onSelect={handleSelectCalculationTableView}
+                        onSave={handleSaveCalculationTableView}
+                        onSaveAs={handleSaveCalculationTableViewAs}
+                        onDelete={handleDeleteCalculationTableView}
+                      />
+                    ) : (
+                      <span className="portfolio-detail-meta">
+                        {calculationTableViewStoreError ? 'Table views unavailable' : 'Loading table views'}
+                      </span>
+                    )}
                     <button
                       type="button"
                       className={`holdings-toolbar-button ${calculationTableViewEdited ? 'holdings-toolbar-button-active' : ''}`}
@@ -2587,6 +2691,17 @@ function PerformancePage() {
               {calculationError ? <div className="inline-notice inline-notice-error">{calculationError}</div> : null}
               {calculationGroupsError ? (
                 <div className="inline-notice inline-notice-error">{calculationGroupsError}</div>
+              ) : null}
+              {pendingSettlementFxUnavailable ? (
+                <div className="inline-notice inline-notice-warning" role="status">
+                  Pending settlement monetary FX is unavailable because a reliable FX boundary or complete attribution
+                  coverage is missing ({calculationSummary?.coverage_state}).
+                </div>
+              ) : calculationSummary?.stale_fx_flag ? (
+                <div className="inline-notice inline-notice-warning" role="status">
+                  Calculation includes stale FX observations; pending settlement monetary FX remains separately
+                  identified.
+                </div>
               ) : null}
               {calculationLoading || calculationGroupsLoading ? <CalculationStatus /> : null}
               <div className="table-shell">

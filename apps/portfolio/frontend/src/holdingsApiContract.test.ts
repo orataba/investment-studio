@@ -32,10 +32,24 @@ describe('holdings workspace request contract', () => {
     )
     vi.stubGlobal('fetch', fetchMock)
 
-    await getHoldingsWorkspace('portfolio-risk', { include_return_series: true })
+    await getHoldingsWorkspace('portfolio-risk', { include_details: true })
 
     expect(fetchMock).toHaveBeenCalledWith(
-      '/api/workspace/holdings?portfolio_id=portfolio-risk&include_return_series=true',
+      '/api/workspace/holdings?portfolio_id=portfolio-risk&include_details=true',
+      expect.any(Object),
+    )
+  })
+
+  it('expands holdings detail arrays only through an explicit opt-in', async () => {
+    const fetchMock = vi.fn(() =>
+      Promise.resolve(new Response(JSON.stringify({}), { status: 200 })),
+    )
+    vi.stubGlobal('fetch', fetchMock)
+
+    await getHoldingsWorkspace('portfolio-detailed', { include_details: true })
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/api/workspace/holdings?portfolio_id=portfolio-detailed&include_details=true',
       expect.any(Object),
     )
   })

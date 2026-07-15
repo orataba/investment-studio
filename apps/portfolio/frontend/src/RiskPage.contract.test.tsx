@@ -1,0 +1,478 @@
+import { screen, within } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
+
+import RiskPage from './pages/RiskPage'
+import { holdingFixture, holdingsWorkspaceFixture, instrumentFixture } from './test/portfolioFixtures'
+import { renderPortfolioPage } from './test/renderPortfolioPage'
+
+const apiMocks = vi.hoisted(() => ({
+  getHoldingsWorkspace: vi.fn(),
+  getPortfolioAccountsWorkspace: vi.fn(),
+  getPortfolioTaxonomyCatalog: vi.fn(),
+  getPortfolioInstruments: vi.fn(),
+  getPortfolioInstrumentPriceChart: vi.fn(),
+}))
+
+vi.mock('./lib/api', () => apiMocks)
+vi.mock('./components/PortfolioWorkspaceLayout', () => ({
+  default: ({ children }: { children: unknown }) => children,
+}))
+
+function isoDateDaysBefore(daysBefore: number) {
+  const date = new Date(Date.UTC(2026, 6, 15 - daysBefore))
+  return date.toISOString().slice(0, 10)
+}
+
+const returnPoints = Array.from({ length: 110 }, (_, index) => {
+  const daysBefore = 109 - index
+  return {
+    start_date: isoDateDaysBefore(daysBefore + 1),
+    date: isoDateDaysBefore(daysBefore),
+    value: index % 5 === 0 ? -0.001 : index % 2 === 0 ? 0.0015 : 0.0005,
+  }
+})
+
+const riskHolding = holdingFixture({
+  instrument_return_series_all: {
+    first_return_start_date: isoDateDaysBefore(110),
+    points: returnPoints,
+  },
+})
+
+const betaReturnPoints = returnPoints.map((point, index) => ({
+  ...point,
+  value: index % 7 === 0 ? -0.0007 : index % 3 === 0 ? 0.0011 : 0.0003,
+}))
+
+function betaHolding(returnSeriesPoints = betaReturnPoints) {
+  return holdingFixture({
+    line_id: 'holding:asset-2',
+    instrument_core: instrumentFixture({
+      instrument_id: 'asset-2',
+      instrument_name: 'Beta Fund',
+      identifiers: [{ identifier_type: 'ticker', identifier_value: 'BETA', is_primary: true }],
+    }),
+    market_value: 200,
+    market_value_base: 200,
+    allocation: 0.2,
+    instrument_return_series_all: {
+      first_return_start_date: isoDateDaysBefore(110),
+      points: returnSeriesPoints,
+    },
+  })
+}
+
+function twoHoldingWorkspace(secondHolding = betaHolding()) {
+  return holdingsWorkspaceFixture({
+    rows: [riskHolding, secondHolding],
+    totals: {
+      market_value: 1000,
+      day_change_pct: 0.01,
+      day_change_value: 10,
+      cost_basis: 900,
+      allocation: 1,
+    },
+    risk_basis: {
+      requested_frequency: 'daily',
+      resolved_frequency: 'daily',
+      default_frequency: 'daily',
+      source_frequency_counts: { daily: 2 },
+      status_label: 'Daily risk basis',
+    },
+  })
+}
+
+const accountsWorkspace = {
+  portfolio_id: '3',
+  base_currency: 'USD',
+  summary: {
+    account_count: 1,
+    deposit_account_count: 1,
+    securities_account_count: 0,
+    ledger_posting_count: 0,
+    position_line_count: 0,
+  },
+  derivation_boundary: {
+    ledger_postings: 'fixture',
+    positions: 'fixture',
+    holdings: 'fixture',
+    snapshot: 'fixture',
+  },
+  selected_account_id: 'cash-1',
+  accounts: [
+    {
+      account: {
+        account_id: 'cash-1',
+        portfolio_id: '3',
+        account_name: 'Operating Cash',
+        account_type: 'deposit_account',
+        currency: 'USD',
+        status: 'active',
+      },
+      linked_transaction_count: 0,
+      linked_posting_count: 0,
+      derived_cash_balance: 200,
+      derived_cash_balance_base: 200,
+      pending_settlement: 0,
+      pending_settlement_base: 0,
+      account_value_base: 200,
+      position_line_count: 0,
+      position_market_value: 0,
+      position_market_value_currency: 'USD',
+    },
+  ],
+  ledger_postings: [],
+  positions: [],
+  linked_transactions: [],
+}
+
+const taxonomyCatalog = {
+  portfolio_id: '3',
+  default_planning_taxonomy_id: 'taxonomy-1',
+  risk_basis: {
+    requested_frequency: 'daily',
+    resolved_frequency: 'daily',
+    default_frequency: 'daily',
+    source_frequency_counts: { daily: 1 },
+    status_label: 'Daily risk basis',
+  },
+  taxonomies: [
+    {
+      taxonomy_id: 'taxonomy-1',
+      portfolio_id: '3',
+      name: 'Policy Allocation',
+      taxonomy_type: 'allocation',
+      primary_assignment_scope: 'instrument',
+      planning_enabled: true,
+      budgeting_level: 'root',
+      root_default_target_dimension: 'weight',
+      status: 'active',
+    },
+  ],
+  taxonomy_nodes: [
+    {
+      taxonomy_node_id: 'risk-assets',
+      taxonomy_id: 'taxonomy-1',
+      parent_taxonomy_node_id: null,
+      node_name: 'Risk Assets',
+      sort_order: 1,
+      is_terminal: true,
+      default_target_dimension: 'risk_budget',
+      status: 'active',
+    },
+    {
+      taxonomy_node_id: 'cash-node',
+      taxonomy_id: 'taxonomy-1',
+      parent_taxonomy_node_id: null,
+      node_name: 'Cash',
+      node_code: 'CASH',
+      sort_order: 2,
+      is_terminal: true,
+      default_target_dimension: 'weight',
+      status: 'active',
+    },
+  ],
+  taxonomy_assignments: [
+    {
+      assignment_id: 'assignment-asset',
+      taxonomy_id: 'taxonomy-1',
+      target_scope: 'instrument',
+      target_entity_id: 'asset-1',
+      taxonomy_node_id: 'risk-assets',
+      status: 'active',
+    },
+    {
+      assignment_id: 'assignment-cash',
+      taxonomy_id: 'taxonomy-1',
+      target_scope: 'cash_bucket',
+      target_entity_id: 'cash-1',
+      taxonomy_node_id: 'cash-node',
+      status: 'active',
+    },
+  ],
+  instrument_universe: [
+    {
+      portfolio_id: '3',
+      instrument_id: 'asset-1',
+      instrument_ref: instrumentFixture(),
+      source: 'transaction',
+      holding_state: 'held',
+      transaction_count: 1,
+      status: 'active',
+      instrument_trend_basis: 'total_return_nav',
+      instrument_risk_frequency: 'daily',
+      instrument_return_series_all: riskHolding.instrument_return_series_all,
+    },
+  ],
+  target_sets: [
+    {
+      target_set_id: 'saa-root',
+      taxonomy_id: 'taxonomy-1',
+      comparator_taxonomy_node_id: null,
+      target_set_type: 'saa',
+      name: 'SAA',
+      weight_enabled: true,
+      risk_budget_enabled: true,
+      status: 'active',
+    },
+    {
+      target_set_id: 'taa-root',
+      taxonomy_id: 'taxonomy-1',
+      comparator_taxonomy_node_id: null,
+      target_set_type: 'taa',
+      name: 'TAA',
+      weight_enabled: true,
+      risk_budget_enabled: true,
+      status: 'active',
+    },
+  ],
+  target_set_lines: [
+    {
+      target_line_id: 'saa-risk',
+      target_set_id: 'saa-root',
+      target_member_type: 'taxonomy_node',
+      target_member_id: 'risk-assets',
+      taxonomy_node_id: 'risk-assets',
+      target_weight: 0.7,
+      target_risk_share: 1,
+    },
+    {
+      target_line_id: 'saa-cash',
+      target_set_id: 'saa-root',
+      target_member_type: 'taxonomy_node',
+      target_member_id: 'cash-node',
+      taxonomy_node_id: 'cash-node',
+      target_weight: 0.3,
+      target_risk_share: null,
+    },
+    {
+      target_line_id: 'taa-risk',
+      target_set_id: 'taa-root',
+      target_member_type: 'taxonomy_node',
+      target_member_id: 'risk-assets',
+      taxonomy_node_id: 'risk-assets',
+      target_weight: 0.75,
+      target_risk_share: 1,
+    },
+    {
+      target_line_id: 'taa-cash',
+      target_set_id: 'taa-root',
+      target_member_type: 'taxonomy_node',
+      target_member_id: 'cash-node',
+      taxonomy_node_id: 'cash-node',
+      target_weight: 0.25,
+      target_risk_share: null,
+    },
+  ],
+  target_set_integrity_issues: [],
+}
+
+function taxonomyCatalogWithFullUniverse() {
+  return {
+    ...taxonomyCatalog,
+    risk_basis: {
+      ...taxonomyCatalog.risk_basis,
+      source_frequency_counts: { daily: 2 },
+    },
+    instrument_universe: [
+      ...taxonomyCatalog.instrument_universe,
+      {
+        portfolio_id: '3',
+        instrument_id: 'asset-2',
+        instrument_ref: instrumentFixture({
+          instrument_id: 'asset-2',
+          instrument_name: 'Beta Fund',
+          identifiers: [{ identifier_type: 'ticker', identifier_value: 'BETA', is_primary: true }],
+        }),
+        source: 'manual',
+        holding_state: 'not_held',
+        transaction_count: 0,
+        status: 'active',
+        instrument_trend_basis: 'total_return_nav',
+        instrument_risk_frequency: 'daily',
+        instrument_return_series_all: {
+          first_return_start_date: isoDateDaysBefore(110),
+          points: betaReturnPoints,
+        },
+      },
+    ],
+  }
+}
+
+function renderRiskPage() {
+  return renderPortfolioPage(
+    <RiskPage />,
+    '/portfolios/3/risk',
+    '/portfolios/:portfolioId/risk',
+  )
+}
+
+describe('Risk rendered page contract', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    apiMocks.getHoldingsWorkspace.mockResolvedValue(
+      holdingsWorkspaceFixture({ rows: [riskHolding], totals: { market_value: 800, day_change_pct: 0.01, day_change_value: 8, cost_basis: 700, allocation: 0.8 } }),
+    )
+    apiMocks.getPortfolioAccountsWorkspace.mockResolvedValue(accountsWorkspace)
+    apiMocks.getPortfolioTaxonomyCatalog.mockResolvedValue(taxonomyCatalog)
+    apiMocks.getPortfolioInstruments.mockResolvedValue({ portfolio_id: '3', instruments: [] })
+  })
+
+  it('shows cash in capital drift, excludes it from risk drift, and compares SAA with TAA', async () => {
+    renderRiskPage()
+
+    const weightGap = await screen.findByRole('img', { name: 'Weight target drift' })
+    const riskGap = screen.getByRole('img', { name: 'Risk budget target gap' })
+
+    expect(within(weightGap).getByText('Cash')).toBeInTheDocument()
+    expect(within(weightGap).getByText('30.00%')).toBeInTheDocument()
+    expect(within(weightGap).getByText('25.00%')).toBeInTheDocument()
+    expect(within(riskGap).queryByText('Cash')).not.toBeInTheDocument()
+    expect(within(riskGap).getByText('Risk Assets')).toBeInTheDocument()
+    expect(within(riskGap).getAllByText('100.00%')).toHaveLength(3)
+
+    expect(apiMocks.getHoldingsWorkspace).toHaveBeenCalledWith('3', {
+      include_details: true,
+    })
+  })
+
+  it('defaults the correlation matrix to active non-cash Current Holdings', async () => {
+    apiMocks.getPortfolioTaxonomyCatalog.mockResolvedValue(taxonomyCatalogWithFullUniverse())
+
+    renderRiskPage()
+
+    const scopeSelect = await screen.findByRole('combobox', { name: 'Matrix scope' })
+    expect(scopeSelect).toHaveValue('__current_holdings__')
+    expect(within(scopeSelect).getByRole('option', { name: 'Current Holdings' })).toBeInTheDocument()
+    expect(within(scopeSelect).getByRole('option', { name: 'Full Universe' })).toBeInTheDocument()
+    expect(await screen.findAllByText('Alpha Fund')).not.toHaveLength(0)
+    expect(screen.queryByText('Beta Fund')).not.toBeInTheDocument()
+    const matrixSection = screen.getByText('Correlation Matrix').closest('section')
+    expect(matrixSection).not.toBeNull()
+    expect(within(matrixSection as HTMLElement).queryByText('Cash')).not.toBeInTheDocument()
+  })
+
+  it('switches explicitly to Full Universe without changing the page structure', async () => {
+    apiMocks.getPortfolioTaxonomyCatalog.mockResolvedValue(taxonomyCatalogWithFullUniverse())
+    const user = userEvent.setup()
+
+    renderRiskPage()
+
+    const scopeSelect = await screen.findByRole('combobox', { name: 'Matrix scope' })
+    await user.selectOptions(scopeSelect, '__full_universe__')
+
+    expect(scopeSelect).toHaveValue('__full_universe__')
+    expect(await screen.findAllByText('Beta Fund')).not.toHaveLength(0)
+    expect(screen.getAllByText('Alpha Fund')).not.toHaveLength(0)
+  })
+
+  it('fails closed and names a Current Holdings member whose return series is missing', async () => {
+    apiMocks.getHoldingsWorkspace.mockResolvedValue(
+      twoHoldingWorkspace(
+        betaHolding([]),
+      ),
+    )
+
+    renderRiskPage()
+
+    const coverageAlert = await screen.findByRole('alert', {
+      name: 'Correlation matrix coverage issues',
+    })
+    expect(coverageAlert).toHaveTextContent('Correlation matrix unavailable')
+    expect(coverageAlert).toHaveTextContent('Beta Fund')
+    expect(coverageAlert).toHaveTextContent('Full-history return series is missing')
+    expect(coverageAlert).toHaveTextContent('no members or dates were dropped')
+  })
+
+  it('fails closed when a non-cash position has quantity but no allocation or base value', async () => {
+    apiMocks.getHoldingsWorkspace.mockResolvedValue(
+      holdingsWorkspaceFixture({
+        rows: [
+          holdingFixture({
+            quantity: 10,
+            allocation: null,
+            market_value_base: null,
+            instrument_return_series_all: riskHolding.instrument_return_series_all,
+          }),
+        ],
+      }),
+    )
+
+    renderRiskPage()
+
+    const coverageAlert = await screen.findByRole('alert', {
+      name: 'Correlation matrix coverage issues',
+    })
+    expect(coverageAlert).toHaveTextContent(
+      'Alpha Fund: Current holding is missing its current portfolio weight.',
+    )
+  })
+
+  it('does not silently drop an active Full Universe member with missing history', async () => {
+    const fullUniverseCatalog = taxonomyCatalogWithFullUniverse()
+    apiMocks.getPortfolioTaxonomyCatalog.mockResolvedValue({
+      ...fullUniverseCatalog,
+      instrument_universe: fullUniverseCatalog.instrument_universe.map((record) =>
+        record.instrument_id === 'asset-2'
+          ? { ...record, instrument_return_series_all: null }
+          : record,
+      ),
+    })
+    const user = userEvent.setup()
+
+    renderRiskPage()
+
+    const scopeSelect = await screen.findByRole('combobox', { name: 'Matrix scope' })
+    await user.selectOptions(scopeSelect, '__full_universe__')
+    const coverageAlert = await screen.findByRole('alert', {
+      name: 'Correlation matrix coverage issues',
+    })
+    expect(coverageAlert).toHaveTextContent('Beta Fund')
+    expect(coverageAlert).toHaveTextContent('active universe payload')
+    expect(coverageAlert).toHaveTextContent('All 2 scope members')
+  })
+
+  it('fails closed on misaligned member dates and lists the first dates plus total count', async () => {
+    const missingDate = isoDateDaysBefore(5)
+    apiMocks.getHoldingsWorkspace.mockResolvedValue(
+      twoHoldingWorkspace(
+        betaHolding(betaReturnPoints.filter((point) => point.date !== missingDate)),
+      ),
+    )
+
+    renderRiskPage()
+
+    const coverageAlert = await screen.findByRole('alert', {
+      name: 'Correlation matrix coverage issues',
+    })
+    expect(coverageAlert).toHaveTextContent('Beta Fund')
+    expect(coverageAlert).toHaveTextContent('Return dates do not match')
+    expect(coverageAlert).toHaveTextContent(`Missing dates (1 total): ${missingDate}`)
+  })
+
+  it('fails closed when equal end dates represent different return periods', async () => {
+    const mismatchedDate = isoDateDaysBefore(4)
+    const mismatchedStartDate = isoDateDaysBefore(6)
+    apiMocks.getHoldingsWorkspace.mockResolvedValue(
+      twoHoldingWorkspace(
+        betaHolding(
+          betaReturnPoints.map((point) =>
+            point.date === mismatchedDate
+              ? { ...point, start_date: mismatchedStartDate }
+              : point,
+          ),
+        ),
+      ),
+    )
+
+    renderRiskPage()
+
+    const coverageAlert = await screen.findByRole('alert', {
+      name: 'Correlation matrix coverage issues',
+    })
+    expect(coverageAlert).toHaveTextContent('Beta Fund')
+    expect(coverageAlert).toHaveTextContent('scope members do not share one period identity')
+    expect(coverageAlert).toHaveTextContent(mismatchedDate)
+  })
+})

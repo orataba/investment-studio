@@ -1,7 +1,5 @@
 import type { PortfolioPerformanceSummary } from './api'
 
-export const MIN_ANNUALIZED_RETURN_HISTORY_DAYS = 365
-
 const MILLISECONDS_PER_DAY = 24 * 60 * 60 * 1000
 
 function isoDateUtc(value: string | null | undefined) {
@@ -33,6 +31,8 @@ export function buildPerformanceHistoryReliability(
     | 'snapshot_count'
     | 'return_observation_count'
     | 'risk_return_observation_count'
+    | 'annualization_eligible'
+    | 'annualization_unavailable_reason'
   >,
 ): PerformanceHistoryReliability {
   const startTimestamp = isoDateUtc(summary.start_date)
@@ -42,7 +42,7 @@ export function buildPerformanceHistoryReliability(
       ? Math.round((endTimestamp - startTimestamp) / MILLISECONDS_PER_DAY)
       : null
   const calendarSpanDays = elapsedDays == null ? null : elapsedDays + 1
-  const annualizedReturnEligible = elapsedDays != null && elapsedDays >= MIN_ANNUALIZED_RETURN_HISTORY_DAYS
+  const annualizedReturnEligible = summary.annualization_eligible
   const periodLabel =
     summary.start_date && summary.end_date ? `${summary.start_date} to ${summary.end_date}` : 'Observed period unavailable'
   const spanLabel = calendarSpanDays == null ? null : `${calendarSpanDays} calendar days`
@@ -63,6 +63,8 @@ export function buildPerformanceHistoryReliability(
     sampleLabel: sampleParts.join(' · '),
     annualizationMessage: annualizedReturnEligible
       ? null
-      : 'Insufficient history: annualized TWR and IRR / MWRR require at least one year. Period TWR remains the primary return.',
+      : summary.annualization_unavailable_reason === 'measurement_period_shorter_than_one_year'
+        ? 'Insufficient history: annualized TWR and IRR / MWRR require at least one ACT/365.25 year. Period TWR remains the primary return.'
+        : 'Annualized TWR and IRR / MWRR are unavailable until a valid measurement period is established. Period TWR remains the primary return.',
   }
 }

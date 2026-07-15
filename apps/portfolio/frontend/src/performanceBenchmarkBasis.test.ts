@@ -35,8 +35,9 @@ describe('performance benchmark basis reliability', () => {
 
   it('wires basis disclosure and fail-closed comparison into Performance', () => {
     expect(performancePageSource).toContain('benchmarkChart.chart_basis')
-    expect(performancePageSource).toContain('!benchmarkBasisAssessment?.comparisonEligible')
-    expect(performancePageSource).toContain('Benchmark basis')
+    expect(performancePageSource).toContain('assessBenchmarkComparisonGuard')
+    expect(performancePageSource).toContain("benchmarkGuard?.mode !== 'canonical'")
+    expect(performancePageSource).toContain('Manual comparator · canonical')
     expect(performancePageSource).toContain('performance-benchmark-basis-warning')
     expect(performancePageSource).toContain('setBenchmarkChart(null)')
   })

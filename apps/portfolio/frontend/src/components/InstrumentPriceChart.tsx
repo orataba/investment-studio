@@ -117,7 +117,10 @@ export default function InstrumentPriceChart({
       : null
 
   return (
-    <section className={`instrument-price-chart ${variant === 'instrument' ? 'instrument-price-chart-instrument' : ''}`}>
+    <section
+      className={`instrument-price-chart ${variant === 'instrument' ? 'instrument-price-chart-instrument' : ''}`}
+      aria-busy={loading}
+    >
       <div className="instrument-price-chart-toolbar">
         {variant === 'instrument' && chart ? (
           <div className="instrument-series-label portfolio-instrument-series-label">
@@ -134,8 +137,16 @@ export default function InstrumentPriceChart({
           </div>
         ) : null}
         <div className="price-chart-readout">
-          <strong>{activePoint ? formatUnitPrice(activePoint.value, currency) : '—'}</strong>
-          <span>{activePoint ? formatChartDate(activePoint.date) : chart ? `As of ${chart.as_of_date}` : 'No data'}</span>
+          <strong>{activePoint ? formatUnitPrice(activePoint.value, currency) : loading ? 'Loading' : '—'}</strong>
+          <span>
+            {activePoint
+              ? formatChartDate(activePoint.date)
+              : loading
+                ? 'Loading chart'
+                : chart
+                  ? `As of ${chart.as_of_date}`
+                  : 'No data'}
+          </span>
           <span>
             {activeChangeValue != null
               ? `${formatSignedCurrency(activeChangeValue, currency)} · ${formatPercent(activeChangePct)}`

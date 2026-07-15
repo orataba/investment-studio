@@ -91,16 +91,16 @@ function TableStatusRow({
 export default function PortfolioSecurityDetailPage() {
   const { portfolioId = '', instrumentId = '' } = useParams()
   const [searchParams, setSearchParams] = useSearchParams()
-  const [workspace, setWorkspace] = useState<PortfolioInstrumentHoldingProjectionResponse | null>(null)
+  const [workspaceResponse, setWorkspace] = useState<PortfolioInstrumentHoldingProjectionResponse | null>(null)
   const [workspaceLoading, setWorkspaceLoading] = useState(true)
   const [workspaceError, setWorkspaceError] = useState<string | null>(null)
-  const [positionLotsWorkspace, setPositionLotsWorkspace] = useState<PortfolioPositionLotListResponse | null>(null)
+  const [positionLotsResponse, setPositionLotsWorkspace] = useState<PortfolioPositionLotListResponse | null>(null)
   const [positionLotsLoading, setPositionLotsLoading] = useState(false)
   const [positionLotsError, setPositionLotsError] = useState<string | null>(null)
-  const [transactionsWorkspace, setTransactionsWorkspace] = useState<PortfolioTransactionListResponse | null>(null)
+  const [transactionsResponse, setTransactionsWorkspace] = useState<PortfolioTransactionListResponse | null>(null)
   const [transactionsLoading, setTransactionsLoading] = useState(false)
   const [transactionsError, setTransactionsError] = useState<string | null>(null)
-  const [instrumentChartWorkspace, setInstrumentChartWorkspace] = useState<PortfolioInstrumentPriceChartResponse | null>(null)
+  const [instrumentChartResponse, setInstrumentChartWorkspace] = useState<PortfolioInstrumentPriceChartResponse | null>(null)
   const [instrumentChartLoading, setInstrumentChartLoading] = useState(false)
   const [instrumentChartError, setInstrumentChartError] = useState<string | null>(null)
 
@@ -108,6 +108,23 @@ export default function PortfolioSecurityDetailPage() {
   const selectedPositionLotId = searchParams.get('position_lot_id')
   const detailTab = parseDetailTab(searchParams.get('detail_tab'))
   const chartRangeKey = parseChartRange(searchParams.get('chart_range'))
+  const workspace =
+    workspaceResponse?.portfolio_id === portfolioId &&
+    (!workspaceResponse.row ||
+      workspaceResponse.row.instrument_core.instrument_id === instrumentId) &&
+    (!requestedAsOfDate || workspaceResponse.as_of_date === requestedAsOfDate)
+      ? workspaceResponse
+      : null
+  const positionLotsWorkspace =
+    positionLotsResponse?.portfolio_id === portfolioId &&
+    positionLotsResponse.position_lots.every((positionLot) => positionLot.instrument_id === instrumentId)
+      ? positionLotsResponse
+      : null
+  const transactionsWorkspace =
+    transactionsResponse?.portfolio_id === portfolioId &&
+    transactionsResponse.transactions.every((transaction) => transaction.instrument_id === instrumentId)
+      ? transactionsResponse
+      : null
   const selectedRow = workspace?.row ?? null
   const selectedPositionLots = positionLotsWorkspace?.position_lots ?? []
   const selectedTransactions = transactionsWorkspace?.transactions ?? []
@@ -116,6 +133,13 @@ export default function PortfolioSecurityDetailPage() {
     selectedPositionLots[0] ??
     null
   const resolvedAsOfDate = workspace?.as_of_date || requestedAsOfDate
+  const instrumentChartWorkspace =
+    instrumentChartResponse?.portfolio_id === portfolioId &&
+    instrumentChartResponse.instrument_core.instrument_id === instrumentId &&
+    instrumentChartResponse.range_key === chartRangeKey &&
+    (!resolvedAsOfDate || instrumentChartResponse.as_of_date === resolvedAsOfDate)
+      ? instrumentChartResponse
+      : null
   const baseCurrency = workspace?.base_currency ?? selectedRow?.instrument_core.currency ?? instrumentChartWorkspace?.currency ?? 'USD'
   const selectedRowIdentifier = selectedRow ? primaryIdentifier(selectedRow) : instrumentId
   const selectedRowUnrealizedBase =
@@ -137,23 +161,47 @@ export default function PortfolioSecurityDetailPage() {
     instrumentChartWorkspace?.chart_basis ?? instrumentChartWorkspace?.metric_family,
   )
   const latestPerformancePoint = instrumentChartWorkspace?.points[instrumentChartWorkspace.points.length - 1] ?? null
+  const positionLotsPending =
+    workspaceLoading ||
+    positionLotsLoading ||
+    Boolean(resolvedAsOfDate && !positionLotsWorkspace && !positionLotsError)
+  const transactionsPending =
+    workspaceLoading ||
+    transactionsLoading ||
+    Boolean(resolvedAsOfDate && !transactionsWorkspace && !transactionsError)
+  const instrumentChartPending =
+    workspaceLoading ||
+    instrumentChartLoading ||
+    Boolean(resolvedAsOfDate && !instrumentChartWorkspace && !instrumentChartError)
 
   const detailTabs = [
     { key: 'overview', label: 'Overview', meta: selectedRow ? selectedRow.instrument_core.instrument_type : 'Instrument' },
     {
       key: 'transactions',
       label: 'Transactions',
-      meta: transactionsLoading ? '...' : transactionsWorkspace ? String(transactionsWorkspace.summary.total_transactions) : '0',
+      meta: transactionsPending
+        ? 'Loading'
+        : transactionsWorkspace
+          ? String(transactionsWorkspace.summary.total_transactions)
+          : '—',
     },
     {
       key: 'lots',
       label: 'PositionLots',
-      meta: positionLotsLoading ? '...' : positionLotsWorkspace ? String(positionLotsWorkspace.summary.position_lot_count) : '0',
+      meta: positionLotsPending
+        ? 'Loading'
+        : positionLotsWorkspace
+          ? String(positionLotsWorkspace.summary.position_lot_count)
+          : '—',
     },
     {
       key: 'realizations',
       label: 'Realizations',
-      meta: positionLotsLoading ? '...' : selectedPositionLot ? String(selectedPositionLot.realization_count) : '0',
+      meta: positionLotsPending
+        ? 'Loading'
+        : positionLotsWorkspace
+          ? String(selectedPositionLot?.realization_count ?? 0)
+          : '—',
     },
   ] as const
 
@@ -374,7 +422,7 @@ export default function PortfolioSecurityDetailPage() {
     }
 
     let cancelled = false
-    setInstrumentChartWorkspace((current) => (current?.instrument_core.instrument_id === instrumentId ? current : null))
+    setInstrumentChartWorkspace(null)
     setInstrumentChartError(null)
     setInstrumentChartLoading(true)
 
@@ -406,8 +454,15 @@ export default function PortfolioSecurityDetailPage() {
   }, [instrumentId, chartRangeKey, portfolioId, resolvedAsOfDate])
 
   return (
-    <PortfolioWorkspaceLayout activeSection="Holdings" toolbarLabel={workspace?.view_label ?? 'View: Holdings'}>
-      <section className="portfolio-detail-surface portfolio-security-detail">
+    <PortfolioWorkspaceLayout
+      activeSection="Holdings"
+      toolbarLabel={workspace?.view_label ?? 'View: Holdings'}
+      busy={workspaceLoading || positionLotsPending || transactionsPending || instrumentChartPending}
+    >
+      <section
+        className="portfolio-detail-surface portfolio-security-detail"
+        aria-busy={workspaceLoading || positionLotsPending || transactionsPending || instrumentChartPending}
+      >
         <div className="portfolio-security-detail-nav">
           <Link className="table-inline-link" to={backToHoldingsPath}>
             Back to Holdings
@@ -460,7 +515,7 @@ export default function PortfolioSecurityDetailPage() {
           <div className="portfolio-security-chart-main">
             <InstrumentPriceChart
               chart={instrumentChartWorkspace}
-              loading={instrumentChartLoading}
+              loading={instrumentChartPending}
               error={instrumentChartError}
               rangeKey={chartRangeKey}
               onRangeChange={(rangeKey) => updateSearchParam('chart_range', rangeKey)}
@@ -547,11 +602,11 @@ export default function PortfolioSecurityDetailPage() {
               <div className="portfolio-detail-toolbar holdings-side-toolbar">
                 <div className="panel-title">Account Slices</div>
                 <div className="portfolio-detail-meta">
-                  {positionLotsLoading ? 'Loading' : `${accountSlices.length} accounts`}
+                  {positionLotsPending ? 'Loading' : `${accountSlices.length} accounts`}
                 </div>
               </div>
               <div className="portfolio-security-account-list">
-                {positionLotsLoading ? (
+                {positionLotsPending ? (
                   <div className="empty-state">Loading account positions.</div>
                 ) : positionLotsError ? (
                   <div className="empty-state table-status-cell-error">{positionLotsError}</div>
@@ -588,7 +643,7 @@ export default function PortfolioSecurityDetailPage() {
                 <div className="panel-title">Linked Transactions</div>
                 <div className="portfolio-detail-meta">{resolvedAsOfDate || '—'}</div>
               </div>
-              {transactionsLoading ? (
+              {transactionsPending ? (
                 <div className="portfolio-detail-meta">Loading</div>
               ) : transactionsWorkspace ? (
                 <div className="portfolio-detail-meta">{transactionsWorkspace.summary.total_transactions} facts</div>
@@ -606,7 +661,7 @@ export default function PortfolioSecurityDetailPage() {
                   </tr>
                 </thead>
                 <tbody>
-                  {transactionsLoading ? (
+                  {transactionsPending ? (
                     <TableStatusRow colSpan={5} label="Loading" />
                   ) : transactionsError ? (
                     <TableStatusRow colSpan={5} label={transactionsError} tone="error" />
@@ -664,7 +719,7 @@ export default function PortfolioSecurityDetailPage() {
                 <div className="panel-title">PositionLots</div>
                 <div className="portfolio-detail-meta">{selectedRow?.instrument_core.instrument_name ?? instrumentId}</div>
               </div>
-              {positionLotsLoading ? (
+              {positionLotsPending ? (
                 <div className="portfolio-detail-meta">Loading</div>
               ) : positionLotsWorkspace ? (
                 <div className="portfolio-detail-meta">
@@ -687,7 +742,7 @@ export default function PortfolioSecurityDetailPage() {
                     </tr>
                   </thead>
                   <tbody>
-                    {positionLotsLoading ? (
+                    {positionLotsPending ? (
                       <TableStatusRow colSpan={7} label="Loading" />
                     ) : positionLotsError ? (
                       <TableStatusRow colSpan={7} label={positionLotsError} tone="error" />
@@ -788,11 +843,11 @@ export default function PortfolioSecurityDetailPage() {
                 </div>
               </div>
               <div className="portfolio-detail-meta">
-                {positionLotsLoading
+                {positionLotsPending
                   ? 'Loading'
                   : selectedPositionLot
                     ? `${selectedPositionLot.realization_count} matched exits`
-                    : '0 matched exits'}
+                    : 'No lot'}
               </div>
             </div>
             <div className="table-shell">
@@ -808,7 +863,7 @@ export default function PortfolioSecurityDetailPage() {
                   </tr>
                 </thead>
                 <tbody>
-                  {positionLotsLoading ? (
+                  {positionLotsPending ? (
                     <TableStatusRow colSpan={6} label="Loading" />
                   ) : positionLotsError ? (
                     <TableStatusRow colSpan={6} label={positionLotsError} tone="error" />

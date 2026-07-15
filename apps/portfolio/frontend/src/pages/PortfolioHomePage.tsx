@@ -11,6 +11,7 @@ import {
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom'
 
 import CalculationStatus from '../components/CalculationStatus'
+import HoldingsTotalRow, { isPortfolioReturnColumn } from '../components/HoldingsTotalRow'
 import PortfolioTableViewControls, { type PortfolioTableViewOption } from '../components/PortfolioTableViewControls'
 import PortfolioWorkspaceLayout from '../components/PortfolioWorkspaceLayout'
 import QualityWarningsNotice from '../components/QualityWarningsNotice'
@@ -41,6 +42,7 @@ import {
   type PortfolioTaxonomyCatalogResponse,
   type PortfolioTaxonomyNodeRecord,
 } from '../lib/api'
+import { baseAmountForRow, normalizedCurrency } from '../lib/holdingAmounts'
 import { buildPortfolioHoldingDetailPath } from '../lib/navigation'
 
 type HoldingsColumnKey =
@@ -187,7 +189,6 @@ type HoldingsViewStore = {
 
 const LOCKED_HOLDINGS_COLUMN: HoldingsColumnKey = 'instrument'
 const HOLDINGS_COLUMN_WIDTHS_STORAGE_KEY = 'portfolio_ops.portfolio.holdings.columnWidths.v4'
-const HOLDINGS_VIEWS_STORAGE_KEY = 'portfolio_ops.portfolio.holdings.views.v4'
 const HOLDINGS_COLUMN_MIN_WIDTH = 84
 const HOLDINGS_COLUMN_MAX_WIDTH = 520
 
@@ -454,6 +455,43 @@ function primaryIdentifier(row: PortfolioHoldingRow) {
   )
 }
 
+function instrumentTrendCoverageLabel(row: PortfolioHoldingRow) {
+  const basis = row.instrument_trend_basis ? formatLabel(row.instrument_trend_basis) : 'Unavailable basis'
+  const coverage = row.instrument_trend_coverage
+  const state = formatLabel(coverage?.state ?? 'unavailable')
+  const observationCount = coverage?.observation_count ?? 0
+  return `Trend: ${basis} · ${state} · ${observationCount} observation${observationCount === 1 ? '' : 's'}`
+}
+
+function instrumentTrendReasonLabel(row: PortfolioHoldingRow) {
+  const basis = row.instrument_trend_basis ? formatLabel(row.instrument_trend_basis) : 'trend basis'
+  switch (row.instrument_trend_reason) {
+    case 'selected_more_complete_alternate_series':
+      return `Using ${basis} because it provides more complete history than the preferred basis.`
+    case 'selected_split_adjusted_raw_price_series':
+      return `Raw ${basis} history was adjusted across confirmed split ratios.`
+    case 'selected_series_has_single_observation':
+      return 'Trend history has only one observation.'
+    case 'raw_price_split_evidence_unconfirmed':
+      return 'Trend withheld because split evidence is not confirmed.'
+    case 'raw_price_split_ratio_invalid':
+      return 'Trend withheld because the confirmed split ratio is invalid.'
+    case 'raw_price_split_fraction_treatment_insufficient':
+      return 'Trend withheld because split fraction treatment is insufficient.'
+    case 'raw_price_split_effective_date_invalid':
+      return 'Trend withheld because the split effective date is invalid.'
+    case 'selected_policy_series':
+      return 'Policy-preferred trend basis selected.'
+    case 'quote_policy_unavailable':
+    case 'quote_series_unavailable':
+      return 'Trend unavailable because no eligible quote series was found.'
+    default:
+      return row.instrument_trend_reason
+        ? `Trend status: ${formatLabel(row.instrument_trend_reason)}.`
+        : 'Trend selection reason unavailable.'
+  }
+}
+
 function finiteNumber(value: number | null | undefined) {
   return typeof value === 'number' && Number.isFinite(value) ? value : null
 }
@@ -537,26 +575,6 @@ function sumCompleteNumbers(rows: PortfolioHoldingRow[], accessor: (row: Portfol
     total += value
   }
   return total
-}
-
-function normalizedCurrency(value: string | null | undefined) {
-  return String(value || '').trim().toUpperCase()
-}
-
-function baseAmountForRow(
-  row: PortfolioHoldingRow,
-  baseCurrency: string,
-  baseValue: number | null | undefined,
-  localValue: number | null | undefined,
-) {
-  const resolvedBaseValue = finiteNumber(baseValue)
-  if (resolvedBaseValue != null) {
-    return resolvedBaseValue
-  }
-  if (normalizedCurrency(row.instrument_core.currency) === normalizedCurrency(baseCurrency)) {
-    return finiteNumber(localValue)
-  }
-  return null
 }
 
 function isCashHoldingRow(row: PortfolioHoldingRow) {
@@ -1307,13 +1325,9 @@ function normalizeHoldingsViewStore(value: unknown): HoldingsViewStore {
     const storedView = storedViewById.get(defaultView.id)
     return storedView ? { ...storedView, readonly: true } : defaultView
   })
-  const customViews = storedViews
-    ? storedViews.filter((view) => !SYSTEM_HOLDINGS_VIEW_IDS.has(view.id)).map((view) => ({ ...view, readonly: false }))
-    : Array.isArray((record as { customViews?: unknown }).customViews)
-      ? ((record as { customViews: unknown[] }).customViews)
-          .map((view) => normalizeHoldingsTableView(view, false))
-          .filter(isActiveStoredHoldingsView)
-      : []
+  const customViews = (storedViews || [])
+    .filter((view) => !SYSTEM_HOLDINGS_VIEW_IDS.has(view.id))
+    .map((view) => ({ ...view, readonly: false }))
   const views = [...systemViews, ...customViews]
   const knownViewIds = new Set(views.map((view) => view.id))
   const activeViewId =
@@ -1323,34 +1337,8 @@ function normalizeHoldingsViewStore(value: unknown): HoldingsViewStore {
   return { activeViewId, views }
 }
 
-function loadHoldingsViewStore(): HoldingsViewStore {
-  if (typeof window === 'undefined') {
-    return normalizeHoldingsViewStore(null)
-  }
-  try {
-    const rawValue = window.localStorage.getItem(HOLDINGS_VIEWS_STORAGE_KEY)
-    if (rawValue) {
-      return normalizeHoldingsViewStore(JSON.parse(rawValue))
-    }
-  } catch {
-    return normalizeHoldingsViewStore(null)
-  }
-  return normalizeHoldingsViewStore(null)
-}
-
-function saveHoldingsViewStore(store: HoldingsViewStore) {
-  if (typeof window === 'undefined') {
-    return
-  }
-  try {
-    window.localStorage.setItem(HOLDINGS_VIEWS_STORAGE_KEY, JSON.stringify(store))
-  } catch {
-    return
-  }
-}
-
 function getHoldingsViews(store: HoldingsViewStore) {
-  return store.views.length ? store.views : SYSTEM_HOLDINGS_VIEWS
+  return store.views
 }
 
 function getHoldingsViewById(store: HoldingsViewStore, viewId: string) {
@@ -1499,6 +1487,7 @@ function holdingColumnTotalExportValue(
   column: HoldingsColumnKey,
   rows: PortfolioHoldingRow[],
   context: HoldingsColumnContext,
+  allowBlendedInstrumentReturn = true,
 ): string | number | null {
   switch (column) {
     case 'instrument':
@@ -1524,13 +1513,21 @@ function holdingColumnTotalExportValue(
     case 'unrealized_pct':
       return totalUnrealizedPct(rows, context.workspace)
     case 'instrument_return_1w':
-      return weightedHoldingMetric(rows, context.workspace, (row) => row.instrument_return_1w)
+      return allowBlendedInstrumentReturn
+        ? weightedHoldingMetric(rows, context.workspace, (row) => row.instrument_return_1w)
+        : null
     case 'instrument_return_mtd':
-      return weightedHoldingMetric(rows, context.workspace, (row) => row.instrument_return_mtd)
+      return allowBlendedInstrumentReturn
+        ? weightedHoldingMetric(rows, context.workspace, (row) => row.instrument_return_mtd)
+        : null
     case 'instrument_return_ytd':
-      return weightedHoldingMetric(rows, context.workspace, (row) => row.instrument_return_ytd)
+      return allowBlendedInstrumentReturn
+        ? weightedHoldingMetric(rows, context.workspace, (row) => row.instrument_return_ytd)
+        : null
     case 'instrument_return_1y':
-      return weightedHoldingMetric(rows, context.workspace, (row) => row.instrument_return_1y)
+      return allowBlendedInstrumentReturn
+        ? weightedHoldingMetric(rows, context.workspace, (row) => row.instrument_return_1y)
+        : null
     case 'instrument_current_drawdown':
       return groupedCurrentDrawdown(rows, context.workspace)
     case 'instrument_volatility_1m':
@@ -1577,6 +1574,13 @@ const HOLDINGS_COLUMN_DEFINITIONS: Record<HoldingsColumnKey, HoldingsColumnDefin
     render: (row) => (
       <div className="holding-name-stack">
         <span>{row.instrument_core.instrument_name}</span>
+        <span className="holding-secondary holding-trend-summary">{instrumentTrendCoverageLabel(row)}</span>
+        <span
+          className="holding-secondary holding-trend-reason"
+          title={instrumentTrendReasonLabel(row)}
+        >
+          {instrumentTrendReasonLabel(row)}
+        </span>
       </div>
     ),
     sortValue: (row) => row.instrument_core.instrument_name,
@@ -2002,13 +2006,16 @@ export default function PortfolioHomePage() {
   const navigate = useNavigate()
   const { portfolioId = '' } = useParams()
   const [searchParams, setSearchParams] = useSearchParams()
-  const [workspace, setWorkspace] = useState<HoldingsWorkspaceResponse | null>(null)
-  const [taxonomyCatalog, setTaxonomyCatalog] = useState<PortfolioTaxonomyCatalogResponse | null>(null)
+  const [workspaceResponse, setWorkspace] = useState<HoldingsWorkspaceResponse | null>(null)
+  const [taxonomyCatalogResponse, setTaxonomyCatalog] = useState<PortfolioTaxonomyCatalogResponse | null>(null)
+  const workspace = workspaceResponse?.portfolio_id === portfolioId ? workspaceResponse : null
+  const taxonomyCatalog =
+    taxonomyCatalogResponse?.portfolio_id === portfolioId ? taxonomyCatalogResponse : null
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [taxonomyError, setTaxonomyError] = useState<string | null>(null)
   const [riskPolicyRevision, setRiskPolicyRevision] = useState(0)
-  const initialHoldingsViewStore = useMemo(() => loadHoldingsViewStore(), [])
+  const initialHoldingsViewStore = useMemo(() => normalizeHoldingsViewStore(null), [])
   const initialHoldingsViewState = useMemo(
     () => resolveHoldingsViewState(initialHoldingsViewStore, initialHoldingsViewStore.activeViewId),
     [initialHoldingsViewStore],
@@ -2021,7 +2028,9 @@ export default function PortfolioHomePage() {
     [searchParams],
   )
   const [holdingsViewStore, setHoldingsViewStore] = useState<HoldingsViewStore>(() => initialHoldingsViewStore)
-  const [holdingsViewStoreRemoteReady, setHoldingsViewStoreRemoteReady] = useState(false)
+  const [holdingsViewStoreReadyPortfolioId, setHoldingsViewStoreReadyPortfolioId] =
+    useState<string | null>(null)
+  const [holdingsViewStoreError, setHoldingsViewStoreError] = useState<string | null>(null)
   const [activeHoldingsViewId, setActiveHoldingsViewId] = useState(initialHoldingsViewStore.activeViewId)
   const [holdingsColumns, setHoldingsColumns] = useState<HoldingsColumnKey[]>(() => initialHoldingsViewState.columns)
   const [holdingsColumnWidths, setHoldingsColumnWidths] = useState<Partial<Record<HoldingsColumnKey, number>>>(() =>
@@ -2468,7 +2477,7 @@ export default function PortfolioHomePage() {
         ...visibleColumns.map((column, index) =>
           index === 0
             ? nonCashPortfolioLabel
-            : holdingColumnTotalExportValue(column.key, nonCashPortfolioRows, columnContext),
+            : holdingColumnTotalExportValue(column.key, nonCashPortfolioRows, columnContext, false),
           ),
       ])
     }
@@ -2502,7 +2511,9 @@ export default function PortfolioHomePage() {
 
     rows.push([
       ...(holdingsGroupBy !== 'none' ? ['Portfolio Total'] : []),
-      ...visibleColumns.map((column) => holdingColumnTotalExportValue(column.key, sortedHoldingRows, columnContext)),
+      ...visibleColumns.map((column) =>
+        holdingColumnTotalExportValue(column.key, sortedHoldingRows, columnContext, false),
+      ),
     ])
 
     downloadTable(`holdings-${workspace.portfolio_id}-${workspace.as_of_date}`, rows, format, 'Holdings')
@@ -2569,22 +2580,29 @@ export default function PortfolioHomePage() {
       return null
     }
     return (
-      <tr key={key} className={className}>
-        {visibleColumns.map((column, index) => {
+      <HoldingsTotalRow
+        key={key}
+        className={className}
+        label={label}
+        cells={visibleColumns.map((column, index) => {
+          const withholdInstrumentReturn = isPortfolioReturnColumn(column.key)
           const classNames = [
             holdingsAlignmentClass(column),
             isHoldingsChartColumn(column.key) ? 'chart-cell' : '',
-            column.totalClassName?.(rows, columnContext) ?? '',
+            withholdInstrumentReturn ? '' : column.totalClassName?.(rows, columnContext) ?? '',
           ]
             .filter(Boolean)
             .join(' ')
-          return (
-            <td key={column.key} className={classNames || undefined}>
-              {index === 0 ? <strong>{label}</strong> : column.total?.(rows, columnContext) ?? ''}
-            </td>
-          )
+          return {
+            key: column.key,
+            className: classNames || undefined,
+            content:
+              index === 0 || withholdInstrumentReturn
+                ? undefined
+                : column.total?.(rows, columnContext) ?? '',
+          }
         })}
-      </tr>
+      />
     )
   }
 
@@ -2622,12 +2640,18 @@ export default function PortfolioHomePage() {
 
   useEffect(() => {
     if (!portfolioId) {
-      setHoldingsViewStoreRemoteReady(false)
+      setHoldingsViewStoreReadyPortfolioId(null)
+      setHoldingsViewStoreError(null)
       return
     }
 
     let cancelled = false
-    setHoldingsViewStoreRemoteReady(false)
+    const defaultStore = normalizeHoldingsViewStore(null)
+    setHoldingsViewStoreReadyPortfolioId(null)
+    setHoldingsViewStoreError(null)
+    setHoldingsViewStore(defaultStore)
+    setActiveHoldingsViewId(defaultStore.activeViewId)
+    applyHoldingsViewState(resolveHoldingsViewState(defaultStore, defaultStore.activeViewId))
     getPortfolioTableViewStore<HoldingsViewStore>(portfolioId, 'holdings')
       .then((response) => {
         if (cancelled) {
@@ -2635,15 +2659,19 @@ export default function PortfolioHomePage() {
         }
         const nextStore = response.store
           ? normalizeHoldingsViewStore(response.store)
-          : normalizeHoldingsViewStore(loadHoldingsViewStore())
+          : defaultStore
         setHoldingsViewStore(nextStore)
         setActiveHoldingsViewId(nextStore.activeViewId)
         applyHoldingsViewState(resolveHoldingsViewState(nextStore, nextStore.activeViewId))
-        setHoldingsViewStoreRemoteReady(true)
+        setHoldingsViewStoreReadyPortfolioId(portfolioId)
       })
       .catch((requestError: unknown) => {
         if (!cancelled) {
-          console.warn('Failed to load persisted holdings views.', requestError)
+          setHoldingsViewStoreError(
+            `Holdings table views unavailable: ${
+              requestError instanceof Error ? requestError.message : 'backend read failed.'
+            }`,
+          )
         }
       })
 
@@ -2653,14 +2681,17 @@ export default function PortfolioHomePage() {
   }, [portfolioId])
 
   useEffect(() => {
-    saveHoldingsViewStore(holdingsViewStore)
-    if (!portfolioId || !holdingsViewStoreRemoteReady) {
+    if (!portfolioId || holdingsViewStoreReadyPortfolioId !== portfolioId) {
       return
     }
     savePortfolioTableViewStore(portfolioId, 'holdings', holdingsViewStore).catch((requestError: unknown) => {
-      console.warn('Failed to persist holdings views.', requestError)
+      setHoldingsViewStoreError(
+        `Failed to save holdings table views: ${
+          requestError instanceof Error ? requestError.message : 'backend write failed.'
+        }`,
+      )
     })
-  }, [holdingsViewStore, holdingsViewStoreRemoteReady, portfolioId])
+  }, [holdingsViewStore, holdingsViewStoreReadyPortfolioId, portfolioId])
 
   useEffect(() => {
     if (typeof window === 'undefined') {
@@ -2804,7 +2835,11 @@ export default function PortfolioHomePage() {
   return (
     <>
       <NoticeToast notice={viewToast} onDismiss={() => setViewToast(null)} />
-      <PortfolioWorkspaceLayout activeSection="Holdings" toolbarLabel={workspace?.view_label ?? 'View: Holdings'}>
+      <PortfolioWorkspaceLayout
+        activeSection="Holdings"
+        toolbarLabel={workspace?.view_label ?? 'View: Holdings'}
+        busy={loading}
+      >
       <section className="portfolio-detail-surface holdings-surface">
         <div className="transaction-filter-bar holdings-filter-bar">
           <div className="transaction-filter-group holdings-filter-group">
@@ -2819,17 +2854,23 @@ export default function PortfolioHomePage() {
             </label>
           </div>
           <div className="transaction-filter-actions holdings-filter-actions">
-            <PortfolioTableViewControls
-              views={holdingsViews}
-              activeViewId={activeHoldingsViewId}
-              edited={holdingsViewEdited}
-              canSave
-              canDelete
-              onSelect={handleSelectHoldingsView}
-              onSave={handleSaveHoldingsView}
-              onSaveAs={handleSaveHoldingsViewAs}
-              onDelete={handleDeleteHoldingsView}
-            />
+            {holdingsViewStoreReadyPortfolioId === portfolioId ? (
+              <PortfolioTableViewControls
+                views={holdingsViews}
+                activeViewId={activeHoldingsViewId}
+                edited={holdingsViewEdited}
+                canSave
+                canDelete
+                onSelect={handleSelectHoldingsView}
+                onSave={handleSaveHoldingsView}
+                onSaveAs={handleSaveHoldingsViewAs}
+                onDelete={handleDeleteHoldingsView}
+              />
+            ) : (
+              <span className="portfolio-detail-meta">
+                {holdingsViewStoreError ? 'Table views unavailable' : 'Loading table views'}
+              </span>
+            )}
             <button
               type="button"
               className={`holdings-toolbar-button ${columnsEdited ? 'holdings-toolbar-button-active' : ''}`}
@@ -2860,6 +2901,11 @@ export default function PortfolioHomePage() {
         </div>
         {loading ? <CalculationStatus /> : null}
         {error ? <div className="error-state">{error}</div> : null}
+        {holdingsViewStoreError ? (
+          <div className="inline-notice inline-notice-error" role="alert">
+            {holdingsViewStoreError}
+          </div>
+        ) : null}
         <QualityWarningsNotice warnings={workspace?.quality_warnings} />
         {taxonomyError && holdingsGroupBy.startsWith('taxonomy') ? (
           <div className="inline-notice inline-notice-warning">{taxonomyError}</div>

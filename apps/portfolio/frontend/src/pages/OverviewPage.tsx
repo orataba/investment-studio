@@ -8,6 +8,7 @@ import BenchmarkSearchBox, {
 import CalculationStatus from '../components/CalculationStatus'
 import PerformanceNavChart from '../components/PerformanceNavChart'
 import PortfolioWorkspaceLayout from '../components/PortfolioWorkspaceLayout'
+import QualityWarningsNotice from '../components/QualityWarningsNotice'
 import RiskRankedBars from '../components/RiskRankedBars'
 import Sparkline from '../../../../../packages/ui/src/Sparkline'
 import { useModalDialog } from '../../../../../packages/ui/src/useModalDialog'
@@ -41,6 +42,15 @@ import {
   formatUnitPrice,
   signedValueClass,
 } from '../lib/format'
+import {
+  baseAmountForRow,
+  completeAmountSum,
+  holdingAmountForDisplay,
+} from '../lib/holdingAmounts'
+import {
+  assessBenchmarkComparisonGuard,
+  type BenchmarkComparisonMode,
+} from '../lib/benchmarkComparisonGuard'
 import { buildMonthlyBuckets, buildMonthlyReturnMatrixRows, MONTH_LABELS } from '../lib/monthlyReturns'
 import { buildTwrIndexPoints } from '../lib/performanceSeries'
 
@@ -49,8 +59,8 @@ type AllocationBucket = {
   label: string
   topLevelId: string
   topLevelLabel: string
-  value: number
-  weight: number
+  value: number | null
+  weight: number | null
   holdingsCount: number
 }
 
@@ -143,6 +153,12 @@ function isCashHoldingRow(row: PortfolioHoldingRow) {
   )
 }
 
+function hasFiniteAllocation(
+  row: PortfolioHoldingRow,
+): row is PortfolioHoldingRow & { allocation: number } {
+  return row.allocation != null && Number.isFinite(row.allocation)
+}
+
 function signedPercent(value: number | null | undefined, digits = 2) {
   if (value == null || Number.isNaN(value)) {
     return '—'
@@ -211,15 +227,23 @@ function formatDateKey(date: Date) {
   return `${year}-${month}-${day}`
 }
 
+function previousDateKey(dateKey: string | null) {
+  const parsedDate = dateKey ? dateFromString(dateKey) : null
+  return parsedDate ? formatDateKey(addDays(parsedDate, -1)) : null
+}
+
 function periodReturnFromTwr(
   points: PortfolioDailyPerformancePoint[],
   targetDate: string | null,
-  options: { fallbackToFirst?: boolean; includeTargetDate?: boolean } = {},
+  options: {
+    includeTargetDate?: boolean
+    requireReliableBoundaries?: boolean
+    effectiveEndDate?: string | null
+  } = {},
 ) {
-  const fallbackToFirst = options.fallbackToFirst ?? true
   const includeTargetDate = options.includeTargetDate ?? false
   const sortedPoints = points
-    .filter((point) => point.daily_twr != null && Number.isFinite(point.daily_twr))
+    .filter((point) => !options.effectiveEndDate || point.as_of_date <= options.effectiveEndDate)
     .slice()
     .sort((left, right) => left.as_of_date.localeCompare(right.as_of_date))
   if (!sortedPoints.length) {
@@ -231,16 +255,51 @@ function periodReturnFromTwr(
         includeTargetDate ? point.as_of_date >= targetDate : point.as_of_date > targetDate,
       )
     : sortedPoints
-  if (!periodPoints.length && !fallbackToFirst) {
+  if (!periodPoints.length) {
     return null
   }
-  const returnPoints = periodPoints.length ? periodPoints : sortedPoints
+  const candidatePoints = periodPoints
+  if (options.requireReliableBoundaries) {
+    const anchorPoint = targetDate
+      ? sortedPoints.find((point) => point.as_of_date === targetDate) ?? null
+      : null
+    const endPoint = candidatePoints[candidatePoints.length - 1] ?? null
+    const reliableValuation = (point: PortfolioDailyPerformancePoint | null) =>
+      point != null &&
+      point.ending_nav != null &&
+      point.valuation_coverage_state === 'complete'
+    const continuousPath = candidatePoints.every((point, index) => {
+      const previousDate = index === 0 ? anchorPoint?.as_of_date : candidatePoints[index - 1]?.as_of_date
+      const dayGap = previousDate ? dayDiff(previousDate, point.as_of_date) : null
+      return (
+        dayGap === 1 &&
+        point.return_coverage_state === 'complete' &&
+        point.daily_twr != null &&
+        Number.isFinite(point.daily_twr)
+      )
+    })
+    if (!reliableValuation(anchorPoint) || !reliableValuation(endPoint) || !continuousPath) {
+      return null
+    }
+  }
+  const returnPoints = candidatePoints.filter(
+    (point) => point.daily_twr != null && Number.isFinite(point.daily_twr),
+  )
+  if (!returnPoints.length) {
+    return null
+  }
 
   return returnPoints.reduce((growthIndex, point) => growthIndex * (1 + (point.daily_twr ?? 0)), 1) - 1
 }
 
-function buildPortfolioReturnMetrics(points: PortfolioDailyPerformancePoint[]) {
-  const sortedPoints = points.slice().sort((left, right) => left.as_of_date.localeCompare(right.as_of_date))
+function buildPortfolioReturnMetrics(
+  points: PortfolioDailyPerformancePoint[],
+  effectiveEndDate?: string | null,
+) {
+  const sortedPoints = points
+    .filter((point) => !effectiveEndDate || point.as_of_date <= effectiveEndDate)
+    .slice()
+    .sort((left, right) => left.as_of_date.localeCompare(right.as_of_date))
   const latestPoint = sortedPoints[sortedPoints.length - 1]
   const latestDate = latestPoint ? dateFromString(latestPoint.as_of_date) : null
   if (!latestPoint || !latestDate) {
@@ -255,23 +314,25 @@ function buildPortfolioReturnMetrics(points: PortfolioDailyPerformancePoint[]) {
   const yearStart = new Date(latestDate.getFullYear(), 0, 1)
   const priorMonthEnd = addDays(monthStart, -1)
   const priorYearEnd = addDays(yearStart, -1)
-  const hasYearStartAnchor = sortedPoints.some(
-    (point) => point.ending_nav != null && point.as_of_date <= formatDateKey(yearStart),
-  )
+  const effectiveOptions = { requireReliableBoundaries: true, effectiveEndDate }
 
   return {
-    oneWeek: periodReturnFromTwr(sortedPoints, formatDateKey(addDays(latestDate, -7))),
-    mtd: periodReturnFromTwr(sortedPoints, formatDateKey(priorMonthEnd), { fallbackToFirst: false }),
-    ytd: hasYearStartAnchor
-      ? periodReturnFromTwr(sortedPoints, formatDateKey(priorYearEnd), { fallbackToFirst: false })
-      : null,
+    oneWeek: periodReturnFromTwr(sortedPoints, formatDateKey(addDays(latestDate, -7)), {
+      ...effectiveOptions,
+    }),
+    mtd: periodReturnFromTwr(sortedPoints, formatDateKey(priorMonthEnd), {
+      ...effectiveOptions,
+    }),
+    ytd: periodReturnFromTwr(sortedPoints, formatDateKey(priorYearEnd), {
+      ...effectiveOptions,
+    }),
   }
 }
 
 function periodReturnFromValuePoints(
   points: Array<{ date: string; value: number }>,
   targetDate: string | null,
-  fallbackToFirst = true,
+  options: { requireExactAnchor?: boolean; requiredEndDate?: string | null } = {},
 ) {
   const sortedPoints = points
     .filter((point) => Number.isFinite(point.value))
@@ -282,11 +343,16 @@ function periodReturnFromValuePoints(
   }
 
   const latestPoint = sortedPoints[sortedPoints.length - 1]
+  if (options.requiredEndDate && latestPoint.date !== options.requiredEndDate) {
+    return null
+  }
   const anchorPoint = targetDate
-    ? sortedPoints.reduce<PortfolioInstrumentPriceChartPoint | null>(
-        (current, point) => (point.date <= targetDate ? point : current),
-        null,
-      ) ?? (fallbackToFirst ? sortedPoints[0] : null)
+    ? options.requireExactAnchor
+      ? sortedPoints.find((point) => point.date === targetDate) ?? null
+      : sortedPoints.reduce<PortfolioInstrumentPriceChartPoint | null>(
+          (current, point) => (point.date <= targetDate ? point : current),
+          null,
+        )
     : sortedPoints[0]
   return anchorPoint && anchorPoint.value !== 0 ? latestPoint.value / anchorPoint.value - 1 : null
 }
@@ -438,9 +504,15 @@ function buildBenchmarkMetrics(
   const drawdowns = buildDrawdownMetrics(metricPoints)
 
   return {
-    oneWeek: periodReturnFromValuePoints(metricPoints, formatDateKey(addDays(latestDate, -7))),
-    mtd: periodReturnFromValuePoints(metricPoints, formatDateKey(priorMonthEnd), false),
-    ytd: periodReturnFromValuePoints(metricPoints, formatDateKey(priorYearEnd), false),
+    oneWeek: portfolioEndDate
+      ? periodReturnFromValuePoints(
+          metricPoints,
+          formatDateKey(addDays(latestDate, -7)),
+          { requireExactAnchor: true, requiredEndDate: portfolioEndDate },
+        )
+      : null,
+    mtd: periodReturnFromValuePoints(metricPoints, formatDateKey(priorMonthEnd)),
+    ytd: periodReturnFromValuePoints(metricPoints, formatDateKey(priorYearEnd)),
     sinceInception,
     annualizedReturn,
     annualizedVolatility,
@@ -459,6 +531,7 @@ function benchmarkNote(
   selected: SharedInstrumentRecord | null,
   loading: boolean,
   value: number | null | undefined,
+  mode: BenchmarkComparisonMode | null,
   formatter: (input: number | null | undefined) => string = signedPercent,
 ) {
   if (!selected) {
@@ -467,7 +540,10 @@ function benchmarkNote(
   if (loading) {
     return 'BM loading'
   }
-  return `BM ${formatter(value)}`
+  if (mode == null || mode === 'unavailable') {
+    return 'BM unavailable'
+  }
+  return `${mode === 'exploratory' ? 'Exploratory BM' : 'BM'} ${formatter(value)}`
 }
 
 function StrategySleeveDonut({
@@ -568,14 +644,14 @@ function accumulateBucket(
     label: string
     topLevelId: string
     topLevelLabel: string
-    value: number
-    weight: number
+    value: number | null
+    weight: number | null
   },
 ) {
   const current = buckets.get(args.id)
   if (current) {
-    current.value += args.value
-    current.weight += args.weight
+    current.value = current.value != null && args.value != null ? current.value + args.value : null
+    current.weight = current.weight != null && args.weight != null ? current.weight + args.weight : null
     current.holdingsCount += 1
     return
   }
@@ -766,24 +842,68 @@ export default function OverviewPage() {
   const sortedHoldings = useMemo(
     () =>
       [...nonCashHoldingsRows].sort(
-        (left, right) =>
-          (right.allocation ?? 0) - (left.allocation ?? 0) ||
-          (right.market_value_base ?? right.market_value ?? 0) - (left.market_value_base ?? left.market_value ?? 0),
+        (left, right) => {
+          const leftAllocation =
+            left.allocation != null && Number.isFinite(left.allocation) ? left.allocation : null
+          const rightAllocation =
+            right.allocation != null && Number.isFinite(right.allocation) ? right.allocation : null
+          if (leftAllocation == null || rightAllocation == null) {
+            if (leftAllocation != null) {
+              return -1
+            }
+            if (rightAllocation != null) {
+              return 1
+            }
+          } else {
+            const allocationDelta = rightAllocation - leftAllocation
+            if (allocationDelta) {
+              return allocationDelta
+            }
+          }
+          const leftValue = baseAmountForRow(
+            left,
+            resolvedBaseCurrency,
+            left.market_value_base,
+            left.market_value,
+          )
+          const rightValue = baseAmountForRow(
+            right,
+            resolvedBaseCurrency,
+            right.market_value_base,
+            right.market_value,
+          )
+          if (leftValue == null || rightValue == null) {
+            return leftValue == null ? (rightValue == null ? 0 : 1) : -1
+          }
+          return rightValue - leftValue
+        },
       ),
-    [nonCashHoldingsRows],
+    [nonCashHoldingsRows, resolvedBaseCurrency],
   )
   const holdingsMarketValueBase = useMemo(
     () =>
-      nonCashHoldingsRows.reduce(
-        (sum, row) => sum + (row.market_value_base ?? row.market_value ?? 0),
-        0,
+      completeAmountSum(
+        nonCashHoldingsRows.map((row) =>
+          baseAmountForRow(
+            row,
+            resolvedBaseCurrency,
+            row.market_value_base,
+            row.market_value,
+          ),
+        ),
       ),
-    [nonCashHoldingsRows],
+    [nonCashHoldingsRows, resolvedBaseCurrency],
   )
-  const cashValueRaw = (summary?.nav ?? 0) - holdingsMarketValueBase
-  const cashValue = Math.abs(cashValueRaw) < 1 ? 0 : cashValueRaw
-  const cashWeight = summary?.nav ? cashValue / summary.nav : null
-  const top5Weight = sortedHoldings.slice(0, 5).reduce((sum, row) => sum + (row.allocation ?? 0), 0)
+  const cashValue =
+    summary?.nav != null && holdingsMarketValueBase != null
+      ? summary.nav - holdingsMarketValueBase
+      : null
+  const cashWeight = summary?.nav && cashValue != null ? cashValue / summary.nav : null
+  const holdingsAllocationsComplete = nonCashHoldingsRows.every(hasFiniteAllocation)
+  const top5Holdings = sortedHoldings.slice(0, 5)
+  const top5Weight = holdingsAllocationsComplete
+    ? completeAmountSum(top5Holdings.map((row) => row.allocation))
+    : null
   const navChartPoints = useMemo(
     () =>
       (performanceWorkspace?.daily_series ?? [])
@@ -836,8 +956,14 @@ export default function OverviewPage() {
     >()
 
     nonCashHoldingsRows.forEach((row) => {
-      const value = row.market_value_base ?? row.market_value ?? 0
-      const weight = row.allocation ?? ((summary?.nav ?? 0) > 0 ? value / (summary?.nav ?? 1) : 0)
+      const value = baseAmountForRow(
+        row,
+        resolvedBaseCurrency,
+        row.market_value_base,
+        row.market_value,
+      )
+      const weight =
+        row.allocation != null && Number.isFinite(row.allocation) ? row.allocation : null
       const assignment = assignmentByInstrumentId.get(row.instrument_core.instrument_id)
       const leafNode = assignment ? nodesById.get(assignment.taxonomy_node_id) ?? null : null
       const path = leafNode ? resolveNodePath(leafNode.taxonomy_node_id, nodesById) : []
@@ -861,9 +987,25 @@ export default function OverviewPage() {
       })
     })
 
-    const sortedTopLevelBuckets = [...topLevelBuckets.values()].sort(
-      (left, right) => right.weight - left.weight || right.value - left.value,
-    )
+    const sortedTopLevelBuckets = [...topLevelBuckets.values()].sort((left, right) => {
+      if (left.weight == null || right.weight == null) {
+        if (left.weight != null) {
+          return -1
+        }
+        if (right.weight != null) {
+          return 1
+        }
+      } else {
+        const weightDelta = right.weight - left.weight
+        if (weightDelta) {
+          return weightDelta
+        }
+      }
+      if (left.value == null || right.value == null) {
+        return left.value == null ? (right.value == null ? 0 : 1) : -1
+      }
+      return right.value - left.value
+    })
 
     return {
       topLevelBuckets: sortedTopLevelBuckets,
@@ -873,39 +1015,117 @@ export default function OverviewPage() {
     defaultPlanningTaxonomyId,
     nonCashHoldingsRows,
     holdingsWorkspace?.as_of_date,
+    resolvedBaseCurrency,
     summary?.as_of_date,
     summary?.nav,
     taxonomyCatalog,
   ])
 
-  const sleeveRibbonSegments = composition.topLevelBuckets.map((bucket) => ({
-    id: bucket.id,
-    label: bucket.label,
-    value: bucket.weight,
-    valueLabel: formatPercent(bucket.weight),
-    detail: `${bucket.holdingsCount} lines · ${formatCurrency(bucket.value, resolvedBaseCurrency)}`,
-  }))
-  const topHoldingBarItems = sortedHoldings.slice(0, TOP_HOLDINGS_LIMIT).map((row) => ({
-    id: row.line_id,
-    label: row.instrument_core.instrument_name,
-    subtitle: composition.assignedLabelByInstrumentId.get(row.instrument_core.instrument_id)?.leafLabel ?? formatLabel(row.instrument_core.instrument_type),
-    value: row.allocation ?? 0,
-    valueLabel: formatPercent(row.allocation),
-    detail: formatCurrency(row.market_value_base ?? row.market_value, resolvedBaseCurrency),
-  }))
+  const completeSleeveBuckets = composition.topLevelBuckets.filter(
+    (bucket): bucket is AllocationBucket & { value: number; weight: number } =>
+      bucket.value != null && Number.isFinite(bucket.value) &&
+      bucket.weight != null && Number.isFinite(bucket.weight),
+  )
+  const sleeveRibbonSegments =
+    completeSleeveBuckets.length === composition.topLevelBuckets.length
+      ? completeSleeveBuckets.map((bucket) => ({
+          id: bucket.id,
+          label: bucket.label,
+          value: bucket.weight,
+          valueLabel: formatPercent(bucket.weight),
+          detail: `${bucket.holdingsCount} lines · ${formatCurrency(bucket.value, resolvedBaseCurrency)}`,
+        }))
+      : null
+  const topHoldingRows = sortedHoldings.slice(0, TOP_HOLDINGS_LIMIT)
+  const completeTopHoldingRows = topHoldingRows.filter(hasFiniteAllocation)
+  const topHoldingBarItems =
+    holdingsAllocationsComplete &&
+    holdingsMarketValueBase != null &&
+    completeTopHoldingRows.length === topHoldingRows.length
+      ? completeTopHoldingRows.map((row) => {
+          const marketValue = holdingAmountForDisplay(
+            row,
+            resolvedBaseCurrency,
+            row.market_value_base,
+            row.market_value,
+          )
+          return {
+            id: row.line_id,
+            label: row.instrument_core.instrument_name,
+            subtitle: composition.assignedLabelByInstrumentId.get(row.instrument_core.instrument_id)?.leafLabel ?? formatLabel(row.instrument_core.instrument_type),
+            value: row.allocation,
+            valueLabel: formatPercent(row.allocation),
+            detail: formatCurrency(marketValue.value, marketValue.currency),
+          }
+        })
+      : null
   const selectedBenchmarkInstrument =
     benchmarkInstruments.find((instrument) => instrument.instrument_id === benchmarkInstrumentId) ?? null
   const portfolioInceptionDate =
+    performanceWorkspace?.summary.effective_start_date ??
     performanceWorkspace?.summary.start_date ??
     performanceWorkspace?.daily_series.find((point) => point.ending_nav != null)?.as_of_date ??
     null
-  const benchmarkEndDate = performanceWorkspace?.summary.end_date ?? holdingsWorkspace?.as_of_date ?? summary?.as_of_date ?? null
+  const benchmarkEndDate =
+    performanceWorkspace?.summary.effective_end_date ??
+    performanceWorkspace?.summary.end_date ??
+    holdingsWorkspace?.as_of_date ??
+    summary?.as_of_date ??
+    null
+  const benchmarkStartBoundaryDate = previousDateKey(portfolioInceptionDate)
+  const benchmarkEligibleDates = useMemo(
+    () =>
+      (performanceWorkspace?.daily_series ?? [])
+        .filter(
+          (point) =>
+            portfolioInceptionDate != null &&
+            benchmarkEndDate != null &&
+            point.as_of_date >= portfolioInceptionDate &&
+            point.as_of_date <= benchmarkEndDate &&
+            Number.isFinite(point.daily_twr) &&
+            point.return_observation_eligible,
+        )
+        .map((point) => point.as_of_date)
+        .sort(),
+    [benchmarkEndDate, performanceWorkspace?.daily_series, portfolioInceptionDate],
+  )
+  const benchmarkGuard = useMemo(
+    () =>
+      selectedBenchmarkInstrument && benchmarkChart && benchmarkStartBoundaryDate
+        ? assessBenchmarkComparisonGuard({
+            chartBasis: benchmarkChart.chart_basis,
+            benchmarkCurrency: benchmarkChart.currency,
+            portfolioCurrency: resolvedBaseCurrency,
+            points: benchmarkChart.points,
+            startBoundaryDate: benchmarkStartBoundaryDate,
+            eligiblePortfolioDates: benchmarkEligibleDates,
+          })
+        : null,
+    [
+      benchmarkChart,
+      benchmarkEligibleDates,
+      benchmarkStartBoundaryDate,
+      resolvedBaseCurrency,
+      selectedBenchmarkInstrument,
+    ],
+  )
   const benchmarkMetrics = useMemo(
-    () => buildBenchmarkMetrics(benchmarkChart?.points ?? [], portfolioInceptionDate, benchmarkEndDate) ?? null,
-    [benchmarkChart, benchmarkEndDate, portfolioInceptionDate],
+    () =>
+      benchmarkGuard == null || benchmarkGuard.mode === 'unavailable'
+        ? null
+        : buildBenchmarkMetrics(
+            benchmarkChart?.points ?? [],
+            benchmarkStartBoundaryDate,
+            benchmarkEndDate,
+          ) ?? null,
+    [benchmarkChart, benchmarkEndDate, benchmarkGuard?.mode, benchmarkStartBoundaryDate],
   )
   const portfolioReturnMetrics = useMemo(
-    () => buildPortfolioReturnMetrics(performanceWorkspace?.daily_series ?? []),
+    () =>
+      buildPortfolioReturnMetrics(
+        performanceWorkspace?.daily_series ?? [],
+        performanceWorkspace?.summary.effective_end_date ?? performanceWorkspace?.summary.end_date,
+      ),
     [performanceWorkspace],
   )
   const portfolioRiskMetrics = useMemo(
@@ -925,21 +1145,37 @@ export default function OverviewPage() {
         {
           label: '1W Return',
           value: signedPercent(portfolioReturnMetrics.oneWeek),
-          benchmark: benchmarkNote(selectedBenchmarkInstrument, benchmarkLoading, benchmarkMetrics?.oneWeek),
+          benchmark: benchmarkNote(
+            selectedBenchmarkInstrument,
+            benchmarkLoading,
+            benchmarkMetrics?.oneWeek,
+            benchmarkGuard?.mode ?? null,
+          ),
           emphasis: true,
           toneClassName: signedValueClass(portfolioReturnMetrics.oneWeek),
         },
         {
           label: 'MTD',
           value: signedPercent(portfolioReturnMetrics.mtd),
-          benchmark: benchmarkNote(selectedBenchmarkInstrument, benchmarkLoading, benchmarkMetrics?.mtd),
+          benchmark: benchmarkNote(
+            selectedBenchmarkInstrument,
+            benchmarkLoading,
+            benchmarkMetrics?.mtd,
+            benchmarkGuard?.mode ?? null,
+          ),
           emphasis: true,
           toneClassName: signedValueClass(portfolioReturnMetrics.mtd),
+          title: portfolioReturnMetrics.mtd == null ? 'Reliable month-start boundary and continuous coverage required.' : undefined,
         },
         {
           label: 'YTD',
           value: signedPercent(portfolioReturnMetrics.ytd),
-          benchmark: benchmarkNote(selectedBenchmarkInstrument, benchmarkLoading, benchmarkMetrics?.ytd),
+          benchmark: benchmarkNote(
+            selectedBenchmarkInstrument,
+            benchmarkLoading,
+            benchmarkMetrics?.ytd,
+            benchmarkGuard?.mode ?? null,
+          ),
           emphasis: true,
           toneClassName: signedValueClass(portfolioReturnMetrics.ytd),
           title: portfolioReturnMetrics.ytd == null ? 'No year-start anchor.' : undefined,
@@ -947,7 +1183,12 @@ export default function OverviewPage() {
         {
           label: 'Since Inception',
           value: signedPercent(performanceWorkspace?.summary.cumulative_twr),
-          benchmark: benchmarkNote(selectedBenchmarkInstrument, benchmarkLoading, benchmarkMetrics?.sinceInception),
+          benchmark: benchmarkNote(
+            selectedBenchmarkInstrument,
+            benchmarkLoading,
+            benchmarkMetrics?.sinceInception,
+            benchmarkGuard?.mode ?? null,
+          ),
           emphasis: true,
           toneClassName: signedValueClass(performanceWorkspace?.summary.cumulative_twr),
         },
@@ -959,13 +1200,23 @@ export default function OverviewPage() {
         {
           label: 'Current DD',
           value: signedPercent(performanceWorkspace?.summary.current_drawdown),
-          benchmark: benchmarkNote(selectedBenchmarkInstrument, benchmarkLoading, benchmarkMetrics?.currentDrawdown),
+          benchmark: benchmarkNote(
+            selectedBenchmarkInstrument,
+            benchmarkLoading,
+            benchmarkMetrics?.currentDrawdown,
+            benchmarkGuard?.mode ?? null,
+          ),
           toneClassName: signedValueClass(performanceWorkspace?.summary.current_drawdown),
         },
         {
           label: 'Max DD',
           value: signedPercent(performanceWorkspace?.summary.max_drawdown),
-          benchmark: benchmarkNote(selectedBenchmarkInstrument, benchmarkLoading, benchmarkMetrics?.maxDrawdown),
+          benchmark: benchmarkNote(
+            selectedBenchmarkInstrument,
+            benchmarkLoading,
+            benchmarkMetrics?.maxDrawdown,
+            benchmarkGuard?.mode ?? null,
+          ),
           toneClassName: signedValueClass(performanceWorkspace?.summary.max_drawdown),
         },
         {
@@ -975,6 +1226,7 @@ export default function OverviewPage() {
             selectedBenchmarkInstrument,
             benchmarkLoading,
             benchmarkMetrics?.volatility1m,
+            benchmarkGuard?.mode ?? null,
             formatPercent,
           ),
           title: portfolioRiskMetrics.volatility1m == null ? 'Need full 1M history.' : undefined,
@@ -986,6 +1238,7 @@ export default function OverviewPage() {
             selectedBenchmarkInstrument,
             benchmarkLoading,
             benchmarkMetrics?.volatility3m,
+            benchmarkGuard?.mode ?? null,
             formatPercent,
           ),
           title: portfolioRiskMetrics.volatility3m == null ? 'Need full 3M history.' : undefined,
@@ -1042,12 +1295,28 @@ export default function OverviewPage() {
     {
       key: 'market_value',
       label: TOP_HOLDING_COLUMN_LABELS.market_value,
-      render: (row) => formatCurrency(row.market_value_base ?? row.market_value, resolvedBaseCurrency),
+      render: (row) => {
+        const amount = holdingAmountForDisplay(
+          row,
+          resolvedBaseCurrency,
+          row.market_value_base,
+          row.market_value,
+        )
+        return formatCurrency(amount.value, amount.currency)
+      },
     },
     {
       key: 'cost_basis',
       label: TOP_HOLDING_COLUMN_LABELS.cost_basis,
-      render: (row) => formatCurrency(row.cost_basis_base ?? row.cost_basis, resolvedBaseCurrency),
+      render: (row) => {
+        const amount = holdingAmountForDisplay(
+          row,
+          resolvedBaseCurrency,
+          row.cost_basis_base,
+          row.cost_basis,
+        )
+        return formatCurrency(amount.value, amount.currency)
+      },
     },
     {
       key: 'unrealized_pnl',
@@ -1067,11 +1336,19 @@ export default function OverviewPage() {
     {
       key: 'day_change',
       label: TOP_HOLDING_COLUMN_LABELS.day_change,
-      render: (row) => (
-        <span className={signedValueClass(row.day_change_pct)}>
-          {formatSignedCurrency(row.day_change_value_base ?? row.day_change_value, resolvedBaseCurrency)} ({signedPercent(row.day_change_pct)})
-        </span>
-      ),
+      render: (row) => {
+        const amount = holdingAmountForDisplay(
+          row,
+          resolvedBaseCurrency,
+          row.day_change_value_base,
+          row.day_change_value,
+        )
+        return (
+          <span className={signedValueClass(row.day_change_pct)}>
+            {formatSignedCurrency(amount.value, amount.currency)} ({signedPercent(row.day_change_pct)})
+          </span>
+        )
+      },
     },
     {
       key: 'weight',
@@ -1120,10 +1397,26 @@ export default function OverviewPage() {
     .filter((definition): definition is TopHoldingColumnDefinition => Boolean(definition))
 
   return (
-    <PortfolioWorkspaceLayout activeSection="Overview" toolbarLabel="View: Portfolio Overview">
+    <PortfolioWorkspaceLayout
+      activeSection="Overview"
+      toolbarLabel="View: Portfolio Overview"
+      busy={workspaceLoading || performanceLoading || benchmarkLoading}
+    >
       <section className="portfolio-detail-surface portfolio-overview-surface">
         {workspaceError ? <div className="inline-notice inline-notice-error">{workspaceError}</div> : null}
         {performanceError ? <div className="inline-notice inline-notice-error">{performanceError}</div> : null}
+        {performanceWorkspace?.summary.as_of_clamp_reason ? (
+          <div className="inline-notice" role="status">
+            Performance as of {performanceWorkspace.summary.effective_end_date ?? performanceWorkspace.summary.end_date ?? '—'}: {' '}
+            {performanceWorkspace.summary.as_of_clamp_reason}
+          </div>
+        ) : null}
+        <QualityWarningsNotice
+          warnings={[
+            ...(holdingsWorkspace?.quality_warnings ?? []),
+            ...(performanceWorkspace?.summary.quality_warnings ?? []),
+          ]}
+        />
 
         {workspaceLoading ? <CalculationStatus /> : null}
 
@@ -1146,6 +1439,7 @@ export default function OverviewPage() {
                         onSelectInstrument={(instrument) => {
                           setBenchmarkInstrumentId(instrument.instrument_id)
                           setBenchmarkSearch(benchmarkInstrumentLabel(instrument))
+                          setBenchmarkChart(null)
                           setBenchmarkError(null)
                         }}
                         onClear={() => {
@@ -1157,6 +1451,37 @@ export default function OverviewPage() {
                       />
                     </div>
                     {benchmarkError ? <div className="overview-benchmark-error">{benchmarkError}</div> : null}
+                    {!benchmarkError && benchmarkGuard ? (
+                      <div
+                        className={`performance-benchmark-basis-status ${
+                          benchmarkGuard.mode === 'canonical'
+                            ? 'performance-benchmark-basis-status-comparable'
+                            : 'performance-benchmark-basis-status-fallback'
+                        }`}
+                      >
+                        <span>
+                          {benchmarkGuard.mode === 'canonical'
+                            ? 'Manual comparator · canonical'
+                            : benchmarkGuard.mode === 'exploratory'
+                              ? 'Manual comparator · exploratory'
+                              : 'Manual comparator unavailable'}
+                        </span>
+                        <code>{benchmarkGuard.basisAssessment.basis ?? 'unavailable'}</code>
+                        <span>{benchmarkGuard.basisAssessment.label}</span>
+                      </div>
+                    ) : null}
+                    {!benchmarkError && benchmarkGuard?.warning ? (
+                      <div
+                        className={`inline-notice ${
+                          benchmarkGuard.reason === 'benchmark_currency_mismatch'
+                            ? 'inline-notice-error'
+                            : 'inline-notice-warning'
+                        } performance-benchmark-basis-warning`}
+                        role="status"
+                      >
+                        {benchmarkGuard.warning}
+                      </div>
+                    ) : null}
                     {performanceLoading && !performanceWorkspace ? (
                       <CalculationStatus />
                     ) : null}
@@ -1164,10 +1489,14 @@ export default function OverviewPage() {
                       <PerformanceNavChart
                         points={navChartPoints}
                         twrPoints={twrIndexChartPoints}
-                        benchmarkPoints={benchmarkChartPoints}
+                        benchmarkPoints={
+                          benchmarkGuard && benchmarkGuard.mode !== 'unavailable' ? benchmarkChartPoints : []
+                        }
                         benchmarkLabel={
                           selectedBenchmarkInstrument
-                            ? instrumentPrimaryIdentifier(selectedBenchmarkInstrument)
+                            ? `${instrumentPrimaryIdentifier(selectedBenchmarkInstrument)}${
+                                benchmarkGuard?.mode === 'exploratory' ? ' (exploratory)' : ''
+                              }`
                             : null
                         }
                         currency={resolvedBaseCurrency}
@@ -1244,7 +1573,9 @@ export default function OverviewPage() {
                                   bucket
                                     ? `${bucket.start_date} to ${bucket.end_date}; ${formatLabel(
                                         bucket.coverage_state,
-                                      )}; ${formatNumber(bucket.observation_count, 0)} observations`
+                                      )}; ${formatNumber(bucket.observation_count, 0)} observations${
+                                        bucket.unavailable_reason ? `; ${bucket.unavailable_reason}` : ''
+                                      }`
                                     : undefined
                                 }
                               >
@@ -1272,18 +1603,26 @@ export default function OverviewPage() {
                   <div className="portfolio-detail-toolbar performance-subsection-toolbar">
                     <div className="panel-title">Strategy Sleeves</div>
                   </div>
-                  <StrategySleeveDonut segments={sleeveRibbonSegments} />
+                  {sleeveRibbonSegments ? (
+                    <StrategySleeveDonut segments={sleeveRibbonSegments} />
+                  ) : (
+                    <div className="price-chart-empty">Sleeve allocation unavailable.</div>
+                  )}
                 </section>
 
                 <section className="performance-section-block">
                   <div className="portfolio-detail-toolbar performance-subsection-toolbar">
                     <div className="panel-title">Top Holdings</div>
                   </div>
-                  <RiskRankedBars
-                    items={topHoldingBarItems}
-                    ariaLabel="Top holdings ranked by current weight"
-                    emptyLabel="No holdings."
-                  />
+                  {topHoldingBarItems ? (
+                    <RiskRankedBars
+                      items={topHoldingBarItems}
+                      ariaLabel="Top holdings ranked by current weight"
+                      emptyLabel="No holdings."
+                    />
+                  ) : (
+                    <div className="price-chart-empty">Top holdings allocation unavailable.</div>
+                  )}
                 </section>
               </div>
 

@@ -20,6 +20,13 @@ function instrument(
     instrument_type: 'fund',
     currency: 'CNY',
     latest_market_data: [],
+    quote_selection_policy: {
+      trading: [],
+      valuation: [],
+      total_return: [],
+      chart: [],
+      reference: [],
+    },
     coverage_state: 'complete',
     identifiers: [
       {
@@ -58,6 +65,10 @@ describe('transaction presentation', () => {
       trade_timezone: 'Asia/Shanghai',
       trade_time_is_estimated: false,
       settlement_date: '2026-07-02',
+      economic_date: '2026-07-03',
+      external_flow_date: null,
+      entitlement_date: null,
+      acquisition_date: null,
       account: {
         account_id: 'broker',
         portfolio_id: 'portfolio-1',
@@ -66,6 +77,7 @@ describe('transaction presentation', () => {
         currency: 'CNY',
         status: 'active',
       },
+      settlement_cash_account: null,
       instrument_id: 'fund-1',
       instrument_ref: {
         instrument_id: 'fund-1',
@@ -75,21 +87,40 @@ describe('transaction presentation', () => {
         identifiers: [],
       },
       quantity: 100,
+      source_quantity: '100',
       price: 1.25,
+      source_price: '1.25',
       gross_amount: 125,
+      source_gross_amount: '125',
+      counter_amount: null,
+      source_counter_amount: null,
+      fx_rate: null,
+      source_fx_rate: null,
       fees: 1,
+      source_fees: '1',
+      fee_category: 'transaction_cost',
       taxes: 0,
+      source_taxes: '0',
       currency: 'CNY',
+      transfer_scope: null,
+      transfer_object_type: null,
+      transfer_group_id: null,
+      counterparty_account_id: null,
       net_cash_effect: -126,
       note: '=unsafe',
-    } as PortfolioTransactionRecord
+      created_at: null,
+      row_version: 1,
+    } satisfies PortfolioTransactionRecord
 
     const rows = buildTransactionExportRows([transaction])
+    const column = (header: string) => TRANSACTION_EXPORT_HEADERS.indexOf(header)
 
     expect(rows[0]).toEqual(TRANSACTION_EXPORT_HEADERS)
-    expect(rows[1][10]).toBe(100)
-    expect(rows[1][12]).toBe(125)
-    expect(rows[1][17]).toBe('=unsafe')
+    expect(rows[1][column('Quantity')]).toBe(100)
+    expect(rows[1][column('Gross Amount')]).toBe(125)
+    expect(rows[1][column('Economic Date')]).toBe('2026-07-03')
+    expect(rows[1][column('Fee Category')]).toBe('transaction_cost')
+    expect(rows[1][column('Note')]).toBe('=unsafe')
   })
 
   it('counts only populated URL filters', () => {

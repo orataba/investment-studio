@@ -36,6 +36,7 @@ type PortfolioWorkspaceLayoutProps = {
   children: React.ReactNode
   toolbarLabel?: string
   controls?: React.ReactNode
+  busy?: boolean
 }
 
 type PortfolioSelectorOption = {
@@ -73,19 +74,6 @@ const RISK_CONTRIBUTION_MODE_OPTIONS: Array<{ value: PortfolioRiskContributionMo
 ]
 const SUPPORTED_RISK_POLICY_WINDOW_DAYS = new Set<number>(RISK_WINDOW_OPTIONS.map((option) => option.value))
 
-const FALLBACK_SUMMARY: PortfolioWorkspaceSummary = {
-  portfolio_id: '',
-  portfolio_name: 'Portfolio',
-  base_currency: 'USD',
-  as_of_date: '—',
-  nav: 0,
-  day_change_value: 0,
-  day_change_pct: 0,
-  toolbar_label: 'View: Portfolio Summary',
-  badges: [],
-  sections: [],
-}
-
 function extractErrorMessage(error: unknown) {
   return error instanceof Error ? error.message : 'Request failed.'
 }
@@ -95,10 +83,12 @@ export default function PortfolioWorkspaceLayout({
   children,
   toolbarLabel,
   controls,
+  busy = false,
 }: PortfolioWorkspaceLayoutProps) {
   const navigate = useNavigate()
   const { portfolioId = '' } = useParams()
   const [summary, setSummary] = useState<PortfolioWorkspaceSummary | null>(null)
+  const [summaryLoading, setSummaryLoading] = useState(true)
   const [summaryError, setSummaryError] = useState<string | null>(null)
   const [portfolioOptions, setPortfolioOptions] = useState<PortfolioSelectorOption[]>([])
   const [selectorMenuOpen, setSelectorMenuOpen] = useState(false)
@@ -130,12 +120,16 @@ export default function PortfolioWorkspaceLayout({
 
     if (!portfolioId) {
       setSummary(null)
+      setSummaryLoading(false)
       setSummaryError('Portfolio id is required.')
       return () => {
         cancelled = true
       }
     }
 
+    setSummary(null)
+    setSummaryLoading(true)
+    setSummaryError(null)
     getWorkspaceSummaryForPortfolio(portfolioId)
       .then((response) => {
         if (!cancelled) {
@@ -145,7 +139,13 @@ export default function PortfolioWorkspaceLayout({
       })
       .catch((error) => {
         if (!cancelled) {
+          setSummary(null)
           setSummaryError(error instanceof Error ? error.message : 'Failed to load workspace summary.')
+        }
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setSummaryLoading(false)
         }
       })
 
@@ -212,24 +212,26 @@ export default function PortfolioWorkspaceLayout({
     setRiskSettingsError(null)
   }, [portfolioId])
 
-  const resolvedSummary = summary ?? FALLBACK_SUMMARY
-  const resolvedPortfolioId = portfolioId || resolvedSummary.portfolio_id
+  const activeSummary = summary?.portfolio_id === portfolioId ? summary : null
+  const summaryBusy = summaryLoading || Boolean(summary && !activeSummary)
+  const portfolioName = activeSummary?.portfolio_name ?? 'Portfolio'
+  const resolvedPortfolioId = portfolioId || activeSummary?.portfolio_id || ''
   const portfolioHomePath = resolvedPortfolioId
     ? buildPortfolioSectionPath(resolvedPortfolioId, '/overview')
     : '/portfolios'
-  const changeToneClassName = signedValueClass(resolvedSummary.day_change_value)
+  const changeToneClassName = signedValueClass(activeSummary?.day_change_value)
   const changeClassName = changeToneClassName
     ? `portfolio-change-value ${changeToneClassName}`
     : 'portfolio-change-value neutral-cell'
   const badges = summaryError
-    ? [...resolvedSummary.badges, 'Workspace summary unavailable']
-    : resolvedSummary.badges
+    ? [...(activeSummary?.badges ?? []), 'Workspace summary unavailable']
+    : activeSummary?.badges ?? []
   const selectorPortfolios =
     resolvedPortfolioId && !portfolioOptions.some((portfolio) => portfolio.portfolio_id === resolvedPortfolioId)
       ? [
           {
             portfolio_id: resolvedPortfolioId,
-            portfolio_name: resolvedSummary.portfolio_name,
+            portfolio_name: portfolioName,
           },
           ...portfolioOptions,
         ]
@@ -262,7 +264,7 @@ export default function PortfolioWorkspaceLayout({
       setSelectorMenuOpen(false)
       setPendingPortfolioDelete({
         portfolio_id: resolvedPortfolioId,
-        portfolio_name: resolvedSummary.portfolio_name,
+        portfolio_name: portfolioName,
       })
       return
     }
@@ -275,7 +277,7 @@ export default function PortfolioWorkspaceLayout({
           portfolio_name: copied.portfolio_name,
         },
       ])
-      setSelectorNotice(`Copied portfolio "${resolvedSummary.portfolio_name}".`)
+      setSelectorNotice(`Copied portfolio "${portfolioName}".`)
       navigate(buildPortfolioSectionPath(copied.portfolio_id, '/overview'))
     } catch (requestError) {
       setSelectorNotice(
@@ -373,8 +375,11 @@ export default function PortfolioWorkspaceLayout({
   }
 
   return (
-    <section className="terminal-page portfolio-workspace-page">
-      <header className="portfolio-workspace-shell">
+    <section
+      className="terminal-page portfolio-workspace-page"
+      aria-busy={summaryBusy || busy}
+    >
+      <header className="portfolio-workspace-shell" aria-busy={summaryBusy}>
         <div className="portfolio-toolbar-band">
           <div className="workspace-breadcrumbs">
             <a href={PLATFORM_HOME_URL} className="workspace-breadcrumb-link">
@@ -386,14 +391,23 @@ export default function PortfolioWorkspaceLayout({
             </Link>
             <span className="workspace-breadcrumb-separator">/</span>
             <Link to={portfolioHomePath} className="workspace-breadcrumb-link">
-              {resolvedSummary.portfolio_name}
+              {portfolioName}
             </Link>
             <span className="workspace-breadcrumb-separator">/</span>
             <span className="workspace-breadcrumb-current">{activeSection}</span>
           </div>
           <div className="workspace-app-heading">
             <div className="workspace-app-title">Portfolio</div>
-            <div className="workspace-app-as-of">As of {resolvedSummary.as_of_date || '—'}</div>
+            <div className="workspace-app-as-of">
+              {summaryBusy ? (
+                <span
+                  className="portfolio-summary-skeleton portfolio-summary-skeleton-as-of"
+                  aria-hidden="true"
+                />
+              ) : (
+                <>As of {activeSummary?.as_of_date || '—'}</>
+              )}
+            </div>
           </div>
           <div className="portfolio-selector-row">
             <Link className="workspace-selector-chip workspace-selector-chip-inactive workspace-selector-chip-home" to="/portfolios">
@@ -461,19 +475,41 @@ export default function PortfolioWorkspaceLayout({
           <div className="portfolio-header-row">
             <div className="portfolio-title-stack">
               <div className="portfolio-headline">
-                <span className="portfolio-name">{resolvedSummary.portfolio_name}</span>
-                <span className="portfolio-nav-value">
-                  {formatCurrency(resolvedSummary.nav, resolvedSummary.base_currency)}
-                </span>
-                <span className={changeClassName}>
-                  {formatSignedCurrency(resolvedSummary.day_change_value, resolvedSummary.base_currency)} (
-                  {formatPercent(
-                    resolvedSummary.day_change_pct == null
-                      ? null
-                      : resolvedSummary.day_change_pct,
-                  )}
-                  )
-                </span>
+                {summaryBusy ? (
+                  <>
+                    <span className="sr-only" role="status" aria-live="polite">
+                      Loading portfolio summary.
+                    </span>
+                    <span
+                      className="portfolio-summary-skeleton portfolio-summary-skeleton-name"
+                      aria-hidden="true"
+                    />
+                    <span
+                      className="portfolio-summary-skeleton portfolio-summary-skeleton-nav"
+                      aria-hidden="true"
+                    />
+                    <span
+                      className="portfolio-summary-skeleton portfolio-summary-skeleton-change"
+                      aria-hidden="true"
+                    />
+                  </>
+                ) : (
+                  <>
+                    <span className="portfolio-name">{portfolioName}</span>
+                    {activeSummary ? (
+                      <>
+                        <span className="portfolio-nav-value">
+                          {formatCurrency(activeSummary.nav, activeSummary.base_currency)}
+                        </span>
+                        <span className={changeClassName}>
+                          {formatSignedCurrency(activeSummary.day_change_value, activeSummary.base_currency)} (
+                          {formatPercent(activeSummary.day_change_pct)}
+                          )
+                        </span>
+                      </>
+                    ) : null}
+                  </>
+                )}
               </div>
               <div className="portfolio-subhead-row">
                 {badges.map((badge) => (
@@ -511,6 +547,7 @@ export default function PortfolioWorkspaceLayout({
                 role="dialog"
                 aria-modal="true"
                 aria-labelledby="portfolio-risk-settings-title"
+                aria-busy={riskSettingsLoading || riskSettingsSaving}
                 tabIndex={-1}
               >
                 <div className="portfolio-settings-modal-header">
@@ -534,7 +571,9 @@ export default function PortfolioWorkspaceLayout({
                   </div>
                 ) : null}
                 {riskSettingsLoading ? (
-                  <div className="empty-state">Loading.</div>
+                  <div className="empty-state" role="status" aria-live="polite">
+                    Loading risk settings.
+                  </div>
                 ) : (
                   <form className="portfolio-settings-form" onSubmit={(event) => void handleSaveRiskSettings(event)}>
                     <div className="portfolio-settings-grid">

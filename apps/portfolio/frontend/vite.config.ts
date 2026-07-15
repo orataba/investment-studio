@@ -17,6 +17,11 @@ export default defineConfig(({ mode }) => {
 
   return {
     plugins: [react()],
+    test: {
+      environment: 'jsdom',
+      setupFiles: ['./src/test/setup.ts'],
+      css: false,
+    },
     resolve: {
       alias: [
         { find: 'react/jsx-dev-runtime', replacement: reactJsxDevRuntimePath },

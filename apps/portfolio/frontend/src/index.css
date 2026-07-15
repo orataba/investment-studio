@@ -748,6 +748,57 @@ button:disabled {
   letter-spacing: 0;
 }
 
+.portfolio-summary-skeleton {
+  display: inline-block;
+  flex: 0 0 auto;
+  border-radius: 2px;
+  background: linear-gradient(
+    90deg,
+    var(--portfolio-band) 20%,
+    #e5e7eb 38%,
+    var(--portfolio-band) 56%
+  );
+  background-size: 240% 100%;
+  animation: portfolio-summary-skeleton-shimmer 1.2s ease-in-out infinite;
+}
+
+.portfolio-summary-skeleton-name {
+  width: 168px;
+  height: 26px;
+}
+
+.portfolio-summary-skeleton-nav {
+  width: 112px;
+  height: 20px;
+}
+
+.portfolio-summary-skeleton-change {
+  width: 148px;
+  height: 20px;
+}
+
+.portfolio-summary-skeleton-as-of {
+  width: 104px;
+  height: 13px;
+  vertical-align: middle;
+}
+
+@keyframes portfolio-summary-skeleton-shimmer {
+  from {
+    background-position: 100% 0;
+  }
+
+  to {
+    background-position: -100% 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .portfolio-summary-skeleton {
+    animation: none;
+  }
+}
+
 .portfolio-nav-value {
   font-size: 18px;
   font-weight: 500;
@@ -849,6 +900,16 @@ button:disabled {
   color: var(--portfolio-muted);
   font-size: 12px;
   font-weight: 400;
+}
+
+.holding-trend-summary,
+.holding-trend-reason {
+  font-size: 10px;
+  line-height: 1.25;
+}
+
+.holding-trend-reason {
+  color: var(--portfolio-faint);
 }
 
 .row-select {
@@ -7589,6 +7650,39 @@ td b {
   white-space: nowrap;
 }
 
+.performance-window-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+
+.performance-window-action {
+  box-sizing: border-box;
+  height: 30px;
+  min-height: 30px;
+  padding: 0 9px;
+  border: 1px solid var(--portfolio-line-strong);
+  border-radius: 0;
+  background: transparent;
+  color: var(--portfolio-muted);
+  font: inherit;
+  font-size: 13px;
+  line-height: 28px;
+}
+
+.performance-window-action:hover:not(:disabled) {
+  border-color: var(--portfolio-accent);
+  color: var(--portfolio-accent);
+}
+
+.performance-window-action-active,
+.performance-window-action-active:hover:not(:disabled) {
+  border-color: var(--portfolio-accent);
+  background: var(--portfolio-accent-soft);
+  color: var(--portfolio-ink);
+}
+
 .performance-window-bar .transaction-filter-input,
 .performance-window-bar .overview-benchmark-search-box input {
   box-sizing: border-box;
@@ -8007,6 +8101,10 @@ input[type='date']::-webkit-calendar-picker-indicator {
 @media (max-width: 640px) {
   .performance-window-group {
     grid-template-columns: 1fr;
+    width: 100%;
+  }
+
+  .performance-window-actions {
     width: 100%;
   }
 

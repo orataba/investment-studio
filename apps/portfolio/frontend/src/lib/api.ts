@@ -3,6 +3,7 @@ import type {
   InstrumentIdentifier,
   DataStatus,
   MetricFamily,
+  PriceUnit,
   QuoteBasis,
   QuoteSelectionPolicy,
 } from '../../../../../packages/instrument-core/ts/src'
@@ -93,30 +94,58 @@ export type PortfolioInstrumentPriceChartResponse = {
   chart_basis: string | null
   metric_family: string | null
   currency: string
+  coverage_state?: PortfolioPerformanceCoverageState
+  selection_reason?: string | null
+  split_adjusted?: boolean
   points: PortfolioInstrumentPriceChartPoint[]
   summary: PortfolioInstrumentPriceChartSummary
 }
 
-export type PortfolioTransactionExecutionQuoteResponse = {
+type PortfolioTransactionExecutionQuoteBase = {
   portfolio_id: string
   instrument_id: string
   requested_as_of_date: string
-  selection_role: 'trading' | 'valuation' | null
-  value: number | null
-  quote_date: string | null
-  quote_basis: QuoteBasis | null
-  metric_family: MetricFamily | null
   currency: string
-  provider: string | null
-  status: DataStatus
-  stale: boolean
 }
+
+export type PortfolioTransactionExecutionQuoteResponse =
+  | (PortfolioTransactionExecutionQuoteBase & {
+      selection_role: 'trading' | 'valuation'
+      value: number
+      quote_date: string
+      quote_basis: QuoteBasis
+      metric_family: MetricFamily
+      provider: string | null
+      status: 'complete'
+      stale: boolean
+      price_unit: PriceUnit
+      price_scale: number
+      unavailable_reason: null
+    })
+  | (PortfolioTransactionExecutionQuoteBase & {
+      selection_role: null
+      value: null
+      quote_date: null
+      quote_basis: null
+      metric_family: null
+      provider: null
+      status: 'unavailable'
+      stale: false
+      price_unit: null
+      price_scale: null
+      unavailable_reason: string
+    })
 
 export type PortfolioPerformanceCoverageState = 'complete' | 'partial' | 'unavailable'
 
 export type PortfolioDailyPerformancePoint = {
   as_of_date: string
   coverage_state: PortfolioPerformanceCoverageState
+  valuation_coverage_state: PortfolioPerformanceCoverageState
+  return_coverage_state: PortfolioPerformanceCoverageState
+  book_pnl_coverage_state: PortfolioPerformanceCoverageState
+  attribution_coverage_state: PortfolioPerformanceCoverageState
+  return_chain_continuous: boolean
   stale_price_flag: boolean
   stale_fx_flag: boolean
   market_observation_count: number
@@ -129,6 +158,7 @@ export type PortfolioDailyPerformancePoint = {
   income_cash_amount: number | null
   expense_cash_amount: number | null
   cash_currency_gains: number | null
+  pending_settlement_currency_gains?: number | null
   instrument_currency_gains: number | null
   return_of_capital_amount: number | null
   total_pnl: number | null
@@ -145,11 +175,25 @@ export type PortfolioDailyPerformancePoint = {
 export type PortfolioPerformanceSummary = {
   start_date: string | null
   end_date: string | null
+  requested_start_date?: string | null
+  requested_end_date?: string | null
+  effective_start_date?: string | null
+  effective_end_date?: string | null
+  as_of_clamp_reason?: string | null
   coverage_state: PortfolioPerformanceCoverageState
+  valuation_coverage_state: PortfolioPerformanceCoverageState
+  return_coverage_state: PortfolioPerformanceCoverageState
+  book_pnl_coverage_state: PortfolioPerformanceCoverageState
+  attribution_coverage_state: PortfolioPerformanceCoverageState
   snapshot_count: number
   return_observation_count: number
   risk_return_observation_count: number
   risk_annualization_periods_per_year: number | null
+  risk_calculation_frequency: PortfolioCalculationFrequency
+  risk_minimum_sample_count: number
+  risk_sample_count: number
+  risk_result_status: 'available' | 'insufficient_samples' | 'unavailable'
+  risk_unavailable_reason: string | null
   latest_complete_as_of_date: string | null
   start_nav: number | null
   end_nav: number | null
@@ -157,9 +201,19 @@ export type PortfolioPerformanceSummary = {
   external_cash_out: number
   net_external_inflow: number
   cumulative_twr: number | null
+  annualization_eligible: boolean
+  annualization_years: number | null
+  annualization_unavailable_reason: string | null
   annualized_twr: number | null
   irr: number | null
   mwror: number | null
+  irr_solver_status:
+    | 'unique_root'
+    | 'invalid_cash_flows'
+    | 'no_root'
+    | 'multiple_roots_or_non_unique'
+    | null
+  irr_unavailable_reason: string | null
   absolute_change: number | null
   delta: number | null
   realized_pnl: number | null
@@ -167,6 +221,7 @@ export type PortfolioPerformanceSummary = {
   income_cash_amount: number | null
   expense_cash_amount: number | null
   cash_currency_gains: number | null
+  pending_settlement_currency_gains?: number | null
   instrument_currency_gains: number | null
   return_of_capital_amount: number | null
   total_pnl: number | null
@@ -217,6 +272,7 @@ export type PortfolioPeriodCalculationSummary = {
   fees: number | null
   taxes: number | null
   cash_currency_gains: number | null
+  pending_settlement_currency_gains?: number | null
   instrument_currency_gains: number | null
   deposits: number
   withdrawals: number
@@ -280,6 +336,7 @@ export type PortfolioPeriodCalculationGroupMetrics = {
   fees: number | null
   taxes: number | null
   cash_currency_gains: number | null
+  pending_settlement_currency_gains?: number | null
   instrument_currency_gains: number | null
   total_pnl: number | null
   period_contribution: number | null
@@ -400,6 +457,7 @@ export type PortfolioContributionLineRecord = {
   fee_amount: number | null
   tax_amount: number | null
   cash_currency_gains: number | null
+  pending_settlement_currency_gains?: number | null
   instrument_currency_gains: number | null
   total_pnl: number | null
   period_contribution: number | null
@@ -454,6 +512,7 @@ export type PortfolioContributionReportResponse = {
     fee_amount: number | null
     tax_amount: number | null
     cash_currency_gains: number | null
+    pending_settlement_currency_gains?: number | null
     instrument_currency_gains: number | null
     total_pnl: number | null
     daily_return: number | null
@@ -486,6 +545,15 @@ export type PortfolioHoldingRow = {
   price_chart_1y: SparklinePoint[]
   instrument_trend_as_of_date?: string | null
   instrument_trend_basis?: string | null
+  instrument_trend_coverage?: {
+    state: PortfolioPerformanceCoverageState
+    observation_count: number
+    start_date: string | null
+    end_date: string | null
+    available_return_windows: string[]
+  } | null
+  instrument_trend_reason?: string | null
+  instrument_trend_split_adjusted?: boolean
   instrument_risk_frequency?: PortfolioCalculationFrequency | null
   instrument_return_1w?: number | null
   instrument_return_mtd?: number | null
@@ -522,6 +590,7 @@ export type HoldingsWorkspaceResponse = {
   base_currency: string
   as_of_date: string
   view_label: string
+  detail_level?: 'compact' | 'full'
   coverage_note: string
   quality_warnings: string[]
   risk_basis?: {
@@ -561,7 +630,7 @@ export type PortfolioInstrumentHoldingProjectionResponse = {
 
 export type HoldingsWorkspaceFilters = {
   as_of_date?: string
-  include_return_series?: boolean
+  include_details?: boolean
 }
 
 export type SharedMarketDataPoint = {
@@ -570,6 +639,8 @@ export type SharedMarketDataPoint = {
   as_of_date: string
   value: string
   currency: string
+  price_unit: PriceUnit
+  price_scale: string
   provider?: string | null
   status: DataStatus
 }
@@ -581,7 +652,7 @@ export type SharedInstrumentRecord = {
   currency: string
   identifiers: InstrumentIdentifier[]
   latest_market_data: SharedMarketDataPoint[]
-  quote_selection_policy?: QuoteSelectionPolicy
+  quote_selection_policy: QuoteSelectionPolicy
   coverage_state: DataStatus
 }
 
@@ -594,7 +665,7 @@ type RawSharedInstrumentRecord = {
   instrument_core: InstrumentCore
   coverage_state: DataStatus
   latest_market_data: SharedMarketDataPoint[]
-  quote_selection_policy?: QuoteSelectionPolicy
+  quote_selection_policy: QuoteSelectionPolicy
 }
 
 type RawPortfolioSharedInstrumentsResponse = {
@@ -704,6 +775,10 @@ export type PortfolioInstrumentUniverseRecord = {
   first_transaction_date?: string | null
   last_transaction_date?: string | null
   transaction_count: number
+  research_lifecycle: 'held' | 'observed' | 'former'
+  research_eligibility: 'eligible' | 'pm_review_required'
+  research_pm_approved: boolean
+  research_pm_approved_at?: string | null
   status: string
   created_at?: string | null
   updated_at?: string | null
@@ -742,6 +817,10 @@ export type PortfolioDefaultPlanningTaxonomyResponse = {
 
 export type PortfolioInstrumentUniverseCreatePayload = {
   instrument_id: string
+}
+
+export type PortfolioResearchInstrumentEligibilityUpdatePayload = {
+  pm_approved: boolean
 }
 
 export type PortfolioResearchRunStatus = 'running' | 'completed' | 'failed'
@@ -1011,6 +1090,9 @@ export type PortfolioResearchTargetWeightGapRecord = {
   current_value_base?: number | null
   base_currency: string
   action: string
+  research_lifecycle?: 'held' | 'observed' | 'former' | null
+  research_eligibility?: 'eligible' | 'pm_review_required' | null
+  research_pm_approved?: boolean | null
   execution_status: 'ready' | 'manual_review_required'
   execution_note?: string | null
 }
@@ -1032,6 +1114,9 @@ export type PortfolioResearchTargetRowRecord = {
   implementation_weight?: number | null
   gap_to_implementation?: number | null
   action?: string | null
+  research_lifecycle?: 'held' | 'observed' | 'former' | null
+  research_eligibility?: 'eligible' | 'pm_review_required' | null
+  research_pm_approved?: boolean | null
   execution_status: 'ready' | 'manual_review_required'
   execution_note?: string | null
 }
@@ -1057,6 +1142,9 @@ export type PortfolioResearchBacktestMetricsRecord = {
   end_date?: string | null
   period_return?: number | null
   ytd_return?: number | null
+  annualization_eligible?: boolean
+  annualization_years?: number | null
+  annualization_unavailable_reason?: string | null
   annualized_return?: number | null
   annualized_volatility?: number | null
   sharpe_ratio?: number | null
@@ -1172,6 +1260,8 @@ export type PortfolioResearchWorkbenchResponse = {
   settings: PortfolioResearchSettingsRecord
   risk_policy: PortfolioRiskPolicyRecord
   current_context: PortfolioResearchCurrentContextRecord
+  instrument_universe: PortfolioInstrumentUniverseRecord[]
+  detail_level: 'compact' | 'selected_run'
   runs: PortfolioResearchRunRecord[]
   selected_run?: PortfolioResearchRunRecord | null
 }
@@ -1405,28 +1495,48 @@ export type PortfolioTransactionRecord = {
   trade_timezone: string
   trade_time_is_estimated: boolean
   settlement_date: string
-  entitlement_date?: string | null
-  acquisition_date?: string | null
+  economic_date: string
+  external_flow_date: string | null
+  entitlement_date: string | null
+  acquisition_date: string | null
   account: PortfolioAccountRecord
-  settlement_cash_account?: PortfolioAccountRecord | null
-  instrument_id?: string | null
-  instrument_ref?: InstrumentCore | null
-  quantity?: number | null
-  price?: number | null
+  settlement_cash_account: PortfolioAccountRecord | null
+  instrument_id: string | null
+  instrument_ref: InstrumentCore | null
+  quantity: number | null
+  source_quantity: string | null
+  price: number | null
+  source_price: string | null
   gross_amount: number
-  counter_amount?: number | null
-  fx_rate?: number | null
+  source_gross_amount: string | null
+  counter_amount: number | null
+  source_counter_amount: string | null
+  fx_rate: number | null
+  source_fx_rate: string | null
   fees: number
+  source_fees: string | null
+  fee_category: PortfolioFeeCategory
   taxes: number
+  source_taxes: string | null
   currency: string
-  transfer_scope?: string | null
-  transfer_object_type?: string | null
-  transfer_group_id?: string | null
-  counterparty_account_id?: string | null
-  net_cash_effect?: number | null
-  note?: string | null
-  created_at?: string | null
+  transfer_scope: string | null
+  transfer_object_type: string | null
+  transfer_group_id: string | null
+  counterparty_account_id: string | null
+  net_cash_effect: number | null
+  note: string | null
+  created_at: string | null
+  row_version: number
 }
+
+export type PortfolioFeeCategory =
+  | 'unknown'
+  | 'transaction_cost'
+  | 'management_fee'
+  | 'custody_fee'
+  | 'administration_fee'
+  | 'performance_fee'
+  | 'other'
 
 export type PortfolioTransactionListResponse = {
   portfolio_id: string
@@ -1450,9 +1560,10 @@ export type PortfolioTransactionWorkspaceResponse = {
   portfolio_id: string
   summary: PortfolioTransactionListResponse['summary']
   derivation_boundary: PortfolioTransactionListResponse['derivation_boundary']
-  selected_transaction_id?: string | null
+  selected_transaction_id: string | null
   transactions: PortfolioTransactionRecord[]
-  selected_transaction?: PortfolioTransactionRecord | null
+  selected_transaction: PortfolioTransactionRecord | null
+  delete_scope_row_versions: Record<string, number>
   ledger_summary: PortfolioLedgerPostingListResponse['summary']
   ledger_postings: PortfolioLedgerPostingRecord[]
   related_position_lot_summary: PortfolioPositionLotListResponse['summary']
@@ -1600,13 +1711,12 @@ export type PortfolioTransactionCreatePayload = {
   counter_amount?: number | null
   fx_rate?: number | null
   fees?: number
+  fee_category?: PortfolioFeeCategory
   taxes?: number
   currency: string
-  transfer_scope?: string | null
-  transfer_object_type?: string | null
-  transfer_group_id?: string | null
   counterparty_account_id?: string | null
   note?: string | null
+  expected_row_version?: number | null
 }
 
 export type PortfolioPerformanceFilters = {
@@ -1625,7 +1735,6 @@ export type PortfolioInternalTransferCreatePayload = {
   quantity?: number | null
   gross_amount?: number | null
   note?: string | null
-  transfer_group_id?: string | null
 }
 
 export type PortfolioTransactionBatchResponse = {
@@ -1771,7 +1880,7 @@ export function getHoldingsWorkspace(
   const query = buildQuery({
     portfolio_id: portfolioId,
     as_of_date: filters.as_of_date,
-    include_return_series: filters.include_return_series ? 'true' : undefined,
+    include_details: filters.include_details ? 'true' : undefined,
   })
   return fetchJson<HoldingsWorkspaceResponse>(API_BASE_URL, `/api/workspace/holdings${query}`)
 }
@@ -2100,11 +2209,40 @@ export function deletePortfolioInstrumentUniverseRecord(portfolioId: string, ins
   )
 }
 
-export function getPortfolioResearchWorkbench(portfolioId: string, selectedRunId?: string) {
-  const query = buildQuery({ selected_run_id: selectedRunId })
+export function getPortfolioResearchWorkbench(
+  portfolioId: string,
+  selectedRunId?: string,
+  options: { include_details?: boolean } = {},
+) {
+  const query = buildQuery({
+    selected_run_id: selectedRunId,
+    include_details: options.include_details ? 'true' : undefined,
+  })
   return fetchJson<PortfolioResearchWorkbenchResponse>(
     API_BASE_URL,
     `/api/portfolios/${portfolioId}/research/workbench${query}`,
+  )
+}
+
+export function getPortfolioResearchRun(portfolioId: string, researchRunId: string) {
+  return fetchJson<PortfolioResearchRunRecord>(
+    API_BASE_URL,
+    `/api/portfolios/${portfolioId}/research/runs/${encodeURIComponent(researchRunId)}`,
+  )
+}
+
+export function updatePortfolioResearchInstrumentEligibility(
+  portfolioId: string,
+  instrumentId: string,
+  payload: PortfolioResearchInstrumentEligibilityUpdatePayload,
+) {
+  return fetchJson<PortfolioInstrumentUniverseRecord>(
+    API_BASE_URL,
+    `/api/portfolios/${portfolioId}/research/instruments/${encodeURIComponent(instrumentId)}/eligibility`,
+    {
+      method: 'PUT',
+      body: JSON.stringify(payload),
+    },
   )
 }
 
@@ -2343,12 +2481,17 @@ export function updatePortfolioTransaction(
   )
 }
 
-export function deletePortfolioTransaction(portfolioId: string, transactionId: string) {
+export function deletePortfolioTransaction(
+  portfolioId: string,
+  transactionId: string,
+  expectedRowVersions: Record<string, number>,
+) {
   return fetchJson<PortfolioTransactionDeleteResponse>(
     API_BASE_URL,
     `/api/portfolios/${portfolioId}/transactions/${transactionId}`,
     {
       method: 'DELETE',
+      body: JSON.stringify({ expected_row_versions: expectedRowVersions }),
     },
   )
 }

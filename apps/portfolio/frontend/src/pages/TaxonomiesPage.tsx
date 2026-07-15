@@ -1,4 +1,4 @@
-import { FormEvent, useEffect, useMemo, useRef, useState, type DragEvent as ReactDragEvent, type MouseEvent as ReactMouseEvent, type ReactNode } from 'react'
+import { FormEvent, useEffect, useMemo, useRef, useState, type DragEvent as ReactDragEvent, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type ReactNode } from 'react'
 import { useParams, useSearchParams } from 'react-router-dom'
 
 import CalculationStatus from '../components/CalculationStatus'
@@ -36,6 +36,7 @@ import {
   type TaxonomyAssignmentScope,
 } from '../lib/api'
 import { formatCurrency, formatLabel, formatPercent } from '../lib/format'
+import { completeAmountSum } from '../lib/holdingAmounts'
 import {
   TARGET_EDIT_ASSIGNMENT_LOCK_MESSAGE,
   canDragTaxonomyEntity,
@@ -102,6 +103,10 @@ type NodeAggregate = {
   current_weight: number | null
   current_value_base: number | null
   direct_assignment_count: number
+}
+
+type NodeAggregateWithCoverage = NodeAggregate & {
+  held_entity_count: number
 }
 
 type TargetLineDraft = {
@@ -369,6 +374,17 @@ function isSyntheticCashTargetMember(member: Pick<TargetScopeMember, 'target_mem
   return member.system_role === 'cash' || (member.target_member_type === 'cash_bucket' && member.target_member_id === CASH_TARGET_MEMBER_ID)
 }
 
+function isCashLikeTargetMember(
+  member: Pick<TargetScopeMember, 'target_member_type' | 'target_member_id' | 'system_role' | 'node' | 'entity'>,
+) {
+  return (
+    isSyntheticCashTargetMember(member) ||
+    member.target_member_type === 'cash_bucket' ||
+    member.entity?.target_scope === 'cash_bucket' ||
+    isCashTaxonomyNode(member.node)
+  )
+}
+
 function isSystemCashEntity(entity: CoverageEntity, taxonomy: PortfolioTaxonomyRecord | null | undefined) {
   return taxonomy?.primary_assignment_scope === 'instrument' && entity.target_scope === 'cash_bucket'
 }
@@ -402,7 +418,7 @@ function buildTargetSetDraft(args: {
         member.member_key,
         {
           target_weight: isSyntheticCashTargetMember(member) && targetLine?.target_weight == null ? '0' : percentInputFromDecimal(targetLine?.target_weight),
-          target_risk_share: isSyntheticCashTargetMember(member) ? '0' : percentInputFromDecimal(targetLine?.target_risk_share),
+          target_risk_share: isCashLikeTargetMember(member) ? '' : percentInputFromDecimal(targetLine?.target_risk_share),
           notes: targetLine?.notes ?? '',
         },
       ]
@@ -501,15 +517,14 @@ function validateTargetSetDraft(
       }
     }
     if (draft.risk_budget_enabled) {
+      if (isCashLikeTargetMember(member)) {
+        return
+      }
       const parsedRisk = parsePercentInput(lineDraft.target_risk_share)
       if (parsedRisk == null) {
         errors.push(`Missing target risk budget for ${member.label}.`)
       } else if (Number.isNaN(parsedRisk) || parsedRisk < 0) {
         errors.push(`Invalid target risk budget for ${member.label}.`)
-      } else if (isSyntheticCashTargetMember(member)) {
-        if (Math.abs(parsedRisk) > 0.0005) {
-          errors.push('Cash risk budget must be 0%.')
-        }
       } else {
         riskSum += parsedRisk
         riskSeen = true
@@ -864,40 +879,15 @@ export default function TaxonomiesPage() {
 
   useEffect(() => {
     function handleWindowKeydown(event: KeyboardEvent) {
-      const target = event.target as HTMLElement | null
-      const tagName = target?.tagName?.toLowerCase()
-      if (target?.isContentEditable || tagName === 'input' || tagName === 'textarea' || tagName === 'select') {
-        return
-      }
       if (event.key === 'Escape') {
         setContextMenuState(null)
         closeModalStack()
-        return
-      }
-      if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') {
-        if (!targetEditMode && selectedNode?.is_terminal && selectedEntityIds.size) {
-          event.preventDefault()
-          void assignEntitiesToNode(selectedNode, Array.from(selectedEntityIds))
-        }
-        return
-      }
-      if (targetEditMode) {
-        return
-      }
-      if (event.key === 'Tab' && selectedNode) {
-        event.preventDefault()
-        startNodeCreate('child', selectedNode)
-        return
-      }
-      if (event.key === 'Enter') {
-        event.preventDefault()
-        startNodeCreate(selectedNode ? 'sibling' : 'root', selectedNode)
       }
     }
 
     window.addEventListener('keydown', handleWindowKeydown)
     return () => window.removeEventListener('keydown', handleWindowKeydown)
-  }, [selectedNode, selectedEntityIds, targetEditMode])
+  }, [])
 
   useEffect(() => {
     if (!targetEditMode) {
@@ -977,11 +967,12 @@ export default function TaxonomiesPage() {
       const holdingRowsForEntities = includeCashBuckets
         ? holdingsRows.filter((row) => !isCashHoldingRow(row))
         : holdingsRows
-      const totalEntityValueBase =
-        holdingRowsForEntities.reduce((total, row) => total + (row.market_value_base ?? 0), 0) +
-        (includeCashBuckets
-          ? visibleCashAccounts.reduce((total, accountRow) => total + (accountRow.derived_cash_balance_base ?? 0), 0)
-          : 0)
+      const totalEntityValueBase = completeAmountSum([
+        ...holdingRowsForEntities.map((row) => row.market_value_base),
+        ...(includeCashBuckets
+          ? visibleCashAccounts.map((accountRow) => accountRow.derived_cash_balance_base)
+          : []),
+      ])
 
       const holdingEntities = holdingRowsForEntities.map((row) => {
         const assignments = activeAssignmentsByEntityKey.get(coverageEntityKey('instrument', row.instrument_core.instrument_id)) ?? []
@@ -1002,9 +993,9 @@ export default function TaxonomiesPage() {
           label: `${primaryIdentifier(row.instrument_core)} · ${row.instrument_core.instrument_name}`,
           supporting_label: row.instrument_core.currency,
           allocation:
-            row.market_value_base != null && totalEntityValueBase > 1e-9
+            row.market_value_base != null && totalEntityValueBase != null && totalEntityValueBase > 1e-9
               ? row.market_value_base / totalEntityValueBase
-              : row.allocation ?? null,
+              : null,
           market_value_base: row.market_value_base ?? null,
           current_assignment: assignment,
           current_node: currentNode,
@@ -1089,7 +1080,7 @@ export default function TaxonomiesPage() {
           label: accountRow.account.account_name,
           supporting_label: accountRow.account.currency,
           allocation:
-            accountRow.derived_cash_balance_base != null && totalEntityValueBase > 1e-9
+            accountRow.derived_cash_balance_base != null && totalEntityValueBase != null && totalEntityValueBase > 1e-9
               ? accountRow.derived_cash_balance_base / totalEntityValueBase
               : null,
           market_value_base: accountRow.derived_cash_balance_base ?? null,
@@ -1224,45 +1215,32 @@ export default function TaxonomiesPage() {
       directEntitiesByNodeId.set(entity.current_assignment.taxonomy_node_id, currentEntitiesForNode)
     })
 
-    const lookup = new Map<string, NodeAggregate>()
+    const lookup = new Map<string, NodeAggregateWithCoverage>()
 
-    function walk(nodeId: string): NodeAggregate {
+    function walk(nodeId: string): NodeAggregateWithCoverage {
       const directEntities = directEntitiesByNodeId.get(nodeId) ?? []
+      const directHeldEntities = directEntities.filter((entity) => entity.holding_state === 'held')
       let currentEntityCount = directEntities.length
-      let currentWeightTotal = 0
-      let currentWeightSeen = false
-      let currentValueBaseTotal = 0
-      let currentValueSeen = false
-
-      directEntities.forEach((entity) => {
-        if (entity.allocation != null) {
-          currentWeightTotal += entity.allocation
-          currentWeightSeen = true
-        }
-        if (entity.market_value_base != null) {
-          currentValueBaseTotal += entity.market_value_base
-          currentValueSeen = true
-        }
-      })
+      let heldEntityCount = directHeldEntities.length
+      const weightParts = directHeldEntities.map((entity) => entity.allocation)
+      const valueParts = directHeldEntities.map((entity) => entity.market_value_base)
 
       ;(childrenByParent.get(nodeId) ?? []).forEach((child) => {
         const childAggregate = walk(child.taxonomy_node_id)
         currentEntityCount += childAggregate.current_entity_count
-        if (childAggregate.current_weight != null) {
-          currentWeightTotal += childAggregate.current_weight
-          currentWeightSeen = true
-        }
-        if (childAggregate.current_value_base != null) {
-          currentValueBaseTotal += childAggregate.current_value_base
-          currentValueSeen = true
+        heldEntityCount += childAggregate.held_entity_count
+        if (childAggregate.held_entity_count) {
+          weightParts.push(childAggregate.current_weight)
+          valueParts.push(childAggregate.current_value_base)
         }
       })
 
       const aggregate = {
         current_entity_count: currentEntityCount,
-        current_weight: currentWeightSeen ? currentWeightTotal : null,
-        current_value_base: currentValueSeen ? currentValueBaseTotal : null,
+        current_weight: heldEntityCount ? completeAmountSum(weightParts) : null,
+        current_value_base: heldEntityCount ? completeAmountSum(valueParts) : null,
         direct_assignment_count: (directAssignmentsByNodeId.get(nodeId) ?? []).length,
+        held_entity_count: heldEntityCount,
       }
       lookup.set(nodeId, aggregate)
       return aggregate
@@ -1298,73 +1276,45 @@ export default function TaxonomiesPage() {
     [currentEntities],
   )
   const cashAggregate = useMemo(() => {
-    let currentWeightTotal = 0
-    let currentWeightSeen = false
-    let currentValueBaseTotal = 0
-    let currentValueSeen = false
-
-    cashBucketEntities.forEach((entity) => {
-      if (entity.allocation != null) {
-        currentWeightTotal += entity.allocation
-        currentWeightSeen = true
-      }
-      if (entity.market_value_base != null) {
-        currentValueBaseTotal += entity.market_value_base
-        currentValueSeen = true
-      }
-    })
+    const heldCashEntities = cashBucketEntities.filter((entity) => entity.holding_state === 'held')
 
     return {
       current_entity_count: cashBucketEntities.length,
-      current_weight: currentWeightSeen ? currentWeightTotal : null,
-      current_value_base: currentValueSeen ? currentValueBaseTotal : null,
+      current_weight: heldCashEntities.length
+        ? completeAmountSum(heldCashEntities.map((entity) => entity.allocation))
+        : null,
+      current_value_base: heldCashEntities.length
+        ? completeAmountSum(heldCashEntities.map((entity) => entity.market_value_base))
+        : null,
       direct_assignment_count: cashBucketEntities.length,
     } satisfies NodeAggregate
   }, [cashBucketEntities])
 
   const taxonomyCurrentSummary = useMemo(() => {
-    let weightTotal = 0
-    let valueTotal = 0
-    let weightSeen = false
-    let valueSeen = false
-
-    currentEntities.forEach((entity) => {
-      if (entity.allocation != null) {
-        weightTotal += entity.allocation
-        weightSeen = true
-      }
-      if (entity.market_value_base != null) {
-        valueTotal += entity.market_value_base
-        valueSeen = true
-      }
-    })
+    const heldEntities = currentEntities.filter((entity) => entity.holding_state === 'held')
 
     return {
-      current_weight: weightSeen ? weightTotal : null,
-      current_value_base: valueSeen ? valueTotal : null,
+      current_weight: heldEntities.length
+        ? completeAmountSum(heldEntities.map((entity) => entity.allocation))
+        : null,
+      current_value_base: heldEntities.length
+        ? completeAmountSum(heldEntities.map((entity) => entity.market_value_base))
+        : null,
     }
   }, [currentEntities])
 
   const unassignedSummary = useMemo(() => {
-    let weightTotal = 0
-    let valueTotal = 0
-    let weightSeen = false
-    let valueSeen = false
-
-    coverageSummary.unassignedEntities.forEach((entity) => {
-      if (entity.allocation != null) {
-        weightTotal += entity.allocation
-        weightSeen = true
-      }
-      if (entity.market_value_base != null) {
-        valueTotal += entity.market_value_base
-        valueSeen = true
-      }
-    })
+    const heldEntities = coverageSummary.unassignedEntities.filter(
+      (entity) => entity.holding_state === 'held',
+    )
 
     return {
-      current_weight: weightSeen ? weightTotal : null,
-      current_value_base: valueSeen ? valueTotal : null,
+      current_weight: heldEntities.length
+        ? completeAmountSum(heldEntities.map((entity) => entity.allocation))
+        : null,
+      current_value_base: heldEntities.length
+        ? completeAmountSum(heldEntities.map((entity) => entity.market_value_base))
+        : null,
     }
   }, [coverageSummary.unassignedEntities])
 
@@ -1838,8 +1788,12 @@ export default function TaxonomiesPage() {
         ? targetScopeKey(targetMember.node?.parent_taxonomy_node_id ?? null)
         : targetScopeKey(targetMember.entity?.current_assignment?.taxonomy_node_id ?? null)
     const draft = targetDraftsByScope[scopeKey]?.[kind] ?? EMPTY_TARGET_SET_DRAFT
-    if (isSyntheticCashTargetMember(targetMember) && dimension === 'risk_budget') {
-      return <span className="taxonomy-fixed-target-value">0.00%</span>
+    if (isCashLikeTargetMember(targetMember) && dimension === 'risk_budget') {
+      return (
+        <span className="taxonomy-fixed-target-value" title="Cash is excluded from risk budgets.">
+          N/A
+        </span>
+      )
     }
     const lineDraft = draft.lines_by_member_key[targetMember.member_key] ?? {
       target_weight: '',
@@ -1986,6 +1940,29 @@ export default function TaxonomiesPage() {
     })
   }
 
+  function handleTaxonomyScopeKeydown(event: ReactKeyboardEvent<HTMLElement>) {
+    const target = event.target as HTMLElement | null
+    const tagName = target?.tagName?.toLowerCase()
+    if (
+      target?.isContentEditable ||
+      tagName === 'input' ||
+      tagName === 'textarea' ||
+      tagName === 'select'
+    ) {
+      return
+    }
+    if (
+      event.key === 'Enter' &&
+      (event.metaKey || event.ctrlKey) &&
+      !targetEditMode &&
+      selectedNode?.is_terminal &&
+      selectedEntityIds.size
+    ) {
+      event.preventDefault()
+      void assignEntitiesToNode(selectedNode, Array.from(selectedEntityIds))
+    }
+  }
+
   function handleNodeContextMenu(event: ReactMouseEvent, node: PortfolioTaxonomyNodeRecord) {
     event.preventDefault()
     setSelectedNodeId(node.taxonomy_node_id)
@@ -2129,7 +2106,7 @@ export default function TaxonomiesPage() {
       lines: targetMembers.map((member) => {
         const lineDraft = draft.lines_by_member_key[member.member_key] ?? {
           target_weight: '',
-          target_risk_share: isSyntheticCashTargetMember(member) ? '0' : '',
+          target_risk_share: '',
           notes: '',
         }
         const targetWeight = parsePercentInput(lineDraft.target_weight)
@@ -2139,7 +2116,10 @@ export default function TaxonomiesPage() {
           target_member_id: member.target_member_id,
           taxonomy_node_id: member.taxonomy_node_id,
           target_weight: draft.weight_enabled ? (targetWeight == null ? null : targetWeight) : null,
-          target_risk_share: draft.risk_budget_enabled ? (targetRiskShare == null ? null : targetRiskShare) : null,
+          target_risk_share:
+            draft.risk_budget_enabled && !isCashLikeTargetMember(member)
+              ? (targetRiskShare == null ? null : targetRiskShare)
+              : null,
           notes: lineDraft.notes || null,
         }
       }),
@@ -2869,7 +2849,7 @@ export default function TaxonomiesPage() {
     : null
 
     return (
-      <PortfolioWorkspaceLayout activeSection="Taxonomies" toolbarLabel="Page: Taxonomies">
+      <PortfolioWorkspaceLayout activeSection="Taxonomies" toolbarLabel="Page: Taxonomies" busy={loading}>
         <div className="taxonomy-page taxonomy-page-table">
         {notice || workspaceError || actionError || supplementalNotice ? (
           <div className="page-toast-stack" role="status" aria-live="polite">
@@ -2883,7 +2863,7 @@ export default function TaxonomiesPage() {
 
       {!loading && !catalog && !workspaceError ? <div className="empty-state">No data.</div> : null}
 
-      {!workspaceError ? (
+      {!loading && !workspaceError ? (
         <>
           <section className="panel taxonomy-strip-section">
             <div className="taxonomy-topbar">
@@ -2970,7 +2950,11 @@ export default function TaxonomiesPage() {
           </section>
 
           {selectedTaxonomy ? (
-            <section className="panel taxonomy-levels-section">
+            <section
+              className="panel taxonomy-levels-section"
+              aria-keyshortcuts="Control+Enter Meta+Enter"
+              onKeyDown={handleTaxonomyScopeKeydown}
+            >
               <div className="taxonomy-collapsed-summary taxonomy-tree-summary taxonomy-target-summary-row">
                 <div className="taxonomy-target-summary-meta">
                   {targetEditMode ? (

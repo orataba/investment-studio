@@ -17,7 +17,9 @@ import {
   getPortfolioInstruments,
   getPortfolioRiskPolicy,
   getPortfolioTaxonomyCatalog,
+  getPortfolioResearchRun,
   getPortfolioResearchWorkbench,
+  updatePortfolioResearchInstrumentEligibility,
   updatePortfolioResearchSettings,
   type PortfolioResearchBacktestBenchmarkComparisonResponse,
   type PortfolioResearchBacktestBenchmarkRecord,
@@ -117,6 +119,18 @@ function formatTimestamp(value: string | null | undefined) {
     return '-'
   }
   return value.replace('T', ' ').replace('Z', ' UTC')
+}
+
+function researchLifecycleLabel(value: 'held' | 'observed' | 'former') {
+  return {
+    held: 'Held',
+    observed: 'Observed',
+    former: 'Former',
+  }[value]
+}
+
+function researchEligibilityLabel(value: 'eligible' | 'pm_review_required') {
+  return value === 'eligible' ? 'Eligible' : 'PM review required'
 }
 
 function resolveStatusLabel(status: string) {
@@ -744,10 +758,13 @@ export default function ResearchPage() {
   const { portfolioId = '' } = useParams()
   const [workbench, setWorkbench] = useState<PortfolioResearchWorkbenchResponse | null>(null)
   const [loading, setLoading] = useState(true)
+  const [runDetailLoading, setRunDetailLoading] = useState(false)
+  const [runDetailError, setRunDetailError] = useState<string | null>(null)
   const [workspaceError, setWorkspaceError] = useState<string | null>(null)
   const [actionError, setActionError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
   const [actionPending, setActionPending] = useState<'run' | null>(null)
+  const [eligibilityPendingId, setEligibilityPendingId] = useState<string | null>(null)
   const [frozenMenuOpen, setFrozenMenuOpen] = useState(false)
   const [boundsMenuOpen, setBoundsMenuOpen] = useState(false)
   const [dynamicScopeOptions, setDynamicScopeOptions] = useState<PortfolioResearchPlanningScopeOption[] | null>(null)
@@ -842,8 +859,11 @@ export default function ResearchPage() {
     invalidateRequests(runRequestSequenceRef)
     draftPortfolioIdRef.current = ''
     setWorkbench(null)
+    setRunDetailLoading(false)
+    setRunDetailError(null)
     setWorkspaceError(null)
     setActionPending(null)
+    setEligibilityPendingId(null)
     setActionError(null)
     setNotice(null)
     setFrozenMenuOpen(false)
@@ -1026,9 +1046,75 @@ export default function ResearchPage() {
 
   useEffect(() => {
     const researchRunId = latestRun?.research_run_id ?? ''
+    if (
+      !portfolioId
+      || !researchRunId
+      || latestRun?.status !== 'completed'
+      || latestRun.detail != null
+    ) {
+      setRunDetailLoading(false)
+      setRunDetailError(null)
+      return undefined
+    }
+
+    let cancelled = false
+    setRunDetailLoading(true)
+    setRunDetailError(null)
+    getPortfolioResearchRun(portfolioId, researchRunId)
+      .then((detailedRun) => {
+        if (cancelled || currentPortfolioIdRef.current !== portfolioId) {
+          return
+        }
+        setWorkbench((current) => {
+          if (!current || current.portfolio_id !== portfolioId) {
+            return current
+          }
+          const compactRun = (
+            current.selected_run?.research_run_id === researchRunId
+              ? current.selected_run
+              : current.runs.find((run) => run.research_run_id === researchRunId)
+          )
+          if (!compactRun) {
+            return current
+          }
+          return {
+            ...current,
+            detail_level: 'selected_run',
+            selected_run: {
+              ...detailedRun,
+              reliability_state: compactRun.reliability_state,
+              is_current: compactRun.is_current,
+              reliability_reasons: compactRun.reliability_reasons,
+            },
+          }
+        })
+      })
+      .catch((error) => {
+        if (!cancelled) {
+          setRunDetailError(extractErrorMessage(error))
+        }
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setRunDetailLoading(false)
+        }
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [latestRun?.detail, latestRun?.research_run_id, latestRun?.status, portfolioId])
+
+  useEffect(() => {
+    const researchRunId = latestRun?.research_run_id ?? ''
     const selectedBenchmarkId = benchmarkInstrumentId.trim()
     const storedBenchmarkId = latestRun?.detail?.backtest_benchmark?.instrument_id ?? ''
-    if (!portfolioId || !researchRunId || latestRun?.status !== 'completed' || !selectedBenchmarkId) {
+    if (
+      !portfolioId
+      || !researchRunId
+      || latestRun?.status !== 'completed'
+      || latestRun.detail == null
+      || !selectedBenchmarkId
+    ) {
       setBenchmarkComparison(null)
       setBenchmarkComparisonLoading(false)
       setBenchmarkComparisonError(null)
@@ -1301,6 +1387,48 @@ export default function ResearchPage() {
     }
   }
 
+  async function handleResearchEligibilityApproval(instrumentId: string, pmApproved: boolean) {
+    const targetPortfolioId = portfolioId
+    if (!targetPortfolioId || eligibilityPendingId) {
+      return
+    }
+    setEligibilityPendingId(instrumentId)
+    setActionError(null)
+    try {
+      const updated = await updatePortfolioResearchInstrumentEligibility(
+        targetPortfolioId,
+        instrumentId,
+        { pm_approved: pmApproved },
+      )
+      if (currentPortfolioIdRef.current !== targetPortfolioId) {
+        return
+      }
+      setWorkbench((current) => (
+        current?.portfolio_id === targetPortfolioId
+          ? {
+              ...current,
+              instrument_universe: (current.instrument_universe ?? []).map((item) => (
+                item.instrument_id === updated.instrument_id ? updated : item
+              )),
+            }
+          : current
+      ))
+      setNotice(
+        pmApproved
+          ? 'PM approval saved. Run Research again to refresh execution readiness.'
+          : 'PM approval removed. Former-instrument targets require review again.',
+      )
+    } catch (error) {
+      if (currentPortfolioIdRef.current === targetPortfolioId) {
+        setActionError(extractErrorMessage(error))
+      }
+    } finally {
+      if (currentPortfolioIdRef.current === targetPortfolioId) {
+        setEligibilityPendingId(null)
+      }
+    }
+  }
+
   const solvedGroups = latestRun?.detail?.solved_result_groups ?? []
   const backtest = latestRun?.detail?.backtest ?? null
   const staleRun = latestRun?.status === 'completed' && latestRun.reliability_state === 'stale'
@@ -1321,7 +1449,11 @@ export default function ResearchPage() {
     : null
 
   return (
-    <PortfolioWorkspaceLayout activeSection="Research" toolbarLabel="View: Research Workbench">
+    <PortfolioWorkspaceLayout
+      activeSection="Research"
+      toolbarLabel="View: Research Workbench"
+      busy={loading || runDetailLoading}
+    >
       {notice ? <div className="inline-notice inline-notice-success">{notice}</div> : null}
       {workspaceError ? <div className="inline-notice inline-notice-error">{workspaceError}</div> : null}
       {actionError ? <div className="inline-notice inline-notice-error">{actionError}</div> : null}
@@ -1579,9 +1711,77 @@ export default function ResearchPage() {
             </form>
           </section>
 
+          <section className="panel">
+            <div className="panel-header">
+              <div>
+                <div className="panel-title">Research Universe</div>
+              </div>
+              <div className="portfolio-detail-meta">
+                Lifecycle is derived from holdings and transaction history.
+              </div>
+            </div>
+            <div className="table-shell">
+              <table className="transactions-table research-universe-table">
+                <thead>
+                  <tr>
+                    <th>Instrument</th>
+                    <th>Status</th>
+                    <th>Research Eligibility</th>
+                    <th>PM Approval</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {!(workbench.instrument_universe ?? []).length ? (
+                    <TableStatusRow colSpan={4} label="No instruments are available for Research." />
+                  ) : (
+                    (workbench.instrument_universe ?? []).map((instrument) => {
+                      const isPending = eligibilityPendingId === instrument.instrument_id
+                      return (
+                        <tr key={instrument.instrument_id}>
+                          <td>{instrument.instrument_ref?.instrument_name ?? instrument.instrument_id}</td>
+                          <td>{researchLifecycleLabel(instrument.research_lifecycle)}</td>
+                          <td>{researchEligibilityLabel(instrument.research_eligibility)}</td>
+                          <td>
+                            {instrument.research_lifecycle !== 'former' ? (
+                              'Not required'
+                            ) : (
+                              <button
+                                type="button"
+                                className="toolbar-link"
+                                disabled={eligibilityPendingId != null}
+                                onClick={() => void handleResearchEligibilityApproval(
+                                  instrument.instrument_id,
+                                  !instrument.research_pm_approved,
+                                )}
+                              >
+                                {isPending
+                                  ? 'Saving...'
+                                  : instrument.research_pm_approved
+                                    ? 'Revoke approval'
+                                    : 'Approve for research'}
+                              </button>
+                            )}
+                          </td>
+                        </tr>
+                      )
+                    })
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </section>
+
           {!latestRun ? (
             <section className="panel">
               <div className="empty-state">Run to generate the latest solved result.</div>
+            </section>
+          ) : latestRun.status === 'completed' && latestRun.detail == null ? (
+            <section className="panel" aria-busy={runDetailLoading}>
+              {runDetailLoading ? <CalculationStatus /> : (
+                <div className="inline-notice inline-notice-error">
+                  {runDetailError ?? 'Research run detail is unavailable.'}
+                </div>
+              )}
             </section>
           ) : latestRun.status === 'failed' ? (
             <section className="panel">
@@ -1606,7 +1806,7 @@ export default function ResearchPage() {
                 <section className="panel">
                   <div className="inline-notice inline-notice-warning">
                     <strong>Manual PM decision required.</strong>{' '}
-                    A 0% solved target for a currently held instrument is not an executable liquidation instruction.
+                    Review each flagged target and its execution note before translating the solved result into orders.
                     <ul>
                       {manualReviewGaps.map((row) => (
                         <li key={`${row.member_type}:${row.member_id}`}>

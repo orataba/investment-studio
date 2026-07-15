@@ -1,9 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import {
-  MIN_ANNUALIZED_RETURN_HISTORY_DAYS,
-  buildPerformanceHistoryReliability,
-} from './lib/performanceHistoryReliability'
+import { buildPerformanceHistoryReliability } from './lib/performanceHistoryReliability'
 import performancePageSource from './pages/PerformancePage.tsx?raw'
 
 describe('performance short-history reliability policy', () => {
@@ -14,9 +11,10 @@ describe('performance short-history reliability policy', () => {
       snapshot_count: 101,
       return_observation_count: 101,
       risk_return_observation_count: 68,
+      annualization_eligible: false,
+      annualization_unavailable_reason: 'measurement_period_shorter_than_one_year',
     })
 
-    expect(MIN_ANNUALIZED_RETURN_HISTORY_DAYS).toBe(365)
     expect(profile.elapsedDays).toBe(100)
     expect(profile.calendarSpanDays).toBe(101)
     expect(profile.annualizedReturnEligible).toBe(false)
@@ -26,16 +24,18 @@ describe('performance short-history reliability policy', () => {
     expect(profile.annualizationMessage).toContain('Period TWR remains the primary return')
   })
 
-  it('allows annualized return presentation after a full year has elapsed', () => {
+  it('uses the canonical backend gate after a full ACT/365.25 year has elapsed', () => {
     const profile = buildPerformanceHistoryReliability({
-      start_date: '2025-07-09',
+      start_date: '2025-07-08',
       end_date: '2026-07-09',
       snapshot_count: 252,
       return_observation_count: 252,
       risk_return_observation_count: 251,
+      annualization_eligible: true,
+      annualization_unavailable_reason: null,
     })
 
-    expect(profile.elapsedDays).toBe(365)
+    expect(profile.elapsedDays).toBe(366)
     expect(profile.annualizedReturnEligible).toBe(true)
     expect(profile.annualizationMessage).toBeNull()
   })

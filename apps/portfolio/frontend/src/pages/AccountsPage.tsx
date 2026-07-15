@@ -475,6 +475,7 @@ export default function AccountsPage() {
     <PortfolioWorkspaceLayout
       activeSection="Accounts"
       toolbarLabel="View: Account Ledger"
+      busy={loading}
       controls={
         workspace ? (
           <div className="portfolio-summary-strip">
