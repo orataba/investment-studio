@@ -13,21 +13,28 @@ def _detail(
     *,
     instrument_type: str = "equity",
 ) -> dict[str, object]:
+    quote_basis = "dirty_price" if instrument_type == "bond" else "close"
     point = {
         "metric_family": "price",
-        "quote_basis": "close",
+        "quote_basis": quote_basis,
         "as_of_date": "2026-04-15",
         "value": str(price),
         "currency": "USD",
         "status": "complete",
     }
+    if instrument_type == "bond":
+        point["price_unit"] = "percent_of_par"
+        point["price_scale"] = 0.01
+    else:
+        point["price_unit"] = "per_unit"
+        point["price_scale"] = 1.0
     return {
         "instrument_id": instrument_id,
         "instrument_name": instrument_id,
         "instrument_type": instrument_type,
         "currency": "USD",
         "identifiers": [],
-        "quote_selection_policy": {"valuation": ["close"]},
+        "quote_selection_policy": {"valuation": [quote_basis]},
         "market_data": [point],
         "latest_market_data": [point],
     }
@@ -95,13 +102,16 @@ def test_historical_pricing_uses_one_bulk_registry_load(monkeypatch) -> None:
         lambda: pytest.fail("specific-id pricing must not scan the registry"),
     )
 
-    pricing = ledger._resolve_pricing_map(
+    pricing_quotes = ledger._resolve_pricing_quote_map(
         {"equity-a", "equity-b"},
         as_of_date=date(2026, 4, 15),
     )
 
     assert calls == [{"equity-a", "equity-b"}]
-    assert pricing == {"equity-a": 11.0, "equity-b": 22.0}
+    assert {
+        instrument_id: ledger._pricing_value(quote)
+        for instrument_id, quote in pricing_quotes.items()
+    } == {"equity-a": 11.0, "equity-b": 22.0}
 
 
 def test_position_lot_filters_run_before_pricing(monkeypatch) -> None:

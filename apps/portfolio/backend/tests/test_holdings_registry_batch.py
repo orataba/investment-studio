@@ -49,7 +49,11 @@ def test_materialized_holdings_uses_one_bulk_detail_map(client, monkeypatch) -> 
 
     response = client.get(
         "/api/workspace/holdings",
-        params={"portfolio_id": "portfolio-ops", "as_of_date": "2026-04-15"},
+        params={
+            "portfolio_id": "portfolio-ops",
+            "as_of_date": "2026-04-15",
+            "include_details": True,
+        },
     )
 
     assert response.status_code == 200
@@ -90,7 +94,7 @@ def test_instrument_holding_projection_skips_portfolio_wide_analytics(client, mo
     assert len(response.content) < 5_000
 
 
-def test_instrument_holding_projection_preserves_arbitrary_as_of_fallback(client, monkeypatch) -> None:
+def test_instrument_holding_projection_fails_closed_when_snapshot_is_unavailable(client, monkeypatch) -> None:
     monkeypatch.setattr(
         workspace_routes,
         "build_materialized_instrument_holding_projection",
@@ -99,33 +103,9 @@ def test_instrument_holding_projection_preserves_arbitrary_as_of_fallback(client
     monkeypatch.setattr(
         workspace_routes,
         "holdings_workspace",
-        lambda **_kwargs: {
-            "portfolio_id": "portfolio-ops",
-            "portfolio_name": "Portfolio Operations",
-            "base_currency": "USD",
-            "as_of_date": "2026-04-12",
-            "view_label": "View: Holdings",
-            "rows": [
-                {
-                    "line_id": "equity-us-abbv",
-                    "instrument_core": {
-                        "instrument_id": "equity-us-abbv",
-                        "instrument_name": "AbbVie Inc",
-                        "instrument_type": "equity",
-                        "currency": "USD",
-                        "identifiers": [],
-                    },
-                    "quantity": 10.0,
-                    "last_price": 200.0,
-                    "market_value": 2_000.0,
-                    "cost_basis": 1_800.0,
-                    "allocation": 0.2,
-                    "coverage_status": "price-nav-fx",
-                    "price_chart_1m": [{"as_of_date": "2026-04-12", "value": 200.0}],
-                    "instrument_return_series_all": {"points": []},
-                }
-            ],
-        },
+        lambda **_kwargs: (_ for _ in ()).throw(
+            AssertionError("single-instrument projection must not rebuild the full workspace")
+        ),
     )
 
     response = client.get(
@@ -137,10 +117,10 @@ def test_instrument_holding_projection_preserves_arbitrary_as_of_fallback(client
         },
     )
 
-    assert response.status_code == 200
-    assert response.json()["row"]["quantity"] == 10.0
-    assert "price_chart_1m" not in response.json()["row"]
-    assert "instrument_return_series_all" not in response.json()["row"]
+    assert response.status_code == 409
+    assert response.json()["detail"] == (
+        "Materialized holding projection is unavailable for the requested date."
+    )
 
 
 def test_fallback_holdings_reuses_bulk_details_for_frequency_valuation_and_charts(
@@ -175,7 +155,11 @@ def test_fallback_holdings_reuses_bulk_details_for_frequency_valuation_and_chart
 
     response = client.get(
         "/api/workspace/holdings",
-        params={"portfolio_id": "portfolio-ops", "as_of_date": "2026-04-15"},
+        params={
+            "portfolio_id": "portfolio-ops",
+            "as_of_date": "2026-04-15",
+            "include_details": True,
+        },
     )
 
     assert response.status_code == 200

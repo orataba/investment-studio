@@ -10,7 +10,7 @@ import pandas as pd
 from portfolio_app.db.models import PortfolioRecordModel
 from portfolio_app.db.session import get_session_factory
 from portfolio_app.services.calculation_frequency import CalculationFrequency
-from portfolio_app.services.performance import is_cash_holding_instrument_id
+from portfolio_app.services.holdings_market_profile import is_cash_holding_instrument_id
 from portfolio_app.services.research_solver import (
     RESEARCH_COVARIANCE_MODEL_ID,
     RESEARCH_DEFAULT_MISSING_RETURN_POLICY,

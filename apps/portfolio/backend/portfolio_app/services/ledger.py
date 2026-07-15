@@ -5,14 +5,21 @@ from copy import deepcopy
 from datetime import date
 from decimal import Decimal, ROUND_DOWN, ROUND_HALF_UP
 
+from portfolio_ops_instrument_core import VALUATION_PROHIBITED_TOTAL_RETURN_BASES
+
 from portfolio_app.services.instrument_registry import (
     InstrumentRegistryError,
     get_platform_fx_rates,
     get_registry_instrument_details,
+    get_registry_instrument_detail,
     list_registry_corporate_actions,
     list_registry_instruments,
 )
+from portfolio_app.services import valuation_fx
 from portfolio_app.services.market_data import is_usable_market_data_point
+from portfolio_app.services.market_data import quote_policy_bases, resolve_quote_point
+from portfolio_app.services.transaction_dates import transaction_sort_key
+from portfolio_app.services.transaction_pricing import transaction_price_scale
 
 
 def _safe_float(value: object) -> float | None:
@@ -24,11 +31,11 @@ def _safe_float(value: object) -> float | None:
         return None
 
 
-def _resolve_pricing_map(
+def _resolve_pricing_quote_map(
     instrument_ids: set[str] | None = None,
     *,
     as_of_date: date | None = None,
-) -> dict[str, float]:
+) -> dict[str, object]:
     normalized_instrument_ids = {instrument_id for instrument_id in (instrument_ids or set()) if instrument_id}
     if normalized_instrument_ids or as_of_date is not None:
         target_instrument_ids = normalized_instrument_ids or {
@@ -37,12 +44,12 @@ def _resolve_pricing_map(
             if str(item.get("instrument_id") or "")
         }
         instrument_details = get_registry_instrument_details(target_instrument_ids)
-        pricing_map: dict[str, float] = {}
+        pricing_map: dict[str, object] = {}
         for instrument_id in target_instrument_ids:
             detail = instrument_details.get(instrument_id)
             if not isinstance(detail, dict):
                 continue
-            resolved = _select_quote_value(
+            resolved = _select_quote_point(
                 detail,
                 role="valuation",
                 as_of_date=as_of_date,
@@ -52,12 +59,12 @@ def _resolve_pricing_map(
         return pricing_map
 
     instruments = list_registry_instruments()
-    pricing_map: dict[str, float] = {}
+    pricing_map: dict[str, object] = {}
     for instrument in instruments:
         instrument_id = str(instrument.get("instrument_id") or "")
         if normalized_instrument_ids and instrument_id not in normalized_instrument_ids:
             continue
-        resolved = _select_quote_value(instrument, role="valuation")
+        resolved = _select_quote_point(instrument, role="valuation")
         if resolved is not None:
             pricing_map[instrument_id] = resolved
     return pricing_map
@@ -92,21 +99,6 @@ def resolve_fx_rate_map() -> dict[tuple[str, str], float]:
     return fx_rate_map
 
 
-def _direct_fx_instrument_map(fx_payload: dict[str, object]) -> dict[tuple[str, str], str]:
-    direct_instruments: dict[tuple[str, str], str] = {}
-    for item in fx_payload.get("rates", []):
-        if not is_usable_market_data_point(item):
-            continue
-        if str(item.get("source_kind") or "") != "direct":
-            continue
-        base_currency = str(item.get("base_currency") or "").strip().upper()
-        quote_currency = str(item.get("quote_currency") or "").strip().upper()
-        instrument_id = str(item.get("instrument_id") or "").strip()
-        if base_currency and quote_currency and instrument_id:
-            direct_instruments[(base_currency, quote_currency)] = instrument_id
-    return direct_instruments
-
-
 def convert_amount(
     amount: float | None,
     *,
@@ -131,87 +123,24 @@ def convert_amount(
     return float(amount) * rate
 
 
-def _normalized_policy_bases(instrument: dict[str, object], role: str) -> list[str]:
-    policy = instrument.get("quote_selection_policy", {})
-    if not isinstance(policy, dict):
-        return []
-    raw_values = policy.get(role)
-    if not isinstance(raw_values, list):
-        return []
-    normalized_values: list[str] = []
-    for raw_value in raw_values:
-        value = str(raw_value or "").strip()
-        if value and value not in normalized_values:
-            normalized_values.append(value)
-    return normalized_values
-
-
-FORBIDDEN_VALUATION_QUOTE_BASES = frozenset(
-    {
-        "adjusted_close",
-        "adjusted_nav",
-        "adjusted_price",
-        "accum_nav",
-        "accumulated_nav",
-        "cum_nav",
-        "cumulative_nav",
-        "dividend_adjusted_nav",
-        "nav_with_dividend",
-        "reinvested_nav",
-        "split_adjusted_close",
-        "total_return_nav",
-        "total_return_price",
-    }
-)
-
-
-def _market_points_by_basis(detail: dict[str, object]) -> dict[str, list[dict[str, object]]]:
-    market_data = detail.get("market_data", [])
-    points_by_basis: dict[str, list[dict[str, object]]] = defaultdict(list)
-    if not isinstance(market_data, list):
-        return points_by_basis
-    for point in market_data:
-        if not is_usable_market_data_point(point):
-            continue
-        quote_basis = str(point.get("quote_basis") or "").strip()
-        if not quote_basis:
-            continue
-        points_by_basis[quote_basis].append(point)
-    for points in points_by_basis.values():
-        points.sort(key=lambda item: str(item.get("as_of_date") or ""))
-    return points_by_basis
-
-
-def _latest_point_on_or_before(
-    points: list[dict[str, object]],
-    as_of_date: date,
+def _select_quote_point(
+    instrument: dict[str, object],
+    *,
+    role: str,
+    as_of_date: date | None = None,
 ) -> dict[str, object] | None:
-    as_of_iso = as_of_date.isoformat()
-    latest: dict[str, object] | None = None
-    for point in points:
-        point_date = str(point.get("as_of_date") or "")
-        if point_date and point_date <= as_of_iso:
-            latest = point
-    return latest
-
-
-def _latest_points_by_basis(instrument: dict[str, object]) -> dict[str, dict[str, object]]:
-    latest_market_data = instrument.get("latest_market_data", [])
-    if not isinstance(latest_market_data, list):
-        return {}
-
-    latest_by_basis: dict[str, dict[str, object]] = {}
-    for point in latest_market_data:
-        if not is_usable_market_data_point(point):
-            continue
-        quote_basis = str(point.get("quote_basis") or "").strip()
-        if not quote_basis:
-            continue
-        as_of_date = str(point.get("as_of_date") or "")
-        current = latest_by_basis.get(quote_basis)
-        if current is None or as_of_date >= str(current.get("as_of_date") or ""):
-            latest_by_basis[quote_basis] = point
-    return latest_by_basis
+    candidate_bases = quote_policy_bases(instrument, role)
+    if role == "valuation" and any(
+        quote_basis.strip().lower() in VALUATION_PROHIBITED_TOTAL_RETURN_BASES
+        for quote_basis in candidate_bases
+    ):
+        return None
+    resolved_as_of_date = as_of_date or date.max
+    return resolve_quote_point(
+        instrument,
+        candidate_bases=candidate_bases,
+        as_of_date=resolved_as_of_date,
+    ).point
 
 
 def _select_quote_value(
@@ -220,51 +149,35 @@ def _select_quote_value(
     role: str,
     as_of_date: date | None = None,
 ) -> float | None:
-    candidate_bases = _normalized_policy_bases(instrument, role)
-    if role == "valuation" and any(
-        quote_basis.strip().lower() in FORBIDDEN_VALUATION_QUOTE_BASES
-        for quote_basis in candidate_bases
-    ):
+    point = _select_quote_point(instrument, role=role, as_of_date=as_of_date)
+    return _safe_float((point or {}).get("value"))
+
+
+def _pricing_value(quote: object) -> float | None:
+    if isinstance(quote, dict):
+        return _safe_float(quote.get("value"))
+    return _safe_float(quote)
+
+
+def _pricing_scale(quote: object) -> float | None:
+    if not isinstance(quote, dict):
         return None
-    if as_of_date is not None:
-        points_by_basis = _market_points_by_basis(instrument)
-        for quote_basis in candidate_bases:
-            point = _latest_point_on_or_before(points_by_basis.get(quote_basis, []), as_of_date)
-            resolved = _safe_float((point or {}).get("value"))
-            if resolved is not None:
-                return resolved
-        return None
-
-    latest_by_basis = _latest_points_by_basis(instrument)
-    for quote_basis in candidate_bases:
-        resolved = _safe_float(latest_by_basis.get(quote_basis, {}).get("value"))
-        if resolved is not None:
-            return resolved
-    return None
+    return _safe_float(quote.get("price_scale"))
 
 
-def _position_market_value(
+def _display_price_from_gross(
     *,
+    gross_amount: float,
     quantity: float,
-    last_price: float | None,
     instrument_ref: dict[str, object] | None,
 ) -> float | None:
-    if last_price is None:
+    if quantity <= 1e-9 or instrument_ref is None:
         return None
-    instrument_type = str((instrument_ref or {}).get("instrument_type") or "").strip().lower()
-    if instrument_type == "bond":
-        return quantity * last_price / 100.0
-    return quantity * last_price
-
-
-def _transaction_sort_key(transaction: dict[str, object]) -> tuple[str, str, str, str, str]:
-    return (
-        str(transaction.get("trade_date") or ""),
-        str(transaction.get("trade_at") or ""),
-        str(transaction.get("created_at") or ""),
-        str(transaction.get("transaction_id") or ""),
-        str(transaction.get("settlement_date") or ""),
-    )
+    try:
+        price_scale = transaction_price_scale(instrument_ref)
+    except ValueError:
+        return None
+    return gross_amount / quantity / price_scale
 
 
 def _corporate_action_sort_key(event: dict[str, object]) -> tuple[str, int, str, str]:
@@ -454,10 +367,11 @@ def _resolve_cost_basis_method(account_cost_methods: dict[str, str] | None, acco
 def _resolve_account_currency(
     account_currency_map: dict[str, str] | None,
     account_id: str,
-    fallback_currency: str,
 ) -> str:
-    resolved = str((account_currency_map or {}).get(account_id) or "").strip().upper()
-    return resolved or fallback_currency
+    return valuation_fx.required_currency(
+        (account_currency_map or {}).get(account_id),
+        field_name=f"currency for account '{account_id}'",
+    )
 
 
 def _ensure_position_bucket(
@@ -870,6 +784,10 @@ def derive_ledger_postings(
         cost_basis_delta: float | None = None,
         currency: str | None = None,
     ) -> None:
+        posting_currency = valuation_fx.required_currency(
+            currency if currency is not None else transaction.get("currency"),
+            field_name="ledger-posting currency",
+        )
         posting_index = len([item for item in postings if item["transaction_id"] == transaction["transaction_id"]]) + 1
         postings.append(
             {
@@ -892,7 +810,7 @@ def derive_ledger_postings(
                 "cash_amount_delta": cash_amount_delta,
                 "quantity_delta": quantity_delta,
                 "cost_basis_delta": cost_basis_delta,
-                "currency": currency or str(transaction.get("currency") or ""),
+                "currency": posting_currency,
                 "transfer_group_id": transaction.get("transfer_group_id"),
                 "note": transaction.get("note"),
                 "created_at": transaction.get("created_at"),
@@ -963,7 +881,9 @@ def derive_ledger_postings(
         quantity = _safe_float(transaction.get("quantity"))
         account_id = str(transaction.get("account_id") or "")
         settlement_cash_account_id = transaction.get("settlement_cash_account_id")
-        currency = str(transaction.get("currency") or "")
+        currency = valuation_fx.required_currency(
+            transaction.get("currency"), field_name="transaction currency"
+        )
         instrument_id = str(transaction.get("instrument_id") or "")
         cost_basis_method = _resolve_cost_basis_method(account_cost_methods, account_id)
 
@@ -1032,7 +952,7 @@ def derive_ledger_postings(
                     posting_role="fx_conversion_target_cash",
                     account_id=target_account_id,
                     cash_amount_delta=target_amount,
-                    currency=_resolve_account_currency(account_currency_map, target_account_id, currency),
+                    currency=_resolve_account_currency(account_currency_map, target_account_id),
                 )
             continue
 
@@ -1388,7 +1308,7 @@ def validate_transaction_position_history(
     additional point-in-time ownership check.
     """
 
-    ordered_transactions = sorted(transactions, key=_transaction_sort_key)
+    ordered_transactions = sorted(transactions, key=transaction_sort_key)
     _build_position_state(
         ordered_transactions,
         account_cost_methods=account_cost_methods,
@@ -1404,12 +1324,12 @@ def validate_transaction_position_history(
             and transaction.get("transfer_object_type") == "position"
         ):
             transaction_id = str(transaction.get("transaction_id") or "")
-            transaction_sort_key = _transaction_sort_key(transaction)
+            current_transaction_sort_key = transaction_sort_key(transaction)
             prior_transactions = [
                 candidate
                 for candidate in ordered_transactions
                 if str(candidate.get("transaction_id") or "") != transaction_id
-                and _transaction_sort_key(candidate) <= transaction_sort_key
+                and transaction_sort_key(candidate) <= current_transaction_sort_key
             ]
             expected_cost_basis = estimate_position_cost_basis(
                 portfolio_id,
@@ -1569,6 +1489,7 @@ def _new_position_lot(
         "remaining_cost_basis": entry_cost_basis,
         "realized_cost_basis": 0.0,
         "transferred_cost_basis": 0.0,
+        "realized_gross_proceeds": 0.0,
         "realized_proceeds": 0.0,
         "realized_pnl": 0.0,
         "income_cash_amount": 0.0,
@@ -1826,7 +1747,7 @@ def build_position_lots(
     status: str | None = None,
     as_of_date: date | None = None,
     corporate_actions: list[dict[str, object]] | None = None,
-    pricing_map: dict[str, float] | None = None,
+    pricing_map: dict[str, object] | None = None,
 ) -> list[dict[str, object]]:
     account_cost_methods = {
         str(account.get("account_id") or ""): str(account.get("cost_basis_method") or "fifo")
@@ -1838,7 +1759,7 @@ def build_position_lots(
     all_position_lots: list[dict[str, object]] = []
     position_lot_by_id: dict[str, dict[str, object]] = {}
     lot_sequence = 0
-    sorted_transactions = sorted(transactions, key=_transaction_sort_key)
+    sorted_transactions = sorted(transactions, key=transaction_sort_key)
     resolved_actions = _resolved_corporate_actions(
         sorted_transactions,
         corporate_actions=corporate_actions,
@@ -2199,11 +2120,16 @@ def build_position_lots(
             )
             net_proceeds = gross_amount - fees - taxes
             quantity_weights = [(_safe_float(slice_item.get("quantity")) or 0.0) for slice_item in disposal_slices]
+            gross_proceeds_allocations = _proportional_allocations(
+                gross_amount,
+                quantity_weights,
+            )
             proceeds_allocations = _proportional_allocations(net_proceeds, quantity_weights)
             for index, slice_item in enumerate(disposal_slices):
                 position_lot = slice_item["position_lot"]
                 matched_quantity = _safe_float(slice_item.get("quantity")) or 0.0
                 matched_cost_basis = _safe_float(slice_item.get("cost_basis")) or 0.0
+                gross_proceeds = gross_proceeds_allocations[index]
                 proceeds = proceeds_allocations[index]
                 realized_pnl = proceeds - matched_cost_basis
                 position_lot["realized_quantity"] = (
@@ -2211,6 +2137,10 @@ def build_position_lots(
                 )
                 position_lot["realized_cost_basis"] = (
                     (_safe_float(position_lot.get("realized_cost_basis")) or 0.0) + matched_cost_basis
+                )
+                position_lot["realized_gross_proceeds"] = (
+                    (_safe_float(position_lot.get("realized_gross_proceeds")) or 0.0)
+                    + gross_proceeds
                 )
                 position_lot["realized_proceeds"] = (
                     (_safe_float(position_lot.get("realized_proceeds")) or 0.0) + proceeds
@@ -2227,6 +2157,7 @@ def build_position_lots(
                             "transaction_type": transaction_type,
                             "trade_date": trade_date,
                             "quantity": matched_quantity,
+                            "gross_proceeds": gross_proceeds,
                             "proceeds": proceeds,
                             "cost_basis_released": matched_cost_basis,
                             "realized_pnl": realized_pnl,
@@ -2438,7 +2369,7 @@ def build_position_lots(
     missing_pricing_ids = returned_instrument_ids - resolved_pricing_map.keys()
     if missing_pricing_ids:
         resolved_pricing_map.update(
-            _resolve_pricing_map(missing_pricing_ids, as_of_date=as_of_date)
+            _resolve_pricing_quote_map(missing_pricing_ids, as_of_date=as_of_date)
         )
     resolved_as_of_date = as_of_date or date.today()
     rendered_position_lots: list[dict[str, object]] = []
@@ -2452,7 +2383,13 @@ def build_position_lots(
         entry_tax_amount = _safe_float(raw_position_lot.get("entry_tax_amount")) or 0.0
         entry_cost_basis = _safe_float(raw_position_lot.get("entry_cost_basis")) or 0.0
         realized_proceeds = _safe_float(raw_position_lot.get("realized_proceeds")) or 0.0
-        instrument_price = resolved_pricing_map.get(str(raw_position_lot.get("instrument_id") or ""))
+        realized_gross_proceeds = _safe_float(
+            raw_position_lot.get("realized_gross_proceeds")
+        )
+        if realized_gross_proceeds is None:
+            raise ValueError("Position lot is missing canonical realized gross proceeds.")
+        instrument_quote = resolved_pricing_map.get(str(raw_position_lot.get("instrument_id") or ""))
+        instrument_price = _pricing_value(instrument_quote)
         instrument_ref = (
             raw_position_lot.get("instrument_ref")
             if isinstance(raw_position_lot.get("instrument_ref"), dict)
@@ -2465,10 +2402,11 @@ def build_position_lots(
         holding_period_days = None
         if acquisition_date_value is not None and closed_at_value is not None:
             holding_period_days = max((closed_at_value - acquisition_date_value).days, 0)
-        current_market_value = _position_market_value(
+        current_market_value = valuation_fx.position_market_value(
             quantity=remaining_quantity,
             last_price=instrument_price,
             instrument_ref=instrument_ref,
+            price_scale=_pricing_scale(instrument_quote),
         )
 
         rendered_position_lots.append(
@@ -2513,14 +2451,21 @@ def build_position_lots(
                 "remaining_cost_basis": remaining_cost_basis,
                 "realized_cost_basis": _safe_float(raw_position_lot.get("realized_cost_basis")) or 0.0,
                 "transferred_cost_basis": _safe_float(raw_position_lot.get("transferred_cost_basis")) or 0.0,
+                "realized_gross_proceeds": realized_gross_proceeds,
                 "realized_proceeds": realized_proceeds,
                 "realized_pnl": _safe_float(raw_position_lot.get("realized_pnl")) or 0.0,
                 "income_cash_amount": _safe_float(raw_position_lot.get("income_cash_amount")) or 0.0,
                 "expense_cash_amount": _safe_float(raw_position_lot.get("expense_cash_amount")) or 0.0,
                 "return_of_capital_amount": _safe_float(raw_position_lot.get("return_of_capital_amount")) or 0.0,
-                "entry_price": (entry_gross_amount / entry_quantity) if entry_quantity > 1e-9 else None,
-                "average_exit_price": (
-                    realized_proceeds / realized_quantity if realized_quantity > 1e-9 else None
+                "entry_price": _display_price_from_gross(
+                    gross_amount=entry_gross_amount,
+                    quantity=entry_quantity,
+                    instrument_ref=instrument_ref,
+                ),
+                "average_exit_price": _display_price_from_gross(
+                    gross_amount=realized_gross_proceeds,
+                    quantity=realized_quantity,
+                    instrument_ref=instrument_ref,
                 ),
                 "current_market_value": current_market_value,
                 "unrealized_pnl": (
@@ -2561,7 +2506,7 @@ def build_portfolio_positions(
     *,
     as_of_date: date | None = None,
 ) -> list[dict[str, object]]:
-    pricing_map: dict[str, float] = {}
+    pricing_map: dict[str, object] = {}
     position_lots = build_position_lots(
         portfolio_id,
         accounts,
@@ -2598,7 +2543,8 @@ def build_portfolio_positions(
         quantity = _safe_float(bucket.get("quantity")) or 0.0
         if abs(quantity) <= 1e-9:
             continue
-        last_price = pricing_map.get(str(bucket.get("instrument_id") or ""))
+        pricing_quote = pricing_map.get(str(bucket.get("instrument_id") or ""))
+        last_price = _pricing_value(pricing_quote)
         account_ids = sorted(account_id for account_id in bucket["account_ids"] if account_id)
         rendered_positions.append(
             {
@@ -2609,7 +2555,7 @@ def build_portfolio_positions(
                 "quantity": quantity,
                 "cost_basis": _safe_float(bucket.get("cost_basis")),
                 "last_price": last_price,
-                "market_value": _position_market_value(
+                "market_value": valuation_fx.position_market_value(
                     quantity=quantity,
                     last_price=last_price,
                     instrument_ref=(
@@ -2617,6 +2563,7 @@ def build_portfolio_positions(
                         if isinstance(bucket.get("instrument_ref"), dict)
                         else None
                     ),
+                    price_scale=_pricing_scale(pricing_quote),
                 ),
                 "currency": bucket["currency"],
                 "account_ids": account_ids,
@@ -2690,10 +2637,10 @@ def build_account_workspace(
     direct_fx_instruments: dict[tuple[str, str], str] = {}
     instrument_detail_cache: dict[str, dict[str, object] | None] = {}
     if as_of_date is not None:
-        from portfolio_app.services.performance import convert_amount_on
-
-        convert_amount_on_fn = convert_amount_on
-        direct_fx_instruments = _direct_fx_instrument_map(get_platform_fx_rates())
+        convert_amount_on_fn = valuation_fx.convert_amount_on
+        direct_fx_instruments = valuation_fx.fx_direct_instrument_map(
+            get_platform_fx_rates()
+        )
 
     def convert_to_base(amount: float | None, *, from_currency: str) -> float | None:
         normalized_currency = str(from_currency or "").strip().upper()
@@ -2711,6 +2658,7 @@ def build_account_workspace(
             to_currency=base_currency,
             direct_fx_instruments=direct_fx_instruments,
             instrument_detail_cache=instrument_detail_cache,
+            instrument_detail_loader=get_registry_instrument_detail,
         )
         return converted_amount
 
@@ -2732,7 +2680,7 @@ def build_account_workspace(
         else:
             pending_settlement[account_id] += cash_delta
 
-    pricing_map: dict[str, float] = {}
+    pricing_map: dict[str, object] = {}
     position_lots = build_position_lots(
         portfolio_id,
         accounts,
@@ -2775,8 +2723,9 @@ def build_account_workspace(
         if abs(quantity) < 1e-9:
             continue
         instrument_id = str(bucket["instrument_id"])
-        last_price = pricing_map.get(instrument_id)
-        market_value = _position_market_value(
+        pricing_quote = pricing_map.get(instrument_id)
+        last_price = _pricing_value(pricing_quote)
+        market_value = valuation_fx.position_market_value(
             quantity=quantity,
             last_price=last_price,
             instrument_ref=(
@@ -2784,6 +2733,7 @@ def build_account_workspace(
                 if isinstance(bucket.get("instrument_ref"), dict)
                 else None
             ),
+            price_scale=_pricing_scale(pricing_quote),
         )
         account_id = str(bucket["account_id"])
         position_count_by_account[account_id] += 1

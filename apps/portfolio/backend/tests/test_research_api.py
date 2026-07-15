@@ -130,6 +130,182 @@ def _create_planning_taxonomy(client, *, root_default_target_dimension: str = "w
     return taxonomy_id, node_ids
 
 
+def test_risk_target_resolution_excludes_cash_but_preserves_capital_context() -> None:
+    state = TaxonomyResearchState(
+        portfolio_id="portfolio-cash-contract",
+        planning_taxonomy_id="taxonomy-cash-contract",
+        taxonomy_name="Planning",
+        root_default_target_dimension="risk_budget",
+        base_currency="USD",
+        as_of_date=date(2026, 1, 2),
+        node_by_id={},
+        children_by_parent={},
+        node_path_by_id={},
+        node_depth_by_id={},
+        node_subtree_by_id={},
+        direct_assignments_by_node={},
+        target_sets_by_scope_type={
+            (None, "taa"): [
+                {
+                    "target_set_id": "target-cash-contract",
+                    "target_set_type": "taa",
+                    "name": "Combined Target",
+                    "weight_enabled": True,
+                    "risk_budget_enabled": True,
+                    "status": "active",
+                }
+            ]
+        },
+        target_lines_by_set_id={
+            "target-cash-contract": {
+                (TARGET_MEMBER_INSTRUMENT, "asset-a"): {
+                    "target_weight": 0.8,
+                    "target_risk_share": 1.0,
+                },
+                (TARGET_MEMBER_CASH, SYSTEM_CASH_TARGET_MEMBER_ID): {
+                    "target_weight": 0.2,
+                    "target_risk_share": None,
+                },
+            }
+        },
+        account_name_by_id={},
+        instrument_detail_cache={},
+        direct_fx_instruments={},
+        frozen_taxonomy_node_ids=frozenset(),
+        top_sleeve_weight_bounds={},
+    )
+    members = [
+        ScopeMemberRecord(
+            member_type=TARGET_MEMBER_INSTRUMENT,
+            member_id="asset-a",
+            label="Asset A",
+        ),
+        ScopeMemberRecord(
+            member_type=TARGET_MEMBER_CASH,
+            member_id=SYSTEM_CASH_TARGET_MEMBER_ID,
+            label=SYSTEM_CASH_TARGET_LABEL,
+        ),
+    ]
+
+    rows, warnings = research_solver_service._resolve_dimension_target_rows(
+        state,
+        scope_node_id=None,
+        scope_members=members,
+        as_of_date=date(2026, 1, 2),
+        selected_dimension="risk_budget",
+    )
+
+    assert warnings == []
+    risky_row = next(row for row in rows if row["member_type"] == TARGET_MEMBER_INSTRUMENT)
+    cash_row = next(row for row in rows if row["member_type"] == TARGET_MEMBER_CASH)
+    assert risky_row["selected_value"] == pytest.approx(1.0)
+    assert risky_row["target_risk_share"] == pytest.approx(1.0)
+    assert cash_row["target_weight"] == pytest.approx(0.2)
+    assert cash_row["selected_value"] is None
+    assert cash_row["target_risk_share"] is None
+
+
+def test_risk_target_resolution_is_unavailable_for_cash_only_scope() -> None:
+    state = TaxonomyResearchState(
+        portfolio_id="portfolio-cash-only",
+        planning_taxonomy_id="taxonomy-cash-only",
+        taxonomy_name="Planning",
+        root_default_target_dimension="risk_budget",
+        base_currency="USD",
+        as_of_date=date(2026, 1, 2),
+        node_by_id={},
+        children_by_parent={},
+        node_path_by_id={},
+        node_depth_by_id={},
+        node_subtree_by_id={},
+        direct_assignments_by_node={},
+        target_sets_by_scope_type={},
+        target_lines_by_set_id={},
+        account_name_by_id={},
+        instrument_detail_cache={},
+        direct_fx_instruments={},
+        frozen_taxonomy_node_ids=frozenset(),
+        top_sleeve_weight_bounds={},
+    )
+
+    with pytest.raises(ValueError, match="risk budget is unavailable: no risky members"):
+        research_solver_service._resolve_dimension_target_rows(
+            state,
+            scope_node_id=None,
+            scope_members=[
+                ScopeMemberRecord(
+                    member_type=TARGET_MEMBER_CASH,
+                    member_id=SYSTEM_CASH_TARGET_MEMBER_ID,
+                    label=SYSTEM_CASH_TARGET_LABEL,
+                )
+            ],
+            as_of_date=date(2026, 1, 2),
+            selected_dimension="risk_budget",
+        )
+
+
+def test_single_risky_member_with_cash_does_not_bypass_incomplete_enabled_target_set() -> None:
+    state = TaxonomyResearchState(
+        portfolio_id="portfolio-incomplete-single-risky",
+        planning_taxonomy_id="taxonomy-incomplete-single-risky",
+        taxonomy_name="Planning",
+        root_default_target_dimension="risk_budget",
+        base_currency="USD",
+        as_of_date=date(2026, 1, 2),
+        node_by_id={},
+        children_by_parent={},
+        node_path_by_id={},
+        node_depth_by_id={},
+        node_subtree_by_id={},
+        direct_assignments_by_node={},
+        target_sets_by_scope_type={
+            (None, "taa"): [
+                {
+                    "target_set_id": "target-incomplete-single-risky",
+                    "target_set_type": "taa",
+                    "name": "Incomplete Combined Target",
+                    "weight_enabled": True,
+                    "risk_budget_enabled": True,
+                    "status": "active",
+                }
+            ]
+        },
+        target_lines_by_set_id={
+            "target-incomplete-single-risky": {
+                (TARGET_MEMBER_CASH, SYSTEM_CASH_TARGET_MEMBER_ID): {
+                    "target_weight": 0.2,
+                    "target_risk_share": None,
+                }
+            }
+        },
+        account_name_by_id={},
+        instrument_detail_cache={},
+        direct_fx_instruments={},
+        frozen_taxonomy_node_ids=frozenset(),
+        top_sleeve_weight_bounds={},
+    )
+
+    with pytest.raises(ValueError, match="target set is incomplete.*Asset A"):
+        research_solver_service._resolve_dimension_target_rows(
+            state,
+            scope_node_id=None,
+            scope_members=[
+                ScopeMemberRecord(
+                    member_type=TARGET_MEMBER_INSTRUMENT,
+                    member_id="asset-a",
+                    label="Asset A",
+                ),
+                ScopeMemberRecord(
+                    member_type=TARGET_MEMBER_CASH,
+                    member_id=SYSTEM_CASH_TARGET_MEMBER_ID,
+                    label=SYSTEM_CASH_TARGET_LABEL,
+                ),
+            ],
+            as_of_date=date(2026, 1, 2),
+            selected_dimension="risk_budget",
+        )
+
+
 def test_current_target_solve_fails_closed_for_unassigned_non_cash_holding(monkeypatch):
     state = TaxonomyResearchState(
         portfolio_id="portfolio-unassigned-test",
@@ -303,7 +479,7 @@ def test_taxonomy_state_reuses_seeded_market_data_caches(monkeypatch) -> None:
     )
     monkeypatch.setattr("portfolio_app.services.research_solver.list_accounts", lambda _portfolio_id: [])
     monkeypatch.setattr(
-        "portfolio_app.services.research_solver._build_direct_fx_instrument_map",
+        "portfolio_app.services.research_solver.get_platform_fx_rates",
         lambda: pytest.fail("seeded FX map should avoid a platform reload"),
     )
 
@@ -333,16 +509,20 @@ def test_zero_risk_budget_member_is_excluded_from_covariance_and_kept_in_results
             value *= 1.0 + point_return
             points.append(
                 {
+                    "metric_family": "nav",
                     "as_of_date": point_date.isoformat(),
                     "value": value,
                     "quote_basis": "total_return_nav",
                     "currency": "USD",
+                    "price_unit": "per_unit",
+                    "price_scale": 1.0,
                     "status": "complete",
                 }
             )
         return {
             "instrument_id": instrument_id,
             "instrument_name": instrument_id,
+            "instrument_type": "fund",
             "currency": "USD",
             "quote_selection_policy": {"total_return": ["total_return_nav"]},
             "market_data": points,
@@ -444,16 +624,20 @@ def test_zero_weight_member_starting_after_early_rebalance_does_not_block_backte
             value *= 1.0 + (daily_return if index % 2 == 0 else -daily_return / 2.0)
             points.append(
                 {
+                    "metric_family": "nav",
                     "as_of_date": point_date.isoformat(),
                     "value": value,
                     "quote_basis": "total_return_nav",
                     "currency": "USD",
+                    "price_unit": "per_unit",
+                    "price_scale": 1.0,
                     "status": "complete",
                 }
             )
         return {
             "instrument_id": instrument_id,
             "instrument_name": instrument_id,
+            "instrument_type": "fund",
             "currency": "USD",
             "quote_selection_policy": {"total_return": ["total_return_nav"]},
             "market_data": points,
@@ -564,14 +748,18 @@ def test_positive_top_sleeve_minimum_overrides_zero_configured_weight() -> None:
         return {
             "instrument_id": instrument_id,
             "instrument_name": instrument_id,
+            "instrument_type": "fund",
             "currency": "USD",
             "quote_selection_policy": {"total_return": ["total_return_nav"]},
             "market_data": [
                 {
+                    "metric_family": "nav",
                     "as_of_date": point_date.isoformat(),
                     "value": 1.0 + index * step,
                     "quote_basis": "total_return_nav",
                     "currency": "USD",
+                    "price_unit": "per_unit",
+                    "price_scale": 1.0,
                     "status": "complete",
                 }
                 for index, point_date in enumerate(dates)
@@ -747,7 +935,7 @@ def _create_target_sets(client, taxonomy_id: str, node_ids: dict[str, str]) -> N
                     "target_member_type": TARGET_MEMBER_CASH,
                     "target_member_id": SYSTEM_CASH_TARGET_MEMBER_ID,
                     "target_weight": 0.15,
-                    "target_risk_share": 0.0,
+                    "target_risk_share": None,
                 },
             ],
         },
@@ -774,7 +962,7 @@ def _create_target_sets(client, taxonomy_id: str, node_ids: dict[str, str]) -> N
                     "target_member_type": TARGET_MEMBER_CASH,
                     "target_member_id": SYSTEM_CASH_TARGET_MEMBER_ID,
                     "target_weight": 0.15,
-                    "target_risk_share": 0.0,
+                    "target_risk_share": None,
                 },
             ],
         },
@@ -960,7 +1148,56 @@ def test_research_backtest_metrics_include_ytd_drawdown_duration_and_calmar() ->
     assert metrics["max_drawdown_days"] == 3
     assert metrics["max_drawdown_recovery_days"] == 7
     assert metrics["current_drawdown"] == pytest.approx(0.0)
+    assert metrics["annualization_eligible"] is False
+    assert metrics["annualized_return"] is None
+    assert metrics["calmar_ratio"] is None
+
+
+def test_research_backtest_metrics_require_ytd_anchor_and_use_arithmetic_mean_sharpe() -> None:
+    anchored_points = [
+        {"date": "2024-12-31", "value": 1.0},
+        {"date": "2025-01-02", "value": 1.1},
+        {"date": "2025-12-31", "value": 0.99},
+        {"date": "2026-01-02", "value": 1.2},
+    ]
+    returns = {
+        "2025-01-02": 0.1,
+        "2025-12-31": -0.1,
+        "2026-01-02": 1.2 / 0.99 - 1.0,
+    }
+
+    metrics = _build_backtest_metrics(anchored_points, returns)
+    periods_per_year = _infer_periods_per_year(
+        [date(2025, 1, 2), date(2025, 12, 31), date(2026, 1, 2)]
+    )
+    values = np.asarray(list(returns.values()), dtype="float64")
+    expected_volatility = float(np.std(values, ddof=1) * sqrt(periods_per_year))
+    expected_sharpe = float(np.mean(values) * periods_per_year / expected_volatility)
+
+    assert metrics["annualization_eligible"] is True
+    assert metrics["annualization_years"] == pytest.approx(367 / 365.25)
+    assert metrics["annualized_return"] == pytest.approx(1.2 ** (365.25 / 367) - 1.0)
+    assert metrics["ytd_return"] == pytest.approx(1.2 / 0.99 - 1.0)
+    assert metrics["sharpe_ratio"] == pytest.approx(expected_sharpe)
     assert metrics["calmar_ratio"] is not None
+
+    unanchored_metrics = _build_backtest_metrics(
+        [
+            {"date": "2026-01-02", "value": 1.0},
+            {"date": "2026-01-05", "value": 1.02},
+        ],
+        {"2026-01-05": 0.02},
+    )
+    assert unanchored_metrics["ytd_return"] is None
+
+    stale_anchor_metrics = _build_backtest_metrics(
+        [
+            {"date": "2024-12-31", "value": 1.0},
+            {"date": "2026-07-01", "value": 1.2},
+        ],
+        {"2026-07-01": 0.2},
+    )
+    assert stale_anchor_metrics["ytd_return"] is None
 
 
 def test_top_sleeve_bounds_reject_fixed_gross_above_max_capacity() -> None:
@@ -1173,15 +1410,24 @@ def test_research_workbench_reads_canonical_run_top_holdings(client):
     assert response.status_code == 200
     payload = response.json()
     assert payload["runs"][0]["detail"] is None
-    top_holding = payload["selected_run"]["detail"]["top_holdings"][0]
+    assert payload["detail_level"] == "compact"
+    assert payload["selected_run"]["detail"] is None
+    assert payload["selected_run"]["artifacts"] == []
+    selected_response = client.get(
+        "/api/portfolios/portfolio-ops/research/workbench",
+        params={"selected_run_id": "canonical-run"},
+    )
+    assert selected_response.status_code == 200
+    selected_payload = selected_response.json()
+    assert selected_payload["detail_level"] == "selected_run"
+    top_holding = selected_payload["selected_run"]["detail"]["top_holdings"][0]
     assert top_holding["instrument_id"] == "equity-us-abbv"
     assert top_holding["instrument_name"] == "AbbVie Inc"
     assert top_holding["instrument_type"] == "equity"
-    assert payload["selected_run"]["detail"]["top_holdings"][0]["instrument_id"] == "equity-us-abbv"
-    assert payload["selected_run"]["reliability_state"] == "stale"
+    assert selected_payload["selected_run"]["reliability_state"] == "stale"
     assert any(
         "predates planning-state fingerprinting" in reason
-        for reason in payload["selected_run"]["reliability_reasons"]
+        for reason in selected_payload["selected_run"]["reliability_reasons"]
     )
 
     run_response = client.get("/api/portfolios/portfolio-ops/research/runs/canonical-run")
@@ -1244,6 +1490,8 @@ def test_research_series_prefers_total_return_nav_for_funds() -> None:
                 "as_of_date": "2026-04-14",
                 "value": "1.0000",
                 "currency": "USD",
+                "price_unit": "per_unit",
+                "price_scale": 1.0,
                 "status": "complete",
             },
             {
@@ -1252,6 +1500,8 @@ def test_research_series_prefers_total_return_nav_for_funds() -> None:
                 "as_of_date": "2026-04-14",
                 "value": "1.1200",
                 "currency": "USD",
+                "price_unit": "per_unit",
+                "price_scale": 1.0,
                 "status": "complete",
             },
             {
@@ -1260,6 +1510,8 @@ def test_research_series_prefers_total_return_nav_for_funds() -> None:
                 "as_of_date": "2026-04-15",
                 "value": "1.0100",
                 "currency": "USD",
+                "price_unit": "per_unit",
+                "price_scale": 1.0,
                 "status": "complete",
             },
             {
@@ -1268,6 +1520,8 @@ def test_research_series_prefers_total_return_nav_for_funds() -> None:
                 "as_of_date": "2026-04-15",
                 "value": "1.1350",
                 "currency": "USD",
+                "price_unit": "per_unit",
+                "price_scale": 1.0,
                 "status": "complete",
             },
         ],
@@ -1299,6 +1553,8 @@ def test_research_series_uses_only_complete_market_data() -> None:
                 "as_of_date": "2026-04-14",
                 "value": "1.1200",
                 "currency": "USD",
+                "price_unit": "per_unit",
+                "price_scale": 1.0,
                 "status": "complete",
             },
             {
@@ -1307,6 +1563,8 @@ def test_research_series_uses_only_complete_market_data() -> None:
                 "as_of_date": "2026-04-15",
                 "value": "1.1350",
                 "currency": "USD",
+                "price_unit": "per_unit",
+                "price_scale": 1.0,
                 "status": "partial",
             },
         ],
@@ -1329,8 +1587,9 @@ def test_instrument_chart_bases_prefer_total_return_role() -> None:
     assert _candidate_chart_bases(detail) == ["total_return_nav", "official_nav"]
 
 
-def test_instrument_trend_falls_back_to_latest_basis_when_policy_empty() -> None:
+def test_instrument_trend_requires_an_explicit_quote_policy() -> None:
     detail = {
+        "instrument_type": "equity",
         "currency": "USD",
         "market_data": [
             {
@@ -1339,6 +1598,8 @@ def test_instrument_trend_falls_back_to_latest_basis_when_policy_empty() -> None
                 "as_of_date": "2026-01-01",
                 "value": "100",
                 "currency": "USD",
+                "price_unit": "per_unit",
+                "price_scale": 1.0,
                 "status": "complete",
             },
             {
@@ -1347,6 +1608,8 @@ def test_instrument_trend_falls_back_to_latest_basis_when_policy_empty() -> None
                 "as_of_date": "2026-01-01",
                 "value": "100",
                 "currency": "USD",
+                "price_unit": "per_unit",
+                "price_scale": 1.0,
                 "status": "complete",
             },
             {
@@ -1355,6 +1618,8 @@ def test_instrument_trend_falls_back_to_latest_basis_when_policy_empty() -> None
                 "as_of_date": "2026-01-10",
                 "value": "110",
                 "currency": "USD",
+                "price_unit": "per_unit",
+                "price_scale": 1.0,
                 "status": "complete",
             },
         ],
@@ -1362,8 +1627,9 @@ def test_instrument_trend_falls_back_to_latest_basis_when_policy_empty() -> None
 
     metrics = build_instrument_trend_metrics_from_detail(detail, as_of_date=date(2026, 1, 10))
 
-    assert metrics["instrument_trend_basis"] == "adjusted_close"
-    assert metrics["instrument_return_ytd"] == pytest.approx(0.1)
+    assert metrics["instrument_trend_basis"] is None
+    assert metrics["instrument_return_ytd"] is None
+    assert metrics["instrument_trend_reason"] == "quote_policy_unavailable"
 
 
 def test_instrument_trend_volatility_uses_quote_observation_density() -> None:
@@ -1403,6 +1669,7 @@ def test_instrument_trend_volatility_can_use_weekly_risk_basis() -> None:
 
 def test_holdings_instrument_volatility_requires_window_start_coverage() -> None:
     detail = {
+        "instrument_type": "equity",
         "currency": "USD",
         "quote_selection_policy": {"total_return": ["close"]},
         "market_data": [
@@ -1412,6 +1679,8 @@ def test_holdings_instrument_volatility_requires_window_start_coverage() -> None
                 "as_of_date": (date(2026, 1, 1) + timedelta(days=offset)).isoformat(),
                 "value": str(100.0 + offset / 10),
                 "currency": "USD",
+                "price_unit": "per_unit",
+                "price_scale": 1.0,
                 "status": "complete",
             }
             for offset in range(0, 106, 7)
@@ -1429,6 +1698,7 @@ def test_holdings_instrument_volatility_requires_window_start_coverage() -> None
 
 def test_holdings_instrument_volatility_allows_complete_weekly_window() -> None:
     detail = {
+        "instrument_type": "equity",
         "currency": "USD",
         "quote_selection_policy": {"total_return": ["close"]},
         "market_data": [
@@ -1438,6 +1708,8 @@ def test_holdings_instrument_volatility_allows_complete_weekly_window() -> None:
                 "as_of_date": (date(2025, 10, 16) + timedelta(days=offset)).isoformat(),
                 "value": str(100.0 + offset / 10),
                 "currency": "USD",
+                "price_unit": "per_unit",
+                "price_scale": 1.0,
                 "status": "complete",
             }
             for offset in range(0, 183, 7)
@@ -1471,6 +1743,8 @@ def test_research_series_prefers_adjusted_close_for_equities() -> None:
                 "as_of_date": "2026-04-14",
                 "value": "100.0000",
                 "currency": "USD",
+                "price_unit": "per_unit",
+                "price_scale": 1.0,
                 "status": "complete",
             },
             {
@@ -1479,6 +1753,8 @@ def test_research_series_prefers_adjusted_close_for_equities() -> None:
                 "as_of_date": "2026-04-14",
                 "value": "108.0000",
                 "currency": "USD",
+                "price_unit": "per_unit",
+                "price_scale": 1.0,
                 "status": "complete",
             },
             {
@@ -1487,6 +1763,8 @@ def test_research_series_prefers_adjusted_close_for_equities() -> None:
                 "as_of_date": "2026-04-15",
                 "value": "102.0000",
                 "currency": "USD",
+                "price_unit": "per_unit",
+                "price_scale": 1.0,
                 "status": "complete",
             },
             {
@@ -1495,6 +1773,8 @@ def test_research_series_prefers_adjusted_close_for_equities() -> None:
                 "as_of_date": "2026-04-15",
                 "value": "110.5000",
                 "currency": "USD",
+                "price_unit": "per_unit",
+                "price_scale": 1.0,
                 "status": "complete",
             },
         ],

@@ -8,7 +8,7 @@ import pytest
 from tests.store_fixture import TEST_PORTFOLIO_STORE
 
 from portfolio_app.db.models import PortfolioCalculationStateModel, PortfolioDailySnapshotModel
-from portfolio_app.api.contracts import LedgerPostingRecord, PositionLotRecord
+from portfolio_app.api.contracts import InstrumentOption, LedgerPostingRecord, PositionLotRecord
 from portfolio_app.db.session import get_session_factory
 from portfolio_app.services import daily_snapshots, portfolio_store
 from portfolio_app.services.daily_snapshots import refresh_portfolio_daily_snapshots
@@ -125,6 +125,58 @@ def test_portfolio_instruments_endpoint_reads_shared_registry_via_portfolio_back
     )
     assert abbv["instrument_core"]["identifiers"][0]["identifier_value"] == "ABBV"
     assert abbv["coverage_state"] == "complete"
+    assert abbv["latest_market_data"][0]["price_unit"] == "per_unit"
+    assert abbv["latest_market_data"][0]["price_scale"] == "1"
+
+
+def test_instrument_option_rejects_missing_or_noncanonical_price_contract() -> None:
+    payload = {
+        "instrument_core": {
+            "instrument_id": "bond-test",
+            "instrument_name": "Bond Test",
+            "instrument_type": "bond",
+            "currency": "USD",
+            "identifiers": [],
+        },
+        "coverage_state": "complete",
+        "quote_selection_policy": {
+            "trading": ["clean_price", "dirty_price"],
+            "valuation": ["dirty_price", "clean_price"],
+            "total_return": ["dirty_price", "clean_price"],
+            "chart": ["dirty_price", "clean_price"],
+            "reference": ["clean_price", "dirty_price"],
+        },
+        "latest_market_data": [
+            {
+                "metric_family": "price",
+                "quote_basis": "dirty_price",
+                "as_of_date": "2026-07-15",
+                "value": "98.5",
+                "currency": "USD",
+                "price_unit": "percent_of_par",
+                "price_scale": "0.01",
+                "status": "complete",
+            }
+        ],
+    }
+
+    assert str(InstrumentOption.model_validate(payload).latest_market_data[0].price_scale) == "0.01"
+    missing = deepcopy(payload)
+    missing["latest_market_data"][0].pop("price_scale")
+    with pytest.raises(ValueError, match="price_scale"):
+        InstrumentOption.model_validate(missing)
+
+    wrong = deepcopy(payload)
+    wrong["latest_market_data"][0]["price_unit"] = "per_unit"
+    wrong["latest_market_data"][0]["price_scale"] = "1"
+    with pytest.raises(ValueError, match="canonical instrument identity"):
+        InstrumentOption.model_validate(wrong)
+
+    for required_field in ("latest_market_data", "quote_selection_policy"):
+        incomplete = deepcopy(payload)
+        incomplete.pop(required_field)
+        with pytest.raises(ValueError, match=required_field):
+            InstrumentOption.model_validate(incomplete)
 
 
 def test_transaction_write_refreshes_materialized_daily_snapshots(client):
@@ -431,7 +483,15 @@ def test_transaction_fact_can_be_updated_and_deleted(client):
     assert updated_payload["gross_amount"] == pytest.approx(1250.0)
     assert updated_payload["note"] == "Corrected note"
 
-    deleted_response = client.delete(f"/api/portfolios/portfolio-ops/transactions/{transaction_id}")
+    deleted_response = client.request(
+        "DELETE",
+        f"/api/portfolios/portfolio-ops/transactions/{transaction_id}",
+        json={
+            "expected_row_versions": {
+                transaction_id: updated_payload["row_version"]
+            }
+        },
+    )
     assert deleted_response.status_code == 200
     deleted_payload = deleted_response.json()
     assert deleted_payload["deleted_count"] == 1
@@ -445,6 +505,19 @@ def test_transaction_fact_can_be_updated_and_deleted(client):
 
 
 def test_deleting_transfer_leg_removes_entire_pair(client):
+    caller_named_group = client.post(
+        "/api/portfolios/portfolio-ops/transactions/internal-transfer",
+        json={
+            "trade_date": "2026-04-16",
+            "from_account_id": "cash-usd-main",
+            "to_account_id": "cash-usd-reserve",
+            "transfer_object_type": "cash",
+            "gross_amount": 250.0,
+            "transfer_group_id": "caller-controlled-group",
+        },
+    )
+    assert caller_named_group.status_code == 422
+
     transfer_response = client.post(
         "/api/portfolios/portfolio-ops/transactions/internal-transfer",
         json={
@@ -459,8 +532,34 @@ def test_deleting_transfer_leg_removes_entire_pair(client):
     assert transfer_response.status_code == 200
     transfer_payload = transfer_response.json()
     delete_target = transfer_payload["transactions"][0]["transaction_id"]
+    expected_row_versions = {
+        transaction["transaction_id"]: transaction["row_version"]
+        for transaction in transfer_payload["transactions"]
+    }
+    workspace_response = client.get(
+        "/api/portfolios/portfolio-ops/transactions/workspace",
+        params={"transaction_id": delete_target},
+    )
+    assert workspace_response.status_code == 200
+    assert workspace_response.json()["delete_scope_row_versions"] == expected_row_versions
 
-    deleted_response = client.delete(f"/api/portfolios/portfolio-ops/transactions/{delete_target}")
+    incomplete_delete = client.request(
+        "DELETE",
+        f"/api/portfolios/portfolio-ops/transactions/{delete_target}",
+        json={
+            "expected_row_versions": {
+                delete_target: transfer_payload["transactions"][0]["row_version"]
+            }
+        },
+    )
+    assert incomplete_delete.status_code == 409
+    assert "delete scope changed" in incomplete_delete.json()["detail"].lower()
+
+    deleted_response = client.request(
+        "DELETE",
+        f"/api/portfolios/portfolio-ops/transactions/{delete_target}",
+        json={"expected_row_versions": expected_row_versions},
+    )
     assert deleted_response.status_code == 200
     deleted_payload = deleted_response.json()
     assert deleted_payload["deleted_count"] == 2
@@ -702,7 +801,10 @@ def test_accounts_workspace_defers_security_cash_until_settlement_date(client):
 
 
 def test_holdings_workspace_includes_shared_price_sparklines(client):
-    response = client.get("/api/workspace/holdings", params={"portfolio_id": "portfolio-ops"})
+    response = client.get(
+        "/api/workspace/holdings",
+        params={"portfolio_id": "portfolio-ops", "include_details": True},
+    )
     assert response.status_code == 200
     holdings = response.json()
     assert "price_chart_range" not in holdings
@@ -1141,7 +1243,7 @@ def test_accepts_display_rounded_price_when_gross_amount_is_authoritative(client
     assert payload["price"] == pytest.approx(11.5436)
 
 
-def test_normalizes_transaction_precision_conventions(client):
+def test_preserves_transaction_source_precision_and_keeps_float_calculation_projection(client):
     buy_response = client.post(
         "/api/portfolios/portfolio-ops/transactions",
         json={
@@ -1150,21 +1252,26 @@ def test_normalizes_transaction_precision_conventions(client):
             "account_id": "broker-us-core",
             "settlement_cash_account_id": "cash-usd-main",
             "instrument_id": "fund-us-agg",
-            "quantity": 700.004,
-            "price": 11.54364,
-            "gross_amount": 8080.504,
-            "fees": 0.004,
-            "taxes": 0.004,
+            "quantity": "700.004",
+            "price": "11.54364",
+            "gross_amount": "8080.59417456",
+            "fees": "0.004",
+            "taxes": "0.004",
             "currency": "USD",
         },
     )
     assert buy_response.status_code == 200
     payload = buy_response.json()
-    assert payload["quantity"] == pytest.approx(700.00)
-    assert payload["price"] == pytest.approx(11.5436)
-    assert payload["gross_amount"] == pytest.approx(8080.50)
-    assert payload["fees"] == pytest.approx(0.00)
-    assert payload["taxes"] == pytest.approx(0.00)
+    assert payload["quantity"] == pytest.approx(700.004)
+    assert payload["price"] == pytest.approx(11.54364)
+    assert payload["gross_amount"] == pytest.approx(8080.59417456)
+    assert payload["fees"] == pytest.approx(0.004)
+    assert payload["taxes"] == pytest.approx(0.004)
+    assert payload["source_quantity"] == "700.004000000000"
+    assert payload["source_price"] == "11.543640000000"
+    assert payload["source_gross_amount"] == "8080.59417456"
+    assert payload["source_fees"] == "0.00400000"
+    assert payload["source_taxes"] == "0.00400000"
 
 
 def test_rejects_inconsistent_opening_balance_and_dividend_reinvestment_amount_contracts(client):
@@ -2677,6 +2784,8 @@ def test_transaction_execution_quote_uses_raw_valuation_basis_not_adjusted_chart
                     "as_of_date": "2026-03-27",
                     "value": "1.66",
                     "currency": "CNY",
+                    "price_unit": "per_unit",
+                    "price_scale": 1.0,
                     "provider": "tushare:fund_daily",
                     "status": "complete",
                 },
@@ -2686,6 +2795,8 @@ def test_transaction_execution_quote_uses_raw_valuation_basis_not_adjusted_chart
                     "as_of_date": "2026-03-27",
                     "value": "0.4152179894",
                     "currency": "CNY",
+                    "price_unit": "per_unit",
+                    "price_scale": 1.0,
                     "provider": "tushare:fund_adj",
                     "status": "complete",
                 },
@@ -3127,6 +3238,9 @@ def test_transactions_workspace_returns_selected_fact_ledger_and_related_positio
     payload = response.json()
     assert payload["selected_transaction_id"] == "txn-0003"
     assert payload["selected_transaction"]["transaction_id"] == "txn-0003"
+    assert payload["delete_scope_row_versions"] == {
+        "txn-0003": payload["selected_transaction"]["row_version"]
+    }
     assert payload["selected_transaction"]["account"]["account_id"] == "broker-us-core"
     assert payload["ledger_summary"]["posting_count"] > 0
     assert all(posting["transaction_id"] == "txn-0003" for posting in payload["ledger_postings"])

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from threading import Lock
 from time import monotonic, sleep
@@ -19,7 +20,7 @@ from portfolio_app.db.models import (
     TransactionRecordModel,
 )
 from portfolio_app.db.session import get_session_factory
-from portfolio_app.services import performance
+from portfolio_app.services import attribution, holdings_market_profile, performance
 from portfolio_app.services.instrument_charts import HOLDINGS_PRICE_CHART_RANGE_KEYS
 from portfolio_app.services.portfolio_store import (
     _resolve_live_portfolio_as_of_date,
@@ -27,14 +28,34 @@ from portfolio_app.services.portfolio_store import (
     _serialize_portfolio_row,
     _serialize_transaction_row,
 )
-from portfolio_app.services.snapshot_selection import default_portfolio_snapshot
+from portfolio_app.services.snapshot_selection import (
+    default_portfolio_snapshot,
+)
 
 _LOCAL_REFRESH_LOCKS: dict[str, Lock] = {}
 _LOCAL_REFRESH_LOCKS_GUARD = Lock()
 _RUNNING_REFRESH_WAIT_SECONDS = 30.0
 _RUNNING_REFRESH_POLL_SECONDS = 0.1
 _RUNNING_REFRESH_LEASE_SECONDS = 900.0
-DAILY_SNAPSHOT_CALCULATION_VERSION = "portfolio-daily-v20260712-flow-aligned-performance"
+_SOURCE_GENERATION_MAX_DISCARDS = 3
+_SOURCE_GENERATION_CHANGED_REASON = "source_generation_changed_during_calculation"
+_SOURCE_GENERATION_CHANGED_BEFORE_PUBLISH_REASON = "source_generation_changed_before_publish"
+DAILY_SNAPSHOT_CALCULATION_VERSION = (
+    "portfolio-daily-v20260715-split-coverage-return-chain-quote-identity-market-history"
+    "-source-generation-fence-pending-settlement-fx"
+)
+
+
+@dataclass(frozen=True)
+class _SnapshotSourceGeneration:
+    refresh_request_id: str | None
+    market_data_updated_at: str | None
+
+    def as_payload(self) -> dict[str, str | None]:
+        return {
+            "refresh_request_id": self.refresh_request_id,
+            "market_data_updated_at": self.market_data_updated_at,
+        }
 
 
 def _current_utc_timestamp() -> str:
@@ -168,6 +189,32 @@ def _source_market_data_is_current(
     return state.source_market_data_updated_at == _source_market_data_watermark(session, portfolio_id)
 
 
+def _snapshot_source_generation(
+    session,
+    portfolio_id: str,
+) -> _SnapshotSourceGeneration | None:
+    state = session.get(PortfolioCalculationStateModel, portfolio_id)
+    if state is None:
+        return None
+    return _SnapshotSourceGeneration(
+        refresh_request_id=state.refresh_request_id,
+        market_data_updated_at=_source_market_data_watermark(session, portfolio_id),
+    )
+
+
+def _read_snapshot_source_generation(portfolio_id: str) -> _SnapshotSourceGeneration | None:
+    """Read the generation from a fresh session after an out-of-session calculation.
+
+    The snapshot builder resolves market data through independent registry reads. Reusing
+    the calculation session here could therefore compare against a transaction-local view
+    instead of the generation that is currently committed.
+    """
+
+    session_factory = get_session_factory()
+    with session_factory() as session:
+        return _snapshot_source_generation(session, portfolio_id)
+
+
 def _load_accounts(session, portfolio_id: str) -> list[AccountRecordModel]:
     return list(
         session.scalars(
@@ -239,6 +286,7 @@ def _incremental_snapshot_seed(
         .where(
             PortfolioDailySnapshotModel.portfolio_id == portfolio_id,
             PortfolioDailySnapshotModel.as_of_date < dirty_from,
+            PortfolioDailySnapshotModel.valuation_coverage_state == "complete",
             PortfolioDailySnapshotModel.nav.is_not(None),
         )
         .order_by(PortfolioDailySnapshotModel.as_of_date.desc())
@@ -265,7 +313,13 @@ def _incremental_snapshot_seed(
         "persist_from": dirty_from,
         "cumulative_twr": _safe_float(prior_payload.get("cumulative_twr")),
         "peak_growth": max([1.0, *prefix_growth_values]),
+        "return_chain_continuous": bool(
+            prior_payload.get("return_chain_continuous", prior_row.cumulative_twr is not None)
+        ),
         "cash_currency_gains": _safe_float(prior_payload.get("cash_currency_gains")),
+        "pending_settlement_currency_gains": _safe_float(
+            prior_payload.get("pending_settlement_currency_gains")
+        ),
         "instrument_currency_gains": _safe_float(prior_payload.get("instrument_currency_gains")),
     }
 
@@ -282,7 +336,11 @@ def _rebase_incremental_snapshots(
     growth_index = 1.0 + cumulative_twr if cumulative_twr is not None else 1.0
     peak_growth_index = max(_safe_float(seed.get("peak_growth")) or 1.0, growth_index)
     has_return_history = cumulative_twr is not None
+    return_chain_continuous = bool(seed.get("return_chain_continuous", True))
     prefix_cash_fx = _safe_float(seed.get("cash_currency_gains"))
+    prefix_pending_settlement_fx = _safe_float(
+        seed.get("pending_settlement_currency_gains")
+    )
     prefix_instrument_fx = _safe_float(seed.get("instrument_currency_gains"))
 
     for snapshot in snapshots:
@@ -290,22 +348,44 @@ def _rebase_incremental_snapshots(
         if snapshot_date is None or snapshot_date <= seed_date:
             continue
         daily_twr = _safe_float(snapshot.get("daily_twr"))
-        if daily_twr is not None:
+        point_return_complete = (
+            str(snapshot.get("return_coverage_state") or "unavailable") == "complete"
+            and daily_twr is not None
+        )
+        if not point_return_complete:
+            return_chain_continuous = False
+        elif return_chain_continuous:
             has_return_history = True
             growth_index *= 1.0 + daily_twr
             peak_growth_index = max(peak_growth_index, growth_index)
-        snapshot["cumulative_twr"] = growth_index - 1.0 if has_return_history else None
+        snapshot["return_chain_continuous"] = return_chain_continuous
+        snapshot["cumulative_twr"] = (
+            growth_index - 1.0
+            if has_return_history and return_chain_continuous
+            else None
+        )
         snapshot["drawdown"] = (
             growth_index / peak_growth_index - 1.0
-            if has_return_history and peak_growth_index > 1e-12
+            if has_return_history and return_chain_continuous and peak_growth_index > 1e-12
             else None
         )
 
         local_cash_fx = _safe_float(snapshot.get("cash_currency_gains"))
+        local_pending_settlement_fx = _safe_float(
+            snapshot.get("pending_settlement_currency_gains")
+        )
         local_instrument_fx = _safe_float(snapshot.get("instrument_currency_gains"))
         snapshot["cash_currency_gains"] = (
             prefix_cash_fx + local_cash_fx
             if prefix_cash_fx is not None and local_cash_fx is not None
+            else None
+        )
+        snapshot["pending_settlement_currency_gains"] = (
+            prefix_pending_settlement_fx + local_pending_settlement_fx
+            if (
+                prefix_pending_settlement_fx is not None
+                and local_pending_settlement_fx is not None
+            )
             else None
         )
         snapshot["instrument_currency_gains"] = (
@@ -315,10 +395,19 @@ def _rebase_incremental_snapshots(
         )
         total_pnl = _safe_float(snapshot.get("total_pnl"))
         if total_pnl is not None:
-            if prefix_cash_fx is None or prefix_instrument_fx is None:
+            if (
+                prefix_cash_fx is None
+                or prefix_pending_settlement_fx is None
+                or prefix_instrument_fx is None
+            ):
                 snapshot["total_pnl"] = None
             else:
-                snapshot["total_pnl"] = total_pnl + prefix_cash_fx + prefix_instrument_fx
+                snapshot["total_pnl"] = (
+                    total_pnl
+                    + prefix_cash_fx
+                    + prefix_pending_settlement_fx
+                    + prefix_instrument_fx
+                )
 
 
 def _current_refresh_result(session, portfolio_id: str) -> dict[str, object] | None:
@@ -333,7 +422,68 @@ def _current_refresh_result(session, portfolio_id: str) -> dict[str, object] | N
         "refreshed_at": state.refreshed_at,
         "source_market_data_updated_at": state.source_market_data_updated_at,
         "calculation_version": DAILY_SNAPSHOT_CALCULATION_VERSION,
+        "source_generation_status": "stable",
+        "source_generation_reason": None,
+        "discarded_attempt_count": 0,
+        "source_generation_before": None,
+        "source_generation_after": None,
     }
+
+
+def _discard_source_generation_attempt(
+    portfolio_id: str,
+    *,
+    request_id: str,
+    claimed_started_at: str | None,
+    source_generation_before: _SnapshotSourceGeneration | None,
+    source_generation_after: _SnapshotSourceGeneration | None,
+    reason: str,
+) -> dict[str, object]:
+    """Leave published rows untouched and make the interrupted generation retryable."""
+
+    completed_at = _current_utc_timestamp()
+    session_factory = get_session_factory()
+    with session_factory() as session:
+        state = session.get(PortfolioCalculationStateModel, portfolio_id)
+        if (
+            state is not None
+            and state.daily_snapshot_status == "running"
+            and state.refresh_started_at == claimed_started_at
+        ):
+            # An unannounced registry update does not advance refresh_request_id.
+            # Give the retry a distinct fact-generation identity in that case.
+            if state.refresh_request_id == request_id:
+                state.refresh_request_id = _new_refresh_request_id()
+            state.daily_snapshot_status = "stale"
+            state.refresh_completed_at = completed_at
+            state.error_message = reason
+
+        result = {
+            "portfolio_id": portfolio_id,
+            "snapshot_count": _snapshot_count(session, portfolio_id),
+            "refreshed_from": state.refreshed_from if state is not None else None,
+            "refreshed_to": state.refreshed_to if state is not None else None,
+            "refreshed_at": state.refreshed_at if state is not None else None,
+            "source_market_data_updated_at": (
+                state.source_market_data_updated_at if state is not None else None
+            ),
+            "calculation_version": DAILY_SNAPSHOT_CALCULATION_VERSION,
+            "source_generation_status": "discarded",
+            "source_generation_reason": reason,
+            "discarded_attempt_count": 1,
+            "source_generation_before": (
+                source_generation_before.as_payload()
+                if source_generation_before is not None
+                else None
+            ),
+            "source_generation_after": (
+                source_generation_after.as_payload()
+                if source_generation_after is not None
+                else None
+            ),
+        }
+        session.commit()
+        return result
 
 
 def _mark_portfolio_daily_snapshots_stale_in_session(
@@ -489,6 +639,10 @@ def _refresh_portfolio_daily_snapshots_once(
             accounts = [_serialize_account_row(item) for item in account_records]
             transactions = [_serialize_transaction_row(item) for item in transaction_records]
             source_market_data_updated_at = _source_market_data_watermark(session, portfolio_id)
+            source_generation_before = _SnapshotSourceGeneration(
+                refresh_request_id=request_id,
+                market_data_updated_at=source_market_data_updated_at,
+            )
             incremental_seed = (
                 _incremental_snapshot_seed(
                     session,
@@ -514,6 +668,20 @@ def _refresh_portfolio_daily_snapshots_once(
             )
             if incremental_seed is not None:
                 _rebase_incremental_snapshots(snapshots, seed=incremental_seed)
+            source_generation_after = _read_snapshot_source_generation(portfolio_id)
+            if source_generation_after != source_generation_before:
+                session.rollback()
+                return (
+                    _discard_source_generation_attempt(
+                        portfolio_id,
+                        request_id=request_id,
+                        claimed_started_at=claimed_started_at,
+                        source_generation_before=source_generation_before,
+                        source_generation_after=source_generation_after,
+                        reason=_SOURCE_GENERATION_CHANGED_REASON,
+                    ),
+                    True,
+                )
             calculated_at = _current_utc_timestamp()
 
             persist_from = (
@@ -550,6 +718,7 @@ def _refresh_portfolio_daily_snapshots_once(
             session.execute(contribution_delete)
             session.execute(holding_delete)
             session.execute(snapshot_delete)
+            daily_snapshot_rows: list[dict[str, object]] = []
             for snapshot in snapshots_to_persist:
                 snapshot_date = _parse_date(snapshot.get("as_of_date"))
                 if snapshot_date is None:
@@ -562,20 +731,33 @@ def _refresh_portfolio_daily_snapshots_once(
                 ]
                 public_snapshot = _public_snapshot_payload(snapshot)
                 public_snapshot["calculation_version"] = DAILY_SNAPSHOT_CALCULATION_VERSION
-                session.add(
-                    PortfolioDailySnapshotModel(
-                        portfolio_id=portfolio_id,
-                        as_of_date=snapshot_date,
-                        coverage_state=str(snapshot.get("coverage_state") or "unavailable"),
-                        nav=_safe_float(snapshot.get("nav")),
-                        beginning_nav=_safe_float(snapshot.get("beginning_nav")),
-                        ending_nav=_safe_float(snapshot.get("ending_nav")),
-                        daily_twr=_safe_float(snapshot.get("daily_twr")),
-                        cumulative_twr=_safe_float(snapshot.get("cumulative_twr")),
-                        drawdown=_safe_float(snapshot.get("drawdown")),
-                        snapshot_json=_json_safe(public_snapshot),  # type: ignore[arg-type]
-                        calculated_at=calculated_at,
-                    )
+                public_snapshot["source_generation"] = source_generation_before.as_payload()
+                daily_snapshot_rows.append(
+                    {
+                        "portfolio_id": portfolio_id,
+                        "as_of_date": snapshot_date,
+                        "coverage_state": str(snapshot.get("coverage_state") or "unavailable"),
+                        "valuation_coverage_state": str(
+                            snapshot.get("valuation_coverage_state") or "unavailable"
+                        ),
+                        "return_coverage_state": str(
+                            snapshot.get("return_coverage_state") or "unavailable"
+                        ),
+                        "book_pnl_coverage_state": str(
+                            snapshot.get("book_pnl_coverage_state") or "unavailable"
+                        ),
+                        "attribution_coverage_state": str(
+                            snapshot.get("attribution_coverage_state") or "unavailable"
+                        ),
+                        "nav": _safe_float(snapshot.get("nav")),
+                        "beginning_nav": _safe_float(snapshot.get("beginning_nav")),
+                        "ending_nav": _safe_float(snapshot.get("ending_nav")),
+                        "daily_twr": _safe_float(snapshot.get("daily_twr")),
+                        "cumulative_twr": _safe_float(snapshot.get("cumulative_twr")),
+                        "drawdown": _safe_float(snapshot.get("drawdown")),
+                        "snapshot_json": _json_safe(public_snapshot),
+                        "calculated_at": calculated_at,
+                    }
                 )
                 for holding in holding_rows:
                     account_id = str(holding.get("account_id") or "")
@@ -603,7 +785,7 @@ def _refresh_portfolio_daily_snapshots_once(
                 for contribution_slice in contribution_slices:
                     axis = str(contribution_slice.get("axis") or "")
                     group_key = str(contribution_slice.get("group_key") or "")
-                    if axis not in performance.MATERIALIZED_CONTRIBUTION_AXES or not group_key:
+                    if axis not in attribution.MATERIALIZED_CONTRIBUTION_AXES or not group_key:
                         continue
                     session.add(
                         PortfolioDailyContributionSliceModel(
@@ -620,6 +802,10 @@ def _refresh_portfolio_daily_snapshots_once(
                         )
                     )
 
+            session.add_all(
+                PortfolioDailySnapshotModel(**row)
+                for row in daily_snapshot_rows
+            )
             session.flush()
             latest_snapshot = snapshots[-1] if snapshots else None
             portfolio_record.as_of_date = resolved_end_date
@@ -669,13 +855,19 @@ def _refresh_portfolio_daily_snapshots_once(
             )
             request_superseded = int(update_result.rowcount or 0) == 0
             if request_superseded:
-                session.refresh(state)
-                if (
-                    state.daily_snapshot_status == "running"
-                    and state.refresh_started_at == claimed_started_at
-                ):
-                    state.daily_snapshot_status = "stale"
-                    state.refresh_completed_at = calculated_at
+                session.rollback()
+                source_generation_before_publish = _read_snapshot_source_generation(portfolio_id)
+                return (
+                    _discard_source_generation_attempt(
+                        portfolio_id,
+                        request_id=request_id,
+                        claimed_started_at=claimed_started_at,
+                        source_generation_before=source_generation_before,
+                        source_generation_after=source_generation_before_publish,
+                        reason=_SOURCE_GENERATION_CHANGED_BEFORE_PUBLISH_REASON,
+                    ),
+                    True,
+                )
             session.commit()
 
             return {
@@ -686,7 +878,12 @@ def _refresh_portfolio_daily_snapshots_once(
                 "refreshed_at": calculated_at,
                 "source_market_data_updated_at": source_market_data_updated_at,
                 "recalculated_from": persist_from or refreshed_from,
-            }, request_superseded
+                "source_generation_status": "stable",
+                "source_generation_reason": None,
+                "discarded_attempt_count": 0,
+                "source_generation_before": source_generation_before.as_payload(),
+                "source_generation_after": source_generation_after.as_payload(),
+            }, False
     except Exception as error:
         with session_factory() as session:
             if session.get(PortfolioRecordModel, portfolio_id) is not None:
@@ -717,6 +914,8 @@ def _refresh_portfolio_daily_snapshots_once(
 def refresh_portfolio_daily_snapshots(portfolio_id: str, end_date: date | None = None) -> dict[str, object] | None:
     lock = _refresh_lock_for_portfolio(portfolio_id)
     with lock:
+        discarded_attempt_count = 0
+        last_discarded_result: dict[str, object] | None = None
         while True:
             claim = _claim_daily_snapshot_refresh(portfolio_id)
             claim_status = str(claim.get("status") or "")
@@ -724,6 +923,18 @@ def refresh_portfolio_daily_snapshots(portfolio_id: str, end_date: date | None =
                 return None
             if claim_status == "current":
                 result = claim.get("result")
+                if isinstance(result, dict) and last_discarded_result is not None:
+                    result["source_generation_status"] = "stable_after_retry"
+                    result["source_generation_reason"] = last_discarded_result.get(
+                        "source_generation_reason"
+                    )
+                    result["discarded_attempt_count"] = discarded_attempt_count
+                    result["source_generation_before"] = last_discarded_result.get(
+                        "source_generation_before"
+                    )
+                    result["source_generation_after"] = last_discarded_result.get(
+                        "source_generation_after"
+                    )
                 return result if isinstance(result, dict) else None
             if claim_status == "running":
                 if not _wait_for_running_daily_snapshot_refresh(portfolio_id):
@@ -739,7 +950,28 @@ def refresh_portfolio_daily_snapshots(portfolio_id: str, end_date: date | None =
                 end_date=end_date,
             )
             if request_superseded:
+                if (
+                    isinstance(result, dict)
+                    and result.get("source_generation_status") == "discarded"
+                ):
+                    discarded_attempt_count += 1
+                    result["discarded_attempt_count"] = discarded_attempt_count
+                    last_discarded_result = result
+                    if discarded_attempt_count >= _SOURCE_GENERATION_MAX_DISCARDS:
+                        return result
                 continue
+            if isinstance(result, dict) and last_discarded_result is not None:
+                result["source_generation_status"] = "stable_after_retry"
+                result["source_generation_reason"] = last_discarded_result.get(
+                    "source_generation_reason"
+                )
+                result["discarded_attempt_count"] = discarded_attempt_count
+                result["source_generation_before"] = last_discarded_result.get(
+                    "source_generation_before"
+                )
+                result["source_generation_after"] = last_discarded_result.get(
+                    "source_generation_after"
+                )
             return result
 
 
@@ -843,7 +1075,9 @@ def list_materialized_daily_snapshots(
             statement = statement.where(PortfolioDailySnapshotModel.as_of_date >= start_date)
         if end_date is not None:
             statement = statement.where(PortfolioDailySnapshotModel.as_of_date <= end_date)
-        rows = session.scalars(statement.order_by(PortfolioDailySnapshotModel.as_of_date)).all()
+        rows = session.scalars(
+            statement.order_by(PortfolioDailySnapshotModel.as_of_date)
+        ).all()
         return [_restore_snapshot(dict(row.snapshot_json)) for row in rows]
 
 
@@ -852,7 +1086,12 @@ def get_materialized_daily_snapshot(portfolio_id: str, as_of_date: date) -> dict
     with session_factory() as session:
         if _state_requires_refresh(session, portfolio_id):
             return None
-        row = session.get(PortfolioDailySnapshotModel, {"portfolio_id": portfolio_id, "as_of_date": as_of_date})
+        row = session.scalar(
+            select(PortfolioDailySnapshotModel).where(
+                PortfolioDailySnapshotModel.portfolio_id == portfolio_id,
+                PortfolioDailySnapshotModel.as_of_date == as_of_date,
+            )
+        )
         return _restore_snapshot(dict(row.snapshot_json)) if row is not None else None
 
 
@@ -908,7 +1147,9 @@ def _first_present(rows: list[dict[str, object]], key: str) -> object | None:
 def _is_cash_holding_payload(row: dict[str, object]) -> bool:
     instrument_core = row.get("instrument_ref") if isinstance(row.get("instrument_ref"), dict) else None
     instrument_type = str((instrument_core or {}).get("instrument_type") or "").strip().lower()
-    return instrument_type == "cash" or performance.is_cash_holding_instrument_id(row.get("instrument_id") or row.get("line_id"))
+    return instrument_type == "cash" or holdings_market_profile.is_cash_holding_instrument_id(
+        row.get("instrument_id") or row.get("line_id")
+    )
 
 
 def _aggregate_holding_rows(
@@ -975,6 +1216,12 @@ def _aggregate_holding_rows(
             "instrument_holding_start_date": _first_present(instrument_rows, "instrument_holding_start_date"),
             "instrument_trend_as_of_date": _first_present(instrument_rows, "instrument_trend_as_of_date"),
             "instrument_trend_basis": _first_present(instrument_rows, "instrument_trend_basis"),
+            "instrument_trend_coverage": _first_present(instrument_rows, "instrument_trend_coverage"),
+            "instrument_trend_reason": _first_present(instrument_rows, "instrument_trend_reason"),
+            "instrument_trend_split_adjusted": _first_present(
+                instrument_rows,
+                "instrument_trend_split_adjusted",
+            ),
             "instrument_risk_frequency": _first_present(instrument_rows, "instrument_risk_frequency"),
         }
         market_value = _sum_complete([row.get("market_value") for row in instrument_rows])
@@ -984,10 +1231,9 @@ def _aggregate_holding_rows(
         aggregated_rows.append(
             {
                 "line_id": instrument_id,
-                "instrument_core": performance.normalize_instrument_core(
+                "instrument_core": holdings_market_profile.normalize_instrument_core(
                     instrument_id,
                     first_row.get("instrument_ref") if isinstance(first_row.get("instrument_ref"), dict) else None,
-                    fallback_currency=str(first_row.get("currency") or "USD"),
                 ),
                 "quantity": _sum_complete([row.get("quantity") for row in instrument_rows]),
                 "last_price": _first_present(instrument_rows, "last_price"),
@@ -1062,7 +1308,9 @@ def build_materialized_holdings_workspace(
                 PortfolioDailySnapshotModel.portfolio_id == portfolio_id
             )
             snapshot_statement = snapshot_statement.where(PortfolioDailySnapshotModel.as_of_date == as_of_date)
-            snapshot = session.scalar(snapshot_statement.order_by(PortfolioDailySnapshotModel.as_of_date.desc()))
+            snapshot = session.scalar(
+                snapshot_statement.order_by(PortfolioDailySnapshotModel.as_of_date.desc())
+            )
         if snapshot is None:
             return None
 
@@ -1088,11 +1336,15 @@ def build_materialized_holdings_workspace(
     total_market_value_base = (
         _sum_complete([row.get("market_value_base") for row in aggregated_rows]) if aggregated_rows else 0.0
     )
-    day_change_totals = performance.summarize_holding_day_change(
+    day_change_totals = holdings_market_profile.summarize_holding_day_change(
         aggregated_rows,
         total_market_value_base=total_market_value_base,
     )
-    noncash_snapshot_rows = [row for row in rows if not performance.is_cash_holding_instrument_id(row.instrument_id)]
+    noncash_snapshot_rows = [
+        row
+        for row in rows
+        if not holdings_market_profile.is_cash_holding_instrument_id(row.instrument_id)
+    ]
     total_cost_basis_base = (
         _sum_complete([row.cost_basis_base for row in noncash_snapshot_rows]) if noncash_snapshot_rows else 0.0
     )
@@ -1272,7 +1524,7 @@ def build_materialized_contribution_report(
     axis: str = "instrument",
     group_key: str | None = None,
 ) -> dict[str, object] | None:
-    if axis not in performance.MATERIALIZED_CONTRIBUTION_AXES:
+    if axis not in attribution.MATERIALIZED_CONTRIBUTION_AXES:
         return None
     ensure_portfolio_daily_snapshots(portfolio_id)
     session_factory = get_session_factory()

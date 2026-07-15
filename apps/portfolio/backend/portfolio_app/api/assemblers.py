@@ -10,6 +10,10 @@ from portfolio_app.api.contracts import (
     TransactionListSummary,
     TransactionRecord,
 )
+from portfolio_app.services.transaction_dates import (
+    transaction_economic_date,
+    transaction_external_flow_date,
+)
 
 
 def resolve_transaction_flow_scope(transaction_type: str) -> str:
@@ -66,6 +70,10 @@ def serialize_transaction(
         settlement_account = account_lookup.get(settlement_id)
 
     instrument_ref = record.get("instrument_ref")
+    economic_date = transaction_economic_date(record)
+    if economic_date is None:
+        raise HTTPException(status_code=400, detail="Transaction economic date is invalid")
+    external_flow_date = transaction_external_flow_date(record)
     return TransactionRecord(
         transaction_id=str(record.get("transaction_id") or ""),
         portfolio_id=portfolio_id,
@@ -77,6 +85,8 @@ def serialize_transaction(
         trade_timezone=str(record.get("trade_timezone") or ""),
         trade_time_is_estimated=bool(record.get("trade_time_is_estimated")),
         settlement_date=date.fromisoformat(str(record.get("settlement_date") or date.today().isoformat())),
+        economic_date=economic_date,
+        external_flow_date=external_flow_date,
         entitlement_date=(
             date.fromisoformat(str(record.get("entitlement_date")))
             if record.get("entitlement_date")
@@ -94,12 +104,28 @@ def serialize_transaction(
         instrument_id=str(record.get("instrument_id")) if record.get("instrument_id") else None,
         instrument_ref=InstrumentCoreContract.model_validate(instrument_ref) if instrument_ref else None,
         quantity=float(record["quantity"]) if record.get("quantity") is not None else None,
+        source_quantity=str(record["source_quantity"]) if record.get("source_quantity") is not None else None,
         price=float(record["price"]) if record.get("price") is not None else None,
+        source_price=str(record["source_price"]) if record.get("source_price") is not None else None,
         gross_amount=float(record.get("gross_amount") or 0.0),
+        source_gross_amount=(
+            str(record["source_gross_amount"])
+            if record.get("source_gross_amount") is not None
+            else None
+        ),
         counter_amount=float(record["counter_amount"]) if record.get("counter_amount") is not None else None,
+        source_counter_amount=(
+            str(record["source_counter_amount"])
+            if record.get("source_counter_amount") is not None
+            else None
+        ),
         fx_rate=float(record["fx_rate"]) if record.get("fx_rate") is not None else None,
+        source_fx_rate=str(record["source_fx_rate"]) if record.get("source_fx_rate") is not None else None,
         fees=float(record.get("fees") or 0.0),
+        source_fees=str(record["source_fees"]) if record.get("source_fees") is not None else None,
+        fee_category=str(record.get("fee_category") or "unknown"),
         taxes=float(record.get("taxes") or 0.0),
+        source_taxes=str(record["source_taxes"]) if record.get("source_taxes") is not None else None,
         currency=str(record.get("currency") or ""),
         transfer_scope=str(record.get("transfer_scope")) if record.get("transfer_scope") else None,
         transfer_object_type=(
@@ -112,6 +138,7 @@ def serialize_transaction(
         net_cash_effect=resolve_transaction_net_cash_effect(record),
         note=str(record.get("note")) if record.get("note") else None,
         created_at=str(record.get("created_at")) if record.get("created_at") else None,
+        row_version=int(record.get("row_version") or 1),
     )
 
 

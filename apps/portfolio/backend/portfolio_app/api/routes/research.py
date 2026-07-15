@@ -3,16 +3,21 @@ from __future__ import annotations
 from fastapi import APIRouter, HTTPException, Query
 
 from portfolio_app.api.contracts import (
+    PortfolioInstrumentUniverseRecord,
     ResearchArtifactContentResponse,
     ResearchBacktestBenchmarkComparisonResponse,
     ResearchRunCreateRequest,
     ResearchRunRecord,
+    ResearchInstrumentEligibilityUpdateRequest,
     ResearchSettingsRecord,
     ResearchSettingsUpdateRequest,
     ResearchWorkbenchResponse,
 )
 from portfolio_app.services.instrument_registry import InstrumentRegistryError
-from portfolio_app.services.portfolio_store import get_portfolio
+from portfolio_app.services.portfolio_store import (
+    get_portfolio,
+    set_portfolio_instrument_research_pm_approval,
+)
 from portfolio_app.services.research import (
     get_research_backtest_benchmark_comparison,
     get_research_run,
@@ -30,9 +35,14 @@ router = APIRouter()
 def get_portfolio_research_workbench(
     portfolio_id: str,
     selected_run_id: str | None = Query(default=None),
+    include_details: bool = Query(default=False),
 ) -> ResearchWorkbenchResponse:
     try:
-        workbench = get_research_workbench(portfolio_id, selected_run_id=selected_run_id)
+        workbench = get_research_workbench(
+            portfolio_id,
+            selected_run_id=selected_run_id,
+            include_details=include_details,
+        )
     except InstrumentRegistryError as error:
         raise HTTPException(status_code=502, detail=str(error)) from error
     except ValueError as error:
@@ -40,6 +50,30 @@ def get_portfolio_research_workbench(
     if workbench is None:
         raise HTTPException(status_code=404, detail="Portfolio not found")
     return ResearchWorkbenchResponse.model_validate(workbench)
+
+
+@router.put(
+    "/{portfolio_id}/research/instruments/{instrument_id}/eligibility",
+    response_model=PortfolioInstrumentUniverseRecord,
+)
+def update_portfolio_research_instrument_eligibility(
+    portfolio_id: str,
+    instrument_id: str,
+    payload: ResearchInstrumentEligibilityUpdateRequest,
+) -> PortfolioInstrumentUniverseRecord:
+    if get_portfolio(portfolio_id) is None:
+        raise HTTPException(status_code=404, detail="Portfolio not found")
+    try:
+        record = set_portfolio_instrument_research_pm_approval(
+            portfolio_id,
+            instrument_id,
+            pm_approved=payload.pm_approved,
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    if record is None:
+        raise HTTPException(status_code=404, detail="Portfolio instrument not found")
+    return PortfolioInstrumentUniverseRecord.model_validate(record)
 
 
 @router.put("/{portfolio_id}/research/settings", response_model=ResearchSettingsRecord)

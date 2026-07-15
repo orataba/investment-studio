@@ -4,16 +4,21 @@ from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from datetime import date, time
 from typing import Literal
 
-from pydantic import BaseModel, Field, field_validator, model_validator
-from portfolio_ops_instrument_core.models import InstrumentCore as InstrumentCoreContract
-from portfolio_ops_instrument_core.models import CorporateActionEvent as CorporateActionEventContract
-from portfolio_ops_instrument_core.models import InstrumentIdentifier as InstrumentIdentifierContract
-from portfolio_ops_instrument_core.models import (
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from portfolio_ops_instrument_core import (
+    CorporateActionEvent as CorporateActionEventContract,
     DataStatus as CoverageState,
     IdentifierType,
+    InstrumentCore as InstrumentCoreContract,
+    InstrumentIdentifier as InstrumentIdentifierContract,
     InstrumentType,
     MetricFamily,
+    PriceUnit,
     QuoteBasis,
+    QuoteSelectionPolicy,
+    canonical_price_contract,
+    parse_persisted_price_contract,
+    validate_market_data_identity,
 )
 
 
@@ -24,7 +29,7 @@ SupportedCurrency = Literal["USD", "HKD", "CNY"]
 TaxonomyAssignmentScope = Literal["instrument", "account", "cash_bucket"]
 TargetMemberType = Literal["taxonomy_node", "instrument", "account", "cash_bucket"]
 DefaultTargetDimension = Literal["weight", "risk_budget"]
-TransactionType = Literal[
+TransactionCommandType = Literal[
     "buy",
     "sell",
     "dividend",
@@ -38,9 +43,17 @@ TransactionType = Literal[
     "deposit",
     "withdrawal",
     "fx_conversion",
-    "transfer_in",
-    "transfer_out",
     "opening_balance",
+]
+TransactionType = TransactionCommandType | Literal["transfer_in", "transfer_out"]
+FeeCategory = Literal[
+    "unknown",
+    "transaction_cost",
+    "management_fee",
+    "custody_fee",
+    "administration_fee",
+    "performance_fee",
+    "other",
 ]
 FlowScope = Literal["external_cash_flow", "internal_portfolio", "bootstrap"]
 TransferScope = Literal["external_portfolio_boundary", "internal_portfolio"]
@@ -70,6 +83,8 @@ PositionLotOpeningType = TransactionType | Literal["corporate_action"]
 ResearchRunStatus = Literal["running", "completed", "failed"]
 ResearchRunReliabilityState = Literal["current", "stale", "unassessed", "not_completed"]
 ResearchExecutionStatus = Literal["ready", "manual_review_required"]
+ResearchLifecycle = Literal["held", "observed", "former"]
+ResearchEligibility = Literal["eligible", "pm_review_required"]
 ResearchArtifactPreviewKind = Literal["text", "html", "binary"]
 ResearchAsOfMode = Literal["dynamic", "pinned"]
 ResearchTargetDimension = Literal["scope_default", "weight", "risk_budget"]
@@ -79,6 +94,13 @@ ResearchMissingReturnPolicy = Literal["strict", "complete_case_drop"]
 ResearchBacktestRebalanceFrequency = Literal["1w", "1m", "3m"]
 PortfolioCalculationFrequency = Literal["daily", "weekly", "monthly"]
 PortfolioRiskCalculationFrequency = Literal["auto", "daily", "weekly", "monthly"]
+PortfolioRiskResultStatus = Literal["available", "insufficient_samples", "unavailable"]
+XirrSolverStatus = Literal[
+    "unique_root",
+    "invalid_cash_flows",
+    "no_root",
+    "multiple_roots_or_non_unique",
+]
 PortfolioRiskCovarianceModel = Literal["ewma_vol_shrinkage_corr_covariance", "ewma_covariance", "sample_covariance"]
 PortfolioRiskContributionMode = Literal["signed", "abs"]
 TargetSetType = Literal["saa", "taa"]
@@ -88,6 +110,9 @@ SUPPORTED_RISK_WINDOW_DAYS = {30, 90, 180, 366, 730}
 QUANTITY_DISPLAY_QUANTUM = Decimal("0.01")
 AMOUNT_DISPLAY_QUANTUM = Decimal("0.01")
 PRICE_DISPLAY_QUANTUM = Decimal("0.0001")
+QUANTITY_SOURCE_QUANTUM = Decimal("0.000000000001")
+PRICE_SOURCE_QUANTUM = Decimal("0.000000000001")
+AMOUNT_SOURCE_QUANTUM = Decimal("0.00000001")
 AMOUNT_CONTRACT_EPSILON = Decimal("0.000001")
 
 
@@ -105,24 +130,30 @@ def _amount_contract_matches_display_price(
     quantity: object,
     price: object,
     gross_amount: object,
+    price_scale: object = 1,
 ) -> bool:
     resolved_quantity = _to_decimal(quantity)
     resolved_price = _to_decimal(price)
     resolved_gross_amount = _to_decimal(gross_amount)
+    resolved_price_scale = _to_decimal(price_scale)
     if (
         resolved_quantity is None
         or resolved_price is None
         or resolved_gross_amount is None
         or resolved_quantity <= 0
         or resolved_price <= 0
+        or resolved_price_scale is None
+        or resolved_price_scale <= 0
     ):
         return False
 
-    expected_gross_amount = resolved_quantity * resolved_price
+    expected_gross_amount = resolved_quantity * resolved_price * resolved_price_scale
     if abs(resolved_gross_amount - expected_gross_amount) <= AMOUNT_CONTRACT_EPSILON:
         return True
 
-    derived_display_price = (resolved_gross_amount / resolved_quantity).quantize(
+    derived_display_price = (
+        resolved_gross_amount / resolved_quantity / resolved_price_scale
+    ).quantize(
         PRICE_DISPLAY_QUANTUM,
         rounding=ROUND_HALF_UP,
     )
@@ -143,7 +174,7 @@ def _quantize_numeric_input(value: object, *, quantum: Decimal) -> object:
     resolved_value = _to_decimal(value)
     if resolved_value is None:
         return value
-    return float(resolved_value.quantize(quantum, rounding=ROUND_HALF_UP))
+    return resolved_value.quantize(quantum, rounding=ROUND_HALF_UP)
 
 
 def _normalize_required_text(value: object) -> object:
@@ -189,11 +220,50 @@ def _validate_risk_window_days(value: int) -> int:
     return resolved
 
 
+class InstrumentLatestMarketDataPoint(BaseModel):
+    metric_family: MetricFamily
+    quote_basis: QuoteBasis
+    as_of_date: date
+    value: Decimal
+    currency: str = Field(min_length=1, max_length=8)
+    price_unit: PriceUnit
+    price_scale: Decimal = Field(gt=0)
+    provider: str | None = None
+    status: CoverageState
+
+    @model_validator(mode="after")
+    def validate_point_contract(self) -> "InstrumentLatestMarketDataPoint":
+        validate_market_data_identity(
+            metric_family=self.metric_family,
+            quote_basis=self.quote_basis,
+        )
+        parse_persisted_price_contract(
+            price_unit=self.price_unit,
+            price_scale=self.price_scale,
+        )
+        return self
+
+
 class InstrumentOption(BaseModel):
     instrument_core: InstrumentCoreContract
     coverage_state: CoverageState
-    latest_market_data: list[dict[str, object]] = Field(default_factory=list)
-    quote_selection_policy: dict[str, list[str]] = Field(default_factory=dict)
+    latest_market_data: list[InstrumentLatestMarketDataPoint]
+    quote_selection_policy: QuoteSelectionPolicy
+
+    @model_validator(mode="after")
+    def validate_latest_market_data_contract(self) -> "InstrumentOption":
+        for point in self.latest_market_data:
+            canonical_unit, canonical_scale = canonical_price_contract(
+                instrument_type=self.instrument_core.instrument_type,
+                metric_family=point.metric_family,
+                quote_basis=point.quote_basis,
+            )
+            if point.price_unit != canonical_unit or point.price_scale != canonical_scale:
+                raise ValueError(
+                    "latest_market_data price contract does not match the canonical "
+                    "instrument identity."
+                )
+        return self
 
 
 class SharedInstrumentListResponse(BaseModel):
@@ -324,6 +394,8 @@ class TransactionRecord(BaseModel):
     trade_timezone: str
     trade_time_is_estimated: bool = False
     settlement_date: date
+    economic_date: date
+    external_flow_date: date | None = None
     entitlement_date: date | None = None
     acquisition_date: date | None = None
     account: AccountRecord
@@ -331,12 +403,20 @@ class TransactionRecord(BaseModel):
     instrument_id: str | None = None
     instrument_ref: InstrumentCoreContract | None = None
     quantity: float | None = None
+    source_quantity: str | None = None
     price: float | None = None
+    source_price: str | None = None
     gross_amount: float
+    source_gross_amount: str | None = None
     counter_amount: float | None = None
+    source_counter_amount: str | None = None
     fx_rate: float | None = None
+    source_fx_rate: str | None = None
     fees: float = 0.0
+    source_fees: str | None = None
+    fee_category: FeeCategory = "unknown"
     taxes: float = 0.0
+    source_taxes: str | None = None
     currency: str
     transfer_scope: TransferScope | None = None
     transfer_object_type: TransferObjectType | None = None
@@ -345,6 +425,7 @@ class TransactionRecord(BaseModel):
     net_cash_effect: float | None = None
     note: str | None = None
     created_at: str | None = None
+    row_version: int = Field(default=1, ge=1)
 
 
 class TransactionListSummary(BaseModel):
@@ -452,6 +533,9 @@ class InstrumentPriceChartResponse(BaseModel):
     chart_basis: str | None = None
     metric_family: str | None = None
     currency: str
+    coverage_state: CoverageState = "unavailable"
+    selection_reason: str | None = None
+    split_adjusted: bool = False
     points: list[InstrumentPriceChartPoint] = Field(default_factory=list)
     summary: InstrumentPriceChartSummary
 
@@ -461,14 +545,73 @@ class TransactionExecutionQuoteResponse(BaseModel):
     instrument_id: str
     requested_as_of_date: date
     selection_role: Literal["trading", "valuation"] | None = None
-    value: float | None = None
+    value: float | None = Field(default=None, gt=0)
     quote_date: date | None = None
     quote_basis: QuoteBasis | None = None
     metric_family: MetricFamily | None = None
     currency: str
     provider: str | None = None
-    status: CoverageState
+    status: Literal["complete", "unavailable"]
     stale: bool = False
+    price_unit: PriceUnit | None = None
+    price_scale: float | None = Field(default=None, gt=0)
+    unavailable_reason: str | None = None
+
+    @model_validator(mode="after")
+    def validate_execution_quote_contract(self) -> "TransactionExecutionQuoteResponse":
+        if self.status == "complete":
+            required_fields = {
+                "selection_role": self.selection_role,
+                "value": self.value,
+                "quote_date": self.quote_date,
+                "quote_basis": self.quote_basis,
+                "metric_family": self.metric_family,
+                "price_unit": self.price_unit,
+                "price_scale": self.price_scale,
+            }
+            missing = [name for name, value in required_fields.items() if value is None]
+            if missing:
+                raise ValueError(
+                    "Complete execution quote is missing: " + ", ".join(missing) + "."
+                )
+            if self.unavailable_reason is not None:
+                raise ValueError("Complete execution quote cannot have unavailable_reason.")
+            assert self.metric_family is not None
+            assert self.quote_basis is not None
+            assert self.price_unit is not None
+            assert self.price_scale is not None
+            validate_market_data_identity(
+                metric_family=self.metric_family,
+                quote_basis=self.quote_basis,
+            )
+            parse_persisted_price_contract(
+                price_unit=self.price_unit,
+                price_scale=self.price_scale,
+            )
+            return self
+
+        unavailable_fields = {
+            "selection_role": self.selection_role,
+            "value": self.value,
+            "quote_date": self.quote_date,
+            "quote_basis": self.quote_basis,
+            "metric_family": self.metric_family,
+            "provider": self.provider,
+            "price_unit": self.price_unit,
+            "price_scale": self.price_scale,
+        }
+        populated = [name for name, value in unavailable_fields.items() if value is not None]
+        if populated:
+            raise ValueError(
+                "Unavailable execution quote must not populate: "
+                + ", ".join(populated)
+                + "."
+            )
+        if self.stale:
+            raise ValueError("Unavailable execution quote cannot be stale.")
+        if not str(self.unavailable_reason or "").strip():
+            raise ValueError("Unavailable execution quote requires unavailable_reason.")
+        return self
 
 
 class PositionLotRealizationRecord(BaseModel):
@@ -477,6 +620,7 @@ class PositionLotRealizationRecord(BaseModel):
     transaction_type: TransactionType
     trade_date: date
     quantity: float
+    gross_proceeds: float | None = None
     proceeds: float | None = None
     cost_basis_released: float
     realized_pnl: float | None = None
@@ -522,6 +666,7 @@ class PositionLotRecord(BaseModel):
     remaining_cost_basis: float
     realized_cost_basis: float
     transferred_cost_basis: float = 0.0
+    realized_gross_proceeds: float = 0.0
     realized_proceeds: float = 0.0
     realized_pnl: float = 0.0
     income_cash_amount: float = 0.0
@@ -557,6 +702,7 @@ class TransactionWorkspaceResponse(BaseModel):
     selected_transaction_id: str | None = None
     transactions: list[TransactionRecord]
     selected_transaction: TransactionRecord | None = None
+    delete_scope_row_versions: dict[str, int]
     ledger_summary: LedgerPostingListSummary
     ledger_postings: list[LedgerPostingRecord]
     related_position_lot_summary: PositionLotListSummary
@@ -578,6 +724,11 @@ class DailySnapshotRecord(BaseModel):
     valuation_timezone: str
     valuation_cutoff_policy: str
     coverage_state: CoverageState
+    valuation_coverage_state: CoverageState
+    return_coverage_state: CoverageState
+    book_pnl_coverage_state: CoverageState
+    attribution_coverage_state: CoverageState
+    return_chain_continuous: bool
     stale_price_flag: bool = False
     stale_fx_flag: bool = False
     total_position_count: int = 0
@@ -594,6 +745,7 @@ class DailySnapshotRecord(BaseModel):
     income_cash_amount: float | None = None
     expense_cash_amount: float | None = None
     cash_currency_gains: float | None = None
+    pending_settlement_currency_gains: float | None = None
     instrument_currency_gains: float | None = None
     return_of_capital_amount: float | None = None
     total_pnl: float | None = None
@@ -615,6 +767,11 @@ class DailySnapshotListSummary(BaseModel):
     partial_count: int
     unavailable_count: int
     latest_complete_as_of_date: date | None = None
+    requested_start_date: date | None = None
+    requested_end_date: date | None = None
+    effective_start_date: date | None = None
+    effective_end_date: date | None = None
+    as_of_clamp_reason: str | None = None
 
 
 class DailySnapshotListResponse(BaseModel):
@@ -641,6 +798,11 @@ class DailySnapshotRefreshResult(BaseModel):
     refreshed_at: str | None = None
     source_market_data_updated_at: str | None = None
     recalculated_from: date | None = None
+    source_generation_status: Literal["stable", "stable_after_retry", "discarded"] = "stable"
+    source_generation_reason: str | None = None
+    discarded_attempt_count: int = Field(default=0, ge=0)
+    source_generation_before: dict[str, str | None] | None = None
+    source_generation_after: dict[str, str | None] | None = None
 
 
 class DailySnapshotRefreshResponse(BaseModel):
@@ -651,6 +813,11 @@ class DailySnapshotRefreshResponse(BaseModel):
 class DailyPerformancePoint(BaseModel):
     as_of_date: date
     coverage_state: CoverageState
+    valuation_coverage_state: CoverageState
+    return_coverage_state: CoverageState
+    book_pnl_coverage_state: CoverageState
+    attribution_coverage_state: CoverageState
+    return_chain_continuous: bool
     stale_price_flag: bool = False
     stale_fx_flag: bool = False
     market_observation_count: int = 0
@@ -663,6 +830,7 @@ class DailyPerformancePoint(BaseModel):
     income_cash_amount: float | None = None
     expense_cash_amount: float | None = None
     cash_currency_gains: float | None = None
+    pending_settlement_currency_gains: float | None = None
     instrument_currency_gains: float | None = None
     return_of_capital_amount: float | None = None
     total_pnl: float | None = None
@@ -680,10 +848,24 @@ class PerformanceSummary(BaseModel):
     start_date: date | None = None
     end_date: date | None = None
     coverage_state: CoverageState
+    valuation_coverage_state: CoverageState
+    return_coverage_state: CoverageState
+    book_pnl_coverage_state: CoverageState
+    attribution_coverage_state: CoverageState
+    requested_start_date: date | None = None
+    requested_end_date: date | None = None
+    effective_start_date: date | None = None
+    effective_end_date: date | None = None
+    as_of_clamp_reason: str | None = None
     snapshot_count: int
     return_observation_count: int
     risk_return_observation_count: int = 0
     risk_annualization_periods_per_year: float | None = None
+    risk_calculation_frequency: PortfolioCalculationFrequency = "daily"
+    risk_minimum_sample_count: int = 2
+    risk_sample_count: int = 0
+    risk_result_status: PortfolioRiskResultStatus = "unavailable"
+    risk_unavailable_reason: str | None = None
     latest_complete_as_of_date: date | None = None
     start_nav: float | None = None
     end_nav: float | None = None
@@ -691,9 +873,14 @@ class PerformanceSummary(BaseModel):
     external_cash_out: float = 0.0
     net_external_inflow: float = 0.0
     cumulative_twr: float | None = None
+    annualization_eligible: bool = False
+    annualization_years: float | None = None
+    annualization_unavailable_reason: str | None = None
     annualized_twr: float | None = None
     irr: float | None = None
     mwror: float | None = None
+    irr_solver_status: XirrSolverStatus | None = None
+    irr_unavailable_reason: str | None = None
     absolute_change: float | None = None
     delta: float | None = None
     realized_pnl: float | None = None
@@ -701,6 +888,7 @@ class PerformanceSummary(BaseModel):
     income_cash_amount: float | None = None
     expense_cash_amount: float | None = None
     cash_currency_gains: float | None = None
+    pending_settlement_currency_gains: float | None = None
     instrument_currency_gains: float | None = None
     return_of_capital_amount: float | None = None
     total_pnl: float | None = None
@@ -751,6 +939,7 @@ class PeriodCalculationSummary(BaseModel):
     fees: float | None = None
     taxes: float | None = None
     cash_currency_gains: float | None = None
+    pending_settlement_currency_gains: float | None = None
     instrument_currency_gains: float | None = None
     deposits: float = 0.0
     withdrawals: float = 0.0
@@ -887,6 +1076,10 @@ class PortfolioInstrumentUniverseRecord(BaseModel):
     first_transaction_date: date | None = None
     last_transaction_date: date | None = None
     transaction_count: int = 0
+    research_lifecycle: ResearchLifecycle
+    research_eligibility: ResearchEligibility
+    research_pm_approved: bool = False
+    research_pm_approved_at: str | None = None
     status: str = "active"
     created_at: str | None = None
     updated_at: str | None = None
@@ -902,6 +1095,10 @@ class PortfolioInstrumentUniverseCreateRequest(BaseModel):
     @classmethod
     def validate_required_text(cls, value: object) -> object:
         return _normalize_required_text(value)
+
+
+class ResearchInstrumentEligibilityUpdateRequest(BaseModel):
+    pm_approved: bool
 
 
 class TargetSetRecord(BaseModel):
@@ -1318,6 +1515,9 @@ class ResearchTargetWeightGapRecord(BaseModel):
     current_value_base: float | None = None
     base_currency: str
     action: str
+    research_lifecycle: ResearchLifecycle | None = None
+    research_eligibility: ResearchEligibility | None = None
+    research_pm_approved: bool | None = None
     execution_status: ResearchExecutionStatus = "ready"
     execution_note: str | None = None
 
@@ -1339,6 +1539,9 @@ class ResearchTargetRowRecord(BaseModel):
     implementation_weight: float | None = None
     gap_to_implementation: float | None = None
     action: str | None = None
+    research_lifecycle: ResearchLifecycle | None = None
+    research_eligibility: ResearchEligibility | None = None
+    research_pm_approved: bool | None = None
     execution_status: ResearchExecutionStatus = "ready"
     execution_note: str | None = None
 
@@ -1364,6 +1567,9 @@ class ResearchBacktestMetricsRecord(BaseModel):
     end_date: str | None = None
     period_return: float | None = None
     ytd_return: float | None = None
+    annualization_eligible: bool = False
+    annualization_years: float | None = None
+    annualization_unavailable_reason: str | None = None
     annualized_return: float | None = None
     annualized_volatility: float | None = None
     sharpe_ratio: float | None = None
@@ -1494,6 +1700,8 @@ class ResearchWorkbenchResponse(BaseModel):
     settings: ResearchSettingsRecord
     risk_policy: PortfolioRiskPolicyRecord
     current_context: ResearchCurrentContextRecord
+    instrument_universe: list[PortfolioInstrumentUniverseRecord] = Field(default_factory=list)
+    detail_level: Literal["compact", "selected_run"] = "compact"
     runs: list[ResearchRunRecord] = Field(default_factory=list)
     selected_run: ResearchRunRecord | None = None
 
@@ -1759,6 +1967,7 @@ CalculationBucket = Literal[
     "fees",
     "taxes",
     "cash_currency_gains",
+    "pending_settlement_currency_gains",
     "instrument_currency_gains",
     "total_pnl",
     "period_contribution",
@@ -1797,6 +2006,7 @@ class DailyContributionSliceRecord(BaseModel):
     fee_amount: float | None = None
     tax_amount: float | None = None
     cash_currency_gains: float | None = None
+    pending_settlement_currency_gains: float | None = None
     instrument_currency_gains: float | None = None
     total_pnl: float | None = None
     daily_return: float | None = None
@@ -1819,6 +2029,7 @@ class ContributionLineRecord(BaseModel):
     fee_amount: float | None = None
     tax_amount: float | None = None
     cash_currency_gains: float | None = None
+    pending_settlement_currency_gains: float | None = None
     instrument_currency_gains: float | None = None
     total_pnl: float | None = None
     period_contribution: float | None = None
@@ -1875,6 +2086,7 @@ class ContributionCalendarBucketRecord(BaseModel):
     fee_amount: float | None = None
     tax_amount: float | None = None
     cash_currency_gains: float | None = None
+    pending_settlement_currency_gains: float | None = None
     instrument_currency_gains: float | None = None
     total_pnl: float | None = None
     bucket_contribution: float | None = None
@@ -1917,6 +2129,7 @@ ContributionBucket = Literal[
     "fee_amount",
     "tax_amount",
     "cash_currency_gains",
+    "pending_settlement_currency_gains",
     "instrument_currency_gains",
     "total_pnl",
     "contribution",
@@ -2150,6 +2363,7 @@ class PeriodCalculationGroupChildRecord(BaseModel):
     fees: float | None = None
     taxes: float | None = None
     cash_currency_gains: float | None = None
+    pending_settlement_currency_gains: float | None = None
     instrument_currency_gains: float | None = None
     total_pnl: float | None = None
     period_contribution: float | None = None
@@ -2184,6 +2398,7 @@ class PeriodCalculationGroupRecord(BaseModel):
     fees: float | None = None
     taxes: float | None = None
     cash_currency_gains: float | None = None
+    pending_settlement_currency_gains: float | None = None
     instrument_currency_gains: float | None = None
     total_pnl: float | None = None
     period_contribution: float | None = None
@@ -2256,6 +2471,7 @@ class PeriodCalculationGroupCalendarBucketRecord(BaseModel):
     fees: float | None = None
     taxes: float | None = None
     cash_currency_gains: float | None = None
+    pending_settlement_currency_gains: float | None = None
     instrument_currency_gains: float | None = None
     total_pnl: float | None = None
     bucket_contribution: float | None = None
@@ -2458,7 +2674,9 @@ class LedgerPostingListResponse(BaseModel):
 
 
 class TransactionCreateRequest(BaseModel):
-    transaction_type: TransactionType
+    model_config = ConfigDict(extra="forbid")
+
+    transaction_type: TransactionCommandType
     trade_date: date
     trade_time: str | None = None
     settlement_date: date | None = None
@@ -2467,17 +2685,15 @@ class TransactionCreateRequest(BaseModel):
     account_id: str
     settlement_cash_account_id: str | None = None
     instrument_id: str | None = None
-    quantity: float | None = Field(default=None, ge=0)
-    price: float | None = Field(default=None, ge=0)
-    gross_amount: float = Field(ge=0)
-    counter_amount: float | None = Field(default=None, ge=0)
-    fx_rate: float | None = Field(default=None, gt=0)
-    fees: float = Field(default=0, ge=0)
-    taxes: float = Field(default=0, ge=0)
+    quantity: Decimal | None = Field(default=None, ge=0, lt=Decimal("1e16"))
+    price: Decimal | None = Field(default=None, ge=0, lt=Decimal("1e16"))
+    gross_amount: Decimal = Field(ge=0, lt=Decimal("1e20"))
+    counter_amount: Decimal | None = Field(default=None, ge=0, lt=Decimal("1e20"))
+    fx_rate: Decimal | None = Field(default=None, gt=0, lt=Decimal("1e16"))
+    fees: Decimal = Field(default=Decimal("0"), ge=0, lt=Decimal("1e20"))
+    fee_category: FeeCategory = "unknown"
+    taxes: Decimal = Field(default=Decimal("0"), ge=0, lt=Decimal("1e20"))
     currency: str = Field(min_length=1, max_length=8)
-    transfer_scope: TransferScope | None = None
-    transfer_object_type: TransferObjectType | None = None
-    transfer_group_id: str | None = None
     counterparty_account_id: str | None = None
     note: str | None = None
 
@@ -2510,17 +2726,22 @@ class TransactionCreateRequest(BaseModel):
     @field_validator("quantity", mode="before")
     @classmethod
     def normalize_quantity_precision(cls, value: object) -> object:
-        return _quantize_numeric_input(value, quantum=QUANTITY_DISPLAY_QUANTUM)
+        return _quantize_numeric_input(value, quantum=QUANTITY_SOURCE_QUANTUM)
 
     @field_validator("price", mode="before")
     @classmethod
     def normalize_price_precision(cls, value: object) -> object:
-        return _quantize_numeric_input(value, quantum=PRICE_DISPLAY_QUANTUM)
+        return _quantize_numeric_input(value, quantum=PRICE_SOURCE_QUANTUM)
 
     @field_validator("gross_amount", "counter_amount", "fees", "taxes", mode="before")
     @classmethod
     def normalize_amount_precision(cls, value: object) -> object:
-        return _quantize_numeric_input(value, quantum=AMOUNT_DISPLAY_QUANTUM)
+        return _quantize_numeric_input(value, quantum=AMOUNT_SOURCE_QUANTUM)
+
+    @field_validator("fx_rate", mode="before")
+    @classmethod
+    def normalize_fx_rate_precision(cls, value: object) -> object:
+        return _quantize_numeric_input(value, quantum=PRICE_SOURCE_QUANTUM)
 
     @model_validator(mode="after")
     def validate_amount_contract(self) -> "TransactionCreateRequest":
@@ -2539,12 +2760,6 @@ class TransactionCreateRequest(BaseModel):
                 raise ValueError("Security transactions require positive quantity.")
             if self.price is None or self.price <= 0:
                 raise ValueError("Security transactions require positive price.")
-            if not _amount_contract_matches_display_price(
-                quantity=self.quantity,
-                price=self.price,
-                gross_amount=self.gross_amount,
-            ):
-                raise ValueError("gross_amount must equal quantity multiplied by price for buy and sell.")
 
         if self.transaction_type in {"dividend", "coupon"}:
             if not self.instrument_id:
@@ -2584,14 +2799,6 @@ class TransactionCreateRequest(BaseModel):
             if self.price is not None:
                 if self.price <= 0:
                     raise ValueError("Dividend reinvestment price must be positive when provided.")
-                if not _amount_contract_matches_display_price(
-                    quantity=self.quantity,
-                    price=self.price,
-                    gross_amount=self.gross_amount,
-                ):
-                    raise ValueError(
-                        "gross_amount must equal quantity multiplied by price for dividend reinvestment."
-                    )
             if self.fees != 0 or self.taxes != 0:
                 raise ValueError("Dividend reinvestment must not carry fees or taxes.")
 
@@ -2650,41 +2857,21 @@ class TransactionCreateRequest(BaseModel):
                 raise ValueError("entitlement_date on fee and tax requires instrument_id.")
 
         if (
+            self.fee_category != "unknown"
+            and self.transaction_type != "fee"
+            and self.fees <= 0
+        ):
+            raise ValueError(
+                "fee_category requires a fee transaction or a positive attached fee."
+            )
+
+        if (
             self.entitlement_date is not None
             and self.transaction_type not in {"dividend", "coupon", "fee", "tax"}
         ):
             raise ValueError(
                 "entitlement_date is only allowed for dividend, coupon, fee, and tax."
             )
-
-        if self.transaction_type in {"transfer_in", "transfer_out"}:
-            if self.transfer_scope != "internal_portfolio":
-                raise ValueError("Transfer transactions require transfer_scope=internal_portfolio.")
-            if self.transfer_object_type is None:
-                raise ValueError("Transfer transactions require transfer_object_type.")
-            if not self.transfer_group_id:
-                raise ValueError("Transfer transactions require transfer_group_id.")
-            if self.transfer_object_type == "cash":
-                if self.instrument_id is not None or self.quantity is not None or self.price is not None:
-                    raise ValueError("Cash transfers must not carry instrument, quantity, or price.")
-            if self.transfer_object_type == "position":
-                if not self.instrument_id:
-                    raise ValueError("Position transfers require instrument_id.")
-                if self.quantity is None or self.quantity <= 0:
-                    raise ValueError("Position transfers require positive quantity.")
-                if self.price is not None:
-                    raise ValueError("Position transfers must not carry price.")
-                if self.gross_amount <= 0:
-                    raise ValueError("Position transfers require transferred cost basis.")
-            if self.fees != 0 or self.taxes != 0:
-                raise ValueError("Transfer transactions must not carry fees or taxes.")
-
-        if self.transaction_type not in {"transfer_in", "transfer_out"} and (
-            self.transfer_scope is not None
-            or self.transfer_object_type is not None
-            or self.transfer_group_id is not None
-        ):
-            raise ValueError("Transfer fields are only allowed for transfer transactions.")
 
         if self.transaction_type == "opening_balance":
             if self.instrument_id:
@@ -2702,14 +2889,6 @@ class TransactionCreateRequest(BaseModel):
                 if self.price is not None:
                     if self.price <= 0:
                         raise ValueError("Security opening balance price must be positive when provided.")
-                    if not _amount_contract_matches_display_price(
-                        quantity=self.quantity,
-                        price=self.price,
-                        gross_amount=self.gross_amount,
-                    ):
-                        raise ValueError(
-                            "gross_amount must equal quantity multiplied by price for security opening balance."
-                        )
             elif self.quantity is not None or self.price is not None:
                 raise ValueError("Cash opening balance must not carry quantity or price.")
         elif self.acquisition_date is not None:
@@ -2718,7 +2897,13 @@ class TransactionCreateRequest(BaseModel):
         return self
 
 
+class TransactionUpdateRequest(TransactionCreateRequest):
+    expected_row_version: int | None = Field(default=None, ge=1)
+
+
 class InternalTransferCreateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     trade_date: date
     trade_time: str | None = None
     settlement_date: date | None = None
@@ -2726,10 +2911,9 @@ class InternalTransferCreateRequest(BaseModel):
     from_account_id: str
     to_account_id: str
     instrument_id: str | None = None
-    quantity: float | None = Field(default=None, ge=0)
-    gross_amount: float | None = Field(default=None, ge=0)
+    quantity: Decimal | None = Field(default=None, ge=0, lt=Decimal("1e16"))
+    gross_amount: Decimal | None = Field(default=None, ge=0, lt=Decimal("1e20"))
     note: str | None = None
-    transfer_group_id: str | None = None
 
     @model_validator(mode="after")
     def validate_internal_transfer(self) -> "InternalTransferCreateRequest":
@@ -2769,12 +2953,12 @@ class InternalTransferCreateRequest(BaseModel):
     @field_validator("quantity", mode="before")
     @classmethod
     def normalize_quantity_precision(cls, value: object) -> object:
-        return _quantize_numeric_input(value, quantum=QUANTITY_DISPLAY_QUANTUM)
+        return _quantize_numeric_input(value, quantum=QUANTITY_SOURCE_QUANTUM)
 
     @field_validator("gross_amount", mode="before")
     @classmethod
     def normalize_amount_precision(cls, value: object) -> object:
-        return _quantize_numeric_input(value, quantum=AMOUNT_DISPLAY_QUANTUM)
+        return _quantize_numeric_input(value, quantum=AMOUNT_SOURCE_QUANTUM)
 
 
 class TransactionBatchResponse(BaseModel):
@@ -2784,8 +2968,48 @@ class TransactionBatchResponse(BaseModel):
     transactions: list[TransactionRecord]
 
 
+class TransactionDeleteRequest(BaseModel):
+    expected_row_versions: dict[str, int] = Field(min_length=1)
+
+    @field_validator("expected_row_versions", mode="before")
+    @classmethod
+    def validate_expected_row_versions(cls, value: object) -> object:
+        if not isinstance(value, dict) or not value:
+            raise ValueError("expected_row_versions must be a non-empty object.")
+        for transaction_id, row_version in value.items():
+            if not isinstance(transaction_id, str) or not transaction_id.strip():
+                raise ValueError("expected_row_versions keys must be transaction IDs.")
+            if transaction_id != transaction_id.strip():
+                raise ValueError("expected_row_versions keys must not contain surrounding whitespace.")
+            if isinstance(row_version, bool) or not isinstance(row_version, int) or row_version < 1:
+                raise ValueError("expected_row_versions values must be positive integers.")
+        return value
+
+
 class TransactionDeleteResponse(BaseModel):
     portfolio_id: str
     deleted_count: int
     deleted_transaction_ids: list[str]
     transfer_group_id: str | None = None
+
+
+class TransactionChangeLogRecord(BaseModel):
+    change_id: str
+    portfolio_id: str
+    transaction_id: str
+    change_type: Literal["create", "update", "delete"]
+    row_version: int = Field(ge=1)
+    before: dict[str, object] | None = None
+    after: dict[str, object] | None = None
+    request_idempotency_key: str | None = None
+    changed_at: str
+
+
+class TransactionChangeLogSummary(BaseModel):
+    change_count: int
+
+
+class TransactionChangeLogResponse(BaseModel):
+    portfolio_id: str
+    summary: TransactionChangeLogSummary
+    changes: list[TransactionChangeLogRecord] = Field(default_factory=list)

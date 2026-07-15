@@ -62,6 +62,7 @@ from portfolio_app.api.contracts import (
     ReturnCalendarSummary,
 )
 from portfolio_app.services.instrument_registry import InstrumentRegistryError
+from portfolio_app.services.attribution import CONTRIBUTION_AXES, CONTRIBUTION_AXIS_ERROR
 from portfolio_app.services.daily_snapshots import (
     list_materialized_daily_snapshots,
     refresh_portfolio_daily_snapshots_for_instrument_change,
@@ -72,8 +73,6 @@ from portfolio_app.services.workspace_cache import (
     get_cached_materialized_performance_report,
 )
 from portfolio_app.services.performance import (
-    CONTRIBUTION_AXES,
-    CONTRIBUTION_AXIS_ERROR,
     build_period_boundary_groups_report,
     build_contribution_bucket_calendar_report,
     build_contribution_bucket_report,
@@ -90,7 +89,10 @@ from portfolio_app.services.performance import (
     build_period_calculation_groups_report,
     build_taxonomy_calculation_detail_report_from_base_report,
     build_taxonomy_contribution_report_from_base_report,
-    build_return_calendar_report,
+    build_return_calendar_report_from_performance_report,
+)
+from portfolio_app.services.return_chain import (
+    resolve_reliable_snapshot_window,
     summarize_daily_snapshots,
 )
 from portfolio_app.services.portfolio_store import get_portfolio, list_accounts, list_transactions
@@ -172,7 +174,7 @@ def list_daily_snapshots(
         raise HTTPException(status_code=404, detail="Portfolio not found")
 
     try:
-        snapshots = list_materialized_daily_snapshots(
+        loaded_snapshots = list_materialized_daily_snapshots(
             portfolio_id,
             start_date=start_date,
             end_date=end_date,
@@ -180,12 +182,32 @@ def list_daily_snapshots(
     except InstrumentRegistryError as error:
         raise HTTPException(status_code=502, detail=str(error)) from error
 
+    snapshot_window = resolve_reliable_snapshot_window(
+        loaded_snapshots,
+        requested_start_date=start_date,
+        requested_end_date=end_date,
+        default_end_date=(
+            date.fromisoformat(str(portfolio.get("as_of_date"))[:10])
+            if portfolio.get("as_of_date")
+            else None
+        ),
+    )
+    snapshots = list(snapshot_window["snapshots"])
     return DailySnapshotListResponse(
         portfolio_id=portfolio_id,
         base_currency=str(portfolio.get("base_currency") or "USD"),
         valuation_timezone=str(portfolio.get("valuation_timezone") or ""),
         valuation_cutoff_policy=str(portfolio.get("valuation_cutoff_policy") or "latest_complete_eod"),
-        summary=DailySnapshotListSummary.model_validate(summarize_daily_snapshots(snapshots)),
+        summary=DailySnapshotListSummary.model_validate(
+            summarize_daily_snapshots(
+                snapshots,
+                requested_start_date=snapshot_window["requested_start_date"],
+                requested_end_date=snapshot_window["requested_end_date"],
+                effective_start_date=snapshot_window["effective_start_date"],
+                effective_end_date=snapshot_window["effective_end_date"],
+                as_of_clamp_reason=snapshot_window["as_of_clamp_reason"],
+            )
+        ),
         snapshots=[DailySnapshotRecord.model_validate(item) for item in snapshots],
     )
 
@@ -718,12 +740,18 @@ def get_portfolio_return_calendar(
         raise HTTPException(status_code=422, detail="frequency must be monthly or weekly")
 
     try:
-        report = build_return_calendar_report(
-            portfolio,
-            list_accounts(portfolio_id),
-            list_transactions(portfolio_id),
+        # Calendar buckets are a presentation rollup over the same authoritative,
+        # snapshot-fenced window as Performance. Reuse its bounded cache instead of
+        # rebuilding valuation for each calendar request or frequency.
+        performance_report = get_cached_materialized_performance_report(
+            portfolio_id,
             start_date=start_date,
             end_date=end_date,
+        )
+        if performance_report is None:
+            raise HTTPException(status_code=404, detail="Portfolio not found")
+        report = build_return_calendar_report_from_performance_report(
+            performance_report,
             frequency=frequency,
         )
     except InstrumentRegistryError as error:

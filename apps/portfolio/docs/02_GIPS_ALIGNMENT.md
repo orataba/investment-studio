@@ -5,7 +5,6 @@
 关联文档：
 
 - [`01_CALCULATION_SPEC.md`](./01_CALCULATION_SPEC.md)
-- [`03_OPTIMIZATION_HANDOFF.md`](./03_OPTIMIZATION_HANDOFF.md)
 
 ## 1. 定位
 
@@ -70,6 +69,8 @@ GIPS 强调一致应用计算方法、建立政策，并披露方法边界。
 - 公允价值估值、return chain、book P&L 与 attribution 必须分别返回 coverage / reliability；单一 `coverage_state` 不得让成本或归因缺口阻断本来完整的 fair-value NAV/TWR；
 - `stale_price_flag`、`stale_fx_flag` 及 requested/effective as-of 必须随关键结果返回；
 - 区间 daily series、summary、drawdown 必须使用同一组 window-rebased `daily_twr`。
+- external flow 落在不可靠估值 gap 内时，不跨 gap 几何链接；下一个可靠点只建立新 anchor。自然月、MTD/QTD/YTD 等期间还必须有可靠起止边界和连续 return coverage；
+- 用户请求终点超过 latest reliable endpoint 时，后端 clamp 到有效终点并返回 requested/effective as-of 与原因，所有区间组件共用这一终点。
 
 ### 2.5 成本法不得污染绩效收益率
 
@@ -123,7 +124,9 @@ GIPS 的 ex-post risk disclosure 与行业实践都要求风险统计基于收�
 - transaction costs 不得从 gross return 中加回；
 - `fee_category` 缺失时返回 `unknown`，不能猜测 management / custody / transaction-cost 分类。
 
-## 3. 当前实现映射与已知偏差
+固定收益 fair value 使用 dirty-price boundary。percent-of-par 报价必须带明确 price unit/scale；clean price 只有在同日、同币种、同 unit/scale 的 accrued interest 唯一存在时才可合成 dirty price。clean-only 或身份含混的数据不得进入正式 NAV/TWR。
+
+## 3. 当前实现映射与边界
 
 | 主题 | 当前实现 |
 | --- | --- |
@@ -137,13 +140,14 @@ GIPS 的 ex-post risk disclosure 与行业实践都要求风险统计基于收�
 | Research target solve | `_resolve_dimension_target_rows()` 校验完整 target set，`_solve_risk_budget_weights()` 在历史不足或求解失败时抛错 |
 | 物化读模型 | `PortfolioDailySnapshotModel` / holding snapshot / contribution slice |
 | 刷新治理 | `PortfolioCalculationStateModel.refresh_request_id` 对 stale 请求去重，刷新串行 claim；计算期间若收到新请求会再跑一轮 |
-| MWR | `_solve_xirr()` 输出 `irr` / `mwror`，作为补充指标 |
+| Source generation fence | snapshot 计算前、计算后与 publish 前核对源 generation；变化时丢弃并重试，不发布混合世代结果 |
+| MWR | `_solve_xirr_result()` 只发布 `unique_root`；`no_root` / `multiple_roots` / `invalid_cash_flows` 显式不可用 |
 | Performance group TWR | `_daily_group_return_from_components()` 在 instrument / taxonomy / calculation detail 聚合间复用同一 flow-adjusted denominator |
 | Manual benchmark guard | Performance 页面要求同币种、起点锚点和 eligible return date 覆盖完整后才展示轻量 benchmark metrics |
-| External-flow effective date | 目标口径为实际收付日；当前通用 trade-date 路径是待修偏差，见 `03_OPTIMIZATION_HANDOFF.md` |
-| 少于一年年化 | 目标口径为后端直接 unavailable；当前 API / Research 偏差列在 `03_OPTIMIZATION_HANDOFF.md`，不得把 UI 隐藏视为已完成 |
+| External-flow effective date | deposit / withdrawal 使用显式 external-flow date 或 settlement date；dividend / coupon 的经济日期可来自 entitlement date |
+| 少于一年年化 | 后端以 `ACT/365.25` eligibility 直接 withholding annualized TWR/MWR 与 Calmar；UI/export 沿用同一状态 |
 | 费用 basis | 当前只能标记 `after recorded expenses`，尚不支持正式 gross/net-of-fees 声明 |
-| Coverage 分层 | 目标口径要求 valuation / return / book-P&L / attribution 分离；当前混合状态是待修缺口 |
+| Coverage 分层 | API 与物化 snapshot 分别返回 valuation / return / book-P&L / attribution coverage，成本或归因缺口不反向污染完整 NAV/TWR |
 
 ## 4. 暂不覆盖的 GIPS 能力
 
@@ -170,6 +174,7 @@ GIPS 的 ex-post risk disclosure 与行业实践都要求风险统计基于收�
 - drawdown 是否基于 TWR growth index；
 - risk 是否只使用符合 `return_observation_eligible` 的 `daily_twr`；
 - `IRR / MWROR` 缺失是否被解释为补充指标不可用，而不是 TWR 失败；
+- XIRR 是否只发布唯一有效 root，并保留 solver status；
 - 少于一年时后端是否拒绝发布 annualized TWR / MWR / Calmar；
 - 收益 basis 是否仍只描述为 after recorded expenses，除非 fee classification 与完整性已被证明；
 - valuation / return / book-P&L / attribution coverage 是否保持分离；

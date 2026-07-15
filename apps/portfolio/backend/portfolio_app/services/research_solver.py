@@ -11,25 +11,39 @@ import numpy as np
 import pandas as pd
 from scipy.optimize import minimize
 
+from portfolio_app.services.annualization import annualization_eligibility
 from portfolio_app.services.calculation_frequency import (
     CalculationFrequency,
     calculation_frequency_profile,
     infer_observation_frequency,
     period_end_date,
 )
-from portfolio_app.services.market_data import is_usable_market_data_point
-import portfolio_app.services.performance as performance_service
+from portfolio_app.services import valuation_fx
+from portfolio_app.services.instrument_registry import (
+    get_platform_fx_rates,
+    get_registry_instrument_detail,
+)
+from portfolio_app.services.market_data import (
+    quote_policy_bases,
+    resolve_quote_series,
+)
 from portfolio_app.services.ledger import build_account_workspace
 from portfolio_app.services.performance import build_holdings_report
 from portfolio_app.services.portfolio_store import (
     get_portfolio,
     list_accounts,
+    list_portfolio_instrument_universe,
     list_target_set_lines,
     list_target_sets,
     list_taxonomies,
     list_taxonomy_assignments,
     list_taxonomy_nodes,
     list_transactions,
+)
+from portfolio_app.services.research_eligibility import (
+    FORMER_PM_REVIEW_EXECUTION_NOTE,
+    RESEARCH_EXECUTION_TARGET_EPSILON,
+    enrich_instrument_research_state,
 )
 
 ROOT_SCOPE_MEMBER_ID = "__portfolio_root__"
@@ -288,54 +302,24 @@ def _parse_iso_date(value: object) -> date | None:
         return None
 
 
-def _normalized_currency(value: object, *, fallback: str = "USD") -> str:
-    normalized = str(value or "").strip().upper()
-    return normalized or fallback
-
-
-def _build_direct_fx_instrument_map() -> dict[tuple[str, str], str]:
-    direct_instruments: dict[tuple[str, str], str] = {}
-    payload = performance_service.get_platform_fx_rates()
-    if not isinstance(payload, dict):
-        return direct_instruments
-    for item in payload.get("rates", []):
-        if not is_usable_market_data_point(item):
-            continue
-        if str(item.get("source_kind") or "") != "direct":
-            continue
-        base_currency = _normalized_currency(item.get("base_currency"), fallback="")
-        quote_currency = _normalized_currency(item.get("quote_currency"), fallback="")
-        instrument_id = str(item.get("instrument_id") or "").strip()
-        if base_currency and quote_currency and instrument_id:
-            direct_instruments[(base_currency, quote_currency)] = instrument_id
-    return direct_instruments
-
-
 def _instrument_detail(
     state: TaxonomyResearchState,
     instrument_id: str,
 ) -> dict[str, object] | None:
     if instrument_id not in state.instrument_detail_cache:
-        state.instrument_detail_cache[instrument_id] = performance_service.get_registry_instrument_detail(instrument_id)
+        state.instrument_detail_cache[instrument_id] = get_registry_instrument_detail(
+            instrument_id
+        )
     return state.instrument_detail_cache[instrument_id]
 
 
 def _candidate_quote_bases(detail: dict[str, object]) -> list[str]:
-    policy = detail.get("quote_selection_policy", {})
-    candidate_bases: list[str] = []
-    if isinstance(policy, dict):
-        # Research should consume total-return series whenever the shared
-        # registry provides one. Statement valuation still uses the separate
-        # valuation role; this path is specifically for return/risk simulation.
-        for role in ("total_return", "chart", "valuation", "reference"):
-            raw_values = policy.get(role)
-            if not isinstance(raw_values, list):
-                continue
-            for raw_value in raw_values:
-                value = str(raw_value or "").strip()
-                if value and value not in candidate_bases:
-                    candidate_bases.append(value)
-    return candidate_bases
+    # Research should consume total-return series whenever the shared registry
+    # provides one. Statement valuation retains its separate policy boundary.
+    return quote_policy_bases(
+        detail,
+        ("total_return", "chart", "valuation", "reference"),
+    )
 
 
 def _selected_price_points(
@@ -343,39 +327,21 @@ def _selected_price_points(
     *,
     end_date: date,
 ) -> list[tuple[date, float, str]]:
-    market_data = detail.get("market_data", [])
-    if not isinstance(market_data, list):
+    resolution = resolve_quote_series(
+        detail,
+        candidate_bases=_candidate_quote_bases(detail),
+        end_date=end_date,
+    )
+    if not resolution.available:
         return []
-    points_by_basis: dict[str, list[tuple[date, float, str]]] = defaultdict(list)
-    for raw_point in market_data:
-        if not is_usable_market_data_point(raw_point):
-            continue
-        point_date = _parse_iso_date(raw_point.get("as_of_date"))
-        point_value = _safe_float(raw_point.get("value"))
-        quote_basis = str(raw_point.get("quote_basis") or "").strip()
-        if (
-            point_date is None
-            or point_value is None
-            or not np.isfinite(point_value)
-            or point_value <= 0.0
-            or not quote_basis
-            or point_date > end_date
-        ):
-            continue
-        points_by_basis[quote_basis].append(
-            (
-                point_date,
-                point_value,
-                _normalized_currency(raw_point.get("currency"), fallback=str(detail.get("currency") or "USD")),
-            )
-        )
-    for points in points_by_basis.values():
-        points.sort(key=lambda item: item[0])
-
-    for quote_basis in _candidate_quote_bases(detail):
-        if points_by_basis.get(quote_basis):
-            return points_by_basis[quote_basis]
-    return []
+    selected: list[tuple[date, float, str]] = []
+    for point in resolution.points:
+        point_date = point.get("as_of_date")
+        point_value = _safe_float(point.get("value"))
+        if not isinstance(point_date, date) or point_value is None:
+            return []
+        selected.append((point_date, point_value, str(point.get("currency") or "")))
+    return selected
 
 
 def _convert_price_to_base(
@@ -385,15 +351,19 @@ def _convert_price_to_base(
     value: float,
     point_currency: str,
 ) -> float | None:
-    normalized_currency = _normalized_currency(point_currency, fallback=state.base_currency)
+    normalized_currency = valuation_fx.required_currency(
+        point_currency,
+        field_name="market-data currency",
+    )
     if normalized_currency == state.base_currency:
         return value
-    fx = performance_service.resolve_fx_rate_on(
+    fx = valuation_fx.resolve_fx_rate_on(
         as_of_date=point_date,
         base_currency=normalized_currency,
         quote_currency=state.base_currency,
         direct_instruments=state.direct_fx_instruments,
         instrument_detail_cache=state.instrument_detail_cache,
+        instrument_detail_loader=get_registry_instrument_detail,
     )
     rate = _safe_float((fx or {}).get("rate"))
     if rate is None or rate <= 0:
@@ -475,12 +445,6 @@ def _member_is_cash_like(state: TaxonomyResearchState, member: ScopeMemberRecord
     if member.member_type != TARGET_MEMBER_NODE:
         return False
     return _node_is_cash_subtree(state, member.member_id)
-
-
-def _taxonomy_node_row_is_system_cash_like(node: dict[str, object]) -> bool:
-    normalized_name = str(node.get("node_name") or "").strip().lower()
-    normalized_code = str(node.get("node_code") or "").strip().lower()
-    return normalized_code == "cash" or normalized_name in {"cash", "现金"}
 
 
 def _scope_is_frozen(state: TaxonomyResearchState, scope_node_id: str | None) -> bool:
@@ -1997,7 +1961,16 @@ def _resolve_dimension_target_rows(
     )
 
     candidate_types = ["taa", "saa"]
-    line_keys = [(member.member_type, member.member_id) for member in scope_members]
+    cash_like_members = [member for member in scope_members if _member_is_cash_like(state, member)]
+    dimension_members = (
+        [member for member in scope_members if not _member_is_cash_like(state, member)]
+        if resolved_dimension == TARGET_DIMENSION_RISK_BUDGET
+        else scope_members
+    )
+    scope_label = str(state.node_by_id.get(scope_node_id, {}).get("node_name") or ROOT_SCOPE_LABEL)
+    if resolved_dimension == TARGET_DIMENSION_RISK_BUDGET and not dimension_members:
+        raise ValueError(f"{scope_label} risk budget is unavailable: no risky members.")
+    line_keys = [(member.member_type, member.member_id) for member in dimension_members]
 
     enabled_field = "weight_enabled" if resolved_dimension == TARGET_DIMENSION_WEIGHT else "risk_budget_enabled"
     value_field = "target_weight" if resolved_dimension == TARGET_DIMENSION_WEIGHT else "target_risk_share"
@@ -2017,24 +1990,25 @@ def _resolve_dimension_target_rows(
         rendered_rows: list[dict[str, object]] = []
         complete = True
         missing_member_labels: list[str] = []
-        for member in scope_members:
+        for member in dimension_members:
             line = line_map.get((member.member_type, member.member_id))
             if line is None or line.get(value_field) is None:
-                if member.member_type != TARGET_MEMBER_CASH:
+                if resolved_dimension == TARGET_DIMENSION_WEIGHT and _member_is_cash_like(state, member):
+                    selected_value = 0.0
+                    target_weight = 0.0
+                    target_risk_share = None
+                else:
                     missing_member_labels.append(member.label)
                     complete = False
                     break
-                selected_value = 0.0
-                target_weight = 0.0 if resolved_dimension == TARGET_DIMENSION_WEIGHT else _safe_float((line or {}).get("target_weight"))
-                target_risk_share = (
-                    0.0
-                    if resolved_dimension == TARGET_DIMENSION_RISK_BUDGET
-                    else _safe_float((line or {}).get("target_risk_share"))
-                )
             else:
                 selected_value = float(line.get(value_field))
                 target_weight = _safe_float(line.get("target_weight"))
-                target_risk_share = _safe_float(line.get("target_risk_share"))
+                target_risk_share = (
+                    None
+                    if _member_is_cash_like(state, member)
+                    else _safe_float(line.get("target_risk_share"))
+                )
             rendered_rows.append(
                 {
                     "member_type": member.member_type,
@@ -2052,12 +2026,7 @@ def _resolve_dimension_target_rows(
             )
         if complete and len(rendered_rows) == len(line_keys):
             selected_total = sum(float(row["selected_value"]) for row in rendered_rows)
-            expected_total = (
-                0.0
-                if resolved_dimension == TARGET_DIMENSION_RISK_BUDGET
-                and all(_member_is_cash_like(state, member) for member in scope_members)
-                else 1.0
-            )
+            expected_total = 1.0
             if any(float(row["selected_value"]) < -1e-12 for row in rendered_rows):
                 raise ValueError(f"{target_set.get('name') or target_set_type} has negative {resolved_dimension} targets.")
             if abs(selected_total - expected_total) > 1e-6:
@@ -2065,18 +2034,42 @@ def _resolve_dimension_target_rows(
                     f"{target_set.get('name') or target_set_type} {resolved_dimension} targets must sum to "
                     f"{expected_total:.6f}; got {selected_total:.6f}."
                 )
+            if resolved_dimension == TARGET_DIMENSION_RISK_BUDGET:
+                for member in cash_like_members:
+                    line = line_map.get((member.member_type, member.member_id)) or {}
+                    rendered_rows.append(
+                        {
+                            "member_type": member.member_type,
+                            "member_id": member.member_id,
+                            "label": member.label,
+                            "taxonomy_node_id": member.taxonomy_node_id,
+                            "default_target_dimension": member.default_target_dimension,
+                            "selected_dimension": resolved_dimension,
+                            "selected_value": None,
+                            "target_weight": _safe_float(line.get("target_weight")),
+                            "target_risk_share": None,
+                            "source_target_set_id": target_set.get("target_set_id"),
+                            "source_target_set_type": target_set_type,
+                        }
+                    )
             return rendered_rows, warnings
         if not complete:
             incomplete_target_sets.append((target_set, missing_member_labels))
 
-    if len(scope_members) == 1:
-        member = scope_members[0]
-        selected_value = (
-            0.0
-            if resolved_dimension == TARGET_DIMENSION_RISK_BUDGET and _member_is_cash_like(state, member)
-            else 1.0
+    if saw_enabled_target_set and incomplete_target_sets:
+        target_set, missing_member_labels = incomplete_target_sets[0]
+        missing_label = ", ".join(missing_member_labels[:8]) or "one or more active taxonomy members"
+        if len(missing_member_labels) > 8:
+            missing_label += f", +{len(missing_member_labels) - 8} more"
+        raise ValueError(
+            f"{scope_label} {resolved_dimension} target set is incomplete; "
+            f"missing target lines for active members: {missing_label}."
         )
-        return [
+
+    if len(dimension_members) == 1:
+        member = dimension_members[0]
+        selected_value = 1.0
+        rendered_rows = [
             {
                 "member_type": member.member_type,
                 "member_id": member.member_id,
@@ -2091,18 +2084,27 @@ def _resolve_dimension_target_rows(
                 "source_target_set_type": None,
                 "source_label_override": "Single Member",
             }
-        ], warnings
+        ]
+        if resolved_dimension == TARGET_DIMENSION_RISK_BUDGET:
+            rendered_rows.extend(
+                {
+                    "member_type": cash_member.member_type,
+                    "member_id": cash_member.member_id,
+                    "label": cash_member.label,
+                    "taxonomy_node_id": cash_member.taxonomy_node_id,
+                    "default_target_dimension": cash_member.default_target_dimension,
+                    "selected_dimension": resolved_dimension,
+                    "selected_value": None,
+                    "target_weight": None,
+                    "target_risk_share": None,
+                    "source_target_set_id": None,
+                    "source_target_set_type": None,
+                    "source_label_override": "Cash Capital Context",
+                }
+                for cash_member in cash_like_members
+            )
+        return rendered_rows, warnings
 
-    scope_label = str(state.node_by_id.get(scope_node_id, {}).get("node_name") or ROOT_SCOPE_LABEL)
-    if saw_enabled_target_set and incomplete_target_sets:
-        target_set, missing_member_labels = incomplete_target_sets[0]
-        missing_label = ", ".join(missing_member_labels[:8]) or "one or more active taxonomy members"
-        if len(missing_member_labels) > 8:
-            missing_label += f", +{len(missing_member_labels) - 8} more"
-        raise ValueError(
-            f"{scope_label} {resolved_dimension} target set is incomplete; "
-            f"missing target lines for active members: {missing_label}."
-        )
     raise ValueError(
         f"{scope_label} has no active complete {resolved_dimension} target set for the requested scope members."
     )
@@ -2619,7 +2621,7 @@ def _solve_current_scope(
 
     target_values = pd.Series(
         {
-            f"{row['member_type']}::{row['member_id']}": float(row["selected_value"])
+            f"{row['member_type']}::{row['member_id']}": float(_safe_float(row.get("selected_value")) or 0.0)
             for row in resolved_rows
         },
         dtype="float64",
@@ -2629,6 +2631,9 @@ def _solve_current_scope(
         for row in resolved_rows
     }
     cash_like_keys = [key for key in member_keys if _member_is_cash_like(state, member_by_key[key])]
+    non_cash_keys = [key for key in member_keys if key not in cash_like_keys]
+    if target_dimension_used == TARGET_DIMENSION_RISK_BUDGET and not non_cash_keys:
+        raise ValueError(f"{scope_label} risk budget is unavailable: no risky members.")
     frozen_keys = [
         key
         for key in member_keys
@@ -2652,7 +2657,6 @@ def _solve_current_scope(
         for key in member_keys
         if key not in cash_like_keys and key not in frozen_keys and key not in zero_target_keys
     ]
-    non_cash_keys = [key for key in member_keys if key not in cash_like_keys]
     preferred_cash_weights = pd.Series(
         {
             f"{row['member_type']}::{row['member_id']}": float(_safe_float(row.get("target_weight")) or 0.0)
@@ -2945,8 +2949,6 @@ def _solve_current_scope(
         warnings.extend(current_risk_share_warnings)
     else:
         current_risk_share_by_key = {}
-    for key in cash_like_keys:
-        current_risk_share_by_key[key] = 0.0
     gap_turnover = float(0.5 * np.abs(implementation_weights - current_weights).sum())
     max_weight_gap = float(np.max(np.abs(current_weights - implementation_weights))) if len(member_keys) else 0.0
     solve_event = {
@@ -3281,9 +3283,22 @@ def _build_leaf_target_weight_gaps(
     *,
     leaf_target_rows: list[dict[str, object]],
     base_currency: str,
+    instrument_research_state_by_id: dict[str, dict[str, object]] | None = None,
 ) -> list[dict[str, object]]:
     gaps: list[dict[str, object]] = []
     for row in leaf_target_rows:
+        member_type = str(row.get("member_type") or "")
+        member_id = str(row.get("member_id") or "")
+        raw_research_state = (
+            (instrument_research_state_by_id or {}).get(member_id)
+            if member_type == TARGET_MEMBER_INSTRUMENT
+            else None
+        )
+        research_state = (
+            enrich_instrument_research_state(raw_research_state)
+            if raw_research_state is not None
+            else None
+        )
         current_weight = _safe_float(row.get("current_weight"))
         target_weight = _safe_float(row.get("target_weight"))
         gap = (
@@ -3294,9 +3309,19 @@ def _build_leaf_target_weight_gaps(
         action = "Review"
         execution_status = "ready"
         execution_note = None
-        if gap is not None:
+        if (
+            member_type == TARGET_MEMBER_INSTRUMENT
+            and research_state is not None
+            and research_state["research_lifecycle"] == "former"
+            and research_state["research_eligibility"] == "pm_review_required"
+            and target_weight is not None
+            and target_weight > RESEARCH_EXECUTION_TARGET_EPSILON
+        ):
+            execution_status = "manual_review_required"
+            execution_note = FORMER_PM_REVIEW_EXECUTION_NOTE
+        elif gap is not None:
             if (
-                str(row.get("member_type") or "") == "instrument"
+                member_type == TARGET_MEMBER_INSTRUMENT
                 and current_weight > 1e-8
                 and target_weight <= 1e-12
             ):
@@ -3312,21 +3337,28 @@ def _build_leaf_target_weight_gaps(
                 action = "Reduce"
             else:
                 action = "Hold"
-        gaps.append(
-            {
-                "member_type": row.get("member_type"),
-                "member_id": row.get("member_id"),
-                "label": row.get("label"),
-                "current_weight": current_weight,
-                "target_weight": target_weight,
-                "gap": gap,
-                "current_value_base": None,
-                "base_currency": base_currency,
-                "action": action,
-                "execution_status": execution_status,
-                "execution_note": execution_note,
-            }
-        )
+        gap_payload: dict[str, object] = {
+            "member_type": row.get("member_type"),
+            "member_id": row.get("member_id"),
+            "label": row.get("label"),
+            "current_weight": current_weight,
+            "target_weight": target_weight,
+            "gap": gap,
+            "current_value_base": None,
+            "base_currency": base_currency,
+            "action": action,
+            "execution_status": execution_status,
+            "execution_note": execution_note,
+        }
+        if research_state is not None:
+            gap_payload.update(
+                {
+                    "research_lifecycle": research_state["research_lifecycle"],
+                    "research_eligibility": research_state["research_eligibility"],
+                    "research_pm_approved": research_state["research_pm_approved"],
+                }
+            )
+        gaps.append(gap_payload)
     gaps.sort(key=lambda item: abs(_safe_float(item.get("gap")) or 0.0), reverse=True)
     return gaps
 
@@ -3356,13 +3388,11 @@ def _build_taxonomy_state(
     if taxonomy is None:
         raise ValueError("Planning taxonomy not found.")
 
-    taxonomy_scope = str(taxonomy.get("primary_assignment_scope") or "")
     node_rows = [
         item
         for item in list_taxonomy_nodes(portfolio_id)
         if str(item.get("taxonomy_id") or "") == planning_taxonomy_id
         and str(item.get("status") or "") == "active"
-        and not (taxonomy_scope == TARGET_MEMBER_INSTRUMENT and _taxonomy_node_row_is_system_cash_like(item))
     ]
     node_rows.sort(
         key=lambda item: (
@@ -3451,7 +3481,9 @@ def _build_taxonomy_state(
         planning_taxonomy_id=planning_taxonomy_id,
         taxonomy_name=str(taxonomy.get("name") or planning_taxonomy_id),
         root_default_target_dimension=str(taxonomy.get("root_default_target_dimension") or TARGET_DIMENSION_WEIGHT),
-        base_currency=_normalized_currency(portfolio.get("base_currency")),
+        base_currency=valuation_fx.required_currency(
+            portfolio.get("base_currency"), field_name="portfolio base currency"
+        ),
         as_of_date=as_of_date,
         node_by_id=node_by_id,
         children_by_parent=children_by_parent,
@@ -3466,7 +3498,7 @@ def _build_taxonomy_state(
         direct_fx_instruments=(
             direct_fx_instruments
             if direct_fx_instruments is not None
-            else _build_direct_fx_instrument_map()
+            else valuation_fx.fx_direct_instrument_map(get_platform_fx_rates())
         ),
         frozen_taxonomy_node_ids=frozenset(
             str(item).strip() for item in (frozen_taxonomy_node_ids or []) if str(item).strip()
@@ -3830,12 +3862,27 @@ def _compound_return(values: list[float]) -> float | None:
 
 
 def _build_backtest_metrics(points: list[dict[str, object]], returns: dict[str, float]) -> dict[str, object]:
-    if len(points) < 2 or not returns:
+    parsed_points = sorted(
+        [
+            (parsed_date, value)
+            for item in points
+            if (parsed_date := _parse_iso_date(item.get("date"))) is not None
+            and (value := _safe_float(item.get("value"))) is not None
+        ],
+        key=lambda item: item[0],
+    )
+    start_date = parsed_points[0][0] if parsed_points else None
+    end_date = parsed_points[-1][0] if parsed_points else None
+    annualization = annualization_eligibility(start_date, end_date)
+    if len(parsed_points) < 2 or not returns:
         return {
             "start_date": points[0]["date"] if points else None,
             "end_date": points[-1]["date"] if points else None,
             "period_return": None,
             "ytd_return": None,
+            "annualization_eligible": annualization.eligible,
+            "annualization_years": annualization.years,
+            "annualization_unavailable_reason": annualization.unavailable_reason,
             "annualized_return": None,
             "annualized_volatility": None,
             "sharpe_ratio": None,
@@ -3848,38 +3895,55 @@ def _build_backtest_metrics(points: list[dict[str, object]], returns: dict[str, 
             "current_drawdown": None,
             "calmar_ratio": None,
         }
-    start_value = _safe_float(points[0].get("value")) or 1.0
-    end_value = _safe_float(points[-1].get("value")) or start_value
-    dates: list[date] = []
-    for item in points:
-        parsed_date = _parse_iso_date(item.get("date"))
-        if parsed_date is not None:
-            dates.append(parsed_date)
+    start_value = parsed_points[0][1]
+    end_value = parsed_points[-1][1]
+    dates = [item[0] for item in parsed_points]
     return_dates = [_parse_iso_date(date_key) for date_key in returns.keys()]
     periods_per_year = _infer_periods_per_year([item for item in return_dates if item is not None])
-    period_count = max(len(returns), 1)
     period_return = end_value / start_value - 1.0 if abs(start_value) > 1e-12 else None
     end_date = dates[-1] if dates else None
-    ytd_return_values = [
-        float(value)
-        for date_key, value in sorted(returns.items())
-        if (parsed_date := _parse_iso_date(date_key)) is not None
-        and end_date is not None
-        and parsed_date.year == end_date.year
-    ]
-    ytd_return = _compound_return(ytd_return_values)
+    year_start = date(end_date.year, 1, 1) if end_date is not None else None
+    # A YTD base must represent the year boundary, not merely be any older NAV
+    # point.  Seven days accommodates normal year-end market closures across
+    # the supported daily/weekly/monthly sampled backtests without relabelling
+    # a stale multi-period return as YTD.
+    earliest_ytd_anchor = year_start - timedelta(days=7) if year_start is not None else None
+    ytd_anchor = next(
+        (
+            value
+            for point_date, value in reversed(parsed_points)
+            if year_start is not None
+            and earliest_ytd_anchor is not None
+            and earliest_ytd_anchor <= point_date <= year_start
+        ),
+        None,
+    )
+    ytd_return = (
+        end_value / ytd_anchor - 1.0
+        if ytd_anchor is not None and abs(ytd_anchor) > 1e-12
+        else None
+    )
     annualized_return = (
-        (end_value / start_value) ** (periods_per_year / period_count) - 1.0
-        if period_return is not None and end_value > 0 and start_value > 0
+        (end_value / start_value) ** (1.0 / annualization.years) - 1.0
+        if annualization.eligible
+        and annualization.years is not None
+        and period_return is not None
+        and end_value > 0
+        and start_value > 0
         else None
     )
     return_values = np.asarray(list(returns.values()), dtype="float64")
     annualized_volatility = (
         float(np.nanstd(return_values, ddof=1) * sqrt(periods_per_year)) if len(return_values) > 1 else None
     )
+    annualized_arithmetic_mean_return = (
+        float(np.nanmean(return_values) * periods_per_year) if len(return_values) > 0 else None
+    )
     sharpe_ratio = (
-        float(annualized_return / annualized_volatility)
-        if annualized_return is not None and annualized_volatility is not None and annualized_volatility > 1e-12
+        float(annualized_arithmetic_mean_return / annualized_volatility)
+        if annualized_arithmetic_mean_return is not None
+        and annualized_volatility is not None
+        and annualized_volatility > 1e-12
         else None
     )
 
@@ -3921,6 +3985,9 @@ def _build_backtest_metrics(points: list[dict[str, object]], returns: dict[str, 
         "end_date": dates[-1].isoformat() if dates else None,
         "period_return": period_return,
         "ytd_return": ytd_return,
+        "annualization_eligible": annualization.eligible,
+        "annualization_years": annualization.years,
+        "annualization_unavailable_reason": annualization.unavailable_reason,
         "annualized_return": annualized_return,
         "annualized_volatility": annualized_volatility,
         "sharpe_ratio": sharpe_ratio,
@@ -4604,6 +4671,11 @@ def solve_current_target_weights(
         target_weight_gaps = _build_leaf_target_weight_gaps(
             leaf_target_rows=scope_result.leaf_target_rows,
             base_currency=state.base_currency,
+            instrument_research_state_by_id={
+                str(item.get("instrument_id") or ""): item
+                for item in list_portfolio_instrument_universe(portfolio_id)
+                if str(item.get("instrument_id") or "")
+            },
         )
     else:
         actual_rows = []

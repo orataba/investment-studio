@@ -1,6 +1,6 @@
 # Portfolio 计算口径与目标规格
 
-> 文档状态：本文定义 Portfolio 的 canonical 计算合同和已确认的目标口径，不代表每一项都已在当前实现完成。已知实现偏差、实施顺序与验收门槛统一记录在 [`03_OPTIMIZATION_HANDOFF.md`](./03_OPTIMIZATION_HANDOFF.md)。标记为 future design 的对象不得被 UI、API 或其他文档描述成已上线能力。
+> 文档状态：本文定义 Portfolio 的 canonical 计算合同和已确认的上线口径。标记为 future design 的对象不得被 UI、API 或其他文档描述成已上线能力；新的实现偏差应在对应 issue/执行记录中明确登记，不在本文内静默兼容。
 
 > 适用范围：仅适用于 `apps/portfolio` 的组合级 Overview / Holdings / Performance / Risk / Research。本文不定义 `apps/watchlist` 的 fund/instrument detail，也不能用 Watchlist 的同名 Performance / Risk tab 作为实现或验收依据。
 
@@ -112,9 +112,10 @@
 - 每个 `Portfolio` 必须定义 `valuation_timezone` 和 `valuation_cutoff_policy`；
 - 组合日度结果按 `as_of_date` 归档，`as_of_date` 表示**市场日**，不是实际计算发生的墙上时间；
 - 单个资产优先使用其本地市场在该 `as_of_date` 的最新官方收盘价或该日最终可用估值；
+- 行情源必须携带可审计的 `expected_frequency`、market calendar / schedule 与 `release_lag`；缺点判断以该 source schedule 为准，不能把尚未到发布时间的数据误报为缺失，也不能把超过 release lag 的缺口当成正常休市；
 - 组合绝对口径快照只有在该 `as_of_date` 所需市场和 FX 数据满足覆盖率阈值后，才能标记为 `complete`；
 - benchmark 相关区块的 `complete / partial / unavailable` 由 benchmark coverage 单独决定，不反向阻塞绝对口径 snapshot；
-- 组合 summary、Overview 和未显式指定日期的 Holdings 默认展示 latest fresh complete `as_of_date`，而不是当前本地时钟下尚未收齐数据的“今天”。fresh complete 表示 `coverage_state = complete`、`nav` 存在且 `stale_price_flag = false`；它要求当前持仓资产价格/NAV 都没有 stale carry-forward。`stale_fx_flag` 是独立质量标记，不单独把资产新鲜度日期向前推，也不能作为资产新鲜度兜底。
+- 组合 summary、Overview 和未显式指定日期的 Holdings 默认展示 latest fresh complete `as_of_date`，而不是当前本地时钟下尚未收齐数据的“今天”。fresh complete 表示 `valuation_coverage_state = complete`、`nav` 存在且 `stale_price_flag = false`；它要求当前持仓资产价格/NAV 都没有 stale carry-forward。`stale_fx_flag` 是独立质量标记，不单独把资产新鲜度日期向前推，也不能作为资产新鲜度兜底。
 
 示例：
 
@@ -146,6 +147,13 @@
 - fund 的 research/risk 序列使用 `total_return_nav`；若改用 `official_nav`，必须在结果中标记 quote basis，且不得把分红/派息收益伪装成已复权 total return；
 - equity 的 research/risk 序列使用 `adjusted_close`；若改用 `close`，必须在结果中标记 quote basis，且不得把除权除息导致的机械跳空当成真实损失；
 - chart / sparkline 必须展示实际采用的 quote basis。basis 缺失时，图表可以降级为 `partial / unavailable`，不能静默换基准。
+
+每条可用于估值、收益或执行价格校验的行情还必须满足显式身份合同：
+
+- series identity 至少由 `metric_family + quote_basis + currency` 构成；同一角色出现多条匹配 series 时视为 ambiguous 并失败关闭，不能按日期把候选序列拼接；
+- `price_unit` 与 `price_scale` 必须成对存在且与资产类型一致。普通价格与 FX rate 的 scale 为 `1`；债券 percent-of-par 的 scale 为 `0.01`；
+- 估值、上一行情、图表和交易执行价格检查必须沿用同一 resolved identity。币种、basis、unit 或 scale 不一致时返回明确 unavailable reason，不做隐式换算；
+- quote role 只决定允许搜索的 basis 顺序，不得越过 metric family、currency 或 price contract 的唯一性校验。
 
 ### 2.2 组合基准货币
 
@@ -284,6 +292,19 @@ Risk 与 Research 的 covariance / correlation / risk contribution 必须先确�
 - 若重叠覆盖率低于配置阈值，结果标记为 `partial` 或 `unavailable`；
 - 风控和 period analytics 页面必须显示 coverage ratio，前端不得把缺失数据伪装成正常结果。
 
+Coverage 必须按职责拆分，至少返回：
+
+- `valuation_coverage_state`：fair-value NAV 所需的价格、FX 与现金是否完整；
+- `return_coverage_state`：可靠估值边界与可链接 daily return 是否完整；
+- `book_pnl_coverage_state`：cost basis、lots 与账面 P&L 是否完整；
+- `attribution_coverage_state`：贡献拆分和分组解释是否完整。
+
+这四个状态不得互相替代。成本或归因不完整不能阻断已经完整的 fair-value NAV/TWR；反之，完整账面成本也不能修补缺失估值或收益链。
+
+Return chain 只链接连续且 `return_coverage_state = complete` 的可靠观察。若不可靠估值 gap 内发生 external flow，gap 后第一个可靠点必须作为新 anchor，其当日不发布跨 gap 的 bridging return；后续从该 anchor 继续链接。月度、MTD、QTD、YTD 等闭合区间只有在可靠起点、可靠终点和中间连续覆盖同时满足时才可发布完整收益；inception 落在期间内部只能是 partial / unavailable，不能伪装成完整自然期间收益。
+
+用户请求的终点晚于 latest reliable endpoint 时，后端应 clamp 到该 endpoint，并同时返回 requested/effective as-of 与 `as_of_clamp_reason`。summary、chart、drawdown、calendar 和 Calculation 必须使用同一 effective window。
+
 ## 3. 估值与 NAV
 
 ### 3.1 单个头寸市值
@@ -318,6 +339,7 @@ MVP 中：
 
 - `SettledCash_t^{base}` 表示截至 `t` 已经按 `effective_date` 生效的现金 posting；
 - `PendingSettlementNet_t^{base}` 表示 trade date 已确认、但 cash leg 尚未到 `effective_date` 的证券结算应收 / 应付款；该值在 settlement 前继续留在 NAV 中，settlement 当日转入 `SettledCash_t^{base}`；
+- 非基准货币的 `PendingSettlementNet` 是独立 monetary exposure。结算前的汇率重估必须记为 `PendingSettlementCurrencyGain`，与 settled cash FX、instrument FX 和资产 capital gain 分列；不得把待结算应收 / 应付的 FX 变动吸收到资产的 realized / unrealized capital gain；
 - `Accounts` workspace、account-axis contribution、Research current context / actual rows 在任意 `as_of_date = t` 都必须复用同一条 settled-vs-pending 口径；不能出现 settled cash 已按 `effective_date` 截断，但 ending value / actual rows 又漏掉 pending settlement 的情况；
 - `OtherAssets_t` 可先默认为 `0`，除非显式支持应收项；
 - `Liabilities_t` 可先包含费用、税费、应付款等可识别项目；
@@ -336,6 +358,19 @@ $$
 - 任何涉及 target、drift、risk diagnostics 的结果必须带 `weight_basis`；
 - 首版 `TargetSet.target_weight` 的 canonical basis 固定为 `portfolio_nav`；
 - API/UI 不允许只返回一个无语义的 `weight` 字段。
+
+### 3.4 Transaction facts、日期与审计
+
+Transaction 是可修改的业务事实，但修改必须保留可追溯性，并与 ledger 派生结果分层：
+
+- `transaction_economic_date` 默认取 `trade_date`；dividend / coupon 有合法 `entitlement_date` 时在 entitlement date 确认经济收益；
+- deposit / withdrawal 的 `external_flow_date` 优先使用显式导入值，其次 `settlement_date`，最后才回退 `trade_date`。TWR 必须在该实际收付日中性化 external flow；
+- 证券头寸 posting 在 trade date 生效，结算现金 posting 在 settlement date 生效；pending settlement 在两者之间作为独立 monetary exposure 留在 NAV；
+- `fee_category` 必须显式保存；无法分类的历史或导入事实使用 `unknown`，不得猜测 management / custody / transaction cost；
+- create / update / delete 必须写入 additive change log，记录 before / after、row version、时间与可用的 idempotency key；这不是 event-sourcing ledger replacement；
+- 同一 portfolio 的 idempotency key 只可重放同一 operation 与同一 request hash；同 key 不同 payload 必须冲突失败；
+- update / delete 使用 `row_version` 做 optimistic concurrency，版本不匹配时拒绝覆盖较新的事实；
+- 源 `quantity / price / amount / fx / fees / taxes` 使用 practical NUMERIC 精度保存，同时保留 float64 projection 供现有计算与统计使用。不得用显示舍入值反写源事实。
 
 ### 3.5 Cost Basis / Purchase Value
 
@@ -365,6 +400,8 @@ Portfolio 级 TWR、IRR、drawdown 和 contribution 必须基于 fair value、ca
 - 若数据源提供的是 clean price，则必须同时提供 accrued interest，再合成为 canonical dirty value；
 - coupon 作为现金收益进入 ledger；到期本金回收通过 `maturity_redemption` 或等价显式事件入账；
 - duration、convexity、yield、spread 等字段可作为解释性外部输入展示，但不是首版 canonical 自研计算结果。
+- 债券数量按 face quantity 表达，percent-of-par 执行价使用 `price_scale = 0.01`：face quantity `1000`、price `98.5` 的 gross amount 为 `985`，不是 `98,500`；
+- dirty price 可直接估值；clean price 只有在同日、同币种、同 price unit/scale 的 accrued-interest component 唯一存在时，才合成为 canonical dirty price。clean-only、重复 accrued component 或 contract 不一致均失败关闭。
 
 #### Open position book cost
 
@@ -522,6 +559,8 @@ $$
 
 所有组合级价值对象先换算到 `base_currency` 再聚合。
 
+Portfolio、account、transaction、ledger posting、position lot 与 market-data point 的币种都是必填事实。缺失或空币种必须使对应估值/计算失败关闭；不得默认成 `USD`、组合基准币或交易另一侧币种。
+
 ### 4.2 基准货币收益
 
 base currency 下的单期收益应优先直接从 base value 计算：
@@ -650,6 +689,8 @@ $$
 - TWR 反映经理在中性化 external flows 后的投资表现；
 - XIRR 数学结果天然是年化率；测量期不足一年时不得把它作为 annualized MWR 展示。若产品需要短期资金加权收益，必须另行计算并命名为 period MWR；
 - UI 不允许用 IRR 替代 TWR 展示“组合收益”。
+- XIRR solver 必须返回 `unique_root`、`no_root`、`multiple_roots` 或 `invalid_cash_flows` 状态；只有唯一、有限且满足残差容差的有效 root 可以发布。多根不得靠初始猜值任选一个结果；
+- solver status 与 unavailable reason 必须进入 API/export，前端不能把 `no_root`、`multiple_roots` 或非法现金流统一渲染成数值 0。
 
 ### 5.6 Absolute Change 与 Delta
 
@@ -682,7 +723,7 @@ $$
 其中：
 
 $$
-PeriodPnL = CapitalGain + Income - Fees - Taxes + FXPnL
+PeriodPnL = CapitalGain + Income - Fees - Taxes + SettledCashFXPnL + PendingSettlementFXPnL + InstrumentFXPnL
 $$
 
 其中：
@@ -1273,6 +1314,10 @@ $$
 - `stale_price_count`
 - `benchmark_overlap_ratio`（若适用）
 - `calculation_version`
+- `requested_as_of_date` / effective `as_of_date` / `as_of_clamp_reason`（若发生终点 clamp）
+- valuation / return / book-P&L / attribution 四维 coverage state
+- `irr_solver_status`（若请求 MWR）
+- risk `calculation_frequency`、sample count 与 minimum-sample / coverage reason（若适用）
 
 ### 12.1 物化快照刷新一致性
 
@@ -1285,6 +1330,8 @@ daily snapshot、holding snapshot、contribution slice 是可重建的读模型�
 - 同一组合的物化刷新串行执行；如果刷新期间又收到新的 `refresh_request_id`，当前计算结果不得把状态置为 `current` 或清空 `dirty_from`，必须继续按最新事实再计算一轮；
 - 邮件、文件或批量行情导入完成后按资产/组合去重触发刷新，不应在单个数据点写入过程中反复启动组合重建；
 - 读路径可以在发现状态不是 `current` 时触发 repair refresh，但 repair 必须复用同一套串行 claim 逻辑，不能并行删除/插入同一组合的物化表。
+- 每次计算在读取源事实前记录 transaction/account generation 与共享行情 generation，在计算完成后以及正式 publish 前再次读取；任一 generation 改变时，丢弃该次混合世代结果并重试，不得发布半旧半新的 snapshot；
+- refresh 结果显式返回 `source_generation_status = stable | stable_after_retry | discarded`、reason 与 before/after generation。重试仍不稳定时保持 stale，不覆盖最后一个已发布的稳定读模型。
 
 ## 13. 首版明确不锁死的高级口径
 

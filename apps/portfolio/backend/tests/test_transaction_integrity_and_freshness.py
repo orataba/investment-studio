@@ -158,6 +158,7 @@ def test_deleting_a_position_source_fact_cannot_invalidate_later_sales() -> None
         portfolio_store.delete_transactions(
             "portfolio-ops",
             transaction_ids=["txn-0003"],
+            expected_row_versions={"txn-0003": 1},
         )
 
     assert portfolio_store.get_transaction("portfolio-ops", "txn-0003") is not None

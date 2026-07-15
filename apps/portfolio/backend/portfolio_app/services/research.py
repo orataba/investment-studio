@@ -15,6 +15,7 @@ from sqlalchemy.orm import defer
 
 from portfolio_app.core.settings import get_settings
 from portfolio_app.db.models import (
+    PortfolioInstrumentUniverseRecordModel,
     PortfolioRecordModel,
     ResearchRunRecordModel,
     ResearchSettingsRecordModel,
@@ -43,6 +44,7 @@ from portfolio_app.services.research_solver import (
 )
 from portfolio_app.services.portfolio_store import (
     get_portfolio,
+    list_portfolio_instrument_universe,
     list_target_sets,
     list_taxonomies,
     list_taxonomy_assignments,
@@ -50,6 +52,7 @@ from portfolio_app.services.portfolio_store import (
     list_accounts,
     list_transactions,
 )
+from portfolio_app.services.research_eligibility import derive_research_lifecycle
 from portfolio_app.services.risk_model import get_portfolio_risk_policy, normalize_portfolio_risk_policy, risk_window_label
 
 TEXT_SUFFIXES = {".csv", ".json", ".md", ".txt", ".yaml", ".yml"}
@@ -548,6 +551,12 @@ def _planning_state_fingerprint(
         if active_target_set_ids
         else []
     )
+    instrument_universe = session.scalars(
+        select(PortfolioInstrumentUniverseRecordModel).where(
+            PortfolioInstrumentUniverseRecordModel.portfolio_id == portfolio_id,
+            PortfolioInstrumentUniverseRecordModel.status == "active",
+        )
+    ).all()
     lines_by_target_set_id: dict[str, list[dict[str, object]]] = {}
     for item in target_lines:
         lines_by_target_set_id.setdefault(item.target_set_id, []).append(
@@ -628,6 +637,20 @@ def _planning_state_fingerprint(
                 str(item["target_set_type"]),
                 str(item["target_set_id"]),
             ),
+        ),
+        "research_instrument_eligibility": sorted(
+            [
+                {
+                    "instrument_id": item.instrument_id,
+                    "research_lifecycle": derive_research_lifecycle(
+                        holding_state=item.holding_state,
+                        transaction_count=item.transaction_count,
+                    ),
+                    "research_pm_approved": bool(item.research_pm_approved),
+                }
+                for item in instrument_universe
+            ],
+            key=lambda item: str(item["instrument_id"]),
         ),
     }
     digest = hashlib.sha256(_canonical_reliability_value(state).encode("utf-8")).hexdigest()
@@ -735,7 +758,7 @@ def _serialize_run_row(
                 for item in detail["top_holdings"]
                 if isinstance(item, dict)
             ]
-    artifacts = deepcopy(row.artifacts_json or [])
+    artifact_rows = deepcopy(row.artifacts_json or [])
     return {
         "research_run_id": row.research_run_id,
         "portfolio_id": row.portfolio_id,
@@ -754,8 +777,8 @@ def _serialize_run_row(
         "reliability_state": reliability_state,
         "is_current": reliability_state == "current",
         "reliability_reasons": list(reliability_reasons or []),
-        "artifact_count": len(artifacts),
-        "artifacts": artifacts,
+        "artifact_count": len(artifact_rows),
+        "artifacts": artifact_rows if include_detail else [],
         "detail": detail,
     }
 
@@ -1311,6 +1334,9 @@ def _build_target_rows(solution: dict[str, object]) -> list[dict[str, object]]:
                 "implementation_weight": implementation_weight,
                 "gap_to_implementation": gap_to_implementation,
                 "action": str((target_gap or {}).get("action") or "").strip() or None,
+                "research_lifecycle": (target_gap or {}).get("research_lifecycle"),
+                "research_eligibility": (target_gap or {}).get("research_eligibility"),
+                "research_pm_approved": (target_gap or {}).get("research_pm_approved"),
                 "execution_status": str((target_gap or {}).get("execution_status") or "ready"),
                 "execution_note": str((target_gap or {}).get("execution_note") or "").strip() or None,
             }
@@ -1562,6 +1588,7 @@ def get_research_workbench(
     portfolio_id: str,
     *,
     selected_run_id: str | None = None,
+    include_details: bool = False,
 ) -> dict[str, object] | None:
     portfolio = get_portfolio(portfolio_id)
     if portfolio is None:
@@ -1624,18 +1651,20 @@ def get_research_workbench(
             for row in run_rows
         ]
         selected_run_row = None
+        explicit_selected_run = False
         if selected_run_id:
             selected_run_row = next(
                 (row for row in run_rows if row.research_run_id == selected_run_id),
                 None,
             )
+            explicit_selected_run = selected_run_row is not None
         if selected_run_row is None and run_rows:
             selected_run_row = run_rows[0]
         selected_run = (
             _serialize_run_row(
                 selected_run_row,
                 taxonomy_name_map,
-                include_detail=True,
+                include_detail=include_details or explicit_selected_run,
                 reliability_state=reliability_by_run_id[selected_run_row.research_run_id][0],
                 reliability_reasons=reliability_by_run_id[selected_run_row.research_run_id][1],
             )
@@ -1678,6 +1707,12 @@ def get_research_workbench(
         "settings": settings_payload,
         "risk_policy": production_risk_model,
         "current_context": context,
+        "instrument_universe": list_portfolio_instrument_universe(portfolio_id),
+        "detail_level": (
+            "selected_run"
+            if selected_run is not None and (include_details or explicit_selected_run)
+            else "compact"
+        ),
         "runs": runs,
         "selected_run": selected_run,
     }

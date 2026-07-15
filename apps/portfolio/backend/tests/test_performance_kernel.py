@@ -15,7 +15,20 @@ from portfolio_app.db.models import (
     PortfolioDailySnapshotModel,
 )
 from portfolio_app.db.session import get_session_factory
-from portfolio_app.services import daily_snapshots, ledger, performance, portfolio_store
+from portfolio_app.services.annualization import (
+    SHORT_PERIOD_REASON,
+    annualization_eligibility,
+)
+from portfolio_app.services import (
+    attribution,
+    daily_snapshots,
+    holdings_market_profile,
+    ledger,
+    performance,
+    period_metrics,
+    portfolio_store,
+    valuation_fx,
+)
 
 
 def _write_store(store: dict[str, object]) -> None:
@@ -23,7 +36,7 @@ def _write_store(store: dict[str, object]) -> None:
 
 
 def test_holding_day_change_uses_adjusted_return_but_raw_market_value_across_split() -> None:
-    change_pct, change_value = performance._holding_day_change_metrics(
+    change_pct, change_value = holdings_market_profile.holding_day_change_metrics(
         quantity=200.0,
         current_price=0.905,
         previous_price=1.945,
@@ -58,6 +71,8 @@ def _test_instrument_detail(
                 "as_of_date": as_of_date,
                 "value": value,
                 "currency": "USD",
+                "price_unit": "per_unit",
+                "price_scale": 1.0,
                 "status": "complete",
             }
             for as_of_date, value in history
@@ -97,7 +112,7 @@ def test_realized_risk_contribution_uses_common_matrix_for_sparse_instruments():
                 }
             )
 
-    metrics = performance._realized_risk_attribution_by_group(
+    metrics = attribution.realized_risk_attribution_by_group(
         daily_slices,
         portfolio_daily_series,
         calculation_frequency="daily",
@@ -150,7 +165,7 @@ def test_realized_risk_contribution_links_daily_contributions_for_weekly_frequen
             ]
         )
 
-    metrics = performance._realized_risk_attribution_by_group(
+    metrics = attribution.realized_risk_attribution_by_group(
         daily_slices,
         portfolio_daily_series,
         calculation_frequency="weekly",
@@ -188,6 +203,8 @@ def test_valuation_quote_selection_rejects_reference_and_total_return_fallbacks(
                 "as_of_date": "2026-01-02",
                 "value": "55.00",
                 "currency": "USD",
+                "price_unit": "per_unit",
+                "price_scale": 1.0,
                 "status": "complete",
             }
         ],
@@ -198,6 +215,8 @@ def test_valuation_quote_selection_rejects_reference_and_total_return_fallbacks(
                 "as_of_date": "2026-01-02",
                 "value": "55.00",
                 "currency": "USD",
+                "price_unit": "per_unit",
+                "price_scale": 1.0,
                 "status": "complete",
             }
         ],
@@ -231,6 +250,8 @@ def test_valuation_quote_selection_rejects_reference_and_total_return_fallbacks(
             "as_of_date": "2026-01-02",
             "value": "50.00",
             "currency": "USD",
+            "price_unit": "per_unit",
+            "price_scale": 1.0,
             "status": "complete",
         }
     )
@@ -274,6 +295,8 @@ def test_quote_selection_uses_only_complete_market_data():
                 "as_of_date": "2026-01-01",
                 "value": "100.00",
                 "currency": "USD",
+                "price_unit": "per_unit",
+                "price_scale": 1.0,
                 "status": "complete",
             },
             {
@@ -282,6 +305,8 @@ def test_quote_selection_uses_only_complete_market_data():
                 "as_of_date": "2026-01-02",
                 "value": "110.00",
                 "currency": "USD",
+                "price_unit": "per_unit",
+                "price_scale": 1.0,
                 "status": "partial",
             },
         ],
@@ -292,6 +317,8 @@ def test_quote_selection_uses_only_complete_market_data():
                 "as_of_date": "2026-01-02",
                 "value": "110.00",
                 "currency": "USD",
+                "price_unit": "per_unit",
+                "price_scale": 1.0,
                 "status": "partial",
             },
             {
@@ -300,6 +327,8 @@ def test_quote_selection_uses_only_complete_market_data():
                 "as_of_date": "2026-01-01",
                 "value": "100.00",
                 "currency": "USD",
+                "price_unit": "per_unit",
+                "price_scale": 1.0,
                 "status": "complete",
             },
         ],
@@ -429,7 +458,33 @@ def test_seed_portfolio_performance_uses_external_boundary_flows(client):
     assert summary["external_cash_out"] == 12000.0
     assert summary["net_external_inflow"] == 38000.0
     assert summary["cumulative_twr"] is not None
-    assert summary["irr"] is not None
+    assert summary["annualization_eligible"] is False
+    assert summary["annualization_unavailable_reason"] == SHORT_PERIOD_REASON
+    assert summary["annualized_twr"] is None
+    assert summary["irr"] is None
+    assert summary["mwror"] is None
+    assert summary["irr_solver_status"] is None
+    assert summary["irr_unavailable_reason"] == SHORT_PERIOD_REASON
+
+
+@pytest.mark.parametrize(
+    ("end_date", "expected_years", "expected_eligible"),
+    [
+        (date(2026, 12, 31), 364 / 365.25, False),
+        (date(2027, 1, 1), 365 / 365.25, False),
+        (date(2027, 1, 2), 366 / 365.25, True),
+    ],
+)
+def test_annualization_eligibility_uses_act_365_25(
+    end_date: date,
+    expected_years: float,
+    expected_eligible: bool,
+) -> None:
+    profile = annualization_eligibility(date(2026, 1, 1), end_date)
+
+    assert profile.years == pytest.approx(expected_years)
+    assert profile.eligible is expected_eligible
+    assert profile.unavailable_reason == (None if expected_eligible else SHORT_PERIOD_REASON)
 
 
 def test_performance_endpoints_reuse_materialized_daily_snapshots(client, monkeypatch):
@@ -489,7 +544,7 @@ def test_holdings_and_contribution_endpoints_reuse_materialized_read_models(clie
     assert all("instrument_return_series_all" not in row for row in holdings_response.json()["rows"])
 
     full_holdings_response = client.get(
-        "/api/workspace/holdings?portfolio_id=portfolio-ops&include_return_series=true"
+        "/api/workspace/holdings?portfolio_id=portfolio-ops&include_details=true"
     )
     assert full_holdings_response.status_code == 200
     assert all("instrument_return_series_all" in row for row in full_holdings_response.json()["rows"])
@@ -922,12 +977,62 @@ def test_same_day_inception_cash_flows_have_no_money_weighted_return(client, mon
 
 
 def test_xirr_rejects_zero_duration_even_when_same_day_flows_do_not_net_to_zero():
-    assert performance._solve_xirr(
+    assert period_metrics.solve_xirr(
         [
             (date(2026, 1, 1), -100.0),
             (date(2026, 1, 1), 110.0),
         ]
     ) is None
+
+
+def test_xirr_solver_publishes_only_a_provably_unique_valid_root():
+    unique = period_metrics.solve_xirr_result(
+        [
+            (date(2026, 1, 1), -100.0),
+            (date(2027, 1, 1), 110.0),
+        ]
+    )
+    expected_rate = 1.1 ** (period_metrics.DAYS_PER_YEAR / 365.0) - 1.0
+    assert unique.status == "unique_root"
+    assert unique.rate == pytest.approx(expected_rate, abs=1e-10)
+    assert period_metrics.solve_xirr(
+        [
+            (date(2026, 1, 1), -100.0),
+            (date(2027, 1, 1), 110.0),
+        ]
+    ) == pytest.approx(expected_rate, abs=1e-10)
+
+    invalid = period_metrics.solve_xirr_result(
+        [
+            (date(2026, 1, 1), -100.0),
+            (date(2026, 1, 1), 110.0),
+        ]
+    )
+    assert invalid.status == "invalid_cash_flows"
+    assert invalid.rate is None
+
+    no_root = period_metrics.solve_xirr_result(
+        [
+            (date(2026, 1, 1), 100.0),
+            (date(2027, 1, 1), 110.0),
+        ]
+    )
+    assert no_root.status == "no_root"
+    assert no_root.rate is None
+
+
+def test_xirr_solver_fails_closed_for_classic_multiple_root_cash_flows():
+    cash_flows = [
+        (date(2025, 1, 1), -100.0),
+        (date(2026, 1, 1), 230.0),
+        (date(2027, 1, 1), -132.0),
+    ]
+
+    result = period_metrics.solve_xirr_result(cash_flows)
+
+    assert result.status == "multiple_roots_or_non_unique"
+    assert result.rate is None
+    assert period_metrics.solve_xirr(cash_flows) is None
 
 
 def test_dividend_receivable_is_accrued_on_entitlement_date(client, monkeypatch):
@@ -1280,13 +1385,13 @@ def test_daily_twr_ignores_internal_sale_but_cuts_on_withdrawal(client, monkeypa
     assert by_date["2026-01-03"]["daily_twr"] == 0.0
 
 
-def test_performance_summary_reports_one_year_twr_annualized_and_irr(client, monkeypatch):
+def test_performance_summary_reports_full_act_365_25_year_twr_annualized_and_irr(client, monkeypatch):
     instrument_detail = _test_instrument_detail(
         instrument_id="equity-us-test",
         instrument_name="Test Equity",
         history=[
             ("2026-01-01", "100.00"),
-            ("2027-01-01", "110.00"),
+            ("2027-01-02", "110.00"),
         ],
     )
     monkeypatch.setattr(
@@ -1357,7 +1462,7 @@ def test_performance_summary_reports_one_year_twr_annualized_and_irr(client, mon
             },
         ],
     )
-    store["portfolios"][0]["as_of_date"] = "2027-01-01"
+    store["portfolios"][0]["as_of_date"] = "2027-01-02"
     _write_store(store)
 
     response = client.get("/api/portfolios/performance-one-year-test/performance")
@@ -1365,12 +1470,17 @@ def test_performance_summary_reports_one_year_twr_annualized_and_irr(client, mon
     payload = response.json()
     summary = payload["summary"]
     last_point = payload["daily_series"][-1]
-    expected_annualized = (1.1 ** (365.25 / 365.0)) - 1.0
+    expected_annualized = (1.1 ** (365.25 / 366.0)) - 1.0
 
     assert isclose(summary["cumulative_twr"], 0.1, rel_tol=0.0, abs_tol=1e-12)
+    assert summary["annualization_eligible"] is True
+    assert summary["annualization_years"] == pytest.approx(366 / 365.25)
+    assert summary["annualization_unavailable_reason"] is None
     assert isclose(summary["annualized_twr"], expected_annualized, rel_tol=0.0, abs_tol=1e-12)
     assert isclose(summary["irr"], expected_annualized, rel_tol=0.0, abs_tol=1e-10)
     assert isclose(summary["mwror"], summary["irr"], rel_tol=0.0, abs_tol=1e-12)
+    assert summary["irr_solver_status"] == "unique_root"
+    assert summary["irr_unavailable_reason"] is None
     assert summary["external_cash_in"] == 0.0
     assert summary["external_cash_out"] == 0.0
     assert summary["realized_pnl"] == 0.0
@@ -1519,7 +1629,7 @@ def test_performance_summary_reports_pnl_decomposition_and_risk_metrics(client, 
     by_date = {item["as_of_date"]: item for item in payload["daily_series"]}
     expected_daily_returns = [0.10000000000000009]
     expected_mean_daily_return = sum(expected_daily_returns) / len(expected_daily_returns)
-    expected_periods_per_year = 1 / 2 * performance.DAYS_PER_YEAR
+    expected_periods_per_year = 1 / 2 * period_metrics.DAYS_PER_YEAR
     expected_annualized_mean = expected_mean_daily_return * expected_periods_per_year
 
     assert summary["realized_pnl"] == 10.0
@@ -1529,6 +1639,11 @@ def test_performance_summary_reports_pnl_decomposition_and_risk_metrics(client, 
     assert summary["total_pnl"] == 10.0
     assert summary["return_observation_count"] == 2
     assert summary["risk_return_observation_count"] == 1
+    assert summary["risk_calculation_frequency"] == "daily"
+    assert summary["risk_minimum_sample_count"] == 2
+    assert summary["risk_sample_count"] == 1
+    assert summary["risk_result_status"] == "insufficient_samples"
+    assert summary["risk_unavailable_reason"] == "insufficient_return_samples"
     assert isclose(summary["risk_annualization_periods_per_year"], expected_periods_per_year, rel_tol=0.0, abs_tol=1e-12)
     assert isclose(summary["mean_daily_return"], expected_mean_daily_return, rel_tol=0.0, abs_tol=1e-12)
     assert isclose(summary["annualized_return_from_daily_mean"], expected_annualized_mean, rel_tol=0.0, abs_tol=1e-12)
@@ -1634,8 +1749,7 @@ def test_risk_metrics_exclude_carry_forward_non_trading_days(client, monkeypatch
     mean_return = sum(risk_returns) / len(risk_returns)
     daily_stddev = sqrt(sum((value - mean_return) ** 2 for value in risk_returns) / (len(risk_returns) - 1))
     downside_deviation = sqrt(sum(min(0.0, value) ** 2 for value in risk_returns) / len(risk_returns))
-    expected_periods_per_year = 2 / 4 * performance.DAYS_PER_YEAR
-    expected_annualized_twr = (1.05 ** (performance.DAYS_PER_YEAR / 4)) - 1
+    expected_periods_per_year = 2 / 4 * period_metrics.DAYS_PER_YEAR
     expected_annualized_mean = mean_return * expected_periods_per_year
     expected_annualized_volatility = daily_stddev * sqrt(expected_periods_per_year)
     expected_annualized_downside_volatility = downside_deviation * sqrt(expected_periods_per_year)
@@ -1650,10 +1764,19 @@ def test_risk_metrics_exclude_carry_forward_non_trading_days(client, monkeypatch
     assert by_date["2026-01-06"]["return_observation_eligible"] is True
     assert summary["return_observation_count"] == 4
     assert summary["risk_return_observation_count"] == 2
+    assert summary["risk_calculation_frequency"] == "daily"
+    assert summary["risk_minimum_sample_count"] == 2
+    assert summary["risk_sample_count"] == 2
+    assert summary["risk_result_status"] == "available"
+    assert summary["risk_unavailable_reason"] is None
     assert isclose(summary["risk_annualization_periods_per_year"], expected_periods_per_year, rel_tol=0.0, abs_tol=1e-12)
     assert isclose(summary["mean_daily_return"], sum(risk_returns) / len(risk_returns), rel_tol=0.0, abs_tol=1e-12)
     assert isclose(summary["annualized_return_from_daily_mean"], expected_annualized_mean, rel_tol=0.0, abs_tol=1e-12)
-    assert isclose(summary["annualized_twr"], expected_annualized_twr, rel_tol=0.0, abs_tol=1e-12)
+    assert summary["annualization_eligible"] is False
+    assert summary["annualization_unavailable_reason"] == SHORT_PERIOD_REASON
+    assert summary["annualized_twr"] is None
+    assert summary["irr"] is None
+    assert summary["mwror"] is None
     assert isclose(summary["annualized_volatility"], expected_annualized_volatility, rel_tol=0.0, abs_tol=1e-12)
     assert isclose(summary["annualized_downside_volatility"], expected_annualized_downside_volatility, rel_tol=0.0, abs_tol=1e-12)
     assert isclose(summary["sharpe_ratio"], expected_annualized_mean / expected_annualized_volatility, rel_tol=0.0, abs_tol=1e-12)
@@ -1761,7 +1884,18 @@ def test_materialized_window_summary_rebases_twr_and_drawdown(client, monkeypatc
     assert window_response.status_code == 200
     window_payload = window_response.json()
     summary = window_payload["summary"]
+    daily_series = window_payload["daily_series"]
     by_date = {item["as_of_date"]: item for item in window_payload["daily_series"]}
+    first_point = daily_series[0]
+    last_point = daily_series[-1]
+
+    assert summary["start_date"] == first_point["as_of_date"] == "2026-01-03"
+    assert summary["end_date"] == last_point["as_of_date"] == "2026-01-04"
+    assert isclose(summary["start_nav"], first_point["beginning_nav"], rel_tol=0.0, abs_tol=1e-12)
+    assert isclose(summary["end_nav"], last_point["ending_nav"], rel_tol=0.0, abs_tol=1e-12)
+    assert isclose(first_point["daily_twr"], 0.10, rel_tol=0.0, abs_tol=1e-12)
+    assert isclose(first_point["cumulative_twr"], first_point["daily_twr"], rel_tol=0.0, abs_tol=1e-12)
+    assert isclose(summary["cumulative_twr"], last_point["cumulative_twr"], rel_tol=0.0, abs_tol=1e-12)
     assert isclose(summary["cumulative_twr"], -0.01, rel_tol=0.0, abs_tol=1e-12)
     assert isclose(summary["current_drawdown"], -0.10, rel_tol=0.0, abs_tol=1e-12)
     assert isclose(summary["max_drawdown"], -0.10, rel_tol=0.0, abs_tol=1e-12)
@@ -3898,6 +4032,8 @@ def test_instrument_contribution_report_surfaces_instrument_currency_gains(clien
                 "as_of_date": "2026-01-01",
                 "value": "7.80",
                 "currency": "HKD",
+                "price_unit": "rate",
+                "price_scale": 1.0,
                 "status": "complete",
             },
             {
@@ -3906,6 +4042,8 @@ def test_instrument_contribution_report_surfaces_instrument_currency_gains(clien
                 "as_of_date": "2026-01-02",
                 "value": "7.50",
                 "currency": "HKD",
+                "price_unit": "rate",
+                "price_scale": 1.0,
                 "status": "complete",
             },
         ],
@@ -3916,22 +4054,26 @@ def test_instrument_contribution_report_surfaces_instrument_currency_gains(clien
         "instrument_type": "fund",
         "currency": "HKD",
         "identifiers": [{"identifier_type": "ticker", "identifier_value": "HKCONFUND", "is_primary": True}],
-        "quote_selection_policy": {"valuation": ["close"], "reference": ["close"]},
+        "quote_selection_policy": {"valuation": ["official_nav"], "reference": ["official_nav"]},
         "market_data": [
             {
                 "metric_family": "nav",
-                "quote_basis": "close",
+                "quote_basis": "official_nav",
                 "as_of_date": "2026-01-01",
                 "value": "78.00",
                 "currency": "HKD",
+                "price_unit": "per_unit",
+                "price_scale": 1.0,
                 "status": "complete",
             },
             {
                 "metric_family": "nav",
-                "quote_basis": "close",
+                "quote_basis": "official_nav",
                 "as_of_date": "2026-01-02",
                 "value": "78.00",
                 "currency": "HKD",
+                "price_unit": "per_unit",
+                "price_scale": 1.0,
                 "status": "complete",
             },
         ],
@@ -4070,6 +4212,8 @@ def test_instrument_contribution_bucket_drilldown_surfaces_instrument_currency_g
                 "as_of_date": "2026-01-01",
                 "value": "7.80",
                 "currency": "HKD",
+                "price_unit": "rate",
+                "price_scale": 1.0,
                 "status": "complete",
             },
             {
@@ -4078,6 +4222,8 @@ def test_instrument_contribution_bucket_drilldown_surfaces_instrument_currency_g
                 "as_of_date": "2026-01-02",
                 "value": "7.50",
                 "currency": "HKD",
+                "price_unit": "rate",
+                "price_scale": 1.0,
                 "status": "complete",
             },
         ],
@@ -4088,22 +4234,26 @@ def test_instrument_contribution_bucket_drilldown_surfaces_instrument_currency_g
         "instrument_type": "fund",
         "currency": "HKD",
         "identifiers": [{"identifier_type": "ticker", "identifier_value": "HKDRILL", "is_primary": True}],
-        "quote_selection_policy": {"valuation": ["close"], "reference": ["close"]},
+        "quote_selection_policy": {"valuation": ["official_nav"], "reference": ["official_nav"]},
         "market_data": [
             {
                 "metric_family": "nav",
-                "quote_basis": "close",
+                "quote_basis": "official_nav",
                 "as_of_date": "2026-01-01",
                 "value": "78.00",
                 "currency": "HKD",
+                "price_unit": "per_unit",
+                "price_scale": 1.0,
                 "status": "complete",
             },
             {
                 "metric_family": "nav",
-                "quote_basis": "close",
+                "quote_basis": "official_nav",
                 "as_of_date": "2026-01-02",
                 "value": "78.00",
                 "currency": "HKD",
+                "price_unit": "per_unit",
+                "price_scale": 1.0,
                 "status": "complete",
             },
         ],
@@ -4358,6 +4508,8 @@ def test_account_contribution_report_tracks_cash_currency_gains(client, monkeypa
                 "as_of_date": "2026-01-01",
                 "value": "7.80",
                 "currency": "HKD",
+                "price_unit": "rate",
+                "price_scale": 1.0,
                 "status": "complete",
             },
             {
@@ -4366,6 +4518,8 @@ def test_account_contribution_report_tracks_cash_currency_gains(client, monkeypa
                 "as_of_date": "2026-01-02",
                 "value": "7.50",
                 "currency": "HKD",
+                "price_unit": "rate",
+                "price_scale": 1.0,
                 "status": "complete",
             },
         ],
@@ -8227,6 +8381,8 @@ def test_cash_currency_gains_flow_through_performance_and_calculation(client, mo
                 "as_of_date": "2026-01-01",
                 "value": "7.80",
                 "currency": "HKD",
+                "price_unit": "rate",
+                "price_scale": 1.0,
                 "status": "complete",
             },
             {
@@ -8235,6 +8391,8 @@ def test_cash_currency_gains_flow_through_performance_and_calculation(client, mo
                 "as_of_date": "2026-01-02",
                 "value": "7.50",
                 "currency": "HKD",
+                "price_unit": "rate",
+                "price_scale": 1.0,
                 "status": "complete",
             },
         ],
@@ -8398,30 +8556,40 @@ def test_cash_currency_gains_flow_through_performance_and_calculation(client, mo
 def test_previous_fx_rate_resolves_cross_rate_through_usd_pivot():
     instrument_detail_cache = {
         "fx-usd-hkd": {
+            "instrument_type": "fx",
+            "currency": "HKD",
             "market_data": [
                 {
                     "metric_family": "fx",
                     "quote_basis": "spot",
                     "as_of_date": "2026-01-02",
                     "value": "7.8",
+                    "currency": "HKD",
+                    "price_unit": "rate",
+                    "price_scale": 1.0,
                     "status": "complete",
                 }
             ]
         },
         "fx-usd-cny": {
+            "instrument_type": "fx",
+            "currency": "CNY",
             "market_data": [
                 {
                     "metric_family": "fx",
                     "quote_basis": "spot",
                     "as_of_date": "2026-01-02",
                     "value": "7.2",
+                    "currency": "CNY",
+                    "price_unit": "rate",
+                    "price_scale": 1.0,
                     "status": "complete",
                 }
             ]
         },
     }
 
-    resolved = performance.resolve_previous_fx_rate_before(
+    resolved = valuation_fx.resolve_previous_fx_rate_before(
         before_date=date(2026, 1, 10),
         base_currency="HKD",
         quote_currency="CNY",
@@ -8430,6 +8598,7 @@ def test_previous_fx_rate_resolves_cross_rate_through_usd_pivot():
             ("USD", "CNY"): "fx-usd-cny",
         },
         instrument_detail_cache=instrument_detail_cache,
+        instrument_detail_loader=lambda _instrument_id: None,
     )
 
     assert resolved is not None
@@ -8452,6 +8621,8 @@ def test_instrument_currency_gains_flow_through_performance_and_calculation(clie
                 "as_of_date": "2026-01-01",
                 "value": "7.80",
                 "currency": "HKD",
+                "price_unit": "rate",
+                "price_scale": 1.0,
                 "status": "complete",
             },
             {
@@ -8460,6 +8631,8 @@ def test_instrument_currency_gains_flow_through_performance_and_calculation(clie
                 "as_of_date": "2026-01-02",
                 "value": "7.50",
                 "currency": "HKD",
+                "price_unit": "rate",
+                "price_scale": 1.0,
                 "status": "complete",
             },
         ],
@@ -8470,22 +8643,26 @@ def test_instrument_currency_gains_flow_through_performance_and_calculation(clie
         "instrument_type": "fund",
         "currency": "HKD",
         "identifiers": [{"identifier_type": "ticker", "identifier_value": "HKFUND", "is_primary": True}],
-        "quote_selection_policy": {"valuation": ["close"], "reference": ["close"]},
+        "quote_selection_policy": {"valuation": ["official_nav"], "reference": ["official_nav"]},
         "market_data": [
             {
                 "metric_family": "nav",
-                "quote_basis": "close",
+                "quote_basis": "official_nav",
                 "as_of_date": "2026-01-01",
                 "value": "78.00",
                 "currency": "HKD",
+                "price_unit": "per_unit",
+                "price_scale": 1.0,
                 "status": "complete",
             },
             {
                 "metric_family": "nav",
-                "quote_basis": "close",
+                "quote_basis": "official_nav",
                 "as_of_date": "2026-01-02",
                 "value": "78.00",
                 "currency": "HKD",
+                "price_unit": "per_unit",
+                "price_scale": 1.0,
                 "status": "complete",
             },
         ],
@@ -8637,6 +8814,8 @@ def test_foreign_currency_income_and_realized_pnl_are_reported_in_base_currency(
                 "as_of_date": "2026-01-01",
                 "value": "7.50",
                 "currency": "HKD",
+                "price_unit": "rate",
+                "price_scale": 1.0,
                 "status": "complete",
             },
             {
@@ -8645,6 +8824,8 @@ def test_foreign_currency_income_and_realized_pnl_are_reported_in_base_currency(
                 "as_of_date": "2026-01-02",
                 "value": "7.50",
                 "currency": "HKD",
+                "price_unit": "rate",
+                "price_scale": 1.0,
                 "status": "complete",
             },
         ],
@@ -8663,6 +8844,8 @@ def test_foreign_currency_income_and_realized_pnl_are_reported_in_base_currency(
                 "as_of_date": "2026-01-01",
                 "value": "78.00",
                 "currency": "HKD",
+                "price_unit": "per_unit",
+                "price_scale": 1.0,
                 "status": "complete",
             },
             {
@@ -8671,6 +8854,8 @@ def test_foreign_currency_income_and_realized_pnl_are_reported_in_base_currency(
                 "as_of_date": "2026-01-02",
                 "value": "82.00",
                 "currency": "HKD",
+                "price_unit": "per_unit",
+                "price_scale": 1.0,
                 "status": "complete",
             },
         ],
@@ -8866,6 +9051,8 @@ def test_foreign_currency_external_flow_is_converted_before_daily_twr(client, mo
                 "as_of_date": "2026-01-01",
                 "value": "7.80",
                 "currency": "HKD",
+                "price_unit": "rate",
+                "price_scale": 1.0,
                 "status": "complete",
             },
             {
@@ -8874,6 +9061,8 @@ def test_foreign_currency_external_flow_is_converted_before_daily_twr(client, mo
                 "as_of_date": "2026-01-02",
                 "value": "7.50",
                 "currency": "HKD",
+                "price_unit": "rate",
+                "price_scale": 1.0,
                 "status": "complete",
             },
         ],

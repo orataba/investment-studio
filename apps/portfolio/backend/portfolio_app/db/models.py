@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 from datetime import date
+from decimal import Decimal
 
-from sqlalchemy import Boolean, CheckConstraint, Date, ForeignKey, Index, JSON, String
+from sqlalchemy import Boolean, CheckConstraint, Date, ForeignKey, Index, Integer, JSON, Numeric, String
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from portfolio_app.db.base import Base
@@ -77,6 +78,12 @@ class PortfolioDailySnapshotModel(Base):
     __tablename__ = "portfolio_daily_snapshot"
     __table_args__ = (
         Index("ix_portfolio_daily_snapshot_portfolio_coverage", "portfolio_id", "coverage_state", "as_of_date"),
+        Index(
+            "ix_portfolio_daily_snapshot_portfolio_valuation_coverage",
+            "portfolio_id",
+            "valuation_coverage_state",
+            "as_of_date",
+        ),
     )
 
     portfolio_id: Mapped[str] = mapped_column(
@@ -85,6 +92,10 @@ class PortfolioDailySnapshotModel(Base):
     )
     as_of_date: Mapped[date] = mapped_column(Date, primary_key=True)
     coverage_state: Mapped[str] = mapped_column(String, nullable=False)
+    valuation_coverage_state: Mapped[str] = mapped_column(String, nullable=False, default="unavailable")
+    return_coverage_state: Mapped[str] = mapped_column(String, nullable=False, default="unavailable")
+    book_pnl_coverage_state: Mapped[str] = mapped_column(String, nullable=False, default="unavailable")
+    attribution_coverage_state: Mapped[str] = mapped_column(String, nullable=False, default="unavailable")
     nav: Mapped[float | None]
     beginning_nav: Mapped[float | None]
     ending_nav: Mapped[float | None]
@@ -213,6 +224,8 @@ class PortfolioInstrumentUniverseRecordModel(Base):
     first_transaction_date: Mapped[date | None] = mapped_column(Date)
     last_transaction_date: Mapped[date | None] = mapped_column(Date)
     transaction_count: Mapped[int] = mapped_column(nullable=False, default=0)
+    research_pm_approved: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    research_pm_approved_at: Mapped[str | None] = mapped_column(String)
     status: Mapped[str] = mapped_column(String, nullable=False, default="active")
     created_at: Mapped[str] = mapped_column(String, nullable=False)
     updated_at: Mapped[str] = mapped_column(String, nullable=False)
@@ -288,12 +301,25 @@ class TransactionRecordModel(Base):
     instrument_id: Mapped[str | None] = mapped_column(String)
     instrument_ref_json: Mapped[dict[str, object] | None] = mapped_column(JSON)
     quantity: Mapped[float | None]
+    source_quantity: Mapped[Decimal | None] = mapped_column(Numeric(28, 12))
     price: Mapped[float | None]
+    source_price: Mapped[Decimal | None] = mapped_column(Numeric(28, 12))
     gross_amount: Mapped[float] = mapped_column(nullable=False, default=0.0)
+    source_gross_amount: Mapped[Decimal | None] = mapped_column(Numeric(28, 8))
     counter_amount: Mapped[float | None]
+    source_counter_amount: Mapped[Decimal | None] = mapped_column(Numeric(28, 8))
     fx_rate: Mapped[float | None]
+    source_fx_rate: Mapped[Decimal | None] = mapped_column(Numeric(28, 12))
     fees: Mapped[float] = mapped_column(nullable=False, default=0.0)
+    source_fees: Mapped[Decimal | None] = mapped_column(Numeric(28, 8))
+    fee_category: Mapped[str] = mapped_column(
+        String,
+        nullable=False,
+        default="unknown",
+        server_default="unknown",
+    )
     taxes: Mapped[float] = mapped_column(nullable=False, default=0.0)
+    source_taxes: Mapped[Decimal | None] = mapped_column(Numeric(28, 8))
     currency: Mapped[str] = mapped_column(String, nullable=False)
     transfer_scope: Mapped[str | None] = mapped_column(String)
     transfer_object_type: Mapped[str | None] = mapped_column(String)
@@ -301,8 +327,57 @@ class TransactionRecordModel(Base):
     counterparty_account_id: Mapped[str | None] = mapped_column(String)
     note: Mapped[str | None] = mapped_column(String)
     created_at: Mapped[str | None] = mapped_column(String)
+    row_version: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        default=1,
+        server_default="1",
+    )
 
     portfolio: Mapped[PortfolioRecordModel] = relationship(back_populates="transactions")
+
+
+class TransactionChangeLogModel(Base):
+    __tablename__ = "transaction_change_log"
+    __table_args__ = (
+        CheckConstraint(
+            "change_type IN ('create', 'update', 'delete')",
+            name="ck_transaction_change_log_type",
+        ),
+        Index(
+            "ix_transaction_change_log_portfolio_transaction_changed",
+            "portfolio_id",
+            "transaction_id",
+            "changed_at",
+        ),
+    )
+
+    change_id: Mapped[str] = mapped_column(String, primary_key=True)
+    portfolio_id: Mapped[str] = mapped_column(
+        ForeignKey("portfolio_record.portfolio_id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    transaction_id: Mapped[str] = mapped_column(String, nullable=False)
+    change_type: Mapped[str] = mapped_column(String, nullable=False)
+    row_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    before_json: Mapped[dict[str, object] | None] = mapped_column(JSON)
+    after_json: Mapped[dict[str, object] | None] = mapped_column(JSON)
+    request_idempotency_key: Mapped[str | None] = mapped_column(String)
+    changed_at: Mapped[str] = mapped_column(String, nullable=False)
+
+
+class TransactionIdempotencyRecordModel(Base):
+    __tablename__ = "transaction_idempotency_record"
+
+    portfolio_id: Mapped[str] = mapped_column(
+        ForeignKey("portfolio_record.portfolio_id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    idempotency_key: Mapped[str] = mapped_column(String, primary_key=True)
+    operation: Mapped[str] = mapped_column(String, nullable=False)
+    request_hash: Mapped[str] = mapped_column(String, nullable=False)
+    transaction_ids_json: Mapped[list[str]] = mapped_column(JSON, nullable=False)
+    created_at: Mapped[str] = mapped_column(String, nullable=False)
 
 
 class TaxonomyRecordModel(Base):
@@ -408,6 +483,10 @@ class TargetSetRecordModel(Base):
 class TargetSetLineRecordModel(Base):
     __tablename__ = "target_set_line_record"
     __table_args__ = (
+        CheckConstraint(
+            "target_member_type != 'cash_bucket' OR target_risk_share IS NULL",
+            name="ck_target_set_line_cash_risk_null",
+        ),
         Index(
             "ix_target_set_line_record_target_set_node",
             "target_set_id",

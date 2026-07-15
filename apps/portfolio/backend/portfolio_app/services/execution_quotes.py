@@ -1,10 +1,9 @@
 from __future__ import annotations
 
 from datetime import date
-from math import isfinite
 
 from portfolio_app.services.instrument_registry import get_registry_instrument_detail
-from portfolio_app.services.market_data import is_usable_market_data_point, market_data_status
+from portfolio_app.services.market_data import resolve_quote_point
 
 
 # Execution and position valuation must use an observable, unadjusted quote.
@@ -35,16 +34,6 @@ def _parse_iso_date(value: object) -> date | None:
             except ValueError:
                 return None
     return None
-
-
-def _positive_float(value: object) -> float | None:
-    try:
-        resolved = float(value) if value is not None else None
-    except (TypeError, ValueError):
-        return None
-    if resolved is None or not isfinite(resolved) or resolved <= 0:
-        return None
-    return resolved
 
 
 def _execution_quote_candidates(detail: dict[str, object]) -> list[tuple[str, str]]:
@@ -78,42 +67,37 @@ def build_execution_quote_from_detail(
     as_of_date: date,
 ) -> dict[str, object]:
     candidates = _execution_quote_candidates(detail)
-    candidate_bases = {quote_basis for _, quote_basis in candidates}
-    latest_by_basis: dict[str, tuple[date, dict[str, object], float]] = {}
-    market_data = detail.get("market_data")
-
-    if isinstance(market_data, list) and candidate_bases:
-        for point in market_data:
-            if not is_usable_market_data_point(point):
-                continue
-            quote_basis = str(point.get("quote_basis") or "").strip().lower()
-            if quote_basis not in candidate_bases:
-                continue
-            quote_date = _parse_iso_date(point.get("as_of_date"))
-            value = _positive_float(point.get("value"))
-            if quote_date is None or quote_date > as_of_date or value is None:
-                continue
-            current = latest_by_basis.get(quote_basis)
-            if current is None or quote_date >= current[0]:
-                latest_by_basis[quote_basis] = (quote_date, point, value)
-
-    for selection_role, quote_basis in candidates:
-        selected = latest_by_basis.get(quote_basis)
-        if selected is None:
-            continue
-        quote_date, point, value = selected
+    resolution = resolve_quote_point(
+        detail,
+        candidate_bases=[quote_basis for _, quote_basis in candidates],
+        as_of_date=as_of_date,
+    )
+    point = resolution.point
+    if point is not None:
+        quote_basis = str(point.get("quote_basis") or "").strip().lower()
+        selection_basis = str(
+            point.get("source_quote_basis") or quote_basis
+        ).strip().lower()
+        selection_role = next(
+            (role for role, candidate_basis in candidates if candidate_basis == selection_basis),
+            None,
+        )
+        quote_date = _parse_iso_date(point.get("as_of_date"))
         return {
             "instrument_id": str(detail.get("instrument_id") or instrument_id),
             "requested_as_of_date": as_of_date,
             "selection_role": selection_role,
-            "value": value,
+            "value": point.get("value"),
             "quote_date": quote_date,
             "quote_basis": quote_basis,
             "metric_family": str(point.get("metric_family") or "").strip() or None,
-            "currency": str(point.get("currency") or detail.get("currency") or "USD"),
+            "currency": str(point.get("currency") or detail.get("currency") or "USD").upper(),
             "provider": str(point.get("provider")) if point.get("provider") is not None else None,
-            "status": market_data_status(point),
-            "stale": quote_date < as_of_date,
+            "status": str(point.get("status") or "complete"),
+            "stale": quote_date is not None and quote_date < as_of_date,
+            "price_unit": point.get("price_unit"),
+            "price_scale": point.get("price_scale"),
+            "unavailable_reason": None,
         }
 
     return {
@@ -128,6 +112,13 @@ def build_execution_quote_from_detail(
         "provider": None,
         "status": "unavailable",
         "stale": False,
+        "price_unit": None,
+        "price_scale": None,
+        "unavailable_reason": (
+            resolution.unavailable_reason
+            if candidates
+            else "no_eligible_execution_quote"
+        ),
     }
 
 

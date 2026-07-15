@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib
 import json
+import os
 import sys
 from copy import deepcopy
 from pathlib import Path
@@ -12,6 +13,10 @@ import pytest
 from fastapi.testclient import TestClient
 
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
+os.environ.setdefault(
+    "PORTFOLIO_OPS_PORTFOLIO_DATABASE_URL",
+    "sqlite+pysqlite:///:memory:",
+)
 BACKEND_ROOT_STR = str(BACKEND_ROOT)
 if BACKEND_ROOT_STR in sys.path:
     sys.path.remove(BACKEND_ROOT_STR)
@@ -32,14 +37,58 @@ def _market_point(
     value: str,
     currency: str,
 ) -> dict[str, object]:
+    price_unit = "rate" if metric_family == "fx" else "per_unit"
     return {
         "metric_family": metric_family,
         "quote_basis": quote_basis,
         "as_of_date": as_of_date,
         "value": value,
         "currency": currency,
+        "price_unit": price_unit,
+        "price_scale": "1",
         "status": "complete",
     }
+
+
+def _canonical_quote_policy(instrument_type: str) -> dict[str, list[str]]:
+    policies = {
+        "equity": {
+            "trading": ["last", "close"],
+            "valuation": ["close", "last"],
+            "total_return": ["adjusted_close", "close", "last"],
+            "chart": ["adjusted_close", "close", "last"],
+            "reference": ["close", "last"],
+        },
+        "fund": {
+            "trading": ["last", "close", "official_nav"],
+            "valuation": ["official_nav", "close", "last"],
+            "total_return": [
+                "total_return_nav",
+                "dividend_adjusted_nav",
+                "reinvested_nav",
+                "adjusted_close",
+                "official_nav",
+                "close",
+            ],
+            "chart": [
+                "total_return_nav",
+                "dividend_adjusted_nav",
+                "reinvested_nav",
+                "adjusted_close",
+                "official_nav",
+                "close",
+            ],
+            "reference": ["official_nav", "close", "last"],
+        },
+        "fx": {
+            "trading": ["spot"],
+            "valuation": ["spot"],
+            "total_return": ["spot"],
+            "chart": ["spot"],
+            "reference": ["spot"],
+        },
+    }
+    return deepcopy(policies[instrument_type])
 
 
 REGISTRY_INSTRUMENT_DETAILS = [
@@ -52,7 +101,7 @@ REGISTRY_INSTRUMENT_DETAILS = [
             {"identifier_type": "ticker", "identifier_value": "ABBV", "is_primary": True},
             {"identifier_type": "isin", "identifier_value": "US00287Y1091", "is_primary": False},
         ],
-        "quote_selection_policy": {"valuation": ["close"], "reference": ["close"]},
+        "quote_selection_policy": _canonical_quote_policy("equity"),
         "market_data": [
             _market_point("price", "close", "2026-02-10", "206.47", "USD"),
             _market_point("price", "close", "2026-03-15", "210.20", "USD"),
@@ -66,7 +115,7 @@ REGISTRY_INSTRUMENT_DETAILS = [
         "instrument_type": "fund",
         "currency": "USD",
         "identifiers": [{"identifier_type": "ticker", "identifier_value": "AGG", "is_primary": True}],
-        "quote_selection_policy": {"valuation": ["close"], "reference": ["close"]},
+        "quote_selection_policy": _canonical_quote_policy("fund"),
         "market_data": [
             _market_point("price", "close", "2026-03-05", "96.82", "USD"),
             _market_point("price", "close", "2026-03-28", "97.62", "USD"),
@@ -80,7 +129,7 @@ REGISTRY_INSTRUMENT_DETAILS = [
         "instrument_type": "fund",
         "currency": "HKD",
         "identifiers": [{"identifier_type": "ticker", "identifier_value": "2800.HK", "is_primary": True}],
-        "quote_selection_policy": {"valuation": ["close"], "reference": ["close"]},
+        "quote_selection_policy": _canonical_quote_policy("fund"),
         "market_data": [
             _market_point("price", "close", "2026-03-04", "21.30", "HKD"),
             _market_point("price", "close", "2026-04-02", "21.05", "HKD"),
@@ -93,7 +142,7 @@ REGISTRY_INSTRUMENT_DETAILS = [
         "instrument_type": "fund",
         "currency": "USD",
         "identifiers": [{"identifier_type": "ticker", "identifier_value": "WATCH", "is_primary": True}],
-        "quote_selection_policy": {"valuation": ["close"], "reference": ["close"]},
+        "quote_selection_policy": _canonical_quote_policy("fund"),
         "market_data": [
             _market_point("price", "close", "2026-04-15", "100.00", "USD"),
         ],
@@ -104,7 +153,7 @@ REGISTRY_INSTRUMENT_DETAILS = [
         "instrument_type": "fx",
         "currency": "HKD",
         "identifiers": [{"identifier_type": "ticker", "identifier_value": "USDHKD", "is_primary": True}],
-        "quote_selection_policy": {"valuation": ["spot"], "reference": ["spot"]},
+        "quote_selection_policy": _canonical_quote_policy("fx"),
         "market_data": [
             _market_point("fx", "spot", "2026-02-20", "7.80", "HKD"),
             _market_point("fx", "spot", "2026-03-04", "7.79", "HKD"),
@@ -118,7 +167,7 @@ REGISTRY_INSTRUMENT_DETAILS = [
         "instrument_type": "fx",
         "currency": "CNY",
         "identifiers": [{"identifier_type": "ticker", "identifier_value": "USDCNY", "is_primary": True}],
-        "quote_selection_policy": {"valuation": ["spot"], "reference": ["spot"]},
+        "quote_selection_policy": _canonical_quote_policy("fx"),
         "market_data": [
             _market_point("fx", "spot", "2026-04-02", "7.29", "CNY"),
             _market_point("fx", "spot", "2026-04-15", "7.20", "CNY"),
@@ -149,6 +198,7 @@ REGISTRY_INSTRUMENTS = [
             if key != "market_data"
         },
         "latest_market_data": _latest_market_data(detail),
+        "coverage_state": "complete",
     }
     for detail in REGISTRY_INSTRUMENT_DETAILS
 ]
@@ -228,11 +278,11 @@ FX_PAYLOAD = {
 }
 
 
-def _run_alembic_upgrade(database_url: str) -> None:
+def _run_alembic_upgrade(database_url: str, revision: str = "head") -> None:
     config = Config(str(BACKEND_ROOT / "alembic.ini"))
     config.set_main_option("script_location", str(BACKEND_ROOT / "alembic"))
     config.set_main_option("sqlalchemy.url", database_url)
-    command.upgrade(config, "head")
+    command.upgrade(config, revision)
 
 
 def _get_registry_instrument(instrument_id: str):
@@ -270,7 +320,13 @@ def isolated_portfolio_store(request, tmp_path, monkeypatch):
     session_module.get_engine.cache_clear()
     session_module.get_session_factory.cache_clear()
 
-    _run_alembic_upgrade(database_url)
+    migration_base = request.node.get_closest_marker("migration_base_revision")
+    initial_revision = "head"
+    if migration_base is not None:
+        if len(migration_base.args) != 1 or not isinstance(migration_base.args[0], str):
+            raise ValueError("migration_base_revision requires exactly one revision string.")
+        initial_revision = migration_base.args[0]
+    _run_alembic_upgrade(database_url, initial_revision)
     InstrumentRegistryBase.metadata.create_all(bind=session_module.get_engine())
     portfolio_store.reset_store(deepcopy(TEST_PORTFOLIO_STORE))
     shared_store.reset_store(

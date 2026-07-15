@@ -32,5 +32,6 @@ include = ["portfolio_app*"]
 addopts = "-ra"
 testpaths = ["tests"]
 markers = [
+  "migration_base_revision(revision): initializes the isolated test database at an explicit pre-head migration revision",
   "postgresql_integration: exercises PostgreSQL-only schema and constraint behavior",
 ]

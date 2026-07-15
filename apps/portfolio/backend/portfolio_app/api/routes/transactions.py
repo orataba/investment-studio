@@ -1,17 +1,16 @@
 from __future__ import annotations
 
 from datetime import UTC, date, datetime
-from uuid import uuid4
+from uuid import NAMESPACE_URL, uuid4, uuid5
 
-from fastapi import APIRouter, BackgroundTasks, HTTPException, Query
+from fastapi import APIRouter, BackgroundTasks, Header, HTTPException, Query
 
 from portfolio_app.api.assemblers import (
-    resolve_transaction_flow_scope,
-    resolve_transaction_net_cash_effect,
     serialize_transaction,
     summarize_transactions,
 )
 from portfolio_app.api.contracts import (
+    _amount_contract_matches_display_price,
     AccountRecord,
     InstrumentCoreContract,
     DerivationBoundaryStatus,
@@ -20,13 +19,16 @@ from portfolio_app.api.contracts import (
     LedgerPostingListSummary,
     PositionLotListSummary,
     TransactionBatchResponse,
+    TransactionChangeLogResponse,
+    TransactionChangeLogSummary,
     TransactionCreateRequest,
+    TransactionDeleteRequest,
     TransactionDeleteResponse,
     TransactionExecutionQuoteResponse,
     TransactionListResponse,
-    TransactionListSummary,
     TransactionPositionPreviewResponse,
     TransactionRecord,
+    TransactionUpdateRequest,
     TransactionWorkspaceResponse,
 )
 from portfolio_app.services.ledger import (
@@ -45,18 +47,25 @@ from portfolio_app.services.instrument_registry import (
 )
 from portfolio_app.services.daily_snapshots import refresh_portfolio_daily_snapshots
 from portfolio_app.services.execution_quotes import get_execution_quote_on_or_before
+from portfolio_app.services.transaction_pricing import transaction_price_scale
 from portfolio_app.services.portfolio_store import (
+    TransactionIdempotencyConflictError,
+    TransactionIdempotencyKeyError,
+    TransactionRowVersionConflictError,
     create_transaction,
     create_transactions,
     delete_transactions,
     get_account,
     get_portfolio,
     get_transaction,
+    get_transaction_idempotency_result,
     list_accounts,
+    list_transaction_change_logs,
     list_transactions,
     resolve_trade_timing,
     update_transaction,
 )
+from portfolio_app.services.transaction_dates import transaction_sort_key
 
 
 router = APIRouter()
@@ -70,6 +79,8 @@ INCOME_ASSET_TYPES: dict[str, set[str]] = {
     "return_of_capital": {"fund", "etf", "equity"},
     "maturity_redemption": {"bond"},
 }
+TRANSACTION_CREATE_IDEMPOTENCY_OPERATION = "create_transaction"
+INTERNAL_TRANSFER_IDEMPOTENCY_OPERATION = "create_internal_transfer"
 
 
 def _queue_daily_snapshot_refresh(background_tasks: BackgroundTasks | None, portfolio_id: str) -> None:
@@ -77,24 +88,30 @@ def _queue_daily_snapshot_refresh(background_tasks: BackgroundTasks | None, port
         background_tasks.add_task(refresh_portfolio_daily_snapshots, portfolio_id)
 
 
-def _resolve_flow_scope(transaction_type: str) -> str:
-    return resolve_transaction_flow_scope(transaction_type)
+def _request_payload_for_idempotency(
+    payload: TransactionCreateRequest | InternalTransferCreateRequest,
+) -> dict[str, object]:
+    return payload.model_dump(mode="json", exclude_none=False)
 
 
-def _resolve_net_cash_effect(record: dict[str, object]) -> float | None:
-    return resolve_transaction_net_cash_effect(record)
-
-
-def _serialize_transaction(
+def _idempotency_replay_or_error(
     portfolio_id: str,
-    record: dict[str, object],
-    account_lookup: dict[str, dict[str, object]],
-) -> TransactionRecord:
-    return serialize_transaction(portfolio_id, record, account_lookup)
-
-
-def _build_summary(records: list[dict[str, object]]) -> TransactionListSummary:
-    return summarize_transactions(records)
+    *,
+    idempotency_key: str | None,
+    operation: str,
+    request_payload: dict[str, object],
+) -> list[dict[str, object]] | None:
+    try:
+        return get_transaction_idempotency_result(
+            portfolio_id,
+            idempotency_key=idempotency_key,
+            operation=operation,
+            request_payload=request_payload,
+        )
+    except TransactionIdempotencyKeyError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    except TransactionIdempotencyConflictError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
 
 
 def _load_instrument_ref(instrument_id: str) -> dict[str, object]:
@@ -115,21 +132,55 @@ def _load_instrument_ref(instrument_id: str) -> dict[str, object]:
     }
 
 
+def _validate_instrument_amount_contract(
+    *,
+    payload: TransactionCreateRequest,
+    instrument_ref: dict[str, object] | None,
+) -> None:
+    if instrument_ref is None or payload.price is None:
+        return
+    if payload.transaction_type not in {
+        "buy",
+        "sell",
+        "dividend_reinvestment",
+        "opening_balance",
+    }:
+        return
+    price_scale = transaction_price_scale(instrument_ref)
+    if _amount_contract_matches_display_price(
+        quantity=payload.quantity,
+        price=payload.price,
+        gross_amount=payload.gross_amount,
+        price_scale=price_scale,
+    ):
+        return
+    if payload.transaction_type == "opening_balance":
+        contract_label = "security opening balance"
+    elif payload.transaction_type == "dividend_reinvestment":
+        contract_label = "dividend reinvestment"
+    else:
+        contract_label = "buy and sell"
+    raise HTTPException(
+        status_code=422,
+        detail=(
+            "gross_amount must equal quantity multiplied by price for "
+            f"{contract_label} (price scale {price_scale:g})."
+        ),
+    )
+
+
 def _serialize_instrument_option(record: dict[str, object]) -> dict[str, object]:
-    coverage_state = str(record.get("coverage_state") or "").strip() or None
-    if coverage_state is None:
-        coverage_state = "complete" if record.get("latest_market_data") else "unavailable"
     return {
         "instrument_core": {
             "instrument_id": record["instrument_id"],
             "instrument_name": record["instrument_name"],
             "instrument_type": record["instrument_type"],
             "currency": record["currency"],
-            "identifiers": record.get("identifiers", []),
+            "identifiers": record["identifiers"],
         },
-        "coverage_state": coverage_state,
-        "latest_market_data": record.get("latest_market_data", []),
-        "quote_selection_policy": record.get("quote_selection_policy", {}),
+        "coverage_state": record["coverage_state"],
+        "latest_market_data": record["latest_market_data"],
+        "quote_selection_policy": record["quote_selection_policy"],
     }
 
 
@@ -207,16 +258,6 @@ def _list_transactions_as_of_trade_date(
     )
 
 
-def _transaction_sort_key(record: dict[str, object]) -> tuple[str, str, str, str, str]:
-    return (
-        str(record.get("trade_date") or ""),
-        str(record.get("trade_at") or ""),
-        str(record.get("created_at") or ""),
-        str(record.get("transaction_id") or ""),
-        str(record.get("settlement_date") or ""),
-    )
-
-
 def _pending_transaction_sort_key(
     *,
     trade_date: date,
@@ -255,7 +296,7 @@ def _list_transactions_as_of_trade_moment(
             trade_date,
             exclude_transaction_ids=exclude_transaction_ids,
         )
-        if _transaction_sort_key(record) <= pending_sort_key
+        if transaction_sort_key(record) <= pending_sort_key
     ]
 
 
@@ -519,9 +560,30 @@ def list_transaction_records(
 
     return TransactionListResponse(
         portfolio_id=portfolio_id,
-        summary=_build_summary(records),
+        summary=summarize_transactions(records),
         derivation_boundary=DerivationBoundaryStatus(),
-        transactions=[_serialize_transaction(portfolio_id, item, account_lookup) for item in records],
+        transactions=[serialize_transaction(portfolio_id, item, account_lookup) for item in records],
+    )
+
+
+@router.get(
+    "/{portfolio_id}/transactions/change-log",
+    response_model=TransactionChangeLogResponse,
+)
+def list_transaction_change_log_records(
+    portfolio_id: str,
+    transaction_id: str | None = None,
+) -> TransactionChangeLogResponse:
+    if get_portfolio(portfolio_id) is None:
+        raise HTTPException(status_code=404, detail="Portfolio not found")
+    changes = list_transaction_change_logs(
+        portfolio_id,
+        transaction_id=transaction_id,
+    )
+    return TransactionChangeLogResponse(
+        portfolio_id=portfolio_id,
+        summary=TransactionChangeLogSummary(change_count=len(changes)),
+        changes=changes,
     )
 
 
@@ -549,7 +611,7 @@ def get_transaction_workspace(
         end_date=end_date,
     )
     serialized_transactions = [
-        _serialize_transaction(portfolio_id, item, account_lookup) for item in filtered_records
+        serialize_transaction(portfolio_id, item, account_lookup) for item in filtered_records
     ]
     selected_transaction = next(
         (item for item in serialized_transactions if item.transaction_id == transaction_id),
@@ -558,6 +620,31 @@ def get_transaction_workspace(
     selected_transaction_id = selected_transaction.transaction_id if selected_transaction else None
 
     all_transactions = list_transactions(portfolio_id)
+    selected_transaction_record = next(
+        (
+            record
+            for record in all_transactions
+            if str(record.get("transaction_id") or "") == selected_transaction_id
+        ),
+        None,
+    )
+    selected_transfer_group_id = str(
+        (selected_transaction_record or {}).get("transfer_group_id") or ""
+    ).strip()
+    delete_scope_records = (
+        [
+            record
+            for record in all_transactions
+            if str(record.get("transfer_group_id") or "").strip()
+            == selected_transfer_group_id
+        ]
+        if selected_transfer_group_id
+        else ([selected_transaction_record] if selected_transaction_record else [])
+    )
+    delete_scope_row_versions = {
+        str(record["transaction_id"]): int(record["row_version"])
+        for record in delete_scope_records
+    }
     account_cost_methods = {
         str(account.get("account_id") or ""): str(account.get("cost_basis_method") or "fifo")
         for account in accounts
@@ -602,7 +689,7 @@ def get_transaction_workspace(
 
     return TransactionWorkspaceResponse(
         portfolio_id=portfolio_id,
-        summary=_build_summary(filtered_records),
+        summary=summarize_transactions(filtered_records),
         derivation_boundary=DerivationBoundaryStatus(
             ledger_postings="next_layer",
             positions="next_layer",
@@ -613,6 +700,7 @@ def get_transaction_workspace(
         selected_transaction_id=selected_transaction_id,
         transactions=serialized_transactions,
         selected_transaction=selected_transaction,
+        delete_scope_row_versions=delete_scope_row_versions,
         ledger_summary=LedgerPostingListSummary.model_validate(summarize_ledger_postings(ledger_postings_raw)),
         ledger_postings=ledger_postings_raw,
         related_position_lot_summary=PositionLotListSummary.model_validate(
@@ -711,6 +799,9 @@ def _persist_transaction_record(
     payload: TransactionCreateRequest,
     existing_transaction: dict[str, object] | None = None,
     background_tasks: BackgroundTasks | None = None,
+    expected_row_version: int | None = None,
+    idempotency_key: str | None = None,
+    idempotency_payload: dict[str, object] | None = None,
 ) -> TransactionRecord:
     portfolio = get_portfolio(portfolio_id)
     if portfolio is None:
@@ -742,12 +833,6 @@ def _persist_transaction_record(
 
     transaction_type = payload.transaction_type
     account_type = str(account.get("account_type") or "")
-    transfer_object_type = payload.transfer_object_type
-    if transaction_type in {"transfer_in", "transfer_out"}:
-        raise HTTPException(
-            status_code=400,
-            detail="Use /transactions/internal-transfer for paired internal transfer facts.",
-        )
     if transaction_type in {"deposit", "withdrawal"} and account_type != "deposit_account":
         raise HTTPException(status_code=400, detail="Cash-flow transactions require deposit_account.")
     if transaction_type == "interest" and account_type != "deposit_account":
@@ -764,12 +849,6 @@ def _persist_transaction_record(
         "maturity_redemption",
     } and account_type != "securities_account":
         raise HTTPException(status_code=400, detail="Instrument income and trade transactions require securities_account.")
-    if transaction_type in {"transfer_in", "transfer_out"}:
-        if transfer_object_type == "cash" and account_type != "deposit_account":
-            raise HTTPException(status_code=400, detail="Cash transfer requires deposit_account.")
-        if transfer_object_type == "position" and account_type != "securities_account":
-            raise HTTPException(status_code=400, detail="Position transfer requires securities_account.")
-
     settlement_cash_account = None
     settlement_cash_account_id = payload.settlement_cash_account_id
     fx_conversion_target_account = None
@@ -854,6 +933,10 @@ def _persist_transaction_record(
         account=account,
         instrument_ref=instrument_ref,
         transaction_type=transaction_type,
+    )
+    _validate_instrument_amount_contract(
+        payload=payload,
+        instrument_ref=instrument_ref,
     )
 
     transactions_as_of_trade_date: list[dict[str, object]] | None = None
@@ -973,11 +1056,12 @@ def _persist_transaction_record(
         "counter_amount": payload.counter_amount,
         "fx_rate": payload.fx_rate,
         "fees": payload.fees,
+        "fee_category": payload.fee_category,
         "taxes": payload.taxes,
         "currency": payload.currency,
-        "transfer_scope": payload.transfer_scope,
-        "transfer_object_type": payload.transfer_object_type,
-        "transfer_group_id": payload.transfer_group_id,
+        "transfer_scope": None,
+        "transfer_object_type": None,
+        "transfer_group_id": None,
         "counterparty_account_id": (
             str(fx_conversion_target_account.get("account_id") or "")
             if fx_conversion_target_account is not None
@@ -991,13 +1075,24 @@ def _persist_transaction_record(
             persisted_record = update_transaction(
                 portfolio_id,
                 str(existing_transaction.get("transaction_id") or ""),
+                expected_row_version=expected_row_version,
                 **transaction_values,
             )
         else:
             persisted_record = create_transaction(
                 portfolio_id=portfolio_id,
+                idempotency_key=idempotency_key,
+                idempotency_payload=idempotency_payload,
+                idempotency_operation=TRANSACTION_CREATE_IDEMPOTENCY_OPERATION,
                 **transaction_values,
             )
+    except TransactionIdempotencyKeyError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    except (
+        TransactionIdempotencyConflictError,
+        TransactionRowVersionConflictError,
+    ) as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
     except ValueError as error:
         raise HTTPException(
             status_code=409,
@@ -1007,7 +1102,7 @@ def _persist_transaction_record(
         raise HTTPException(status_code=404, detail="Transaction not found")
     _queue_daily_snapshot_refresh(background_tasks, portfolio_id)
     account_lookup = {item["account_id"]: item for item in list_accounts(portfolio_id)}
-    return _serialize_transaction(portfolio_id, persisted_record, account_lookup)
+    return serialize_transaction(portfolio_id, persisted_record, account_lookup)
 
 
 @router.post("/{portfolio_id}/transactions", response_model=TransactionRecord)
@@ -1015,11 +1110,26 @@ def create_transaction_record(
     portfolio_id: str,
     payload: TransactionCreateRequest,
     background_tasks: BackgroundTasks,
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
 ) -> TransactionRecord:
+    idempotency_payload = _request_payload_for_idempotency(payload)
+    replayed = _idempotency_replay_or_error(
+        portfolio_id,
+        idempotency_key=idempotency_key,
+        operation=TRANSACTION_CREATE_IDEMPOTENCY_OPERATION,
+        request_payload=idempotency_payload,
+    )
+    if replayed is not None:
+        account_lookup = {
+            item["account_id"]: item for item in list_accounts(portfolio_id)
+        }
+        return serialize_transaction(portfolio_id, replayed[0], account_lookup)
     return _persist_transaction_record(
         portfolio_id=portfolio_id,
         payload=payload,
         background_tasks=background_tasks,
+        idempotency_key=idempotency_key,
+        idempotency_payload=idempotency_payload,
     )
 
 
@@ -1027,7 +1137,7 @@ def create_transaction_record(
 def update_transaction_record(
     portfolio_id: str,
     transaction_id: str,
-    payload: TransactionCreateRequest,
+    payload: TransactionUpdateRequest,
     background_tasks: BackgroundTasks,
 ) -> TransactionRecord:
     existing_transaction = get_transaction(portfolio_id, transaction_id)
@@ -1043,11 +1153,24 @@ def update_transaction_record(
             status_code=400,
             detail="Paired internal transfer facts must be deleted and recreated as a batch.",
         )
+    current_row_version = int(existing_transaction.get("row_version") or 1)
+    if (
+        payload.expected_row_version is not None
+        and payload.expected_row_version != current_row_version
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Transaction row version is stale; reload and retry "
+                f"(expected {payload.expected_row_version}, current {current_row_version})."
+            ),
+        )
     return _persist_transaction_record(
         portfolio_id=portfolio_id,
         payload=payload,
         existing_transaction=existing_transaction,
         background_tasks=background_tasks,
+        expected_row_version=payload.expected_row_version,
     )
 
 
@@ -1055,6 +1178,7 @@ def update_transaction_record(
 def delete_transaction_record(
     portfolio_id: str,
     transaction_id: str,
+    payload: TransactionDeleteRequest,
     background_tasks: BackgroundTasks,
 ) -> TransactionDeleteResponse:
     existing_transaction = get_transaction(portfolio_id, transaction_id)
@@ -1071,7 +1195,10 @@ def delete_transaction_record(
         deleted_records = delete_transactions(
             portfolio_id,
             transaction_ids=transaction_ids,
+            expected_row_versions=payload.expected_row_versions,
         )
+    except TransactionRowVersionConflictError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
     except ValueError as error:
         raise HTTPException(
             status_code=409,
@@ -1094,9 +1221,34 @@ def create_internal_transfer_records(
     portfolio_id: str,
     payload: InternalTransferCreateRequest,
     background_tasks: BackgroundTasks,
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
 ) -> TransactionBatchResponse:
     if get_portfolio(portfolio_id) is None:
         raise HTTPException(status_code=404, detail="Portfolio not found")
+
+    idempotency_payload = _request_payload_for_idempotency(payload)
+    replayed = _idempotency_replay_or_error(
+        portfolio_id,
+        idempotency_key=idempotency_key,
+        operation=INTERNAL_TRANSFER_IDEMPOTENCY_OPERATION,
+        request_payload=idempotency_payload,
+    )
+    if replayed is not None:
+        account_lookup = {
+            item["account_id"]: item for item in list_accounts(portfolio_id)
+        }
+        transfer_group_id = (
+            str(replayed[0].get("transfer_group_id") or "").strip() or None
+        )
+        return TransactionBatchResponse(
+            portfolio_id=portfolio_id,
+            created_count=len(replayed),
+            transfer_group_id=transfer_group_id,
+            transactions=[
+                serialize_transaction(portfolio_id, item, account_lookup)
+                for item in replayed
+            ],
+        )
 
     from_account = get_account(portfolio_id, payload.from_account_id)
     to_account = get_account(portfolio_id, payload.to_account_id)
@@ -1196,7 +1348,11 @@ def create_internal_transfer_records(
                 )
         transferred_amount = estimated_transferred_amount
 
-    transfer_group_id = payload.transfer_group_id or f"trf-{uuid4().hex[:12]}"
+    transfer_group_id = (
+        f"trf-{uuid5(NAMESPACE_URL, f'{portfolio_id}:{idempotency_key.strip()}').hex[:12]}"
+        if idempotency_key
+        else f"trf-{uuid4().hex[:12]}"
+    )
     trade_date = payload.trade_date
 
     try:
@@ -1256,7 +1412,14 @@ def create_internal_transfer_records(
                     "created_at": pending_created_at,
                 },
             ],
+            idempotency_key=idempotency_key,
+            idempotency_payload=idempotency_payload,
+            idempotency_operation=INTERNAL_TRANSFER_IDEMPOTENCY_OPERATION,
         )
+    except TransactionIdempotencyKeyError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    except TransactionIdempotencyConflictError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
     except ValueError as error:
         raise HTTPException(
             status_code=409,
@@ -1268,5 +1431,5 @@ def create_internal_transfer_records(
         portfolio_id=portfolio_id,
         created_count=len(created_records),
         transfer_group_id=transfer_group_id,
-        transactions=[_serialize_transaction(portfolio_id, item, account_lookup) for item in created_records],
+        transactions=[serialize_transaction(portfolio_id, item, account_lookup) for item in created_records],
     )

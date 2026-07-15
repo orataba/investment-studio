@@ -4,6 +4,7 @@ from copy import deepcopy
 
 import pytest
 
+from portfolio_app.api.contracts import TransactionExecutionQuoteResponse
 from portfolio_app.services import execution_quotes
 
 
@@ -22,6 +23,8 @@ def _point(
         "as_of_date": as_of_date,
         "value": value,
         "currency": "CNY",
+        "price_unit": "per_unit",
+        "price_scale": 1.0,
         "provider": provider,
         "status": status,
     }
@@ -31,11 +34,12 @@ def _instrument_detail(
     *,
     policy: dict[str, list[str]],
     market_data: list[dict[str, object]],
+    instrument_type: str = "etf",
 ) -> dict[str, object]:
     return {
         "instrument_id": "159516-sz",
         "instrument_name": "半导体设备ETF国泰",
-        "instrument_type": "etf",
+        "instrument_type": instrument_type,
         "currency": "CNY",
         "identifiers": [
             {
@@ -104,6 +108,9 @@ def test_execution_quote_endpoint_prefers_raw_close_over_adjusted_close(client, 
         "provider": "tushare:fund_daily",
         "status": "complete",
         "stale": False,
+        "price_unit": "per_unit",
+        "price_scale": pytest.approx(1.0),
+        "unavailable_reason": None,
     }
 
 
@@ -169,6 +176,9 @@ def test_execution_quote_endpoint_returns_unavailable_instead_of_adjusted_fallba
     assert payload["provider"] is None
     assert payload["status"] == "unavailable"
     assert payload["stale"] is False
+    assert payload["price_unit"] is None
+    assert payload["price_scale"] is None
+    assert payload["unavailable_reason"] == "no_eligible_execution_quote"
 
 
 def test_execution_quote_endpoint_returns_not_found_for_unknown_instrument(client, monkeypatch):
@@ -181,3 +191,70 @@ def test_execution_quote_endpoint_returns_not_found_for_unknown_instrument(clien
 
     assert response.status_code == 404
     assert response.json()["detail"] == "Instrument not found in shared registry."
+
+
+def test_execution_quote_endpoint_returns_explicit_bond_price_contract(client, monkeypatch):
+    dirty_price = _point(
+        quote_basis="dirty_price",
+        as_of_date="2026-03-27",
+        value="98.5",
+        provider="bond-execution-quote-test",
+    )
+    dirty_price["price_unit"] = "percent_of_par"
+    dirty_price["price_scale"] = 0.01
+    _install_detail(
+        monkeypatch,
+        _instrument_detail(
+            policy={"trading": ["dirty_price"], "valuation": ["dirty_price"]},
+            market_data=[dirty_price],
+            instrument_type="bond",
+        ),
+    )
+
+    response = client.get(
+        "/api/portfolios/portfolio-ops/transactions/execution-quote",
+        params={"instrument_id": "159516-sz", "as_of_date": "2026-03-27"},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["value"] == pytest.approx(98.5)
+    assert payload["quote_basis"] == "dirty_price"
+    assert payload["price_unit"] == "percent_of_par"
+    assert payload["price_scale"] == pytest.approx(0.01)
+    assert payload["unavailable_reason"] is None
+
+
+def test_execution_quote_response_rejects_incomplete_available_contract() -> None:
+    complete_payload = {
+        "portfolio_id": "portfolio-ops",
+        "instrument_id": "159516-sz",
+        "requested_as_of_date": "2026-03-27",
+        "selection_role": "trading",
+        "value": 1.66,
+        "quote_date": "2026-03-27",
+        "quote_basis": "close",
+        "metric_family": "price",
+        "currency": "CNY",
+        "provider": "test",
+        "status": "complete",
+        "stale": False,
+        "price_unit": "per_unit",
+        "price_scale": 1,
+        "unavailable_reason": None,
+    }
+
+    assert TransactionExecutionQuoteResponse.model_validate(complete_payload).value == pytest.approx(
+        1.66
+    )
+    missing_scale = {**complete_payload, "price_scale": None}
+    with pytest.raises(ValueError, match="price_scale"):
+        TransactionExecutionQuoteResponse.model_validate(missing_scale)
+
+    unavailable_with_value = {
+        **complete_payload,
+        "status": "unavailable",
+        "unavailable_reason": "no_eligible_execution_quote",
+    }
+    with pytest.raises(ValueError, match="must not populate"):
+        TransactionExecutionQuoteResponse.model_validate(unavailable_with_value)

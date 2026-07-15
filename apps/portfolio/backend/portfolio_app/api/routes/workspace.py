@@ -12,7 +12,6 @@ from portfolio_app.services.daily_snapshots import (
     DAILY_SNAPSHOT_CALCULATION_VERSION,
     build_materialized_instrument_holding_projection,
     ensure_portfolio_daily_snapshots,
-    project_instrument_holding_row,
 )
 from portfolio_app.services.instrument_charts import (
     HOLDINGS_PRICE_CHART_RANGE_KEYS,
@@ -36,6 +35,8 @@ from portfolio_app.services.instrument_registry import (
 from portfolio_app.services.performance import (
     build_holdings_report,
     corporate_action_quality_warnings,
+)
+from portfolio_app.services.holdings_market_profile import (
     is_cash_holding_instrument_id,
     summarize_holding_day_change,
 )
@@ -53,6 +54,9 @@ router = APIRouter()
 _HOLDINGS_TREND_FIELD_NAMES = (
     "instrument_trend_as_of_date",
     "instrument_trend_basis",
+    "instrument_trend_coverage",
+    "instrument_trend_reason",
+    "instrument_trend_split_adjusted",
     "instrument_risk_frequency",
     "instrument_return_1w",
     "instrument_return_mtd",
@@ -81,12 +85,34 @@ _HOLDINGS_RETURN_SERIES_FIELD_NAMES = (
     "instrument_return_series_all",
     "instrument_holding_return_series",
 )
+_HOLDINGS_CHART_FIELD_NAMES = tuple(
+    f"price_chart_{range_key}" for range_key in HOLDINGS_PRICE_CHART_RANGE_KEYS
+)
+_COMPACT_HOLDINGS_SPARKLINE_POINT_LIMIT = 24
+
+
+def _compact_sparkline_points(value: object) -> list[object]:
+    points = value if isinstance(value, list) else []
+    if len(points) <= _COMPACT_HOLDINGS_SPARKLINE_POINT_LIMIT:
+        return list(points)
+    last_index = len(points) - 1
+    selected_indices = sorted(
+        {
+            round(
+                position
+                * last_index
+                / (_COMPACT_HOLDINGS_SPARKLINE_POINT_LIMIT - 1)
+            )
+            for position in range(_COMPACT_HOLDINGS_SPARKLINE_POINT_LIMIT)
+        }
+    )
+    return [points[index] for index in selected_indices]
 
 
 def _public_holdings_workspace_response(
     workspace: dict[str, object],
     *,
-    include_return_series: bool,
+    include_details: bool,
 ) -> dict[str, object]:
     rows = workspace.get("rows")
     row_items = rows if isinstance(rows, list) else []
@@ -105,12 +131,18 @@ def _public_holdings_workspace_response(
         instrument_types,
         instrument_ids,
     )
-    if include_return_series:
+    if include_details:
+        workspace["detail_level"] = "full"
         return workspace
+    workspace["detail_level"] = "compact"
     if isinstance(rows, list):
         for row in rows:
             if not isinstance(row, dict):
                 continue
+            compact_sparkline = _compact_sparkline_points(row.get("price_chart_6m"))
+            for field_name in _HOLDINGS_CHART_FIELD_NAMES:
+                row[field_name] = []
+            row["price_chart_6m"] = compact_sparkline
             for field_name in _HOLDINGS_RETURN_SERIES_FIELD_NAMES:
                 row.pop(field_name, None)
     return workspace
@@ -397,7 +429,7 @@ def preload_workspace(
 def holdings_workspace(
     portfolio_id: str | None = None,
     as_of_date: date | None = None,
-    include_return_series: bool = False,
+    include_details: bool = False,
 ) -> dict[str, object]:
     resolved_portfolio = _require_portfolio(portfolio_id, live_if_materialized_stale=as_of_date is None)
 
@@ -441,7 +473,7 @@ def holdings_workspace(
                 )
                 return _public_holdings_workspace_response(
                     enriched_response,
-                    include_return_series=include_return_series,
+                    include_details=include_details,
                 )
             accounts = list_accounts(resolved_portfolio_id)
             position_lots = build_position_lots(
@@ -465,7 +497,7 @@ def holdings_workspace(
             )
             return _public_holdings_workspace_response(
                 enriched_response,
-                include_return_series=include_return_series,
+                include_details=include_details,
             )
         except InstrumentRegistryError as error:
             raise HTTPException(status_code=502, detail=str(error)) from error
@@ -656,7 +688,7 @@ def holdings_workspace(
     )
     return _public_holdings_workspace_response(
         enriched_response,
-        include_return_series=include_return_series,
+        include_details=include_details,
     )
 
 
@@ -680,37 +712,10 @@ def instrument_holding_projection(
     except InstrumentRegistryError as error:
         raise HTTPException(status_code=502, detail=str(error)) from error
     if response is None:
-        fallback_workspace = holdings_workspace(
-            portfolio_id=resolved_portfolio_id,
-            as_of_date=as_of_date,
-            include_return_series=False,
+        raise HTTPException(
+            status_code=409,
+            detail="Materialized holding projection is unavailable for the requested date.",
         )
-        fallback_rows = fallback_workspace.get("rows")
-        matching_row = next(
-            (
-                item
-                for item in fallback_rows if isinstance(item, dict)
-                and str(
-                    (
-                        item.get("instrument_core")
-                        if isinstance(item.get("instrument_core"), dict)
-                        else {}
-                    ).get("instrument_id")
-                    or item.get("line_id")
-                    or ""
-                )
-                == normalized_instrument_id
-            ),
-            None,
-        ) if isinstance(fallback_rows, list) else None
-        response = {
-            "portfolio_id": fallback_workspace["portfolio_id"],
-            "portfolio_name": fallback_workspace["portfolio_name"],
-            "base_currency": fallback_workspace["base_currency"],
-            "as_of_date": fallback_workspace["as_of_date"],
-            "view_label": fallback_workspace.get("view_label") or "View: Holdings",
-            "row": project_instrument_holding_row(matching_row) if matching_row is not None else None,
-        }
 
     row = response.get("row")
     if isinstance(row, dict):

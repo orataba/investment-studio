@@ -1,0 +1,416 @@
+from __future__ import annotations
+
+import os
+from pathlib import Path
+from uuid import uuid4
+
+from alembic import command
+from alembic.config import Config
+import pytest
+import sqlalchemy as sa
+from sqlalchemy.engine import make_url
+
+
+BACKEND_ROOT = Path(__file__).resolve().parents[1]
+WORKSPACE_ROOT = BACKEND_ROOT.parents[2]
+
+pytestmark = pytest.mark.postgresql_integration
+
+RECONCILIATION_REVISION = "20260715_0032r"
+RECONCILIATION_PARENT = "20260711_0032"
+LEGACY_FOREIGN_KEY = "fk_transaction_record_asset_id_instrument"
+CURRENT_FOREIGN_KEY = "fk_transaction_record_instrument_id_instrument"
+
+
+def _admin_database_url(database_url: str) -> str:
+    return make_url(database_url).set(database="postgres").render_as_string(
+        hide_password=False
+    )
+
+
+def _portfolio_config(database_url: str) -> Config:
+    config = Config(str(BACKEND_ROOT / "alembic.ini"))
+    config.set_main_option("script_location", str(BACKEND_ROOT / "alembic"))
+    config.set_main_option("sqlalchemy.url", database_url)
+    return config
+
+
+def _run_registry_upgrade() -> None:
+    root = WORKSPACE_ROOT / "infra" / "instrument_registry"
+    config = Config(str(root / "alembic.ini"))
+    config.set_main_option("script_location", str(root / "alembic"))
+    command.upgrade(config, "head")
+
+
+@pytest.fixture
+def postgres_reconciliation_database(
+    monkeypatch: pytest.MonkeyPatch,
+) -> str:
+    base_database_url = os.getenv("PORTFOLIO_OPS_TEST_POSTGRES_URL")
+    if not base_database_url:
+        pytest.skip("PORTFOLIO_OPS_TEST_POSTGRES_URL is not explicitly configured.")
+    database_name = f"portfolio_ops_reconcile_{uuid4().hex[:8]}"
+    database_url = make_url(base_database_url).set(database=database_name).render_as_string(
+        hide_password=False
+    )
+    admin_engine = sa.create_engine(
+        _admin_database_url(base_database_url),
+        isolation_level="AUTOCOMMIT",
+    )
+    try:
+        with admin_engine.connect() as connection:
+            connection.execute(sa.text("SELECT 1"))
+            connection.execute(sa.text(f'CREATE DATABASE "{database_name}"'))
+    except Exception as error:  # pragma: no cover - environment-dependent skip
+        pytest.skip(f"PostgreSQL is not available for integration test: {error}")
+    finally:
+        admin_engine.dispose()
+
+    monkeypatch.setenv("PORTFOLIO_OPS_INSTRUMENT_REGISTRY_DATABASE_URL", database_url)
+    monkeypatch.setenv("PORTFOLIO_OPS_INSTRUMENT_REGISTRY_SCHEMA", "instrument_registry")
+    monkeypatch.setenv("PORTFOLIO_OPS_PORTFOLIO_DATABASE_URL", database_url)
+    monkeypatch.setenv("PORTFOLIO_OPS_PORTFOLIO_ALEMBIC_DATABASE_URL", database_url)
+    monkeypatch.setenv("PORTFOLIO_OPS_PORTFOLIO_DATABASE_SCHEMA", "portfolio")
+
+    from portfolio_app.core import settings as settings_module
+    from portfolio_app.db import session as session_module
+
+    settings_module.get_settings.cache_clear()
+    session_module.get_engine.cache_clear()
+    session_module.get_session_factory.cache_clear()
+
+    _run_registry_upgrade()
+    command.upgrade(_portfolio_config(database_url), "20260715_0038")
+
+    yield database_url
+
+    cleanup_engine = sa.create_engine(
+        _admin_database_url(base_database_url),
+        isolation_level="AUTOCOMMIT",
+    )
+    try:
+        with cleanup_engine.begin() as connection:
+            connection.execute(
+                sa.text(
+                    """
+                    SELECT pg_terminate_backend(pid)
+                    FROM pg_stat_activity
+                    WHERE datname = :database_name
+                      AND pid <> pg_backend_pid()
+                    """
+                ),
+                {"database_name": database_name},
+            )
+            connection.execute(sa.text(f'DROP DATABASE IF EXISTS "{database_name}"'))
+    finally:
+        cleanup_engine.dispose()
+        settings_module.get_settings.cache_clear()
+        session_module.get_engine.cache_clear()
+        session_module.get_session_factory.cache_clear()
+
+
+def _set_search_path(connection: sa.Connection) -> None:
+    connection.exec_driver_sql(
+        "SET search_path TO portfolio, instrument_registry, public"
+    )
+
+
+def _constraint_names(connection: sa.Connection) -> set[str]:
+    return {
+        str(name)
+        for name in connection.scalars(
+            sa.text(
+                """
+                SELECT con.conname
+                FROM pg_constraint AS con
+                JOIN pg_class AS cls ON cls.oid = con.conrelid
+                JOIN pg_namespace AS ns ON ns.oid = cls.relnamespace
+                WHERE ns.nspname = 'portfolio'
+                  AND cls.relname = 'transaction_record'
+                  AND con.contype = 'f'
+                """
+            )
+        )
+    }
+
+
+def _object_oid(
+    connection: sa.Connection,
+    *,
+    object_name: str,
+    constraint: bool = False,
+) -> int:
+    if constraint:
+        statement = sa.text(
+            """
+            SELECT con.oid
+            FROM pg_constraint AS con
+            JOIN pg_class AS cls ON cls.oid = con.conrelid
+            JOIN pg_namespace AS ns ON ns.oid = cls.relnamespace
+            WHERE ns.nspname = 'portfolio'
+              AND cls.relname = 'transaction_record'
+              AND con.conname = :object_name
+            """
+        )
+    else:
+        statement = sa.text(
+            """
+            SELECT cls.oid
+            FROM pg_class AS cls
+            JOIN pg_namespace AS ns ON ns.oid = cls.relnamespace
+            WHERE ns.nspname = 'portfolio'
+              AND cls.relname = :object_name
+            """
+        )
+    value = connection.scalar(statement, {"object_name": object_name})
+    assert value is not None
+    return int(value)
+
+
+def _install_postgres_reconciliation_drift(connection: sa.Connection) -> None:
+    _set_search_path(connection)
+    for table_name in (
+        "taxonomy_record",
+        "taxonomy_assignment_record",
+        "target_set_record",
+    ):
+        connection.exec_driver_sql(
+            f"ALTER TABLE portfolio.{table_name} ADD COLUMN effective_from date"
+        )
+        connection.exec_driver_sql(
+            f"ALTER TABLE portfolio.{table_name} ADD COLUMN effective_to date"
+        )
+
+    connection.exec_driver_sql(
+        "DROP INDEX portfolio.ix_target_set_record_taxonomy_scope_type"
+    )
+    connection.exec_driver_sql(
+        "CREATE INDEX ix_target_set_record_taxonomy_scope_type_effective "
+        "ON portfolio.target_set_record ("
+        "taxonomy_id, comparator_taxonomy_node_id, target_set_type, "
+        "effective_from, target_set_id)"
+    )
+    connection.exec_driver_sql(
+        "ALTER INDEX portfolio.ix_portfolio_daily_holding_instrument_date "
+        "RENAME TO ix_portfolio_daily_holding_asset_date"
+    )
+    connection.exec_driver_sql(
+        "ALTER INDEX portfolio.ix_transaction_record_portfolio_instrument_trade "
+        "RENAME TO ix_transaction_record_portfolio_asset_trade"
+    )
+    connection.exec_driver_sql(
+        "ALTER TABLE portfolio.research_settings_record "
+        "ALTER COLUMN backtest_rebalance_frequency SET DEFAULT '1m'"
+    )
+
+
+def _assert_postgres_reconciled(connection: sa.Connection) -> None:
+    _set_search_path(connection)
+    unexpected_columns = connection.execute(
+        sa.text(
+            """
+            SELECT table_name, column_name
+            FROM information_schema.columns
+            WHERE table_schema = 'portfolio'
+              AND table_name IN (
+                  'taxonomy_record',
+                  'taxonomy_assignment_record',
+                  'target_set_record'
+              )
+              AND column_name IN ('effective_from', 'effective_to')
+            """
+        )
+    ).all()
+    assert unexpected_columns == []
+
+    indexes = {
+        str(row.indexname): str(row.indexdef)
+        for row in connection.execute(
+            sa.text(
+                """
+                SELECT indexname, indexdef
+                FROM pg_indexes
+                WHERE schemaname = 'portfolio'
+                  AND tablename IN (
+                      'target_set_record',
+                      'portfolio_daily_holding_snapshot',
+                      'transaction_record',
+                      'taxonomy_assignment_record'
+                  )
+                """
+            )
+        )
+    }
+    assert "ix_target_set_record_taxonomy_scope_type_effective" not in indexes
+    assert "ix_target_set_record_taxonomy_scope_type" in indexes
+    assert "ix_portfolio_daily_holding_asset_date" not in indexes
+    assert "ix_portfolio_daily_holding_instrument_date" in indexes
+    assert "ix_transaction_record_portfolio_asset_trade" not in indexes
+    assert "ix_transaction_record_portfolio_instrument_trade" in indexes
+    assert "uq_taxonomy_assignment_target" not in indexes
+    assert "uq_target_set_active_scope" not in indexes
+
+    assert _constraint_names(connection).issuperset({CURRENT_FOREIGN_KEY})
+    assert LEGACY_FOREIGN_KEY not in _constraint_names(connection)
+    foreign_key = connection.execute(
+        sa.text(
+            """
+            SELECT
+                pg_get_constraintdef(con.oid) AS definition,
+                ref_ns.nspname AS referred_schema
+            FROM pg_constraint AS con
+            JOIN pg_class AS cls ON cls.oid = con.conrelid
+            JOIN pg_namespace AS ns ON ns.oid = cls.relnamespace
+            JOIN pg_class AS ref_cls ON ref_cls.oid = con.confrelid
+            JOIN pg_namespace AS ref_ns ON ref_ns.oid = ref_cls.relnamespace
+            WHERE ns.nspname = 'portfolio'
+              AND cls.relname = 'transaction_record'
+              AND con.conname = :constraint_name
+            """
+        ),
+        {"constraint_name": CURRENT_FOREIGN_KEY},
+    ).mappings().one()
+    assert foreign_key["referred_schema"] == "instrument_registry"
+    assert foreign_key["definition"] in {
+        "FOREIGN KEY (instrument_id) REFERENCES instrument(instrument_id) ON DELETE RESTRICT",
+        (
+            "FOREIGN KEY (instrument_id) REFERENCES "
+            "instrument_registry.instrument(instrument_id) ON DELETE RESTRICT"
+        ),
+    }
+    assert connection.scalar(
+        sa.text(
+            """
+            SELECT column_default
+            FROM information_schema.columns
+            WHERE table_schema = 'portfolio'
+              AND table_name = 'research_settings_record'
+              AND column_name = 'backtest_rebalance_frequency'
+            """
+        )
+    ) is None
+
+
+def _make_foreign_key_canonical(connection: sa.Connection) -> None:
+    _set_search_path(connection)
+    names = _constraint_names(connection)
+    if LEGACY_FOREIGN_KEY in names:
+        connection.exec_driver_sql(
+            f"ALTER TABLE portfolio.transaction_record DROP CONSTRAINT {LEGACY_FOREIGN_KEY}"
+        )
+    if CURRENT_FOREIGN_KEY not in names:
+        connection.exec_driver_sql(
+            f"ALTER TABLE portfolio.transaction_record ADD CONSTRAINT {CURRENT_FOREIGN_KEY} "
+            "FOREIGN KEY (instrument_id) "
+            "REFERENCES instrument_registry.instrument(instrument_id) ON DELETE RESTRICT"
+        )
+
+
+def test_postgres_schema_reconciliation_is_lossless_and_fail_closed(
+    postgres_reconciliation_database: str,
+) -> None:
+    database_url = postgres_reconciliation_database
+    config = _portfolio_config(database_url)
+    engine = sa.create_engine(database_url)
+    command.downgrade(config, RECONCILIATION_PARENT)
+
+    try:
+        with engine.begin() as connection:
+            _set_search_path(connection)
+            connection.exec_driver_sql(
+                f"ALTER TABLE portfolio.transaction_record "
+                f"DROP CONSTRAINT {CURRENT_FOREIGN_KEY}"
+            )
+            connection.exec_driver_sql(
+                f"ALTER TABLE portfolio.transaction_record "
+                f"ADD CONSTRAINT {LEGACY_FOREIGN_KEY} FOREIGN KEY (instrument_id) "
+                "REFERENCES instrument_registry.instrument(instrument_id) ON DELETE CASCADE"
+            )
+
+        with pytest.raises(RuntimeError, match="definition is not equivalent"):
+            command.upgrade(config, RECONCILIATION_REVISION)
+
+        with engine.connect() as connection:
+            _set_search_path(connection)
+            assert connection.scalar(
+                sa.text("SELECT version_num FROM portfolio.alembic_version")
+            ) == RECONCILIATION_PARENT
+            assert "ON DELETE CASCADE" in str(
+                connection.scalar(
+                    sa.text(
+                        """
+                        SELECT pg_get_constraintdef(oid)
+                        FROM pg_constraint
+                        WHERE conname = :constraint_name
+                        """
+                    ),
+                    {"constraint_name": LEGACY_FOREIGN_KEY},
+                )
+            )
+
+        with engine.begin() as connection:
+            _make_foreign_key_canonical(connection)
+            connection.exec_driver_sql(
+                f"ALTER TABLE portfolio.transaction_record "
+                f"RENAME CONSTRAINT {CURRENT_FOREIGN_KEY} TO {LEGACY_FOREIGN_KEY}"
+            )
+            _install_postgres_reconciliation_drift(connection)
+            legacy_holding_oid = _object_oid(
+                connection,
+                object_name="ix_portfolio_daily_holding_asset_date",
+            )
+            legacy_transaction_oid = _object_oid(
+                connection,
+                object_name="ix_transaction_record_portfolio_asset_trade",
+            )
+            legacy_foreign_key_oid = _object_oid(
+                connection,
+                object_name=LEGACY_FOREIGN_KEY,
+                constraint=True,
+            )
+
+        command.upgrade(config, RECONCILIATION_REVISION)
+        with engine.connect() as connection:
+            _assert_postgres_reconciled(connection)
+            assert _object_oid(
+                connection,
+                object_name="ix_portfolio_daily_holding_instrument_date",
+            ) == legacy_holding_oid
+            assert _object_oid(
+                connection,
+                object_name="ix_transaction_record_portfolio_instrument_trade",
+            ) == legacy_transaction_oid
+            assert _object_oid(
+                connection,
+                object_name=CURRENT_FOREIGN_KEY,
+                constraint=True,
+            ) == legacy_foreign_key_oid
+
+        command.downgrade(config, RECONCILIATION_PARENT)
+        with engine.connect() as connection:
+            _assert_postgres_reconciled(connection)
+            assert connection.scalar(
+                sa.text("SELECT version_num FROM portfolio.alembic_version")
+            ) == RECONCILIATION_PARENT
+    finally:
+        with engine.begin() as connection:
+            _make_foreign_key_canonical(connection)
+            for table_name in (
+                "taxonomy_record",
+                "taxonomy_assignment_record",
+                "target_set_record",
+            ):
+                columns = {
+                    str(column["name"])
+                    for column in sa.inspect(connection).get_columns(
+                        table_name,
+                        schema="portfolio",
+                    )
+                }
+                for column_name in ("effective_from", "effective_to"):
+                    if column_name in columns:
+                        connection.exec_driver_sql(
+                            f"UPDATE portfolio.{table_name} SET {column_name} = NULL"
+                        )
+        command.upgrade(config, "head")
+        engine.dispose()

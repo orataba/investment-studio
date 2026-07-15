@@ -33,9 +33,6 @@ from portfolio_ops_instrument_core import instrument_store as shared_store
 
 pytestmark = pytest.mark.postgresql_integration
 
-DEFAULT_POSTGRES_URL = "postgresql+psycopg://portfolio_ops:portfolio_ops@127.0.0.1:5432/portfolio_ops"
-
-
 def _run_instrument_registry_upgrade() -> None:
     config = Config(str(WORKSPACE_ROOT / "infra" / "instrument_registry" / "alembic.ini"))
     config.set_main_option(
@@ -59,7 +56,9 @@ def _admin_database_url(database_url: str) -> str:
 
 @pytest.fixture
 def postgres_portfolio_env(monkeypatch: pytest.MonkeyPatch) -> dict[str, str]:
-    base_database_url = os.getenv("PORTFOLIO_OPS_TEST_POSTGRES_URL", DEFAULT_POSTGRES_URL)
+    base_database_url = os.getenv("PORTFOLIO_OPS_TEST_POSTGRES_URL")
+    if not base_database_url:
+        pytest.skip("PORTFOLIO_OPS_TEST_POSTGRES_URL is not explicitly configured.")
     database_name = f"portfolio_ops_portfolio_fk_{uuid4().hex[:8]}"
     database_url = make_url(base_database_url).set(database=database_name).render_as_string(hide_password=False)
     admin_engine = create_engine(_admin_database_url(base_database_url), isolation_level="AUTOCOMMIT")
