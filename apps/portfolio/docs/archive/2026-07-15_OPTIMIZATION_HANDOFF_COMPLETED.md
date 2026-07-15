@@ -2,7 +2,8 @@
 
 - Status: completed and archived
 - Completed: 2026-07-15, Asia/Shanghai
-- Starting commit: `f0bfcd7a87d14ef35d571aec0f01b21206cf1c52`
+- Pre-rewrite starting commit: `f0bfcd7a87d14ef35d571aec0f01b21206cf1c52`
+- Rewritten main head: `42e5c5aa429d5b588f804b60dab0f5d23e6f5ce4`
 - Delivery branch: `codex/portfolio-optimization-clean-head`
 - Live database: `portfolio_ops_rollback_44d`
 
@@ -125,5 +126,6 @@ Every route reached its page-specific business-data marker with no final loading
 
 ## Remaining operational observations
 
-- The removed database dump can still exist in historical Git objects and the remote history. Purging it requires a separately authorized history rewrite and coordinated force-push; it was intentionally not performed as part of an ordinary code optimization round.
+- A separately authorized sensitive-data rewrite removed all six historical dump/checksum paths, covering every former filename, from 39 affected commits. The nine old blob objects were pruned from the local object database, local raw-tree checkpoint refs were removed, and rewritten `main` was force-pushed with a fixed old-SHA lease. A fresh bare fetch of remote `main` found no matching path and no historical blob at or above 1 MiB. The first changed pre-rewrite commit was `471fc98f0b453bd07f1488618dbf30e9b4489f2a`; no Git LFS objects were involved.
+- GitHub's read-only `refs/pull/1/head` and `refs/pull/2/head` retain their pre-rewrite snapshots until GitHub Support dereferences the affected PRs, clears cached views, and performs server-side garbage collection. Normal and forced Git pushes cannot update these platform-owned refs; no temporary recreation branches were left on the remote.
 - There is no active implementation phase or deferred compatibility cleanup in this archive.
