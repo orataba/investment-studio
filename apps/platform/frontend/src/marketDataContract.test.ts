@@ -66,6 +66,16 @@ describe('Platform market-data price identity', () => {
     ).not.toContain('accrued_interest')
   })
 
+  it('exposes only the two canonical fund NAV series with unambiguous labels', () => {
+    expect(quoteBasisOptionsForInstrument('fund', 'nav')).toEqual([
+      { value: 'official_nav', label: 'Unit NAV' },
+      {
+        value: 'total_return_nav',
+        label: 'Dividend-Reinvested Total Return NAV',
+      },
+    ])
+  })
+
   it('formats the unit and scale together for quote tables', () => {
     expect(formatPriceContract('percent_of_par', '0.01')).toBe('Percent of par × 0.01')
     expect(formatPriceContract('rate', '1')).toBe('Rate × 1')

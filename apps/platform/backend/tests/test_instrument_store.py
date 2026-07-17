@@ -10,7 +10,10 @@ from alembic import command
 from alembic.config import Config
 import pytest
 
-from portfolio_ops_instrument_core import MarketDataPoint, QuoteSelectionPolicy
+from portfolio_ops_instrument_core import (
+    MarketDataPoint,
+    QuoteSelectionPolicy,
+)
 
 from platform_app.services import instrument_store
 from platform_app.services.instrument_store import (
@@ -21,9 +24,11 @@ from platform_app.services.instrument_store import (
     find_instrument_by_identifier,
     get_instrument,
     instrument_registry_name,
+    list_instrument_ids_with_nav_history_before,
     list_instruments,
+    list_stale_current_fund_nav_projections,
     restore_instrument,
-    replace_nav_history,
+    publish_fund_nav_history,
     update_refresh_status,
     upsert_corporate_action_event,
     upsert_market_data,
@@ -97,8 +102,8 @@ TEST_SHARED_STORE = {
             "quote_selection_policy": {
                 "trading": ["last", "close", "official_nav"],
                 "valuation": ["official_nav", "close", "last"],
-                "total_return": ["total_return_nav", "adjusted_close", "official_nav", "close"],
-                "chart": ["total_return_nav", "adjusted_close", "official_nav", "close"],
+                "total_return": ["total_return_nav"],
+                "chart": ["total_return_nav"],
                 "reference": ["official_nav", "close", "last"],
             },
         },
@@ -109,11 +114,19 @@ TEST_SHARED_STORE = {
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
 WORKSPACE_ROOT = BACKEND_ROOT.parents[2]
 SHARED_ASSET_MIGRATIONS_ROOT = WORKSPACE_ROOT / "infra" / "instrument_registry"
+PLATFORM_MIGRATIONS_ROOT = BACKEND_ROOT
 
 
-def _run_alembic_upgrade(database_url: str) -> None:
+def _run_alembic_upgrade(database_url: str, revision: str = "head") -> None:
     config = Config(str(SHARED_ASSET_MIGRATIONS_ROOT / "alembic.ini"))
     config.set_main_option("script_location", str(SHARED_ASSET_MIGRATIONS_ROOT / "alembic"))
+    config.set_main_option("sqlalchemy.url", database_url)
+    command.upgrade(config, revision)
+
+
+def _run_platform_alembic_upgrade(database_url: str) -> None:
+    config = Config(str(PLATFORM_MIGRATIONS_ROOT / "alembic.ini"))
+    config.set_main_option("script_location", str(PLATFORM_MIGRATIONS_ROOT / "alembic"))
     config.set_main_option("sqlalchemy.url", database_url)
     command.upgrade(config, "head")
 
@@ -152,7 +165,7 @@ def test_market_data_point_contract_requires_persisted_price_identity() -> None:
             status="complete",
         )
 
-    with pytest.raises(ValueError, match="accrued_interest"):
+    with pytest.raises(ValueError, match='requires metric_family "price"'):
         MarketDataPoint(
             instrument_id="invalid-contract",
             metric_family="nav",
@@ -163,6 +176,93 @@ def test_market_data_point_contract_requires_persisted_price_identity() -> None:
             price_unit="percent_of_par",
             price_scale=Decimal("0.01"),
             status="complete",
+        )
+
+
+def test_market_data_point_requires_auditable_nav_lineage() -> None:
+    with pytest.raises(ValueError, match="require nav_lineage"):
+        MarketDataPoint(
+            instrument_id="lineage-fund",
+            metric_family="nav",
+            quote_basis="official_nav",
+            as_of_date=date(2026, 7, 15),
+            value=Decimal("1.25"),
+            currency="CNY",
+            price_unit="per_unit",
+            price_scale=Decimal("1"),
+            status="complete",
+        )
+
+    derived = MarketDataPoint(
+        instrument_id="lineage-fund",
+        metric_family="nav",
+        quote_basis="total_return_nav",
+        as_of_date=date(2026, 7, 15),
+        value=Decimal("1.30"),
+        currency="CNY",
+        price_unit="per_unit",
+        price_scale=Decimal("1"),
+        status="complete",
+        nav_lineage={
+            "kind": "derived_dividend_reinvestment",
+            "method_version": "dividend_reinvestment/v1",
+            "anchor_date": "2026-01-01",
+            "evidence": {
+                "factor_record_id": "factor-2026-06-30",
+                "distribution_dates": ["2026-06-30"],
+            },
+        },
+    )
+
+    assert derived.nav_lineage is not None
+    assert derived.nav_lineage.kind == "derived_dividend_reinvestment"
+
+    with pytest.raises(ValueError, match="method_version and anchor_date"):
+        MarketDataPoint(
+            instrument_id="lineage-fund",
+            metric_family="nav",
+            quote_basis="total_return_nav",
+            as_of_date=date(2026, 7, 15),
+            value=Decimal("1.30"),
+            currency="CNY",
+            price_unit="per_unit",
+            price_scale=Decimal("1"),
+            status="complete",
+            nav_lineage={
+                "kind": "derived_dividend_reinvestment",
+                "evidence": {"distribution_dates": ["2026-06-30"]},
+            },
+        )
+
+
+@pytest.mark.parametrize(
+    "retired_basis",
+    [
+        "cumulative_nav",
+        "accumulated_nav",
+        "cum_nav",
+        "dividend_adjusted_nav",
+        "reinvested_nav",
+    ],
+)
+def test_retired_nav_quote_bases_are_not_part_of_the_shared_contract(
+    retired_basis: str,
+) -> None:
+    with pytest.raises(ValueError):
+        MarketDataPoint(
+            instrument_id="lineage-fund",
+            metric_family="nav",
+            quote_basis=retired_basis,
+            as_of_date=date(2026, 7, 15),
+            value=Decimal("1.25"),
+            currency="CNY",
+            price_unit="per_unit",
+            price_scale=Decimal("1"),
+            status="complete",
+            nav_lineage={
+                "kind": "provider_explicit",
+                "evidence": {"source_field": retired_basis},
+            },
         )
 
 
@@ -241,7 +341,7 @@ def test_market_data_price_contract_migration_backfills_and_is_reversible(
     finally:
         connection.close()
 
-    command.upgrade(config, "head")
+    command.upgrade(config, "20260715_0008")
 
     connection = sqlite3.connect(database_path)
     try:
@@ -372,6 +472,8 @@ def isolated_store(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     session_module.get_engine.cache_clear()
     session_module.get_session_factory.cache_clear()
 
+    _run_alembic_upgrade(database_url, "20260715_0011")
+    _run_platform_alembic_upgrade(database_url)
     _run_alembic_upgrade(database_url)
     instrument_store.reset_store(
         {
@@ -385,6 +487,88 @@ def isolated_store(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     settings_module.get_settings.cache_clear()
     session_module.get_engine.cache_clear()
     session_module.get_session_factory.cache_clear()
+
+
+def test_raw_price_bars_are_idempotent_and_validate_ohlc(
+    isolated_store: Path,
+) -> None:
+    created = create_instrument(
+        instrument_name="Price Bar ETF",
+        instrument_type="etf",
+        currency="CNY",
+        identifiers=[
+            {
+                "identifier_type": "ticker",
+                "identifier_value": "510999.SH",
+                "is_primary": True,
+            }
+        ],
+        quote_selection_policy={
+            "trading": ["last", "close"],
+            "valuation": ["close", "last"],
+            "total_return": ["adjusted_close", "close", "last"],
+            "chart": ["adjusted_close", "close", "last"],
+            "reference": ["close", "last"],
+        },
+    )
+    instrument_id = str(created["instrument_id"])
+    rows = [
+        {
+            "as_of_date": "2026-07-15",
+            "open": "1.0100",
+            "high": "1.0300",
+            "low": "1.0000",
+            "close": "1.0200",
+            "previous_close": "1.0050",
+            "volume": "123456",
+            "turnover": "126000",
+            "adjustment_factor": "1.25",
+            "currency": "CNY",
+            "volume_unit": "lot",
+            "turnover_unit": "thousand_cny",
+            "provider": "tushare:fund_daily+adjustment_factor",
+            "status": "complete",
+        }
+    ]
+
+    assert instrument_store.upsert_price_bars(
+        instrument_id=instrument_id,
+        rows=rows,
+    ) == 1
+    assert instrument_store.upsert_price_bars(
+        instrument_id=instrument_id,
+        rows=rows,
+    ) == 0
+    assert instrument_store.get_price_bars(instrument_id=instrument_id) == [
+        {
+            "date": "2026-07-15",
+            "open": "1.01",
+            "high": "1.03",
+            "low": "1",
+            "close": "1.02",
+            "previous_close": "1.005",
+            "volume": "123456",
+            "turnover": "126000",
+            "adjustment_factor": "1.25",
+            "currency": "CNY",
+            "volume_unit": "lot",
+            "turnover_unit": "thousand_cny",
+            "provider": "tushare:fund_daily+adjustment_factor",
+            "status": "complete",
+        }
+    ]
+
+    with pytest.raises(ValueError, match="OHLC high/low ordering"):
+        instrument_store.upsert_price_bars(
+            instrument_id=instrument_id,
+            rows=[
+                {
+                    **rows[0],
+                    "high": "1.01",
+                    "close": "1.02",
+                }
+            ],
+        )
 
 
 def _market_data_persistence_state(
@@ -423,6 +607,107 @@ def _market_data_persistence_state(
     assert instrument_watermark is not None
     assert registry_watermark is not None
     return point_count[0], instrument_watermark[0], registry_watermark[0]
+
+
+def test_atomic_fund_nav_publication_keeps_unprovable_total_return_absent(
+    isolated_store: Path,
+) -> None:
+    initial = get_instrument("fund-us-agg")
+    assert initial is not None
+    publication_args = {
+        "instrument_id": "fund-us-agg",
+        "rows": [
+            {
+                "as_of_date": "2026-07-15",
+                "nav": "1.25",
+                "nav_status": "complete",
+                "nav_source_provider": "pytest-unit-nav",
+                "nav_lineage": {
+                    "kind": "provider_explicit",
+                    "evidence": {"source_field": "unit_nav"},
+                },
+                "currency": "USD",
+            }
+        ],
+        "projection_run": {
+            "source_observation_fingerprint": "a" * 64,
+            "projection_kind": "event_derived",
+            "projection_status": "unavailable",
+            "method_version": "dividend_reinvestment/v2",
+            "anchor_date": None,
+            "source_provider": "pytest-unit-nav",
+            "evidence": {
+                "unavailable_reason": "reinvestment_evidence_not_observed",
+                "source_row_count": 1,
+                "published_total_return_dates": [],
+                "missing_total_return_dates": ["2026-07-15"],
+            },
+            "created_by": "pytest",
+        },
+        "current_fund_nav_event_ids": [],
+        "current_fund_nav_reinvestment_evidence_ids": [],
+        "refresh_status": "imported",
+        "updated_by": "pytest",
+        "message": "Publish exact unit NAV without an unprovable total-return curve.",
+    }
+
+    first = publish_fund_nav_history(
+        **publication_args,
+        expected_market_data_updated_at=initial["market_data_updated_at"],
+    )
+    assert first is not None
+    assert first["changed"] is True
+    assert first["dirty_from"] == "2026-07-15"
+    detail = first["record"]
+    assert detail["current_fund_nav_projection_run_id"] == first[
+        "published_projection_run_id"
+    ]
+    assert detail["fund_nav_projection_runs"][0]["projection_status"] == "unavailable"
+    assert {
+        point["quote_basis"]
+        for point in detail["market_data"]
+        if point["metric_family"] == "nav"
+    } == {"official_nav"}
+    assert detail["fund_nav_adjustment_factors"] == []
+
+    assert list_stale_current_fund_nav_projections(
+        method_version="fund_nav_reinvestment_projection/v3"
+    ) == [
+        {
+            "instrument_id": "fund-us-agg",
+            "method_version": "dividend_reinvestment/v2",
+            "source_provider": "pytest-unit-nav",
+        }
+    ]
+    assert list_stale_current_fund_nav_projections(
+        method_version="dividend_reinvestment/v2"
+    ) == []
+
+    replay = publish_fund_nav_history(
+        **publication_args,
+        expected_market_data_updated_at=first["market_data_updated_at"],
+    )
+    assert replay is not None
+    assert replay["changed"] is False
+    assert replay["dirty_from"] is None
+    assert replay["market_data_updated_at"] == first["market_data_updated_at"]
+
+
+def test_instrument_summary_batch_is_bounded_and_does_not_load_histories(
+    isolated_store: Path,
+) -> None:
+    records = instrument_store.get_instrument_summaries(
+        ["fund-us-agg", "missing", "fund-us-agg"]
+    )
+
+    assert list(records) == ["fund-us-agg", "missing"]
+    assert records["missing"] is None
+    summary = records["fund-us-agg"]
+    assert summary is not None
+    assert summary["instrument_id"] == "fund-us-agg"
+    assert summary["latest_market_data"]
+    assert "market_data" not in summary
+    assert "fund_nav_event_revisions" not in summary
 
 
 def test_runtime_rejects_missing_persisted_quote_policy_without_fallback(
@@ -708,9 +993,10 @@ def test_list_instruments_filters_in_sql_semantics_and_returns_latest_points(
             "currency": "USD",
             "price_unit": "per_unit",
             "price_scale": "1",
-            "provider": "pytest",
-            "status": "complete",
-        }
+                "provider": "pytest",
+                "status": "complete",
+                "nav_lineage": None,
+            }
     ]
 
 
@@ -786,6 +1072,70 @@ def test_upsert_market_data_updates_shared_store_without_app_callbacks(
         point["as_of_date"] == "2026-04-16" and point["value"] == "97.0100"
         for point in record["latest_market_data"]
     )
+
+
+def test_nav_history_boundary_query_uses_canonical_nav_only(
+    isolated_store: Path,
+) -> None:
+    current = get_instrument("fund-us-agg")
+    assert current is not None
+    published = publish_fund_nav_history(
+        instrument_id="fund-us-agg",
+        rows=[
+            {
+                "as_of_date": "2025-12-25",
+                "nav": "96.50",
+                "nav_status": "complete",
+                "nav_source_provider": "pytest",
+                "nav_lineage": {
+                    "kind": "provider_explicit",
+                    "evidence": {"source_field": "unit_nav"},
+                },
+                "currency": "USD",
+            }
+        ],
+        projection_run={
+            "source_observation_fingerprint": "e" * 64,
+            "projection_kind": "event_derived",
+            "projection_status": "unavailable",
+            "method_version": "dividend_reinvestment/v2",
+            "anchor_date": None,
+            "source_provider": "pytest",
+            "evidence": {
+                "unavailable_reason": "reinvestment_evidence_not_observed",
+                "published_total_return_dates": [],
+                "missing_total_return_dates": ["2025-12-25"],
+            },
+            "created_by": "pytest",
+        },
+        current_fund_nav_event_ids=[],
+        current_fund_nav_reinvestment_evidence_ids=[],
+        expected_market_data_updated_at=current.get("market_data_updated_at"),
+        refresh_status="imported",
+        updated_by="pytest",
+        message="boundary fixture",
+        mode="manual",
+    )
+    assert published is not None
+    upsert_market_data(
+        instrument_id="cash-usd",
+        metric_family="price",
+        quote_basis="par",
+        as_of_date=date(2025, 12, 20),
+        value="1",
+        currency="USD",
+        provider="pytest",
+        status="complete",
+    )
+
+    assert list_instrument_ids_with_nav_history_before(
+        instrument_ids={"fund-us-agg", "cash-usd"},
+        before_date=date(2025, 12, 26),
+    ) == {"fund-us-agg"}
+    assert list_instrument_ids_with_nav_history_before(
+        instrument_ids=set(),
+        before_date=date(2025, 12, 26),
+    ) == set()
 
 
 def test_market_data_price_contract_is_derived_for_all_write_paths(
@@ -1077,7 +1427,7 @@ def test_market_data_price_contract_rejects_invalid_batch_atomically(
             ],
         )
 
-    with pytest.raises(ValueError, match="accrued_interest"):
+    with pytest.raises(ValueError, match="audited raw-to-canonical NAV import path"):
         upsert_market_data_points(
             instrument_id=bond["instrument_id"],
             rows=[
@@ -1289,27 +1639,100 @@ def test_market_data_watermark_is_globally_monotonic_within_same_clock_tick(
     assert second["market_data_updated_at"] == "2099-01-01T00:00:00.000001Z"
 
 
-def test_replace_nav_history_updates_shared_store_without_app_callbacks(
+def test_publish_fund_nav_history_updates_shared_store_without_app_callbacks(
     isolated_store: Path,
 ) -> None:
-    record = replace_nav_history(
+    current = get_instrument("fund-us-agg")
+    assert current is not None
+    record = publish_fund_nav_history(
         instrument_id="fund-us-agg",
         rows=[
             {
                 "as_of_date": "2026-04-14",
                 "nav": "100.0000",
+                "nav_status": "complete",
+                "nav_source_provider": "pytest",
+                "nav_lineage": {
+                    "kind": "provider_explicit",
+                    "evidence": {"source_field": "nav"},
+                },
                 "nav_with_dividend": "100.5000",
+                "nav_with_dividend_status": "complete",
+                "nav_with_dividend_source_provider": "pytest",
+                "nav_with_dividend_lineage": {
+                    "kind": "provider_explicit",
+                    "evidence": {
+                        "source_field": "test_total_nav",
+                        "factor_logical_key": "provider:2026-04-14",
+                    },
+                },
                 "currency": "USD",
             },
             {
                 "as_of_date": "2026-04-15",
                 "nav": "100.2000",
-                "nav_with_dividend": "100.7000",
+                "nav_status": "complete",
+                "nav_source_provider": "row-specific-provider",
+                "nav_with_dividend_source_provider": "total-return-provider",
+                "nav_lineage": {
+                    "kind": "provider_explicit",
+                    "evidence": {
+                        "source_field": "nav",
+                        "raw_observation_id": 42,
+                    },
+                },
+                "nav_with_dividend": "100.7010",
+                "nav_with_dividend_status": "complete",
+                "nav_with_dividend_lineage": {
+                    "kind": "provider_explicit",
+                    "evidence": {
+                        "source_field": "test_total_nav",
+                        "factor_logical_key": "provider:2026-04-15",
+                    },
+                },
                 "currency": "USD",
             },
         ],
-        provider="pytest",
-        point_status="complete",
+        projection_run={
+            "source_observation_fingerprint": "b" * 64,
+            "projection_kind": "provider_explicit",
+            "projection_status": "complete",
+            "method_version": "dividend_reinvestment/v2",
+            "anchor_date": "2026-04-14",
+            "source_provider": "pytest",
+            "evidence": {
+                "published_total_return_dates": ["2026-04-14", "2026-04-15"],
+                "missing_total_return_dates": [],
+            },
+            "created_by": "pytest",
+        },
+        current_fund_nav_event_ids=[],
+        current_fund_nav_reinvestment_evidence_ids=[],
+        adjustment_factors=[
+            {
+                "factor_logical_key": "provider:2026-04-14",
+                "as_of_date": "2026-04-14",
+                "factor_level": "1.005",
+                "factor_kind": "provider_implied",
+                "evidence_kind": "provider_total_return",
+                "method_version": "dividend_reinvestment/v2",
+                "anchor_date": "2026-04-14",
+                "source_provider": "pytest",
+                "evidence": {"source_field": "test_total_nav"},
+            },
+            {
+                "factor_logical_key": "provider:2026-04-15",
+                "as_of_date": "2026-04-15",
+                "factor_level": "1.005",
+                "factor_kind": "provider_implied",
+                "evidence_kind": "provider_total_return",
+                "method_version": "dividend_reinvestment/v2",
+                "anchor_date": "2026-04-15",
+                "source_provider": "total-return-provider",
+                "evidence": {"source_field": "test_total_nav"},
+            },
+        ],
+        expected_market_data_updated_at=current.get("market_data_updated_at"),
         refresh_status="ready",
         updated_by="pytest",
         message="nav import",
@@ -1323,11 +1746,149 @@ def test_replace_nav_history_updates_shared_store_without_app_callbacks(
         and point["value"] == "100.2000"
         and point["price_unit"] == "per_unit"
         and point["price_scale"] == "1"
-        for point in record["latest_market_data"]
+        and point["provider"] == "row-specific-provider"
+        and point["nav_lineage"]["evidence"]["raw_observation_id"] == 42
+        for point in record["record"]["latest_market_data"]
     )
 
 
-def test_replace_nav_history_rejects_fx_before_persistence(
+def test_fund_return_policy_requires_the_canonical_total_return_nav(
+    isolated_store: Path,
+) -> None:
+    created = create_instrument(
+        instrument_name="Strict Return Fund",
+        instrument_type="fund",
+        currency="CNY",
+        identifiers=[
+            {
+                "identifier_type": "internal",
+                "identifier_value": "STRICT-RETURN-FUND",
+                "is_primary": True,
+            }
+        ],
+    )
+
+    assert created["quote_selection_policy"]["total_return"] == ["total_return_nav"]
+    assert created["quote_selection_policy"]["chart"] == ["total_return_nav"]
+
+    invalid_policy = dict(created["quote_selection_policy"])
+    invalid_policy["total_return"] = ["total_return_nav", "official_nav"]
+    with pytest.raises(ValueError, match="fund total_return must use only"):
+        instrument_store.upsert_quote_selection_policy(
+            instrument_id=str(created["instrument_id"]),
+            quote_selection_policy=invalid_policy,
+        )
+
+
+def test_publish_fund_nav_history_never_persists_cash_cumulative_nav(
+    isolated_store: Path,
+) -> None:
+    current = get_instrument("fund-us-agg")
+    assert current is not None
+    record = publish_fund_nav_history(
+        instrument_id="fund-us-agg",
+        rows=[
+            {
+                "as_of_date": "2026-04-16",
+                "nav": "100.3000",
+                "nav_status": "complete",
+                "nav_source_provider": "pytest",
+                "nav_lineage": {
+                    "kind": "provider_explicit",
+                    "evidence": {"source_field": "nav"},
+                },
+                "cash_cumulative_nav": "105.3000",
+                "nav_with_dividend": "105.3150",
+                "nav_with_dividend_status": "complete",
+                "nav_with_dividend_source_provider": "pytest",
+                "nav_with_dividend_lineage": {
+                    "kind": "provider_explicit",
+                    "evidence": {
+                        "source_field": "test_total_nav",
+                        "factor_logical_key": "provider:2026-04-16",
+                    },
+                },
+                "currency": "USD",
+            }
+        ],
+        projection_run={
+            "source_observation_fingerprint": "c" * 64,
+            "projection_kind": "provider_explicit",
+            "projection_status": "complete",
+            "method_version": "dividend_reinvestment/v2",
+            "anchor_date": "2026-04-16",
+            "source_provider": "pytest",
+            "evidence": {
+                "published_total_return_dates": ["2026-04-16"],
+                "missing_total_return_dates": [],
+            },
+            "created_by": "pytest",
+        },
+        current_fund_nav_event_ids=[],
+        current_fund_nav_reinvestment_evidence_ids=[],
+        adjustment_factors=[
+            {
+                "factor_logical_key": "provider:2026-04-16",
+                "as_of_date": "2026-04-16",
+                "factor_level": "1.05",
+                "factor_kind": "provider_implied",
+                "evidence_kind": "provider_total_return",
+                "method_version": "dividend_reinvestment/v2",
+                "anchor_date": "2026-04-16",
+                "source_provider": "pytest",
+                "evidence": {"source_field": "test_total_nav"},
+            }
+        ],
+        expected_market_data_updated_at=current.get("market_data_updated_at"),
+        refresh_status="ready",
+        updated_by="pytest",
+        message="strict nav import",
+    )
+
+    assert record is not None
+    imported_bases = {
+        point["quote_basis"]
+        for point in record["record"]["latest_market_data"]
+        if point["as_of_date"] == "2026-04-16"
+    }
+    assert imported_bases == {"official_nav", "total_return_nav"}
+
+    with pytest.raises(ValueError, match="has no NAV observation"):
+        latest = get_instrument("fund-us-agg")
+        assert latest is not None
+        publish_fund_nav_history(
+            instrument_id="fund-us-agg",
+            rows=[
+                {
+                    "as_of_date": "2026-04-17",
+                    "cash_cumulative_nav": "105.5000",
+                    "currency": "USD",
+                }
+            ],
+            projection_run={
+                "source_observation_fingerprint": "d" * 64,
+                "projection_kind": "event_derived",
+                "projection_status": "unavailable",
+                "method_version": "dividend_reinvestment/v2",
+                "anchor_date": None,
+                "source_provider": "pytest",
+                "evidence": {
+                    "unavailable_reason": "no_unit_nav_observation",
+                    "published_total_return_dates": [],
+                    "missing_total_return_dates": [],
+                },
+                "created_by": "pytest",
+            },
+            current_fund_nav_event_ids=[],
+            current_fund_nav_reinvestment_evidence_ids=[],
+            expected_market_data_updated_at=latest.get("market_data_updated_at"),
+            refresh_status="ready",
+            updated_by="pytest",
+            message="cash cumulative only",
+        )
+
+
+def test_publish_fund_nav_history_rejects_fx_before_persistence(
     isolated_store: Path,
 ) -> None:
     fx = create_instrument(
@@ -1347,7 +1908,7 @@ def test_replace_nav_history_rejects_fx_before_persistence(
         ValueError,
         match="NAV history import is only supported for fund instruments",
     ):
-        replace_nav_history(
+        publish_fund_nav_history(
             instrument_id=str(fx["instrument_id"]),
             rows=[
                 {
@@ -1356,8 +1917,23 @@ def test_replace_nav_history_rejects_fx_before_persistence(
                     "currency": "CNY",
                 }
             ],
-            provider="pytest",
-            point_status="complete",
+            projection_run={
+                "source_observation_fingerprint": "e" * 64,
+                "projection_kind": "event_derived",
+                "projection_status": "unavailable",
+                "method_version": "dividend_reinvestment/v2",
+                "anchor_date": None,
+                "source_provider": "pytest",
+                "evidence": {
+                    "unavailable_reason": "not_a_fund",
+                    "published_total_return_dates": [],
+                    "missing_total_return_dates": ["2026-04-15"],
+                },
+                "created_by": "pytest",
+            },
+            current_fund_nav_event_ids=[],
+            current_fund_nav_reinvestment_evidence_ids=[],
+            expected_market_data_updated_at=fx.get("market_data_updated_at"),
             refresh_status="ready",
             updated_by="pytest",
             message="invalid FX NAV import",
@@ -1535,28 +2111,50 @@ def test_email_failure_does_not_infer_a_missing_persistent_cursor(
     assert failed["refresh_status"]["last_successful_requested_at"] is None
 
 
-def test_replace_nav_history_advances_only_email_success_cursor(
+def test_publish_fund_nav_history_advances_only_email_success_cursor(
     isolated_store: Path,
 ) -> None:
-    manual = replace_nav_history(
+    current = get_instrument("fund-us-agg")
+    assert current is not None
+    manual = publish_fund_nav_history(
         instrument_id="fund-us-agg",
         rows=[
             {
                 "as_of_date": "2026-04-16",
                 "nav": "100.3000",
-                "nav_with_dividend": "100.8000",
+                "nav_status": "complete",
+                "nav_source_provider": "pytest",
+                "nav_lineage": {
+                    "kind": "provider_explicit",
+                    "evidence": {"source_field": "nav"},
+                },
                 "currency": "USD",
             }
         ],
-        provider="pytest",
-        point_status="complete",
+        projection_run={
+            "source_observation_fingerprint": "f" * 64,
+            "projection_kind": "event_derived",
+            "projection_status": "unavailable",
+            "method_version": "dividend_reinvestment/v2",
+            "anchor_date": None,
+            "source_provider": "pytest",
+            "evidence": {
+                "unavailable_reason": "reinvestment_evidence_not_observed",
+                "published_total_return_dates": [],
+                "missing_total_return_dates": ["2026-04-16"],
+            },
+            "created_by": "pytest",
+        },
+        current_fund_nav_event_ids=[],
+        current_fund_nav_reinvestment_evidence_ids=[],
+        expected_market_data_updated_at=current.get("market_data_updated_at"),
         refresh_status="imported",
         updated_by="pytest",
         message="manual import",
         mode="manual",
     )
     assert manual is not None
-    assert manual["refresh_status"]["last_successful_requested_at"] is None
+    assert manual["record"]["refresh_status"]["last_successful_requested_at"] is None
     manual_status = update_refresh_status(
         instrument_id="fund-us-agg",
         status="no_match",
@@ -1575,18 +2173,40 @@ def test_replace_nav_history_advances_only_email_success_cursor(
         source_api_profile=None,
         source_email_rules=[{}],
     )
-    email = replace_nav_history(
+    current = get_instrument("fund-us-agg")
+    assert current is not None
+    email = publish_fund_nav_history(
         instrument_id="fund-us-agg",
         rows=[
             {
                 "as_of_date": "2026-04-17",
                 "nav": "100.4000",
-                "nav_with_dividend": "100.9000",
+                "nav_status": "complete",
+                "nav_source_provider": "pytest",
+                "nav_lineage": {
+                    "kind": "provider_explicit",
+                    "evidence": {"source_field": "nav"},
+                },
                 "currency": "USD",
             }
         ],
-        provider="pytest",
-        point_status="complete",
+        projection_run={
+            "source_observation_fingerprint": "0" * 64,
+            "projection_kind": "event_derived",
+            "projection_status": "unavailable",
+            "method_version": "dividend_reinvestment/v2",
+            "anchor_date": None,
+            "source_provider": "pytest",
+            "evidence": {
+                "unavailable_reason": "reinvestment_evidence_not_observed",
+                "published_total_return_dates": [],
+                "missing_total_return_dates": ["2026-04-17"],
+            },
+            "created_by": "pytest",
+        },
+        current_fund_nav_event_ids=[],
+        current_fund_nav_reinvestment_evidence_ids=[],
+        expected_market_data_updated_at=current.get("market_data_updated_at"),
         refresh_status="imported",
         updated_by="pytest",
         message="email import",
@@ -1594,8 +2214,8 @@ def test_replace_nav_history_advances_only_email_success_cursor(
     )
     assert email is not None
     assert (
-        email["refresh_status"]["last_successful_requested_at"]
-        == email["refresh_status"]["requested_at"]
+        email["record"]["refresh_status"]["last_successful_requested_at"]
+        == email["record"]["refresh_status"]["requested_at"]
     )
 
 
@@ -1612,9 +2232,10 @@ def test_preview_nav_import_filters_rows_to_selected_instrument(
     )
 
     assert rows is not None
-    assert len(rows) == 1
-    assert rows[0]["instrument_code"] == "AGG"
-    assert rows[0]["as_of_date"] == "2026-04-15"
+    assert {
+        (row["as_of_date"], "official_nav" if row.get("nav") else "total_return_nav")
+        for row in rows
+    } == {("2026-04-15", "official_nav")}
 
 
 def test_import_nav_file_accepts_csv_bytes(

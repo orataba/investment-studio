@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from collections.abc import Iterable
+from datetime import date
+
 from portfolio_ops_instrument_core import instrument_store as shared_store
 
 from platform_app.db.session import get_session_factory
@@ -8,6 +11,7 @@ from platform_app.db.session import get_session_factory
 DEFAULT_REGISTRY_NAME = shared_store.DEFAULT_REGISTRY_NAME
 EMPTY_STORE = shared_store.EMPTY_STORE
 _normalize_store = shared_store._normalize_store
+StaleFundNavPublicationError = shared_store.StaleFundNavPublicationError
 _SOURCE_SETTING_UNSET = object()
 
 
@@ -31,8 +35,43 @@ def list_instruments(
     )
 
 
+def list_instrument_ids_with_nav_history_before(
+    *,
+    instrument_ids: Iterable[str],
+    before_date: date,
+) -> set[str]:
+    return shared_store.list_instrument_ids_with_nav_history_before(
+        get_session_factory(),
+        instrument_ids=instrument_ids,
+        before_date=before_date,
+    )
+
+
+def list_stale_current_fund_nav_projections(
+    *,
+    method_version: str,
+    include_inactive: bool = False,
+    instrument_ids: Iterable[str] | None = None,
+) -> list[dict[str, str]]:
+    return shared_store.list_stale_current_fund_nav_projections(
+        get_session_factory(),
+        method_version=method_version,
+        include_inactive=include_inactive,
+        instrument_ids=instrument_ids,
+    )
+
+
 def get_instrument(instrument_id: str) -> dict[str, object] | None:
     return shared_store.get_instrument(get_session_factory(), instrument_id)
+
+
+def get_instrument_summaries(
+    instrument_ids: list[str] | set[str] | tuple[str, ...],
+) -> dict[str, dict[str, object] | None]:
+    return shared_store.get_instrument_summaries(
+        get_session_factory(),
+        instrument_ids,
+    )
 
 
 def find_instrument_by_identifier(
@@ -77,6 +116,7 @@ def upsert_market_data(
     currency: str,
     provider: str | None,
     status: str,
+    nav_lineage: dict[str, object] | None = None,
 ) -> dict[str, object] | None:
     return shared_store.upsert_market_data(
         get_session_factory(),
@@ -88,6 +128,7 @@ def upsert_market_data(
         currency=currency,
         provider=provider,
         status=status,
+        nav_lineage=nav_lineage,
     )
 
 
@@ -100,6 +141,34 @@ def upsert_market_data_points(
         get_session_factory(),
         instrument_id=instrument_id,
         rows=rows,
+    )
+
+
+def upsert_price_bars(
+    *,
+    instrument_id: str,
+    rows: list[dict[str, object]],
+) -> int | None:
+    return shared_store.upsert_price_bars(
+        get_session_factory(),
+        instrument_id=instrument_id,
+        rows=rows,
+    )
+
+
+def get_price_bars(
+    *,
+    instrument_id: str,
+    start_date: date | None = None,
+    end_date: date | None = None,
+    limit: int | None = None,
+) -> list[dict[str, object]]:
+    return shared_store.get_price_bars(
+        get_session_factory(),
+        instrument_id=instrument_id,
+        start_date=start_date,
+        end_date=end_date,
+        limit=limit,
     )
 
 
@@ -153,23 +222,35 @@ def upsert_quote_selection_policy(
     )
 
 
-def replace_nav_history(
+def publish_fund_nav_history(
     *,
     instrument_id: str,
     rows: list[dict[str, object]],
-    provider: str | None,
-    point_status: str,
+    projection_run: dict[str, object],
+    current_fund_nav_event_ids: Iterable[str],
+    current_fund_nav_reinvestment_evidence_ids: Iterable[str],
+    event_revisions: Iterable[dict[str, object]] = (),
+    reinvestment_evidence_revisions: Iterable[dict[str, object]] = (),
+    adjustment_factors: Iterable[dict[str, object]] = (),
+    expected_market_data_updated_at: str | None,
     refresh_status: str,
     updated_by: str | None,
     message: str,
     mode: str | None = None,
 ) -> dict[str, object] | None:
-    return shared_store.replace_nav_history(
+    return shared_store.publish_fund_nav_history(
         get_session_factory(),
         instrument_id=instrument_id,
         rows=rows,
-        provider=provider,
-        point_status=point_status,
+        projection_run=projection_run,
+        current_fund_nav_event_ids=current_fund_nav_event_ids,
+        current_fund_nav_reinvestment_evidence_ids=(
+            current_fund_nav_reinvestment_evidence_ids
+        ),
+        event_revisions=event_revisions,
+        reinvestment_evidence_revisions=reinvestment_evidence_revisions,
+        adjustment_factors=adjustment_factors,
+        expected_market_data_updated_at=expected_market_data_updated_at,
         refresh_status=refresh_status,
         updated_by=updated_by,
         message=message,

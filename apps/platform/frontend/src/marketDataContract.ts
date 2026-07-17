@@ -25,8 +25,11 @@ export const QUOTE_BASIS_OPTIONS: Record<MetricFamily, QuoteBasisOption[]> = {
     { value: 'par', label: 'Par' },
   ],
   nav: [
-    { value: 'official_nav', label: 'Official NAV' },
-    { value: 'total_return_nav', label: 'Total Return NAV' },
+    { value: 'official_nav', label: 'Unit NAV' },
+    {
+      value: 'total_return_nav',
+      label: 'Dividend-Reinvested Total Return NAV',
+    },
   ],
   fx: [{ value: 'spot', label: 'Spot' }],
 }
@@ -44,9 +47,6 @@ export function defaultMarketDataSelection(instrumentType: InstrumentType): {
     quoteBasis = 'par'
   } else if (instrumentType === 'bond') {
     quoteBasis = 'dirty_price'
-  } else if (instrumentType === 'fund') {
-    metricFamily = 'nav'
-    quoteBasis = 'official_nav'
   }
   return {
     metric_family: metricFamily,

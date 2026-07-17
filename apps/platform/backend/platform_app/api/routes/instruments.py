@@ -1,11 +1,19 @@
 from __future__ import annotations
 
+from datetime import date
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Query
-from typing import Annotated
+from typing import Annotated, Never
 
 from platform_app.api.contracts import (
     PlatformBulkRefreshRequest,
     PlatformBulkRefreshResponse,
+    PlatformFundNavActionCandidate,
+    PlatformFundNavActionCandidateRejectRequest,
+    PlatformFundNavActionCreateRequest,
+    PlatformFundNavActionRevisionRequest,
+    PlatformFundNavMutationResponse,
+    PlatformFundNavReinvestmentEvidenceCreateRequest,
+    PlatformFundNavReinvestmentEvidenceRevisionRequest,
     PlatformInstrumentCreateRequest,
     PlatformInstrumentDetail,
     PlatformLifecycleTransitionRequest,
@@ -20,6 +28,21 @@ from platform_app.api.contracts import (
     PlatformRefreshTriggerRequest,
     PlatformSourceSettingsUpdateRequest,
 )
+from platform_app.services.fund_nav_action_candidates import (
+    FundNavActionCandidateConflictError,
+    FundNavActionCandidateNotFoundError,
+)
+from platform_app.services.fund_nav_actions import (
+    FundNavAdminConflictError,
+    confirm_fund_nav_action_candidate,
+    create_fund_nav_action,
+    create_fund_nav_reinvestment_evidence,
+    list_fund_nav_action_candidates,
+    reject_fund_nav_action_candidate,
+    resume_fund_nav_action_candidate_confirmation,
+    revise_fund_nav_action,
+    revise_fund_nav_reinvestment_evidence,
+)
 from platform_app.services.market_data_ops import (
     import_nav_file,
     import_nav_text,
@@ -28,6 +51,7 @@ from platform_app.services.market_data_ops import (
     refresh_market_data_batch,
 )
 from platform_app.services.instrument_store import (
+    StaleFundNavPublicationError,
     archive_instrument,
     create_instrument,
     find_instrument_by_identifier,
@@ -153,6 +177,323 @@ def get_instrument_record(instrument_id: str) -> PlatformInstrumentDetail:
     return PlatformInstrumentDetail.model_validate(record)
 
 
+@router.get(
+    "/{instrument_id}/nav-action-candidates",
+    response_model=list[PlatformFundNavActionCandidate],
+)
+def list_instrument_nav_action_candidates(
+    instrument_id: str,
+    include_history: bool = False,
+) -> list[PlatformFundNavActionCandidate]:
+    records = list_fund_nav_action_candidates(
+        instrument_id=instrument_id,
+        include_history=include_history,
+    )
+    if records is None:
+        raise HTTPException(status_code=404, detail="Instrument not found")
+    return [PlatformFundNavActionCandidate.model_validate(item) for item in records]
+
+
+@router.post(
+    "/{instrument_id}/nav-action-candidates/{candidate_id}/reject",
+    response_model=PlatformFundNavActionCandidate,
+)
+def reject_instrument_nav_action_candidate(
+    instrument_id: str,
+    candidate_id: str,
+    payload: PlatformFundNavActionCandidateRejectRequest,
+) -> PlatformFundNavActionCandidate:
+    try:
+        record = reject_fund_nav_action_candidate(
+            instrument_id=instrument_id,
+            candidate_id=candidate_id,
+            reason=payload.reason,
+            decision_by=payload.decision_by,
+        )
+    except FundNavActionCandidateNotFoundError as error:
+        raise HTTPException(status_code=404, detail="NAV action candidate not found") from error
+    except (FundNavActionCandidateConflictError, ValueError) as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    if record is None:
+        raise HTTPException(status_code=404, detail="Instrument not found")
+    return PlatformFundNavActionCandidate.model_validate(record)
+
+
+def _fund_nav_mutation_response(
+    *,
+    instrument_id: str,
+    result: dict[str, object] | None,
+    background_tasks: BackgroundTasks,
+) -> PlatformFundNavMutationResponse:
+    if result is None:
+        raise HTTPException(status_code=404, detail="Instrument not found")
+    if bool(result.get("changed")):
+        raw_dirty_from = result.get("dirty_from")
+        dirty_from = (
+            date.fromisoformat(str(raw_dirty_from))
+            if raw_dirty_from
+            else None
+        )
+        queue_market_data_downstream_refresh(
+            background_tasks,
+            instrument_ids=[instrument_id],
+            dirty_from=dirty_from,
+        )
+    return PlatformFundNavMutationResponse.model_validate(result)
+
+
+def _raise_fund_nav_mutation_error(error: Exception) -> Never:
+    if isinstance(error, FundNavActionCandidateNotFoundError):
+        raise HTTPException(
+            status_code=404,
+            detail="NAV action candidate not found",
+        ) from error
+    if isinstance(
+        error,
+        (
+            FundNavActionCandidateConflictError,
+            FundNavAdminConflictError,
+            StaleFundNavPublicationError,
+        ),
+    ):
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    raise HTTPException(status_code=400, detail=str(error)) from error
+
+
+@router.post(
+    "/{instrument_id}/fund-nav-actions",
+    response_model=PlatformFundNavMutationResponse,
+)
+def create_instrument_fund_nav_action(
+    instrument_id: str,
+    payload: PlatformFundNavActionCreateRequest,
+    background_tasks: BackgroundTasks,
+) -> PlatformFundNavMutationResponse:
+    try:
+        result = create_fund_nav_action(
+            instrument_id=instrument_id,
+            action_payload=payload.action.model_dump(mode="json", exclude_none=True),
+            reinvestment_evidence_payload=(
+                payload.reinvestment_evidence.model_dump(
+                    mode="json",
+                    exclude_none=True,
+                )
+                if payload.reinvestment_evidence is not None
+                else None
+            ),
+            client_mutation_id=payload.client_mutation_id,
+            recorded_by=payload.recorded_by,
+            revision_reason=payload.revision_reason,
+        )
+    except (
+        FundNavAdminConflictError,
+        StaleFundNavPublicationError,
+        ValueError,
+    ) as error:
+        _raise_fund_nav_mutation_error(error)
+    return _fund_nav_mutation_response(
+        instrument_id=instrument_id,
+        result=result,
+        background_tasks=background_tasks,
+    )
+
+
+@router.post(
+    "/{instrument_id}/fund-nav-actions/{action_id}/revisions",
+    response_model=PlatformFundNavMutationResponse,
+)
+def revise_instrument_fund_nav_action(
+    instrument_id: str,
+    action_id: str,
+    payload: PlatformFundNavActionRevisionRequest,
+    background_tasks: BackgroundTasks,
+) -> PlatformFundNavMutationResponse:
+    try:
+        result = revise_fund_nav_action(
+            instrument_id=instrument_id,
+            action_id=action_id,
+            predecessor_fund_nav_event_id=payload.predecessor_fund_nav_event_id,
+            revision_kind=payload.revision_kind,
+            action_payload=(
+                payload.action.model_dump(mode="json", exclude_none=True)
+                if payload.action is not None
+                else None
+            ),
+            reinvestment_evidence_payload=(
+                payload.reinvestment_evidence.model_dump(
+                    mode="json",
+                    exclude_none=True,
+                )
+                if payload.reinvestment_evidence is not None
+                else None
+            ),
+            client_mutation_id=payload.client_mutation_id,
+            recorded_by=payload.recorded_by,
+            revision_reason=payload.revision_reason,
+        )
+    except (
+        FundNavAdminConflictError,
+        StaleFundNavPublicationError,
+        ValueError,
+    ) as error:
+        _raise_fund_nav_mutation_error(error)
+    return _fund_nav_mutation_response(
+        instrument_id=instrument_id,
+        result=result,
+        background_tasks=background_tasks,
+    )
+
+
+@router.post(
+    "/{instrument_id}/fund-nav-events/{fund_nav_event_id}/reinvestment-evidence",
+    response_model=PlatformFundNavMutationResponse,
+)
+def create_instrument_fund_nav_reinvestment_evidence(
+    instrument_id: str,
+    fund_nav_event_id: str,
+    payload: PlatformFundNavReinvestmentEvidenceCreateRequest,
+    background_tasks: BackgroundTasks,
+) -> PlatformFundNavMutationResponse:
+    try:
+        result = create_fund_nav_reinvestment_evidence(
+            instrument_id=instrument_id,
+            fund_nav_event_id=fund_nav_event_id,
+            evidence_payload=payload.evidence.model_dump(
+                mode="json",
+                exclude_none=True,
+            ),
+            client_mutation_id=payload.client_mutation_id,
+            recorded_by=payload.recorded_by,
+            revision_reason=payload.revision_reason,
+        )
+    except (
+        FundNavAdminConflictError,
+        StaleFundNavPublicationError,
+        ValueError,
+    ) as error:
+        _raise_fund_nav_mutation_error(error)
+    return _fund_nav_mutation_response(
+        instrument_id=instrument_id,
+        result=result,
+        background_tasks=background_tasks,
+    )
+
+
+@router.post(
+    "/{instrument_id}/fund-nav-reinvestment-evidence/{evidence_id}/revisions",
+    response_model=PlatformFundNavMutationResponse,
+)
+def revise_instrument_fund_nav_reinvestment_evidence(
+    instrument_id: str,
+    evidence_id: str,
+    payload: PlatformFundNavReinvestmentEvidenceRevisionRequest,
+    background_tasks: BackgroundTasks,
+) -> PlatformFundNavMutationResponse:
+    if evidence_id != payload.predecessor_fund_nav_reinvestment_evidence_id:
+        raise HTTPException(
+            status_code=409,
+            detail="Evidence path id must match the optimistic predecessor id.",
+        )
+    try:
+        result = revise_fund_nav_reinvestment_evidence(
+            instrument_id=instrument_id,
+            predecessor_fund_nav_reinvestment_evidence_id=(
+                payload.predecessor_fund_nav_reinvestment_evidence_id
+            ),
+            revision_kind=payload.revision_kind,
+            evidence_payload=(
+                payload.evidence.model_dump(mode="json", exclude_none=True)
+                if payload.evidence is not None
+                else None
+            ),
+            client_mutation_id=payload.client_mutation_id,
+            recorded_by=payload.recorded_by,
+            revision_reason=payload.revision_reason,
+        )
+    except (
+        FundNavAdminConflictError,
+        StaleFundNavPublicationError,
+        ValueError,
+    ) as error:
+        _raise_fund_nav_mutation_error(error)
+    return _fund_nav_mutation_response(
+        instrument_id=instrument_id,
+        result=result,
+        background_tasks=background_tasks,
+    )
+
+
+@router.post(
+    "/{instrument_id}/nav-action-candidates/{candidate_id}/confirm",
+    response_model=PlatformFundNavMutationResponse,
+)
+def confirm_instrument_nav_action_candidate(
+    instrument_id: str,
+    candidate_id: str,
+    payload: PlatformFundNavActionCreateRequest,
+    background_tasks: BackgroundTasks,
+) -> PlatformFundNavMutationResponse:
+    try:
+        result = confirm_fund_nav_action_candidate(
+            instrument_id=instrument_id,
+            candidate_id=candidate_id,
+            action_payload=payload.action.model_dump(mode="json", exclude_none=True),
+            reinvestment_evidence_payload=(
+                payload.reinvestment_evidence.model_dump(
+                    mode="json",
+                    exclude_none=True,
+                )
+                if payload.reinvestment_evidence is not None
+                else None
+            ),
+            client_mutation_id=payload.client_mutation_id,
+            recorded_by=payload.recorded_by,
+            revision_reason=payload.revision_reason,
+        )
+    except (
+        FundNavActionCandidateNotFoundError,
+        FundNavActionCandidateConflictError,
+        FundNavAdminConflictError,
+        StaleFundNavPublicationError,
+        ValueError,
+    ) as error:
+        _raise_fund_nav_mutation_error(error)
+    return _fund_nav_mutation_response(
+        instrument_id=instrument_id,
+        result=result,
+        background_tasks=background_tasks,
+    )
+
+
+@router.post(
+    "/{instrument_id}/nav-action-candidates/{candidate_id}/resume-confirmation",
+    response_model=PlatformFundNavMutationResponse,
+)
+def resume_instrument_nav_action_candidate_confirmation(
+    instrument_id: str,
+    candidate_id: str,
+    background_tasks: BackgroundTasks,
+) -> PlatformFundNavMutationResponse:
+    try:
+        result = resume_fund_nav_action_candidate_confirmation(
+            instrument_id=instrument_id,
+            candidate_id=candidate_id,
+        )
+    except (
+        FundNavActionCandidateNotFoundError,
+        FundNavActionCandidateConflictError,
+        FundNavAdminConflictError,
+        StaleFundNavPublicationError,
+        ValueError,
+    ) as error:
+        _raise_fund_nav_mutation_error(error)
+    return _fund_nav_mutation_response(
+        instrument_id=instrument_id,
+        result=result,
+        background_tasks=background_tasks,
+    )
+
+
 @router.post("/{instrument_id}/market-data", response_model=PlatformInstrumentRecord)
 def upsert_instrument_market_data(
     instrument_id: str,
@@ -169,6 +510,11 @@ def upsert_instrument_market_data(
             currency=payload.currency,
             provider=payload.provider,
             status=payload.status,
+            nav_lineage=(
+                payload.nav_lineage.model_dump(mode="json")
+                if payload.nav_lineage is not None
+                else None
+            ),
         )
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error

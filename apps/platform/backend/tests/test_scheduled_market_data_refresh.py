@@ -17,6 +17,20 @@ scheduled_refresh = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(scheduled_refresh)
 
 
+@pytest.fixture(autouse=True)
+def _empty_projection_reconciliation(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        scheduled_refresh,
+        "rebuild_stale_fund_nav_projections",
+        lambda **kwargs: {
+            "source": "fund_nav_projection",
+            "refreshed_count": 0,
+            "skipped_count": 0,
+            "results": [],
+        },
+    )
+
+
 def _args(tmp_path: Path, **overrides: object) -> argparse.Namespace:
     values: dict[str, object] = {
         "channel": "all",
@@ -81,6 +95,52 @@ def test_all_channels_merge_into_one_downstream_notification(monkeypatch, tmp_pa
     assert summary["updated_instrument_count"] == 2
     assert summary["downstream_request_count"] == 2
     assert summary["refresh_all_portfolios"] is True
+    assert [item["channel"] for item in summary["channels"]] == [
+        "tushare",
+        "email",
+        "fund_nav_projection",
+    ]
+
+
+def test_all_channel_notifies_for_projection_only_rebuild(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    notified: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        scheduled_refresh,
+        "refresh_market_data_batch",
+        lambda **kwargs: {
+            "source": kwargs["source"],
+            "refreshed_count": 0,
+            "skipped_count": 0,
+            "results": [],
+        },
+    )
+    monkeypatch.setattr(
+        scheduled_refresh,
+        "rebuild_stale_fund_nav_projections",
+        lambda **kwargs: {
+            "source": "fund_nav_projection",
+            "refreshed_count": 1,
+            "skipped_count": 4,
+            "results": [_updated_result("fund-manual", "fund")],
+        },
+    )
+    monkeypatch.setattr(
+        scheduled_refresh,
+        "notify_market_data_downstream_refresh",
+        lambda **kwargs: (
+            notified.append(kwargs)
+            or scheduled_refresh.DownstreamRefreshResult(request_count=2)
+        ),
+    )
+
+    exit_code, summary = scheduled_refresh._run_refresh(_args(tmp_path))
+
+    assert exit_code == 0
+    assert summary["updated_instrument_ids"] == ["fund-manual"]
+    assert notified[0]["instrument_ids"] == ["fund-manual"]
 
 
 def test_strict_downstream_failure_sets_failed_summary(monkeypatch, tmp_path: Path) -> None:
@@ -203,6 +263,168 @@ def test_retry_timeout_keeps_failed_result_and_continues_to_next_item(monkeypatc
         "fund-timeout": "failed",
         "fund-next": "refreshed",
     }
+
+
+def test_email_failures_retry_one_mailbox_batch_not_once_per_failed_item(
+    monkeypatch,
+) -> None:
+    calls: list[str] = []
+
+    def fake_batch(**kwargs):  # type: ignore[no-untyped-def]
+        calls.append(kwargs["source"])
+        return {
+            "source": "email",
+            "skipped_count": 0,
+            "results": [_updated_result("fund-a", "fund")],
+        }
+
+    monkeypatch.setattr(scheduled_refresh, "refresh_market_data_batch", fake_batch)
+    monkeypatch.setattr(
+        scheduled_refresh,
+        "refresh_market_data_with_timeout",
+        lambda **kwargs: pytest.fail(
+            f"email retry must not refresh one item: {kwargs['instrument_id']}"
+        ),
+    )
+
+    results, response = scheduled_refresh._retry_failed_email_batch(
+        results=[
+            {**_updated_result("fund-a", "fund"), "status": "failed"},
+            {**_updated_result("fund-b", "fund"), "status": "failed"},
+            {
+                **_updated_result("email-folder:INBOX", "other"),
+                "status": "failed",
+            },
+        ],
+        updated_by="pytest",
+        full_history=False,
+        include_inactive=False,
+        retry_attempts=1,
+    )
+
+    assert calls == ["email"]
+    assert response is not None
+    assert [item["instrument_id"] for item in results] == ["fund-a"]
+
+
+def test_email_retry_preserves_updates_from_first_attempt_and_drops_resolved_folder_failure(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        scheduled_refresh,
+        "refresh_market_data_batch",
+        lambda **kwargs: {
+            "source": kwargs["source"],
+            "skipped_count": 0,
+            "results": [
+                {
+                    **_updated_result("fund-a", "fund"),
+                    "status": "no_new_data",
+                },
+                _updated_result("fund-b", "fund"),
+            ],
+        },
+    )
+
+    results, _ = scheduled_refresh._retry_failed_email_batch(
+        results=[
+            _updated_result("fund-a", "fund"),
+            {
+                **_updated_result("email-folder:INBOX", "other"),
+                "status": "failed",
+            },
+        ],
+        updated_by="pytest",
+        full_history=False,
+        include_inactive=False,
+        retry_attempts=1,
+    )
+
+    assert {
+        item["instrument_id"]: item["status"] for item in results
+    } == {"fund-a": "refreshed", "fund-b": "refreshed"}
+
+
+def test_projection_retry_targets_only_failed_reconciliations(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[set[str]] = []
+
+    def fake_rebuild(**kwargs: object) -> dict[str, object]:
+        instrument_ids = set(kwargs["instrument_ids"])
+        calls.append(instrument_ids)
+        return {
+            "source": "fund_nav_projection",
+            "results": [_updated_result(instrument_id, "fund") for instrument_id in instrument_ids],
+        }
+
+    monkeypatch.setattr(
+        scheduled_refresh,
+        "rebuild_stale_fund_nav_projections",
+        fake_rebuild,
+    )
+    results = scheduled_refresh._retry_failed_projection_batch(
+        results=[
+            {**_updated_result("fund-failed", "fund"), "status": "failed"},
+            _updated_result("fund-ready", "fund"),
+        ],
+        updated_by="pytest",
+        include_inactive=False,
+        retry_attempts=1,
+    )
+
+    assert calls == [{"fund-failed"}]
+    assert {item["instrument_id"]: item["status"] for item in results} == {
+        "fund-failed": "refreshed",
+        "fund-ready": "refreshed",
+    }
+
+
+def test_selected_email_ids_still_scan_mailbox_only_once(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    calls: list[dict[str, object]] = []
+
+    def fake_batch(**kwargs):  # type: ignore[no-untyped-def]
+        calls.append(kwargs)
+        return {
+            "source": "email",
+            "refreshed_count": 2,
+            "skipped_count": 0,
+            "results": [
+                _updated_result("fund-a", "fund"),
+                _updated_result("fund-b", "fund"),
+            ],
+        }
+
+    monkeypatch.setattr(scheduled_refresh, "refresh_market_data_batch", fake_batch)
+    monkeypatch.setattr(
+        scheduled_refresh,
+        "refresh_market_data_with_timeout",
+        lambda **kwargs: pytest.fail(
+            f"selected email path must not rescan per item: {kwargs['instrument_id']}"
+        ),
+    )
+    monkeypatch.setattr(
+        scheduled_refresh,
+        "notify_market_data_downstream_refresh",
+        lambda **kwargs: scheduled_refresh.DownstreamRefreshResult(request_count=2),
+    )
+
+    exit_code, summary = scheduled_refresh._run_refresh(
+        _args(
+            tmp_path,
+            channel="email",
+            instrument_ids=["fund-a", "fund-b"],
+            retry_failed_attempts=0,
+        )
+    )
+
+    assert exit_code == 0
+    assert len(calls) == 1
+    assert calls[0]["source"] == "email"
+    assert summary["updated_instrument_ids"] == ["fund-a", "fund-b"]
 
 
 def test_exclusive_lock_rejects_overlap_from_another_process(tmp_path: Path) -> None:

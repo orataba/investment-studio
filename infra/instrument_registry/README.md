@@ -10,6 +10,8 @@
 
 数据库目标必须显式配置；`.env.example` 仅是键名模板，backend 目录不创建 `.env` 文件或软链接。迁移只读取显式进程环境或仓库外 secrets，连接 URL 必须与三个 app 使用同一个 canonical PostgreSQL。
 
+发布和新库恢复必须使用仓库根目录的 `infra/scripts/migrate_all.sh`。当前 Registry head 包含 destructive canonical-NAV cleanup，统一 runner 会先停在其前置 revision、建立 Platform 私有原始证据表，再推进 Registry head。不要用无序的独立 `alembic upgrade head` 绕过该依赖。
+
 环境变量：
 
 - `PORTFOLIO_OPS_INSTRUMENT_REGISTRY_DATABASE_URL`

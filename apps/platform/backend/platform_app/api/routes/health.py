@@ -24,9 +24,12 @@ def get_health() -> dict[str, object]:
         "email_sync": {
             "enabled": settings.email_sync_enabled,
             "ready": settings.email_sync_enabled and settings.email_sync_ready,
-            "imap_folder": settings.email_imap_folder,
+            "imap_folders": settings.email_imap_folders,
             "imap_use_ssl": settings.email_imap_use_ssl,
-            "max_messages": settings.email_imap_max_messages,
+            "history_start_date": settings.email_history_start_date.isoformat(),
+            "header_fetch_batch_size": settings.email_header_fetch_batch_size,
+            "message_fetch_batch_size": settings.email_message_fetch_batch_size,
+            "ingestion_lease_seconds": settings.email_ingestion_lease_seconds,
             "missing_required_settings": missing_email_settings,
         },
         "tushare_sync": {

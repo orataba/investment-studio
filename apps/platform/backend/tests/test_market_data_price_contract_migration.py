@@ -274,7 +274,7 @@ def test_market_data_price_contract_hardening_backfills_and_enforces_sqlite(
             currency="CNY",
         )
 
-    command.upgrade(config, "head")
+    command.upgrade(config, "20260715_0009")
 
     with engine.connect() as connection:
         rows = connection.execute(
@@ -312,7 +312,6 @@ def test_market_data_price_contract_hardening_backfills_and_enforces_sqlite(
     assert _constraint_names(engine) == {
         "ck_instrument_market_data_price_unit_scale_contract",
         "ck_instrument_market_data_quote_identity_contract",
-        "ck_instrument_market_data_market_data_status_contract",
     }
     assert trigger_names.issuperset(
         {
@@ -429,7 +428,7 @@ def test_observation_contract_normalizes_legacy_refresh_cursor_once(
             },
         )
 
-    command.upgrade(config, "head")
+    command.upgrade(config, "20260715_0011")
     with engine.connect() as connection:
         payload, policy_payload = connection.execute(
             sa.text(
@@ -493,7 +492,7 @@ def test_observation_contract_downgrade_restores_working_0010_sqlite_triggers(
             },
         )
 
-    command.upgrade(config, "head")
+    command.upgrade(config, "20260715_0011")
     command.downgrade(config, "20260715_0010")
 
     with engine.begin() as connection:
@@ -776,7 +775,7 @@ def test_market_data_price_contract_hardening_on_postgresql(
         )
 
     with pytest.raises(RuntimeError, match="existing market-data rows violate"):
-        command.upgrade(config, "head")
+        command.upgrade(config, "20260715_0009")
 
     with engine.begin() as connection:
         _set_search_path(connection, schema)
@@ -790,7 +789,7 @@ def test_market_data_price_contract_hardening_on_postgresql(
             )
         )
 
-    command.upgrade(config, "head")
+    command.upgrade(config, "20260715_0009")
     columns = {
         str(item["name"]): item
         for item in sa.inspect(engine).get_columns(
@@ -801,7 +800,6 @@ def test_market_data_price_contract_hardening_on_postgresql(
     assert columns["price_unit"]["nullable"] is False
     assert columns["price_scale"]["nullable"] is False
     assert _constraint_names(engine, schema=schema) == {
-        "ck_instrument_market_data_market_data_status_contract",
         "ck_instrument_market_data_price_unit_scale_contract",
         "ck_instrument_market_data_quote_identity_contract",
     }

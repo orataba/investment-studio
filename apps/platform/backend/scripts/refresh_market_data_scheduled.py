@@ -25,6 +25,7 @@ from platform_app.services.downstream_notifications import (  # noqa: E402
     notify_market_data_downstream_refresh,
 )
 from platform_app.services.market_data_ops import (  # noqa: E402
+    rebuild_stale_fund_nav_projections,
     refresh_market_data_batch,
     refresh_market_data_with_timeout,
 )
@@ -102,9 +103,12 @@ def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Refresh Portfolio Operations market data without a browser session.")
     parser.add_argument(
         "--channel",
-        choices=("all", "email", "tushare"),
+        choices=("all", "email", "tushare", "projection"),
         default="all",
-        help="Data channel to refresh. all runs tushare first, then email.",
+        help=(
+            "Data channel to refresh. all runs tushare, email, then reconciles "
+            "outdated fund NAV projections without another source fetch."
+        ),
     )
     parser.add_argument("--updated-by", default="scheduler", help="Audit label for refresh_status.")
     parser.add_argument("--full-history", action="store_true", help="Request full history instead of incremental refresh.")
@@ -118,15 +122,15 @@ def _parse_args() -> argparse.Namespace:
         "--require-downstream-success",
         action="store_true",
         help=(
-            "Require the Portfolio refresh response and Watchlist recalc enqueue "
-            "acknowledgement; this does not wait for Watchlist workers to finish."
+            "Require Portfolio and Watchlist durable enqueue acknowledgements; "
+            "this does not wait for either worker to finish."
         ),
     )
     parser.add_argument(
         "--downstream-timeout-seconds",
         type=float,
-        default=900.0,
-        help="Timeout used for the synchronous downstream Portfolio refresh.",
+        default=15.0,
+        help="Per-request timeout used while enqueueing Portfolio recalculations.",
     )
     parser.add_argument(
         "--watchlist-downstream-timeout-seconds",
@@ -170,7 +174,9 @@ def _parse_args() -> argparse.Namespace:
 
 def _channels(selected_channel: str) -> list[str]:
     if selected_channel == "all":
-        return ["tushare", "email"]
+        return ["tushare", "email", "fund_nav_projection"]
+    if selected_channel == "projection":
+        return ["fund_nav_projection"]
     return [selected_channel]
 
 
@@ -316,6 +322,104 @@ def _retry_failed_results(
     return list(by_instrument_id.values())
 
 
+def _retry_failed_email_batch(
+    *,
+    results: list[dict[str, object]],
+    updated_by: str | None,
+    full_history: bool,
+    include_inactive: bool,
+    retry_attempts: int,
+) -> tuple[list[dict[str, object]], dict[str, object] | None]:
+    """Retry one mailbox scan once per attempt, never once per failed fund."""
+    latest_response: dict[str, object] | None = None
+    current_results = results
+    successful_results = {
+        str(item.get("instrument_id") or ""): item
+        for item in results
+        if str(item.get("instrument_id") or "")
+        and str(item.get("status") or "") in UPDATED_STATUSES
+    }
+    for attempt in range(1, max(0, retry_attempts) + 1):
+        if not any(
+            str(item.get("status") or "") in RETRYABLE_STATUSES
+            for item in current_results
+        ):
+            break
+        LOGGER.info(
+            "retrying failed email batch attempt=%s failed_count=%s",
+            attempt,
+            sum(
+                1
+                for item in current_results
+                if str(item.get("status") or "") in RETRYABLE_STATUSES
+            ),
+        )
+        latest_response = refresh_market_data_batch(
+            source="email",
+            updated_by=updated_by,
+            full_history=full_history,
+            include_inactive=include_inactive,
+        )
+        latest_results = list(latest_response.get("results", []))
+        for item in latest_results:
+            instrument_id = str(item.get("instrument_id") or "")
+            if instrument_id and str(item.get("status") or "") in UPDATED_STATUSES:
+                successful_results[instrument_id] = item
+        latest_by_id = {
+            str(item.get("instrument_id") or ""): item
+            for item in latest_results
+            if str(item.get("instrument_id") or "")
+        }
+        current_results = list(latest_results)
+        for instrument_id, successful in successful_results.items():
+            latest = latest_by_id.get(instrument_id)
+            latest_status = str((latest or {}).get("status") or "")
+            if latest_status in FAILED_STATUSES or latest_status in UPDATED_STATUSES:
+                continue
+            if latest is None:
+                current_results.append(successful)
+                continue
+            current_results[current_results.index(latest)] = successful
+    return current_results, latest_response
+
+
+def _retry_failed_projection_batch(
+    *,
+    results: list[dict[str, object]],
+    updated_by: str | None,
+    include_inactive: bool,
+    retry_attempts: int,
+) -> list[dict[str, object]]:
+    by_instrument_id = {
+        str(item.get("instrument_id") or ""): item
+        for item in results
+        if str(item.get("instrument_id") or "")
+    }
+    for attempt in range(1, max(0, retry_attempts) + 1):
+        retry_ids = {
+            instrument_id
+            for instrument_id, item in by_instrument_id.items()
+            if str(item.get("status") or "") in RETRYABLE_STATUSES
+        }
+        if not retry_ids:
+            break
+        LOGGER.info(
+            "retrying fund NAV projection reconciliation attempt=%s count=%s",
+            attempt,
+            len(retry_ids),
+        )
+        response = rebuild_stale_fund_nav_projections(
+            updated_by=updated_by,
+            include_inactive=include_inactive,
+            instrument_ids=retry_ids,
+        )
+        for item in list(response.get("results", [])):
+            instrument_id = str(item.get("instrument_id") or "")
+            if instrument_id:
+                by_instrument_id[instrument_id] = item
+    return list(by_instrument_id.values())
+
+
 def _run_refresh(
     args: argparse.Namespace,
     *,
@@ -336,7 +440,17 @@ def _run_refresh(
     channels = ["configured"] if requested_instrument_ids and args.channel == "all" else _channels(args.channel)
     for channel in channels:
         LOGGER.info("refreshing channel=%s", channel)
-        if requested_instrument_ids:
+        if channel == "fund_nav_projection":
+            response = rebuild_stale_fund_nav_projections(
+                updated_by=args.updated_by,
+                include_inactive=args.include_inactive,
+                instrument_ids=(
+                    set(requested_instrument_ids)
+                    if requested_instrument_ids
+                    else None
+                ),
+            )
+        elif requested_instrument_ids and channel != "email":
             results = _refresh_selected_instruments(
                 channel=channel,
                 instrument_ids=requested_instrument_ids,
@@ -357,15 +471,36 @@ def _run_refresh(
                 include_inactive=args.include_inactive,
             )
         results = list(response.get("results", []))
-        results = _retry_failed_results(
-            channel=channel,
-            results=results,
-            updated_by=args.updated_by,
-            full_history=args.full_history,
-            retry_attempts=args.retry_failed_attempts,
-        )
+        updated_before_retry = _updated_instrument_ids(results)
+        if channel == "email":
+            results, retry_response = _retry_failed_email_batch(
+                results=results,
+                updated_by=args.updated_by,
+                full_history=args.full_history,
+                include_inactive=args.include_inactive,
+                retry_attempts=args.retry_failed_attempts,
+            )
+            if retry_response is not None:
+                response = retry_response
+        elif channel == "fund_nav_projection":
+            results = _retry_failed_projection_batch(
+                results=results,
+                updated_by=args.updated_by,
+                include_inactive=args.include_inactive,
+                retry_attempts=args.retry_failed_attempts,
+            )
+        else:
+            results = _retry_failed_results(
+                channel=channel,
+                results=results,
+                updated_by=args.updated_by,
+                full_history=args.full_history,
+                retry_attempts=args.retry_failed_attempts,
+            )
         all_results.extend(results)
-        updated_ids = _updated_instrument_ids(results)
+        updated_ids = list(
+            dict.fromkeys([*updated_before_retry, *_updated_instrument_ids(results)])
+        )
         for instrument_id in updated_ids:
             if instrument_id not in seen_updated_ids:
                 seen_updated_ids.add(instrument_id)

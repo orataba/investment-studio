@@ -102,7 +102,41 @@ def _request_portfolio_daily_snapshot_refresh(
     if not refresh_all and not instrument_ids:
         return DownstreamRefreshResult()
 
-    url = f"{portfolio_api_url}/api/portfolios/snapshots/daily/refresh"
+    def validate_recalculation_acknowledgement(payload: object) -> str | None:
+        if not isinstance(payload, dict):
+            return "Portfolio recalculation acknowledgement must be a JSON object."
+        portfolio_ids = payload.get("portfolio_ids")
+        accepted = payload.get("accepted")
+        if not isinstance(portfolio_ids, list) or not isinstance(accepted, list):
+            return (
+                "Portfolio recalculation acknowledgement requires portfolio_ids "
+                "and accepted arrays."
+            )
+        normalized_ids = [str(item).strip() for item in portfolio_ids]
+        if any(not item for item in normalized_ids) or len(set(normalized_ids)) != len(
+            normalized_ids
+        ):
+            return "Portfolio recalculation acknowledgement contains invalid portfolio ids."
+        accepted_ids: list[str] = []
+        for item in accepted:
+            if not isinstance(item, dict) or item.get("status") != "accepted":
+                return "Portfolio recalculation acknowledgement contains an invalid item."
+            portfolio_id = str(item.get("portfolio_id") or "").strip()
+            request_id = str(item.get("refresh_request_id") or "").strip()
+            if not portfolio_id or not request_id:
+                return (
+                    "Portfolio recalculation acknowledgement is missing a portfolio "
+                    "or request id."
+                )
+            accepted_ids.append(portfolio_id)
+        if accepted_ids != normalized_ids:
+            return (
+                "Portfolio recalculation acknowledgement portfolio_ids do not match "
+                "the accepted items."
+            )
+        return None
+
+    url = f"{portfolio_api_url}/api/portfolios/snapshots/daily/recalculations"
     failure = _post_json(
         url,
         {
@@ -111,6 +145,7 @@ def _request_portfolio_daily_snapshot_refresh(
             "refresh_all": refresh_all,
         },
         timeout=request_timeout_seconds,
+        validate_response=validate_recalculation_acknowledgement,
     )
     return DownstreamRefreshResult(
         request_count=1,

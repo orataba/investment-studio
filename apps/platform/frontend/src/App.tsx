@@ -23,6 +23,7 @@ import {
   supportsNavHistoryImport,
 } from '../../../../packages/instrument-core/ts/src'
 import { detailForSelection, instrumentsForVisibility } from './instrumentVisibility'
+import { FundNavActionReview } from './FundNavActionReview'
 import { NavImportButton } from './NavImportButton'
 import { PriceContractFields } from './PriceContractFields'
 import { SourceScheduleFields } from './SourceScheduleFields'
@@ -136,10 +137,8 @@ type PlatformFxRatesResponse = {
 type PlatformNavImportPreviewRow = {
   as_of_date: string
   nav?: string | null
-  cumulative_nav?: string | null
   nav_with_dividend?: string | null
   currency: string
-  frequency: string
   instrument_code?: string | null
   instrument_name?: string | null
 }
@@ -181,17 +180,17 @@ function allowedFamiliesForInstrument(instrumentType: InstrumentType): MetricFam
     return ['price']
   }
   if (instrumentType === 'fund') {
-    return ['nav', 'price']
+    return ['price']
   }
-  return ['price', 'nav']
+  return ['price']
 }
 
 function formatBasisLabel(quoteBasis: QuoteBasis) {
   if (quoteBasis === 'official_nav') {
-    return 'Official NAV'
+    return 'Unit NAV'
   }
   if (quoteBasis === 'total_return_nav') {
-    return 'Total Return NAV'
+    return 'Dividend-Reinvested Total Return NAV'
   }
   if (quoteBasis === 'adjusted_close') {
     return 'Adjusted Close'
@@ -253,10 +252,10 @@ function formatPrimaryQuoteDetail(
     return `TR ${formatPointValue(totalReturnNav)}`
   }
   if (officialNav) {
-    return 'Official NAV only'
+    return 'Unit NAV only'
   }
   if (totalReturnNav) {
-    return 'Total return NAV only'
+    return 'Dividend-reinvested total return NAV only'
   }
   if (primaryQuote) {
     return formatBasisLabel(primaryQuote.quote_basis)
@@ -397,6 +396,7 @@ function InstrumentsPage({
   onTriggerChannelRefresh,
   onImportNavText,
   onImportNavFile,
+  onFundNavMutationCommitted,
   onArchiveInstrument,
   onRestoreInstrument,
 }: {
@@ -467,6 +467,7 @@ function InstrumentsPage({
     status: DataStatus
     updated_by?: string | null
   }) => Promise<void>
+  onFundNavMutationCommitted: (instrumentId: string) => Promise<PlatformInstrumentDetail>
   onArchiveInstrument: (payload: { instrument_id: string; updated_by?: string | null }) => Promise<void>
   onRestoreInstrument: (payload: { instrument_id: string; updated_by?: string | null }) => Promise<void>
 }) {
@@ -602,7 +603,6 @@ function InstrumentsPage({
         {
           as_of_date: string
           nav: string | null
-          cumulative_nav: string | null
           nav_with_dividend: string | null
           currency: string
           status: DataStatus
@@ -618,7 +618,6 @@ function InstrumentsPage({
           {
             as_of_date: point.as_of_date,
             nav: null,
-            cumulative_nav: null,
             nav_with_dividend: null,
             currency: point.currency,
             status: point.status,
@@ -629,9 +628,6 @@ function InstrumentsPage({
         }
         if (point.quote_basis === 'total_return_nav') {
           existing.nav_with_dividend = point.value
-        }
-        if (point.quote_basis === 'cumulative_nav') {
-          existing.cumulative_nav = point.value
         }
         existing.currency = point.currency
         existing.status = point.status
@@ -1123,6 +1119,9 @@ function InstrumentsPage({
     ) {
       return
     }
+    if (panel === 'quote' && targetInstrument?.instrument_type === 'fund') {
+      return
+    }
     if (instrumentId) {
       syncSelectedInstrument(instrumentId)
     }
@@ -1342,9 +1341,11 @@ function InstrumentsPage({
                   </span>
                 </div>
                 <div className="registry-form-actions">
-                  <button type="button" className="registry-submit secondary" onClick={() => openActionPanel('quote', selectedInstrument.instrument_id)}>
-                    Add Quote
-                  </button>
+                  {selectedInstrument.instrument_type !== 'fund' ? (
+                    <button type="button" className="registry-submit secondary" onClick={() => openActionPanel('quote', selectedInstrument.instrument_id)}>
+                      Add Quote
+                    </button>
+                  ) : null}
                   <NavImportButton
                     instrumentType={selectedInstrument.instrument_type}
                     type="button"
@@ -1383,14 +1384,16 @@ function InstrumentsPage({
             <button type="button" className={panelButtonClass('create')} onClick={() => openActionPanel('create')}>
               Add Instrument
             </button>
-            <button
-              type="button"
-              className={panelButtonClass('quote')}
-              disabled={!selectedInstrument}
-              onClick={() => openActionPanel('quote')}
-            >
-              Add Quote
-            </button>
+            {!selectedInstrument || selectedInstrument.instrument_type !== 'fund' ? (
+              <button
+                type="button"
+                className={panelButtonClass('quote')}
+                disabled={!selectedInstrument}
+                onClick={() => openActionPanel('quote')}
+              >
+                Add Quote
+              </button>
+            ) : null}
             <button
               type="button"
               className={panelButtonClass('source')}
@@ -1704,9 +1707,12 @@ function InstrumentsPage({
                           }
                           setNavImportText(event.target.value)
                         }}
-                        placeholder={`date,nav,cumulative_nav,nav_with_dividend,currency\nYYYY-MM-DD,12.84,18.12,18.46,USD`}
+                        placeholder={`date,nav,nav_with_dividend,currency\nYYYY-MM-DD,12.84,18.46,USD`}
                       />
                     </label>
+                  </div>
+                  <div className="registry-form-note">
+                    Only two fund NAV series are accepted: Unit NAV and Dividend-Reinvested Total Return NAV.
                   </div>
                   {navImportFileName ? (
                     <div className="registry-form-note">
@@ -1745,9 +1751,8 @@ function InstrumentsPage({
                           <thead>
                             <tr>
                               <th>Date</th>
-                              <th>NAV</th>
-                              <th>Cash Cumulative NAV</th>
-                              <th>Total Return NAV</th>
+                              <th>Unit NAV</th>
+                              <th>Dividend-Reinvested Total Return NAV</th>
                               <th>Currency</th>
                               <th>Code</th>
                               <th>Name</th>
@@ -1758,7 +1763,6 @@ function InstrumentsPage({
                               <tr key={`${row.as_of_date}-${row.nav || ''}-${row.nav_with_dividend || ''}`}>
                                 <td>{row.as_of_date}</td>
                                 <td>{row.nav || '—'}</td>
-                                <td>{row.cumulative_nav || '—'}</td>
                                 <td>{row.nav_with_dividend || '—'}</td>
                                 <td>{row.currency}</td>
                                 <td>{row.instrument_code || '—'}</td>
@@ -1983,13 +1987,15 @@ function InstrumentsPage({
                       </td>
                       <td>
                         <div className="registry-row-actions">
-                          <button
-                            type="button"
-                            className="registry-submit secondary"
-                            onClick={() => openActionPanel('quote', item.instrument_id)}
-                          >
-                            Quote
-                          </button>
+                          {item.instrument_type !== 'fund' ? (
+                            <button
+                              type="button"
+                              className="registry-submit secondary"
+                              onClick={() => openActionPanel('quote', item.instrument_id)}
+                            >
+                              Quote
+                            </button>
+                          ) : null}
                           {item.lifecycle_state.status === 'archived' ? (
                             <button
                               type="button"
@@ -2024,9 +2030,11 @@ function InstrumentsPage({
                                 </div>
                               </div>
                               <div className="registry-toolbar-actions">
-                                <button type="button" className="registry-submit secondary" onClick={() => openActionPanel('quote', item.instrument_id)}>
-                                  Add Quote
-                                </button>
+                                {item.instrument_type !== 'fund' ? (
+                                  <button type="button" className="registry-submit secondary" onClick={() => openActionPanel('quote', item.instrument_id)}>
+                                    Add Quote
+                                  </button>
+                                ) : null}
                                 <NavImportButton
                                   instrumentType={item.instrument_type}
                                   type="button"
@@ -2159,9 +2167,8 @@ function InstrumentsPage({
                                     <thead>
                                       <tr>
                                         <th>Date</th>
-                                        <th>Official NAV</th>
-                                        <th>Cash Cumulative NAV</th>
-                                        <th>Total Return NAV</th>
+                                        <th>Unit NAV</th>
+                                        <th>Dividend-Reinvested Total Return NAV</th>
                                         <th>Currency</th>
                                         <th>Status</th>
                                         <th>Provider</th>
@@ -2173,7 +2180,6 @@ function InstrumentsPage({
                                           <tr key={`${point.as_of_date}-${point.currency}`}>
                                             <td>{point.as_of_date}</td>
                                             <td>{point.nav || '—'}</td>
-                                            <td>{point.cumulative_nav || '—'}</td>
                                             <td>{point.nav_with_dividend || '—'}</td>
                                             <td>{point.currency}</td>
                                             <td>{point.status}</td>
@@ -2182,13 +2188,27 @@ function InstrumentsPage({
                                         ))
                                       ) : (
                                         <tr>
-                                          <td colSpan={7}>No NAV history loaded for this instrument.</td>
+                                          <td colSpan={6}>No NAV history loaded for this instrument.</td>
                                         </tr>
                                       )}
                                     </tbody>
                                   </table>
                                 </div>
                               </div>
+
+                              {item.instrument_type === 'fund' ? (
+                                <FundNavActionReview
+                                  instrumentId={item.instrument_id}
+                                  request={fetchJson}
+                                  onMutationCommitted={async (instrumentId) => {
+                                    const detail = await onFundNavMutationCommitted(instrumentId)
+                                    if (selectedInstrumentIdRef.current === instrumentId) {
+                                      setSelectedInstrumentDetail(detail)
+                                      setSelectedInstrumentDetailError(null)
+                                    }
+                                  }}
+                                />
+                              ) : null}
 
                               <div className="registry-detail-section">
                                 <div className="registry-detail-header">
@@ -2630,6 +2650,25 @@ export default function App() {
     }
   }
 
+  async function handleFundNavMutationCommitted(instrumentId: string) {
+    try {
+      const detail = await fetchJson<PlatformInstrumentDetail>(
+        `/api/instruments/${encodeURIComponent(instrumentId)}`,
+      )
+      setInstruments((current) => upsertInstrumentRecord(current, detail, showInactive))
+      setAllInstruments((current) => upsertInstrumentRecord(current, detail, true))
+      setRegistryError(null)
+      return detail
+    } catch (requestError) {
+      setRegistryError(
+        requestError instanceof Error
+          ? requestError.message
+          : 'The NAV event was confirmed, but the refreshed instrument failed to load.',
+      )
+      throw requestError
+    }
+  }
+
   if (currentPath === INSTRUMENT_REGISTRY_PATH) {
     return (
       <InstrumentsPage
@@ -2655,6 +2694,7 @@ export default function App() {
         onTriggerChannelRefresh={handleTriggerChannelRefresh}
         onImportNavText={handleImportNavText}
         onImportNavFile={handleImportNavFile}
+        onFundNavMutationCommitted={handleFundNavMutationCommitted}
         onArchiveInstrument={handleArchiveInstrument}
         onRestoreInstrument={handleRestoreInstrument}
       />

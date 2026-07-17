@@ -2,13 +2,23 @@ from __future__ import annotations
 
 from collections import Counter
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Query
 
 from platform_app.core.settings import get_settings
+from platform_app.db.session import get_session_factory
+from platform_app.services.email_ingestion.monitoring import build_email_nav_inventory
 from platform_app.services.instrument_store import list_instruments
 
 
 router = APIRouter()
+
+
+@router.get("/email-nav-inventory")
+def get_email_nav_inventory(
+    limit: int = Query(default=100, ge=1, le=500),
+) -> dict[str, object]:
+    """Review durable email NAV routing and pipeline health without reading IMAP."""
+    return build_email_nav_inventory(get_session_factory(), limit=limit)
 
 
 @router.get("")

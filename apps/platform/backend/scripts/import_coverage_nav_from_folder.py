@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import re
 import sys
+import hashlib
+import json
 from collections import defaultdict
 from pathlib import Path
 
@@ -17,7 +19,7 @@ sys.path.insert(0, str(BACKEND_ROOT))
 from platform_app.db.models import Instrument, InstrumentIdentifier  # noqa: E402
 from platform_app.db.session import get_session_factory  # noqa: E402
 from platform_app.services import market_data_ops  # noqa: E402
-from platform_app.services.instrument_store import replace_nav_history  # noqa: E402
+from platform_app.services.instrument_store import get_instrument  # noqa: E402
 from portfolio_ops_instrument_core.instrument_store import (  # noqa: E402
     _default_lifecycle_state,
     _default_quote_selection_policy,
@@ -223,18 +225,47 @@ def main() -> int:
     for instrument_id, rows in sorted(matched_rows_by_instrument.items()):
         instrument = instruments[instrument_id]
         _ensure_instrument(instrument)
-        merged_rows = market_data_ops._merge_rows_by_date(rows)
-        normalized_status = market_data_ops._normalize_import_status(merged_rows, "complete")
-        replace_nav_history(
+        registry_instrument = get_instrument(instrument_id)
+        if registry_instrument is None:
+            raise RuntimeError(f'Instrument "{instrument_id}" disappeared during import.')
+        merged_rows = market_data_ops._normalize_nav_rows_for_instrument(
+            instrument=registry_instrument,
+            rows=rows,
+        )
+        source_files = sorted(matched_files_by_instrument[instrument_id])
+        source_revision = hashlib.sha256(
+            json.dumps(
+                {"files": source_files, "rows": merged_rows},
+                ensure_ascii=False,
+                sort_keys=True,
+                default=str,
+            ).encode("utf-8")
+        ).hexdigest()
+        market_data_ops.record_raw_nav_observations(
             instrument_id=instrument_id,
             rows=merged_rows,
             provider="nav_folder_import",
-            point_status=normalized_status,
+            source_kind="manual_import",
+            source_ref=f"coverage-folder:{source_revision}",
+            status="complete",
+            evidence={"file_names": source_files},
+        )
+        market_data_ops._publish_fund_nav_projection(
+            instrument_id=instrument_id,
+            load_source_rows=lambda current_instrument, current_id=instrument_id: (
+                market_data_ops._load_all_durable_nav_source_rows(
+                    instrument_id=current_id,
+                    instrument=current_instrument,
+                )
+            ),
+            source_provider="nav_folder_import",
             refresh_status="imported",
             updated_by="codex_nav_import",
-            message=(
+            message_factory=lambda publication, files=source_files: (
                 f"Imported {len(merged_rows)} NAV rows from nav folder: "
-                + ", ".join(matched_files_by_instrument[instrument_id])
+                + ", ".join(files)
+                + f"; rebuilt {len(publication.rows)} canonical dates and found "
+                + f"{len(publication.action_candidates)} action signal(s)."
             ),
             mode="manual",
         )

@@ -28,6 +28,24 @@ class _StubResponse:
         return json.dumps(self.payload).encode("utf-8")
 
 
+def _portfolio_ack(*portfolio_ids: str) -> _StubResponse:
+    return _StubResponse(
+        {
+            "portfolio_ids": list(portfolio_ids),
+            "accepted": [
+                {
+                    "portfolio_id": portfolio_id,
+                    "status": "accepted",
+                    "daily_snapshot_status": "stale",
+                    "refresh_request_id": f"request-{portfolio_id}",
+                    "dirty_from": "2026-05-01",
+                }
+                for portfolio_id in portfolio_ids
+            ],
+        }
+    )
+
+
 def test_market_data_refresh_notifies_portfolio_and_watchlist(monkeypatch) -> None:
     requests: list[tuple[str, dict[str, object]]] = []
 
@@ -42,7 +60,7 @@ def test_market_data_refresh_notifies_portfolio_and_watchlist(monkeypatch) -> No
                     "missing_instrument_ids": [],
                 }
             )
-        return _StubResponse()
+        return _portfolio_ack("portfolio-1")
 
     monkeypatch.setattr(downstream_notifications, "get_settings", lambda: _StubSettings())
     monkeypatch.setattr(downstream_notifications, "urlopen", fake_urlopen)
@@ -54,7 +72,7 @@ def test_market_data_refresh_notifies_portfolio_and_watchlist(monkeypatch) -> No
 
     assert requests == [
         (
-            "http://portfolio.local/api/portfolios/snapshots/daily/refresh",
+            "http://portfolio.local/api/portfolios/snapshots/daily/recalculations",
             {
                 "instrument_ids": ["fund-a", "fx-usdcny"],
                 "dirty_from": "2026-05-01",
@@ -81,7 +99,7 @@ def test_fx_refresh_only_notifies_portfolio(monkeypatch) -> None:
     def fake_urlopen(request, timeout):  # type: ignore[no-untyped-def]
         del timeout
         requests.append((request.full_url, json.loads(request.data.decode("utf-8"))))
-        return _StubResponse()
+        return _portfolio_ack("portfolio-1")
 
     monkeypatch.setattr(downstream_notifications, "get_settings", lambda: _StubSettings())
     monkeypatch.setattr(downstream_notifications, "urlopen", fake_urlopen)
@@ -94,7 +112,7 @@ def test_fx_refresh_only_notifies_portfolio(monkeypatch) -> None:
 
     assert requests == [
         (
-            "http://portfolio.local/api/portfolios/snapshots/daily/refresh",
+            "http://portfolio.local/api/portfolios/snapshots/daily/recalculations",
             {
                 "instrument_ids": [],
                 "dirty_from": "2026-05-01",
@@ -106,7 +124,9 @@ def test_fx_refresh_only_notifies_portfolio(monkeypatch) -> None:
 
 def test_watchlist_bulk_acknowledgement_must_accept_every_instrument(monkeypatch) -> None:
     def fake_urlopen(request, timeout):  # type: ignore[no-untyped-def]
-        del request, timeout
+        del timeout
+        if request.full_url.endswith("/snapshots/daily/recalculations"):
+            return _portfolio_ack("portfolio-1")
         return _StubResponse(
             {
                 "accepted_count": 1,
@@ -127,6 +147,37 @@ def test_watchlist_bulk_acknowledgement_must_accept_every_instrument(monkeypatch
     assert "fund-b" in result.failures[0].message
 
 
+def test_portfolio_recalculation_acknowledgement_must_be_complete(monkeypatch) -> None:
+    def fake_urlopen(request, timeout):  # type: ignore[no-untyped-def]
+        del timeout
+        if request.full_url.endswith("/api/recalc/bulk"):
+            return _StubResponse(
+                {"accepted_count": 1, "missing_instrument_ids": []}
+            )
+        return _StubResponse(
+            {
+                "portfolio_ids": ["portfolio-1"],
+                "accepted": [
+                    {
+                        "portfolio_id": "portfolio-1",
+                        "status": "accepted",
+                        "refresh_request_id": "",
+                    }
+                ],
+            }
+        )
+
+    monkeypatch.setattr(downstream_notifications, "get_settings", lambda: _StubSettings())
+    monkeypatch.setattr(downstream_notifications, "urlopen", fake_urlopen)
+
+    result = downstream_notifications.notify_market_data_downstream_refresh(
+        instrument_ids=["fund-a"],
+    )
+
+    assert result.succeeded is False
+    assert "missing a portfolio or request id" in result.failures[0].message
+
+
 def test_best_effort_notifications_report_failures_without_raising(monkeypatch) -> None:
     requests: list[tuple[str, float]] = []
 
@@ -144,7 +195,10 @@ def test_best_effort_notifications_report_failures_without_raising(monkeypatch) 
     )
 
     assert requests == [
-        ("http://portfolio.local/api/portfolios/snapshots/daily/refresh", 17.0),
+        (
+            "http://portfolio.local/api/portfolios/snapshots/daily/recalculations",
+            17.0,
+        ),
         ("http://watchlist.local/api/recalc/bulk", 3.0),
     ]
     assert result.request_count == 2
@@ -170,7 +224,7 @@ def test_strict_notifications_attempt_every_request_then_raise(monkeypatch) -> N
         )
 
     assert requested_urls == [
-        "http://portfolio.local/api/portfolios/snapshots/daily/refresh",
+        "http://portfolio.local/api/portfolios/snapshots/daily/recalculations",
         "http://watchlist.local/api/recalc/bulk",
     ]
     assert raised.value.result.request_count == 2

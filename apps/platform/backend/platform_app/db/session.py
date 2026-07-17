@@ -10,13 +10,30 @@ from sqlalchemy.orm import Session, sessionmaker
 from platform_app.core.settings import get_settings
 
 
-def _configure_search_path(engine: Engine, schema: str | None) -> Engine:
-    if not schema or engine.dialect.name != "postgresql":
+def _search_path_fragments(*schemas: str | None) -> list[str]:
+    fragments: list[str] = []
+    for candidate in (*schemas, "public"):
+        if not candidate:
+            continue
+        normalized = candidate.strip()
+        if normalized and normalized not in fragments:
+            fragments.append(normalized)
+    return fragments
+
+
+def _configure_search_path(engine: Engine, *schemas: str | None) -> Engine:
+    if engine.dialect.name != "postgresql":
         return engine
+
+    fragments = _search_path_fragments(*schemas)
+    search_path = ", ".join(
+        f'"{fragment}"' if fragment != "public" else "public"
+        for fragment in fragments
+    )
 
     def _apply_search_path(dbapi_connection) -> None:  # type: ignore[no-untyped-def]
         cursor = dbapi_connection.cursor()
-        cursor.execute(f'SET search_path TO "{schema}"')
+        cursor.execute(f"SET search_path TO {search_path}")
         cursor.close()
 
     @event.listens_for(engine, "connect")
@@ -37,7 +54,11 @@ def _configure_search_path(engine: Engine, schema: str | None) -> Engine:
 def get_engine() -> Engine:
     settings = get_settings()
     engine = create_engine(settings.database_url, echo=settings.sql_echo)
-    return _configure_search_path(engine, settings.database_schema)
+    return _configure_search_path(
+        engine,
+        settings.operations_database_schema,
+        settings.database_schema,
+    )
 
 
 @lru_cache

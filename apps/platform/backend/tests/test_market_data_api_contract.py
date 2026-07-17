@@ -44,6 +44,37 @@ def _instrument_record() -> dict[str, object]:
     }
 
 
+def test_instrument_list_accepts_projection_reconciliation_refresh_status(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    record = _instrument_record()
+    record["refresh_status"] = {
+        "status": "refreshed",
+        "message": "Projection rebuilt with the current methodology.",
+        "requested_at": "2026-07-16T12:00:00Z",
+        "requested_by": "pytest",
+        "mode": "projection_reconciliation",
+        "last_successful_requested_at": "2026-07-16T12:00:00Z",
+    }
+    monkeypatch.setattr(
+        instrument_routes,
+        "list_instruments",
+        lambda **_kwargs: [record],
+    )
+    monkeypatch.setattr(
+        instrument_routes,
+        "instrument_registry_name",
+        lambda: "pytest-registry",
+    )
+
+    response = TestClient(app).get("/api/instruments?include_inactive=true")
+
+    assert response.status_code == 200
+    assert response.json()["instruments"][0]["refresh_status"]["mode"] == (
+        "projection_reconciliation"
+    )
+
+
 def test_market_data_command_derives_contract_and_response_requires_it() -> None:
     payload = contracts.PlatformMarketDataUpsertRequest.model_validate(
         {

@@ -1022,6 +1022,277 @@ textarea {
   background: #ffffff;
 }
 
+.fund-nav-action-review {
+  border-top: 2px solid var(--platform-ink);
+}
+
+.fund-nav-action-intro,
+.fund-nav-action-empty {
+  margin: 0;
+  color: var(--platform-muted);
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.fund-nav-candidate-list {
+  display: grid;
+  gap: 14px;
+}
+
+.fund-nav-candidate {
+  display: grid;
+  gap: 14px;
+  padding: 16px;
+  border: 1px solid var(--platform-line-strong);
+  background: #ffffff;
+}
+
+.fund-nav-candidate-facts {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 14px 18px;
+}
+
+.fund-nav-candidate-facts > div {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.fund-nav-candidate-facts span,
+.fund-nav-review-form label > span {
+  color: var(--platform-faint);
+  font-size: 11px;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+}
+
+.fund-nav-candidate-facts strong {
+  color: var(--platform-ink);
+  font-size: 13px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.fund-nav-candidate-facts small {
+  color: var(--platform-faint);
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+
+.fund-nav-source-evidence {
+  border-top: 1px solid var(--platform-line);
+  padding-top: 10px;
+}
+
+.fund-nav-source-evidence summary {
+  width: fit-content;
+  color: var(--platform-muted);
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.fund-nav-source-evidence pre {
+  max-height: 240px;
+  margin: 10px 0 0;
+  padding: 12px;
+  overflow: auto;
+  border: 1px solid var(--platform-line);
+  background: var(--platform-band);
+  color: var(--platform-ink);
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.fund-nav-review-form {
+  display: grid;
+  gap: 14px;
+  padding: 16px;
+  border-top: 1px solid var(--platform-line-strong);
+  background: var(--platform-band);
+}
+
+.fund-nav-review-form label {
+  display: grid;
+  gap: 6px;
+}
+
+.fund-nav-review-form input,
+.fund-nav-review-form select {
+  width: 100%;
+  height: 38px;
+  padding: 0 10px;
+  border: 1px solid var(--platform-line-strong);
+  background: #ffffff;
+  color: var(--platform-ink);
+}
+
+.fund-nav-review-form textarea {
+  width: 100%;
+  min-height: 112px;
+  padding: 10px;
+  resize: vertical;
+  border: 1px solid var(--platform-line-strong);
+  background: #ffffff;
+  color: var(--platform-ink);
+  line-height: 1.5;
+}
+
+.fund-nav-na-warning {
+  color: var(--platform-warning);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.fund-nav-action-review .registry-notice,
+.fund-nav-action-review .registry-error {
+  margin-top: 0;
+}
+
+.fund-nav-action-review button:disabled {
+  cursor: not-allowed;
+  opacity: .55;
+}
+
+.fund-nav-na-panel {
+  padding: 13px 14px;
+  border: 1px solid rgba(146, 64, 14, .35);
+  background: #fffaf2;
+  color: #713f12;
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.fund-nav-operator-field {
+  display: grid;
+  gap: 7px;
+  max-width: 560px;
+}
+
+.fund-nav-operator-field span {
+  color: var(--platform-faint);
+  font-size: 11px;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+}
+
+.fund-nav-operator-field input {
+  width: 100%;
+  height: 38px;
+  padding: 0 10px;
+  border: 1px solid var(--platform-line-strong);
+  background: #ffffff;
+  color: var(--platform-ink);
+}
+
+.fund-nav-editor-shell {
+  display: grid;
+  gap: 12px;
+  padding: 16px;
+  border: 2px solid var(--platform-ink);
+  background: #ffffff;
+}
+
+.fund-nav-audit-fields {
+  padding-top: 14px;
+  border-top: 1px solid var(--platform-line-strong);
+}
+
+.fund-nav-nested-evidence {
+  display: grid;
+  gap: 12px;
+  padding: 12px;
+  border: 1px solid var(--platform-line-strong);
+  background: #ffffff;
+}
+
+.fund-nav-cancellation-warning {
+  padding: 12px 14px;
+  border: 1px solid rgba(180, 35, 24, .35);
+  background: #fff7f6;
+  color: var(--platform-negative);
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.fund-nav-ledger-section {
+  display: grid;
+  gap: 14px;
+  padding-top: 16px;
+  border-top: 1px solid var(--platform-line-strong);
+}
+
+.fund-nav-current-actions {
+  display: grid;
+  gap: 12px;
+}
+
+.fund-nav-current-action {
+  display: grid;
+  gap: 13px;
+  padding: 14px;
+  border: 1px solid var(--platform-line);
+  background: #ffffff;
+}
+
+.fund-nav-projection-facts {
+  padding: 13px 0;
+}
+
+.fund-nav-history-disclosure {
+  display: grid;
+  gap: 12px;
+  padding-top: 10px;
+  border-top: 1px solid var(--platform-line);
+}
+
+.fund-nav-history-disclosure > summary {
+  width: fit-content;
+  color: var(--platform-muted);
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.fund-nav-action-review .registry-table td small {
+  display: block;
+  max-width: 260px;
+  margin-top: 4px;
+  color: var(--platform-faint);
+  font-size: 11px;
+  line-height: 1.45;
+  white-space: normal;
+}
+
+.fund-nav-factor-table {
+  min-width: 1040px;
+}
+
+.fund-nav-inline-evidence {
+  margin-top: 5px;
+  color: var(--platform-muted);
+  font-size: 11px;
+}
+
+.fund-nav-inline-evidence summary {
+  cursor: pointer;
+}
+
+.fund-nav-inline-evidence pre {
+  max-width: 360px;
+  max-height: 180px;
+  margin: 6px 0 0;
+  padding: 8px;
+  overflow: auto;
+  border: 1px solid var(--platform-line);
+  background: var(--platform-band);
+  font-size: 11px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+}
+
 @media (max-width: 960px) {
   .platform-shell {
     width: min(100%, calc(100% - 28px));
@@ -1035,7 +1306,8 @@ textarea {
   .registry-ops-grid,
   .registry-op-meta,
   .registry-detail-grid,
-  .registry-action-layout {
+  .registry-action-layout,
+  .fund-nav-candidate-facts {
     grid-template-columns: 1fr;
   }
 

@@ -1,21 +1,22 @@
 from __future__ import annotations
 
 from contextlib import AbstractContextManager
-from collections import OrderedDict
+import csv
+from dataclasses import dataclass
 from datetime import date, datetime, timedelta
-from decimal import Decimal, ROUND_HALF_UP
-from email import policy
-from email.parser import BytesParser
-from email.utils import parseaddr
-from io import BytesIO
-import imaplib
+from decimal import Decimal, ROUND_HALF_UP, localcontext
+from io import BytesIO, StringIO
+import hashlib
+import json
 import logging
 import multiprocessing
 import re
 import signal
 import threading
 import time
-from typing import Any
+import warnings
+from typing import Any, Callable
+from zipfile import BadZipFile, ZipFile
 
 from portfolio_ops_instrument_core import (
     parse_positive_market_data_value,
@@ -23,15 +24,34 @@ from portfolio_ops_instrument_core import (
 )
 
 from platform_app.core.settings import get_settings
+from platform_app.db.session import get_session_factory
+from platform_app.services.email_ingestion import (
+    EmailIngestionBusyError,
+    EmailIngestionError,
+    ingest_email_nav,
+)
+from platform_app.services.email_ingestion.repository import EmailIngestionRepository
+from platform_app.services.fund_nav_action_candidates import (
+    FundNavActionCandidateRepository,
+)
 from platform_app.services.instrument_store import (
     get_instrument,
+    list_instrument_ids_with_nav_history_before,
     list_instruments,
-    replace_nav_history,
+    list_stale_current_fund_nav_projections,
+    publish_fund_nav_history,
+    StaleFundNavPublicationError,
     update_refresh_status,
     upsert_quote_selection_policy,
     upsert_corporate_action_event,
     upsert_market_data_points,
+    upsert_price_bars,
 )
+from platform_app.services.nav_raw_store import (
+    list_raw_nav_observations,
+    record_raw_nav_observations,
+)
+from platform_app.services import tushare_client
 
 try:
     from openpyxl import load_workbook
@@ -42,12 +62,6 @@ try:
     import xlrd
 except ImportError:  # pragma: no cover - optional dependency
     xlrd = None
-
-try:
-    import tushare as ts
-except ImportError:  # pragma: no cover - optional dependency
-    ts = None
-
 
 LOGGER = logging.getLogger("portfolio_ops.market_data_ops")
 
@@ -116,13 +130,13 @@ NAV_IMPORT_HEADER_MAP = {
     "实际净值": "nav",
     "navwithdividend": "nav_with_dividend",
     "nav_with_dividend": "nav_with_dividend",
-    "累计净值": "cumulative_nav",
-    "累计净值元": "cumulative_nav",
-    "累计单位净值": "cumulative_nav",
-    "累计单位净值元": "cumulative_nav",
-    "累计单位净值元份": "cumulative_nav",
-    "资产份额累计净值元": "cumulative_nav",
-    "实际累计净值": "cumulative_nav",
+    "累计净值": "cash_cumulative_nav",
+    "累计净值元": "cash_cumulative_nav",
+    "累计单位净值": "cash_cumulative_nav",
+    "累计单位净值元": "cash_cumulative_nav",
+    "累计单位净值元份": "cash_cumulative_nav",
+    "资产份额累计净值元": "cash_cumulative_nav",
+    "实际累计净值": "cash_cumulative_nav",
     "复权净值": "nav_with_dividend",
     "复权单位净值": "nav_with_dividend",
     "分红再投资净值": "nav_with_dividend",
@@ -150,14 +164,23 @@ NAV_IMPORT_HEADER_MAP = {
 }
 
 LABEL_SNAPSHOT_FIELD_ALIASES = {
-    "as_of_date": ("日期", "净值日期"),
+    "as_of_date": ("日期", "净值日期", "估值日期"),
     "nav": ("单位净值",),
-    "cumulative_nav": ("累计单位净值",),
+    "cash_cumulative_nav": ("累计单位净值",),
     "nav_with_dividend": ("复权单位净值", "分红再投资净值", "复利净值"),
+}
+LABEL_SNAPSHOT_IDENTITY_ALIASES = {
+    "instrument_code": ("产品代码", "产品编码", "基金代码"),
+    "instrument_name": ("产品名称", "产品全称", "基金名称"),
 }
 
 TOTAL_RETURN_NAV_DECIMAL_PLACES = Decimal("0.0000000000000001")
-CASH_DISTRIBUTION_EVENT_THRESHOLD = Decimal("0.0001")
+FUND_NAV_FACTOR_DECIMAL_PLACES = Decimal("0.000000000000000001")
+NAV_SEMANTIC_ZERO_TOLERANCE = Decimal("0.00000001")
+MAX_WORKBOOK_ROWS = 100_000
+MAX_WORKBOOK_COLUMNS = 256
+MAX_WORKBOOK_CELLS = 1_000_000
+MAX_XLSX_UNCOMPRESSED_BYTES = 100 * 1024 * 1024
 TUSHARE_PROFILE_ALIASES = {"tushare", "tushare_pro", "tushare-pro"}
 TUSHARE_PRICE_SUFFIXES = {"SH", "SZ"}
 TUSHARE_INDEX_SUFFIXES = {"SH", "SZ", "CSI", "CNI"}
@@ -239,6 +262,21 @@ def _parse_nav_decimal(value: object) -> Decimal | None:
         return None
 
 
+def _parse_nonnegative_decimal(value: object) -> Decimal | None:
+    if value is None:
+        return None
+    normalized = str(value).strip().replace(",", "")
+    if not normalized:
+        return None
+    try:
+        parsed = Decimal(normalized)
+    except (ArithmeticError, ValueError):
+        return None
+    if not parsed.is_finite() or parsed < 0:
+        return None
+    return parsed
+
+
 def _format_total_return_nav_decimal(value: Decimal) -> Decimal:
     return value.quantize(TOTAL_RETURN_NAV_DECIMAL_PLACES, rounding=ROUND_HALF_UP)
 
@@ -251,39 +289,105 @@ def _detect_delimiter(line: str) -> str:
     return ","
 
 
-def _split_delimited_line(line: str, delimiter: str) -> list[str]:
-    return [cell.strip().strip('"') for cell in line.split(delimiter)]
-
-
 def _matrix_from_text(raw_text: str) -> list[list[object]]:
-    lines = [line.strip() for line in raw_text.replace("\r\n", "\n").split("\n") if line.strip()]
+    lines = [line for line in raw_text.replace("\r\n", "\n").split("\n") if line.strip()]
     if not lines:
         return []
     delimiter = _detect_delimiter(lines[0])
-    return [_split_delimited_line(line, delimiter) for line in lines]
+    return [
+        [cell.strip() for cell in row]
+        for row in csv.reader(StringIO("\n".join(lines)), delimiter=delimiter)
+    ]
 
 
-def _matrix_from_xlsx(file_bytes: bytes) -> list[list[object]]:
+def _bounded_matrix(rows: Any) -> list[list[object]]:
+    matrix: list[list[object]] = []
+    cell_count = 0
+    for row_index, row in enumerate(rows, start=1):
+        if row_index > MAX_WORKBOOK_ROWS:
+            raise ValueError(f"NAV workbook exceeds {MAX_WORKBOOK_ROWS} rows.")
+        values = list(row)
+        if len(values) > MAX_WORKBOOK_COLUMNS:
+            raise ValueError(
+                f"NAV workbook exceeds {MAX_WORKBOOK_COLUMNS} columns on row {row_index}."
+            )
+        cell_count += len(values)
+        if cell_count > MAX_WORKBOOK_CELLS:
+            raise ValueError(f"NAV workbook exceeds {MAX_WORKBOOK_CELLS} cells.")
+        matrix.append(values)
+    return matrix
+
+
+def _xlsx_matrices(file_bytes: bytes) -> list[tuple[str, list[list[object]]]]:
     if load_workbook is None:
         return []
-    workbook = load_workbook(BytesIO(file_bytes), data_only=True, read_only=False)
-    for sheet in workbook.worksheets:
-        matrix = [list(row) for row in sheet.iter_rows(values_only=True)]
-        if any(any(value is not None and str(value).strip() for value in row) for row in matrix):
-            return matrix
-    return []
+    try:
+        with ZipFile(BytesIO(file_bytes)) as archive:
+            expanded_size = sum(info.file_size for info in archive.infolist())
+    except BadZipFile as error:
+        raise ValueError("Invalid xlsx workbook.") from error
+    if expanded_size > MAX_XLSX_UNCOMPRESSED_BYTES:
+        raise ValueError(
+            f"NAV xlsx expands beyond {MAX_XLSX_UNCOMPRESSED_BYTES} bytes."
+        )
+    with warnings.catch_warnings():
+        warnings.filterwarnings(
+            "ignore",
+            message="Workbook contains no default style, apply openpyxl's default",
+            category=UserWarning,
+        )
+        workbook = load_workbook(BytesIO(file_bytes), data_only=True, read_only=True)
+    try:
+        matrices: list[tuple[str, list[list[object]]]] = []
+        workbook_cell_count = 0
+        for sheet in workbook.worksheets:
+            # Some administrators emit a bogus A1:A1 dimension even though the
+            # worksheet contains a full table. Resetting dimensions keeps the
+            # memory-safe read-only reader while making it inspect real cells.
+            reset_dimensions = getattr(sheet, "reset_dimensions", None)
+            if callable(reset_dimensions):
+                reset_dimensions()
+            matrix = _bounded_matrix(sheet.iter_rows(values_only=True))
+            workbook_cell_count += sum(len(row) for row in matrix)
+            if workbook_cell_count > MAX_WORKBOOK_CELLS:
+                raise ValueError(
+                    f"NAV workbook exceeds {MAX_WORKBOOK_CELLS} cells across sheets."
+                )
+            matrices.append((str(sheet.title), matrix))
+        return matrices
+    finally:
+        workbook.close()
 
 
-def _matrix_from_xls(file_bytes: bytes) -> list[list[object]]:
+def _xls_matrices(file_bytes: bytes) -> list[tuple[str, list[list[object]]]]:
     if xlrd is None:
         return []
-    workbook = xlrd.open_workbook(file_contents=file_bytes)
-    for index in range(workbook.nsheets):
-        sheet = workbook.sheet_by_index(index)
-        matrix = [sheet.row_values(row_index) for row_index in range(sheet.nrows)]
-        if any(any(str(value).strip() for value in row) for row in matrix):
-            return matrix
-    return []
+    diagnostics = StringIO()
+    workbook = xlrd.open_workbook(
+        file_contents=file_bytes,
+        on_demand=True,
+        logfile=diagnostics,
+    )
+    if diagnostic_text := diagnostics.getvalue().strip():
+        LOGGER.debug("xlrd nonfatal workbook diagnostics: %s", diagnostic_text)
+    try:
+        matrices: list[tuple[str, list[list[object]]]] = []
+        workbook_cell_count = 0
+        for sheet in (
+            workbook.sheet_by_index(index) for index in range(workbook.nsheets)
+        ):
+            matrix = _bounded_matrix(
+                sheet.row_values(row_index) for row_index in range(sheet.nrows)
+            )
+            workbook_cell_count += sum(len(row) for row in matrix)
+            if workbook_cell_count > MAX_WORKBOOK_CELLS:
+                raise ValueError(
+                    f"NAV workbook exceeds {MAX_WORKBOOK_CELLS} cells across sheets."
+                )
+            matrices.append((str(sheet.name), matrix))
+        return matrices
+    finally:
+        workbook.release_resources()
 
 
 def _extract_attachment_text_from_matrix(matrix: list[list[object]]) -> str:
@@ -319,7 +423,7 @@ def _parse_nav_rows_from_matrix(matrix: list[list[object]]) -> list[dict[str, ob
     for idx, row in enumerate(matrix[:12]):
         mapped = [NAV_IMPORT_HEADER_MAP.get(_normalize_nav_header(str(cell)), "") for cell in row]
         if "as_of_date" in mapped and any(
-            key in mapped for key in ("nav", "cumulative_nav", "nav_with_dividend")
+            key in mapped for key in ("nav", "cash_cumulative_nav", "nav_with_dividend")
         ):
             header = mapped
             start_index = idx + 1
@@ -332,9 +436,7 @@ def _parse_nav_rows_from_matrix(matrix: list[list[object]]) -> list[dict[str, ob
         values = ["" if value is None else str(value).strip() for value in raw_row]
         if not any(values):
             continue
-        row_data: dict[str, object] = {
-            "frequency": "daily",
-        }
+        row_data: dict[str, object] = {}
         for index, column in enumerate(header):
             if not column:
                 continue
@@ -343,10 +445,14 @@ def _parse_nav_rows_from_matrix(matrix: list[list[object]]) -> list[dict[str, ob
                 parsed_date = _parse_nav_date(cell)
                 if parsed_date is not None:
                     row_data["as_of_date"] = parsed_date.isoformat()
-            elif column in {"nav", "cumulative_nav", "nav_with_dividend"}:
+            elif column in {"nav", "cash_cumulative_nav", "nav_with_dividend"}:
                 parsed_value = _parse_nav_decimal(cell)
                 if parsed_value is not None:
                     row_data[column] = parsed_value
+                    if column == "nav_with_dividend":
+                        row_data["_total_return_source_field"] = (
+                            "provider_reinvested_nav_column"
+                        )
             elif column == "currency" and cell:
                 row_data["currency"] = cell.upper()
             elif column == "frequency" and cell:
@@ -355,7 +461,7 @@ def _parse_nav_rows_from_matrix(matrix: list[list[object]]) -> list[dict[str, ob
                 row_data[column] = cell
         if row_data.get("as_of_date") and any(
             row_data.get(key) is not None
-            for key in ("nav", "cumulative_nav", "nav_with_dividend")
+            for key in ("nav", "cash_cumulative_nav", "nav_with_dividend")
         ):
             rows.append(row_data)
     rows.sort(key=lambda item: str(item["as_of_date"]))
@@ -368,11 +474,17 @@ def _parse_nav_rows_from_label_snapshot_matrix(matrix: list[list[object]]) -> li
 
     found_date: date | None = None
     found_nav: Decimal | None = None
-    found_cumulative_nav: Decimal | None = None
+    found_cash_cumulative_nav: Decimal | None = None
     found_total_return_nav: Decimal | None = None
+    found_instrument_code = ""
+    found_instrument_name = ""
     normalized_aliases = {
         field: tuple(_normalize_nav_header(alias) for alias in aliases)
         for field, aliases in LABEL_SNAPSHOT_FIELD_ALIASES.items()
+    }
+    normalized_identity_aliases = {
+        field: tuple(_normalize_nav_header(alias) for alias in aliases)
+        for field, aliases in LABEL_SNAPSHOT_IDENTITY_ALIASES.items()
     }
 
     for row in matrix:
@@ -383,15 +495,58 @@ def _parse_nav_rows_from_label_snapshot_matrix(matrix: list[list[object]]) -> li
             normalized_cell = _normalize_nav_header(cell)
             next_value = string_values[index + 1] if index + 1 < len(string_values) else ""
 
+            if (
+                not found_instrument_code
+                and normalized_cell
+                in normalized_identity_aliases["instrument_code"]
+                and next_value
+            ):
+                found_instrument_code = next_value.strip().upper()
+            if (
+                not found_instrument_name
+                and normalized_cell
+                in normalized_identity_aliases["instrument_name"]
+                and next_value
+            ):
+                found_instrument_name = next_value.strip()
+
+            if not found_instrument_code:
+                for label in LABEL_SNAPSHOT_IDENTITY_ALIASES["instrument_code"]:
+                    if re.match(rf"^\s*{re.escape(label)}\s*[：:]", cell):
+                        found_instrument_code = re.sub(
+                            rf"^\s*{re.escape(label)}\s*[：:]\s*",
+                            "",
+                            cell,
+                        ).strip().upper()
+                        break
+            if not found_instrument_name:
+                for label in LABEL_SNAPSHOT_IDENTITY_ALIASES["instrument_name"]:
+                    if re.match(rf"^\s*{re.escape(label)}\s*[：:]", cell):
+                        found_instrument_name = re.sub(
+                            rf"^\s*{re.escape(label)}\s*[：:]\s*",
+                            "",
+                            cell,
+                        ).strip()
+                        break
+            if not found_instrument_name:
+                dedicated_table = re.fullmatch(
+                    r".+?[_＿]+(?P<instrument_name>[^_＿]+?)[_＿]+专用表",
+                    cell,
+                )
+                if dedicated_table is not None:
+                    found_instrument_name = dedicated_table.group(
+                        "instrument_name"
+                    ).strip()
+
             if found_date is None and normalized_cell in normalized_aliases["as_of_date"]:
                 found_date = _parse_nav_date(next_value)
             if found_nav is None and normalized_cell in normalized_aliases["nav"]:
                 found_nav = _parse_nav_decimal(next_value)
             if (
-                found_cumulative_nav is None
-                and normalized_cell in normalized_aliases["cumulative_nav"]
+                found_cash_cumulative_nav is None
+                and normalized_cell in normalized_aliases["cash_cumulative_nav"]
             ):
-                found_cumulative_nav = _parse_nav_decimal(next_value)
+                found_cash_cumulative_nav = _parse_nav_decimal(next_value)
             if (
                 found_total_return_nav is None
                 and normalized_cell in normalized_aliases["nav_with_dividend"]
@@ -402,10 +557,17 @@ def _parse_nav_rows_from_label_snapshot_matrix(matrix: list[list[object]]) -> li
                 found_date = _parse_nav_date(
                     re.sub(r"^.*?[：:]\s*", "", cell).strip()
                 )
-            if found_nav is None:
+            if found_nav is None and not any(
+                longer_label in cell
+                for longer_label in (
+                    "累计单位净值",
+                    "复权单位净值",
+                    "分红再投资净值",
+                )
+            ):
                 found_nav = _extract_numeric_from_text("单位净值", cell)
-            if found_cumulative_nav is None:
-                found_cumulative_nav = _extract_numeric_from_text("累计单位净值", cell)
+            if found_cash_cumulative_nav is None:
+                found_cash_cumulative_nav = _extract_numeric_from_text("累计单位净值", cell)
             if found_total_return_nav is None:
                 for label in ("复权单位净值", "分红再投资净值", "复利净值"):
                     found_total_return_nav = _extract_numeric_from_text(label, cell)
@@ -418,25 +580,140 @@ def _parse_nav_rows_from_label_snapshot_matrix(matrix: list[list[object]]) -> li
     row: dict[str, object] = {
         "as_of_date": found_date.isoformat(),
         "nav": found_nav,
-        "frequency": "daily",
     }
-    if found_cumulative_nav is not None:
-        row["cumulative_nav"] = found_cumulative_nav
+    if found_instrument_code:
+        row["instrument_code"] = found_instrument_code
+    if found_instrument_name:
+        row["instrument_name"] = found_instrument_name
+    if found_cash_cumulative_nav is not None:
+        row["cash_cumulative_nav"] = found_cash_cumulative_nav
     if found_total_return_nav is not None:
         row["nav_with_dividend"] = found_total_return_nav
+        row["_total_return_source_field"] = "provider_reinvested_nav_label"
     return [row]
+
+
+def _label_snapshot_filename_code(attachment_name: str) -> str:
+    filename = attachment_name.replace("\\", "/").rsplit("/", 1)[-1].strip()
+    match = re.match(r"^(?P<code>[A-Z][A-Z0-9]{4,15})(?=[_＿-])", filename)
+    return match.group("code") if match is not None else ""
+
+
+def _with_label_snapshot_filename_identity(
+    rows: list[dict[str, object]],
+    *,
+    attachment_name: str,
+) -> list[dict[str, object]]:
+    filename_code = _label_snapshot_filename_code(attachment_name)
+    if not filename_code:
+        return rows
+    enriched: list[dict[str, object]] = []
+    for raw_row in rows:
+        row = dict(raw_row)
+        parsed_code = str(row.get("instrument_code") or "").strip().upper()
+        if parsed_code and parsed_code != filename_code:
+            raise ValueError(
+                "Label NAV snapshot identity conflicts between workbook and filename."
+            )
+        row["instrument_code"] = filename_code
+        enriched.append(row)
+    return enriched
 
 
 def _parse_nav_rows_from_text(raw_text: str) -> list[dict[str, object]]:
     return _parse_nav_rows_from_matrix(_matrix_from_text(raw_text))
 
 
+def _parse_nav_rows_from_workbook_matrices(
+    matrices: list[tuple[str, list[list[object]]]],
+    *,
+    parser: Callable[[list[list[object]]], list[dict[str, object]]],
+) -> list[dict[str, object]]:
+    """Parse every sheet, retaining provenance and collapsing exact duplicates."""
+    rows_by_signature: dict[str, dict[str, object]] = {}
+    for sheet_name, matrix in matrices:
+        for raw_row in parser(matrix):
+            row = dict(raw_row)
+            signature = json.dumps(
+                {
+                    key: str(value)
+                    for key, value in sorted(row.items())
+                    if key not in {"_source_sheet", "_source_sheets"}
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            existing = rows_by_signature.get(signature)
+            if existing is None:
+                row["_source_sheet"] = sheet_name
+                row["_source_sheets"] = [sheet_name]
+                rows_by_signature[signature] = row
+                continue
+            source_sheets = list(existing.get("_source_sheets", []))
+            if sheet_name not in source_sheets:
+                source_sheets.append(sheet_name)
+                existing["_source_sheets"] = source_sheets
+    return sorted(
+        rows_by_signature.values(),
+        key=lambda row: (
+            str(row.get("as_of_date") or ""),
+            str(row.get("instrument_code") or ""),
+            str(row.get("instrument_name") or ""),
+            str(row.get("nav") or ""),
+            str(row.get("cash_cumulative_nav") or ""),
+            str(row.get("nav_with_dividend") or ""),
+            str(row.get("_source_sheet") or ""),
+        ),
+    )
+
+
 def _parse_nav_rows_from_xlsx(file_bytes: bytes) -> list[dict[str, object]]:
-    return _parse_nav_rows_from_matrix(_matrix_from_xlsx(file_bytes))
+    return _parse_nav_rows_from_workbook_matrices(
+        _xlsx_matrices(file_bytes),
+        parser=_parse_nav_rows_from_matrix,
+    )
 
 
 def _parse_nav_rows_from_xls(file_bytes: bytes) -> list[dict[str, object]]:
-    return _parse_nav_rows_from_matrix(_matrix_from_xls(file_bytes))
+    return _parse_nav_rows_from_workbook_matrices(
+        _xls_matrices(file_bytes),
+        parser=_parse_nav_rows_from_matrix,
+    )
+
+
+_XLS_OLE_SIGNATURE = bytes.fromhex("D0CF11E0A1B11AE1")
+_ZIP_SIGNATURES = (b"PK\x03\x04", b"PK\x05\x06", b"PK\x07\x08")
+
+
+def _workbook_matrices_by_content(
+    file_bytes: bytes,
+) -> list[tuple[str, list[list[object]]]]:
+    if file_bytes.startswith(_XLS_OLE_SIGNATURE):
+        return _xls_matrices(file_bytes)
+    if file_bytes.startswith(_ZIP_SIGNATURES):
+        return _xlsx_matrices(file_bytes)
+    raise ValueError("NAV workbook content is neither XLS nor XLSX.")
+
+
+def _parse_nav_rows_from_workbook_content(
+    file_bytes: bytes,
+    *,
+    parser: Callable[[list[list[object]]], list[dict[str, object]]],
+) -> list[dict[str, object]]:
+    return _parse_nav_rows_from_workbook_matrices(
+        _workbook_matrices_by_content(file_bytes),
+        parser=parser,
+    )
+
+
+def _decode_nav_text(file_bytes: bytes) -> str:
+    for encoding in ("utf-8-sig", "gb18030"):
+        try:
+            return file_bytes.decode(encoding)
+        except UnicodeDecodeError:
+            continue
+    raise ValueError("NAV text file must be UTF-8 or GB18030 encoded.")
 
 
 def _parse_nav_rows_from_uploaded_file(
@@ -446,11 +723,12 @@ def _parse_nav_rows_from_uploaded_file(
 ) -> list[dict[str, object]]:
     lower_name = file_name.lower().strip()
     if lower_name.endswith((".csv", ".tsv", ".txt")):
-        return _parse_nav_rows_from_text(file_bytes.decode("utf-8", errors="ignore"))
-    if lower_name.endswith(".xlsx"):
-        return _parse_nav_rows_from_xlsx(file_bytes)
-    if lower_name.endswith(".xls"):
-        return _parse_nav_rows_from_xls(file_bytes)
+        return _parse_nav_rows_from_text(_decode_nav_text(file_bytes))
+    if lower_name.endswith((".xlsx", ".xls")):
+        return _parse_nav_rows_from_workbook_content(
+            file_bytes,
+            parser=_parse_nav_rows_from_matrix,
+        )
     raise ValueError("Unsupported NAV file type. Use csv, tsv, txt, xlsx, or xls.")
 
 
@@ -462,218 +740,42 @@ def _parse_nav_rows_from_attachment(
 ) -> list[dict[str, object]]:
     lower_name = attachment_name.lower()
     if parser_profile == "label_nav_snapshot":
-        if lower_name.endswith(".xls"):
-            return _parse_nav_rows_from_label_snapshot_matrix(_matrix_from_xls(attachment_bytes))
-        if lower_name.endswith(".xlsx"):
-            return _parse_nav_rows_from_label_snapshot_matrix(_matrix_from_xlsx(attachment_bytes))
+        if lower_name.endswith((".xls", ".xlsx")):
+            return _with_label_snapshot_filename_identity(
+                _parse_nav_rows_from_workbook_content(
+                    attachment_bytes,
+                    parser=_parse_nav_rows_from_label_snapshot_matrix,
+                ),
+                attachment_name=attachment_name,
+            )
         return []
 
     if lower_name.endswith((".csv", ".tsv", ".txt")):
-        return _parse_nav_rows_from_text(attachment_bytes.decode("utf-8", errors="ignore"))
-    if lower_name.endswith(".xlsx"):
-        return _parse_nav_rows_from_xlsx(attachment_bytes)
-    if lower_name.endswith(".xls"):
-        return _parse_nav_rows_from_xls(attachment_bytes)
+        return _parse_nav_rows_from_text(_decode_nav_text(attachment_bytes))
+    if lower_name.endswith((".xlsx", ".xls")):
+        return _parse_nav_rows_from_workbook_content(
+            attachment_bytes,
+            parser=_parse_nav_rows_from_matrix,
+        )
     return []
 
 
 def _extract_attachment_text(attachment_name: str, attachment_bytes: bytes) -> str:
     lower_name = attachment_name.lower()
     if lower_name.endswith((".csv", ".tsv", ".txt")):
-        return attachment_bytes.decode("utf-8", errors="ignore")
-    if lower_name.endswith(".xlsx"):
-        return _extract_attachment_text_from_matrix(_matrix_from_xlsx(attachment_bytes))
-    if lower_name.endswith(".xls"):
-        return _extract_attachment_text_from_matrix(_matrix_from_xls(attachment_bytes))
+        return _decode_nav_text(attachment_bytes)
+    if lower_name.endswith((".xlsx", ".xls")):
+        return "\n".join(
+            _extract_attachment_text_from_matrix(matrix)
+            for _sheet_name, matrix in _workbook_matrices_by_content(
+                attachment_bytes
+            )
+        )
     return ""
-
-
-def _extract_email_body_text(message) -> str:
-    text_parts: list[str] = []
-    for part in message.walk():
-        if part.get_content_disposition() == "attachment":
-            continue
-        if part.get_content_type() != "text/plain":
-            continue
-        try:
-            content = part.get_content()
-        except Exception:
-            payload = part.get_payload(decode=True) or b""
-            charset = part.get_content_charset() or "utf-8"
-            content = payload.decode(charset, errors="ignore")
-        if content:
-            text_parts.append(str(content))
-    return "\n".join(text_parts)
-
-
-def _fetch_message_bytes(mailbox, uid: int, request: str) -> bytes | None:
-    cached_fetch = getattr(mailbox, "fetch_message_bytes", None)
-    if callable(cached_fetch):
-        return cached_fetch(uid, request)
-    fetch_status, fetch_data = mailbox.uid("fetch", str(uid), request)
-    if fetch_status != "OK":
-        return None
-    return next(
-        (
-            bytes(item[1])
-            for item in fetch_data
-            if isinstance(item, tuple) and len(item) >= 2 and isinstance(item[1], (bytes, bytearray))
-        ),
-        None,
-    )
-
-
-def _extract_email_attachment_candidates(message) -> list[tuple[str, bytes]]:
-    attachments: list[tuple[str, bytes]] = []
-    for part in message.walk():
-        filename = part.get_filename()
-        if not filename and part.get_content_disposition() != "attachment":
-            continue
-        payload = part.get_payload(decode=True) or b""
-        if not payload:
-            continue
-        attachments.append((filename or "attachment", payload))
-    return attachments
 
 
 def _normalize_text_token(value: str) -> str:
     return re.sub(r"[^0-9a-zA-Z\u4e00-\u9fff]+", "", value.lower())
-
-
-def _normalized_email_rules(source_settings: dict[str, object]) -> list[dict[str, object]]:
-    raw_rules = source_settings.get("source_email_rules", [])
-    if not isinstance(raw_rules, list):
-        return []
-    rules: list[dict[str, object]] = []
-    for rule in raw_rules:
-        if not isinstance(rule, dict):
-            continue
-        normalized = {
-            "sender_equals": [str(item).strip().lower() for item in rule.get("sender_equals", []) if str(item).strip()],
-            "subject_contains": [str(item).strip().lower() for item in rule.get("subject_contains", []) if str(item).strip()],
-            "subject_excludes": [str(item).strip().lower() for item in rule.get("subject_excludes", []) if str(item).strip()],
-            "attachment_name_contains": [
-                str(item).strip().lower() for item in rule.get("attachment_name_contains", []) if str(item).strip()
-            ],
-            "attachment_name_excludes": [
-                str(item).strip().lower() for item in rule.get("attachment_name_excludes", []) if str(item).strip()
-            ],
-            "attachment_extensions": [
-                str(item).strip().lower().lstrip(".")
-                for item in rule.get("attachment_extensions", [])
-                if str(item).strip()
-            ],
-            "attachment_content_contains": [
-                str(item).strip().lower()
-                for item in rule.get("attachment_content_contains", [])
-                if str(item).strip()
-            ],
-            "row_code_equals": [
-                str(item).strip().upper()
-                for item in rule.get("row_code_equals", [])
-                if str(item).strip()
-            ],
-            "row_name_equals": [
-                _normalize_text_token(str(item))
-                for item in rule.get("row_name_equals", [])
-                if str(item).strip()
-            ],
-            "row_name_contains": [
-                _normalize_text_token(str(item))
-                for item in rule.get("row_name_contains", [])
-                if str(item).strip()
-            ],
-            "row_name_excludes": [
-                _normalize_text_token(str(item))
-                for item in rule.get("row_name_excludes", [])
-                if str(item).strip()
-            ],
-            "parser_profile": str(rule.get("parser_profile") or "generic_nav_table").strip() or "generic_nav_table",
-        }
-        rules.append(normalized)
-    return rules
-
-
-def _row_matches_rule(
-    *,
-    rule: dict[str, object],
-    row: dict[str, object],
-) -> bool:
-    row_code = str(row.get("instrument_code") or "").strip().upper()
-    row_name = _normalize_text_token(str(row.get("instrument_name") or ""))
-
-    required_codes = list(rule.get("row_code_equals", []))
-    if required_codes and row_code not in required_codes:
-        return False
-
-    required_name_equals = list(rule.get("row_name_equals", []))
-    if required_name_equals and row_name not in required_name_equals:
-        return False
-
-    required_name_contains = list(rule.get("row_name_contains", []))
-    if required_name_contains and not any(token and token in row_name for token in required_name_contains):
-        return False
-
-    excluded_name_tokens = list(rule.get("row_name_excludes", []))
-    if any(token and token in row_name for token in excluded_name_tokens):
-        return False
-
-    return True
-
-
-def _filter_rows_for_rule(
-    *,
-    rule: dict[str, object],
-    rows: list[dict[str, object]],
-) -> list[dict[str, object]]:
-    if not rows:
-        return []
-    has_row_selectors = any(
-        list(rule.get(key, []))
-        for key in ("row_code_equals", "row_name_equals", "row_name_contains", "row_name_excludes")
-    )
-    if not has_row_selectors:
-        return rows
-    return [row for row in rows if _row_matches_rule(rule=rule, row=row)]
-
-
-def _message_matches_rule(
-    *,
-    rule: dict[str, object],
-    subject: str,
-    sender_email: str,
-) -> bool:
-    normalized_subject = subject.lower()
-    sender_equals = list(rule.get("sender_equals", []))
-    if sender_equals and sender_email not in sender_equals:
-        return False
-    if any(keyword not in normalized_subject for keyword in list(rule.get("subject_contains", []))):
-        return False
-    if any(keyword in normalized_subject for keyword in list(rule.get("subject_excludes", []))):
-        return False
-    return True
-
-
-def _attachment_matches_rule(
-    *,
-    rule: dict[str, object],
-    attachment_name: str,
-    attachment_text: str,
-) -> bool:
-    normalized_name = attachment_name.lower()
-    normalized_text = attachment_text.lower()
-    required_extensions = list(rule.get("attachment_extensions", []))
-    if required_extensions:
-        extension = normalized_name.rsplit(".", 1)[-1] if "." in normalized_name else ""
-        if extension not in required_extensions:
-            return False
-    if any(keyword not in normalized_name for keyword in list(rule.get("attachment_name_contains", []))):
-        return False
-    if any(keyword in normalized_name for keyword in list(rule.get("attachment_name_excludes", []))):
-        return False
-    if any(keyword not in normalized_text for keyword in list(rule.get("attachment_content_contains", []))):
-        return False
-    return True
 
 
 def _normalize_import_status(rows: list[dict[str, object]], fallback: str) -> str:
@@ -681,165 +783,1625 @@ def _normalize_import_status(rows: list[dict[str, object]], fallback: str) -> st
     return fallback
 
 
+_NAV_VALUE_FIELDS = frozenset({"nav", "cash_cumulative_nav", "nav_with_dividend"})
+_NAV_SOURCE_EVIDENCE_FIELDS = (
+    "_email_candidate_route_id",
+    "_email_attachment_name",
+    "_email_folder",
+    "_email_uid",
+    "_email_sent_at",
+    "_raw_observation_id",
+    "_raw_captured_at",
+    "_raw_source_kind",
+    "_raw_source_ref",
+    "_raw_source_provider",
+    "_total_return_source_field",
+    "_source_sheet",
+    "_source_sheets",
+)
+_NAV_VALUE_STATUSES = frozenset({"complete", "partial", "unavailable"})
+
+
+def _nav_value_source_metadata(
+    row: dict[str, object],
+    value_field: str,
+) -> dict[str, object]:
+    existing = row.get(f"_{value_field}_source_metadata")
+    if isinstance(existing, dict):
+        return dict(existing)
+    metadata = {
+        key: row[key]
+        for key in _NAV_SOURCE_EVIDENCE_FIELDS
+        if row.get(key) is not None and row.get(key) != ""
+    }
+    field_provider = row.get(f"_{value_field}_source_provider")
+    if field_provider is not None and field_provider != "":
+        metadata["_raw_source_provider"] = field_provider
+    return metadata
+
+
+def _nav_value_status(row: dict[str, object], value_field: str) -> str | None:
+    if row.get(value_field) is None or row.get(value_field) == "":
+        return None
+    status = str(row.get(f"_{value_field}_status") or "").strip().lower()
+    if status not in _NAV_VALUE_STATUSES:
+        raise ValueError(
+            f'{value_field} requires an explicit source status; got "{status}".'
+        )
+    return status
+
+
+def _stamp_nav_value_statuses(
+    rows: list[dict[str, object]],
+    *,
+    status: str,
+) -> list[dict[str, object]]:
+    normalized_status = status.strip().lower()
+    if normalized_status not in _NAV_VALUE_STATUSES:
+        raise ValueError(f'Unsupported NAV status "{status}".')
+    stamped: list[dict[str, object]] = []
+    for raw_row in rows:
+        row = dict(raw_row)
+        for value_field in _NAV_VALUE_FIELDS:
+            if row.get(value_field) is not None and row.get(value_field) != "":
+                row[f"_{value_field}_status"] = normalized_status
+        stamped.append(row)
+    return stamped
+
+
 def _merge_rows_by_date(rows: list[dict[str, object]]) -> list[dict[str, object]]:
     merged: dict[str, dict[str, object]] = {}
+    row_sources: dict[str, tuple[int, str, str, int]] = {}
+    revision_counts: dict[str, int] = {}
+
+    def source_rank(row: dict[str, object]) -> tuple[int, str, str, int]:
+        timestamp = str(
+            row.get("_email_sent_at") or row.get("_raw_captured_at") or ""
+        )
+        source_kind = str(row.get("_raw_source_kind") or "")
+        if source_kind == "manual_import":
+            source_class = 3
+        elif row.get("_email_candidate_route_id") is not None:
+            source_class = 2
+        elif source_kind == "api_observation":
+            source_class = 1
+        else:
+            source_class = 0
+        if row.get("_email_candidate_route_id") is not None:
+            revision_scope = f"email:{row.get('_email_folder') or ''}"
+            revision_sequence = int(row.get("_email_uid") or 0)
+        elif row.get("_raw_observation_id") is not None:
+            revision_scope = "raw-observation"
+            revision_sequence = int(row.get("_raw_observation_id") or 0)
+        else:
+            revision_scope = ""
+            revision_sequence = 0
+        return (
+            source_class,
+            timestamp,
+            revision_scope,
+            revision_sequence,
+        )
+
+    def compare_source_rank(
+        left: tuple[int, str, str, int],
+        right: tuple[int, str, str, int],
+    ) -> int | None:
+        """Compare only revisions with a real chronological ordering."""
+        if left[0] != right[0]:
+            return 1 if left[0] > right[0] else -1
+        if left[1] and right[1] and left[1] != right[1]:
+            return 1 if left[1] > right[1] else -1
+        if left[2] and left[2] == right[2] and left[3] != right[3]:
+            return 1 if left[3] > right[3] else -1
+        if left == right:
+            return 0
+        return None
+
+    def normalized_value(value: object) -> tuple[str, object]:
+        if value is None or value == "":
+            return ("absent", "")
+        parsed = _parse_nav_decimal(value)
+        if parsed is not None:
+            return ("decimal", parsed)
+        return ("raw", str(value).strip())
+
+    def observation_signature(row: dict[str, object]) -> tuple[object, ...]:
+        return (
+            str(row.get("currency") or "").strip().upper(),
+            *(normalized_value(row.get(key)) for key in sorted(_NAV_VALUE_FIELDS)),
+        )
+
+    def prepared_row(row: dict[str, object], as_of_date: str) -> dict[str, object]:
+        prepared = {
+            key: value
+            for key, value in row.items()
+            if key != "as_of_date"
+            and not key.endswith("_source_metadata")
+            and value is not None
+            and value != ""
+        }
+        prepared["as_of_date"] = as_of_date
+        for value_field in _NAV_VALUE_FIELDS:
+            if row.get(value_field) is None or row.get(value_field) == "":
+                continue
+            prepared[f"_{value_field}_source_metadata"] = (
+                _nav_value_source_metadata(row, value_field)
+            )
+        return prepared
+
     for row in rows:
         as_of_date = str(row.get("as_of_date") or "").strip()
         if not as_of_date:
             continue
-        merged[as_of_date] = {**merged.get(as_of_date, {}), **row}
+        rank = source_rank(row)
+        candidate = prepared_row(row, as_of_date)
+        existing = merged.get(as_of_date)
+        if existing is None:
+            merged[as_of_date] = candidate
+            row_sources[as_of_date] = rank
+            continue
+
+        previous_rank = row_sources[as_of_date]
+        same_observation = observation_signature(existing) == observation_signature(
+            candidate
+        )
+        comparison = compare_source_rank(rank, previous_rank)
+        if not same_observation:
+            if comparison in (None, 0):
+                raise ValueError(
+                    f"Conflicting NAV observations for {as_of_date} lack a strict "
+                    "source revision order."
+                )
+            revision_counts[as_of_date] = revision_counts.get(as_of_date, 0) + 1
+        if comparison == 1:
+            merged[as_of_date] = candidate
+            row_sources[as_of_date] = rank
+    for as_of_date, revision_count in revision_counts.items():
+        merged[as_of_date]["_email_revision_count"] = revision_count
     return [merged[key] for key in sorted(merged.keys())]
 
 
-def _existing_nav_history_by_date(instrument_id: str) -> dict[date, dict[str, Decimal]]:
-    instrument = get_instrument(instrument_id)
-    if instrument is None:
-        return {}
+@dataclass(frozen=True)
+class FundNavPublication:
+    rows: list[dict[str, object]]
+    projection_run: dict[str, object]
+    current_fund_nav_event_ids: list[str]
+    current_fund_nav_reinvestment_evidence_ids: list[str]
+    action_candidates: list[dict[str, object]]
+    adjustment_factors: list[dict[str, object]]
+    derived_total_return_count: int
+    explicit_total_return_count: int
 
-    history: dict[date, dict[str, Decimal]] = {}
-    for point in list(instrument.get("market_data", [])):
-        if not isinstance(point, dict):
-            continue
-        if str(point.get("metric_family") or "").strip() != "nav":
-            continue
-        if str(point.get("status") or "").strip().lower() != "complete":
-            continue
-        point_date = _parse_nav_date(point.get("as_of_date"))
-        point_value = _parse_nav_decimal(point.get("value"))
-        quote_basis = str(point.get("quote_basis") or "").strip()
-        if point_date is None or point_value is None:
-            continue
-        if quote_basis == "official_nav":
-            history.setdefault(point_date, {})["nav"] = point_value
-        elif quote_basis == "total_return_nav":
-            history.setdefault(point_date, {})["nav_with_dividend"] = point_value
-        elif quote_basis in {"cumulative_nav", "accumulated_nav", "cum_nav"}:
-            history.setdefault(point_date, {})["cumulative_nav"] = point_value
-    return history
+    @property
+    def has_derived_total_return(self) -> bool:
+        return self.derived_total_return_count > 0
 
 
-def _apply_reinvested_total_return_correction(
-    *,
-    instrument_id: str,
-    rows: list[dict[str, object]],
-) -> tuple[list[dict[str, object]], bool]:
-    """Derive a reinvested total-return NAV from unit and cash-cumulative NAV.
+FUND_NAV_PROJECTION_METHOD_VERSION = "fund_nav_reinvestment_projection/v5"
+FUND_NAV_PROJECTION_CREATED_BY = "platform_fund_nav_projection_builder"
+AUTO_CASH_DISTRIBUTION_MAX_ABS_INTERVAL_RETURN = Decimal("0.50")
+CUMULATIVE_NAV_SEMANTICS_MIN_VOTES = 3
+CUMULATIVE_NAV_SEMANTICS_DOMINANCE = 4
+CUMULATIVE_NAV_SEMANTICS_COMPARISON_LAGS = (1, 5, 20)
 
-    `cumulative_nav` is unit NAV plus cash distributions per original share; it
-    is not itself a reinvested series. An explicit `nav_with_dividend` always
-    wins. Otherwise the reinvestment factor is rolled forward whenever the
-    cumulative cash-distribution balance changes.
-    """
-    if not rows:
-        return rows, False
 
-    existing_history = _existing_nav_history_by_date(instrument_id)
-    corrected_rows: list[dict[str, object]] = []
-    recognized_cash_distribution: Decimal | None = None
-    reinvested_factor: Decimal | None = None
-    applied = False
-
-    first_row_date = min(
-        (
-            parsed
-            for row in rows
-            if (parsed := _parse_nav_date(row.get("as_of_date"))) is not None
-        ),
-        default=None,
-    )
-    if first_row_date is not None:
-        anchor_dates = [
-            point_date
-            for point_date, values in existing_history.items()
-            if point_date < first_row_date
-            and values.get("nav") not in {None, Decimal("0")}
-            and values.get("nav_with_dividend") is not None
-            and values.get("cumulative_nav") is not None
-        ]
-        if anchor_dates:
-            anchor = existing_history[max(anchor_dates)]
-            reinvested_factor = anchor["nav_with_dividend"] / anchor["nav"]
-            recognized_cash_distribution = anchor["cumulative_nav"] - anchor["nav"]
-
-    for row in sorted(rows, key=lambda item: str(item.get("as_of_date") or "")):
-        corrected_row = dict(row)
-        row_date = _parse_nav_date(row.get("as_of_date"))
-        row_nav = _parse_nav_decimal(row.get("nav"))
-        row_cumulative_nav = _parse_nav_decimal(row.get("cumulative_nav"))
-        explicit_total_return_nav = _parse_nav_decimal(row.get("nav_with_dividend"))
-        if row_date is None or row_nav is None:
-            corrected_rows.append(corrected_row)
-            continue
-
-        cash_distribution = (
-            row_cumulative_nav - row_nav
-            if row_cumulative_nav is not None
-            else None
+def _quantized_factor_level(value: Decimal) -> Decimal:
+    with localcontext() as context:
+        context.prec = 76
+        return value.quantize(
+            FUND_NAV_FACTOR_DECIMAL_PLACES,
+            rounding=ROUND_HALF_UP,
         )
-        if explicit_total_return_nav is not None:
-            if row_nav != 0:
-                reinvested_factor = explicit_total_return_nav / row_nav
-            if cash_distribution is not None:
-                recognized_cash_distribution = cash_distribution
-            corrected_rows.append(corrected_row)
-            continue
-        if row_cumulative_nav is None:
-            corrected_rows.append(corrected_row)
-            continue
 
-        existing_same_day = existing_history.get(row_date, {})
-        existing_same_day_total = existing_same_day.get("nav_with_dividend")
-        if reinvested_factor is None:
-            reinvested_total_nav = existing_same_day_total or row_cumulative_nav
-            reinvested_factor = reinvested_total_nav / row_nav if row_nav != 0 else None
-            recognized_cash_distribution = cash_distribution
+
+def _fund_nav_ledger_id(prefix: str, *parts: object) -> str:
+    identity = "\\0".join(str(part) for part in parts)
+    digest = hashlib.sha256(identity.encode("utf-8")).hexdigest()
+    return f"{prefix}-{digest}"
+
+
+def _row_source_provider(
+    row: dict[str, object],
+    *,
+    fallback: str,
+) -> str:
+    raw_provider = str(row.get("_raw_source_provider") or "").strip()
+    if raw_provider:
+        source_ref = str(row.get("_raw_source_ref") or "").strip()
+        return f"{raw_provider}|{source_ref}" if source_ref else raw_provider
+    route_id = row.get("_email_candidate_route_id")
+    if route_id is not None:
+        return f"email-route:{route_id}"
+    return fallback.strip() or "platform_nav_import"
+
+
+def _row_lineage_evidence(row: dict[str, object]) -> dict[str, object]:
+    evidence: dict[str, object] = {}
+    for evidence_key in _NAV_SOURCE_EVIDENCE_FIELDS:
+        if evidence_key == "_total_return_source_field":
+            continue
+        value = row.get(evidence_key)
+        if value is not None and value != "":
+            evidence[evidence_key.removeprefix("_")] = value
+    return evidence
+
+
+def _reported_decimal_uncertainty(value: object) -> Decimal:
+    if value is None or value == "":
+        return Decimal("0")
+    try:
+        parsed = Decimal(str(value).strip().replace(",", ""))
+    except Exception:
+        return Decimal("0")
+    if not parsed.is_finite():
+        return Decimal("0")
+    exponent = parsed.as_tuple().exponent
+    quantum = Decimal(1).scaleb(exponent) if exponent < 0 else Decimal(1)
+    return abs(quantum) / Decimal(2)
+
+
+def _cash_delta_uncertainty(
+    previous_row: dict[str, object],
+    current_row: dict[str, object],
+) -> Decimal:
+    return max(
+        NAV_SEMANTIC_ZERO_TOLERANCE,
+        sum(
+            (
+                _reported_decimal_uncertainty(previous_row.get("nav")),
+                _reported_decimal_uncertainty(
+                    previous_row.get("cash_cumulative_nav")
+                ),
+                _reported_decimal_uncertainty(current_row.get("nav")),
+                _reported_decimal_uncertainty(
+                    current_row.get("cash_cumulative_nav")
+                ),
+            ),
+            Decimal("0"),
+        ),
+    )
+
+
+def _nav_ratio_uncertainty(row: dict[str, object]) -> Decimal:
+    unit_nav = _parse_nav_decimal(row.get("nav"))
+    cumulative_nav = _parse_nav_decimal(row.get("cash_cumulative_nav"))
+    if unit_nav is None or cumulative_nav is None or unit_nav <= 0:
+        return Decimal("0")
+    unit_uncertainty = _reported_decimal_uncertainty(row.get("nav"))
+    cumulative_uncertainty = _reported_decimal_uncertainty(
+        row.get("cash_cumulative_nav")
+    )
+    with localcontext() as context:
+        context.prec = 76
+        return max(
+            NAV_SEMANTIC_ZERO_TOLERANCE,
+            cumulative_uncertainty / unit_nav
+            + abs(cumulative_nav) * unit_uncertainty / (unit_nav * unit_nav),
+        )
+
+
+def _infer_cumulative_nav_semantics(
+    rows: list[dict[str, object]],
+) -> dict[str, object]:
+    """Distinguish cash-cumulative from dividend-reinvested disclosures.
+
+    A cash-cumulative series keeps ``cumulative - unit`` stable between cash
+    distributions.  A dividend-reinvested series keeps ``cumulative / unit``
+    stable instead.  We require several informative post-divergence intervals
+    and a decisive vote margin; otherwise the source remains ambiguous.
+    """
+
+    complete_rows: list[dict[str, object]] = []
+    for row in rows:
+        unit_nav = _parse_nav_decimal(row.get("nav"))
+        cumulative_nav = _parse_nav_decimal(row.get("cash_cumulative_nav"))
+        if (
+            unit_nav is None
+            or cumulative_nav is None
+            or unit_nav <= 0
+            or _nav_value_status(row, "nav") != "complete"
+            or _nav_value_status(row, "cash_cumulative_nav") != "complete"
+        ):
+            continue
+        complete_rows.append(row)
+
+    cash_cumulative_votes = 0
+    reinvested_votes = 0
+    informative_intervals = 0
+    comparison_pairs = (
+        (complete_rows[current_index - lag], complete_rows[current_index])
+        for current_index in range(1, len(complete_rows))
+        for lag in CUMULATIVE_NAV_SEMANTICS_COMPARISON_LAGS
+        if current_index >= lag
+    )
+    for previous_row, current_row in comparison_pairs:
+        previous_unit = _parse_nav_decimal(previous_row.get("nav"))
+        current_unit = _parse_nav_decimal(current_row.get("nav"))
+        previous_cumulative = _parse_nav_decimal(
+            previous_row.get("cash_cumulative_nav")
+        )
+        current_cumulative = _parse_nav_decimal(
+            current_row.get("cash_cumulative_nav")
+        )
+        assert previous_unit is not None and current_unit is not None
+        assert previous_cumulative is not None and current_cumulative is not None
+        unit_move_uncertainty = (
+            _reported_decimal_uncertainty(previous_row.get("nav"))
+            + _reported_decimal_uncertainty(current_row.get("nav"))
+        )
+        if abs(current_unit - previous_unit) <= unit_move_uncertainty:
+            continue
+        previous_balance = previous_cumulative - previous_unit
+        current_balance = current_cumulative - current_unit
+        balance_uncertainty = _cash_delta_uncertainty(
+            previous_row,
+            current_row,
+        )
+        if (
+            abs(previous_balance) <= balance_uncertainty
+            and abs(current_balance) <= balance_uncertainty
+        ):
+            # Before the first distribution both semantics collapse to unit NAV.
+            continue
+        with localcontext() as context:
+            context.prec = 76
+            previous_ratio = previous_cumulative / previous_unit
+            current_ratio = current_cumulative / current_unit
+        difference_stable = (
+            abs(current_balance - previous_balance) <= balance_uncertainty
+        )
+        ratio_stable = abs(current_ratio - previous_ratio) <= (
+            _nav_ratio_uncertainty(previous_row)
+            + _nav_ratio_uncertainty(current_row)
+        )
+        if difference_stable == ratio_stable:
+            # A distribution boundary can move both measures; a flat unit NAV
+            # can leave both stable. Neither interval is discriminating.
+            continue
+        informative_intervals += 1
+        if difference_stable:
+            cash_cumulative_votes += 1
         else:
-            cash_dividend = (
-                Decimal("0")
-                if recognized_cash_distribution is None
-                else cash_distribution - recognized_cash_distribution
+            reinvested_votes += 1
+
+    kind = "ambiguous"
+    if cash_cumulative_votes >= max(
+        CUMULATIVE_NAV_SEMANTICS_MIN_VOTES,
+        reinvested_votes * CUMULATIVE_NAV_SEMANTICS_DOMINANCE,
+    ):
+        kind = "cash_non_reinvested"
+    elif reinvested_votes >= max(
+        CUMULATIVE_NAV_SEMANTICS_MIN_VOTES,
+        cash_cumulative_votes * CUMULATIVE_NAV_SEMANTICS_DOMINANCE,
+    ):
+        kind = "dividend_reinvested"
+    return {
+        "kind": kind,
+        "cash_cumulative_votes": cash_cumulative_votes,
+        "dividend_reinvested_votes": reinvested_votes,
+        "informative_intervals": informative_intervals,
+        "complete_observation_count": len(complete_rows),
+        "comparison_lags": list(CUMULATIVE_NAV_SEMANTICS_COMPARISON_LAGS),
+    }
+
+
+def _current_fund_nav_heads(
+    instrument: dict[str, object] | None,
+) -> tuple[list[dict[str, object]], dict[str, dict[str, object]]]:
+    """Return exact current action/evidence heads without legacy status inference."""
+
+    if not isinstance(instrument, dict):
+        return [], {}
+
+    events: list[dict[str, object]] = []
+    seen_event_ids: set[str] = set()
+    for index, raw_event in enumerate(
+        list(instrument.get("fund_nav_events", [])),
+        start=1,
+    ):
+        if not isinstance(raw_event, dict):
+            raise ValueError(f"Current fund NAV event {index} must be an object.")
+        event = dict(raw_event)
+        event_id = str(event.get("fund_nav_event_id") or "").strip()
+        effective_date = _parse_nav_date(event.get("effective_date"))
+        event_type = str(event.get("event_type") or "").strip()
+        if not event_id or effective_date is None:
+            raise ValueError(
+                f"Current fund NAV event {index} requires an id and effective_date."
             )
-            if abs(cash_dividend) <= CASH_DISTRIBUTION_EVENT_THRESHOLD:
-                cash_dividend = Decimal("0")
-            if row_nav == 0 or reinvested_factor is None:
-                reinvested_total_nav = row_cumulative_nav
-            else:
-                if cash_dividend != 0:
-                    reinvested_factor = reinvested_factor * (
-                        Decimal("1") + cash_dividend / row_nav
-                    )
-                    recognized_cash_distribution = cash_distribution
-                reinvested_total_nav = row_nav * reinvested_factor
+        if event_id in seen_event_ids:
+            raise ValueError(f'Duplicate current fund NAV event id "{event_id}".')
+        if event_type not in {"cash_distribution", "unit_split"}:
+            raise ValueError(
+                f'Current fund NAV event "{event_id}" has unsupported type '
+                f'"{event_type}".'
+            )
+        seen_event_ids.add(event_id)
+        event["fund_nav_event_id"] = event_id
+        event["effective_date"] = effective_date.isoformat()
+        events.append(event)
 
-        formatted_total_nav = _format_total_return_nav_decimal(reinvested_total_nav)
-        applied = True
-        corrected_row["nav_with_dividend"] = formatted_total_nav
-        corrected_rows.append(corrected_row)
+    events_by_date: dict[date, list[dict[str, object]]] = {}
+    for event in events:
+        event_date = _parse_nav_date(event["effective_date"])
+        assert event_date is not None
+        events_by_date.setdefault(event_date, []).append(event)
+    for event_date, same_day_events in events_by_date.items():
+        if len(same_day_events) == 1:
+            same_day_events.sort(
+                key=lambda item: str(item["fund_nav_event_id"]),
+            )
+            continue
+        sequence_orders = [
+            event.get("sequence_order") for event in same_day_events
+        ]
+        if (
+            any(
+                not isinstance(sequence_order, int) or sequence_order < 1
+                for sequence_order in sequence_orders
+            )
+            or len(set(sequence_orders)) != len(sequence_orders)
+        ):
+            # Keep a deterministic diagnostic order, but do not invent the
+            # non-commutative business order. Projection segments crossing the
+            # date will be marked unavailable below.
+            same_day_events.sort(
+                key=lambda item: str(item["fund_nav_event_id"]),
+            )
+            for event in same_day_events:
+                event["_sequence_ambiguous"] = True
+            continue
+        same_day_events.sort(key=lambda item: int(item["sequence_order"]))
+    ordered_events = [
+        event
+        for event_date in sorted(events_by_date)
+        for event in events_by_date[event_date]
+    ]
 
-    return corrected_rows, applied
+    evidence_by_event_id: dict[str, dict[str, object]] = {}
+    seen_evidence_ids: set[str] = set()
+    for index, raw_evidence in enumerate(
+        list(instrument.get("fund_nav_reinvestment_evidence", [])),
+        start=1,
+    ):
+        if not isinstance(raw_evidence, dict):
+            raise ValueError(
+                f"Current fund NAV reinvestment evidence {index} must be an object."
+            )
+        evidence = dict(raw_evidence)
+        evidence_id = str(
+            evidence.get("fund_nav_reinvestment_evidence_id") or ""
+        ).strip()
+        event_id = str(evidence.get("fund_nav_event_id") or "").strip()
+        if not evidence_id or not event_id:
+            raise ValueError(
+                "Current fund NAV reinvestment evidence requires evidence and event ids."
+            )
+        if evidence_id in seen_evidence_ids:
+            raise ValueError(
+                f'Duplicate current reinvestment evidence id "{evidence_id}".'
+            )
+        if event_id in evidence_by_event_id:
+            raise ValueError(
+                f'Current fund NAV event "{event_id}" has multiple evidence heads.'
+            )
+        if event_id not in seen_event_ids:
+            raise ValueError(
+                f'Current reinvestment evidence "{evidence_id}" references a non-current event.'
+            )
+        seen_evidence_ids.add(evidence_id)
+        evidence["fund_nav_reinvestment_evidence_id"] = evidence_id
+        evidence["fund_nav_event_id"] = event_id
+        evidence_by_event_id[event_id] = evidence
+    return ordered_events, evidence_by_event_id
 
 
-def _requires_reinvested_incremental_anchor(
+def _fund_nav_events_between(
+    events: list[dict[str, object]],
+    *,
+    after_date: date,
+    through_date: date,
+) -> list[dict[str, object]]:
+    return [
+        event
+        for event in events
+        if after_date
+        < (_parse_nav_date(event.get("effective_date")) or date.min)
+        <= through_date
+    ]
+
+
+def _fund_nav_source_observation_fingerprint(
+    rows: list[dict[str, object]],
+) -> str:
+    """Hash only ordered durable source facts, never derived projection output."""
+
+    observations: list[dict[str, object]] = []
+    for row in sorted(rows, key=lambda item: str(item.get("as_of_date") or "")):
+        observation: dict[str, object] = {
+            "as_of_date": str(row.get("as_of_date") or "").strip(),
+            "currency": str(row.get("currency") or "").strip().upper(),
+        }
+        for value_field in sorted(_NAV_VALUE_FIELDS):
+            value = row.get(value_field)
+            if value is None or value == "":
+                continue
+            observation[value_field] = str(value).strip()
+            observation[f"{value_field}_status"] = _nav_value_status(
+                row,
+                value_field,
+            )
+            observation[f"{value_field}_source"] = _nav_value_source_metadata(
+                row,
+                value_field,
+            )
+        observations.append(observation)
+    payload = {
+        "contract": "fund_nav_source_observations/v1",
+        "observations": observations,
+    }
+    return hashlib.sha256(
+        json.dumps(
+            payload,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            default=str,
+        ).encode("utf-8")
+    ).hexdigest()
+
+
+def _cash_balance_action_candidate(
+    *,
+    instrument_id: str,
+    previous_row: dict[str, object],
+    current_row: dict[str, object],
+    cash_balance_before: Decimal,
+    cash_balance_after: Decimal,
+    expected_cash_balance: Decimal | None,
+    unit_nav: Decimal,
+    cash_cumulative_nav: Decimal,
+    unit_provider: str,
+    cash_provider: str,
+    unit_evidence: dict[str, object],
+    cash_evidence: dict[str, object],
+    confirmed_event_ids: list[str] | None = None,
+) -> dict[str, object]:
+    """Describe an observed interval anomaly without inventing a fund event.
+
+    A cash-cumulative disclosure does not reveal the exact event date or the
+    reinvestment NAV.  Those unknowns deliberately do not enter the canonical
+    event/factor ledger.
+    """
+
+    interval_start = _parse_nav_date(previous_row.get("as_of_date"))
+    interval_end = _parse_nav_date(current_row.get("as_of_date"))
+    if interval_start is None or interval_end is None or interval_start >= interval_end:
+        raise ValueError("Fund NAV action candidate requires an ordered date interval.")
+    observed_delta = cash_balance_after - cash_balance_before
+    uncertainty = _cash_delta_uncertainty(previous_row, current_row)
+    candidate_type = (
+        "cash_distribution_signal"
+        if observed_delta > 0
+        else "cash_balance_discontinuity"
+    )
+    revision_payload = {
+        "interval_start_date": interval_start.isoformat(),
+        "interval_end_date": interval_end.isoformat(),
+        "cash_balance_before": str(cash_balance_before),
+        "cash_balance_after": str(cash_balance_after),
+        "expected_cash_balance": (
+            str(expected_cash_balance) if expected_cash_balance is not None else None
+        ),
+        "measurement_uncertainty": str(uncertainty),
+        "unit_nav": str(unit_nav),
+        "cash_cumulative_nav": str(cash_cumulative_nav),
+        "unit_provider": unit_provider,
+        "cash_provider": cash_provider,
+        "unit_evidence": unit_evidence,
+        "cash_evidence": cash_evidence,
+        "confirmed_event_ids": confirmed_event_ids or [],
+    }
+    source_revision = hashlib.sha256(
+        json.dumps(
+            revision_payload,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            default=str,
+        ).encode("utf-8")
+    ).hexdigest()
+    return {
+        "fund_nav_action_candidate_id": _fund_nav_ledger_id(
+            "fund-nav-action-candidate",
+            instrument_id,
+            candidate_type,
+            interval_start,
+            interval_end,
+            source_revision,
+        ),
+        "candidate_type": candidate_type,
+        "interval_start_date": interval_start.isoformat(),
+        "interval_end_date": interval_end.isoformat(),
+        "observed_cash_balance_before": str(cash_balance_before),
+        "observed_cash_balance_after": str(cash_balance_after),
+        "observed_cash_delta": str(observed_delta),
+        "expected_cash_balance": (
+            str(expected_cash_balance) if expected_cash_balance is not None else None
+        ),
+        "measurement_uncertainty": str(uncertainty),
+        "status": "open",
+        "source_provider": cash_provider,
+        "source_revision": source_revision,
+        "source_evidence": revision_payload,
+    }
+
+
+def _cash_disclosure_intervals(
     *,
     instrument_id: str,
     rows: list[dict[str, object]],
-    full_history: bool,
-    nav_since_date: date | None,
-) -> bool:
-    if full_history or nav_since_date is None:
-        return False
-    if not any(
-        row.get("cumulative_nav") is not None and row.get("nav_with_dividend") is None
-        for row in rows
+    events: list[dict[str, object]],
+    source_provider: str,
+) -> tuple[dict[date, dict[str, object]], list[dict[str, object]]]:
+    """Validate disclosed cash balances without deriving reinvestment returns."""
+
+    complete_rows: list[tuple[date, dict[str, object], Decimal]] = []
+    for raw_row in rows:
+        row_date = _parse_nav_date(raw_row.get("as_of_date"))
+        unit_nav = _parse_nav_decimal(raw_row.get("nav"))
+        cash_cumulative_nav = _parse_nav_decimal(
+            raw_row.get("cash_cumulative_nav")
+        )
+        if (
+            row_date is None
+            or unit_nav is None
+            or cash_cumulative_nav is None
+            or _nav_value_status(raw_row, "nav") != "complete"
+            or _nav_value_status(raw_row, "cash_cumulative_nav") != "complete"
+        ):
+            continue
+        complete_rows.append(
+            (row_date, raw_row, cash_cumulative_nav - unit_nav)
+        )
+
+    intervals: dict[date, dict[str, object]] = {}
+    candidates: list[dict[str, object]] = []
+    if not complete_rows:
+        return intervals, candidates
+    first_date, _first_row, first_balance = complete_rows[0]
+    intervals[first_date] = {
+        "kind": "baseline",
+        "valid": True,
+        "cash_balance": first_balance,
+        "event_ids": [],
+    }
+
+    previous_date, previous_row, previous_balance = complete_rows[0]
+    for current_date, current_row, current_balance in complete_rows[1:]:
+        interval_events = _fund_nav_events_between(
+            events,
+            after_date=previous_date,
+            through_date=current_date,
+        )
+        interval_event_ids = [
+            str(event["fund_nav_event_id"]) for event in interval_events
+        ]
+        interval_valid = not any(
+            bool(event.get("_sequence_ambiguous")) for event in interval_events
+        )
+        expected_cash_balance = previous_balance
+        if interval_valid:
+            for event in interval_events:
+                event_type = str(event.get("event_type") or "")
+                if event_type == "cash_distribution":
+                    cash_per_unit = _parse_nav_decimal(
+                        event.get("cash_per_unit")
+                    )
+                    if cash_per_unit is None:
+                        interval_valid = False
+                        break
+                    expected_cash_balance += cash_per_unit
+                elif event_type == "unit_split":
+                    unit_ratio = _parse_nav_decimal(event.get("unit_ratio"))
+                    if unit_ratio is None:
+                        interval_valid = False
+                        break
+                    with localcontext() as context:
+                        context.prec = 76
+                        expected_cash_balance /= unit_ratio
+                else:  # pragma: no cover - current-head validation rejects this
+                    interval_valid = False
+                    break
+
+        tolerance = _cash_delta_uncertainty(previous_row, current_row)
+        reconciled = interval_valid and (
+            abs(current_balance - expected_cash_balance) <= tolerance
+        )
+        intervals[current_date] = {
+            "kind": "interval",
+            "valid": reconciled,
+            "cash_balance": current_balance,
+            "expected_cash_balance": (
+                expected_cash_balance if interval_valid else None
+            ),
+            "observed_cash_delta": current_balance - previous_balance,
+            "measurement_uncertainty": tolerance,
+            "previous_unit_nav": _parse_nav_decimal(previous_row.get("nav")),
+            "current_unit_nav": _parse_nav_decimal(current_row.get("nav")),
+            "event_ids": interval_event_ids,
+            "interval_start_date": previous_date.isoformat(),
+        }
+        if not reconciled:
+            unit_nav = _parse_nav_decimal(current_row.get("nav"))
+            cash_cumulative_nav = _parse_nav_decimal(
+                current_row.get("cash_cumulative_nav")
+            )
+            assert unit_nav is not None and cash_cumulative_nav is not None
+            unit_source = _nav_value_source_metadata(current_row, "nav")
+            cash_source = _nav_value_source_metadata(
+                current_row,
+                "cash_cumulative_nav",
+            )
+            candidates.append(
+                _cash_balance_action_candidate(
+                    instrument_id=instrument_id,
+                    previous_row=previous_row,
+                    current_row=current_row,
+                    cash_balance_before=previous_balance,
+                    cash_balance_after=current_balance,
+                    expected_cash_balance=(
+                        expected_cash_balance if interval_valid else None
+                    ),
+                    unit_nav=unit_nav,
+                    cash_cumulative_nav=cash_cumulative_nav,
+                    unit_provider=_row_source_provider(
+                        unit_source,
+                        fallback=source_provider,
+                    ),
+                    cash_provider=_row_source_provider(
+                        cash_source,
+                        fallback=source_provider,
+                    ),
+                    unit_evidence=_row_lineage_evidence(unit_source),
+                    cash_evidence=_row_lineage_evidence(cash_source),
+                    confirmed_event_ids=interval_event_ids,
+                )
+            )
+        previous_date = current_date
+        previous_row = current_row
+        previous_balance = current_balance
+    return intervals, candidates
+
+
+def _auto_cash_distribution_terms(
+    *,
+    interval: dict[str, object] | None,
+    current_unit_nav: Decimal,
+) -> tuple[Decimal, Decimal, Decimal] | None:
+    """Resolve a positive disclosed cash jump when both interval endpoints exist.
+
+    The provider's cash-cumulative NAV reveals the per-unit distribution.  The
+    first complete observation after that disclosure change supplies the
+    reinvestment NAV used for an endpoint total-return calculation.  Negative
+    jumps, intervals containing separately confirmed events, and implausible
+    implied returns remain unresolved rather than being guessed.
+    """
+
+    if interval is None or bool(interval.get("valid")):
+        return None
+    if list(interval.get("event_ids") or []):
+        return None
+    current_balance = interval.get("cash_balance")
+    expected_balance = interval.get("expected_cash_balance")
+    uncertainty = interval.get("measurement_uncertainty")
+    previous_unit_nav = interval.get("previous_unit_nav")
+    if not all(
+        isinstance(value, Decimal)
+        for value in (
+            current_balance,
+            expected_balance,
+            uncertainty,
+            previous_unit_nav,
+        )
     ):
-        return False
-    row_dates = {_parse_nav_date(row.get("as_of_date")) for row in rows}
-    if nav_since_date in row_dates:
-        return False
-    anchor = _existing_nav_history_by_date(instrument_id).get(nav_since_date, {})
-    return not all(
-        anchor.get(key) is not None
-        for key in ("nav", "cumulative_nav", "nav_with_dividend")
+        return None
+    assert isinstance(current_balance, Decimal)
+    assert isinstance(expected_balance, Decimal)
+    assert isinstance(uncertainty, Decimal)
+    assert isinstance(previous_unit_nav, Decimal)
+    if current_unit_nav <= 0 or previous_unit_nav <= 0:
+        return None
+    cash_per_unit = current_balance - expected_balance
+    if cash_per_unit <= uncertainty:
+        return None
+    with localcontext() as context:
+        context.prec = 76
+        implied_interval_return = (
+            (current_unit_nav + cash_per_unit) / previous_unit_nav
+        ) - Decimal("1")
+        if (
+            abs(implied_interval_return)
+            > AUTO_CASH_DISTRIBUTION_MAX_ABS_INTERVAL_RETURN
+        ):
+            return None
+        multiplier = _quantized_factor_level(
+            Decimal("1") + cash_per_unit / current_unit_nav
+        )
+    return cash_per_unit, multiplier, implied_interval_return
+
+
+def _build_fund_nav_publication(
+    *,
+    instrument_id: str,
+    rows: list[dict[str, object]],
+    source_provider: str = "platform_nav_import",
+    instrument: dict[str, object] | None = None,
+) -> FundNavPublication:
+    """Build a fail-closed, revision-aware canonical fund NAV projection.
+
+    Unit NAV is the only directly publishable price observation. A provider's
+    cash-cumulative disclosure remains raw evidence. Total return is published
+    only when it is either explicit provider evidence or unit NAV multiplied by
+    a traceable reinvestment factor. A broken segment stays NA until an explicit
+    provider total-return observation creates a new auditable re-anchor.
+    """
+
+    if instrument is None or "fund_nav_events" not in instrument:
+        instrument = get_instrument(instrument_id)
+    if instrument is None:
+        raise ValueError(f'Instrument "{instrument_id}" no longer exists.')
+
+    ordered_rows = sorted(
+        (dict(row) for row in rows),
+        key=lambda item: str(item.get("as_of_date") or ""),
+    )
+    source_fingerprint = _fund_nav_source_observation_fingerprint(ordered_rows)
+    cumulative_nav_semantics = _infer_cumulative_nav_semantics(ordered_rows)
+    events, evidence_by_event_id = _current_fund_nav_heads(instrument)
+    current_event_ids = sorted(
+        str(event["fund_nav_event_id"]) for event in events
+    )
+    current_evidence_ids = sorted(
+        str(evidence["fund_nav_reinvestment_evidence_id"])
+        for evidence in evidence_by_event_id.values()
+    )
+    if cumulative_nav_semantics["kind"] == "dividend_reinvested":
+        # Some managers label a reinvested total-return series as “累计净值”.
+        # Interpreting its balance changes as cash distributions would apply
+        # the same dividend twice.
+        cash_intervals: dict[date, dict[str, object]] = {}
+        action_candidates: list[dict[str, object]] = []
+    else:
+        cash_intervals, action_candidates = _cash_disclosure_intervals(
+            instrument_id=instrument_id,
+            rows=ordered_rows,
+            events=events,
+            source_provider=source_provider,
+        )
+
+    canonical_rows: list[dict[str, object]] = []
+    row_facts: list[dict[str, object]] = []
+    seen_source_dates: set[date] = set()
+    fallback_currency = str(instrument.get("currency") or "").strip().upper()
+    for row_index, row in enumerate(ordered_rows, start=1):
+        row_date = _parse_nav_date(row.get("as_of_date"))
+        if row_date is None:
+            raise ValueError(f"Fund NAV source row {row_index} has an invalid date.")
+        if row_date in seen_source_dates:
+            raise ValueError(
+                f"Fund NAV source rows contain duplicate date {row_date.isoformat()}; "
+                "durable revisions must be merged before projection."
+            )
+        seen_source_dates.add(row_date)
+        currency = str(row.get("currency") or fallback_currency).strip().upper()
+        unit_nav = _parse_nav_decimal(row.get("nav"))
+        cash_cumulative_nav = _parse_nav_decimal(row.get("cash_cumulative_nav"))
+        explicit_total_return = _parse_nav_decimal(row.get("nav_with_dividend"))
+        unit_status = _nav_value_status(row, "nav")
+        cash_status = _nav_value_status(row, "cash_cumulative_nav")
+        total_return_status = _nav_value_status(row, "nav_with_dividend")
+        if unit_nav is not None and not currency:
+            raise ValueError(
+                f"Fund NAV source row {row_index} has no canonical currency."
+            )
+
+        unit_source = _nav_value_source_metadata(row, "nav")
+        cash_source = _nav_value_source_metadata(row, "cash_cumulative_nav")
+        total_source = _nav_value_source_metadata(row, "nav_with_dividend")
+        total_source_field = str(
+            row.get("_total_return_source_field")
+            or "provider_reinvested_nav"
+        )
+        if (
+            explicit_total_return is None
+            and cash_cumulative_nav is not None
+            and cumulative_nav_semantics["kind"] == "dividend_reinvested"
+        ):
+            explicit_total_return = cash_cumulative_nav
+            total_return_status = cash_status
+            total_source = cash_source
+            total_source_field = "cumulative_nav_dividend_reinvested"
+        unit_provider = _row_source_provider(unit_source, fallback=source_provider)
+        cash_provider = _row_source_provider(cash_source, fallback=source_provider)
+        total_provider = _row_source_provider(total_source, fallback=source_provider)
+        unit_evidence = _row_lineage_evidence(unit_source)
+        cash_evidence = _row_lineage_evidence(cash_source)
+        total_evidence = _row_lineage_evidence(total_source)
+        if total_source_field == "cumulative_nav_dividend_reinvested":
+            total_evidence = {
+                **total_evidence,
+                "cumulative_nav_semantics": cumulative_nav_semantics,
+            }
+
+        canonical: dict[str, object] | None = None
+        if unit_nav is not None:
+            canonical = {
+                "as_of_date": row_date.isoformat(),
+                "currency": currency,
+                "nav": str(row.get("nav")).strip(),
+                "nav_status": unit_status,
+                "nav_source_provider": unit_provider,
+                "nav_lineage": {
+                    "kind": "provider_explicit",
+                    "evidence": {
+                        "source_field": "unit_nav",
+                        **unit_evidence,
+                    },
+                },
+            }
+            canonical_rows.append(canonical)
+        row_facts.append(
+            {
+                "raw": row,
+                "date": row_date,
+                "canonical": canonical,
+                "unit_nav": unit_nav,
+                "cash_cumulative_nav": cash_cumulative_nav,
+                "explicit_total_return": explicit_total_return,
+                "unit_status": unit_status,
+                "cash_status": cash_status,
+                "total_status": total_return_status,
+                "unit_provider": unit_provider,
+                "cash_provider": cash_provider,
+                "total_provider": total_provider,
+                "total_source_field": total_source_field,
+                "unit_evidence": unit_evidence,
+                "cash_evidence": cash_evidence,
+                "total_evidence": total_evidence,
+            }
+        )
+
+    adjustment_factors: list[dict[str, object]] = []
+    explicit_count = 0
+    derived_count = 0
+    break_reasons: list[dict[str, object]] = []
+    auto_cash_distributions: list[dict[str, object]] = []
+    segment_live = False
+    segment_anchor_date: date | None = None
+    segment_factor_key: str | None = None
+    segment_factor_level: Decimal | None = None
+    segment_event_cutoff: date | None = None
+    segment_origin: str | None = None
+    segment_broken = False
+    provider_normalization_scale: Decimal | None = None
+    current_segment_start_date: date | None = None
+    first_complete_cash_date = next(
+        (
+            fact["date"]
+            for fact in row_facts
+            if fact["unit_nav"] is not None
+            and fact["cash_cumulative_nav"] is not None
+            and fact["unit_status"] == "complete"
+            and fact["cash_status"] == "complete"
+        ),
+        None,
+    )
+
+    for fact in row_facts:
+        row_date = fact["date"]
+        assert isinstance(row_date, date)
+        canonical = fact["canonical"]
+        unit_nav = fact["unit_nav"]
+        cash_cumulative_nav = fact["cash_cumulative_nav"]
+        explicit_total_return = fact["explicit_total_return"]
+        unit_complete = unit_nav is not None and fact["unit_status"] == "complete"
+        cash_complete = (
+            cash_cumulative_nav is not None and fact["cash_status"] == "complete"
+        )
+        explicit_complete = (
+            explicit_total_return is not None
+            and fact["total_status"] == "complete"
+            and unit_complete
+            and canonical is not None
+        )
+
+        if explicit_complete:
+            assert isinstance(unit_nav, Decimal)
+            assert isinstance(explicit_total_return, Decimal)
+            with localcontext() as context:
+                context.prec = 76
+                raw_provider_factor = _quantized_factor_level(
+                    explicit_total_return / unit_nav
+                )
+            prior_complete_total_rows = [
+                row
+                for row in canonical_rows
+                if row.get("nav_with_dividend") is not None
+                and row.get("nav_with_dividend_status") == "complete"
+            ]
+            bridge_factor_level: Decimal | None = None
+            bridge_cash_distribution: tuple[Decimal, Decimal, Decimal] | None = None
+            if (
+                prior_complete_total_rows
+                and segment_live
+                and not segment_broken
+                and segment_origin
+                in {"window_normalized", "cash_cumulative_derived"}
+                and segment_factor_level is not None
+                and segment_event_cutoff is not None
+            ):
+                bridge_interval = cash_intervals.get(row_date)
+                bridge_events = _fund_nav_events_between(
+                    events,
+                    after_date=segment_event_cutoff,
+                    through_date=row_date,
+                )
+                if (
+                    bridge_interval is not None
+                    and bool(bridge_interval.get("valid"))
+                    and not bridge_events
+                ):
+                    bridge_factor_level = segment_factor_level
+                elif (
+                    cash_complete
+                    and cumulative_nav_semantics["kind"]
+                    == "cash_non_reinvested"
+                ):
+                    bridge_cash_distribution = _auto_cash_distribution_terms(
+                        interval=bridge_interval,
+                        current_unit_nav=unit_nav,
+                    )
+                    if bridge_cash_distribution is not None:
+                        assert bridge_interval is not None
+                        cash_per_unit, multiplier, implied_return = (
+                            bridge_cash_distribution
+                        )
+                        bridge_factor_level = _quantized_factor_level(
+                            segment_factor_level * multiplier
+                        )
+                        auto_cash_distributions.append(
+                            {
+                                "interval_start_date": str(
+                                    bridge_interval.get("interval_start_date")
+                                ),
+                                "interval_end_date": row_date.isoformat(),
+                                "cash_per_unit": str(cash_per_unit),
+                                "reinvestment_nav": str(unit_nav),
+                                "implied_interval_return": str(implied_return),
+                                "resolved_by": "provider_total_return_overlap",
+                            }
+                        )
+                        action_candidates[:] = [
+                            candidate
+                            for candidate in action_candidates
+                            if not (
+                                candidate.get("interval_start_date")
+                                == bridge_interval.get("interval_start_date")
+                                and candidate.get("interval_end_date")
+                                == row_date.isoformat()
+                            )
+                        ]
+                if bridge_factor_level is not None:
+                    provider_normalization_scale = _quantized_factor_level(
+                        bridge_factor_level / raw_provider_factor
+                    )
+            starts_unverified_segment = bool(prior_complete_total_rows) and (
+                segment_broken
+                or (
+                    segment_origin
+                    in {"window_normalized", "cash_cumulative_derived"}
+                    and bridge_factor_level is None
+                )
+            )
+            if starts_unverified_segment:
+                for prior_row in prior_complete_total_rows:
+                    # The persistence contract intentionally has no partial
+                    # total-return quote: an unprovable point is represented by
+                    # absence.  The historical projection run preserves the
+                    # superseded derivation; the new run records the segment
+                    # break below and publishes only the verified scale.
+                    for field_name in (
+                        "nav_with_dividend",
+                        "nav_with_dividend_status",
+                        "nav_with_dividend_source_provider",
+                        "nav_with_dividend_lineage",
+                    ):
+                        prior_row.pop(field_name, None)
+                adjustment_factors.clear()
+                explicit_count = 0
+                derived_count = 0
+                auto_cash_distributions.clear()
+                provider_normalization_scale = None
+                break_reasons.append(
+                    {
+                        "as_of_date": row_date.isoformat(),
+                        "reason": "provider_reanchor_without_verified_overlap",
+                        "excluded_complete_points": len(prior_complete_total_rows),
+                    }
+                )
+                current_segment_start_date = row_date
+            if provider_normalization_scale is None:
+                provider_normalization_scale = Decimal("1")
+            factor_level = _quantized_factor_level(
+                raw_provider_factor * provider_normalization_scale
+            )
+            factor_key = f"provider:{row_date.isoformat()}"
+            total_evidence = dict(fact["total_evidence"])
+            source_field = str(fact["total_source_field"])
+            factor_evidence: dict[str, object] = {
+                "source_field": source_field,
+                "unit_nav": str(unit_nav),
+                "provider_total_return_nav": str(explicit_total_return),
+                "unit_nav_source_provider": str(fact["unit_provider"]),
+                "total_return_source_provider": str(fact["total_provider"]),
+                **total_evidence,
+            }
+            if provider_normalization_scale != Decimal("1"):
+                factor_evidence.update(
+                    {
+                        "canonical_normalization_scale": str(
+                            provider_normalization_scale
+                        ),
+                        "normalization_reason": (
+                            "preserve_verified_pre_overlap_return_history"
+                        ),
+                        "overlap_provider_factor": str(raw_provider_factor),
+                    }
+                )
+            adjustment_factors.append(
+                {
+                    "factor_logical_key": factor_key,
+                    "as_of_date": row_date.isoformat(),
+                    "factor_level": str(factor_level),
+                    "factor_kind": "provider_implied",
+                    "evidence_kind": "provider_total_return",
+                    "method_version": FUND_NAV_PROJECTION_METHOD_VERSION,
+                    "anchor_date": row_date.isoformat(),
+                    "source_provider": str(fact["total_provider"]),
+                    "evidence": factor_evidence,
+                }
+            )
+            canonical_total = _format_total_return_nav_decimal(
+                unit_nav * factor_level
+            )
+            canonical["nav_with_dividend"] = canonical_total
+            canonical["nav_with_dividend_status"] = "complete"
+            canonical["nav_with_dividend_source_provider"] = str(
+                fact["total_provider"]
+            )
+            canonical["nav_with_dividend_lineage"] = {
+                "kind": "provider_explicit",
+                "evidence": {
+                    "factor_logical_key": factor_key,
+                    "source_field": source_field,
+                    "provider_reported_total_return_nav": str(
+                        explicit_total_return
+                    ),
+                    **(
+                        {
+                            "canonical_normalization_scale": str(
+                                provider_normalization_scale
+                            )
+                        }
+                        if provider_normalization_scale != Decimal("1")
+                        else {}
+                    ),
+                    **total_evidence,
+                },
+            }
+            explicit_count += 1
+            segment_live = cash_complete
+            segment_anchor_date = row_date
+            segment_factor_key = factor_key
+            segment_factor_level = factor_level
+            segment_event_cutoff = row_date
+            segment_origin = "provider_explicit"
+            segment_broken = False
+            if current_segment_start_date is None:
+                current_segment_start_date = row_date
+            continue
+
+        if not unit_complete or not cash_complete or canonical is None:
+            continue
+        assert isinstance(unit_nav, Decimal)
+        assert isinstance(cash_cumulative_nav, Decimal)
+        cash_balance = cash_cumulative_nav - unit_nav
+
+        if segment_anchor_date is None:
+            is_first_complete_cash = row_date == first_complete_cash_date
+            if is_first_complete_cash:
+                factor_key = f"window:{row_date.isoformat()}"
+                factor_level = Decimal("1")
+                adjustment_factors.append(
+                    {
+                        "factor_logical_key": factor_key,
+                        "as_of_date": row_date.isoformat(),
+                        "factor_level": "1",
+                        "factor_kind": "event_derived",
+                        "evidence_kind": "window_normalized_anchor",
+                        "method_version": FUND_NAV_PROJECTION_METHOD_VERSION,
+                        "anchor_date": row_date.isoformat(),
+                        "source_provider": "derived:cash_cumulative_nav",
+                        "evidence": {
+                            "normalization_scope": "observed_return_window",
+                            "starting_cash_balance": str(cash_balance),
+                            "calculation": "unit_nav_at_anchor=1.0_factor_level",
+                        },
+                    }
+                )
+                segment_live = True
+                segment_anchor_date = row_date
+                segment_factor_key = factor_key
+                segment_factor_level = factor_level
+                segment_event_cutoff = row_date
+                segment_origin = "window_normalized"
+                segment_broken = False
+                current_segment_start_date = row_date
+            else:
+                continue
+
+        if not segment_live:
+            continue
+        assert segment_anchor_date is not None
+        assert segment_factor_key is not None
+        assert segment_factor_level is not None
+        assert segment_event_cutoff is not None
+
+        interval_events = _fund_nav_events_between(
+            events,
+            after_date=segment_event_cutoff,
+            through_date=row_date,
+        )
+        interval = cash_intervals.get(row_date)
+        auto_cash_factor_applied = False
+        if row_date != segment_anchor_date and (
+            interval is None or not bool(interval.get("valid"))
+        ):
+            ambiguous_events = [
+                event for event in interval_events if event.get("_sequence_ambiguous")
+            ]
+            auto_cash_terms = (
+                None
+                if (
+                    ambiguous_events
+                    or cumulative_nav_semantics["kind"]
+                    != "cash_non_reinvested"
+                )
+                else _auto_cash_distribution_terms(
+                    interval=interval,
+                    current_unit_nav=unit_nav,
+                )
+            )
+            if auto_cash_terms is not None:
+                assert interval is not None
+                cash_per_unit, multiplier, implied_return = auto_cash_terms
+                previous_factor_key = segment_factor_key
+                previous_factor_level = segment_factor_level
+                next_level = _quantized_factor_level(
+                    previous_factor_level * multiplier
+                )
+                next_key = f"cash-disclosure:{row_date.isoformat()}"
+                adjustment_factors.append(
+                    {
+                        "factor_logical_key": next_key,
+                        "as_of_date": row_date.isoformat(),
+                        "factor_level": str(next_level),
+                        "factor_kind": "provider_implied",
+                        "evidence_kind": "provider_cash_cumulative",
+                        "method_version": FUND_NAV_PROJECTION_METHOD_VERSION,
+                        "anchor_date": row_date.isoformat(),
+                        "source_provider": str(fact["cash_provider"]),
+                        "evidence": {
+                            "source_field": "cash_cumulative_nav",
+                            "interval_start_date": str(
+                                interval.get("interval_start_date")
+                            ),
+                            "interval_end_date": row_date.isoformat(),
+                            "cash_balance_before": str(
+                                interval.get("expected_cash_balance")
+                            ),
+                            "cash_balance_after": str(
+                                interval.get("cash_balance")
+                            ),
+                            "cash_per_unit": str(cash_per_unit),
+                            "reinvestment_nav": str(unit_nav),
+                            "reinvestment_nav_semantics": (
+                                "first_complete_observation_after_"
+                                "cash_disclosure_change"
+                            ),
+                            "implied_interval_return": str(implied_return),
+                            "previous_factor_logical_key": previous_factor_key,
+                            "previous_factor_level": str(previous_factor_level),
+                            "calculation": (
+                                "previous_factor*(1+cash_per_unit/"
+                                "current_unit_nav)"
+                            ),
+                            **dict(fact["cash_evidence"]),
+                        },
+                    }
+                )
+                auto_cash_distributions.append(
+                    {
+                        "interval_start_date": str(
+                            interval.get("interval_start_date")
+                        ),
+                        "interval_end_date": row_date.isoformat(),
+                        "cash_per_unit": str(cash_per_unit),
+                        "reinvestment_nav": str(unit_nav),
+                        "implied_interval_return": str(implied_return),
+                        "resolved_by": "cash_cumulative_disclosure",
+                    }
+                )
+                action_candidates[:] = [
+                    candidate
+                    for candidate in action_candidates
+                    if not (
+                        candidate.get("interval_start_date")
+                        == interval.get("interval_start_date")
+                        and candidate.get("interval_end_date")
+                        == row_date.isoformat()
+                    )
+                ]
+                segment_factor_level = next_level
+                segment_factor_key = next_key
+                segment_anchor_date = row_date
+                segment_event_cutoff = row_date
+                segment_origin = "cash_cumulative_derived"
+                segment_broken = False
+                interval_events = []
+                auto_cash_factor_applied = True
+            else:
+                segment_live = False
+                segment_broken = True
+            if ambiguous_events and not auto_cash_factor_applied:
+                break_reasons.extend(
+                    {
+                        "as_of_date": str(event["effective_date"]),
+                        "reason": "same_day_action_sequence_unverified",
+                        "fund_nav_event_id": str(event["fund_nav_event_id"]),
+                    }
+                    for event in ambiguous_events
+                )
+            elif not auto_cash_factor_applied:
+                break_reasons.append(
+                    {
+                        "as_of_date": row_date.isoformat(),
+                        "reason": "cash_disclosure_conflict",
+                    }
+                )
+            if not auto_cash_factor_applied:
+                continue
+        next_level = segment_factor_level
+        next_key = segment_factor_key
+        interval_factors: list[dict[str, object]] = []
+        interval_valid = True
+        for event in interval_events:
+            event_id = str(event["fund_nav_event_id"])
+            event_date = _parse_nav_date(event.get("effective_date"))
+            assert event_date is not None
+            if event.get("_sequence_ambiguous"):
+                interval_valid = False
+                break_reasons.append(
+                    {
+                        "as_of_date": event_date.isoformat(),
+                        "reason": "same_day_action_sequence_unverified",
+                        "fund_nav_event_id": event_id,
+                    }
+                )
+                break
+            evidence_id: str | None = None
+            if str(event.get("event_type")) == "cash_distribution":
+                cash_per_unit = _parse_nav_decimal(event.get("cash_per_unit"))
+                evidence = evidence_by_event_id.get(event_id)
+                reinvestment_nav = _parse_nav_decimal(
+                    evidence.get("reinvestment_nav") if evidence else None
+                )
+                if cash_per_unit is None or reinvestment_nav is None:
+                    interval_valid = False
+                    break_reasons.append(
+                        {
+                            "as_of_date": event_date.isoformat(),
+                            "reason": "reinvestment_nav_not_observed",
+                            "fund_nav_event_id": event_id,
+                        }
+                    )
+                    break
+                evidence_id = str(
+                    evidence["fund_nav_reinvestment_evidence_id"]
+                )
+                action_multiplier = _quantized_factor_level(
+                    Decimal("1") + cash_per_unit / reinvestment_nav
+                )
+                calculation_evidence: dict[str, object] = {
+                    "cash_per_unit": str(cash_per_unit),
+                    "reinvestment_nav": str(reinvestment_nav),
+                    "calculation": "previous_factor*(1+cash_per_unit/reinvestment_nav)",
+                }
+            else:
+                unit_ratio = _parse_nav_decimal(event.get("unit_ratio"))
+                if unit_ratio is None:
+                    interval_valid = False
+                    break_reasons.append(
+                        {
+                            "as_of_date": event_date.isoformat(),
+                            "reason": "unit_split_ratio_not_observed",
+                            "fund_nav_event_id": event_id,
+                        }
+                    )
+                    break
+                action_multiplier = _quantized_factor_level(unit_ratio)
+                calculation_evidence = {
+                    "unit_ratio": str(unit_ratio),
+                    "calculation": "previous_factor*unit_ratio",
+                }
+            next_level = _quantized_factor_level(next_level * action_multiplier)
+            factor_key = f"event:{event_id}"
+            interval_factors.append(
+                {
+                    "factor_logical_key": factor_key,
+                    "previous_factor_logical_key": next_key,
+                    "as_of_date": event_date.isoformat(),
+                    "factor_level": str(next_level),
+                    "factor_kind": "event_derived",
+                    "fund_nav_event_id": event_id,
+                    "fund_nav_reinvestment_evidence_id": evidence_id,
+                    "evidence_kind": "fund_nav_event",
+                    "method_version": FUND_NAV_PROJECTION_METHOD_VERSION,
+                    "anchor_date": segment_anchor_date.isoformat(),
+                    "source_provider": str(
+                        event.get("source") or "fund_nav_event"
+                    ),
+                    "evidence": {
+                        "previous_factor_logical_key": next_key,
+                        "action_multiplier": str(action_multiplier),
+                        **calculation_evidence,
+                    },
+                }
+            )
+            next_key = factor_key
+        if not interval_valid:
+            segment_live = False
+            segment_broken = True
+            continue
+
+        adjustment_factors.extend(interval_factors)
+        segment_factor_level = next_level
+        segment_factor_key = next_key
+        segment_event_cutoff = row_date
+        total_return_nav = _format_total_return_nav_decimal(
+            unit_nav * segment_factor_level
+        )
+        canonical["nav_with_dividend"] = total_return_nav
+        canonical["nav_with_dividend_status"] = "complete"
+        canonical["nav_with_dividend_source_provider"] = (
+            "derived:fund_nav_reinvestment_factor"
+        )
+        canonical["nav_with_dividend_lineage"] = {
+            "kind": "derived_dividend_reinvestment",
+            "method_version": FUND_NAV_PROJECTION_METHOD_VERSION,
+            "anchor_date": segment_anchor_date.isoformat(),
+            "evidence": {
+                "factor_logical_key": segment_factor_key,
+                "unit_nav": str(unit_nav),
+                "cash_cumulative_source_provider": str(fact["cash_provider"]),
+                "cash_cumulative_source_evidence": dict(fact["cash_evidence"]),
+            },
+        }
+        derived_count += 1
+
+    total_return_dates = [
+        str(row["as_of_date"])
+        for row in canonical_rows
+        if row.get("nav_with_dividend") is not None
+        and row.get("nav_with_dividend_status") == "complete"
+    ]
+    complete_unit_dates = [
+        str(fact["date"])
+        for fact in row_facts
+        if fact["unit_nav"] is not None and fact["unit_status"] == "complete"
+    ]
+    total_return_date_set = set(total_return_dates)
+    missing_total_return_dates = [
+        unit_date
+        for unit_date in complete_unit_dates
+        if unit_date not in total_return_date_set
+    ]
+    if not total_return_dates:
+        adjustment_factors = []
+        projection_status = "unavailable"
+        projection_kind = (
+            "provider_explicit"
+            if any(fact["explicit_total_return"] is not None for fact in row_facts)
+            else "event_derived"
+        )
+        projection_anchor_date: str | None = None
+        if not any(fact["unit_status"] == "complete" for fact in row_facts):
+            unavailable_reason = "complete_unit_nav_unavailable"
+        elif any(fact["explicit_total_return"] is not None for fact in row_facts):
+            unavailable_reason = "provider_total_return_not_factorable"
+        elif first_complete_cash_date is None:
+            unavailable_reason = "cash_cumulative_evidence_unavailable"
+        else:
+            unavailable_reason = "window_normalization_anchor_unavailable"
+    else:
+        projection_status = (
+            "partial" if missing_total_return_dates else "complete"
+        )
+        factor_kinds = {
+            str(factor.get("factor_kind") or "")
+            for factor in adjustment_factors
+        }
+        if factor_kinds == {"provider_implied", "event_derived"}:
+            projection_kind = "hybrid_reanchored"
+        elif factor_kinds == {"provider_implied"}:
+            projection_kind = "provider_explicit"
+        else:
+            projection_kind = "event_derived"
+        projection_anchor_date = (
+            current_segment_start_date.isoformat()
+            if current_segment_start_date is not None
+            else min(str(factor["anchor_date"]) for factor in adjustment_factors)
+        )
+        unavailable_reason = None
+
+    projection_evidence: dict[str, object] = {
+        "contract": FUND_NAV_PROJECTION_METHOD_VERSION,
+        "source_observation_count": len(ordered_rows),
+        "unit_nav_observation_count": sum(
+            fact["unit_nav"] is not None for fact in row_facts
+        ),
+        "cash_cumulative_observation_count": sum(
+            fact["cash_cumulative_nav"] is not None for fact in row_facts
+        ),
+        "provider_total_return_observation_count": sum(
+            fact["explicit_total_return"] is not None for fact in row_facts
+        ),
+        "published_total_return_dates": total_return_dates,
+        "missing_total_return_dates": missing_total_return_dates,
+        "factor_logical_keys": [
+            str(factor["factor_logical_key"]) for factor in adjustment_factors
+        ],
+        "segment_breaks": break_reasons,
+        "cumulative_nav_semantics": cumulative_nav_semantics,
+    }
+    if auto_cash_distributions:
+        projection_evidence["auto_cash_distributions"] = (
+            auto_cash_distributions
+        )
+    if unavailable_reason is not None:
+        projection_evidence["unavailable_reason"] = unavailable_reason
+    normalized_source_provider = source_provider.strip() or "platform_nav_import"
+    projection_run: dict[str, object] = {
+        "source_observation_fingerprint": source_fingerprint,
+        "projection_kind": projection_kind,
+        "projection_status": projection_status,
+        "method_version": FUND_NAV_PROJECTION_METHOD_VERSION,
+        "anchor_date": projection_anchor_date,
+        "source_provider": normalized_source_provider,
+        "evidence": projection_evidence,
+        "created_by": FUND_NAV_PROJECTION_CREATED_BY,
+    }
+    return FundNavPublication(
+        rows=canonical_rows,
+        projection_run=projection_run,
+        current_fund_nav_event_ids=current_event_ids,
+        current_fund_nav_reinvestment_evidence_ids=current_evidence_ids,
+        action_candidates=action_candidates,
+        adjustment_factors=adjustment_factors,
+        derived_total_return_count=derived_count,
+        explicit_total_return_count=explicit_count,
     )
 
 
@@ -913,10 +2475,9 @@ def _nav_import_instrument(instrument_id: str) -> dict[str, object] | None:
     return instrument
 
 
-def _prepare_nav_rows_for_instrument(
+def _normalize_nav_rows_for_instrument(
     *,
     instrument: dict[str, object],
-    instrument_id: str,
     rows: list[dict[str, object]],
 ) -> list[dict[str, object]]:
     filtered_rows = _filter_rows_for_instrument(instrument=instrument, rows=rows)
@@ -936,37 +2497,211 @@ def _prepare_nav_rows_for_instrument(
         rows=filtered_rows,
         instrument_currency=instrument.get("currency"),
     )
-    merged_rows = _merge_rows_by_date(currency_rows)
-    prepared_rows, _ = _apply_reinvested_total_return_correction(
-        instrument_id=instrument_id,
-        rows=merged_rows,
-    )
-    return prepared_rows
+    return _merge_rows_by_date(currency_rows)
 
 
-def _search_uids_for_rule(
-    mailbox,
+def _publish_fund_nav_projection(
     *,
-    rule: dict[str, object],
-    fallback_uids: list[int],
-    search_criteria: tuple[str, ...] = ("ALL",),
-) -> list[int]:
-    sender_equals = list(rule.get("sender_equals", []))
-    if not sender_equals:
-        return fallback_uids
+    instrument_id: str,
+    load_source_rows: Callable[[dict[str, object]], list[dict[str, object]]],
+    source_provider: str,
+    refresh_status: str,
+    updated_by: str | None,
+    mode: str,
+    message_factory: Callable[[FundNavPublication], str],
+) -> tuple[dict[str, object], FundNavPublication]:
+    """Build and atomically publish a current raw snapshot with stale-write retry."""
 
-    matched: set[int] = set()
-    criteria_suffix = () if search_criteria == ("ALL",) else search_criteria
-    for sender in sender_equals:
-        search_status, search_data = mailbox.uid("search", None, "FROM", sender, *criteria_suffix)
-        if search_status != "OK":
-            return fallback_uids
-        raw_uid_list = search_data[0] if search_data and search_data[0] else b""
-        matched.update(int(item) for item in raw_uid_list.split() if item)
-    if not matched:
-        return []
-    fallback_set = set(fallback_uids)
-    return [uid for uid in sorted(matched) if uid in fallback_set]
+    for _attempt in range(3):
+        instrument = get_instrument(instrument_id)
+        if instrument is None:
+            raise ValueError(f'Instrument "{instrument_id}" no longer exists.')
+        source_rows = load_source_rows(instrument)
+        publication = _build_fund_nav_publication(
+            instrument_id=instrument_id,
+            rows=source_rows,
+            source_provider=source_provider,
+            instrument=instrument,
+        )
+        message = message_factory(publication)
+        try:
+            persisted = publish_fund_nav_history(
+                instrument_id=instrument_id,
+                rows=publication.rows,
+                projection_run=publication.projection_run,
+                current_fund_nav_event_ids=(
+                    publication.current_fund_nav_event_ids
+                ),
+                current_fund_nav_reinvestment_evidence_ids=(
+                    publication.current_fund_nav_reinvestment_evidence_ids
+                ),
+                adjustment_factors=publication.adjustment_factors,
+                expected_market_data_updated_at=(
+                    str(instrument["market_data_updated_at"])
+                    if instrument.get("market_data_updated_at") is not None
+                    else None
+                ),
+                refresh_status=refresh_status,
+                updated_by=updated_by,
+                message=message,
+                mode=mode,
+            )
+        except StaleFundNavPublicationError:
+            continue
+        if persisted is None:
+            raise ValueError(f'Instrument "{instrument_id}" no longer exists.')
+        record = persisted.get("record")
+        if not isinstance(record, dict):
+            raise ValueError(
+                f'Fund NAV publication for "{instrument_id}" returned no record.'
+            )
+        FundNavActionCandidateRepository(get_session_factory()).project_current(
+            instrument_id=instrument_id,
+            candidates=publication.action_candidates,
+        )
+        return record, publication
+    raise StaleFundNavPublicationError(
+        f'Fund NAV publication for "{instrument_id}" remained stale after 3 retries.'
+    )
+
+
+def _load_all_durable_nav_source_rows(
+    *,
+    instrument_id: str,
+    instrument: dict[str, object],
+) -> list[dict[str, object]]:
+    repository = EmailIngestionRepository(get_session_factory())
+    source_rows = [
+        *list_raw_nav_observations(instrument_id=instrument_id),
+        *repository.matched_nav_history(instrument_id),
+    ]
+    source_settings = dict(instrument.get("source_settings", {}))
+    if str(source_settings.get("source_mode") or "").strip().lower() == "email":
+        history_start_date = get_settings().email_history_start_date
+        source_rows = [
+            row
+            for row in source_rows
+            if (row_date := _parse_nav_date(row.get("as_of_date"))) is None
+            or row_date >= history_start_date
+        ]
+    return _merge_rows_by_date(
+        _apply_nav_row_currency(
+            rows=source_rows,
+            instrument_currency=instrument.get("currency"),
+        )
+    )
+
+
+def rebuild_stale_fund_nav_projections(
+    *,
+    updated_by: str | None,
+    include_inactive: bool = False,
+    instrument_ids: set[str] | None = None,
+) -> dict[str, object]:
+    """Rebuild only current NAV projections created by an older method contract."""
+
+    instruments = list_instruments(include_inactive=include_inactive)
+    stale_current = list_stale_current_fund_nav_projections(
+        method_version=FUND_NAV_PROJECTION_METHOD_VERSION,
+        include_inactive=include_inactive,
+        instrument_ids=instrument_ids,
+    )
+    instruments_by_id = {
+        str(instrument.get("instrument_id") or ""): instrument
+        for instrument in instruments
+    }
+    targets = [
+        (instruments_by_id[target["instrument_id"]], target)
+        for target in stale_current
+        if target["instrument_id"] in instruments_by_id
+    ]
+
+    LOGGER.info(
+        "fund NAV projection reconciliation targets=%s skipped=%s method_version=%s",
+        len(targets),
+        len(instruments) - len(targets),
+        FUND_NAV_PROJECTION_METHOD_VERSION,
+    )
+    results: list[dict[str, object]] = []
+    for instrument, current_run in targets:
+        instrument_id = str(instrument["instrument_id"])
+        source_settings = dict(instrument.get("source_settings", {}))
+        source_provider = str(
+            current_run.get("source_provider") or "canonical_nav_reprojection"
+        ).strip()
+        try:
+            with market_data_item_timeout(instrument_id):
+                record, publication = _publish_fund_nav_projection(
+                    instrument_id=instrument_id,
+                    load_source_rows=lambda current_instrument: (
+                        _load_all_durable_nav_source_rows(
+                            instrument_id=instrument_id,
+                            instrument=current_instrument,
+                        )
+                    ),
+                    source_provider=source_provider,
+                    refresh_status="refreshed",
+                    updated_by=updated_by,
+                    message_factory=lambda current_publication: (
+                        f"Rebuilt {len(current_publication.rows)} canonical NAV dates "
+                        f"under {FUND_NAV_PROJECTION_METHOD_VERSION}; "
+                        f"{len(current_publication.action_candidates)} NAV action "
+                        "signal(s) require review."
+                    ),
+                    mode="projection_reconciliation",
+                )
+            message = (
+                f"Rebuilt {len(publication.rows)} canonical NAV dates under "
+                f"{FUND_NAV_PROJECTION_METHOD_VERSION}."
+            )
+            status = "refreshed"
+            result_instrument = record
+        except Exception as error:
+            LOGGER.exception(
+                "fund NAV projection reconciliation failed instrument_id=%s",
+                instrument_id,
+            )
+            message = (
+                "Fund NAV projection reconciliation failed: "
+                f"{type(error).__name__}: {error}"
+            )
+            result_instrument = update_refresh_status(
+                instrument_id=instrument_id,
+                status="failed",
+                message=message,
+                updated_by=updated_by,
+                mode="projection_reconciliation",
+            ) or instrument
+            status = "failed"
+        result_source_settings = dict(
+            result_instrument.get("source_settings", source_settings)
+        )
+        results.append(
+            {
+                "instrument_id": instrument_id,
+                "instrument_name": str(
+                    result_instrument.get("instrument_name")
+                    or instrument.get("instrument_name")
+                    or ""
+                ),
+                "instrument_type": str(
+                    result_instrument.get("instrument_type")
+                    or instrument.get("instrument_type")
+                    or ""
+                ),
+                "source_mode": result_source_settings.get("source_mode") or "manual",
+                "source_api_profile": result_source_settings.get("source_api_profile") or "",
+                "status": status,
+                "message": message,
+            }
+        )
+
+    return {
+        "source": "fund_nav_projection",
+        "refreshed_count": sum(item["status"] == "refreshed" for item in results),
+        "skipped_count": len(instruments) - len(targets),
+        "results": results,
+    }
 
 
 def _latest_nav_date_from_instrument(instrument: dict[str, object]) -> date | None:
@@ -1100,19 +2835,27 @@ def _call_tushare_api(
     settings = get_settings()
     if not settings.tushare_ready:
         raise TushareRefreshError("Tushare token is not configured. Set PORTFOLIO_OPS_PLATFORM_TUSHARE_TOKEN first.")
-    if ts is None:
-        raise TushareRefreshError("Tushare SDK is not installed. Install the backend dependency first.")
 
     try:
-        pro = ts.pro_api(
-            settings.tushare_token,
-            timeout=getattr(settings, "tushare_timeout_seconds", 30),
+        pro = tushare_client.create_tushare_client(
+            token=settings.tushare_token,
+            api_url=settings.tushare_api_url,
+            timeout_seconds=getattr(settings, "tushare_timeout_seconds", 30),
         )
-        setattr(pro, "_DataApi__http_url", settings.tushare_api_url)
-        api_method = getattr(pro, api_name)
-        frame = api_method(**params, fields=fields)
+        frame = tushare_client.invoke_tushare_api(
+            client=pro,
+            api_name=api_name,
+            params=params,
+            fields=fields,
+        )
     except Exception as exc:
-        raise TushareRefreshError(f"Tushare SDK request failed: {exc}") from exc
+        safe_message = tushare_client.redact_tushare_error_message(
+            exc,
+            token=settings.tushare_token,
+        )
+        raise TushareRefreshError(
+            f"Tushare SDK request failed: {safe_message}"
+        ) from exc
 
     if frame is None:
         return []
@@ -1140,7 +2883,6 @@ def _call_tushare_api(
 def _tushare_nav_rows(
     rows: list[dict[str, object]],
     *,
-    instrument_id: str,
     instrument_currency: object,
     latest_date: date | None,
 ) -> list[dict[str, object]]:
@@ -1154,35 +2896,27 @@ def _tushare_nav_rows(
             continue
         if point_date < TUSHARE_HISTORY_START_DATE:
             continue
-        # Keep the current anchor date so cash-cumulative NAV can roll a
-        # reinvested total-return series forward without discontinuity.
+        # Keep the latest stored date so provider corrections on that date are
+        # retained as a new raw evidence revision.
         if latest_date is not None and point_date < latest_date:
             continue
         nav = _parse_nav_decimal(row.get("unit_nav"))
-        cumulative_nav = _parse_nav_decimal(row.get("accum_nav"))
+        cash_cumulative_nav = _parse_nav_decimal(row.get("accum_nav"))
         total_return_nav = _parse_nav_decimal(row.get("adj_nav"))
-        if nav is None and cumulative_nav is None and total_return_nav is None:
+        if nav is None and cash_cumulative_nav is None and total_return_nav is None:
             continue
         prepared_rows.append(
             {
                 "as_of_date": point_date.isoformat(),
                 "nav": nav,
-                "cumulative_nav": cumulative_nav,
+                "cash_cumulative_nav": cash_cumulative_nav,
                 "nav_with_dividend": total_return_nav,
+                "_total_return_source_field": "adj_nav",
                 "currency": normalized_currency,
                 "frequency": "daily",
             }
         )
-    merged_rows = _merge_rows_by_date(prepared_rows)
-    corrected_rows, _ = _apply_reinvested_total_return_correction(
-        instrument_id=instrument_id,
-        rows=merged_rows,
-    )
-    return _changed_nav_rows_since_date(
-        instrument_id=instrument_id,
-        rows=corrected_rows,
-        nav_since_date=latest_date,
-    )
+    return _merge_rows_by_date(prepared_rows)
 
 
 def _tushare_price_rows(
@@ -1206,9 +2940,61 @@ def _tushare_price_rows(
             {
                 "as_of_date": point_date,
                 "value": close_value,
+                "open": _parse_nav_decimal(row.get("open")),
+                "high": _parse_nav_decimal(row.get("high")),
+                "low": _parse_nav_decimal(row.get("low")),
+                "close": close_value,
+                "previous_close": _parse_nav_decimal(row.get("pre_close")),
+                "volume": _parse_nonnegative_decimal(row.get("vol")),
+                "turnover": _parse_nonnegative_decimal(row.get("amount")),
             }
         )
     return sorted(prepared_rows, key=lambda item: item["as_of_date"])
+
+
+def _tushare_price_bar_rows(
+    rows: list[dict[str, object]],
+    *,
+    api_name: str,
+    adjustment_factors: dict[date, Decimal] | None = None,
+) -> list[dict[str, object]]:
+    bars: list[dict[str, object]] = []
+    for row in rows:
+        if not all(row.get(field_name) is not None for field_name in ("open", "high", "low", "close")):
+            continue
+        point_date = row.get("as_of_date")
+        if not isinstance(point_date, date):
+            continue
+        volume = row.get("volume")
+        turnover = row.get("turnover")
+        adjustment_factor = (adjustment_factors or {}).get(point_date)
+        bars.append(
+            {
+                "as_of_date": point_date,
+                "open": row["open"],
+                "high": row["high"],
+                "low": row["low"],
+                "close": row["close"],
+                "previous_close": row.get("previous_close"),
+                "volume": volume,
+                "turnover": turnover,
+                "adjustment_factor": adjustment_factor,
+                "currency": "CNY",
+                "volume_unit": "lot" if volume is not None else None,
+                "turnover_unit": "thousand_cny" if turnover is not None else None,
+                "provider": (
+                    f"tushare:{api_name}+adjustment_factor"
+                    if adjustment_factor is not None
+                    else f"tushare:{api_name}"
+                ),
+                "status": (
+                    "complete"
+                    if volume is not None and turnover is not None
+                    else "partial"
+                ),
+            }
+        )
+    return bars
 
 
 def _tushare_adjustment_factors(
@@ -1386,307 +3172,6 @@ def _decimal_text(value: Decimal) -> str:
     return format(value.normalize(), "f")
 
 
-def _format_imap_since_date(value: date) -> str:
-    month = (
-        "Jan",
-        "Feb",
-        "Mar",
-        "Apr",
-        "May",
-        "Jun",
-        "Jul",
-        "Aug",
-        "Sep",
-        "Oct",
-        "Nov",
-        "Dec",
-    )[value.month - 1]
-    return f"{value.day:02d}-{month}-{value.year}"
-
-
-def _latest_successful_email_refresh_date(instrument: dict[str, object]) -> date | None:
-    refresh_status = instrument.get("refresh_status", {})
-    if not isinstance(refresh_status, dict):
-        return None
-    raw_requested_at = str(
-        refresh_status.get("last_successful_requested_at") or ""
-    ).strip()
-    if not raw_requested_at:
-        return None
-    try:
-        requested_at = datetime.fromisoformat(raw_requested_at.replace("Z", "+00:00"))
-    except ValueError:
-        return None
-    # IMAP SINCE is day-granular. Keep a one-day overlap so timezone differences
-    # and late mailbox delivery cannot make a successful cursor skip a message.
-    return min(requested_at.date(), date.today()) - timedelta(days=1)
-
-
-def _email_search_since_date(
-    *,
-    instrument: dict[str, object],
-    nav_since_date: date | None,
-    full_history: bool,
-) -> date | None:
-    if full_history:
-        return None
-    candidates = [
-        candidate
-        for candidate in (
-            nav_since_date,
-            _latest_successful_email_refresh_date(instrument),
-        )
-        if candidate is not None
-    ]
-    return max(candidates) if candidates else None
-
-
-def _filter_rows_since_nav_date(
-    rows: list[dict[str, object]],
-    *,
-    nav_since_date: date | None,
-) -> list[dict[str, object]]:
-    if nav_since_date is None:
-        return rows
-    filtered_rows: list[dict[str, object]] = []
-    for row in rows:
-        row_date = _parse_nav_date(row.get("as_of_date"))
-        if row_date is not None and row_date >= nav_since_date:
-            filtered_rows.append(row)
-    return filtered_rows
-
-
-def _changed_nav_rows_since_date(
-    *,
-    instrument_id: str,
-    rows: list[dict[str, object]],
-    nav_since_date: date | None,
-) -> list[dict[str, object]]:
-    if nav_since_date is None:
-        return rows
-    existing_history = _existing_nav_history_by_date(instrument_id)
-    changed_rows: list[dict[str, object]] = []
-    for row in rows:
-        row_date = _parse_nav_date(row.get("as_of_date"))
-        if row_date is None or row_date < nav_since_date:
-            continue
-        if row_date > nav_since_date:
-            changed_rows.append(row)
-            continue
-        existing_row = existing_history.get(row_date, {})
-        incoming_nav = _parse_nav_decimal(row.get("nav"))
-        incoming_cumulative_nav = _parse_nav_decimal(row.get("cumulative_nav"))
-        incoming_total_nav = _parse_nav_decimal(row.get("nav_with_dividend"))
-        nav_changed = incoming_nav is not None and incoming_nav != existing_row.get("nav")
-        cumulative_nav_changed = (
-            incoming_cumulative_nav is not None
-            and incoming_cumulative_nav != existing_row.get("cumulative_nav")
-        )
-        total_nav_changed = (
-            incoming_total_nav is not None
-            and incoming_total_nav != existing_row.get("nav_with_dividend")
-        )
-        if nav_changed or cumulative_nav_changed or total_nav_changed:
-            changed_rows.append(row)
-    return changed_rows
-
-
-def _import_rows_from_email_rules(
-    *,
-    instrument_id: str,
-    instrument_currency: object,
-    rules: list[dict[str, object]],
-    mailbox,
-    pending_uids: list[int],
-    updated_by: str | None,
-    full_history: bool,
-    nav_since_date: date | None = None,
-    search_criteria: tuple[str, ...] = ("ALL",),
-    use_server_rule_search: bool = True,
-) -> dict[str, object] | None:
-    matched_rows: list[dict[str, object]] = []
-    matched_batches: list[tuple[str, str, list[dict[str, object]]]] = []
-    ordered_uids = pending_uids
-
-    for rule in rules:
-        parser_profile = str(rule.get("parser_profile") or "generic_nav_table")
-        rule_uids = (
-            _search_uids_for_rule(
-                mailbox,
-                rule=rule,
-                fallback_uids=ordered_uids,
-                search_criteria=search_criteria,
-            )
-            if use_server_rule_search
-            else ordered_uids
-        )
-        for uid in rule_uids:
-            header_bytes = _fetch_message_bytes(
-                mailbox,
-                uid,
-                "(BODY.PEEK[HEADER.FIELDS (SUBJECT FROM)])",
-            )
-            if header_bytes is None:
-                continue
-            header_message = BytesParser(policy=policy.default).parsebytes(header_bytes)
-            subject = str(header_message.get("subject") or "")
-            sender = str(header_message.get("from") or "")
-            sender_email = parseaddr(sender)[1].strip().lower()
-            if not _message_matches_rule(rule=rule, subject=subject, sender_email=sender_email):
-                continue
-            raw_bytes = _fetch_message_bytes(mailbox, uid, "(RFC822)")
-            if raw_bytes is None:
-                continue
-
-            message = BytesParser(policy=policy.default).parsebytes(raw_bytes)
-
-            attachment_candidates = _extract_email_attachment_candidates(message)
-            for attachment_name, attachment_bytes in attachment_candidates:
-                attachment_text = _extract_attachment_text(attachment_name, attachment_bytes)
-                if not _attachment_matches_rule(
-                    rule=rule,
-                    attachment_name=attachment_name,
-                    attachment_text=attachment_text,
-                ):
-                    continue
-                cached_parser = getattr(mailbox, "parse_attachment_rows", None)
-                rows = (
-                    cached_parser(
-                        uid=uid,
-                        attachment_name=attachment_name,
-                        attachment_bytes=attachment_bytes,
-                        parser_profile=parser_profile,
-                    )
-                    if callable(cached_parser)
-                    else _parse_nav_rows_from_attachment(
-                        attachment_name=attachment_name,
-                        attachment_bytes=attachment_bytes,
-                        parser_profile=parser_profile,
-                    )
-                )
-                rows = _filter_rows_for_rule(rule=rule, rows=rows)
-                if not rows:
-                    continue
-                matched_rows.extend(rows)
-                matched_batches.append((f"{uid}:{attachment_name}", attachment_name, rows))
-                break
-
-    merged_rows = _merge_rows_by_date(
-        _apply_nav_row_currency(
-            rows=matched_rows,
-            instrument_currency=instrument_currency,
-        )
-    )
-    if not merged_rows:
-        return None
-    if not full_history and nav_since_date is not None and not _filter_rows_since_nav_date(
-        merged_rows,
-        nav_since_date=nav_since_date,
-    ):
-        return update_refresh_status(
-            instrument_id=instrument_id,
-            status="no_new_data",
-            message=(
-                "Matched email NAV rows, but none were newer than "
-                f"{nav_since_date.isoformat()}."
-            ),
-            updated_by=updated_by,
-            mode="email",
-        )
-    if _requires_reinvested_incremental_anchor(
-        instrument_id=instrument_id,
-        rows=merged_rows,
-        full_history=full_history,
-        nav_since_date=nav_since_date,
-    ):
-        return update_refresh_status(
-            instrument_id=instrument_id,
-            status="blocked",
-            message=(
-                "Email NAV import needs the latest existing NAV date "
-                f"{nav_since_date.isoformat()} in the matched attachment rows before "
-                "dividend reinvestment can be recalculated."
-            ),
-            updated_by=updated_by,
-            mode="email",
-        )
-    merged_rows, reinvested_correction_applied = _apply_reinvested_total_return_correction(
-        instrument_id=instrument_id,
-        rows=merged_rows,
-    )
-    if not full_history:
-        merged_rows = _changed_nav_rows_since_date(
-            instrument_id=instrument_id,
-            rows=merged_rows,
-            nav_since_date=nav_since_date,
-        )
-    if not merged_rows:
-        return update_refresh_status(
-            instrument_id=instrument_id,
-            status="no_new_data",
-            message=(
-                "Matched email NAV rows, but none were newer or changed since "
-                f"{nav_since_date.isoformat()}."
-                if nav_since_date is not None
-                else "Matched email NAV rows, but none contained importable NAV data."
-            ),
-            updated_by=updated_by,
-            mode="email",
-        )
-    imported_dates = {
-        row_date
-        for row in merged_rows
-        if (row_date := _parse_nav_date(row.get("as_of_date"))) is not None
-    }
-    used_provider_refs: list[str] = []
-    used_attachment_names: list[str] = []
-    for provider_ref, attachment_name, batch_rows in matched_batches:
-        used_rows = (
-            batch_rows
-            if full_history
-            else [
-                row
-                for row in batch_rows
-                if _parse_nav_date(row.get("as_of_date")) in imported_dates
-            ]
-        )
-        if not used_rows:
-            continue
-        used_provider_refs.append(provider_ref)
-        used_attachment_names.append(attachment_name)
-
-    if full_history:
-        provider = "email:history"
-        message = (
-            f"Imported {len(merged_rows)} NAV rows from {len(used_provider_refs)} "
-            "email attachments."
-        )
-    else:
-        unique_attachment_names = list(dict.fromkeys(used_attachment_names))
-        provider = (
-            f"email:{unique_attachment_names[0]}"
-            if len(unique_attachment_names) == 1
-            else "email:recent_window"
-        )
-        since_text = f" since {nav_since_date.isoformat()}" if nav_since_date else ""
-        message = (
-            f"Imported {len(merged_rows)} NAV rows from {len(used_provider_refs)} "
-            f"recent email attachments{since_text}."
-        )
-    if reinvested_correction_applied:
-        message = f"{message} Recalculated total_return_nav using dividend reinvestment."
-    return replace_nav_history(
-        instrument_id=instrument_id,
-        rows=merged_rows,
-        provider=provider,
-        point_status=_normalize_import_status(merged_rows, "complete"),
-        refresh_status="imported",
-        updated_by=updated_by,
-        message=message,
-        mode="email",
-    )
-
-
 def import_nav_text(
     *,
     instrument_id: str,
@@ -1699,22 +3184,37 @@ def import_nav_text(
     if instrument is None:
         return None
     rows = _parse_nav_rows_from_text(raw_text)
-    prepared_rows = _prepare_nav_rows_for_instrument(
+    normalized_rows = _normalize_nav_rows_for_instrument(
         instrument=instrument,
-        instrument_id=instrument_id,
         rows=rows,
     )
-    normalized_status = _normalize_import_status(prepared_rows, status)
-    return replace_nav_history(
+    point_provider = provider or "platform_manual_import"
+    record_raw_nav_observations(
         instrument_id=instrument_id,
-        rows=prepared_rows,
-        provider=provider or "platform_manual_import",
-        point_status=normalized_status,
+        rows=normalized_rows,
+        source_kind="manual_import",
+        source_ref="text:" + hashlib.sha256(raw_text.encode("utf-8")).hexdigest(),
+        provider=point_provider,
+        status=status,
+        evidence={"input_type": "text"},
+    )
+    record, _publication = _publish_fund_nav_projection(
+        instrument_id=instrument_id,
+        load_source_rows=lambda current_instrument: _load_all_durable_nav_source_rows(
+            instrument_id=instrument_id,
+            instrument=current_instrument,
+        ),
+        source_provider=point_provider,
         refresh_status="imported",
         updated_by=updated_by,
-        message=f"Imported {len(prepared_rows)} NAV rows into shared market data.",
+        message_factory=lambda publication: (
+            f"Stored {len(normalized_rows)} raw NAV observations and rebuilt "
+            f"{len(publication.rows)} canonical NAV dates; "
+            f"{len(publication.action_candidates)} NAV action signal(s) require review."
+        ),
         mode="manual",
     )
+    return record
 
 
 def preview_nav_import(
@@ -1734,11 +3234,16 @@ def preview_nav_import(
     else:
         raise ValueError("Provide NAV import text or a NAV file payload.")
 
-    return _prepare_nav_rows_for_instrument(
+    normalized_rows = _normalize_nav_rows_for_instrument(
         instrument=instrument,
-        instrument_id=instrument_id,
         rows=rows,
     )
+    return _build_fund_nav_publication(
+        instrument_id=instrument_id,
+        rows=_stamp_nav_value_statuses(normalized_rows, status="complete"),
+        source_provider="preview_import",
+        instrument=instrument,
+    ).rows
 
 
 def import_nav_file(
@@ -1754,22 +3259,37 @@ def import_nav_file(
     if instrument is None:
         return None
     rows = _parse_nav_rows_from_uploaded_file(file_name=file_name, file_bytes=file_bytes)
-    prepared_rows = _prepare_nav_rows_for_instrument(
+    normalized_rows = _normalize_nav_rows_for_instrument(
         instrument=instrument,
-        instrument_id=instrument_id,
         rows=rows,
     )
-    normalized_status = _normalize_import_status(prepared_rows, status)
-    return replace_nav_history(
+    point_provider = provider or f"platform_file_import:{file_name}"
+    record_raw_nav_observations(
         instrument_id=instrument_id,
-        rows=prepared_rows,
-        provider=provider or f"platform_file_import:{file_name}",
-        point_status=normalized_status,
+        rows=normalized_rows,
+        source_kind="manual_import",
+        source_ref="file:" + hashlib.sha256(file_bytes).hexdigest(),
+        provider=point_provider,
+        status=status,
+        evidence={"file_name": file_name},
+    )
+    record, _publication = _publish_fund_nav_projection(
+        instrument_id=instrument_id,
+        load_source_rows=lambda current_instrument: _load_all_durable_nav_source_rows(
+            instrument_id=instrument_id,
+            instrument=current_instrument,
+        ),
+        source_provider=point_provider,
         refresh_status="imported",
         updated_by=updated_by,
-        message=f"Imported {len(prepared_rows)} NAV rows from {file_name}.",
+        message_factory=lambda publication: (
+            f"Stored {len(normalized_rows)} raw NAV observations from {file_name} "
+            f"and rebuilt {len(publication.rows)} canonical NAV dates; "
+            f"{len(publication.action_candidates)} NAV action signal(s) require review."
+        ),
         mode="manual",
     )
+    return record
 
 
 def refresh_market_data(
@@ -1786,13 +3306,13 @@ def refresh_market_data(
     source_settings = dict(instrument.get("source_settings", {}))
     requested_source = str(source or "configured").strip().lower()
     if requested_source == "email":
-        return _refresh_from_email(
-            instrument_id=instrument_id,
-            instrument=instrument,
-            source_settings=source_settings,
+        _run_email_ingestion_batch(
+            instruments=list_instruments(include_inactive=False),
+            settings=get_settings(),
             updated_by=updated_by,
             full_history=full_history,
         )
+        return get_instrument(instrument_id)
     if requested_source == "tushare":
         return _refresh_from_tushare(
             instrument_id=instrument_id,
@@ -1803,13 +3323,13 @@ def refresh_market_data(
 
     source_mode = str(source_settings.get("source_mode") or "manual")
     if source_mode == "email":
-        return _refresh_from_email(
-            instrument_id=instrument_id,
-            instrument=instrument,
-            source_settings=source_settings,
+        _run_email_ingestion_batch(
+            instruments=list_instruments(include_inactive=False),
+            settings=get_settings(),
             updated_by=updated_by,
             full_history=full_history,
         )
+        return get_instrument(instrument_id)
     if source_mode == "api":
         profile = str(source_settings.get("source_api_profile") or "").strip()
         if profile.lower() in TUSHARE_PROFILE_ALIASES:
@@ -1923,7 +3443,9 @@ def _refresh_tushare_listed_security(
         _call_tushare_api(
             api_name=price_api_name,
             params=params,
-            fields="ts_code,trade_date,close",
+            fields=(
+                "ts_code,trade_date,open,high,low,close,pre_close,vol,amount"
+            ),
         ),
         latest_date=None,
     )
@@ -1932,6 +3454,18 @@ def _refresh_tushare_listed_security(
         params=params,
         fields="ts_code,trade_date,adj_factor",
     )
+    if not close_rows and not factor_rows:
+        return update_refresh_status(
+            instrument_id=instrument_id,
+            status="failed",
+            message=(
+                f"Tushare returned an empty response for both {price_api_name} and "
+                f"{factor_api_name} for established listed security {ts_code}; "
+                "existing canonical price history was preserved without rewriting it."
+            ),
+            updated_by=updated_by,
+            mode="api",
+        )
     factors = _tushare_adjustment_factors(factor_rows)
     close_by_date = _existing_price_values(instrument, quote_basis="close")
     existing_adjusted_by_date = _existing_price_values(
@@ -2086,6 +3620,16 @@ def _refresh_tushare_listed_security(
     )
     if changed_count is None:
         return None
+    bar_changed_count = upsert_price_bars(
+        instrument_id=instrument_id,
+        rows=_tushare_price_bar_rows(
+            close_rows,
+            api_name=price_api_name,
+            adjustment_factors=factors,
+        ),
+    )
+    if bar_changed_count is None:
+        return None
     detected_actions = _detect_tushare_share_splits(
         factors=factors,
         close_by_date=close_by_date,
@@ -2128,7 +3672,7 @@ def _refresh_tushare_listed_security(
             updated_by=updated_by,
             mode="api",
         )
-    if changed_count == 0:
+    if changed_count == 0 and bar_changed_count == 0:
         return update_refresh_status(
             instrument_id=instrument_id,
             status="no_new_data",
@@ -2151,7 +3695,7 @@ def _refresh_tushare_listed_security(
         message=(
             f"Updated {changed_count} market-data points for {ts_code}: "
             f"raw close for valuation/trading and {adjusted_count} qfq adjusted closes "
-            "for charts and total return; "
+            f"for charts and total return; {bar_changed_count} raw OHLCV bars; "
             f"{confirmed_action_count} confirmed and {detected_action_count} review-required "
             "share-adjustment event(s)."
         ),
@@ -2189,7 +3733,6 @@ def _refresh_from_tushare(
             )
             nav_rows = _tushare_nav_rows(
                 rows,
-                instrument_id=instrument_id,
                 instrument_currency=instrument.get("currency"),
                 latest_date=latest_date,
             )
@@ -2202,16 +3745,32 @@ def _refresh_from_tushare(
                     updated_by=updated_by,
                     mode="api",
                 )
-            return replace_nav_history(
+            record_raw_nav_observations(
                 instrument_id=instrument_id,
                 rows=nav_rows,
+                source_kind="api_observation",
+                source_ref="tushare:fund_nav",
                 provider="tushare:fund_nav",
-                point_status="complete",
+                status="complete",
+                evidence={"ts_code": ts_code, "source_field": "adj_nav"},
+            )
+            record, _publication = _publish_fund_nav_projection(
+                instrument_id=instrument_id,
+                load_source_rows=lambda current_instrument: _load_all_durable_nav_source_rows(
+                    instrument_id=instrument_id,
+                    instrument=current_instrument,
+                ),
+                source_provider="tushare:fund_nav",
                 refresh_status="imported",
                 updated_by=updated_by,
-                message=f"Imported {len(nav_rows)} NAV rows from Tushare fund_nav for {ts_code}.",
+                message_factory=lambda publication: (
+                    f"Stored {len(nav_rows)} Tushare NAV observations for {ts_code} "
+                    f"and rebuilt {len(publication.rows)} canonical NAV dates; "
+                    f"{len(publication.action_candidates)} NAV action signal(s) require review."
+                ),
                 mode="api",
             )
+            return record
 
         if instrument_type in {"fund", "etf"} and suffix in TUSHARE_PRICE_SUFFIXES:
             return _refresh_tushare_listed_security(
@@ -2253,7 +3812,9 @@ def _refresh_from_tushare(
             rows = _call_tushare_api(
                 api_name="index_daily",
                 params=params,
-                fields="ts_code,trade_date,close",
+                fields=(
+                    "ts_code,trade_date,open,high,low,close,pre_close,vol,amount"
+                ),
             )
             return _upsert_tushare_price_rows(
                 instrument_id=instrument_id,
@@ -2312,7 +3873,15 @@ def _upsert_tushare_price_rows(
             for row in rows
         ],
     )
-    if changed_count == 0:
+    if changed_count is None:
+        return None
+    bar_changed_count = upsert_price_bars(
+        instrument_id=instrument_id,
+        rows=_tushare_price_bar_rows(rows, api_name=api_name),
+    )
+    if bar_changed_count is None:
+        return None
+    if changed_count == 0 and bar_changed_count == 0:
         return update_refresh_status(
             instrument_id=instrument_id,
             status="no_new_data",
@@ -2323,7 +3892,10 @@ def _upsert_tushare_price_rows(
     return update_refresh_status(
         instrument_id=instrument_id,
         status="refreshed",
-        message=f"Imported {changed_count} close rows from Tushare {api_name} for {ts_code}.",
+        message=(
+            f"Imported {changed_count} close rows and {bar_changed_count} raw OHLCV bars "
+            f"from Tushare {api_name} for {ts_code}."
+        ),
         updated_by=updated_by,
         mode="api",
     )
@@ -2340,192 +3912,6 @@ def _matches_batch_source(instrument: dict[str, object], source: str) -> bool:
     if normalized_source == "all":
         return source_mode == "email" or (source_mode == "api" and _tushare_profile_enabled(source_settings))
     return False
-
-
-class _EmailMailboxConnectionError(RuntimeError):
-    pass
-
-
-class _EmailMailboxFolderError(RuntimeError):
-    pass
-
-
-def _imap_status_ok(status: object) -> bool:
-    if isinstance(status, bytes):
-        return status.upper() == b"OK"
-    return str(status or "").upper() == "OK"
-
-
-class _EmailMailboxSession:
-    """Own one IMAP login and safely reuse it across an email refresh batch."""
-
-    def __init__(self, settings: Any) -> None:
-        self.settings = settings
-        self._mailbox: imaplib.IMAP4 | imaplib.IMAP4_SSL | None = None
-        self._selected_folder: str | None = None
-        self._search_cache: dict[tuple[str, tuple[object, ...]], tuple[object, object]] = {}
-        self._message_cache: OrderedDict[tuple[str, int, str], bytes | None] = OrderedDict()
-        self._message_cache_bytes = 0
-        self._message_cache_limit_bytes = 64 * 1024 * 1024
-        self._attachment_rows_cache: dict[
-            tuple[str, int, str, str], list[dict[str, object]]
-        ] = {}
-
-    @staticmethod
-    def _discard_mailbox(mailbox: object) -> None:
-        shutdown = getattr(mailbox, "shutdown", None)
-        if callable(shutdown):
-            try:
-                shutdown()
-                return
-            except Exception:
-                pass
-        logout = getattr(mailbox, "logout", None)
-        if callable(logout):
-            try:
-                logout()
-            except Exception:
-                pass
-
-    def _connect(self) -> imaplib.IMAP4 | imaplib.IMAP4_SSL:
-        mailbox_cls = imaplib.IMAP4_SSL if self.settings.email_imap_use_ssl else imaplib.IMAP4
-        mailbox = mailbox_cls(
-            self.settings.email_imap_host,
-            self.settings.email_imap_port,
-            timeout=self.settings.email_imap_timeout_seconds,
-        )
-        try:
-            login_status, _ = mailbox.login(
-                self.settings.email_imap_username,
-                self.settings.email_imap_password,
-            )
-            if not _imap_status_ok(login_status):
-                raise _EmailMailboxConnectionError("IMAP login failed.")
-        except Exception:
-            self._discard_mailbox(mailbox)
-            raise
-        self._mailbox = mailbox
-        self._selected_folder = None
-        return mailbox
-
-    def open_folder(self, preferred_folder: str) -> "_EmailMailboxSession":
-        mailbox = self._mailbox or self._connect()
-        folders = list(
-            dict.fromkeys(
-                folder
-                for folder in (preferred_folder, self.settings.email_imap_folder)
-                if folder
-            )
-        )
-        for folder in folders:
-            if folder == self._selected_folder:
-                return self
-            select_status, _ = mailbox.select(
-                folder,
-                readonly=not self.settings.email_imap_mark_seen,
-            )
-            if _imap_status_ok(select_status):
-                self._selected_folder = folder
-                return self
-            # Do not assume the previous mailbox remains selected after a failed SELECT.
-            self._selected_folder = None
-        raise _EmailMailboxFolderError("unable to open the configured mailbox folder.")
-
-    def uid(self, command: str, *args: object):
-        mailbox = self._mailbox
-        if mailbox is None:
-            raise _EmailMailboxConnectionError("IMAP session is not connected.")
-        normalized_command = command.strip().lower()
-        if normalized_command != "search" or self._selected_folder is None:
-            return mailbox.uid(command, *args)
-        cache_key = (self._selected_folder, tuple(args))
-        cached = self._search_cache.get(cache_key)
-        if cached is not None:
-            return cached
-        result = mailbox.uid(command, *args)
-        if _imap_status_ok(result[0]):
-            self._search_cache[cache_key] = result
-        return result
-
-    def fetch_message_bytes(self, uid: int, request: str) -> bytes | None:
-        folder = self._selected_folder
-        mailbox = self._mailbox
-        if folder is None or mailbox is None:
-            raise _EmailMailboxConnectionError("IMAP folder is not selected.")
-        cache_key = (folder, uid, request)
-        if cache_key in self._message_cache:
-            cached = self._message_cache.pop(cache_key)
-            self._message_cache[cache_key] = cached
-            return cached
-        fetch_status, fetch_data = mailbox.uid("fetch", str(uid), request)
-        payload = None
-        if _imap_status_ok(fetch_status):
-            payload = next(
-                (
-                    bytes(item[1])
-                    for item in fetch_data
-                    if isinstance(item, tuple)
-                    and len(item) >= 2
-                    and isinstance(item[1], (bytes, bytearray))
-                ),
-                None,
-            )
-        payload_size = len(payload) if payload is not None else 0
-        while self._message_cache and (
-            self._message_cache_bytes + payload_size > self._message_cache_limit_bytes
-        ):
-            _, evicted = self._message_cache.popitem(last=False)
-            self._message_cache_bytes -= len(evicted) if evicted is not None else 0
-        if payload_size <= self._message_cache_limit_bytes:
-            self._message_cache[cache_key] = payload
-            self._message_cache_bytes += payload_size
-        return payload
-
-    def parse_attachment_rows(
-        self,
-        *,
-        uid: int,
-        attachment_name: str,
-        attachment_bytes: bytes,
-        parser_profile: str,
-    ) -> list[dict[str, object]]:
-        folder = self._selected_folder or ""
-        cache_key = (folder, uid, attachment_name, parser_profile)
-        cached = self._attachment_rows_cache.get(cache_key)
-        if cached is not None:
-            return cached
-        rows = _parse_nav_rows_from_attachment(
-            attachment_name=attachment_name,
-            attachment_bytes=attachment_bytes,
-            parser_profile=parser_profile,
-        )
-        self._attachment_rows_cache[cache_key] = rows
-        return rows
-
-    def invalidate(self) -> None:
-        mailbox = self._mailbox
-        self._mailbox = None
-        self._selected_folder = None
-        self._search_cache.clear()
-        if mailbox is not None:
-            self._discard_mailbox(mailbox)
-
-    def close(self) -> None:
-        mailbox = self._mailbox
-        selected_folder = self._selected_folder
-        self._mailbox = None
-        self._selected_folder = None
-        if mailbox is None:
-            return
-        if selected_folder is not None:
-            try:
-                mailbox.close()
-            except Exception:
-                pass
-        try:
-            mailbox.logout()
-        except Exception:
-            pass
 
 
 def _tushare_refresh_process_worker(
@@ -2701,6 +4087,238 @@ def _run_tushare_refresh_process_batch(
     return ordered_results
 
 
+def _email_parser_adapter(
+    attachment_name: str,
+    attachment_bytes: bytes,
+    parser_profile: str,
+) -> list[dict[str, object]]:
+    return _parse_nav_rows_from_attachment(
+        attachment_name=attachment_name,
+        attachment_bytes=attachment_bytes,
+        parser_profile=parser_profile,
+    )
+
+
+def _email_attachment_text_adapter(
+    attachment_name: str,
+    attachment_bytes: bytes,
+) -> str:
+    return _extract_attachment_text(attachment_name, attachment_bytes)
+
+
+def _email_batch_result_item(
+    *,
+    instrument: dict[str, object],
+    status: str,
+    message: str,
+) -> dict[str, object]:
+    source_settings = dict(instrument.get("source_settings", {}))
+    return {
+        "instrument_id": instrument["instrument_id"],
+        "instrument_name": instrument["instrument_name"],
+        "instrument_type": instrument["instrument_type"],
+        "source_mode": source_settings.get("source_mode") or "manual",
+        "source_api_profile": source_settings.get("source_api_profile") or "",
+        "status": status,
+        "message": message,
+    }
+
+
+def _run_email_ingestion_batch(
+    *,
+    instruments: list[dict[str, object]],
+    settings: Any,
+    updated_by: str | None,
+    full_history: bool,
+) -> dict[str, object]:
+    instruments_by_id = {
+        str(instrument.get("instrument_id") or ""): instrument
+        for instrument in instruments
+    }
+    configured_email_ids = {
+        instrument_id
+        for instrument_id, instrument in instruments_by_id.items()
+        if str(dict(instrument.get("source_settings", {})).get("source_mode") or "")
+        .strip()
+        .lower()
+        == "email"
+    }
+    try:
+        ingestion = ingest_email_nav(
+            settings=settings,
+            instruments=instruments,
+            parse_attachment=_email_parser_adapter,
+            extract_attachment_text=_email_attachment_text_adapter,
+            full_history=full_history,
+        )
+    except EmailIngestionError as error:
+        failure_status = (
+            "failed" if isinstance(error, EmailIngestionBusyError) else "blocked"
+        )
+        results: list[dict[str, object]] = []
+        for instrument_id in sorted(configured_email_ids):
+            instrument = instruments_by_id[instrument_id]
+            refreshed = update_refresh_status(
+                instrument_id=instrument_id,
+                status=failure_status,
+                message=str(error),
+                updated_by=updated_by,
+                mode="email",
+            )
+            if refreshed is not None:
+                results.append(
+                    _email_batch_result_item(
+                        instrument=refreshed,
+                        status=failure_status,
+                        message=str(error),
+                    )
+                )
+        return {
+            "source": "email",
+            "refreshed_count": 0,
+            "skipped_count": len(instruments) - len(configured_email_ids),
+            "results": results,
+            "folders": [],
+        }
+
+    repository = EmailIngestionRepository(get_session_factory())
+    results_by_id: dict[str, dict[str, object]] = {}
+    boundary_rebuild_ids = list_instrument_ids_with_nav_history_before(
+        instrument_ids=configured_email_ids,
+        before_date=settings.email_history_start_date,
+    )
+    publication_ids = set(ingestion.batches).union(boundary_rebuild_ids)
+    for instrument_id in sorted(publication_ids):
+        batch = ingestion.batches.get(instrument_id)
+        instrument = instruments_by_id.get(instrument_id)
+        if instrument is None:
+            continue
+        try:
+            source_names = list(dict.fromkeys(batch.attachment_names if batch else []))
+            if instrument_id in boundary_rebuild_ids:
+                message_factory = lambda publication: (
+                    f"Rebuilt {len(publication.rows)} canonical NAV dates within "
+                    f"the email history boundary {settings.email_history_start_date.isoformat()}; "
+                    f"{len(publication.action_candidates)} NAV action signal(s) require review."
+                )
+            else:
+                message_factory = lambda publication: (
+                    f"Rebuilt {len(publication.rows)} canonical NAV dates from "
+                    f"{len(source_names)} durable email attachments; "
+                    f"{len(publication.action_candidates)} NAV action signal(s) require review."
+                )
+            record, publication = _publish_fund_nav_projection(
+                instrument_id=instrument_id,
+                load_source_rows=lambda current_instrument: (
+                    _load_all_durable_nav_source_rows(
+                        instrument_id=instrument_id,
+                        instrument=current_instrument,
+                    )
+                ),
+                source_provider="email",
+                refresh_status="imported",
+                updated_by=updated_by,
+                message_factory=message_factory,
+                mode="email",
+            )
+            message = message_factory(publication)
+            repository.mark_imported(batch.route_ids if batch else [])
+            results_by_id[instrument_id] = _email_batch_result_item(
+                instrument=record,
+                status="imported",
+                message=message,
+            )
+        except Exception as error:
+            LOGGER.exception(
+                "email canonical NAV publication failed instrument_id=%s",
+                instrument_id,
+            )
+            message = f"Email NAV publication failed: {type(error).__name__}: {error}"
+            record = update_refresh_status(
+                instrument_id=instrument_id,
+                status="failed",
+                message=message,
+                updated_by=updated_by,
+                mode="email",
+            )
+            if record is not None:
+                results_by_id[instrument_id] = _email_batch_result_item(
+                    instrument=record,
+                    status="failed",
+                    message=message,
+                )
+
+    failed_folder_names = {
+        folder.folder_name for folder in ingestion.failed_folders
+    }
+    for instrument_id in sorted(configured_email_ids - set(results_by_id)):
+        instrument = instruments_by_id[instrument_id]
+        source_settings = dict(instrument.get("source_settings", {}))
+        source_folder = str(source_settings.get("source_location") or "").strip()
+        if source_folder in failed_folder_names:
+            status = "failed"
+            message = f'Configured email folder "{source_folder}" failed to scan.'
+        else:
+            status = "no_new_data"
+            message = "Email scan completed with no new exact-routed NAV observations."
+        record = update_refresh_status(
+            instrument_id=instrument_id,
+            status=status,
+            message=message,
+            updated_by=updated_by,
+            mode="email",
+        )
+        if record is not None:
+            results_by_id[instrument_id] = _email_batch_result_item(
+                instrument=record,
+                status=status,
+                message=message,
+            )
+
+    results = list(results_by_id.values())
+    for folder in ingestion.failed_folders:
+        results.append(
+            {
+                "instrument_id": f"email-folder:{folder.folder_name}",
+                "instrument_name": folder.folder_name,
+                "instrument_type": "other",
+                "source_mode": "email",
+                "source_api_profile": "",
+                "status": "failed",
+                "message": folder.error,
+            }
+        )
+    return {
+        "source": "email",
+        "refreshed_count": sum(
+            1 for item in results if item["status"] in {"imported", "refreshed"}
+        ),
+        "skipped_count": max(
+            0,
+            len(instruments) - len(configured_email_ids.union(ingestion.batches)),
+        ),
+        "results": results,
+        "folders": [
+            {
+                "folder_name": folder.folder_name,
+                "uid_validity": folder.uid_validity,
+                "discovered_messages": folder.discovered_messages,
+                "fetched_messages": folder.fetched_messages,
+                "stored_attachments": folder.stored_attachments,
+                "parsed_attachments": folder.parsed_attachments,
+                "ignored_messages": folder.ignored_messages,
+                "failed_messages": folder.failed_messages,
+                "error": folder.error,
+            }
+            for folder in ingestion.folders
+        ],
+        "unmatched_candidates": ingestion.unmatched_candidates,
+        "ambiguous_candidates": ingestion.ambiguous_candidates,
+        "invalid_candidates": ingestion.invalid_candidates,
+        "out_of_scope_candidates": ingestion.out_of_scope_candidates,
+    }
+
+
 def refresh_market_data_batch(
     *,
     source: str,
@@ -2720,6 +4338,44 @@ def refresh_market_data_batch(
         len(targets),
         len(instruments) - len(targets),
     )
+    if normalized_source == "email":
+        return _run_email_ingestion_batch(
+            instruments=instruments,
+            settings=settings,
+            updated_by=updated_by,
+            full_history=full_history,
+        )
+    if normalized_source == "all":
+        tushare_result = refresh_market_data_batch(
+            source="tushare",
+            updated_by=updated_by,
+            full_history=full_history,
+            include_inactive=include_inactive,
+        )
+        email_result = _run_email_ingestion_batch(
+            instruments=instruments,
+            settings=settings,
+            updated_by=updated_by,
+            full_history=full_history,
+        )
+        combined_results = [
+            *list(tushare_result.get("results", [])),
+            *list(email_result.get("results", [])),
+        ]
+        return {
+            **email_result,
+            "source": "all",
+            "refreshed_count": sum(
+                1
+                for item in combined_results
+                if item.get("status") in {"imported", "refreshed"}
+            ),
+            "skipped_count": min(
+                int(tushare_result.get("skipped_count", 0)),
+                int(email_result.get("skipped_count", 0)),
+            ),
+            "results": combined_results,
+        }
     if normalized_source == "tushare" and targets:
         max_workers = min(getattr(settings, "tushare_batch_max_workers", 4), len(targets))
         LOGGER.info(
@@ -2760,335 +4416,9 @@ def refresh_market_data_batch(
             "skipped_count": len(instruments) - len(targets),
             "results": results,
         }
-    results: list[dict[str, object]] = []
-    has_email_targets = any(
-        str(dict(item.get("source_settings", {})).get("source_mode") or "").strip().lower()
-        == "email"
-        for item in targets
-    )
-    email_session = _EmailMailboxSession(settings) if has_email_targets else None
-    email_target_details: dict[str, dict[str, object]] = {}
-    email_batch_uids_by_folder: dict[str, list[int]] = {}
-    if email_session is not None:
-        earliest_cursor_by_folder: dict[str, date | None] = {}
-        for target in targets:
-            target_settings = dict(target.get("source_settings", {}))
-            if str(target_settings.get("source_mode") or "").strip().lower() != "email":
-                continue
-            instrument_id = str(target.get("instrument_id") or "")
-            detail = get_instrument(instrument_id)
-            if detail is None:
-                continue
-            email_target_details[instrument_id] = detail
-            detail_settings = dict(detail.get("source_settings", {}))
-            folder = str(
-                detail_settings.get("source_location") or settings.email_imap_folder
-            ).strip() or settings.email_imap_folder
-            cursor = _email_search_since_date(
-                instrument=detail,
-                nav_since_date=(
-                    None if full_history else _latest_nav_date_from_instrument(detail)
-                ),
-                full_history=full_history,
-            )
-            if folder not in earliest_cursor_by_folder:
-                earliest_cursor_by_folder[folder] = cursor
-            elif cursor is None:
-                earliest_cursor_by_folder[folder] = None
-            elif earliest_cursor_by_folder[folder] is not None:
-                earliest_cursor_by_folder[folder] = min(
-                    cursor,
-                    earliest_cursor_by_folder[folder],
-                )
-        for folder, earliest_cursor in earliest_cursor_by_folder.items():
-            try:
-                mailbox = email_session.open_folder(folder)
-                criteria = (
-                    ("ALL",)
-                    if earliest_cursor is None
-                    else ("SINCE", _format_imap_since_date(earliest_cursor))
-                )
-                search_status, search_data = mailbox.uid("search", None, *criteria)
-                if not _imap_status_ok(search_status):
-                    continue
-                raw_uid_list = search_data[0] if search_data and search_data[0] else b""
-                available_uids = [int(item) for item in raw_uid_list.split() if item]
-                pending_uids = (
-                    available_uids
-                    if earliest_cursor is not None
-                    else available_uids[-settings.email_imap_max_messages :]
-                )
-                email_batch_uids_by_folder[folder] = pending_uids
-                if email_session._selected_folder:
-                    email_batch_uids_by_folder[email_session._selected_folder] = pending_uids
-                LOGGER.info(
-                    "email batch snapshot folder=%s cursor=%s uid_count=%s",
-                    folder,
-                    earliest_cursor.isoformat() if earliest_cursor else "all-limited",
-                    len(pending_uids),
-                )
-            except Exception:
-                LOGGER.exception("email batch snapshot failed folder=%s", folder)
-                email_session.invalidate()
-    try:
-        for index, instrument in enumerate(targets, start=1):
-            instrument_id = str(instrument.get("instrument_id") or "")
-            target_source_mode = str(
-                dict(instrument.get("source_settings", {})).get("source_mode") or "manual"
-            ).strip().lower()
-            LOGGER.info(
-                "market data batch item started source=%s index=%s/%s instrument_id=%s",
-                normalized_source,
-                index,
-                len(targets),
-                instrument_id,
-            )
-            try:
-                with market_data_item_timeout(instrument_id):
-                    if target_source_mode == "email" and email_session is not None:
-                        current_instrument = email_target_details.get(instrument_id) or get_instrument(instrument_id)
-                        if current_instrument is None:
-                            refreshed = None
-                        else:
-                            current_source_settings = dict(
-                                current_instrument.get("source_settings", {})
-                            )
-                            if (
-                                str(current_source_settings.get("source_mode") or "manual")
-                                .strip()
-                                .lower()
-                                == "email"
-                            ):
-                                refreshed = _refresh_from_email(
-                                    instrument_id=instrument_id,
-                                    instrument=current_instrument,
-                                    source_settings=current_source_settings,
-                                    updated_by=updated_by,
-                                    full_history=full_history,
-                                    mailbox_session=email_session,
-                                    batch_pending_uids=email_batch_uids_by_folder.get(
-                                        str(
-                                            current_source_settings.get("source_location")
-                                            or settings.email_imap_folder
-                                        ).strip()
-                                        or settings.email_imap_folder
-                                    ),
-                                )
-                            else:
-                                refreshed = refresh_market_data(
-                                    instrument_id=instrument_id,
-                                    updated_by=updated_by,
-                                    full_history=full_history,
-                                    source="configured",
-                                )
-                    else:
-                        refreshed = refresh_market_data(
-                            instrument_id=instrument_id,
-                            updated_by=updated_by,
-                            full_history=full_history,
-                            source="configured",
-                        )
-            except MarketDataItemTimeout as exc:
-                if email_session is not None:
-                    email_session.invalidate()
-                LOGGER.warning(
-                    "market data batch item timed out source=%s index=%s/%s instrument_id=%s timeout_seconds=%s",
-                    normalized_source,
-                    index,
-                    len(targets),
-                    instrument_id,
-                    settings.market_data_batch_item_timeout_seconds,
-                )
-                refreshed = update_refresh_status(
-                    instrument_id=instrument_id,
-                    status="failed",
-                    message=str(exc),
-                    updated_by=updated_by,
-                    mode=target_source_mode,
-                )
-            if refreshed is None:
-                LOGGER.info(
-                    "market data batch item skipped source=%s index=%s/%s instrument_id=%s",
-                    normalized_source,
-                    index,
-                    len(targets),
-                    instrument_id,
-                )
-                continue
-            source_settings = dict(refreshed.get("source_settings", {}))
-            refresh_status = dict(refreshed.get("refresh_status", {}))
-            LOGGER.info(
-                "market data batch item finished source=%s index=%s/%s instrument_id=%s status=%s",
-                normalized_source,
-                index,
-                len(targets),
-                refreshed["instrument_id"],
-                refresh_status.get("status") or "idle",
-            )
-            results.append(
-                {
-                    "instrument_id": refreshed["instrument_id"],
-                    "instrument_name": refreshed["instrument_name"],
-                    "instrument_type": refreshed["instrument_type"],
-                    "source_mode": source_settings.get("source_mode") or "manual",
-                    "source_api_profile": source_settings.get("source_api_profile") or "",
-                    "status": refresh_status.get("status") or "idle",
-                    "message": refresh_status.get("message") or "",
-                }
-            )
-    finally:
-        if email_session is not None:
-            email_session.close()
     return {
         "source": normalized_source,
-        "refreshed_count": sum(1 for item in results if item["status"] in {"imported", "refreshed"}),
-        "skipped_count": len(instruments) - len(targets),
-        "results": results,
+        "refreshed_count": 0,
+        "skipped_count": len(instruments),
+        "results": [],
     }
-
-
-def _refresh_from_email(
-    *,
-    instrument_id: str,
-    instrument: dict[str, object],
-    source_settings: dict[str, object],
-    updated_by: str | None,
-    full_history: bool,
-    mailbox_session: _EmailMailboxSession | None = None,
-    batch_pending_uids: list[int] | None = None,
-) -> dict[str, object] | None:
-    settings = get_settings()
-    if not settings.email_sync_enabled:
-        return update_refresh_status(
-            instrument_id=instrument_id,
-            status="blocked",
-            message="Email refresh is disabled. Set PORTFOLIO_OPS_PLATFORM_EMAIL_SYNC_ENABLED=true first.",
-            updated_by=updated_by,
-            mode="email",
-        )
-    if not settings.email_sync_ready:
-        return update_refresh_status(
-            instrument_id=instrument_id,
-            status="blocked",
-            message="Email refresh is not configured. Set IMAP host, username, and password.",
-            updated_by=updated_by,
-            mode="email",
-        )
-
-    preferred_folder = str(source_settings.get("source_location", "")).strip()
-    email_rules = _normalized_email_rules(source_settings)
-    if not email_rules:
-        return update_refresh_status(
-            instrument_id=instrument_id,
-            status="blocked",
-            message="Email refresh requires at least one explicit product email rule.",
-            updated_by=updated_by,
-            mode="email",
-        )
-
-    owns_session = mailbox_session is None
-    session = mailbox_session or _EmailMailboxSession(settings)
-    try:
-        for attempt in range(2):
-            try:
-                mailbox = session.open_folder(preferred_folder)
-                nav_since_date = None if full_history else _latest_nav_date_from_instrument(instrument)
-                search_since_date = _email_search_since_date(
-                    instrument=instrument,
-                    nav_since_date=nav_since_date,
-                    full_history=full_history,
-                )
-                search_criteria = (
-                    ("ALL",)
-                    if search_since_date is None
-                    else ("SINCE", _format_imap_since_date(search_since_date))
-                )
-                if batch_pending_uids is None:
-                    search_status, search_data = mailbox.uid("search", None, *search_criteria)
-                    if not _imap_status_ok(search_status):
-                        raise _EmailMailboxConnectionError("unable to list mailbox messages.")
-                    raw_uid_list = search_data[0] if search_data and search_data[0] else b""
-                    available_uids = [int(item) for item in raw_uid_list.split() if item]
-                    pending_uids = (
-                        available_uids
-                        if search_since_date is not None
-                        else available_uids[-settings.email_imap_max_messages :]
-                    )
-                else:
-                    pending_uids = batch_pending_uids
-
-                record = _import_rows_from_email_rules(
-                    instrument_id=instrument_id,
-                    instrument_currency=instrument.get("currency"),
-                    rules=email_rules,
-                    mailbox=mailbox,
-                    pending_uids=pending_uids,
-                    updated_by=updated_by,
-                    full_history=full_history,
-                    nav_since_date=nav_since_date,
-                    search_criteria=search_criteria,
-                    use_server_rule_search=batch_pending_uids is None,
-                )
-                if record is not None:
-                    return record
-
-                since_text = (
-                    f" received since {search_since_date.isoformat()}"
-                    if search_since_date
-                    else ""
-                )
-                return update_refresh_status(
-                    instrument_id=instrument_id,
-                    status="no_match",
-                    message=(
-                        "No email attachment matched the explicit product rules"
-                        f"{since_text}."
-                    ),
-                    updated_by=updated_by,
-                    mode="email",
-                )
-            except MarketDataItemTimeout:
-                session.invalidate()
-                raise
-            except _EmailMailboxFolderError as exc:
-                return update_refresh_status(
-                    instrument_id=instrument_id,
-                    status="blocked",
-                    message=f"Email refresh failed: {exc}",
-                    updated_by=updated_by,
-                    mode="email",
-                )
-            except (
-                _EmailMailboxConnectionError,
-                imaplib.IMAP4.abort,
-                imaplib.IMAP4.error,
-                OSError,
-                EOFError,
-            ) as exc:
-                session.invalidate()
-                if attempt == 0:
-                    LOGGER.warning(
-                        "email refresh IMAP session failed; reconnecting instrument_id=%s error=%s",
-                        instrument_id,
-                        exc,
-                    )
-                    continue
-                return update_refresh_status(
-                    instrument_id=instrument_id,
-                    status="failed",
-                    message=f"Email refresh failed: {exc}",
-                    updated_by=updated_by,
-                    mode="email",
-                )
-            except Exception as exc:
-                session.invalidate()
-                return update_refresh_status(
-                    instrument_id=instrument_id,
-                    status="failed",
-                    message=f"Email refresh failed: {exc}",
-                    updated_by=updated_by,
-                    mode="email",
-                )
-    finally:
-        if owns_session:
-            session.close()

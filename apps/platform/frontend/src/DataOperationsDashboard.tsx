@@ -1,6 +1,10 @@
 import { useCallback, useEffect, useState } from 'react'
 
 import { LanguageSelector } from '../../../../packages/ui/src/i18n'
+import {
+  EmailNavInventoryPanel,
+  type EmailNavInventoryPayload,
+} from './EmailNavInventoryPanel'
 
 type DashboardPayload = {
   registry_name: string
@@ -43,6 +47,7 @@ function formatDateTime(value: string | null) {
 
 export default function DataOperationsDashboard() {
   const [data, setData] = useState<DashboardPayload | null>(null)
+  const [emailInventory, setEmailInventory] = useState<EmailNavInventoryPayload | null>(null)
   const [loading, setLoading] = useState(true)
   const [refreshing, setRefreshing] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -50,10 +55,19 @@ export default function DataOperationsDashboard() {
   const loadDashboard = useCallback(async () => {
     setLoading(true)
     try {
-      const response = await fetch(`${API_BASE}/api/dashboard`)
-      if (!response.ok) throw new Error(await response.text())
-      setData((await response.json()) as DashboardPayload)
-      setError(null)
+      const [dashboardResponse, inventoryResponse] = await Promise.all([
+        fetch(`${API_BASE}/api/dashboard`),
+        fetch(`${API_BASE}/api/dashboard/email-nav-inventory?limit=100`),
+      ])
+      if (!dashboardResponse.ok) throw new Error(await dashboardResponse.text())
+      setData((await dashboardResponse.json()) as DashboardPayload)
+      if (inventoryResponse.ok) {
+        setEmailInventory((await inventoryResponse.json()) as EmailNavInventoryPayload)
+        setError(null)
+      } else {
+        setEmailInventory(null)
+        setError(`Email NAV inventory: ${await inventoryResponse.text()}`)
+      }
     } catch (loadError) {
       setError(loadError instanceof Error ? loadError.message : 'Failed to load data operations.')
     } finally {
@@ -146,6 +160,8 @@ export default function DataOperationsDashboard() {
               <div><a href={siblingUrl('5173')}>Open Watchlist ↗</a><a href={siblingUrl('5174')}>Open Portfolio ↗</a></div>
             </aside>
           </section>
+
+          {emailInventory ? <EmailNavInventoryPanel inventory={emailInventory} /> : null}
 
           <section className="data-ops-panel data-ops-exceptions">
             <div className="data-ops-panel-header"><div><span>Exceptions</span><h2>Items needing attention</h2></div><a href="/instruments">Open registry</a></div>

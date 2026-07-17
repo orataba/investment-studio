@@ -5,13 +5,17 @@ from pathlib import Path
 
 from alembic import command
 from alembic.config import Config
-from sqlalchemy import create_engine, text
+from sqlalchemy import create_engine, inspect, text
+
+from platform_app.core.settings import get_settings
 
 
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
 WORKSPACE_ROOT = BACKEND_ROOT.parents[2]
 MIGRATIONS_ROOT = WORKSPACE_ROOT / "infra" / "instrument_registry"
 VERSIONS_DIR = MIGRATIONS_ROOT / "alembic" / "versions"
+PLATFORM_MIGRATIONS_ROOT = BACKEND_ROOT
+PLATFORM_VERSIONS_DIR = PLATFORM_MIGRATIONS_ROOT / "alembic" / "versions"
 RUNTIME_PACKAGE_NAMES = ("app", "platform_app", "portfolio_ops_instrument_core")
 
 
@@ -39,6 +43,20 @@ def test_instrument_registry_revisions_do_not_import_runtime_modules() -> None:
         assert not offenders, f"{migration_path.name} imports runtime packages: {offenders}"
 
 
+def test_platform_revisions_do_not_import_runtime_modules() -> None:
+    for migration_path in PLATFORM_VERSIONS_DIR.glob("*.py"):
+        imported_modules = _imported_modules(migration_path.read_text(encoding="utf-8"))
+        offenders = sorted(
+            module
+            for module in imported_modules
+            if any(
+                module == package or module.startswith(f"{package}.")
+                for package in RUNTIME_PACKAGE_NAMES
+            )
+        )
+        assert not offenders, f"{migration_path.name} imports runtime packages: {offenders}"
+
+
 def test_instrument_registry_migrations_upgrade_an_empty_database(tmp_path, monkeypatch) -> None:
     database_url = f"sqlite+pysqlite:///{tmp_path / 'instrument-registry-migrations.db'}"
     monkeypatch.setenv("PORTFOLIO_OPS_INSTRUMENT_REGISTRY_DATABASE_URL", database_url)
@@ -47,6 +65,65 @@ def test_instrument_registry_migrations_upgrade_an_empty_database(tmp_path, monk
     config = Config(str(MIGRATIONS_ROOT / "alembic.ini"))
     config.set_main_option("script_location", str(MIGRATIONS_ROOT / "alembic"))
     command.upgrade(config, "head")
+
+
+def test_platform_migrations_upgrade_an_empty_database(tmp_path, monkeypatch) -> None:
+    database_url = f"sqlite+pysqlite:///{tmp_path / 'platform-migrations.db'}"
+    monkeypatch.setenv("PORTFOLIO_OPS_PLATFORM_DATABASE_URL", database_url)
+    monkeypatch.delenv("PORTFOLIO_OPS_PLATFORM_ALEMBIC_DATABASE_URL", raising=False)
+    monkeypatch.setenv("PORTFOLIO_OPS_PLATFORM_DATABASE_SCHEMA", "")
+    monkeypatch.setenv("PORTFOLIO_OPS_PLATFORM_OPERATIONS_DATABASE_SCHEMA", "")
+    get_settings.cache_clear()
+    try:
+        config = Config(str(PLATFORM_MIGRATIONS_ROOT / "alembic.ini"))
+        config.set_main_option(
+            "script_location",
+            str(PLATFORM_MIGRATIONS_ROOT / "alembic"),
+        )
+        command.upgrade(config, "head")
+        command.check(config)
+    finally:
+        get_settings.cache_clear()
+
+    tables = set(inspect(create_engine(database_url)).get_table_names())
+    assert {
+        "email_mailbox_ingestion_lease",
+        "email_folder_cursor",
+        "email_message_occurrence",
+        "email_attachment_artifact",
+        "email_message_attachment",
+        "email_attachment_parse",
+        "email_nav_candidate",
+    }.issubset(tables)
+
+
+def test_platform_mailbox_lease_migrates_from_email_foundation_head(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    database_url = f"sqlite+pysqlite:///{tmp_path / 'platform-lease-upgrade.db'}"
+    monkeypatch.setenv("PORTFOLIO_OPS_PLATFORM_DATABASE_URL", database_url)
+    monkeypatch.delenv("PORTFOLIO_OPS_PLATFORM_ALEMBIC_DATABASE_URL", raising=False)
+    monkeypatch.setenv("PORTFOLIO_OPS_PLATFORM_DATABASE_SCHEMA", "")
+    monkeypatch.setenv("PORTFOLIO_OPS_PLATFORM_OPERATIONS_DATABASE_SCHEMA", "")
+    get_settings.cache_clear()
+    try:
+        config = Config(str(PLATFORM_MIGRATIONS_ROOT / "alembic.ini"))
+        config.set_main_option(
+            "script_location",
+            str(PLATFORM_MIGRATIONS_ROOT / "alembic"),
+        )
+        command.upgrade(config, "20260715_0001")
+        assert "email_mailbox_ingestion_lease" not in set(
+            inspect(create_engine(database_url)).get_table_names()
+        )
+        command.upgrade(config, "head")
+    finally:
+        get_settings.cache_clear()
+
+    assert "email_mailbox_ingestion_lease" in set(
+        inspect(create_engine(database_url)).get_table_names()
+    )
 
 
 def test_corporate_action_migration_seeds_confirmed_semiconductor_etf_splits(

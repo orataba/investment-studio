@@ -36,9 +36,6 @@ def test_nav_file_requests_enforce_decoded_size_limit(
     [
         "adjusted_close",
         "total_return_nav",
-        "cumulative_nav",
-        "dividend_adjusted_nav",
-        "reinvested_nav",
     ],
 )
 def test_quote_policy_rejects_total_return_basis_for_valuation(
@@ -59,8 +56,17 @@ def test_quote_policy_rejects_total_return_basis_for_valuation(
 
 
 @pytest.mark.parametrize("role", ["total_return", "chart"])
-@pytest.mark.parametrize("invalid_basis", ["cumulative_nav", "accumulated_nav", "cum_nav"])
-def test_quote_policy_rejects_cash_cumulative_nav_as_total_return(
+@pytest.mark.parametrize(
+    "invalid_basis",
+    [
+        "cumulative_nav",
+        "accumulated_nav",
+        "cum_nav",
+        "dividend_adjusted_nav",
+        "reinvested_nav",
+    ],
+)
+def test_quote_policy_rejects_retired_nav_aliases(
     role: str,
     invalid_basis: str,
 ) -> None:
@@ -72,7 +78,117 @@ def test_quote_policy_rejects_cash_cumulative_nav_as_total_return(
         "reference": ["official_nav"],
     }
     policy[role] = [invalid_basis]
-    with pytest.raises(ValidationError, match="cash-cumulative NAV as total return"):
+    with pytest.raises(ValidationError, match="Input should be"):
         contracts.PlatformQuoteSelectionPolicyUpdateRequest.model_validate(
             {"quote_selection_policy": policy}
+        )
+
+
+def _cash_action_payload() -> dict[str, object]:
+    return {
+        "event_type": "cash_distribution",
+        "effective_date": "2026-06-30",
+        "cash_per_unit": "0.05",
+        "evidence_kind": "provider_notice",
+        "source": "manager notice 2026-06-30",
+        "provenance": {"notice_sha256": "abc"},
+    }
+
+
+def _reinvestment_evidence_payload() -> dict[str, object]:
+    return {
+        "reinvestment_nav": "1.20",
+        "evidence_kind": "provider_notice",
+        "source": "manager notice 2026-06-30",
+        "provenance": {"notice_sha256": "abc"},
+    }
+
+
+def _mutation_audit() -> dict[str, object]:
+    return {
+        "client_mutation_id": "mutation-1",
+        "recorded_by": "data-operations-admin",
+        "revision_reason": "Confirmed against the signed manager notice.",
+    }
+
+
+def test_fund_nav_action_create_separates_action_from_reinvestment_evidence() -> None:
+    request = contracts.PlatformFundNavActionCreateRequest.model_validate(
+        {
+            **_mutation_audit(),
+            "action": _cash_action_payload(),
+            "reinvestment_evidence": _reinvestment_evidence_payload(),
+        }
+    )
+
+    assert request.action.cash_per_unit is not None
+    assert request.reinvestment_evidence is not None
+    assert request.reinvestment_evidence.reinvestment_nav > 0
+
+    with pytest.raises(ValidationError, match="recorded_by"):
+        contracts.PlatformFundNavActionCreateRequest.model_validate(
+            {
+                "client_mutation_id": "mutation-1",
+                "revision_reason": "Missing administrator identity.",
+                "action": _cash_action_payload(),
+            }
+        )
+
+
+def test_fund_nav_revision_requests_are_append_only_and_explicit() -> None:
+    correction = contracts.PlatformFundNavActionRevisionRequest.model_validate(
+        {
+            **_mutation_audit(),
+            "predecessor_fund_nav_event_id": "event-v1",
+            "revision_kind": "correction",
+            "action": {**_cash_action_payload(), "cash_per_unit": "0.06"},
+        }
+    )
+    assert correction.predecessor_fund_nav_event_id == "event-v1"
+
+    with pytest.raises(ValidationError, match="action is required"):
+        contracts.PlatformFundNavActionRevisionRequest.model_validate(
+            {
+                **_mutation_audit(),
+                "predecessor_fund_nav_event_id": "event-v1",
+                "revision_kind": "correction",
+            }
+        )
+
+    with pytest.raises(ValidationError, match="forbids replacement fields"):
+        contracts.PlatformFundNavActionRevisionRequest.model_validate(
+            {
+                **_mutation_audit(),
+                "predecessor_fund_nav_event_id": "event-v1",
+                "revision_kind": "cancellation",
+                "action": _cash_action_payload(),
+            }
+        )
+
+
+def test_fund_nav_evidence_cancellation_cannot_rewrite_the_predecessor() -> None:
+    request = contracts.PlatformFundNavReinvestmentEvidenceRevisionRequest.model_validate(
+        {
+            **_mutation_audit(),
+            "predecessor_fund_nav_reinvestment_evidence_id": "evidence-v1",
+            "revision_kind": "cancellation",
+        }
+    )
+    assert request.evidence is None
+
+    with pytest.raises(ValidationError, match="forbids replacement fields"):
+        contracts.PlatformFundNavReinvestmentEvidenceRevisionRequest.model_validate(
+            {
+                **_mutation_audit(),
+                "predecessor_fund_nav_reinvestment_evidence_id": "evidence-v1",
+                "revision_kind": "cancellation",
+                "evidence": _reinvestment_evidence_payload(),
+            }
+        )
+
+
+def test_candidate_rejection_requires_an_audited_decision_actor() -> None:
+    with pytest.raises(ValidationError, match="decision_by"):
+        contracts.PlatformFundNavActionCandidateRejectRequest.model_validate(
+            {"reason": "Not a distribution."}
         )
