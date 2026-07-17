@@ -91,7 +91,7 @@ printf '%s\n' \
   '#!/usr/bin/env bash' \
   'set -euo pipefail' \
   'if [[ "$1" == "--list" ]]; then' \
-  '  printf "%s\n" "1; 0 0 SCHEMA - instrument_registry owner" "2; 0 0 SCHEMA - portfolio owner" "3; 0 0 SCHEMA - watchlist owner"' \
+  '  printf "%s\n" "1; 0 0 SCHEMA - instrument_registry owner" "2; 0 0 SCHEMA - platform owner" "3; 0 0 SCHEMA - portfolio owner" "4; 0 0 SCHEMA - watchlist owner"' \
   '  exit 0' \
   'fi' \
   'exit 99' \

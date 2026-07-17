@@ -41,10 +41,13 @@ printf '%s\n' \
 printf '%s\n' \
   '#!/usr/bin/env bash' \
   'set -euo pipefail' \
-  'printf "%s|%s|%s|%s|%s|%s|%s\n" \
+  'printf "%s|%s|%s|%s|%s|%s|%s|%s|%s|%s\n" \
     "$PORTFOLIO_OPS_INSTRUMENT_REGISTRY_DATABASE_URL" \
     "$PORTFOLIO_OPS_INSTRUMENT_REGISTRY_ALEMBIC_DATABASE_URL" \
     "$PORTFOLIO_OPS_PLATFORM_DATABASE_URL" \
+    "$PORTFOLIO_OPS_PLATFORM_ALEMBIC_DATABASE_URL" \
+    "$PORTFOLIO_OPS_PLATFORM_DATABASE_SCHEMA" \
+    "$PORTFOLIO_OPS_PLATFORM_OPERATIONS_DATABASE_SCHEMA" \
     "$PORTFOLIO_OPS_PORTFOLIO_DATABASE_URL" \
     "$PORTFOLIO_OPS_PORTFOLIO_ALEMBIC_DATABASE_URL" \
     "$PORTFOLIO_OPS_WATCHLIST_DATABASE_URL" \
@@ -90,7 +93,9 @@ grep -q '^services:stop$' "$EVENT_LOG"
 grep -q '^services:start$' "$EVENT_LOG"
 grep -q -- '--set|ON_ERROR_STOP=1' "$EVENT_LOG"
 grep -q -- '--single-transaction' "$EVENT_LOG"
-expected_migration_env="$DATABASE_URL|$DATABASE_URL|$DATABASE_URL|$DATABASE_URL|$DATABASE_URL|$DATABASE_URL|$DATABASE_URL"
+grep -q 'DROP SCHEMA IF EXISTS platform CASCADE' "$EVENT_LOG"
+grep -q 'CREATE SCHEMA platform' "$EVENT_LOG"
+expected_migration_env="$DATABASE_URL|$DATABASE_URL|$DATABASE_URL|$DATABASE_URL|instrument_registry|platform|$DATABASE_URL|$DATABASE_URL|$DATABASE_URL|$DATABASE_URL"
 [[ "$(cat "$MIGRATION_ENV")" == "$expected_migration_env" ]]
 if grep -q 'sensitive-password' "$EVENT_LOG"; then
   echo "Successful rebuild exposed database credentials in a PostgreSQL command argument." >&2

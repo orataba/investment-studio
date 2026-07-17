@@ -24,7 +24,7 @@ chmod 600 "$ENV_ROOT/platform.env"
 printf '%s\n' \
   '#!/usr/bin/env bash' \
   'set -euo pipefail' \
-  'printf "%s\n" "${PORTFOLIO_OPS_PLATFORM_TUSHARE_TOKEN:-}" "${PORTFOLIO_OPS_PLATFORM_EMAIL_SYNC_ENABLED:-}" "${PORTFOLIO_OPS_PLATFORM_EMAIL_IMAP_PASSWORD:-}" "${PORTFOLIO_OPS_PLATFORM_DATABASE_URL:-}" "$*" > "$CAPTURE_PATH"' \
+  'printf "%s\n" "${PORTFOLIO_OPS_PLATFORM_TUSHARE_TOKEN:-}" "${PORTFOLIO_OPS_PLATFORM_EMAIL_SYNC_ENABLED:-}" "${PORTFOLIO_OPS_PLATFORM_EMAIL_IMAP_PASSWORD:-}" "${PORTFOLIO_OPS_PLATFORM_DATABASE_URL:-}" "${PORTFOLIO_OPS_PLATFORM_DATABASE_SCHEMA:-}" "${PORTFOLIO_OPS_PLATFORM_OPERATIONS_DATABASE_SCHEMA:-}" "$*" > "$CAPTURE_PATH"' \
   > "$MOCK_BIN/python"
 printf '%s\n' \
   '#!/usr/bin/env bash' \
@@ -46,7 +46,9 @@ fi
 [[ "$(sed -n '2p' "$CAPTURE_PATH")" == "true" ]]
 [[ "$(sed -n '3p' "$CAPTURE_PATH")" == '$(touch "'$SENTINEL_PATH'")' ]]
 [[ "$(sed -n '4p' "$CAPTURE_PATH")" == "postgresql+psycopg://explicit/local" ]]
-[[ "$(sed -n '5p' "$CAPTURE_PATH")" == "-m uvicorn platform_app.main:app --host 127.0.0.1 --port 8002" ]]
+[[ "$(sed -n '5p' "$CAPTURE_PATH")" == "instrument_registry" ]]
+[[ "$(sed -n '6p' "$CAPTURE_PATH")" == "platform" ]]
+[[ "$(sed -n '7p' "$CAPTURE_PATH")" == "-m uvicorn platform_app.main:app --host 127.0.0.1 --port 8002" ]]
 
 set +e
 "$REPOSITORY_ROOT/infra/launchd/run_local_service.sh" \

@@ -9,16 +9,18 @@
 2. [USER_MANUAL.md](./USER_MANUAL.md)
    面向公司同事的使用手册，说明 Platform / Watchlist / Portfolio 的日常使用方式。
 3. [DATABASE_WORKFLOW.md](./DATABASE_WORKFLOW.md)
-   单库多 schema 的数据库拓扑、迁移入口、重建脚本和 PostgreSQL integration test 路径。
+   单库四 schema 的数据库拓扑、依赖顺序迁移、重建脚本和 PostgreSQL integration test 路径。
 4. [PLATFORM_BOUNDARIES.md](./PLATFORM_BOUNDARIES.md)
-   `Platform / Watchlist / Portfolio / instrument-core / instrument_registry` 之间的当前职责和数据边界。
+   `Platform / Watchlist / Portfolio / instrument-core / instrument_registry / platform schema` 之间的当前职责和数据边界。
 5. [FRONTEND_DESIGN_BASELINE.md](./FRONTEND_DESIGN_BASELINE.md)
    当前前端设计基线：白底数据终端、tab-to-content 节奏、字体层级和跨 app UI 边界。
-6. [SERVER_DEPLOYMENT.md](./SERVER_DEPLOYMENT.md)
+6. [FUND_NAV_EVENT_AND_RECALCULATION_MODEL.md](./FUND_NAV_EVENT_AND_RECALCULATION_MODEL.md)
+   私募基金单位净值、不可变行为/复投证据、复权因子、人工修订和下游重算的当前合同。
+7. [SERVER_DEPLOYMENT.md](./SERVER_DEPLOYMENT.md)
    当前 Linux/systemd 服务部署、迁移、健康检查和运维边界。
-7. [NEW_MACHINE_RESTORE.md](./NEW_MACHINE_RESTORE.md)
+8. [NEW_MACHINE_RESTORE.md](./NEW_MACHINE_RESTORE.md)
    新电脑从私有 GitHub 仓库恢复项目、数据库、运行环境和定时任务的步骤参考。
-8. [LOCAL_MACOS_SERVICE.md](./LOCAL_MACOS_SERVICE.md)
+9. [LOCAL_MACOS_SERVICE.md](./LOCAL_MACOS_SERVICE.md)
    在 macOS 上安装、检查和移除本地 `launchd` 常驻服务与每日 21:00 刷新/重算任务。
 
 按 app 深入时：

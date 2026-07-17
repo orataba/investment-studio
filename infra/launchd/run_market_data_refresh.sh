@@ -49,7 +49,7 @@ if [[ ! -f "$AUDIT_SCRIPT" ]]; then
   exit 1
 fi
 case "$CHANNEL" in
-  all|email|tushare) ;;
+  all|email|tushare|projection) ;;
   *)
     echo "Invalid refresh channel: $CHANNEL" >&2
     exit 64
@@ -75,6 +75,7 @@ export PYTHONPATH="$BACKEND_ROOT:$PROJECT_ROOT/packages/instrument-core/python"
 export PORTFOLIO_OPS_PLATFORM_ENVIRONMENT=local
 export PORTFOLIO_OPS_PLATFORM_DATABASE_URL="$DATABASE_URL"
 export PORTFOLIO_OPS_PLATFORM_DATABASE_SCHEMA=instrument_registry
+export PORTFOLIO_OPS_PLATFORM_OPERATIONS_DATABASE_SCHEMA=platform
 export PORTFOLIO_OPS_PLATFORM_FRONTEND_URL=http://127.0.0.1:5172
 export PORTFOLIO_OPS_PLATFORM_WATCHLIST_URL=http://127.0.0.1:5173
 export PORTFOLIO_OPS_PLATFORM_PORTFOLIO_URL=http://127.0.0.1:5174

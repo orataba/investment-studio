@@ -48,8 +48,10 @@ write_env_files() {
   local registry_url="$2"
   local watchlist_url="$3"
   local portfolio_url="$4"
+  local platform_alembic_url="${5:-$platform_url}"
   printf '%s\n' \
     "PORTFOLIO_OPS_PLATFORM_DATABASE_URL=$platform_url" \
+    "PORTFOLIO_OPS_PLATFORM_ALEMBIC_DATABASE_URL=$platform_alembic_url" \
     "PORTFOLIO_OPS_INSTRUMENT_REGISTRY_DATABASE_URL=$registry_url" \
     > "$ENV_ROOT/platform.env"
   printf '%s\n' "PORTFOLIO_OPS_WATCHLIST_DATABASE_URL=$watchlist_url" \
@@ -112,6 +114,34 @@ if [[ $mismatch_status -eq 0 ]]; then
 fi
 grep -q 'must target the same PostgreSQL' "$TEST_ROOT/mismatch.out"
 
+write_env_files "$CANONICAL_URL" "$CANONICAL_URL" "$CANONICAL_URL" "$CANONICAL_URL" "$MISMATCHED_URL"
+set +e
+run_installer "$TEST_ROOT/config-platform-migration-mismatch" "$ENV_ROOT" \
+  > "$TEST_ROOT/platform-migration-mismatch.out" 2>&1
+platform_migration_mismatch_status=$?
+set -e
+if [[ $platform_migration_mismatch_status -eq 0 ]]; then
+  echo "The systemd app installer accepted a different Platform migration target." >&2
+  exit 1
+fi
+grep -q 'PORTFOLIO_OPS_PLATFORM_ALEMBIC_DATABASE_URL' \
+  "$TEST_ROOT/platform-migration-mismatch.out"
+
+write_env_files "$CANONICAL_URL" "$CANONICAL_URL" "$CANONICAL_URL" "$CANONICAL_URL"
+printf '%s\n' 'PORTFOLIO_OPS_PLATFORM_OPERATIONS_DATABASE_SCHEMA=instrument_registry' \
+  >> "$ENV_ROOT/platform.env"
+set +e
+run_installer "$TEST_ROOT/config-platform-schema-mismatch" "$ENV_ROOT" \
+  > "$TEST_ROOT/platform-schema-mismatch.out" 2>&1
+platform_schema_mismatch_status=$?
+set -e
+if [[ $platform_schema_mismatch_status -eq 0 ]]; then
+  echo "The systemd app installer accepted an invalid Platform operations schema." >&2
+  exit 1
+fi
+grep -q 'PORTFOLIO_OPS_PLATFORM_OPERATIONS_DATABASE_SCHEMA must be platform' \
+  "$TEST_ROOT/platform-schema-mismatch.out"
+
 PASSWORD_URL="${CANONICAL_URL/portfolio_ops@/portfolio_ops:test-password@}"
 write_env_files "$PASSWORD_URL" "$CANONICAL_URL" "$CANONICAL_URL" "$CANONICAL_URL"
 set +e
@@ -141,5 +171,11 @@ for app in platform watchlist portfolio; do
     exit 1
   fi
 done
+grep -Fxq 'Environment=PORTFOLIO_OPS_PLATFORM_DATABASE_SCHEMA=instrument_registry' \
+  "$UNIT_ROOT/portfolio-ops-platform-api.service"
+grep -Fxq 'Environment=PORTFOLIO_OPS_PLATFORM_OPERATIONS_DATABASE_SCHEMA=platform' \
+  "$UNIT_ROOT/portfolio-ops-platform-api.service"
+grep -Fq 'ExecStart=/usr/bin/env PORTFOLIO_OPS_PLATFORM_DATABASE_SCHEMA=instrument_registry PORTFOLIO_OPS_PLATFORM_OPERATIONS_DATABASE_SCHEMA=platform ' \
+  "$UNIT_ROOT/portfolio-ops-platform-api.service"
 
 echo "systemd app external-environment contract test passed."

@@ -65,6 +65,13 @@ The installer rejects a missing `ENV_ROOT`, repository-local `.env` files or
 symlinks, insecure file/directory permissions, password-bearing URLs, and mixed
 database targets before it writes or restarts any unit.
 
+`PORTFOLIO_OPS_PLATFORM_ALEMBIC_DATABASE_URL` is optional and is validated
+against the same database target when present. The installer rejects conflicting
+schema values, and generated Platform API and refresh execution commands pin
+`PORTFOLIO_OPS_PLATFORM_DATABASE_SCHEMA=instrument_registry` and
+`PORTFOLIO_OPS_PLATFORM_OPERATIONS_DATABASE_SCHEMA=platform`, so a stale secret
+template cannot redirect private ingestion tables into a shared schema.
+
 Install and start the app units with that external directory explicitly bound:
 
 ```bash
@@ -80,9 +87,11 @@ requires another bind address.
 The installer generates all six replacement units privately before changing
 systemd state. It snapshots the previous unit files, enablement, and active set,
 including the market-data refresh service/timer. Before migration it stops every
-database writer and creates a verified backup of the three project schemas with
+database writer and creates a verified backup of the four project schemas with
 the shared archive/manifest/checksum primitive, then runs
-`infra/scripts/migrate_all.sh` in Registry, Portfolio, Watchlist order.
+`infra/scripts/migrate_all.sh`. The backup covers `instrument_registry`,
+`platform`, `portfolio`, and `watchlist`; migration order is dependency-aware so
+Platform raw-evidence storage exists before destructive Registry NAV cleanup.
 
 Migration, unit publication, daemon reload, enablement, restart, or active-state
 gate failure restores the database, old unit files, prior enablement, and exact

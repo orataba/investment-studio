@@ -81,6 +81,9 @@ portfolio_ops_validate_env_file "$PORTFOLIO_ENV_FILE" PORTFOLIO_OPS_PORTFOLIO_
 validate_database_contract() {
   unset \
     PORTFOLIO_OPS_PLATFORM_DATABASE_URL \
+    PORTFOLIO_OPS_PLATFORM_ALEMBIC_DATABASE_URL \
+    PORTFOLIO_OPS_PLATFORM_DATABASE_SCHEMA \
+    PORTFOLIO_OPS_PLATFORM_OPERATIONS_DATABASE_SCHEMA \
     PORTFOLIO_OPS_INSTRUMENT_REGISTRY_DATABASE_URL \
     PORTFOLIO_OPS_INSTRUMENT_REGISTRY_ALEMBIC_DATABASE_URL \
     PORTFOLIO_OPS_PORTFOLIO_DATABASE_URL \
@@ -107,6 +110,17 @@ validate_database_contract() {
     fi
   done
 
+  if [[ -n "${PORTFOLIO_OPS_PLATFORM_DATABASE_SCHEMA:-}" \
+    && "$PORTFOLIO_OPS_PLATFORM_DATABASE_SCHEMA" != "instrument_registry" ]]; then
+    echo "PORTFOLIO_OPS_PLATFORM_DATABASE_SCHEMA must be instrument_registry." >&2
+    return 1
+  fi
+  if [[ -n "${PORTFOLIO_OPS_PLATFORM_OPERATIONS_DATABASE_SCHEMA:-}" \
+    && "$PORTFOLIO_OPS_PLATFORM_OPERATIONS_DATABASE_SCHEMA" != "platform" ]]; then
+    echo "PORTFOLIO_OPS_PLATFORM_OPERATIONS_DATABASE_SCHEMA must be platform." >&2
+    return 1
+  fi
+
   "$PYTHON_BIN" - <<'PY'
 from __future__ import annotations
 
@@ -121,6 +135,7 @@ REQUIRED_URLS = (
     "PORTFOLIO_OPS_WATCHLIST_DATABASE_URL",
 )
 OPTIONAL_URLS = (
+    "PORTFOLIO_OPS_PLATFORM_ALEMBIC_DATABASE_URL",
     "PORTFOLIO_OPS_INSTRUMENT_REGISTRY_ALEMBIC_DATABASE_URL",
     "PORTFOLIO_OPS_PORTFOLIO_ALEMBIC_DATABASE_URL",
     "PORTFOLIO_OPS_WATCHLIST_ALEMBIC_DATABASE_URL",
@@ -176,6 +191,8 @@ PY
 
 validate_database_contract
 DATABASE_URL="$PORTFOLIO_OPS_PLATFORM_DATABASE_URL"
+export PORTFOLIO_OPS_PLATFORM_DATABASE_SCHEMA=instrument_registry
+export PORTFOLIO_OPS_PLATFORM_OPERATIONS_DATABASE_SCHEMA=platform
 
 INSTALL_WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/portfolio-ops-systemd-install.XXXXXX")"
 chmod 700 "$INSTALL_WORK_DIR"
@@ -213,8 +230,12 @@ write_api_service() {
   local env_file="$ENV_ROOT/$app.env"
   local service_file="$UNIT_OUTPUT_DIR/$UNIT_PREFIX-$app-api.service"
   local pythonpath_value="$backend_root:$PROJECT_ROOT/packages/instrument-core/python"
-  local escaped_env_file
+  local escaped_env_file schema_environment_lines="" exec_start_prefix=""
   escaped_env_file="$(printf '%q' "$env_file")"
+  if [[ "$app" == "platform" ]]; then
+    schema_environment_lines=$'Environment=PORTFOLIO_OPS_PLATFORM_DATABASE_SCHEMA=instrument_registry\nEnvironment=PORTFOLIO_OPS_PLATFORM_OPERATIONS_DATABASE_SCHEMA=platform'
+    exec_start_prefix='/usr/bin/env PORTFOLIO_OPS_PLATFORM_DATABASE_SCHEMA=instrument_registry PORTFOLIO_OPS_PLATFORM_OPERATIONS_DATABASE_SCHEMA=platform '
+  fi
 
   cat > "$service_file" <<EOF
 [Unit]
@@ -229,7 +250,8 @@ Environment=PYTHONUNBUFFERED=1
 Environment=PYTHONNOUSERSITE=1
 Environment=PYTHONPATH=$pythonpath_value
 EnvironmentFile=$escaped_env_file
-ExecStart=$PYTHON_BIN -m uvicorn $module --host $API_HOST --port $port
+$schema_environment_lines
+ExecStart=$exec_start_prefix$PYTHON_BIN -m uvicorn $module --host $API_HOST --port $port
 Restart=always
 RestartSec=5
 StandardOutput=journal

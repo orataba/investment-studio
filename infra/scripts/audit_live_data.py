@@ -22,7 +22,6 @@ if str(INSTRUMENT_CORE_PYTHON) not in sys.path:
     sys.path.insert(0, str(INSTRUMENT_CORE_PYTHON))
 
 from portfolio_ops_instrument_core import (  # noqa: E402
-    CASH_CUMULATIVE_NAV_BASES,
     FX_INSTRUMENT_IDENTITIES,
     QUOTE_BASIS_METRIC_FAMILY,
     QuoteSelectionPolicy,
@@ -30,7 +29,8 @@ from portfolio_ops_instrument_core import (  # noqa: E402
 )
 
 
-FINAL_FLAT_TABLE_HEAD_PAIR = ("20260715_0011", "20260715_0039")
+FINAL_FLAT_TABLE_HEAD_PAIR = ("20260717_0015", "20260716_0040")
+FUND_NAV_PROJECTION_METHOD_VERSION = "fund_nav_reinvestment_projection/v5"
 
 AUDIT_CHECK_NAMES = (
     "market_data_invalid_values",
@@ -40,7 +40,8 @@ AUDIT_CHECK_NAMES = (
     "market_data_fx_identity_contract",
     "market_data_logical_duplicates",
     "valuation_policy_total_return_basis",
-    "cash_cumulative_nav_in_return_policy",
+    "fund_nav_current_projection_contract",
+    "held_fund_recent_total_return_coverage",
     "portfolio_nav_reconciliation",
     "portfolio_twr_geometric_link",
     "portfolio_drawdown_from_twr",
@@ -50,6 +51,7 @@ AUDIT_CHECK_NAMES = (
     "reserved_cash_taxonomy_nodes",
     "taxonomy_assignment_overlap",
     "current_unassigned_planning_holdings",
+    "price_bar_contract",
     "corporate_action_event_integrity",
     "held_confirmed_share_split_events_covered",
     "held_detected_or_uncovered_share_adjustments",
@@ -83,12 +85,9 @@ VALUATION_PROHIBITED_BASES_SQL = ", ".join(
     _sql_text_literal(quote_basis)
     for quote_basis in sorted(VALUATION_PROHIBITED_TOTAL_RETURN_BASES)
 )
-CASH_CUMULATIVE_NAV_BASES_SQL = ", ".join(
-    _sql_text_literal(quote_basis)
-    for quote_basis in sorted(CASH_CUMULATIVE_NAV_BASES)
+FUND_NAV_PROJECTION_METHOD_VERSION_SQL = _sql_text_literal(
+    FUND_NAV_PROJECTION_METHOD_VERSION
 )
-
-
 @dataclass(frozen=True)
 class AuditCheck:
     name: str
@@ -370,7 +369,7 @@ def _run_flat_table_audit(database_url: str) -> list[AuditCheck]:
                 _count_check(
                     cursor,
                     name="market_data_invalid_values",
-                    query="""
+                    query=f"""
                         SELECT count(*)
                         FROM instrument_registry.instrument_market_data
                         WHERE status NOT IN ('complete', 'partial', 'unavailable')
@@ -476,12 +475,6 @@ def _run_flat_table_audit(database_url: str) -> list[AuditCheck]:
                                                     {VALUATION_PROHIBITED_BASES_SQL}
                                                 )
                                               )
-                                           OR (
-                                                role.role_name IN ('total_return', 'chart')
-                                                AND quote_basis.value IN (
-                                                    {CASH_CUMULATIVE_NAV_BASES_SQL}
-                                                )
-                                              )
                                       )
                                    OR (
                                         SELECT count(*)
@@ -532,9 +525,7 @@ def _run_flat_table_audit(database_url: str) -> list[AuditCheck]:
                                       'dirty_price', 'par', 'accrued_interest'
                                   ))
                                   OR (md.metric_family = 'nav' AND md.quote_basis IN (
-                                      'official_nav', 'total_return_nav', 'cumulative_nav',
-                                      'accumulated_nav', 'cum_nav', 'dividend_adjusted_nav',
-                                      'reinvested_nav'
+                                      'official_nav', 'total_return_nav'
                                   ))
                                   OR (md.metric_family = 'fx' AND md.quote_basis = 'spot')
                               )
@@ -624,7 +615,7 @@ def _run_flat_table_audit(database_url: str) -> list[AuditCheck]:
                 _count_check(
                     cursor,
                     name="valuation_policy_total_return_basis",
-                    query="""
+                    query=f"""
                         SELECT count(*)
                         FROM instrument_registry.instrument instrument
                         WHERE coalesce(instrument.lifecycle_state_json ->> 'status', 'active') = 'active'
@@ -640,19 +631,7 @@ def _run_flat_table_audit(database_url: str) -> list[AuditCheck]:
                                   END
                               ) basis(value)
                               WHERE basis.value IN (
-                                  'adjusted_close',
-                                  'adjusted_nav',
-                                  'adjusted_price',
-                                  'accum_nav',
-                                  'accumulated_nav',
-                                  'cum_nav',
-                                  'cumulative_nav',
-                                  'dividend_adjusted_nav',
-                                  'nav_with_dividend',
-                                  'reinvested_nav',
-                                  'split_adjusted_close',
-                                  'total_return_nav',
-                                  'total_return_price'
+                                  {VALUATION_PROHIBITED_BASES_SQL}
                               )
                           )
                     """,
@@ -665,33 +644,108 @@ def _run_flat_table_audit(database_url: str) -> list[AuditCheck]:
             checks.append(
                 _count_check(
                     cursor,
-                    name="cash_cumulative_nav_in_return_policy",
-                    query="""
+                    name="fund_nav_current_projection_contract",
+                    query=f"""
                         SELECT count(*)
-                        FROM instrument_registry.instrument instrument
-                        WHERE coalesce(instrument.lifecycle_state_json ->> 'status', 'active') = 'active'
-                          AND EXISTS (
-                              SELECT 1
-                              FROM json_array_elements_text(
-                                  CASE
-                                      WHEN json_typeof(
-                                          instrument.quote_selection_policy_json -> 'total_return'
-                                      ) = 'array'
-                                      THEN instrument.quote_selection_policy_json -> 'total_return'
-                                      ELSE '[]'::json
-                                  END
-                              ) basis(value)
-                              WHERE basis.value IN (
-                                  'accum_nav',
-                                  'accumulated_nav',
-                                  'cum_nav',
-                                  'cumulative_nav'
+                        FROM instrument_registry.fund_nav_current_projection current
+                        JOIN instrument_registry.fund_nav_projection_run run
+                          ON run.fund_nav_projection_run_id =
+                             current.fund_nav_projection_run_id
+                        WHERE run.instrument_id <> current.instrument_id
+                           OR run.method_version <>
+                              {FUND_NAV_PROJECTION_METHOD_VERSION_SQL}
+                           OR (
+                                run.projection_kind = 'event_derived'
+                                AND run.projection_status IN ('complete', 'partial')
+                                AND (
+                                    SELECT count(*)
+                                    FROM instrument_registry.fund_nav_adjustment_factor anchor
+                                    WHERE anchor.fund_nav_projection_run_id =
+                                          run.fund_nav_projection_run_id
+                                      AND anchor.evidence_kind IN (
+                                          'zero_cash_anchor',
+                                          'window_normalized_anchor'
+                                      )
+                                      AND anchor.factor_level::numeric = 1
+                                      AND anchor.anchor_date = run.anchor_date
+                                      AND anchor.as_of_date = run.anchor_date
+                                      AND anchor.fund_nav_event_id IS NULL
+                                      AND anchor.fund_nav_reinvestment_evidence_id IS NULL
+                                      AND anchor.previous_fund_nav_adjustment_factor_id IS NULL
+                                ) <> 1
                               )
+                    """,
+                    detail=(
+                        "Every current private-fund projection must use the deployed "
+                        f"{FUND_NAV_PROJECTION_METHOD_VERSION} method; complete or "
+                        "partial event-derived series require "
+                        "one auditable unit-factor zero-cash or window-normalized anchor."
+                    ),
+                )
+            )
+            checks.append(
+                _count_check(
+                    cursor,
+                    name="held_fund_recent_total_return_coverage",
+                    query="""
+                        WITH latest_portfolio_dates AS (
+                            SELECT portfolio_id, max(as_of_date) AS as_of_date
+                            FROM portfolio.portfolio_daily_snapshot
+                            GROUP BY portfolio_id
+                        ), held_funds AS (
+                            SELECT
+                                holding.instrument_id,
+                                max(latest.as_of_date) AS reference_date
+                            FROM portfolio.portfolio_daily_holding_snapshot holding
+                            JOIN latest_portfolio_dates latest
+                              ON latest.portfolio_id = holding.portfolio_id
+                             AND latest.as_of_date = holding.as_of_date
+                            JOIN instrument_registry.instrument instrument
+                              ON instrument.instrument_id = holding.instrument_id
+                             AND instrument.instrument_type = 'fund'
+                            WHERE holding.quantity <> 0
+                            GROUP BY holding.instrument_id
+                        ), coverage AS (
+                            SELECT
+                                held.instrument_id,
+                                count(*) FILTER (
+                                    WHERE quote.quote_basis = 'official_nav'
+                                      AND quote.status = 'complete'
+                                ) AS official_count,
+                                count(*) FILTER (
+                                    WHERE quote.quote_basis = 'total_return_nav'
+                                      AND quote.status = 'complete'
+                                ) AS total_return_count,
+                                max(quote.as_of_date) FILTER (
+                                    WHERE quote.quote_basis = 'official_nav'
+                                      AND quote.status = 'complete'
+                                ) AS latest_official_date,
+                                max(quote.as_of_date) FILTER (
+                                    WHERE quote.quote_basis = 'total_return_nav'
+                                      AND quote.status = 'complete'
+                                ) AS latest_total_return_date
+                            FROM held_funds held
+                            LEFT JOIN instrument_registry.instrument_market_data quote
+                              ON quote.instrument_id = held.instrument_id
+                             AND quote.metric_family = 'nav'
+                             AND quote.as_of_date BETWEEN
+                                 held.reference_date - 120 AND held.reference_date
+                            GROUP BY held.instrument_id
+                        )
+                        SELECT count(*)
+                        FROM coverage
+                        WHERE official_count >= 10
+                          AND (
+                              total_return_count * 2 < official_count
+                              OR latest_total_return_date IS NULL
+                              OR latest_total_return_date
+                                 < latest_official_date - 14
                           )
                     """,
                     detail=(
-                        "Cash cumulative NAV is a disclosure value, not a dividend-reinvested "
-                        "total-return series, and must not be selected for return/risk analytics."
+                        "Each currently held fund with at least ten recent official NAV "
+                        "observations must retain at least half of that 120-day window as "
+                        "current total return; this catches stalled projection chains."
                     ),
                 )
             )
@@ -1043,6 +1097,35 @@ def _run_flat_table_audit(database_url: str) -> list[AuditCheck]:
                         "taxonomy risk-budget solve."
                     ),
                     warning_only=True,
+                )
+            )
+
+            checks.append(
+                _count_check(
+                    cursor,
+                    name="price_bar_contract",
+                    query="""
+                        SELECT count(*)
+                        FROM instrument_registry.instrument_price_bar bar
+                        JOIN instrument_registry.instrument instrument
+                          ON instrument.instrument_id = bar.instrument_id
+                        LEFT JOIN instrument_registry.instrument_market_data close_quote
+                          ON close_quote.instrument_id = bar.instrument_id
+                         AND close_quote.metric_family = 'price'
+                         AND close_quote.quote_basis = 'close'
+                         AND close_quote.as_of_date = bar.as_of_date
+                         AND close_quote.currency = bar.currency
+                        WHERE instrument.instrument_type NOT IN ('etf', 'equity', 'index')
+                           OR bar.currency <> instrument.currency
+                           OR close_quote.instrument_market_data_id IS NULL
+                           OR abs(
+                               bar.close_price::numeric - close_quote.value::numeric
+                           ) > 0.000000000001
+                    """,
+                    detail=(
+                        "Every raw OHLCV bar must belong to a listed instrument, use its "
+                        "canonical currency, and reconcile to the same-date raw close."
+                    ),
                 )
             )
 

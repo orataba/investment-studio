@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 
 # Shared, source-only primitives for taking and restoring a verified snapshot of
-# the three project-owned PostgreSQL schemas. Callers remain responsible for
+# the four project-owned PostgreSQL schemas. Callers remain responsible for
 # stopping writers before invoking either function.
 
-PORTFOLIO_OPS_PROJECT_SCHEMAS=(instrument_registry portfolio watchlist)
+PORTFOLIO_OPS_PROJECT_SCHEMAS=(instrument_registry platform portfolio watchlist)
 
 portfolio_ops_find_postgres_binary() {
   if [[ $# -ne 1 ]]; then
@@ -289,7 +289,7 @@ portfolio_ops_create_project_schema_backup() {
     --command "
       SELECT nspname
       FROM pg_namespace
-      WHERE nspname IN ('instrument_registry', 'portfolio', 'watchlist')
+      WHERE nspname IN ('instrument_registry', 'platform', 'portfolio', 'watchlist')
       ORDER BY nspname;
     " > "$schemas_path"; then
     rm -rf "$work_dir"
@@ -309,7 +309,7 @@ portfolio_ops_create_project_schema_backup() {
   while IFS= read -r schema || [[ -n "$schema" ]]; do
     [[ -n "$schema" ]] || continue
     case "$schema" in
-      instrument_registry|portfolio|watchlist) ;;
+      instrument_registry|platform|portfolio|watchlist) ;;
       *)
         echo "Database returned an unexpected project schema name: $schema" >&2
         rm -rf "$work_dir" "$backup_path" "$manifest_path" "$checksum_path" "$manifest_checksum_path"
@@ -457,6 +457,7 @@ portfolio_ops_restore_project_schema_backup() (
   printf '%s\n' '
       DROP SCHEMA IF EXISTS watchlist CASCADE;
       DROP SCHEMA IF EXISTS portfolio CASCADE;
+      DROP SCHEMA IF EXISTS platform CASCADE;
       DROP SCHEMA IF EXISTS instrument_registry CASCADE;
     ' > "$restore_sql"
   chmod 600 "$restore_sql"
@@ -494,7 +495,7 @@ portfolio_ops_restore_project_schema_backup() (
     --command "
       SELECT nspname
       FROM pg_namespace
-      WHERE nspname IN ('instrument_registry', 'portfolio', 'watchlist')
+      WHERE nspname IN ('instrument_registry', 'platform', 'portfolio', 'watchlist')
       ORDER BY nspname;
     " > "$restored_schemas"; then
     rm -f "$restored_schemas"

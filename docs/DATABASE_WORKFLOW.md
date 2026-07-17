@@ -5,6 +5,7 @@
 - PostgreSQL database: `portfolio_ops`
 - Schemas:
   - `instrument_registry`
+  - `platform`
   - `portfolio`
   - `watchlist`
 
@@ -26,14 +27,7 @@ Runtime secrets come only from `~/.config/orataba/secrets/portfolio-operations-w
 
 ## Apply Migrations
 
-```bash
-(cd infra/instrument_registry && alembic upgrade head)
-(cd apps/portfolio/backend && PYTHONPATH=. alembic upgrade head)
-(cd apps/watchlist/backend && PYTHONPATH=. alembic upgrade head)
-```
-
-For release automation, use the fail-fast shared entry point instead of running
-the three commands independently:
+Use the fail-fast shared entry point for a release or a clean installation:
 
 ```bash
 PROJECT_ROOT="$PWD" PYTHON_BIN="$PWD/.venv/bin/python" \
@@ -43,12 +37,19 @@ PROJECT_ROOT="$PWD" PYTHON_BIN="$PWD/.venv/bin/python" \
 
 `ENV_ROOT` is optional. When it is set, it must contain `platform.env`,
 `portfolio.env`, and `watchlist.env`. Without it, the script uses only the
-already-exported process environment and never reads repository-local `.env`. The
-instrument registry, Portfolio, and Watchlist migration targets are all required
-explicitly before any migration begins; the Registry target never falls back to
-the Platform runtime variable.
+already-exported process environment and never reads repository-local `.env`.
+The Instrument Registry, Platform, Portfolio, and Watchlist migration targets
+are all required explicitly before any migration begins; the Registry target
+never falls back to the Platform runtime variable.
 Already-exported process variables always take precedence over external env-file
 entries; this prevents a release or restore command from being silently redirected.
+
+The runner owns the dependency order. It first brings Registry to the revision
+required by Platform's evidence schema, then migrates `platform`, advances Registry
+to its destructive canonical-NAV revision, and finally migrates Portfolio and
+Watchlist. Do not replace this with four independent `alembic upgrade head` calls:
+the Registry NAV cleanup must not run before Platform can preserve the original
+manual/API/email observations.
 
 The destructive dump restore wrapper performs a checksum/archive/target
 preflight, stops managed local services, retains a pre-restore schema backup,
@@ -77,7 +78,7 @@ failure leaves managed services stopped and retains the recovery state path.
 
 ## Reset Local Schemas
 
-如果本地数据库已经混入旧 schema、脏数据、半迁移状态，直接重建三套 schema：
+如果本地数据库已经混入旧 schema、脏数据、半迁移状态，直接重建四套 schema：
 
 ```bash
 PORTFOLIO_OPS_LOCAL_DATABASE_URL='postgresql://portfolio_ops@127.0.0.1:5432/portfolio_ops' \
@@ -86,10 +87,10 @@ PORTFOLIO_OPS_LOCAL_DATABASE_URL='postgresql://portfolio_ops@127.0.0.1:5432/port
 
 说明：
 
-- 这是破坏性命令，会删除 `instrument_registry / portfolio / watchlist` 三个 schema 的全部数据。
+- 这是破坏性命令，会删除 `instrument_registry / platform / portfolio / watchlist` 四个 schema 的全部数据，包括 Platform 的邮箱游标、原始证据与重试状态。
 - 必须同时显式提供 `postgresql://` 或 `postgresql+psycopg://` URL 和
   `--confirm-destroy-project-schemas`；脚本没有隐式目标或兼容性 fallback。
-- 同一个显式目标会交给 `psql` 和三条 Alembic migration chain；带密码 URL 会先在
+- 同一个显式目标会交给 `psql` 和四条 Alembic migration chain；带密码 URL 会先在
   私有临时目录拆成无密码连接参数与 `0600` passfile，不进入子进程 argv，脚本输出也
   只显示数据库名与角色。
 - 脚本会先停止当前已加载的托管 LaunchAgent。schema 删除或 migration 开始后若失败，
@@ -101,11 +102,15 @@ PORTFOLIO_OPS_LOCAL_DATABASE_URL='postgresql://portfolio_ops@127.0.0.1:5432/port
 
 ## Runtime Defaults
 
-- Platform backend connects to `instrument_registry`
+- Platform backend uses `platform, instrument_registry, public` search-path order: operational state is private, canonical facts remain shared
 - Portfolio backend connects to `portfolio`
 - Watchlist backend connects to `watchlist`
 
-Each backend sets PostgreSQL `search_path` from its own `database_schema` setting, so one database instance can host all three app schemas without cross-app table collisions.
+Platform pins `database_schema=instrument_registry` and
+`operations_database_schema=platform`; its migrations keep their Alembic version
+table in `platform`. Portfolio and Watchlist keep their own schema first. One
+database instance can therefore host all four project schemas without treating
+Platform operational rows as shared market facts.
 
 当前 backend 顶层包名已经拆开：
 

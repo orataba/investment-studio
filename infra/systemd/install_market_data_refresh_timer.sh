@@ -57,13 +57,26 @@ portfolio_ops_validate_env_file \
   PORTFOLIO_OPS_PLATFORM_ \
   PORTFOLIO_OPS_INSTRUMENT_REGISTRY_
 (
-  unset PORTFOLIO_OPS_PLATFORM_DATABASE_URL
+  unset \
+    PORTFOLIO_OPS_PLATFORM_DATABASE_URL \
+    PORTFOLIO_OPS_PLATFORM_DATABASE_SCHEMA \
+    PORTFOLIO_OPS_PLATFORM_OPERATIONS_DATABASE_SCHEMA
   portfolio_ops_load_env_file \
     "$ENV_FILE" \
     PORTFOLIO_OPS_PLATFORM_ \
     PORTFOLIO_OPS_INSTRUMENT_REGISTRY_
   if [[ -z "${PORTFOLIO_OPS_PLATFORM_DATABASE_URL:-}" ]]; then
     echo "External platform environment is missing PORTFOLIO_OPS_PLATFORM_DATABASE_URL." >&2
+    exit 1
+  fi
+  if [[ -n "${PORTFOLIO_OPS_PLATFORM_DATABASE_SCHEMA:-}" \
+    && "$PORTFOLIO_OPS_PLATFORM_DATABASE_SCHEMA" != "instrument_registry" ]]; then
+    echo "PORTFOLIO_OPS_PLATFORM_DATABASE_SCHEMA must be instrument_registry." >&2
+    exit 1
+  fi
+  if [[ -n "${PORTFOLIO_OPS_PLATFORM_OPERATIONS_DATABASE_SCHEMA:-}" \
+    && "$PORTFOLIO_OPS_PLATFORM_OPERATIONS_DATABASE_SCHEMA" != "platform" ]]; then
+    echo "PORTFOLIO_OPS_PLATFORM_OPERATIONS_DATABASE_SCHEMA must be platform." >&2
     exit 1
   fi
   PORTFOLIO_OPS_RUNTIME_DATABASE_URL="$PORTFOLIO_OPS_PLATFORM_DATABASE_URL" \
@@ -144,10 +157,12 @@ WorkingDirectory=$BACKEND_ROOT
 Environment=PYTHONPATH=$PYTHONPATH_VALUE
 Environment=PYTHONNOUSERSITE=1
 $environment_file_line
+Environment=PORTFOLIO_OPS_PLATFORM_DATABASE_SCHEMA=instrument_registry
+Environment=PORTFOLIO_OPS_PLATFORM_OPERATIONS_DATABASE_SCHEMA=platform
 TimeoutStartSec=$TIMEOUT_START_SEC
 Restart=$restart_policy
 RestartSec=$RESTART_SEC
-ExecStart=/bin/bash -lc 'cd $escaped_backend_root && PYTHONPATH=$escaped_pythonpath_value $escaped_python_bin $escaped_backend_root/scripts/refresh_market_data_scheduled.py --channel $escaped_channel --updated-by $escaped_updated_by --retry-failed-attempts $escaped_retry_failed_attempts --lock-file $escaped_lock_file --summary-file $escaped_summary_file --json$fail_on_item_failure_arg$require_downstream_success_arg >> $escaped_log_file 2>&1'
+ExecStart=/bin/bash -lc 'cd $escaped_backend_root && PORTFOLIO_OPS_PLATFORM_DATABASE_SCHEMA=instrument_registry PORTFOLIO_OPS_PLATFORM_OPERATIONS_DATABASE_SCHEMA=platform PYTHONPATH=$escaped_pythonpath_value $escaped_python_bin $escaped_backend_root/scripts/refresh_market_data_scheduled.py --channel $escaped_channel --updated-by $escaped_updated_by --retry-failed-attempts $escaped_retry_failed_attempts --lock-file $escaped_lock_file --summary-file $escaped_summary_file --json$fail_on_item_failure_arg$require_downstream_success_arg >> $escaped_log_file 2>&1'
 EOF
 
 cat > "$TIMER_FILE" <<EOF

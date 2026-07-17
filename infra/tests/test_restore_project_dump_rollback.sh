@@ -31,6 +31,7 @@ createdb --host "$DATABASE_HOST" --port "$DATABASE_PORT" --username "$DATABASE_U
 
 psql --host "$DATABASE_HOST" --port "$DATABASE_PORT" --username "$DATABASE_USER" --dbname "$TARGET_DATABASE" --set ON_ERROR_STOP=1 <<'SQL'
 CREATE SCHEMA instrument_registry;
+CREATE SCHEMA platform;
 CREATE SCHEMA portfolio;
 CREATE SCHEMA watchlist;
 CREATE TABLE portfolio.restore_sentinel (value text PRIMARY KEY);
@@ -39,6 +40,7 @@ SQL
 
 psql --host "$DATABASE_HOST" --port "$DATABASE_PORT" --username "$DATABASE_USER" --dbname "$SOURCE_DATABASE" --set ON_ERROR_STOP=1 <<'SQL'
 CREATE SCHEMA instrument_registry;
+CREATE SCHEMA platform;
 CREATE SCHEMA portfolio;
 CREATE SCHEMA watchlist;
 CREATE TABLE portfolio.replacement_payload (value text PRIMARY KEY);
@@ -53,6 +55,7 @@ pg_dump \
   --dbname "$SOURCE_DATABASE" \
   --format custom \
   --schema instrument_registry \
+  --schema platform \
   --schema portfolio \
   --schema watchlist \
   --file "$INCOMING_DUMP"
@@ -86,7 +89,7 @@ printf '%s\n' \
   '    if [[ "$1" == "--file" ]]; then output="$2"; shift 2; else shift; fi' \
   '  done' \
   '  [[ -n "$output" ]]' \
-  '  printf "%s\n" "CREATE SCHEMA instrument_registry;" "CREATE SCHEMA portfolio;" "CREATE SCHEMA watchlist;" "SELECT 1 / 0;" > "$output"' \
+  '  printf "%s\n" "CREATE SCHEMA instrument_registry;" "CREATE SCHEMA platform;" "CREATE SCHEMA portfolio;" "CREATE SCHEMA watchlist;" "SELECT 1 / 0;" > "$output"' \
   '  printf "helper-rollback-sql-injected\n" >> "$EVENT_LOG"' \
   '  exit 0' \
   'fi' \
@@ -143,8 +146,16 @@ if [[ -z "$rollback_line" || -z "$restart_line" || "$rollback_line" -ge "$restar
 fi
 
 SUCCESSFUL_MIGRATION_RUNNER="$TEST_ROOT/successful-migration-runner"
-printf '%s\n' '#!/usr/bin/env bash' 'exit 0' > "$SUCCESSFUL_MIGRATION_RUNNER"
+MIGRATION_ENV="$TEST_ROOT/migration-environment"
+printf '%s\n' \
+  '#!/usr/bin/env bash' \
+  'set -euo pipefail' \
+  'platform_alembic_status=missing' \
+  'if [[ -n "${PORTFOLIO_OPS_PLATFORM_ALEMBIC_DATABASE_URL:-}" && "$PORTFOLIO_OPS_PLATFORM_ALEMBIC_DATABASE_URL" == "${PORTFOLIO_OPS_PLATFORM_DATABASE_URL:-}" ]]; then platform_alembic_status=match; fi' \
+  'printf "%s|%s\n" "$platform_alembic_status" "${PORTFOLIO_OPS_PLATFORM_OPERATIONS_DATABASE_SCHEMA:-}" > "$MIGRATION_ENV"' \
+  > "$SUCCESSFUL_MIGRATION_RUNNER"
 chmod +x "$SUCCESSFUL_MIGRATION_RUNNER"
+export MIGRATION_ENV
 
 CONFIRM_RESTORE="$TARGET_DATABASE" \
 PORTFOLIO_OPS_LOCAL_DATABASE_URL="$TARGET_DATABASE_URL" \
@@ -153,6 +164,8 @@ PORTFOLIO_OPS_RESTORE_BACKUP_DIR="$TEST_ROOT/backups" \
 PORTFOLIO_OPS_RESTORE_MIGRATION_RUNNER="$SUCCESSFUL_MIGRATION_RUNNER" \
 PORTFOLIO_OPS_RESTORE_SERVICE_MANAGER=none \
   "$REPOSITORY_ROOT/infra/postgres/restore_project_dump.sh" "$INCOMING_DUMP"
+
+[[ "$(cat "$MIGRATION_ENV")" == "match|platform" ]]
 
 incoming_value="$(
   psql --host "$DATABASE_HOST" --port "$DATABASE_PORT" --username "$DATABASE_USER" --dbname "$TARGET_DATABASE" \
@@ -199,9 +212,9 @@ preserved_value="$(
 )"
 preserved_schema_count="$(
   psql --host "$DATABASE_HOST" --port "$DATABASE_PORT" --username "$DATABASE_USER" --dbname "$TARGET_DATABASE" \
-    --tuples-only --no-align --command "SELECT count(*) FROM pg_namespace WHERE nspname IN ('instrument_registry', 'portfolio', 'watchlist')"
+    --tuples-only --no-align --command "SELECT count(*) FROM pg_namespace WHERE nspname IN ('instrument_registry', 'platform', 'portfolio', 'watchlist')"
 )"
 [[ "$preserved_value" == "incoming-data" ]]
-[[ "$preserved_schema_count" == "3" ]]
+[[ "$preserved_schema_count" == "4" ]]
 
 echo "restore failure rollback and success-path integration test passed."

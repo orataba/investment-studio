@@ -75,6 +75,7 @@ fi
 
 for required_database_variable in \
   PORTFOLIO_OPS_INSTRUMENT_REGISTRY_DATABASE_URL \
+  PORTFOLIO_OPS_PLATFORM_DATABASE_URL \
   PORTFOLIO_OPS_PORTFOLIO_DATABASE_URL \
   PORTFOLIO_OPS_WATCHLIST_DATABASE_URL; do
   if [[ -z "${!required_database_variable:-}" ]]; then
@@ -88,6 +89,7 @@ run_migration() {
   local label="$1"
   local migration_root="$2"
   local pythonpath="$3"
+  local revision="${4:-head}"
 
   if [[ ! -f "$migration_root/alembic.ini" ]]; then
     echo "Missing Alembic configuration for $label: $migration_root/alembic.ini" >&2
@@ -98,14 +100,59 @@ run_migration() {
   (
     cd "$migration_root"
     PYTHONPATH="$pythonpath${PYTHONPATH:+:$PYTHONPATH}" \
-      "$PYTHON_BIN" -m alembic upgrade head
+      "$PYTHON_BIN" -m alembic upgrade "$revision"
+  )
+}
+
+current_migration_revision() {
+  local label="$1"
+  local migration_root="$2"
+  local pythonpath="$3"
+
+  if [[ ! -f "$migration_root/alembic.ini" ]]; then
+    echo "Missing Alembic configuration for $label: $migration_root/alembic.ini" >&2
+    exit 1
+  fi
+
+  (
+    cd "$migration_root"
+    PYTHONPATH="$pythonpath${PYTHONPATH:+:$PYTHONPATH}" \
+      "$PYTHON_BIN" -m alembic current
   )
 }
 
 INSTRUMENT_CORE_PYTHON="$PROJECT_ROOT/packages/instrument-core/python"
+PLATFORM_BACKEND="$PROJECT_ROOT/apps/platform/backend"
+REGISTRY_MIGRATION_ROOT="$PROJECT_ROOT/infra/instrument_registry"
+REGISTRY_NAV_LEDGER_REVISION="20260715_0012"
+REGISTRY_NAV_CONTRACT_REVISION="20260716_0013"
+REGISTRY_NAV_CASH_RETURN_REVISION="20260717_0014"
+REGISTRY_PRICE_BAR_REVISION="20260717_0015"
+registry_current_revision="$(
+  current_migration_revision \
+    "instrument registry" \
+    "$REGISTRY_MIGRATION_ROOT" \
+    "$INSTRUMENT_CORE_PYTHON"
+)"
+if [[ "$registry_current_revision" == *"$REGISTRY_NAV_LEDGER_REVISION"* ]] || \
+   [[ "$registry_current_revision" == *"$REGISTRY_NAV_CONTRACT_REVISION"* ]] || \
+   [[ "$registry_current_revision" == *"$REGISTRY_NAV_CASH_RETURN_REVISION"* ]] || \
+   [[ "$registry_current_revision" == *"$REGISTRY_PRICE_BAR_REVISION"* ]]; then
+  echo "Instrument registry NAV contract is already applied; prerequisite phase is complete."
+else
+  run_migration \
+    "instrument registry prerequisite" \
+    "$REGISTRY_MIGRATION_ROOT" \
+    "$INSTRUMENT_CORE_PYTHON" \
+    "20260715_0011"
+fi
 run_migration \
-  "instrument registry" \
-  "$PROJECT_ROOT/infra/instrument_registry" \
+  "platform" \
+  "$PLATFORM_BACKEND" \
+  "$PLATFORM_BACKEND:$INSTRUMENT_CORE_PYTHON"
+run_migration \
+  "instrument registry NAV contract" \
+  "$REGISTRY_MIGRATION_ROOT" \
   "$INSTRUMENT_CORE_PYTHON"
 run_migration \
   "portfolio" \

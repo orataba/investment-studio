@@ -5,7 +5,7 @@
 当前状态：
 
 - `apps/platform`
-  平台入口与 `Database Dashboard`，维护 `instrument_registry` schema 中的 `Instruments / FX / NAV` 主数据，支持手工录入、CSV/Excel 导入、邮件刷新与历史查看，但不是其他 app 的运行时依赖。
+  平台入口与 `Database Dashboard`，维护 `instrument_registry` 中的 `Instruments / FX / NAV` 主数据，并在私有 `platform` schema 保存邮件抓取、原始证据、解析与重试状态；不是其他 app 的运行时依赖。
 - `apps/watchlist`
   已有可运行的前后端、数据库迁移、测试与文档，继续承载 fund/index watchlist、local detail、facts、recalc 与 read model 基线；Copilot 当前只保留后端扩展接口，默认 UI 不对外开放。
 - `apps/portfolio`
@@ -65,7 +65,7 @@ portfolio-operations-workbench/
 - `apps/portfolio`
   承载 portfolio / account / transaction / performance / risk / research 语境。
 - `apps/platform`
-  平台 landing / app switcher 与 `Database Dashboard`；只维护共享资产，不承载其他 app 的业务编排。
+  平台 landing / app switcher 与 `Database Dashboard`；维护共享资产和自己的数据摄取工作流，不承载其他 app 的业务编排。
 - `packages/instrument-core`
   当前承载共享资产 contract、持久化 model 与 shared store helper：`instrument_id`、`name`、identifiers、`instrument_type`、`currency`、typed `market_data` 与最小 `quote_selection_policy`。
 - `packages/ui`
@@ -78,6 +78,7 @@ portfolio-operations-workbench/
 - 两个 app 保持解耦，不做业务模型融合。
 - `Watchlist` 与 `Portfolio` 直接访问同一个 PostgreSQL 中的 `instrument_registry` + 各自私有 schema，不通过 app-to-app HTTP 互相取数。
 - 共享资产身份与 typed market facts / selector policy，不共享上层业务 read model。
+- 私募基金 canonical NAV 只有单位净值 `official_nav` 与分红再投资复权累计净值 `total_return_nav`；现金分红简单累加值只保留为私有原始证据，不能进入回报曲线。
 - `Watchlist` 继续 fund/index watchlist 语境，不承载 portfolio 业务事实。
 - `Portfolio` 继续 portfolio/account/transaction/performance/risk/research 语境。
 - 前端视觉基线统一为白底、冷中性灰线条和表格优先的信息密度；不要再引入米黄、沙色或暖灰页面背景。
@@ -101,6 +102,8 @@ portfolio-operations-workbench/
 
 - `instrument_registry`
   共享资产、行情、净值、FX 等主事实。
+- `platform`
+  邮件游标、原始证据、附件解析、重试与候选路由等 Platform 私有运行状态。
 - `watchlist`
   watchlist 自己的 read model、facts、recalc job 等私有数据。
 - `portfolio`
@@ -118,7 +121,8 @@ ENV_ROOT="$HOME/.config/orataba/secrets/portfolio-operations-workbench" \
 - 统一迁移入口只读取显式进程环境或上述仓库外目录中的
   `platform.env / portfolio.env / watchlist.env`；Platform、Instrument Registry、Portfolio、Watchlist 的 database URL 必须显式存在并指向同一个 canonical PostgreSQL。
 - `instrument_registry` schema 由 `infra/instrument_registry` 统一管理。
-- `platform` backend 直接使用这套共享表，但不再拥有 instrument registry schema 的迁移入口。
+- `platform` backend 直接使用共享表，但不拥有 Registry 的迁移入口；`apps/platform/backend/alembic` 只管理私有 `platform` schema。
+- 统一迁移入口会在 destructive NAV cleanup 前先建立 Platform 原始证据表，不要把它替换为各 migration chain 无序的独立 `upgrade head`。
 
 如果本地库已经跑脏或迁移链断过，直接执行：
 
@@ -127,8 +131,8 @@ PORTFOLIO_OPS_LOCAL_DATABASE_URL='postgresql://portfolio_ops@127.0.0.1:5432/port
   ./infra/postgres/rebuild_local_schemas.sh --confirm-destroy-project-schemas
 ```
 
-这个脚本会销毁并重建 `instrument_registry / portfolio / watchlist` 三个 schema；必须
-显式给出目标 URL 与破坏性确认 flag。它会把同一 URL 交给 `psql` 和三条 migration
+这个脚本会销毁并重建 `instrument_registry / platform / portfolio / watchlist` 四个 schema；必须
+显式给出目标 URL 与破坏性确认 flag。它会把同一 URL 交给 `psql` 和四条 migration
 chain，并在破坏性阶段失败时保持托管服务停止。
 
 重建完成后：
@@ -185,7 +189,7 @@ PORTFOLIO_OPS_LOCAL_DATABASE_URL='postgresql+psycopg://portfolio_ops@127.0.0.1:5
 ## 仓库卫生
 
 - `nav/` 是冻结迁移要保留的 NAV 附件图片数据，已纳入 Git；后续新增大批量原始材料前先确认是否应进入仓库。
-- `data/migration/` 只记录恢复制品政策；真实 dump 与校验文件必须保存在 Git 外的加密、受控存储中，且 dump 只允许覆盖 `instrument_registry`、`portfolio`、`watchlist`。
+- `data/migration/` 只记录恢复制品政策；真实 dump 与校验文件必须保存在 Git 外的加密、受控存储中，且 dump 只允许覆盖 `instrument_registry`、`platform`、`portfolio`、`watchlist`。
 - 三个 backend 目录只保留 `.env.example` 作为键名模板，不创建 `.env` 文件或软链接；真实 secrets 位于仓库外的 `~/.config/orataba/secrets/portfolio-operations-workbench/`，运行时必须显式提供指向同一 PostgreSQL 的 canonical database URL。
 - `node_modules/`、`dist/`、`*.db`、`*.sqlite*`、`__pycache__/`、`.pytest_cache/` 都是本地产物，不应进入提交。
 - `.local-pg/`、`ref/`、虚拟环境和用户级 `systemd --user` unit 都是本机状态，不作为跨机器 Git 迁移载体；`.env.example` 模板仍保留在 Git 里用于说明配置项。

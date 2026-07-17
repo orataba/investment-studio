@@ -46,6 +46,33 @@ if [[ $missing_env_root_status -ne 64 ]]; then
   exit 1
 fi
 
+printf '%s\n' \
+  'PORTFOLIO_OPS_PLATFORM_DATABASE_URL=postgresql+psycopg://portfolio_ops@127.0.0.1:5432/portfolio_ops' \
+  'PORTFOLIO_OPS_PLATFORM_OPERATIONS_DATABASE_SCHEMA=instrument_registry' \
+  > "$ENV_ROOT/platform.env"
+set +e
+HOME="$TEST_ROOT/home" \
+XDG_CONFIG_HOME="$TEST_ROOT/config-invalid-schema" \
+PATH="$MOCK_BIN:$PATH" \
+PROJECT_ROOT="$PROJECT_ROOT" \
+BACKEND_ROOT="$BACKEND_ROOT" \
+PYTHON_BIN="$(command -v python3)" \
+ENV_ROOT="$ENV_ROOT" \
+  "$REPOSITORY_ROOT/infra/systemd/install_market_data_refresh_timer.sh" \
+  > "$TEST_ROOT/invalid-schema.out" 2>&1
+invalid_schema_status=$?
+set -e
+if [[ $invalid_schema_status -eq 0 ]]; then
+  echo "The systemd timer installer accepted an invalid Platform operations schema." >&2
+  exit 1
+fi
+grep -q 'PORTFOLIO_OPS_PLATFORM_OPERATIONS_DATABASE_SCHEMA must be platform' \
+  "$TEST_ROOT/invalid-schema.out"
+printf '%s\n' \
+  'PORTFOLIO_OPS_PLATFORM_DATABASE_URL=postgresql+psycopg://portfolio_ops@127.0.0.1:5432/portfolio_ops' \
+  > "$ENV_ROOT/platform.env"
+chmod 600 "$ENV_ROOT/platform.env"
+
 HOME="$TEST_ROOT/home" \
 XDG_CONFIG_HOME="$TEST_ROOT/config" \
 PATH="$MOCK_BIN:$PATH" \
@@ -69,6 +96,9 @@ grep -Fq -- '--require-downstream-success' "$SERVICE_FILE"
 grep -Fq -- '--json' "$SERVICE_FILE"
 grep -Fq 'EnvironmentFile=' "$SERVICE_FILE"
 grep -Fq 'platform.env' "$SERVICE_FILE"
+grep -Fxq 'Environment=PORTFOLIO_OPS_PLATFORM_DATABASE_SCHEMA=instrument_registry' "$SERVICE_FILE"
+grep -Fxq 'Environment=PORTFOLIO_OPS_PLATFORM_OPERATIONS_DATABASE_SCHEMA=platform' "$SERVICE_FILE"
+grep -Fq 'PORTFOLIO_OPS_PLATFORM_DATABASE_SCHEMA=instrument_registry PORTFOLIO_OPS_PLATFORM_OPERATIONS_DATABASE_SCHEMA=platform PYTHONPATH=' "$SERVICE_FILE"
 if grep -Fq '/apps/platform/backend/.env' "$SERVICE_FILE"; then
   echo "The timer unit retained a repository-local environment fallback." >&2
   exit 1

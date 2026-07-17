@@ -314,7 +314,7 @@ if ! is_local_database_host; then
   expected_confirmation="$DATABASE_NAME@$DATABASE_HOST:$DATABASE_PORT"
 fi
 if [[ "${CONFIRM_RESTORE:-}" != "$expected_confirmation" ]]; then
-  echo "Restore replaces the instrument_registry, portfolio, and watchlist schemas." >&2
+  echo "Restore replaces the instrument_registry, platform, portfolio, and watchlist schemas." >&2
   echo "Verified target: $DATABASE_USER@$DATABASE_HOST:$DATABASE_PORT/$DATABASE_NAME" >&2
   echo "Re-run with CONFIRM_RESTORE=$expected_confirmation after confirming the target." >&2
   exit 64
@@ -407,8 +407,10 @@ chmod 600 "$INCOMING_ARCHIVE_SQL"
 printf '%s\n' '
   DROP SCHEMA IF EXISTS watchlist CASCADE;
   DROP SCHEMA IF EXISTS portfolio CASCADE;
+  DROP SCHEMA IF EXISTS platform CASCADE;
   DROP SCHEMA IF EXISTS instrument_registry CASCADE;
   CREATE SCHEMA instrument_registry;
+  CREATE SCHEMA platform;
   CREATE SCHEMA portfolio;
   CREATE SCHEMA watchlist;
 ' > "$INCOMING_RESTORE_SQL"
@@ -427,7 +429,9 @@ export PORTFOLIO_OPS_INSTRUMENT_REGISTRY_DATABASE_URL="$DATABASE_URL"
 export PORTFOLIO_OPS_INSTRUMENT_REGISTRY_ALEMBIC_DATABASE_URL="$DATABASE_URL"
 export PORTFOLIO_OPS_INSTRUMENT_REGISTRY_SCHEMA=instrument_registry
 export PORTFOLIO_OPS_PLATFORM_DATABASE_URL="$DATABASE_URL"
+export PORTFOLIO_OPS_PLATFORM_ALEMBIC_DATABASE_URL="$DATABASE_URL"
 export PORTFOLIO_OPS_PLATFORM_DATABASE_SCHEMA=instrument_registry
+export PORTFOLIO_OPS_PLATFORM_OPERATIONS_DATABASE_SCHEMA=platform
 export PORTFOLIO_OPS_PORTFOLIO_DATABASE_URL="$DATABASE_URL"
 export PORTFOLIO_OPS_PORTFOLIO_ALEMBIC_DATABASE_URL="$DATABASE_URL"
 export PORTFOLIO_OPS_PORTFOLIO_DATABASE_SCHEMA=portfolio
@@ -448,11 +452,11 @@ schema_count="$(
     --command "
       SELECT count(*)
       FROM pg_namespace
-      WHERE nspname IN ('instrument_registry', 'portfolio', 'watchlist');
+      WHERE nspname IN ('instrument_registry', 'platform', 'portfolio', 'watchlist');
     "
 )"
-if [[ "$schema_count" != "3" ]]; then
-  echo "Post-restore validation failed: expected 3 project schemas, found $schema_count." >&2
+if [[ "$schema_count" != "4" ]]; then
+  echo "Post-restore validation failed: expected 4 project schemas, found $schema_count." >&2
   exit 1
 fi
 

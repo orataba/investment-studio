@@ -39,6 +39,7 @@ printf '%s\n' \
   '    "argv": sys.argv[1:],' \
   '    "database_url": os.environ.get("PORTFOLIO_OPS_PLATFORM_DATABASE_URL"),' \
   '    "database_schema": os.environ.get("PORTFOLIO_OPS_PLATFORM_DATABASE_SCHEMA"),' \
+  '    "operations_database_schema": os.environ.get("PORTFOLIO_OPS_PLATFORM_OPERATIONS_DATABASE_SCHEMA"),' \
   '    "environment": os.environ.get("PORTFOLIO_OPS_PLATFORM_ENVIRONMENT"),' \
   '    "watchlist_api_url": os.environ.get("PORTFOLIO_OPS_PLATFORM_WATCHLIST_API_URL"),' \
   '    "portfolio_api_url": os.environ.get("PORTFOLIO_OPS_PLATFORM_PORTFOLIO_API_URL"),' \
@@ -99,6 +100,7 @@ assert "--fail-on-item-failure" in arguments
 assert "--json" in arguments
 assert payload["database_url"] == "postgresql+psycopg://explicit/local"
 assert payload["database_schema"] == "instrument_registry"
+assert payload["operations_database_schema"] == "platform"
 assert payload["environment"] == "local"
 assert payload["watchlist_api_url"] == "http://127.0.0.1:8000"
 assert payload["portfolio_api_url"] == "http://127.0.0.1:8001"
@@ -144,6 +146,7 @@ if [[ $repository_env_status -eq 0 ]]; then
   echo "The scheduled runner accepted a repository-local .env symlink." >&2
   exit 1
 fi
-grep -q 'Repository runtime environment files are not allowed for launchd' "$TEST_ROOT/repository-env.out"
+grep -q 'Repository runtime environment files are not allowed for managed services' \
+  "$TEST_ROOT/repository-env.out"
 
 echo "launchd scheduled refresh runner test passed."

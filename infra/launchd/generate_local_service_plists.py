@@ -105,7 +105,7 @@ def main() -> int:
             str(env_root),
         ],
         "WorkingDirectory": str(project_root / "apps" / "platform" / "backend"),
-        "RunAtLoad": False,
+        "RunAtLoad": True,
         "KeepAlive": False,
         "StartCalendarInterval": {
             "Hour": args.refresh_hour,

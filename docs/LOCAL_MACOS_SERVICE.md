@@ -1,6 +1,6 @@
 # macOS 本地后台服务
 
-项目提供六个用户级 `launchd` 常驻服务，在登录后自动启动三个 API 与三个前端；另有一个独立的一次性 LaunchAgent，每天本地时间 `21:00` 刷新行情并触发 Watchlist 与 Portfolio 下游重算。所有端口只绑定到 `127.0.0.1`，不会暴露给局域网。
+项目提供六个用户级 `launchd` 常驻服务，在登录后自动启动三个 API 与三个前端；另有一个独立的一次性 LaunchAgent，在加载时及每天本地时间 `21:00` 刷新行情并触发 Watchlist 与 Portfolio 下游重算。所有端口只绑定到 `127.0.0.1`，不会暴露给局域网。
 
 ## 依赖
 
@@ -34,13 +34,13 @@ PORTFOLIO_OPS_LOCAL_DATABASE_URL='postgresql+psycopg://portfolio_ops@127.0.0.1:5
 先通过交互方式把认证信息配置到当前用户权限为 `0600` 的 `.pgpass`，避免 shell
 history 和进程参数暴露凭据。
 
-安装器会停止并等待旧服务退出，创建并校验三个项目 schema 的迁移前 custom-format
-备份，执行全部 Alembic 迁移，重建三个前端，然后以原子文件替换更新各 plist 并启动 `launchd`
+安装器会停止并等待旧服务退出，创建并校验 `instrument_registry / platform / portfolio / watchlist`
+四个项目 schema 的迁移前 custom-format 备份，执行全部 Alembic 迁移，重建三个前端，然后以原子文件替换更新各 plist 并启动 `launchd`
 服务。任一迁移、构建、plist 安装或健康检查失败时，会先卸载新服务、恢复数据库备份
 和旧 plist，再恢复此前加载的服务；数据库或 plist 回滚失败时所有托管服务保持停止。
 校验后的迁移前备份默认保留在
-`~/Library/Application Support/portfolio-operations-workbench/backups/`。定时任务会被
-加载但不会在安装时立即执行。
+`~/Library/Application Support/portfolio-operations-workbench/backups/`。定时任务在
+加载后会先执行一次，并继续保留每日计划；非阻塞文件锁拒绝与其他刷新重叠。
 
 默认调度时间可以在安装时覆盖，例如：
 
@@ -53,16 +53,21 @@ PORTFOLIO_OPS_LOCAL_DATABASE_URL='postgresql+psycopg://portfolio_ops@127.0.0.1:5
 
 `StartCalendarInterval` 使用 macOS 当前系统时区。电脑在 `21:00` 处于睡眠状态时，
 `launchd` 会在下次唤醒后补跑一次，并把睡眠期间错过的多个触发合并成一次。
-用户已注销或电脑关机时，用户级 LaunchAgent 没有加载；重新登录不会追补这类
-触发，之后会在下一个 `21:00` 正常执行。锁屏但未注销不影响调度。
+用户已注销或电脑关机时，用户级 LaunchAgent 没有加载；重新登录会由
+`RunAtLoad` 执行一次完整刷新，并继续等待下一个 `21:00`。锁屏但未注销不影响调度。
 
-定时任务按 Tushare、邮件两个已配置通道增量刷新，失败条目会先重试两次。成功
+定时任务依次按 Tushare、邮件通道增量刷新，再协调方法版本落后的私募基金投影；失败条目会先重试两次。成功
 写入后，Portfolio 快照刷新会在请求内同步完成，FX 变化会刷新所有组合；Watchlist
 请求负责可靠地持久化或复用重算 job，后台 worker 随后异步完成实际物化。
 任务通过 `fcntl` 非阻塞锁避免同一个 scheduled 脚本从 launchd 或终端重叠运行，
 进程退出或崩溃时内核会自动释放锁。单项刷新失败、下游请求失败或任务异常都会
 留下非零退出状态和原子写入的运行摘要，`KeepAlive=false` 因而不会形成无限重启
 循环，下一个日历触发仍会正常运行。
+
+Platform API 与定时 runner 都固定使用 `platform, instrument_registry, public`
+search-path 顺序。邮箱目录游标、附件解析和重试状态写入私有 `platform` schema，
+canonical 单位净值/复权累计净值才写入 `instrument_registry`；安装或恢复的备份会同时
+覆盖两者，避免只恢复行情结果却丢失 ingestion checkpoint 后重复全量扫描。
 
 Platform API 和定时任务都会读取当前
 `~/.config/orataba/secrets/portfolio-operations-workbench/platform.env`，不再读取仓库
@@ -112,7 +117,7 @@ launchctl kickstart "gui/$UID/com.orataba.portfolio-ops.market-data-refresh"
 
 执行 `infra/postgres/restore_project_dump.sh` 时，恢复脚本会临时卸载当前已
 加载的六个常驻 job 和定时刷新 job，完成安全备份和数据库恢复/迁移后再加载。
-恢复定时 job 时只重新注册日历计划，不会立即触发刷新。恢复失败会先自动回滚
+恢复定时 job 时会由 `RunAtLoad` 启动一次刷新并重新注册日历计划。恢复失败会先自动回滚
 数据库，再恢复这些服务；回滚本身失败时服务保持停止，避免在半恢复数据库上
 继续写入。incoming dump 必须具有通过校验的 SHA-256 文件，不能跳过；停服后若
 仍有客户端连接无法终止，恢复会在备份或 schema 删除前硬失败。恢复脚本与安装器

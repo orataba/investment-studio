@@ -65,7 +65,7 @@ done
 
 ## 4. 恢复数据库快照
 
-从批准的私有制品存储取得同目录下的 custom-format dump 与 SHA-256 文件。制品只允许包含 `instrument_registry`、`portfolio`、`watchlist` 三个 schema，不得包含 `public`、其他项目 schema 或 PostgreSQL raw data directory。Git 仓库不分发业务数据库快照。
+从批准的私有制品存储取得同目录下的 custom-format dump 与 SHA-256 文件。制品必须包含 `instrument_registry`、`platform`、`portfolio`、`watchlist` 四个 schema，不得把 `public`、其他项目 schema 或 PostgreSQL raw data directory 作为恢复制品。Git 仓库不分发业务数据库快照；缺少 `platform` 的旧三-schema dump 不再是有效恢复制品。
 
 先校验 dump：
 
@@ -92,7 +92,7 @@ CONFIRM_RESTORE=portfolio_ops \
 
 恢复脚本只接受 `PORTFOLIO_OPS_LOCAL_DATABASE_URL` 指定的单一显式目标，不读取另一组
 默认 host/port/user/password。它会再次校验 checksum 和目标数据库，停止已安装的 launchd/systemd
-应用服务，断开残留连接，并在破坏性操作前把当前三个 schema 备份到
+应用服务，断开残留连接，并在破坏性操作前把当前四个 schema 备份到
 `${XDG_STATE_HOME:-~/.local/state}/portfolio-operations-workbench/postgres-backups/`。
 恢复或 Alembic 升级任一步失败时，脚本会自动清理半恢复状态、还原该备份，
 然后再启动原先运行的服务。若自动回滚本身失败，服务会保持停止，且日志会
@@ -108,6 +108,8 @@ incoming dump 的 SHA-256 文件是强制输入，没有跳过校验的开关。
 ```bash
 psql -h 127.0.0.1 -U portfolio_ops -d portfolio_ops -c "
 select 'instrument_registry.instrument' as table_name, count(*) from instrument_registry.instrument
+union all
+select 'platform.email_folder_cursor', count(*) from platform.email_folder_cursor
 union all
 select 'portfolio.portfolio_record', count(*) from portfolio.portfolio_record
 union all
@@ -242,7 +244,7 @@ infra/launchd/status_local_services.sh
 ```
 
 安装器只使用这里显式指定、且已经在前述步骤创建并恢复完成的数据库。迁移前会先
-停止旧服务并保留一份经过 archive/checksum 校验的三个项目 schema 备份；后续迁移、
+停止旧服务并保留一份经过 archive/checksum 校验的四个项目 schema 备份；后续迁移、
 构建、plist 安装或健康检查失败时会先回滚数据库与旧 plist，再恢复原服务集合。
 自动回滚失败时服务保持停止。
 

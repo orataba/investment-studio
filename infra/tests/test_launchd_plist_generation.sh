@@ -68,7 +68,7 @@ refresh_path = plist_root / "test.portfolio-ops.market-data-refresh.plist"
 with refresh_path.open("rb") as source:
     refresh = plistlib.load(source)
 assert refresh["KeepAlive"] is False
-assert refresh["RunAtLoad"] is False
+assert refresh["RunAtLoad"] is True
 assert refresh["StartCalendarInterval"] == {"Hour": 21, "Minute": 0}
 assert refresh["ProcessType"] == "Background"
 assert refresh["LowPriorityIO"] is True

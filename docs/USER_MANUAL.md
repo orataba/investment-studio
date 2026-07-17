@@ -33,7 +33,7 @@ Portfolio Operations Workbench 分为三块：
 核心数据分四类：
 
 - 资产主档：名称、资产类型、币种、ticker、ISIN、内部 ID、生命周期状态。
-- 市场行情：基金 NAV、含分红 NAV、指数 close、股票/债券价格、FX spot。
+- 市场行情：基金单位净值、分红再投资复权累计净值、指数 close、股票/债券价格、FX spot。
 - 组合事实：账户、交易、现金流、持仓、成本、费用、税费、内部转账。
 - 分类体系：Watchlist fund/index taxonomy、研究标签、Portfolio planning taxonomy、sleeve tree、TargetSet。
 
@@ -78,10 +78,11 @@ Portfolio Operations Workbench 分为三块：
 
 ### 4.3 维护市场数据
 
-基金优先维护 NAV 或 NAV with dividend：
+基金只维护两种 canonical NAV：
 
-- 普通净值使用 NAV。
-- 需要体现分红再投资或总回报时使用 NAV with dividend / total return NAV。
+- 单位净值使用 NAV / `official_nav`。
+- 需要体现总回报时，只使用分红再投资复权累计净值 / `total_return_nav`。
+- 单位净值加历史现金分红的普通累计值不是复权累计净值，不得录入 total return；无法确认供应商口径或缺少完整分红再投资信息时保持空值/NA。
 - 同一日期同一口径不要重复录入多个冲突值。
 
 指数维护 close 序列：
@@ -101,6 +102,8 @@ FX 维护 spot：
 资产有 active / archived 生命周期。已停用或重复资产应 archive，不应删除业务历史。Archive 后下游新搜索一般不再优先展示，但历史记录仍可追溯。
 
 手动刷新会请求系统重新读取或计算相关市场数据。刷新后 Watchlist recalc 和 Portfolio snapshot 可能需要一点时间完成。若页面仍为空，检查 source settings、行情覆盖日期、资产类型和下游刷新状态。
+
+托管环境在任务加载/用户登录时先运行一次，并默认每天 `21:00 Asia/Shanghai` 自动运行统一刷新。邮件通道会扫描配置中的所有目录，`INBOX` 和产品专用目录都必须显式列入；平时按目录 UID 增量读取，不会每次全量下载邮箱。源数据刷新后还会单独协调方法版本落后的基金净值投影，这一步只读已落库证据，不重复扫描邮箱。某个目录、附件、基金或投影失败时会留下可重试状态和运行摘要，不应把“任务进程退出”误当成全部基金已经成功更新。
 
 ## 5. Watchlist 使用
 
@@ -131,7 +134,7 @@ Watchlist 管理“哪些资产进入观察范围”和“如何展示这些资�
 
 ### 5.4 视图和字段
 
-Watchlist 的字段来自 field registry 和 instrument attributes。字段可能只适用于特定 instrument type。例如基金字段不一定适用于指数；指数 performance/risk 字段依赖 close 序列；基金收益风险字段依赖 NAV 或 NAV with dividend。
+Watchlist 的字段来自 field registry 和 instrument attributes。字段可能只适用于特定 instrument type。例如基金字段不一定适用于指数；指数 performance/risk 字段依赖 close 序列；基金收益风险字段只依赖可信的分红再投资复权累计净值，缺失时为 NA，不回退单位净值。
 
 列配置用于当前分析任务，不改变底层数据。若某个字段长期需要在团队视图中出现，应创建或调整 view，而不是让每个人临时改列。
 
@@ -148,7 +151,7 @@ Watchlist 的字段来自 field registry 和 instrument attributes。字段可�
 常用区域：
 
 - Overview：查看基金名称、identifier、核心状态、taxonomy、关键指标和数据 freshness。
-- Quote：查看 NAV 序列、NAV with dividend、分红、默认 benchmark 和图表。
+- Quote：查看单位净值、分红再投资复权累计净值、分红、默认 benchmark 和图表。
 - Performance：查看增长曲线、年度收益、trailing returns、peer comparison 和区间表现。
 - Risk：查看波动率、回撤、风险结构、rolling volatility / Sharpe 和 benchmark 对比。
 - Research：维护人工评级、研究结论、research overview 和时间线 notes。

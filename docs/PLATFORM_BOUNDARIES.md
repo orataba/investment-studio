@@ -14,12 +14,13 @@
 数据库拓扑是：
 
 - `instrument_registry` schema
+- `platform` schema
 - `watchlist` schema
 - `portfolio` schema
 
 不是：
 
-- `platform` 作为共享数据 API
+- `platform` schema 作为共享事实源或跨 app 数据 API
 - `watchlist` / `portfolio` 通过 app-to-app HTTP 互相取数
 - 一个 app 的 detail page 直接充当另一个 app 的上下文页
 
@@ -27,7 +28,8 @@
 
 ### Platform
 
-- 只直接读写 `instrument_registry`
+- 直接读写 `instrument_registry` 中的共享资产事实
+- 直接读写 `platform` 中的邮件抓取、原始证据、解析、重试和候选路由状态
 - 提供平台首页、app registry 和 Database Dashboard API
 - 可以下线；`watchlist` 和 `portfolio` 的核心读写路径不应受影响
 
@@ -57,7 +59,7 @@ Watchlist 与 Portfolio 会使用相同的投资术语，但这些页面不是�
 
 当前共享层分成三部分：
 
-### `packages-ops/instrument-core`
+### `packages/instrument-core`
 
 承载跨 app 稳定 contract 和共享持久化 helper：
 
@@ -91,6 +93,20 @@ Watchlist 与 Portfolio 会使用相同的投资术语，但这些页面不是�
 
 `instrument_registry` 的 Alembic 入口独立放在 [infra/instrument_registry](../infra/instrument_registry/README.md)，不再挂在 `platform` app 下。
 
+## Platform Private Layer
+
+### `platform` schema
+
+承载 Platform 自己可重放、可审计的运行状态，不向 Watchlist 或 Portfolio 提供 canonical 市场事实：
+
+- 每个邮箱目录及其 `UIDVALIDITY / UID` 高水位
+- 邮件出现记录、附件内容哈希和消息到附件的关联
+- 带 parser 版本、lease、重试与 dead-letter 状态的解析任务
+- 尚未进入 Registry 的 NAV 候选和原始 NAV 证据
+- 供应商原样提供的现金累计净值、复权口径声明与拒绝原因
+
+该 schema 由 [apps/platform/backend/alembic](../apps/platform/backend/alembic) 独立迁移。口令、token 和附件二进制仍不进入数据库；附件表只保存内容哈希、元数据和受控存储引用。
+
 ## Storage Boundary
 
 共享资产身份由数据库直接约束，而不是靠 app 约定：
@@ -113,6 +129,10 @@ Watchlist 与 Portfolio 会使用相同的投资术语，但这些页面不是�
    支持手工录入、CSV/Excel 文件导入、邮件刷新，并能直接查看选中资产的共享市场数据与净值历史
 2. 数据写入 `instrument_registry`
 3. `Watchlist` 和 `Portfolio` 直接从 `instrument_registry` 读取
+
+邮件通道先进入 `platform` 私有 ingestion state：逐目录按 `UIDVALIDITY + UID` 增量发现，仅对可能命中的邮件抓取正文与附件，并按附件 SHA-256 和 parser 版本去重。目录归档规则只是缩小候选范围；`INBOX` 仍是显式扫描目录，日频/周频只用于 freshness 判断，不能替代目录覆盖。解析结果必须先保留原始证据和匹配依据，再由严格 NAV 口径校验写入 Registry。
+
+基金在 Registry 中只允许两种 NAV identity：`official_nav` 是单位净值，`total_return_nav` 是分红再投资后的复权累计净值。单位净值加历史现金分红的普通累计值不是回报指数，只能作为 Platform 私有原始证据，不能写成 `total_return_nav`。只有供应商明确提供可信复权序列，或系统拥有完整分红与再投资信息并完成可审计计算时，才写入复权累计净值；否则该字段保持 unavailable/NA，不使用单位净值、现金累计值或交易价格兜底。
 
 Registry 行情合同在数据库与 shared store 两层一致执行：point currency 必须等于 instrument
 master currency，value 必须有限且大于零，status 必须 canonical；FX 还必须匹配维护中的
@@ -153,11 +173,12 @@ unavailable，不读取 Watchlist 旧 `nav_fact` 作为行情 fallback。
 - ledger postings / lots
 - target sets / research runs
 
-共享的是资产身份、市场事实，以及解释这些事实何时应到达、来自何处所必需的非秘密 source descriptor / schedule；不是 app 业务语义。`SourceSettings` 中的 source mode、位置/profile、email rule 描述、expected frequency、market calendar 和 release lag 属于 Registry 合同，因为所有消费者都需要同一 freshness/provenance 口径。真实邮箱口令、API token、抓取进程、解析器、重试状态和操作 UI 仍属于 Platform 私域，不得写入共享 Registry 记录。
+共享的是资产身份、经过校验的市场事实，以及解释这些事实何时应到达、来自何处所必需的非秘密 source descriptor / schedule；不是 app 业务语义。`SourceSettings` 中的 source mode、位置/profile、email rule 描述、expected frequency、market calendar 和 release lag 属于 Registry 合同，因为所有消费者都需要同一 freshness/provenance 口径。真实邮箱口令、API token、抓取进程、原始附件、原始 NAV 证据、解析器、重试状态和操作 UI 仍属于 Platform 私域，不得写入共享 Registry 记录。
 
 ## Operational Rule
 
 如果未来再新增功能，默认遵守这条判断：
 
 - 如果是共享资产身份、共享市场事实，或这些事实的非秘密 provenance / 到达日程合同，优先放 `instrument-core + instrument_registry`
+- 如果是 Platform 抓取、证据、解析、重试或候选工作流，放入 `platform` schema
 - 如果是某个 app 的工作流、派生读模型、研究判断、展示状态，必须留在 app 私域

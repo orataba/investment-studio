@@ -46,7 +46,7 @@ printf '%s\n' \
   '  PORTFOLIO_OPS_PROJECT_SCHEMA_BACKUP_PATH="$backup_root/$label-test.pgdump"' \
   '  PORTFOLIO_OPS_PROJECT_SCHEMA_MANIFEST_PATH="$backup_root/$label-test.schemas"' \
   '  : > "$PORTFOLIO_OPS_PROJECT_SCHEMA_BACKUP_PATH"' \
-  '  printf "%s\n" instrument_registry portfolio watchlist > "$PORTFOLIO_OPS_PROJECT_SCHEMA_MANIFEST_PATH"' \
+  '  printf "%s\n" instrument_registry platform portfolio watchlist > "$PORTFOLIO_OPS_PROJECT_SCHEMA_MANIFEST_PATH"' \
   '  printf "backup\n" >> "$EVENT_LOG"' \
   '}' \
   'portfolio_ops_restore_project_schema_backup() {' \

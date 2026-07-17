@@ -4,7 +4,7 @@ umask 077
 
 if [[ $# -ne 1 || "$1" != "--confirm-destroy-project-schemas" ]]; then
   echo "Usage: PORTFOLIO_OPS_LOCAL_DATABASE_URL=postgresql://user@host/database $0 --confirm-destroy-project-schemas" >&2
-  echo "This command permanently deletes the instrument_registry, portfolio, and watchlist schemas." >&2
+  echo "This command permanently deletes the instrument_registry, platform, portfolio, and watchlist schemas." >&2
   exit 64
 fi
 
@@ -135,8 +135,10 @@ portfolio_ops_run_libpq_command "$LIBPQ_PASSFILE" \
   --command '
     DROP SCHEMA IF EXISTS watchlist CASCADE;
     DROP SCHEMA IF EXISTS portfolio CASCADE;
+    DROP SCHEMA IF EXISTS platform CASCADE;
     DROP SCHEMA IF EXISTS instrument_registry CASCADE;
     CREATE SCHEMA instrument_registry;
+    CREATE SCHEMA platform;
     CREATE SCHEMA portfolio;
     CREATE SCHEMA watchlist;
   '
@@ -147,7 +149,9 @@ export PORTFOLIO_OPS_INSTRUMENT_REGISTRY_DATABASE_URL="$DATABASE_URL"
 export PORTFOLIO_OPS_INSTRUMENT_REGISTRY_ALEMBIC_DATABASE_URL="$DATABASE_URL"
 export PORTFOLIO_OPS_INSTRUMENT_REGISTRY_SCHEMA=instrument_registry
 export PORTFOLIO_OPS_PLATFORM_DATABASE_URL="$DATABASE_URL"
+export PORTFOLIO_OPS_PLATFORM_ALEMBIC_DATABASE_URL="$DATABASE_URL"
 export PORTFOLIO_OPS_PLATFORM_DATABASE_SCHEMA=instrument_registry
+export PORTFOLIO_OPS_PLATFORM_OPERATIONS_DATABASE_SCHEMA=platform
 export PORTFOLIO_OPS_PORTFOLIO_DATABASE_URL="$DATABASE_URL"
 export PORTFOLIO_OPS_PORTFOLIO_ALEMBIC_DATABASE_URL="$DATABASE_URL"
 export PORTFOLIO_OPS_PORTFOLIO_DATABASE_SCHEMA=portfolio

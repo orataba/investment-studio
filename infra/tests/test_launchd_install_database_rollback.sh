@@ -48,6 +48,9 @@ prepare_case() {
     '#!/usr/bin/env bash' \
     'set -euo pipefail' \
     'printf "migrate\n" >> "$EVENT_LOG"' \
+    'platform_alembic_status=missing' \
+    'if [[ -n "${PORTFOLIO_OPS_PLATFORM_ALEMBIC_DATABASE_URL:-}" && "$PORTFOLIO_OPS_PLATFORM_ALEMBIC_DATABASE_URL" == "${PORTFOLIO_OPS_PLATFORM_DATABASE_URL:-}" ]]; then platform_alembic_status=match; fi' \
+    'printf "platform-migration-env:%s|%s\n" "$platform_alembic_status" "${PORTFOLIO_OPS_PLATFORM_OPERATIONS_DATABASE_SCHEMA:-}" >> "$EVENT_LOG"' \
     'if [[ "${MIGRATION_FAIL:-false}" == "true" ]]; then exit 9; fi' \
     > "$project_root/infra/scripts/migrate_all.sh"
 
@@ -69,7 +72,7 @@ prepare_case() {
     'case "$*" in' \
     '  *pg_roles*) printf "%s\n" 1 ;;' \
     '  *pg_database*) printf "%s\n" 1 ;;' \
-    '  *pg_namespace*) printf "%s\n" instrument_registry portfolio watchlist ;;' \
+    '  *pg_namespace*) printf "%s\n" instrument_registry platform portfolio watchlist ;;' \
     '  *"DROP SCHEMA"*) printf "drop-schemas\n" >> "$EVENT_LOG" ;;' \
     'esac' \
     'exit 0' \
@@ -79,6 +82,7 @@ prepare_case() {
     '#!/usr/bin/env bash' \
     'set -euo pipefail' \
     'if [[ "$*" == *sensitive-password* ]]; then printf "credential-in-argv\n" >> "$EVENT_LOG"; fi' \
+    'printf "pg_dump:%s\n" "$*" >> "$EVENT_LOG"' \
     'output=""' \
     'while [[ $# -gt 0 ]]; do' \
     '  if [[ "$1" == "--file" ]]; then output="$2"; shift 2; else shift; fi' \
@@ -93,7 +97,7 @@ prepare_case() {
     'set -euo pipefail' \
     'if [[ "$*" == *sensitive-password* ]]; then printf "credential-in-argv\n" >> "$EVENT_LOG"; fi' \
     'if [[ "$1" == "--list" ]]; then' \
-    '  printf "%s\n" "1; 0 0 SCHEMA - instrument_registry owner" "2; 0 0 SCHEMA - portfolio owner" "3; 0 0 SCHEMA - watchlist owner"' \
+    '  printf "%s\n" "1; 0 0 SCHEMA - instrument_registry owner" "2; 0 0 SCHEMA - platform owner" "3; 0 0 SCHEMA - portfolio owner" "4; 0 0 SCHEMA - watchlist owner"' \
     '  exit 0' \
     'fi' \
     'output=""' \
@@ -104,7 +108,7 @@ prepare_case() {
     '  printf "restore-failed\n" >> "$EVENT_LOG"' \
     '  exit 12' \
     'fi' \
-    'if [[ -n "$output" ]]; then printf "%s\n" "CREATE SCHEMA instrument_registry;" "CREATE SCHEMA portfolio;" "CREATE SCHEMA watchlist;" > "$output"; fi' \
+    'if [[ -n "$output" ]]; then printf "%s\n" "CREATE SCHEMA instrument_registry;" "CREATE SCHEMA platform;" "CREATE SCHEMA portfolio;" "CREATE SCHEMA watchlist;" > "$output"; fi' \
     'printf "restore\n" >> "$EVENT_LOG"' \
     > "$mock_bin/pg_restore"
 
@@ -198,6 +202,8 @@ set -e
 [[ $migration_status -eq 9 ]]
 grep -q '^backup$' "$EVENT_LOG"
 grep -q '^migrate$' "$EVENT_LOG"
+grep -q '^platform-migration-env:match|platform$' "$EVENT_LOG"
+grep -q '^pg_dump:.*--schema=platform' "$EVENT_LOG"
 grep -q '^restore$' "$EVENT_LOG"
 restore_line="$(grep -n '^restore$' "$EVENT_LOG" | cut -d: -f1)"
 restart_line="$(grep -n 'launchctl:bootstrap .*test.portfolio-ops.platform-api.plist' "$EVENT_LOG" | tail -n 1 | cut -d: -f1)"
