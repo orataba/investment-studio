@@ -1061,24 +1061,60 @@ FIELD_REGISTRY = [
         "default_width": 140,
         "default_visible": True,
     },
-    {
-        "field_key": "price_chart_1m",
-        "label": "Chart 1M",
-        "description": "1-month chart from the current selected quote series.",
-        "category_code": "performance_risk",
-        "data_type": "sparkline",
-        "formatter_code": "sparkline",
-        "sort_mode": "none",
-        "filter_mode": "none",
-        "group_mode": "none",
-        "instrument_scope_json": ["fund", "etf", "index"],
-        "product_scope_json": [],
-        "availability_rule_json": {"requires": ["instrument_chart_read_model"]},
-        "source_domain": "read_model",
-        "source_metric_code": "instrument_chart_read_model.series",
-        "default_width": 140,
-        "default_visible": False,
-    },
+    *[
+        {
+            "field_key": field_key,
+            "label": label,
+            "description": description,
+            "category_code": "performance_risk",
+            "data_type": "sparkline",
+            "formatter_code": "sparkline",
+            "sort_mode": "none",
+            "filter_mode": "none",
+            "group_mode": "none",
+            "instrument_scope_json": ["fund", "etf", "index"],
+            "product_scope_json": [],
+            "availability_rule_json": {
+                "requires": ["instrument_chart_read_model"]
+            },
+            "source_domain": "read_model",
+            "source_metric_code": (
+                f"instrument_chart_read_model.normalized_return.{window.lower()}"
+            ),
+            "default_width": 140,
+            "default_visible": False,
+        }
+        for field_key, window, label, description in (
+            (
+                "return_chart_1d",
+                "1D",
+                "Return 1D",
+                "Cumulative return from the last valid close on or before the "
+                "one-day boundary to the latest close.",
+            ),
+            (
+                "return_chart_1w",
+                "1W",
+                "Return 1W",
+                "Cumulative return from the last valid close on or before the "
+                "one-week boundary to the latest close.",
+            ),
+            (
+                "return_chart_1m",
+                "1M",
+                "Return 1M",
+                "Cumulative return from the last valid close on or before the "
+                "one-month boundary to the latest close.",
+            ),
+            (
+                "return_chart_1y",
+                "1Y",
+                "Return 1Y",
+                "Cumulative return from the last valid close on or before the "
+                "one-year boundary to the latest close.",
+            ),
+        )
+    ],
     {
         "field_key": "overall_rating",
         "label": "Overall Rating",

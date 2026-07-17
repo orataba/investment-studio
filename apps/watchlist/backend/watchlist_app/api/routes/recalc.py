@@ -16,6 +16,10 @@ from watchlist_app.services.canonical_recalc import (
     CanonicalRecalcService,
     RecalcJobAlreadyRunningError,
 )
+from watchlist_app.services.instrument_resolution import resolve_watchlist_instrument
+from watchlist_app.services.shared_instrument_registry import (
+    SharedInstrumentRegistryError,
+)
 from watchlist_app.services.recalc_job_ids import make_recalc_dedupe_key, make_recalc_job_id
 
 
@@ -44,6 +48,29 @@ def enqueue_bulk_recalc(
             )
         ).all()
     )
+    provisioned_ids: list[str] = []
+    for instrument_id in instrument_ids:
+        if instrument_id in available_ids:
+            continue
+        try:
+            resolution = resolve_watchlist_instrument(
+                session,
+                instrument_id=instrument_id,
+            )
+        except SharedInstrumentRegistryError as error:
+            raise HTTPException(
+                status_code=503,
+                detail="Shared instrument registry is unavailable.",
+            ) from error
+        if (
+            resolution is not None
+            and bool(resolution.get("detail_supported"))
+            and str(resolution.get("canonical_instrument_id") or "").strip()
+            == instrument_id
+            and session.get(InstrumentDetail, instrument_id) is not None
+        ):
+            available_ids.add(instrument_id)
+            provisioned_ids.append(instrument_id)
     missing_ids = [
         instrument_id for instrument_id in instrument_ids if instrument_id not in available_ids
     ]
@@ -92,6 +119,7 @@ def enqueue_bulk_recalc(
     return {
         "requested_count": len(instrument_ids),
         "accepted_count": len(enqueued_ids) + len(existing_ids),
+        "provisioned_instrument_ids": provisioned_ids,
         "enqueued_instrument_ids": enqueued_ids,
         "existing_instrument_ids": existing_ids,
         "missing_instrument_ids": missing_ids,

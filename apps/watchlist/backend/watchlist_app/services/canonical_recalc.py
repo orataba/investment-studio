@@ -13,6 +13,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from portfolio_ops_instrument_core import (
+    FUND_TOTAL_RETURN_QUOTE_BASES,
     QUOTE_BASIS_METRIC_FAMILY,
     validate_market_data_identity,
 )
@@ -53,7 +54,18 @@ from watchlist_app.services.read_models import (
     collapse_latest_attribute_values,
     serialize_payload,
 )
+from watchlist_app.services.materialization_policy import (
+    WATCHLIST_MATERIALIZATION_VERSION,
+)
 from watchlist_app.services.recalc_job_ids import make_recalc_dedupe_key, make_recalc_job_id
+from watchlist_app.services.return_windows import (
+    RETURN_WINDOW_POLICY_VERSION,
+    annualized_return_percent,
+    named_return_window_spec,
+    period_return_percent,
+    resolve_return_window,
+    return_window_metadata,
+)
 from watchlist_app.services.shared_instrument_registry import (
     get_shared_instrument,
     list_shared_instruments,
@@ -74,6 +86,9 @@ DEFAULT_TABS = [
     "monitoring",
 ]
 
+PERFORMANCE_METHODOLOGY_VERSION = "canonical-performance/v4"
+RISK_METHODOLOGY_VERSION = "canonical-risk/v3"
+
 
 class RecalcJobLeaseLostError(RuntimeError):
     """Raised when an obsolete worker tries to publish a recalculation."""
@@ -83,24 +98,20 @@ class RecalcJobAlreadyRunningError(RuntimeError):
     """Raised when synchronous work would overlap an active instrument job."""
 
 
-ORDINARY_NAV_QUOTE_BASES = {
+UNIT_OR_RAW_QUOTE_BASES = {
     "close",
     "last",
     "official_nav",
 }
-TOTAL_RETURN_NAV_QUOTE_BASES = {
+TOTAL_RETURN_QUOTE_BASES = {
     "total_return_nav",
-    "dividend_adjusted_nav",
-    "reinvested_nav",
     "adjusted_close",
 }
 QUOTE_BASIS_LABELS = {
-    "official_nav": "Official NAV",
+    "official_nav": "Unit NAV",
     "close": "Close",
     "last": "Last Price",
-    "total_return_nav": "Total Return NAV",
-    "dividend_adjusted_nav": "Dividend-Adjusted NAV",
-    "reinvested_nav": "Reinvested NAV",
+    "total_return_nav": "Dividend-Reinvested Total Return NAV",
     "adjusted_close": "Adjusted Close",
 }
 PEER_METRIC_MIN_SAMPLE = 2
@@ -271,30 +282,8 @@ def _normalize_nav_settings(payload: dict[str, Any] | None) -> dict[str, Any]:
     return normalized
 
 
-def _allows_ordinary_return_basis(instrument_type: object) -> bool:
-    return str(instrument_type or "").strip().lower() == "index"
-
-
-def _quote_policy_prefers_ordinary_nav(
-    shared_instrument: dict[str, object] | None,
-    *,
-    role: str,
-) -> bool:
-    if not isinstance(shared_instrument, dict):
-        return False
-    raw_policy = shared_instrument.get("quote_selection_policy")
-    if not isinstance(raw_policy, dict):
-        return False
-    raw_values = raw_policy.get(role)
-    if not isinstance(raw_values, list):
-        return False
-    for raw_value in raw_values:
-        value = str(raw_value or "").strip().lower()
-        if value in ORDINARY_NAV_QUOTE_BASES:
-            return True
-        if value in TOTAL_RETURN_NAV_QUOTE_BASES:
-            return False
-    return False
+def _allows_listed_price_return_basis(instrument_type: object) -> bool:
+    return str(instrument_type or "").strip().lower() in {"equity", "etf", "index"}
 
 
 def _normalize_quote_basis(value: object) -> str:
@@ -303,9 +292,9 @@ def _normalize_quote_basis(value: object) -> str:
 
 def _quote_basis_row_slot(quote_basis: object) -> str | None:
     normalized = _normalize_quote_basis(quote_basis)
-    if normalized in TOTAL_RETURN_NAV_QUOTE_BASES:
+    if normalized in TOTAL_RETURN_QUOTE_BASES:
         return "nav_with_dividend"
-    if normalized in ORDINARY_NAV_QUOTE_BASES:
+    if normalized in UNIT_OR_RAW_QUOTE_BASES:
         return "nav"
     return None
 
@@ -330,7 +319,7 @@ def _quote_basis_series_type(quote_basis: object) -> str:
     metric_family = _quote_basis_metric_family(normalized)
     if metric_family == "price":
         return "price"
-    if normalized in TOTAL_RETURN_NAV_QUOTE_BASES:
+    if normalized in TOTAL_RETURN_QUOTE_BASES:
         return "total_return_nav"
     return "nav"
 
@@ -596,31 +585,6 @@ def _primary_identifier(shared_instrument: dict[str, object] | None) -> str | No
         return None
     value = str(candidate.get("identifier_value") or "").strip()
     return value or None
-
-
-def _window_return(latest_value: float, base_value: float, days: int) -> float | None:
-    if base_value <= 0:
-        return None
-    raw = latest_value / base_value - 1
-    if days > 366:
-        return (pow(1 + raw, 365.25 / max(days, 1)) - 1) * 100
-    return raw * 100
-
-
-def _annualized_return(latest_value: float, base_value: float, days: int) -> float | None:
-    if latest_value <= 0 or base_value <= 0 or days <= 0:
-        return None
-    return (pow(latest_value / base_value, 365.25 / max(days, 1)) - 1) * 100
-
-
-def _value_at_or_before(nav_points: list[dict[str, Any]], target_date: date) -> dict[str, Any] | None:
-    candidates = [point for point in nav_points if point["as_of_date"] <= target_date]
-    return candidates[-1] if candidates else None
-
-
-def _value_before(nav_points: list[dict[str, Any]], target_date: date) -> dict[str, Any] | None:
-    candidates = [point for point in nav_points if point["as_of_date"] < target_date]
-    return candidates[-1] if candidates else None
 
 
 def _compute_drawdown(nav_points: list[dict[str, Any]]) -> float | None:
@@ -1114,24 +1078,21 @@ def _compute_calendar_year_returns(nav_points: list[dict[str, Any]]) -> list[dic
     for year in years:
         start_of_year = date(year, 1, 1)
         end_of_year = min(date(year, 12, 31), latest_as_of) if latest_as_of is not None else date(year, 12, 31)
-        start_point = _value_at_or_before(nav_points, start_of_year)
-        if start_point is None:
-            start_point = next((point for point in nav_points if point["as_of_date"].year == year), None)
-        end_point = _value_at_or_before(nav_points, end_of_year)
-        if start_point is None or end_point is None:
-            continue
-        if end_point["as_of_date"] <= start_point["as_of_date"] and end_point is not start_point:
+        window = resolve_return_window(
+            nav_points,
+            requested_start_date=start_of_year,
+            requested_end_date=end_of_year,
+            anchor_mode="strictly_before",
+        )
+        if window is None:
             continue
         annual_returns.append(
             {
                 "year": year,
-                "investment_nav": _window_return(
-                    end_point["value"],
-                    start_point["value"],
-                    max((end_point["as_of_date"] - start_point["as_of_date"]).days, 1),
-                ),
+                "investment_nav": period_return_percent(window),
                 "category_nav": None,
                 "index_nav": None,
+                **return_window_metadata(window),
             }
         )
     return annual_returns
@@ -1145,6 +1106,41 @@ def _snapshot_metadata(snapshot) -> dict[str, object] | None:
         "methodology_version": snapshot.methodology_version,
         "source_cutoff_at": _coerce_utc(snapshot.source_cutoff_at).isoformat().replace("+00:00", "Z"),
     }
+
+
+def _performance_window_metadata(
+    nav_points: list[dict[str, Any]],
+    window_name: str,
+) -> dict[str, object]:
+    if len(nav_points) < 2:
+        return {}
+    as_of_date = nav_points[-1]["as_of_date"]
+    if window_name in {"1W", "MTD", "YTD", "3M", "6M", "1Y"}:
+        spec = named_return_window_spec(window_name, as_of_date)
+        window = resolve_return_window(
+            nav_points,
+            requested_start_date=spec.requested_start_date,
+            requested_end_date=spec.requested_end_date,
+            anchor_mode=spec.anchor_mode,
+        )
+    elif window_name in {"3Y", "5Y"}:
+        spec = named_return_window_spec(window_name, as_of_date)
+        window = resolve_return_window(
+            nav_points,
+            requested_start_date=spec.requested_start_date,
+            requested_end_date=spec.requested_end_date,
+            anchor_mode=spec.anchor_mode,
+        )
+    elif window_name == "Ann.":
+        window = resolve_return_window(
+            nav_points,
+            requested_start_date=nav_points[0]["as_of_date"],
+            requested_end_date=as_of_date,
+            anchor_mode="on_or_before",
+        )
+    else:
+        window = None
+    return return_window_metadata(window) if window is not None else {}
 
 
 def _growth_of_100(nav_points: list[dict[str, Any]]) -> float | None:
@@ -1317,24 +1313,63 @@ def _selection_candidates(
     *,
     role: str,
     preference: str,
-    allow_ordinary_nav: bool,
+    instrument_type: object,
 ) -> list[str]:
     normalized_preference = (preference or "auto").strip().lower()
     candidates = _quote_policy_candidates(shared_instrument, role=role)
     if not candidates:
         return []
+    normalized_instrument_type = str(instrument_type or "").strip().lower()
+    if normalized_instrument_type == "fund":
+        if normalized_preference == "nav":
+            return []
+        return [basis for basis in candidates if basis in FUND_TOTAL_RETURN_QUOTE_BASES]
+
+    allow_ordinary_nav = _allows_listed_price_return_basis(normalized_instrument_type)
     if normalized_preference == "nav_with_dividend":
-        return [basis for basis in candidates if basis in TOTAL_RETURN_NAV_QUOTE_BASES]
+        return [basis for basis in candidates if basis in TOTAL_RETURN_QUOTE_BASES]
     if normalized_preference == "nav":
         return (
-            [basis for basis in candidates if basis in ORDINARY_NAV_QUOTE_BASES]
+            [basis for basis in candidates if basis in UNIT_OR_RAW_QUOTE_BASES]
             if allow_ordinary_nav
             else []
         )
 
     if allow_ordinary_nav:
         return candidates
-    return [basis for basis in candidates if basis in TOTAL_RETURN_NAV_QUOTE_BASES]
+    return [basis for basis in candidates if basis in TOTAL_RETURN_QUOTE_BASES]
+
+
+def _return_kind_for_quote_basis(quote_basis: str | None) -> str | None:
+    if quote_basis in TOTAL_RETURN_QUOTE_BASES:
+        return "total_return"
+    if quote_basis in {"close", "last"}:
+        return "price_return"
+    if quote_basis == "official_nav":
+        return "unit_nav_return"
+    return None
+
+
+def _current_fund_nav_projection(
+    shared_instrument: dict[str, object] | None,
+) -> dict[str, object] | None:
+    if not isinstance(shared_instrument, dict):
+        return None
+    current_run_id = str(
+        shared_instrument.get("current_fund_nav_projection_run_id") or ""
+    ).strip()
+    runs = shared_instrument.get("fund_nav_projection_runs")
+    if not current_run_id or not isinstance(runs, list):
+        return None
+    return next(
+        (
+            run
+            for run in runs
+            if isinstance(run, dict)
+            and str(run.get("fund_nav_projection_run_id") or "") == current_run_id
+        ),
+        None,
+    )
 
 
 def _select_quote_series(
@@ -1343,13 +1378,13 @@ def _select_quote_series(
     shared_instrument: dict[str, object] | None,
     role: str,
     preference: str,
-    allow_ordinary_nav: bool = False,
+    instrument_type: object,
 ) -> dict[str, object]:
     for quote_basis in _selection_candidates(
         shared_instrument,
         role=role,
         preference=preference,
-        allow_ordinary_nav=allow_ordinary_nav,
+        instrument_type=instrument_type,
     ):
         points = [
             point
@@ -1363,10 +1398,27 @@ def _select_quote_series(
             continue
         row_slot = _quote_basis_row_slot(quote_basis)
         metric_family = str(points[-1]["metric_family"])
+        projection = (
+            _current_fund_nav_projection(shared_instrument)
+            if str(instrument_type or "").strip().lower() == "fund"
+            and quote_basis == "total_return_nav"
+            else None
+        )
+        projection_status = str(
+            (projection or {}).get("projection_status") or "ready"
+        ).strip().lower()
+        projection_evidence = (projection or {}).get("evidence")
+        segment_breaks = (
+            list(projection_evidence.get("segment_breaks") or [])
+            if isinstance(projection_evidence, dict)
+            else []
+        )
         return {
             "nav_basis_type": row_slot,
             "nav_basis_source": str(points[-1].get("source") or "shared"),
-            "nav_basis_status": "ready",
+            "nav_basis_status": (
+                "partial" if projection_status == "partial" else "ready"
+            ),
             "points": points,
             "rows": [],
             "selected_role": role,
@@ -1375,6 +1427,10 @@ def _select_quote_series(
             "selected_series_type": _quote_basis_series_type(quote_basis),
             "selected_series_label": _quote_basis_label(quote_basis),
             "selected_date_label": _quote_basis_date_label(quote_basis),
+            "return_kind": _return_kind_for_quote_basis(quote_basis),
+            "return_series_status": projection_status,
+            "return_anchor_date": (projection or {}).get("anchor_date"),
+            "return_segment_breaks": segment_breaks,
         }
 
     return {
@@ -1389,6 +1445,10 @@ def _select_quote_series(
         "selected_series_type": None,
         "selected_series_label": None,
         "selected_date_label": None,
+        "return_kind": None,
+        "return_series_status": "unavailable",
+        "return_anchor_date": None,
+        "return_segment_breaks": [],
     }
 
 
@@ -1444,6 +1504,12 @@ def _selection_metadata(selection: dict[str, object]) -> dict[str, object]:
         "basis_type": selection.get("nav_basis_type"),
         "label": selection.get("selected_series_label"),
         "date_label": selection.get("selected_date_label"),
+        "return_kind": selection.get("return_kind"),
+        "return_series_status": selection.get("return_series_status"),
+        "return_anchor_date": selection.get("return_anchor_date"),
+        "return_segment_breaks": list(
+            selection.get("return_segment_breaks") or []
+        ),
     }
 
 
@@ -1545,10 +1611,7 @@ class CanonicalRecalcService:
             shared_instrument=shared_instrument,
             role="total_return",
             preference=nav_basis_preference,
-            allow_ordinary_nav=(
-                _allows_ordinary_return_basis(instrument_type)
-                or _quote_policy_prefers_ordinary_nav(shared_instrument, role="total_return")
-            ),
+            instrument_type=instrument_type,
         )
         nav_rows = _rows_with_selected_series(nav_rows, selection)
         selection["rows"] = nav_rows
@@ -1571,6 +1634,12 @@ class CanonicalRecalcService:
             "selected_series_type": selection.get("selected_series_type"),
             "selected_series_label": selection.get("selected_series_label"),
             "selected_date_label": selection.get("selected_date_label"),
+            "return_kind": selection.get("return_kind"),
+            "return_series_status": selection.get("return_series_status"),
+            "return_anchor_date": selection.get("return_anchor_date"),
+            "return_segment_breaks": list(
+                selection.get("return_segment_breaks") or []
+            ),
             "calculation_frequency_profile": frequency_context["profile"],
             "compare_settings": {
                 "default_benchmark_instrument_id": nav_settings.get("default_benchmark_instrument_id"),
@@ -1880,12 +1949,14 @@ class CanonicalRecalcService:
         )
         if (
             shared_instrument is not None
-            and shared_instrument_type in {"fund", "etf", "index"}
+            and shared_instrument_type in {"fund", "etf", "equity", "index"}
         ):
             instrument = self.instrument_repository.upsert_from_shared_instrument(
                 session,
                 shared_instrument=shared_instrument,
-                detail_view_type=instrument.detail_view_type or shared_instrument_type,
+                detail_view_type=(
+                    "fund" if shared_instrument_type == "fund" else "listed"
+                ),
             )
 
         now = _utcnow()
@@ -1910,10 +1981,7 @@ class CanonicalRecalcService:
             shared_instrument=shared_instrument,
             role="total_return",
             preference=nav_basis_preference,
-            allow_ordinary_nav=(
-                _allows_ordinary_return_basis(instrument.instrument_type)
-                or _quote_policy_prefers_ordinary_nav(shared_instrument, role="total_return")
-            ),
+            instrument_type=instrument.instrument_type,
         )
         nav_rows = _rows_with_selected_series(nav_rows, nav_selection)
         nav_selection["rows"] = nav_rows
@@ -1925,10 +1993,7 @@ class CanonicalRecalcService:
             shared_instrument=shared_instrument,
             role="chart",
             preference=nav_basis_preference,
-            allow_ordinary_nav=(
-                _allows_ordinary_return_basis(instrument.instrument_type)
-                or _quote_policy_prefers_ordinary_nav(shared_instrument, role="chart")
-            ),
+            instrument_type=instrument.instrument_type,
         )
         market_data_source_cutoff = (
             source_watermark_at_start
@@ -2074,6 +2139,7 @@ class CanonicalRecalcService:
                 data_freshness_status=summary_payload["freshness"]["data_freshness_status"],
                 last_recalculated_at=now,
                 source_cutoff_at=materialized_market_source_cutoff,
+                materialization_version=WATCHLIST_MATERIALIZATION_VERSION,
             )
 
         self._refresh_watchlist_rows(
@@ -2133,51 +2199,58 @@ class CanonicalRecalcService:
         latest = nav_points[-1]
         as_of_date = latest["as_of_date"]
         windows = {
-            "return_ytd": date(as_of_date.year, 1, 1),
-            "return_1w": as_of_date - timedelta(days=7),
-            "return_mtd": date(as_of_date.year, as_of_date.month, 1),
-            "return_1m": as_of_date - timedelta(days=30),
-            "return_3m": as_of_date - timedelta(days=90),
-            "return_6m": as_of_date - timedelta(days=180),
-            "return_1y": as_of_date - timedelta(days=365),
+            "return_ytd": "YTD",
+            "return_1w": "1W",
+            "return_mtd": "MTD",
+            "return_1m": "1M",
+            "return_3m": "3M",
+            "return_6m": "6M",
+            "return_1y": "1Y",
         }
         returns: dict[str, Decimal | None] = {}
-        for key, target_date in windows.items():
-            base = (
-                _value_before(nav_points, target_date)
-                if key in {"return_ytd", "return_mtd"}
-                else _value_at_or_before(nav_points, target_date)
+        for key, window_name in windows.items():
+            spec = named_return_window_spec(window_name, as_of_date)
+            window = resolve_return_window(
+                nav_points,
+                requested_start_date=spec.requested_start_date,
+                requested_end_date=spec.requested_end_date,
+                anchor_mode=spec.anchor_mode,
             )
-            if base is None:
-                returns[key] = None
-                continue
-            returns[key] = _safe_decimal(
-                _window_return(latest["value"], base["value"], max((as_of_date - base["as_of_date"]).days, 1))
+            returns[key] = (
+                _safe_decimal(period_return_percent(window))
+                if window is not None
+                else None
             )
 
-        first = nav_points[0]
-        annualized_return = _annualized_return(
-            latest["value"],
-            first["value"],
-            max((as_of_date - first["as_of_date"]).days, 1),
+        since_inception_window = resolve_return_window(
+            nav_points,
+            requested_start_date=nav_points[0]["as_of_date"],
+            requested_end_date=as_of_date,
+            anchor_mode="on_or_before",
+        )
+        annualized_return = (
+            annualized_return_percent(since_inception_window)
+            if since_inception_window is not None
+            else None
         )
         annualized_windows = {
-            "return_3y_annualized": round(365.25 * 3),
-            "return_5y_annualized": round(365.25 * 5),
-            "return_10y_annualized": round(365.25 * 10),
+            "return_3y_annualized": "3Y",
+            "return_5y_annualized": "5Y",
+            "return_10y_annualized": "10Y",
         }
         annualized_window_returns: dict[str, Decimal | None] = {}
-        for key, lookback_days in annualized_windows.items():
-            base = _value_at_or_before(nav_points, as_of_date - timedelta(days=lookback_days))
-            if base is None:
-                annualized_window_returns[key] = None
-                continue
-            annualized_window_returns[key] = _safe_decimal(
-                _annualized_return(
-                    latest["value"],
-                    base["value"],
-                    max((as_of_date - base["as_of_date"]).days, 1),
-                )
+        for key, window_name in annualized_windows.items():
+            spec = named_return_window_spec(window_name, as_of_date)
+            window = resolve_return_window(
+                nav_points,
+                requested_start_date=spec.requested_start_date,
+                requested_end_date=spec.requested_end_date,
+                anchor_mode=spec.anchor_mode,
+            )
+            annualized_window_returns[key] = (
+                _safe_decimal(annualized_return_percent(window))
+                if window is not None
+                else None
             )
         max_drawdown = _compute_drawdown(nav_points)
         calmar = annualized_return / abs(max_drawdown) if annualized_return is not None and max_drawdown not in {None, 0} else None
@@ -2188,11 +2261,12 @@ class CanonicalRecalcService:
             data={
                 "as_of_date": as_of_date,
                 "source_cutoff_at": source_cutoff_at,
-                "methodology_version": "canonical-performance/v3",
+                "methodology_version": PERFORMANCE_METHODOLOGY_VERSION,
                 "input_hash": _hash_payload(
                     {
                         "nav_points": nav_points,
                         "calculation_frequency_profile": calculation_frequency_profile,
+                        "return_window_policy": RETURN_WINDOW_POLICY_VERSION,
                     }
                 ),
                 "calculated_at": now,
@@ -2236,7 +2310,7 @@ class CanonicalRecalcService:
             data={
                 "as_of_date": latest["as_of_date"],
                 "source_cutoff_at": source_cutoff_at,
-                "methodology_version": "canonical-risk/v3",
+                "methodology_version": RISK_METHODOLOGY_VERSION,
                 "input_hash": _hash_payload(
                     {
                         "nav_points": nav_points,
@@ -2398,7 +2472,29 @@ class CanonicalRecalcService:
         )
         selected_series = _selection_metadata(nav_selection)
         date_label = str(selected_series.get("date_label") or "Last Quote Date")
-        freshness_status = "fresh" if nav_selection["points"] else "pending_recalc"
+        return_series_status = str(
+            nav_selection.get("return_series_status") or ""
+        ).strip().lower()
+        return_segment_breaks = list(
+            nav_selection.get("return_segment_breaks") or []
+        )
+        has_unconfirmed_return_break = bool(
+            return_series_status == "partial" and return_segment_breaks
+        )
+        freshness_status = (
+            "unavailable"
+            if not nav_selection["points"]
+            else "partial"
+            if has_unconfirmed_return_break
+            else "fresh"
+        )
+        staleness_reason = (
+            "No canonical series available."
+            if not nav_selection["points"]
+            else "Canonical total-return series stops at an unconfirmed fund event."
+            if has_unconfirmed_return_break
+            else None
+        )
         return {
             "instrument_id": instrument.instrument_id,
             "fund_name": instrument.instrument_name,
@@ -2419,6 +2515,12 @@ class CanonicalRecalcService:
                 "selected_series_type": nav_selection.get("selected_series_type"),
                 "selected_series_label": nav_selection.get("selected_series_label"),
                 "selected_date_label": nav_selection.get("selected_date_label"),
+                "return_kind": nav_selection.get("return_kind"),
+                "return_series_status": nav_selection.get("return_series_status"),
+                "return_anchor_date": nav_selection.get("return_anchor_date"),
+                "return_segment_breaks": list(
+                    nav_selection.get("return_segment_breaks") or []
+                ),
                 "latest_nav": (
                     nav_selection["points"][-1]["value"]
                     if nav_selection.get("nav_basis_type") == "nav" and nav_selection["points"]
@@ -2466,7 +2568,7 @@ class CanonicalRecalcService:
                 "last_fact_update_at": source_cutoff_at.isoformat().replace("+00:00", "Z"),
                 "last_recalculated_at": now.isoformat().replace("+00:00", "Z"),
                 "last_successful_snapshot_at": now.isoformat().replace("+00:00", "Z"),
-                "staleness_reason": None if nav_selection["points"] else "No canonical series available.",
+                "staleness_reason": staleness_reason,
             },
             "quick_monitoring_items": [],
             "tabs": DEFAULT_TABS,
@@ -2513,6 +2615,8 @@ class CanonicalRecalcService:
             session,
             instrument_ids=sorted(active_peer_instrument_ids),
         ):
+            if snapshot.methodology_version != PERFORMANCE_METHODOLOGY_VERSION:
+                continue
             performance_by_asset.setdefault(str(snapshot.instrument_id), snapshot)
         if performance_snapshot is not None and instrument_id in active_peer_instrument_ids:
             performance_by_asset[str(instrument_id)] = performance_snapshot
@@ -2521,6 +2625,8 @@ class CanonicalRecalcService:
             session,
             instrument_ids=sorted(active_peer_instrument_ids),
         ):
+            if snapshot.methodology_version != RISK_METHODOLOGY_VERSION:
+                continue
             risk_by_asset.setdefault(str(snapshot.instrument_id), snapshot)
         if risk_snapshot is not None and instrument_id in active_peer_instrument_ids:
             risk_by_asset[str(instrument_id)] = risk_snapshot
@@ -2675,6 +2781,13 @@ class CanonicalRecalcService:
             trailing_returns = [
                 row for row in trailing_returns if any(row[key] is not None for key in ("investment_nav", "category_nav", "index_nav"))
             ]
+            trailing_returns = [
+                {
+                    **row,
+                    **_performance_window_metadata(nav_points, str(row["window"])),
+                }
+                for row in trailing_returns
+            ]
         growth_of_100 = _growth_of_100(nav_points)
         if growth_of_100 is not None:
             growth_chart_series = [{"name": "Growth of 100", "value": growth_of_100}]
@@ -2685,6 +2798,7 @@ class CanonicalRecalcService:
             "ranking": _primary_peer_ranking(peer_comparison),
             "peer_comparison": peer_comparison,
             "calculation_frequency_profile": calculation_frequency_profile,
+            "return_window_policy": RETURN_WINDOW_POLICY_VERSION,
             "snapshot_metadata": _snapshot_metadata(performance_snapshot),
         }
 
@@ -2843,6 +2957,7 @@ class CanonicalRecalcService:
                     staleness_reason=freshness.get("staleness_reason"),
                 )
                 | {
+                    "materialization_version": WATCHLIST_MATERIALIZATION_VERSION,
                     "return_ytd": getattr(performance_snapshot, "return_ytd", None),
                     "return_1w": getattr(performance_snapshot, "return_1w", None),
                     "return_mtd": getattr(performance_snapshot, "return_mtd", None),

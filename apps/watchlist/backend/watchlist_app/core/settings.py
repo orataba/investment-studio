@@ -23,6 +23,8 @@ class Settings(BaseSettings):
     recalc_worker_shutdown_timeout_seconds: float = 5.0
     recalc_worker_running_job_timeout_seconds: float = 300.0
     recalc_worker_heartbeat_interval_seconds: float = 30.0
+    recalc_worker_reconcile_interval_seconds: float = 60.0
+    recalc_worker_reconcile_batch_size: int = 500
     document_storage_root: Path = WORKSPACE_ROOT / "var" / "watchlist-documents"
     document_upload_max_bytes: int = 25 * 1024 * 1024
     copilot_provider: str = "stub"
@@ -67,6 +69,7 @@ class Settings(BaseSettings):
         "recalc_worker_shutdown_timeout_seconds",
         "recalc_worker_running_job_timeout_seconds",
         "recalc_worker_heartbeat_interval_seconds",
+        "recalc_worker_reconcile_interval_seconds",
         mode="before",
     )
     @classmethod
@@ -76,6 +79,16 @@ class Settings(BaseSettings):
         numeric = float(value)
         if numeric <= 0:
             raise ValueError("worker timing values must be positive.")
+        return numeric
+
+    @field_validator("recalc_worker_reconcile_batch_size", mode="before")
+    @classmethod
+    def _coerce_reconcile_batch_size(cls, value: object) -> int:
+        numeric = int(value)
+        if numeric < 1 or numeric > 10_000:
+            raise ValueError(
+                "recalc_worker_reconcile_batch_size must be between 1 and 10000."
+            )
         return numeric
 
     @field_validator("document_upload_max_bytes", mode="before")

@@ -63,11 +63,13 @@ watchlist 和 fund detail 已经不再使用“平铺 fund tags”模型，而�
 - watchlist `move` / `copy` 必须先命中 source watchlist membership，不能绕过 source 直接向 target 加资产
 - 自定义 view 的 `view_id` 会做 path-safe slug 化；创建冲突会重试；复制 watchlist 时也会清洗 legacy custom view id
 - canonical quote/NAV history 在 watchlist detail 是只读视图；导入、刷新、编辑共享行情/净值要回到 `Database Dashboard`。watchlist 派生层必须保留真实 `metric_family / quote_basis / role`，例如 `price/close/chart` 和 `nav/total_return_nav/total_return` 不能再只压成 NAV 文案。
+- 主图和 Sparkline 统一展示区间累计收益并返回真实锚点；Overview 主图只使用双端拖动范围条，MTD/YTD 等指标按期初前一有效收盘。`close/last` 只能标记价格收益，不能伪装成含分红总回报。完整规则见 [RETURN_SERIES_CONTRACT.md](./RETURN_SERIES_CONTRACT.md)。
 - monitoring 的缺失项检查是 taxonomy-aware；它既检查当前分类下适用且 `required_for_monitoring` 的字段，也检查 `fund_regime` 和分类叶子是否完整
 - 后端 API 已统一到 `instrument` 主语；旧 `/api/funds/...` 兼容路由已删除
 - 前端详情 canonical 路由是 `/instruments/:instrumentId`
 - watchlist 不再单独提供共享资产库页面；共享资产浏览和维护统一回到 `Database Dashboard`
 - stale read repair 现在写 durable recalc job，并由后台 worker 自动消费；worker 会回收超时 `running` job，Web 请求只负责发现 stale，不直接补算
+- worker 还会按 instrument id 做有界 keyset 分页，对账 Registry `market_data_updated_at` 与所有本地 read model 的最旧 `source_cutoff_at`；通知丢失或进程重启后会自动补建同一条 per-instrument 去重队列任务
 - 产品框架的示例标签值不再在 migration 或运行时自动注入；watchlist 数据只保留显式录入和值得追溯的派生结果
 
 ## 5. 当前后端状态

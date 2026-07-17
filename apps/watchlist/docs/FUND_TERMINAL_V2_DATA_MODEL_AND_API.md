@@ -138,6 +138,7 @@ facts 路由已经统一到 instrument 主语：
 - `recalc_job`
 
 stale read repair 也只会写 job，不会直接在 Web 请求里补算；后台 worker 会异步消费这些 queued jobs。
+Registry 通知只是低延迟提示，不是正确性边界；worker 会分页对账源版本与本地 materialization cutoff，并通过同一条 durable、per-instrument 串行队列修复漏通知。
 
 ## 5. fund 产品框架如何落地
 

@@ -8,6 +8,9 @@ from watchlist_app.core.settings import get_settings
 from watchlist_app.db.session import get_session_factory
 from watchlist_app.repositories.sqlalchemy.recalc_jobs import SQLAlchemyRecalcJobRepository
 from watchlist_app.services.canonical_recalc import CanonicalRecalcService
+from watchlist_app.services.read_model_freshness import (
+    reconcile_stale_instrument_read_models,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -103,7 +106,28 @@ def run_recalc_worker_loop(
 ) -> None:
     settings = get_settings()
     interval = poll_interval_seconds or settings.recalc_worker_poll_interval_seconds
+    next_reconcile_at = 0.0
+    reconcile_cursor: str | None = None
     while not stop_event.is_set():
+        now = time.monotonic()
+        if now >= next_reconcile_at:
+            try:
+                reconciliation = reconcile_stale_instrument_read_models(
+                    limit=settings.recalc_worker_reconcile_batch_size,
+                    after_instrument_id=reconcile_cursor,
+                )
+                reconcile_cursor = reconciliation.next_cursor
+                next_reconcile_at = time.monotonic() + (
+                    settings.recalc_worker_reconcile_interval_seconds
+                    if reconciliation.cycle_completed
+                    else interval
+                )
+            except Exception:
+                logger.exception("Watchlist source-generation reconciliation failed.")
+                next_reconcile_at = (
+                    time.monotonic()
+                    + settings.recalc_worker_reconcile_interval_seconds
+                )
         processed = False
         try:
             processed = process_next_recalc_job()
@@ -111,7 +135,11 @@ def run_recalc_worker_loop(
             logger.exception("Watchlist recalc worker loop failed.")
         if processed:
             continue
-        stop_event.wait(interval)
+        wait_seconds = min(
+            interval,
+            max(0.0, next_reconcile_at - time.monotonic()),
+        )
+        stop_event.wait(wait_seconds)
 
 
 def start_recalc_worker(*, stop_event: Event | None = None) -> tuple[Thread, Event]:

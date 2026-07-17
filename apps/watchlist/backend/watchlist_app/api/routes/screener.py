@@ -8,6 +8,8 @@ from watchlist_app.repositories.sqlalchemy.watchlists import SQLAlchemyWatchlist
 from watchlist_app.services.read_models import execute_watchlist_query
 from watchlist_app.services.read_model_freshness import (
     latest_local_market_data_date,
+    local_materialization_source_cutoff,
+    local_materialization_version,
     schedule_instrument_refreshes_if_stale,
 )
 
@@ -66,9 +68,13 @@ def run_screener_query(
                         item.get("last_nav_date"),
                     ),
                 ),
-                "local_source_cutoff_at": (
-                    getattr(chart_record, "source_cutoff_at", None)
-                    or getattr(row_record, "last_recalculated_at", None)
+                "local_source_cutoff_at": local_materialization_source_cutoff(
+                    getattr(chart_record, "source_cutoff_at", None),
+                    getattr(row_record, "last_fact_update_at", None),
+                ),
+                "local_materialization_version": local_materialization_version(
+                    getattr(chart_record, "materialization_version", None),
+                    getattr(row_record, "materialization_version", None),
                 ),
             }
         )

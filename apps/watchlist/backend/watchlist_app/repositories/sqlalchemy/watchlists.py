@@ -47,7 +47,7 @@ LOCAL_DETAIL_VIEW_FILTERS = {"instrument_type": ["fund", "etf", "index"]}
 ALL_COVERAGE_WATCHLIST_ID = "all-coverage"
 ALL_COVERAGE_WATCHLIST_NAME = "All Covered"
 ALL_COVERAGE_WATCHLIST_DESCRIPTION = (
-    "System-maintained coverage of every active fund, ETF, and index in the shared instrument registry."
+    "System-maintained coverage of every active fund, ETF, stock, and index in the shared instrument registry."
 )
 SYSTEM_OWNER_TYPE = "system"
 SYSTEM_OWNER_ID = "watchlist"
@@ -62,7 +62,7 @@ def _overview_view_columns() -> list[dict[str, object]]:
     return [
         {"field_key": "instrument_name", "display_order": 1, "width": 320},
         {"field_key": "attr.coverage_status", "display_order": 2, "width": 110},
-        {"field_key": "price_chart_1m", "display_order": 3, "width": 140},
+        {"field_key": "return_chart_1m", "display_order": 3, "width": 140},
         {"field_key": "latest_quote", "display_order": 4, "width": 130},
         {"field_key": "latest_quote_date", "display_order": 5, "width": 140},
         {"field_key": "return_1w", "display_order": 6, "width": 150},

@@ -1,17 +1,21 @@
 from __future__ import annotations
 
+from copy import deepcopy
 from datetime import UTC, date, datetime, timedelta
 import math
 import statistics
+from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import text
+from sqlalchemy import select, text
 from sqlalchemy.exc import IntegrityError
 
 from .conftest import (
     TEST_SHARED_INSTRUMENTS,
     canonical_quote_policy,
+    mutate_shared_instrument_metadata_for_drift,
+    publish_provider_explicit_nav,
     seed_shared_instrument,
 )
 
@@ -87,59 +91,6 @@ def test_calculation_frequency_context_resamples_declared_weekly_points() -> Non
     ]
 
 
-def test_return_nav_basis_does_not_treat_cash_cumulative_nav_as_total_return() -> None:
-    from watchlist_app.services.canonical_recalc import _select_quote_series, _shared_quote_points_by_basis
-
-    points_by_basis = _shared_quote_points_by_basis(
-        [
-            {
-                "metric_family": "nav",
-                "quote_basis": "official_nav",
-                "as_of_date": "2026-01-01",
-                "value": "1.000000",
-                "currency": "CNY",
-                "status": "complete",
-            },
-            {
-                "metric_family": "nav",
-                "quote_basis": "CUMULATIVE_NAV",
-                "as_of_date": "2026-01-01",
-                "value": "1.250000",
-                "currency": "CNY",
-                "status": "complete",
-            },
-            {
-                "metric_family": "nav",
-                "quote_basis": "official_nav",
-                "as_of_date": "2026-01-08",
-                "value": "1.010000",
-                "currency": "CNY",
-                "status": "complete",
-            },
-            {
-                "metric_family": "nav",
-                "quote_basis": "CUMULATIVE_NAV",
-                "as_of_date": "2026-01-08",
-                "value": "1.262500",
-                "currency": "CNY",
-                "status": "complete",
-            },
-        ],
-        expected_currency="CNY",
-    )
-
-    selection = _select_quote_series(
-        points_by_basis,
-        shared_instrument=None,
-        role="total_return",
-        preference="auto",
-    )
-
-    assert selection["nav_basis_type"] is None
-    assert selection["selected_quote_basis"] is None
-    assert selection["points"] == []
-
-
 def test_return_nav_basis_does_not_fallback_to_ordinary_nav() -> None:
     from watchlist_app.services.canonical_recalc import _select_quote_series, _shared_quote_points_by_basis
 
@@ -176,33 +127,153 @@ def test_return_nav_basis_does_not_fallback_to_ordinary_nav() -> None:
         shared_instrument=shared_instrument,
         role="total_return",
         preference="auto",
+        instrument_type="fund",
     )
     explicit_nav_selection = _select_quote_series(
         points_by_basis,
         shared_instrument=shared_instrument,
         role="total_return",
         preference="nav",
+        instrument_type="fund",
     )
     quote_selection = _select_quote_series(
         points_by_basis,
         shared_instrument=shared_instrument,
         role="chart",
         preference="auto",
-        allow_ordinary_nav=True,
+        instrument_type="fund",
     )
 
     assert auto_selection["nav_basis_type"] is None
     assert auto_selection["points"] == []
     assert explicit_nav_selection["nav_basis_type"] is None
     assert explicit_nav_selection["points"] == []
-    assert quote_selection["nav_basis_type"] == "nav"
-    assert [point["value"] for point in quote_selection["points"]] == [1.0, 1.01]
+    assert quote_selection["nav_basis_type"] is None
+    assert quote_selection["points"] == []
 
 
-def test_quote_policy_can_select_close_series_over_stale_cumulative_nav() -> None:
+def test_completed_recalc_marks_missing_canonical_series_unavailable() -> None:
+    from watchlist_app.services.canonical_recalc import CanonicalRecalcService
+
+    now = datetime(2026, 7, 16, 8, tzinfo=UTC)
+    payload = CanonicalRecalcService()._summary_payload(
+        instrument=SimpleNamespace(
+            instrument_id="fund-no-total-return",
+            instrument_name="无可信复权序列基金",
+            primary_identifier_value="NO-TWR",
+            metadata_json={},
+        ),
+        nav_selection={
+            "points": [],
+            "nav_basis_type": None,
+            "nav_basis_source": "unavailable",
+            "nav_basis_status": "unavailable",
+        },
+        performance_snapshot=None,
+        risk_snapshot=None,
+        exposure_snapshot=None,
+        score_snapshot=None,
+        attributes={},
+        taxonomy_context={},
+        source_cutoff_at=now,
+        now=now,
+    )
+
+    assert payload["freshness"] == {
+        "data_freshness_status": "unavailable",
+        "last_fact_update_at": "2026-07-16T08:00:00Z",
+        "last_recalculated_at": "2026-07-16T08:00:00Z",
+        "last_successful_snapshot_at": "2026-07-16T08:00:00Z",
+        "staleness_reason": "No canonical series available.",
+    }
+
+
+def test_partial_total_return_with_source_gaps_remains_fresh_without_event_break() -> None:
+    from watchlist_app.services.canonical_recalc import CanonicalRecalcService
+
+    now = datetime(2026, 7, 16, 8, tzinfo=UTC)
+    payload = CanonicalRecalcService()._summary_payload(
+        instrument=SimpleNamespace(
+            instrument_id="public-fund-with-calendar-gaps",
+            instrument_name="Calendar Gap Fund",
+            primary_identifier_value="GAP.OF",
+            metadata_json={},
+        ),
+        nav_selection={
+            "points": [
+                {
+                    "as_of_date": date(2026, 7, 16),
+                    "value": 1.25,
+                }
+            ],
+            "nav_basis_type": "nav_with_dividend",
+            "nav_basis_source": "shared",
+            "nav_basis_status": "partial",
+            "return_series_status": "partial",
+            "return_segment_breaks": [],
+        },
+        performance_snapshot=None,
+        risk_snapshot=None,
+        exposure_snapshot=None,
+        score_snapshot=None,
+        attributes={},
+        taxonomy_context={},
+        source_cutoff_at=now,
+        now=now,
+    )
+
+    assert payload["freshness"]["data_freshness_status"] == "fresh"
+    assert payload["freshness"]["staleness_reason"] is None
+
+
+def test_partial_total_return_with_segment_break_stays_actionable() -> None:
+    from watchlist_app.services.canonical_recalc import CanonicalRecalcService
+
+    now = datetime(2026, 7, 16, 8, tzinfo=UTC)
+    payload = CanonicalRecalcService()._summary_payload(
+        instrument=SimpleNamespace(
+            instrument_id="fund-with-event-break",
+            instrument_name="Event Break Fund",
+            primary_identifier_value="BREAK",
+            metadata_json={},
+        ),
+        nav_selection={
+            "points": [
+                {
+                    "as_of_date": date(2026, 7, 15),
+                    "value": 1.10,
+                }
+            ],
+            "nav_basis_type": "nav_with_dividend",
+            "nav_basis_source": "shared",
+            "nav_basis_status": "partial",
+            "return_series_status": "partial",
+            "return_segment_breaks": [
+                {
+                    "as_of_date": "2026-07-16",
+                    "reason": "cash_disclosure_conflict",
+                }
+            ],
+        },
+        performance_snapshot=None,
+        risk_snapshot=None,
+        exposure_snapshot=None,
+        score_snapshot=None,
+        attributes={},
+        taxonomy_context={},
+        source_cutoff_at=now,
+        now=now,
+    )
+
+    assert payload["freshness"]["data_freshness_status"] == "partial"
+    assert payload["freshness"]["staleness_reason"] == (
+        "Canonical total-return series stops at an unconfirmed fund event."
+    )
+
+
+def test_listed_index_policy_can_select_close_over_stale_total_return_series() -> None:
     from watchlist_app.services.canonical_recalc import (
         _group_shared_nav_rows,
-        _quote_policy_prefers_ordinary_nav,
         _rows_with_selected_series,
         _select_quote_series,
         _shared_quote_points_by_basis,
@@ -219,6 +290,10 @@ def test_quote_policy_can_select_close_series_over_stale_cumulative_nav() -> Non
             {
                 "metric_family": "nav",
                 "quote_basis": "total_return_nav",
+                "nav_lineage": {
+                    "kind": "provider_explicit",
+                    "evidence": {"source_field": "test_total_return_nav"},
+                },
                 "as_of_date": "2026-06-15",
                 "value": "1.7993",
                 "currency": "CNY",
@@ -248,6 +323,10 @@ def test_quote_policy_can_select_close_series_over_stale_cumulative_nav() -> Non
             {
                 "metric_family": "nav",
                 "quote_basis": "total_return_nav",
+                "nav_lineage": {
+                    "kind": "provider_explicit",
+                    "evidence": {"source_field": "test_total_return_nav"},
+                },
                 "as_of_date": "2026-06-15",
                 "value": "1.7993",
                 "currency": "CNY",
@@ -273,13 +352,12 @@ def test_quote_policy_can_select_close_series_over_stale_cumulative_nav() -> Non
         expected_currency="CNY",
     )
 
-    assert _quote_policy_prefers_ordinary_nav(shared_instrument, role="total_return")
     selection = _select_quote_series(
         points_by_basis,
         shared_instrument=shared_instrument,
         role="total_return",
         preference="auto",
-        allow_ordinary_nav=True,
+        instrument_type="index",
     )
     rows = _rows_with_selected_series(rows, selection)
 
@@ -287,6 +365,7 @@ def test_quote_policy_can_select_close_series_over_stale_cumulative_nav() -> Non
     assert selection["selected_metric_family"] == "price"
     assert selection["selected_quote_basis"] == "close"
     assert selection["selected_series_label"] == "Close"
+    assert selection["return_kind"] == "price_return"
     assert rows[-1]["basis_metadata"]["nav"]["quote_basis"] == "close"
     assert rows[-1]["basis_metadata"]["nav"]["metric_family"] == "price"
     assert [point["as_of_date"] for point in selection["points"]] == [
@@ -307,6 +386,10 @@ def test_quote_selection_rejects_partial_and_identity_mismatched_points() -> Non
             {
                 "metric_family": "nav",
                 "quote_basis": "total_return_nav",
+                "nav_lineage": {
+                    "kind": "provider_explicit",
+                    "evidence": {"source_field": "test_total_return_nav"},
+                },
                 "as_of_date": "2026-06-25",
                 "value": "1.8670",
                 "currency": "CNY",
@@ -329,6 +412,7 @@ def test_quote_selection_rejects_partial_and_identity_mismatched_points() -> Non
         shared_instrument=None,
         role="total_return",
         preference="auto",
+        instrument_type="fund",
     )
 
     assert points_by_basis == {}
@@ -347,6 +431,10 @@ def test_quote_selection_rejects_noncanonical_currency_and_missing_policy() -> N
             {
                 "metric_family": "nav",
                 "quote_basis": "total_return_nav",
+                "nav_lineage": {
+                    "kind": "provider_explicit",
+                    "evidence": {"source_field": "test_total_return_nav"},
+                },
                 "as_of_date": "2026-06-24",
                 "value": "1.8",
                 "currency": "USD",
@@ -355,6 +443,10 @@ def test_quote_selection_rejects_noncanonical_currency_and_missing_policy() -> N
             {
                 "metric_family": "nav",
                 "quote_basis": "total_return_nav",
+                "nav_lineage": {
+                    "kind": "provider_explicit",
+                    "evidence": {"source_field": "test_total_return_nav"},
+                },
                 "as_of_date": "2026-06-25",
                 "value": "1.9",
                 "currency": "CNY",
@@ -372,6 +464,7 @@ def test_quote_selection_rejects_noncanonical_currency_and_missing_policy() -> N
         shared_instrument={"currency": "CNY"},
         role="total_return",
         preference="auto",
+        instrument_type="fund",
     )
     assert selection["nav_basis_status"] == "unavailable"
     assert selection["points"] == []
@@ -406,7 +499,7 @@ def test_create_watchlist_generates_unique_ids_and_required_columns(
     assert overview_view["columns"] == [
         "instrument_name",
         "attr.coverage_status",
-        "price_chart_1m",
+        "return_chart_1m",
         "latest_quote",
         "latest_quote_date",
         "return_1w",
@@ -534,8 +627,58 @@ def test_adding_index_shared_registry_instrument_is_supported(
     assert resolve_response.status_code == 200
     payload = resolve_response.json()
     assert payload["detail_supported"] is True
-    assert payload["detail_view_type"] == "index"
+    assert payload["detail_view_type"] == "listed"
     assert payload["detail_subject_id"] == "index-csi-300"
+
+    from portfolio_ops_instrument_core import instrument_store as shared_store
+    from watchlist_app.db.session import get_session_factory
+
+    assert shared_store.upsert_price_bars(
+        get_session_factory(),
+        instrument_id="index-csi-300",
+        rows=[
+            {
+                "as_of_date": "2026-04-14",
+                "open": "3588.10",
+                "high": "3610.20",
+                "low": "3579.50",
+                "close": "3598.80",
+                "previous_close": "3580.00",
+                "volume": "123456",
+                "turnover": "2345678",
+                "currency": "CNY",
+                "volume_unit": "lot",
+                "turnover_unit": "thousand_cny",
+                "provider": "tushare:index_daily",
+                "status": "complete",
+            },
+            {
+                "as_of_date": "2026-04-15",
+                "open": "3599.00",
+                "high": "3620.00",
+                "low": "3590.00",
+                "close": "3600.12",
+                "previous_close": "3598.80",
+                "volume": "130000",
+                "turnover": "2500000",
+                "currency": "CNY",
+                "volume_unit": "lot",
+                "turnover_unit": "thousand_cny",
+                "provider": "tushare:index_daily",
+                "status": "complete",
+            },
+        ],
+    ) == 2
+    bars_response = client.get(
+        "/api/instruments/index-csi-300/price-bars",
+        params={"limit": 1},
+    )
+    assert bars_response.status_code == 200
+    bars_payload = bars_response.json()
+    assert bars_payload["adjustment_mode"] == "raw"
+    assert bars_payload["count"] == 1
+    assert bars_payload["bars"][0]["date"] == "2026-04-15"
+    assert bars_payload["bars"][0]["close"] == "3600.12"
 
     tree_response = client.get("/api/taxonomies/fund-taxonomy")
     assert tree_response.status_code == 200
@@ -630,7 +773,7 @@ def test_archived_shared_alias_resolves_to_canonical_without_recreating_duplicat
         assert session.get(InstrumentDetail, "nav-8c76dae71a") is None
 
 
-def test_adding_unsupported_shared_registry_instrument_is_rejected(
+def test_adding_equity_shared_registry_instrument_uses_listed_detail(
     client: TestClient,
 ) -> None:
     seed_shared_instrument(
@@ -669,8 +812,11 @@ def test_adding_unsupported_shared_registry_instrument_is_rejected(
         json={"instrument_ids": ["equity-demo"]},
     )
 
-    assert add_response.status_code == 400
-    assert "fund, ETF, and index instruments only" in add_response.json()["detail"]
+    assert add_response.status_code == 200
+    resolve_response = client.get("/api/instruments/equity-demo/resolve")
+    assert resolve_response.status_code == 200
+    assert resolve_response.json()["detail_view_type"] == "listed"
+    assert resolve_response.json()["detail_subject_id"] == "equity-demo"
 
 
 def test_move_watchlist_items_transfers_membership_to_target_watchlist(
@@ -929,6 +1075,33 @@ def test_adding_shared_nav_instrument_recalculates_last_nav_fields(
     assert payload["snapshot_metadata"]["as_of_date"] == "2026-04-14"
 
 
+def test_shared_total_return_fixture_is_backed_by_current_projection_factors(
+    client: TestClient,
+) -> None:
+    from watchlist_app.services.shared_instrument_registry import get_shared_instrument
+
+    detail = get_shared_instrument("sxv264")
+    assert detail is not None
+    current_run_id = detail["current_fund_nav_projection_run_id"]
+    factors = {
+        item["fund_nav_adjustment_factor_id"]: item
+        for item in detail["fund_nav_adjustment_factors"]
+    }
+    total_rows = [
+        point
+        for point in detail["market_data"]
+        if point["quote_basis"] == "total_return_nav"
+    ]
+
+    assert len(total_rows) == len(factors) == 4
+    for point in total_rows:
+        factor_id = point["nav_lineage"]["evidence"]["factor_record_id"]
+        factor = factors[factor_id]
+        assert factor["fund_nav_projection_run_id"] == current_run_id
+        assert factor["factor_kind"] == "provider_implied"
+        assert factor["as_of_date"] == point["as_of_date"]
+
+
 def test_adding_existing_watchlist_item_is_noop_without_membership_recalc(
     client: TestClient,
     monkeypatch: pytest.MonkeyPatch,
@@ -1036,6 +1209,10 @@ def test_calendar_period_returns_use_prior_close_as_base(
                 {
                     "metric_family": "nav",
                     "quote_basis": "total_return_nav",
+                    "nav_lineage": {
+                        "kind": "provider_explicit",
+                        "evidence": {"source_field": "test_total_return_nav"},
+                    },
                     "as_of_date": as_of_date,
                     "value": value,
                     "currency": "USD",
@@ -1208,8 +1385,14 @@ def test_instrument_performance_and_risk_payloads_include_materialized_metrics(
     }
     assert performance_payload["snapshot_metadata"]["as_of_date"] == "2026-04-14"
     assert trailing_by_window["MTD"]["investment_nav"] == pytest.approx(2.259067, abs=1e-6)
+    assert trailing_by_window["MTD"]["requested_start_date"] == "2026-04-01"
+    assert trailing_by_window["MTD"]["anchor_mode"] == "strictly_before"
+    assert trailing_by_window["MTD"]["anchor_date"] == "2026-03-14"
+    assert trailing_by_window["MTD"]["end_date"] == "2026-04-14"
     assert trailing_by_window["YTD"]["investment_nav"] == pytest.approx(3.832283, abs=1e-6)
+    assert trailing_by_window["YTD"]["anchor_date"] == "2025-12-31"
     assert trailing_by_window["Ann."]["investment_nav"] == pytest.approx(14.119462, abs=1e-6)
+    assert performance_payload["return_window_policy"] == "return-window/v1"
 
     risk_response = client.get("/api/instruments/sxv264/risk")
     assert risk_response.status_code == 200
@@ -1255,6 +1438,10 @@ def test_instrument_detail_payload_exposes_weekly_calculation_frequency(
                 {
                     "metric_family": "nav",
                     "quote_basis": "total_return_nav",
+                    "nav_lineage": {
+                        "kind": "provider_explicit",
+                        "evidence": {"source_field": "test_total_return_nav"},
+                    },
                     "as_of_date": as_of_date,
                     "value": value,
                     "currency": "USD",
@@ -1345,6 +1532,10 @@ def test_instrument_performance_payload_includes_taxonomy_peer_ranking(
                     {
                         "metric_family": "nav",
                         "quote_basis": "total_return_nav",
+                        "nav_lineage": {
+                            "kind": "provider_explicit",
+                            "evidence": {"source_field": "test_total_return_nav"},
+                        },
                         "as_of_date": as_of_date,
                         "value": value,
                         "currency": "USD",
@@ -1787,6 +1978,50 @@ def test_same_date_market_data_revision_triggers_refresh(
     assert len(scheduled) == 1
 
 
+def test_worker_reconciliation_repairs_a_missed_market_data_notification(
+    client: TestClient,
+) -> None:
+    from watchlist_app.db import session as session_module
+    from watchlist_app.db.models.recalc import RecalcJob
+    from watchlist_app.services.read_model_freshness import (
+        reconcile_stale_instrument_read_models,
+    )
+
+    created_watchlist = client.post(
+        "/api/watchlists",
+        json={"name": "Silent Source Change", "description": None},
+    )
+    watchlist_id = created_watchlist.json()["watchlist_id"]
+    assert client.post(
+        f"/api/watchlists/{watchlist_id}/items",
+        json={"instrument_ids": ["sxv264"]},
+    ).status_code == 200
+
+    session_factory = session_module.get_session_factory()
+    revised = deepcopy(TEST_SHARED_INSTRUMENTS["sxv264"])
+    for point in revised["market_data"]:
+        if point["as_of_date"] == "2026-04-07":
+            point["provider"] = "silent-revision-test"
+    publish_provider_explicit_nav(session_factory, revised)
+
+    reconciliation = reconcile_stale_instrument_read_models(limit=500)
+
+    with session_factory() as session:
+        jobs = list(
+            session.scalars(
+                select(RecalcJob).where(
+                    RecalcJob.instrument_id == "sxv264",
+                    RecalcJob.trigger_ref_type == "worker_reconcile",
+                )
+            ).all()
+        )
+    assert reconciliation.scheduled_count == 1
+    assert reconciliation.scanned_count >= 1
+    assert reconciliation.cycle_completed is True
+    assert len(jobs) == 1
+    assert jobs[0].job_status == "queued"
+
+
 def test_stale_read_repair_commits_requeued_existing_job(client: TestClient) -> None:
     from watchlist_app.db import session as session_module
     from watchlist_app.repositories.sqlalchemy.recalc_jobs import SQLAlchemyRecalcJobRepository
@@ -1884,6 +2119,57 @@ def test_manual_recalc_enqueue_reuses_open_dedupe_job(client: TestClient) -> Non
         and job.trigger_ref_type == "api_request"
     ]
     assert len(matching) == 1
+
+
+def test_bulk_recalc_provisions_supported_shared_instrument_before_enqueue(
+    client: TestClient,
+) -> None:
+    response = client.post(
+        "/api/recalc/bulk",
+        json={
+            "instrument_ids": ["sxv264"],
+            "job_type": "all",
+            "trigger_type": "market_data_refresh",
+            "trigger_ref_type": "shared_market_data",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "requested_count": 1,
+        "accepted_count": 1,
+        "provisioned_instrument_ids": ["sxv264"],
+        "enqueued_instrument_ids": ["sxv264"],
+        "existing_instrument_ids": [],
+        "missing_instrument_ids": [],
+    }
+    detail = client.get("/api/instruments/sxv264/resolve")
+    assert detail.status_code == 200
+    assert detail.json()["detail_supported"] is True
+
+
+def test_bulk_recalc_keeps_unknown_shared_instrument_explicitly_missing(
+    client: TestClient,
+) -> None:
+    response = client.post(
+        "/api/recalc/bulk",
+        json={
+            "instrument_ids": ["not-in-registry"],
+            "job_type": "all",
+            "trigger_type": "market_data_refresh",
+            "trigger_ref_type": "shared_market_data",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "requested_count": 1,
+        "accepted_count": 0,
+        "provisioned_instrument_ids": [],
+        "enqueued_instrument_ids": [],
+        "existing_instrument_ids": [],
+        "missing_instrument_ids": ["not-in-registry"],
+    }
 
 
 def test_synchronous_recalc_reuses_queued_job(client: TestClient) -> None:
@@ -2027,6 +2313,7 @@ def test_manual_recalc_enqueue_returns_existing_job_after_dedupe_race(
 def test_process_next_recalc_job_refreshes_shared_metadata_drift(
     client: TestClient,
 ) -> None:
+    from portfolio_ops_instrument_core import instrument_store as shared_store
     from watchlist_app.db import session as session_module
     from watchlist_app.repositories.sqlalchemy.recalc_jobs import SQLAlchemyRecalcJobRepository
     from watchlist_app.services.recalc_worker import process_next_recalc_job
@@ -2043,24 +2330,48 @@ def test_process_next_recalc_job_refreshes_shared_metadata_drift(
     )
     assert add_response.status_code == 200
 
-    seed_shared_instrument(
-        {
-            **TEST_SHARED_INSTRUMENTS["sxv264"],
-            "instrument_name": "SXV264 Renamed Total Return Fund",
-            "identifiers": [
-                {
-                    "identifier_type": "ticker",
-                    "identifier_value": "SXV264X",
-                    "is_primary": True,
-                }
-            ],
-        }
+    session_factory = session_module.get_session_factory()
+    before_drift = shared_store.get_instrument(session_factory, "sxv264")
+    assert before_drift is not None
+    ledger_identity = (
+        before_drift["current_fund_nav_projection_run_id"],
+        [
+            item["fund_nav_projection_run_id"]
+            for item in before_drift["fund_nav_projection_runs"]
+        ],
+        [
+            item["fund_nav_adjustment_factor_id"]
+            for item in before_drift["fund_nav_adjustment_factor_history"]
+        ],
     )
+    mutate_shared_instrument_metadata_for_drift(
+        instrument_id="sxv264",
+        instrument_name="SXV264 Renamed Total Return Fund",
+        identifiers=[
+            {
+                "identifier_type": "ticker",
+                "identifier_value": "SXV264X",
+                "is_primary": True,
+            }
+        ],
+    )
+    after_drift = shared_store.get_instrument(session_factory, "sxv264")
+    assert after_drift is not None
+    assert (
+        after_drift["current_fund_nav_projection_run_id"],
+        [
+            item["fund_nav_projection_run_id"]
+            for item in after_drift["fund_nav_projection_runs"]
+        ],
+        [
+            item["fund_nav_adjustment_factor_id"]
+            for item in after_drift["fund_nav_adjustment_factor_history"]
+        ],
+    ) == ledger_identity
 
     summary_response = client.get("/api/instruments/sxv264/summary")
     assert summary_response.status_code == 200
 
-    session_factory = session_module.get_session_factory()
     with session_factory() as session:
         jobs = list(SQLAlchemyRecalcJobRepository().list_recent(session))
     queued_jobs = [
@@ -2639,7 +2950,8 @@ def test_local_detail_support_is_explicit_by_instrument_type(
 
     assert watchlists_route._supports_local_detail({"instrument_type": "fund"}) is True
     assert watchlists_route._supports_local_detail({"instrument_type": "index"}) is True
-    assert watchlists_route._supports_local_detail({"instrument_type": "equity"}) is False
+    assert watchlists_route._supports_local_detail({"instrument_type": "equity"}) is True
+    assert watchlists_route._local_detail_view_type({"instrument_type": "equity"}) == "listed"
 
 
 def test_shared_registry_service_wraps_storage_errors_without_local_fallback(
@@ -3715,8 +4027,9 @@ def test_seeded_private_fund_watchlist_tags_are_available(client: TestClient) ->
     assert fields_by_key["latest_quote"]["instrument_scope_json"] == []
     assert fields_by_key["latest_quote"]["source_metric_code"] == "instrument_chart_read_model.series.latest_quote"
     assert fields_by_key["latest_quote_date"]["data_type"] == "date"
-    assert fields_by_key["price_chart_1m"]["label"] == "Chart 1M"
-    assert fields_by_key["price_chart_1m"]["description"] == "1-month NAV chart from the current chart read model."
+    assert fields_by_key["return_chart_1m"]["label"] == "Return 1M"
+    assert "one-month boundary" in fields_by_key["return_chart_1m"]["description"]
+    assert "price_chart_1m" not in fields_by_key
     assert fields_by_key["return_1w"]["label"] == "1W Return"
     assert fields_by_key["return_mtd"]["label"] == "MTD"
     assert fields_by_key["return_ytd"]["label"] == "YTD"
@@ -4181,7 +4494,7 @@ def test_monitoring_dashboard_surfaces_missing_labels_quotes_and_open_recalc_job
         for item in payload["needs_attention_instruments"]
         if item["instrument_id"] == "fund-no-data"
     )
-    assert attention_asset["data_freshness_status"] == "pending_recalc"
+    assert attention_asset["data_freshness_status"] == "unavailable"
     assert "needs_refresh" in attention_asset["issue_flags"]
     assert "missing_quote" in attention_asset["issue_flags"]
 

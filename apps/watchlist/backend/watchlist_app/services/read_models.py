@@ -7,6 +7,12 @@ from typing import Any
 
 from watchlist_app.db.models.read_models import InstrumentChartReadModel, WatchlistRowReadModel
 from watchlist_app.db.models.watchlists import InstrumentAttributeValue, WatchlistView
+from watchlist_app.services.return_windows import (
+    named_return_window_spec,
+    normalized_return_points,
+    resolve_return_window,
+    return_window_metadata,
+)
 
 
 TAXONOMY_GROUP_BY_CODE = "taxonomy"
@@ -125,36 +131,23 @@ def build_latest_quote_overrides(
     return overrides
 
 
-CHART_FIELD_POINT_LIMITS = {
-    "price_chart_1d": 10,
-    "price_chart_1w": 20,
-    "price_chart_1m": 40,
-    "price_chart_1y": 64,
+RETURN_CHART_WINDOWS = {
+    "return_chart_1d": "1D",
+    "return_chart_1w": "1W",
+    "return_chart_1m": "1M",
+    "return_chart_1y": "1Y",
 }
-DEFAULT_SPARKLINE_POINT_LIMIT = 40
 
 
 def _is_chart_field(field_key: object) -> bool:
     normalized = str(field_key or "").strip().lower()
-    return normalized.startswith("price_chart_") or "sparkline" in normalized
-
-
-def _sparkline_point_limit(selected_fields: Sequence[object]) -> int:
-    chart_fields = [str(field) for field in selected_fields if _is_chart_field(field)]
-    if not chart_fields:
-        return 0
-    return max(
-        CHART_FIELD_POINT_LIMITS.get(field, DEFAULT_SPARKLINE_POINT_LIMIT)
-        for field in chart_fields
-    )
+    return normalized in RETURN_CHART_WINDOWS
 
 
 def _extract_sparkline_points(
     payload: object,
-    *,
-    point_limit: int,
 ) -> list[dict[str, object]]:
-    if point_limit <= 0 or not isinstance(payload, dict):
+    if not isinstance(payload, dict):
         return []
     series = payload.get("series")
     if not isinstance(series, list):
@@ -174,13 +167,40 @@ def _extract_sparkline_points(
                 continue
             normalized.append(
                 {
-                    "date": point.get("date"),
+                    "as_of_date": date.fromisoformat(str(point.get("date"))[:10]),
                     "value": float(value),
                 }
             )
         if normalized:
-            return normalized[-point_limit:]
+            return normalized
     return []
+
+
+def _chart_return_kind(payload: object) -> str | None:
+    if not isinstance(payload, dict):
+        return None
+    metadata = payload.get("selected_series")
+    if not isinstance(metadata, dict):
+        return None
+    explicit = str(metadata.get("return_kind") or "").strip()
+    if explicit:
+        return explicit
+    quote_basis = str(metadata.get("quote_basis") or "").strip()
+    if quote_basis in {"total_return_nav", "adjusted_close"}:
+        return "total_return"
+    if quote_basis in {"close", "last"}:
+        return "price_return"
+    if quote_basis == "official_nav":
+        return "unit_nav_return"
+    return None
+
+
+def _chart_return_label(return_kind: str) -> str:
+    return {
+        "total_return": "Cumulative Total Return",
+        "price_return": "Cumulative Price Return",
+        "unit_nav_return": "Cumulative Unit NAV Return",
+    }[return_kind]
 
 
 def build_sparkline_payload(
@@ -188,21 +208,67 @@ def build_sparkline_payload(
     *,
     instrument_ids: Sequence[str],
     selected_fields: Sequence[object],
-) -> dict[str, list[dict[str, object]]]:
-    point_limit = _sparkline_point_limit(selected_fields)
-    if point_limit <= 0:
+) -> dict[str, dict[str, dict[str, object]]]:
+    requested_fields = [
+        str(field) for field in selected_fields if _is_chart_field(field)
+    ]
+    if not requested_fields:
         return {}
     requested_ids = set(instrument_ids)
-    payload: dict[str, list[dict[str, object]]] = {}
+    payload: dict[str, dict[str, dict[str, object]]] = {}
     for chart in charts or []:
         if chart.instrument_id not in requested_ids:
             continue
-        points = _extract_sparkline_points(
-            chart.payload_json,
-            point_limit=point_limit,
+        points = _extract_sparkline_points(chart.payload_json)
+        return_kind = _chart_return_kind(chart.payload_json)
+        if not points or return_kind is None:
+            continue
+        metadata = (
+            chart.payload_json.get("selected_series")
+            if isinstance(chart.payload_json, dict)
+            else None
         )
-        if points:
-            payload[chart.instrument_id] = points
+        raw_status = (
+            str(metadata.get("return_series_status") or "ready").strip().lower()
+            if isinstance(metadata, dict)
+            else "ready"
+        )
+        series_status = "partial" if raw_status == "partial" else "ready"
+        latest_date = points[-1]["as_of_date"]
+        if not isinstance(latest_date, date):
+            continue
+        field_payloads: dict[str, dict[str, object]] = {}
+        for field_key in requested_fields:
+            spec = named_return_window_spec(
+                RETURN_CHART_WINDOWS[field_key],
+                latest_date,
+            )
+            window = resolve_return_window(
+                points,
+                requested_start_date=spec.requested_start_date,
+                requested_end_date=spec.requested_end_date,
+                anchor_mode=spec.anchor_mode,
+            )
+            if window is None:
+                field_payloads[field_key] = {
+                    "points": [],
+                    "return_kind": return_kind,
+                    "label": _chart_return_label(return_kind),
+                    "status": "unavailable",
+                    "requested_start_date": spec.requested_start_date.isoformat(),
+                    "requested_end_date": spec.requested_end_date.isoformat(),
+                    "anchor_date": None,
+                    "end_date": None,
+                }
+                continue
+            field_payloads[field_key] = {
+                "points": normalized_return_points(window),
+                "return_kind": return_kind,
+                "label": _chart_return_label(return_kind),
+                "status": series_status,
+                **return_window_metadata(window),
+            }
+        payload[chart.instrument_id] = field_payloads
     return payload
 
 

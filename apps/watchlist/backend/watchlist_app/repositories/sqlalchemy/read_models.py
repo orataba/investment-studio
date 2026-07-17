@@ -18,6 +18,7 @@ from watchlist_app.db.models.read_models import (
     WatchlistRowReadModel,
 )
 from watchlist_app.db.models.watchlists import WatchlistView
+from watchlist_app.services.materialization_policy import UNVERSIONED_MATERIALIZATION
 
 
 def _scoped_view_id(watchlist_id: str, local_view_id: str) -> str:
@@ -155,6 +156,9 @@ class SQLAlchemyReadModelRepository:
                 last_recalculated_at=data.get("last_recalculated_at"),
                 last_successful_snapshot_at=data.get("last_successful_snapshot_at"),
                 staleness_reason=data.get("staleness_reason"),
+                materialization_version=str(
+                    data.get("materialization_version") or UNVERSIONED_MATERIALIZATION
+                ),
             )
             session.add(record)
             session.flush()
@@ -190,6 +194,9 @@ class SQLAlchemyReadModelRepository:
         record.last_recalculated_at = data.get("last_recalculated_at")
         record.last_successful_snapshot_at = data.get("last_successful_snapshot_at")
         record.staleness_reason = data.get("staleness_reason")
+        record.materialization_version = str(
+            data.get("materialization_version") or UNVERSIONED_MATERIALIZATION
+        )
         session.flush()
         return record
 
@@ -275,6 +282,7 @@ class SQLAlchemyReadModelRepository:
         data_freshness_status: str,
         last_recalculated_at,
         source_cutoff_at,
+        materialization_version: str,
     ):
         record = session.get(model_class, instrument_id)
         if record is None:
@@ -285,6 +293,8 @@ class SQLAlchemyReadModelRepository:
                 last_recalculated_at=last_recalculated_at,
                 source_cutoff_at=source_cutoff_at,
             )
+            if isinstance(record, InstrumentChartReadModel):
+                record.materialization_version = materialization_version
             session.add(record)
             session.flush()
             return record
@@ -292,5 +302,7 @@ class SQLAlchemyReadModelRepository:
         record.data_freshness_status = data_freshness_status
         record.last_recalculated_at = last_recalculated_at
         record.source_cutoff_at = source_cutoff_at
+        if isinstance(record, InstrumentChartReadModel):
+            record.materialization_version = materialization_version
         session.flush()
         return record

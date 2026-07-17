@@ -6,7 +6,7 @@ import {
   copyWatchlist,
   type FieldCategory,
   type FieldRegistryRecord,
-  type FundChartPoint,
+  type ReturnSparklineSeries,
   type FundTaxonomyTreeNode,
   type FundTaxonomyTreeResponse,
   type ScreenerResponse,
@@ -447,7 +447,7 @@ function getWatchlistCompactMinWidth(fieldKey: string, field: FieldRegistryRecor
 }
 
 function isChartFieldKey(fieldKey: string) {
-  return fieldKey.startsWith('price_chart_') || fieldKey.includes('sparkline')
+  return fieldKey.startsWith('return_chart_')
 }
 
 function isAverageSummaryField(fieldKey: string, field: FieldRegistryRecord | undefined) {
@@ -502,28 +502,12 @@ function formatGroupAverageCell(fieldKey: string, field: FieldRegistryRecord | u
   return formatNumber(value)
 }
 
-function priceChartMaxPoints(fieldKey: string) {
-  if (fieldKey.endsWith('1y')) {
-    return 120
-  }
-  if (fieldKey.endsWith('1m')) {
-    return 40
-  }
-  if (fieldKey.endsWith('1w')) {
-    return 20
-  }
-  if (fieldKey.endsWith('1d')) {
-    return 10
-  }
-  return undefined
-}
-
 function renderCell(
   fieldKey: string,
   value: unknown,
   instrumentId: string,
   watchlistId: string,
-  sparklinePoints: FundChartPoint[] | undefined,
+  sparkline: ReturnSparklineSeries | undefined,
 ) {
   if (fieldKey === 'instrument_name') {
     return (
@@ -550,7 +534,15 @@ function renderCell(
   }
 
   if (isChartFieldKey(fieldKey)) {
-    return <Sparkline values={sparklinePoints} maxPoints={priceChartMaxPoints(fieldKey)} />
+    const anchorLabel = sparkline?.anchor_date
+      ? `${sparkline.anchor_date} to ${sparkline.end_date || 'latest'}`
+      : 'unavailable window'
+    return (
+      <Sparkline
+        values={sparkline?.points}
+        ariaLabel={`${sparkline?.label || 'Cumulative return'}; ${anchorLabel}`}
+      />
+    )
   }
 
   if (fieldKey === 'aum') {
@@ -787,7 +779,9 @@ export default function WatchlistsPage() {
   const [error, setError] = useState<string | null>(null)
   const [pendingDeleteWatchlist, setPendingDeleteWatchlist] = useState<WatchlistRecord | null>(null)
   const [deletingWatchlist, setDeletingWatchlist] = useState(false)
-  const [sparklineMap, setSparklineMap] = useState<Record<string, FundChartPoint[]>>({})
+  const [sparklineMap, setSparklineMap] = useState<
+    Record<string, Record<string, ReturnSparklineSeries>>
+  >({})
   const [collapsedGroupKeys, setCollapsedGroupKeys] = useState<Set<string>>(new Set())
   const [draggingInstrumentId, setDraggingInstrumentId] = useState<string | null>(null)
   const [groupDropTargetKey, setGroupDropTargetKey] = useState<string | null>(null)
@@ -1181,88 +1175,7 @@ export default function WatchlistsPage() {
     moveTargetOptions.find((item) => item.watchlist_id === moveTargetWatchlistId) || moveTargetOptions[0] || null
   const selectedSharedInstrument =
     sharedInstrumentResults.find((item) => item.instrument_id === selectedInstrumentId) || null
-  const mergedFieldRegistry = useMemo(() => {
-    const sparklineFields = ['price_chart_1d', 'price_chart_1w', 'price_chart_1m', 'price_chart_1y']
-    const hasSparkline = fieldRegistry.some((field) => sparklineFields.includes(field.field_key))
-    if (hasSparkline) {
-      return fieldRegistry
-    }
-    return [
-      ...fieldRegistry,
-      {
-        field_key: 'price_chart_1d',
-        label: 'Chart 1D',
-        description: '1 day',
-        category_code: 'market_data',
-        data_type: 'sparkline',
-        formatter_code: 'sparkline',
-        sort_mode: 'none',
-        filter_mode: 'none',
-        group_mode: 'none',
-        instrument_scope_json: ['fund', 'etf', 'index'],
-        product_scope_json: [],
-        availability_rule_json: {},
-        source_domain: 'derived',
-        source_metric_code: 'nav_chart',
-        default_width: null,
-        default_visible: false,
-      },
-      {
-        field_key: 'price_chart_1w',
-        label: 'Chart 1W',
-        description: '1 week',
-        category_code: 'market_data',
-        data_type: 'sparkline',
-        formatter_code: 'sparkline',
-        sort_mode: 'none',
-        filter_mode: 'none',
-        group_mode: 'none',
-        instrument_scope_json: ['fund', 'etf', 'index'],
-        product_scope_json: [],
-        availability_rule_json: {},
-        source_domain: 'derived',
-        source_metric_code: 'nav_chart',
-        default_width: null,
-        default_visible: false,
-      },
-      {
-        field_key: 'price_chart_1m',
-        label: 'Chart 1M',
-        description: '1 month',
-        category_code: 'market_data',
-        data_type: 'sparkline',
-        formatter_code: 'sparkline',
-        sort_mode: 'none',
-        filter_mode: 'none',
-        group_mode: 'none',
-        instrument_scope_json: ['fund', 'etf', 'index'],
-        product_scope_json: [],
-        availability_rule_json: {},
-        source_domain: 'derived',
-        source_metric_code: 'nav_chart',
-        default_width: null,
-        default_visible: false,
-      },
-      {
-        field_key: 'price_chart_1y',
-        label: 'Chart 1Y',
-        description: '1 year',
-        category_code: 'market_data',
-        data_type: 'sparkline',
-        formatter_code: 'sparkline',
-        sort_mode: 'none',
-        filter_mode: 'none',
-        group_mode: 'none',
-        instrument_scope_json: ['fund', 'etf', 'index'],
-        product_scope_json: [],
-        availability_rule_json: {},
-        source_domain: 'derived',
-        source_metric_code: 'nav_chart',
-        default_width: null,
-        default_visible: false,
-      },
-    ]
-  }, [fieldRegistry])
+  const mergedFieldRegistry = fieldRegistry
   const activeInstrumentTypes = useMemo(() => {
     const types = new Set<string>()
     ;(screenerResult?.rows || []).forEach((row) => {
@@ -3089,7 +3002,7 @@ export default function WatchlistsPage() {
                                     row[column],
                                     instrumentId,
                                     watchlistId,
-                                    sparklineMap[instrumentId],
+                                    sparklineMap[instrumentId]?.[column],
                                   )}
                                 </td>
                               )

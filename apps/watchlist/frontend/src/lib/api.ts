@@ -196,6 +196,35 @@ export type InstrumentResolveResponse = {
   corporate_actions: CorporateActionEvent[]
 }
 
+export type InstrumentPriceBar = {
+  date: string
+  open: string
+  high: string
+  low: string
+  close: string
+  previous_close: string | null
+  volume: string | null
+  turnover: string | null
+  adjustment_factor: string | null
+  currency: string
+  volume_unit: string | null
+  turnover_unit: string | null
+  provider: string
+  status: 'complete' | 'partial'
+}
+
+export type InstrumentPriceBarsResponse = {
+  instrument_id: string
+  instrument_type: 'etf' | 'equity' | 'index'
+  currency: string
+  adjustment_mode: 'raw_with_factor' | 'raw'
+  factor_coverage: number
+  source_refresh_status: string
+  source_refresh_message: string
+  count: number
+  bars: InstrumentPriceBar[]
+}
+
 export type CorporateActionEvent = {
   corporate_action_event_id: string
   action_type: 'share_split'
@@ -258,7 +287,7 @@ export type ScreenerResponse = {
   groups: ScreenerGroup[]
   total_rows: number
   stale_row_count: number
-  sparklines?: Record<string, FundChartPoint[]>
+  sparklines?: Record<string, Record<string, ReturnSparklineSeries>>
   snapshot_metadata: ScreenerSnapshotMetadata
 }
 
@@ -368,6 +397,10 @@ export type FundSummaryResponse = {
     selected_series_type?: string | null
     selected_series_label?: string | null
     selected_date_label?: string | null
+    return_kind?: ReturnKind | null
+    return_series_status?: string | null
+    return_anchor_date?: string | null
+    return_segment_breaks?: Array<Record<string, unknown>>
     latest_nav?: number | null
     latest_nav_with_dividend?: number | null
   }
@@ -390,6 +423,21 @@ type RawFundLibraryItem = {
 }
 
 export type FundChartPoint = { date: string; value: number }
+
+export type ReturnKind = 'total_return' | 'price_return' | 'unit_nav_return'
+
+export type ReturnSparklineSeries = {
+  points: FundChartPoint[]
+  return_kind: ReturnKind
+  label: string
+  status: 'ready' | 'partial' | 'unavailable'
+  policy_version?: string
+  anchor_mode?: 'on_or_before' | 'strictly_before'
+  requested_start_date: string
+  requested_end_date: string
+  anchor_date: string | null
+  end_date: string | null
+}
 
 export type CalculationFrequency = 'daily' | 'weekly' | 'monthly'
 
@@ -427,6 +475,10 @@ export type SelectedQuoteSeriesMetadata = {
   basis_type?: string | null
   label?: string | null
   date_label?: string | null
+  return_kind?: ReturnKind | null
+  return_series_status?: string | null
+  return_anchor_date?: string | null
+  return_segment_breaks?: Array<Record<string, unknown>>
 }
 
 export type SelectedQuotePoint = {
@@ -612,6 +664,10 @@ export type FundNavSeriesResponse = {
   selected_series_type?: string | null
   selected_series_label?: string | null
   selected_date_label?: string | null
+  return_kind?: ReturnKind | null
+  return_series_status?: string | null
+  return_anchor_date?: string | null
+  return_segment_breaks: Array<Record<string, unknown>>
   calculation_frequency_profile: CalculationFrequencyProfile
   compare_settings?: {
     default_benchmark_instrument_id: string | null
@@ -658,6 +714,10 @@ type RawFundNavSeriesResponse = {
   selected_series_type?: string | null
   selected_series_label?: string | null
   selected_date_label?: string | null
+  return_kind?: ReturnKind | null
+  return_series_status?: string | null
+  return_anchor_date?: string | null
+  return_segment_breaks?: Array<Record<string, unknown>>
   calculation_frequency_profile: CalculationFrequencyProfile
   compare_settings?: {
     default_benchmark_instrument_id: string | null
@@ -808,6 +868,10 @@ function normalizeFundNavSeriesResponse(response: RawFundNavSeriesResponse): Fun
     selected_series_type: response.selected_series_type,
     selected_series_label: response.selected_series_label,
     selected_date_label: response.selected_date_label,
+    return_kind: response.return_kind,
+    return_series_status: response.return_series_status,
+    return_anchor_date: response.return_anchor_date,
+    return_segment_breaks: response.return_segment_breaks || [],
     calculation_frequency_profile: response.calculation_frequency_profile,
     compare_settings: response.compare_settings,
     refresh_status: response.refresh_status,
@@ -878,6 +942,26 @@ export function getWatchlistDetail(watchlistId: string) {
 export function resolveInstrumentDetail(instrumentId: string) {
   return fetchJson<InstrumentResolveResponse>(
     `/api/instruments/${encodeURIComponent(instrumentId)}/resolve`,
+  )
+}
+
+export function getInstrumentPriceBars(
+  instrumentId: string,
+  options?: { start_date?: string; end_date?: string; limit?: number },
+) {
+  const params = new URLSearchParams()
+  if (options?.start_date) {
+    params.set('start_date', options.start_date)
+  }
+  if (options?.end_date) {
+    params.set('end_date', options.end_date)
+  }
+  if (typeof options?.limit === 'number') {
+    params.set('limit', String(options.limit))
+  }
+  const query = params.toString()
+  return fetchJson<InstrumentPriceBarsResponse>(
+    `${buildInstrumentDetailApiPath(instrumentId, 'price-bars')}${query ? `?${query}` : ''}`,
   )
 }
 

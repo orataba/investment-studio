@@ -43,6 +43,8 @@ from watchlist_app.services.read_models import (
 )
 from watchlist_app.services.read_model_freshness import (
     latest_local_market_data_date,
+    local_materialization_source_cutoff,
+    local_materialization_version,
     schedule_instrument_refresh_if_stale,
 )
 
@@ -109,10 +111,17 @@ def _schedule_instrument_refresh(
             chart_payload=chart_record.payload_json if chart_record is not None else None,
             fallback_values=((source_row.last_nav_date if source_row is not None else None),),
         ),
-        local_source_cutoff_at=(
-            chart_record.source_cutoff_at
-            if chart_record is not None
-            else (source_row.last_recalculated_at if source_row is not None else None)
+        local_source_cutoff_at=local_materialization_source_cutoff(
+            chart_record.source_cutoff_at if chart_record is not None else None,
+            *(
+                (source_row.last_fact_update_at,)
+                if source_row is not None
+                else ()
+            ),
+        ),
+        local_materialization_version=local_materialization_version(
+            getattr(chart_record, "materialization_version", None),
+            getattr(source_row, "materialization_version", None),
         ),
         trigger_ref_type=trigger_ref_type,
         trigger_ref_id=instrument_id,

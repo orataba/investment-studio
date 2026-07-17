@@ -81,6 +81,12 @@ import {
   normalizeNavQuoteCurrency,
   type NavQuoteBasis,
 } from '../lib/navQuoteBasis'
+import {
+  namedReturnWindowSpec,
+  normalizeCumulativeReturn,
+  resolveReturnWindow,
+  shiftIsoDate,
+} from '../lib/returnWindows'
 
 type FundDetailBundle = {
   summary: FundSummaryResponse
@@ -245,11 +251,9 @@ type DetailTab =
   | 'monitoring'
 
 type DetailKind = 'fund' | 'index'
-type ChartRange = '1M' | '3M' | '6M' | 'YTD' | '1Y' | '3Y' | '5Y' | '10Y' | 'MAX' | 'CUSTOM'
 type QuoteBasis = NavQuoteBasis
 type ChartFrequency = 'daily' | 'weekly' | 'monthly'
 type ChartDisplayStyle = 'mountain' | 'line' | 'dot'
-type ChartScale = 'linear' | 'logarithmic'
 type QuoteChartMenu = 'settings'
 type ChartHoverPanel = 'primary' | 'drawdown'
 type ChartHoverCursor = {
@@ -434,13 +438,16 @@ const TAB_LABELS: Record<DetailTab, LocalizedText> = {
 
 const NAV_BASIS_LABELS: Record<string, LocalizedText> = {
   auto: { en: 'Auto', zh: '自动' },
-  nav_with_dividend: { en: 'NAV with Dividends', zh: '累计净值' },
-  nav: { en: 'NAV', zh: '单位净值' },
+  nav_with_dividend: {
+    en: 'Dividend-Reinvested Total Return NAV',
+    zh: '分红再投资复权累计净值',
+  },
+  nav: { en: 'Unit NAV', zh: '单位净值' },
 }
 
 const NAV_BASIS_SOURCE_LABELS: Record<string, string> = {
-  nav_with_dividend_series: 'NAV with Dividend Series',
-  nav_series: 'NAV Series',
+  nav_with_dividend_series: 'Dividend-Reinvested Total Return NAV Series',
+  nav_series: 'Unit NAV Series',
   manual_nav_editor: 'Manual Editor',
   shared: 'Shared Registry',
   local: 'Local Facts',
@@ -478,22 +485,12 @@ const RESEARCH_OVERVIEW_FIELDS: Array<{
   { key: 'primary_analyst', label: 'Primary Analyst', type: 'text' },
 ]
 
-const QUOTE_RANGE_OPTIONS: Array<{ value: ChartRange | 'YTD' | 'CUSTOM'; label: string }> = [
-  { value: '1M', label: '1M' },
-  { value: '3M', label: '3M' },
-  { value: '6M', label: '6M' },
-  { value: 'YTD', label: 'YTD' },
-  { value: '1Y', label: '1Y' },
-  { value: '3Y', label: '3Y' },
-  { value: '5Y', label: '5Y' },
-  { value: '10Y', label: '10Y' },
-  { value: 'MAX', label: 'MAX' },
-  { value: 'CUSTOM', label: 'Custom' },
-]
-
 const QUOTE_BASIS_LABELS: Record<QuoteBasis, LocalizedText> = {
-  nav: { en: 'NAV', zh: '单位净值' },
-  nav_with_dividend: { en: 'NAV with Dividends', zh: '累计净值' },
+  nav: { en: 'Unit NAV', zh: '单位净值' },
+  nav_with_dividend: {
+    en: 'Dividend-Reinvested Total Return NAV',
+    zh: '分红再投资复权累计净值',
+  },
 }
 
 const SYSTEM_LABELS: Record<string, LocalizedText> = {
@@ -507,7 +504,6 @@ const SYSTEM_LABELS: Record<string, LocalizedText> = {
   downloadPdf: { en: 'Download PDF', zh: '下载 PDF' },
   fileName: { en: 'File Name', zh: '文件名' },
   fundDetail: { en: 'Fund Detail', zh: '基金详情' },
-  indexed: { en: 'Indexed to 1.00', zh: '归一到 1.00' },
   indexDetail: { en: 'Index Detail', zh: '指数详情' },
   notes: { en: 'Notes', zh: '备注' },
   noDocuments: { en: 'No documents yet.', zh: '暂无文档。' },
@@ -558,6 +554,7 @@ const SYSTEM_VALUE_LABELS: Record<string, LocalizedText> = {
   proposed: { en: 'Proposed', zh: '拟投' },
   stale: { en: 'Stale', zh: '过期' },
   unrated: { en: 'Unrated', zh: '未评级' },
+  unavailable: { en: 'Unavailable', zh: '不可用' },
   uploaded: { en: 'Uploaded', zh: '已上传' },
   watch: { en: 'Watch', zh: '观察' },
   factsheet: { en: 'Fact Sheet', zh: '要素表' },
@@ -1712,6 +1709,7 @@ function defaultFundNavSeriesResponse(fundId: string): FundNavSeriesResponse {
     nav_basis_type: null,
     nav_basis_source: 'unavailable',
     nav_basis_status: 'unavailable',
+    return_segment_breaks: [],
     calculation_frequency_profile: defaultCalculationFrequencyProfile(),
     series: [],
     calculation_series: [],
@@ -2020,41 +2018,6 @@ function buildChartAreaPath(
   return `${topPath} L ${lastX.toFixed(2)} ${baseline.toFixed(2)} L ${firstX.toFixed(2)} ${baseline.toFixed(2)} Z`
 }
 
-function filterChartPoints(points: FundChartPoint[], range: ChartRange) {
-  if (range === 'MAX' || points.length < 2) {
-    return points
-  }
-
-  const latestDate = new Date(points[points.length - 1].date)
-  if (Number.isNaN(latestDate.getTime())) {
-    return points
-  }
-
-  const cutoff = new Date(latestDate)
-  if (range === '1M') {
-    cutoff.setMonth(cutoff.getMonth() - 1)
-  } else if (range === '3M') {
-    cutoff.setMonth(cutoff.getMonth() - 3)
-  } else if (range === '6M') {
-    cutoff.setMonth(cutoff.getMonth() - 6)
-  } else if (range === '1Y') {
-    cutoff.setFullYear(cutoff.getFullYear() - 1)
-  } else if (range === '3Y') {
-    cutoff.setFullYear(cutoff.getFullYear() - 3)
-  } else if (range === '5Y') {
-    cutoff.setFullYear(cutoff.getFullYear() - 5)
-  } else if (range === '10Y') {
-    cutoff.setFullYear(cutoff.getFullYear() - 10)
-  }
-
-  const filtered = points.filter((point) => {
-    const current = new Date(point.date)
-    return !Number.isNaN(current.getTime()) && current >= cutoff
-  })
-
-  return filtered.length >= 2 ? filtered : points.slice(-Math.min(points.length, 2))
-}
-
 function buildBasisSeries(rows: FundNavSeriesResponse['rows'], basis: QuoteBasis) {
   return buildNavQuoteBasisSeries(rows, basis)
 }
@@ -2277,23 +2240,6 @@ function findNearestPositionedPointIndex(points: Array<FundChartPoint & { x: num
   return nearestIndex
 }
 
-function applyChartScale(points: FundChartPoint[], scale: ChartScale) {
-  if (!points.length) {
-    return []
-  }
-  if (scale === 'logarithmic') {
-    const canUseLogScale = points.every((point) => point.value > 0)
-    if (!canUseLogScale) {
-      return points
-    }
-    return points.map((point) => ({
-      date: point.date,
-      value: Math.log10(point.value),
-    }))
-  }
-  return points
-}
-
 function buildDrawdownSeries(points: FundChartPoint[]) {
   let runningMax = 0
   return points.map((point) => {
@@ -2304,19 +2250,6 @@ function buildDrawdownSeries(points: FundChartPoint[]) {
       value: drawdown,
     }
   })
-}
-
-function getSeriesChangeStats(points: FundChartPoint[]) {
-  if (points.length < 2) {
-    return { change: null, changePct: null }
-  }
-  const first = points[0]
-  const last = points[points.length - 1]
-  const change = last.value - first.value
-  return {
-    change,
-    changePct: first.value !== 0 ? (change / first.value) * 100 : null,
-  }
 }
 
 function getLatestPointChangeStats(points: FundChartPoint[]) {
@@ -2330,63 +2263,6 @@ function getLatestPointChangeStats(points: FundChartPoint[]) {
     change,
     changePct: previous.value !== 0 ? (change / previous.value) * 100 : null,
   }
-}
-
-function getRangeWindow(points: FundChartPoint[], range: ChartRange) {
-  if (!points.length) {
-    return { start: '', end: '' }
-  }
-
-  const end = points[points.length - 1].date
-  if (range === 'MAX' || range === 'CUSTOM') {
-    return { start: points[0].date, end }
-  }
-
-  const latestDate = new Date(`${end}T00:00:00`)
-  if (Number.isNaN(latestDate.getTime())) {
-    return { start: points[0].date, end }
-  }
-
-  const startDate = new Date(latestDate)
-  if (range === '1M') {
-    startDate.setMonth(startDate.getMonth() - 1)
-  } else if (range === '3M') {
-    startDate.setMonth(startDate.getMonth() - 3)
-  } else if (range === '6M') {
-    startDate.setMonth(startDate.getMonth() - 6)
-  } else if (range === 'YTD') {
-    startDate.setMonth(0)
-    startDate.setDate(1)
-  } else if (range === '1Y') {
-    startDate.setFullYear(startDate.getFullYear() - 1)
-  } else if (range === '3Y') {
-    startDate.setFullYear(startDate.getFullYear() - 3)
-  } else if (range === '5Y') {
-    startDate.setFullYear(startDate.getFullYear() - 5)
-  } else if (range === '10Y') {
-    startDate.setFullYear(startDate.getFullYear() - 10)
-  }
-
-  return {
-    start: startDate.toISOString().slice(0, 10),
-    end,
-  }
-}
-
-function filterSeriesByDateWindow(
-  points: FundChartPoint[],
-  startDate: string,
-  endDate: string,
-) {
-  return points.filter((point) => {
-    if (startDate && point.date < startDate) {
-      return false
-    }
-    if (endDate && point.date > endDate) {
-      return false
-    }
-    return true
-  })
 }
 
 function getMonthBucket(value: string) {
@@ -2421,17 +2297,6 @@ function buildMonthlyCloseSeries(points: FundChartPoint[]) {
   return monthlyPoints
 }
 
-function rebaseSeries(points: FundChartPoint[], baseValue = 100) {
-  if (!points.length || points[0].value === 0) {
-    return []
-  }
-  const startingValue = points[0].value
-  return points.map((point) => ({
-    date: point.date,
-    value: (point.value / startingValue) * baseValue,
-  }))
-}
-
 function buildCommonDateWindow(leftPoints: FundChartPoint[], rightPoints: FundChartPoint[]) {
   if (!leftPoints.length || !rightPoints.length) {
     return null
@@ -2452,116 +2317,25 @@ function buildCommonDateWindow(leftPoints: FundChartPoint[], rightPoints: FundCh
   return { start, end }
 }
 
-function buildCommonWindowSeries(
-  points: FundChartPoint[],
-  commonWindow: { start: string; end: string } | null,
-) {
-  if (!commonWindow) {
-    return []
-  }
-
-  const sortedPoints = sortSeriesByDate(points)
-  if (!sortedPoints.length) {
-    return []
-  }
-
-  const startIndex = findLastPointIndexOnOrBefore(sortedPoints, commonWindow.start)
-  const firstInWindowIndex = sortedPoints.findIndex((point) => point.date >= commonWindow.start)
-  const anchorPoint =
-    startIndex >= 0
-      ? sortedPoints[startIndex]
-      : firstInWindowIndex >= 0
-        ? sortedPoints[firstInWindowIndex]
-        : null
-  if (!anchorPoint || anchorPoint.date > commonWindow.end) {
-    return []
-  }
-
-  const windowPoints: FundChartPoint[] = [
-    {
-      date: commonWindow.start,
-      value: anchorPoint.value,
-    },
-  ]
-
-  sortedPoints.forEach((point) => {
-    if (point.date <= commonWindow.start || point.date > commonWindow.end) {
-      return
-    }
-    windowPoints.push(point)
-  })
-
-  const lastPoint = windowPoints[windowPoints.length - 1]
-  if (lastPoint && lastPoint.date < commonWindow.end) {
-    windowPoints.push({
-      date: commonWindow.end,
-      value: lastPoint.value,
-    })
-  }
-
-  return windowPoints
-}
-
-function buildCommonRebasedSeries(
-  points: FundChartPoint[],
-  commonWindow: { start: string; end: string } | null,
-  baseValue = 1,
-) {
-  const windowPoints = buildCommonWindowSeries(points, commonWindow)
-  return rebaseSeries(windowPoints, baseValue)
-}
-
-function getRangeWindowWithinDateWindow(
-  dateWindow: { start: string; end: string },
-  range: ChartRange,
-) {
-  if (range === 'MAX') {
-    return dateWindow
-  }
-
-  const end = dateWindow.end
-  const start =
-    range === 'YTD'
-      ? `${end.slice(0, 4)}-01-01`
-      : range === '1M'
-        ? shiftIsoDate(end, { months: -1 })
-        : range === '3M'
-          ? shiftIsoDate(end, { months: -3 })
-          : range === '6M'
-            ? shiftIsoDate(end, { months: -6 })
-            : range === '1Y'
-              ? shiftIsoDate(end, { years: -1 })
-              : range === '3Y'
-                ? shiftIsoDate(end, { years: -3 })
-                : range === '5Y'
-                  ? shiftIsoDate(end, { years: -5 })
-                  : range === '10Y'
-                    ? shiftIsoDate(end, { years: -10 })
-                    : dateWindow.start
-
-  return {
-    start: start && start > dateWindow.start ? start : dateWindow.start,
-    end,
-  }
-}
-
 function resolveCommonChartWindow(
   commonWindow: { start: string; end: string } | null,
-  range: ChartRange,
-  customStartDate: string,
-  customEndDate: string,
+  selectedStartDate: string,
+  selectedEndDate: string,
 ) {
   if (!commonWindow) {
     return null
   }
 
-  const resolvedWindow =
-    range === 'CUSTOM'
-      ? {
-          start: customStartDate && customStartDate > commonWindow.start ? customStartDate : commonWindow.start,
-          end: customEndDate && customEndDate < commonWindow.end ? customEndDate : commonWindow.end,
-        }
-      : getRangeWindowWithinDateWindow(commonWindow, range)
+  const resolvedWindow = {
+    start:
+      selectedStartDate && selectedStartDate > commonWindow.start
+        ? selectedStartDate
+        : commonWindow.start,
+    end:
+      selectedEndDate && selectedEndDate < commonWindow.end
+        ? selectedEndDate
+        : commonWindow.end,
+  }
 
   return resolvedWindow.start <= resolvedWindow.end ? resolvedWindow : null
 }
@@ -2909,49 +2683,9 @@ function sortSeriesByDate(points: FundChartPoint[]) {
   return [...points].sort((left, right) => left.date.localeCompare(right.date))
 }
 
-function shiftIsoDate(
-  value: string,
-  offset: { days?: number; months?: number; years?: number },
-) {
-  const year = Number(value.slice(0, 4))
-  const month = Number(value.slice(5, 7))
-  const day = Number(value.slice(8, 10))
-  if (!Number.isFinite(year) || !Number.isFinite(month) || !Number.isFinite(day)) {
-    return null
-  }
-
-  let targetYear = year + (offset.years || 0)
-  let targetMonthIndex = month - 1 + (offset.months || 0)
-  while (targetMonthIndex < 0) {
-    targetMonthIndex += 12
-    targetYear -= 1
-  }
-  while (targetMonthIndex > 11) {
-    targetMonthIndex -= 12
-    targetYear += 1
-  }
-
-  const lastDayOfMonth = new Date(Date.UTC(targetYear, targetMonthIndex + 1, 0)).getUTCDate()
-  const targetDay = Math.min(day, lastDayOfMonth)
-  const shifted = new Date(Date.UTC(targetYear, targetMonthIndex, targetDay))
-  if (offset.days) {
-    shifted.setUTCDate(shifted.getUTCDate() + offset.days)
-  }
-  return shifted.toISOString().slice(0, 10)
-}
-
 function findLastPointIndexOnOrBefore(points: FundChartPoint[], targetDate: string) {
   for (let index = points.length - 1; index >= 0; index -= 1) {
     if (points[index].date <= targetDate) {
-      return index
-    }
-  }
-  return -1
-}
-
-function findLastPointIndexBefore(points: FundChartPoint[], targetDate: string) {
-  for (let index = points.length - 1; index >= 0; index -= 1) {
-    if (points[index].date < targetDate) {
       return index
     }
   }
@@ -2964,48 +2698,24 @@ function getAnchoredWindow(
   referenceEndDate?: string | null,
 ) {
   const sortedPoints = sortSeriesByDate(points)
-  if (!sortedPoints.length) {
+  if (sortedPoints.length < 2) {
     return []
   }
-
   const requestedEndDate = referenceEndDate || sortedPoints[sortedPoints.length - 1]?.date || ''
-  const endIndex = findLastPointIndexOnOrBefore(sortedPoints, requestedEndDate)
-  if (endIndex < 0) {
-    return []
-  }
-
   if (periodKey === 'SI') {
-    return sortedPoints.slice(0, endIndex + 1)
+    return (
+      resolveReturnWindow(
+        sortedPoints,
+        sortedPoints[0].date,
+        requestedEndDate,
+        'on_or_before',
+      )?.points || []
+    )
   }
-
-  const endPoint = sortedPoints[endIndex]
-  const targetStartDate =
-    periodKey === 'YTD'
-      ? `${endPoint.date.slice(0, 4)}-01-01`
-      : periodKey === 'MTD'
-        ? `${endPoint.date.slice(0, 7)}-01`
-      : periodKey === '1W'
-        ? shiftIsoDate(endPoint.date, { days: -7 })
-        : periodKey === '1Y'
-          ? shiftIsoDate(endPoint.date, { years: -1 })
-          : periodKey === '2Y'
-            ? shiftIsoDate(endPoint.date, { years: -2 })
-            : periodKey === '3Y'
-              ? shiftIsoDate(endPoint.date, { years: -3 })
-              : shiftIsoDate(endPoint.date, { years: -5 })
-
-  if (!targetStartDate) {
-    return []
-  }
-
-  const startIndex =
-    periodKey === 'YTD' || periodKey === 'MTD'
-      ? findLastPointIndexBefore(sortedPoints, targetStartDate)
-      : findLastPointIndexOnOrBefore(sortedPoints, targetStartDate)
-  if (startIndex < 0 || startIndex >= endIndex) {
-    return []
-  }
-  return sortedPoints.slice(startIndex, endIndex + 1)
+  const spec = namedReturnWindowSpec(periodKey, requestedEndDate)
+  return (
+    resolveReturnWindow(sortedPoints, spec.start, spec.end, spec.anchorMode)?.points || []
+  )
 }
 
 function getPeriodReturnFromPoints(points: FundChartPoint[]) {
@@ -3454,51 +3164,6 @@ function buildCalculationPointSeries(series: FundNavSeriesResponse['calculation_
     .sort((left, right) => left.date.localeCompare(right.date))
 }
 
-function getChartTickValues(points: FundChartPoint[], count = 5) {
-  if (!points.length) {
-    return []
-  }
-  const values = points.map((point) => point.value)
-  const min = Math.min(...values)
-  const max = Math.max(...values)
-  const range = max - min
-  if (range === 0) {
-    return [min]
-  }
-  return Array.from({ length: count }, (_, index) => min + (range / (count - 1)) * index)
-}
-
-function getLogTickValues(points: FundChartPoint[], count = 5) {
-  if (!points.length || points.some((point) => point.value <= 0)) {
-    return getChartTickValues(points, count)
-  }
-  const values = points.map((point) => point.value)
-  const min = Math.min(...values)
-  const max = Math.max(...values)
-  const logMin = Math.log10(min)
-  const logMax = Math.log10(max)
-  if (!Number.isFinite(logMin) || !Number.isFinite(logMax) || logMin === logMax) {
-    return [min]
-  }
-  return Array.from(
-    { length: count },
-    (_, index) => 10 ** (logMin + ((logMax - logMin) / Math.max(count - 1, 1)) * index),
-  )
-}
-
-function getLogTickValuesFromBounds(logMin: number, logMax: number, count = 5) {
-  if (!Number.isFinite(logMin) || !Number.isFinite(logMax)) {
-    return []
-  }
-  if (logMin === logMax) {
-    return [10 ** logMin]
-  }
-  return Array.from(
-    { length: count },
-    (_, index) => 10 ** (logMin + ((logMax - logMin) / Math.max(count - 1, 1)) * index),
-  )
-}
-
 function getLinearTickValues(min: number, max: number, count = 5) {
   if (!Number.isFinite(min) || !Number.isFinite(max)) {
     return []
@@ -3507,11 +3172,6 @@ function getLinearTickValues(min: number, max: number, count = 5) {
     return [min]
   }
   return Array.from({ length: count }, (_, index) => min + ((max - min) / Math.max(count - 1, 1)) * index)
-}
-
-function formatAxisNumber(value: number) {
-  const digits = Math.abs(value) >= 100 ? 2 : 4
-  return value.toFixed(digits)
 }
 
 function parseChartDateParts(value: string) {
@@ -4029,7 +3689,6 @@ export default function FundDetailPage({
   const databaseDashboardUrl = `${PLATFORM_HOME_URL}/database-dashboard`
   const [bundle, setBundle] = useState<FundDetailBundle | null>(null)
   const [activeTab, setActiveTab] = useState<DetailTab>('overview')
-  const [chartRange, setChartRange] = useState<ChartRange>('3Y')
   const [quoteBasis, setQuoteBasis] = useState<QuoteBasis>('nav_with_dividend')
   const [chartFrequency, setChartFrequency] = useState<ChartFrequency>('daily')
   const [selectedCurrency, setSelectedCurrency] = useState('USD')
@@ -4052,7 +3711,6 @@ export default function FundDetailPage({
   const [chartHoverPanel, setChartHoverPanel] = useState<ChartHoverPanel | null>(null)
   const [chartHoverCursor, setChartHoverCursor] = useState<ChartHoverCursor | null>(null)
   const [chartDisplayStyle, setChartDisplayStyle] = useState<ChartDisplayStyle>('mountain')
-  const [chartScale, setChartScale] = useState<ChartScale>('linear')
   const [showDividendEvents, setShowDividendEvents] = useState(true)
   const [showTimelineNoteEvents, setShowTimelineNoteEvents] = useState(true)
   const [showDrawdownPanel, setShowDrawdownPanel] = useState(true)
@@ -4494,14 +4152,12 @@ export default function FundDetailPage({
     setChartTimelineNoteContextMenu(null)
     setTimelineNoteViewAnchorDate(null)
   }, [
-    chartRange,
     quoteBasis,
     chartFrequency,
     selectedCurrency,
     chartStartDate,
     chartEndDate,
     chartDisplayStyle,
-    chartScale,
     showDividendEvents,
     showDrawdownPanel,
     fundId,
@@ -4556,26 +4212,9 @@ export default function FundDetailPage({
     setQuoteActionNotice(null)
     setOpenQuoteChartMenu(null)
     setRiskSettingsOpen(false)
+    setChartStartDate('')
+    setChartEndDate('')
   }, [fundId])
-
-  useEffect(() => {
-    if (!bundle || chartRange === 'CUSTOM') {
-      return
-    }
-
-    const currencies = getAvailableQuoteCurrencies(bundle.navSeries.rows)
-    const effectiveCurrency =
-      currencies.includes(selectedCurrency) ? selectedCurrency : currencies[0] || ''
-    const quoteContext = buildQuoteSeriesContext(bundle.navSeries.rows, {
-      currency: effectiveCurrency,
-      requestedBasis: quoteBasis,
-    })
-    const navBasisSeries = quoteContext.basisSeries
-    const defaultWindow = getRangeWindow(navBasisSeries, chartRange)
-
-    setChartStartDate(defaultWindow.start)
-    setChartEndDate(defaultWindow.end)
-  }, [bundle, chartRange, quoteBasis, selectedCurrency])
 
   async function handleSavePeople() {
     if (!peopleDraft) {
@@ -4869,7 +4508,6 @@ export default function FundDetailPage({
 
   function focusTimelineNoteInQuote(noteDate: string) {
     setActiveTab('overview')
-    setChartRange('MAX')
     setChartStartDate('')
     setChartEndDate('')
     setTimelineNoteViewAnchorDate(noteDate)
@@ -5097,24 +4735,31 @@ export default function FundDetailPage({
   // Metrics use the backend-selected calculation series, never the zoomed or downsampled chart display series.
   const calculationBasisSeries = buildCalculationPointSeries(navSeries.calculation_series)
   const selectedCalculationBasis = resolvePreferredQuoteBasis(navSeries.nav_basis_type)
-  const defaultWindow = getRangeWindow(navBasisSeries, chartRange)
-  const effectiveStartDate = chartRange === 'CUSTOM' ? chartStartDate : defaultWindow.start
-  const effectiveEndDate = chartRange === 'CUSTOM' ? chartEndDate : defaultWindow.end
   const zoomMaxIndex = Math.max(navBasisSeries.length - 1, 0)
-  const rawZoomStartIndex = effectiveStartDate
-    ? findLastPointIndexOnOrBefore(navBasisSeries, effectiveStartDate)
+  const rawZoomStartIndex = chartStartDate
+    ? findLastPointIndexOnOrBefore(navBasisSeries, chartStartDate)
     : 0
-  const rawZoomEndIndex = effectiveEndDate
-    ? findLastPointIndexOnOrBefore(navBasisSeries, effectiveEndDate)
+  const rawZoomEndIndex = chartEndDate
+    ? findLastPointIndexOnOrBefore(navBasisSeries, chartEndDate)
     : zoomMaxIndex
-  const zoomStartIndex = Math.max(0, Math.min(rawZoomStartIndex < 0 ? 0 : rawZoomStartIndex, zoomMaxIndex))
+  const boundedZoomStartIndex = Math.max(
+    0,
+    Math.min(rawZoomStartIndex < 0 ? 0 : rawZoomStartIndex, Math.max(zoomMaxIndex - 1, 0)),
+  )
+  const boundedZoomEndIndex = Math.max(
+    0,
+    Math.min(rawZoomEndIndex < 0 ? 0 : rawZoomEndIndex, zoomMaxIndex),
+  )
+  const zoomStartIndex =
+    zoomMaxIndex <= 0
+      ? 0
+      : Math.min(boundedZoomStartIndex, Math.max(boundedZoomEndIndex - 1, 0))
   const zoomEndIndex =
     zoomMaxIndex <= 0
       ? 0
-      : Math.max(
-          Math.min(zoomStartIndex + 1, zoomMaxIndex),
-          Math.min(rawZoomEndIndex < 0 ? zoomMaxIndex : rawZoomEndIndex, zoomMaxIndex),
-        )
+      : Math.max(zoomStartIndex + 1, boundedZoomEndIndex)
+  const effectiveStartDate = navBasisSeries[zoomStartIndex]?.date || ''
+  const effectiveEndDate = navBasisSeries[zoomEndIndex]?.date || ''
   const canUseZoom = navBasisSeries.length > 2
   const zoomSelectionLeftPct = zoomMaxIndex > 0 ? (zoomStartIndex / zoomMaxIndex) * 100 : 0
   const zoomSelectionRightPct =
@@ -5152,54 +4797,50 @@ export default function FundDetailPage({
     ? buildCommonDateWindow(navBasisSeries, benchmarkNavBasisSeries)
     : null
   const compareDateWindow = hasBenchmarkSelection
-    ? resolveCommonChartWindow(rawCompareDateWindow, chartRange, chartStartDate, chartEndDate)
+    ? resolveCommonChartWindow(rawCompareDateWindow, effectiveStartDate, effectiveEndDate)
     : null
-  const rawCommonNavSeries = compareDateWindow ? buildCommonWindowSeries(navBasisSeries, compareDateWindow) : []
-  const rawCommonBenchmarkSeries = compareDateWindow
-    ? buildCommonWindowSeries(benchmarkNavBasisSeries, compareDateWindow)
-    : []
-  const shouldIndexCompareSeries = Boolean(
-    hasBenchmarkSelection &&
-      compareDateWindow &&
-      rawCommonNavSeries.length > 1 &&
-      rawCommonBenchmarkSeries.length > 1,
+  const requestedChartWindow = compareDateWindow || {
+    start: effectiveStartDate,
+    end: effectiveEndDate,
+  }
+  const fundReturnWindow = resolveReturnWindow(
+    navBasisSeries,
+    requestedChartWindow.start,
+    requestedChartWindow.end,
+    'on_or_before',
   )
-  const visibleNavSeries = shouldIndexCompareSeries
-    ? resampleSeriesPreservingBounds(rawCommonNavSeries, chartFrequency)
-    : resampleSeries(
-        filterSeriesByDateWindow(navBasisSeries, effectiveStartDate, effectiveEndDate),
+  const benchmarkReturnWindow = compareDateWindow
+    ? resolveReturnWindow(
+        benchmarkNavBasisSeries,
+        requestedChartWindow.start,
+        requestedChartWindow.end,
+        'on_or_before',
+      )
+    : null
+  const visibleNavSeries = fundReturnWindow
+    ? resampleSeriesPreservingBounds(fundReturnWindow.points, chartFrequency)
+    : []
+  const benchmarkVisibleNavSeries = benchmarkReturnWindow
+    ? resampleSeriesPreservingBounds(benchmarkReturnWindow.points, chartFrequency)
+    : []
+  const chartNavSeries = fundReturnWindow
+    ? resampleSeriesPreservingBounds(
+        normalizeCumulativeReturn(fundReturnWindow),
         chartFrequency,
       )
-  const benchmarkVisibleNavSeries = shouldIndexCompareSeries
-    ? resampleSeriesPreservingBounds(rawCommonBenchmarkSeries, chartFrequency)
     : []
-  const indexedNavSeries = shouldIndexCompareSeries
-    ? buildCommonRebasedSeries(visibleNavSeries, compareDateWindow, 1)
+  const chartBenchmarkSeries = benchmarkReturnWindow
+    ? resampleSeriesPreservingBounds(
+        normalizeCumulativeReturn(benchmarkReturnWindow),
+        chartFrequency,
+      )
     : []
-  const indexedBenchmarkSeries = shouldIndexCompareSeries
-    ? buildCommonRebasedSeries(benchmarkVisibleNavSeries, compareDateWindow, 1)
-    : []
-  const chartNavSeries =
-    shouldIndexCompareSeries && indexedNavSeries.length ? indexedNavSeries : visibleNavSeries
-  const chartBenchmarkSeries = shouldIndexCompareSeries
-    ? indexedBenchmarkSeries
-    : []
-  const chartDateWindow = shouldIndexCompareSeries && compareDateWindow
-    ? compareDateWindow
-    : {
-        start: visibleNavSeries[0]?.date || effectiveStartDate,
-        end: visibleNavSeries[visibleNavSeries.length - 1]?.date || effectiveEndDate,
-      }
-  const drawdownSourceSeries =
-    shouldIndexCompareSeries && compareDateWindow
-      ? buildCommonWindowSeries(visibleNavSeries, compareDateWindow)
-      : visibleNavSeries
-  const benchmarkDrawdownSourceSeries =
-    shouldIndexCompareSeries && compareDateWindow
-      ? buildCommonWindowSeries(benchmarkVisibleNavSeries, compareDateWindow)
-      : benchmarkVisibleNavSeries
-  const drawdownSeries = buildDrawdownSeries(drawdownSourceSeries)
-  const benchmarkDrawdownSeries = buildDrawdownSeries(benchmarkDrawdownSourceSeries)
+  const chartDateWindow = {
+    start: requestedChartWindow.start || fundReturnWindow?.anchorDate || '',
+    end: requestedChartWindow.end || fundReturnWindow?.endDate || '',
+  }
+  const drawdownSeries = buildDrawdownSeries(visibleNavSeries)
+  const benchmarkDrawdownSeries = buildDrawdownSeries(benchmarkVisibleNavSeries)
   const latestPoint = visibleNavSeries.length ? visibleNavSeries[visibleNavSeries.length - 1] : undefined
   const periodLow =
     visibleNavSeries.length > 0 ? Math.min(...visibleNavSeries.map((point) => point.value)) : null
@@ -5207,8 +4848,9 @@ export default function FundDetailPage({
     visibleNavSeries.length > 0 ? Math.max(...visibleNavSeries.map((point) => point.value)) : null
   const maxDrawdown =
     drawdownSeries.length > 0 ? Math.min(...drawdownSeries.map((point) => point.value)) : null
-  const chartQuotePeriodStats = getSeriesChangeStats(chartNavSeries)
-  const chartBenchmarkPeriodStats = getSeriesChangeStats(chartBenchmarkSeries)
+  const chartCumulativeReturn = chartNavSeries[chartNavSeries.length - 1]?.value ?? null
+  const chartBenchmarkCumulativeReturn =
+    chartBenchmarkSeries[chartBenchmarkSeries.length - 1]?.value ?? null
   const latestSeriesPoint = navBasisSeries[navBasisSeries.length - 1]
   const quoteLatestStats = getLatestPointChangeStats(navBasisSeries)
   const quoteChange = quoteLatestStats.change
@@ -5237,9 +4879,24 @@ export default function FundDetailPage({
     activeQuoteBasis === selectedNavBasis && selectedSeriesLabel
       ? selectedSeriesLabel
       : localize(language, QUOTE_BASIS_LABELS[activeQuoteBasis])
-  const chartSeriesBasisLabel = shouldIndexCompareSeries
-    ? localize(language, SYSTEM_LABELS.indexed)
-    : quoteBasisLabel
+  const activeReturnKind =
+    activeQuoteBasis === selectedNavBasis && navSeries.return_kind
+      ? navSeries.return_kind
+      : activeQuoteBasis === 'nav_with_dividend'
+        ? 'total_return'
+        : detailKind === 'index'
+          ? 'price_return'
+          : 'unit_nav_return'
+  const chartSeriesBasisLabel =
+    activeReturnKind === 'total_return'
+      ? 'Cumulative Total Return'
+      : activeReturnKind === 'price_return'
+        ? 'Cumulative Price Return'
+        : 'Cumulative Unit NAV Return'
+  const latestReturnSegmentBreak =
+    navSeries.return_segment_breaks[navSeries.return_segment_breaks.length - 1]
+  const hasUnconfirmedReturnSegmentBreak =
+    navSeries.return_series_status === 'partial' && navSeries.return_segment_breaks.length > 0
   const quoteBasisOptions = [
     activeQuoteBasis,
     ...availableQuoteBases.filter((basis) => basis !== activeQuoteBasis),
@@ -5630,15 +5287,8 @@ export default function FundDetailPage({
     getDocumentRecordText(row, 'file_name') || getDocumentRecordText(row, 'title') || '—'
   const getDocumentRecordNotes = (row: Record<string, unknown>) => getDocumentRecordText(row, 'notes')
   const currentDocumentRows = documents.current_documents || []
-  const combinedVisibleSeries = [...chartNavSeries, ...chartBenchmarkSeries]
-  const canUseLogarithmicScale =
-    combinedVisibleSeries.length > 0 && combinedVisibleSeries.every((point) => point.value > 0)
-  const effectiveChartScale =
-    chartScale === 'logarithmic' && canUseLogarithmicScale
-      ? chartScale
-      : 'linear'
-  const scaledVisibleSeries = applyChartScale(chartNavSeries, effectiveChartScale)
-  const scaledBenchmarkVisibleSeries = applyChartScale(chartBenchmarkSeries, effectiveChartScale)
+  const scaledVisibleSeries = chartNavSeries
+  const scaledBenchmarkVisibleSeries = chartBenchmarkSeries
   const combinedScaledSeries = [...scaledVisibleSeries, ...scaledBenchmarkVisibleSeries]
   const chartWindowTickDates = getChartAxisTicksForWindow(chartDateWindow.start, chartDateWindow.end, 8)
   const chartTickDates =
@@ -5677,10 +5327,7 @@ export default function FundDetailPage({
           chartDateWindow.end,
         )
       : ''
-  const chartTickValues =
-    effectiveChartScale === 'logarithmic'
-      ? getLogTickValuesFromBounds(chartMin, chartMax, 5)
-      : getLinearTickValues(chartMin, chartMax, 5)
+  const chartTickValues = getLinearTickValues(chartMin, chartMax, 5)
   const combinedDrawdownSeries = [...drawdownSeries, ...benchmarkDrawdownSeries]
   const drawdownBounds = getDrawdownAxisBounds(combinedDrawdownSeries)
   const drawdownBands = buildChartBands(drawdownSeries, DRAWDOWN_CHART_GEOMETRY, 10)
@@ -5879,10 +5526,10 @@ export default function FundDetailPage({
   const latestBenchmarkDrawdownPoint =
     positionedBenchmarkDrawdownPoints[positionedBenchmarkDrawdownPoints.length - 1] ?? null
   const latestChartValueLabel =
-    chartNavSeries.length > 0 ? formatNumber(chartNavSeries[chartNavSeries.length - 1].value, 4) : null
+    chartNavSeries.length > 0 ? formatPercent(chartNavSeries[chartNavSeries.length - 1].value) : null
   const latestBenchmarkChartValueLabel =
     chartBenchmarkSeries.length > 0
-      ? formatNumber(chartBenchmarkSeries[chartBenchmarkSeries.length - 1].value, 4)
+      ? formatPercent(chartBenchmarkSeries[chartBenchmarkSeries.length - 1].value)
       : null
   const latestDrawdownValueLabel =
     drawdownSeries.length > 0 ? formatPercent(drawdownSeries[drawdownSeries.length - 1].value) : null
@@ -7895,6 +7542,15 @@ export default function FundDetailPage({
                     Benchmark calculation unavailable because its selected NAV basis does not match the fund calculation basis.
                   </div>
                 ) : null}
+                {hasUnconfirmedReturnSegmentBreak ? (
+                  <div className="instrument-quote-action-notice" role="status">
+                    Total-return history stops before an unconfirmed fund event
+                    {latestReturnSegmentBreak?.as_of_date
+                      ? ` on ${formatDate(String(latestReturnSegmentBreak.as_of_date))}`
+                      : ''}
+                    . Returns after that break remain unavailable until the event is reviewed.
+                  </div>
+                ) : null}
 
                 <div className="instrument-chart-stage instrument-chart-stage-interactive">
                   {scaledVisibleSeries.length > 1 ? (
@@ -7904,22 +7560,24 @@ export default function FundDetailPage({
                         <div className="instrument-series-label">
                           <strong>{summary.ticker_or_isin}</strong>
                           <span>{chartSeriesBasisLabel}</span>
-                          <em className={`instrument-series-change-${getSignedMetricTone(chartQuotePeriodStats.changePct ?? chartQuotePeriodStats.change)}`}>
-                            {formatChangeSummary(chartQuotePeriodStats.change, chartQuotePeriodStats.changePct)}
+                          <em className={`instrument-series-change-${getSignedMetricTone(chartCumulativeReturn)}`}>
+                            {formatPercent(chartCumulativeReturn)}
                           </em>
                         </div>
                         {selectedBenchmark ? (
                           <div className="instrument-series-label instrument-series-label-benchmark-row">
                             <strong>{selectedBenchmark.ticker_or_isin || selectedBenchmark.fund_name}</strong>
-                            <span>Compare</span>
-                            <em className={`instrument-series-change-${getSignedMetricTone(chartBenchmarkPeriodStats.changePct ?? chartBenchmarkPeriodStats.change)}`}>
-                              {formatChangeSummary(chartBenchmarkPeriodStats.change, chartBenchmarkPeriodStats.changePct)}
+                            <span>{chartSeriesBasisLabel}</span>
+                            <em className={`instrument-series-change-${getSignedMetricTone(chartBenchmarkCumulativeReturn)}`}>
+                              {formatPercent(chartBenchmarkCumulativeReturn)}
                             </em>
                           </div>
                         ) : null}
                       </div>
                       <div className="instrument-chart-series-meta">
-                        <span>{effectiveCurrency || 'Currency unavailable'}</span>
+                        <span>
+                          Anchor {formatDate(fundReturnWindow?.anchorDate)} → {formatDate(fundReturnWindow?.endDate)}
+                        </span>
                         <div className="instrument-chart-menu instrument-chart-settings-menu" ref={quoteChartMenuRef}>
                           <button
                             type="button"
@@ -7953,7 +7611,7 @@ export default function FundDetailPage({
                       className="instrument-line-chart"
                       style={{ cursor: timelineNoteCaptureMode || isPrimaryHoverActive ? 'crosshair' : 'default' }}
                       role="img"
-                      aria-label="Interactive NAV chart"
+                      aria-label={`Interactive ${chartSeriesBasisLabel} chart`}
                       onMouseMove={(event) =>
                         updateChartHoverFromPointer(event, PRIMARY_CHART_GEOMETRY, 'primary')
                       }
@@ -7988,7 +7646,7 @@ export default function FundDetailPage({
 
                       {chartTickValues.map((tick, index) => {
                         const projectedY = projectChartValue(
-                          effectiveChartScale === 'logarithmic' ? Math.log10(tick) : tick,
+                          tick,
                           chartMin,
                           chartMax,
                           PRIMARY_CHART_GEOMETRY,
@@ -8023,7 +7681,7 @@ export default function FundDetailPage({
                               x={String(getYAxisStubEndX(PRIMARY_CHART_GEOMETRY))}
                               y={getYAxisLabelTextY(projectedY, PRIMARY_CHART_GEOMETRY, isBottomTick ? 'above' : 'below')}
                             >
-                              {formatAxisNumber(tick)}
+                              {formatPercent(tick)}
                             </text>
                           </g>
                         )
@@ -8180,7 +7838,7 @@ export default function FundDetailPage({
                               <i className="instrument-chart-tooltip-swatch" />
                                 {chartSeriesBasisLabel}
                             </span>
-                            <strong>{formatNumber(hoverNavValue, 4)}</strong>
+                            <strong>{formatPercent(hoverNavValue)}</strong>
                           </div>
                           {selectedBenchmark && hoverBenchmarkValue != null ? (
                             <div className="instrument-chart-tooltip-row instrument-chart-tooltip-row-benchmark">
@@ -8188,7 +7846,7 @@ export default function FundDetailPage({
                                 <i className="instrument-chart-tooltip-swatch" />
                                 {selectedBenchmark.ticker_or_isin || selectedBenchmark.fund_name}
                               </span>
-                              <strong>{formatNumber(hoverBenchmarkValue, 4)}</strong>
+                              <strong>{formatPercent(hoverBenchmarkValue)}</strong>
                             </div>
                           ) : null}
                           {showDrawdownPanel ? (
@@ -8517,7 +8175,7 @@ export default function FundDetailPage({
                                   <i className="instrument-chart-tooltip-swatch" />
                                     {chartSeriesBasisLabel}
                                 </span>
-                                <strong>{formatNumber(hoverNavValue, 4)}</strong>
+                                <strong>{formatPercent(hoverNavValue)}</strong>
                               </div>
                               {selectedBenchmark && hoverBenchmarkValue != null ? (
                                 <div className="instrument-chart-tooltip-row instrument-chart-tooltip-row-benchmark">
@@ -8525,7 +8183,7 @@ export default function FundDetailPage({
                                     <i className="instrument-chart-tooltip-swatch" />
                                     {selectedBenchmark.ticker_or_isin || selectedBenchmark.fund_name}
                                   </span>
-                                  <strong>{formatNumber(hoverBenchmarkValue, 4)}</strong>
+                                  <strong>{formatPercent(hoverBenchmarkValue)}</strong>
                                 </div>
                               ) : null}
                               {showDrawdownPanel ? (
@@ -8587,7 +8245,6 @@ export default function FundDetailPage({
                               const nextIndex = Math.min(Number(event.target.value), zoomEndIndex - 1)
                               const nextPoint = navBasisSeries[Math.max(nextIndex, 0)]
                               if (nextPoint) {
-                                setChartRange('CUSTOM')
                                 setChartStartDate(nextPoint.date)
                               }
                             }}
@@ -8602,7 +8259,6 @@ export default function FundDetailPage({
                               const nextIndex = Math.max(Number(event.target.value), zoomStartIndex + 1)
                               const nextPoint = navBasisSeries[Math.min(nextIndex, zoomMaxIndex)]
                               if (nextPoint) {
-                                setChartRange('CUSTOM')
                                 setChartEndDate(nextPoint.date)
                               }
                             }}

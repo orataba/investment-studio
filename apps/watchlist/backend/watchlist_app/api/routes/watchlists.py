@@ -63,7 +63,7 @@ read_model_repository = SQLAlchemyReadModelRepository()
 taxonomy_repository = SQLAlchemyTaxonomyRepository()
 canonical_recalc_service = CanonicalRecalcService()
 MAX_WATCHLIST_ID_ATTEMPTS = 10
-LOCAL_DETAIL_INSTRUMENT_TYPES = {"fund", "etf", "index"}
+LOCAL_DETAIL_INSTRUMENT_TYPES = {"fund", "etf", "equity", "index"}
 
 
 def _is_all_coverage_watchlist(watchlist_id: str) -> bool:
@@ -174,9 +174,11 @@ def _primary_shared_identifier(
 
 def _local_detail_view_type(shared_instrument: dict[str, object]) -> str | None:
     instrument_type = str(shared_instrument.get("instrument_type") or "").strip().lower()
-    if instrument_type == "etf":
+    if instrument_type == "fund":
         return "fund"
-    return instrument_type if instrument_type in {"fund", "index"} else None
+    if instrument_type in {"etf", "equity", "index"}:
+        return "listed"
+    return None
 
 
 def _supports_local_detail(shared_instrument: dict[str, object]) -> bool:
@@ -848,7 +850,7 @@ def add_items_to_watchlist(
         raise HTTPException(
             status_code=400,
             detail=(
-                f"Watchlist currently supports fund, ETF, and index instruments only: {unsupported_label}. "
+                f"Watchlist currently supports fund, ETF, stock, and index instruments only: {unsupported_label}. "
                 "Use Database Dashboard for shared master data, then add supported instruments here."
             ),
         )

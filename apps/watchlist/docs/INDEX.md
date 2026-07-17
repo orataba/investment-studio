@@ -16,7 +16,9 @@
    fund detail `Research` 页的定性研究标签、`timeline_notes` 和人工 rating 规则。
 6. [FUND_TERMINAL_V2_DATA_MODEL_AND_API.md](./FUND_TERMINAL_V2_DATA_MODEL_AND_API.md)
    当前后端数据分层、关键表、API 分组与路由边界。
-7. [FUND_TERMINAL_V2_AI_COPILOT.md](./FUND_TERMINAL_V2_AI_COPILOT.md)
+7. [RETURN_SERIES_CONTRACT.md](./RETURN_SERIES_CONTRACT.md)
+   主图、Sparkline、MTD/YTD、自定义区间和私募复权收益的统一边界契约。
+8. [FUND_TERMINAL_V2_AI_COPILOT.md](./FUND_TERMINAL_V2_AI_COPILOT.md)
    保留中的 Copilot 后端接口、上下文范围、返回协议与 provider 边界；当前 UI 默认关闭。
 
 后续如果需要新文档，默认只补三类内容：

@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { Link, useParams, useSearchParams } from 'react-router-dom'
 
 import FundDetailPage from './FundDetailPage'
+import ListedInstrumentDetailPage from './ListedInstrumentDetailPage'
 import LoadingOverlay from '../components/LoadingOverlay'
 import {
   getWatchlistDetail,
@@ -85,27 +86,25 @@ export default function InstrumentDetailPage() {
 
   if (
     instrument.detail_supported &&
-    instrument.detail_view_type === 'fund' &&
+    ['etf', 'equity', 'index'].includes(instrument.instrument_type) &&
     instrument.detail_subject_id
   ) {
     return (
-      <FundDetailPage
-        fundId={instrument.detail_subject_id}
+      <ListedInstrumentDetailPage
+        instrument={instrument}
         watchlistContext={watchlistContext}
-        corporateActions={instrument.corporate_actions}
       />
     )
   }
 
   if (
     instrument.detail_supported &&
-    instrument.detail_view_type === 'index' &&
+    instrument.detail_view_type === 'fund' &&
     instrument.detail_subject_id
   ) {
     return (
       <FundDetailPage
         fundId={instrument.detail_subject_id}
-        detailKind="index"
         watchlistContext={watchlistContext}
         corporateActions={instrument.corporate_actions}
       />

@@ -1,29 +1,204 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import UTC, date, datetime
 import logging
 from typing import Mapping, Sequence
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 
 from watchlist_app.core.settings import get_settings
 from watchlist_app.db.session import get_session_factory
 from watchlist_app.db.models.instruments import InstrumentDetail
 from watchlist_app.db.models.recalc import RecalcJob
+from watchlist_app.db.models.read_models import (
+    InstrumentChartReadModel,
+    WatchlistRowReadModel,
+)
 from watchlist_app.repositories.sqlalchemy.instruments import SQLAlchemyInstrumentRepository
 from watchlist_app.repositories.sqlalchemy.recalc_jobs import SQLAlchemyRecalcJobRepository
 from watchlist_app.services.recalc_job_ids import make_recalc_dedupe_key, make_recalc_job_id
+from watchlist_app.services.materialization_policy import (
+    WATCHLIST_MATERIALIZATION_VERSION,
+)
 from watchlist_app.services.shared_instrument_registry import (
     SharedInstrumentRegistryError,
     get_shared_instrument,
-    list_shared_instruments,
+    get_shared_instrument_summaries,
 )
 
 
 logger = logging.getLogger(__name__)
 instrument_repository = SQLAlchemyInstrumentRepository()
 recalc_repository = SQLAlchemyRecalcJobRepository()
+
+
+@dataclass(frozen=True, slots=True)
+class ReconciliationBatchResult:
+    scanned_count: int
+    scheduled_count: int
+    next_cursor: str | None
+    cycle_completed: bool
+
+
+def _load_reconciliation_targets(
+    *,
+    limit: int,
+    after_instrument_id: str | None,
+) -> tuple[list[dict[str, object]], str | None, bool]:
+    """Load one keyset-paginated local batch and its materialization cutoffs."""
+
+    session_factory = get_session_factory()
+    with session_factory() as session:
+        statement = select(InstrumentDetail.instrument_id).where(
+            InstrumentDetail.is_active.is_(True)
+        )
+        normalized_cursor = str(after_instrument_id or "").strip()
+        if normalized_cursor:
+            statement = statement.where(
+                InstrumentDetail.instrument_id > normalized_cursor
+            )
+        statement = statement.order_by(InstrumentDetail.instrument_id).limit(limit + 1)
+        candidate_ids = list(session.scalars(statement).all())
+        has_more = len(candidate_ids) > limit
+        instrument_ids = candidate_ids[:limit]
+        if not instrument_ids:
+            return [], None, True
+
+        chart_state_by_id = {
+            instrument_id: {
+                "source_cutoff_at": source_cutoff_at,
+                "materialization_version": materialization_version,
+            }
+            for instrument_id, source_cutoff_at, materialization_version in session.execute(
+                select(
+                    InstrumentChartReadModel.instrument_id,
+                    InstrumentChartReadModel.source_cutoff_at,
+                    InstrumentChartReadModel.materialization_version,
+                ).where(InstrumentChartReadModel.instrument_id.in_(instrument_ids))
+            ).all()
+        }
+        row_stats_by_id = {
+            instrument_id: {
+                "latest_nav_date": latest_nav_date,
+                "oldest_source_cutoff_at": oldest_source_cutoff_at,
+                "row_count": int(row_count),
+                "source_cutoff_count": int(source_cutoff_count),
+                "min_materialization_version": min_materialization_version,
+                "max_materialization_version": max_materialization_version,
+            }
+            for (
+                instrument_id,
+                latest_nav_date,
+                oldest_source_cutoff_at,
+                row_count,
+                source_cutoff_count,
+                min_materialization_version,
+                max_materialization_version,
+            ) in session.execute(
+                select(
+                    WatchlistRowReadModel.instrument_id,
+                    func.max(WatchlistRowReadModel.last_nav_date),
+                    func.min(WatchlistRowReadModel.last_fact_update_at),
+                    func.count(),
+                    func.count(WatchlistRowReadModel.last_fact_update_at),
+                    func.min(WatchlistRowReadModel.materialization_version),
+                    func.max(WatchlistRowReadModel.materialization_version),
+                )
+                .where(WatchlistRowReadModel.instrument_id.in_(instrument_ids))
+                .group_by(WatchlistRowReadModel.instrument_id)
+            ).all()
+        }
+
+        targets: list[dict[str, object]] = []
+        for instrument_id in instrument_ids:
+            row_stats = row_stats_by_id.get(instrument_id)
+            row_source_cutoff: object = None
+            if row_stats is not None and (
+                row_stats["row_count"] == row_stats["source_cutoff_count"]
+            ):
+                row_source_cutoff = row_stats["oldest_source_cutoff_at"]
+            local_cutoffs: tuple[object, ...] = (
+                (chart_state_by_id.get(instrument_id) or {}).get("source_cutoff_at"),
+            )
+            if row_stats is not None:
+                local_cutoffs = (*local_cutoffs, row_source_cutoff)
+            local_versions = [
+                str(
+                    (chart_state_by_id.get(instrument_id) or {}).get(
+                        "materialization_version"
+                    )
+                    or ""
+                ).strip()
+            ]
+            if row_stats is not None:
+                row_version = (
+                    str(row_stats["min_materialization_version"] or "").strip()
+                    if row_stats["min_materialization_version"]
+                    == row_stats["max_materialization_version"]
+                    else ""
+                )
+                local_versions.append(row_version)
+            targets.append(
+                {
+                    "instrument_id": instrument_id,
+                    "local_latest_date": (
+                        row_stats["latest_nav_date"]
+                        if row_stats is not None
+                        else None
+                    ),
+                    "local_source_cutoff_at": local_materialization_source_cutoff(
+                        *local_cutoffs
+                    ),
+                    "local_materialization_version": (
+                        local_versions[0]
+                        if local_versions
+                        and local_versions[0]
+                        and all(version == local_versions[0] for version in local_versions)
+                        else None
+                    ),
+                }
+            )
+
+    return (
+        targets,
+        instrument_ids[-1] if has_more else None,
+        not has_more,
+    )
+
+
+def reconcile_stale_instrument_read_models(
+    *,
+    limit: int,
+    after_instrument_id: str | None = None,
+) -> ReconciliationBatchResult:
+    """Repair missed notifications by comparing local read models with Registry.
+
+    The notification endpoints are a low-latency hint, not a correctness
+    boundary.  This bounded worker scan guarantees eventual repair after a
+    process restart or a lost HTTP acknowledgement while reusing the same
+    durable, per-instrument deduplicated queue as foreground stale-read repair.
+    """
+
+    if limit < 1:
+        raise ValueError("Reconciliation limit must be positive.")
+
+    targets, next_cursor, cycle_completed = _load_reconciliation_targets(
+        limit=limit,
+        after_instrument_id=after_instrument_id,
+    )
+    scheduled_count = schedule_instrument_refreshes_if_stale(
+        targets=targets,
+        trigger_ref_type="worker_reconcile",
+        raise_on_error=True,
+    )
+    return ReconciliationBatchResult(
+        scanned_count=len(targets),
+        scheduled_count=scheduled_count,
+        next_cursor=next_cursor,
+        cycle_completed=cycle_completed,
+    )
 
 
 def _parse_iso_date(value: object) -> date | None:
@@ -54,6 +229,32 @@ def _parse_iso_datetime(value: object) -> datetime | None:
     if parsed.tzinfo is None:
         return parsed.replace(tzinfo=UTC)
     return parsed.astimezone(UTC)
+
+
+def local_materialization_source_cutoff(*values: object) -> datetime | None:
+    """Return the oldest complete source generation across local consumers.
+
+    A missing generation is deliberately stale: using a recalculation wall clock
+    or the newest consumer would hide a partially materialized source revision.
+    """
+
+    if not values:
+        return None
+    parsed = [_parse_iso_datetime(value) for value in values]
+    if any(value is None for value in parsed):
+        return None
+    return min(value for value in parsed if value is not None)
+
+
+def local_materialization_version(*values: object) -> str | None:
+    """Return one version only when every local consumer agrees on it."""
+
+    if not values:
+        return None
+    normalized = [str(value or "").strip() for value in values]
+    if not normalized[0] or any(value != normalized[0] for value in normalized):
+        return None
+    return normalized[0]
 
 
 def latest_local_market_data_date(
@@ -112,6 +313,16 @@ def _shared_market_data_updated_at(
     if not isinstance(shared_instrument, dict):
         return None
     return _parse_iso_datetime(shared_instrument.get("market_data_updated_at"))
+
+
+def _source_generation_ref(
+    *,
+    shared_updated_at: datetime | None,
+    shared_latest_date: date | None,
+) -> str | None:
+    if shared_updated_at is not None:
+        return shared_updated_at.isoformat().replace("+00:00", "Z")
+    return shared_latest_date.isoformat() if shared_latest_date is not None else None
 
 
 def _primary_shared_identifier(shared_instrument: dict[str, object] | None) -> str | None:
@@ -183,6 +394,7 @@ def schedule_instrument_refreshes_if_stale(
     targets: Sequence[Mapping[str, object]],
     trigger_ref_type: str,
     trigger_ref_id: str | None = None,
+    raise_on_error: bool = False,
 ) -> int:
     """Batch stale-read repair without turning a screener read into an N+1 query.
 
@@ -201,12 +413,10 @@ def schedule_instrument_refreshes_if_stale(
         return 0
 
     try:
-        shared_by_id = {
-            str(item.get("instrument_id")): item
-            for item in list_shared_instruments(limit=None)
-            if str(item.get("instrument_id") or "").strip() in normalized_targets
-        }
+        shared_by_id = get_shared_instrument_summaries(list(normalized_targets))
     except SharedInstrumentRegistryError:
+        if raise_on_error:
+            raise
         return 0
 
     session_factory = get_session_factory()
@@ -252,13 +462,18 @@ def schedule_instrument_refreshes_if_stale(
                     instrument=local_instrument,
                     shared_instrument=shared_instrument,
                 )
+                materialization_drift = (
+                    str(target.get("local_materialization_version") or "").strip()
+                    != WATCHLIST_MATERIALIZATION_VERSION
+                )
                 if (
                     shared_latest_date is None
                     and shared_updated_at is None
                     and not metadata_drift
+                    and not materialization_drift
                 ):
                     continue
-                if not metadata_drift:
+                if not metadata_drift and not materialization_drift:
                     if shared_updated_at is not None:
                         if (
                             local_cutoff_at is not None
@@ -274,6 +489,10 @@ def schedule_instrument_refreshes_if_stale(
                 if instrument_id in open_instrument_ids:
                     scheduled_count += 1
                     continue
+                source_generation_ref = _source_generation_ref(
+                    shared_updated_at=shared_updated_at,
+                    shared_latest_date=shared_latest_date,
+                )
                 try:
                     with session.begin_nested():
                         recalc_repository.create(
@@ -285,11 +504,7 @@ def schedule_instrument_refreshes_if_stale(
                             trigger_ref_type=trigger_ref_type,
                             trigger_ref_id=(
                                 trigger_ref_id
-                                or (
-                                    shared_latest_date.isoformat()
-                                    if shared_latest_date is not None
-                                    else None
-                                )
+                                or source_generation_ref
                             ),
                             job_status="queued",
                             priority=95,
@@ -297,7 +512,13 @@ def schedule_instrument_refreshes_if_stale(
                                 job_type="all",
                                 instrument_id=instrument_id,
                             ),
-                            payload_json={"requested_by": "stale_read_repair"},
+                            payload_json={
+                                "requested_by": "stale_read_repair",
+                                "target_source_generation": source_generation_ref,
+                                "target_materialization_version": (
+                                    WATCHLIST_MATERIALIZATION_VERSION
+                                ),
+                            },
                         )
                     open_instrument_ids.add(instrument_id)
                     scheduled_count += 1
@@ -308,6 +529,8 @@ def schedule_instrument_refreshes_if_stale(
             session.commit()
             return scheduled_count
     except Exception:
+        if raise_on_error:
+            raise
         logger.exception("Batch stale read repair failed.")
         return 0
 
@@ -317,6 +540,7 @@ def schedule_instrument_refresh_if_stale(
     instrument_id: str,
     local_latest_date: date | None,
     local_source_cutoff_at: datetime | None = None,
+    local_materialization_version: str | None = WATCHLIST_MATERIALIZATION_VERSION,
     trigger_ref_type: str,
     trigger_ref_id: str | None = None,
 ) -> bool:
@@ -334,9 +558,18 @@ def schedule_instrument_refresh_if_stale(
         instrument_id=normalized_instrument_id,
         shared_instrument=shared_instrument,
     )
-    if shared_latest_date is None and shared_updated_at is None and not metadata_drift:
+    materialization_drift = (
+        str(local_materialization_version or "").strip()
+        != WATCHLIST_MATERIALIZATION_VERSION
+    )
+    if (
+        shared_latest_date is None
+        and shared_updated_at is None
+        and not metadata_drift
+        and not materialization_drift
+    ):
         return False
-    if not metadata_drift:
+    if not metadata_drift and not materialization_drift:
         if shared_updated_at is not None:
             if local_cutoff_at is not None and shared_updated_at <= local_cutoff_at:
                 return False
@@ -350,7 +583,10 @@ def schedule_instrument_refresh_if_stale(
         instrument_id=normalized_instrument_id,
         trigger_ref_type=trigger_ref_type,
         trigger_ref_id=trigger_ref_id
-        or (shared_latest_date.isoformat() if shared_latest_date is not None else None),
+        or _source_generation_ref(
+            shared_updated_at=shared_updated_at,
+            shared_latest_date=shared_latest_date,
+        ),
     )
 
 

@@ -9,6 +9,7 @@ from sqlalchemy.orm import Mapped, mapped_column
 
 from watchlist_app.db.base import Base
 from watchlist_app.db.models.common import PayloadReadModelMixin
+from watchlist_app.services.materialization_policy import UNVERSIONED_MATERIALIZATION
 
 
 class WatchlistRowReadModel(Base):
@@ -51,6 +52,11 @@ class WatchlistRowReadModel(Base):
         DateTime(timezone=True)
     )
     staleness_reason: Mapped[str | None]
+    materialization_version: Mapped[str] = mapped_column(
+        nullable=False,
+        default=UNVERSIONED_MATERIALIZATION,
+        server_default=UNVERSIONED_MATERIALIZATION,
+    )
 
 
 class InstrumentSummaryReadModel(PayloadReadModelMixin, Base):
@@ -68,6 +74,11 @@ class InstrumentChartReadModel(PayloadReadModelMixin, Base):
     instrument_id: Mapped[str] = mapped_column(
         ForeignKey("instrument_detail.instrument_id", ondelete="CASCADE"),
         primary_key=True,
+    )
+    materialization_version: Mapped[str] = mapped_column(
+        nullable=False,
+        default=UNVERSIONED_MATERIALIZATION,
+        server_default=UNVERSIONED_MATERIALIZATION,
     )
 
 
