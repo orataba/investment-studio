@@ -1664,6 +1664,16 @@ def test_tushare_refresh_imports_index_close(monkeypatch) -> None:
     monkeypatch.setattr(market_data_ops, "_call_tushare_api", fake_call_tushare_api)
     monkeypatch.setattr(
         market_data_ops,
+        "get_price_bar_coverage",
+        lambda **_kwargs: {
+            "row_count": 1,
+            "first_date": "2026-06-12",
+            "latest_date": "2026-06-12",
+            "adjustment_factor_count": 0,
+        },
+    )
+    monkeypatch.setattr(
+        market_data_ops,
         "upsert_market_data_points",
         fake_upsert_market_data_points,
     )
@@ -1712,6 +1722,241 @@ def test_tushare_refresh_imports_index_close(monkeypatch) -> None:
     }
     assert captured["refresh_status"]["status"] == "refreshed"
     assert captured["refresh_status"]["mode"] == "api"
+
+
+def test_tushare_index_refresh_repairs_ohlcv_history_behind_existing_closes(
+    monkeypatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_call_tushare_api(**kwargs: object) -> list[dict[str, object]]:
+        captured["api_call"] = kwargs
+        return [
+            {
+                "ts_code": "000300.SH",
+                "trade_date": "20240102",
+                "open": "4100",
+                "high": "4210",
+                "low": "4090",
+                "close": "4200",
+                "pre_close": "4095",
+                "vol": "100",
+                "amount": "420000",
+            },
+            {
+                "ts_code": "000300.SH",
+                "trade_date": "20260615",
+                "open": "4195",
+                "high": "4220",
+                "low": "4180",
+                "close": "4210",
+                "pre_close": "4200",
+                "vol": "120",
+                "amount": "505200",
+            },
+        ]
+
+    monkeypatch.setattr(market_data_ops, "_call_tushare_api", fake_call_tushare_api)
+    monkeypatch.setattr(
+        market_data_ops,
+        "get_price_bar_coverage",
+        lambda **_kwargs: {
+            "row_count": 0,
+            "first_date": None,
+            "latest_date": None,
+            "adjustment_factor_count": 0,
+        },
+    )
+    monkeypatch.setattr(
+        market_data_ops,
+        "upsert_market_data_points",
+        lambda **kwargs: captured.setdefault("market_rows", kwargs["rows"])
+        and len(kwargs["rows"]),
+    )
+    monkeypatch.setattr(
+        market_data_ops,
+        "upsert_price_bars",
+        lambda **kwargs: captured.setdefault("bar_rows", kwargs["rows"])
+        and len(kwargs["rows"]),
+    )
+    monkeypatch.setattr(
+        market_data_ops,
+        "update_refresh_status",
+        lambda **kwargs: {"instrument_id": kwargs["instrument_id"]},
+    )
+
+    result = market_data_ops._refresh_from_tushare(
+        instrument_id="000300-sh",
+        instrument={
+            "instrument_id": "000300-sh",
+            "instrument_type": "index",
+            "currency": "CNY",
+            "identifiers": [
+                {
+                    "identifier_type": "ticker",
+                    "identifier_value": "000300.SH",
+                    "is_primary": True,
+                }
+            ],
+            "market_data": [
+                {
+                    "metric_family": "price",
+                    "quote_basis": "close",
+                    "as_of_date": "2024-01-02",
+                    "value": "4200",
+                    "status": "complete",
+                },
+                {
+                    "metric_family": "price",
+                    "quote_basis": "close",
+                    "as_of_date": "2026-06-12",
+                    "value": "4200",
+                    "status": "complete",
+                },
+            ],
+        },
+        updated_by="test",
+        full_history=False,
+    )
+
+    assert result == {"instrument_id": "000300-sh"}
+    assert captured["api_call"]["params"]["start_date"] == "20240102"
+    assert [row["as_of_date"] for row in captured["market_rows"]] == [
+        market_data_ops.date(2024, 1, 2),
+        market_data_ops.date(2026, 6, 15),
+    ]
+    assert [row["as_of_date"] for row in captured["bar_rows"]] == [
+        market_data_ops.date(2024, 1, 2),
+        market_data_ops.date(2026, 6, 15),
+    ]
+
+
+def test_listed_security_refresh_repairs_missing_factor_and_bar_history(
+    monkeypatch,
+) -> None:
+    captured: dict[str, object] = {"api_calls": []}
+
+    def fake_call_tushare_api(**kwargs: object) -> list[dict[str, object]]:
+        captured["api_calls"].append(kwargs)
+        if kwargs["api_name"] == "fund_adj":
+            return [
+                {"ts_code": "513050.SH", "trade_date": "20240102", "adj_factor": "1"},
+                {"ts_code": "513050.SH", "trade_date": "20260716", "adj_factor": "2"},
+            ]
+        return [
+            {
+                "ts_code": "513050.SH",
+                "trade_date": "20240102",
+                "open": "0.90",
+                "high": "0.92",
+                "low": "0.89",
+                "close": "0.91",
+                "pre_close": "0.90",
+                "vol": "1000",
+                "amount": "910",
+            },
+            {
+                "ts_code": "513050.SH",
+                "trade_date": "20260716",
+                "open": "1.14",
+                "high": "1.16",
+                "low": "1.13",
+                "close": "1.15",
+                "pre_close": "1.14",
+                "vol": "2000",
+                "amount": "2300",
+            },
+        ]
+
+    monkeypatch.setattr(market_data_ops, "_call_tushare_api", fake_call_tushare_api)
+    monkeypatch.setattr(
+        market_data_ops,
+        "get_price_bar_coverage",
+        lambda **_kwargs: {
+            "row_count": 6,
+            "first_date": "2026-07-09",
+            "latest_date": "2026-07-16",
+            "adjustment_factor_count": 5,
+        },
+    )
+    monkeypatch.setattr(
+        market_data_ops,
+        "upsert_market_data_points",
+        lambda **kwargs: len(kwargs["rows"]),
+    )
+    monkeypatch.setattr(
+        market_data_ops,
+        "upsert_price_bars",
+        lambda **kwargs: captured.setdefault("bar_rows", kwargs["rows"])
+        and len(kwargs["rows"]),
+    )
+    monkeypatch.setattr(
+        market_data_ops,
+        "update_refresh_status",
+        lambda **kwargs: {"instrument_id": kwargs["instrument_id"]},
+    )
+    monkeypatch.setattr(
+        market_data_ops,
+        "upsert_corporate_action_event",
+        lambda **_kwargs: None,
+    )
+
+    result = market_data_ops._refresh_from_tushare(
+        instrument_id="513050-sh",
+        instrument={
+            "instrument_id": "513050-sh",
+            "instrument_type": "etf",
+            "currency": "CNY",
+            "identifiers": [
+                {
+                    "identifier_type": "ticker",
+                    "identifier_value": "513050.SH",
+                    "is_primary": True,
+                }
+            ],
+            "quote_selection_policy": {
+                "trading": ["last", "close"],
+                "valuation": ["close", "last"],
+                "total_return": ["adjusted_close", "close", "last"],
+                "chart": ["adjusted_close", "close", "last"],
+                "reference": ["close", "last"],
+            },
+            "market_data": [
+                {
+                    "metric_family": "price",
+                    "quote_basis": "close",
+                    "as_of_date": "2024-01-02",
+                    "value": "0.91",
+                    "status": "complete",
+                },
+                {
+                    "metric_family": "price",
+                    "quote_basis": "close",
+                    "as_of_date": "2026-07-16",
+                    "value": "1.15",
+                    "status": "complete",
+                },
+                {
+                    "metric_family": "price",
+                    "quote_basis": "adjusted_close",
+                    "as_of_date": "2026-07-16",
+                    "value": "1.15",
+                    "provider": "tushare:fund_adj:qfq:latest_factor=2",
+                    "status": "complete",
+                },
+            ],
+        },
+        updated_by="test",
+        full_history=False,
+    )
+
+    assert result == {"instrument_id": "513050-sh"}
+    assert captured["api_calls"][0]["params"]["start_date"] == "20240102"
+    assert [row["as_of_date"] for row in captured["bar_rows"]] == [
+        market_data_ops.date(2024, 1, 2),
+        market_data_ops.date(2026, 7, 16),
+    ]
+    assert all(row["adjustment_factor"] is not None for row in captured["bar_rows"])
 
 
 def test_tushare_price_refresh_starts_at_2024_when_no_existing_history(monkeypatch) -> None:

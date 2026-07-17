@@ -35,6 +35,7 @@ from platform_app.services.fund_nav_action_candidates import (
     FundNavActionCandidateRepository,
 )
 from platform_app.services.instrument_store import (
+    get_price_bar_coverage,
     get_instrument,
     list_instrument_ids_with_nav_history_before,
     list_instruments,
@@ -3145,6 +3146,53 @@ def _existing_complete_price_dates(
     return dates
 
 
+def _price_bar_repair_start_date(
+    *,
+    instrument_id: str,
+    instrument: dict[str, object],
+    require_adjustment_factor: bool,
+) -> date | None:
+    """Find the first canonical close when persisted OHLCV needs repair."""
+
+    canonical_dates = sorted(
+        point_date
+        for point_date in _existing_price_values(
+            instrument,
+            quote_basis="close",
+        )
+        if point_date >= TUSHARE_HISTORY_START_DATE
+    )
+    if not canonical_dates:
+        return None
+
+    coverage = get_price_bar_coverage(instrument_id=instrument_id)
+    row_count = int(coverage.get("row_count") or 0)
+    factor_count = int(coverage.get("adjustment_factor_count") or 0)
+    raw_first_bar_date = coverage.get("first_date")
+    raw_latest_bar_date = coverage.get("latest_date")
+    first_bar_date = (
+        _parse_nav_date(raw_first_bar_date) if raw_first_bar_date is not None else None
+    )
+    latest_bar_date = (
+        _parse_nav_date(raw_latest_bar_date)
+        if raw_latest_bar_date is not None
+        else None
+    )
+    coverage_incomplete = (
+        row_count < len(canonical_dates)
+        or first_bar_date is None
+        or first_bar_date > canonical_dates[0]
+        or latest_bar_date is None
+        or latest_bar_date < canonical_dates[-1]
+    )
+    factor_coverage_incomplete = (
+        require_adjustment_factor and factor_count < row_count
+    )
+    if coverage_incomplete or factor_coverage_incomplete:
+        return canonical_dates[0]
+    return None
+
+
 QFQ_FACTOR_PATTERN = re.compile(r"(?:^|:)latest_factor=([0-9]+(?:\.[0-9]+)?)$")
 
 
@@ -3427,8 +3475,19 @@ def _refresh_tushare_listed_security(
         metric_family="price",
         quote_bases={"close"},
     )
+    repair_start = (
+        None
+        if full_history
+        else _price_bar_repair_start_date(
+            instrument_id=instrument_id,
+            instrument=instrument,
+            require_adjustment_factor=True,
+        )
+    )
     if full_history or latest_close_date is None:
         query_start = TUSHARE_HISTORY_START_DATE
+    elif repair_start is not None:
+        query_start = repair_start
     else:
         query_start = max(
             TUSHARE_HISTORY_START_DATE,
@@ -3804,10 +3863,25 @@ def _refresh_from_tushare(
                 metric_family="price",
                 quote_bases={"close"},
             )
-            params = {"ts_code": ts_code}
-            params["start_date"] = _format_tushare_date(
-                _tushare_query_start_date(latest_date=latest_date, full_history=full_history)
+            repair_start = (
+                None
+                if full_history
+                else _price_bar_repair_start_date(
+                    instrument_id=instrument_id,
+                    instrument=instrument,
+                    require_adjustment_factor=False,
+                )
             )
+            params = {"ts_code": ts_code}
+            query_start = (
+                repair_start
+                if repair_start is not None and not full_history
+                else _tushare_query_start_date(
+                    latest_date=latest_date,
+                    full_history=full_history,
+                )
+            )
+            params["start_date"] = _format_tushare_date(query_start)
             params["end_date"] = _format_tushare_date(date.today())
             rows = _call_tushare_api(
                 api_name="index_daily",
@@ -3820,7 +3894,10 @@ def _refresh_from_tushare(
                 instrument_id=instrument_id,
                 ts_code=ts_code,
                 api_name="index_daily",
-                rows=_tushare_price_rows(rows, latest_date=latest_date),
+                rows=_tushare_price_rows(
+                    rows,
+                    latest_date=None if repair_start is not None else latest_date,
+                ),
                 updated_by=updated_by,
             )
     except TushareRefreshError as exc:

@@ -172,6 +172,13 @@ def get_price_bars(
     )
 
 
+def get_price_bar_coverage(*, instrument_id: str) -> dict[str, object]:
+    return shared_store.get_price_bar_coverage(
+        get_session_factory(),
+        instrument_id=instrument_id,
+    )
+
+
 def upsert_corporate_action_event(**kwargs: object) -> dict[str, object] | None:
     return shared_store.upsert_corporate_action_event(
         get_session_factory(),

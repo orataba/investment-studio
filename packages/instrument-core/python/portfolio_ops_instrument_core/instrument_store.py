@@ -3671,6 +3671,32 @@ def get_price_bars(
         ]
 
 
+def get_price_bar_coverage(
+    session_factory: SessionFactory,
+    *,
+    instrument_id: str,
+) -> dict[str, object]:
+    """Return compact persisted OHLCV coverage without loading every bar."""
+
+    with session_factory() as session:
+        row = session.execute(
+            select(
+                func.count(InstrumentPriceBar.instrument_price_bar_id),
+                func.min(InstrumentPriceBar.as_of_date),
+                func.max(InstrumentPriceBar.as_of_date),
+                func.count(InstrumentPriceBar.adjustment_factor),
+            ).where(InstrumentPriceBar.instrument_id == instrument_id)
+        ).one()
+    first_date = row[1]
+    latest_date = row[2]
+    return {
+        "row_count": int(row[0] or 0),
+        "first_date": first_date.isoformat() if first_date is not None else None,
+        "latest_date": latest_date.isoformat() if latest_date is not None else None,
+        "adjustment_factor_count": int(row[3] or 0),
+    }
+
+
 def upsert_source_settings(
     session_factory: SessionFactory,
     *,

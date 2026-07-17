@@ -512,6 +512,12 @@ def test_raw_price_bars_are_idempotent_and_validate_ohlc(
         },
     )
     instrument_id = str(created["instrument_id"])
+    assert instrument_store.get_price_bar_coverage(instrument_id=instrument_id) == {
+        "row_count": 0,
+        "first_date": None,
+        "latest_date": None,
+        "adjustment_factor_count": 0,
+    }
     rows = [
         {
             "as_of_date": "2026-07-15",
@@ -557,6 +563,12 @@ def test_raw_price_bars_are_idempotent_and_validate_ohlc(
             "status": "complete",
         }
     ]
+    assert instrument_store.get_price_bar_coverage(instrument_id=instrument_id) == {
+        "row_count": 1,
+        "first_date": "2026-07-15",
+        "latest_date": "2026-07-15",
+        "adjustment_factor_count": 1,
+    }
 
     with pytest.raises(ValueError, match="OHLC high/low ordering"):
         instrument_store.upsert_price_bars(
