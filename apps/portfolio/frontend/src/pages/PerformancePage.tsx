@@ -59,6 +59,7 @@ import {
 } from '../lib/performanceWindow'
 import {
   realizedRiskContributionResidual,
+  realizedRiskEstimateIsLowSample,
   realizedRiskMetricsAvailable,
 } from '../lib/performanceRiskReliability'
 
@@ -293,6 +294,14 @@ const CALCULATION_COLUMN_LABELS: Record<CalculationColumnKey, string> = {
   beta: 'Beta to Portfolio',
   risk_contribution: 'Realized RC',
   observations: 'Obs',
+}
+
+const CALCULATION_COLUMN_DESCRIPTIONS: Partial<Record<CalculationColumnKey, string>> = {
+  own_corr:
+    'Correlation between the group return and portfolio TWR on aligned risk periods; the portfolio includes the group.',
+  risk_contribution:
+    'Covariance share of the linked group return contribution and portfolio TWR. Top-level rows sum to 100%; a diversifier can be negative.',
+  observations: 'Aligned group-return observations used for Vol, Sharpe, Corr and Beta.',
 }
 
 const DEFAULT_CALCULATION_TABLE_VIEW_STATE: CalculationTableViewState = {
@@ -2155,6 +2164,12 @@ function PerformancePage() {
     calculationGroupsSummary?.risk_return_observation_count,
     calculationGroupsSummary?.annualized_volatility,
   )
+  const realizedRiskEstimateLowSample = realizedRiskEstimateIsLowSample(
+    calculationGroupsSummary?.risk_return_observation_count,
+  )
+  const showsRealizedRiskEstimate =
+    visibleCalculationColumns.includes('own_corr') ||
+    visibleCalculationColumns.includes('risk_contribution')
   const riskContributionResidual = realizedRiskContributionResidual(
     calculationRows.map((row) => finiteNumber(row.realized_risk_contribution)),
     riskMetricsAvailable,
@@ -2408,12 +2423,13 @@ function PerformancePage() {
   function renderCalculationSortHeader(column: CalculationColumnKey) {
     const active = calculationSortField === column
     const nextSortLabel = !active ? 'ascending' : calculationSortDirection === 'asc' ? 'descending' : 'no sorting'
+    const description = CALCULATION_COLUMN_DESCRIPTIONS[column]
     return (
       <button
         type="button"
         className={`holdings-th-label holdings-th-sortable ${active ? 'holdings-th-sortable-active' : ''}`}
         onClick={() => handleCalculationSort(column)}
-        title={`Sort ${CALCULATION_COLUMN_LABELS[column]}: ${nextSortLabel}`}
+        title={`${description ? `${description} ` : ''}Sort ${CALCULATION_COLUMN_LABELS[column]}: ${nextSortLabel}`}
         aria-label={`Sort ${CALCULATION_COLUMN_LABELS[column]}: ${nextSortLabel}`}
       >
         <span>{CALCULATION_COLUMN_LABELS[column]}</span>
@@ -2701,6 +2717,14 @@ function PerformancePage() {
                 <div className="inline-notice inline-notice-warning" role="status">
                   Calculation includes stale FX observations; pending settlement monetary FX remains separately
                   identified.
+                </div>
+              ) : null}
+              {realizedRiskEstimateLowSample && showsRealizedRiskEstimate ? (
+                <div className="inline-notice inline-notice-warning" role="status">
+                  Low-sample realized risk estimate: Corr to Portfolio and Realized RC use only{' '}
+                  {formatNumber(calculationGroupsSummary?.risk_return_observation_count ?? 0, 0)} aligned{' '}
+                  {calculationGroupsSummary?.risk_calculation_frequency} observations. Treat the ranking and sign as
+                  preliminary; a negative Realized RC means diversification, not a loss.
                 </div>
               ) : null}
               {calculationLoading || calculationGroupsLoading ? <CalculationStatus /> : null}

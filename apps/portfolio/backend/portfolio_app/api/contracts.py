@@ -709,6 +709,106 @@ class TransactionWorkspaceResponse(BaseModel):
     related_position_lots: list[PositionLotRecord]
 
 
+InstrumentEventTaskStatus = Literal[
+    "pending",
+    "processed",
+    "not_applicable",
+    "source_cancelled",
+    "no_entitlement",
+    "needs_review",
+]
+
+
+class InstrumentEventTaskLinkedTransaction(BaseModel):
+    transaction_id: str
+    transaction_type: str
+    trade_date: date
+    settlement_date: date
+    entitlement_date: date | None = None
+    gross_amount: Decimal
+    quantity: Decimal | None = None
+    link_role: Literal["distribution", "reinvestment", "reinvestment_purchase"]
+    linked_event_revision_id: str
+    linked_by: str
+    linked_at: str
+
+
+class InstrumentEventTaskRecord(BaseModel):
+    instrument_event_task_id: str
+    portfolio_id: str
+    account_id: str
+    instrument_id: str
+    instrument_name: str | None = None
+    event_source: str
+    event_action_id: str
+    current_event_revision_id: str
+    event_type: str
+    source_revision_kind: Literal["original", "correction", "cancellation"]
+    source_event_state: Literal["active", "cancelled"]
+    announcement_date: date | None = None
+    record_date: date | None = None
+    effective_date: date
+    payable_date: date | None = None
+    cash_per_unit: Decimal | None = None
+    unit_ratio: Decimal | None = None
+    reinvestment_nav: Decimal | None = None
+    entitled_quantity: Decimal
+    expected_gross_amount: Decimal | None = None
+    resolution_status: Literal["pending", "processed", "not_applicable"]
+    reviewed_event_revision_id: str | None = None
+    resolution_note: str | None = None
+    resolved_by: str | None = None
+    resolved_at: str | None = None
+    status: InstrumentEventTaskStatus
+    attention_required: bool
+    attention_reason: str | None = None
+    linked_transactions: list[InstrumentEventTaskLinkedTransaction] = Field(
+        default_factory=list
+    )
+    row_version: int = Field(ge=1)
+    created_at: str
+    updated_at: str
+
+
+class InstrumentEventTaskListResponse(BaseModel):
+    portfolio_id: str
+    accounting_policy: Literal[
+        "official_unit_nav_assume_no_unrecorded_distribution"
+    ]
+    attention_count: int
+    tasks: list[InstrumentEventTaskRecord] = Field(default_factory=list)
+
+
+class InstrumentEventTaskReviewRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    decision: Literal["processed", "not_applicable", "reopened"]
+    transaction_ids: list[str] = Field(default_factory=list)
+    note: str = Field(min_length=1, max_length=2000)
+    reviewed_by: str = Field(min_length=1, max_length=200)
+    expected_row_version: int = Field(ge=1)
+
+    @field_validator("transaction_ids", mode="before")
+    @classmethod
+    def normalize_transaction_ids(cls, value: object) -> object:
+        return _normalize_optional_text_list(value)
+
+    @field_validator("note", "reviewed_by", mode="before")
+    @classmethod
+    def normalize_review_text(cls, value: object) -> object:
+        return _normalize_required_text(value)
+
+    @model_validator(mode="after")
+    def validate_review_scope(self) -> "InstrumentEventTaskReviewRequest":
+        if self.decision == "processed" and not self.transaction_ids:
+            raise ValueError("Processed review requires linked transaction_ids.")
+        if self.decision != "processed" and self.transaction_ids:
+            raise ValueError(
+                "Only a processed review may include linked transaction_ids."
+            )
+        return self
+
+
 class TransactionPositionPreviewResponse(BaseModel):
     portfolio_id: str
     account_id: str
@@ -783,31 +883,42 @@ class DailySnapshotListResponse(BaseModel):
     snapshots: list[DailySnapshotRecord]
 
 
-class DailySnapshotRefreshRequest(BaseModel):
+class DailySnapshotRecalculationRequest(BaseModel):
     portfolio_ids: list[str] = Field(default_factory=list)
     instrument_ids: list[str] = Field(default_factory=list)
     dirty_from: date | None = None
     refresh_all: bool = False
 
+    @model_validator(mode="after")
+    def require_one_unambiguous_target_selector(
+        self,
+    ) -> "DailySnapshotRecalculationRequest":
+        selected = sum(
+            (
+                bool(self.portfolio_ids),
+                bool(self.instrument_ids),
+                self.refresh_all,
+            )
+        )
+        if selected != 1:
+            raise ValueError(
+                "Exactly one of portfolio_ids, instrument_ids, or refresh_all "
+                "must select the recalculation target."
+            )
+        return self
 
-class DailySnapshotRefreshResult(BaseModel):
+
+class DailySnapshotRecalculationAccepted(BaseModel):
     portfolio_id: str
-    snapshot_count: int = 0
-    refreshed_from: date | None = None
-    refreshed_to: date | None = None
-    refreshed_at: str | None = None
-    source_market_data_updated_at: str | None = None
-    recalculated_from: date | None = None
-    source_generation_status: Literal["stable", "stable_after_retry", "discarded"] = "stable"
-    source_generation_reason: str | None = None
-    discarded_attempt_count: int = Field(default=0, ge=0)
-    source_generation_before: dict[str, str | None] | None = None
-    source_generation_after: dict[str, str | None] | None = None
+    status: Literal["accepted"]
+    daily_snapshot_status: Literal["stale", "running"]
+    refresh_request_id: str = Field(min_length=1)
+    dirty_from: date | None = None
 
 
-class DailySnapshotRefreshResponse(BaseModel):
+class DailySnapshotRecalculationResponse(BaseModel):
     portfolio_ids: list[str]
-    refreshed: list[DailySnapshotRefreshResult]
+    accepted: list[DailySnapshotRecalculationAccepted]
 
 
 class DailyPerformancePoint(BaseModel):
@@ -1480,6 +1591,8 @@ class ResearchSolveEventRecord(BaseModel):
     solver_kind: str | None = None
     solver_detail: str | None = None
     solver_message: str | None = None
+    target_status: str | None = None
+    execution_ready: bool | None = None
     covariance_model: str | None = None
     covariance_observations: int | None = None
     risk_contribution_mode: str | None = None
@@ -2792,8 +2905,6 @@ class TransactionCreateRequest(BaseModel):
                 raise ValueError("Dividend reinvestment requires instrument_id.")
             if self.quantity is None or self.quantity <= 0:
                 raise ValueError("Dividend reinvestment requires positive quantity.")
-            if self.entitlement_date is not None:
-                raise ValueError("Dividend reinvestment does not yet support entitlement_date.")
             if self.settlement_cash_account_id is not None:
                 raise ValueError("Dividend reinvestment must not carry settlement_cash_account_id.")
             if self.price is not None:
@@ -2867,10 +2978,11 @@ class TransactionCreateRequest(BaseModel):
 
         if (
             self.entitlement_date is not None
-            and self.transaction_type not in {"dividend", "coupon", "fee", "tax"}
+            and self.transaction_type
+            not in {"dividend", "dividend_reinvestment", "coupon", "fee", "tax"}
         ):
             raise ValueError(
-                "entitlement_date is only allowed for dividend, coupon, fee, and tax."
+                "entitlement_date is only allowed for dividend, dividend reinvestment, coupon, fee, and tax."
             )
 
         if self.transaction_type == "opening_balance":

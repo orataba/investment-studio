@@ -2,6 +2,7 @@ import { FormEvent, useDeferredValue, useEffect, useMemo, useRef, useState } fro
 import { Link, Navigate, useParams, useSearchParams } from 'react-router-dom'
 
 import CalculationStatus from '../components/CalculationStatus'
+import FundDistributionTasksPanel from '../components/FundDistributionTasksPanel'
 import InstrumentFilterCombobox from '../components/InstrumentFilterCombobox'
 import PortfolioWorkspaceLayout from '../components/PortfolioWorkspaceLayout'
 import {
@@ -14,6 +15,7 @@ import {
   getPortfolioTransactionExecutionQuote,
   getPortfolioTransactionPositionPreview,
   getPortfolioTransactionsWorkspace,
+  reviewPortfolioInstrumentEventTask,
   type PortfolioAccountRecord,
   type PortfolioFeeCategory,
   type PortfolioPositionLotRecord,
@@ -24,6 +26,7 @@ import {
   type PortfolioTransactionFilters,
   type PortfolioTransactionRecord,
   type PortfolioTransactionWorkspaceResponse,
+  type PortfolioInstrumentEventTaskRecord,
   updatePortfolioTransaction,
 } from '../lib/api'
 import {
@@ -582,7 +585,13 @@ function buildFormStateFromTransaction(transaction: PortfolioTransactionRecord):
 }
 
 function supportsEntitlementDate(transactionType: string) {
-  return transactionType === 'dividend' || transactionType === 'coupon' || transactionType === 'fee' || transactionType === 'tax'
+  return (
+    transactionType === 'dividend' ||
+    transactionType === 'dividend_reinvestment' ||
+    transactionType === 'coupon' ||
+    transactionType === 'fee' ||
+    transactionType === 'tax'
+  )
 }
 
 function supportsAcquisitionDate(transactionType: string, accountType?: string | null) {
@@ -656,6 +665,9 @@ export default function TransactionsPage() {
   const [ledgerError, setLedgerError] = useState<string | null>(null)
   const [formError, setFormError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
+  const [activeEventTask, setActiveEventTask] = useState<PortfolioInstrumentEventTaskRecord | null>(null)
+  const [activeEventTaskReviewer, setActiveEventTaskReviewer] = useState('')
+  const [eventTasksRefreshKey, setEventTasksRefreshKey] = useState(0)
   const [drawerOpen, setDrawerOpen] = useState(false)
   const [editingTransactionId, setEditingTransactionId] = useState<string | null>(null)
   const [pendingDeleteTransaction, setPendingDeleteTransaction] = useState<PortfolioTransactionRecord | null>(null)
@@ -684,6 +696,8 @@ export default function TransactionsPage() {
   const drawerDialogRef = useModalDialog(drawerOpen, () => {
     setDrawerOpen(false)
     setEditingTransactionId(null)
+    setActiveEventTask(null)
+    setActiveEventTaskReviewer('')
   })
 
   currentPortfolioIdRef.current = portfolioId
@@ -1638,6 +1652,8 @@ export default function TransactionsPage() {
 
   function openCreateDrawer() {
     setEditingTransactionId(null)
+    setActiveEventTask(null)
+    setActiveEventTaskReviewer('')
     setForm(buildInitialFormState(accounts))
     setPricingAnchor('price')
     autoQuoteKeyRef.current = null
@@ -1650,8 +1666,60 @@ export default function TransactionsPage() {
 
   function openEditDrawer(transaction: PortfolioTransactionRecord) {
     setEditingTransactionId(transaction.transaction_id)
+    setActiveEventTask(null)
+    setActiveEventTaskReviewer('')
     setForm(buildFormStateFromTransaction(transaction))
     setPricingAnchor('price')
+    autoQuoteKeyRef.current = null
+    autoQuantityKeyRef.current = null
+    autoGrossDerivedRef.current = false
+    setFormError(null)
+    setNotice(null)
+    setDrawerOpen(true)
+  }
+
+  function openEventTaskDrawer(
+    task: PortfolioInstrumentEventTaskRecord,
+    transactionType: 'dividend' | 'dividend_reinvestment',
+    reviewedBy: string,
+  ) {
+    const initial = buildInitialFormState(accounts)
+    const account = accounts.find((item) => item.account_id === task.account_id)
+    const settlementAccount = accounts.find(
+      (item) => item.account_id === account?.default_settlement_cash_account_id,
+    )
+    const transactionDate = task.payable_date ?? task.effective_date
+    const expectedGrossAmount = task.expected_gross_amount ?? 0
+    const reinvestedQuantity =
+      transactionType === 'dividend_reinvestment' &&
+      task.reinvestment_nav != null &&
+      task.reinvestment_nav > 0
+        ? expectedGrossAmount / task.reinvestment_nav
+        : null
+    setEditingTransactionId(null)
+    setActiveEventTask(task)
+    setActiveEventTaskReviewer(reviewedBy)
+    setForm({
+      ...initial,
+      transaction_type: transactionType,
+      trade_date: transactionDate,
+      settlement_date: transactionDate,
+      entitlement_date: task.record_date ?? task.effective_date,
+      account_id: task.account_id,
+      settlement_cash_account_id:
+        transactionType === 'dividend'
+          ? settlementAccount?.account_id ?? account?.default_settlement_cash_account_id ?? ''
+          : '',
+      instrument_id: task.instrument_id,
+      quantity:
+        reinvestedQuantity != null
+          ? formatCalculatedFormNumber(reinvestedQuantity, 12)
+          : '',
+      gross_amount: formatCalculatedFormNumber(expectedGrossAmount, 8),
+      note: `Registry distribution ${task.event_action_id}`,
+      instrument_search: '',
+    })
+    setPricingAnchor('gross_amount')
     autoQuoteKeyRef.current = null
     autoQuantityKeyRef.current = null
     autoGrossDerivedRef.current = false
@@ -1670,6 +1738,8 @@ export default function TransactionsPage() {
       }
       setDrawerOpen(false)
       setEditingTransactionId(null)
+      setActiveEventTask(null)
+      setActiveEventTaskReviewer('')
     }
     window.addEventListener('keydown', handleKeyDown)
     window.setTimeout(() => {
@@ -1689,6 +1759,15 @@ export default function TransactionsPage() {
           (transaction) => transaction.transaction_id === editingTransactionId,
         ) ?? null
       : null
+
+    if (
+      activeEventTask &&
+      form.transaction_type !== 'dividend' &&
+      form.transaction_type !== 'dividend_reinvestment'
+    ) {
+      setFormError('A distribution review must create a dividend or dividend-reinvestment fact.')
+      return
+    }
 
     const resolvedAccount =
       accounts.find((account) => account.account_id === form.account_id) ?? selectedAccount ?? null
@@ -1908,16 +1987,47 @@ export default function TransactionsPage() {
       expected_row_version: editingTransaction?.row_version,
     }
 
+    if (activeEventTask && !activeEventTaskReviewer.trim()) {
+      setFormError('Operator identity is required to link this distribution transaction.')
+      return
+    }
+
     try {
       const created = isEditingTransaction
         ? await updatePortfolioTransaction(portfolioId, editingTransactionId, payload)
         : await createPortfolioTransaction(portfolioId, payload)
+      let eventReviewError: string | null = null
+      if (activeEventTask && !isEditingTransaction) {
+        try {
+          await reviewPortfolioInstrumentEventTask(
+            portfolioId,
+            activeEventTask.instrument_event_task_id,
+            {
+              decision: 'processed',
+              transaction_ids: [created.transaction_id],
+              note: `Recorded through Portfolio transaction ${created.transaction_id}.`,
+              reviewed_by: activeEventTaskReviewer.trim(),
+              expected_row_version: activeEventTask.row_version,
+            },
+          )
+        } catch (reviewError) {
+          eventReviewError =
+            reviewError instanceof Error
+              ? reviewError.message
+              : 'The Registry event review could not be linked.'
+        }
+      }
       setDrawerOpen(false)
       setEditingTransactionId(null)
+      setActiveEventTask(null)
+      setActiveEventTaskReviewer('')
+      setEventTasksRefreshKey((current) => current + 1)
       setNotice(
-        isEditingTransaction
-          ? `Updated ${formatLabel(created.transaction_type)} transaction ${created.transaction_id}.`
-          : `Added ${formatLabel(created.transaction_type)} transaction ${created.transaction_id}.`,
+        eventReviewError
+          ? `Added transaction ${created.transaction_id}; the distribution review remains pending: ${eventReviewError}`
+          : isEditingTransaction
+            ? `Updated ${formatLabel(created.transaction_type)} transaction ${created.transaction_id}.`
+            : `Added ${formatLabel(created.transaction_type)} transaction ${created.transaction_id}.`,
       )
       setForm(buildInitialFormState(accounts))
       patchSearchParams({
@@ -1966,6 +2076,7 @@ export default function TransactionsPage() {
       setEditingTransactionId(null)
       setForm(buildInitialFormState(accounts))
       setPendingDeleteTransaction(null)
+      setEventTasksRefreshKey((current) => current + 1)
       patchSearchParams({ transaction_id: null })
       await refreshTransactions(filters, null)
       setNotice(
@@ -2140,6 +2251,12 @@ export default function TransactionsPage() {
       }
     >
       <section className="portfolio-detail-surface">
+        <FundDistributionTasksPanel
+          portfolioId={portfolioId}
+          accountNames={accountNameById}
+          refreshKey={eventTasksRefreshKey}
+          onRecord={openEventTaskDrawer}
+        />
         <div className="portfolio-detail-toolbar">
           <div>
             <div className="panel-title">Transaction Ledger</div>
@@ -2648,6 +2765,8 @@ export default function TransactionsPage() {
           onClick={() => {
             setDrawerOpen(false)
             setEditingTransactionId(null)
+            setActiveEventTask(null)
+            setActiveEventTaskReviewer('')
           }}
         >
           <aside
@@ -2669,6 +2788,8 @@ export default function TransactionsPage() {
                 onClick={() => {
                   setDrawerOpen(false)
                   setEditingTransactionId(null)
+                  setActiveEventTask(null)
+                  setActiveEventTaskReviewer('')
                 }}
               >
                 Close
@@ -2839,6 +2960,7 @@ export default function TransactionsPage() {
                   <span>Type</span>
                   <select
                     value={form.transaction_type}
+                    disabled={Boolean(activeEventTask)}
                     onChange={(event) => {
                       const nextTransactionType = event.target.value
                       setForm((current) => {
@@ -3231,6 +3353,8 @@ export default function TransactionsPage() {
                   onClick={() => {
                     setDrawerOpen(false)
                     setEditingTransactionId(null)
+                    setActiveEventTask(null)
+                    setActiveEventTaskReviewer('')
                   }}
                 >
                   Cancel

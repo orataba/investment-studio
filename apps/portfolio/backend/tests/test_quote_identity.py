@@ -10,6 +10,7 @@ from portfolio_app.services import (
     execution_quotes,
     instrument_charts,
     ledger,
+    market_data,
     performance,
     research_solver,
     valuation_fx,
@@ -116,6 +117,60 @@ def test_fund_close_cannot_be_relabelled_as_nav() -> None:
 
     assert resolution.points == ()
     assert resolution.unavailable_reason == "quote_metric_family_mismatch"
+
+
+def test_fund_analytical_consumers_do_not_fallback_to_unit_nav() -> None:
+    detail = {
+        "instrument_id": "fund-unit-nav-only",
+        "instrument_name": "Unit NAV Only Fund",
+        "instrument_type": "fund",
+        "currency": "USD",
+        "quote_selection_policy": {
+            "trading": ["official_nav"],
+            "valuation": ["official_nav"],
+            "total_return": ["total_return_nav"],
+            "chart": ["total_return_nav"],
+            "reference": ["official_nav"],
+        },
+        "market_data": [
+            _point(
+                metric_family="nav",
+                quote_basis="official_nav",
+                as_of_date="2026-01-01",
+                value="1.00",
+            ),
+            _point(
+                metric_family="nav",
+                quote_basis="official_nav",
+                as_of_date="2026-01-02",
+                value="1.01",
+            ),
+        ],
+    }
+
+    assert market_data.analytical_return_quote_bases(detail) == ["total_return_nav"]
+    assert research_solver._selected_price_points(
+        deepcopy(detail),
+        end_date=date(2026, 1, 2),
+    ) == []
+    chart_selection = instrument_charts._select_chart_series(
+        deepcopy(detail),
+        as_of_date=date(2026, 1, 2),
+    )
+    assert chart_selection.points == ()
+    assert chart_selection.selected_basis is None
+    assert calculation_frequency.selected_observation_dates_from_detail(
+        deepcopy(detail),
+        end_date=date(2026, 1, 2),
+    ) == []
+
+    valuation_point = performance._select_market_point_as_of(
+        detail=deepcopy(detail),
+        role="valuation",
+        as_of_date=date(2026, 1, 2),
+    )
+    assert valuation_point is not None
+    assert valuation_point["quote_basis"] == "official_nav"
 
 
 def test_all_portfolio_quote_consumers_reject_mixed_currency_series():

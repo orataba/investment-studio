@@ -102,6 +102,39 @@ def test_holdings_trend_selects_more_complete_alternate_without_splicing_bases()
     assert [point["value"] for point in chart["points"]] == [80.0, 90.0, 95.0, 96.0, 100.0]
 
 
+def test_mtd_and_ytd_remain_unavailable_without_preperiod_anchors() -> None:
+    trend = build_instrument_trend_metrics_from_detail(
+        _detail(
+            [
+                _point("close", "2026-01-02", "100"),
+                _point("close", "2026-01-10", "110"),
+            ]
+        ),
+        as_of_date=date(2026, 1, 10),
+    )
+
+    assert trend["instrument_return_mtd"] is None
+    assert trend["instrument_return_ytd"] is None
+    assert "mtd" not in trend["instrument_trend_coverage"]["available_return_windows"]
+    assert "ytd" not in trend["instrument_trend_coverage"]["available_return_windows"]
+
+
+def test_one_year_return_uses_a_calendar_year_boundary() -> None:
+    trend = build_instrument_trend_metrics_from_detail(
+        _detail(
+            [
+                _point("close", "2023-03-01", "100"),
+                _point("close", "2023-03-02", "105"),
+                _point("close", "2024-03-01", "120"),
+            ]
+        ),
+        as_of_date=date(2024, 3, 1),
+    )
+
+    assert trend["instrument_return_1y"] == pytest.approx(0.2)
+    assert "1y" in trend["instrument_trend_coverage"]["available_return_windows"]
+
+
 def test_raw_close_history_is_adjusted_with_confirmed_split_ratio_within_one_basis() -> None:
     detail = _detail(
         [

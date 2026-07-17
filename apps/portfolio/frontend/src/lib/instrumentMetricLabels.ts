@@ -1,16 +1,11 @@
 const METRIC_LABELS: Record<string, string> = {
-  official_nav: 'Official NAV',
-  nav: 'NAV',
-  total_return_nav: 'Total Return NAV',
+  official_nav: 'Unit NAV',
+  nav: 'Unit NAV',
+  total_return_nav: 'Dividend-Reinvested Total Return NAV',
   close: 'Market Close',
   adjusted_close: 'Adjusted Close',
   unadjusted_close: 'Market Close',
   unit_nav: 'Unit NAV',
-  cumulative_nav: 'Cumulative NAV',
-  cum_nav: 'Cumulative NAV',
-  accumulated_nav: 'Accumulated NAV',
-  dividend_adjusted_nav: 'Dividend-adjusted NAV',
-  reinvested_nav: 'Total Return NAV',
 }
 
 export function instrumentMetricLabel(metricFamily?: string | null, fallback = 'Market quote') {

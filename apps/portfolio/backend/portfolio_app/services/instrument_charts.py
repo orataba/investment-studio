@@ -8,7 +8,7 @@ from math import sqrt
 from portfolio_app.services.calculation_frequency import CalculationFrequency, period_end_date
 from portfolio_app.services.instrument_registry import get_registry_instrument_detail
 from portfolio_app.services.market_data import (
-    quote_policy_bases,
+    analytical_return_quote_bases,
     resolve_quote_series,
 )
 
@@ -172,17 +172,7 @@ def _range_start_date(*, as_of_date: date, range_key: str) -> date | None:
 
 
 def _candidate_chart_bases(detail: dict[str, object]) -> list[str]:
-    candidate_bases = [
-        *quote_policy_bases(detail, "total_return"),
-        *quote_policy_bases(detail, "chart"),
-        *quote_policy_bases(detail, "valuation"),
-        *quote_policy_bases(detail, "reference"),
-    ]
-    normalized: list[str] = []
-    for quote_basis in candidate_bases:
-        if quote_basis not in normalized:
-            normalized.append(quote_basis)
-    return normalized
+    return analytical_return_quote_bases(detail)
 
 
 def _downsample_points(points: list[dict[str, object]], max_points: int | None) -> list[dict[str, object]]:
@@ -198,6 +188,14 @@ def _downsample_points(points: list[dict[str, object]], max_points: int | None) 
     return [points[index] for index in sorted(sampled_indices)]
 
 
+def _shift_calendar_years(value: date, years: int) -> date:
+    target_year = value.year + years
+    try:
+        return value.replace(year=target_year)
+    except ValueError:
+        return value.replace(year=target_year, month=2, day=28)
+
+
 def _return_window_names(points: list[dict[str, object]]) -> list[str]:
     if len(points) < 2:
         return []
@@ -205,21 +203,12 @@ def _return_window_names(points: list[dict[str, object]]) -> list[str]:
     if not isinstance(end_date, date):
         return []
 
-    def has_anchor(target_date: date, *, fallback_start: date | None = None) -> bool:
-        if any(
+    def has_anchor(target_date: date) -> bool:
+        return any(
             isinstance(point.get("date"), date)
             and point["date"] <= target_date
             and point["date"] < end_date
             for point in points
-        ):
-            return True
-        return bool(
-            fallback_start is not None
-            and any(
-                isinstance(point.get("date"), date)
-                and fallback_start <= point["date"] < end_date
-                for point in points
-            )
         )
 
     month_start = date(end_date.year, end_date.month, 1)
@@ -227,11 +216,11 @@ def _return_window_names(points: list[dict[str, object]]) -> list[str]:
     windows: list[str] = []
     if has_anchor(end_date - timedelta(days=7)):
         windows.append("1w")
-    if has_anchor(month_start - timedelta(days=1), fallback_start=month_start):
+    if has_anchor(month_start - timedelta(days=1)):
         windows.append("mtd")
-    if has_anchor(year_start - timedelta(days=1), fallback_start=year_start):
+    if has_anchor(year_start - timedelta(days=1)):
         windows.append("ytd")
-    if has_anchor(end_date - timedelta(days=365)):
+    if has_anchor(_shift_calendar_years(end_date, -1)):
         windows.append("1y")
     return windows
 
@@ -750,11 +739,8 @@ def _period_return(
     *,
     end_point: dict[str, object] | None,
     anchor_date: date,
-    fallback_start_date: date | None = None,
 ) -> float | None:
     start_point = _latest_point_on_or_before(points, anchor_date)
-    if start_point is None and fallback_start_date is not None:
-        start_point = _first_point_on_or_after(points, fallback_start_date)
     return _return_between_points(start_point, end_point)
 
 
@@ -800,18 +786,16 @@ def build_instrument_trend_metrics_from_detail(
             selected_points,
             end_point=end_point,
             anchor_date=month_start - timedelta(days=1),
-            fallback_start_date=month_start,
         ),
         "instrument_return_ytd": _period_return(
             selected_points,
             end_point=end_point,
             anchor_date=year_start - timedelta(days=1),
-            fallback_start_date=year_start,
         ),
         "instrument_return_1y": _period_return(
             selected_points,
             end_point=end_point,
-            anchor_date=end_date - timedelta(days=365),
+            anchor_date=_shift_calendar_years(end_date, -1),
         ),
         "instrument_volatility_1m": _annualized_window_volatility(
             selected_points,

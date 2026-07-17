@@ -60,25 +60,18 @@ def _canonical_quote_policy(instrument_type: str) -> dict[str, list[str]]:
             "reference": ["close", "last"],
         },
         "fund": {
-            "trading": ["last", "close", "official_nav"],
-            "valuation": ["official_nav", "close", "last"],
-            "total_return": [
-                "total_return_nav",
-                "dividend_adjusted_nav",
-                "reinvested_nav",
-                "adjusted_close",
-                "official_nav",
-                "close",
-            ],
-            "chart": [
-                "total_return_nav",
-                "dividend_adjusted_nav",
-                "reinvested_nav",
-                "adjusted_close",
-                "official_nav",
-                "close",
-            ],
-            "reference": ["official_nav", "close", "last"],
+            "trading": ["official_nav"],
+            "valuation": ["official_nav"],
+            "total_return": ["total_return_nav"],
+            "chart": ["total_return_nav"],
+            "reference": ["official_nav"],
+        },
+        "etf": {
+            "trading": ["last", "close"],
+            "valuation": ["close", "last"],
+            "total_return": ["adjusted_close", "close", "last"],
+            "chart": ["adjusted_close", "close", "last"],
+            "reference": ["close", "last"],
         },
         "fx": {
             "trading": ["spot"],
@@ -112,10 +105,10 @@ REGISTRY_INSTRUMENT_DETAILS = [
     {
         "instrument_id": "fund-us-agg",
         "instrument_name": "iShares Core U.S. Aggregate Bond ETF",
-        "instrument_type": "fund",
+        "instrument_type": "etf",
         "currency": "USD",
         "identifiers": [{"identifier_type": "ticker", "identifier_value": "AGG", "is_primary": True}],
-        "quote_selection_policy": _canonical_quote_policy("fund"),
+        "quote_selection_policy": _canonical_quote_policy("etf"),
         "market_data": [
             _market_point("price", "close", "2026-03-05", "96.82", "USD"),
             _market_point("price", "close", "2026-03-28", "97.62", "USD"),
@@ -126,10 +119,10 @@ REGISTRY_INSTRUMENT_DETAILS = [
     {
         "instrument_id": "fund-hk-2800",
         "instrument_name": "Tracker Fund of Hong Kong",
-        "instrument_type": "fund",
+        "instrument_type": "etf",
         "currency": "HKD",
         "identifiers": [{"identifier_type": "ticker", "identifier_value": "2800.HK", "is_primary": True}],
-        "quote_selection_policy": _canonical_quote_policy("fund"),
+        "quote_selection_policy": _canonical_quote_policy("etf"),
         "market_data": [
             _market_point("price", "close", "2026-03-04", "21.30", "HKD"),
             _market_point("price", "close", "2026-04-02", "21.05", "HKD"),
@@ -139,10 +132,10 @@ REGISTRY_INSTRUMENT_DETAILS = [
     {
         "instrument_id": "fund-us-watch",
         "instrument_name": "Watchlist Fund",
-        "instrument_type": "fund",
+        "instrument_type": "etf",
         "currency": "USD",
         "identifiers": [{"identifier_type": "ticker", "identifier_value": "WATCH", "is_primary": True}],
-        "quote_selection_policy": _canonical_quote_policy("fund"),
+        "quote_selection_policy": _canonical_quote_policy("etf"),
         "market_data": [
             _market_point("price", "close", "2026-04-15", "100.00", "USD"),
         ],
@@ -312,6 +305,12 @@ def isolated_portfolio_store(request, tmp_path, monkeypatch):
     monkeypatch.setenv("PORTFOLIO_OPS_PORTFOLIO_DATABASE_URL", database_url)
     monkeypatch.setenv("PORTFOLIO_OPS_PORTFOLIO_DATABASE_SCHEMA", "")
     monkeypatch.setenv("PORTFOLIO_OPS_PORTFOLIO_RESEARCH_OUTPUTS_ROOT", str(research_outputs_root))
+    # Queue/worker tests start an explicit worker.  Keeping the application
+    # lifespan worker off makes all other request tests deterministic.
+    monkeypatch.setenv(
+        "PORTFOLIO_OPS_PORTFOLIO_DAILY_SNAPSHOT_WORKER_ENABLED",
+        "false",
+    )
 
     from portfolio_app.core import settings as settings_module
     from portfolio_app.db import session as session_module

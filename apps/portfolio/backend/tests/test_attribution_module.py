@@ -409,6 +409,42 @@ def test_realized_risk_attribution_golden_contract(
     assert summary["risk_calculation_frequency"] == calculation_frequency
 
 
+def test_realized_risk_attribution_does_not_report_portfolio_observations_for_cash() -> None:
+    portfolio_daily_series = [
+        {
+            "as_of_date": as_of_date,
+            "daily_twr": portfolio_return,
+            "return_observation_eligible": True,
+        }
+        for as_of_date, portfolio_return in (
+            (date(2026, 1, 5), 0.01),
+            (date(2026, 1, 6), -0.01),
+            (date(2026, 1, 7), 0.02),
+        )
+    ]
+    cash_slices = [
+        {
+            "as_of_date": point["as_of_date"],
+            "group_key": "cash",
+            "daily_return": 0.0,
+            "daily_contribution": 0.0,
+            "return_observation_eligible": False,
+        }
+        for point in portfolio_daily_series
+    ]
+
+    metrics = attribution.realized_risk_attribution_by_group(
+        cash_slices,
+        portfolio_daily_series,
+        calculation_frequency="daily",
+        final_date=date(2026, 1, 7),
+    )
+
+    assert metrics["cash"]["risk_return_observation_count"] == 0
+    assert metrics["cash"]["correlation_to_portfolio"] is None
+    assert metrics["cash"]["realized_risk_contribution"] == pytest.approx(0.0)
+
+
 def test_performance_orchestrator_keeps_portfolio_metadata_boundary(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

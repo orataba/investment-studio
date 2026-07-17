@@ -35,9 +35,9 @@ from portfolio_app.api.contracts import (
     ContributionLineRecord,
     ContributionReportResponse,
     ContributionReportSummary,
-    DailySnapshotRefreshRequest,
-    DailySnapshotRefreshResponse,
-    DailySnapshotRefreshResult,
+    DailySnapshotRecalculationAccepted,
+    DailySnapshotRecalculationRequest,
+    DailySnapshotRecalculationResponse,
     DailySnapshotListResponse,
     DailySnapshotListSummary,
     DailySnapshotRecord,
@@ -64,9 +64,12 @@ from portfolio_app.api.contracts import (
 from portfolio_app.services.instrument_registry import InstrumentRegistryError
 from portfolio_app.services.attribution import CONTRIBUTION_AXES, CONTRIBUTION_AXIS_ERROR
 from portfolio_app.services.daily_snapshots import (
+    enqueue_portfolio_daily_snapshot_recalculations_for_instrument_change,
+    enqueue_selected_portfolio_daily_snapshot_recalculations,
     list_materialized_daily_snapshots,
-    refresh_portfolio_daily_snapshots_for_instrument_change,
-    refresh_selected_portfolio_daily_snapshots,
+)
+from portfolio_app.services.instrument_event_tasks import (
+    reconcile_instrument_event_tasks,
 )
 from portfolio_app.services.workspace_cache import (
     get_cached_materialized_contribution_report,
@@ -133,33 +136,52 @@ def _taxonomy_base_axes(
     return ("instrument", "instrument_detail")
 
 
-@router.post("/snapshots/daily/refresh", response_model=DailySnapshotRefreshResponse)
-def refresh_daily_snapshots(
-    payload: DailySnapshotRefreshRequest,
-) -> DailySnapshotRefreshResponse:
-    try:
-        if payload.refresh_all:
-            refreshed = refresh_portfolio_daily_snapshots_for_instrument_change(
+@router.post(
+    "/snapshots/daily/recalculations",
+    response_model=DailySnapshotRecalculationResponse,
+    status_code=202,
+)
+def enqueue_daily_snapshot_recalculations(
+    payload: DailySnapshotRecalculationRequest,
+) -> DailySnapshotRecalculationResponse:
+    if payload.refresh_all:
+        accepted = (
+            enqueue_portfolio_daily_snapshot_recalculations_for_instrument_change(
                 instrument_ids=[],
                 dirty_from=payload.dirty_from,
                 refresh_all=True,
             )
-        elif payload.portfolio_ids:
-            refreshed = refresh_selected_portfolio_daily_snapshots(
-                payload.portfolio_ids,
-                dirty_from=payload.dirty_from,
-            )
-        else:
-            refreshed = refresh_portfolio_daily_snapshots_for_instrument_change(
+        )
+    elif payload.portfolio_ids:
+        accepted = enqueue_selected_portfolio_daily_snapshot_recalculations(
+            payload.portfolio_ids,
+            dirty_from=payload.dirty_from,
+        )
+    else:
+        accepted = (
+            enqueue_portfolio_daily_snapshot_recalculations_for_instrument_change(
                 instrument_ids=payload.instrument_ids,
                 dirty_from=payload.dirty_from,
             )
+        )
+
+    accepted_portfolio_ids = [
+        str(item.get("portfolio_id") or "") for item in accepted
+    ]
+    try:
+        reconcile_instrument_event_tasks(
+            portfolio_ids=accepted_portfolio_ids,
+            instrument_ids=payload.instrument_ids,
+        )
     except InstrumentRegistryError as error:
         raise HTTPException(status_code=502, detail=str(error)) from error
 
-    return DailySnapshotRefreshResponse(
-        portfolio_ids=[str(item.get("portfolio_id") or "") for item in refreshed],
-        refreshed=[DailySnapshotRefreshResult.model_validate(item) for item in refreshed],
+    return DailySnapshotRecalculationResponse(
+        portfolio_ids=accepted_portfolio_ids,
+        accepted=[
+            DailySnapshotRecalculationAccepted.model_validate(item)
+            for item in accepted
+        ],
     )
 
 
@@ -791,7 +813,7 @@ def get_portfolio_contribution_report(
                 axis=axis,
                 group_key=group_key,
             )
-            if axis in {"instrument", "account"}
+            if axis in _MATERIALIZED_CALCULATION_GROUP_AXES
             else None
         )
         if report is None:

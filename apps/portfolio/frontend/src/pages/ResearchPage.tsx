@@ -62,6 +62,7 @@ const REBALANCE_OPTIONS: Array<{ value: PortfolioResearchBacktestRebalanceFreque
 type ResearchRunSetupDraft = {
   asOfMode: PortfolioResearchAsOfMode
   asOfDate: string
+  notes: string | null
   capitalMode: PortfolioResearchCapitalMode
   grossExposure: string
   targetVolatilityPct: string
@@ -787,6 +788,7 @@ export default function ResearchPage() {
   const runSetupDraftRef = useRef<ResearchRunSetupDraft>({
     asOfMode: 'dynamic',
     asOfDate: '',
+    notes: null,
     capitalMode: 'unit_notional',
     grossExposure: '',
     targetVolatilityPct: '',
@@ -949,6 +951,7 @@ export default function ResearchPage() {
     }))
     const nextDraft: ResearchRunSetupDraft = {
       ...nextAsOf,
+      notes: workbench.settings.notes ?? null,
       capitalMode: nextCapitalMode,
       grossExposure: workbench.settings.gross_exposure != null ? String(workbench.settings.gross_exposure) : '',
       targetVolatilityPct:
@@ -1334,7 +1337,7 @@ export default function ResearchPage() {
       top_sleeve_weight_bounds: topSleeveWeightBounds,
       backtest_rebalance_frequency: draft.backtestRebalanceFrequency,
       backtest_benchmark_instrument_id: draft.benchmarkInstrumentId || null,
-      notes: null,
+      notes: draft.notes,
     })
   }
 
@@ -1432,6 +1435,12 @@ export default function ResearchPage() {
   const solvedGroups = latestRun?.detail?.solved_result_groups ?? []
   const backtest = latestRun?.detail?.backtest ?? null
   const staleRun = latestRun?.status === 'completed' && latestRun.reliability_state === 'stale'
+  const solveEvents = (latestRun?.detail?.scope_solve_events ?? []).length
+    ? latestRun?.detail?.scope_solve_events ?? []
+    : latestRun?.detail?.solve_event
+      ? [latestRun.detail.solve_event]
+      : []
+  const nonExecutionReadySolveEvents = solveEvents.filter((event) => event.execution_ready === false)
   const manualReviewGaps = (latestRun?.detail?.target_weight_gaps ?? []).filter(
     (row) => row.execution_status === 'manual_review_required',
   )
@@ -1799,6 +1808,21 @@ export default function ResearchPage() {
                         {(latestRun.reliability_reasons ?? []).map((reason) => <li key={reason}>{reason}</li>)}
                       </ul>
                     ) : null}
+                  </div>
+                </section>
+              ) : null}
+              {nonExecutionReadySolveEvents.length ? (
+                <section className="panel">
+                  <div className="inline-notice inline-notice-warning">
+                    <strong>Constrained solve — not execution-ready.</strong>{' '}
+                    One or more risk-budget targets were not achieved within the configured constraints.
+                    <ul>
+                      {nonExecutionReadySolveEvents.map((event) => (
+                        <li key={`${event.scope_node_id ?? 'root'}:${event.as_of_date}`}>
+                          {event.scope_label}: {event.solver_message ?? 'Review target shares and weight bounds before using these weights.'}
+                        </li>
+                      ))}
+                    </ul>
                   </div>
                 </section>
               ) : null}

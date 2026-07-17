@@ -1055,6 +1055,8 @@ export type PortfolioResearchSolveEventRecord = {
   solver_kind?: string | null
   solver_detail?: string | null
   solver_message?: string | null
+  target_status?: string | null
+  execution_ready?: boolean | null
   covariance_model?: string | null
   covariance_observations?: number | null
   risk_contribution_mode?: string | null
@@ -1568,6 +1570,78 @@ export type PortfolioTransactionWorkspaceResponse = {
   ledger_postings: PortfolioLedgerPostingRecord[]
   related_position_lot_summary: PortfolioPositionLotListResponse['summary']
   related_position_lots: PortfolioPositionLotRecord[]
+}
+
+export type PortfolioInstrumentEventTaskStatus =
+  | 'pending'
+  | 'processed'
+  | 'not_applicable'
+  | 'source_cancelled'
+  | 'no_entitlement'
+  | 'needs_review'
+
+export type PortfolioInstrumentEventTaskLinkedTransaction = {
+  transaction_id: string
+  transaction_type: string
+  trade_date: string
+  settlement_date: string
+  entitlement_date: string | null
+  gross_amount: number
+  quantity: number | null
+  link_role: 'distribution' | 'reinvestment' | 'reinvestment_purchase'
+  linked_event_revision_id: string
+  linked_by: string
+  linked_at: string
+}
+
+export type PortfolioInstrumentEventTaskRecord = {
+  instrument_event_task_id: string
+  portfolio_id: string
+  account_id: string
+  instrument_id: string
+  instrument_name: string | null
+  event_source: string
+  event_action_id: string
+  current_event_revision_id: string
+  event_type: string
+  source_revision_kind: 'original' | 'correction' | 'cancellation'
+  source_event_state: 'active' | 'cancelled'
+  announcement_date: string | null
+  record_date: string | null
+  effective_date: string
+  payable_date: string | null
+  cash_per_unit: number | null
+  unit_ratio: number | null
+  reinvestment_nav: number | null
+  entitled_quantity: number
+  expected_gross_amount: number | null
+  resolution_status: 'pending' | 'processed' | 'not_applicable'
+  reviewed_event_revision_id: string | null
+  resolution_note: string | null
+  resolved_by: string | null
+  resolved_at: string | null
+  status: PortfolioInstrumentEventTaskStatus
+  attention_required: boolean
+  attention_reason: string | null
+  linked_transactions: PortfolioInstrumentEventTaskLinkedTransaction[]
+  row_version: number
+  created_at: string
+  updated_at: string
+}
+
+export type PortfolioInstrumentEventTaskListResponse = {
+  portfolio_id: string
+  accounting_policy: 'official_unit_nav_assume_no_unrecorded_distribution'
+  attention_count: number
+  tasks: PortfolioInstrumentEventTaskRecord[]
+}
+
+export type PortfolioInstrumentEventTaskReviewPayload = {
+  decision: 'processed' | 'not_applicable' | 'reopened'
+  transaction_ids: string[]
+  note: string
+  reviewed_by: string
+  expected_row_version: number
 }
 
 export type PortfolioTransactionPositionPreviewResponse = {
@@ -2459,6 +2533,32 @@ export function createPortfolioTransaction(
   return fetchJson<PortfolioTransactionRecord>(
     API_BASE_URL,
     `/api/portfolios/${portfolioId}/transactions`,
+    {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    },
+  )
+}
+
+export function getPortfolioInstrumentEventTasks(
+  portfolioId: string,
+  attentionOnly = false,
+) {
+  const query = attentionOnly ? '?attention_only=true' : ''
+  return fetchJson<PortfolioInstrumentEventTaskListResponse>(
+    API_BASE_URL,
+    `/api/portfolios/${portfolioId}/instrument-event-tasks${query}`,
+  )
+}
+
+export function reviewPortfolioInstrumentEventTask(
+  portfolioId: string,
+  instrumentEventTaskId: string,
+  payload: PortfolioInstrumentEventTaskReviewPayload,
+) {
+  return fetchJson<PortfolioInstrumentEventTaskRecord>(
+    API_BASE_URL,
+    `/api/portfolios/${portfolioId}/instrument-event-tasks/${instrumentEventTaskId}/reviews`,
     {
       method: 'POST',
       body: JSON.stringify(payload),

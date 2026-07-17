@@ -34,7 +34,9 @@ def _advance_market_data_generation(value: str) -> None:
 
 
 def test_stable_snapshot_refresh_persists_its_exact_source_generation() -> None:
-    result = daily_snapshots.refresh_portfolio_daily_snapshots("portfolio-ops")
+    result = daily_snapshots._run_portfolio_daily_snapshot_recalculation_synchronously(
+        "portfolio-ops"
+    )
 
     assert result is not None
     assert result["source_generation_status"] == "stable"
@@ -61,7 +63,12 @@ def test_stable_snapshot_refresh_persists_its_exact_source_generation() -> None:
 
 
 def test_source_generation_change_discards_first_output_then_replays(monkeypatch) -> None:
-    assert daily_snapshots.refresh_portfolio_daily_snapshots("portfolio-ops") is not None
+    assert (
+        daily_snapshots._run_portfolio_daily_snapshot_recalculation_synchronously(
+            "portfolio-ops"
+        )
+        is not None
+    )
     published_before = _published_snapshot_fingerprint()
     assert published_before
     daily_snapshots.mark_portfolio_daily_snapshots_stale("portfolio-ops")
@@ -87,7 +94,9 @@ def test_source_generation_change_discards_first_output_then_replays(monkeypatch
         build_while_source_changes,
     )
 
-    result = daily_snapshots.refresh_portfolio_daily_snapshots("portfolio-ops")
+    result = daily_snapshots._run_portfolio_daily_snapshot_recalculation_synchronously(
+        "portfolio-ops"
+    )
 
     assert build_calls["count"] == 2
     assert result is not None
@@ -118,10 +127,14 @@ def test_source_generation_change_discards_first_output_then_replays(monkeypatch
 
 
 def test_repeated_source_generation_change_returns_explicit_discard_status(
-    client,
     monkeypatch,
 ) -> None:
-    assert daily_snapshots.refresh_portfolio_daily_snapshots("portfolio-ops") is not None
+    assert (
+        daily_snapshots._run_portfolio_daily_snapshot_recalculation_synchronously(
+            "portfolio-ops"
+        )
+        is not None
+    )
     published_before = _published_snapshot_fingerprint()
     original_builder = daily_snapshots.performance.build_daily_portfolio_snapshots
 
@@ -139,13 +152,14 @@ def test_repeated_source_generation_change_returns_explicit_discard_status(
         build_while_source_changes,
     )
 
-    response = client.post(
-        "/api/portfolios/snapshots/daily/refresh",
-        json={"portfolio_ids": ["portfolio-ops"]},
+    daily_snapshots.enqueue_selected_portfolio_daily_snapshot_recalculations(
+        ["portfolio-ops"]
+    )
+    payload = daily_snapshots._run_portfolio_daily_snapshot_recalculation_synchronously(
+        "portfolio-ops"
     )
 
-    assert response.status_code == 200
-    payload = response.json()["refreshed"][0]
+    assert payload is not None
     assert payload["source_generation_status"] == "discarded"
     assert payload["source_generation_reason"] == "source_generation_changed_during_calculation"
     assert payload["discarded_attempt_count"] == 1

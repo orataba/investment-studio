@@ -10,8 +10,7 @@ from tests.store_fixture import TEST_PORTFOLIO_STORE
 from portfolio_app.db.models import PortfolioCalculationStateModel, PortfolioDailySnapshotModel
 from portfolio_app.api.contracts import InstrumentOption, LedgerPostingRecord, PositionLotRecord
 from portfolio_app.db.session import get_session_factory
-from portfolio_app.services import daily_snapshots, portfolio_store
-from portfolio_app.services.daily_snapshots import refresh_portfolio_daily_snapshots
+from portfolio_app.services import daily_snapshot_worker, daily_snapshots, portfolio_store
 from portfolio_app.services.ledger import _build_position_state, build_position_lots, derive_ledger_postings
 
 
@@ -179,7 +178,7 @@ def test_instrument_option_rejects_missing_or_noncanonical_price_contract() -> N
             InstrumentOption.model_validate(incomplete)
 
 
-def test_transaction_write_refreshes_materialized_daily_snapshots(client):
+def test_transaction_write_enqueues_materialized_daily_snapshot_recalculation(client):
     baseline_response = client.get("/api/portfolios/portfolio-ops/snapshots/daily")
     assert baseline_response.status_code == 200
 
@@ -199,6 +198,14 @@ def test_transaction_write_refreshes_materialized_daily_snapshots(client):
     with session_factory() as session:
         state = session.get(PortfolioCalculationStateModel, "portfolio-ops")
         assert state is not None
+        assert state.daily_snapshot_status == "stale"
+        assert state.dirty_from == date(2026, 4, 16)
+
+    assert daily_snapshot_worker.run_daily_snapshot_recalculation_worker_once()
+
+    with session_factory() as session:
+        state = session.get(PortfolioCalculationStateModel, "portfolio-ops")
+        assert state is not None
         assert state.daily_snapshot_status == "current"
         assert state.dirty_from is None
         assert state.refreshed_to == date(2026, 4, 16)
@@ -213,7 +220,9 @@ def test_transaction_write_refreshes_materialized_daily_snapshots(client):
 
 
 def test_transaction_update_marks_daily_snapshots_dirty_from_old_trade_date():
-    refresh_portfolio_daily_snapshots("portfolio-ops")
+    daily_snapshots._run_portfolio_daily_snapshot_recalculation_synchronously(
+        "portfolio-ops"
+    )
     existing = portfolio_store.get_transaction("portfolio-ops", "txn-0002")
     assert existing is not None
 
@@ -296,7 +305,9 @@ def test_daily_snapshot_refresh_replays_when_data_changes_mid_refresh(monkeypatc
         build_with_mid_refresh_update,
     )
 
-    result = daily_snapshots.refresh_portfolio_daily_snapshots("portfolio-ops")
+    result = daily_snapshots._run_portfolio_daily_snapshot_recalculation_synchronously(
+        "portfolio-ops"
+    )
 
     assert build_calls["count"] == 2
     assert result is not None
@@ -822,7 +833,7 @@ def test_holdings_workspace_includes_shared_price_sparklines(client):
     assert abbv_row["day_change_value"] == pytest.approx(abbv_row["quantity"] * (206.47 - 207.18))
     assert abbv_row["instrument_return_1w"] == pytest.approx(206.47 / 207.18 - 1)
     assert abbv_row["instrument_return_mtd"] == pytest.approx(206.47 / 210.20 - 1)
-    assert abbv_row["instrument_return_ytd"] == pytest.approx(0)
+    assert abbv_row["instrument_return_ytd"] is None
     assert abbv_row["instrument_return_1y"] is None
     assert abbv_row["instrument_current_drawdown"] == pytest.approx(206.47 / 210.20 - 1)
     assert abbv_row["instrument_max_drawdown"] == pytest.approx(206.47 / 210.20 - 1)
@@ -1774,7 +1785,7 @@ def test_rejects_nested_fee_and_tax_fields_on_fee_tax_transactions(client):
     assert "must not carry nested fees or taxes" in tax_response.text.lower()
 
 
-def test_rejects_dividend_reinvestment_without_existing_position(client):
+def test_rejects_dividend_reinvestment_without_entitled_position(client):
     account = client.post(
         "/api/portfolios/portfolio-ops/accounts",
         json={
@@ -1804,10 +1815,10 @@ def test_rejects_dividend_reinvestment_without_existing_position(client):
         },
     )
     assert response.status_code == 400
-    assert "requires account position as of trade_date" in response.json()["detail"]
+    assert "requires account position as of entitlement_date" in response.json()["detail"]
 
 
-def test_rejects_entitlement_date_on_dividend_reinvestment(client):
+def test_accepts_entitlement_date_on_dividend_reinvestment(client):
     response = client.post(
         "/api/portfolios/portfolio-ops/transactions",
         json={
@@ -1822,8 +1833,8 @@ def test_rejects_entitlement_date_on_dividend_reinvestment(client):
             "currency": "USD",
         },
     )
-    assert response.status_code == 422
-    assert "does not yet support entitlement_date" in response.text
+    assert response.status_code == 200
+    assert response.json()["entitlement_date"] == "2026-04-10"
 
 
 def test_accepts_late_paid_dividend_when_entitlement_date_precedes_sale(client):
@@ -2088,7 +2099,7 @@ def test_entitlement_bod_accepts_same_day_opening_balance_with_prior_acquisition
     assert lots[0]["income_cash_amount"] == pytest.approx(100.0)
 
 
-def test_rejects_late_paid_dividend_reinvestment_and_preserves_workspace_reads(client):
+def test_accepts_late_paid_dividend_reinvestment_after_entitled_position_was_sold(client):
     account = client.post(
         "/api/portfolios/portfolio-ops/accounts",
         json={
@@ -2150,7 +2161,8 @@ def test_rejects_late_paid_dividend_reinvestment_and_preserves_workspace_reads(c
             "currency": "USD",
         },
     )
-    assert drip_response.status_code == 422
+    assert drip_response.status_code == 200
+    assert drip_response.json()["entitlement_date"] == "2026-04-10"
 
     ledger_response = client.get("/api/portfolios/portfolio-ops/ledger-postings")
     assert ledger_response.status_code == 200

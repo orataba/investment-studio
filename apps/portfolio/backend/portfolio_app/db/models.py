@@ -3,7 +3,18 @@ from __future__ import annotations
 from datetime import date
 from decimal import Decimal
 
-from sqlalchemy import Boolean, CheckConstraint, Date, ForeignKey, Index, Integer, JSON, Numeric, String
+from sqlalchemy import (
+    Boolean,
+    CheckConstraint,
+    Date,
+    ForeignKey,
+    Index,
+    Integer,
+    JSON,
+    Numeric,
+    String,
+    UniqueConstraint,
+)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from portfolio_app.db.base import Base
@@ -69,6 +80,10 @@ class PortfolioRecordModel(Base):
         cascade="all, delete-orphan",
     )
     instrument_universe: Mapped[list["PortfolioInstrumentUniverseRecordModel"]] = relationship(
+        back_populates="portfolio",
+        cascade="all, delete-orphan",
+    )
+    instrument_event_tasks: Mapped[list["PortfolioInstrumentEventTaskModel"]] = relationship(
         back_populates="portfolio",
         cascade="all, delete-orphan",
     )
@@ -378,6 +393,188 @@ class TransactionIdempotencyRecordModel(Base):
     request_hash: Mapped[str] = mapped_column(String, nullable=False)
     transaction_ids_json: Mapped[list[str]] = mapped_column(JSON, nullable=False)
     created_at: Mapped[str] = mapped_column(String, nullable=False)
+
+
+class PortfolioInstrumentEventTaskModel(Base):
+    """Portfolio/account review projection for one stable Registry action."""
+
+    __tablename__ = "portfolio_instrument_event_task"
+    __table_args__ = (
+        CheckConstraint(
+            "source_event_state IN ('active', 'cancelled')",
+            name="source_state",
+        ),
+        CheckConstraint(
+            "source_revision_kind IN ('original', 'correction', 'cancellation')",
+            name="revision_kind",
+        ),
+        CheckConstraint(
+            "resolution_status IN ('pending', 'processed', 'not_applicable')",
+            name="resolution_status",
+        ),
+        CheckConstraint(
+            "CAST(entitled_quantity AS NUMERIC) >= 0",
+            name="entitled_quantity",
+        ),
+        CheckConstraint(
+            "row_version >= 1",
+            name="row_version",
+        ),
+        CheckConstraint(
+            "length(trim(event_source)) > 0 "
+            "AND length(trim(event_action_id)) > 0 "
+            "AND length(trim(current_event_revision_id)) > 0 "
+            "AND length(trim(event_type)) > 0 "
+            "AND length(trim(created_at)) > 0 "
+            "AND length(trim(updated_at)) > 0",
+            name="identity",
+        ),
+        UniqueConstraint(
+            "portfolio_id",
+            "account_id",
+            "event_source",
+            "event_action_id",
+            name="uq_portfolio_instrument_event_task_scope_action",
+        ),
+        Index(
+            "ix_portfolio_instrument_event_task_attention",
+            "portfolio_id",
+            "source_event_state",
+            "resolution_status",
+            "effective_date",
+        ),
+        Index(
+            "ix_portfolio_instrument_event_task_instrument",
+            "portfolio_id",
+            "instrument_id",
+            "effective_date",
+        ),
+    )
+
+    instrument_event_task_id: Mapped[str] = mapped_column(String, primary_key=True)
+    portfolio_id: Mapped[str] = mapped_column(
+        ForeignKey("portfolio_record.portfolio_id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    account_id: Mapped[str] = mapped_column(
+        ForeignKey("account_record.account_id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    instrument_id: Mapped[str] = mapped_column(String, nullable=False)
+    event_source: Mapped[str] = mapped_column(String, nullable=False)
+    event_action_id: Mapped[str] = mapped_column(String, nullable=False)
+    current_event_revision_id: Mapped[str] = mapped_column(String, nullable=False)
+    event_type: Mapped[str] = mapped_column(String, nullable=False)
+    source_revision_kind: Mapped[str] = mapped_column(String, nullable=False)
+    source_event_state: Mapped[str] = mapped_column(String, nullable=False)
+    announcement_date: Mapped[date | None] = mapped_column(Date)
+    record_date: Mapped[date | None] = mapped_column(Date)
+    effective_date: Mapped[date] = mapped_column(Date, nullable=False)
+    payable_date: Mapped[date | None] = mapped_column(Date)
+    cash_per_unit: Mapped[Decimal | None] = mapped_column(Numeric(28, 12))
+    unit_ratio: Mapped[Decimal | None] = mapped_column(Numeric(28, 12))
+    reinvestment_nav: Mapped[Decimal | None] = mapped_column(Numeric(28, 12))
+    entitled_quantity: Mapped[Decimal] = mapped_column(
+        Numeric(28, 12),
+        nullable=False,
+        default=Decimal("0"),
+    )
+    resolution_status: Mapped[str] = mapped_column(
+        String,
+        nullable=False,
+        default="pending",
+    )
+    reviewed_event_revision_id: Mapped[str | None] = mapped_column(String)
+    resolution_note: Mapped[str | None] = mapped_column(String)
+    resolved_by: Mapped[str | None] = mapped_column(String)
+    resolved_at: Mapped[str | None] = mapped_column(String)
+    row_version: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        default=1,
+        server_default="1",
+    )
+    created_at: Mapped[str] = mapped_column(String, nullable=False)
+    updated_at: Mapped[str] = mapped_column(String, nullable=False)
+
+    portfolio: Mapped[PortfolioRecordModel] = relationship(
+        back_populates="instrument_event_tasks"
+    )
+
+
+class PortfolioInstrumentEventTaskLinkModel(Base):
+    """Current link from an event review task to an existing ledger fact."""
+
+    __tablename__ = "portfolio_instrument_event_task_link"
+    __table_args__ = (
+        CheckConstraint(
+            "link_role IN ('distribution', 'reinvestment', 'reinvestment_purchase')",
+            name="role",
+        ),
+        UniqueConstraint(
+            "instrument_event_task_id",
+            "transaction_id",
+            name="uq_portfolio_instrument_event_task_link_transaction",
+        ),
+        Index(
+            "ix_portfolio_instrument_event_task_link_transaction",
+            "transaction_id",
+            "instrument_event_task_id",
+        ),
+    )
+
+    instrument_event_task_link_id: Mapped[str] = mapped_column(String, primary_key=True)
+    instrument_event_task_id: Mapped[str] = mapped_column(
+        ForeignKey(
+            "portfolio_instrument_event_task.instrument_event_task_id",
+            ondelete="CASCADE",
+        ),
+        nullable=False,
+    )
+    transaction_id: Mapped[str] = mapped_column(
+        ForeignKey("transaction_record.transaction_id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    link_role: Mapped[str] = mapped_column(String, nullable=False)
+    linked_event_revision_id: Mapped[str] = mapped_column(String, nullable=False)
+    linked_by: Mapped[str] = mapped_column(String, nullable=False)
+    linked_at: Mapped[str] = mapped_column(String, nullable=False)
+
+
+class PortfolioInstrumentEventTaskReviewModel(Base):
+    """Immutable human review history for a Portfolio event task."""
+
+    __tablename__ = "portfolio_instrument_event_task_review"
+    __table_args__ = (
+        CheckConstraint(
+            "decision IN ('processed', 'not_applicable', 'reopened')",
+            name="decision",
+        ),
+        Index(
+            "ix_portfolio_instrument_event_task_review_task_time",
+            "instrument_event_task_id",
+            "reviewed_at",
+        ),
+    )
+
+    instrument_event_task_review_id: Mapped[str] = mapped_column(String, primary_key=True)
+    instrument_event_task_id: Mapped[str] = mapped_column(
+        ForeignKey(
+            "portfolio_instrument_event_task.instrument_event_task_id",
+            ondelete="CASCADE",
+        ),
+        nullable=False,
+    )
+    portfolio_id: Mapped[str] = mapped_column(
+        ForeignKey("portfolio_record.portfolio_id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    event_revision_id: Mapped[str] = mapped_column(String, nullable=False)
+    decision: Mapped[str] = mapped_column(String, nullable=False)
+    linked_transaction_ids_json: Mapped[list[str]] = mapped_column(JSON, nullable=False)
+    note: Mapped[str] = mapped_column(String, nullable=False)
+    reviewed_by: Mapped[str] = mapped_column(String, nullable=False)
+    reviewed_at: Mapped[str] = mapped_column(String, nullable=False)
 
 
 class TaxonomyRecordModel(Base):

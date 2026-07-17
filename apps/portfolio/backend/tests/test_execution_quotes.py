@@ -149,7 +149,7 @@ def test_execution_quote_endpoint_returns_unavailable_instead_of_adjusted_fallba
         _instrument_detail(
             policy={
                 "trading": ["adjusted_close"],
-                "valuation": ["total_return_nav", "cumulative_nav"],
+                "valuation": ["official_nav"],
             },
             market_data=[
                 _point(
@@ -178,7 +178,7 @@ def test_execution_quote_endpoint_returns_unavailable_instead_of_adjusted_fallba
     assert payload["stale"] is False
     assert payload["price_unit"] is None
     assert payload["price_scale"] is None
-    assert payload["unavailable_reason"] == "no_eligible_execution_quote"
+    assert payload["unavailable_reason"] == "quote_series_unavailable"
 
 
 def test_execution_quote_endpoint_returns_not_found_for_unknown_instrument(client, monkeypatch):

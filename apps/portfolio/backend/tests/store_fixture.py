@@ -54,7 +54,7 @@ TEST_PORTFOLIO_STORE: dict[str, list[dict[str, Any]]] = {
             "institution": "Interactive Brokers",
             "default_settlement_cash_account_id": "cash-usd-main",
             "cost_basis_method": "fifo",
-            "allowed_instrument_types": ["equity", "fund"],
+            "allowed_instrument_types": ["equity", "fund", "etf"],
             "opened_at": "2026-01-02",
             "status": "active",
         },
@@ -67,7 +67,7 @@ TEST_PORTFOLIO_STORE: dict[str, list[dict[str, Any]]] = {
             "institution": "Interactive Brokers",
             "default_settlement_cash_account_id": "cash-usd-reserve",
             "cost_basis_method": "fifo",
-            "allowed_instrument_types": ["bond", "fund"],
+            "allowed_instrument_types": ["bond", "fund", "etf"],
             "opened_at": "2026-01-15",
             "status": "active",
         },
@@ -106,7 +106,7 @@ TEST_PORTFOLIO_STORE: dict[str, list[dict[str, Any]]] = {
             "institution": "Interactive Brokers Hong Kong",
             "default_settlement_cash_account_id": "cash-hkd-main",
             "cost_basis_method": "fifo",
-            "allowed_instrument_types": ["equity", "fund"],
+            "allowed_instrument_types": ["equity", "fund", "etf"],
             "opened_at": "2026-02-20",
             "status": "active",
         },
@@ -220,7 +220,7 @@ TEST_PORTFOLIO_STORE: dict[str, list[dict[str, Any]]] = {
             "instrument_ref": {
                 "instrument_id": "fund-us-agg",
                 "instrument_name": "iShares Core U.S. Aggregate Bond ETF",
-                "instrument_type": "fund",
+                "instrument_type": "etf",
                 "currency": "USD",
                 "identifiers": [
                     {
@@ -295,7 +295,7 @@ TEST_PORTFOLIO_STORE: dict[str, list[dict[str, Any]]] = {
             "instrument_ref": {
                 "instrument_id": "fund-us-agg",
                 "instrument_name": "iShares Core U.S. Aggregate Bond ETF",
-                "instrument_type": "fund",
+                "instrument_type": "etf",
                 "currency": "USD",
                 "identifiers": [
                     {
@@ -462,7 +462,7 @@ TEST_PORTFOLIO_STORE: dict[str, list[dict[str, Any]]] = {
             "instrument_ref": {
                 "instrument_id": "fund-us-agg",
                 "instrument_name": "iShares Core U.S. Aggregate Bond ETF",
-                "instrument_type": "fund",
+                "instrument_type": "etf",
                 "currency": "USD",
                 "identifiers": [
                     {
@@ -497,7 +497,7 @@ TEST_PORTFOLIO_STORE: dict[str, list[dict[str, Any]]] = {
             "instrument_ref": {
                 "instrument_id": "fund-us-agg",
                 "instrument_name": "iShares Core U.S. Aggregate Bond ETF",
-                "instrument_type": "fund",
+                "instrument_type": "etf",
                 "currency": "USD",
                 "identifiers": [
                     {
@@ -532,7 +532,7 @@ TEST_PORTFOLIO_STORE: dict[str, list[dict[str, Any]]] = {
             "instrument_ref": {
                 "instrument_id": "fund-us-agg",
                 "instrument_name": "iShares Core U.S. Aggregate Bond ETF",
-                "instrument_type": "fund",
+                "instrument_type": "etf",
                 "currency": "USD",
                 "identifiers": [
                     {
@@ -613,7 +613,7 @@ TEST_PORTFOLIO_STORE: dict[str, list[dict[str, Any]]] = {
             "instrument_ref": {
                 "instrument_id": "fund-hk-2800",
                 "instrument_name": "Tracker Fund of Hong Kong",
-                "instrument_type": "fund",
+                "instrument_type": "etf",
                 "currency": "HKD",
                 "identifiers": [
                     {

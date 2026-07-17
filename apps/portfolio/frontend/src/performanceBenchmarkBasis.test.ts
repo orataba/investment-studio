@@ -4,7 +4,7 @@ import { assessPerformanceBenchmarkBasis } from './lib/performanceBenchmarkBasis
 import performancePageSource from './pages/PerformancePage.tsx?raw'
 
 describe('performance benchmark basis reliability', () => {
-  it.each(['adjusted_close', 'total_return_nav', 'dividend_adjusted_nav', 'reinvested_nav'])(
+  it.each(['adjusted_close', 'total_return_nav'])(
     'accepts %s as a confirmed total-return basis',
     (basis) => {
       const assessment = assessPerformanceBenchmarkBasis(basis)

@@ -35,6 +35,31 @@ def _write_store(store: dict[str, object]) -> None:
     portfolio_store.reset_store(store)
 
 
+def test_calculation_instrument_detail_batches_are_briefly_reused(monkeypatch) -> None:
+    calls: list[tuple[str, ...]] = []
+    session_factory = object()
+
+    def load_details(instrument_ids):
+        normalized_ids = tuple(sorted(instrument_ids))
+        calls.append(normalized_ids)
+        return {
+            instrument_id: {"instrument_id": instrument_id, "market_data": []}
+            for instrument_id in normalized_ids
+        }
+
+    monkeypatch.setattr(performance, "get_session_factory", lambda: session_factory)
+    monkeypatch.setattr(performance, "get_registry_instrument_details", load_details)
+    performance._clear_calculation_instrument_detail_cache()
+
+    first = performance._get_calculation_instrument_details(["instrument-b", "instrument-a"])
+    first["request-only"] = {"instrument_id": "request-only"}
+    second = performance._get_calculation_instrument_details({"instrument-a", "instrument-b"})
+
+    assert calls == [("instrument-a", "instrument-b")]
+    assert "request-only" not in second
+    performance._clear_calculation_instrument_detail_cache()
+
+
 def test_holding_day_change_uses_adjusted_return_but_raw_market_value_across_split() -> None:
     change_pct, change_value = holdings_market_profile.holding_day_change_metrics(
         quantity=200.0,
@@ -57,14 +82,41 @@ def _test_instrument_detail(
     history: list[tuple[str, str]],
     instrument_type: str = "equity",
 ) -> dict[str, object]:
-    return {
-        "instrument_id": instrument_id,
-        "instrument_name": instrument_name,
-        "instrument_type": instrument_type,
-        "currency": "USD",
-        "identifiers": [{"identifier_type": "ticker", "identifier_value": instrument_id.upper(), "is_primary": True}],
-        "quote_selection_policy": {"valuation": ["close"], "reference": ["close"]},
-        "market_data": [
+    if instrument_type == "fund":
+        quote_selection_policy = {
+            "trading": ["official_nav"],
+            "valuation": ["official_nav"],
+            "total_return": ["total_return_nav"],
+            "chart": ["total_return_nav"],
+            "reference": ["official_nav"],
+        }
+        market_data = [
+            {
+                "metric_family": "nav",
+                "quote_basis": quote_basis,
+                "nav_lineage": {
+                    "kind": "provider_explicit",
+                    "evidence": {"source_field": quote_basis},
+                },
+                "as_of_date": as_of_date,
+                "value": value,
+                "currency": "USD",
+                "price_unit": "per_unit",
+                "price_scale": 1.0,
+                "status": "complete",
+            }
+            for as_of_date, value in history
+            for quote_basis in ("official_nav", "total_return_nav")
+        ]
+    else:
+        quote_selection_policy = {
+            "trading": ["close"],
+            "valuation": ["close"],
+            "total_return": ["close"],
+            "chart": ["close"],
+            "reference": ["close"],
+        }
+        market_data = [
             {
                 "metric_family": "price",
                 "quote_basis": "close",
@@ -76,7 +128,15 @@ def _test_instrument_detail(
                 "status": "complete",
             }
             for as_of_date, value in history
-        ],
+        ]
+    return {
+        "instrument_id": instrument_id,
+        "instrument_name": instrument_name,
+        "instrument_type": instrument_type,
+        "currency": "USD",
+        "identifiers": [{"identifier_type": "ticker", "identifier_value": instrument_id.upper(), "is_primary": True}],
+        "quote_selection_policy": quote_selection_policy,
+        "market_data": market_data,
     }
 
 
@@ -575,6 +635,14 @@ def test_holdings_and_contribution_endpoints_reuse_materialized_read_models(clie
     assert contribution_response.status_code == 200
     assert contribution_response.json()["daily_slices"]
 
+    for materialized_axis in ("account", "instrument_type", "currency"):
+        materialized_response = client.get(
+            "/api/portfolios/portfolio-ops/performance/contribution"
+            f"?axis={materialized_axis}"
+        )
+        assert materialized_response.status_code == 200
+        assert materialized_response.json()["daily_slices"]
+
     lookback_response = client.get(
         "/api/portfolios/portfolio-ops/performance/contribution"
         "?axis=instrument&start_date=2025-01-01&end_date=2026-04-15"
@@ -612,27 +680,29 @@ def test_materialized_contribution_rejects_missing_tail_snapshot(client):
     assert report is None
 
 
-def test_daily_snapshot_refresh_endpoint_refreshes_impacted_instrument_portfolios(client):
+def test_daily_snapshot_recalculation_endpoint_enqueues_impacted_portfolios(client):
     initial_response = client.get("/api/portfolios/portfolio-ops/snapshots/daily")
     assert initial_response.status_code == 200
 
     refresh_response = client.post(
-        "/api/portfolios/snapshots/daily/refresh",
+        "/api/portfolios/snapshots/daily/recalculations",
         json={
             "instrument_ids": ["fund-us-agg"],
             "dirty_from": "2026-04-14",
         },
     )
-    assert refresh_response.status_code == 200
+    assert refresh_response.status_code == 202
     refresh_payload = refresh_response.json()
     assert refresh_payload["portfolio_ids"] == ["portfolio-ops"]
-    assert refresh_payload["refreshed"][0]["snapshot_count"] == _daily_snapshot_row_count("portfolio-ops")
+    assert refresh_payload["accepted"][0]["status"] == "accepted"
+    assert refresh_payload["accepted"][0]["daily_snapshot_status"] == "stale"
+    assert refresh_payload["accepted"][0]["dirty_from"] == "2026-04-14"
 
     empty_refresh_response = client.post(
-        "/api/portfolios/snapshots/daily/refresh",
+        "/api/portfolios/snapshots/daily/recalculations",
         json={"instrument_ids": ["not-held"]},
     )
-    assert empty_refresh_response.status_code == 200
+    assert empty_refresh_response.status_code == 202
     assert empty_refresh_response.json()["portfolio_ids"] == []
 
 
@@ -965,7 +1035,9 @@ def test_same_day_inception_cash_flows_have_no_money_weighted_return(client, mon
     assert calculation_summary["delta"] == pytest.approx(0.0)
     assert calculation_summary["capital_gains"] == pytest.approx(0.0)
 
-    daily_snapshots.refresh_portfolio_daily_snapshots(portfolio_id)
+    daily_snapshots._run_portfolio_daily_snapshot_recalculation_synchronously(
+        portfolio_id
+    )
     portfolios_response = client.get("/api/portfolios")
     assert portfolios_response.status_code == 200
     portfolio_summary = next(
@@ -3513,8 +3585,8 @@ def test_instrument_contribution_and_calculation_capture_attached_buy_charges(cl
 
     line = next(item for item in contribution_payload["lines"] if item["group_key"] == "equity-us-fee-test")
     assert isclose(line["expense_cash_amount"], 0.0, rel_tol=0.0, abs_tol=1e-12)
-    assert isclose(line["fee_amount"], 0.0, rel_tol=0.0, abs_tol=1e-12)
-    assert isclose(line["tax_amount"], 0.0, rel_tol=0.0, abs_tol=1e-12)
+    assert isclose(line["fee_amount"], 5.0, rel_tol=0.0, abs_tol=1e-12)
+    assert isclose(line["tax_amount"], 2.0, rel_tol=0.0, abs_tol=1e-12)
     assert isclose(line["total_pnl"], -7.0, rel_tol=0.0, abs_tol=1e-12)
     assert isclose(line["period_contribution"], -0.07, rel_tol=0.0, abs_tol=1e-12)
 
@@ -3524,17 +3596,23 @@ def test_instrument_contribution_and_calculation_capture_attached_buy_charges(cl
     )
     assert contribution_entries_response.status_code == 200
     contribution_entries_payload = contribution_entries_response.json()
-    assert contribution_entries_payload["summary"]["entry_count"] == 0
-    assert isclose(contribution_entries_payload["summary"]["total_amount"], 0.0, rel_tol=0.0, abs_tol=1e-12)
-    assert contribution_entries_payload["entries"] == []
+    assert contribution_entries_payload["summary"]["entry_count"] == 1
+    assert isclose(contribution_entries_payload["summary"]["total_amount"], 5.0, rel_tol=0.0, abs_tol=1e-12)
+    assert contribution_entries_payload["entries"][0]["component_kind"] == "attached_fee"
+    assert isclose(
+        contribution_entries_payload["entries"][0]["base_amount"],
+        5.0,
+        rel_tol=0.0,
+        abs_tol=1e-12,
+    )
 
     calculation_response = client.get("/api/portfolios/instrument-contribution-fee-test/performance/calculation")
     assert calculation_response.status_code == 200
     calculation_payload = calculation_response.json()
     calculation_summary = calculation_payload["summary"]
-    assert isclose(calculation_summary["capital_gains"], -7.0, rel_tol=0.0, abs_tol=1e-12)
-    assert isclose(calculation_summary["fees"], 0.0, rel_tol=0.0, abs_tol=1e-12)
-    assert isclose(calculation_summary["taxes"], 0.0, rel_tol=0.0, abs_tol=1e-12)
+    assert isclose(calculation_summary["capital_gains"], 0.0, rel_tol=0.0, abs_tol=1e-12)
+    assert isclose(calculation_summary["fees"], 5.0, rel_tol=0.0, abs_tol=1e-12)
+    assert isclose(calculation_summary["taxes"], 2.0, rel_tol=0.0, abs_tol=1e-12)
     assert "residual_gains" not in calculation_summary
 
 

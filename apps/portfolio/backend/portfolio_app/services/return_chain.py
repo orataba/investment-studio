@@ -194,11 +194,20 @@ def period_return_coverage_state(
         and _safe_float(visible_snapshots[0].get("daily_twr")) is None
         and bool(visible_snapshots[0].get("return_chain_continuous"))
     )
+    requested_start_precedes_inception = bool(
+        requested_start_date is not None
+        and inception_date is not None
+        and requested_start_date < inception_date
+    )
     return_snapshots = visible_snapshots[1:] if initial_valuation_anchor else visible_snapshots
     period_start_date = (
         first_date + timedelta(days=1)
         if initial_valuation_anchor
-        else (requested_start_date or first_date)
+        else (
+            inception_date
+            if requested_start_precedes_inception
+            else (requested_start_date or first_date)
+        )
     )
     has_any_return = any(
         _safe_float(snapshot.get("daily_twr")) is not None
@@ -217,19 +226,18 @@ def period_return_coverage_state(
             None,
         )
         starts_at_inception = (
-            inception_date == requested_start_date
+            inception_date is not None
+            and requested_start_date <= inception_date
+            and first_date == inception_date
             and snapshot_coverage_state(visible_snapshots[0], "return") == "complete"
             and _safe_float(visible_snapshots[0].get("daily_twr")) is not None
         )
         start_boundary_complete = bool(
-            first_date == requested_start_date
+            first_date
+            == (inception_date if requested_start_precedes_inception else requested_start_date)
             and (
                 (boundary_snapshot is not None and has_complete_valuation(boundary_snapshot))
                 or starts_at_inception
-            )
-            and not (
-                inception_date is not None
-                and inception_date > requested_start_date
             )
         )
 

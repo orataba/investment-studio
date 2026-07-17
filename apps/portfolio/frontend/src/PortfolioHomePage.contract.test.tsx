@@ -165,7 +165,11 @@ describe('Holdings rendered page contract', () => {
     expect(apiMocks.getHoldingsWorkspace).toHaveBeenCalledWith('3', {
       as_of_date: undefined,
     })
-    expect(screen.getByText('Trend: Total Return NAV · Complete · 250 observations')).toBeInTheDocument()
+    expect(
+      screen.getByText(
+        'Trend: Dividend-Reinvested Total Return NAV · Complete · 250 observations',
+      ),
+    ).toBeInTheDocument()
     expect(screen.getByText('Policy-preferred trend basis selected.')).toBeInTheDocument()
     expect(screen.getByRole('columnheader', { name: /Chart 6M/ })).toBeInTheDocument()
     const unavailableReason = screen.getByText(

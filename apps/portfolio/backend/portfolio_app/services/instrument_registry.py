@@ -37,6 +37,34 @@ def get_registry_instrument_details(
         raise InstrumentRegistryError("Failed to query shared instrument registry.") from error
 
 
+def get_registry_instrument_event_details(
+    instrument_ids: list[str] | set[str] | tuple[str, ...],
+) -> dict[str, dict[str, object] | None]:
+    try:
+        return shared_store.get_instrument_event_details(
+            get_session_factory(),
+            instrument_ids,
+        )
+    except Exception as error:  # pragma: no cover - defensive wrapper
+        raise InstrumentRegistryError(
+            "Failed to query shared instrument event ledgers."
+        ) from error
+
+
+def get_registry_instrument_summaries(
+    instrument_ids: list[str] | set[str] | tuple[str, ...],
+) -> dict[str, dict[str, object] | None]:
+    try:
+        return shared_store.get_instrument_summaries(
+            get_session_factory(),
+            instrument_ids,
+        )
+    except Exception as error:  # pragma: no cover - defensive wrapper
+        raise InstrumentRegistryError(
+            "Failed to query shared instrument summaries."
+        ) from error
+
+
 def list_registry_corporate_actions(
     instrument_ids: list[str] | set[str] | tuple[str, ...],
     *,

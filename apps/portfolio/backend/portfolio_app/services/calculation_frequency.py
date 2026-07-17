@@ -5,7 +5,10 @@ from collections import Counter
 from datetime import date, timedelta
 from typing import Literal
 
-from portfolio_app.services.market_data import quote_policy_bases, resolve_quote_series
+from portfolio_app.services.market_data import (
+    analytical_return_quote_bases,
+    resolve_quote_series,
+)
 
 CalculationFrequency = Literal["daily", "weekly", "monthly"]
 RequestedCalculationFrequency = Literal["auto", "daily", "weekly", "monthly"]
@@ -185,10 +188,7 @@ def selected_observation_dates_from_detail(
 ) -> list[date]:
     resolution = resolve_quote_series(
         detail,
-        candidate_bases=quote_policy_bases(
-            detail,
-            ("total_return", "chart", "valuation", "reference"),
-        ),
+        candidate_bases=analytical_return_quote_bases(detail),
         end_date=end_date,
     )
     if not resolution.available:

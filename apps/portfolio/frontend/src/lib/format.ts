@@ -83,6 +83,12 @@ export function signedValueClass(value: number | null | undefined) {
 }
 
 export function formatLabel(value: string) {
+  if (value === 'official_nav') {
+    return 'Unit NAV'
+  }
+  if (value === 'total_return_nav') {
+    return 'Dividend-Reinvested Total Return NAV'
+  }
   const formatted = value
     .replace(/[_-]+/g, ' ')
     .replace(/\b\w/g, (letter) => letter.toUpperCase())

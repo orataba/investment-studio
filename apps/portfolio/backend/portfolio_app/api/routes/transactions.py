@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import UTC, date, datetime
 from uuid import NAMESPACE_URL, uuid4, uuid5
 
-from fastapi import APIRouter, BackgroundTasks, Header, HTTPException, Query
+from fastapi import APIRouter, Header, HTTPException, Query
 
 from portfolio_app.api.assemblers import (
     serialize_transaction,
@@ -45,7 +45,6 @@ from portfolio_app.services.instrument_registry import (
     get_registry_instrument,
     list_registry_instruments,
 )
-from portfolio_app.services.daily_snapshots import refresh_portfolio_daily_snapshots
 from portfolio_app.services.execution_quotes import get_execution_quote_on_or_before
 from portfolio_app.services.transaction_pricing import transaction_price_scale
 from portfolio_app.services.portfolio_store import (
@@ -81,11 +80,6 @@ INCOME_ASSET_TYPES: dict[str, set[str]] = {
 }
 TRANSACTION_CREATE_IDEMPOTENCY_OPERATION = "create_transaction"
 INTERNAL_TRANSFER_IDEMPOTENCY_OPERATION = "create_internal_transfer"
-
-
-def _queue_daily_snapshot_refresh(background_tasks: BackgroundTasks | None, portfolio_id: str) -> None:
-    if background_tasks is not None:
-        background_tasks.add_task(refresh_portfolio_daily_snapshots, portfolio_id)
 
 
 def _request_payload_for_idempotency(
@@ -798,7 +792,6 @@ def _persist_transaction_record(
     portfolio_id: str,
     payload: TransactionCreateRequest,
     existing_transaction: dict[str, object] | None = None,
-    background_tasks: BackgroundTasks | None = None,
     expected_row_version: int | None = None,
     idempotency_key: str | None = None,
     idempotency_payload: dict[str, object] | None = None,
@@ -940,7 +933,7 @@ def _persist_transaction_record(
     )
 
     transactions_as_of_trade_date: list[dict[str, object]] | None = None
-    if transaction_type in {"sell", "maturity_redemption", "dividend_reinvestment"} and instrument_id:
+    if transaction_type in {"sell", "maturity_redemption"} and instrument_id:
         transactions_as_of_trade_date = _list_transactions_as_of_trade_moment(
             portfolio_id,
             trade_date=payload.trade_date,
@@ -951,7 +944,9 @@ def _persist_transaction_record(
         )
 
     transactions_as_of_entitlement_date: list[dict[str, object]] | None = None
-    if transaction_type in {"dividend", "coupon"} or (transaction_type in {"fee", "tax"} and instrument_id):
+    if transaction_type in {"dividend", "dividend_reinvestment", "coupon"} or (
+        transaction_type in {"fee", "tax"} and instrument_id
+    ):
         if instrument_id:
             transactions_as_of_entitlement_date = _list_transactions_as_of_entitlement_moment(
                 portfolio_id,
@@ -975,7 +970,9 @@ def _persist_transaction_record(
         if requested_quantity > available_quantity + 1e-9:
             raise HTTPException(status_code=400, detail="Transaction quantity exceeds account position as of trade_date.")
 
-    if transaction_type in {"dividend", "coupon"} or (transaction_type in {"fee", "tax"} and instrument_id):
+    if transaction_type in {"dividend", "dividend_reinvestment", "coupon"} or (
+        transaction_type in {"fee", "tax"} and instrument_id
+    ):
         if instrument_id:
             available_quantity = estimate_position_quantity(
                 portfolio_id,
@@ -989,20 +986,6 @@ def _persist_transaction_record(
                     status_code=400,
                     detail="Instrument-linked income and expense requires account position as of entitlement_date.",
                 )
-
-    if transaction_type == "dividend_reinvestment" and instrument_id:
-        available_quantity = estimate_position_quantity(
-            portfolio_id,
-            transactions_as_of_trade_date or [],
-            account_id=payload.account_id,
-            instrument_id=instrument_id,
-            account_cost_methods=account_cost_methods,
-        )
-        if available_quantity <= 1e-9:
-            raise HTTPException(
-                status_code=400,
-                detail="Dividend reinvestment requires account position as of trade_date.",
-            )
 
     if transaction_type == "return_of_capital" and instrument_id:
         transactions_as_of_trade_date = _list_transactions_as_of_trade_moment(
@@ -1100,7 +1083,6 @@ def _persist_transaction_record(
         ) from error
     if persisted_record is None:
         raise HTTPException(status_code=404, detail="Transaction not found")
-    _queue_daily_snapshot_refresh(background_tasks, portfolio_id)
     account_lookup = {item["account_id"]: item for item in list_accounts(portfolio_id)}
     return serialize_transaction(portfolio_id, persisted_record, account_lookup)
 
@@ -1109,7 +1091,6 @@ def _persist_transaction_record(
 def create_transaction_record(
     portfolio_id: str,
     payload: TransactionCreateRequest,
-    background_tasks: BackgroundTasks,
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
 ) -> TransactionRecord:
     idempotency_payload = _request_payload_for_idempotency(payload)
@@ -1127,7 +1108,6 @@ def create_transaction_record(
     return _persist_transaction_record(
         portfolio_id=portfolio_id,
         payload=payload,
-        background_tasks=background_tasks,
         idempotency_key=idempotency_key,
         idempotency_payload=idempotency_payload,
     )
@@ -1138,7 +1118,6 @@ def update_transaction_record(
     portfolio_id: str,
     transaction_id: str,
     payload: TransactionUpdateRequest,
-    background_tasks: BackgroundTasks,
 ) -> TransactionRecord:
     existing_transaction = get_transaction(portfolio_id, transaction_id)
     if existing_transaction is None:
@@ -1169,7 +1148,6 @@ def update_transaction_record(
         portfolio_id=portfolio_id,
         payload=payload,
         existing_transaction=existing_transaction,
-        background_tasks=background_tasks,
         expected_row_version=payload.expected_row_version,
     )
 
@@ -1179,7 +1157,6 @@ def delete_transaction_record(
     portfolio_id: str,
     transaction_id: str,
     payload: TransactionDeleteRequest,
-    background_tasks: BackgroundTasks,
 ) -> TransactionDeleteResponse:
     existing_transaction = get_transaction(portfolio_id, transaction_id)
     if existing_transaction is None:
@@ -1204,7 +1181,6 @@ def delete_transaction_record(
             status_code=409,
             detail=f"Deleting this fact would invalidate later position history. {error}",
         ) from error
-    _queue_daily_snapshot_refresh(background_tasks, portfolio_id)
     return TransactionDeleteResponse(
         portfolio_id=portfolio_id,
         deleted_count=len(deleted_records),
@@ -1220,7 +1196,6 @@ def delete_transaction_record(
 def create_internal_transfer_records(
     portfolio_id: str,
     payload: InternalTransferCreateRequest,
-    background_tasks: BackgroundTasks,
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
 ) -> TransactionBatchResponse:
     if get_portfolio(portfolio_id) is None:
@@ -1425,7 +1400,6 @@ def create_internal_transfer_records(
             status_code=409,
             detail=f"Transaction history changed; reload and retry. {error}",
         ) from error
-    _queue_daily_snapshot_refresh(background_tasks, portfolio_id)
     account_lookup = {item["account_id"]: item for item in list_accounts(portfolio_id)}
     return TransactionBatchResponse(
         portfolio_id=portfolio_id,

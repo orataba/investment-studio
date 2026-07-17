@@ -1,16 +1,42 @@
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse
 
 from portfolio_app.api.router import api_router
 from portfolio_app.core.settings import get_settings
+from portfolio_app.services.daily_snapshot_worker import (
+    start_daily_snapshot_recalculation_worker,
+    stop_daily_snapshot_recalculation_worker,
+)
 
 settings = get_settings()
+
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    if settings.daily_snapshot_worker_enabled:
+        start_daily_snapshot_recalculation_worker(
+            poll_seconds=settings.daily_snapshot_worker_poll_seconds,
+            reconciliation_batch_size=(
+                settings.daily_snapshot_worker_reconciliation_batch_size
+            ),
+        )
+    try:
+        yield
+    finally:
+        if settings.daily_snapshot_worker_enabled:
+            stop_daily_snapshot_recalculation_worker(
+                timeout_seconds=settings.daily_snapshot_worker_shutdown_seconds,
+            )
+
 
 app = FastAPI(
     title=settings.app_name,
     version=settings.app_version,
     description="Portfolio management backend with portfolio, account, risk, and research surfaces.",
+    lifespan=lifespan,
 )
 
 app.add_middleware(

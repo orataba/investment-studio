@@ -6,6 +6,7 @@ from math import isfinite
 from typing import Iterable
 
 from portfolio_ops_instrument_core import (
+    FUND_TOTAL_RETURN_QUOTE_BASES,
     QUOTE_BASIS_METRIC_FAMILY,
     canonical_price_contract,
 )
@@ -16,6 +17,8 @@ USABLE_MARKET_DATA_STATUS = "complete"
 SUPPORTED_PRIMARY_QUOTE_BASES = frozenset(
     set(QUOTE_BASIS_METRIC_FAMILY) - {"accrued_interest"}
 )
+
+
 @dataclass(frozen=True)
 class QuoteSeriesResolution:
     points: tuple[dict[str, object], ...] = ()
@@ -100,6 +103,27 @@ def quote_policy_bases(
             if quote_basis and quote_basis not in bases:
                 bases.append(quote_basis)
     return bases
+
+
+def analytical_return_quote_bases(detail: dict[str, object]) -> list[str]:
+    """Return the ordered quote bases eligible for analytical return series.
+
+    A fund's unit NAV is a valuation fact, not a total-return substitute. Fund
+    analytics therefore consume only the canonical dividend-reinvested NAV and
+    remain unavailable when it is absent. Listed instruments retain their
+    explicit policy order, including adjusted close and raw-price fallbacks.
+    """
+
+    if _normalized_text(detail.get("instrument_type")) == "fund":
+        return [
+            quote_basis
+            for quote_basis in quote_policy_bases(detail, ("total_return", "chart"))
+            if quote_basis in FUND_TOTAL_RETURN_QUOTE_BASES
+        ]
+    return quote_policy_bases(
+        detail,
+        ("total_return", "chart", "valuation", "reference"),
+    )
 
 
 def available_quote_bases(detail: dict[str, object]) -> list[str]:

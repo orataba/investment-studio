@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import {
+  realizedRiskEstimateIsLowSample,
   realizedRiskContributionResidual,
   realizedRiskMetricsAvailable,
 } from './lib/performanceRiskReliability'
@@ -18,5 +19,11 @@ describe('performance realized-risk reliability', () => {
 
     expect(available).toBe(true)
     expect(realizedRiskContributionResidual([0.6, 0.25, 0.15], available)).toBeCloseTo(0, 12)
+  })
+
+  it('flags a computed realized-risk estimate with too few aligned periods', () => {
+    expect(realizedRiskEstimateIsLowSample(1)).toBe(false)
+    expect(realizedRiskEstimateIsLowSample(4)).toBe(true)
+    expect(realizedRiskEstimateIsLowSample(12)).toBe(false)
   })
 })

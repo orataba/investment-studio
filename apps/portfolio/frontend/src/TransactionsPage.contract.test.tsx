@@ -13,10 +13,12 @@ const apiMocks = vi.hoisted(() => ({
   deletePortfolioTransaction: vi.fn(),
   getPortfolioAccounts: vi.fn(),
   getPortfolioFxRates: vi.fn(),
+  getPortfolioInstrumentEventTasks: vi.fn(),
   getPortfolioInstruments: vi.fn(),
   getPortfolioTransactionExecutionQuote: vi.fn(),
   getPortfolioTransactionPositionPreview: vi.fn(),
   getPortfolioTransactionsWorkspace: vi.fn(),
+  reviewPortfolioInstrumentEventTask: vi.fn(),
   updatePortfolioTransaction: vi.fn(),
 }))
 
@@ -171,6 +173,12 @@ describe('Transactions rendered page contract', () => {
       instruments: [etfInstrument, bondInstrument],
     })
     apiMocks.getPortfolioFxRates.mockResolvedValue({ portfolio_id: '3', rates: [] })
+    apiMocks.getPortfolioInstrumentEventTasks.mockResolvedValue({
+      portfolio_id: '3',
+      accounting_policy: 'official_unit_nav_assume_no_unrecorded_distribution',
+      attention_count: 0,
+      tasks: [],
+    })
     apiMocks.getPortfolioTransactionPositionPreview.mockImplementation(
       (_portfolioId, request) =>
         Promise.resolve({
@@ -402,6 +410,9 @@ describe('Transactions rendered page contract', () => {
         'bond-brokerage-1',
       ),
     )
+    fireEvent.change(within(dialog).getByLabelText('Trade Date'), {
+      target: { value: '2026-07-15' },
+    })
     const securitySearch = within(dialog).getByRole('searchbox', { name: 'Security' })
     await user.type(securitySearch, 'TBOND')
     await user.click(

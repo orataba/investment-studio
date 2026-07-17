@@ -1534,7 +1534,6 @@ def realized_risk_attribution_by_group(
     risk_by_group: dict[str, dict[str, object]] = {}
     for group_key, buckets in grouped_inputs.items():
         own_returns_by_date: dict[date, float] = {}
-        contributions_by_date: dict[date, float] = {}
         for bucket_date in sorted(buckets):
             bucket = buckets[bucket_date]
             bucket_returns = [
@@ -1545,10 +1544,6 @@ def realized_risk_attribution_by_group(
             own_return = compound_returns([float(value) for value in bucket_returns])
             if own_return is not None:
                 own_returns_by_date[bucket_date] = own_return
-            if bool(bucket.get("has_contribution")):
-                contributions_by_date[bucket_date] = (
-                    _safe_float(bucket.get("contribution")) or 0.0
-                )
 
         own_dates = sorted(own_returns_by_date)
         own_values = [own_returns_by_date[item] for item in own_dates]
@@ -1576,11 +1571,6 @@ def realized_risk_attribution_by_group(
             else None
         )
 
-        contribution_pair_dates = sorted(
-            bucket_date
-            for bucket_date in contributions_by_date
-            if bucket_date in portfolio_returns
-        )
         own_pair_dates = sorted(
             bucket_date
             for bucket_date in own_returns_by_date
@@ -1597,7 +1587,7 @@ def realized_risk_attribution_by_group(
 
         risk_by_group[group_key] = {
             "risk_calculation_frequency": calculation_frequency,
-            "risk_return_observation_count": len(contribution_pair_dates),
+            "risk_return_observation_count": len(own_pair_dates),
             "risk_annualization_periods_per_year": periods_per_year,
             "annualized_volatility": annualized_volatility,
             "sharpe_ratio": sharpe_ratio,
@@ -1614,7 +1604,7 @@ def realized_risk_attribution_by_group(
             "realized_risk_contribution": None,
         }
     (
-        common_dates,
+        _common_dates,
         common_portfolio_returns,
         common_group_contributions,
     ) = bucketed_realized_contribution_matrix(
@@ -1626,7 +1616,6 @@ def realized_risk_attribution_by_group(
     common_portfolio_variance = sample_covariance(
         common_portfolio_returns, common_portfolio_returns
     )
-    common_observation_count = len(common_dates)
     for group_key, contribution_values in common_group_contributions.items():
         group_metrics = risk_by_group.setdefault(
             group_key, risk_metric_defaults(calculation_frequency)
@@ -1634,8 +1623,6 @@ def realized_risk_attribution_by_group(
         contribution_covariance = sample_covariance(
             contribution_values, common_portfolio_returns
         )
-        if int(group_metrics.get("risk_return_observation_count") or 0) <= 0:
-            group_metrics["risk_return_observation_count"] = common_observation_count
         group_metrics["realized_risk_contribution"] = (
             contribution_covariance / common_portfolio_variance
             if contribution_covariance is not None

@@ -177,6 +177,7 @@ const workbenchFixture = {
     top_sleeve_weight_bounds: [],
     backtest_rebalance_frequency: '1m',
     backtest_benchmark_instrument_id: null,
+    notes: 'Keep this research note.',
   },
   current_context: {
     quality_warnings: [],
@@ -248,6 +249,14 @@ describe('Research rendered page contract', () => {
     apiMocks.getPortfolioResearchWorkbench.mockResolvedValue(workbenchFixture)
     apiMocks.getPortfolioResearchRun.mockResolvedValue(completedRun)
     apiMocks.getPortfolioInstruments.mockResolvedValue({ portfolio_id: '3', instruments: [] })
+    apiMocks.getPortfolioRiskPolicy.mockResolvedValue({
+      lookback_days: 365,
+      calculation_frequency: 'auto',
+      missing_return_policy: 'strict',
+      covariance_model_id: 'sample_covariance',
+      contribution_mode: 'signed',
+    })
+    apiMocks.updatePortfolioResearchSettings.mockResolvedValue(workbenchFixture.settings)
     apiMocks.updatePortfolioResearchInstrumentEligibility.mockResolvedValue({
       ...workbenchFixture.instrument_universe[2],
       research_eligibility: 'eligible',
@@ -296,5 +305,52 @@ describe('Research rendered page contract', () => {
     expect(within(periodReturnRow).getByText('1.80%')).toBeInTheDocument()
     expect(apiMocks.getPortfolioResearchWorkbench).toHaveBeenCalledWith('3')
     expect(apiMocks.getPortfolioResearchRun).toHaveBeenCalledWith('3', 'research-1')
+  })
+
+  it('preserves existing research notes when run settings auto-save', async () => {
+    renderPortfolioPage(
+      <ResearchPage />,
+      '/portfolios/3/research',
+      '/portfolios/:portfolioId/research',
+    )
+
+    const capitalMode = await screen.findByLabelText('Capital Mode')
+    fireEvent.change(capitalMode, { target: { value: 'fixed_gross' } })
+
+    await waitFor(() => {
+      expect(apiMocks.updatePortfolioResearchSettings).toHaveBeenCalledWith(
+        '3',
+        expect.objectContaining({ notes: 'Keep this research note.' }),
+      )
+    }, { timeout: 2_000 })
+  })
+
+  it('marks a constrained risk-budget target miss as not execution-ready', async () => {
+    apiMocks.getPortfolioResearchRun.mockResolvedValue({
+      ...completedRun,
+      detail: {
+        ...completedRun.detail,
+        scope_solve_events: [
+          {
+            as_of_date: '2026-07-15',
+            scope_node_id: 'risk-assets',
+            scope_label: 'Risk Assets',
+            target_status: 'constrained_target_miss',
+            execution_ready: false,
+            solver_message: 'Maximum target-share gap is 12.00%.',
+            member_count: 2,
+          },
+        ],
+      },
+    })
+
+    renderPortfolioPage(
+      <ResearchPage />,
+      '/portfolios/3/research',
+      '/portfolios/:portfolioId/research',
+    )
+
+    expect(await screen.findByText('Constrained solve — not execution-ready.')).toBeInTheDocument()
+    expect(screen.getByText(/Risk Assets: Maximum target-share gap is 12.00%/)).toBeInTheDocument()
   })
 })

@@ -1750,6 +1750,44 @@ def _lock_portfolio_for_transaction_mutation(session, portfolio_id: str) -> bool
     return portfolio_key is not None
 
 
+def load_locked_portfolio_ledger_state(
+    session,
+    portfolio_id: str,
+) -> tuple[list[dict[str, object]], list[dict[str, object]]] | None:
+    """Lock one portfolio and return a coherent account/transaction snapshot.
+
+    Event-task projection and transaction mutations share this lock, so an
+    entitlement calculation cannot race a ledger write for the same portfolio.
+    """
+
+    if not _lock_portfolio_for_transaction_mutation(session, portfolio_id):
+        return None
+    accounts = list(
+        session.scalars(
+            select(AccountRecordModel)
+            .where(AccountRecordModel.portfolio_id == portfolio_id)
+            .order_by(AccountRecordModel.account_id)
+        ).all()
+    )
+    transactions = list(
+        session.scalars(
+            select(TransactionRecordModel)
+            .where(TransactionRecordModel.portfolio_id == portfolio_id)
+            .order_by(
+                TransactionRecordModel.trade_date,
+                TransactionRecordModel.trade_at,
+                TransactionRecordModel.created_at,
+                TransactionRecordModel.transaction_id,
+                TransactionRecordModel.settlement_date,
+            )
+        ).all()
+    )
+    return (
+        [_serialize_account_row(item) for item in accounts],
+        [_serialize_transaction_row(item) for item in transactions],
+    )
+
+
 def _validate_portfolio_transaction_history(session, portfolio_id: str) -> None:
     accounts = list(
         session.scalars(

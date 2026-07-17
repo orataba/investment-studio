@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import date, timedelta
 from math import sqrt
 
@@ -697,8 +698,10 @@ def test_zero_weight_member_starting_after_early_rebalance_does_not_block_backte
     monkeypatch.setattr(research_solver_service, "_build_taxonomy_state", lambda *_args, **_kwargs: state)
     original_solve = research_solver_service.solve_current_target_weights
     period_solutions: list[dict[str, object]] = []
+    frozen_actual_flags: list[bool] = []
 
     def capture_period_solve(*args, **kwargs):
+        frozen_actual_flags.append(bool(kwargs.get("_resolve_frozen_actuals")))
         solution = original_solve(*args, **kwargs)
         period_solutions.append(solution)
         return solution
@@ -731,6 +734,7 @@ def test_zero_weight_member_starting_after_early_rebalance_does_not_block_backte
 
     assert payload["backtest"]["points"]
     assert period_solutions
+    assert frozen_actual_flags and all(frozen_actual_flags)
     assert not any(
         "research window is clipped" in warning
         for warning in payload["backtest"]["warnings"]
@@ -741,7 +745,7 @@ def test_zero_weight_member_starting_after_early_rebalance_does_not_block_backte
         assert row_by_id["late-zero"]["target_weight"] == pytest.approx(0.0)
 
 
-def test_positive_top_sleeve_minimum_overrides_zero_configured_weight() -> None:
+def test_positive_top_sleeve_minimum_overrides_zero_configured_weight(monkeypatch) -> None:
     dates = [item.date() for item in pd.bdate_range("2026-01-05", periods=8)]
 
     def detail(instrument_id: str, step: float) -> dict[str, object]:
@@ -830,6 +834,84 @@ def test_positive_top_sleeve_minimum_overrides_zero_configured_weight() -> None:
     assert row_by_id["node-b"]["configured_weight"] == pytest.approx(0.0)
     assert row_by_id["node-b"]["target_weight"] == pytest.approx(0.2)
     assert row_by_id["node-a"]["target_weight"] == pytest.approx(0.8)
+
+    frozen_state = replace(state, frozen_taxonomy_node_ids=frozenset({"node-b"}))
+
+    def frozen_actuals(_state, *, scope_node_id, as_of_date):
+        del _state, as_of_date
+        if scope_node_id == "node-b":
+            return ([{
+                "member_type": TARGET_MEMBER_INSTRUMENT,
+                "member_id": "asset-b",
+                "label": "asset-b",
+                "current_weight": 1.0,
+                "current_value_base": 35.0,
+            }], [])
+        return ([
+            {
+                "member_type": TARGET_MEMBER_NODE,
+                "member_id": "node-a",
+                "label": "A",
+                "current_weight": 0.65,
+                "current_value_base": 65.0,
+            },
+            {
+                "member_type": TARGET_MEMBER_NODE,
+                "member_id": "node-b",
+                "label": "B",
+                "current_weight": 0.35,
+                "current_value_base": 35.0,
+            },
+            {
+                "member_type": TARGET_MEMBER_CASH,
+                "member_id": SYSTEM_CASH_TARGET_MEMBER_ID,
+                "label": SYSTEM_CASH_TARGET_LABEL,
+                "current_weight": 0.0,
+                "current_value_base": 0.0,
+            },
+        ], [])
+
+    monkeypatch.setattr(research_solver_service, "_current_scope_actuals", frozen_actuals)
+    frozen_result = _solve_current_scope(
+        frozen_state,
+        scope_node_id=None,
+        as_of_date=dates[-1],
+        lookback_days=30,
+        calculation_frequency="daily",
+        target_dimension="weight",
+        capital_mode="unit_notional",
+        gross_exposure=None,
+        target_volatility=None,
+        max_gross_exposure=None,
+        missing_return_policy="strict",
+        apply_capital_overlay=False,
+        include_actuals=False,
+        resolve_frozen_actuals=True,
+    )
+    frozen_row_by_id = {str(row["member_id"]): row for row in frozen_result.member_target_rows}
+    assert frozen_row_by_id["node-b"]["target_weight"] == pytest.approx(0.35)
+    assert frozen_row_by_id["node-a"]["target_weight"] == pytest.approx(0.65)
+
+    with pytest.raises(ValueError, match=r"B final weight .* is below its minimum"):
+        _solve_current_scope(
+            state,
+            scope_node_id=None,
+            as_of_date=dates[-1],
+            lookback_days=30,
+            calculation_frequency="daily",
+            target_dimension="weight",
+            capital_mode=CAPITAL_MODE_VOLATILITY_CAP,
+            gross_exposure=None,
+            target_volatility=0.000001,
+            max_gross_exposure=None,
+            missing_return_policy="strict",
+            apply_capital_overlay=True,
+            risk_model_config={
+                "covariance_model_id": "sample_covariance",
+                "parameters": {"min_observations": 2},
+            },
+            include_actuals=False,
+        )
 
 
 def test_backtest_universe_omits_zero_weight_leaf_targets() -> None:
@@ -1397,7 +1479,17 @@ def test_research_workbench_reads_canonical_run_top_holdings(client):
                             "base_currency": "USD",
                             "price": 206.47,
                         }
-                    ]
+                    ],
+                    "backtest": {
+                        "points": [
+                            {"date": "2026-04-01", "value": 100.0},
+                            {"date": "2026-04-15", "value": 101.8},
+                        ],
+                        "metrics": {
+                            "annualization_eligible": True,
+                            "annualized_return": 9.99,
+                        },
+                    },
                 },
                 artifacts_json=[],
                 request_payload_json={},
@@ -1424,6 +1516,10 @@ def test_research_workbench_reads_canonical_run_top_holdings(client):
     assert top_holding["instrument_id"] == "equity-us-abbv"
     assert top_holding["instrument_name"] == "AbbVie Inc"
     assert top_holding["instrument_type"] == "equity"
+    selected_metrics = selected_payload["selected_run"]["detail"]["backtest"]["metrics"]
+    assert selected_metrics["period_return"] == pytest.approx(0.018)
+    assert selected_metrics["annualization_eligible"] is False
+    assert selected_metrics["annualized_return"] is None
     assert selected_payload["selected_run"]["reliability_state"] == "stale"
     assert any(
         "predates planning-state fingerprinting" in reason
@@ -1433,6 +1529,7 @@ def test_research_workbench_reads_canonical_run_top_holdings(client):
     run_response = client.get("/api/portfolios/portfolio-ops/research/runs/canonical-run")
     assert run_response.status_code == 200
     assert run_response.json()["detail"]["top_holdings"][0]["instrument_id"] == "equity-us-abbv"
+    assert run_response.json()["detail"]["backtest"]["metrics"]["annualized_return"] is None
 
 
 def test_research_dynamic_as_of_tracks_latest_portfolio_date(client):
@@ -1480,8 +1577,8 @@ def test_research_series_prefers_total_return_nav_for_funds() -> None:
         "quote_selection_policy": {
             "valuation": ["official_nav"],
             "reference": ["official_nav"],
-            "chart": ["total_return_nav", "official_nav"],
-            "total_return": ["total_return_nav", "official_nav"],
+            "chart": ["total_return_nav"],
+            "total_return": ["total_return_nav"],
         },
         "market_data": [
             {
@@ -1535,6 +1632,44 @@ def test_research_series_prefers_total_return_nav_for_funds() -> None:
     ]
 
 
+def test_fund_analytics_remain_unavailable_without_total_return_nav() -> None:
+    detail = {
+        "instrument_id": "fund-unit-nav-only",
+        "instrument_type": "fund",
+        "currency": "USD",
+        "quote_selection_policy": {
+            "valuation": ["official_nav"],
+            "reference": ["official_nav"],
+            "chart": ["total_return_nav"],
+            "total_return": ["total_return_nav"],
+        },
+        "market_data": [
+            {
+                "metric_family": "nav",
+                "quote_basis": "official_nav",
+                "as_of_date": as_of_date,
+                "value": value,
+                "currency": "USD",
+                "price_unit": "per_unit",
+                "price_scale": 1.0,
+                "status": "complete",
+            }
+            for as_of_date, value in (
+                ("2026-04-14", "1.0000"),
+                ("2026-04-15", "1.0100"),
+            )
+        ],
+    }
+
+    assert _selected_price_points(detail, end_date=date(2026, 4, 15)) == []
+    metrics = build_instrument_trend_metrics_from_detail(
+        detail,
+        as_of_date=date(2026, 4, 15),
+    )
+    assert metrics["instrument_trend_basis"] is None
+    assert metrics["instrument_trend_reason"] == "quote_series_unavailable"
+
+
 def test_research_series_uses_only_complete_market_data() -> None:
     detail = {
         "instrument_id": "fund-status-test",
@@ -1543,8 +1678,8 @@ def test_research_series_uses_only_complete_market_data() -> None:
         "quote_selection_policy": {
             "valuation": ["official_nav"],
             "reference": ["official_nav"],
-            "chart": ["total_return_nav", "official_nav"],
-            "total_return": ["total_return_nav", "official_nav"],
+            "chart": ["total_return_nav"],
+            "total_return": ["total_return_nav"],
         },
         "market_data": [
             {
@@ -1575,16 +1710,18 @@ def test_research_series_uses_only_complete_market_data() -> None:
     assert [(item[0].isoformat(), item[1]) for item in points] == [("2026-04-14", 1.12)]
 
 
-def test_instrument_chart_bases_prefer_total_return_role() -> None:
+def test_fund_instrument_chart_basis_is_exact_total_return_nav() -> None:
     detail = {
+        "instrument_type": "fund",
         "quote_selection_policy": {
             "valuation": ["official_nav"],
             "reference": ["official_nav"],
-            "total_return": ["total_return_nav", "official_nav"],
+            "chart": ["total_return_nav"],
+            "total_return": ["total_return_nav"],
         },
     }
 
-    assert _candidate_chart_bases(detail) == ["total_return_nav", "official_nav"]
+    assert _candidate_chart_bases(detail) == ["total_return_nav"]
 
 
 def test_instrument_trend_requires_an_explicit_quote_policy() -> None:
@@ -2980,6 +3117,8 @@ def test_research_risk_budget_solver_accepts_binding_weight_bounds():
     assert bounded.solver_detail in {"slsqp_minimax", "slsqp_minimax_balanced"}
     assert bounded.max_abs_share_gap is not None
     assert bounded.max_abs_share_gap > 1e-4
+    assert bounded.target_status == "constrained_target_miss"
+    assert bounded.execution_ready is False
 
 
 def test_research_risk_budget_solver_returns_binding_signed_negative_constrained_solution():
@@ -3005,6 +3144,8 @@ def test_research_risk_budget_solver_returns_binding_signed_negative_constrained
     assert solution.solver_kind in {"slsqp_minimax", "slsqp_minimax_balanced"}
     assert solution.max_abs_share_gap > 1e-4
     assert float(solution.achieved_risk_shares.min()) < 0.0
+    assert solution.target_status == "constrained_target_miss"
+    assert solution.execution_ready is False
 
 
 def test_research_target_volatility_rejects_unaligned_risk_history(client):

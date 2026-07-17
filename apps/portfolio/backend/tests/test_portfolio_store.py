@@ -47,7 +47,7 @@ def test_reset_store_round_trips_manual_instrument_universe() -> None:
                 "instrument_ref": {
                     "instrument_id": "fund-us-watch",
                     "instrument_name": "Watchlist Fund",
-                    "instrument_type": "fund",
+                    "instrument_type": "etf",
                     "currency": "USD",
                     "identifiers": [
                         {

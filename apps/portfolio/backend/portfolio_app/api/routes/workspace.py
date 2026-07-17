@@ -32,6 +32,10 @@ from portfolio_app.services.instrument_registry import (
     InstrumentRegistryError,
     get_registry_instrument_details,
 )
+from portfolio_app.services.instrument_event_tasks import (
+    instrument_event_task_quality_warnings,
+    reconcile_instrument_event_tasks,
+)
 from portfolio_app.services.performance import (
     build_holdings_report,
     corporate_action_quality_warnings,
@@ -127,9 +131,22 @@ def _public_holdings_workspace_response(
         for row in row_items
         if isinstance(row, dict) and str(row.get("instrument_id") or "").strip()
     }
-    workspace["quality_warnings"] = corporate_action_quality_warnings(
-        instrument_types,
-        instrument_ids,
+    portfolio_id = str(workspace.get("portfolio_id") or "").strip()
+    if portfolio_id:
+        reconcile_instrument_event_tasks(
+            portfolio_ids=[portfolio_id],
+            instrument_ids=instrument_ids,
+        )
+    workspace["quality_warnings"] = (
+        corporate_action_quality_warnings(
+            instrument_types,
+            instrument_ids,
+        )
+        + (
+            instrument_event_task_quality_warnings(portfolio_id)
+            if portfolio_id
+            else []
+        )
     )
     if include_details:
         workspace["detail_level"] = "full"
@@ -725,8 +742,15 @@ def instrument_holding_projection(
     else:
         instrument_types = set()
         instrument_ids = set()
-    response["quality_warnings"] = corporate_action_quality_warnings(
-        instrument_types,
-        instrument_ids,
+    reconcile_instrument_event_tasks(
+        portfolio_ids=[resolved_portfolio_id],
+        instrument_ids=instrument_ids,
+    )
+    response["quality_warnings"] = (
+        corporate_action_quality_warnings(
+            instrument_types,
+            instrument_ids,
+        )
+        + instrument_event_task_quality_warnings(resolved_portfolio_id)
     )
     return response

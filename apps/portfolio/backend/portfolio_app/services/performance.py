@@ -1,10 +1,12 @@
 from __future__ import annotations
 
-from collections import defaultdict
+from collections import OrderedDict, defaultdict
 from copy import deepcopy
 from datetime import date, timedelta
 from functools import partial
 from math import isfinite, sqrt
+from threading import RLock
+from time import monotonic
 from typing import cast
 
 from portfolio_ops_instrument_core import VALUATION_PROHIBITED_TOTAL_RETURN_BASES
@@ -19,11 +21,16 @@ from portfolio_app.services import (
 from portfolio_app.services.annualization import annualization_eligibility
 from portfolio_app.services.calculation_frequency import CalculationFrequency, period_end_date
 from portfolio_app.core.settings import get_settings
+from portfolio_app.db.session import get_session_factory
 from portfolio_app.services.instrument_registry import (
     InstrumentRegistryError,
     get_platform_fx_rates,
     get_registry_instrument_detail,
+    get_registry_instrument_details,
     list_registry_corporate_actions,
+)
+from portfolio_app.services.instrument_event_tasks import (
+    instrument_event_task_quality_warnings,
 )
 from portfolio_app.services.ledger import (
     build_position_lots,
@@ -55,6 +62,76 @@ NON_CAPITALIZED_ATTACHED_CHARGE_TRANSACTION_TYPES = {
     "interest",
     "return_of_capital",
 }
+
+
+# The Performance page requests the portfolio calculation and its grouped
+# breakdown at the same time. Both need the same large instrument-history
+# payload, so briefly coalesce those sibling reads instead of deserializing the
+# full payload twice. The short TTL intentionally keeps this separate from a
+# durable market-data cache.
+CALCULATION_INSTRUMENT_DETAIL_CACHE_TTL_SECONDS = 2.0
+CALCULATION_INSTRUMENT_DETAIL_CACHE_MAX_ENTRIES = 2
+_calculation_instrument_detail_cache: OrderedDict[
+    tuple[int, int, tuple[str, ...]],
+    tuple[float, dict[str, dict[str, object] | None]],
+] = OrderedDict()
+_calculation_instrument_detail_cache_lock = RLock()
+
+
+def _clear_calculation_instrument_detail_cache() -> None:
+    with _calculation_instrument_detail_cache_lock:
+        _calculation_instrument_detail_cache.clear()
+
+
+def _get_calculation_instrument_details(
+    instrument_ids: list[str] | set[str] | tuple[str, ...],
+) -> dict[str, dict[str, object] | None]:
+    normalized_ids = tuple(
+        sorted(
+            {
+                str(instrument_id).strip()
+                for instrument_id in instrument_ids
+                if str(instrument_id).strip()
+            }
+        )
+    )
+    if not normalized_ids:
+        return {}
+
+    cache_key = (
+        id(get_registry_instrument_details),
+        id(get_session_factory()),
+        normalized_ids,
+    )
+    now = monotonic()
+    with _calculation_instrument_detail_cache_lock:
+        expired_keys = [
+            key
+            for key, (expires_at, _) in _calculation_instrument_detail_cache.items()
+            if expires_at <= now
+        ]
+        for key in expired_keys:
+            _calculation_instrument_detail_cache.pop(key, None)
+
+        cached = _calculation_instrument_detail_cache.get(cache_key)
+        if cached is not None:
+            _calculation_instrument_detail_cache.move_to_end(cache_key)
+            return dict(cached[1])
+
+        loaded = get_registry_instrument_details(normalized_ids)
+        cached_details = dict(loaded)
+        _calculation_instrument_detail_cache[cache_key] = (
+            monotonic() + CALCULATION_INSTRUMENT_DETAIL_CACHE_TTL_SECONDS,
+            cached_details,
+        )
+        _calculation_instrument_detail_cache.move_to_end(cache_key)
+        while (
+            len(_calculation_instrument_detail_cache)
+            > CALCULATION_INSTRUMENT_DETAIL_CACHE_MAX_ENTRIES
+        ):
+            _calculation_instrument_detail_cache.popitem(last=False)
+        return dict(cached_details)
+
 
 def _safe_float(value: object) -> float | None:
     try:
@@ -420,11 +497,14 @@ def _sum_period_transaction_buckets(
             if converted is not None:
                 taxes += converted
 
-        if fee_amount > 0 and transaction_type in NON_CAPITALIZED_ATTACHED_CHARGE_TRANSACTION_TYPES:
+        # Attached charges are always disclosed as fees/taxes.  Whether they
+        # are also an expense-cash component is a separate question: trade
+        # charges are already capitalized into cost/proceeds by the ledger.
+        if fee_amount > 0:
             converted = convert_component(fee_amount, trade_date=effective_date, currency=currency)
             if converted is not None:
                 fees += converted
-        if tax_amount > 0 and transaction_type in NON_CAPITALIZED_ATTACHED_CHARGE_TRANSACTION_TYPES:
+        if tax_amount > 0:
             converted = convert_component(tax_amount, trade_date=effective_date, currency=currency)
             if converted is not None:
                 taxes += converted
@@ -713,6 +793,7 @@ def _period_unrealized_capital_gains_by_group(
         accounts,
         transactions_before_start,
         as_of_date=start_boundary_date,
+        instrument_detail_cache=instrument_detail_cache,
     ):
         if str(position_lot.get("status") or "") != "open":
             continue
@@ -2105,13 +2186,18 @@ def build_portfolio_performance_report_from_snapshots(
             "max_drawdown": max_drawdown,
             "max_drawdown_days": max_drawdown_days,
             "drawdown_duration_days": drawdown_duration_days,
-            "quality_warnings": corporate_action_quality_warnings(
-                _transaction_instrument_types(transactions),
-                {
-                    str(transaction.get("instrument_id") or "").strip()
-                    for transaction in transactions
-                    if str(transaction.get("instrument_id") or "").strip()
-                },
+            "quality_warnings": (
+                corporate_action_quality_warnings(
+                    _transaction_instrument_types(transactions),
+                    {
+                        str(transaction.get("instrument_id") or "").strip()
+                        for transaction in transactions
+                        if str(transaction.get("instrument_id") or "").strip()
+                    },
+                )
+                + instrument_event_task_quality_warnings(
+                    str(portfolio.get("portfolio_id") or "")
+                )
             ),
         },
         "daily_series": [
@@ -2265,7 +2351,19 @@ def build_period_calculation_report(
 
     fx_payload = get_platform_fx_rates()
     direct_fx_instruments = valuation_fx.fx_direct_instrument_map(fx_payload)
-    instrument_detail_cache: dict[str, dict[str, object] | None] = {}
+    calculation_instrument_ids = _instrument_ids_for_calculation_risk_basis(
+        portfolio,
+        accounts,
+        sorted_transactions,
+        start_date=resolved_start_date,
+        end_date=resolved_end_date,
+    )
+    loaded_instrument_details = _get_calculation_instrument_details(calculation_instrument_ids)
+    instrument_detail_cache: dict[str, dict[str, object] | None] = {
+        instrument_id: detail
+        for instrument_id, detail in loaded_instrument_details.items()
+        if isinstance(detail, dict)
+    }
 
     transaction_buckets = _sum_period_transaction_buckets(
         period_transactions,
@@ -2538,6 +2636,7 @@ def _build_boundary_holding_records(
         transactions,
         status="open",
         as_of_date=as_of_date,
+        instrument_detail_cache=instrument_detail_cache,
     )
     position_buckets = holdings_market_profile.position_buckets_from_lots(position_lots)
     rendered_positions: list[dict[str, object]] = []
@@ -4108,24 +4207,24 @@ def _build_contribution_daily_events(
                     trade_date=as_of_date,
                     currency=currency,
                 )
-                if fee_amount > 0:
-                    add_amount(
-                        group_key=group_key,
-                        group_label=group_label,
-                        field_name="fee_amount",
-                        amount=fee_amount,
-                        trade_date=as_of_date,
-                        currency=currency,
-                    )
-                if tax_amount > 0:
-                    add_amount(
-                        group_key=group_key,
-                        group_label=group_label,
-                        field_name="tax_amount",
-                        amount=tax_amount,
-                        trade_date=as_of_date,
-                        currency=currency,
-                    )
+            if fee_amount > 0:
+                add_amount(
+                    group_key=group_key,
+                    group_label=group_label,
+                    field_name="fee_amount",
+                    amount=fee_amount,
+                    trade_date=as_of_date,
+                    currency=currency,
+                )
+            if tax_amount > 0:
+                add_amount(
+                    group_key=group_key,
+                    group_label=group_label,
+                    field_name="tax_amount",
+                    amount=tax_amount,
+                    trade_date=as_of_date,
+                    currency=currency,
+                )
 
     return events
 
@@ -5497,6 +5596,7 @@ def _instrument_ids_for_calculation_risk_basis(
             accounts,
             end_transactions,
             as_of_date=end_date,
+            resolve_pricing=False,
         ):
             if str(position_lot.get("status") or "") == "open":
                 add_instrument_id(position_lot.get("instrument_id"))
@@ -5512,6 +5612,7 @@ def _instrument_ids_for_calculation_risk_basis(
                 accounts,
                 start_transactions,
                 as_of_date=start_date,
+                resolve_pricing=False,
             ):
                 if str(position_lot.get("status") or "") == "open":
                     add_instrument_id(position_lot.get("instrument_id"))
@@ -5998,10 +6099,20 @@ def build_period_calculation_groups_report(
         start_date=resolved_start_date,
         end_date=risk_basis_end_date,
     )
+    instrument_detail_cache = _get_calculation_instrument_details(risk_instrument_ids)
+
+    def risk_instrument_detail(instrument_id: str) -> dict[str, object] | None:
+        detail = instrument_detail_cache.get(instrument_id)
+        if isinstance(detail, dict):
+            return detail
+        detail = get_registry_instrument_detail(instrument_id)
+        instrument_detail_cache[instrument_id] = detail
+        return detail
+
     risk_frequency_profile = calculation_frequency_profile_for_instruments(
         risk_instrument_ids,
         end_date=risk_basis_end_date,
-        detail_loader=get_registry_instrument_detail,
+        detail_loader=risk_instrument_detail,
     )
     risk_calculation_frequency = cast(
         CalculationFrequency,
@@ -6020,7 +6131,6 @@ def build_period_calculation_groups_report(
     )
     fx_payload = get_platform_fx_rates()
     direct_fx_instruments = valuation_fx.fx_direct_instrument_map(fx_payload)
-    instrument_detail_cache: dict[str, dict[str, object] | None] = {}
     unrealized_capital_summary = (
         _period_unrealized_capital_gains_by_group(
             portfolio,
@@ -7017,9 +7127,7 @@ def build_contribution_entries_report(
                         account_name_map=account_name_map,
                         taxonomy_context=taxonomy_context,
                     )
-                if fee_amount > 0 and (
-                    transaction_type in NON_CAPITALIZED_ATTACHED_CHARGE_TRANSACTION_TYPES
-                ):
+                if fee_amount > 0:
                     _append_calculation_transaction_entry(
                         entries,
                         axis=axis,
@@ -7048,9 +7156,7 @@ def build_contribution_entries_report(
                         account_name_map=account_name_map,
                         taxonomy_context=taxonomy_context,
                     )
-                if tax_amount > 0 and (
-                    transaction_type in NON_CAPITALIZED_ATTACHED_CHARGE_TRANSACTION_TYPES
-                ):
+                if tax_amount > 0:
                     _append_calculation_transaction_entry(
                         entries,
                         axis=axis,
@@ -7481,7 +7587,7 @@ def build_period_calculation_entries_report(
                         account_name_map=account_name_map,
                         taxonomy_context=taxonomy_context,
                     )
-                if fee_amount > 0 and transaction_type in NON_CAPITALIZED_ATTACHED_CHARGE_TRANSACTION_TYPES:
+                if fee_amount > 0:
                     _append_calculation_transaction_entry(
                         entries,
                         axis=axis,
@@ -7510,7 +7616,7 @@ def build_period_calculation_entries_report(
                         account_name_map=account_name_map,
                         taxonomy_context=taxonomy_context,
                     )
-                if tax_amount > 0 and transaction_type in NON_CAPITALIZED_ATTACHED_CHARGE_TRANSACTION_TYPES:
+                if tax_amount > 0:
                     _append_calculation_transaction_entry(
                         entries,
                         axis=axis,

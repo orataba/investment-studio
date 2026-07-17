@@ -209,6 +209,54 @@ def test_account_workspace_reuses_pricing_and_corporate_actions(monkeypatch) -> 
     assert workspace["accounts"][0]["position_market_value"] == pytest.approx(250.0)
 
 
+def test_account_workspace_reuses_supplied_instrument_detail_cache(monkeypatch) -> None:
+    pricing_calls: list[set[str]] = []
+
+    def load_details(instrument_ids):
+        pricing_calls.append(set(instrument_ids))
+        return {instrument_id: _detail(instrument_id, 25.0) for instrument_id in instrument_ids}
+
+    monkeypatch.setattr(ledger, "get_registry_instrument_details", load_details)
+    monkeypatch.setattr(ledger, "list_registry_corporate_actions", lambda *_args, **_kwargs: [])
+    instrument_detail_cache: dict[str, dict[str, object] | None] = {}
+
+    for _ in range(2):
+        workspace = ledger.build_account_workspace(
+            "portfolio",
+            [_account()],
+            [_buy("txn-a", "equity-a")],
+            as_of_date=date(2026, 4, 15),
+            instrument_detail_cache=instrument_detail_cache,
+        )
+        assert workspace["positions"][0]["last_price"] == pytest.approx(25.0)
+
+    assert pricing_calls == [{"equity-a"}]
+    assert instrument_detail_cache["equity-a"] is not None
+
+
+def test_position_lot_identity_scan_can_skip_pricing_resolution(monkeypatch) -> None:
+    pricing_calls: list[set[str]] = []
+
+    def load_details(instrument_ids):
+        pricing_calls.append(set(instrument_ids))
+        return {instrument_id: _detail(instrument_id, 25.0) for instrument_id in instrument_ids}
+
+    monkeypatch.setattr(ledger, "get_registry_instrument_details", load_details)
+    monkeypatch.setattr(ledger, "list_registry_corporate_actions", lambda *_args, **_kwargs: [])
+
+    position_lots = ledger.build_position_lots(
+        "portfolio",
+        [_account()],
+        [_buy("txn-a", "equity-a")],
+        as_of_date=date(2026, 4, 15),
+        resolve_pricing=False,
+    )
+
+    assert len(position_lots) == 1
+    assert position_lots[0]["instrument_id"] == "equity-a"
+    assert pricing_calls == []
+
+
 def test_account_workspace_preserves_missing_price_propagation(monkeypatch) -> None:
     monkeypatch.setattr(
         ledger,

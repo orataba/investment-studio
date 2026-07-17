@@ -9,7 +9,7 @@ from portfolio_app.services.research_solver import _build_leaf_target_weight_gap
 WATCH_INSTRUMENT_REF = {
     "instrument_id": "fund-us-watch",
     "instrument_name": "Watchlist Fund",
-    "instrument_type": "fund",
+    "instrument_type": "etf",
     "currency": "USD",
     "identifiers": [
         {

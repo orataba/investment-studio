@@ -290,6 +290,39 @@ def test_performance_summary_clamps_to_latest_reliable_endpoint() -> None:
     assert [point["as_of_date"] for point in report["daily_series"]] == [date(2026, 1, 1)]
 
 
+def test_performance_request_before_inception_uses_complete_inception_return_chain() -> None:
+    portfolio_id = "pre-inception-window-test"
+    snapshots = [
+        _snapshot(date(2026, 1, 5), nav=100.0, daily_twr=0.0),
+        _snapshot(date(2026, 1, 6), nav=101.0, daily_twr=0.01),
+        _snapshot(date(2026, 1, 7), nav=99.99, daily_twr=-0.01),
+    ]
+    transactions = [
+        _transaction(
+            portfolio_id,
+            "txn-open",
+            "opening_balance",
+            date(2026, 1, 5),
+            gross_amount=100.0,
+        )
+    ]
+
+    report = performance.build_portfolio_performance_report_from_snapshots(
+        _portfolio(portfolio_id, date(2026, 1, 7)),
+        snapshots,
+        transactions=transactions,
+        start_date=date(2026, 1, 1),
+        end_date=date(2026, 1, 7),
+    )
+
+    summary = report["summary"]
+    assert summary["requested_start_date"] == date(2026, 1, 1)
+    assert summary["effective_start_date"] == date(2026, 1, 5)
+    assert summary["return_coverage_state"] == "complete"
+    assert summary["cumulative_twr"] == pytest.approx(-0.0001)
+    assert summary["risk_return_observation_count"] == 3
+
+
 def test_reliable_endpoint_clamp_distinguishes_stale_price() -> None:
     window = return_chain.resolve_reliable_snapshot_window(
         [

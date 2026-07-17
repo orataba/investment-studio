@@ -1,3 +1,5 @@
+export const REALIZED_RISK_LOW_SAMPLE_THRESHOLD = 12
+
 export function realizedRiskMetricsAvailable(
   observationCount: number | null | undefined,
   annualizedVolatility: number | null | undefined,
@@ -6,6 +8,16 @@ export function realizedRiskMetricsAvailable(
     Number.isFinite(observationCount) &&
     Number(observationCount) >= 2 &&
     Number.isFinite(annualizedVolatility)
+  )
+}
+
+export function realizedRiskEstimateIsLowSample(
+  observationCount: number | null | undefined,
+) {
+  return (
+    Number.isFinite(observationCount) &&
+    Number(observationCount) >= 2 &&
+    Number(observationCount) < REALIZED_RISK_LOW_SAMPLE_THRESHOLD
   )
 }
 

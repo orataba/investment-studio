@@ -27,7 +27,10 @@ from portfolio_app.db.models import (
     TransactionRecordModel,
 )
 from portfolio_app.db.session import get_session_factory
-from portfolio_app.services.instrument_charts import build_instrument_sparkline
+from portfolio_app.services.instrument_charts import (
+    build_instrument_sparkline,
+    build_instrument_sparkline_from_detail,
+)
 from portfolio_app.services.instrument_registry import InstrumentRegistryError
 from portfolio_app.services.ledger import build_account_workspace
 from portfolio_app.services.performance import build_holdings_report
@@ -39,6 +42,7 @@ from portfolio_app.services.research_solver import (
     build_research_scope_options,
     build_current_target_backtest,
     build_research_backtest_benchmark_comparison,
+    rebuild_backtest_metrics_from_points,
     research_window_start_date,
     solve_current_target_weights,
 )
@@ -758,6 +762,15 @@ def _serialize_run_row(
                 for item in detail["top_holdings"]
                 if isinstance(item, dict)
             ]
+        for backtest_key in ("backtest", "backtest_benchmark"):
+            backtest_payload = detail.get(backtest_key)
+            if not isinstance(backtest_payload, dict):
+                continue
+            points = backtest_payload.get("points")
+            if isinstance(points, list):
+                backtest_payload["metrics"] = rebuild_backtest_metrics_from_points(
+                    [item for item in points if isinstance(item, dict)]
+                )
     artifact_rows = deepcopy(row.artifacts_json or [])
     return {
         "research_run_id": row.research_run_id,
@@ -1005,6 +1018,7 @@ def _build_research_context(
     planning_taxonomy_id: str | None,
     as_of_date: date,
     lookback_days: int,
+    instrument_detail_cache: dict[str, dict[str, object] | None] | None = None,
 ) -> dict[str, object]:
     portfolio = get_portfolio(portfolio_id)
     if portfolio is None:
@@ -1013,11 +1027,15 @@ def _build_research_context(
     accounts = list_accounts(portfolio_id)
     transactions = list_transactions(portfolio_id)
 
+    resolved_instrument_detail_cache = (
+        instrument_detail_cache if instrument_detail_cache is not None else {}
+    )
     statement = build_holdings_report(
         portfolio,
         accounts,
         transactions,
         as_of_date=as_of_date,
+        instrument_detail_cache=resolved_instrument_detail_cache,
     )
     account_workspace = build_account_workspace(
         portfolio_id,
@@ -1025,6 +1043,7 @@ def _build_research_context(
         transactions,
         base_currency=str(statement.get("base_currency") or portfolio.get("base_currency") or "USD"),
         as_of_date=as_of_date,
+        instrument_detail_cache=resolved_instrument_detail_cache,
     )
     lookback_start = research_window_start_date(as_of_date, lookback_days)
     statement_positions = list(statement.get("positions", []))
@@ -1057,10 +1076,21 @@ def _build_research_context(
     daily_points: list[dict[str, object]] = []
     if top_holdings:
         reference_instrument = top_holdings[0]
-        daily_points = build_instrument_sparkline(
-            str(reference_instrument.get("instrument_id") or ""),
-            as_of_date=as_of_date,
-            max_points=20,
+        reference_instrument_id = str(reference_instrument.get("instrument_id") or "")
+        cached_reference_detail = resolved_instrument_detail_cache.get(reference_instrument_id)
+        daily_points = (
+            build_instrument_sparkline_from_detail(
+                cached_reference_detail,
+                instrument_id=reference_instrument_id,
+                as_of_date=as_of_date,
+                max_points=20,
+            )
+            if isinstance(cached_reference_detail, dict)
+            else build_instrument_sparkline(
+                reference_instrument_id,
+                as_of_date=as_of_date,
+                max_points=20,
+            )
         )
         chart_label = "Reference Tape"
         chart_currency = str(reference_instrument.get("base_currency") or statement.get("base_currency") or "USD")
@@ -1676,11 +1706,13 @@ def get_research_workbench(
     risk_calculation_frequency = str(
         production_risk_model.get("calculation_frequency") or settings_payload.get("calculation_frequency") or "auto"
     )
+    instrument_detail_cache: dict[str, dict[str, object] | None] = {}
     context = _build_research_context(
         portfolio_id,
         planning_taxonomy_id=str(settings_payload.get("planning_taxonomy_id") or "").strip() or None,
         as_of_date=date.fromisoformat(str(settings_payload["as_of_date"])),
         lookback_days=risk_lookback_days,
+        instrument_detail_cache=instrument_detail_cache,
     )
     calculation_frequency_profile = build_research_calculation_frequency_profile(
         portfolio_id,
@@ -1689,6 +1721,7 @@ def get_research_workbench(
         as_of_date=date.fromisoformat(str(settings_payload["as_of_date"])),
         lookback_days=risk_lookback_days,
         requested_frequency=risk_calculation_frequency,
+        _instrument_detail_cache=instrument_detail_cache,
     )
 
     return {
@@ -1944,11 +1977,13 @@ def run_portfolio_research(
         session.commit()
 
         try:
+            instrument_detail_cache: dict[str, dict[str, object] | None] = {}
             context = _build_research_context(
                 portfolio_id,
                 planning_taxonomy_id=str(settings_row.planning_taxonomy_id or "").strip() or None,
                 as_of_date=effective_as_of_date,
                 lookback_days=risk_lookback_days,
+                instrument_detail_cache=instrument_detail_cache,
             )
             planning_taxonomy_name = taxonomy_name_map.get(str(settings_row.planning_taxonomy_id or "").strip() or "")
             solution = solve_current_target_weights(
@@ -1967,6 +2002,7 @@ def run_portfolio_research(
                 frozen_taxonomy_node_ids=deepcopy(settings_row.frozen_taxonomy_node_ids_json or []),
                 top_sleeve_weight_bounds=deepcopy(settings_row.top_sleeve_weight_bounds_json or []),
                 risk_model_config=deepcopy(production_risk_model or {}),
+                _instrument_detail_cache=instrument_detail_cache,
             )
             backtest_payload = build_current_target_backtest(
                 portfolio_id,
@@ -1987,6 +2023,7 @@ def run_portfolio_research(
                 rebalance_frequency=str(settings_row.backtest_rebalance_frequency or "1m"),
                 benchmark_instrument_id=str(settings_row.backtest_benchmark_instrument_id or "").strip() or None,
                 current_solution=solution,
+                _instrument_detail_cache=instrument_detail_cache,
             )
             solution.update(backtest_payload)
             detail = _build_current_target_detail(

@@ -34,6 +34,31 @@ def _parse_date(value: object) -> date | None:
     return None
 
 
+def transaction_precedes_entitlement_bod(
+    transaction: dict[str, object],
+    entitlement_date: date,
+) -> bool:
+    """Whether a position fact belongs to entitlement-date beginning of day.
+
+    Same-day ordinary trades are excluded: a same-day purchase is not entitled,
+    while a same-day sale has not reduced the opening position.  A same-day
+    opening balance is included only when its acquisition date proves earlier
+    ownership.
+    """
+
+    trade_date = _parse_date(transaction.get("trade_date"))
+    if trade_date is None:
+        return False
+    if trade_date < entitlement_date:
+        return True
+    if trade_date > entitlement_date:
+        return False
+    if str(transaction.get("transaction_type") or "") != "opening_balance":
+        return False
+    acquisition_date = _parse_date(transaction.get("acquisition_date"))
+    return acquisition_date is not None and acquisition_date < entitlement_date
+
+
 def transaction_economic_date(transaction: dict[str, object]) -> date | None:
     """Return the date on which the economic fact is recognized.
 

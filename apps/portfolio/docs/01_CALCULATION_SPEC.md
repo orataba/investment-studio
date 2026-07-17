@@ -144,9 +144,20 @@
 规范如下：
 
 - 组合账面估值不得静默切到 total-return basis；若分红或派息已作为交易/现金流入账，再用复权价会造成双算；
-- fund 的 research/risk 序列使用 `total_return_nav`；若改用 `official_nav`，必须在结果中标记 quote basis，且不得把分红/派息收益伪装成已复权 total return；
+- fund 的 research/risk 序列只使用 `total_return_nav`；缺失时结果为 unavailable/NA。`official_nav` 只用于估值和明确标注的单位净值视图，不能作为 total-return 序列的兼容回退；
 - equity 的 research/risk 序列使用 `adjusted_close`；若改用 `close`，必须在结果中标记 quote basis，且不得把除权除息导致的机械跳空当成真实损失；
 - chart / sparkline 必须展示实际采用的 quote basis。basis 缺失时，图表可以降级为 `partial / unavailable`，不能静默换基准。
+
+#### Portfolio 中的基金分红处理
+
+基金是否存在分红，必须由共享 Registry 的通用、可修订事件账本决定，Portfolio 不维护按基金名称、邮箱规则或产品 ID 写死的分红配置。
+
+- 尚无已确认分红事件时，Portfolio 明确采用“无未记录分红”的会计假设，继续用 `official_nav` 估值并计算 ledger-driven TWR；不能因为缺少 `total_return_nav` 而阻断组合收益。
+- 这个假设只适用于组合会计。它不能生成或替代基金的 `total_return_nav`；research / risk 缺少可证明的分红再投资链时仍然必须为 unavailable / NA。
+- Registry 出现已确认 `cash_distribution` 后，Portfolio 按 `portfolio + securities account + stable action id` 生成待核查事项，计算权益日持仓和预期税前分红；事件本身不得自动生成现金、份额或交易。
+- 操作人核对托管/管理人事实后，录入 `dividend`、`dividend_reinvestment`，或 `dividend + buy` 交易，并把交易关联到当前事件修订。关联前必须校验组合、账户、标的、权益日及 `entitled quantity × cash per unit`。
+- Registry 对同一 stable action 追加 correction / cancellation 时，不得修改或删除已经存在的 Portfolio 交易；原关联自动进入重新核查。人工重新确认、修订交易或解除关联后，均保留不可变审核历史。
+- 交易新增、修改、删除继续沿用统一的 snapshot invalidation 与耐久重算队列；不得为分红另建同步重算旁路，也不得在 API 请求中执行长耗时全量重算。
 
 每条可用于估值、收益或执行价格校验的行情还必须满足显式身份合同：
 
@@ -301,7 +312,7 @@ Coverage 必须按职责拆分，至少返回：
 
 这四个状态不得互相替代。成本或归因不完整不能阻断已经完整的 fair-value NAV/TWR；反之，完整账面成本也不能修补缺失估值或收益链。
 
-Return chain 只链接连续且 `return_coverage_state = complete` 的可靠观察。若不可靠估值 gap 内发生 external flow，gap 后第一个可靠点必须作为新 anchor，其当日不发布跨 gap 的 bridging return；后续从该 anchor 继续链接。月度、MTD、QTD、YTD 等闭合区间只有在可靠起点、可靠终点和中间连续覆盖同时满足时才可发布完整收益；inception 落在期间内部只能是 partial / unavailable，不能伪装成完整自然期间收益。
+Return chain 只链接连续且 `return_coverage_state = complete` 的可靠观察。若不可靠估值 gap 内发生 external flow，gap 后第一个可靠点必须作为新 anchor，其当日不发布跨 gap 的 bridging return；后续从该 anchor 继续链接。月度、MTD、QTD、YTD 等闭合区间只有在可靠起点、可靠终点和中间连续覆盖同时满足时才可发布完整收益；inception 落在期间内部只能是 partial / unavailable，不能伪装成完整自然期间收益。Performance 明细页的滚动或手动区间若请求起点早于组合 inception，则必须保留 requested start，同时把 effective start 明确收敛到 inception，并按该有效区间发布结果；不得把成立前尚不存在的日期误报为 return coverage gap。此规则不改变前述自然月/季度/年度闭合区间的完整性要求。
 
 用户请求的终点晚于 latest reliable endpoint 时，后端应 clamp 到该 endpoint，并同时返回 requested/effective as-of 与 `as_of_clamp_reason`。summary、chart、drawdown、calendar 和 Calculation 必须使用同一 effective window。
 
@@ -448,7 +459,7 @@ Holdings 可以展示 quote-derived instrument market trend 指标，作为扫�
 - `1W Return / MTD / YTD / 1Y` 只使用标的自身 selected quote series，计算为 `latest_quote / anchor_quote - 1`；
 - selected quote series 按 `quote_selection_policy.total_return -> chart -> valuation -> reference` 选择；若策略为空，则选用截至 as-of 最新的一条 quote basis，不能混用多个 basis；
 - `1W Return` / `1Y` 的 anchor quote 是目标日期或之前最近 quote；
-- `MTD` / `YTD` 的 anchor quote 是月初 / 年初之前最近 quote；若历史不足，则只能使用期间内第一条 quote 作为明确标记的 partial-data anchor，不能展示为完整区间收益；
+- `MTD` / `YTD` 的 anchor quote 是严格早于月初 / 年初的最近 quote；若该锚点不存在则返回空值，禁止拿期间内第一条 quote 冒充完整自然期间收益；
 - `Current DD` 计算为 `latest_quote / max_available_selected_quote_to_date - 1`；
 - `Vol 1M / 3M / 6M / 1Y` 使用同一 selected quote series 先按组合 resolved risk frequency 取 daily / weekly / monthly period returns，再按实际 elapsed days 年化；不得使用 `Chart *` sampled points；
 - volatility 窗口必须有接近窗口起点的初始 quote、足够 elapsed-day 覆盖和最小收益样本数，否则为空。当前门槛为 daily `10 / 30 / 60 / 120`、weekly `3 / 6 / 12 / 24`、monthly `2 / 2 / 4 / 6`，分别对应 `1M / 3M / 6M / 1Y`；
@@ -614,7 +625,7 @@ Performance 页面使用用户选择的区间作为唯一窗口。UI 的主要�
 - Calculation 底层的 `Capital Gain` 使用期间绩效成本，而不是账户 book cost；它是 reconciliation 派生值，不作为默认表格列展示。期初已有持仓按 start date 的 beginning market value 重置为期间成本，区间内买入按成交 gross amount 建立期间成本，期末未卖出的持仓用 end date market value 计算 `Unrealized Gain`。
 - `Capital Gain = Realized Gain + Unrealized Gain`；`Realized Gain` 是期间卖出部分相对于期间成本的资本利得，`Unrealized Gain` 是期末仍持有部分相对于期间成本的资本利得。FIFO / moving average 只影响 Holdings / book P&L，不改变 Performance Calculation 的期间资本利得拆分。
 - `Income` 只包含 dividend / coupon / interest / dividend reinvestment 收益确认，不包含 realized capital gain。fees、taxes、FX P&L 分列。P&L 与 book attribution 不和 benchmark 对比。
-- Performance 中的区间风险贡献是 realized attribution，不另设 Risk tab。对每个 group，`Vol / Sharpe` 使用 group 自身 daily return；`Corr to Portfolio` 使用 group daily return 与 portfolio daily TWR；`Beta to Portfolio = Cov(R_g, R_p) / Var(R_p)` 保留为高级可选列；`Realized RC` 使用 `Cov(Contribution_g, R_p) / Var(R_p)`，衡量该 group 的 contribution 路径对组合已实现方差的协方差占比。这些指标服务区间复盘，不使用 Risk 页的 point-in-time covariance lookback。
+- Performance 中的区间风险贡献是 realized attribution，不另设 Risk tab。对每个 group，`Vol / Sharpe` 使用 group 自身 daily return；`Corr to Portfolio` 使用 group daily return 与 portfolio daily TWR，且 portfolio 包含该 group；`Beta to Portfolio = Cov(R_g, R_p) / Var(R_p)` 保留为高级可选列；`Realized RC` 使用 `Cov(Contribution_g, R_p) / Var(R_p)`，衡量该 group 的 contribution 路径对组合已实现方差的协方差占比。顶层 group 的 `Realized RC` 应加总为 100%，分散化 group 可以为负值。行级 `Obs` 表示该 group 自身 return 与 portfolio 对齐后用于 Vol / Sharpe / Corr / Beta 的 observation count，不得用 portfolio 的公共 observation count 填充 cash 等无自身收益样本的行。少于 12 个对齐 period 的 Corr / Realized RC 可以计算，但 UI 必须明确标记为 low-sample preliminary estimate。这些指标服务区间复盘，不使用 Risk 页的 point-in-time covariance lookback。
 
 Overview 的 chart compare 与 Performance 的 benchmark compare 是独立选择状态，因为用户可能对图表和区间绩效选择不同对比对象。
 
@@ -651,7 +662,7 @@ $$
 
 这是组合页面和绩效页中默认的区间收益口径。
 
-组合的 `TWR Index` 是把 `R_cum` 归一到 100 后得到的组合表现曲线。它在语义上类似基金的 total-return NAV / cumulative NAV，但不是组合会计单位净值；它只用于投资表现、回撤、波动和 benchmark comparison，不用于资产规模或账面 NAV 展示。
+组合的 `TWR Index` 是把 `R_cum` 归一到 100 后得到的组合表现曲线。它在语义上类似基金的分红再投资复权 `total_return_nav`，但不是组合会计单位净值；它只用于投资表现、回撤、波动和 benchmark comparison，不用于资产规模或账面 NAV 展示。
 
 ### 5.4 Annualized TWR
 

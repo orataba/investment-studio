@@ -181,7 +181,9 @@ def test_expired_daily_snapshot_refresh_lease_is_recovered() -> None:
         ).isoformat()
         session.commit()
 
-    result = daily_snapshots.refresh_portfolio_daily_snapshots("portfolio-ops")
+    result = daily_snapshots._run_portfolio_daily_snapshot_recalculation_synchronously(
+        "portfolio-ops"
+    )
 
     assert result is not None
     with session_factory() as session:
@@ -193,7 +195,9 @@ def test_expired_daily_snapshot_refresh_lease_is_recovered() -> None:
 
 
 def test_market_data_watermark_self_invalidates_without_notification() -> None:
-    daily_snapshots.refresh_portfolio_daily_snapshots("portfolio-ops")
+    daily_snapshots._run_portfolio_daily_snapshot_recalculation_synchronously(
+        "portfolio-ops"
+    )
     session_factory = get_session_factory()
     with session_factory() as session:
         state = session.get(PortfolioCalculationStateModel, "portfolio-ops")

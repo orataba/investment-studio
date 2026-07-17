@@ -18,7 +18,10 @@ from portfolio_app.services.instrument_registry import (
 from portfolio_app.services import valuation_fx
 from portfolio_app.services.market_data import is_usable_market_data_point
 from portfolio_app.services.market_data import quote_policy_bases, resolve_quote_point
-from portfolio_app.services.transaction_dates import transaction_sort_key
+from portfolio_app.services.transaction_dates import (
+    transaction_precedes_entitlement_bod,
+    transaction_sort_key,
+)
 from portfolio_app.services.transaction_pricing import transaction_price_scale
 
 
@@ -35,6 +38,7 @@ def _resolve_pricing_quote_map(
     instrument_ids: set[str] | None = None,
     *,
     as_of_date: date | None = None,
+    instrument_detail_cache: dict[str, dict[str, object] | None] | None = None,
 ) -> dict[str, object]:
     normalized_instrument_ids = {instrument_id for instrument_id in (instrument_ids or set()) if instrument_id}
     if normalized_instrument_ids or as_of_date is not None:
@@ -43,7 +47,31 @@ def _resolve_pricing_quote_map(
             for item in list_registry_instruments()
             if str(item.get("instrument_id") or "")
         }
-        instrument_details = get_registry_instrument_details(target_instrument_ids)
+        missing_instrument_ids = (
+            target_instrument_ids
+            if instrument_detail_cache is None
+            else target_instrument_ids - instrument_detail_cache.keys()
+        )
+        loaded_details = (
+            get_registry_instrument_details(missing_instrument_ids)
+            if missing_instrument_ids
+            else {}
+        )
+        if instrument_detail_cache is not None:
+            # A bulk miss must not suppress a caller's authoritative fallback
+            # loader (performance/reporting layers may provide one).  Positive
+            # details are safe to share across the request; unresolved ids stay
+            # eligible for fallback resolution.
+            instrument_detail_cache.update(
+                {
+                    instrument_id: detail
+                    for instrument_id, detail in loaded_details.items()
+                    if isinstance(detail, dict)
+                }
+            )
+            instrument_details = instrument_detail_cache
+        else:
+            instrument_details = loaded_details
         pricing_map: dict[str, object] = {}
         for instrument_id in target_instrument_ids:
             detail = instrument_details.get(instrument_id)
@@ -710,10 +738,6 @@ def _build_position_state(
             continue
 
         if transaction_type == "dividend_reinvestment":
-            current_bucket = position_state.get((account_id, instrument_id))
-            current_quantity = _safe_float((current_bucket or {}).get("quantity")) or 0.0
-            if current_quantity <= 1e-9:
-                raise ValueError("Dividend reinvestment requires existing position as of trade_date.")
             _add_position_state(
                 position_state,
                 account_id,
@@ -1062,10 +1086,6 @@ def derive_ledger_postings(
 
         if transaction_type == "dividend_reinvestment":
             reinvested_quantity = quantity or 0.0
-            current_bucket = position_state.get((account_id, instrument_id))
-            current_quantity = _safe_float((current_bucket or {}).get("quantity")) or 0.0
-            if current_quantity <= 1e-9:
-                raise ValueError("Dividend reinvestment requires existing position as of trade_date.")
             append_posting(
                 transaction,
                 posting_role="security_reinvestment_position",
@@ -1348,7 +1368,7 @@ def validate_transaction_position_history(
                 )
 
         if not instrument_id or not (
-            transaction_type in {"dividend", "coupon"}
+            transaction_type in {"dividend", "dividend_reinvestment", "coupon"}
             or transaction_type in {"fee", "tax"}
         ):
             continue
@@ -1360,7 +1380,7 @@ def validate_transaction_position_history(
             candidate
             for candidate in ordered_transactions
             if str(candidate.get("transaction_id") or "") != transaction_id
-            and _transaction_precedes_entitlement_bod(candidate, entitlement_date)
+            and transaction_precedes_entitlement_bod(candidate, entitlement_date)
         ]
 
         available_quantity = estimate_position_quantity(
@@ -1390,31 +1410,6 @@ def _parse_iso_date(value: object) -> date | None:
         except ValueError:
             return None
     return None
-
-
-def _transaction_precedes_entitlement_bod(
-    transaction: dict[str, object],
-    entitlement_date: date,
-) -> bool:
-    """Return whether a position fact belongs to entitlement-date BOD.
-
-    Ordinary same-day trades are excluded: a same-day buy has no entitlement,
-    while a same-day sale has not reduced the entitled opening position yet.
-    An opening-balance fact recorded that day is included only when its explicit
-    acquisition date proves the position predates the entitlement boundary.
-    """
-
-    trade_date = _parse_iso_date(transaction.get("trade_date"))
-    if trade_date is None:
-        return False
-    if trade_date < entitlement_date:
-        return True
-    if trade_date > entitlement_date:
-        return False
-    if str(transaction.get("transaction_type") or "") != "opening_balance":
-        return False
-    acquisition_date = _parse_iso_date(transaction.get("acquisition_date"))
-    return acquisition_date is not None and acquisition_date < entitlement_date
 
 
 def _proportional_allocations(total: float, weights: list[float]) -> list[float]:
@@ -1748,6 +1743,8 @@ def build_position_lots(
     as_of_date: date | None = None,
     corporate_actions: list[dict[str, object]] | None = None,
     pricing_map: dict[str, object] | None = None,
+    instrument_detail_cache: dict[str, dict[str, object] | None] | None = None,
+    resolve_pricing: bool = True,
 ) -> list[dict[str, object]]:
     account_cost_methods = {
         str(account.get("account_id") or ""): str(account.get("cost_basis_method") or "fifo")
@@ -1871,7 +1868,7 @@ def build_position_lots(
             snapshot_transactions = [
                 transaction_item
                 for transaction_item in sorted_transactions[:transaction_index]
-                if _transaction_precedes_entitlement_bod(transaction_item, entitlement_date)
+                if transaction_precedes_entitlement_bod(transaction_item, entitlement_date)
             ]
             entitled_lots = [
                 position_lot
@@ -2083,14 +2080,20 @@ def build_position_lots(
             continue
 
         if transaction_type == "dividend_reinvestment" and resolved_instrument_id and quantity > 0:
-            _allocate_lot_cash_flow_by_quantity(
-                position_lots_by_key,
-                account_id=account_key,
-                instrument_id=resolved_instrument_id,
+            if entitlement_date is None:
+                raise ValueError("Dividend reinvestment requires entitlement_date.")
+            allocate_snapshot_cash_flow(
+                transaction_index=transaction_index,
+                target_account_id=account_key,
+                target_instrument_id=resolved_instrument_id,
+                entitlement_date=entitlement_date,
                 amount=gross_amount,
                 field_name="income_cash_amount",
+                weight_field="remaining_quantity",
                 transaction_id=transaction_id,
-                error_message="Dividend reinvestment requires open position lots as of trade_date.",
+                error_message=(
+                    "Dividend reinvestment requires entitled position lots as of entitlement_date."
+                ),
             )
             append_position_lot(
                 target_account_id=account_key,
@@ -2367,9 +2370,13 @@ def build_position_lots(
     }
     resolved_pricing_map = pricing_map if pricing_map is not None else {}
     missing_pricing_ids = returned_instrument_ids - resolved_pricing_map.keys()
-    if missing_pricing_ids:
+    if resolve_pricing and missing_pricing_ids:
         resolved_pricing_map.update(
-            _resolve_pricing_quote_map(missing_pricing_ids, as_of_date=as_of_date)
+            _resolve_pricing_quote_map(
+                missing_pricing_ids,
+                as_of_date=as_of_date,
+                instrument_detail_cache=instrument_detail_cache,
+            )
         )
     resolved_as_of_date = as_of_date or date.today()
     rendered_position_lots: list[dict[str, object]] = []
@@ -2599,6 +2606,7 @@ def build_account_workspace(
     selected_account_id: str | None = None,
     base_currency: str = "USD",
     as_of_date: date | None = None,
+    instrument_detail_cache: dict[str, dict[str, object] | None] | None = None,
 ) -> dict[str, object]:
     account_lookup = {str(account["account_id"]): account for account in accounts}
     resolved_selected_account_id = selected_account_id or next(iter(account_lookup.keys()), None)
@@ -2635,7 +2643,9 @@ def build_account_workspace(
     fx_rate_map = resolve_fx_rate_map()
     convert_amount_on_fn = None
     direct_fx_instruments: dict[tuple[str, str], str] = {}
-    instrument_detail_cache: dict[str, dict[str, object] | None] = {}
+    resolved_instrument_detail_cache = (
+        instrument_detail_cache if instrument_detail_cache is not None else {}
+    )
     if as_of_date is not None:
         convert_amount_on_fn = valuation_fx.convert_amount_on
         direct_fx_instruments = valuation_fx.fx_direct_instrument_map(
@@ -2657,7 +2667,7 @@ def build_account_workspace(
             from_currency=normalized_currency,
             to_currency=base_currency,
             direct_fx_instruments=direct_fx_instruments,
-            instrument_detail_cache=instrument_detail_cache,
+            instrument_detail_cache=resolved_instrument_detail_cache,
             instrument_detail_loader=get_registry_instrument_detail,
         )
         return converted_amount
@@ -2689,6 +2699,7 @@ def build_account_workspace(
         as_of_date=as_of_date,
         corporate_actions=corporate_actions,
         pricing_map=pricing_map,
+        instrument_detail_cache=resolved_instrument_detail_cache,
     )
     positions_by_account_instrument: dict[tuple[str, str], dict[str, object]] = {}
     for position_lot in position_lots:

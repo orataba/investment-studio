@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from copy import deepcopy
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import date, timedelta
 from itertools import combinations
 from math import ceil, sqrt
@@ -24,7 +24,7 @@ from portfolio_app.services.instrument_registry import (
     get_registry_instrument_detail,
 )
 from portfolio_app.services.market_data import (
-    quote_policy_bases,
+    analytical_return_quote_bases,
     resolve_quote_series,
 )
 from portfolio_app.services.ledger import build_account_workspace
@@ -178,6 +178,8 @@ class RiskBudgetSolution:
     message: str
     solver_kind: str
     contribution_mode: str
+    target_status: str = "satisfied"
+    execution_ready: bool = True
 
 
 @dataclass(frozen=True)
@@ -198,6 +200,8 @@ class LocalRiskBudgetSolve:
     dropped_return_rows: list[dict[str, object]] | None = None
     latest_complete_return_date: str | None = None
     trailing_complete_return_staleness_days: int | None = None
+    target_status: str = "satisfied"
+    execution_ready: bool = True
 
 
 @dataclass(frozen=True)
@@ -314,12 +318,7 @@ def _instrument_detail(
 
 
 def _candidate_quote_bases(detail: dict[str, object]) -> list[str]:
-    # Research should consume total-return series whenever the shared registry
-    # provides one. Statement valuation retains its separate policy boundary.
-    return quote_policy_bases(
-        detail,
-        ("total_return", "chart", "valuation", "reference"),
-    )
+    return analytical_return_quote_bases(detail)
 
 
 def _selected_price_points(
@@ -1639,18 +1638,36 @@ def _solve_risk_budget_problem(
                 if minimax is not None and _is_better_risk_budget_solution(problem, minimax, primary)
                 else primary
             )
-    if enforce_tolerance and best.max_abs_share_gap > RESEARCH_MAX_RISK_BUDGET_SHARE_GAP + 1e-12:
+    target_gap_missed = best.max_abs_share_gap > RESEARCH_MAX_RISK_BUDGET_SHARE_GAP + 1e-12
+    if enforce_tolerance and target_gap_missed:
         raise ValueError(
             "Risk budget solver could not satisfy target risk shares within "
             f"{RESEARCH_MAX_RISK_BUDGET_SHARE_GAP:.2%}; achieved max gap {best.max_abs_share_gap:.2%}."
         )
     achieved = np.asarray(best.achieved_risk_shares, dtype="float64")
-    if (
-        best.contribution_mode == "signed"
-        and not _risk_budget_problem_has_binding_bounds(problem)
-        and float(achieved.min()) < -1e-12
-    ):
+    negative_signed_share = best.contribution_mode == "signed" and float(achieved.min()) < -1e-12
+    if enforce_tolerance and negative_signed_share:
         raise ValueError("Risk budget solver produced a negative signed risk share.")
+    if target_gap_missed or negative_signed_share:
+        reasons: list[str] = []
+        if target_gap_missed:
+            reasons.append(
+                f"maximum target-share gap is {best.max_abs_share_gap:.2%} "
+                f"(tolerance {RESEARCH_MAX_RISK_BUDGET_SHARE_GAP:.2%})"
+            )
+        if negative_signed_share:
+            reasons.append(f"minimum signed risk share is {float(achieved.min()):.2%}")
+        constrained = _risk_budget_problem_has_binding_bounds(problem)
+        return replace(
+            best,
+            target_status="constrained_target_miss" if constrained else "target_miss",
+            execution_ready=False,
+            message=(
+                f"{best.message}; best feasible result is not execution-ready: "
+                + "; ".join(reasons)
+                + "."
+            ),
+        )
     return best
 
 
@@ -1765,6 +1782,8 @@ def _solve_risk_budget_weights(
         dropped_return_rows=coverage.dropped_rows,
         latest_complete_return_date=coverage.latest_complete_date.isoformat() if coverage.latest_complete_date else None,
         trailing_complete_return_staleness_days=coverage.trailing_staleness_days,
+        target_status=solution.target_status,
+        execution_ready=solution.execution_ready,
     )
 
 
@@ -2479,6 +2498,7 @@ def _solve_current_scope(
     apply_capital_overlay: bool,
     risk_model_config: dict[str, object] | None = None,
     include_actuals: bool = True,
+    resolve_frozen_actuals: bool = False,
 ) -> ScopeTargetSolveResult:
     scope_label = str(state.node_by_id.get(scope_node_id, {}).get("node_name") or ROOT_SCOPE_LABEL)
     scope_path = state.node_path_by_id.get(scope_node_id or ROOT_SCOPE_MEMBER_ID, ROOT_SCOPE_LABEL)
@@ -2504,6 +2524,15 @@ def _solve_current_scope(
         for member in members
     }
     member_keys = list(member_by_key)
+    frozen_keys = [
+        key
+        for key in member_keys
+        if _member_is_frozen(
+            state,
+            scope_node_id=scope_node_id,
+            member=member_by_key[key],
+        )
+    ]
     target_dimension_used = str(resolved_rows[0]["selected_dimension"]) if resolved_rows else TARGET_DIMENSION_WEIGHT
     top_sleeve_bounds_by_key = _root_top_sleeve_bounds_by_key(
         state,
@@ -2566,6 +2595,7 @@ def _solve_current_scope(
                 apply_capital_overlay=False,
                 risk_model_config=risk_model_config,
                 include_actuals=include_actuals,
+                resolve_frozen_actuals=resolve_frozen_actuals,
             )
             child_results_by_key[member_key] = child_result
             child_scope_solve_events.extend(child_result.scope_solve_events)
@@ -2604,7 +2634,7 @@ def _solve_current_scope(
             current_nav_series_by_member[(member.member_type, member.member_id)] = instrument_nav
             warnings.extend(instrument_warnings)
 
-    if include_actuals:
+    if include_actuals or (resolve_frozen_actuals and frozen_keys):
         current_actual_rows, current_actual_warnings = _current_scope_actuals(
             state,
             scope_node_id=scope_node_id,
@@ -2634,15 +2664,6 @@ def _solve_current_scope(
     non_cash_keys = [key for key in member_keys if key not in cash_like_keys]
     if target_dimension_used == TARGET_DIMENSION_RISK_BUDGET and not non_cash_keys:
         raise ValueError(f"{scope_label} risk budget is unavailable: no risky members.")
-    frozen_keys = [
-        key
-        for key in member_keys
-        if _member_is_frozen(
-            state,
-            scope_node_id=scope_node_id,
-            member=member_by_key[key],
-        )
-    ]
     fixed_weight_targets = pd.Series(
         {
             key: current_actual_weight_by_key[key]
@@ -2725,6 +2746,11 @@ def _solve_current_scope(
                 lower_bounds=lower_bounds,
                 upper_bounds=upper_bounds,
             )
+            if not risk_solve.execution_ready:
+                warnings.append(
+                    f"{scope_label} risk-budget target was not achieved under the configured constraints; "
+                    "the constrained result is for research comparison only and is not execution-ready."
+                )
             solved_weights = risk_solve.weights
             risk_gap = risk_solve.max_abs_share_gap
             solver_kind = risk_solve.solver_kind
@@ -2845,7 +2871,6 @@ def _solve_current_scope(
                 f"{scope_label} had no positive risky target weight before capital overlay, so Research used equal risky-sleeve weights."
             )
 
-    top_sleeve_bound_weights = implementation_weights.copy()
     estimated_risk_sleeve_volatility = None
     effective_gross_exposure = None
     risky_allocation_scaling_factor = None
@@ -2905,14 +2930,9 @@ def _solve_current_scope(
                         f"{scope_label} capital overlay leaves a {residual_cash:.2%} residual but the scope has no cash-like member."
                     )
 
-    top_sleeve_bound_status_weights = (
-        top_sleeve_bound_weights
-        if capital_mode == CAPITAL_MODE_VOLATILITY_CAP
-        else implementation_weights
-    )
     _validate_final_top_sleeve_bounds(
         scope_label=scope_label,
-        implementation_weights=top_sleeve_bound_status_weights,
+        implementation_weights=implementation_weights,
         bounds_by_key=top_sleeve_bounds_by_key,
         member_by_key=member_by_key,
     )
@@ -2927,7 +2947,7 @@ def _solve_current_scope(
         member_key = f"{row['member_type']}::{row['member_id']}"
         row["implementation_weight"] = float(implementation_weights.get(member_key, 0.0))
     top_sleeve_bound_weight_by_id = {
-        member_by_key[key].member_id: float(top_sleeve_bound_status_weights.get(key, 0.0))
+        member_by_key[key].member_id: float(implementation_weights.get(key, 0.0))
         for key in top_sleeve_bounds_by_key
         if key in member_by_key
     }
@@ -2963,6 +2983,8 @@ def _solve_current_scope(
         "solver_kind": solver_kind,
         "solver_detail": risk_solve.solver_detail,
         "solver_message": risk_solve.message,
+        "target_status": risk_solve.target_status,
+        "execution_ready": risk_solve.execution_ready,
         "covariance_model": risk_solve.covariance_model,
         "covariance_observations": risk_solve.covariance_observations,
         "risk_contribution_mode": risk_solve.risk_contribution_mode,
@@ -3175,6 +3197,7 @@ def _current_scope_actuals(
             accounts,
             transactions,
             as_of_date=as_of_date,
+            instrument_detail_cache=state.instrument_detail_cache,
         )
         account_workspace = build_account_workspace(
             state.portfolio_id,
@@ -3182,6 +3205,7 @@ def _current_scope_actuals(
             transactions,
             base_currency=state.base_currency,
             as_of_date=as_of_date,
+            instrument_detail_cache=state.instrument_detail_cache,
         )
 
         position_value_by_instrument: dict[str, float] = {}
@@ -3553,6 +3577,8 @@ def build_research_calculation_frequency_profile(
     as_of_date: date,
     lookback_days: int,
     requested_frequency: str,
+    _instrument_detail_cache: dict[str, dict[str, object] | None] | None = None,
+    _direct_fx_instruments: dict[tuple[str, str], str] | None = None,
 ) -> dict[str, object]:
     if not planning_taxonomy_id:
         return calculation_frequency_profile(
@@ -3563,6 +3589,8 @@ def build_research_calculation_frequency_profile(
         portfolio_id,
         planning_taxonomy_id=planning_taxonomy_id,
         as_of_date=as_of_date,
+        instrument_detail_cache=_instrument_detail_cache,
+        direct_fx_instruments=_direct_fx_instruments,
     )
     if comparator_taxonomy_node_id and comparator_taxonomy_node_id not in state.node_by_id:
         raise ValueError("Selected research scope was not found in the planning taxonomy.")
@@ -4047,6 +4075,20 @@ def _backtest_return_map_from_points(points: list[dict[str, object]]) -> dict[st
     return returns
 
 
+def rebuild_backtest_metrics_from_points(points: list[dict[str, object]]) -> dict[str, object]:
+    """Rebuild persisted metrics from their canonical NAV points.
+
+    Research runs are durable snapshots, but metric definitions can be corrected
+    over time.  The point series is the source of truth, so read paths can safely
+    refresh derived metrics without rewriting the historical run.
+    """
+    normalized_points = _normalized_backtest_points(points)
+    return _build_backtest_metrics(
+        normalized_points,
+        _backtest_return_map_from_points(normalized_points),
+    )
+
+
 def _resolved_backtest_calculation_frequency(solution: dict[str, object], requested_frequency: object) -> CalculationFrequency:
     profile = solution.get("calculation_frequency")
     if isinstance(profile, dict):
@@ -4270,6 +4312,8 @@ def build_current_target_backtest(
     rebalance_frequency: str = "1m",
     benchmark_instrument_id: str | None = None,
     current_solution: dict[str, object] | None = None,
+    _instrument_detail_cache: dict[str, dict[str, object] | None] | None = None,
+    _direct_fx_instruments: dict[tuple[str, str], str] | None = None,
 ) -> dict[str, object]:
     frequency = _normalize_backtest_rebalance_frequency(rebalance_frequency)
     state = _build_taxonomy_state(
@@ -4278,6 +4322,8 @@ def build_current_target_backtest(
         as_of_date=as_of_date,
         frozen_taxonomy_node_ids=frozen_taxonomy_node_ids,
         top_sleeve_weight_bounds=top_sleeve_weight_bounds,
+        instrument_detail_cache=_instrument_detail_cache,
+        direct_fx_instruments=_direct_fx_instruments,
     )
     solution = current_solution or solve_current_target_weights(
         portfolio_id,
@@ -4295,6 +4341,8 @@ def build_current_target_backtest(
         frozen_taxonomy_node_ids=frozen_taxonomy_node_ids,
         top_sleeve_weight_bounds=top_sleeve_weight_bounds,
         risk_model_config=risk_model_config,
+        _instrument_detail_cache=state.instrument_detail_cache,
+        _direct_fx_instruments=state.direct_fx_instruments,
     )
     active_leaf_ids = _active_backtest_leaf_ids(solution)
     warnings: list[str] = list(RESEARCH_BACKTEST_METHODOLOGY_WARNINGS)
@@ -4451,6 +4499,7 @@ def build_current_target_backtest(
                 top_sleeve_weight_bounds=top_sleeve_weight_bounds,
                 risk_model_config=risk_model_config,
                 include_actuals=False,
+                _resolve_frozen_actuals=True,
                 _instrument_detail_cache=state.instrument_detail_cache,
                 _direct_fx_instruments=state.direct_fx_instruments,
             )
@@ -4606,6 +4655,7 @@ def solve_current_target_weights(
     top_sleeve_weight_bounds: list[dict[str, object]] | None = None,
     risk_model_config: dict[str, object] | None = None,
     include_actuals: bool = True,
+    _resolve_frozen_actuals: bool = False,
     _instrument_detail_cache: dict[str, dict[str, object] | None] | None = None,
     _direct_fx_instruments: dict[tuple[str, str], str] | None = None,
 ) -> dict[str, object]:
@@ -4648,6 +4698,7 @@ def solve_current_target_weights(
         apply_capital_overlay=comparator_taxonomy_node_id is None,
         risk_model_config=risk_model_config,
         include_actuals=include_actuals,
+        resolve_frozen_actuals=_resolve_frozen_actuals,
     )
     if include_actuals:
         actual_rows, actual_warnings = _current_scope_actuals(

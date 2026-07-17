@@ -4,11 +4,10 @@ from copy import deepcopy
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from threading import Lock
-from time import monotonic, sleep
 from uuid import uuid4
 
 from portfolio_ops_instrument_core.db_models import Instrument
-from sqlalchemy import delete, func, or_, select, update
+from sqlalchemy import and_, case, delete, func, or_, select, update
 
 from portfolio_app.db.models import (
     AccountRecordModel,
@@ -34,15 +33,14 @@ from portfolio_app.services.snapshot_selection import (
 
 _LOCAL_REFRESH_LOCKS: dict[str, Lock] = {}
 _LOCAL_REFRESH_LOCKS_GUARD = Lock()
-_RUNNING_REFRESH_WAIT_SECONDS = 30.0
-_RUNNING_REFRESH_POLL_SECONDS = 0.1
 _RUNNING_REFRESH_LEASE_SECONDS = 900.0
+_DAILY_SNAPSHOT_QUEUE_SCAN_LIMIT = 64
 _SOURCE_GENERATION_MAX_DISCARDS = 3
 _SOURCE_GENERATION_CHANGED_REASON = "source_generation_changed_during_calculation"
 _SOURCE_GENERATION_CHANGED_BEFORE_PUBLISH_REASON = "source_generation_changed_before_publish"
 DAILY_SNAPSHOT_CALCULATION_VERSION = (
     "portfolio-daily-v20260715-split-coverage-return-chain-quote-identity-market-history"
-    "-source-generation-fence-pending-settlement-fx"
+    "-source-generation-fence-pending-settlement-fx-recorded-attached-charges"
 )
 
 
@@ -491,16 +489,60 @@ def _mark_portfolio_daily_snapshots_stale_in_session(
     portfolio_id: str,
     *,
     dirty_from: date | None,
-) -> None:
-    if session.get(PortfolioRecordModel, portfolio_id) is None:
-        return
+) -> dict[str, object] | None:
+    portfolio = session.scalar(
+        select(PortfolioRecordModel)
+        .where(PortfolioRecordModel.portfolio_id == portfolio_id)
+        .with_for_update()
+    )
+    if portfolio is None:
+        return None
     state = _state_for_portfolio(session, portfolio_id)
-    state.refresh_request_id = _new_refresh_request_id()
-    if state.daily_snapshot_status != "running":
-        state.daily_snapshot_status = "stale"
-    if dirty_from is not None:
-        state.dirty_from = min(state.dirty_from, dirty_from) if state.dirty_from is not None else dirty_from
-    state.error_message = None
+
+    state_model = PortfolioCalculationStateModel
+    values: dict[str, object] = {
+        "refresh_request_id": _new_refresh_request_id(),
+        "daily_snapshot_status": case(
+            (state_model.daily_snapshot_status == "running", "running"),
+            else_="stale",
+        ),
+        "error_message": None,
+    }
+    if dirty_from is None:
+        # ``stale/running + NULL`` is the established representation of a
+        # full rebuild.  A full request must override any queued partial one.
+        values["dirty_from"] = None
+    else:
+        # Compute the minimum in the UPDATE itself.  Concurrent enqueue calls
+        # therefore cannot overwrite an earlier invalidation with a later date.
+        # Preserve NULL when it already denotes a queued/running full rebuild;
+        # NULL on a current row still means clean and accepts the partial date.
+        values["dirty_from"] = case(
+            (
+                and_(
+                    state_model.daily_snapshot_status.in_(("stale", "running")),
+                    state_model.dirty_from.is_(None),
+                ),
+                None,
+            ),
+            (state_model.dirty_from.is_(None), dirty_from),
+            (state_model.dirty_from > dirty_from, dirty_from),
+            else_=state_model.dirty_from,
+        )
+    session.execute(
+        update(state_model)
+        .where(state_model.portfolio_id == portfolio_id)
+        .values(**values)
+    )
+    session.flush()
+    session.expire(state)
+    return {
+        "portfolio_id": portfolio_id,
+        "status": "accepted",
+        "daily_snapshot_status": state.daily_snapshot_status,
+        "refresh_request_id": state.refresh_request_id,
+        "dirty_from": state.dirty_from,
+    }
 
 
 def mark_portfolio_daily_snapshots_stale(
@@ -525,6 +567,45 @@ def mark_portfolio_daily_snapshots_stale(
             dirty_from=dirty_from,
         )
         owned_session.commit()
+
+
+def _wake_daily_snapshot_worker() -> None:
+    # Imported lazily to keep the calculation service independent from the
+    # worker lifecycle module while still avoiding poll latency for API jobs.
+    from portfolio_app.services.daily_snapshot_worker import (
+        wake_daily_snapshot_recalculation_worker,
+    )
+
+    wake_daily_snapshot_recalculation_worker()
+
+
+def enqueue_selected_portfolio_daily_snapshot_recalculations(
+    portfolio_ids: list[str],
+    *,
+    dirty_from: date | None = None,
+) -> list[dict[str, object]]:
+    normalized_portfolio_ids = list(
+        dict.fromkeys(
+            str(portfolio_id).strip()
+            for portfolio_id in portfolio_ids
+            if str(portfolio_id).strip()
+        )
+    )
+    accepted: list[dict[str, object]] = []
+    session_factory = get_session_factory()
+    with session_factory() as session:
+        for portfolio_id in normalized_portfolio_ids:
+            result = _mark_portfolio_daily_snapshots_stale_in_session(
+                session,
+                portfolio_id,
+                dirty_from=dirty_from,
+            )
+            if result is not None:
+                accepted.append(result)
+        session.commit()
+    if accepted:
+        _wake_daily_snapshot_worker()
+    return accepted
 
 
 def _claim_daily_snapshot_refresh(portfolio_id: str) -> dict[str, object]:
@@ -595,19 +676,7 @@ def _claim_daily_snapshot_refresh(portfolio_id: str) -> dict[str, object]:
         return {"status": "claimed", "request_id": request_id}
 
 
-def _wait_for_running_daily_snapshot_refresh(portfolio_id: str) -> bool:
-    deadline = monotonic() + _RUNNING_REFRESH_WAIT_SECONDS
-    session_factory = get_session_factory()
-    while monotonic() < deadline:
-        sleep(_RUNNING_REFRESH_POLL_SECONDS)
-        with session_factory() as session:
-            state = session.get(PortfolioCalculationStateModel, portfolio_id)
-            if state is None or state.daily_snapshot_status != "running":
-                return True
-    return False
-
-
-def _refresh_portfolio_daily_snapshots_once(
+def _recalculate_portfolio_daily_snapshots_once(
     portfolio_id: str,
     *,
     request_id: str,
@@ -911,7 +980,17 @@ def _refresh_portfolio_daily_snapshots_once(
         raise
 
 
-def refresh_portfolio_daily_snapshots(portfolio_id: str, end_date: date | None = None) -> dict[str, object] | None:
+def _run_portfolio_daily_snapshot_recalculation_synchronously(
+    portfolio_id: str,
+    end_date: date | None = None,
+) -> dict[str, object] | None:
+    """Run one claimed recalculation job for the queue worker.
+
+    This is deliberately internal.  Request handlers enqueue generations and
+    return; only the worker and read-through materialization invoke the
+    synchronous calculation kernel.
+    """
+
     lock = _refresh_lock_for_portfolio(portfolio_id)
     with lock:
         discarded_attempt_count = 0
@@ -937,14 +1016,14 @@ def refresh_portfolio_daily_snapshots(portfolio_id: str, end_date: date | None =
                     )
                 return result if isinstance(result, dict) else None
             if claim_status == "running":
-                if not _wait_for_running_daily_snapshot_refresh(portfolio_id):
-                    return None
-                continue
+                # Another process owns a live database claim.  Do not make the
+                # single queue worker wait behind it and starve other jobs.
+                return None
 
             request_id = str(claim.get("request_id") or "")
             if not request_id:
                 continue
-            result, request_superseded = _refresh_portfolio_daily_snapshots_once(
+            result, request_superseded = _recalculate_portfolio_daily_snapshots_once(
                 portfolio_id,
                 request_id=request_id,
                 end_date=end_date,
@@ -975,30 +1054,6 @@ def refresh_portfolio_daily_snapshots(portfolio_id: str, end_date: date | None =
             return result
 
 
-def refresh_all_portfolio_daily_snapshots() -> list[dict[str, object]]:
-    session_factory = get_session_factory()
-    with session_factory() as session:
-        portfolio_ids = list(session.scalars(select(PortfolioRecordModel.portfolio_id)).all())
-    return refresh_selected_portfolio_daily_snapshots(portfolio_ids)
-
-
-def refresh_selected_portfolio_daily_snapshots(
-    portfolio_ids: list[str],
-    *,
-    dirty_from: date | None = None,
-) -> list[dict[str, object]]:
-    normalized_portfolio_ids = list(
-        dict.fromkeys(str(portfolio_id).strip() for portfolio_id in portfolio_ids if str(portfolio_id).strip())
-    )
-    refreshed: list[dict[str, object]] = []
-    for portfolio_id in normalized_portfolio_ids:
-        mark_portfolio_daily_snapshots_stale(portfolio_id, dirty_from=dirty_from)
-        result = refresh_portfolio_daily_snapshots(portfolio_id)
-        if result is not None:
-            refreshed.append(result)
-    return refreshed
-
-
 def _portfolio_ids_for_instrument_change(
     session,
     *,
@@ -1020,7 +1075,7 @@ def _portfolio_ids_for_instrument_change(
     )
 
 
-def refresh_portfolio_daily_snapshots_for_instrument_change(
+def enqueue_portfolio_daily_snapshot_recalculations_for_instrument_change(
     *,
     instrument_ids: list[str],
     dirty_from: date | None = None,
@@ -1033,7 +1088,119 @@ def refresh_portfolio_daily_snapshots_for_instrument_change(
             instrument_ids=instrument_ids,
             refresh_all=refresh_all,
         )
-    return refresh_selected_portfolio_daily_snapshots(portfolio_ids, dirty_from=dirty_from)
+    return enqueue_selected_portfolio_daily_snapshot_recalculations(
+        portfolio_ids,
+        dirty_from=dirty_from,
+    )
+
+
+def _next_daily_snapshot_recalculation_candidate() -> str | None:
+    """Return one stale or abandoned portfolio for a database-claim attempt."""
+
+    session_factory = get_session_factory()
+    with session_factory() as session:
+        rows = session.execute(
+            select(PortfolioRecordModel.portfolio_id, PortfolioCalculationStateModel)
+            .outerjoin(
+                PortfolioCalculationStateModel,
+                PortfolioCalculationStateModel.portfolio_id
+                == PortfolioRecordModel.portfolio_id,
+            )
+            .where(
+                or_(
+                    PortfolioCalculationStateModel.portfolio_id.is_(None),
+                    PortfolioCalculationStateModel.daily_snapshot_status.in_(
+                        ("stale", "running")
+                    ),
+                )
+            )
+            .order_by(
+                case(
+                    (
+                        PortfolioCalculationStateModel.daily_snapshot_status
+                        == "stale",
+                        0,
+                    ),
+                    (PortfolioCalculationStateModel.portfolio_id.is_(None), 1),
+                    else_=2,
+                ),
+                PortfolioCalculationStateModel.dirty_from,
+                PortfolioCalculationStateModel.refresh_started_at,
+                PortfolioRecordModel.portfolio_id,
+            )
+            .limit(_DAILY_SNAPSHOT_QUEUE_SCAN_LIMIT)
+        ).all()
+        for portfolio_id, state in rows:
+            if state is None or state.daily_snapshot_status == "stale":
+                return str(portfolio_id)
+            if (
+                state.daily_snapshot_status == "running"
+                and _running_refresh_lease_expired(state)
+            ):
+                return str(portfolio_id)
+    return None
+
+
+def _reconcile_materialized_source_generation_batch(
+    *,
+    after_portfolio_id: str | None,
+    batch_size: int,
+) -> tuple[str | None, str | None]:
+    """Boundedly discover current snapshots whose source facts changed silently.
+
+    The queue notification is an optimization, not the source of truth.  This
+    pass lets a restarted worker recover a missed Platform callback by comparing
+    the persisted materialization generation with the Registry watermark.
+    """
+
+    if batch_size <= 0:
+        raise ValueError("Daily snapshot reconciliation batch_size must be positive.")
+    session_factory = get_session_factory()
+    with session_factory() as session:
+        portfolio_ids_with_instrument_history = select(
+            TransactionRecordModel.portfolio_id
+        ).where(TransactionRecordModel.instrument_id.is_not(None))
+        portfolio_ids_with_snapshots = select(
+            PortfolioDailySnapshotModel.portfolio_id
+        )
+        statement = (
+            select(PortfolioCalculationStateModel.portfolio_id)
+            .where(
+                PortfolioCalculationStateModel.daily_snapshot_status == "current",
+                PortfolioCalculationStateModel.portfolio_id.in_(
+                    portfolio_ids_with_instrument_history
+                ),
+                PortfolioCalculationStateModel.portfolio_id.in_(
+                    portfolio_ids_with_snapshots
+                ),
+            )
+            .order_by(PortfolioCalculationStateModel.portfolio_id)
+            .limit(batch_size)
+        )
+        if after_portfolio_id is not None:
+            statement = statement.where(
+                PortfolioCalculationStateModel.portfolio_id > after_portfolio_id
+            )
+        portfolio_ids = list(session.scalars(statement).all())
+        next_cursor = (
+            str(portfolio_ids[-1])
+            if len(portfolio_ids) == batch_size
+            else None
+        )
+        for portfolio_id in portfolio_ids:
+            if not _state_requires_refresh(session, str(portfolio_id)):
+                continue
+            accepted = _mark_portfolio_daily_snapshots_stale_in_session(
+                session,
+                str(portfolio_id),
+                dirty_from=None,
+            )
+            session.commit()
+            return (
+                str(portfolio_id) if accepted is not None else None,
+                str(portfolio_id),
+            )
+        return None, next_cursor
 
 
 def _state_requires_refresh(session, portfolio_id: str) -> bool:
@@ -1054,7 +1221,7 @@ def ensure_portfolio_daily_snapshots(portfolio_id: str) -> None:
             return
         should_refresh = _state_requires_refresh(session, portfolio_id)
     if should_refresh:
-        refresh_portfolio_daily_snapshots(portfolio_id)
+        _run_portfolio_daily_snapshot_recalculation_synchronously(portfolio_id)
 
 
 def list_materialized_daily_snapshots(

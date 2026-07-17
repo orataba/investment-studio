@@ -1,8 +1,6 @@
 const CONFIRMED_TOTAL_RETURN_BASES = new Set([
   'adjusted_close',
   'total_return_nav',
-  'dividend_adjusted_nav',
-  'reinvested_nav',
 ])
 
 export type PerformanceBenchmarkBasisAssessment = {
