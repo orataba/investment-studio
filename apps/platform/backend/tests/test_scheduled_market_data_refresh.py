@@ -8,6 +8,7 @@ import sys
 from pathlib import Path
 
 import pytest
+import psycopg
 
 
 SCRIPT_PATH = Path(__file__).resolve().parents[1] / "scripts" / "refresh_market_data_scheduled.py"
@@ -43,6 +44,8 @@ def _args(tmp_path: Path, **overrides: object) -> argparse.Namespace:
         "watchlist_downstream_timeout_seconds": 7.0,
         "fail_on_item_failure": True,
         "retry_failed_attempts": 0,
+        "database_wait_seconds": 0.0,
+        "database_retry_interval_seconds": 1.0,
         "instrument_ids": [],
         "json": False,
         "lock_file": tmp_path / "refresh.lock",
@@ -62,6 +65,74 @@ def _updated_result(instrument_id: str, instrument_type: str) -> dict[str, objec
         "status": "refreshed",
         "message": "updated",
     }
+
+
+def test_database_readiness_retries_without_exposing_connection_string(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    attempts = 0
+    clock = [100.0]
+
+    class ReadyConnection:
+        def __enter__(self) -> "ReadyConnection":
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
+        def execute(self, statement: str) -> None:
+            assert statement == "SELECT 1"
+
+    def connect(*args: object, **kwargs: object) -> ReadyConnection:
+        nonlocal attempts
+        del args, kwargs
+        attempts += 1
+        if attempts < 3:
+            raise psycopg.OperationalError("database unavailable at secret-host")
+        return ReadyConnection()
+
+    monkeypatch.setenv(
+        "PORTFOLIO_OPS_PLATFORM_DATABASE_URL",
+        "postgresql+psycopg://secret:secret@secret-host/database",
+    )
+    monkeypatch.setattr(scheduled_refresh.psycopg, "connect", connect)
+    monkeypatch.setattr(scheduled_refresh.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(
+        scheduled_refresh.time,
+        "sleep",
+        lambda seconds: clock.__setitem__(0, clock[0] + seconds),
+    )
+
+    assert scheduled_refresh._wait_for_database(
+        timeout_seconds=10,
+        retry_interval_seconds=2,
+    ) == 3
+    assert attempts == 3
+
+
+def test_database_readiness_timeout_is_sanitized(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(
+        "PORTFOLIO_OPS_PLATFORM_DATABASE_URL",
+        "postgresql://secret:secret@secret-host/database",
+    )
+    monkeypatch.setattr(
+        scheduled_refresh.psycopg,
+        "connect",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            psycopg.OperationalError("secret-host refused secret")
+        ),
+    )
+
+    with pytest.raises(scheduled_refresh.DatabaseUnavailableError) as captured:
+        scheduled_refresh._wait_for_database(
+            timeout_seconds=0,
+            retry_interval_seconds=1,
+        )
+
+    assert "secret" not in str(captured.value)
+    assert "secret-host" not in str(captured.value)
 
 
 def test_all_channels_merge_into_one_downstream_notification(monkeypatch, tmp_path: Path) -> None:

@@ -19,6 +19,23 @@ from portfolio_app.services import daily_snapshot_worker, daily_snapshots
 PORTFOLIO_ID = "portfolio-ops"
 
 
+def test_worker_error_backoff_is_bounded_and_logs_at_sparse_intervals() -> None:
+    delays = [
+        daily_snapshot_worker._worker_error_backoff_seconds(
+            failures,
+            poll_seconds=0.25,
+        )
+        for failures in range(1, 10)
+    ]
+
+    assert delays == [1.0, 2.0, 4.0, 8.0, 16.0, 32.0, 60.0, 60.0, 60.0]
+    assert [
+        failures
+        for failures in range(1, 18)
+        if daily_snapshot_worker._should_log_worker_error(failures)
+    ] == [1, 2, 4, 8, 16]
+
+
 def _calculation_state() -> dict[str, object]:
     session_factory = get_session_factory()
     with session_factory() as session:

@@ -30,6 +30,7 @@ from .types import AttachmentPayload, FolderIdentity, MessageHeader
 
 PARSER_VERSION = "fund-nav-v2"
 PARSER_PROFILE_VERSIONS = {
+    "generic_nav_table": "fund-nav-v3",
     "label_nav_snapshot": "label-nav-v3",
 }
 MAX_PARSE_ATTEMPTS = 5
@@ -798,7 +799,12 @@ class EmailIngestionRepository:
                 metadata=dict(parse.parser_metadata_json or {}),
             )
 
-    def prepare_parser_upgrades(self, *, parser_profile: str) -> list[int]:
+    def prepare_parser_upgrades(
+        self,
+        *,
+        parser_profile: str,
+        prior_statuses: tuple[str, ...] = ("succeeded",),
+    ) -> list[int]:
         """Create current-version jobs from immutable artifacts and contexts.
 
         Parser upgrades never download mail again and never mutate an older parse.
@@ -813,7 +819,7 @@ class EmailIngestionRepository:
                     .where(
                         EmailAttachmentParse.parser_profile == parser_profile,
                         EmailAttachmentParse.parser_version != current_version,
-                        EmailAttachmentParse.status == "succeeded",
+                        EmailAttachmentParse.status.in_(prior_statuses),
                         EmailAttachmentParse.route_contexts.any(),
                     )
                     .order_by(EmailAttachmentParse.email_attachment_parse_id)

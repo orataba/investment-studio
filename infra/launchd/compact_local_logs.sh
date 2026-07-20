@@ -1,0 +1,42 @@
+#!/usr/bin/env bash
+set -euo pipefail
+umask 077
+
+LOG_DIR="${1:-${LOG_DIR:-$HOME/Library/Logs/portfolio-operations-workbench}}"
+MAX_BYTES="${PORTFOLIO_OPS_LOCAL_LOG_MAX_BYTES:-104857600}"
+RETAIN_BYTES="${PORTFOLIO_OPS_LOCAL_LOG_RETAIN_BYTES:-10485760}"
+
+for value_name in MAX_BYTES RETAIN_BYTES; do
+  value="${!value_name}"
+  if [[ ! "$value" =~ ^[1-9][0-9]*$ ]]; then
+    echo "$value_name must be a positive integer." >&2
+    exit 64
+  fi
+done
+if (( RETAIN_BYTES > MAX_BYTES )); then
+  echo "RETAIN_BYTES must not exceed MAX_BYTES." >&2
+  exit 64
+fi
+
+mkdir -p "$LOG_DIR"
+
+file_size_bytes() {
+  local path="$1"
+  stat -f '%z' "$path" 2>/dev/null || stat -c '%s' "$path"
+}
+
+while IFS= read -r -d '' log_file; do
+  size_bytes="$(file_size_bytes "$log_file")"
+  if (( size_bytes <= MAX_BYTES )); then
+    continue
+  fi
+  file_name="$(basename "$log_file")"
+  temporary_file="$(mktemp "$LOG_DIR/.${file_name}.compact.XXXXXX")"
+  if ! tail -c "$RETAIN_BYTES" "$log_file" > "$temporary_file"; then
+    rm -f "$temporary_file"
+    exit 1
+  fi
+  chmod 600 "$temporary_file"
+  mv -f "$temporary_file" "$log_file"
+  echo "Compacted $file_name from $size_bytes to $(file_size_bytes "$log_file") bytes."
+done < <(find "$LOG_DIR" -maxdepth 1 -type f -name '*.log' -print0)

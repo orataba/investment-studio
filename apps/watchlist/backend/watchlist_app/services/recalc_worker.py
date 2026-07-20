@@ -16,6 +16,25 @@ from watchlist_app.services.read_model_freshness import (
 logger = logging.getLogger(__name__)
 recalc_repository = SQLAlchemyRecalcJobRepository()
 canonical_recalc_service = CanonicalRecalcService()
+MAX_WORKER_ERROR_BACKOFF_SECONDS = 60.0
+
+
+def _worker_error_backoff_seconds(
+    consecutive_failures: int,
+    *,
+    poll_interval_seconds: float,
+) -> float:
+    exponent = max(0, min(consecutive_failures - 1, 6))
+    return min(
+        MAX_WORKER_ERROR_BACKOFF_SECONDS,
+        max(1.0, poll_interval_seconds) * (2**exponent),
+    )
+
+
+def _should_log_worker_error(consecutive_failures: int) -> bool:
+    return consecutive_failures > 0 and (
+        consecutive_failures & (consecutive_failures - 1)
+    ) == 0
 
 
 def process_next_recalc_job() -> bool:
@@ -108,6 +127,7 @@ def run_recalc_worker_loop(
     interval = poll_interval_seconds or settings.recalc_worker_poll_interval_seconds
     next_reconcile_at = 0.0
     reconcile_cursor: str | None = None
+    consecutive_worker_failures = 0
     while not stop_event.is_set():
         now = time.monotonic()
         if now >= next_reconcile_at:
@@ -132,7 +152,26 @@ def run_recalc_worker_loop(
         try:
             processed = process_next_recalc_job()
         except Exception:
-            logger.exception("Watchlist recalc worker loop failed.")
+            consecutive_worker_failures += 1
+            backoff_seconds = _worker_error_backoff_seconds(
+                consecutive_worker_failures,
+                poll_interval_seconds=interval,
+            )
+            if _should_log_worker_error(consecutive_worker_failures):
+                logger.exception(
+                    "Watchlist recalc worker failed; retrying in %.1f seconds "
+                    "(consecutive_failures=%s).",
+                    backoff_seconds,
+                    consecutive_worker_failures,
+                )
+            stop_event.wait(backoff_seconds)
+            continue
+        if consecutive_worker_failures:
+            logger.info(
+                "Watchlist recalc worker recovered after %s failures.",
+                consecutive_worker_failures,
+            )
+            consecutive_worker_failures = 0
         if processed:
             continue
         wait_seconds = min(

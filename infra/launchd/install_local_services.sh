@@ -25,6 +25,7 @@ NODE_BIN="${NODE_BIN:-$(command -v node || true)}"
 NPM_BIN="${NPM_BIN:-$(command -v npm || true)}"
 MIGRATION_RUNNER="$PROJECT_ROOT/infra/scripts/migrate_all.sh"
 SERVICE_CONTROL="$SCRIPT_DIR/control_local_services.sh"
+LOG_COMPACTOR="$SCRIPT_DIR/compact_local_logs.sh"
 BACKUP_HELPER="$PROJECT_ROOT/infra/postgres/project_schema_backup.sh"
 
 services=(
@@ -48,7 +49,7 @@ if [[ "$BUILD_FRONTENDS" == "true" && ( -z "$NPM_BIN" || ! -x "$NPM_BIN" ) ]]; t
   exit 1
 fi
 
-for required_executable in "$MIGRATION_RUNNER" "$SERVICE_CONTROL"; do
+for required_executable in "$MIGRATION_RUNNER" "$SERVICE_CONTROL" "$LOG_COMPACTOR"; do
   if [[ ! -x "$required_executable" ]]; then
     echo "Required installer helper is missing or not executable: $required_executable" >&2
     exit 1
@@ -228,6 +229,8 @@ if ! LABEL_PREFIX="$LABEL_PREFIX" LAUNCH_AGENTS_DIR="$LAUNCH_AGENTS_DIR" \
   exit 1
 fi
 restart_required="true"
+
+"$LOG_COMPACTOR" "$LOG_DIR"
 
 portfolio_ops_create_project_schema_backup \
   "$DATABASE_URL" \

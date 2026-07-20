@@ -325,6 +325,32 @@ def _source_generation_ref(
     return shared_latest_date.isoformat() if shared_latest_date is not None else None
 
 
+def _source_data_is_materialized(
+    *,
+    shared_updated_at: datetime | None,
+    shared_latest_date: date | None,
+    local_source_cutoff_at: datetime | None,
+    local_latest_date: date | None,
+) -> bool:
+    if shared_updated_at is not None:
+        return (
+            local_source_cutoff_at is not None
+            and shared_updated_at <= local_source_cutoff_at
+        )
+    if shared_latest_date is None:
+        return True
+    if local_latest_date is not None and shared_latest_date <= local_latest_date:
+        return True
+    # Some legacy Registry rows predate the source-generation watermark. When
+    # the selected display series is unavailable, its local latest date remains
+    # null forever. A complete materialization after the source observation date
+    # proves that generation was considered; a later source date still requeues.
+    return (
+        local_source_cutoff_at is not None
+        and shared_latest_date <= local_source_cutoff_at.date()
+    )
+
+
 def _primary_shared_identifier(shared_instrument: dict[str, object] | None) -> str | None:
     if not isinstance(shared_instrument, dict):
         return None
@@ -474,16 +500,11 @@ def schedule_instrument_refreshes_if_stale(
                 ):
                     continue
                 if not metadata_drift and not materialization_drift:
-                    if shared_updated_at is not None:
-                        if (
-                            local_cutoff_at is not None
-                            and shared_updated_at <= local_cutoff_at
-                        ):
-                            continue
-                    elif (
-                        shared_latest_date is not None
-                        and local_latest_date is not None
-                        and shared_latest_date <= local_latest_date
+                    if _source_data_is_materialized(
+                        shared_updated_at=shared_updated_at,
+                        shared_latest_date=shared_latest_date,
+                        local_source_cutoff_at=local_cutoff_at,
+                        local_latest_date=local_latest_date,
                     ):
                         continue
                 if instrument_id in open_instrument_ids:
@@ -570,13 +591,11 @@ def schedule_instrument_refresh_if_stale(
     ):
         return False
     if not metadata_drift and not materialization_drift:
-        if shared_updated_at is not None:
-            if local_cutoff_at is not None and shared_updated_at <= local_cutoff_at:
-                return False
-        elif (
-            shared_latest_date is not None
-            and local_latest_date is not None
-            and shared_latest_date <= local_latest_date
+        if _source_data_is_materialized(
+            shared_updated_at=shared_updated_at,
+            shared_latest_date=shared_latest_date,
+            local_source_cutoff_at=local_cutoff_at,
+            local_latest_date=local_latest_date,
         ):
             return False
     return _enqueue_stale_recalc_job(

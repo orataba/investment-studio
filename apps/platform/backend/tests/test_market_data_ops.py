@@ -146,6 +146,53 @@ def test_attachment_uses_xlsx_content_when_filename_is_mislabeled_xls() -> None:
     assert str(parsed[0]["nav"]) == "1.0123"
 
 
+def test_generic_attachment_parses_bilingual_administrator_headers() -> None:
+    parsed = _parse_nav_rows_from_attachment(
+        attachment_name="bilingual.xlsx",
+        attachment_bytes=_workbook_bytes(
+            [
+                [
+                    "日期\n（NAV As Of Date）",
+                    "产品名称\n（Fund Name）",
+                    "单位净值\n（NAV/Share）",
+                    "累计单位净值\n（Accumulated NAV/Share）",
+                    "协会备案编码\n（Fund Filling Code）",
+                ],
+                ["2026-07-17", "九木宏观对冲1号私募证券投资基金A", "1.2085", "1.2085", "SBAE63"],
+            ]
+        ),
+        parser_profile="generic_nav_table",
+    )
+
+    assert parsed[0]["as_of_date"] == "2026-07-17"
+    assert parsed[0]["instrument_code"] == "SBAE63"
+    assert str(parsed[0]["nav"]) == "1.2085"
+    assert str(parsed[0]["cash_cumulative_nav"]) == "1.2085"
+
+
+def test_generic_attachment_falls_back_to_label_snapshot_layout() -> None:
+    parsed = _parse_nav_rows_from_attachment(
+        attachment_name="SAZL37-2026年07月16日-发送每日净值信息.xls",
+        attachment_bytes=_workbook_bytes(
+            [
+                ["资产净值公告", None],
+                ["彬元量化市场中性1号私募证券投资基金C专用表", None],
+                ["2026年07月16日", None],
+                ["基金代码：", "AZL37C"],
+                ["基金名称：", "彬元量化市场中性1号私募证券投资基金C"],
+                ["基金份额净值：", "1.2345"],
+                ["基金份额累计净值：", "1.2345"],
+            ]
+        ),
+        parser_profile="generic_nav_table",
+    )
+
+    assert parsed[0]["as_of_date"] == "2026-07-16"
+    assert parsed[0]["instrument_code"] == "AZL37C"
+    assert str(parsed[0]["nav"]) == "1.2345"
+    assert str(parsed[0]["cash_cumulative_nav"]) == "1.2345"
+
+
 def test_attachment_uses_xls_content_when_filename_is_mislabeled_xlsx(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -941,6 +988,72 @@ def test_cash_distribution_reversal_breaks_the_derived_chain() -> None:
         publication.action_candidates[0]["candidate_type"]
         == "cash_balance_discontinuity"
     )
+
+
+def test_sustained_cash_cumulative_reporting_reset_preserves_unit_return_chain() -> None:
+    rows = [
+        {
+            "as_of_date": "2025-08-01",
+            "nav": "1.179",
+            "cash_cumulative_nav": "1.363",
+        },
+        {
+            "as_of_date": "2025-08-08",
+            "nav": "1.207",
+            "cash_cumulative_nav": "1.391",
+        },
+        {
+            "as_of_date": "2025-08-15",
+            "nav": "1.235",
+            "cash_cumulative_nav": "1.419",
+        },
+        {
+            "as_of_date": "2025-08-26",
+            "nav": "1.301",
+            "cash_cumulative_nav": "1.301",
+        },
+        {
+            "as_of_date": "2025-08-29",
+            "nav": "1.286",
+            "cash_cumulative_nav": "1.286",
+        },
+        {
+            "as_of_date": "2025-09-02",
+            "nav": "1.274",
+            "cash_cumulative_nav": "1.274",
+        },
+    ]
+
+    publication = _build_complete_fund_nav_publication(
+        instrument_id="private-fund",
+        instrument={"fund_nav_events": [], "fund_nav_adjustment_factors": []},
+        rows=rows,
+    )
+
+    assert publication.projection_run["projection_status"] == "complete"
+    assert publication.action_candidates == []
+    assert all(row.get("nav_with_dividend") for row in publication.rows)
+    resets = publication.projection_run["evidence"][
+        "auto_cash_reporting_basis_resets"
+    ]
+    assert resets == [
+        {
+            "kind": "cash_cumulative_reporting_basis_reset_to_unit_nav",
+            "interval_start_date": "2025-08-15",
+            "interval_end_date": "2025-08-26",
+            "stable_pre_reset_start_date": "2025-08-08",
+            "cash_balance_before": "0.184",
+            "cash_balance_after": "0.000",
+            "unit_nav_before": "1.235",
+            "unit_nav_after": "1.301",
+            "unit_return_at_reset": "0.053441295546558704",
+            "confirmation_dates": [
+                "2025-08-26",
+                "2025-08-29",
+                "2025-09-02",
+            ],
+        }
+    ]
 
 
 def test_confirmed_distribution_advances_factor_and_total_return_curve() -> None:

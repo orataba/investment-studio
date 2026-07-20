@@ -143,6 +143,65 @@ def test_source_generation_ref_preserves_same_date_revision_identity() -> None:
     ) == "2026-07-15T09:30:00Z"
 
 
+def test_legacy_source_date_converges_when_selected_series_is_unavailable() -> None:
+    from watchlist_app.services.read_model_freshness import (
+        _source_data_is_materialized,
+    )
+
+    assert _source_data_is_materialized(
+        shared_updated_at=None,
+        shared_latest_date=date(2026, 4, 28),
+        local_source_cutoff_at=datetime(2026, 7, 20, 8, 0, tzinfo=UTC),
+        local_latest_date=None,
+    ) is True
+    assert _source_data_is_materialized(
+        shared_updated_at=None,
+        shared_latest_date=date(2026, 7, 21),
+        local_source_cutoff_at=datetime(2026, 7, 20, 8, 0, tzinfo=UTC),
+        local_latest_date=None,
+    ) is False
+
+
+def test_single_instrument_legacy_source_date_does_not_requeue_forever(
+    monkeypatch,
+) -> None:
+    from watchlist_app.services import read_model_freshness
+
+    shared = {
+        "instrument_id": "legacy-fund",
+        "instrument_name": "Legacy Fund",
+        "instrument_type": "fund",
+        "identifiers": [],
+        "market_data_updated_at": None,
+        "latest_market_data": [{"as_of_date": "2026-04-28"}],
+    }
+    monkeypatch.setattr(
+        read_model_freshness,
+        "get_shared_instrument",
+        lambda _instrument_id: shared,
+    )
+    monkeypatch.setattr(
+        read_model_freshness,
+        "_local_instrument_metadata_drift",
+        lambda **_kwargs: False,
+    )
+    monkeypatch.setattr(
+        read_model_freshness,
+        "_enqueue_stale_recalc_job",
+        lambda **_kwargs: (_ for _ in ()).throw(
+            AssertionError("already-materialized legacy data must not requeue")
+        ),
+    )
+
+    assert read_model_freshness.schedule_instrument_refresh_if_stale(
+        instrument_id="legacy-fund",
+        local_latest_date=None,
+        local_source_cutoff_at=datetime(2026, 7, 20, 8, 0, tzinfo=UTC),
+        local_materialization_version="watchlist-materialization/v2",
+        trigger_ref_type="detail_read",
+    ) is False
+
+
 def test_stale_generation_creates_one_durable_per_instrument_job(
     monkeypatch,
 ) -> None:
@@ -414,6 +473,25 @@ def test_worker_advances_reconciliation_cursor_and_never_zero_waits(
 
     assert cursor_calls == [None, "fund-b"]
     assert stop_event.waits == [0.5, 0.5]
+
+
+def test_worker_error_backoff_is_bounded_and_logs_at_sparse_intervals() -> None:
+    from watchlist_app.services import recalc_worker
+
+    delays = [
+        recalc_worker._worker_error_backoff_seconds(
+            failures,
+            poll_interval_seconds=0.5,
+        )
+        for failures in range(1, 10)
+    ]
+
+    assert delays == [1.0, 2.0, 4.0, 8.0, 16.0, 32.0, 60.0, 60.0, 60.0]
+    assert [
+        failures
+        for failures in range(1, 18)
+        if recalc_worker._should_log_worker_error(failures)
+    ] == [1, 2, 4, 8, 16]
 
 
 def test_worker_retries_same_page_after_registry_failure_without_spinning(

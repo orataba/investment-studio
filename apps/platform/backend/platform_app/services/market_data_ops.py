@@ -162,12 +162,20 @@ NAV_IMPORT_HEADER_MAP = {
     "资产名称": "instrument_name",
     "fundname": "instrument_name",
     "基金名称": "instrument_name",
+    # Common administrator export headers retain an English translation after
+    # punctuation is stripped by ``_normalize_nav_header``.
+    "日期navasofdate": "as_of_date",
+    "产品名称fundname": "instrument_name",
+    "单位净值navshare": "nav",
+    "累计单位净值accumulatednavshare": "cash_cumulative_nav",
+    "协会备案编码fundfillingcode": "instrument_code",
+    "协会备案编码fundfilingcode": "instrument_code",
 }
 
 LABEL_SNAPSHOT_FIELD_ALIASES = {
     "as_of_date": ("日期", "净值日期", "估值日期"),
-    "nav": ("单位净值",),
-    "cash_cumulative_nav": ("累计单位净值",),
+    "nav": ("单位净值", "基金份额净值"),
+    "cash_cumulative_nav": ("累计单位净值", "基金份额累计净值"),
     "nav_with_dividend": ("复权单位净值", "分红再投资净值", "复利净值"),
 }
 LABEL_SNAPSHOT_IDENTITY_ALIASES = {
@@ -496,6 +504,12 @@ def _parse_nav_rows_from_label_snapshot_matrix(matrix: list[list[object]]) -> li
             normalized_cell = _normalize_nav_header(cell)
             next_value = string_values[index + 1] if index + 1 < len(string_values) else ""
 
+            if found_date is None and re.fullmatch(
+                r"\s*\d{4}年\d{1,2}月\d{1,2}日\s*",
+                cell,
+            ):
+                found_date = _parse_nav_date(cell)
+
             if (
                 not found_instrument_code
                 and normalized_cell
@@ -617,6 +631,24 @@ def _with_label_snapshot_filename_identity(
                 "Label NAV snapshot identity conflicts between workbook and filename."
             )
         row["instrument_code"] = filename_code
+        enriched.append(row)
+    return enriched
+
+
+def _with_optional_label_snapshot_filename_identity(
+    rows: list[dict[str, object]],
+    *,
+    attachment_name: str,
+) -> list[dict[str, object]]:
+    """Fill missing identity without overriding a workbook's explicit code."""
+    filename_code = _label_snapshot_filename_code(attachment_name)
+    if not filename_code:
+        return rows
+    enriched: list[dict[str, object]] = []
+    for raw_row in rows:
+        row = dict(raw_row)
+        if not str(row.get("instrument_code") or "").strip():
+            row["instrument_code"] = filename_code
         enriched.append(row)
     return enriched
 
@@ -754,9 +786,19 @@ def _parse_nav_rows_from_attachment(
     if lower_name.endswith((".csv", ".tsv", ".txt")):
         return _parse_nav_rows_from_text(_decode_nav_text(attachment_bytes))
     if lower_name.endswith((".xlsx", ".xls")):
-        return _parse_nav_rows_from_workbook_content(
-            attachment_bytes,
+        matrices = _workbook_matrices_by_content(attachment_bytes)
+        rows = _parse_nav_rows_from_workbook_matrices(
+            matrices,
             parser=_parse_nav_rows_from_matrix,
+        )
+        if rows:
+            return rows
+        return _with_optional_label_snapshot_filename_identity(
+            _parse_nav_rows_from_workbook_matrices(
+                matrices,
+                parser=_parse_nav_rows_from_label_snapshot_matrix,
+            ),
+            attachment_name=attachment_name,
         )
     return []
 
@@ -979,9 +1021,10 @@ class FundNavPublication:
         return self.derived_total_return_count > 0
 
 
-FUND_NAV_PROJECTION_METHOD_VERSION = "fund_nav_reinvestment_projection/v5"
+FUND_NAV_PROJECTION_METHOD_VERSION = "fund_nav_reinvestment_projection/v6"
 FUND_NAV_PROJECTION_CREATED_BY = "platform_fund_nav_projection_builder"
 AUTO_CASH_DISTRIBUTION_MAX_ABS_INTERVAL_RETURN = Decimal("0.50")
+CASH_REPORTING_RESET_CONFIRMATION_ROWS = 3
 CUMULATIVE_NAV_SEMANTICS_MIN_VOTES = 3
 CUMULATIVE_NAV_SEMANTICS_DOMINANCE = 4
 CUMULATIVE_NAV_SEMANTICS_COMPARISON_LAGS = (1, 5, 20)
@@ -1062,6 +1105,88 @@ def _cash_delta_uncertainty(
             Decimal("0"),
         ),
     )
+
+
+def _cash_balance_zero_tolerance(row: dict[str, object]) -> Decimal:
+    return max(
+        NAV_SEMANTIC_ZERO_TOLERANCE,
+        _reported_decimal_uncertainty(row.get("nav"))
+        + _reported_decimal_uncertainty(row.get("cash_cumulative_nav")),
+    )
+
+
+def _cash_reporting_basis_reset_evidence(
+    *,
+    complete_rows: list[tuple[date, dict[str, object], Decimal]],
+    current_index: int,
+    expected_cash_balance: Decimal | None,
+    event_ids: list[str],
+) -> dict[str, object] | None:
+    """Recognize a sustained provider reset from cash-cumulative to unit NAV.
+
+    This is deliberately narrower than a generic negative cash-balance change:
+    the pre-reset balance must be stable, unit NAV may not fall at the boundary,
+    and the disclosed cash balance must remain zero for three observations.
+    """
+
+    if (
+        expected_cash_balance is None
+        or event_ids
+        or current_index < 2
+        or len(complete_rows) - current_index
+        < CASH_REPORTING_RESET_CONFIRMATION_ROWS
+    ):
+        return None
+    previous_date, previous_row, previous_cash_balance = complete_rows[
+        current_index - 1
+    ]
+    prior_date, prior_row, prior_cash_balance = complete_rows[current_index - 2]
+    current_date, current_row, current_cash_balance = complete_rows[current_index]
+    boundary_uncertainty = _cash_delta_uncertainty(previous_row, current_row)
+    if expected_cash_balance <= boundary_uncertainty:
+        return None
+    if (
+        abs(prior_cash_balance - previous_cash_balance)
+        > _cash_delta_uncertainty(prior_row, previous_row)
+    ):
+        return None
+    previous_unit_nav = _parse_nav_decimal(previous_row.get("nav"))
+    current_unit_nav = _parse_nav_decimal(current_row.get("nav"))
+    if previous_unit_nav is None or current_unit_nav is None:
+        return None
+    unit_move_uncertainty = (
+        _reported_decimal_uncertainty(previous_row.get("nav"))
+        + _reported_decimal_uncertainty(current_row.get("nav"))
+    )
+    if current_unit_nav + unit_move_uncertainty < previous_unit_nav:
+        return None
+
+    confirmation_rows = complete_rows[
+        current_index : current_index + CASH_REPORTING_RESET_CONFIRMATION_ROWS
+    ]
+    if any(
+        abs(cash_balance) > _cash_balance_zero_tolerance(row)
+        for _row_date, row, cash_balance in confirmation_rows
+    ):
+        return None
+    with localcontext() as context:
+        context.prec = 76
+        unit_return = current_unit_nav / previous_unit_nav - Decimal("1")
+    return {
+        "kind": "cash_cumulative_reporting_basis_reset_to_unit_nav",
+        "interval_start_date": previous_date.isoformat(),
+        "interval_end_date": current_date.isoformat(),
+        "stable_pre_reset_start_date": prior_date.isoformat(),
+        "cash_balance_before": str(previous_cash_balance),
+        "cash_balance_after": str(current_cash_balance),
+        "unit_nav_before": str(previous_unit_nav),
+        "unit_nav_after": str(current_unit_nav),
+        "unit_return_at_reset": str(_quantized_factor_level(unit_return)),
+        "confirmation_dates": [
+            row_date.isoformat()
+            for row_date, _row, _cash_balance in confirmation_rows
+        ],
+    }
 
 
 def _nav_ratio_uncertainty(row: dict[str, object]) -> Decimal:
@@ -1480,7 +1605,11 @@ def _cash_disclosure_intervals(
     }
 
     previous_date, previous_row, previous_balance = complete_rows[0]
-    for current_date, current_row, current_balance in complete_rows[1:]:
+    for current_index, (
+        current_date,
+        current_row,
+        current_balance,
+    ) in enumerate(complete_rows[1:], start=1):
         interval_events = _fund_nav_events_between(
             events,
             after_date=previous_date,
@@ -1520,6 +1649,18 @@ def _cash_disclosure_intervals(
         reconciled = interval_valid and (
             abs(current_balance - expected_cash_balance) <= tolerance
         )
+        reporting_basis_reset = (
+            _cash_reporting_basis_reset_evidence(
+                complete_rows=complete_rows,
+                current_index=current_index,
+                expected_cash_balance=(
+                    expected_cash_balance if interval_valid else None
+                ),
+                event_ids=interval_event_ids,
+            )
+            if not reconciled
+            else None
+        )
         intervals[current_date] = {
             "kind": "interval",
             "valid": reconciled,
@@ -1533,8 +1674,9 @@ def _cash_disclosure_intervals(
             "current_unit_nav": _parse_nav_decimal(current_row.get("nav")),
             "event_ids": interval_event_ids,
             "interval_start_date": previous_date.isoformat(),
+            "reporting_basis_reset": reporting_basis_reset,
         }
-        if not reconciled:
+        if not reconciled and reporting_basis_reset is None:
             unit_nav = _parse_nav_decimal(current_row.get("nav"))
             cash_cumulative_nav = _parse_nav_decimal(
                 current_row.get("cash_cumulative_nav")
@@ -1779,6 +1921,7 @@ def _build_fund_nav_publication(
     derived_count = 0
     break_reasons: list[dict[str, object]] = []
     auto_cash_distributions: list[dict[str, object]] = []
+    auto_cash_reporting_basis_resets: list[dict[str, object]] = []
     segment_live = False
     segment_anchor_date: date | None = None
     segment_factor_key: str | None = None
@@ -2085,7 +2228,19 @@ def _build_fund_nav_publication(
                     current_unit_nav=unit_nav,
                 )
             )
-            if auto_cash_terms is not None:
+            reporting_basis_reset = (
+                dict(interval.get("reporting_basis_reset") or {})
+                if interval is not None
+                else {}
+            )
+            if reporting_basis_reset:
+                auto_cash_reporting_basis_resets.append(
+                    reporting_basis_reset
+                )
+                segment_event_cutoff = row_date
+                interval_events = []
+                auto_cash_factor_applied = True
+            elif auto_cash_terms is not None:
                 assert interval is not None
                 cash_per_unit, multiplier, implied_return = auto_cash_terms
                 previous_factor_key = segment_factor_key
@@ -2380,6 +2535,10 @@ def _build_fund_nav_publication(
     if auto_cash_distributions:
         projection_evidence["auto_cash_distributions"] = (
             auto_cash_distributions
+        )
+    if auto_cash_reporting_basis_resets:
+        projection_evidence["auto_cash_reporting_basis_resets"] = (
+            auto_cash_reporting_basis_resets
         )
     if unavailable_reason is not None:
         projection_evidence["unavailable_reason"] = unavailable_reason

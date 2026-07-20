@@ -1812,6 +1812,77 @@ def test_label_parser_upgrade_replays_artifact_supersedes_old_route_and_rebuilds
     ) == []
 
 
+def test_generic_parser_upgrade_requeues_terminal_no_nav_rows_from_durable_artifact(
+    email_session_factory: sessionmaker[Session],
+) -> None:
+    repository = EmailIngestionRepository(email_session_factory)
+    identity = FolderIdentity("mailbox-key", "INBOX", "100", 2)
+    lease_token = repository.acquire_mailbox_lease(
+        mailbox_key="mailbox-key",
+        lease_seconds=60,
+    )
+    repository.start_folder_scan(identity, lease_token=lease_token)
+    header = _header(1)
+    repository.record_headers(identity, [header])
+    artifact = repository.materialize_message(
+        identity=identity,
+        header=header,
+        raw_message=_message(("new-layout.xlsx", b"new-layout")),
+        attachments=[
+            AttachmentPayload(
+                ordinal=1,
+                part_id="1",
+                filename="new-layout.xlsx",
+                media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                payload=b"new-layout",
+            )
+        ],
+    )[0]
+    with email_session_factory() as session:
+        prior_parse = EmailAttachmentParse(
+            email_attachment_artifact_id=artifact.artifact_id,
+            parser_profile="generic_nav_table",
+            parser_version="fund-nav-v2",
+            source_format="xlsx",
+            status="unsupported",
+            completed_at=datetime.now(UTC),
+            last_error_code="NoNavRows",
+            parser_metadata_json={"file_name": "new-layout.xlsx"},
+        )
+        session.add(prior_parse)
+        session.flush()
+        prior_parse_id = prior_parse.email_attachment_parse_id
+        session.commit()
+    repository.register_route_context(
+        parse_id=prior_parse_id,
+        message_attachment_id=artifact.message_attachment_id,
+        routing_contexts=[],
+    )
+
+    upgraded = repository.prepare_parser_upgrades(
+        parser_profile="generic_nav_table",
+        prior_statuses=("unsupported",),
+    )
+
+    assert len(upgraded) == 1
+    work = repository.due_parse_work()
+    assert [item.parse_id for item in work] == upgraded
+    assert work[0].parser_profile == "generic_nav_table"
+    assert work[0].payload == b"new-layout"
+    with email_session_factory() as session:
+        versions = list(
+            session.scalars(
+                select(EmailAttachmentParse.parser_version)
+                .where(
+                    EmailAttachmentParse.email_attachment_artifact_id
+                    == artifact.artifact_id
+                )
+                .order_by(EmailAttachmentParse.parser_version)
+            )
+        )
+    assert versions == ["fund-nav-v2", "fund-nav-v3"]
+
+
 def test_folder_failure_is_isolated_and_next_exact_folder_completes(
     monkeypatch: pytest.MonkeyPatch,
     email_session_factory: sessionmaker[Session],

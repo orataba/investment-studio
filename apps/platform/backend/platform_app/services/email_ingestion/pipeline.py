@@ -582,13 +582,21 @@ def _ingest_email_nav_with_lease(
             "email exact-identity reconciliation requeued_routes=%s",
             requeued_routes,
         )
-    upgraded_parse_ids = repository.prepare_parser_upgrades(
-        parser_profile="label_nav_snapshot"
+    upgraded_parse_ids = set(
+        repository.prepare_parser_upgrades(
+            parser_profile="label_nav_snapshot"
+        )
     )
+    generic_reparse_ids = repository.prepare_parser_upgrades(
+        parser_profile="generic_nav_table",
+        prior_statuses=("unsupported",),
+    )
+    upgraded_parse_ids.update(generic_reparse_ids)
     if upgraded_parse_ids:
         LOGGER.info(
-            "email parser upgrade prepared profile=label_nav_snapshot parses=%s",
+            "email parser upgrade prepared parses=%s generic_terminal_retries=%s",
             len(upgraded_parse_ids),
+            len(generic_reparse_ids),
         )
 
     # Attachment payloads are durable, so parser failures retry without
@@ -639,7 +647,7 @@ def _ingest_email_nav_with_lease(
     # A current parse may already exist from a previous run while only some of
     # its occurrence contexts were copied during this upgrade. Route those
     # contexts before retiring the prior-version evidence.
-    for parse_id in upgraded_parse_ids:
+    for parse_id in sorted(upgraded_parse_ids):
         _route_pending_parse(
             parse_id=parse_id,
             repository=repository,

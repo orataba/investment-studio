@@ -62,7 +62,9 @@ PORTFOLIO_OPS_LOCAL_DATABASE_URL='postgresql+psycopg://portfolio_ops@127.0.0.1:5
 任务通过 `fcntl` 非阻塞锁避免同一个 scheduled 脚本从 launchd 或终端重叠运行，
 进程退出或崩溃时内核会自动释放锁。单项刷新失败、下游请求失败或任务异常都会
 留下非零退出状态和原子写入的运行摘要，`KeepAlive=false` 因而不会形成无限重启
-循环，下一个日历触发仍会正常运行。
+循环，下一个日历触发仍会正常运行。若 PostgreSQL 正在启动或短暂不可用，任务默认
+等待最多 300 秒再退出；可用 `PORTFOLIO_OPS_LOCAL_REFRESH_DATABASE_WAIT_SECONDS`
+和 `PORTFOLIO_OPS_LOCAL_REFRESH_DATABASE_RETRY_INTERVAL_SECONDS` 调整等待时间与间隔。
 
 Platform API 与定时 runner 都固定使用 `platform, instrument_registry, public`
 search-path 顺序。邮箱目录游标、附件解析和重试状态写入私有 `platform` schema，
@@ -94,8 +96,10 @@ infra/launchd/uninstall_local_services.sh
 ```
 
 日志位于 `~/Library/Logs/portfolio-operations-workbench/`，LaunchAgent 通过
-`Umask=077` 将新日志限制为当前用户可读写。卸载只移除服务，不删除数据库、
-研究输出、上传文档或日志。
+`Umask=077` 将新日志限制为当前用户可读写。每次安装或更新在服务停止后会压缩超过
+100 MiB 的 `.log` 文件，仅保留末尾 10 MiB；阈值可分别通过
+`PORTFOLIO_OPS_LOCAL_LOG_MAX_BYTES` 与 `PORTFOLIO_OPS_LOCAL_LOG_RETAIN_BYTES`
+覆盖。卸载只移除服务，不删除数据库、研究输出、上传文档或日志。
 
 定时刷新对应文件为：
 

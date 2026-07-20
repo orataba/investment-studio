@@ -30,7 +30,7 @@ from portfolio_ops_instrument_core import (  # noqa: E402
 
 
 FINAL_FLAT_TABLE_HEAD_PAIR = ("20260717_0015", "20260716_0040")
-FUND_NAV_PROJECTION_METHOD_VERSION = "fund_nav_reinvestment_projection/v5"
+FUND_NAV_PROJECTION_METHOD_VERSION = "fund_nav_reinvestment_projection/v6"
 
 AUDIT_CHECK_NAMES = (
     "market_data_invalid_values",

@@ -7,11 +7,14 @@ import logging
 import os
 import sys
 import tempfile
+import time
 from collections import Counter
 from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 from typing import IO, Iterable, Iterator
+
+import psycopg
 
 
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
@@ -40,6 +43,64 @@ ALREADY_RUNNING_EXIT_CODE = 75
 
 class RefreshAlreadyRunningError(RuntimeError):
     pass
+
+
+class DatabaseUnavailableError(RuntimeError):
+    pass
+
+
+def _database_url() -> str:
+    return str(os.getenv("PORTFOLIO_OPS_PLATFORM_DATABASE_URL") or "").strip()
+
+
+def _psycopg_database_url(database_url: str) -> str:
+    if database_url.startswith("postgresql+psycopg://"):
+        return "postgresql://" + database_url.removeprefix(
+            "postgresql+psycopg://"
+        )
+    return database_url
+
+
+def _wait_for_database(
+    *,
+    timeout_seconds: float,
+    retry_interval_seconds: float,
+) -> int:
+    database_url = _database_url()
+    if not database_url.startswith(("postgresql://", "postgresql+psycopg://")):
+        raise DatabaseUnavailableError(
+            "PORTFOLIO_OPS_PLATFORM_DATABASE_URL must identify PostgreSQL."
+        )
+    deadline = time.monotonic() + max(0.0, timeout_seconds)
+    attempts = 0
+    while True:
+        attempts += 1
+        try:
+            with psycopg.connect(
+                _psycopg_database_url(database_url),
+                connect_timeout=max(1, min(5, int(max(timeout_seconds, 1)))),
+            ) as connection:
+                connection.execute("SELECT 1")
+            if attempts > 1:
+                LOGGER.info("database became ready after %s attempts", attempts)
+            return attempts
+        except psycopg.Error as error:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                error_type = type(error).__name__
+                sqlstate = getattr(error, "sqlstate", None)
+                raise DatabaseUnavailableError(
+                    "PostgreSQL did not become ready before the scheduled refresh "
+                    f"timeout (error_type={error_type}, sqlstate={sqlstate or '-'})."
+                ) from error
+            delay = min(retry_interval_seconds, remaining)
+            if attempts == 1 or attempts & (attempts - 1) == 0:
+                LOGGER.warning(
+                    "database is unavailable; retrying attempt=%s delay_seconds=%.1f",
+                    attempts,
+                    delay,
+                )
+            time.sleep(delay)
 
 
 @contextmanager
@@ -148,6 +209,24 @@ def _parse_args() -> argparse.Namespace:
         type=int,
         default=2,
         help="Retry failed item refreshes this many times before the final summary.",
+    )
+    parser.add_argument(
+        "--database-wait-seconds",
+        type=float,
+        default=os.getenv(
+            "PORTFOLIO_OPS_LOCAL_REFRESH_DATABASE_WAIT_SECONDS",
+            "300",
+        ),
+        help="Wait this long for PostgreSQL before failing the scheduled run.",
+    )
+    parser.add_argument(
+        "--database-retry-interval-seconds",
+        type=float,
+        default=os.getenv(
+            "PORTFOLIO_OPS_LOCAL_REFRESH_DATABASE_RETRY_INTERVAL_SECONDS",
+            "5",
+        ),
+        help="Delay between PostgreSQL readiness attempts.",
     )
     parser.add_argument(
         "--instrument-id",
@@ -625,12 +704,25 @@ def main() -> int:
     if args.retry_failed_attempts < 0:
         LOGGER.error("--retry-failed-attempts must not be negative.")
         return 2
+    if args.database_wait_seconds < 0:
+        LOGGER.error("--database-wait-seconds must not be negative.")
+        return 2
+    if args.database_retry_interval_seconds <= 0:
+        LOGGER.error("--database-retry-interval-seconds must be positive.")
+        return 2
 
     try:
         with _exclusive_refresh_lock(args.lock_file):
             started_at = datetime.now().astimezone()
             try:
+                database_ready_attempts = _wait_for_database(
+                    timeout_seconds=args.database_wait_seconds,
+                    retry_interval_seconds=(
+                        args.database_retry_interval_seconds
+                    ),
+                )
                 exit_code, summary = _run_refresh(args, started_at=started_at)
+                summary["database_ready_attempts"] = database_ready_attempts
             except Exception as error:
                 finished_at = datetime.now().astimezone().isoformat()
                 summary = {

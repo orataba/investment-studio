@@ -11,6 +11,25 @@ from portfolio_app.services.daily_snapshots import (
 
 
 logger = logging.getLogger(__name__)
+MAX_WORKER_ERROR_BACKOFF_SECONDS = 60.0
+
+
+def _worker_error_backoff_seconds(
+    consecutive_failures: int,
+    *,
+    poll_seconds: float,
+) -> float:
+    exponent = max(0, min(consecutive_failures - 1, 6))
+    return min(
+        MAX_WORKER_ERROR_BACKOFF_SECONDS,
+        max(1.0, poll_seconds) * (2**exponent),
+    )
+
+
+def _should_log_worker_error(consecutive_failures: int) -> bool:
+    return consecutive_failures > 0 and (
+        consecutive_failures & (consecutive_failures - 1)
+    ) == 0
 
 
 class DailySnapshotRecalculationWorker:
@@ -56,6 +75,7 @@ class DailySnapshotRecalculationWorker:
         return not self._thread.is_alive()
 
     def _run(self) -> None:
+        consecutive_failures = 0
         while not self._stop_requested.is_set():
             try:
                 processed, self._reconciliation_cursor = (
@@ -71,8 +91,27 @@ class DailySnapshotRecalculationWorker:
             except Exception:
                 # The synchronous kernel records a failed generation before
                 # re-raising.  Keep the worker alive for unrelated portfolios.
-                logger.exception("Portfolio daily snapshot recalculation failed.")
-                processed = False
+                consecutive_failures += 1
+                backoff_seconds = _worker_error_backoff_seconds(
+                    consecutive_failures,
+                    poll_seconds=self._poll_seconds,
+                )
+                if _should_log_worker_error(consecutive_failures):
+                    logger.exception(
+                        "Portfolio daily snapshot worker failed; retrying in "
+                        "%.1f seconds (consecutive_failures=%s).",
+                        backoff_seconds,
+                        consecutive_failures,
+                    )
+                self._wake_requested.wait(backoff_seconds)
+                self._wake_requested.clear()
+                continue
+            if consecutive_failures:
+                logger.info(
+                    "Portfolio daily snapshot worker recovered after %s failures.",
+                    consecutive_failures,
+                )
+                consecutive_failures = 0
             if processed:
                 continue
             self._wake_requested.wait(self._poll_seconds)

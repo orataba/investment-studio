@@ -95,10 +95,10 @@ def test_audit_contract_names_cover_registry_0015(
     )
     assert (
         audit_module.FUND_NAV_PROJECTION_METHOD_VERSION
-        == "fund_nav_reinvestment_projection/v5"
+        == "fund_nav_reinvestment_projection/v6"
     )
     assert audit_module.FUND_NAV_PROJECTION_METHOD_VERSION_SQL == (
-        "'fund_nav_reinvestment_projection/v5'"
+        "'fund_nav_reinvestment_projection/v6'"
     )
 
 
@@ -228,7 +228,7 @@ def test_twr_audit_cte_projects_daily_twr(
         for query in queries
         if "instrument_registry.fund_nav_current_projection" in query
     )
-    assert "fund_nav_reinvestment_projection/v5" in fund_nav_projection_query
+    assert "fund_nav_reinvestment_projection/v6" in fund_nav_projection_query
     assert "{FUND_NAV_PROJECTION_METHOD_VERSION_SQL}" not in (
         fund_nav_projection_query
     )
