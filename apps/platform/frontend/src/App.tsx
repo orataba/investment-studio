@@ -16,6 +16,7 @@ import type {
   QuoteBasis,
   QuoteRole,
   QuoteSelectionPolicy as PlatformQuoteSelectionPolicy,
+  ReturnSemantics,
   SourceSettings as SharedSourceSettings,
 } from '../../../../packages/instrument-core/ts/src'
 import {
@@ -441,6 +442,7 @@ function InstrumentsPage({
     expected_frequency: ExpectedFrequency
     market_calendar: string | null
     release_lag_days: number
+    return_semantics: ReturnSemantics
   }) => Promise<void>
   onTriggerRefresh: (payload: {
     instrument_id: string
@@ -490,6 +492,7 @@ function InstrumentsPage({
   const [expectedFrequency, setExpectedFrequency] = useState<ExpectedFrequency>('event_driven')
   const [marketCalendar, setMarketCalendar] = useState('')
   const [releaseLagDays, setReleaseLagDays] = useState(0)
+  const [returnSemantics, setReturnSemantics] = useState<ReturnSemantics>('unknown')
   const [navImportText, setNavImportText] = useState('')
   const [navImportFileName, setNavImportFileName] = useState('')
   const [navImportFileContent, setNavImportFileContent] = useState('')
@@ -846,6 +849,7 @@ function InstrumentsPage({
     setExpectedFrequency(selectedInstrument.source_settings.expected_frequency)
     setMarketCalendar(selectedInstrument.source_settings.market_calendar || '')
     setReleaseLagDays(selectedInstrument.source_settings.release_lag_days)
+    setReturnSemantics(selectedInstrument.source_settings.return_semantics ?? 'unknown')
   }, [selectedInstrument])
 
   useEffect(() => {
@@ -949,7 +953,7 @@ function InstrumentsPage({
 
   async function handleSourceSettingsSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
-    if (!selectedInstrumentId) {
+    if (!selectedInstrumentId || !selectedInstrument) {
       return
     }
     await onUpdateSourceSettings({
@@ -961,6 +965,7 @@ function InstrumentsPage({
       expected_frequency: expectedFrequency,
       market_calendar: marketCalendar.trim() || null,
       release_lag_days: releaseLagDays,
+      return_semantics: selectedInstrument.instrument_type === 'index' ? returnSemantics : 'unknown',
     })
     await refreshSelectedInstrumentDetail(selectedInstrumentId)
   }
@@ -1637,6 +1642,18 @@ function InstrumentsPage({
                       onMarketCalendarChange={setMarketCalendar}
                       onReleaseLagDaysChange={setReleaseLagDays}
                     />
+                    <label>
+                      <span>Index Return Semantics</span>
+                      <select
+                        value={selectedInstrument.instrument_type === 'index' ? returnSemantics : 'unknown'}
+                        onChange={(event) => setReturnSemantics(event.target.value as ReturnSemantics)}
+                        disabled={selectedInstrument.instrument_type !== 'index'}
+                      >
+                        <option value="unknown">Unknown</option>
+                        <option value="price_return">Price return</option>
+                        <option value="total_return">Total return</option>
+                      </select>
+                    </label>
                     <label>
                       <span>Email Source</span>
                       <input
@@ -2479,6 +2496,7 @@ export default function App() {
     expected_frequency: ExpectedFrequency
     market_calendar: string | null
     release_lag_days: number
+    return_semantics: ReturnSemantics
   }) {
     try {
       const updated = await fetchJson<PlatformInstrumentRecord>(

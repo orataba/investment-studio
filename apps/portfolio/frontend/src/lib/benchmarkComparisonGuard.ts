@@ -7,6 +7,7 @@ export type BenchmarkComparisonMode = 'canonical' | 'exploratory' | 'unavailable
 
 export type BenchmarkComparisonGuardReason =
   | 'benchmark_total_return_comparable'
+  | 'benchmark_price_return_comparable'
   | 'benchmark_price_only_exploratory'
   | 'benchmark_basis_unavailable'
   | 'benchmark_currency_unavailable'
@@ -19,6 +20,7 @@ export type BenchmarkComparisonGuard = {
   mode: BenchmarkComparisonMode
   reason: BenchmarkComparisonGuardReason
   canonicalComparisonEligible: boolean
+  relativeComparisonEligible: boolean
   basisAssessment: PerformanceBenchmarkBasisAssessment
   benchmarkCurrency: string
   portfolioCurrency: string
@@ -33,6 +35,7 @@ type BenchmarkPoint = {
 
 type BenchmarkComparisonGuardInput = {
   chartBasis: string | null | undefined
+  returnSemantics?: string | null
   benchmarkCurrency: string | null | undefined
   portfolioCurrency: string | null | undefined
   points: BenchmarkPoint[]
@@ -56,6 +59,7 @@ function unavailableAssessment(
     mode: 'unavailable',
     reason,
     canonicalComparisonEligible: false,
+    relativeComparisonEligible: false,
     basisAssessment,
     benchmarkCurrency,
     portfolioCurrency,
@@ -66,13 +70,15 @@ function unavailableAssessment(
 
 export function assessBenchmarkComparisonGuard({
   chartBasis,
+  returnSemantics,
   benchmarkCurrency: rawBenchmarkCurrency,
   portfolioCurrency: rawPortfolioCurrency,
   points,
   startBoundaryDate,
   eligiblePortfolioDates,
 }: BenchmarkComparisonGuardInput): BenchmarkComparisonGuard {
-  const basisAssessment = assessPerformanceBenchmarkBasis(chartBasis)
+  const basisAssessment = assessPerformanceBenchmarkBasis(chartBasis, returnSemantics)
+  const normalizedReturnSemantics = String(returnSemantics ?? '').trim().toLowerCase()
   const benchmarkCurrency = normalizeBenchmarkCurrency(rawBenchmarkCurrency)
   const portfolioCurrency = normalizeBenchmarkCurrency(rawPortfolioCurrency)
 
@@ -145,6 +151,21 @@ export function assessBenchmarkComparisonGuard({
       mode: 'exploratory',
       reason: 'benchmark_price_only_exploratory',
       canonicalComparisonEligible: false,
+      relativeComparisonEligible: false,
+      basisAssessment,
+      benchmarkCurrency,
+      portfolioCurrency,
+      missingEligibleDates: [],
+      warning: basisAssessment.warning,
+    }
+  }
+
+  if (normalizedReturnSemantics === 'price_return') {
+    return {
+      mode: 'exploratory',
+      reason: 'benchmark_price_return_comparable',
+      canonicalComparisonEligible: false,
+      relativeComparisonEligible: true,
       basisAssessment,
       benchmarkCurrency,
       portfolioCurrency,
@@ -157,6 +178,7 @@ export function assessBenchmarkComparisonGuard({
     mode: 'canonical',
     reason: 'benchmark_total_return_comparable',
     canonicalComparisonEligible: true,
+    relativeComparisonEligible: true,
     basisAssessment,
     benchmarkCurrency,
     portfolioCurrency,

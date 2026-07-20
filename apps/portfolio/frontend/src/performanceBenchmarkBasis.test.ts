@@ -26,6 +26,25 @@ describe('performance benchmark basis reliability', () => {
     },
   )
 
+  it('accepts close when the selected index series explicitly declares total-return semantics', () => {
+    const assessment = assessPerformanceBenchmarkBasis('close', 'total_return')
+
+    expect(assessment.comparisonEligible).toBe(true)
+    expect(assessment.basis).toBe('close')
+    expect(assessment.label).toContain('confirmed total-return basis')
+    expect(assessment.warning).toBeNull()
+  })
+
+  it('keeps explicitly price-return close exploratory while disclosing standalone metrics', () => {
+    const assessment = assessPerformanceBenchmarkBasis('close', 'price_return')
+
+    expect(assessment.comparisonEligible).toBe(true)
+    expect(assessment.label).toContain('confirmed price-return basis')
+    expect(assessment.warning).toContain('series is rebased')
+    expect(assessment.warning).toContain('benchmark and relative metrics are shown')
+    expect(assessment.warning).toContain('include that basis difference')
+  })
+
   it('fails closed when the chart does not identify its basis', () => {
     const assessment = assessPerformanceBenchmarkBasis(null)
     expect(assessment.comparisonEligible).toBe(false)
@@ -35,8 +54,13 @@ describe('performance benchmark basis reliability', () => {
 
   it('wires basis disclosure and fail-closed comparison into Performance', () => {
     expect(performancePageSource).toContain('benchmarkChart.chart_basis')
+    expect(performancePageSource).toContain('benchmarkChart.return_semantics')
     expect(performancePageSource).toContain('assessBenchmarkComparisonGuard')
-    expect(performancePageSource).toContain("benchmarkGuard?.mode !== 'canonical'")
+    expect(performancePageSource).toContain("benchmarkGuard.mode === 'unavailable'")
+    expect(performancePageSource).toContain(
+      'comparableBenchmarkMetrics = relativeComparisonEligible ? benchmarkMetrics : null',
+    )
+    expect(performancePageSource).toContain('benchmarkGuard?.relativeComparisonEligible ?? false')
     expect(performancePageSource).toContain('Manual comparator · canonical')
     expect(performancePageSource).toContain('performance-benchmark-basis-warning')
     expect(performancePageSource).toContain('setBenchmarkChart(null)')

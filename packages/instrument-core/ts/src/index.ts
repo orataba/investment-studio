@@ -1,6 +1,7 @@
 export type InstrumentType = 'fund' | 'etf' | 'index' | 'bond' | 'equity' | 'cash' | 'fx' | 'other'
 export type ExpectedFrequency = 'daily' | 'weekly' | 'monthly' | 'event_driven'
 export type SourceMode = 'manual' | 'email' | 'api'
+export type ReturnSemantics = 'unknown' | 'price_return' | 'total_return'
 export type IdentifierType =
   | 'ticker'
   | 'exchange_ticker'
@@ -108,6 +109,7 @@ export interface SourceSettings {
   expected_frequency: ExpectedFrequency
   market_calendar: string | null
   release_lag_days: number
+  return_semantics?: ReturnSemantics
 }
 
 export interface QuoteSelectionPolicy {

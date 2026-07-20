@@ -281,6 +281,69 @@ describe('Overview rendered page contract', () => {
     expect(metricPanel).not.toHaveTextContent(/excess/i)
   })
 
+  it('labels a confirmed price index distinctly and shows its normalized benchmark metrics', async () => {
+    const user = userEvent.setup()
+    apiMocks.getPortfolioInstruments.mockResolvedValue({
+      portfolio_id: '3',
+      instruments: [
+        {
+          instrument_id: 'benchmark-1',
+          instrument_name: 'Market Benchmark',
+          instrument_type: 'index',
+          currency: 'USD',
+          identifiers: [{ identifier_type: 'ticker', identifier_value: 'MKT', is_primary: true }],
+          latest_market_data: [],
+          coverage_state: 'complete',
+        },
+      ],
+    })
+    apiMocks.getPortfolioInstrumentPriceChart.mockResolvedValue({
+      portfolio_id: '3',
+      instrument_core: {
+        instrument_id: 'benchmark-1',
+        instrument_name: 'Market Benchmark',
+        instrument_type: 'index',
+        currency: 'USD',
+        identifiers: [{ identifier_type: 'ticker', identifier_value: 'MKT', is_primary: true }],
+      },
+      as_of_date: '2026-07-15',
+      range_key: 'all',
+      chart_basis: 'close',
+      return_semantics: 'price_return',
+      metric_family: 'price',
+      currency: 'USD',
+      points: Array.from({ length: 11 }, (_, index) => ({
+        date: `2026-07-${String(index + 5).padStart(2, '0')}`,
+        value: 100 + index,
+      })),
+      summary: {
+        point_count: 11,
+        change_value: 10,
+        change_pct: 0.1,
+        high: 110,
+        low: 100,
+      },
+    })
+
+    renderPortfolioPage(
+      <OverviewPage />,
+      '/portfolios/3/overview',
+      '/portfolios/:portfolioId/overview',
+    )
+
+    const benchmarkSearch = await screen.findByRole('searchbox', { name: 'Compare benchmark' })
+    await user.type(benchmarkSearch, 'Market')
+    await user.click(await screen.findByRole('button', { name: /Market Benchmark/ }))
+
+    expect(await screen.findByText('Manual comparator · price return')).toBeInTheDocument()
+    expect(await screen.findByText(/Benchmark uses close with confirmed price-return semantics/)).toHaveTextContent(
+      /benchmark and relative metrics are shown/,
+    )
+    const metricPanel = screen.getByRole('complementary', { name: 'Portfolio overview key metrics' })
+    expect(within(metricPanel).getAllByText(/Price BM/).length).toBeGreaterThan(0)
+    expect(within(metricPanel).queryByText(/Exploratory BM/)).not.toBeInTheDocument()
+  })
+
   it.each([
     { boundary: 'exact seven-day anchor', missingDay: 8 },
     { boundary: 'required end boundary', missingDay: 15 },

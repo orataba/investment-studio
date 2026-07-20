@@ -261,6 +261,8 @@ Overview 的质量提示只在检测到实际问题时出现，并给出受影�
 
 Performance 用于真实组合区间复盘。核心口径是日频 TWR、期间 P&L、资金流、贡献拆分和分组归因。
 
+选择 benchmark 后，系统会把组合和基准都按所选区间起点归一化。已确认的全收益指数作为 canonical comparator；已确认的价格指数也会计算差值、tracking error、information ratio、beta 和 capture ratio，但页面会提示价格指数可能不含分红或利息再投资，因此相对结果包含这部分口径差异。收益语义仍为 Unknown 的行情只展示基准自身曲线和指标，不计算相对统计。
+
 常用区域：
 
 - Performance chart：查看组合 NAV/TWR 曲线、drawdown 和 benchmark。

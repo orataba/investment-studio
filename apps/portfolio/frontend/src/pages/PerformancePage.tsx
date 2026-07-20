@@ -1162,10 +1162,12 @@ function buildPerformanceMetricRows(
   selectedBenchmarkInstrument: SharedInstrumentRecord | null,
   benchmarkLoading: boolean,
   benchmarkMetrics: BenchmarkPeriodMetrics | null,
+  relativeComparisonEligible: boolean,
 ) {
   const historyReliability = buildPerformanceHistoryReliability(summary)
   const annualizedReturnEligible = historyReliability.annualizedReturnEligible
-  const relativeMetrics = buildRelativePerformanceMetrics(dailySeries, benchmarkMetrics)
+  const comparableBenchmarkMetrics = relativeComparisonEligible ? benchmarkMetrics : null
+  const relativeMetrics = buildRelativePerformanceMetrics(dailySeries, comparableBenchmarkMetrics)
   const showComparison = selectedBenchmarkInstrument != null || benchmarkLoading
   const irr = finiteNumber(summary.irr) ?? finiteNumber(summary.mwror)
   const irrReliabilityNote = !annualizedReturnEligible
@@ -1183,34 +1185,40 @@ function buildPerformanceMetricRows(
     ? ratioToDrawdown(summary.annualized_twr, summary.max_drawdown)
     : null
   const returnDifference =
-    summary.cumulative_twr != null && benchmarkMetrics?.periodReturn != null
-      ? summary.cumulative_twr - benchmarkMetrics.periodReturn
+    summary.cumulative_twr != null && comparableBenchmarkMetrics?.periodReturn != null
+      ? summary.cumulative_twr - comparableBenchmarkMetrics.periodReturn
       : null
   const annualizedReturnDifference =
-    annualizedReturnEligible && summary.annualized_twr != null && benchmarkMetrics?.annualizedReturn != null
-      ? summary.annualized_twr - benchmarkMetrics.annualizedReturn
+    annualizedReturnEligible && summary.annualized_twr != null && comparableBenchmarkMetrics?.annualizedReturn != null
+      ? summary.annualized_twr - comparableBenchmarkMetrics.annualizedReturn
       : null
   const volatilityDifference =
-    summary.annualized_volatility != null && benchmarkMetrics?.annualizedVolatility != null
-      ? summary.annualized_volatility - benchmarkMetrics.annualizedVolatility
+    summary.annualized_volatility != null && comparableBenchmarkMetrics?.annualizedVolatility != null
+      ? summary.annualized_volatility - comparableBenchmarkMetrics.annualizedVolatility
       : null
   const downsideVolatilityDifference =
-    summary.annualized_downside_volatility != null && benchmarkMetrics?.annualizedDownsideVolatility != null
-      ? summary.annualized_downside_volatility - benchmarkMetrics.annualizedDownsideVolatility
+    summary.annualized_downside_volatility != null && comparableBenchmarkMetrics?.annualizedDownsideVolatility != null
+      ? summary.annualized_downside_volatility - comparableBenchmarkMetrics.annualizedDownsideVolatility
       : null
   const sharpeDifference =
-    summary.sharpe_ratio != null && benchmarkMetrics?.sharpe != null ? summary.sharpe_ratio - benchmarkMetrics.sharpe : null
+    summary.sharpe_ratio != null && comparableBenchmarkMetrics?.sharpe != null
+      ? summary.sharpe_ratio - comparableBenchmarkMetrics.sharpe
+      : null
   const sortinoDifference =
-    summary.sortino_ratio != null && benchmarkMetrics?.sortino != null ? summary.sortino_ratio - benchmarkMetrics.sortino : null
+    summary.sortino_ratio != null && comparableBenchmarkMetrics?.sortino != null
+      ? summary.sortino_ratio - comparableBenchmarkMetrics.sortino
+      : null
   const calmarDifference =
-    calmarRatio != null && benchmarkMetrics?.calmar != null ? calmarRatio - benchmarkMetrics.calmar : null
+    calmarRatio != null && comparableBenchmarkMetrics?.calmar != null
+      ? calmarRatio - comparableBenchmarkMetrics.calmar
+      : null
   const currentDrawdownDifference =
-    summary.current_drawdown != null && benchmarkMetrics?.currentDrawdown != null
-      ? summary.current_drawdown - benchmarkMetrics.currentDrawdown
+    summary.current_drawdown != null && comparableBenchmarkMetrics?.currentDrawdown != null
+      ? summary.current_drawdown - comparableBenchmarkMetrics.currentDrawdown
       : null
   const maxDrawdownDifference =
-    summary.max_drawdown != null && benchmarkMetrics?.maxDrawdown != null
-      ? summary.max_drawdown - benchmarkMetrics.maxDrawdown
+    summary.max_drawdown != null && comparableBenchmarkMetrics?.maxDrawdown != null
+      ? summary.max_drawdown - comparableBenchmarkMetrics.maxDrawdown
       : null
 
   return [
@@ -2053,6 +2061,7 @@ function PerformancePage() {
       selectedBenchmarkInstrument && benchmarkChart
         ? assessBenchmarkComparisonGuard({
             chartBasis: benchmarkChart.chart_basis,
+            returnSemantics: benchmarkChart.return_semantics,
             benchmarkCurrency: benchmarkChart.currency,
             portfolioCurrency: baseCurrency,
             points: benchmarkChart.points,
@@ -2072,7 +2081,7 @@ function PerformancePage() {
   const benchmarkBasisAssessment = benchmarkGuard?.basisAssessment ?? null
   const benchmarkMetrics = useMemo(
     () =>
-      benchmarkGuard?.mode !== 'canonical'
+      benchmarkGuard == null || benchmarkGuard.mode === 'unavailable'
         ? null
         : buildBenchmarkPeriodMetrics(
             benchmarkChart?.points ?? [],
@@ -2098,9 +2107,18 @@ function PerformancePage() {
             selectedBenchmarkInstrument,
             benchmarkLoading,
             benchmarkMetrics,
+            benchmarkGuard?.relativeComparisonEligible ?? false,
           )
         : [],
-    [summary, workspace?.daily_series, baseCurrency, selectedBenchmarkInstrument, benchmarkLoading, benchmarkMetrics],
+    [
+      summary,
+      workspace?.daily_series,
+      baseCurrency,
+      selectedBenchmarkInstrument,
+      benchmarkLoading,
+      benchmarkMetrics,
+      benchmarkGuard?.relativeComparisonEligible,
+    ],
   )
   const calculationRows = useMemo(() => {
     if (!calculationGroupsWorkspace) {
@@ -2611,6 +2629,8 @@ function PerformancePage() {
             <span>
               {benchmarkGuard.mode === 'canonical'
                 ? 'Manual comparator · canonical'
+                : benchmarkGuard.reason === 'benchmark_price_return_comparable'
+                  ? 'Manual comparator · price return'
                 : benchmarkGuard.mode === 'exploratory'
                   ? 'Manual comparator · exploratory'
                   : 'Manual comparator unavailable'}

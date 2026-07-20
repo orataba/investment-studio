@@ -31,11 +31,13 @@ def _detail(
     points: list[dict[str, object]],
     *,
     corporate_actions: list[dict[str, object]] | None = None,
+    instrument_type: str = "equity",
+    return_semantics: str | None = None,
 ) -> dict[str, object]:
-    return {
+    detail: dict[str, object] = {
         "instrument_id": "equity-history",
         "instrument_name": "History Equity",
-        "instrument_type": "equity",
+        "instrument_type": instrument_type,
         "currency": "USD",
         "identifiers": [],
         "quote_selection_policy": {
@@ -47,6 +49,9 @@ def _detail(
         "market_data": points,
         "corporate_actions": corporate_actions or [],
     }
+    if return_semantics is not None:
+        detail["source_settings"] = {"return_semantics": return_semantics}
+    return detail
 
 
 def _split_event(**overrides: object) -> dict[str, object]:
@@ -98,8 +103,58 @@ def test_holdings_trend_selects_more_complete_alternate_without_splicing_bases()
     assert trend["instrument_return_1w"] == pytest.approx(100 / 96 - 1)
     assert chart is not None
     assert chart["chart_basis"] == "close"
+    assert chart["return_semantics"] == "unknown"
     assert chart["selection_reason"] == "selected_more_complete_alternate_series"
     assert [point["value"] for point in chart["points"]] == [80.0, 90.0, 95.0, 96.0, 100.0]
+
+
+@pytest.mark.parametrize(
+    ("configured_semantics", "expected_semantics"),
+    [
+        ("total_return", "total_return"),
+        ("price_return", "price_return"),
+        ("unknown", "unknown"),
+    ],
+)
+def test_index_close_chart_reports_explicit_return_semantics(
+    configured_semantics: str,
+    expected_semantics: str,
+) -> None:
+    chart = build_instrument_price_chart_from_detail(
+        _detail(
+            [
+                _point("close", "2026-07-14", "100"),
+                _point("close", "2026-07-15", "101"),
+            ],
+            instrument_type="index",
+            return_semantics=configured_semantics,
+        ),
+        instrument_id="index-history",
+        as_of_date=date(2026, 7, 15),
+        range_key="all",
+    )
+
+    assert chart is not None
+    assert chart["chart_basis"] == "close"
+    assert chart["return_semantics"] == expected_semantics
+
+
+def test_adjusted_close_reports_total_return_without_manual_semantics() -> None:
+    chart = build_instrument_price_chart_from_detail(
+        _detail(
+            [
+                _point("adjusted_close", "2026-07-14", "100"),
+                _point("adjusted_close", "2026-07-15", "101"),
+            ]
+        ),
+        instrument_id="equity-history",
+        as_of_date=date(2026, 7, 15),
+        range_key="all",
+    )
+
+    assert chart is not None
+    assert chart["chart_basis"] == "adjusted_close"
+    assert chart["return_semantics"] == "total_return"
 
 
 def test_mtd_and_ytd_remain_unavailable_without_preperiod_anchors() -> None:

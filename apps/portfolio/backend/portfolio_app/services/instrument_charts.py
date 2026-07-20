@@ -50,6 +50,10 @@ DAYS_PER_YEAR = 365.25
 RAW_SPLIT_SENSITIVE_BASES = frozenset({"close", "last"})
 TREND_RETURN_WINDOWS: tuple[str, ...] = ("1w", "mtd", "ytd", "1y")
 SUPPORTED_SPLIT_FRACTION_TREATMENTS = frozenset({"exact", "truncate", "round_half_up"})
+CONFIRMED_TOTAL_RETURN_BASES = frozenset({"adjusted_close", "total_return_nav"})
+PRICE_RETURN_BASES = frozenset(
+    {"last", "close", "official_nav", "spot", "clean_price", "dirty_price", "par"}
+)
 
 
 @dataclass(frozen=True)
@@ -63,6 +67,35 @@ class ChartSeriesSelection:
     @property
     def available(self) -> bool:
         return bool(self.points)
+
+
+def chart_return_semantics(
+    detail: dict[str, object],
+    *,
+    selected_basis: str | None,
+) -> str:
+    """Resolve return semantics independently from the provider's field name.
+
+    A total-return index is commonly delivered as a ``close`` series.  The
+    explicit index source contract may therefore confirm that close is a total
+    return, while raw close for an ordinary price index remains price return.
+    """
+
+    normalized_basis = str(selected_basis or "").strip().lower()
+    if normalized_basis in CONFIRMED_TOTAL_RETURN_BASES:
+        return "total_return"
+
+    instrument_type = str(detail.get("instrument_type") or "").strip().lower()
+    source_settings = detail.get("source_settings")
+    configured_semantics = (
+        str(source_settings.get("return_semantics") or "unknown").strip().lower()
+        if isinstance(source_settings, dict)
+        else "unknown"
+    )
+    if instrument_type == "index" and normalized_basis in PRICE_RETURN_BASES:
+        if configured_semantics in {"price_return", "total_return"}:
+            return configured_semantics
+    return "unknown"
 
 
 def _empty_trend_coverage() -> dict[str, object]:
@@ -935,6 +968,10 @@ def build_instrument_price_chart_from_detail(
         "as_of_date": as_of_date.isoformat(),
         "range_key": normalized_range_key,
         "chart_basis": selected_basis,
+        "return_semantics": chart_return_semantics(
+            detail,
+            selected_basis=selected_basis,
+        ),
         "coverage_state": str((selection.coverage or {}).get("state") or "unavailable"),
         "selection_reason": selection.reason,
         "split_adjusted": selection.split_adjusted,

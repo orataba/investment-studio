@@ -252,6 +252,7 @@ def _default_source_settings(
             else None
         ),
         "release_lag_days": release_lag_days,
+        "return_semantics": "unknown",
     }
 
 
@@ -3709,6 +3710,7 @@ def upsert_source_settings(
     expected_frequency: str | None = None,
     market_calendar: object = _SOURCE_SETTING_UNSET,
     release_lag_days: int | None = None,
+    return_semantics: str | None = None,
 ) -> dict[str, object] | None:
     with session_factory() as session:
         target = session.get(Instrument, instrument_id)
@@ -3734,6 +3736,12 @@ def upsert_source_settings(
             source_settings["market_calendar"] = market_calendar
         if release_lag_days is not None:
             source_settings["release_lag_days"] = release_lag_days
+        if return_semantics is not None:
+            if return_semantics != "unknown" and target.instrument_type != "index":
+                raise ValueError(
+                    "Explicit return_semantics is only supported for index instruments."
+                )
+            source_settings["return_semantics"] = return_semantics
         source_settings = _normalized_source_settings(
             {
                 **store_item,

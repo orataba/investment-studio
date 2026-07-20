@@ -32,6 +32,7 @@ from portfolio_ops_instrument_core.models import (
     PriceUnit,
     QuoteBasis,
     QuoteRole,
+    ReturnSemantics,
     SourceSettings as SharedSourceSettings,
     canonical_price_contract,
     parse_persisted_price_contract,
@@ -610,6 +611,7 @@ class PlatformSourceSettingsUpdateRequest(BaseModel):
     expected_frequency: ExpectedFrequency | None = None
     market_calendar: str | None = Field(default=None, min_length=1)
     release_lag_days: int | None = Field(default=None, ge=0)
+    return_semantics: ReturnSemantics | None = None
 
     @field_validator("market_calendar", mode="before")
     @classmethod

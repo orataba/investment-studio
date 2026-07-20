@@ -2041,6 +2041,42 @@ def test_source_schedule_semantics_default_and_roundtrip_by_instrument_type(
     assert equity["source_settings"]["expected_frequency"] == "daily"
     assert equity["source_settings"]["market_calendar"] == "XSHG"
     assert equity["source_settings"]["release_lag_days"] == 0
+    assert equity["source_settings"]["return_semantics"] == "unknown"
+
+    index = create_instrument(
+        instrument_name="Shanghai Total Return Index",
+        instrument_type="index",
+        currency="CNY",
+        identifiers=[
+            {
+                "identifier_type": "ts_code",
+                "identifier_value": "H00300.CSI",
+                "is_primary": True,
+            }
+        ],
+    )
+    index_update = upsert_source_settings(
+        instrument_id=index["instrument_id"],
+        source_mode="api",
+        source_email=None,
+        source_location=None,
+        source_api_profile="tushare",
+        source_email_rules=None,
+        return_semantics="total_return",
+    )
+    assert index_update is not None
+    assert index_update["source_settings"]["return_semantics"] == "total_return"
+
+    with pytest.raises(ValueError, match="only supported for index"):
+        upsert_source_settings(
+            instrument_id=equity["instrument_id"],
+            source_mode="api",
+            source_email=None,
+            source_location=None,
+            source_api_profile="tushare",
+            source_email_rules=None,
+            return_semantics="total_return",
+        )
 
     updated = upsert_source_settings(
         instrument_id=equity["instrument_id"],

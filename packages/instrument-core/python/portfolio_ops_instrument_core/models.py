@@ -14,6 +14,7 @@ INSTRUMENT_TYPES = frozenset(
 )
 ExpectedFrequency = Literal["daily", "weekly", "monthly", "event_driven"]
 SourceMode = Literal["manual", "email", "api"]
+ReturnSemantics = Literal["unknown", "price_return", "total_return"]
 IdentifierType = Literal[
     "ticker",
     "exchange_ticker",
@@ -261,6 +262,7 @@ class SourceSettings(BaseModel):
     expected_frequency: ExpectedFrequency = "event_driven"
     market_calendar: str | None = Field(default=None, min_length=1)
     release_lag_days: int = Field(default=0, ge=0)
+    return_semantics: ReturnSemantics = "unknown"
 
     @field_validator("market_calendar", mode="before")
     @classmethod

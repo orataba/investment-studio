@@ -49,7 +49,7 @@ import {
 } from '../lib/holdingAmounts'
 import {
   assessBenchmarkComparisonGuard,
-  type BenchmarkComparisonMode,
+  type BenchmarkComparisonGuard,
 } from '../lib/benchmarkComparisonGuard'
 import { buildMonthlyBuckets, buildMonthlyReturnMatrixRows, MONTH_LABELS } from '../lib/monthlyReturns'
 import { buildTwrIndexPoints } from '../lib/performanceSeries'
@@ -531,7 +531,7 @@ function benchmarkNote(
   selected: SharedInstrumentRecord | null,
   loading: boolean,
   value: number | null | undefined,
-  mode: BenchmarkComparisonMode | null,
+  guard: BenchmarkComparisonGuard | null,
   formatter: (input: number | null | undefined) => string = signedPercent,
 ) {
   if (!selected) {
@@ -540,10 +540,16 @@ function benchmarkNote(
   if (loading) {
     return 'BM loading'
   }
-  if (mode == null || mode === 'unavailable') {
+  if (guard == null || guard.mode === 'unavailable') {
     return 'BM unavailable'
   }
-  return `${mode === 'exploratory' ? 'Exploratory BM' : 'BM'} ${formatter(value)}`
+  const prefix =
+    guard.reason === 'benchmark_price_return_comparable'
+      ? 'Price BM'
+      : guard.mode === 'exploratory'
+        ? 'Exploratory BM'
+        : 'BM'
+  return `${prefix} ${formatter(value)}`
 }
 
 function StrategySleeveDonut({
@@ -1094,6 +1100,7 @@ export default function OverviewPage() {
       selectedBenchmarkInstrument && benchmarkChart && benchmarkStartBoundaryDate
         ? assessBenchmarkComparisonGuard({
             chartBasis: benchmarkChart.chart_basis,
+            returnSemantics: benchmarkChart.return_semantics,
             benchmarkCurrency: benchmarkChart.currency,
             portfolioCurrency: resolvedBaseCurrency,
             points: benchmarkChart.points,
@@ -1149,7 +1156,7 @@ export default function OverviewPage() {
             selectedBenchmarkInstrument,
             benchmarkLoading,
             benchmarkMetrics?.oneWeek,
-            benchmarkGuard?.mode ?? null,
+            benchmarkGuard,
           ),
           emphasis: true,
           toneClassName: signedValueClass(portfolioReturnMetrics.oneWeek),
@@ -1161,7 +1168,7 @@ export default function OverviewPage() {
             selectedBenchmarkInstrument,
             benchmarkLoading,
             benchmarkMetrics?.mtd,
-            benchmarkGuard?.mode ?? null,
+            benchmarkGuard,
           ),
           emphasis: true,
           toneClassName: signedValueClass(portfolioReturnMetrics.mtd),
@@ -1174,7 +1181,7 @@ export default function OverviewPage() {
             selectedBenchmarkInstrument,
             benchmarkLoading,
             benchmarkMetrics?.ytd,
-            benchmarkGuard?.mode ?? null,
+            benchmarkGuard,
           ),
           emphasis: true,
           toneClassName: signedValueClass(portfolioReturnMetrics.ytd),
@@ -1187,7 +1194,7 @@ export default function OverviewPage() {
             selectedBenchmarkInstrument,
             benchmarkLoading,
             benchmarkMetrics?.sinceInception,
-            benchmarkGuard?.mode ?? null,
+            benchmarkGuard,
           ),
           emphasis: true,
           toneClassName: signedValueClass(performanceWorkspace?.summary.cumulative_twr),
@@ -1204,7 +1211,7 @@ export default function OverviewPage() {
             selectedBenchmarkInstrument,
             benchmarkLoading,
             benchmarkMetrics?.currentDrawdown,
-            benchmarkGuard?.mode ?? null,
+            benchmarkGuard,
           ),
           toneClassName: signedValueClass(performanceWorkspace?.summary.current_drawdown),
         },
@@ -1215,7 +1222,7 @@ export default function OverviewPage() {
             selectedBenchmarkInstrument,
             benchmarkLoading,
             benchmarkMetrics?.maxDrawdown,
-            benchmarkGuard?.mode ?? null,
+            benchmarkGuard,
           ),
           toneClassName: signedValueClass(performanceWorkspace?.summary.max_drawdown),
         },
@@ -1226,7 +1233,7 @@ export default function OverviewPage() {
             selectedBenchmarkInstrument,
             benchmarkLoading,
             benchmarkMetrics?.volatility1m,
-            benchmarkGuard?.mode ?? null,
+            benchmarkGuard,
             formatPercent,
           ),
           title: portfolioRiskMetrics.volatility1m == null ? 'Need full 1M history.' : undefined,
@@ -1238,7 +1245,7 @@ export default function OverviewPage() {
             selectedBenchmarkInstrument,
             benchmarkLoading,
             benchmarkMetrics?.volatility3m,
-            benchmarkGuard?.mode ?? null,
+            benchmarkGuard,
             formatPercent,
           ),
           title: portfolioRiskMetrics.volatility3m == null ? 'Need full 3M history.' : undefined,
@@ -1462,6 +1469,8 @@ export default function OverviewPage() {
                         <span>
                           {benchmarkGuard.mode === 'canonical'
                             ? 'Manual comparator · canonical'
+                            : benchmarkGuard.reason === 'benchmark_price_return_comparable'
+                              ? 'Manual comparator · price return'
                             : benchmarkGuard.mode === 'exploratory'
                               ? 'Manual comparator · exploratory'
                               : 'Manual comparator unavailable'}
@@ -1495,7 +1504,11 @@ export default function OverviewPage() {
                         benchmarkLabel={
                           selectedBenchmarkInstrument
                             ? `${instrumentPrimaryIdentifier(selectedBenchmarkInstrument)}${
-                                benchmarkGuard?.mode === 'exploratory' ? ' (exploratory)' : ''
+                                benchmarkGuard?.reason === 'benchmark_price_return_comparable'
+                                  ? ' (price return)'
+                                  : benchmarkGuard?.mode === 'exploratory'
+                                    ? ' (exploratory)'
+                                    : ''
                               }`
                             : null
                         }

@@ -541,6 +541,8 @@ def update_instrument_source_settings(
         optional_semantics["market_calendar"] = payload.market_calendar
     if payload.release_lag_days is not None:
         optional_semantics["release_lag_days"] = payload.release_lag_days
+    if payload.return_semantics is not None:
+        optional_semantics["return_semantics"] = payload.return_semantics
     try:
         record = upsert_source_settings(
             instrument_id=instrument_id,

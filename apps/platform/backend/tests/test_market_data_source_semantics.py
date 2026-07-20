@@ -9,11 +9,15 @@ from platform_app.api.routes import instruments as instrument_routes
 from platform_app.main import app
 
 
-def _instrument_record(source_settings: dict[str, object]) -> dict[str, object]:
+def _instrument_record(
+    source_settings: dict[str, object],
+    *,
+    instrument_type: str = "equity",
+) -> dict[str, object]:
     return {
         "instrument_id": "schedule-equity",
         "instrument_name": "Schedule Equity",
-        "instrument_type": "equity",
+        "instrument_type": instrument_type,
         "currency": "CNY",
         "identifiers": [
             {
@@ -84,7 +88,9 @@ def test_source_schedule_api_forwards_and_returns_all_semantics(
                 "expected_frequency": kwargs["expected_frequency"],
                 "market_calendar": kwargs["market_calendar"],
                 "release_lag_days": kwargs["release_lag_days"],
-            }
+                "return_semantics": kwargs["return_semantics"],
+            },
+            instrument_type="index",
         )
 
     monkeypatch.setattr(
@@ -103,6 +109,7 @@ def test_source_schedule_api_forwards_and_returns_all_semantics(
             "expected_frequency": "daily",
             "market_calendar": "XSHG",
             "release_lag_days": 1,
+            "return_semantics": "total_return",
         },
     )
 
@@ -110,6 +117,7 @@ def test_source_schedule_api_forwards_and_returns_all_semantics(
     assert captured["expected_frequency"] == "daily"
     assert captured["market_calendar"] == "XSHG"
     assert captured["release_lag_days"] == 1
+    assert captured["return_semantics"] == "total_return"
     assert response.json()["source_settings"] == {
         "source_mode": "api",
         "source_email": "",
@@ -119,4 +127,5 @@ def test_source_schedule_api_forwards_and_returns_all_semantics(
         "expected_frequency": "daily",
         "market_calendar": "XSHG",
         "release_lag_days": 1,
+        "return_semantics": "total_return",
     }

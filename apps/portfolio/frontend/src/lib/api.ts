@@ -72,6 +72,7 @@ export type HoldingReturnSeries = {
 }
 
 export type PortfolioInstrumentChartRangeKey = '1m' | '3m' | '6m' | 'ytd' | '1y' | 'all'
+export type PortfolioReturnSemantics = 'unknown' | 'price_return' | 'total_return'
 
 export type PortfolioInstrumentPriceChartPoint = {
   date: string
@@ -92,6 +93,7 @@ export type PortfolioInstrumentPriceChartResponse = {
   as_of_date: string
   range_key: PortfolioInstrumentChartRangeKey
   chart_basis: string | null
+  return_semantics?: PortfolioReturnSemantics
   metric_family: string | null
   currency: string
   coverage_state?: PortfolioPerformanceCoverageState

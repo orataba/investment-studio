@@ -197,6 +197,7 @@ def upsert_source_settings(
     expected_frequency: str | None = None,
     market_calendar: object = _SOURCE_SETTING_UNSET,
     release_lag_days: int | None = None,
+    return_semantics: str | None = None,
 ) -> dict[str, object] | None:
     optional_semantics: dict[str, object] = {}
     if expected_frequency is not None:
@@ -205,6 +206,8 @@ def upsert_source_settings(
         optional_semantics["market_calendar"] = market_calendar
     if release_lag_days is not None:
         optional_semantics["release_lag_days"] = release_lag_days
+    if return_semantics is not None:
+        optional_semantics["return_semantics"] = return_semantics
     return shared_store.upsert_source_settings(
         get_session_factory(),
         instrument_id=instrument_id,

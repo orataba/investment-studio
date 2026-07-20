@@ -16,6 +16,7 @@ from portfolio_ops_instrument_core import (
     PriceUnit,
     QuoteBasis,
     QuoteSelectionPolicy,
+    ReturnSemantics,
     canonical_price_contract,
     parse_persisted_price_contract,
     validate_market_data_identity,
@@ -531,6 +532,7 @@ class InstrumentPriceChartResponse(BaseModel):
     as_of_date: date
     range_key: str
     chart_basis: str | None = None
+    return_semantics: ReturnSemantics = "unknown"
     metric_family: str | None = None
     currency: str
     coverage_state: CoverageState = "unavailable"

@@ -25,7 +25,21 @@ describe('shared benchmark comparison guard', () => {
     expect(assessment.warning).toBeNull()
   })
 
-  it('keeps a fully covered price-only benchmark exploratory and never canonical', () => {
+  it('allows relative metrics for a confirmed price-return benchmark without calling it canonical total return', () => {
+    const assessment = assessBenchmarkComparisonGuard({
+      ...comparableInput,
+      chartBasis: 'close',
+      returnSemantics: 'price_return',
+    })
+
+    expect(assessment.mode).toBe('exploratory')
+    expect(assessment.reason).toBe('benchmark_price_return_comparable')
+    expect(assessment.canonicalComparisonEligible).toBe(false)
+    expect(assessment.relativeComparisonEligible).toBe(true)
+    expect(assessment.warning).toContain('benchmark and relative metrics are shown')
+  })
+
+  it('withholds relative metrics when close has no verified return semantics', () => {
     const assessment = assessBenchmarkComparisonGuard({
       ...comparableInput,
       chartBasis: 'close',
@@ -34,7 +48,22 @@ describe('shared benchmark comparison guard', () => {
     expect(assessment.mode).toBe('exploratory')
     expect(assessment.reason).toBe('benchmark_price_only_exploratory')
     expect(assessment.canonicalComparisonEligible).toBe(false)
+    expect(assessment.relativeComparisonEligible).toBe(false)
     expect(assessment.warning).toContain('Portfolio-relative differences and relative statistics are withheld')
+  })
+
+  it('admits an index close series when its return semantics are explicitly total return', () => {
+    const assessment = assessBenchmarkComparisonGuard({
+      ...comparableInput,
+      chartBasis: 'close',
+      returnSemantics: 'total_return',
+    })
+
+    expect(assessment.mode).toBe('canonical')
+    expect(assessment.reason).toBe('benchmark_total_return_comparable')
+    expect(assessment.canonicalComparisonEligible).toBe(true)
+    expect(assessment.relativeComparisonEligible).toBe(true)
+    expect(assessment.warning).toBeNull()
   })
 
   it('withholds comparison when currencies differ', () => {
