@@ -558,6 +558,7 @@ export type PortfolioHoldingRow = {
   instrument_trend_split_adjusted?: boolean
   instrument_risk_frequency?: PortfolioCalculationFrequency | null
   instrument_return_1w?: number | null
+  instrument_return_1m?: number | null
   instrument_return_mtd?: number | null
   instrument_return_ytd?: number | null
   instrument_return_1y?: number | null

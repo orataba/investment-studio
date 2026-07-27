@@ -100,6 +100,43 @@ describe('Holdings rendered page contract', () => {
     expect(screen.queryByRole('button', { name: /View\s*:/ })).not.toBeInTheDocument()
   })
 
+  it('upgrades the persisted Return & Risk system view with instrument 1M return', async () => {
+    apiMocks.getPortfolioTableViewStore.mockResolvedValueOnce({
+      store: {
+        activeViewId: 'return-risk',
+        views: [
+          {
+            id: 'return-risk',
+            name: 'Return & Risk',
+            readonly: true,
+            state: {
+              columns: [
+                'instrument',
+                'instrument_return_1w',
+                'instrument_return_mtd',
+                'unrealized_pct',
+              ],
+              columnWidths: {},
+              groupBy: 'none',
+              sortField: 'unrealized_pct',
+              sortDirection: 'desc',
+            },
+          },
+        ],
+      },
+    })
+
+    renderPortfolioPage(
+      <PortfolioHomePage />,
+      '/portfolios/3/holdings',
+      '/portfolios/:portfolioId/holdings',
+    )
+
+    expect(await screen.findByRole('button', { name: /View\s*: Return & Risk/ })).toBeInTheDocument()
+    expect(screen.getByRole('columnheader', { name: /1M Return/ })).toBeInTheDocument()
+    expect(screen.getByRole('columnheader', { name: /Unrealized Return/ })).toBeInTheDocument()
+  })
+
   it('does not render the prior portfolio workspace while the next portfolio is loading', async () => {
     const nextWorkspace = deferred<ReturnType<typeof holdingsWorkspaceFixture>>()
     apiMocks.getHoldingsWorkspace
@@ -182,12 +219,14 @@ describe('Holdings rendered page contract', () => {
     await user.click(screen.getByRole('option', { name: 'Return & Risk' }))
 
     expect(screen.getByRole('columnheader', { name: /1W Return/ })).toBeInTheDocument()
+    expect(screen.getByRole('columnheader', { name: /1M Return/ })).toBeInTheDocument()
     expect(screen.getByRole('columnheader', { name: /^MTD/ })).toBeInTheDocument()
     expect(screen.getByRole('columnheader', { name: /^YTD/ })).toBeInTheDocument()
 
     const holdingRow = screen.getByRole('cell', { name: /Alpha Fund/ }).closest('tr')
     expect(holdingRow).not.toBeNull()
     expect(within(holdingRow!).getByText('+1.23%')).toBeInTheDocument()
+    expect(within(holdingRow!).getByText('+3.45%')).toBeInTheDocument()
     expect(within(holdingRow!).getByText('+2.34%')).toBeInTheDocument()
 
     const ytdHeader = screen.getByRole('columnheader', { name: /^YTD/ })
@@ -199,6 +238,7 @@ describe('Holdings rendered page contract', () => {
     expect(refreshedTotalRow).not.toHaveTextContent(/TWR/i)
     for (const columnKey of [
       'instrument_return_1w',
+      'instrument_return_1m',
       'instrument_return_mtd',
       'instrument_return_ytd',
     ]) {

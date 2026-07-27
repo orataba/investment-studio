@@ -69,6 +69,7 @@ InstrumentLifecycleStatus = Literal["active", "archived"]
 EmailParserProfile = Literal[
     "generic_nav_table",
     "label_nav_snapshot",
+    "ta_virtual_performance_ledger_initial_nav",
 ]
 
 MAX_NAV_IMPORT_BYTES = 25 * 1024 * 1024

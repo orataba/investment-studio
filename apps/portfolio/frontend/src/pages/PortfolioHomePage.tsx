@@ -73,6 +73,7 @@ type HoldingsColumnKey =
   | 'unrealized_value'
   | 'unrealized_pct'
   | 'instrument_return_1w'
+  | 'instrument_return_1m'
   | 'instrument_return_mtd'
   | 'instrument_return_ytd'
   | 'instrument_return_1y'
@@ -209,6 +210,7 @@ const HOLDINGS_COLUMN_GROUPS: Array<{ label: string; columns: HoldingsColumnKey[
       'price_chart_6m',
       'price_chart_1y',
       'instrument_return_1w',
+      'instrument_return_1m',
       'instrument_return_mtd',
       'instrument_return_ytd',
       'instrument_return_1y',
@@ -299,6 +301,7 @@ const DEFAULT_HOLDINGS_COLUMN_WIDTHS: Record<HoldingsColumnKey, number> = {
   unrealized_value: 148,
   unrealized_pct: 148,
   instrument_return_1w: 128,
+  instrument_return_1m: 128,
   instrument_return_mtd: 112,
   instrument_return_ytd: 112,
   instrument_return_1y: 112,
@@ -345,6 +348,7 @@ const COMPACT_HOLDINGS_COLUMN_MIN_WIDTHS: Partial<Record<HoldingsColumnKey, numb
   unrealized_value: 108,
   unrealized_pct: 104,
   instrument_return_1w: 92,
+  instrument_return_1m: 92,
   instrument_return_mtd: 92,
   instrument_return_ytd: 92,
   instrument_return_1y: 92,
@@ -390,6 +394,7 @@ const SYSTEM_HOLDINGS_VIEWS: HoldingsTableView[] = [
         'weight',
         'price_chart_6m',
         'instrument_return_1w',
+        'instrument_return_1m',
         'instrument_return_mtd',
         'instrument_return_ytd',
         'day_change_pct',
@@ -1323,7 +1328,26 @@ function normalizeHoldingsViewStore(value: unknown): HoldingsViewStore {
   const storedViewById = new Map((storedViews || []).map((view) => [view.id, view]))
   const systemViews = SYSTEM_HOLDINGS_VIEWS.map((defaultView) => {
     const storedView = storedViewById.get(defaultView.id)
-    return storedView ? { ...storedView, readonly: true } : defaultView
+    if (!storedView) {
+      return defaultView
+    }
+    if (
+      defaultView.id === 'return-risk' &&
+      !storedView.state.columns.includes('instrument_return_1m')
+    ) {
+      const columns = [...storedView.state.columns]
+      const oneWeekIndex = columns.indexOf('instrument_return_1w')
+      columns.splice(oneWeekIndex >= 0 ? oneWeekIndex + 1 : columns.length, 0, 'instrument_return_1m')
+      return {
+        ...storedView,
+        readonly: true,
+        state: {
+          ...storedView.state,
+          columns,
+        },
+      }
+    }
+    return { ...storedView, readonly: true }
   })
   const customViews = (storedViews || [])
     .filter((view) => !SYSTEM_HOLDINGS_VIEW_IDS.has(view.id))
@@ -1449,6 +1473,8 @@ function holdingColumnExportValue(
       return unrealizedPct(row)
     case 'instrument_return_1w':
       return row.instrument_return_1w ?? null
+    case 'instrument_return_1m':
+      return row.instrument_return_1m ?? null
     case 'instrument_return_mtd':
       return row.instrument_return_mtd ?? null
     case 'instrument_return_ytd':
@@ -1515,6 +1541,10 @@ function holdingColumnTotalExportValue(
     case 'instrument_return_1w':
       return allowBlendedInstrumentReturn
         ? weightedHoldingMetric(rows, context.workspace, (row) => row.instrument_return_1w)
+        : null
+    case 'instrument_return_1m':
+      return allowBlendedInstrumentReturn
+        ? weightedHoldingMetric(rows, context.workspace, (row) => row.instrument_return_1m)
         : null
     case 'instrument_return_mtd':
       return allowBlendedInstrumentReturn
@@ -1791,6 +1821,16 @@ const HOLDINGS_COLUMN_DEFINITIONS: Record<HoldingsColumnKey, HoldingsColumnDefin
     className: (row) => signedValueClass(row.instrument_return_1w),
     total: (rows, context) => signedPercent(weightedHoldingMetric(rows, context.workspace, (row) => row.instrument_return_1w)),
     totalClassName: (rows, context) => signedValueClass(weightedHoldingMetric(rows, context.workspace, (row) => row.instrument_return_1w)),
+  },
+  instrument_return_1m: {
+    key: 'instrument_return_1m',
+    label: '1M Return',
+    align: 'right',
+    render: (row) => signedPercent(row.instrument_return_1m),
+    sortValue: (row) => row.instrument_return_1m,
+    className: (row) => signedValueClass(row.instrument_return_1m),
+    total: (rows, context) => signedPercent(weightedHoldingMetric(rows, context.workspace, (row) => row.instrument_return_1m)),
+    totalClassName: (rows, context) => signedValueClass(weightedHoldingMetric(rows, context.workspace, (row) => row.instrument_return_1m)),
   },
   instrument_return_mtd: {
     key: 'instrument_return_mtd',

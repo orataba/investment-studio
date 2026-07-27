@@ -271,6 +271,59 @@ def test_generic_attachment_parses_bilingual_administrator_headers() -> None:
     assert str(parsed[0]["cash_cumulative_nav"]) == "1.2085"
 
 
+def test_ta_performance_ledger_profile_extracts_only_initial_nav_anchor() -> None:
+    parsed = _parse_nav_rows_from_attachment(
+        attachment_name="均成均享1号私募证券投资基金B_TA虚拟业绩报酬流水_20260625.xlsx",
+        attachment_bytes=_workbook_bytes(
+            [
+                [
+                    "基金账号",
+                    "客户姓名",
+                    "基金名称",
+                    "基金代码",
+                    "净值日期",
+                    "计算日期",
+                    "虚拟业绩报酬",
+                    "持有份额",
+                    "单位净值",
+                    "累计单位净值",
+                    "期初净值日期",
+                    "期初净值",
+                    "期初累计净值",
+                ],
+                [
+                    "JA8009820482",
+                    "九慕云谷策略精选1号私募证券投资基金",
+                    "均成均享1号私募证券投资基金B",
+                    "AFG53B",
+                    "2026-06-25",
+                    "2026-06-26",
+                    "0.00",
+                    "2,080,213.01",
+                    "1.1784",
+                    "1.1784",
+                    "2026-06-23",
+                    "1.2018",
+                    "1.2018",
+                ],
+            ]
+        ),
+        parser_profile="ta_virtual_performance_ledger_initial_nav",
+    )
+
+    assert parsed == [
+        {
+            "as_of_date": "2026-06-23",
+            "nav": Decimal("1.2018"),
+            "cash_cumulative_nav": Decimal("1.2018"),
+            "instrument_code": "AFG53B",
+            "instrument_name": "均成均享1号私募证券投资基金B",
+            "_source_sheet": "Sheet",
+            "_source_sheets": ["Sheet"],
+        }
+    ]
+
+
 def test_generic_attachment_falls_back_to_label_snapshot_layout() -> None:
     parsed = _parse_nav_rows_from_attachment(
         attachment_name="SAZL37-2026年07月16日-发送每日净值信息.xls",

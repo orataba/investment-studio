@@ -456,9 +456,9 @@ Holdings 中的现金行按 settled cash ledger 逐币种生成，`instrument_id
 Holdings 可以展示 quote-derived instrument market trend 指标，作为扫描当前持仓标的自身近期市场表现的辅助列：
 
 - `Chart 1M / 3M / 6M / 1Y` 是前端展示用的 sampled path；
-- `1W Return / MTD / YTD / 1Y` 只使用标的自身 selected quote series，计算为 `latest_quote / anchor_quote - 1`；
+- `1W / 1M Return / MTD / YTD / 1Y` 只使用标的自身 selected quote series，计算为 `latest_quote / anchor_quote - 1`；
 - selected quote series 按 `quote_selection_policy.total_return -> chart -> valuation -> reference` 选择；若策略为空，则选用截至 as-of 最新的一条 quote basis，不能混用多个 basis；
-- `1W Return` / `1Y` 的 anchor quote 是目标日期或之前最近 quote；
+- `1W Return` / `1M Return` / `1Y` 的 anchor quote 是目标日期或之前最近 quote；`1M` 的目标日期按自然月回看，不按固定 30/31 天截断；
 - `MTD` / `YTD` 的 anchor quote 是严格早于月初 / 年初的最近 quote；若该锚点不存在则返回空值，禁止拿期间内第一条 quote 冒充完整自然期间收益；
 - `Current DD` 计算为 `latest_quote / max_available_selected_quote_to_date - 1`；
 - `Vol 1M / 3M / 6M / 1Y` 使用同一 selected quote series 先按组合 resolved risk frequency 取 daily / weekly / monthly period returns，再按实际 elapsed days 年化；不得使用 `Chart *` sampled points；
@@ -477,7 +477,7 @@ Holdings group rows 不是后端 period-performance group：
 
 - market value、cost basis、day change、open lots 等绝对量按组内 rows 汇总；
 - unrealized return 使用组内非现金 `unrealized P&L / cost basis`，不是成员百分比的加权平均；若任一 group / subtotal / `Portfolio Total` 同时包含非现金 row 与 cash row，则 cash 以 0 unrealized P&L、cash market value 作为分母的一部分稀释该比例；纯 cash group 因 cost basis 不适用而为空；
-- `1W / MTD / YTD / 1Y Return` 使用 as-of date base-currency market value 权重对成员自身 return 加权；覆盖不足时为空；
+- `1W / 1M / MTD / YTD / 1Y Return` 使用 as-of date base-currency market value 权重对成员自身 return 加权；覆盖不足时为空；
 - group volatility / drawdown 用组内成员 return series 在共同 period 上组成当前权重的组 return series 后计算，包含协方差效果，不等于成员 volatility 或 drawdown 的加权平均；
 - base-currency cash 可作为 0-return 成员参与覆盖；non-base cash 使用其 FX return series；
 - UI 中的 `Non-cash Portfolio` 行是当前 rows 的非现金 subtotal，只服务展示和导出，不是源事实、不参与 group、sort、detail 或 portfolio totals。

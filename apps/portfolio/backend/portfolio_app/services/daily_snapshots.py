@@ -41,6 +41,7 @@ _SOURCE_GENERATION_CHANGED_BEFORE_PUBLISH_REASON = "source_generation_changed_be
 DAILY_SNAPSHOT_CALCULATION_VERSION = (
     "portfolio-daily-v20260715-split-coverage-return-chain-quote-identity-market-history"
     "-source-generation-fence-pending-settlement-fx-recorded-attached-charges"
+    "-portfolio-instrument-return-windows-v1"
 )
 
 
@@ -1364,6 +1365,7 @@ def _aggregate_holding_rows(
         }
         trend_metrics = {
             "instrument_return_1w": _first_present(instrument_rows, "instrument_return_1w"),
+            "instrument_return_1m": _first_present(instrument_rows, "instrument_return_1m"),
             "instrument_return_mtd": _first_present(instrument_rows, "instrument_return_mtd"),
             "instrument_return_ytd": _first_present(instrument_rows, "instrument_return_ytd"),
             "instrument_return_1y": _first_present(instrument_rows, "instrument_return_1y"),

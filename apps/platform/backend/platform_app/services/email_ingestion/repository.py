@@ -32,6 +32,7 @@ PARSER_VERSION = "fund-nav-v2"
 PARSER_PROFILE_VERSIONS = {
     "generic_nav_table": "fund-nav-v3",
     "label_nav_snapshot": "label-nav-v3",
+    "ta_virtual_performance_ledger_initial_nav": "ta-ledger-initial-nav-v1",
 }
 MAX_PARSE_ATTEMPTS = 5
 HISTORY_START_MESSAGE_REASON_CODE = "BeforeHistoryStartDate"

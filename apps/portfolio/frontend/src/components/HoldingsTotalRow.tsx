@@ -2,6 +2,7 @@ import type { ReactNode } from 'react'
 
 const INSTRUMENT_RETURN_COLUMN_KEYS = new Set([
   'instrument_return_1w',
+  'instrument_return_1m',
   'instrument_return_mtd',
   'instrument_return_ytd',
   'instrument_return_1y',

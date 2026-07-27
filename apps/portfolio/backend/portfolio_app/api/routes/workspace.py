@@ -63,6 +63,7 @@ _HOLDINGS_TREND_FIELD_NAMES = (
     "instrument_trend_split_adjusted",
     "instrument_risk_frequency",
     "instrument_return_1w",
+    "instrument_return_1m",
     "instrument_return_mtd",
     "instrument_return_ytd",
     "instrument_return_1y",

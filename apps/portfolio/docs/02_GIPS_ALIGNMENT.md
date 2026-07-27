@@ -87,7 +87,7 @@ Calculation 的 group axis 包括 instrument、instrument type、currency、acco
 
 Holdings 只作为当前持仓状态表。资产级 TWR、区间 contribution、realized gain、income 和 closed positions 必须从 `Performance` 或 security detail 读取，避免把 current holdings 和 period performance 混成一个口径。
 
-Holdings 中允许出现 `Chart 6M`、`1W Return / MTD / YTD / 1Y` 和 `Current DD`，但它们必须明确是 quote-derived instrument market trend：只基于标的自身 selected quote series，不读取组合现金流、数量、成本法或 realized / income events。它们用于持仓扫盘，不作为 GIPS-informed portfolio return 或 contribution disclosure。
+Holdings 中允许出现 `Chart 6M`、`1W / 1M Return / MTD / YTD / 1Y` 和 `Current DD`，但它们必须明确是 quote-derived instrument market trend：只基于标的自身 selected quote series，不读取组合现金流、数量、成本法或 realized / income events。它们用于持仓扫盘，不作为 GIPS-informed portfolio return 或 contribution disclosure。
 
 Risk / Research 的风险统计也必须保持估值频率一致性：先按 daily / weekly / monthly calculation basis 对齐目标 period，再用 period-end 有效观测计算收益；共同节假日不生成样本，单资产缺价默认进入 `strict` missing-return 诊断。不得用跨 period stale price、缺失收益补 0、pairwise covariance entry 或不同长度持有期收益去补 covariance、correlation、Sharpe 或 target-volatility overlay。Research 只有在用户显式选择 `complete_case_drop` 且通过缺失行比例、latest complete row 新鲜度和最小完整观测数约束时，才允许整行删除缺失 period 后继续求解。
 

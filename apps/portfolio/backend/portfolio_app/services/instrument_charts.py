@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from calendar import monthrange
 from dataclasses import dataclass
 from datetime import date, timedelta
 from decimal import Decimal, InvalidOperation
@@ -49,7 +50,7 @@ ASSET_RISK_MAX_START_GAP_DAYS: dict[CalculationFrequency, int] = {
 ASSET_RISK_MIN_WINDOW_COVERAGE_RATIO = 0.8
 DAYS_PER_YEAR = 365.25
 RAW_SPLIT_SENSITIVE_BASES = frozenset({"close", "last"})
-TREND_RETURN_WINDOWS: tuple[str, ...] = ("1w", "mtd", "ytd", "1y")
+TREND_RETURN_WINDOWS: tuple[str, ...] = ("1w", "1m", "mtd", "ytd", "1y")
 SUPPORTED_SPLIT_FRACTION_TREATMENTS = frozenset({"exact", "truncate", "round_half_up"})
 
 
@@ -113,6 +114,7 @@ def empty_instrument_trend_metrics(
         "instrument_trend_split_adjusted": split_adjusted,
         "instrument_risk_frequency": calculation_frequency,
         "instrument_return_1w": None,
+        "instrument_return_1m": None,
         "instrument_return_mtd": None,
         "instrument_return_ytd": None,
         "instrument_return_1y": None,
@@ -209,12 +211,12 @@ def _downsample_points(points: list[dict[str, object]], max_points: int | None) 
     return [points[index] for index in sorted(sampled_indices)]
 
 
-def _shift_calendar_years(value: date, years: int) -> date:
-    target_year = value.year + years
-    try:
-        return value.replace(year=target_year)
-    except ValueError:
-        return value.replace(year=target_year, month=2, day=28)
+def _shift_calendar_months(value: date, months: int) -> date:
+    month_index = value.year * 12 + value.month - 1 + months
+    target_year, target_month_index = divmod(month_index, 12)
+    target_month = target_month_index + 1
+    target_day = min(value.day, monthrange(target_year, target_month)[1])
+    return date(target_year, target_month, target_day)
 
 
 def _return_window_names(points: list[dict[str, object]]) -> list[str]:
@@ -223,26 +225,17 @@ def _return_window_names(points: list[dict[str, object]]) -> list[str]:
     end_date = points[-1].get("date")
     if not isinstance(end_date, date):
         return []
-
-    def has_anchor(target_date: date) -> bool:
-        return any(
-            isinstance(point.get("date"), date)
-            and point["date"] <= target_date
-            and point["date"] < end_date
-            for point in points
-        )
-
-    month_start = date(end_date.year, end_date.month, 1)
-    year_start = date(end_date.year, 1, 1)
     windows: list[str] = []
-    if has_anchor(end_date - timedelta(days=7)):
-        windows.append("1w")
-    if has_anchor(month_start - timedelta(days=1)):
-        windows.append("mtd")
-    if has_anchor(year_start - timedelta(days=1)):
-        windows.append("ytd")
-    if has_anchor(_shift_calendar_years(end_date, -1)):
-        windows.append("1y")
+    for window_name in TREND_RETURN_WINDOWS:
+        if (
+            _named_period_return(
+                points,
+                end_date=end_date,
+                window_name=window_name,
+            )
+            is not None
+        ):
+            windows.append(window_name)
     return windows
 
 
@@ -755,13 +748,27 @@ def _current_drawdown(points: list[dict[str, object]]) -> float | None:
     return end_value / peak_value - 1 if peak_value > 1e-12 else None
 
 
-def _period_return(
+def _named_period_return(
     points: list[dict[str, object]],
     *,
-    end_point: dict[str, object] | None,
-    anchor_date: date,
+    end_date: date,
+    window_name: str,
 ) -> float | None:
+    normalized_window = window_name.strip().lower()
+    if normalized_window == "1w":
+        anchor_date = end_date - timedelta(days=7)
+    elif normalized_window == "1m":
+        anchor_date = _shift_calendar_months(end_date, -1)
+    elif normalized_window == "mtd":
+        anchor_date = date(end_date.year, end_date.month, 1) - timedelta(days=1)
+    elif normalized_window == "ytd":
+        anchor_date = date(end_date.year, 1, 1) - timedelta(days=1)
+    elif normalized_window == "1y":
+        anchor_date = _shift_calendar_months(end_date, -12)
+    else:
+        raise ValueError(f'Unsupported instrument return window "{window_name}".')
     start_point = _latest_point_on_or_before(points, anchor_date)
+    end_point = points[-1] if points else None
     return _return_between_points(start_point, end_point)
 
 
@@ -787,8 +794,6 @@ def build_instrument_trend_metrics_from_detail(
 
     end_point = selected_points[-1]
     end_date = end_point.get("date") if isinstance(end_point.get("date"), date) else as_of_date
-    month_start = date(end_date.year, end_date.month, 1)
-    year_start = date(end_date.year, 1, 1)
     holding_points = _points_since(selected_points, start_date=holding_start_date) if holding_start_date else []
 
     return {
@@ -798,25 +803,30 @@ def build_instrument_trend_metrics_from_detail(
         "instrument_trend_reason": selection.reason,
         "instrument_trend_split_adjusted": selection.split_adjusted,
         "instrument_risk_frequency": calculation_frequency,
-        "instrument_return_1w": _period_return(
+        "instrument_return_1w": _named_period_return(
             selected_points,
-            end_point=end_point,
-            anchor_date=end_date - timedelta(days=7),
+            end_date=end_date,
+            window_name="1w",
         ),
-        "instrument_return_mtd": _period_return(
+        "instrument_return_1m": _named_period_return(
             selected_points,
-            end_point=end_point,
-            anchor_date=month_start - timedelta(days=1),
+            end_date=end_date,
+            window_name="1m",
         ),
-        "instrument_return_ytd": _period_return(
+        "instrument_return_mtd": _named_period_return(
             selected_points,
-            end_point=end_point,
-            anchor_date=year_start - timedelta(days=1),
+            end_date=end_date,
+            window_name="mtd",
         ),
-        "instrument_return_1y": _period_return(
+        "instrument_return_ytd": _named_period_return(
             selected_points,
-            end_point=end_point,
-            anchor_date=_shift_calendar_years(end_date, -1),
+            end_date=end_date,
+            window_name="ytd",
+        ),
+        "instrument_return_1y": _named_period_return(
+            selected_points,
+            end_date=end_date,
+            window_name="1y",
         ),
         "instrument_volatility_1m": _annualized_window_volatility(
             selected_points,

@@ -99,9 +99,10 @@ def test_holdings_trend_selects_more_complete_alternate_without_splicing_bases()
         "observation_count": 5,
         "start_date": "2025-07-14",
         "end_date": "2026-07-15",
-        "available_return_windows": ["1w", "mtd", "ytd", "1y"],
+        "available_return_windows": ["1w", "1m", "mtd", "ytd", "1y"],
     }
     assert trend["instrument_return_1w"] == pytest.approx(100 / 96 - 1)
+    assert trend["instrument_return_1m"] == pytest.approx(100 / 90 - 1)
     assert chart is not None
     assert chart["chart_basis"] == "close"
     assert chart["return_semantics"] == "unknown"
@@ -216,6 +217,30 @@ def test_one_year_return_uses_a_calendar_year_boundary() -> None:
 
     assert trend["instrument_return_1y"] == pytest.approx(0.2)
     assert "1y" in trend["instrument_trend_coverage"]["available_return_windows"]
+
+
+def test_one_month_return_uses_portfolio_on_or_before_subscription_anchor() -> None:
+    detail = _detail(
+        [
+            _point("total_return_nav", "2026-06-23", "1.2018"),
+            _point("total_return_nav", "2026-06-25", "1.1784"),
+            _point("total_return_nav", "2026-07-24", "1.2849"),
+        ],
+        instrument_type="fund",
+    )
+    detail["quote_selection_policy"] = {
+        role: ["total_return_nav"]
+        for role in ("total_return", "chart", "valuation", "reference")
+    }
+    for point in detail["market_data"]:
+        point["metric_family"] = "nav"
+    trend = build_instrument_trend_metrics_from_detail(
+        detail,
+        as_of_date=date(2026, 7, 24),
+    )
+
+    assert trend["instrument_return_1m"] == pytest.approx(1.2849 / 1.2018 - 1)
+    assert "1m" in trend["instrument_trend_coverage"]["available_return_windows"]
 
 
 def test_raw_close_history_is_adjusted_with_confirmed_split_ratio_within_one_basis() -> None:

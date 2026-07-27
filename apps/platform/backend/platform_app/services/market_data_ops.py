@@ -480,6 +480,74 @@ def _parse_nav_rows_from_matrix(matrix: list[list[object]]) -> list[dict[str, ob
     return rows
 
 
+def _parse_initial_nav_rows_from_ta_performance_ledger_matrix(
+    matrix: list[list[object]],
+) -> list[dict[str, object]]:
+    """Extract the subscription anchor from a TA virtual-performance ledger.
+
+    The ledger also repeats the current NAV.  This profile intentionally emits
+    only the provider's explicit opening NAV fields so the ordinary TA NAV
+    attachment remains the source of daily observations.
+    """
+
+    if not matrix:
+        return []
+
+    required_headers = {
+        "基金名称",
+        "基金代码",
+        "期初净值日期",
+        "期初净值",
+        "期初累计净值",
+    }
+    header_index: dict[str, int] | None = None
+    start_index = 0
+    for row_index, row in enumerate(matrix[:12]):
+        normalized = {
+            _normalize_nav_header(str(cell)): column_index
+            for column_index, cell in enumerate(row)
+            if cell is not None and str(cell).strip()
+        }
+        if required_headers.issubset(normalized):
+            header_index = normalized
+            start_index = row_index + 1
+            break
+    if header_index is None:
+        return []
+
+    rows: list[dict[str, object]] = []
+    for raw_row in matrix[start_index:]:
+        values = ["" if value is None else str(value).strip() for value in raw_row]
+        if not any(values):
+            continue
+
+        def value_for(header: str) -> str:
+            index = header_index[header]
+            return values[index] if index < len(values) else ""
+
+        initial_date = _parse_nav_date(value_for("期初净值日期"))
+        initial_nav = _parse_nav_decimal(value_for("期初净值"))
+        initial_cumulative_nav = _parse_nav_decimal(value_for("期初累计净值"))
+        if initial_date is None or initial_nav is None:
+            continue
+        row: dict[str, object] = {
+            "as_of_date": initial_date.isoformat(),
+            "nav": initial_nav,
+        }
+        if initial_cumulative_nav is not None:
+            row["cash_cumulative_nav"] = initial_cumulative_nav
+        instrument_code = value_for("基金代码")
+        instrument_name = value_for("基金名称")
+        if instrument_code:
+            row["instrument_code"] = instrument_code
+        if instrument_name:
+            row["instrument_name"] = instrument_name
+        rows.append(row)
+
+    rows.sort(key=lambda item: str(item["as_of_date"]))
+    return rows
+
+
 def _parse_nav_rows_from_label_snapshot_matrix(matrix: list[list[object]]) -> list[dict[str, object]]:
     if not matrix:
         return []
@@ -775,6 +843,13 @@ def _parse_nav_rows_from_attachment(
     parser_profile: str,
 ) -> list[dict[str, object]]:
     lower_name = attachment_name.lower()
+    if parser_profile == "ta_virtual_performance_ledger_initial_nav":
+        if lower_name.endswith((".xls", ".xlsx")):
+            return _parse_nav_rows_from_workbook_content(
+                attachment_bytes,
+                parser=_parse_initial_nav_rows_from_ta_performance_ledger_matrix,
+            )
+        return []
     if parser_profile == "label_nav_snapshot":
         if lower_name.endswith((".xls", ".xlsx")):
             return _with_label_snapshot_filename_identity(
