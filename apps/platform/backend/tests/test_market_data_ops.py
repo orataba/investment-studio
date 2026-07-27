@@ -1701,12 +1701,112 @@ def test_tushare_api_uses_sdk_with_configured_proxy_url(monkeypatch) -> None:
 
     assert captured["token"] == "secret-token"
     assert captured["timeout"] == 30
-    assert captured["http_url"] == "https://ttx.dailyfetch.top/"
+    assert captured["http_url"] == "https://ttx.dailyfetch.top"
     assert captured["index_daily_kwargs"] == {
         "ts_code": "000300.SH",
         "fields": "ts_code,trade_date,close",
     }
     assert rows == [{"ts_code": "000300.SH", "trade_date": "20260615", "close": "4200.12"}]
+
+
+def test_unchanged_fund_nav_publication_clears_stale_refresh_failure(
+    monkeypatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    class FakePublication:
+        rows: list[dict[str, object]] = []
+        projection_run = {"projection_run_id": "projection-run"}
+        current_fund_nav_event_ids: list[str] = []
+        current_fund_nav_reinvestment_evidence_ids: list[str] = []
+        adjustment_factors: list[dict[str, object]] = []
+        action_candidates: list[dict[str, object]] = []
+
+    class FakeFundNavActionCandidateRepository:
+        def __init__(self, _session_factory: object) -> None:
+            pass
+
+        def project_current(
+            self,
+            *,
+            instrument_id: str,
+            candidates: list[dict[str, object]],
+        ) -> None:
+            captured["candidate_projection"] = {
+                "instrument_id": instrument_id,
+                "candidates": candidates,
+            }
+
+    monkeypatch.setattr(
+        market_data_ops,
+        "get_instrument",
+        lambda instrument_id: {
+            "instrument_id": instrument_id,
+            "market_data_updated_at": "2026-07-23T00:00:00Z",
+            "refresh_status": {"status": "failed"},
+        },
+    )
+    monkeypatch.setattr(
+        market_data_ops,
+        "_build_fund_nav_publication",
+        lambda **_kwargs: FakePublication(),
+    )
+    monkeypatch.setattr(
+        market_data_ops,
+        "publish_fund_nav_history",
+        lambda **_kwargs: {
+            "record": {
+                "instrument_id": "018654-of",
+                "refresh_status": {"status": "failed"},
+            },
+            "changed": False,
+        },
+    )
+
+    def fake_update_refresh_status(**kwargs: object) -> dict[str, object]:
+        captured["refresh_status"] = kwargs
+        return {
+            "instrument_id": kwargs["instrument_id"],
+            "refresh_status": {
+                "status": kwargs["status"],
+                "message": kwargs["message"],
+            },
+        }
+
+    monkeypatch.setattr(
+        market_data_ops,
+        "update_refresh_status",
+        fake_update_refresh_status,
+    )
+    monkeypatch.setattr(
+        market_data_ops,
+        "FundNavActionCandidateRepository",
+        FakeFundNavActionCandidateRepository,
+    )
+
+    record, publication = market_data_ops._publish_fund_nav_projection(
+        instrument_id="018654-of",
+        load_source_rows=lambda _instrument: [],
+        source_provider="tushare:fund_nav",
+        refresh_status="imported",
+        updated_by="launchd-scheduler",
+        mode="api",
+        message_factory=lambda _publication: "Provider fetch succeeded.",
+    )
+
+    assert publication.rows == []
+    assert record["refresh_status"]["status"] == "imported"
+    assert captured["refresh_status"] == {
+        "instrument_id": "018654-of",
+        "status": "imported",
+        "message": "Provider fetch succeeded.",
+        "updated_by": "launchd-scheduler",
+        "mode": "api",
+    }
+    assert captured["candidate_projection"] == {
+        "instrument_id": "018654-of",
+        "candidates": [],
+    }
 
 
 def test_tushare_refresh_imports_public_fund_nav(monkeypatch) -> None:

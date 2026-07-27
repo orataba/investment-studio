@@ -2876,7 +2876,20 @@ def _publish_fund_nav_projection(
             continue
         if persisted is None:
             raise ValueError(f'Instrument "{instrument_id}" no longer exists.')
-        record = persisted.get("record")
+        if bool(persisted.get("changed")):
+            record = persisted.get("record")
+        else:
+            # Atomic publication is intentionally a byte-for-byte no-op when
+            # the canonical projection is unchanged. Record the successful
+            # fetch separately so a prior provider failure does not remain
+            # visible after a successful idempotent replay.
+            record = update_refresh_status(
+                instrument_id=instrument_id,
+                status=refresh_status,
+                message=message,
+                updated_by=updated_by,
+                mode=mode,
+            )
         if not isinstance(record, dict):
             raise ValueError(
                 f'Fund NAV publication for "{instrument_id}" returned no record.'

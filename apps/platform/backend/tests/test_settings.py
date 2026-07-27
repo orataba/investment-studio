@@ -27,7 +27,7 @@ def test_settings_define_a_private_operations_schema_and_migration_target() -> N
     assert settings.database_schema == "instrument_registry"
     assert settings.operations_database_schema == "platform"
     assert settings.migration_database_url == settings.database_url
-    assert settings.tushare_api_url == "https://ttx.dailyfetch.top/"
+    assert settings.tushare_api_url == "https://ttx.dailyfetch.top"
 
 
 def test_platform_search_path_precedes_the_shared_registry() -> None:

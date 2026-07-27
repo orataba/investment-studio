@@ -39,14 +39,14 @@ def test_create_tushare_client_applies_proxy_to_every_client() -> None:
 
     client = tushare_client.create_tushare_client(
         token="secret-token",
-        api_url="https://ttx.dailyfetch.top/",
+        api_url="https://ttx.dailyfetch.top///",
         timeout_seconds=12,
         sdk_module=sdk,
     )
 
     assert client is sdk.pro
     assert sdk.pro_api_calls == [{"token": "secret-token", "timeout": 12}]
-    assert client._DataApi__http_url == "https://ttx.dailyfetch.top/"
+    assert client._DataApi__http_url == "https://ttx.dailyfetch.top"
 
 
 def test_invoke_tushare_api_uses_bound_pro_endpoint() -> None:

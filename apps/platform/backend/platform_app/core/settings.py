@@ -38,7 +38,7 @@ class Settings(BaseSettings):
     email_ingestion_lease_seconds: int = 1800
     market_data_batch_item_timeout_seconds: int = 300
     tushare_token: str | None = None
-    tushare_api_url: str = "https://ttx.dailyfetch.top/"
+    tushare_api_url: str = "https://ttx.dailyfetch.top"
     tushare_timeout_seconds: int = 30
     tushare_batch_max_workers: int = 4
     tushare_batch_timeout_seconds: int = 3600

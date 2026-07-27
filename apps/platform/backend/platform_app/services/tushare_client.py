@@ -12,7 +12,7 @@ from collections.abc import Mapping
 from typing import Any
 
 
-DEFAULT_TUSHARE_API_URL = "https://ttx.dailyfetch.top/"
+DEFAULT_TUSHARE_API_URL = "https://ttx.dailyfetch.top"
 
 
 try:
@@ -49,7 +49,10 @@ def create_tushare_client(
             "Tushare token is not configured. Set "
             "PORTFOLIO_OPS_PLATFORM_TUSHARE_TOKEN first."
         )
-    normalized_api_url = str(api_url or "").strip()
+    # The installed Tushare SDK appends ``/{api_name}`` itself.  Persisting a
+    # trailing slash here produces ``//fund_nav`` and similar malformed proxy
+    # paths, which some compatible endpoints terminate during TLS handling.
+    normalized_api_url = str(api_url or "").strip().rstrip("/")
     if not normalized_api_url:
         raise TushareClientConfigurationError(
             "Tushare API URL is not configured. Set "
