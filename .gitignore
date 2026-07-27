@@ -31,3 +31,4 @@ apps/watchlist/backups/
 ref/
 *:Zone.Identifier
 /var/
+/outputs/

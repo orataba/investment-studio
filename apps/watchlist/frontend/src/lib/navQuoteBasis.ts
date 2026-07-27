@@ -1,4 +1,5 @@
 export type NavQuoteBasis = 'nav' | 'nav_with_dividend'
+export type ComparableReturnKind = 'total_return' | 'price_return' | 'unit_nav_return'
 
 export type NavQuoteRow = {
   as_of_date: string
@@ -22,6 +23,13 @@ const NAV_QUOTE_BASES: readonly NavQuoteBasis[] = ['nav_with_dividend', 'nav']
 
 export function normalizeNavQuoteCurrency(currency: string | null | undefined): string {
   return String(currency ?? '').trim().toUpperCase()
+}
+
+export function returnKindsAreComparable(
+  primary: ComparableReturnKind | null | undefined,
+  benchmark: ComparableReturnKind | null | undefined,
+): boolean {
+  return primary != null && benchmark != null && primary === benchmark
 }
 
 export function filterNavQuoteRowsByCurrency(

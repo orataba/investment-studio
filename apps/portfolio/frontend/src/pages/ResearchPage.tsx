@@ -39,6 +39,7 @@ import {
   type SharedInstrumentRecord,
 } from '../lib/api'
 import {
+  formatCurrency,
   formatLabel,
   formatNumber,
   formatPercent,
@@ -1444,6 +1445,9 @@ export default function ResearchPage() {
   const manualReviewGaps = (latestRun?.detail?.target_weight_gaps ?? []).filter(
     (row) => row.execution_status === 'manual_review_required',
   )
+  const rebalanceGaps = (latestRun?.detail?.target_weight_gaps ?? []).filter(
+    (row) => Math.abs(row.gap ?? 0) > 0.0001 || row.execution_status === 'manual_review_required',
+  )
   const storedBenchmark = latestRun?.detail?.backtest_benchmark ?? null
   const selectedBenchmarkId = benchmarkInstrumentId.trim()
   const displayBenchmark = selectedBenchmarkId
@@ -1855,40 +1859,98 @@ export default function ResearchPage() {
                     <thead>
                       <tr>
                         <th>Instrument</th>
-                          <th>Solved Weight</th>
-                          <th>Target Risk</th>
-                          <th title="Portfolio-level risk contribution recomputed from solved leaf weights; hierarchical shrinkage can differ from local sleeve targets.">
-                            Look-through RC
-                          </th>
-                          <th>Bounds</th>
-                          <th>Bound</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {!solvedGroups.length ? (
-                          <TableStatusRow colSpan={6} label="No solved result was recorded for the latest run." />
-                        ) : (
+                        <th>Current → Solved Weight</th>
+                        <th>Current MV → Target Capital</th>
+                        <th title="Risk-budget share within the instrument's immediate taxonomy sleeve.">
+                          Local Target Risk
+                        </th>
+                        <th title="Portfolio-level risk contribution recomputed from solved leaf weights; hierarchical shrinkage can differ from local sleeve targets.">
+                          Look-through RC
+                        </th>
+                        <th>Bounds</th>
+                        <th>Bound</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {!solvedGroups.length ? (
+                        <TableStatusRow colSpan={7} label="No solved result was recorded for the latest run." />
+                      ) : (
                         solvedGroups.map((group) => (
                           <Fragment key={group.top_sleeve_id ?? group.top_sleeve_label}>
                             <tr className="research-result-group-row">
                               <td>{group.top_sleeve_label}</td>
-                                <td>{formatMaybePercent(group.solved_weight)}</td>
-                                <td>{formatMaybePercent(group.target_risk_share)}</td>
-                                <td>{formatMaybePercent(group.forward_risk_contribution)}</td>
-                                <td>{formatSolvedBounds(group.min_weight, group.max_weight)}</td>
-                                <td>{formatBoundStatus(group.bound_status)}</td>
-                              </tr>
+                              <td className="research-transition-cell">
+                                {formatMaybePercent(group.current_weight)} → {formatMaybePercent(group.solved_weight)}
+                              </td>
+                              <td className="research-transition-cell">
+                                {formatCurrency(group.current_value_base, workbench?.base_currency, 0)} →{' '}
+                                {formatCurrency(group.target_value_base, workbench?.base_currency, 0)}
+                              </td>
+                              <td>{formatMaybePercent(group.target_risk_share)}</td>
+                              <td>{formatMaybePercent(group.forward_risk_contribution)}</td>
+                              <td>{formatSolvedBounds(group.min_weight, group.max_weight)}</td>
+                              <td>{formatBoundStatus(group.bound_status)}</td>
+                            </tr>
                             {group.rows.map((row) => (
                               <tr key={`${row.member_type}:${row.member_id}`}>
                                 <td className="research-result-member-cell">{row.label}</td>
-                                  <td>{formatMaybePercent(row.solved_weight)}</td>
-                                  <td>{formatMaybePercent(row.target_risk_share)}</td>
-                                  <td>{formatMaybePercent(row.forward_risk_contribution)}</td>
-                                  <td>-</td>
-                                  <td>-</td>
-                                </tr>
+                                <td className="research-transition-cell">
+                                  {formatMaybePercent(row.current_weight)} → {formatMaybePercent(row.solved_weight)}
+                                </td>
+                                <td className="research-transition-cell">
+                                  {formatCurrency(row.current_value_base, workbench?.base_currency, 0)} →{' '}
+                                  {formatCurrency(row.target_value_base, workbench?.base_currency, 0)}
+                                </td>
+                                <td>{formatMaybePercent(row.target_risk_share)}</td>
+                                <td>{formatMaybePercent(row.forward_risk_contribution)}</td>
+                                <td>-</td>
+                                <td>-</td>
+                              </tr>
                             ))}
                           </Fragment>
+                        ))
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              </section>
+
+              <section className="panel">
+                <div className="panel-header">
+                  <div>
+                    <div className="panel-title">Rebalance Gaps</div>
+                    <div className="panel-subtitle">
+                      Current portfolio weight versus the solved weight; review liquidity, costs, and PM flags before trading.
+                    </div>
+                  </div>
+                </div>
+                <div className="table-shell">
+                  <table className="transactions-table research-rebalance-table">
+                    <thead>
+                      <tr>
+                        <th>Instrument</th>
+                        <th>Current Weight</th>
+                        <th>Solved Weight</th>
+                        <th>Gap</th>
+                        <th>Action</th>
+                        <th>Readiness</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {!rebalanceGaps.length ? (
+                        <TableStatusRow colSpan={6} label="No material rebalance gaps were recorded for the latest run." />
+                      ) : (
+                        rebalanceGaps.map((row) => (
+                          <tr key={`${row.member_type}:${row.member_id}`} title={row.execution_note ?? undefined}>
+                            <td>{row.label}</td>
+                            <td>{formatMaybePercent(row.current_weight)}</td>
+                            <td>{formatMaybePercent(row.target_weight)}</td>
+                            <td>{formatMaybePercent(row.gap)}</td>
+                            <td>{row.action}</td>
+                            <td>
+                              {row.execution_status === 'manual_review_required' ? 'PM review' : 'Ready'}
+                            </td>
+                          </tr>
                         ))
                       )}
                     </tbody>

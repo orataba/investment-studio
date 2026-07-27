@@ -74,7 +74,7 @@ def test_market_data_refresh_notifies_portfolio_and_watchlist(monkeypatch) -> No
         (
             "http://portfolio.local/api/portfolios/snapshots/daily/recalculations",
             {
-                "instrument_ids": ["fund-a", "fx-usdcny"],
+                "instrument_ids": [],
                 "dirty_from": "2026-05-01",
                 "refresh_all": True,
             },

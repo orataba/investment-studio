@@ -5,6 +5,7 @@ import csv
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from decimal import Decimal, ROUND_HALF_UP, localcontext
+from functools import lru_cache
 from io import BytesIO, StringIO
 import hashlib
 import json
@@ -17,6 +18,8 @@ import time
 import warnings
 from typing import Any, Callable
 from zipfile import BadZipFile, ZipFile
+
+import exchange_calendars as exchange_calendars
 
 from portfolio_ops_instrument_core import (
     parse_positive_market_data_value,
@@ -899,14 +902,19 @@ def _merge_rows_by_date(rows: list[dict[str, object]]) -> list[dict[str, object]
 
     def source_rank(row: dict[str, object]) -> tuple[int, str, str, int]:
         timestamp = str(
-            row.get("_email_sent_at") or row.get("_raw_captured_at") or ""
+            row.get("_email_sent_at")
+            or row.get("_raw_captured_at")
+            or row.get("_provider_revision_at")
+            or ""
         )
         source_kind = str(row.get("_raw_source_kind") or "")
         if source_kind == "manual_import":
             source_class = 3
         elif row.get("_email_candidate_route_id") is not None:
             source_class = 2
-        elif source_kind == "api_observation":
+        elif source_kind == "api_observation" or row.get(
+            "_provider_revision_scope"
+        ):
             source_class = 1
         else:
             source_class = 0
@@ -916,6 +924,9 @@ def _merge_rows_by_date(rows: list[dict[str, object]]) -> list[dict[str, object]
         elif row.get("_raw_observation_id") is not None:
             revision_scope = "raw-observation"
             revision_sequence = int(row.get("_raw_observation_id") or 0)
+        elif row.get("_provider_revision_scope"):
+            revision_scope = str(row["_provider_revision_scope"])
+            revision_sequence = int(row.get("_provider_revision_sequence") or 0)
         else:
             revision_scope = ""
             revision_sequence = 0
@@ -955,6 +966,33 @@ def _merge_rows_by_date(rows: list[dict[str, object]]) -> list[dict[str, object]
             *(normalized_value(row.get(key)) for key in sorted(_NAV_VALUE_FIELDS)),
         )
 
+    def observations_are_sparse_compatible(
+        left: dict[str, object],
+        right: dict[str, object],
+    ) -> bool:
+        left_currency = str(left.get("currency") or "").strip().upper()
+        right_currency = str(right.get("currency") or "").strip().upper()
+        if left_currency and right_currency and left_currency != right_currency:
+            return False
+        for value_field in _NAV_VALUE_FIELDS:
+            left_value = normalized_value(left.get(value_field))
+            right_value = normalized_value(right.get(value_field))
+            if "absent" in {left_value[0], right_value[0]}:
+                continue
+            if left_value != right_value:
+                return False
+        return True
+
+    def merge_sparse_rows(
+        preferred: dict[str, object],
+        fallback: dict[str, object],
+    ) -> dict[str, object]:
+        combined = dict(preferred)
+        for key, value in fallback.items():
+            if combined.get(key) is None or combined.get(key) == "":
+                combined[key] = value
+        return combined
+
     def prepared_row(row: dict[str, object], as_of_date: str) -> dict[str, object]:
         prepared = {
             key: value
@@ -991,6 +1029,13 @@ def _merge_rows_by_date(rows: list[dict[str, object]]) -> list[dict[str, object]
         )
         comparison = compare_source_rank(rank, previous_rank)
         if not same_observation:
+            if observations_are_sparse_compatible(existing, candidate):
+                if comparison == 1:
+                    merged[as_of_date] = merge_sparse_rows(candidate, existing)
+                    row_sources[as_of_date] = rank
+                else:
+                    merged[as_of_date] = merge_sparse_rows(existing, candidate)
+                continue
             if comparison in (None, 0):
                 raise ValueError(
                     f"Conflicting NAV observations for {as_of_date} lack a strict "
@@ -1021,13 +1066,88 @@ class FundNavPublication:
         return self.derived_total_return_count > 0
 
 
-FUND_NAV_PROJECTION_METHOD_VERSION = "fund_nav_reinvestment_projection/v6"
+FUND_NAV_PROJECTION_METHOD_VERSION = "fund_nav_reinvestment_projection/v7"
 FUND_NAV_PROJECTION_CREATED_BY = "platform_fund_nav_projection_builder"
 AUTO_CASH_DISTRIBUTION_MAX_ABS_INTERVAL_RETURN = Decimal("0.50")
 CASH_REPORTING_RESET_CONFIRMATION_ROWS = 3
 CUMULATIVE_NAV_SEMANTICS_MIN_VOTES = 3
 CUMULATIVE_NAV_SEMANTICS_DOMINANCE = 4
 CUMULATIVE_NAV_SEMANTICS_COMPARISON_LAGS = (1, 5, 20)
+
+
+@lru_cache(maxsize=32)
+def _market_calendar_sessions(
+    calendar_name: str,
+    start_date: date,
+    end_date: date,
+) -> frozenset[date]:
+    try:
+        calendar = exchange_calendars.get_calendar(calendar_name)
+        sessions = calendar.sessions_in_range(
+            start_date.isoformat(),
+            end_date.isoformat(),
+        )
+    except Exception as error:
+        raise ValueError(
+            f'Unable to apply market calendar "{calendar_name}" to fund NAV history.'
+        ) from error
+    return frozenset(session.date() for session in sessions)
+
+
+def _filter_fund_nav_rows_for_market_calendar(
+    *,
+    instrument: dict[str, object],
+    rows: list[dict[str, object]],
+) -> tuple[list[dict[str, object]], dict[str, object] | None]:
+    source_settings = dict(instrument.get("source_settings", {}))
+    calendar_name = str(source_settings.get("market_calendar") or "").strip()
+    if not calendar_name or not rows:
+        return rows, None
+
+    dated_rows: list[tuple[date, dict[str, object]]] = []
+    for row_index, row in enumerate(rows, start=1):
+        row_date = _parse_nav_date(row.get("as_of_date"))
+        if row_date is None:
+            raise ValueError(
+                f"Fund NAV source row {row_index} has an invalid date."
+            )
+        dated_rows.append((row_date, row))
+
+    sessions = _market_calendar_sessions(
+        calendar_name,
+        min(row_date for row_date, _row in dated_rows),
+        max(row_date for row_date, _row in dated_rows),
+    )
+    included_rows = [
+        row for row_date, row in dated_rows if row_date in sessions
+    ]
+    excluded_dates = sorted(
+        row_date for row_date, _row in dated_rows if row_date not in sessions
+    )
+    excluded_date_strings = [row_date.isoformat() for row_date in excluded_dates]
+    if len(excluded_date_strings) <= 20:
+        excluded_date_sample = excluded_date_strings
+    else:
+        excluded_date_sample = [
+            *excluded_date_strings[:10],
+            *excluded_date_strings[-10:],
+        ]
+    return included_rows, {
+        "market_calendar": calendar_name,
+        "unfiltered_source_observation_count": len(rows),
+        "calendar_included_source_observation_count": len(included_rows),
+        "calendar_excluded_source_observation_count": len(excluded_dates),
+        "calendar_excluded_first_date": (
+            excluded_date_strings[0] if excluded_date_strings else None
+        ),
+        "calendar_excluded_last_date": (
+            excluded_date_strings[-1] if excluded_date_strings else None
+        ),
+        "calendar_excluded_date_sample": excluded_date_sample,
+        "calendar_excluded_dates_sha256": hashlib.sha256(
+            "\n".join(excluded_date_strings).encode("utf-8")
+        ).hexdigest(),
+    }
 
 
 def _quantized_factor_level(value: Decimal) -> Decimal:
@@ -1796,11 +1916,45 @@ def _build_fund_nav_publication(
     if instrument is None:
         raise ValueError(f'Instrument "{instrument_id}" no longer exists.')
 
+    source_rows = [dict(row) for row in rows]
+    unfiltered_source_fingerprint = _fund_nav_source_observation_fingerprint(
+        source_rows
+    )
+    source_rows, calendar_filter_evidence = (
+        _filter_fund_nav_rows_for_market_calendar(
+            instrument=instrument,
+            rows=source_rows,
+        )
+    )
     ordered_rows = sorted(
-        (dict(row) for row in rows),
+        source_rows,
         key=lambda item: str(item.get("as_of_date") or ""),
     )
-    source_fingerprint = _fund_nav_source_observation_fingerprint(ordered_rows)
+    filtered_source_fingerprint = _fund_nav_source_observation_fingerprint(
+        ordered_rows
+    )
+    if calendar_filter_evidence is None:
+        source_fingerprint = filtered_source_fingerprint
+    else:
+        source_fingerprint = hashlib.sha256(
+            json.dumps(
+                {
+                    "contract": "fund_nav_calendar_filtered_source/v1",
+                    "market_calendar": calendar_filter_evidence[
+                        "market_calendar"
+                    ],
+                    "unfiltered_source_observation_fingerprint": (
+                        unfiltered_source_fingerprint
+                    ),
+                    "filtered_source_observation_fingerprint": (
+                        filtered_source_fingerprint
+                    ),
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest()
     cumulative_nav_semantics = _infer_cumulative_nav_semantics(ordered_rows)
     events, evidence_by_event_id = _current_fund_nav_heads(instrument)
     current_event_ids = sorted(
@@ -2532,6 +2686,18 @@ def _build_fund_nav_publication(
         "segment_breaks": break_reasons,
         "cumulative_nav_semantics": cumulative_nav_semantics,
     }
+    if calendar_filter_evidence is not None:
+        projection_evidence["market_calendar_filter"] = (
+            {
+                **calendar_filter_evidence,
+                "unfiltered_source_observation_fingerprint": (
+                    unfiltered_source_fingerprint
+                ),
+                "filtered_source_observation_fingerprint": (
+                    filtered_source_fingerprint
+                ),
+            }
+        )
     if auto_cash_distributions:
         projection_evidence["auto_cash_distributions"] = (
             auto_cash_distributions
@@ -3054,6 +3220,10 @@ def _tushare_nav_rows(
         point_date = _parse_nav_date(row.get("nav_date") or row.get("end_date") or row.get("ann_date"))
         if point_date is None:
             continue
+        provider_revision_date = _parse_nav_date(row.get("ann_date"))
+        provider_update_flag = str(row.get("update_flag") or "").strip()
+        provider_revision_sequence = 1 if provider_update_flag == "1" else 0
+        provider_code = str(row.get("ts_code") or "").strip().upper()
         if point_date < TUSHARE_HISTORY_START_DATE:
             continue
         # Keep the latest stored date so provider corrections on that date are
@@ -3072,6 +3242,17 @@ def _tushare_nav_rows(
                 "cash_cumulative_nav": cash_cumulative_nav,
                 "nav_with_dividend": total_return_nav,
                 "_total_return_source_field": "adj_nav",
+                "_provider_revision_at": (
+                    provider_revision_date.isoformat()
+                    if provider_revision_date is not None
+                    else ""
+                ),
+                "_provider_revision_scope": (
+                    f"tushare:fund_nav:{provider_code}"
+                    if provider_code
+                    else "tushare:fund_nav"
+                ),
+                "_provider_revision_sequence": provider_revision_sequence,
                 "currency": normalized_currency,
                 "frequency": "daily",
             }

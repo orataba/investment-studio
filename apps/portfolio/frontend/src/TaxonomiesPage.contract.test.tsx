@@ -213,6 +213,36 @@ describe('Taxonomies rendered page contract', () => {
     expect(screen.queryByText('0.00%')).not.toBeInTheDocument()
   })
 
+  it('keeps the taxonomy workspace mounted while assignment data refreshes', async () => {
+    const user = userEvent.setup()
+    let resolveCatalogRefresh: ((value: typeof taxonomyCatalog) => void) | undefined
+
+    renderPortfolioPage(
+      <TaxonomiesPage />,
+      '/portfolios/3/taxonomies',
+      '/portfolios/:portfolioId/taxonomies',
+    )
+
+    const nodeButton = await screen.findByRole('button', { name: 'Risk Assets' })
+    apiMocks.getPortfolioTaxonomyCatalog.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          resolveCatalogRefresh = resolve
+        }),
+    )
+
+    await user.click(nodeButton)
+    await user.click(screen.getByRole('checkbox', { name: /Select .*Alpha Fund/ }))
+    expect(fireEvent.keyDown(nodeButton, { key: 'Enter', ctrlKey: true })).toBe(false)
+
+    await waitFor(() => expect(screen.getByTestId('portfolio-workspace')).toHaveAttribute('aria-busy', 'true'))
+    expect(screen.getByRole('button', { name: 'Risk Assets' })).toBeInTheDocument()
+    expect(screen.queryByText('Loading')).not.toBeInTheDocument()
+
+    resolveCatalogRefresh?.(taxonomyCatalog)
+    await waitFor(() => expect(screen.getByTestId('portfolio-workspace')).toHaveAttribute('aria-busy', 'false'))
+  })
+
   it('keeps cash weight targets, renders cash risk as N/A, and submits null cash risk', async () => {
     const user = userEvent.setup()
     renderPortfolioPage(

@@ -610,6 +610,7 @@ export default function TaxonomiesPage() {
   const [accountsResponse, setAccountsResponse] = useState<PortfolioAccountsWorkspaceResponse | null>(null)
   const [instrumentsResponse, setInstrumentsResponse] = useState<{ portfolio_id: string; instruments: SharedInstrumentRecord[] } | null>(null)
   const [loading, setLoading] = useState(true)
+  const [refreshing, setRefreshing] = useState(false)
   const [workspaceError, setWorkspaceError] = useState<string | null>(null)
   const [supplementalNotice, setSupplementalNotice] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
@@ -659,6 +660,7 @@ export default function TaxonomiesPage() {
     setActionPending(null)
     setActionError(null)
     setNotice(null)
+    setRefreshing(false)
     if (!portfolioId) {
       setCatalog(null)
       setHoldingsWorkspace(null)
@@ -708,9 +710,13 @@ export default function TaxonomiesPage() {
     if (!portfolioId) {
       return
     }
-    setLoading(true)
+    const requestedPortfolioId = portfolioId
+    setRefreshing(true)
     try {
-      const result = await fetchWorkspace(portfolioId)
+      const result = await fetchWorkspace(requestedPortfolioId)
+      if (currentPortfolioIdRef.current !== requestedPortfolioId) {
+        return
+      }
       setCatalog(result.catalog)
       setHoldingsWorkspace(result.holdingsWorkspace)
       setAccountsResponse(result.accountsResponse)
@@ -718,7 +724,9 @@ export default function TaxonomiesPage() {
       setWorkspaceError(result.workspaceError)
       setSupplementalNotice(result.supplementalNotice)
     } finally {
-      setLoading(false)
+      if (currentPortfolioIdRef.current === requestedPortfolioId) {
+        setRefreshing(false)
+      }
     }
   }
 
@@ -2849,7 +2857,7 @@ export default function TaxonomiesPage() {
     : null
 
     return (
-      <PortfolioWorkspaceLayout activeSection="Taxonomies" toolbarLabel="Page: Taxonomies" busy={loading}>
+      <PortfolioWorkspaceLayout activeSection="Taxonomies" toolbarLabel="Page: Taxonomies" busy={loading || refreshing}>
         <div className="taxonomy-page taxonomy-page-table">
         {notice || workspaceError || actionError || supplementalNotice ? (
           <div className="page-toast-stack" role="status" aria-live="polite">

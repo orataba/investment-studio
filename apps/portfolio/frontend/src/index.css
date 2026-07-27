@@ -5354,8 +5354,13 @@ input[type='checkbox'] {
   padding-left: 24px !important;
 }
 
+.research-transition-cell {
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
 .research-backtest-grid {
-  grid-template-columns: minmax(0, 1.45fr) minmax(280px, 0.55fr);
+  grid-template-columns: minmax(0, 1.45fr) minmax(360px, 0.55fr);
 }
 
 .research-sleeve-grid {
@@ -7385,6 +7390,10 @@ td b {
   }
 
   .overview-nav-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .research-backtest-grid {
     grid-template-columns: 1fr;
   }
 

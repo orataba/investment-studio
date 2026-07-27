@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties, type MouseEvent } from 'react'
 
 import { formatCurrency, formatNumber, formatPercent, formatSignedCurrency } from '../lib/format'
+import { rebasePerformanceSeriesTo100 } from '../lib/performanceSeries'
 
 export type PerformanceNavChartPoint = {
   date: string
@@ -522,11 +523,19 @@ export default function PerformanceNavChart({
     Math.max(windowStartIndex, 0),
     Math.max(0, clampedWindowEndIndex - 1),
   )
-  const visiblePoints = sortedMainPoints.slice(clampedWindowStartIndex, clampedWindowEndIndex + 1)
-  const visibleStartDate = visiblePoints[0]?.date
-  const visibleEndDate = visiblePoints[visiblePoints.length - 1]?.date
-  const visibleTwrPoints = filterPointsByDateWindow(sortedTwrPoints, visibleStartDate, visibleEndDate)
-  const firstVisibleTwrDate = visibleTwrPoints[0]?.date
+  const visibleRawPoints = sortedMainPoints.slice(clampedWindowStartIndex, clampedWindowEndIndex + 1)
+  const visibleStartDate = visibleRawPoints[0]?.date
+  const visibleEndDate = visibleRawPoints[visibleRawPoints.length - 1]?.date
+  const visibleTwrRawPoints = filterPointsByDateWindow(sortedTwrPoints, visibleStartDate, visibleEndDate)
+  const visiblePoints =
+    effectiveSeriesMode === 'twr_index'
+      ? rebasePerformanceSeriesTo100(visibleRawPoints)
+      : visibleRawPoints
+  const visibleTwrPoints =
+    effectiveSeriesMode === 'twr_index'
+      ? visiblePoints
+      : visibleTwrRawPoints
+  const firstVisibleTwrDate = visibleTwrRawPoints[0]?.date
   const twrWindowBaseValue = firstVisibleTwrDate
     ? findPointBefore(sortedTwrPoints, firstVisibleTwrDate)?.value ?? 100
     : 100
@@ -534,23 +543,10 @@ export default function PerformanceNavChart({
     isOverview && effectiveSeriesMode === 'twr_index'
       ? filterPointsByDateWindow(sortedBenchmarkPoints, visibleStartDate, visibleEndDate)
       : []
-  const benchmarkWindowBasePoint = visibleStartDate
-    ? findPointBefore(sortedBenchmarkPoints, visibleStartDate)
-    : null
-  const visibleBenchmarkPoints = (() => {
-    if (visibleBenchmarkRawPoints.length < 2 || !visiblePoints.length || !benchmarkWindowBasePoint) {
-      return []
-    }
-    const benchmarkBase = benchmarkWindowBasePoint.value
-    const mainBase = twrWindowBaseValue
-    if (benchmarkBase === 0) {
-      return []
-    }
-    return visibleBenchmarkRawPoints.map((point) => ({
-      date: point.date,
-      value: (point.value / benchmarkBase) * mainBase,
-    }))
-  })()
+  const visibleBenchmarkPoints =
+    visibleBenchmarkRawPoints.length > 1 && visiblePoints.length
+      ? rebasePerformanceSeriesTo100(visibleBenchmarkRawPoints)
+      : []
 
   const drawdownSourcePoints = useTwrDrawdown ? visibleTwrPoints : visiblePoints
 
@@ -561,7 +557,12 @@ export default function PerformanceNavChart({
 
     const drawdownPoints =
       drawdownSourcePoints.length > 1
-        ? buildDrawdownPoints(drawdownSourcePoints, useTwrDrawdown ? twrWindowBaseValue : undefined)
+        ? buildDrawdownPoints(
+            drawdownSourcePoints,
+            useTwrDrawdown && effectiveSeriesMode !== 'twr_index'
+              ? twrWindowBaseValue
+              : undefined,
+          )
         : []
 
     return {
@@ -569,7 +570,14 @@ export default function PerformanceNavChart({
       drawdownGeometry: drawdownPoints.length > 1 ? buildDrawdownGeometry(drawdownPoints) : null,
       drawdownPoints,
     }
-  }, [drawdownSourcePoints, twrWindowBaseValue, useTwrDrawdown, visibleBenchmarkPoints, visiblePoints])
+  }, [
+    drawdownSourcePoints,
+    effectiveSeriesMode,
+    twrWindowBaseValue,
+    useTwrDrawdown,
+    visibleBenchmarkPoints,
+    visiblePoints,
+  ])
 
   if (!chartState) {
     return <div className="price-chart-empty">Insufficient data.</div>
@@ -583,9 +591,11 @@ export default function PerformanceNavChart({
   const activePortfolioValuePoint = findPointAtOrBefore(sortedValuePoints, activePoint.date)
   const activeTwrPoint = findPointAtOrBefore(sortedTwrPoints, activePoint.date)
   const activePeriodTwr =
-    activeTwrPoint && twrWindowBaseValue !== 0
-      ? activeTwrPoint.value / twrWindowBaseValue - 1
-      : null
+    effectiveSeriesMode === 'twr_index'
+      ? activePoint.value / 100 - 1
+      : activeTwrPoint && twrWindowBaseValue !== 0
+        ? activeTwrPoint.value / twrWindowBaseValue - 1
+        : null
   const activeDrawdown = findDrawdownAtOrBefore(chartState.drawdownPoints, activePoint.date)?.drawdown ?? null
   const changeValue = activePoint.value - firstPoint.value
   const changePct = firstPoint.value !== 0 ? changeValue / firstPoint.value : null
@@ -593,8 +603,8 @@ export default function PerformanceNavChart({
   const activePeriodLabel = effectiveSeriesMode === 'twr_index' ? 'Period TWR' : 'Period Value'
   const activeChangeClassName = toneClassName(isOverview ? activePeriodReturn : changeValue)
   const benchmarkPeriodReturn =
-    visibleBenchmarkRawPoints.length > 1 && benchmarkWindowBasePoint && benchmarkWindowBasePoint.value !== 0
-      ? visibleBenchmarkRawPoints[visibleBenchmarkRawPoints.length - 1].value / benchmarkWindowBasePoint.value - 1
+    visibleBenchmarkPoints.length > 1
+      ? visibleBenchmarkPoints[visibleBenchmarkPoints.length - 1].value / 100 - 1
       : null
 
   const windowHigh = Math.max(...visiblePoints.map((point) => point.value))

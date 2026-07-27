@@ -62,7 +62,10 @@ const completedRun = {
       {
         top_sleeve_id: 'risk-assets',
         top_sleeve_label: 'Risk Assets',
+        current_weight: 0.2,
         solved_weight: 0.8,
+        current_value_base: 200,
+        target_value_base: 800,
         target_risk_share: 1,
         forward_risk_contribution: 1,
         min_weight: 0.6,
@@ -75,7 +78,10 @@ const completedRun = {
             label: 'Alpha Fund',
             top_sleeve_id: 'risk-assets',
             top_sleeve_label: 'Risk Assets',
+            current_weight: 0.2,
             solved_weight: 0.8,
+            current_value_base: 200,
+            target_value_base: 800,
             target_risk_share: 1,
             forward_risk_contribution: 1,
           },
@@ -85,12 +91,30 @@ const completedRun = {
     target_weight_gaps: [
       {
         member_type: 'instrument',
+        member_id: 'asset-1',
+        label: 'Alpha Fund',
+        current_weight: 0.2,
+        target_weight: 0.3,
+        gap: 0.1,
+        current_value_base: 200,
+        target_value_base: 300,
+        base_currency: 'USD',
+        action: 'Increase',
+        research_lifecycle: 'held',
+        research_eligibility: 'eligible',
+        research_pm_approved: false,
+        execution_status: 'ready',
+        execution_note: null,
+      },
+      {
+        member_type: 'instrument',
         member_id: 'former-asset',
         label: 'Former Holding Fund',
         current_weight: 0,
         target_weight: 0.05,
         gap: 0.05,
         current_value_base: 0,
+        target_value_base: 50,
         base_currency: 'USD',
         action: 'Review',
         research_lifecycle: 'former',
@@ -352,5 +376,44 @@ describe('Research rendered page contract', () => {
 
     expect(await screen.findByText('Constrained solve — not execution-ready.')).toBeInTheDocument()
     expect(screen.getByText(/Risk Assets: Maximum target-share gap is 12.00%/)).toBeInTheDocument()
+  })
+
+  it('renders current-to-solved rebalance gaps and execution readiness', async () => {
+    renderPortfolioPage(
+      <ResearchPage />,
+      '/portfolios/3/research',
+      '/portfolios/:portfolioId/research',
+    )
+
+    const gapSection = (await screen.findByText('Rebalance Gaps')).closest('section')
+    expect(gapSection).not.toBeNull()
+    expect(
+      within(gapSection as HTMLElement).getByRole('row', {
+        name: /Alpha Fund 20\.00% 30\.00% 10\.00% Increase Ready/,
+      }),
+    ).toBeInTheDocument()
+    expect(
+      within(gapSection as HTMLElement).getByRole('row', {
+        name: /Former Holding Fund 0\.00% 5\.00% 5\.00% Review PM review/,
+      }),
+    ).toBeInTheDocument()
+  })
+
+  it('renders solved weights and capital as current-to-target transitions', async () => {
+    renderPortfolioPage(
+      <ResearchPage />,
+      '/portfolios/3/research',
+      '/portfolios/:portfolioId/research',
+    )
+
+    const solvedSection = (await screen.findByText('Solved Result')).closest('section')
+    expect(solvedSection).not.toBeNull()
+    expect(within(solvedSection as HTMLElement).getByText('Current → Solved Weight')).toBeInTheDocument()
+    expect(within(solvedSection as HTMLElement).getByText('Current MV → Target Capital')).toBeInTheDocument()
+    expect(
+      within(solvedSection as HTMLElement).getByRole('row', {
+        name: /Alpha Fund 20\.00% → 80\.00% \$200 → \$800 100\.00% 100\.00% - -/,
+      }),
+    ).toBeInTheDocument()
   })
 })

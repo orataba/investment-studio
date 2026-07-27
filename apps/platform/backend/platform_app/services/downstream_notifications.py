@@ -140,7 +140,10 @@ def _request_portfolio_daily_snapshot_refresh(
     failure = _post_json(
         url,
         {
-            "instrument_ids": instrument_ids,
+            # The Portfolio contract requires exactly one target selector.
+            # A refresh-all request therefore cannot also carry instrument ids;
+            # Watchlist still receives the normalized ids independently below.
+            "instrument_ids": [] if refresh_all else instrument_ids,
             "dirty_from": dirty_from.isoformat() if dirty_from is not None else None,
             "refresh_all": refresh_all,
         },

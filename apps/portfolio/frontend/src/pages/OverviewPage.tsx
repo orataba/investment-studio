@@ -52,7 +52,10 @@ import {
   type BenchmarkComparisonGuard,
 } from '../lib/benchmarkComparisonGuard'
 import { buildMonthlyBuckets, buildMonthlyReturnMatrixRows, MONTH_LABELS } from '../lib/monthlyReturns'
-import { buildTwrIndexPoints } from '../lib/performanceSeries'
+import {
+  buildPortfolioValueChartPoints,
+  buildTwrIndexPoints,
+} from '../lib/performanceSeries'
 
 type AllocationBucket = {
   id: string
@@ -911,13 +914,7 @@ export default function OverviewPage() {
     ? completeAmountSum(top5Holdings.map((row) => row.allocation))
     : null
   const navChartPoints = useMemo(
-    () =>
-      (performanceWorkspace?.daily_series ?? [])
-        .filter((point) => point.ending_nav != null)
-        .map((point) => ({
-          date: point.as_of_date,
-          value: point.ending_nav as number,
-        })),
+    () => buildPortfolioValueChartPoints(performanceWorkspace?.daily_series ?? []),
     [performanceWorkspace],
   )
   const twrIndexChartPoints = useMemo(

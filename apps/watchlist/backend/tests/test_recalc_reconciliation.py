@@ -46,9 +46,9 @@ def test_reconciliation_target_loader_keyset_pages_and_fails_closed(
             text(
                 "INSERT INTO instrument_chart_read_model "
                 "(instrument_id, source_cutoff_at, materialization_version) VALUES "
-                "('fund-a', '2026-07-15 09:00:00', 'watchlist-materialization/v2'), "
-                "('fund-b', '2026-07-15 09:00:00', 'watchlist-materialization/v2'), "
-                "('fund-c', '2026-07-15 10:00:00', 'watchlist-materialization/v2')"
+                "('fund-a', '2026-07-15 09:00:00', 'watchlist-materialization/v3'), "
+                "('fund-b', '2026-07-15 09:00:00', 'watchlist-materialization/v3'), "
+                "('fund-c', '2026-07-15 10:00:00', 'watchlist-materialization/v3')"
             )
         )
         connection.execute(
@@ -58,9 +58,9 @@ def test_reconciliation_target_loader_keyset_pages_and_fails_closed(
                 "materialization_version) "
                 "VALUES "
                 "('wl-1', 'fund-a', '2026-07-14', '2026-07-15 08:00:00', "
-                "'watchlist-materialization/v2'), "
+                "'watchlist-materialization/v3'), "
                 "('wl-2', 'fund-a', '2026-07-15', '2026-07-15 09:00:00', "
-                "'watchlist-materialization/v2'), "
+                "'watchlist-materialization/v3'), "
                 "('wl-1', 'fund-b', '2026-07-15', NULL, 'unversioned')"
             )
         )
@@ -98,7 +98,7 @@ def test_reconciliation_target_loader_keyset_pages_and_fails_closed(
         tzinfo=UTC,
     )
     assert first_targets[0]["local_materialization_version"] == (
-        "watchlist-materialization/v2"
+        "watchlist-materialization/v3"
     )
     assert first_targets[1]["local_source_cutoff_at"] is None
     assert first_targets[1]["local_materialization_version"] is None
@@ -113,7 +113,7 @@ def test_reconciliation_target_loader_keyset_pages_and_fails_closed(
         tzinfo=UTC,
     )
     assert second_targets[0]["local_materialization_version"] == (
-        "watchlist-materialization/v2"
+        "watchlist-materialization/v3"
     )
     assert second_cursor is None
     assert second_completed is True
@@ -197,7 +197,7 @@ def test_single_instrument_legacy_source_date_does_not_requeue_forever(
         instrument_id="legacy-fund",
         local_latest_date=None,
         local_source_cutoff_at=datetime(2026, 7, 20, 8, 0, tzinfo=UTC),
-        local_materialization_version="watchlist-materialization/v2",
+        local_materialization_version="watchlist-materialization/v3",
         trigger_ref_type="detail_read",
     ) is False
 
@@ -276,7 +276,7 @@ def test_stale_generation_creates_one_durable_per_instrument_job(
         "instrument_id": "fund-a",
         "local_latest_date": "2026-07-15",
         "local_source_cutoff_at": "2026-07-15T09:00:00Z",
-        "local_materialization_version": "watchlist-materialization/v2",
+        "local_materialization_version": "watchlist-materialization/v3",
     }
 
     first = read_model_freshness.schedule_instrument_refreshes_if_stale(
@@ -315,7 +315,7 @@ def test_stale_generation_creates_one_durable_per_instrument_job(
         "2026-07-15T09:30:00.000001Z"
     )
     assert jobs[0].payload_json["target_materialization_version"] == (
-        "watchlist-materialization/v2"
+        "watchlist-materialization/v3"
     )
 
 

@@ -22,7 +22,9 @@ PORTFOLIO_OPS_LOCAL_DATABASE_URL="postgresql+psycopg://local@127.0.0.1:5432/test
   --log-dir "$LOG_ROOT" \
   --env-root "$ENV_ROOT" \
   --refresh-hour 21 \
-  --refresh-minute 0
+  --refresh-minute 0 \
+  --refresh-retry-hour 23 \
+  --refresh-retry-minute 0
 
 PLIST_ROOT="$PLIST_ROOT" PROJECT_ROOT="$PROJECT_ROOT" LOG_ROOT="$LOG_ROOT" ENV_ROOT="$ENV_ROOT" python3 - <<'PY'
 import os
@@ -69,7 +71,10 @@ with refresh_path.open("rb") as source:
     refresh = plistlib.load(source)
 assert refresh["KeepAlive"] is False
 assert refresh["RunAtLoad"] is True
-assert refresh["StartCalendarInterval"] == {"Hour": 21, "Minute": 0}
+assert refresh["StartCalendarInterval"] == [
+    {"Hour": 21, "Minute": 0},
+    {"Hour": 23, "Minute": 0},
+]
 assert refresh["ProcessType"] == "Background"
 assert refresh["LowPriorityIO"] is True
 assert refresh["Umask"] == 0o077
@@ -82,6 +87,13 @@ assert refresh["ProgramArguments"] == [
 ]
 assert refresh["StandardOutPath"] == f"{log_root}/market-data-refresh.log"
 assert refresh["StandardErrorPath"] == f"{log_root}/market-data-refresh.error.log"
+assert refresh["EnvironmentVariables"] == {
+    "PORTFOLIO_OPS_LOCAL_DATABASE_URL": "postgresql+psycopg://local@127.0.0.1:5432/test",
+    "PORTFOLIO_OPS_LOCAL_REFRESH_HOUR": "21",
+    "PORTFOLIO_OPS_LOCAL_REFRESH_MINUTE": "0",
+    "PORTFOLIO_OPS_LOCAL_REFRESH_RETRY_HOUR": "23",
+    "PORTFOLIO_OPS_LOCAL_REFRESH_RETRY_MINUTE": "0",
+}
 assert refresh_path.stat().st_mode & 0o777 == 0o600
 PY
 

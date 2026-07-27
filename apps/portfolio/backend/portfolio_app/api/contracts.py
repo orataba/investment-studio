@@ -1564,7 +1564,10 @@ class ResearchSolvedResultRowRecord(BaseModel):
     label: str
     top_sleeve_id: str | None = None
     top_sleeve_label: str
+    current_weight: float | None = None
     solved_weight: float | None = None
+    current_value_base: float | None = None
+    target_value_base: float | None = None
     target_risk_share: float | None = None
     forward_risk_contribution: float | None = None
 
@@ -1572,7 +1575,10 @@ class ResearchSolvedResultRowRecord(BaseModel):
 class ResearchSolvedResultGroupRecord(BaseModel):
     top_sleeve_id: str | None = None
     top_sleeve_label: str
+    current_weight: float | None = None
     solved_weight: float | None = None
+    current_value_base: float | None = None
+    target_value_base: float | None = None
     target_risk_share: float | None = None
     forward_risk_contribution: float | None = None
     min_weight: float | None = None
@@ -1628,6 +1634,7 @@ class ResearchTargetWeightGapRecord(BaseModel):
     target_weight: float | None = None
     gap: float | None = None
     current_value_base: float | None = None
+    target_value_base: float | None = None
     base_currency: str
     action: str
     research_lifecycle: ResearchLifecycle | None = None

@@ -336,6 +336,60 @@ def test_retry_timeout_keeps_failed_result_and_continues_to_next_item(monkeypatc
     }
 
 
+def test_retry_exception_keeps_failed_result_and_continues_to_next_item(
+    monkeypatch,
+) -> None:
+    calls: list[str] = []
+
+    def fake_refresh_with_timeout(**kwargs):  # type: ignore[no-untyped-def]
+        instrument_id = kwargs["instrument_id"]
+        calls.append(instrument_id)
+        if instrument_id == "fund-conflict":
+            raise ValueError("conflicting provider observations")
+        return {
+            "instrument_id": instrument_id,
+            "instrument_name": instrument_id,
+            "instrument_type": "fund",
+            "source_settings": {
+                "source_mode": "api",
+                "source_api_profile": "tushare",
+            },
+            "refresh_status": {
+                "status": "refreshed",
+                "message": "updated",
+            },
+        }
+
+    monkeypatch.setattr(
+        scheduled_refresh,
+        "refresh_market_data_with_timeout",
+        fake_refresh_with_timeout,
+    )
+    results = [
+        {**_updated_result("fund-conflict", "fund"), "status": "failed"},
+        {**_updated_result("fund-next", "fund"), "status": "failed"},
+    ]
+
+    retried = scheduled_refresh._retry_failed_results(
+        channel="tushare",
+        results=results,
+        updated_by="pytest",
+        full_history=False,
+        retry_attempts=1,
+    )
+
+    assert calls == ["fund-conflict", "fund-next"]
+    assert {item["instrument_id"]: item["status"] for item in retried} == {
+        "fund-conflict": "failed",
+        "fund-next": "refreshed",
+    }
+    assert "ValueError: conflicting provider observations" in next(
+        item["message"]
+        for item in retried
+        if item["instrument_id"] == "fund-conflict"
+    )
+
+
 def test_email_failures_retry_one_mailbox_batch_not_once_per_failed_item(
     monkeypatch,
 ) -> None:

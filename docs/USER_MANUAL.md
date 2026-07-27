@@ -88,6 +88,9 @@ Portfolio Operations Workbench 分为三块：
 指数维护 close 序列：
 
 - close 用于 Watchlist 指数 performance/risk 字段。
+- close 本身不代表价格收益或全收益；必须按指数官方口径在 source settings 中维护
+  `return_semantics=price_return` 或 `return_semantics=total_return`。无法确认时保持 Unknown，
+  系统不会据此计算 benchmark-relative 指标。
 - close 日期越完整，YTD、MTD、1M、年化收益、回撤、波动率和 Sharpe 越可靠。
 
 FX 维护 spot：
@@ -157,7 +160,7 @@ Watchlist 的字段来自 field registry 和 instrument attributes。字段可�
 - Research：维护人工评级、研究结论、research overview 和时间线 notes。
 - Monitoring：查看需要关注的缺失数据、标签、刷新任务和监控判断。
 
-在 Quote / Performance / Risk 中选择 benchmark 后，图表会展示基金与 benchmark 的相对表现。benchmark 本身也必须有可用行情，否则只显示基金自身数据。
+在 Quote / Performance / Risk 中选择 benchmark 后，图表会展示基金与 benchmark 的相对表现。benchmark 本身必须有可用行情，且双方收益语义必须明确并一致；否则只保留可验证的独立展示，不计算相对统计。
 
 ### 5.7 指数详情页
 

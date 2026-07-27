@@ -130,6 +130,13 @@ export function normalizeCumulativeReturn(window: ReturnWindow) {
   }))
 }
 
+export function cumulativeReturnPercentToGrowthIndex100(points: FundChartPoint[]) {
+  return points.map((point) => ({
+    date: point.date,
+    value: 100 + point.value,
+  }))
+}
+
 export function periodReturnPercent(window: ReturnWindow) {
   const first = window.points[0]
   const last = window.points[window.points.length - 1]

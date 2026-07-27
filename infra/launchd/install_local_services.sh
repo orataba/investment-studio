@@ -18,6 +18,8 @@ BUILD_FRONTENDS="${BUILD_FRONTENDS:-true}"
 DATABASE_URL="${PORTFOLIO_OPS_LOCAL_DATABASE_URL:-}"
 REFRESH_HOUR="${PORTFOLIO_OPS_LOCAL_REFRESH_HOUR:-21}"
 REFRESH_MINUTE="${PORTFOLIO_OPS_LOCAL_REFRESH_MINUTE:-0}"
+REFRESH_RETRY_HOUR="${PORTFOLIO_OPS_LOCAL_REFRESH_RETRY_HOUR:-23}"
+REFRESH_RETRY_MINUTE="${PORTFOLIO_OPS_LOCAL_REFRESH_RETRY_MINUTE:-0}"
 HEALTH_ATTEMPTS="${PORTFOLIO_OPS_INSTALL_HEALTH_ATTEMPTS:-30}"
 
 PYTHON_BIN="${PYTHON_BIN:-$PROJECT_ROOT/.venv/bin/python}"
@@ -74,6 +76,19 @@ if [[ ! "$REFRESH_HOUR" =~ ^[0-9]+$ || "$REFRESH_HOUR" -gt 23 ]]; then
 fi
 if [[ ! "$REFRESH_MINUTE" =~ ^[0-9]+$ || "$REFRESH_MINUTE" -gt 59 ]]; then
   echo "PORTFOLIO_OPS_LOCAL_REFRESH_MINUTE must be an integer between 0 and 59." >&2
+  exit 64
+fi
+if [[ ! "$REFRESH_RETRY_HOUR" =~ ^[0-9]+$ || "$REFRESH_RETRY_HOUR" -gt 23 ]]; then
+  echo "PORTFOLIO_OPS_LOCAL_REFRESH_RETRY_HOUR must be an integer between 0 and 23." >&2
+  exit 64
+fi
+if [[ ! "$REFRESH_RETRY_MINUTE" =~ ^[0-9]+$ || "$REFRESH_RETRY_MINUTE" -gt 59 ]]; then
+  echo "PORTFOLIO_OPS_LOCAL_REFRESH_RETRY_MINUTE must be an integer between 0 and 59." >&2
+  exit 64
+fi
+if (( 10#$REFRESH_RETRY_HOUR * 60 + 10#$REFRESH_RETRY_MINUTE \
+    <= 10#$REFRESH_HOUR * 60 + 10#$REFRESH_MINUTE )); then
+  echo "The refresh retry time must be later than the primary refresh time." >&2
   exit 64
 fi
 if [[ "$BUILD_FRONTENDS" != "true" && "$BUILD_FRONTENDS" != "false" ]]; then
@@ -281,7 +296,9 @@ PORTFOLIO_OPS_LOCAL_DATABASE_URL="$DATABASE_URL" \
   --log-dir "$LOG_DIR" \
   --env-root "$ENV_ROOT" \
   --refresh-hour "$REFRESH_HOUR" \
-  --refresh-minute "$REFRESH_MINUTE"
+  --refresh-minute "$REFRESH_MINUTE" \
+  --refresh-retry-hour "$REFRESH_RETRY_HOUR" \
+  --refresh-retry-minute "$REFRESH_RETRY_MINUTE"
 
 domain="gui/$UID"
 for service in "${services[@]}"; do

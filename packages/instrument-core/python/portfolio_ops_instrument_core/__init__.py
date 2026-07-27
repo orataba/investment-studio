@@ -55,6 +55,12 @@ from portfolio_ops_instrument_core.fx_contract import (
     parse_positive_fx_rate,
     validate_fx_market_data_contract,
 )
+from portfolio_ops_instrument_core.return_semantics import (
+    CONFIRMED_TOTAL_RETURN_QUOTE_BASES,
+    INDEX_LEVEL_QUOTE_BASES,
+    confirmed_total_return_quote_bases,
+    resolve_quote_return_semantics,
+)
 
 __all__ = [
     "CorporateActionEvent",
@@ -110,4 +116,8 @@ __all__ = [
     "normalize_fx_currency",
     "parse_positive_fx_rate",
     "validate_fx_market_data_contract",
+    "CONFIRMED_TOTAL_RETURN_QUOTE_BASES",
+    "INDEX_LEVEL_QUOTE_BASES",
+    "confirmed_total_return_quote_bases",
+    "resolve_quote_return_semantics",
 ]

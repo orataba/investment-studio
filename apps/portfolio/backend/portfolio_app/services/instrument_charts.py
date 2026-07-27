@@ -6,6 +6,7 @@ from decimal import Decimal, InvalidOperation
 from math import sqrt
 
 from portfolio_app.services.calculation_frequency import CalculationFrequency, period_end_date
+from portfolio_ops_instrument_core import resolve_quote_return_semantics
 from portfolio_app.services.instrument_registry import get_registry_instrument_detail
 from portfolio_app.services.market_data import (
     analytical_return_quote_bases,
@@ -50,10 +51,6 @@ DAYS_PER_YEAR = 365.25
 RAW_SPLIT_SENSITIVE_BASES = frozenset({"close", "last"})
 TREND_RETURN_WINDOWS: tuple[str, ...] = ("1w", "mtd", "ytd", "1y")
 SUPPORTED_SPLIT_FRACTION_TREATMENTS = frozenset({"exact", "truncate", "round_half_up"})
-CONFIRMED_TOTAL_RETURN_BASES = frozenset({"adjusted_close", "total_return_nav"})
-PRICE_RETURN_BASES = frozenset(
-    {"last", "close", "official_nav", "spot", "clean_price", "dirty_price", "par"}
-)
 
 
 @dataclass(frozen=True)
@@ -81,21 +78,12 @@ def chart_return_semantics(
     return, while raw close for an ordinary price index remains price return.
     """
 
-    normalized_basis = str(selected_basis or "").strip().lower()
-    if normalized_basis in CONFIRMED_TOTAL_RETURN_BASES:
-        return "total_return"
-
-    instrument_type = str(detail.get("instrument_type") or "").strip().lower()
     source_settings = detail.get("source_settings")
-    configured_semantics = (
-        str(source_settings.get("return_semantics") or "unknown").strip().lower()
-        if isinstance(source_settings, dict)
-        else "unknown"
+    return resolve_quote_return_semantics(
+        instrument_type=detail.get("instrument_type"),
+        quote_basis=selected_basis,
+        source_settings=source_settings if isinstance(source_settings, dict) else None,
     )
-    if instrument_type == "index" and normalized_basis in PRICE_RETURN_BASES:
-        if configured_semantics in {"price_return", "total_return"}:
-            return configured_semantics
-    return "unknown"
 
 
 def _empty_trend_coverage() -> dict[str, object]:

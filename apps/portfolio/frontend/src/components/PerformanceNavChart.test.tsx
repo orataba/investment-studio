@@ -25,23 +25,20 @@ function renderOverviewChart(
 }
 
 describe('PerformanceNavChart Overview TWR boundaries', () => {
-  it('keeps the first visible return when the series has no explicit 100 base point', () => {
-    const backendWindowCumulativeTwr = -0.01
+  it('rebases the first visible TWR point to 100', () => {
     renderOverviewChart([
       { date: '2026-07-01', value: 90 },
       { date: '2026-07-15', value: 99 },
     ])
 
-    expect(screen.getByText('Period TWR -1.00%')).toBeInTheDocument()
+    expect(screen.getByText('Period TWR +10.00%')).toBeInTheDocument()
     expect(
-      within(screen.getByRole('img', { name: 'TWR Return trend' })).getByText('99.00'),
+      within(screen.getByRole('img', { name: 'TWR Return trend' })).getByText('110.00'),
     ).toBeInTheDocument()
-    expect(screen.getByText('Based on TWR · Max -10.00%')).toBeInTheDocument()
-    expect(backendWindowCumulativeTwr).toBeCloseTo(99 / 100 - 1)
+    expect(screen.getByText('Based on TWR · Max 0.00%')).toBeInTheDocument()
   })
 
-  it('uses the cumulative point before a zoomed window for period TWR and drawdown', () => {
-    const backendWindowCumulativeTwr = -0.01
+  it('rebases a zoomed window independently to 100', () => {
     renderOverviewChart([
       { date: '2026-05-31', value: 100 },
       { date: '2026-06-30', value: 110 },
@@ -55,15 +52,14 @@ describe('PerformanceNavChart Overview TWR boundaries', () => {
       target: { value: '2' },
     })
 
-    expect(screen.getByText('Period TWR -1.00%')).toBeInTheDocument()
+    expect(screen.getByText('Period TWR +10.00%')).toBeInTheDocument()
     expect(
-      within(screen.getByRole('img', { name: 'TWR Return trend' })).getByText('108.90'),
+      within(screen.getByRole('img', { name: 'TWR Return trend' })).getByText('110.00'),
     ).toBeInTheDocument()
-    expect(screen.getByText('Based on TWR · Max -10.00%')).toBeInTheDocument()
-    expect(backendWindowCumulativeTwr).toBeCloseTo(108.9 / 110 - 1)
+    expect(screen.getByText('Based on TWR · Max 0.00%')).toBeInTheDocument()
   })
 
-  it('keeps the benchmark first visible return by using the quote before the window', () => {
+  it('rebases the benchmark first visible point to 100', () => {
     renderOverviewChart(
       [
         { date: '2026-07-01', value: 110 },
@@ -76,7 +72,7 @@ describe('PerformanceNavChart Overview TWR boundaries', () => {
       ],
     )
 
-    expect(screen.getByText('Period +21.00%')).toBeInTheDocument()
+    expect(screen.getByText('Period +10.00%')).toBeInTheDocument()
   })
 
   it('renders each short-window date tick once', () => {

@@ -280,6 +280,7 @@ def test_listed_index_policy_can_select_close_over_stale_total_return_series() -
     )
 
     shared_instrument = {
+        "source_settings": {"return_semantics": "price_return"},
         "quote_selection_policy": {
             "total_return": ["close", "adjusted_close", "total_return_nav", "official_nav"],
             "chart": ["close", "adjusted_close", "total_return_nav", "official_nav"],
@@ -373,6 +374,67 @@ def test_listed_index_policy_can_select_close_over_stale_total_return_series() -
         date(2026, 6, 25),
     ]
     assert [point["value"] for point in selection["points"]] == [1.8, 1.867]
+
+
+def test_total_return_index_close_preserves_field_identity_and_return_semantics() -> None:
+    from watchlist_app.services.canonical_recalc import (
+        _group_shared_nav_rows,
+        _rows_with_selected_series,
+        _select_quote_series,
+        _shared_quote_points_by_basis,
+    )
+
+    shared_instrument = {
+        "instrument_type": "index",
+        "source_settings": {"return_semantics": "total_return"},
+        "quote_selection_policy": {
+            "total_return": ["close"],
+            "chart": ["close"],
+        },
+    }
+    market_data = [
+        {
+            "metric_family": "price",
+            "quote_basis": "close",
+            "as_of_date": "2026-06-24",
+            "value": "260.0000",
+            "currency": "CNY",
+            "status": "complete",
+        },
+        {
+            "metric_family": "price",
+            "quote_basis": "close",
+            "as_of_date": "2026-06-25",
+            "value": "261.0000",
+            "currency": "CNY",
+            "status": "complete",
+        },
+    ]
+    points_by_basis = _shared_quote_points_by_basis(
+        market_data,
+        expected_currency="CNY",
+    )
+
+    selection = _select_quote_series(
+        points_by_basis,
+        shared_instrument=shared_instrument,
+        role="total_return",
+        preference="auto",
+        instrument_type="index",
+    )
+    rows = _rows_with_selected_series(
+        _group_shared_nav_rows(market_data, expected_currency="CNY"),
+        selection,
+    )
+
+    assert selection["selected_quote_basis"] == "close"
+    assert selection["selected_metric_family"] == "price"
+    assert selection["nav_basis_type"] == "nav_with_dividend"
+    assert selection["return_kind"] == "total_return"
+    assert selection["selected_series_label"] == "Close · Total Return"
+    assert rows[-1]["nav"] is None
+    assert rows[-1]["nav_with_dividend"] == pytest.approx(261.0)
+    assert rows[-1]["basis_metadata"]["nav_with_dividend"]["quote_basis"] == "close"
 
 
 def test_quote_selection_rejects_partial_and_identity_mismatched_points() -> None:
@@ -1270,6 +1332,7 @@ def test_index_close_series_calculates_watchlist_performance_metrics(
             "instrument_name": "Close Only Index",
             "instrument_type": "index",
             "currency": "USD",
+            "source_settings": {"return_semantics": "price_return"},
             "quote_selection_policy": canonical_quote_policy("index"),
             "identifiers": [
                 {
@@ -1487,7 +1550,7 @@ def test_instrument_detail_payload_exposes_weekly_calculation_frequency(
     risk_response = client.get("/api/instruments/weekly-risk-fund/risk")
     assert risk_response.status_code == 200
     risk_payload = risk_response.json()
-    assert risk_payload["snapshot_metadata"]["methodology_version"] == "canonical-risk/v3"
+    assert risk_payload["snapshot_metadata"]["methodology_version"] == "canonical-risk/v4"
     assert risk_payload["calculation_frequency_profile"]["resolved_frequency"] == "weekly"
     assert risk_payload["calculation_frequency_profile"]["annualization_periods_per_year"] == pytest.approx(
         52.178571,

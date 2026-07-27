@@ -79,9 +79,11 @@ import {
   buildNavQuoteBasisSeries,
   filterNavQuoteRowsByCurrency,
   normalizeNavQuoteCurrency,
+  returnKindsAreComparable,
   type NavQuoteBasis,
 } from '../lib/navQuoteBasis'
 import {
+  cumulativeReturnPercentToGrowthIndex100,
   namedReturnWindowSpec,
   normalizeCumulativeReturn,
   resolveReturnWindow,
@@ -4776,8 +4778,14 @@ export default function FundDetailPage({
   const benchmarkSelectedCalculationBasis = resolvePreferredQuoteBasis(
     benchmarkNavSeries?.nav_basis_type,
   )
+  const calculationReturnKindsComparable = returnKindsAreComparable(
+    navSeries.return_kind,
+    benchmarkNavSeries?.return_kind,
+  )
   const benchmarkCalculationSeries =
-    selectedCalculationBasis && benchmarkSelectedCalculationBasis === selectedCalculationBasis
+    selectedCalculationBasis &&
+    benchmarkSelectedCalculationBasis === selectedCalculationBasis &&
+    calculationReturnKindsComparable
     ? buildBasisSeries(
         benchmarkSourceRows.filter((row) => row.calculation_included),
         selectedCalculationBasis,
@@ -4791,7 +4799,8 @@ export default function FundDetailPage({
   const benchmarkCalculationUnavailable =
     hasBenchmarkSelection &&
     !benchmarkCurrencyUnavailable &&
-    (benchmarkSelectedCalculationBasis !== selectedCalculationBasis ||
+    (!calculationReturnKindsComparable ||
+      benchmarkSelectedCalculationBasis !== selectedCalculationBasis ||
       benchmarkCalculationSeries.length === 0)
   const rawCompareDateWindow = hasBenchmarkSelection
     ? buildCommonDateWindow(navBasisSeries, benchmarkNavBasisSeries)
@@ -4880,8 +4889,8 @@ export default function FundDetailPage({
       ? selectedSeriesLabel
       : localize(language, QUOTE_BASIS_LABELS[activeQuoteBasis])
   const activeReturnKind =
-    activeQuoteBasis === selectedNavBasis && navSeries.return_kind
-      ? navSeries.return_kind
+    activeQuoteBasis === selectedNavBasis
+      ? navSeries.return_kind || 'unknown'
       : activeQuoteBasis === 'nav_with_dividend'
         ? 'total_return'
         : detailKind === 'index'
@@ -4892,7 +4901,9 @@ export default function FundDetailPage({
       ? 'Cumulative Total Return'
       : activeReturnKind === 'price_return'
         ? 'Cumulative Price Return'
-        : 'Cumulative Unit NAV Return'
+        : activeReturnKind === 'unit_nav_return'
+          ? 'Cumulative Unit NAV Return'
+          : 'Cumulative Return · Semantics Unconfirmed'
   const latestReturnSegmentBreak =
     navSeries.return_segment_breaks[navSeries.return_segment_breaks.length - 1]
   const hasUnconfirmedReturnSegmentBreak =
@@ -5287,8 +5298,8 @@ export default function FundDetailPage({
     getDocumentRecordText(row, 'file_name') || getDocumentRecordText(row, 'title') || '—'
   const getDocumentRecordNotes = (row: Record<string, unknown>) => getDocumentRecordText(row, 'notes')
   const currentDocumentRows = documents.current_documents || []
-  const scaledVisibleSeries = chartNavSeries
-  const scaledBenchmarkVisibleSeries = chartBenchmarkSeries
+  const scaledVisibleSeries = cumulativeReturnPercentToGrowthIndex100(chartNavSeries)
+  const scaledBenchmarkVisibleSeries = cumulativeReturnPercentToGrowthIndex100(chartBenchmarkSeries)
   const combinedScaledSeries = [...scaledVisibleSeries, ...scaledBenchmarkVisibleSeries]
   const chartWindowTickDates = getChartAxisTicksForWindow(chartDateWindow.start, chartDateWindow.end, 8)
   const chartTickDates =
@@ -7539,7 +7550,7 @@ export default function FundDetailPage({
                 ) : null}
                 {benchmarkCalculationUnavailable && !benchmarkBasisUnavailable ? (
                   <div className="instrument-quote-action-notice" role="status">
-                    Benchmark calculation unavailable because its selected NAV basis does not match the fund calculation basis.
+                    Benchmark calculation unavailable because its return semantics are unconfirmed or do not match the selected calculation return basis.
                   </div>
                 ) : null}
                 {hasUnconfirmedReturnSegmentBreak ? (
@@ -7576,7 +7587,7 @@ export default function FundDetailPage({
                       </div>
                       <div className="instrument-chart-series-meta">
                         <span>
-                          Anchor {formatDate(fundReturnWindow?.anchorDate)} → {formatDate(fundReturnWindow?.endDate)}
+                          Growth Index · Base 100 · Anchor {formatDate(fundReturnWindow?.anchorDate)} → {formatDate(fundReturnWindow?.endDate)}
                         </span>
                         <div className="instrument-chart-menu instrument-chart-settings-menu" ref={quoteChartMenuRef}>
                           <button
@@ -7681,7 +7692,7 @@ export default function FundDetailPage({
                               x={String(getYAxisStubEndX(PRIMARY_CHART_GEOMETRY))}
                               y={getYAxisLabelTextY(projectedY, PRIMARY_CHART_GEOMETRY, isBottomTick ? 'above' : 'below')}
                             >
-                              {formatPercent(tick)}
+                              {formatNumber(tick, 2)}
                             </text>
                           </g>
                         )

@@ -117,6 +117,8 @@ def _public_holdings_workspace_response(
     workspace: dict[str, object],
     *,
     include_details: bool,
+    transactions: list[dict[str, object]],
+    as_of_date: date,
 ) -> dict[str, object]:
     rows = workspace.get("rows")
     row_items = rows if isinstance(rows, list) else []
@@ -141,6 +143,8 @@ def _public_holdings_workspace_response(
         corporate_action_quality_warnings(
             instrument_types,
             instrument_ids,
+            transactions=transactions,
+            as_of_date=as_of_date,
         )
         + (
             instrument_event_task_quality_warnings(portfolio_id)
@@ -457,6 +461,7 @@ def holdings_workspace(
     )
     resolved_as_of_date = as_of_date or portfolio_as_of_date or date.today()
     resolved_portfolio_id = str(resolved_portfolio["portfolio_id"])
+    transactions = list_transactions(resolved_portfolio_id)
     risk_policy = get_portfolio_risk_policy(resolved_portfolio_id)
     requested_risk_frequency = str((risk_policy or {}).get("calculation_frequency") or "auto")
     materialized_workspace = get_cached_materialized_holdings_workspace(
@@ -491,12 +496,17 @@ def holdings_workspace(
                 return _public_holdings_workspace_response(
                     enriched_response,
                     include_details=include_details,
+                    transactions=transactions,
+                    as_of_date=resolved_as_of_date,
                 )
             accounts = list_accounts(resolved_portfolio_id)
             position_lots = build_position_lots(
                 resolved_portfolio_id,
                 accounts,
-                list_transactions(resolved_portfolio_id, end_date=resolved_as_of_date),
+                list_transactions(
+                    resolved_portfolio_id,
+                    end_date=resolved_as_of_date,
+                ),
                 as_of_date=resolved_as_of_date,
             )
             response = _enrich_holdings_workspace_market_data(
@@ -515,17 +525,21 @@ def holdings_workspace(
             return _public_holdings_workspace_response(
                 enriched_response,
                 include_details=include_details,
+                transactions=transactions,
+                as_of_date=resolved_as_of_date,
             )
         except InstrumentRegistryError as error:
             raise HTTPException(status_code=502, detail=str(error)) from error
 
     accounts = list_accounts(resolved_portfolio_id)
-    transactions = list_transactions(resolved_portfolio_id)
     try:
         position_lots = build_position_lots(
             resolved_portfolio_id,
             accounts,
-            list_transactions(resolved_portfolio_id, end_date=resolved_as_of_date),
+            list_transactions(
+                resolved_portfolio_id,
+                end_date=resolved_as_of_date,
+            ),
             as_of_date=resolved_as_of_date,
         )
         holding_start_dates = _holding_start_dates_by_instrument(position_lots)
@@ -706,6 +720,8 @@ def holdings_workspace(
     return _public_holdings_workspace_response(
         enriched_response,
         include_details=include_details,
+        transactions=transactions,
+        as_of_date=resolved_as_of_date,
     )
 
 
@@ -750,6 +766,12 @@ def instrument_holding_projection(
         corporate_action_quality_warnings(
             instrument_types,
             instrument_ids,
+            transactions=list_transactions(resolved_portfolio_id),
+            as_of_date=(
+                as_of_date
+                or _parse_iso_date(response.get("as_of_date"))
+                or date.today()
+            ),
         )
         + instrument_event_task_quality_warnings(resolved_portfolio_id)
     )

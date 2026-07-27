@@ -25,11 +25,21 @@ refresh_label="$LABEL_PREFIX.$refresh_service"
 refresh_plist="$LAUNCH_AGENTS_DIR/$refresh_label.plist"
 refresh_hour=21
 refresh_minute=0
+refresh_retry_hour=23
+refresh_retry_minute=0
 if [[ -f "$refresh_plist" && -x /usr/libexec/PlistBuddy ]]; then
-  refresh_hour="$(/usr/libexec/PlistBuddy -c 'Print :StartCalendarInterval:Hour' "$refresh_plist" 2>/dev/null || printf '21')"
-  refresh_minute="$(/usr/libexec/PlistBuddy -c 'Print :StartCalendarInterval:Minute' "$refresh_plist" 2>/dev/null || printf '0')"
+  if /usr/libexec/PlistBuddy -c 'Print :StartCalendarInterval:0:Hour' "$refresh_plist" >/dev/null 2>&1; then
+    refresh_hour="$(/usr/libexec/PlistBuddy -c 'Print :StartCalendarInterval:0:Hour' "$refresh_plist")"
+    refresh_minute="$(/usr/libexec/PlistBuddy -c 'Print :StartCalendarInterval:0:Minute' "$refresh_plist")"
+    refresh_retry_hour="$(/usr/libexec/PlistBuddy -c 'Print :StartCalendarInterval:1:Hour' "$refresh_plist")"
+    refresh_retry_minute="$(/usr/libexec/PlistBuddy -c 'Print :StartCalendarInterval:1:Minute' "$refresh_plist")"
+  else
+    refresh_hour="$(/usr/libexec/PlistBuddy -c 'Print :StartCalendarInterval:Hour' "$refresh_plist" 2>/dev/null || printf '21')"
+    refresh_minute="$(/usr/libexec/PlistBuddy -c 'Print :StartCalendarInterval:Minute' "$refresh_plist" 2>/dev/null || printf '0')"
+  fi
 fi
-printf -v refresh_schedule '%02d:%02d local' "$refresh_hour" "$refresh_minute"
+printf -v refresh_schedule '%02d:%02d primary, %02d:%02d conditional retry (local)' \
+  "$refresh_hour" "$refresh_minute" "$refresh_retry_hour" "$refresh_retry_minute"
 if details="$(launchctl print "$domain/$refresh_label" 2>/dev/null)"; then
   state="$(sed -n 's/^[[:space:]]*state = //p' <<<"$details" | head -n 1)"
   pid="$(awk '/^[[:space:]]*pid = / { print $3; exit }' <<<"$details")"

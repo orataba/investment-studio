@@ -51,18 +51,21 @@ PORTFOLIO_OPS_LOCAL_DATABASE_URL='postgresql+psycopg://portfolio_ops@127.0.0.1:5
   infra/launchd/install_local_services.sh
 ```
 
-`StartCalendarInterval` 使用 macOS 当前系统时区。电脑在 `21:00` 处于睡眠状态时，
-`launchd` 会在下次唤醒后补跑一次，并把睡眠期间错过的多个触发合并成一次。
+`StartCalendarInterval` 使用 macOS 当前系统时区。任务每天 `21:00` 正常运行；
+若该批次没有完整成功，则 `23:00` 自动补跑一次。`21:00` 已成功时，`23:00`
+只检查原子运行状态并退出，不会重复扫描或重算。电脑在计划时间处于睡眠状态时，
+`launchd` 会在下次唤醒后补跑，并把睡眠期间错过的多个触发合并。
 用户已注销或电脑关机时，用户级 LaunchAgent 没有加载；重新登录会由
-`RunAtLoad` 执行一次完整刷新，并继续等待下一个 `21:00`。锁屏但未注销不影响调度。
+`RunAtLoad` 按同一补跑状态判断是否需要执行，并继续等待后续计划。锁屏但未注销不影响调度。
 
 定时任务依次按 Tushare、邮件通道增量刷新，再协调方法版本落后的私募基金投影；失败条目会先重试两次。成功
 写入后，Portfolio 快照刷新会在请求内同步完成，FX 变化会刷新所有组合；Watchlist
 请求负责可靠地持久化或复用重算 job，后台 worker 随后异步完成实际物化。
 任务通过 `fcntl` 非阻塞锁避免同一个 scheduled 脚本从 launchd 或终端重叠运行，
-进程退出或崩溃时内核会自动释放锁。单项刷新失败、下游请求失败或任务异常都会
-留下非零退出状态和原子写入的运行摘要，`KeepAlive=false` 因而不会形成无限重启
-循环，下一个日历触发仍会正常运行。若 PostgreSQL 正在启动或短暂不可用，任务默认
+进程退出或崩溃时内核会自动释放锁。单项刷新失败、下游请求失败、审计失败或任务异常都会
+留下非零退出状态、原子写入的刷新摘要及 `var/market-data-refresh-run-state.json`
+运行状态，`KeepAlive=false` 因而不会形成无限重启循环；`23:00` 最多补跑一次，
+之后等待下一天计划。若 PostgreSQL 正在启动或短暂不可用，任务默认
 等待最多 300 秒再退出；可用 `PORTFOLIO_OPS_LOCAL_REFRESH_DATABASE_WAIT_SECONDS`
 和 `PORTFOLIO_OPS_LOCAL_REFRESH_DATABASE_RETRY_INTERVAL_SECONDS` 调整等待时间与间隔。
 

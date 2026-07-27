@@ -55,6 +55,7 @@ from portfolio_app.services.research_solver import (
     _solve_current_scope,
     _solve_risk_budget_problem,
     _solve_risk_budget_weights,
+    _top_sleeve_for_member,
     build_current_target_backtest,
     research_window_start_date,
 )
@@ -204,6 +205,36 @@ def test_risk_target_resolution_excludes_cash_but_preserves_capital_context() ->
     assert cash_row["target_weight"] == pytest.approx(0.2)
     assert cash_row["selected_value"] is None
     assert cash_row["target_risk_share"] is None
+
+
+def test_cash_is_rendered_as_cash_instead_of_unassigned() -> None:
+    state = TaxonomyResearchState(
+        portfolio_id="portfolio-cash-label",
+        planning_taxonomy_id="taxonomy-cash-label",
+        taxonomy_name="Planning",
+        root_default_target_dimension="risk_budget",
+        base_currency="USD",
+        as_of_date=date(2026, 1, 2),
+        node_by_id={},
+        children_by_parent={},
+        node_path_by_id={},
+        node_depth_by_id={},
+        node_subtree_by_id={},
+        direct_assignments_by_node={},
+        target_sets_by_scope_type={},
+        target_lines_by_set_id={},
+        account_name_by_id={},
+        instrument_detail_cache={},
+        direct_fx_instruments={},
+        frozen_taxonomy_node_ids=frozenset(),
+        top_sleeve_weight_bounds={},
+    )
+
+    assert _top_sleeve_for_member(
+        state,
+        member_type=TARGET_MEMBER_CASH,
+        member_id=SYSTEM_CASH_TARGET_MEMBER_ID,
+    ) == (SYSTEM_CASH_TARGET_MEMBER_ID, SYSTEM_CASH_TARGET_LABEL, SYSTEM_CASH_TARGET_LABEL)
 
 
 def test_risk_target_resolution_is_unavailable_for_cash_only_scope() -> None:
@@ -2346,10 +2377,12 @@ def test_current_holding_with_zero_solved_target_requires_manual_review() -> Non
                 "member_id": "short-history-fund",
                 "label": "Short History Fund",
                 "current_weight": 0.08,
+                "current_value_base": 80.0,
                 "target_weight": 0.0,
             }
         ],
         base_currency="CNY",
+        scope_value_base=1_000.0,
     )
 
     assert gaps == [
@@ -2360,7 +2393,8 @@ def test_current_holding_with_zero_solved_target_requires_manual_review() -> Non
             "current_weight": pytest.approx(0.08),
             "target_weight": pytest.approx(0.0),
             "gap": pytest.approx(-0.08),
-            "current_value_base": None,
+            "current_value_base": pytest.approx(80.0),
+            "target_value_base": pytest.approx(0.0),
             "base_currency": "CNY",
             "action": "Review",
             "execution_status": "manual_review_required",
@@ -2468,10 +2502,16 @@ def test_research_run_creates_current_target_weight_outputs(client):
     assert len(run_payload["detail"]["solved_result_groups"]) == 1
     solved_group = run_payload["detail"]["solved_result_groups"][0]
     assert solved_group["top_sleeve_label"] == "Risk Assets"
+    assert solved_group["current_weight"] is not None
+    assert solved_group["current_value_base"] is not None
+    assert solved_group["target_value_base"] is not None
     solved_rows_by_member = {item["member_id"]: item for item in solved_group["rows"]}
     assert set(solved_rows_by_member) == {"equity-us-abbv", "fund-hk-2800"}
     assert solved_rows_by_member["equity-us-abbv"]["target_risk_share"] is None
     assert solved_rows_by_member["fund-hk-2800"]["target_risk_share"] == pytest.approx(1.0)
+    assert all(item["current_weight"] is not None for item in solved_rows_by_member.values())
+    assert all(item["current_value_base"] is not None for item in solved_rows_by_member.values())
+    assert all(item["target_value_base"] is not None for item in solved_rows_by_member.values())
     member_targets_by_label = {item["label"]: item for item in run_payload["detail"]["member_targets"]}
     assert member_targets_by_label["Defensive Equity"]["configured_risk_share"] == pytest.approx(0.45)
     assert member_targets_by_label["Hong Kong Beta"]["configured_risk_share"] == pytest.approx(0.55)
@@ -2489,6 +2529,8 @@ def test_research_run_creates_current_target_weight_outputs(client):
     assert all(item["source_label"] in {"TAA", "SAA", "Single Member"} for item in run_payload["detail"]["target_rows"])
     assert run_payload["detail"]["solve_event"]["as_of_date"] == "2026-04-15"
     assert len(run_payload["detail"]["target_weight_gaps"]) >= 1
+    assert all(item["current_value_base"] is not None for item in run_payload["detail"]["target_weight_gaps"])
+    assert all(item["target_value_base"] is not None for item in run_payload["detail"]["target_weight_gaps"])
     signal_labels = {item["label"] for item in run_payload["detail"]["signals"]}
     assert "Scope Default" in signal_labels
     assert "Solver" in signal_labels
@@ -2669,6 +2711,101 @@ def test_backtest_benchmark_returns_use_sampling_interval_returns() -> None:
     assert benchmark_returns["2026-04-03"] == pytest.approx(4440.7889 / 4491.95 - 1.0)
     assert benchmark_returns["2026-04-10"] == pytest.approx(4636.5655 / 4440.7889 - 1.0)
     assert benchmark_points[-1]["value"] == pytest.approx(4636.5655 / 4491.95)
+
+
+def test_research_benchmark_distinguishes_index_close_return_semantics() -> None:
+    benchmark_detail = {
+        "instrument_id": "index-benchmark",
+        "instrument_name": "Index Benchmark",
+        "instrument_type": "index",
+        "currency": "CNY",
+        "identifiers": [],
+        "source_settings": {"return_semantics": "price_return"},
+        "quote_selection_policy": {
+            "trading": ["close"],
+            "valuation": ["close"],
+            "total_return": ["close"],
+            "chart": ["close"],
+            "reference": ["close"],
+        },
+        "market_data": [
+            {
+                "metric_family": "price",
+                "quote_basis": "close",
+                "as_of_date": point_date,
+                "value": value,
+                "currency": "CNY",
+                "price_unit": "per_unit",
+                "price_scale": "1",
+                "status": "complete",
+            }
+            for point_date, value in (
+                ("2026-03-30", "100"),
+                ("2026-04-03", "101"),
+                ("2026-04-10", "102"),
+            )
+        ],
+    }
+    state = TaxonomyResearchState(
+        portfolio_id="portfolio-benchmark-semantics",
+        planning_taxonomy_id="taxonomy-benchmark-semantics",
+        taxonomy_name="Planning",
+        root_default_target_dimension="weight",
+        base_currency="CNY",
+        as_of_date=date(2026, 4, 10),
+        node_by_id={},
+        children_by_parent={},
+        node_path_by_id={},
+        node_depth_by_id={},
+        node_subtree_by_id={},
+        direct_assignments_by_node={},
+        target_sets_by_scope_type={},
+        target_lines_by_set_id={},
+        account_name_by_id={},
+        instrument_detail_cache={"index-benchmark": benchmark_detail},
+        direct_fx_instruments={},
+        frozen_taxonomy_node_ids=frozenset(),
+        top_sleeve_weight_bounds={},
+    )
+    portfolio_points = [
+        {"date": "2026-03-30", "value": 1.0},
+        {"date": "2026-04-03", "value": 1.01},
+        {"date": "2026-04-10", "value": 1.02},
+    ]
+
+    price_result = research_solver_service._build_backtest_benchmark_comparison_from_state(
+        state,
+        benchmark_instrument_id="index-benchmark",
+        portfolio_points=portfolio_points,
+    )
+
+    assert price_result["backtest_benchmark"]["points"]
+    assert price_result["backtest_relative_metrics"] is not None
+    assert price_result["backtest_benchmark"]["warnings"] == [
+        "index-benchmark uses a price-return series. Portfolio returns include income, "
+        "so excess return and relative statistics include that basis difference."
+    ]
+
+    benchmark_detail["source_settings"] = {"return_semantics": "unknown"}
+    unknown_result = research_solver_service._build_backtest_benchmark_comparison_from_state(
+        state,
+        benchmark_instrument_id="index-benchmark",
+        portfolio_points=portfolio_points,
+    )
+
+    assert unknown_result["backtest_benchmark"]["points"] == []
+    assert unknown_result["backtest_relative_metrics"] is None
+
+    benchmark_detail["source_settings"] = {"return_semantics": "total_return"}
+    total_return_result = research_solver_service._build_backtest_benchmark_comparison_from_state(
+        state,
+        benchmark_instrument_id="index-benchmark",
+        portfolio_points=portfolio_points,
+    )
+
+    assert total_return_result["backtest_benchmark"]["points"]
+    assert total_return_result["backtest_relative_metrics"] is not None
+    assert total_return_result["backtest_benchmark"]["warnings"] == []
 
 
 def test_backtest_weekly_sampling_uses_periodic_returns_for_daily_series() -> None:

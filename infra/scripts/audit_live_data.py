@@ -30,7 +30,7 @@ from portfolio_ops_instrument_core import (  # noqa: E402
 
 
 FINAL_FLAT_TABLE_HEAD_PAIR = ("20260717_0015", "20260716_0040")
-FUND_NAV_PROJECTION_METHOD_VERSION = "fund_nav_reinvestment_projection/v6"
+FUND_NAV_PROJECTION_METHOD_VERSION = "fund_nav_reinvestment_projection/v7"
 
 AUDIT_CHECK_NAMES = (
     "market_data_invalid_values",
@@ -40,6 +40,7 @@ AUDIT_CHECK_NAMES = (
     "market_data_fx_identity_contract",
     "market_data_logical_duplicates",
     "valuation_policy_total_return_basis",
+    "watchlist_index_return_semantics_contract",
     "fund_nav_current_projection_contract",
     "held_fund_recent_total_return_coverage",
     "portfolio_nav_reconciliation",
@@ -214,6 +215,7 @@ def _detect_schema_profile(cursor: psycopg.Cursor[Any]) -> SchemaProfile:
             "instrument_registry",
             "corporate_action_event",
         ),
+        "watchlist_chart": ("watchlist", "instrument_chart_read_model"),
         "target_set": ("portfolio", "target_set_record"),
         "target_line": ("portfolio", "target_set_line_record"),
         "taxonomy": ("portfolio", "taxonomy_record"),
@@ -233,6 +235,7 @@ def _detect_schema_profile(cursor: psycopg.Cursor[Any]) -> SchemaProfile:
         "holding",
         "instrument",
         "corporate_action",
+        "watchlist_chart",
         "target_set",
         "target_line",
         "taxonomy",
@@ -644,6 +647,80 @@ def _run_flat_table_audit(database_url: str) -> list[AuditCheck]:
             checks.append(
                 _count_check(
                     cursor,
+                    name="watchlist_index_return_semantics_contract",
+                    query="""
+                        WITH active_indices AS (
+                            SELECT
+                                instrument.instrument_id,
+                                lower(trim(coalesce(
+                                    instrument.source_settings_json::jsonb
+                                        ->> 'return_semantics',
+                                    ''
+                                ))) AS configured_return_kind
+                            FROM instrument_registry.instrument instrument
+                            WHERE instrument.instrument_type = 'index'
+                              AND coalesce(
+                                    instrument.lifecycle_state_json::jsonb ->> 'status',
+                                    'active'
+                                  ) = 'active'
+                        ), observed AS (
+                            SELECT
+                                active.instrument_id,
+                                active.configured_return_kind,
+                                chart.payload_json::jsonb
+                                    #>> '{selected_series,quote_basis}'
+                                    AS selected_quote_basis,
+                                chart.payload_json::jsonb
+                                    #>> '{selected_series,return_kind}'
+                                    AS published_return_kind,
+                                chart.payload_json::jsonb
+                                    #>> '{selected_series,basis_type}'
+                                    AS published_basis_type
+                            FROM active_indices active
+                            LEFT JOIN watchlist.instrument_chart_read_model chart
+                              ON chart.instrument_id = active.instrument_id
+                        ), expected AS (
+                            SELECT
+                                observed.*,
+                                CASE
+                                    WHEN selected_quote_basis IN (
+                                        'adjusted_close', 'total_return_nav'
+                                    ) THEN 'total_return'
+                                    WHEN selected_quote_basis IN ('close', 'last')
+                                      AND configured_return_kind IN (
+                                          'price_return', 'total_return'
+                                      ) THEN configured_return_kind
+                                    ELSE NULL
+                                END AS expected_return_kind
+                            FROM observed
+                        )
+                        SELECT count(*)
+                        FROM expected
+                        WHERE selected_quote_basis IS NULL
+                           OR published_return_kind
+                              IS DISTINCT FROM expected_return_kind
+                           OR (
+                                expected_return_kind = 'total_return'
+                                AND published_basis_type
+                                    IS DISTINCT FROM 'nav_with_dividend'
+                              )
+                           OR (
+                                expected_return_kind = 'price_return'
+                                AND published_basis_type IS DISTINCT FROM 'nav'
+                              )
+                    """,
+                    detail=(
+                        "Every active index Watchlist chart must preserve the Registry "
+                        "return semantics independently from its close/last field; confirmed "
+                        "total return maps to nav_with_dividend, confirmed price return maps "
+                        "to nav, and unknown semantics must remain unpublished so relative "
+                        "metrics fail closed."
+                    ),
+                )
+            )
+            checks.append(
+                _count_check(
+                    cursor,
                     name="fund_nav_current_projection_contract",
                     query=f"""
                         SELECT count(*)
@@ -651,10 +728,17 @@ def _run_flat_table_audit(database_url: str) -> list[AuditCheck]:
                         JOIN instrument_registry.fund_nav_projection_run run
                           ON run.fund_nav_projection_run_id =
                              current.fund_nav_projection_run_id
-                        WHERE run.instrument_id <> current.instrument_id
-                           OR run.method_version <>
-                              {FUND_NAV_PROJECTION_METHOD_VERSION_SQL}
-                           OR (
+                        JOIN instrument_registry.instrument instrument
+                          ON instrument.instrument_id=current.instrument_id
+                        WHERE coalesce(
+                                instrument.lifecycle_state_json ->> 'status',
+                                'active'
+                              ) = 'active'
+                          AND (
+                            run.instrument_id <> current.instrument_id
+                            OR run.method_version <>
+                               {FUND_NAV_PROJECTION_METHOD_VERSION_SQL}
+                            OR (
                                 run.projection_kind = 'event_derived'
                                 AND run.projection_status IN ('complete', 'partial')
                                 AND (
@@ -674,9 +758,10 @@ def _run_flat_table_audit(database_url: str) -> list[AuditCheck]:
                                       AND anchor.previous_fund_nav_adjustment_factor_id IS NULL
                                 ) <> 1
                               )
+                          )
                     """,
                     detail=(
-                        "Every current private-fund projection must use the deployed "
+                        "Every active fund current projection must use the deployed "
                         f"{FUND_NAV_PROJECTION_METHOD_VERSION} method; complete or "
                         "partial event-derived series require "
                         "one auditable unit-factor zero-cash or window-normalized anchor."

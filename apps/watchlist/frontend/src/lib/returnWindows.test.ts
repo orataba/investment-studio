@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import {
+  cumulativeReturnPercentToGrowthIndex100,
   namedReturnWindowSpec,
   normalizeCumulativeReturn,
   periodReturnPercent,
@@ -24,6 +25,15 @@ describe('canonical return window policy', () => {
     expect(window?.endDate).toBe('2026-07-08')
     expect(window && periodReturnPercent(window)).toBeCloseTo((120 / 112 - 1) * 100)
     expect(window && normalizeCumulativeReturn(window)[0].value).toBe(0)
+  })
+
+  it('plots normalized returns as a growth index with an exact 100 start', () => {
+    const window = resolveReturnWindow(points, '2026-07-02', '2026-07-08')
+    const normalized = window ? normalizeCumulativeReturn(window) : []
+    const growthIndex = cumulativeReturnPercentToGrowthIndex100(normalized)
+
+    expect(growthIndex[0]?.value).toBe(100)
+    expect(growthIndex[growthIndex.length - 1]?.value).toBeCloseTo((120 / 112) * 100)
   })
 
   it('uses the previous month-end close for MTD', () => {

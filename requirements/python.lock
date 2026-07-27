@@ -31,6 +31,8 @@ colorama==0.4.6 ; sys_platform == 'win32'
     #   tqdm
 et-xmlfile==2.0.0
     # via openpyxl
+exchange-calendars==4.13.2
+    # via portfolio-ops-platform-backend (apps/platform/backend/pyproject.toml)
 fastapi==0.139.0
     # via
     #   portfolio-ops-platform-backend (apps/platform/backend/pyproject.toml)
@@ -58,6 +60,8 @@ idna==3.18
     #   requests
 iniconfig==2.3.0
     # via pytest
+korean-lunar-calendar==0.4.0
+    # via exchange-calendars
 lxml==6.1.1
     # via tushare
 mako==1.3.12
@@ -67,6 +71,7 @@ markupsafe==3.0.3
 numpy==2.5.1
     # via
     #   portfolio-ops-portfolio-backend (apps/portfolio/backend/pyproject.toml)
+    #   exchange-calendars
     #   pandas
     #   scipy
 openpyxl==3.1.5
@@ -76,6 +81,7 @@ packaging==26.2
 pandas==2.3.3
     # via
     #   portfolio-ops-portfolio-backend (apps/portfolio/backend/pyproject.toml)
+    #   exchange-calendars
     #   tushare
 pluggy==1.6.0
     # via pytest
@@ -100,6 +106,8 @@ pydantic-settings==2.14.2
     #   portfolio-ops-watchlist-backend (apps/watchlist/backend/pyproject.toml)
 pygments==2.20.0
     # via pytest
+pyluach==2.3.0
+    # via exchange-calendars
 pytest==9.1.1
     # via
     #   portfolio-ops-platform-backend (apps/platform/backend/pyproject.toml)
@@ -136,6 +144,8 @@ sqlalchemy==2.0.51
     #   alembic
 starlette==1.3.1
     # via fastapi
+toolz==1.1.0
+    # via exchange-calendars
 tqdm==4.68.4
     # via tushare
 truststore==0.10.4
@@ -164,6 +174,7 @@ typing-inspection==0.4.2
     #   pydantic-settings
 tzdata==2026.3
     # via
+    #   exchange-calendars
     #   pandas
     #   psycopg
 urllib3==2.7.0

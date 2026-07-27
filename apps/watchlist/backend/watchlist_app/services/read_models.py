@@ -182,9 +182,9 @@ def _chart_return_kind(payload: object) -> str | None:
     metadata = payload.get("selected_series")
     if not isinstance(metadata, dict):
         return None
-    explicit = str(metadata.get("return_kind") or "").strip()
-    if explicit:
-        return explicit
+    if "return_kind" in metadata:
+        explicit = str(metadata.get("return_kind") or "").strip()
+        return explicit or None
     quote_basis = str(metadata.get("quote_basis") or "").strip()
     if quote_basis in {"total_return_nav", "adjusted_close"}:
         return "total_return"

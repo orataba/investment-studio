@@ -29,6 +29,8 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--env-root", type=Path, required=True)
     parser.add_argument("--refresh-hour", type=int, default=21)
     parser.add_argument("--refresh-minute", type=int, default=0)
+    parser.add_argument("--refresh-retry-hour", type=int, default=23)
+    parser.add_argument("--refresh-retry-minute", type=int, default=0)
     return parser.parse_args()
 
 
@@ -59,6 +61,14 @@ def main() -> int:
         raise SystemExit("--refresh-hour must be between 0 and 23")
     if not 0 <= args.refresh_minute <= 59:
         raise SystemExit("--refresh-minute must be between 0 and 59")
+    if not 0 <= args.refresh_retry_hour <= 23:
+        raise SystemExit("--refresh-retry-hour must be between 0 and 23")
+    if not 0 <= args.refresh_retry_minute <= 59:
+        raise SystemExit("--refresh-retry-minute must be between 0 and 59")
+    primary_minutes = args.refresh_hour * 60 + args.refresh_minute
+    retry_minutes = args.refresh_retry_hour * 60 + args.refresh_retry_minute
+    if retry_minutes <= primary_minutes:
+        raise SystemExit("The refresh retry time must be later than the primary refresh time")
 
     project_root = args.project_root.resolve()
     launch_agents_dir = args.launch_agents_dir.expanduser().resolve()
@@ -107,16 +117,26 @@ def main() -> int:
         "WorkingDirectory": str(project_root / "apps" / "platform" / "backend"),
         "RunAtLoad": True,
         "KeepAlive": False,
-        "StartCalendarInterval": {
-            "Hour": args.refresh_hour,
-            "Minute": args.refresh_minute,
-        },
+        "StartCalendarInterval": [
+            {
+                "Hour": args.refresh_hour,
+                "Minute": args.refresh_minute,
+            },
+            {
+                "Hour": args.refresh_retry_hour,
+                "Minute": args.refresh_retry_minute,
+            },
+        ],
         "ProcessType": "Background",
         "LowPriorityIO": True,
         "ThrottleInterval": 60,
         "Umask": 0o077,
         "EnvironmentVariables": {
             "PORTFOLIO_OPS_LOCAL_DATABASE_URL": database_url,
+            "PORTFOLIO_OPS_LOCAL_REFRESH_HOUR": str(args.refresh_hour),
+            "PORTFOLIO_OPS_LOCAL_REFRESH_MINUTE": str(args.refresh_minute),
+            "PORTFOLIO_OPS_LOCAL_REFRESH_RETRY_HOUR": str(args.refresh_retry_hour),
+            "PORTFOLIO_OPS_LOCAL_REFRESH_RETRY_MINUTE": str(args.refresh_retry_minute),
         },
         "StandardOutPath": str(log_dir / f"{MARKET_DATA_REFRESH_SERVICE}.log"),
         "StandardErrorPath": str(log_dir / f"{MARKET_DATA_REFRESH_SERVICE}.error.log"),

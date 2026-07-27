@@ -381,12 +381,28 @@ def _retry_failed_results(
             break
         LOGGER.info("retrying failed items channel=%s attempt=%s count=%s", channel, attempt, len(retry_ids))
         for instrument_id in retry_ids:
-            record = refresh_market_data_with_timeout(
-                instrument_id=instrument_id,
-                updated_by=updated_by,
-                full_history=full_history,
-                source=channel,
-            )
+            try:
+                record = refresh_market_data_with_timeout(
+                    instrument_id=instrument_id,
+                    updated_by=updated_by,
+                    full_history=full_history,
+                    source=channel,
+                )
+            except Exception as error:
+                previous = dict(by_instrument_id[instrument_id])
+                previous["status"] = "failed"
+                previous["message"] = (
+                    f"Retry failed with {type(error).__name__}: {error}"
+                )
+                by_instrument_id[instrument_id] = previous
+                LOGGER.exception(
+                    "retry failed without aborting remaining channels "
+                    "channel=%s attempt=%s instrument_id=%s",
+                    channel,
+                    attempt,
+                    instrument_id,
+                )
+                continue
             if record is None:
                 continue
             result = _result_from_record(record)

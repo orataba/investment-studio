@@ -1028,7 +1028,10 @@ export type PortfolioResearchSolvedResultRowRecord = {
   label: string
   top_sleeve_id?: string | null
   top_sleeve_label: string
+  current_weight?: number | null
   solved_weight?: number | null
+  current_value_base?: number | null
+  target_value_base?: number | null
   target_risk_share?: number | null
   forward_risk_contribution?: number | null
 }
@@ -1036,7 +1039,10 @@ export type PortfolioResearchSolvedResultRowRecord = {
 export type PortfolioResearchSolvedResultGroupRecord = {
   top_sleeve_id?: string | null
   top_sleeve_label: string
+  current_weight?: number | null
   solved_weight?: number | null
+  current_value_base?: number | null
+  target_value_base?: number | null
   target_risk_share?: number | null
   forward_risk_contribution?: number | null
   min_weight?: number | null
@@ -1092,6 +1098,7 @@ export type PortfolioResearchTargetWeightGapRecord = {
   target_weight?: number | null
   gap?: number | null
   current_value_base?: number | null
+  target_value_base?: number | null
   base_currency: string
   action: string
   research_lifecycle?: 'held' | 'observed' | 'former' | null

@@ -5,6 +5,7 @@ import {
   buildNavQuoteBasisSeries,
   filterNavQuoteRowsByCurrency,
   navQuoteValueForBasis,
+  returnKindsAreComparable,
 } from './navQuoteBasis'
 
 describe('NAV quote basis presentation', () => {
@@ -56,5 +57,13 @@ describe('NAV quote basis presentation', () => {
 
     const missingBasisRows = filterNavQuoteRowsByCurrency([{ ...row, nav: null }], 'USD')
     expect(buildNavQuoteBasisContext(missingBasisRows, 'nav').basisSeries).toEqual([])
+  })
+
+  it('allows relative metrics only for matching, explicitly identified return semantics', () => {
+    expect(returnKindsAreComparable('total_return', 'total_return')).toBe(true)
+    expect(returnKindsAreComparable('price_return', 'price_return')).toBe(true)
+    expect(returnKindsAreComparable('total_return', 'price_return')).toBe(false)
+    expect(returnKindsAreComparable('total_return', null)).toBe(false)
+    expect(returnKindsAreComparable(null, null)).toBe(false)
   })
 })

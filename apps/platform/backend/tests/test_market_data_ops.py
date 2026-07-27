@@ -64,6 +64,107 @@ def test_factor_quantization_matches_postgres_half_up_rounding() -> None:
     ) == Decimal("1.000000000000000001")
 
 
+def test_xshg_calendar_filters_weekends_and_spring_festival() -> None:
+    publication = _build_complete_fund_nav_publication(
+        instrument_id="daily-private-fund",
+        instrument={
+            "source_settings": {
+                "expected_frequency": "daily",
+                "market_calendar": "XSHG",
+            },
+            "fund_nav_events": [],
+            "fund_nav_adjustment_factors": [],
+        },
+        rows=[
+            {
+                "as_of_date": "2026-02-13",
+                "nav": "1.0000",
+                "nav_with_dividend": "1.0000",
+            },
+            {
+                "as_of_date": "2026-02-14",
+                "nav": "1.0100",
+                "nav_with_dividend": "1.0100",
+            },
+            {
+                "as_of_date": "2026-02-16",
+                "nav": "1.0200",
+                "nav_with_dividend": "1.0200",
+            },
+            {
+                "as_of_date": "2026-02-23",
+                "nav": "1.0300",
+                "nav_with_dividend": "1.0300",
+            },
+            {
+                "as_of_date": "2026-02-24",
+                "nav": "1.0400",
+                "nav_with_dividend": "1.0400",
+            },
+        ],
+    )
+
+    assert [row["as_of_date"] for row in publication.rows] == [
+        "2026-02-13",
+        "2026-02-24",
+    ]
+    assert publication.projection_run["projection_status"] == "complete"
+    calendar_evidence = publication.projection_run["evidence"][
+        "market_calendar_filter"
+    ]
+    assert calendar_evidence == {
+        "market_calendar": "XSHG",
+        "unfiltered_source_observation_count": 5,
+        "calendar_included_source_observation_count": 2,
+        "calendar_excluded_source_observation_count": 3,
+        "calendar_excluded_first_date": "2026-02-14",
+        "calendar_excluded_last_date": "2026-02-23",
+        "calendar_excluded_date_sample": [
+            "2026-02-14",
+            "2026-02-16",
+            "2026-02-23",
+        ],
+        "calendar_excluded_dates_sha256": (
+            "b772312118dfd9cb5942162147bed1626c7ab3a92d2f4190ab73105ad5815827"
+        ),
+        "unfiltered_source_observation_fingerprint": (
+            "f5992551822d382fa478e04ae1988afd41727991603efe35d718e639b2d5f516"
+        ),
+        "filtered_source_observation_fingerprint": (
+            "cc23e163203c3da043a4e407164c875d276edc995eb7b1c09dfcc085dfeed698"
+        ),
+    }
+
+
+def test_unconfigured_market_calendar_keeps_reported_weekend_nav() -> None:
+    publication = _build_complete_fund_nav_publication(
+        instrument_id="unconfigured-private-fund",
+        instrument={
+            "source_settings": {"expected_frequency": "daily"},
+            "fund_nav_events": [],
+            "fund_nav_adjustment_factors": [],
+        },
+        rows=[
+            {
+                "as_of_date": "2026-02-13",
+                "nav": "1.0000",
+                "nav_with_dividend": "1.0000",
+            },
+            {
+                "as_of_date": "2026-02-14",
+                "nav": "1.0100",
+                "nav_with_dividend": "1.0100",
+            },
+        ],
+    )
+
+    assert [row["as_of_date"] for row in publication.rows] == [
+        "2026-02-13",
+        "2026-02-14",
+    ]
+    assert "market_calendar_filter" not in publication.projection_run["evidence"]
+
+
 def test_non_fund_nav_preview_and_file_import_fail_before_parsing_or_persistence(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -953,6 +1054,40 @@ def test_newer_row_revision_retracts_omitted_total_return_instead_of_splicing() 
     assert row["nav_source_provider"] == "manual:new|manual.csv:row:new"
     assert row["nav_lineage"]["evidence"]["raw_source_provider"] == "manual:new"
     assert publication.adjustment_factors == []
+
+
+def test_tushare_nav_rows_use_announcement_date_as_strict_revision_order() -> None:
+    merged = market_data_ops._tushare_nav_rows(
+        [
+            {
+                "ts_code": "018201.OF",
+                "ann_date": "20260724",
+                "nav_date": "20260723",
+                "unit_nav": "0.793",
+                "accum_nav": "0.793",
+                "adj_nav": None,
+                "update_flag": "0",
+            },
+            {
+                "ts_code": "018201.OF",
+                "ann_date": "20260723",
+                "nav_date": "20260723",
+                "unit_nav": "0.793",
+                "accum_nav": "0.793",
+                "adj_nav": "0.793",
+                "update_flag": "0",
+            },
+        ],
+        instrument_currency="CNY",
+        latest_date=date(2026, 7, 22),
+    )
+
+    assert len(merged) == 1
+    assert str(merged[0]["nav"]) == "0.793"
+    assert str(merged[0]["cash_cumulative_nav"]) == "0.793"
+    assert str(merged[0]["nav_with_dividend"]) == "0.793"
+    assert merged[0]["_provider_revision_at"] == "2026-07-24"
+    assert merged[0]["_provider_revision_scope"] == "tushare:fund_nav:018201.OF"
 
 
 def test_cash_distribution_reversal_breaks_the_derived_chain() -> None:

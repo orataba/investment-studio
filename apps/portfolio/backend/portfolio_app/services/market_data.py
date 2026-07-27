@@ -9,6 +9,7 @@ from portfolio_ops_instrument_core import (
     FUND_TOTAL_RETURN_QUOTE_BASES,
     QUOTE_BASIS_METRIC_FAMILY,
     canonical_price_contract,
+    confirmed_total_return_quote_bases,
 )
 
 
@@ -124,6 +125,22 @@ def analytical_return_quote_bases(detail: dict[str, object]) -> list[str]:
         detail,
         ("total_return", "chart", "valuation", "reference"),
     )
+
+
+def benchmark_total_return_quote_bases(detail: dict[str, object]) -> list[str]:
+    """Return only quote identities proven comparable with portfolio TWR."""
+
+    source_settings = detail.get("source_settings")
+    confirmed_bases = confirmed_total_return_quote_bases(
+        instrument_type=detail.get("instrument_type"),
+        quote_bases=quote_policy_bases(
+            detail,
+            ("total_return", "chart", "valuation", "reference"),
+        ),
+        source_settings=source_settings if isinstance(source_settings, dict) else None,
+    )
+    available_bases = set(available_quote_bases(detail))
+    return [basis for basis in confirmed_bases if basis in available_bases]
 
 
 def available_quote_bases(detail: dict[str, object]) -> list[str]:

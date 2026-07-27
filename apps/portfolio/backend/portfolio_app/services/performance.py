@@ -46,6 +46,7 @@ from portfolio_app.services.risk_basis import calculation_frequency_profile_for_
 from portfolio_app.services.transaction_dates import (
     transaction_external_flow_date,
     transaction_performance_effective_date,
+    transaction_precedes_entitlement_bod,
     transaction_sort_key,
 )
 
@@ -145,30 +146,85 @@ def _safe_float(value: object) -> float | None:
 def corporate_action_quality_warnings(
     instrument_types: set[str],
     instrument_ids: set[str] | None = None,
+    *,
+    transactions: list[dict[str, object]],
+    as_of_date: date | None = None,
 ) -> list[str]:
     normalized_types = {str(value or "").strip().lower() for value in instrument_types}
-    if not normalized_types.intersection({"equity", "etf"}) or not instrument_ids:
+    if (
+        not normalized_types.intersection({"equity", "etf"})
+        or not instrument_ids
+        or not transactions
+    ):
         return []
 
+    corporate_actions = list_registry_corporate_actions(
+        instrument_ids,
+        effective_on_or_before=as_of_date,
+    )
     detected_actions = [
         event
-        for event in list_registry_corporate_actions(instrument_ids)
+        for event in corporate_actions
         if str(event.get("status") or "").strip().lower() == "detected"
     ]
     if not detected_actions:
+        return []
+
+    portfolio_id = next(
+        (
+            str(transaction.get("portfolio_id") or "").strip()
+            for transaction in transactions
+            if str(transaction.get("portfolio_id") or "").strip()
+        ),
+        "",
+    )
+    held_actions: list[dict[str, object]] = []
+    for event in detected_actions:
+        entitlement_date = _parse_iso_date(event.get("record_date")) or _parse_iso_date(
+            event.get("effective_date")
+        )
+        if entitlement_date is None:
+            continue
+        entitlement_transactions = [
+            transaction
+            for transaction in transactions
+            if transaction_precedes_entitlement_bod(
+                transaction,
+                entitlement_date,
+            )
+        ]
+        if not entitlement_transactions:
+            continue
+        position_lots = build_position_lots(
+            portfolio_id,
+            [],
+            entitlement_transactions,
+            instrument_id=str(event.get("instrument_id") or ""),
+            status="open",
+            as_of_date=entitlement_date,
+            corporate_actions=corporate_actions,
+            resolve_pricing=False,
+        )
+        if any(
+            (_safe_float(position_lot.get("remaining_quantity")) or 0.0) > 1e-9
+            for position_lot in position_lots
+        ):
+            held_actions.append(event)
+
+    if not held_actions:
         return []
 
     action_labels = sorted(
         {
             f"{str(event.get('instrument_id') or 'unknown instrument')} effective "
             f"{str(event.get('effective_date') or 'unknown date')}"
-            for event in detected_actions
+            for event in held_actions
         }
     )
     visible_labels = ", ".join(action_labels[:5])
     omitted_count = max(0, len(action_labels) - 5)
     omitted_label = f", plus {omitted_count} more" if omitted_count else ""
-    count = len(detected_actions)
+    count = len(held_actions)
     return [
         f"Corporate action review required: {count} provider-detected share-adjustment "
         f"event(s) remain unconfirmed ({visible_labels}{omitted_label}). Confirm the issuer, "
@@ -2194,6 +2250,11 @@ def build_portfolio_performance_report_from_snapshots(
                         for transaction in transactions
                         if str(transaction.get("instrument_id") or "").strip()
                     },
+                    transactions=transactions,
+                    as_of_date=(
+                        end_anchor_date
+                        or cast(date | None, snapshot_window["effective_end_date"])
+                    ),
                 )
                 + instrument_event_task_quality_warnings(
                     str(portfolio.get("portfolio_id") or "")

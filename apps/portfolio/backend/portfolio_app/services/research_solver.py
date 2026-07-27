@@ -25,6 +25,7 @@ from portfolio_app.services.instrument_registry import (
 )
 from portfolio_app.services.market_data import (
     analytical_return_quote_bases,
+    benchmark_total_return_quote_bases,
     resolve_quote_series,
 )
 from portfolio_app.services.ledger import build_account_workspace
@@ -325,10 +326,15 @@ def _selected_price_points(
     detail: dict[str, object],
     *,
     end_date: date,
+    candidate_bases: list[str] | None = None,
 ) -> list[tuple[date, float, str]]:
     resolution = resolve_quote_series(
         detail,
-        candidate_bases=_candidate_quote_bases(detail),
+        candidate_bases=(
+            candidate_bases
+            if candidate_bases is not None
+            else _candidate_quote_bases(detail)
+        ),
         end_date=end_date,
     )
     if not resolution.available:
@@ -377,12 +383,17 @@ def _build_instrument_nav_series(
     start_date: date,
     end_date: date,
     warn_on_start_clip: bool = True,
+    candidate_bases: list[str] | None = None,
 ) -> tuple[pd.Series, list[str]]:
     detail = _instrument_detail(state, instrument_id)
     if not isinstance(detail, dict):
         raise ValueError(f"Instrument detail for {instrument_id} is unavailable.")
 
-    selected_points = _selected_price_points(detail, end_date=end_date)
+    selected_points = _selected_price_points(
+        detail,
+        end_date=end_date,
+        candidate_bases=candidate_bases,
+    )
     warnings: list[str] = []
     if not selected_points:
         raise ValueError(f"{instrument_id} does not have usable market history for the requested period.")
@@ -2646,8 +2657,15 @@ def _solve_current_scope(
             for item in current_actual_rows
             if item.get("member_type") in {TARGET_MEMBER_NODE, TARGET_MEMBER_INSTRUMENT, TARGET_MEMBER_CASH}
         }
+        current_actual_value_by_key = {
+            f"{item['member_type']}::{item['member_id']}": _safe_float(item.get("current_value_base"))
+            for item in current_actual_rows
+            if item.get("member_type") in {TARGET_MEMBER_NODE, TARGET_MEMBER_INSTRUMENT, TARGET_MEMBER_CASH}
+        }
     else:
+        current_actual_rows = []
         current_actual_weight_by_key = {}
+        current_actual_value_by_key = {}
 
     target_values = pd.Series(
         {
@@ -3034,6 +3052,7 @@ def _solve_current_scope(
                 "selected_target_dimension": resolved_target.get("selected_dimension") if resolved_target else None,
                 "source_target_set_type": resolved_target.get("source_target_set_type") if resolved_target else None,
                 "current_weight": current_weight,
+                "current_value_base": current_actual_value_by_key.get(member_key),
                 "current_risk_share": current_risk_share,
                 "target_weight": implementation_weight,
                 "weight_change": (
@@ -3074,6 +3093,7 @@ def _solve_current_scope(
                         "selected_target_dimension": child_leaf.get("selected_target_dimension"),
                         "source_target_set_type": child_leaf.get("source_target_set_type"),
                         "current_weight": current_leaf_weight,
+                        "current_value_base": child_leaf.get("current_value_base"),
                         "current_risk_share": child_current_risk_share,
                         "target_weight": target_weight,
                         "weight_change": (
@@ -3099,6 +3119,7 @@ def _solve_current_scope(
                 "selected_target_dimension": resolved_target.get("selected_dimension") if resolved_target else None,
                 "source_target_set_type": resolved_target.get("source_target_set_type") if resolved_target else None,
                 "current_weight": current_weight,
+                "current_value_base": current_actual_value_by_key.get(member_key),
                 "current_risk_share": current_risk_share,
                 "target_weight": implementation_weight,
                 "weight_change": (
@@ -3307,6 +3328,7 @@ def _build_leaf_target_weight_gaps(
     *,
     leaf_target_rows: list[dict[str, object]],
     base_currency: str,
+    scope_value_base: float | None = None,
     instrument_research_state_by_id: dict[str, dict[str, object]] | None = None,
 ) -> list[dict[str, object]]:
     gaps: list[dict[str, object]] = []
@@ -3325,6 +3347,12 @@ def _build_leaf_target_weight_gaps(
         )
         current_weight = _safe_float(row.get("current_weight"))
         target_weight = _safe_float(row.get("target_weight"))
+        current_value_base = _safe_float(row.get("current_value_base"))
+        target_value_base = (
+            None
+            if target_weight is None or scope_value_base is None
+            else float(target_weight * scope_value_base)
+        )
         gap = (
             None
             if current_weight is None or target_weight is None
@@ -3368,7 +3396,8 @@ def _build_leaf_target_weight_gaps(
             "current_weight": current_weight,
             "target_weight": target_weight,
             "gap": gap,
-            "current_value_base": None,
+            "current_value_base": current_value_base,
+            "target_value_base": target_value_base,
             "base_currency": base_currency,
             "action": action,
             "execution_status": execution_status,
@@ -3613,6 +3642,9 @@ def _top_sleeve_for_member(
     member_type: str,
     member_id: str,
 ) -> tuple[str | None, str, str]:
+    if member_type == TARGET_MEMBER_CASH:
+        return SYSTEM_CASH_TARGET_MEMBER_ID, SYSTEM_CASH_TARGET_LABEL, SYSTEM_CASH_TARGET_LABEL
+
     node_id: str | None = None
     if member_type == TARGET_MEMBER_NODE and member_id in state.node_by_id:
         node_id = member_id
@@ -3760,6 +3792,7 @@ def _build_solved_result_groups(
     *,
     leaf_rows: list[dict[str, object]],
     member_rows: list[dict[str, object]],
+    scope_value_base: float | None,
     top_sleeve_bound_weight_by_id: dict[str, float] | None = None,
     as_of_date: date,
     lookback_days: int,
@@ -3797,7 +3830,10 @@ def _build_solved_result_groups(
             {
                 "top_sleeve_id": top_sleeve_id,
                 "top_sleeve_label": top_sleeve_label,
+                "current_weight": 0.0,
                 "solved_weight": 0.0,
+                "current_value_base": 0.0,
+                "target_value_base": 0.0 if scope_value_base is not None else None,
                 "target_risk_share": group_target_risk_by_id.get(top_sleeve_id or ""),
                 "forward_risk_contribution": 0.0,
                 "min_weight": _safe_float((group_bounds or {}).get("min_weight")),
@@ -3806,7 +3842,14 @@ def _build_solved_result_groups(
                 "rows": [],
             },
         )
+        current_weight = _safe_float(leaf.get("current_weight"))
         solved_weight = _safe_float(leaf.get("target_weight"))
+        current_value_base = _safe_float(leaf.get("current_value_base"))
+        target_value_base = (
+            None
+            if solved_weight is None or scope_value_base is None
+            else float(solved_weight * scope_value_base)
+        )
         forward_rc = forward_rc_by_key.get(_target_key(leaf))
         row = {
             "member_type": member_type,
@@ -3814,12 +3857,19 @@ def _build_solved_result_groups(
             "label": str(leaf.get("label") or member_id),
             "top_sleeve_id": top_sleeve_id,
             "top_sleeve_label": top_sleeve_label,
+            "current_weight": current_weight,
             "solved_weight": solved_weight,
+            "current_value_base": current_value_base,
+            "target_value_base": target_value_base,
             "target_risk_share": _selected_target_risk_share(leaf),
             "forward_risk_contribution": forward_rc,
         }
         group["rows"].append(row)
+        group["current_weight"] = float(group["current_weight"] or 0.0) + float(current_weight or 0.0)
         group["solved_weight"] = float(group["solved_weight"] or 0.0) + float(solved_weight or 0.0)
+        group["current_value_base"] = float(group["current_value_base"] or 0.0) + float(current_value_base or 0.0)
+        if target_value_base is not None:
+            group["target_value_base"] = float(group["target_value_base"] or 0.0) + target_value_base
         if forward_rc is not None:
             group["forward_risk_contribution"] = float(group["forward_risk_contribution"] or 0.0) + float(forward_rc)
 
@@ -4200,17 +4250,60 @@ def _build_backtest_benchmark_comparison_from_state(
     portfolio_return_map = portfolio_returns or _backtest_return_map_from_points(normalized_points)
     benchmark_label = _instrument_label(state, normalized_benchmark_id)
     benchmark_warnings: list[str] = []
-    try:
-        benchmark_nav, benchmark_warnings = _build_instrument_nav_series(
-            state,
-            instrument_id=normalized_benchmark_id,
-            start_date=date(1900, 1, 1),
-            end_date=state.as_of_date,
-            warn_on_start_clip=False,
+    benchmark_detail = _instrument_detail(state, normalized_benchmark_id)
+    benchmark_candidate_bases = (
+        benchmark_total_return_quote_bases(benchmark_detail)
+        if isinstance(benchmark_detail, dict)
+        else []
+    )
+    benchmark_basis_warning: str | None = None
+    if isinstance(benchmark_detail, dict) and not benchmark_candidate_bases:
+        instrument_type = str(
+            benchmark_detail.get("instrument_type") or ""
+        ).strip().lower()
+        source_settings = benchmark_detail.get("source_settings")
+        configured_semantics = (
+            str(source_settings.get("return_semantics") or "unknown")
+            .strip()
+            .lower()
+            if isinstance(source_settings, dict)
+            else "unknown"
         )
-    except ValueError as error:
-        benchmark_warnings.append(str(error))
+        price_comparison_confirmed = (
+            instrument_type != "index" or configured_semantics == "price_return"
+        )
+        if price_comparison_confirmed:
+            benchmark_candidate_bases = analytical_return_quote_bases(
+                benchmark_detail
+            )
+            if benchmark_candidate_bases:
+                benchmark_basis_warning = (
+                    f"{normalized_benchmark_id} uses a price-return series. "
+                    "Portfolio returns include income, so excess return and relative "
+                    "statistics include that basis difference."
+                )
+    if not benchmark_candidate_bases:
+        benchmark_warnings.append(
+            f"{normalized_benchmark_id} does not have a confirmed total-return series; "
+            "portfolio-relative research metrics are unavailable."
+        )
         benchmark_nav = pd.Series(dtype="float64")
+    else:
+        try:
+            benchmark_nav, instrument_warnings = _build_instrument_nav_series(
+                state,
+                instrument_id=normalized_benchmark_id,
+                start_date=date(1900, 1, 1),
+                end_date=state.as_of_date,
+                warn_on_start_clip=False,
+                candidate_bases=benchmark_candidate_bases,
+            )
+            benchmark_warnings.extend(instrument_warnings)
+            if benchmark_basis_warning is not None:
+                benchmark_warnings.append(benchmark_basis_warning)
+        except ValueError as error:
+            benchmark_warnings.append(str(error))
+            benchmark_nav = pd.Series(dtype="float64")
 
     benchmark_points, benchmark_return_map = _build_sampled_benchmark_points(benchmark_nav, normalized_points)
 
@@ -4706,11 +4799,15 @@ def solve_current_target_weights(
             scope_node_id=comparator_taxonomy_node_id,
             as_of_date=as_of_date,
         )
+        scope_value_base = float(
+            sum(_safe_float(row.get("current_value_base")) or 0.0 for row in actual_rows)
+        )
         warnings = list(dict.fromkeys([*scope_result.warnings, *actual_warnings]))
         solved_result_groups, solved_result_warnings = _build_solved_result_groups(
             state,
             leaf_rows=scope_result.leaf_target_rows,
             member_rows=scope_result.member_target_rows,
+            scope_value_base=scope_value_base,
             top_sleeve_bound_weight_by_id=scope_result.top_sleeve_bound_weight_by_id,
             as_of_date=as_of_date,
             lookback_days=lookback_days,
@@ -4722,6 +4819,7 @@ def solve_current_target_weights(
         target_weight_gaps = _build_leaf_target_weight_gaps(
             leaf_target_rows=scope_result.leaf_target_rows,
             base_currency=state.base_currency,
+            scope_value_base=scope_value_base,
             instrument_research_state_by_id={
                 str(item.get("instrument_id") or ""): item
                 for item in list_portfolio_instrument_universe(portfolio_id)
@@ -4730,6 +4828,7 @@ def solve_current_target_weights(
         )
     else:
         actual_rows = []
+        scope_value_base = None
         warnings = list(dict.fromkeys(scope_result.warnings))
         solved_result_groups = []
         target_weight_gaps = []

@@ -15,6 +15,7 @@ from sqlalchemy.orm import Session
 from portfolio_ops_instrument_core import (
     FUND_TOTAL_RETURN_QUOTE_BASES,
     QUOTE_BASIS_METRIC_FAMILY,
+    resolve_quote_return_semantics,
     validate_market_data_identity,
 )
 
@@ -86,8 +87,8 @@ DEFAULT_TABS = [
     "monitoring",
 ]
 
-PERFORMANCE_METHODOLOGY_VERSION = "canonical-performance/v4"
-RISK_METHODOLOGY_VERSION = "canonical-risk/v3"
+PERFORMANCE_METHODOLOGY_VERSION = "canonical-performance/v5"
+RISK_METHODOLOGY_VERSION = "canonical-risk/v4"
 
 
 class RecalcJobLeaseLostError(RuntimeError):
@@ -1340,13 +1341,31 @@ def _selection_candidates(
     return [basis for basis in candidates if basis in TOTAL_RETURN_QUOTE_BASES]
 
 
-def _return_kind_for_quote_basis(quote_basis: str | None) -> str | None:
-    if quote_basis in TOTAL_RETURN_QUOTE_BASES:
-        return "total_return"
-    if quote_basis in {"close", "last"}:
-        return "price_return"
+def _return_kind_for_quote_basis(
+    quote_basis: str | None,
+    *,
+    shared_instrument: dict[str, object] | None,
+    instrument_type: object,
+) -> str | None:
     if quote_basis == "official_nav":
         return "unit_nav_return"
+    source_settings = (
+        shared_instrument.get("source_settings")
+        if isinstance(shared_instrument, dict)
+        else None
+    )
+    resolved = resolve_quote_return_semantics(
+        instrument_type=instrument_type,
+        quote_basis=quote_basis,
+        source_settings=source_settings if isinstance(source_settings, dict) else None,
+    )
+    if resolved in {"total_return", "price_return"}:
+        return resolved
+    if (
+        str(instrument_type or "").strip().lower() != "index"
+        and quote_basis in {"close", "last"}
+    ):
+        return "price_return"
     return None
 
 
@@ -1396,7 +1415,16 @@ def _select_quote_series(
         ]
         if not points:
             continue
-        row_slot = _quote_basis_row_slot(quote_basis)
+        return_kind = _return_kind_for_quote_basis(
+            quote_basis,
+            shared_instrument=shared_instrument,
+            instrument_type=instrument_type,
+        )
+        row_slot = (
+            "nav_with_dividend"
+            if return_kind == "total_return"
+            else _quote_basis_row_slot(quote_basis)
+        )
         metric_family = str(points[-1]["metric_family"])
         projection = (
             _current_fund_nav_projection(shared_instrument)
@@ -1425,9 +1453,13 @@ def _select_quote_series(
             "selected_metric_family": metric_family,
             "selected_quote_basis": quote_basis,
             "selected_series_type": _quote_basis_series_type(quote_basis),
-            "selected_series_label": _quote_basis_label(quote_basis),
+            "selected_series_label": (
+                f"{_quote_basis_label(quote_basis)} · Total Return"
+                if return_kind == "total_return" and quote_basis not in TOTAL_RETURN_QUOTE_BASES
+                else _quote_basis_label(quote_basis)
+            ),
             "selected_date_label": _quote_basis_date_label(quote_basis),
-            "return_kind": _return_kind_for_quote_basis(quote_basis),
+            "return_kind": return_kind,
             "return_series_status": projection_status,
             "return_anchor_date": (projection or {}).get("anchor_date"),
             "return_segment_breaks": segment_breaks,
@@ -1458,12 +1490,24 @@ def _rows_with_selected_series(
 ) -> list[dict[str, Any]]:
     row_slot = selection.get("nav_basis_type")
     points = selection.get("points")
+    selected_quote_basis = _normalize_quote_basis(
+        selection.get("selected_quote_basis")
+    )
     if row_slot not in {"nav", "nav_with_dividend"} or not isinstance(points, list):
         return rows
 
     grouped: dict[date, dict[str, Any]] = {row["as_of_date"]: dict(row) for row in rows}
     for row in grouped.values():
         row["basis_metadata"] = dict(row.get("basis_metadata") or {})
+        if row_slot == "nav_with_dividend" and selected_quote_basis:
+            raw_metadata = row["basis_metadata"].get("nav")
+            if (
+                isinstance(raw_metadata, dict)
+                and _normalize_quote_basis(raw_metadata.get("quote_basis"))
+                == selected_quote_basis
+            ):
+                row["nav"] = None
+                row["basis_metadata"].pop("nav", None)
 
     for point in points:
         if not isinstance(point, dict) or not isinstance(point.get("as_of_date"), date):

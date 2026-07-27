@@ -13,6 +13,7 @@ CAPTURE_PATH="$TEST_ROOT/captured.json"
 AUDIT_CAPTURE_PATH="$TEST_ROOT/audit-ran"
 SENTINEL_PATH="$TEST_ROOT/unsafe-env-executed"
 LOCK_PATH="$PROJECT_ROOT/var/market-data-refresh.lock"
+RUN_STATE_PATH="$PROJECT_ROOT/var/market-data-refresh-run-state.json"
 ENV_ROOT="$TEST_ROOT/secure env"
 mkdir -p \
   "$(dirname "$REFRESH_SCRIPT")" \
@@ -64,6 +65,8 @@ printf '%s\n' \
 export CAPTURE_PATH
 export AUDIT_CAPTURE_PATH
 PORTFOLIO_OPS_LOCAL_DATABASE_URL="postgresql+psycopg://explicit/local" \
+  PORTFOLIO_OPS_LOCAL_REFRESH_RUN_KIND=primary \
+  PORTFOLIO_OPS_LOCAL_REFRESH_NOW=2026-07-22T21:00:00+08:00 \
   "$REPOSITORY_ROOT/infra/launchd/run_market_data_refresh.sh" \
   "$PROJECT_ROOT" "$(command -v python3)" "$LOCK_PATH" "$ENV_ROOT"
 
@@ -76,7 +79,8 @@ if [[ ! -e "$AUDIT_CAPTURE_PATH" ]]; then
   exit 1
 fi
 
-CAPTURE_PATH="$CAPTURE_PATH" PROJECT_ROOT="$PROJECT_ROOT" LOCK_PATH="$LOCK_PATH" python3 - <<'PY'
+CAPTURE_PATH="$CAPTURE_PATH" PROJECT_ROOT="$PROJECT_ROOT" LOCK_PATH="$LOCK_PATH" \
+  RUN_STATE_PATH="$RUN_STATE_PATH" python3 - <<'PY'
 import json
 import os
 from pathlib import Path
@@ -116,7 +120,47 @@ assert payload["pythonpath"] == (
     f"{normalized_project_root}/apps/platform/backend:"
     f"{normalized_project_root}/packages/instrument-core/python"
 )
+run_state = json.loads(Path(os.environ["RUN_STATE_PATH"]).read_text(encoding="utf-8"))
+assert run_state["status"] == "succeeded"
+assert run_state["run_kind"] == "primary"
+assert run_state["scheduled_date"] == "2026-07-22"
+assert run_state["refresh_exit_code"] == 0
+assert run_state["audit_exit_code"] == 0
 PY
+
+rm -f "$CAPTURE_PATH" "$AUDIT_CAPTURE_PATH"
+PORTFOLIO_OPS_LOCAL_DATABASE_URL="postgresql+psycopg://explicit/local" \
+  PORTFOLIO_OPS_LOCAL_REFRESH_RUN_KIND=retry \
+  PORTFOLIO_OPS_LOCAL_REFRESH_NOW=2026-07-22T23:00:00+08:00 \
+  "$REPOSITORY_ROOT/infra/launchd/run_market_data_refresh.sh" \
+  "$PROJECT_ROOT" "$(command -v python3)" "$LOCK_PATH" "$ENV_ROOT" \
+  > "$TEST_ROOT/retry-skipped.out"
+grep -q 'the primary run already succeeded' "$TEST_ROOT/retry-skipped.out"
+if [[ -e "$CAPTURE_PATH" || -e "$AUDIT_CAPTURE_PATH" ]]; then
+  echo "The conditional retry reran work after a successful primary run." >&2
+  exit 1
+fi
+
+RUN_STATE_PATH="$RUN_STATE_PATH" python3 - <<'PY'
+import json
+import os
+from pathlib import Path
+
+
+path = Path(os.environ["RUN_STATE_PATH"])
+payload = json.loads(path.read_text(encoding="utf-8"))
+payload["status"] = "failed"
+path.write_text(json.dumps(payload), encoding="utf-8")
+PY
+PORTFOLIO_OPS_LOCAL_DATABASE_URL="postgresql+psycopg://explicit/local" \
+  PORTFOLIO_OPS_LOCAL_REFRESH_RUN_KIND=retry \
+  PORTFOLIO_OPS_LOCAL_REFRESH_NOW=2026-07-22T23:00:00+08:00 \
+  "$REPOSITORY_ROOT/infra/launchd/run_market_data_refresh.sh" \
+  "$PROJECT_ROOT" "$(command -v python3)" "$LOCK_PATH" "$ENV_ROOT"
+if [[ ! -e "$CAPTURE_PATH" || ! -e "$AUDIT_CAPTURE_PATH" ]]; then
+  echo "The conditional retry did not run after a failed primary run." >&2
+  exit 1
+fi
 
 set +e
 env \

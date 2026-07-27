@@ -16,6 +16,7 @@ FLAT_TABLE_RELATIONS = {
     ("instrument_registry", "instrument_market_data"),
     ("instrument_registry", "instrument"),
     ("instrument_registry", "corporate_action_event"),
+    ("watchlist", "instrument_chart_read_model"),
     ("portfolio", "transaction_record"),
     ("portfolio", "portfolio_daily_snapshot"),
     ("portfolio", "portfolio_daily_holding_snapshot"),
@@ -75,11 +76,15 @@ def test_flat_table_profile_accepts_only_final_heads(
 def test_audit_contract_names_cover_registry_0015(
     audit_module: ModuleType,
 ) -> None:
-    assert len(audit_module.AUDIT_CHECK_NAMES) == 23
+    assert len(audit_module.AUDIT_CHECK_NAMES) == 24
     assert "instrument_quote_policy_contract" in audit_module.AUDIT_CHECK_NAMES
     assert "market_data_price_contract" in audit_module.AUDIT_CHECK_NAMES
     assert "market_data_fx_identity_contract" in audit_module.AUDIT_CHECK_NAMES
     assert "fund_nav_current_projection_contract" in audit_module.AUDIT_CHECK_NAMES
+    assert (
+        "watchlist_index_return_semantics_contract"
+        in audit_module.AUDIT_CHECK_NAMES
+    )
     assert "held_fund_recent_total_return_coverage" in audit_module.AUDIT_CHECK_NAMES
     assert "price_bar_contract" in audit_module.AUDIT_CHECK_NAMES
     assert "cash_cumulative_nav_in_return_policy" not in audit_module.AUDIT_CHECK_NAMES
@@ -95,10 +100,10 @@ def test_audit_contract_names_cover_registry_0015(
     )
     assert (
         audit_module.FUND_NAV_PROJECTION_METHOD_VERSION
-        == "fund_nav_reinvestment_projection/v6"
+        == "fund_nav_reinvestment_projection/v7"
     )
     assert audit_module.FUND_NAV_PROJECTION_METHOD_VERSION_SQL == (
-        "'fund_nav_reinvestment_projection/v6'"
+        "'fund_nav_reinvestment_projection/v7'"
     )
 
 
@@ -228,7 +233,8 @@ def test_twr_audit_cte_projects_daily_twr(
         for query in queries
         if "instrument_registry.fund_nav_current_projection" in query
     )
-    assert "fund_nav_reinvestment_projection/v6" in fund_nav_projection_query
+    assert "fund_nav_reinvestment_projection/v7" in fund_nav_projection_query
+    assert "lifecycle_state_json" in fund_nav_projection_query
     assert "{FUND_NAV_PROJECTION_METHOD_VERSION_SQL}" not in (
         fund_nav_projection_query
     )
@@ -243,6 +249,15 @@ def test_twr_audit_cte_projects_daily_twr(
     )
     assert "held.reference_date - 120" in held_fund_coverage_query
     assert "latest_official_date - 14" in held_fund_coverage_query
+    index_semantics_query = next(
+        query
+        for query in queries
+        if "watchlist.instrument_chart_read_model" in query
+    )
+    assert "configured_return_kind" in index_semantics_query
+    assert "published_return_kind" in index_semantics_query
+    assert "IS DISTINCT FROM expected_return_kind" in index_semantics_query
+    assert "IS DISTINCT FROM 'nav_with_dividend'" in index_semantics_query
 
 
 def test_cli_requires_explicit_database_configuration(

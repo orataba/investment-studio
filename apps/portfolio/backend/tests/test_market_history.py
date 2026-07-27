@@ -8,6 +8,7 @@ from portfolio_app.services.instrument_charts import (
     build_instrument_price_chart_from_detail,
     build_instrument_trend_metrics_from_detail,
 )
+from portfolio_app.services.market_data import benchmark_total_return_quote_bases
 
 
 def _point(
@@ -137,6 +138,33 @@ def test_index_close_chart_reports_explicit_return_semantics(
     assert chart is not None
     assert chart["chart_basis"] == "close"
     assert chart["return_semantics"] == expected_semantics
+
+
+@pytest.mark.parametrize(
+    ("configured_semantics", "expected_bases"),
+    [
+        ("total_return", ["close"]),
+        ("price_return", []),
+        ("unknown", []),
+    ],
+)
+def test_benchmark_bases_require_confirmed_total_return_semantics(
+    configured_semantics: str,
+    expected_bases: list[str],
+) -> None:
+    detail = _detail(
+        [_point("close", "2026-07-15", "101")],
+        instrument_type="index",
+        return_semantics=configured_semantics,
+    )
+    detail["quote_selection_policy"] = {
+        "total_return": ["close"],
+        "chart": ["close"],
+        "valuation": ["close"],
+        "reference": ["close"],
+    }
+
+    assert benchmark_total_return_quote_bases(detail) == expected_bases
 
 
 def test_adjusted_close_reports_total_return_without_manual_semantics() -> None:
