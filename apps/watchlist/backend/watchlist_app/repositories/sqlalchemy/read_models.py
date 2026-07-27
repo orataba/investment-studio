@@ -138,6 +138,8 @@ class SQLAlchemyReadModelRepository:
                 return_1w=data.get("return_1w"),
                 return_mtd=data.get("return_mtd"),
                 return_1m=data.get("return_1m"),
+                return_3m=data.get("return_3m"),
+                return_6m=data.get("return_6m"),
                 return_1y=data.get("return_1y"),
                 annualized_return=data.get("annualized_return"),
                 return_3y=data.get("return_3y"),
@@ -176,6 +178,8 @@ class SQLAlchemyReadModelRepository:
         record.return_1w = data.get("return_1w")
         record.return_mtd = data.get("return_mtd")
         record.return_1m = data.get("return_1m")
+        record.return_3m = data.get("return_3m")
+        record.return_6m = data.get("return_6m")
         record.return_1y = data.get("return_1y")
         record.annualized_return = data.get("annualized_return")
         record.return_3y = data.get("return_3y")

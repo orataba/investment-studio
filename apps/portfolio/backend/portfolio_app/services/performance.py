@@ -33,6 +33,7 @@ from portfolio_app.services.instrument_event_tasks import (
     instrument_event_task_quality_warnings,
 )
 from portfolio_app.services.ledger import (
+    _split_lot_quantity_allocations,
     build_position_lots,
     derive_ledger_postings,
     ledger_posting_effective_date_iso,
@@ -353,15 +354,26 @@ def _resolve_snapshot_window(
     end_date: date | None,
 ) -> tuple[date, date] | None:
     transaction_dates = [
-        parsed
-        for parsed in (_parse_iso_date(item.get("trade_date")) for item in transactions)
-        if parsed is not None
+        effective_date
+        for item in transactions
+        if (
+            effective_date := transaction_performance_effective_date(item)
+        )
+        is not None
     ]
     portfolio_as_of = _parse_iso_date(portfolio.get("as_of_date"))
     if not transaction_dates and portfolio_as_of is None:
         return None
 
-    resolved_start = start_date or (min(transaction_dates) if transaction_dates else portfolio_as_of)
+    inception_date = min(transaction_dates) if transaction_dates else None
+    resolved_start = start_date or inception_date or portfolio_as_of
+    if (
+        start_date is not None
+        and inception_date is not None
+        and resolved_start is not None
+        and resolved_start < inception_date
+    ):
+        resolved_start = inception_date
     resolved_end = end_date or portfolio_as_of or (max(transaction_dates) if transaction_dates else None)
     if portfolio_as_of is not None and resolved_end is not None and resolved_end > portfolio_as_of:
         resolved_end = portfolio_as_of
@@ -392,9 +404,12 @@ def _build_single_date_snapshot(
     portfolio_view["as_of_date"] = as_of_date.isoformat()
     historical_start_date = min(
         (
-            parsed_trade_date
-            for parsed_trade_date in (_parse_iso_date(item.get("trade_date")) for item in transactions)
-            if parsed_trade_date is not None
+            effective_date
+            for item in transactions
+            if (
+                effective_date := transaction_performance_effective_date(item)
+            )
+            is not None
         ),
         default=as_of_date,
     )
@@ -446,6 +461,7 @@ def _transactions_in_period(
     *,
     start_date: date,
     end_date: date,
+    include_start_date: bool = True,
 ) -> list[dict[str, object]]:
     start_iso = start_date.isoformat()
     end_iso = end_date.isoformat()
@@ -454,7 +470,11 @@ def _transactions_in_period(
         for transaction in sorted(transactions, key=transaction_sort_key)
         if (
             (effective_date := transaction_performance_effective_date(transaction)) is not None
-            and start_iso <= effective_date.isoformat() <= end_iso
+            and (
+                start_iso <= effective_date.isoformat() <= end_iso
+                if include_start_date
+                else start_iso < effective_date.isoformat() <= end_iso
+            )
         )
     ]
 
@@ -475,8 +495,205 @@ def _transactions_as_of_end_date(
     ]
 
 
-def _initial_boundary_date(resolved_start_date: date, requested_start_date: date | None) -> date:
-    return resolved_start_date - timedelta(days=1) if requested_start_date is not None else resolved_start_date
+def _starts_on_imported_valuation_anchor(
+    transactions: list[dict[str, object]],
+    *,
+    resolved_start_date: date,
+) -> bool:
+    """Return whether ``resolved_start_date`` is an imported EOD boundary.
+
+    A same-day external contribution creates investable BOD capital and is
+    therefore part of the first return subperiod.  ``opening_balance`` is
+    different: it imports an already-existing fair-value state.  When that
+    transaction is the first portfolio fact, its EOD value is the initial
+    boundary and must not be reported as day-one performance.
+    """
+
+    effective_transactions: list[tuple[date, dict[str, object]]] = []
+    for transaction in transactions:
+        effective_date = transaction_performance_effective_date(transaction)
+        if effective_date is not None:
+            effective_transactions.append((effective_date, transaction))
+    if not effective_transactions:
+        return False
+    inception_date = min(item[0] for item in effective_transactions)
+    if inception_date != resolved_start_date:
+        return False
+    return any(
+        effective_date == resolved_start_date
+        and str(transaction.get("transaction_type") or "")
+        == "opening_balance"
+        for effective_date, transaction in effective_transactions
+    )
+
+
+def _initial_boundary_date(
+    resolved_start_date: date,
+    requested_start_date: date | None,
+    *,
+    transactions: list[dict[str, object]],
+) -> date:
+    # ``start_date`` is an EOD valuation anchor.  Funded inception is handled
+    # by the first subperiod's BOD cash-flow denominator, not by fabricating a
+    # prior calendar snapshot.
+    del requested_start_date, transactions
+    return resolved_start_date
+
+
+def _requested_start_is_close_boundary(
+    transactions: list[dict[str, object]],
+    *,
+    requested_start_date: date | None,
+    resolved_start_date: date,
+) -> bool:
+    """Whether the requested start has an existing portfolio EOD boundary.
+
+    A funded inception date has no preceding portfolio close.  Even when it is
+    supplied explicitly, that date denotes the portfolio's first BOD-to-EOD
+    subperiod.  Imported opening balances remain EOD anchors.
+    """
+
+    if requested_start_date is None:
+        return False
+    inception_date = min(
+        (
+            effective_date
+            for transaction in transactions
+            if (
+                effective_date := transaction_performance_effective_date(
+                    transaction
+                )
+            )
+            is not None
+        ),
+        default=None,
+    )
+    return inception_date is None or requested_start_date > inception_date
+
+
+def _snapshot_starts_funded_segment(
+    snapshot: dict[str, object] | None,
+    *,
+    resolved_start_date: date,
+) -> bool:
+    """Return whether a daily row restarts performance from zero portfolio NAV.
+
+    Cash that remains inside the portfolio is still part of portfolio NAV even
+    when it earns no return.  A funded segment therefore starts only when the
+    prior EOD portfolio NAV is genuinely zero and a positive BOD contribution
+    supplies the day's return denominator.  This is deliberately narrower than
+    "a deposit happened today": an ordinary contribution to a live portfolio
+    remains a normal close-to-close subperiod.
+    """
+
+    if not isinstance(snapshot, dict):
+        return False
+    snapshot_date = _parse_iso_date(snapshot.get("as_of_date"))
+    beginning_nav = _safe_float(snapshot.get("beginning_nav"))
+    external_cash_in = _safe_float(snapshot.get("external_cash_in"))
+    daily_twr = _safe_float(snapshot.get("daily_twr"))
+    return bool(
+        snapshot_date == resolved_start_date
+        and beginning_nav is not None
+        and abs(beginning_nav) <= 1e-9
+        and external_cash_in is not None
+        and external_cash_in > 1e-9
+        and daily_twr is not None
+        and isfinite(daily_twr)
+        and return_chain.snapshot_coverage_state(snapshot, "return")
+        == "complete"
+    )
+
+
+def _period_start_is_close_boundary(
+    transactions: list[dict[str, object]],
+    *,
+    requested_start_date: date | None,
+    resolved_start_date: date,
+    start_snapshot: dict[str, object] | None = None,
+) -> bool:
+    """Whether the period begins at an existing EOD portfolio state.
+
+    Every explicit start date is an EOD query anchor once the portfolio exists.
+    An imported opening balance is also an EOD state even for a since-inception
+    query.  A true funded inception, or a later re-funding after portfolio NAV
+    reached zero, remains a BOD-to-EOD first subperiod for that funded segment.
+    A live portfolio that merely holds non-earning cash does not qualify.
+    """
+
+    if _starts_on_imported_valuation_anchor(
+        transactions,
+        resolved_start_date=resolved_start_date,
+    ):
+        return True
+    if _snapshot_starts_funded_segment(
+        start_snapshot,
+        resolved_start_date=resolved_start_date,
+    ):
+        return False
+    return _requested_start_is_close_boundary(
+        transactions,
+        requested_start_date=requested_start_date,
+        resolved_start_date=resolved_start_date,
+    )
+
+
+def _raw_period_start_snapshot(
+    portfolio: dict[str, object],
+    accounts: list[dict[str, object]],
+    transactions: list[dict[str, object]],
+    *,
+    resolved_start_date: date,
+) -> dict[str, object]:
+    """Load the unprojected daily row used to classify a period boundary."""
+
+    return _build_single_date_snapshot(
+        portfolio,
+        accounts,
+        _transactions_as_of_end_date(
+            transactions,
+            end_date=resolved_start_date,
+        ),
+        as_of_date=resolved_start_date,
+    )
+
+
+def _period_initial_value_from_daily_slice(
+    daily_slice: dict[str, object],
+) -> float | None:
+    """Return the value immediately before the requested performance interval.
+
+    A normal daily slice starts at BOD.  A close-to-close query anchor and an
+    imported opening balance are EOD boundaries, so their ending value is the
+    interval's initial value.
+    """
+
+    field_name = (
+        "ending_value_base"
+        if bool(daily_slice.get("_is_initial_valuation_anchor"))
+        else "beginning_value_base"
+    )
+    return _safe_float(daily_slice.get(field_name))
+
+
+def _period_risk_start_boundary_date(
+    resolved_start_date: date | None,
+    daily_slices: list[dict[str, object]],
+) -> date | None:
+    """Return the EOD boundary preceding the first included risk subperiod."""
+
+    if resolved_start_date is None:
+        return None
+    starts_on_imported_anchor = any(
+        item.get("as_of_date") == resolved_start_date
+        and bool(item.get("_is_initial_valuation_anchor"))
+        for item in daily_slices
+    )
+    return (
+        resolved_start_date
+        if starts_on_imported_anchor
+        else resolved_start_date - timedelta(days=1)
+    )
 
 
 def _sum_period_transaction_buckets(
@@ -835,58 +1052,199 @@ def _period_unrealized_capital_gains_by_group(
     base_currency: str,
     direct_fx_instruments: dict[tuple[str, str], str],
     instrument_detail_cache: dict[str, dict[str, object] | None],
+    start_is_close_boundary: bool = False,
 ) -> dict[str, object]:
     lots_by_key: dict[tuple[str, str], list[dict[str, object]]] = defaultdict(list)
     sorted_transactions = sorted(transactions, key=transaction_sort_key)
-    start_boundary_date = start_date - timedelta(days=1)
+    start_boundary_date = (
+        start_date
+        if start_is_close_boundary
+        else start_date - timedelta(days=1)
+    )
     portfolio_id = str(portfolio.get("portfolio_id") or "")
-    transactions_before_start = _transactions_as_of_end_date(sorted_transactions, end_date=start_boundary_date)
+    transactions_before_start = _transactions_as_of_end_date(
+        sorted_transactions,
+        end_date=start_boundary_date,
+    )
+    opening_boundary_transactions = [
+        transaction
+        for transaction in sorted_transactions
+        if not start_is_close_boundary
+        if transaction_performance_effective_date(transaction) == start_date
+        and str(transaction.get("transaction_type") or "")
+        == "opening_balance"
+    ]
+    opening_boundary_transaction_ids = {
+        str(transaction.get("transaction_id") or "")
+        for transaction in opening_boundary_transactions
+    }
     coverage_complete = True
     stale_fx_flag = False
 
-    for position_lot in build_position_lots(
-        portfolio_id,
-        accounts,
-        transactions_before_start,
-        as_of_date=start_boundary_date,
-        instrument_detail_cache=instrument_detail_cache,
-    ):
-        if str(position_lot.get("status") or "") != "open":
-            continue
-        quantity = _safe_float(position_lot.get("remaining_quantity")) or 0.0
-        if quantity <= 1e-9:
-            continue
-        lot = {
-            "account_id": str(position_lot.get("account_id") or ""),
-            "instrument_id": str(position_lot.get("instrument_id") or ""),
-            "instrument_ref": (
-                deepcopy(position_lot.get("instrument_ref"))
-                if isinstance(position_lot.get("instrument_ref"), dict)
-                else {}
-            ),
-            "currency": valuation_fx.required_currency(
-                position_lot.get("currency"), field_name="position-lot currency"
-            ),
-            "quantity": quantity,
-            "cost_local": 0.0,
-        }
-        market_value_local = _period_lot_market_value_local(
-            lot,
-            as_of_date=start_boundary_date,
+    def seed_boundary_lots(
+        boundary_transactions: list[dict[str, object]],
+        *,
+        boundary_date: date,
+        corporate_actions: list[dict[str, object]] | None = None,
+    ) -> None:
+        nonlocal coverage_complete
+        for position_lot in build_position_lots(
+            portfolio_id,
+            accounts,
+            boundary_transactions,
+            as_of_date=boundary_date,
+            corporate_actions=corporate_actions,
             instrument_detail_cache=instrument_detail_cache,
+        ):
+            if str(position_lot.get("status") or "") != "open":
+                continue
+            quantity = (
+                _safe_float(position_lot.get("remaining_quantity")) or 0.0
+            )
+            if quantity <= 1e-9:
+                continue
+            lot = {
+                "account_id": str(position_lot.get("account_id") or ""),
+                "instrument_id": str(position_lot.get("instrument_id") or ""),
+                "instrument_ref": (
+                    deepcopy(position_lot.get("instrument_ref"))
+                    if isinstance(position_lot.get("instrument_ref"), dict)
+                    else {}
+                ),
+                "currency": valuation_fx.required_currency(
+                    position_lot.get("currency"),
+                    field_name="position-lot currency",
+                ),
+                "quantity": quantity,
+                "cost_local": 0.0,
+            }
+            market_value_local = _period_lot_market_value_local(
+                lot,
+                as_of_date=boundary_date,
+                instrument_detail_cache=instrument_detail_cache,
+            )
+            if market_value_local is None:
+                coverage_complete = False
+                continue
+            lot["cost_local"] = market_value_local
+            lots_by_key[
+                (str(lot["account_id"]), str(lot["instrument_id"]))
+            ].append(lot)
+
+    seed_boundary_lots(
+        transactions_before_start,
+        boundary_date=start_boundary_date,
+    )
+    # Imported positions that establish the inception boundary are valued at
+    # fair value on that boundary.  Their imported remaining book cost is not
+    # a performance-period cost and must not create day-one gains or losses.
+    if opening_boundary_transactions:
+        seed_boundary_lots(
+            opening_boundary_transactions,
+            boundary_date=start_date,
+            corporate_actions=[],
         )
-        if market_value_local is None:
-            coverage_complete = False
-            continue
-        lot["cost_local"] = market_value_local
-        lots_by_key[(str(lot["account_id"]), str(lot["instrument_id"]))].append(lot)
 
     transfer_slices_by_group: dict[str, list[dict[str, object]]] = {}
-    for transaction in sorted_transactions:
-        trade_date = _parse_iso_date(transaction.get("trade_date"))
-        if trade_date is None or trade_date < start_date or trade_date > end_date:
+    disposed_period_lots: list[dict[str, object]] = []
+    corporate_action_timeline = [
+        event
+        for event in _corporate_actions_for_transactions(
+            sorted_transactions,
+            effective_on_or_before=end_date,
+        )
+        if str(event.get("action_type") or "") == "share_split"
+        and str(event.get("status") or "") == "confirmed"
+        if (
+            effective_date := _parse_iso_date(event.get("effective_date"))
+        )
+        is not None
+        and (
+            start_date < effective_date <= end_date
+            if start_is_close_boundary
+            else start_date <= effective_date <= end_date
+        )
+    ]
+    timeline: list[tuple[date, int, tuple[object, ...], dict[str, object]]] = [
+        (
+            cast(date, _parse_iso_date(event.get("effective_date"))),
+            0,
+            (str(event.get("corporate_action_event_id") or ""),),
+            event,
+        )
+        for event in corporate_action_timeline
+    ]
+    timeline.extend(
+        (
+            effective_date,
+            1,
+            transaction_sort_key(transaction),
+            transaction,
+        )
+        for transaction in sorted_transactions
+        if (
+            effective_date := transaction_performance_effective_date(
+                transaction
+            )
+        )
+        is not None
+        and (
+            start_date < effective_date <= end_date
+            if start_is_close_boundary
+            else start_date <= effective_date <= end_date
+        )
+    )
+    for timeline_date, timeline_kind, _sort_key, transaction in sorted(
+        timeline,
+        key=lambda item: (item[0], item[1], item[2]),
+    ):
+        if timeline_kind == 0:
+            split_instrument_id = str(transaction.get("instrument_id") or "")
+            for (account_key, instrument_key), lots in list(
+                lots_by_key.items()
+            ):
+                del account_key
+                if instrument_key != split_instrument_id:
+                    continue
+                active_lots = [
+                    lot
+                    for lot in lots
+                    if (_safe_float(lot.get("quantity")) or 0.0) > 1e-9
+                ]
+                quantities = [
+                    _safe_float(lot.get("quantity")) or 0.0
+                    for lot in active_lots
+                ]
+                target_quantities = _split_lot_quantity_allocations(
+                    quantities,
+                    transaction,
+                )
+                for lot, target_quantity in zip(
+                    active_lots,
+                    target_quantities,
+                    strict=True,
+                ):
+                    lot["quantity"] = target_quantity
+            continue
+
+        trade_date = timeline_date
+        if (
+            trade_date is None
+            or trade_date > end_date
+            or (
+                trade_date <= start_date
+                if start_is_close_boundary
+                else trade_date < start_date
+            )
+        ):
             continue
         transaction_type = str(transaction.get("transaction_type") or "")
+        if (
+            transaction_type == "opening_balance"
+            and str(transaction.get("transaction_id") or "")
+            in opening_boundary_transaction_ids
+        ):
+            continue
         account_id = str(transaction.get("account_id") or "")
         instrument_ref = (
             deepcopy(transaction.get("instrument_ref"))
@@ -915,11 +1273,13 @@ def _period_unrealized_capital_gains_by_group(
             continue
 
         if transaction_type in {"sell", "maturity_redemption"}:
-            _consume_period_lots(
-                lots_by_key,
-                account_id=account_id,
-                instrument_id=instrument_id,
-                quantity=quantity,
+            disposed_period_lots.extend(
+                _consume_period_lots(
+                    lots_by_key,
+                    account_id=account_id,
+                    instrument_id=instrument_id,
+                    quantity=quantity,
+                )
             )
             continue
 
@@ -985,12 +1345,94 @@ def _period_unrealized_capital_gains_by_group(
         as_of_date=end_date,
     )
     account_name_map = attribution.account_name_map(accounts)
+
+    def resolve_group_key(lot: dict[str, object]) -> str:
+        if detail_parent_axis in {
+            "instrument",
+            "account",
+            "instrument_type",
+            "currency",
+        }:
+            parent_group_key, _parent_group_label = (
+                attribution.position_group_for_axis(
+                    axis=detail_parent_axis,
+                    position_lot=lot,
+                    account_name_map=account_name_map,
+                    base_currency=base_currency,
+                )
+            )
+            item_key = str(lot.get("instrument_id") or "")
+            return (
+                attribution.encode_calculation_detail_group_key(
+                    parent_group_key=parent_group_key,
+                    item_kind="instrument",
+                    item_key=item_key,
+                )
+                if parent_group_key and item_key
+                else ""
+            )
+        if detail_parent_axis == "taxonomy" and taxonomy_resolver is not None:
+            parent_group_key = taxonomy_resolver(lot)
+            item_key = str(lot.get("instrument_id") or "")
+            return (
+                attribution.encode_calculation_detail_group_key(
+                    parent_group_key=parent_group_key,
+                    item_kind="instrument",
+                    item_key=item_key,
+                )
+                if parent_group_key and item_key
+                else ""
+            )
+        if axis == "account":
+            return str(lot.get("account_id") or "")
+        if axis == "instrument_type":
+            instrument_ref = attribution.instrument_ref_from_mapping(lot)
+            group_key, _group_label = attribution.instrument_type_key_label(
+                instrument_ref.get("instrument_type")
+            )
+            return group_key
+        if axis == "currency":
+            return valuation_fx.required_currency(
+                lot.get("currency"), field_name="position-lot currency"
+            )
+        if axis == "taxonomy" and taxonomy_resolver is not None:
+            return taxonomy_resolver(lot)
+        return str(lot.get("instrument_id") or "")
+
     values: dict[str, float] = defaultdict(float)
+    open_group_keys: set[str] = set()
+    disposed_group_keys: set[str] = set()
+    foreign_group_keys: set[str] = set()
+    for disposed_lot in disposed_period_lots:
+        group_key = resolve_group_key(disposed_lot)
+        if not group_key:
+            continue
+        disposed_group_keys.add(group_key)
+        if (
+            valuation_fx.required_currency(
+                disposed_lot.get("currency"),
+                field_name="position-lot currency",
+            )
+            != base_currency
+        ):
+            foreign_group_keys.add(group_key)
+
     for lots in lots_by_key.values():
         for lot in lots:
             quantity = _safe_float(lot.get("quantity")) or 0.0
             if quantity <= 1e-9:
                 continue
+            group_key = resolve_group_key(lot)
+            if group_key:
+                open_group_keys.add(group_key)
+                if (
+                    valuation_fx.required_currency(
+                        lot.get("currency"),
+                        field_name="position-lot currency",
+                    )
+                    != base_currency
+                ):
+                    foreign_group_keys.add(group_key)
             end_market_value_local = _period_lot_market_value_local(
                 lot,
                 as_of_date=end_date,
@@ -1016,48 +1458,6 @@ def _period_unrealized_capital_gains_by_group(
                 coverage_complete = False
                 continue
             stale_fx_flag = stale_fx_flag or _is_stale
-            if detail_parent_axis in {"instrument", "account", "instrument_type", "currency"}:
-                parent_group_key, _parent_group_label = attribution.position_group_for_axis(
-                    axis=detail_parent_axis,
-                    position_lot=lot,
-                    account_name_map=account_name_map,
-                    base_currency=base_currency,
-                )
-                item_key = str(lot.get("instrument_id") or "")
-                group_key = (
-                    attribution.encode_calculation_detail_group_key(
-                        parent_group_key=parent_group_key,
-                        item_kind="instrument",
-                        item_key=item_key,
-                    )
-                    if parent_group_key and item_key
-                    else ""
-                )
-            elif detail_parent_axis == "taxonomy" and taxonomy_resolver is not None:
-                parent_group_key = taxonomy_resolver(lot)
-                item_key = str(lot.get("instrument_id") or "")
-                group_key = (
-                    attribution.encode_calculation_detail_group_key(
-                        parent_group_key=parent_group_key,
-                        item_kind="instrument",
-                        item_key=item_key,
-                    )
-                    if parent_group_key and item_key
-                    else ""
-                )
-            elif axis == "account":
-                group_key = str(lot.get("account_id") or "")
-            elif axis == "instrument_type":
-                instrument_ref = attribution.instrument_ref_from_mapping(lot)
-                group_key, _group_label = attribution.instrument_type_key_label(instrument_ref.get("instrument_type"))
-            elif axis == "currency":
-                group_key = valuation_fx.required_currency(
-                    lot.get("currency"), field_name="position-lot currency"
-                )
-            elif axis == "taxonomy" and taxonomy_resolver is not None:
-                group_key = taxonomy_resolver(lot)
-            else:
-                group_key = str(lot.get("instrument_id") or "")
             if group_key:
                 values[group_key] += unrealized_base
 
@@ -1065,7 +1465,62 @@ def _period_unrealized_capital_gains_by_group(
         "values": dict(values),
         "coverage_complete": coverage_complete,
         "stale_fx_flag": stale_fx_flag,
+        "open_group_keys": sorted(open_group_keys),
+        "disposed_group_keys": sorted(disposed_group_keys),
+        "foreign_group_keys": sorted(foreign_group_keys),
     }
+
+
+def _resolved_period_unrealized_capital_gain(
+    *,
+    group_key: str,
+    capital_gains: float | None,
+    unrealized_capital_summary: dict[str, object],
+) -> tuple[float | None, bool]:
+    """Split period capital gain without mixing book and performance bases.
+
+    The period capital-gain line is already the exact NAV bridge after income,
+    expenses, and currency effects.  If no units were disposed, the entire
+    period capital gain is unrealized; if the group is fully disposed, it is
+    entirely realized.  A remaining base-currency lot can be valued against
+    its reset period cost.  A partially disposed foreign-currency lot needs
+    lot-level daily price/FX attribution, so that ambiguous case fails closed
+    instead of publishing an endpoint-FX approximation.
+    """
+
+    if capital_gains is None or not bool(
+        unrealized_capital_summary.get("coverage_complete")
+    ):
+        return (None, False)
+    disposed_group_keys = {
+        str(item)
+        for item in list(
+            unrealized_capital_summary.get("disposed_group_keys") or []
+        )
+    }
+    open_group_keys = {
+        str(item)
+        for item in list(unrealized_capital_summary.get("open_group_keys") or [])
+    }
+    foreign_group_keys = {
+        str(item)
+        for item in list(
+            unrealized_capital_summary.get("foreign_group_keys") or []
+        )
+    }
+    if group_key not in disposed_group_keys:
+        return (capital_gains, True)
+    if group_key not in open_group_keys:
+        return (0.0, True)
+    if group_key in foreign_group_keys:
+        return (None, False)
+
+    values = (
+        unrealized_capital_summary.get("values")
+        if isinstance(unrealized_capital_summary.get("values"), dict)
+        else {}
+    )
+    return (_safe_float(values.get(group_key)) or 0.0, True)
 
 
 def _daily_external_flow_breakdown(
@@ -1162,6 +1617,8 @@ def build_daily_portfolio_snapshots(
         "account": {},
     }
     external_flow_inside_unreliable_gap = False
+    cumulative_performance_pnl = 0.0
+    performance_pnl_history_complete = True
 
     for as_of_date in _iter_dates(resolved_start_date, resolved_end_date):
         as_of_iso = as_of_date.isoformat()
@@ -1511,26 +1968,6 @@ def build_daily_portfolio_snapshots(
             nav = resolved_cash_balance + pending_settlement_base + resolved_position_market_value
             if resolved_open_cost_basis is not None:
                 unrealized_pnl = resolved_position_market_value - resolved_open_cost_basis
-            if unrealized_pnl is not None and book_pnl_coverage_state == "complete":
-                total_pnl = (
-                    (pnl_components["realized_pnl"] + pnl_components["income_cash_amount"])
-                    - pnl_components["expense_cash_amount"]
-                    + unrealized_pnl
-                )
-                if cash_currency_gains is not None:
-                    total_pnl += cash_currency_gains
-                elif not cash_currency_gain_history_complete:
-                    total_pnl = None
-                if total_pnl is not None:
-                    if pending_settlement_currency_gains is not None:
-                        total_pnl += pending_settlement_currency_gains
-                    elif not pending_settlement_currency_gain_history_complete:
-                        total_pnl = None
-                if total_pnl is not None:
-                    if instrument_currency_gains is not None:
-                        total_pnl += instrument_currency_gains
-                    elif not instrument_currency_gain_history_complete:
-                        total_pnl = None
 
         flow_breakdown = _daily_external_flow_breakdown(
             sorted_transactions,
@@ -1584,6 +2021,38 @@ def build_daily_portfolio_snapshots(
             numerator = nav + float(flow_breakdown["external_cash_out"])
             if numerator >= 0:
                 daily_twr = (numerator / denominator) - 1.0
+
+        # ``total_pnl`` is a performance-period bridge, not a reconstruction
+        # from FIFO/moving-average book components.  Attached trade charges
+        # are already embedded in lot cost or net sale proceeds, so summing
+        # those book components and subtracting the charges again understates
+        # economic P&L.  Accumulating the flow-neutral daily NAV delta makes
+        # the invariant explicit:
+        #
+        #   ending NAV = opening NAV + net external flow + total P&L
+        #
+        # An imported opening balance establishes the first fair-value
+        # boundary and therefore starts with zero period P&L.
+        if nav is None and has_snapshot_content:
+            # A later reliable NAV cannot reconstruct economic P&L across an
+            # earlier valuation gap, even when no external flow occurred.
+            # Keep the bridge unavailable instead of silently treating the
+            # first recovered value as a zero-P&L imported anchor.
+            performance_pnl_history_complete = False
+        if reanchor_after_flow_gap or (
+            flow_has_external_cash and not flow_coverage_complete
+        ):
+            performance_pnl_history_complete = False
+        if delta is not None and performance_pnl_history_complete:
+            cumulative_performance_pnl += delta
+            total_pnl = cumulative_performance_pnl
+        elif (
+            nav is not None
+            and last_complete_nav is None
+            and not flow_has_external_cash
+            and performance_pnl_history_complete
+        ):
+            total_pnl = cumulative_performance_pnl
 
         if valuation_coverage_state != "complete":
             return_coverage_state = valuation_coverage_state
@@ -1845,6 +2314,49 @@ def _portfolio_inception_date(
     return min(activity_dates) if activity_dates else None
 
 
+def _snapshot_as_close_boundary(
+    snapshot: dict[str, object],
+) -> dict[str, object]:
+    """Project an EOD valuation row as the anchor of a queried interval.
+
+    Stored daily snapshots describe that calendar day's BOD-to-EOD subperiod.
+    A query ``start_date`` instead identifies the EOD state after that
+    subperiod.  Keep its valuation and cumulative book balances, while removing
+    the day's flow, P&L, and return observations from the queried interval.
+    """
+
+    boundary = dict(snapshot)
+    ending_nav = _safe_float(snapshot.get("ending_nav"))
+    if ending_nav is None:
+        ending_nav = _safe_float(snapshot.get("nav"))
+    boundary["_is_initial_valuation_anchor"] = True
+    boundary["_is_period_start_close_anchor"] = True
+    boundary["beginning_nav"] = ending_nav
+    boundary["ending_nav"] = ending_nav
+    boundary["nav"] = ending_nav
+    boundary["external_cash_in"] = 0.0
+    boundary["external_cash_out"] = 0.0
+    boundary["net_external_inflow"] = 0.0
+    boundary["absolute_change"] = 0.0 if ending_nav is not None else None
+    boundary["delta"] = 0.0 if ending_nav is not None else None
+    boundary["daily_twr"] = None
+    boundary["cumulative_twr"] = None
+    boundary["drawdown"] = None
+    boundary["return_observation_eligible"] = False
+    # An explicit complete EOD valuation is allowed to start a new chain even
+    # when an earlier, out-of-window chain was broken.
+    boundary["return_chain_continuous"] = return_chain.has_complete_valuation(
+        boundary
+    )
+    boundary["attribution_coverage_state"] = return_chain.merge_coverage_states(
+        [
+            return_chain.snapshot_coverage_state(boundary, "valuation"),
+            return_chain.snapshot_coverage_state(boundary, "book_pnl"),
+        ]
+    )
+    return boundary
+
+
 def _rebased_twr_series(snapshots: list[dict[str, object]]) -> list[dict[str, object]]:
     rendered_snapshots = return_chain.rebased_twr_series(snapshots)
     growth_index = 1.0
@@ -1862,13 +2374,19 @@ def _rebased_twr_series(snapshots: list[dict[str, object]]) -> list[dict[str, ob
             has_return_history = True
             growth_index *= 1.0 + daily_twr
             peak_growth_index = max(peak_growth_index, growth_index)
-        rendered_snapshot["drawdown"] = (
-            (growth_index / peak_growth_index) - 1.0
-            if has_return_history
-            and bool(rendered_snapshot["return_chain_continuous"])
-            and peak_growth_index > 0
-            else None
-        )
+        is_complete_initial_anchor = bool(
+            snapshot.get("_is_initial_valuation_anchor")
+        ) and bool(rendered_snapshot["return_chain_continuous"])
+        if is_complete_initial_anchor and not has_return_history:
+            rendered_snapshot["drawdown"] = 0.0
+        else:
+            rendered_snapshot["drawdown"] = (
+                (growth_index / peak_growth_index) - 1.0
+                if has_return_history
+                and bool(rendered_snapshot["return_chain_continuous"])
+                and peak_growth_index > 0
+                else None
+            )
 
     return rendered_snapshots
 
@@ -1881,12 +2399,20 @@ def build_portfolio_performance_report(
     start_date: date | None = None,
     end_date: date | None = None,
 ) -> dict[str, object]:
-    calculation_start_date = start_date - timedelta(days=1) if start_date is not None else None
+    # Keep one predecessor EOD row as context.  It distinguishes an ordinary
+    # contribution to a live cash-bearing portfolio from a genuine re-funding
+    # after NAV reached zero, while the report builder still exposes only the
+    # requested interval.
+    snapshot_build_start = (
+        start_date - timedelta(days=1)
+        if start_date is not None
+        else None
+    )
     snapshots = build_daily_portfolio_snapshots(
         portfolio,
         accounts,
         transactions,
-        start_date=calculation_start_date,
+        start_date=snapshot_build_start,
         end_date=end_date,
     )
     return build_portfolio_performance_report_from_snapshots(
@@ -1907,16 +2433,73 @@ def build_portfolio_performance_report_from_snapshots(
     end_date: date | None = None,
 ) -> dict[str, object]:
     portfolio_default_end_date = _parse_iso_date(portfolio.get("as_of_date"))
+    source_snapshots: list[dict[str, object]] = []
+    for snapshot in snapshots:
+        snapshot_date = _parse_iso_date(snapshot.get("as_of_date"))
+        if snapshot_date is None:
+            continue
+        normalized_snapshot = dict(snapshot)
+        normalized_snapshot["as_of_date"] = snapshot_date
+        source_snapshots.append(normalized_snapshot)
+    source_snapshots.sort(
+        key=lambda item: cast(date, item["as_of_date"])
+    )
+    inception_date = _portfolio_inception_date(
+        transactions or [],
+        source_snapshots,
+    )
+    raw_start_snapshot = next(
+        (
+            snapshot
+            for snapshot in source_snapshots
+            if start_date is not None
+            and snapshot.get("as_of_date") == start_date
+        ),
+        None,
+    )
+    predecessor_snapshot = next(
+        (
+            snapshot
+            for snapshot in reversed(source_snapshots)
+            if start_date is not None
+            and isinstance(snapshot.get("as_of_date"), date)
+            and snapshot["as_of_date"] < start_date
+        ),
+        None,
+    )
+    start_is_funded_segment = bool(
+        start_date is not None
+        and _snapshot_starts_funded_segment(
+            raw_start_snapshot,
+            resolved_start_date=start_date,
+        )
+    )
+    start_is_close_boundary = bool(
+        start_date is not None
+        and _period_start_is_close_boundary(
+            transactions or [],
+            requested_start_date=start_date,
+            resolved_start_date=start_date,
+            start_snapshot=raw_start_snapshot,
+        )
+    )
     snapshot_window = return_chain.resolve_reliable_snapshot_window(
-        snapshots,
+        source_snapshots,
         requested_start_date=start_date,
         requested_end_date=end_date,
         default_end_date=portfolio_default_end_date,
-        include_start_boundary=True,
     )
     snapshots = list(cast(list[dict[str, object]], snapshot_window["snapshots"]))
     visible_snapshots = [
-        snapshot
+        (
+            _snapshot_as_close_boundary(snapshot)
+            if (
+                start_is_close_boundary
+                and start_date is not None
+                and snapshot.get("as_of_date") == start_date
+            )
+            else dict(snapshot)
+        )
         for snapshot in snapshots
         if start_date is None
         or (isinstance(snapshot.get("as_of_date"), date) and snapshot["as_of_date"] >= start_date)
@@ -1930,29 +2513,23 @@ def build_portfolio_performance_report_from_snapshots(
         effective_end_date=cast(date | None, snapshot_window["effective_end_date"]),
         as_of_clamp_reason=cast(str | None, snapshot_window["as_of_clamp_reason"]),
     )
-    inception_date = _portfolio_inception_date(transactions or [], snapshots)
     return_coverage_state = return_chain.period_return_coverage_state(
         snapshots,
         visible_snapshots,
         requested_start_date=start_date,
         effective_end_date=cast(date | None, snapshot_window["effective_end_date"]),
         inception_date=inception_date,
+        start_is_close_boundary=start_is_close_boundary,
+        start_is_funded_segment=start_is_funded_segment,
     )
     valuation_coverage_state = return_chain.aggregate_snapshot_coverage(visible_snapshots, "valuation")
     book_pnl_coverage_state = return_chain.aggregate_snapshot_coverage(visible_snapshots, "book_pnl")
     attribution_coverage_state = return_chain.aggregate_snapshot_coverage(visible_snapshots, "attribution")
     complete_snapshots = [
         snapshot
-        for snapshot in snapshots
+        for snapshot in visible_snapshots
         if return_chain.has_complete_valuation(snapshot)
     ]
-    if start_date is not None and inception_date is not None:
-        complete_snapshots = [
-            snapshot
-            for snapshot in complete_snapshots
-            if isinstance(snapshot.get("as_of_date"), date)
-            and snapshot["as_of_date"] >= min(inception_date, start_date - timedelta(days=1))
-        ]
     visible_complete_snapshots = [
         snapshot
         for snapshot in visible_snapshots
@@ -1971,14 +2548,32 @@ def build_portfolio_performance_report_from_snapshots(
     risk_return_observation_count = len(risk_return_snapshots)
     start_snapshot = complete_snapshots[0] if complete_snapshots else None
     end_snapshot = visible_complete_snapshots[-1] if visible_complete_snapshots else (complete_snapshots[-1] if complete_snapshots else None)
-    inception_window = bool(
-        start_date is None
+    first_visible_complete_snapshot = (
+        visible_complete_snapshots[0] if visible_complete_snapshots else None
+    )
+    funded_segment_window = bool(
+        not start_is_close_boundary
         and start_snapshot is not None
+        and first_visible_complete_snapshot is start_snapshot
         and abs(_safe_float(start_snapshot.get("beginning_nav")) or 0.0) <= 1e-12
         and (_safe_float(start_snapshot.get("external_cash_in")) or 0.0) > 1e-9
     )
     start_anchor_date = start_snapshot.get("as_of_date") if isinstance((start_snapshot or {}).get("as_of_date"), date) else None
     end_anchor_date = end_snapshot.get("as_of_date") if isinstance((end_snapshot or {}).get("as_of_date"), date) else None
+    portfolio_inception_window = bool(
+        funded_segment_window
+        and start_anchor_date is not None
+        and start_anchor_date == inception_date
+    )
+    # Dates label EOD observations.  A funded-segment start row is a real
+    # start-day BOD-to-EOD subperiod, so its elapsed-time boundary is
+    # represented as the preceding calendar date.  An imported opening
+    # balance is an EOD anchor and is deliberately not shifted.
+    performance_start_boundary_date = (
+        start_anchor_date - timedelta(days=1)
+        if funded_segment_window and start_anchor_date is not None
+        else start_anchor_date
+    )
     display_start_date = start_anchor_date
     if start_date is not None and start_anchor_date is not None and start_anchor_date < start_date:
         display_start_date = start_date
@@ -1989,22 +2584,25 @@ def build_portfolio_performance_report_from_snapshots(
             return None
         if start_snapshot is None:
             return end_value
-        if inception_window:
+        if portfolio_inception_window:
             return end_value
-        start_value = _safe_float((start_snapshot or {}).get(field_name))
+        period_baseline_snapshot = (
+            predecessor_snapshot
+            if funded_segment_window
+            else start_snapshot
+        )
+        start_value = _safe_float(
+            (period_baseline_snapshot or {}).get(field_name)
+        )
         if start_value is None:
             return None
         return end_value - start_value
 
-    cumulative_twr = (
-        return_chain.compound_daily_twr(visible_snapshots)
-        if (
-            end_snapshot
-            and return_observation_count > 0
-            and return_coverage_state == "complete"
-        )
-        else None
-    )
+    cumulative_twr = None
+    if end_snapshot and return_coverage_state == "complete":
+        cumulative_twr = return_chain.compound_daily_twr(visible_snapshots)
+        if cumulative_twr is None and start_snapshot is end_snapshot:
+            cumulative_twr = 0.0
     annualization_start_date = None
     if (
         start_snapshot is not None
@@ -2012,11 +2610,7 @@ def build_portfolio_performance_report_from_snapshots(
         and isinstance(start_snapshot.get("as_of_date"), date)
         and isinstance(end_snapshot.get("as_of_date"), date)
     ):
-        annualization_start_date = (
-            start_snapshot["as_of_date"] - timedelta(days=1)
-            if inception_window
-            else start_snapshot["as_of_date"]
-        )
+        annualization_start_date = performance_start_boundary_date
     annualization = annualization_eligibility(annualization_start_date, end_anchor_date)
     annualized_twr = None
     if (
@@ -2035,7 +2629,7 @@ def build_portfolio_performance_report_from_snapshots(
             if isinstance(snapshot.get("as_of_date"), date)
             and (
                 start_anchor_date <= snapshot["as_of_date"] <= end_anchor_date
-                if inception_window
+                if funded_segment_window
                 else start_anchor_date < snapshot["as_of_date"] <= end_anchor_date
             )
         ]
@@ -2045,7 +2639,7 @@ def build_portfolio_performance_report_from_snapshots(
 
     start_nav = (
         _safe_float((start_snapshot or {}).get("beginning_nav"))
-        if inception_window
+        if funded_segment_window
         else _safe_float((start_snapshot or {}).get("nav"))
     )
     end_nav = _safe_float((end_snapshot or {}).get("nav"))
@@ -2065,7 +2659,10 @@ def build_portfolio_performance_report_from_snapshots(
     )
     instrument_currency_gains = snapshot_period_delta("instrument_currency_gains")
     return_of_capital_amount = snapshot_period_delta("return_of_capital_amount")
-    total_pnl = snapshot_period_delta("total_pnl")
+    # Performance Total P&L is the period NAV bridge.  Book realized and
+    # unrealized fields remain separately disclosed and may depend on the
+    # account cost method, but they do not redefine economic period P&L.
+    total_pnl = delta
 
     irr = None
     irr_solver_status: period_metrics.XirrSolveStatus | None = None
@@ -2088,7 +2685,7 @@ def build_portfolio_performance_report_from_snapshots(
         irr_unavailable_reason = "cash_flow_window_unavailable"
     else:
         cash_flows: list[tuple[date, float]] = (
-            [] if inception_window else [(start_anchor_date, -start_nav)]
+            [] if funded_segment_window else [(start_anchor_date, -start_nav)]
         )
         for snapshot in flow_snapshots:
             snapshot_date = snapshot.get("as_of_date")
@@ -2118,8 +2715,8 @@ def build_portfolio_performance_report_from_snapshots(
     volatility = period_metrics.sample_stddev(daily_returns)
     periods_per_year = period_metrics.periods_per_year_from_observations(
         observation_count=len(daily_returns),
-        start_date=start_anchor_date,
-        end_date=end_anchor_date,
+        start_date=cast(date | None, performance_start_boundary_date),
+        end_date=cast(date | None, end_anchor_date),
     )
     annualized_volatility = (
         volatility * sqrt(periods_per_year)
@@ -2166,7 +2763,7 @@ def build_portfolio_performance_report_from_snapshots(
 
     drawdown_stats = period_metrics.drawdown_stats(
         visible_snapshots if return_coverage_state == "complete" else [],
-        start_anchor_date=start_anchor_date,
+        start_anchor_date=performance_start_boundary_date,
     )
     current_drawdown = drawdown_stats["current_drawdown"]
     max_drawdown = drawdown_stats["max_drawdown"]
@@ -2180,6 +2777,29 @@ def build_portfolio_performance_report_from_snapshots(
             coverage_state = "partial"
         if cumulative_twr is None:
             coverage_state = "partial"
+
+    total_pnl_baseline_snapshot = (
+        None
+        if portfolio_inception_window
+        else (
+            predecessor_snapshot
+            if funded_segment_window
+            else start_snapshot
+        )
+    )
+    start_total_pnl = _safe_float(
+        (total_pnl_baseline_snapshot or {}).get("total_pnl")
+    )
+
+    def period_total_pnl_to_date(snapshot: dict[str, object]) -> float | None:
+        snapshot_total_pnl = _safe_float(snapshot.get("total_pnl"))
+        if snapshot_total_pnl is None:
+            return None
+        if portfolio_inception_window:
+            return snapshot_total_pnl
+        if start_total_pnl is None:
+            return None
+        return snapshot_total_pnl - start_total_pnl
 
     return {
         "portfolio_id": str(portfolio.get("portfolio_id") or ""),
@@ -2287,7 +2907,7 @@ def build_portfolio_performance_report_from_snapshots(
                 ),
                 "instrument_currency_gains": snapshot.get("instrument_currency_gains"),
                 "return_of_capital_amount": snapshot.get("return_of_capital_amount"),
-                "total_pnl": snapshot.get("total_pnl"),
+                "total_pnl": period_total_pnl_to_date(snapshot),
                 "external_cash_in": snapshot["external_cash_in"],
                 "external_cash_out": snapshot["external_cash_out"],
                 "net_external_inflow": snapshot["net_external_inflow"],
@@ -2353,18 +2973,52 @@ def build_period_calculation_report(
         }
 
     resolved_start_date, resolved_end_date = window
-    initial_boundary_date = _initial_boundary_date(resolved_start_date, start_date)
+    requested_resolved_end_date = resolved_end_date
+    reliability_snapshots = build_daily_portfolio_snapshots(
+        portfolio,
+        accounts,
+        transactions,
+        start_date=resolved_start_date,
+        end_date=resolved_end_date,
+    )
+    reliable_window = return_chain.resolve_reliable_snapshot_window(
+        reliability_snapshots,
+        requested_start_date=resolved_start_date,
+        requested_end_date=resolved_end_date,
+        default_end_date=resolved_end_date,
+    )
+    reliable_end_date = cast(
+        date | None, reliable_window.get("effective_end_date")
+    )
+    if reliable_end_date is not None:
+        resolved_end_date = reliable_end_date
     sorted_transactions = sorted(transactions, key=transaction_sort_key)
-    default_inception_window = start_date is None
+    initial_boundary_date = _initial_boundary_date(
+        resolved_start_date,
+        start_date,
+        transactions=sorted_transactions,
+    )
+    raw_start_snapshot = _raw_period_start_snapshot(
+        portfolio,
+        accounts,
+        sorted_transactions,
+        resolved_start_date=resolved_start_date,
+    )
+    start_is_close_boundary = _period_start_is_close_boundary(
+        sorted_transactions,
+        requested_start_date=start_date,
+        resolved_start_date=resolved_start_date,
+        start_snapshot=raw_start_snapshot,
+    )
     start_boundary_transactions = (
-        _build_period_start_boundary_transactions(
-            sorted_transactions,
-            start_date=resolved_start_date,
-        )
-        if default_inception_window
-        else _transactions_as_of_end_date(
+        _transactions_as_of_end_date(
             sorted_transactions,
             end_date=initial_boundary_date,
+        )
+        if start_is_close_boundary
+        else _build_period_start_boundary_transactions(
+            sorted_transactions,
+            start_date=resolved_start_date,
         )
     )
     end_boundary_transactions = _transactions_as_of_end_date(
@@ -2375,6 +3029,7 @@ def build_period_calculation_report(
         sorted_transactions,
         start_date=resolved_start_date,
         end_date=resolved_end_date,
+        include_start_date=not start_is_close_boundary,
     )
 
     start_snapshot = _build_single_date_snapshot(
@@ -2382,7 +3037,7 @@ def build_period_calculation_report(
         accounts,
         start_boundary_transactions,
         as_of_date=initial_boundary_date,
-        allow_materialized=not default_inception_window,
+        allow_materialized=start_is_close_boundary,
     )
     end_snapshot = _build_single_date_snapshot(
         portfolio,
@@ -2446,6 +3101,7 @@ def build_period_calculation_report(
         base_currency=base_currency,
         direct_fx_instruments=direct_fx_instruments,
         instrument_detail_cache=instrument_detail_cache,
+        start_is_close_boundary=start_is_close_boundary,
     )
 
     delta = None
@@ -2485,14 +3141,54 @@ def build_period_calculation_report(
             - instrument_currency_gains
         )
 
-    unrealized_capital_values = (
-        unrealized_capital_summary.get("values")
-        if isinstance(unrealized_capital_summary.get("values"), dict)
-        else {}
+    instrument_contribution_report = build_contribution_report(
+        portfolio,
+        accounts,
+        sorted_transactions,
+        start_date=start_date,
+        end_date=resolved_end_date,
+        axis="instrument",
     )
+    capital_gains_by_group = {
+        str(line.get("group_key") or ""): _capital_gains_from_components(line)
+        for line in list(instrument_contribution_report.get("lines") or [])
+        if str(line.get("group_key") or "")
+    }
+    period_group_keys = (
+        set(capital_gains_by_group)
+        | {
+            str(item)
+            for item in list(
+                unrealized_capital_summary.get("open_group_keys") or []
+            )
+        }
+        | {
+            str(item)
+            for item in list(
+                unrealized_capital_summary.get("disposed_group_keys") or []
+            )
+        }
+    )
+    unrealized_capital_gains_total = 0.0
+    unrealized_capital_gains_complete = True
+    for period_group_key in period_group_keys:
+        group_unrealized_capital_gains, group_split_complete = (
+            _resolved_period_unrealized_capital_gain(
+                group_key=period_group_key,
+                capital_gains=capital_gains_by_group.get(period_group_key),
+                unrealized_capital_summary=unrealized_capital_summary,
+            )
+        )
+        if (
+            not group_split_complete
+            or group_unrealized_capital_gains is None
+        ):
+            unrealized_capital_gains_complete = False
+            continue
+        unrealized_capital_gains_total += group_unrealized_capital_gains
     unrealized_capital_gains = (
-        sum((_safe_float(value) or 0.0) for value in unrealized_capital_values.values())
-        if bool(unrealized_capital_summary.get("coverage_complete"))
+        unrealized_capital_gains_total
+        if unrealized_capital_gains_complete
         else None
     )
     realized_capital_gains = (
@@ -2657,6 +3353,13 @@ def build_period_calculation_report(
         "summary": {
             "start_date": resolved_start_date,
             "end_date": resolved_end_date,
+            "requested_start_date": start_date,
+            "requested_end_date": requested_resolved_end_date,
+            "effective_start_date": resolved_start_date,
+            "effective_end_date": resolved_end_date,
+            "as_of_clamp_reason": reliable_window.get(
+                "as_of_clamp_reason"
+            ),
             "coverage_state": coverage_state,
             "stale_price_flag": stale_price_flag,
             "stale_fx_flag": stale_fx_flag,
@@ -3152,7 +3855,6 @@ def build_period_boundary_holdings_report(
         }
 
     resolved_start_date, resolved_end_date = window
-    initial_boundary_date = _initial_boundary_date(resolved_start_date, start_date)
     resolved_axis = str(axis or "").strip() or None
     if resolved_axis not in (attribution.CONTRIBUTION_AXES | {None}):
         raise ValueError(attribution.CONTRIBUTION_AXIS_ERROR)
@@ -3164,9 +3866,33 @@ def build_period_boundary_holdings_report(
         if str(account.get("account_id") or "")
     }
     sorted_transactions = sorted(transactions, key=transaction_sort_key)
-    start_boundary_transactions = _transactions_as_of_end_date(
+    initial_boundary_date = _initial_boundary_date(
+        resolved_start_date,
+        start_date,
+        transactions=sorted_transactions,
+    )
+    raw_start_snapshot = _raw_period_start_snapshot(
+        portfolio,
+        accounts,
         sorted_transactions,
-        end_date=initial_boundary_date,
+        resolved_start_date=resolved_start_date,
+    )
+    start_is_close_boundary = _period_start_is_close_boundary(
+        sorted_transactions,
+        requested_start_date=start_date,
+        resolved_start_date=resolved_start_date,
+        start_snapshot=raw_start_snapshot,
+    )
+    start_boundary_transactions = (
+        _transactions_as_of_end_date(
+            sorted_transactions,
+            end_date=initial_boundary_date,
+        )
+        if start_is_close_boundary
+        else _build_period_start_boundary_transactions(
+            sorted_transactions,
+            start_date=resolved_start_date,
+        )
     )
     end_boundary_transactions = _transactions_as_of_end_date(
         sorted_transactions,
@@ -3181,6 +3907,7 @@ def build_period_boundary_holdings_report(
         accounts,
         start_boundary_transactions,
         as_of_date=initial_boundary_date,
+        allow_materialized=start_is_close_boundary,
     )
     end_snapshot = _build_single_date_snapshot(
         portfolio,
@@ -3529,23 +4256,91 @@ def build_return_calendar_report_from_performance_report(
 ) -> dict[str, object]:
     """Roll an already-authoritative Performance window into calendar buckets."""
 
+    report_summary = (
+        report.get("summary") if isinstance(report.get("summary"), dict) else {}
+    )
+    report_start_boundary_date = _parse_iso_date(
+        report_summary.get("effective_start_date")
+        or report_summary.get("start_date")
+    )
+    ordered_points = sorted(
+        (
+            point
+            for point in list(report.get("daily_series") or [])
+            if isinstance(point.get("as_of_date"), date)
+        ),
+        key=lambda point: cast(date, point["as_of_date"]),
+    )
     buckets_by_key: dict[str, dict[str, object]] = {}
     ordered_keys: list[str] = []
-    for point in report["daily_series"]:
-        as_of_date = point.get("as_of_date")
-        if not isinstance(as_of_date, date):
+    initial_close_anchor: dict[str, object] | None = None
+    for point_index, point in enumerate(ordered_points):
+        as_of_date = cast(date, point["as_of_date"])
+        beginning_nav = _safe_float(point.get("beginning_nav"))
+        ending_nav = _safe_float(point.get("ending_nav"))
+        summary_start_nav = _safe_float(report_summary.get("start_nav"))
+        cumulative_twr = _safe_float(point.get("cumulative_twr"))
+        has_close_anchor_shape = bool(
+            ending_nav is not None
+            and (
+                (
+                    beginning_nav is not None
+                    and abs(beginning_nav - ending_nav) <= 1e-9
+                )
+                or (
+                    cumulative_twr is not None
+                    and abs(cumulative_twr) <= 1e-12
+                    and summary_start_nav is not None
+                    and abs(summary_start_nav - ending_nav) <= 1e-9
+                )
+            )
+        )
+        is_initial_close_anchor = bool(
+            point_index == 0
+            and report_start_boundary_date == as_of_date
+            and _safe_float(point.get("daily_twr")) is None
+            and has_close_anchor_shape
+        )
+        if is_initial_close_anchor:
+            # The start close supplies the first bucket's opening boundary but
+            # is not itself a return observation or a calendar bucket.
+            initial_close_anchor = point
             continue
+
         bucket_key = _calendar_bucket_key(as_of_date, frequency)
         bucket = buckets_by_key.get(bucket_key)
         if bucket is None:
+            is_first_bucket = not ordered_keys
+            start_boundary_date = (
+                cast(date, initial_close_anchor["as_of_date"])
+                if is_first_bucket and initial_close_anchor is not None
+                else (
+                    as_of_date
+                    if is_first_bucket
+                    else as_of_date - timedelta(days=1)
+                )
+            )
+            start_nav = (
+                initial_close_anchor.get("ending_nav")
+                if is_first_bucket and initial_close_anchor is not None
+                else point.get("beginning_nav")
+            )
+            start_boundary_complete = (
+                return_chain.snapshot_coverage_state(
+                    initial_close_anchor, "valuation"
+                )
+                == "complete"
+                if is_first_bucket and initial_close_anchor is not None
+                else start_nav is not None
+            )
             bucket = {
                 "bucket_key": bucket_key,
                 "frequency": frequency,
-                "start_date": as_of_date,
+                "start_date": start_boundary_date,
                 "end_date": as_of_date,
                 "coverage_state": "unavailable",
                 "observation_count": 0,
-                "start_nav": point.get("beginning_nav"),
+                "start_nav": start_nav,
                 "end_nav": point.get("ending_nav"),
                 "external_cash_in": 0.0,
                 "external_cash_out": 0.0,
@@ -3559,7 +4354,7 @@ def build_return_calendar_report_from_performance_report(
                 "_seen_unavailable": False,
                 "_dates": [],
                 "_return_points_complete": True,
-                "_start_boundary_complete": point.get("beginning_nav") is not None,
+                "_start_boundary_complete": start_boundary_complete,
                 "_end_boundary_complete": False,
                 "_absolute_change_complete": True,
                 "_delta_complete": True,
@@ -3612,9 +4407,7 @@ def build_return_calendar_report_from_performance_report(
 
     rendered_buckets: list[dict[str, object]] = []
     report_effective_end_date = _parse_iso_date(
-        report.get("summary", {}).get("effective_end_date")
-        if isinstance(report.get("summary"), dict)
-        else None
+        report_summary.get("effective_end_date")
     )
     for bucket_index, bucket_key in enumerate(ordered_keys):
         bucket = buckets_by_key[bucket_key]
@@ -4196,10 +4989,11 @@ def _build_contribution_daily_events(
         elif transaction_type == "return_of_capital":
             target_group_key, target_group_label = cash_group(settlement_cash_account_id, currency)
             if target_group_key and target_group_key != group_key:
-                add_flow(
-                    group_key=target_group_key,
-                    group_label=target_group_label,
-                    field_name=attribution.GROUP_CAPITAL_FLOW_IN_FIELD,
+                add_transfer_flow(
+                    source_group_key=group_key,
+                    source_group_label=group_label,
+                    target_group_key=target_group_key,
+                    target_group_label=target_group_label,
                     amount=max(gross_amount - fee_amount - tax_amount, 0.0),
                     trade_date=as_of_date,
                     currency=currency,
@@ -4219,10 +5013,11 @@ def _build_contribution_daily_events(
             if transaction_type in {"dividend", "coupon"}:
                 target_group_key, target_group_label = cash_group(settlement_cash_account_id, currency)
                 if target_group_key and target_group_key != group_key:
-                    add_flow(
-                        group_key=target_group_key,
-                        group_label=target_group_label,
-                        field_name=attribution.GROUP_CAPITAL_FLOW_IN_FIELD,
+                    add_transfer_flow(
+                        source_group_key=group_key,
+                        source_group_label=group_label,
+                        target_group_key=target_group_key,
+                        target_group_label=target_group_label,
                         amount=max(gross_amount - fee_amount - tax_amount, 0.0),
                         trade_date=as_of_date,
                         currency=currency,
@@ -4307,6 +5102,13 @@ def _build_contribution_slices_for_date(
     group_keys = sorted(set(previous_states) | set(current_states) | set(current_events))
     beginning_nav = _safe_float((snapshot or {}).get("beginning_nav"))
     ending_nav = _safe_float((snapshot or {}).get("ending_nav"))
+    is_initial_valuation_anchor = bool(
+        not previous_states
+        and snapshot is not None
+        and return_chain.has_complete_valuation(snapshot)
+        and _safe_float(snapshot.get("daily_twr")) is None
+        and bool(snapshot.get("return_chain_continuous"))
+    )
 
     for candidate_group_key in group_keys:
         previous_state = previous_states.get(candidate_group_key)
@@ -4409,21 +5211,21 @@ def _build_contribution_slices_for_date(
 
         total_pnl = None
         if (
-            realized_pnl is not None
-            and income_cash_amount is not None
-            and expense_cash_amount is not None
-            and unrealized_pnl_change is not None
+            beginning_value_base is not None
+            and ending_value_base is not None
+            and capital_flow_in_base is not None
+            and capital_flow_out_base is not None
         ):
-            total_pnl = realized_pnl + income_cash_amount - expense_cash_amount + unrealized_pnl_change
-            if instrument_currency_gains is not None:
-                total_pnl += instrument_currency_gains
-            if attribution.axis_includes_cash_balance(axis) and cash_currency_gains is not None:
-                total_pnl += cash_currency_gains
-            if attribution.axis_includes_cash_balance(axis):
-                if pending_settlement_currency_gains is not None:
-                    total_pnl += pending_settlement_currency_gains
-                else:
-                    total_pnl = None
+            # Economic group P&L is the flow-neutral fair-value bridge.  Book
+            # unrealized P&L is translated at the current FX rate, so adding
+            # its change to a separately calculated FX effect double-counts
+            # part of a multi-day price/FX interaction.
+            total_pnl = (
+                ending_value_base
+                - beginning_value_base
+                - capital_flow_in_base
+                + capital_flow_out_base
+            )
 
         slice_coverage_state = return_chain.snapshot_coverage_state(snapshot or {}, "attribution")
         if (
@@ -4485,6 +5287,11 @@ def _build_contribution_slices_for_date(
                 "group_key": candidate_group_key,
                 "group_label": group_label,
                 "coverage_state": slice_coverage_state,
+                # An imported opening balance establishes fair value; it is a
+                # boundary observation, not a subperiod return.  Keep the
+                # marker internal so period linking can skip it without
+                # weakening fail-closed handling for later incomplete rows.
+                "_is_initial_valuation_anchor": is_initial_valuation_anchor,
                 "market_observation_count": market_observation_count,
                 "return_observation_eligible": return_observation_eligible,
                 "beginning_value_base": beginning_value_base,
@@ -4703,6 +5510,7 @@ def build_contribution_report_from_daily_slices(
     end_date: date | None = None,
     axis: str = "instrument",
     group_key: str | None = None,
+    start_is_close_boundary: bool = False,
 ) -> dict[str, object]:
     base_currency = valuation_fx.required_currency(
         portfolio.get("base_currency"), field_name="portfolio base currency"
@@ -4720,6 +5528,7 @@ def build_contribution_report_from_daily_slices(
         end_date=end_date,
         axis=axis,
         group_key=group_key,
+        start_is_close_boundary=start_is_close_boundary,
     )
 
 
@@ -4829,6 +5638,7 @@ def build_contribution_report(
         }
 
     resolved_start_date, resolved_end_date = window
+    sorted_transactions = sorted(transactions, key=transaction_sort_key)
     boundary_start_date = resolved_start_date - timedelta(days=1)
     portfolio_view = deepcopy(portfolio)
     portfolio_view["as_of_date"] = resolved_end_date.isoformat()
@@ -4839,16 +5649,39 @@ def build_contribution_report(
         start_date=boundary_start_date,
         end_date=resolved_end_date,
     )
+    reliable_window = return_chain.resolve_reliable_snapshot_window(
+        snapshots,
+        requested_start_date=resolved_start_date,
+        requested_end_date=resolved_end_date,
+        default_end_date=resolved_end_date,
+    )
+    snapshots = list(
+        cast(list[dict[str, object]], reliable_window["snapshots"])
+    )
+    reliable_end_date = cast(
+        date | None, reliable_window.get("effective_end_date")
+    )
+    if reliable_end_date is not None:
+        resolved_end_date = reliable_end_date
     snapshots_by_date = {
         snapshot["as_of_date"]: snapshot
         for snapshot in snapshots
         if isinstance(snapshot.get("as_of_date"), date)
     }
+    start_is_close_boundary = _period_start_is_close_boundary(
+        sorted_transactions,
+        requested_start_date=start_date,
+        resolved_start_date=resolved_start_date,
+        start_snapshot=snapshots_by_date.get(resolved_start_date),
+    )
 
-    sorted_transactions = sorted(transactions, key=transaction_sort_key)
     transactions_by_date: dict[str, list[dict[str, object]]] = defaultdict(list)
     for transaction in sorted_transactions:
-        transactions_by_date[str(transaction.get("trade_date") or "")].append(transaction)
+        effective_date = transaction_performance_effective_date(transaction)
+        if effective_date is not None:
+            transactions_by_date[effective_date.isoformat()].append(
+                transaction
+            )
 
     portfolio_id = str(portfolio.get("portfolio_id") or "")
     account_cost_methods = _account_cost_methods(accounts)
@@ -4930,6 +5763,7 @@ def build_contribution_report(
         end_date=resolved_end_date,
         axis=axis,
         group_key=group_key,
+        start_is_close_boundary=start_is_close_boundary,
     )
 
 
@@ -5001,14 +5835,27 @@ def build_contribution_calendar_report(
             str(item.get("group_key") or ""),
         ),
     )
+    starts_on_close_anchor = any(
+        item.get("as_of_date") == resolved_start_date
+        and bool(item.get("_is_initial_valuation_anchor"))
+        for item in daily_slices
+    )
+    first_observation_date = (
+        resolved_start_date + timedelta(days=1)
+        if starts_on_close_anchor
+        else resolved_start_date
+    )
     bucket_windows: dict[str, dict[str, object]] = {}
-    for as_of_date in _iter_dates(resolved_start_date, resolved_end_date):
+    for as_of_date in _iter_dates(first_observation_date, resolved_end_date):
         bucket_key = _calendar_bucket_key(as_of_date, frequency)
         bucket = bucket_windows.get(bucket_key)
         if bucket is None:
             bucket_windows[bucket_key] = {
                 "bucket_key": bucket_key,
-                "start_date": as_of_date,
+                # Bucket dates are EOD boundaries.  The first return
+                # observation on ``as_of_date`` starts from the preceding EOD.
+                "start_date": as_of_date - timedelta(days=1),
+                "first_observation_date": as_of_date,
                 "end_date": as_of_date,
                 "available_weight_dates": set(),
             }
@@ -5029,15 +5876,25 @@ def build_contribution_calendar_report(
         if not isinstance(as_of_date, date) or not group_key:
             continue
         bucket_key = _calendar_bucket_key(as_of_date, frequency)
-        window = bucket_windows[bucket_key]
+        window = bucket_windows.get(bucket_key)
+        if window is None:
+            continue
         if _safe_float(daily_slice.get("beginning_weight")) is not None:
             available_dates = window.get("available_weight_dates")
             if isinstance(available_dates, set):
                 available_dates.add(as_of_date)
         bucket_group_key = (bucket_key, group_key)
-        if as_of_date == window["start_date"]:
-            bucket_start_values[bucket_group_key] = _safe_float(daily_slice.get("beginning_value_base"))
-            bucket_beginning_weights[bucket_group_key] = _safe_float(daily_slice.get("beginning_weight"))
+        if as_of_date == window["first_observation_date"]:
+            bucket_start_values[bucket_group_key] = (
+                _period_initial_value_from_daily_slice(daily_slice)
+            )
+            bucket_beginning_weights[bucket_group_key] = _safe_float(
+                daily_slice.get(
+                    "ending_weight"
+                    if bool(daily_slice.get("_is_initial_valuation_anchor"))
+                    else "beginning_weight"
+                )
+            )
         if as_of_date == window["end_date"]:
             bucket_end_values[bucket_group_key] = _safe_float(daily_slice.get("ending_value_base"))
             bucket_ending_weights[bucket_group_key] = _safe_float(daily_slice.get("ending_weight"))
@@ -5113,10 +5970,12 @@ def build_contribution_calendar_report(
         weight_denominator = len(available_weight_dates) if isinstance(available_weight_dates, set) else 0
         accumulator["coverage_state"] = attribution.merge_group_coverage_state(bucket_coverage_states[bucket_group_key])
         accumulator["observation_count"] = len(bucket_observation_dates[bucket_group_key])
-        accumulator["beginning_value_base"] = (
-            bucket_start_values.get(bucket_group_key, 0.0)
-            if _safe_float(summary.get("start_nav")) is not None
-            else None
+        # Group bridges use the group's own BOD boundary.  At portfolio
+        # inception an imported opening balance intentionally has no prior
+        # portfolio NAV, but a group may still have a valid zero BOD exposure
+        # and an internal capital flow during that first day.
+        accumulator["beginning_value_base"] = bucket_start_values.get(
+            bucket_group_key, 0.0
         )
         accumulator["ending_value_base"] = (
             bucket_end_values.get(bucket_group_key, 0.0)
@@ -5650,7 +6509,13 @@ def _instrument_ids_for_calculation_risk_basis(
         end_transactions = [
             transaction
             for transaction in transactions
-            if (trade_date := _parse_iso_date(transaction.get("trade_date"))) is not None and trade_date <= end_date
+            if (
+                effective_date := transaction_performance_effective_date(
+                    transaction
+                )
+            )
+            is not None
+            and effective_date <= end_date
         ]
         for position_lot in build_position_lots(
             portfolio_id,
@@ -5666,7 +6531,13 @@ def _instrument_ids_for_calculation_risk_basis(
             start_transactions = [
                 transaction
                 for transaction in transactions
-                if (trade_date := _parse_iso_date(transaction.get("trade_date"))) is not None and trade_date <= start_date
+                if (
+                    effective_date := transaction_performance_effective_date(
+                        transaction
+                    )
+                )
+                is not None
+                and effective_date <= start_date
             ]
             for position_lot in build_position_lots(
                 portfolio_id,
@@ -5679,12 +6550,12 @@ def _instrument_ids_for_calculation_risk_basis(
                     add_instrument_id(position_lot.get("instrument_id"))
 
     for transaction in transactions:
-        trade_date = _parse_iso_date(transaction.get("trade_date"))
-        if trade_date is None:
+        effective_date = transaction_performance_effective_date(transaction)
+        if effective_date is None:
             continue
-        if end_date is not None and trade_date > end_date:
+        if end_date is not None and effective_date > end_date:
             continue
-        if start_date is not None and trade_date < start_date:
+        if start_date is not None and effective_date < start_date:
             continue
         add_instrument_id(transaction.get("instrument_id"))
 
@@ -5755,14 +6626,15 @@ def _build_period_calculation_child_records(
 
     boundary_start_values: dict[str, float | None] = {}
     boundary_end_values: dict[str, float | None] = {}
-    start_value_field = "beginning_value_base" if start_date is not None else "ending_value_base"
     for item in list(detail_report.get("daily_slices") or []):
         slice_group_key = str(item.get("group_key") or "")
         as_of_date = item.get("as_of_date")
         if not slice_group_key or not isinstance(as_of_date, date):
             continue
         if as_of_date == resolved_start_date:
-            boundary_start_values[slice_group_key] = _safe_float(item.get(start_value_field))
+            boundary_start_values[slice_group_key] = (
+                _period_initial_value_from_daily_slice(item)
+            )
         if as_of_date == resolved_end_date:
             boundary_end_values[slice_group_key] = _safe_float(item.get("ending_value_base"))
 
@@ -5771,16 +6643,42 @@ def _build_period_calculation_child_records(
         for item in list(detail_report.get("lines") or [])
         if str(item.get("group_key") or "")
     }
-    period_returns = attribution.period_returns_by_group(list(detail_report.get("daily_slices") or []))
+    period_return_contracts = attribution.period_return_contracts_by_group(
+        list(detail_report.get("daily_slices") or [])
+    )
+    detail_daily_slices = list(detail_report.get("daily_slices") or [])
     child_risk_metrics = attribution.realized_risk_attribution_by_group(
-        list(detail_report.get("daily_slices") or []),
+        detail_daily_slices,
         portfolio_daily_series,
         calculation_frequency=risk_calculation_frequency,
+        start_date=_period_risk_start_boundary_date(
+            resolved_start_date,
+            detail_daily_slices,
+        ),
         final_date=risk_final_date,
     )
     if axis == "instrument":
         unrealized_capital_summary = {"values": {}, "coverage_complete": True}
     else:
+        raw_start_snapshot = (
+            _raw_period_start_snapshot(
+                portfolio,
+                accounts,
+                transactions,
+                resolved_start_date=resolved_start_date,
+            )
+            if resolved_start_date is not None
+            else None
+        )
+        period_start_is_close_boundary = bool(
+            resolved_start_date is not None
+            and _period_start_is_close_boundary(
+                transactions,
+                requested_start_date=start_date,
+                resolved_start_date=resolved_start_date,
+                start_snapshot=raw_start_snapshot,
+            )
+        )
         fx_payload = get_platform_fx_rates()
         direct_fx_instruments = valuation_fx.fx_direct_instrument_map(fx_payload)
         instrument_detail_cache: dict[str, dict[str, object] | None] = {}
@@ -5799,17 +6697,11 @@ def _build_period_calculation_child_records(
                 base_currency=str(detail_report["base_currency"]),
                 direct_fx_instruments=direct_fx_instruments,
                 instrument_detail_cache=instrument_detail_cache,
+                start_is_close_boundary=period_start_is_close_boundary,
             )
             if resolved_start_date is not None and resolved_end_date is not None
             else {"values": {}, "coverage_complete": False}
         )
-    unrealized_capital_values = (
-        unrealized_capital_summary.get("values")
-        if isinstance(unrealized_capital_summary.get("values"), dict)
-        else {}
-    )
-    unrealized_capital_complete = bool(unrealized_capital_summary.get("coverage_complete"))
-
     children_by_parent: dict[str, list[dict[str, object]]] = defaultdict(list)
     child_keys = set(line_map.keys()) | set(boundary_start_values.keys()) | set(boundary_end_values.keys())
     for candidate_child_key in sorted(child_keys):
@@ -5841,11 +6733,13 @@ def _build_period_calculation_child_records(
         )
         child_total_pnl = _safe_float(line.get("total_pnl"))
         capital_gains = _capital_gains_from_components(line)
-        unrealized_capital_gains = _safe_float(unrealized_capital_values.get(candidate_child_key))
-        if item_kind == "cash" and capital_gains is not None and unrealized_capital_gains is None:
-            unrealized_capital_gains = 0.0
-        if capital_gains is not None and unrealized_capital_gains is None and unrealized_capital_complete:
-            unrealized_capital_gains = 0.0
+        unrealized_capital_gains, _unrealized_split_complete = (
+            _resolved_period_unrealized_capital_gain(
+                group_key=candidate_child_key,
+                capital_gains=capital_gains,
+                unrealized_capital_summary=unrealized_capital_summary,
+            )
+        )
         realized_capital_gains = (
             capital_gains - unrealized_capital_gains
             if capital_gains is not None and unrealized_capital_gains is not None
@@ -5871,7 +6765,17 @@ def _build_period_calculation_child_records(
                 "beginning_weight": beginning_weight,
                 "average_weight": _safe_float(line.get("average_weight")),
                 "ending_weight": _safe_float(line.get("ending_weight")),
-                "period_return": period_returns.get(candidate_child_key),
+                "period_return": (
+                    period_return_contracts.get(candidate_child_key, {}).get(
+                        "period_return"
+                    )
+                ),
+                "period_return_coverage_state": str(
+                    period_return_contracts.get(candidate_child_key, {}).get(
+                        "coverage_state"
+                    )
+                    or "unavailable"
+                ),
                 "initial_value": initial_value,
                 "final_value": final_value,
                 "delta": delta,
@@ -5962,11 +6866,10 @@ def _build_period_calculation_cash_parent_group(
 
     initial_value = None
     final_value = None
-    start_value_field = "beginning_value_base" if start_date is not None else "ending_value_base"
     for daily_slice in parent_daily_slices:
         as_of_date = daily_slice.get("as_of_date")
         if as_of_date == resolved_start_date:
-            initial_value = _safe_float(daily_slice.get(start_value_field))
+            initial_value = _period_initial_value_from_daily_slice(daily_slice)
         if as_of_date == resolved_end_date:
             final_value = _safe_float(daily_slice.get("ending_value_base"))
 
@@ -5988,7 +6891,9 @@ def _build_period_calculation_cash_parent_group(
         if delta is not None and group_total_pnl is not None
         else None
     )
-    period_returns = attribution.period_returns_by_group(parent_daily_slices)
+    period_return_contract = attribution.period_return_contracts_by_group(
+        parent_daily_slices
+    ).get("cash", {})
     return {
         "axis": "instrument",
         "taxonomy_id": None,
@@ -5997,7 +6902,10 @@ def _build_period_calculation_cash_parent_group(
         "beginning_weight": _safe_float(line.get("beginning_weight")),
         "average_weight": _safe_float(line.get("average_weight")),
         "ending_weight": _safe_float(line.get("ending_weight")),
-        "period_return": period_returns.get("cash"),
+        "period_return": period_return_contract.get("period_return"),
+        "period_return_coverage_state": str(
+            period_return_contract.get("coverage_state") or "unavailable"
+        ),
         "initial_value": initial_value,
         "final_value": final_value,
         "delta": delta,
@@ -6135,8 +7043,9 @@ def build_period_calculation_groups_report(
                 continue
             boundary_labels[slice_group_key] = str(item.get("group_label") or slice_group_key)
             if as_of_date == resolved_start_date:
-                start_value_field = "beginning_value_base" if start_date is not None else "ending_value_base"
-                boundary_start_values[slice_group_key] = _safe_float(item.get(start_value_field))
+                boundary_start_values[slice_group_key] = (
+                    _period_initial_value_from_daily_slice(item)
+                )
             if as_of_date == resolved_end_date:
                 boundary_end_values[slice_group_key] = _safe_float(item.get("ending_value_base"))
 
@@ -6151,7 +7060,9 @@ def build_period_calculation_groups_report(
         if isinstance(contribution_report.get("_portfolio_daily_series"), list)
         else []
     )
-    period_returns = attribution.period_returns_by_group(contribution_daily_slices)
+    period_return_contracts = attribution.period_return_contracts_by_group(
+        contribution_daily_slices
+    )
     risk_basis_end_date = resolved_end_date or date.today()
     risk_instrument_ids = _instrument_ids_for_calculation_risk_basis(
         portfolio,
@@ -6179,19 +7090,55 @@ def build_period_calculation_groups_report(
         CalculationFrequency,
         str(risk_frequency_profile.get("resolved_frequency") or "daily"),
     )
-    risk_metrics_by_group = attribution.realized_risk_attribution_by_group(
-        contribution_daily_slices,
-        portfolio_daily_series,
-        calculation_frequency=risk_calculation_frequency,
-        final_date=resolved_end_date,
+    risk_basis_complete = (
+        str(risk_frequency_profile.get("coverage_state") or "") == "complete"
     )
-    portfolio_risk_summary = attribution.portfolio_realized_risk_summary(
-        portfolio_daily_series,
-        calculation_frequency=risk_calculation_frequency,
-        final_date=resolved_end_date,
+    risk_start_boundary_date = _period_risk_start_boundary_date(
+        resolved_start_date,
+        contribution_daily_slices,
+    )
+    risk_metrics_by_group = (
+        attribution.realized_risk_attribution_by_group(
+            contribution_daily_slices,
+            portfolio_daily_series,
+            calculation_frequency=risk_calculation_frequency,
+            start_date=risk_start_boundary_date,
+            final_date=resolved_end_date,
+        )
+        if risk_basis_complete
+        else {}
+    )
+    portfolio_risk_summary = (
+        attribution.portfolio_realized_risk_summary(
+            portfolio_daily_series,
+            calculation_frequency=risk_calculation_frequency,
+            start_date=risk_start_boundary_date,
+            final_date=resolved_end_date,
+        )
+        if risk_basis_complete
+        else attribution.risk_metric_defaults(risk_calculation_frequency)
     )
     fx_payload = get_platform_fx_rates()
     direct_fx_instruments = valuation_fx.fx_direct_instrument_map(fx_payload)
+    raw_start_snapshot = (
+        _raw_period_start_snapshot(
+            portfolio,
+            accounts,
+            transactions,
+            resolved_start_date=resolved_start_date,
+        )
+        if resolved_start_date is not None
+        else None
+    )
+    period_start_is_close_boundary = bool(
+        resolved_start_date is not None
+        and _period_start_is_close_boundary(
+            transactions,
+            requested_start_date=start_date,
+            resolved_start_date=resolved_start_date,
+            start_snapshot=raw_start_snapshot,
+        )
+    )
     unrealized_capital_summary = (
         _period_unrealized_capital_gains_by_group(
             portfolio,
@@ -6207,16 +7154,11 @@ def build_period_calculation_groups_report(
             base_currency=str(contribution_report["base_currency"]),
             direct_fx_instruments=direct_fx_instruments,
             instrument_detail_cache=instrument_detail_cache,
+            start_is_close_boundary=period_start_is_close_boundary,
         )
         if resolved_start_date is not None and resolved_end_date is not None
         else {"values": {}, "coverage_complete": False}
     )
-    unrealized_capital_values = (
-        unrealized_capital_summary.get("values")
-        if isinstance(unrealized_capital_summary.get("values"), dict)
-        else {}
-    )
-    unrealized_capital_complete = bool(unrealized_capital_summary.get("coverage_complete"))
     group_keys = set(line_map.keys()) | set(boundary_start_values.keys()) | set(boundary_end_values.keys())
     groups: list[dict[str, object]] = []
     total_initial_value = 0.0
@@ -6245,9 +7187,13 @@ def build_period_calculation_groups_report(
         )
         group_total_pnl = _safe_float(line.get("total_pnl"))
         capital_gains = _capital_gains_from_components(line)
-        unrealized_capital_gains = _safe_float(unrealized_capital_values.get(candidate_group_key))
-        if capital_gains is not None and unrealized_capital_gains is None and unrealized_capital_complete:
-            unrealized_capital_gains = 0.0
+        unrealized_capital_gains, _unrealized_split_complete = (
+            _resolved_period_unrealized_capital_gain(
+                group_key=candidate_group_key,
+                capital_gains=capital_gains,
+                unrealized_capital_summary=unrealized_capital_summary,
+            )
+        )
         realized_capital_gains = (
             capital_gains - unrealized_capital_gains
             if capital_gains is not None and unrealized_capital_gains is not None
@@ -6271,7 +7217,17 @@ def build_period_calculation_groups_report(
                 "beginning_weight": _safe_float(line.get("beginning_weight")),
                 "average_weight": _safe_float(line.get("average_weight")),
                 "ending_weight": _safe_float(line.get("ending_weight")),
-                "period_return": period_returns.get(candidate_group_key),
+                "period_return": (
+                    period_return_contracts.get(candidate_group_key, {}).get(
+                        "period_return"
+                    )
+                ),
+                "period_return_coverage_state": str(
+                    period_return_contracts.get(candidate_group_key, {}).get(
+                        "coverage_state"
+                    )
+                    or "unavailable"
+                ),
                 "initial_value": initial_value,
                 "final_value": final_value,
                 "delta": delta,
@@ -6467,6 +7423,15 @@ def build_period_calculation_groups_report(
             "contribution_residual": contribution_residual,
             "risk_calculation_frequency": portfolio_risk_summary.get("risk_calculation_frequency"),
             "risk_frequency_status_label": risk_frequency_profile.get("status_label"),
+            "risk_basis_coverage_state": risk_frequency_profile.get(
+                "coverage_state"
+            ),
+            "risk_basis_requested_instrument_count": risk_frequency_profile.get(
+                "requested_instrument_count"
+            ),
+            "risk_basis_resolved_instrument_count": risk_frequency_profile.get(
+                "resolved_instrument_count"
+            ),
             "risk_return_observation_count": portfolio_risk_summary.get("risk_return_observation_count"),
             "risk_annualization_periods_per_year": portfolio_risk_summary.get(
                 "risk_annualization_periods_per_year"
@@ -6535,6 +7500,7 @@ def build_period_calculation_groups_calendar_report(
                 base_currency=str(contribution_calendar_report["base_currency"]),
                 direct_fx_instruments=direct_fx_instruments,
                 instrument_detail_cache=instrument_detail_cache,
+                start_is_close_boundary=True,
             )
         return unrealized_capital_cache[cache_key]
 
@@ -6559,18 +7525,13 @@ def build_period_calculation_groups_calendar_report(
         bucket_total_pnl = _safe_float(bucket.get("total_pnl"))
         capital_gains = _capital_gains_from_components(bucket)
         unrealized_capital_summary = unrealized_capital_for_bucket(bucket_start, bucket_end)
-        unrealized_capital_values = (
-            unrealized_capital_summary.get("values")
-            if isinstance(unrealized_capital_summary.get("values"), dict)
-            else {}
+        unrealized_capital_gains, unrealized_split_complete = (
+            _resolved_period_unrealized_capital_gain(
+                group_key=bucket_group_key,
+                capital_gains=capital_gains,
+                unrealized_capital_summary=unrealized_capital_summary,
+            )
         )
-        unrealized_capital_gains = _safe_float(unrealized_capital_values.get(bucket_group_key))
-        if (
-            capital_gains is not None
-            and unrealized_capital_gains is None
-            and bool(unrealized_capital_summary.get("coverage_complete"))
-        ):
-            unrealized_capital_gains = 0.0
         realized_capital_gains = (
             capital_gains - unrealized_capital_gains
             if capital_gains is not None and unrealized_capital_gains is not None
@@ -6591,7 +7552,11 @@ def build_period_calculation_groups_calendar_report(
                 "taxonomy_id": summary.get("taxonomy_id"),
                 "group_key": bucket_group_key,
                 "group_label": str(bucket.get("group_label") or bucket_group_key),
-                "coverage_state": str(bucket.get("coverage_state") or "unavailable"),
+                "coverage_state": (
+                    str(bucket.get("coverage_state") or "unavailable")
+                    if unrealized_split_complete
+                    else "partial"
+                ),
                 "observation_count": int(bucket.get("observation_count") or 0),
                 "beginning_weight": _safe_float(bucket.get("beginning_weight")),
                 "average_weight": _safe_float(bucket.get("average_weight")),
@@ -6868,7 +7833,7 @@ def _build_taxonomy_assignment_context(
 def _resolve_calculation_entry_group(
     *,
     axis: str,
-    trade_date: date | None,
+    effective_date: date | None,
     account_id: str | None,
     account_name_map: dict[str, str],
     instrument_id: str | None,
@@ -6908,14 +7873,14 @@ def _resolve_calculation_entry_group(
         target_entity_id = account_id or ""
     elif target_scope == "cash_bucket":
         target_entity_id = account_id or ""
-    if not target_entity_id or trade_date is None:
+    if not target_entity_id or effective_date is None:
         return (f"unassigned:{taxonomy.get('taxonomy_id')}", "Unassigned")
     return attribution.resolve_taxonomy_group_for_date(
         taxonomy=taxonomy,
         taxonomy_nodes_by_id=taxonomy_nodes_by_id,
         assignments_by_entity=assignments_by_entity,
         target_entity_id=target_entity_id,
-        as_of_date=trade_date,
+        as_of_date=effective_date,
     )
 
 
@@ -6936,6 +7901,7 @@ def _append_calculation_transaction_entry(
 ) -> None:
     trade_date = _parse_iso_date(transaction.get("trade_date"))
     settlement_date = _parse_iso_date(transaction.get("settlement_date"))
+    effective_date = transaction_performance_effective_date(transaction)
     currency = valuation_fx.required_currency(
         transaction.get("currency"), field_name="transaction currency"
     )
@@ -6949,7 +7915,7 @@ def _append_calculation_transaction_entry(
     instrument_name = str((instrument_ref or {}).get("instrument_name") or instrument_id or "")
     group_key, group_label = _resolve_calculation_entry_group(
         axis=axis,
-        trade_date=trade_date,
+        effective_date=effective_date,
         account_id=account_id,
         account_name_map=account_name_map,
         instrument_id=instrument_id,
@@ -6960,10 +7926,10 @@ def _append_calculation_transaction_entry(
     )
     base_amount = None
     stale_fx_flag = False
-    if trade_date is not None:
+    if effective_date is not None:
         base_amount, stale_fx_flag = valuation_fx.convert_amount_on(
             local_amount,
-            as_of_date=trade_date,
+            as_of_date=effective_date,
             from_currency=currency,
             to_currency=base_currency,
             direct_fx_instruments=direct_fx_instruments,
@@ -6981,6 +7947,7 @@ def _append_calculation_transaction_entry(
             "transaction_type": str(transaction.get("transaction_type") or ""),
             "trade_date": trade_date,
             "settlement_date": settlement_date,
+            "effective_date": effective_date,
             "group_key": group_key,
             "group_label": group_label,
             "account_id": account_id,
@@ -7061,10 +8028,23 @@ def build_contribution_entries_report(
 
     resolved_start_date, resolved_end_date = window
     sorted_transactions = sorted(transactions, key=transaction_sort_key)
+    raw_start_snapshot = _raw_period_start_snapshot(
+        portfolio,
+        accounts,
+        sorted_transactions,
+        resolved_start_date=resolved_start_date,
+    )
+    start_is_close_boundary = _period_start_is_close_boundary(
+        sorted_transactions,
+        requested_start_date=start_date,
+        resolved_start_date=resolved_start_date,
+        start_snapshot=raw_start_snapshot,
+    )
     period_transactions = _transactions_in_period(
         sorted_transactions,
         start_date=resolved_start_date,
         end_date=resolved_end_date,
+        include_start_date=not start_is_close_boundary,
     )
     end_boundary_transactions = _transactions_as_of_end_date(
         sorted_transactions,
@@ -7268,12 +8248,19 @@ def build_contribution_entries_report(
                 trade_date = _parse_iso_date(realization.get("trade_date"))
                 if trade_date is None:
                     continue
-                if trade_date < resolved_start_date or trade_date > resolved_end_date:
+                if (
+                    trade_date > resolved_end_date
+                    or (
+                        trade_date <= resolved_start_date
+                        if start_is_close_boundary
+                        else trade_date < resolved_start_date
+                    )
+                ):
                     continue
                 local_amount = _safe_float(realization.get("realized_pnl"))
                 realization_group_key, realization_group_label = _resolve_calculation_entry_group(
                     axis=axis,
-                    trade_date=trade_date,
+                    effective_date=trade_date,
                     account_id=account_id,
                     account_name_map=account_name_map,
                     instrument_id=instrument_id,
@@ -7305,6 +8292,7 @@ def build_contribution_entries_report(
                         "transaction_type": transaction_type,
                         "trade_date": trade_date,
                         "settlement_date": None,
+                        "effective_date": trade_date,
                         "group_key": realization_group_key,
                         "group_label": realization_group_label,
                         "account_id": account_id,
@@ -7321,7 +8309,7 @@ def build_contribution_entries_report(
 
     entries.sort(
         key=lambda item: (
-            item.get("trade_date") or date.min,
+            item.get("effective_date") or item.get("trade_date") or date.min,
             str(item.get("transaction_id") or ""),
             str(item.get("component_kind") or ""),
             str(item.get("group_key") or ""),
@@ -7407,13 +8395,13 @@ def build_contribution_entries_calendar_report(
 
     bucket_accumulators: dict[tuple[str, str], dict[str, object]] = {}
     for entry in list(entries_report.get("entries") or []):
-        trade_date = entry.get("trade_date")
-        if not isinstance(trade_date, date):
+        effective_date = entry.get("effective_date") or entry.get("trade_date")
+        if not isinstance(effective_date, date):
             continue
         entry_group_key = str(entry.get("group_key") or "")
         if not entry_group_key:
             continue
-        bucket_key = _calendar_bucket_key(trade_date, frequency)
+        bucket_key = _calendar_bucket_key(effective_date, frequency)
         accumulator_key = (bucket_key, entry_group_key)
         accumulator = bucket_accumulators.setdefault(
             accumulator_key,
@@ -7425,17 +8413,17 @@ def build_contribution_entries_calendar_report(
                 "contribution_bucket": bucket,
                 "group_key": entry_group_key,
                 "group_label": str(entry.get("group_label") or entry_group_key),
-                "start_date": trade_date,
-                "end_date": trade_date,
+                "start_date": effective_date,
+                "end_date": effective_date,
                 "entry_count": 0,
                 "total_amount": 0.0,
                 "_amount_complete": True,
             },
         )
-        if trade_date < accumulator["start_date"]:
-            accumulator["start_date"] = trade_date
-        if trade_date > accumulator["end_date"]:
-            accumulator["end_date"] = trade_date
+        if effective_date < accumulator["start_date"]:
+            accumulator["start_date"] = effective_date
+        if effective_date > accumulator["end_date"]:
+            accumulator["end_date"] = effective_date
         accumulator["entry_count"] = int(accumulator.get("entry_count") or 0) + 1
         amount = _safe_float(entry.get("base_amount"))
         if amount is None:
@@ -7558,10 +8546,23 @@ def build_period_calculation_entries_report(
 
     resolved_start_date, resolved_end_date = window
     sorted_transactions = sorted(transactions, key=transaction_sort_key)
+    raw_start_snapshot = _raw_period_start_snapshot(
+        portfolio,
+        accounts,
+        sorted_transactions,
+        resolved_start_date=resolved_start_date,
+    )
+    start_is_close_boundary = _period_start_is_close_boundary(
+        sorted_transactions,
+        requested_start_date=start_date,
+        resolved_start_date=resolved_start_date,
+        start_snapshot=raw_start_snapshot,
+    )
     period_transactions = _transactions_in_period(
         sorted_transactions,
         start_date=resolved_start_date,
         end_date=resolved_end_date,
+        include_start_date=not start_is_close_boundary,
     )
     end_boundary_transactions = _transactions_as_of_end_date(
         sorted_transactions,
@@ -7722,12 +8723,19 @@ def build_period_calculation_entries_report(
                 trade_date = _parse_iso_date(realization.get("trade_date"))
                 if trade_date is None:
                     continue
-                if trade_date < resolved_start_date or trade_date > resolved_end_date:
+                if (
+                    trade_date > resolved_end_date
+                    or (
+                        trade_date <= resolved_start_date
+                        if start_is_close_boundary
+                        else trade_date < resolved_start_date
+                    )
+                ):
                     continue
                 local_amount = _safe_float(realization.get("realized_pnl"))
                 realization_group_key, realization_group_label = _resolve_calculation_entry_group(
                     axis=axis,
-                    trade_date=trade_date,
+                    effective_date=trade_date,
                     account_id=account_id,
                     account_name_map=account_name_map,
                     instrument_id=instrument_id,
@@ -7759,6 +8767,7 @@ def build_period_calculation_entries_report(
                         "transaction_type": transaction_type,
                         "trade_date": trade_date,
                         "settlement_date": None,
+                        "effective_date": trade_date,
                         "group_key": realization_group_key,
                         "group_label": realization_group_label,
                         "account_id": account_id,
@@ -7775,7 +8784,7 @@ def build_period_calculation_entries_report(
 
     entries.sort(
         key=lambda item: (
-            item.get("trade_date") or date.min,
+            item.get("effective_date") or item.get("trade_date") or date.min,
             str(item.get("transaction_id") or ""),
             str(item.get("component_kind") or ""),
             str(item.get("group_key") or ""),
@@ -7861,13 +8870,13 @@ def build_period_calculation_entries_calendar_report(
 
     bucket_accumulators: dict[tuple[str, str], dict[str, object]] = {}
     for entry in list(entries_report.get("entries") or []):
-        trade_date = entry.get("trade_date")
-        if not isinstance(trade_date, date):
+        effective_date = entry.get("effective_date") or entry.get("trade_date")
+        if not isinstance(effective_date, date):
             continue
         entry_group_key = str(entry.get("group_key") or "")
         if not entry_group_key:
             continue
-        bucket_key = _calendar_bucket_key(trade_date, frequency)
+        bucket_key = _calendar_bucket_key(effective_date, frequency)
         accumulator_key = (bucket_key, entry_group_key)
         accumulator = bucket_accumulators.setdefault(
             accumulator_key,
@@ -7879,17 +8888,17 @@ def build_period_calculation_entries_calendar_report(
                 "calculation_bucket": bucket,
                 "group_key": entry_group_key,
                 "group_label": str(entry.get("group_label") or entry_group_key),
-                "start_date": trade_date,
-                "end_date": trade_date,
+                "start_date": effective_date,
+                "end_date": effective_date,
                 "entry_count": 0,
                 "total_amount": 0.0,
                 "_amount_complete": True,
             },
         )
-        if trade_date < accumulator["start_date"]:
-            accumulator["start_date"] = trade_date
-        if trade_date > accumulator["end_date"]:
-            accumulator["end_date"] = trade_date
+        if effective_date < accumulator["start_date"]:
+            accumulator["start_date"] = effective_date
+        if effective_date > accumulator["end_date"]:
+            accumulator["end_date"] = effective_date
         accumulator["entry_count"] = int(accumulator.get("entry_count") or 0) + 1
         amount = _safe_float(entry.get("base_amount"))
         if amount is None:

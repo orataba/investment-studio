@@ -24,7 +24,7 @@ describe('performance short-history reliability policy', () => {
     expect(profile.annualizationMessage).toContain('Period TWR remains the primary return')
   })
 
-  it('uses the canonical backend gate after a full ACT/365.25 year has elapsed', () => {
+  it('uses the canonical backend gate after a full calendar-anniversary year has elapsed', () => {
     const profile = buildPerformanceHistoryReliability({
       start_date: '2025-07-08',
       end_date: '2026-07-09',

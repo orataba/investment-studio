@@ -11,7 +11,7 @@ import {
 import { useNavigate, useParams, useSearchParams } from 'react-router'
 
 import CalculationStatus from '../components/CalculationStatus'
-import HoldingsTotalRow, { isPortfolioReturnColumn } from '../components/HoldingsTotalRow'
+import HoldingsTotalRow from '../components/HoldingsTotalRow'
 import PortfolioTableViewControls, { type PortfolioTableViewOption } from '../components/PortfolioTableViewControls'
 import PortfolioWorkspaceLayout from '../components/PortfolioWorkspaceLayout'
 import QualityWarningsNotice from '../components/QualityWarningsNotice'
@@ -74,6 +74,8 @@ type HoldingsColumnKey =
   | 'unrealized_pct'
   | 'instrument_return_1w'
   | 'instrument_return_1m'
+  | 'instrument_return_3m'
+  | 'instrument_return_6m'
   | 'instrument_return_mtd'
   | 'instrument_return_ytd'
   | 'instrument_return_1y'
@@ -94,6 +96,18 @@ type HoldingsColumnKey =
 type HoldingsGroupByKey = 'none' | 'taxonomy_top' | 'taxonomy_leaf' | 'instrument_type' | 'currency' | 'coverage'
 type HoldingsSortDirection = 'asc' | 'desc'
 type SortableValue = number | string | null | undefined
+
+const HOLDINGS_COLUMNS_REQUIRING_DETAILS = new Set<HoldingsColumnKey>([
+  'price_chart_1m',
+  'price_chart_3m',
+  'price_chart_1y',
+  'instrument_current_drawdown',
+  'instrument_max_drawdown',
+  'instrument_volatility_1m',
+  'instrument_volatility_3m',
+  'instrument_volatility_6m',
+  'instrument_volatility_1y',
+])
 
 type HoldingTaxonomyLabels = {
   topLevelId: string
@@ -118,6 +132,66 @@ type HoldingsColumnDefinition = {
   totalClassName?: (rows: PortfolioHoldingRow[], context: HoldingsColumnContext) => string
 }
 
+type HoldingsGroupAggregationKind =
+  | 'none'
+  | 'sum'
+  | 'recomputed_ratio'
+  | 'current_weight_return'
+  | 'current_basket_path'
+  | 'portfolio_risk_contribution'
+
+export const HOLDINGS_GROUP_AGGREGATION_KIND: Record<
+  HoldingsColumnKey,
+  HoldingsGroupAggregationKind
+> = {
+  instrument: 'none',
+  ticker: 'none',
+  instrument_type: 'none',
+  taxonomy_top: 'none',
+  taxonomy_leaf: 'none',
+  currency: 'none',
+  holding_date: 'none',
+  quantity: 'none',
+  cost_method: 'none',
+  avg_cost_book: 'none',
+  last_price: 'none',
+  quote_date: 'none',
+  quote_basis: 'none',
+  quote_provider: 'none',
+  quote_status: 'none',
+  market_value: 'sum',
+  market_value_base: 'sum',
+  cost_basis: 'sum',
+  cost_basis_base: 'sum',
+  weight: 'sum',
+  accounts: 'none',
+  open_lots: 'sum',
+  day_change_value: 'sum',
+  day_change_pct: 'recomputed_ratio',
+  unrealized_value: 'sum',
+  unrealized_pct: 'recomputed_ratio',
+  instrument_return_1w: 'current_weight_return',
+  instrument_return_1m: 'current_weight_return',
+  instrument_return_3m: 'current_weight_return',
+  instrument_return_6m: 'current_weight_return',
+  instrument_return_mtd: 'current_weight_return',
+  instrument_return_ytd: 'current_weight_return',
+  instrument_return_1y: 'current_weight_return',
+  instrument_current_drawdown: 'current_basket_path',
+  instrument_max_drawdown: 'current_basket_path',
+  instrument_holding_max_drawdown: 'none',
+  instrument_volatility_1m: 'current_basket_path',
+  instrument_volatility_3m: 'current_basket_path',
+  instrument_volatility_6m: 'current_basket_path',
+  instrument_volatility_1y: 'current_basket_path',
+  forward_risk_share: 'portfolio_risk_contribution',
+  price_chart_1m: 'none',
+  price_chart_3m: 'none',
+  price_chart_6m: 'none',
+  price_chart_1y: 'none',
+  coverage: 'none',
+}
+
 type HoldingsGroup = {
   key: string
   label: string
@@ -139,7 +213,7 @@ type GroupVolatilitySeries = {
 }
 
 const DAYS_PER_YEAR = 365.25
-const GROUP_METRIC_MIN_VALUE_COVERAGE = 0.8
+const GROUP_METRIC_REQUIRED_VALUE_COVERAGE = 1 - 1e-9
 const GROUP_VOL_WINDOW_DAYS: Record<GroupVolatilityRangeKey, number> = {
   '1m': 31,
   '3m': 92,
@@ -211,6 +285,8 @@ const HOLDINGS_COLUMN_GROUPS: Array<{ label: string; columns: HoldingsColumnKey[
       'price_chart_1y',
       'instrument_return_1w',
       'instrument_return_1m',
+      'instrument_return_3m',
+      'instrument_return_6m',
       'instrument_return_mtd',
       'instrument_return_ytd',
       'instrument_return_1y',
@@ -302,6 +378,8 @@ const DEFAULT_HOLDINGS_COLUMN_WIDTHS: Record<HoldingsColumnKey, number> = {
   unrealized_pct: 148,
   instrument_return_1w: 128,
   instrument_return_1m: 128,
+  instrument_return_3m: 128,
+  instrument_return_6m: 128,
   instrument_return_mtd: 112,
   instrument_return_ytd: 112,
   instrument_return_1y: 112,
@@ -349,6 +427,8 @@ const COMPACT_HOLDINGS_COLUMN_MIN_WIDTHS: Partial<Record<HoldingsColumnKey, numb
   unrealized_pct: 104,
   instrument_return_1w: 92,
   instrument_return_1m: 92,
+  instrument_return_3m: 92,
+  instrument_return_6m: 92,
   instrument_return_mtd: 92,
   instrument_return_ytd: 92,
   instrument_return_1y: 92,
@@ -390,13 +470,17 @@ const SYSTEM_HOLDINGS_VIEWS: HoldingsTableView[] = [
       columns: [
         'instrument',
         'instrument_type',
+        'holding_date',
         'market_value_base',
         'weight',
         'price_chart_6m',
         'instrument_return_1w',
         'instrument_return_1m',
+        'instrument_return_3m',
+        'instrument_return_6m',
         'instrument_return_mtd',
         'instrument_return_ytd',
+        'instrument_return_1y',
         'day_change_pct',
         'day_change_value',
         'unrealized_value',
@@ -473,6 +557,8 @@ function instrumentTrendReasonLabel(row: PortfolioHoldingRow) {
   switch (row.instrument_trend_reason) {
     case 'selected_more_complete_alternate_series':
       return `Using ${basis} because it provides more complete history than the preferred basis.`
+    case 'selected_alternate_total_return_series':
+      return `Using the next available policy-approved total-return basis, ${basis}.`
     case 'selected_split_adjusted_raw_price_series':
       return `Raw ${basis} history was adjusted across confirmed split ratios.`
     case 'selected_series_has_single_observation':
@@ -490,6 +576,10 @@ function instrumentTrendReasonLabel(row: PortfolioHoldingRow) {
     case 'quote_policy_unavailable':
     case 'quote_series_unavailable':
       return 'Trend unavailable because no eligible quote series was found.'
+    case 'total_return_basis_unavailable':
+      return 'Trend unavailable because Registry has no confirmed total-return basis for this instrument.'
+    case 'total_return_series_unavailable':
+      return 'Trend unavailable because the confirmed total-return series has no usable observations.'
     default:
       return row.instrument_trend_reason
         ? `Trend status: ${formatLabel(row.instrument_trend_reason)}.`
@@ -633,10 +723,7 @@ function bookAvgCost(row: PortfolioHoldingRow) {
 }
 
 function quoteDate(row: PortfolioHoldingRow) {
-  if (row.quote_as_of_date) {
-    return row.quote_as_of_date
-  }
-  return row.price_chart_6m[row.price_chart_6m.length - 1]?.date ?? null
+  return row.quote_as_of_date ?? null
 }
 
 function chartPointsForColumn(row: PortfolioHoldingRow, column: HoldingsColumnKey) {
@@ -719,19 +806,10 @@ function totalUnrealizedPct(rows: PortfolioHoldingRow[], workspace: HoldingsWork
     baseAmountForRow(row, workspace.base_currency, row.cost_basis_base, row.cost_basis),
   )
   const unrealized = totalUnrealizedBase(rows, workspace)
-  if (costBasis == null || unrealized == null) {
+  if (costBasis == null || unrealized == null || Math.abs(costBasis) <= 1e-12) {
     return null
   }
-  const cashRows = rows.filter((row) => isCashHoldingRow(row))
-  const cashBasis = cashRows.length ? sumCompleteNumbers(cashRows, (row) => rowMarketValueBase(row, workspace)) : 0
-  if (cashBasis == null) {
-    return null
-  }
-  const denominator = costBasis + cashBasis
-  if (Math.abs(denominator) <= 1e-12) {
-    return null
-  }
-  return unrealized / Math.abs(denominator)
+  return unrealized / Math.abs(costBasis)
 }
 
 function totalMarketValueBase(rows: PortfolioHoldingRow[], workspace: HoldingsWorkspaceResponse) {
@@ -775,12 +853,47 @@ function rowMarketValueBase(row: PortfolioHoldingRow, workspace: HoldingsWorkspa
   return baseAmountForRow(row, workspace.base_currency, row.market_value_base, row.market_value)
 }
 
+function returnCurrencyForRow(
+  row: PortfolioHoldingRow,
+  workspace: HoldingsWorkspaceResponse,
+) {
+  if (row.instrument_core.instrument_type === 'cash') {
+    return workspace.base_currency.trim().toUpperCase()
+  }
+  return row.instrument_core.currency.trim().toUpperCase()
+}
+
+function rowsHaveCompatibleReturnCurrency(
+  rows: PortfolioHoldingRow[],
+  workspace: HoldingsWorkspaceResponse,
+) {
+  const currencies = new Set(
+    rows
+      .filter((row) => {
+        const value = rowMarketValueBase(row, workspace)
+        return value != null && Math.abs(value) > 1e-12
+      })
+      .map((row) => returnCurrencyForRow(row, workspace)),
+  )
+  return currencies.size <= 1
+}
+
 function weightedHoldingMetric(
   rows: PortfolioHoldingRow[],
   workspace: HoldingsWorkspaceResponse,
   accessor: (row: PortfolioHoldingRow) => number | null | undefined,
 ) {
-  const totalAbsValue = rows.reduce((sum, row) => sum + Math.abs(rowMarketValueBase(row, workspace) ?? 0), 0)
+  if (!rowsHaveCompatibleReturnCurrency(rows, workspace)) {
+    return null
+  }
+  const rowValues = rows.map((row) => rowMarketValueBase(row, workspace))
+  if (rowValues.some((value) => value == null)) {
+    return null
+  }
+  const totalAbsValue = rowValues.reduce<number>(
+    (sum, value) => sum + Math.abs(value ?? 0),
+    0,
+  )
   if (totalAbsValue <= 1e-12) {
     return null
   }
@@ -798,7 +911,10 @@ function weightedHoldingMetric(
     weightedTotal += value * metric
     denominator += value
   }
-  if (eligibleAbsValue / totalAbsValue < GROUP_METRIC_MIN_VALUE_COVERAGE || Math.abs(denominator) <= 1e-12) {
+  if (
+    eligibleAbsValue / totalAbsValue < GROUP_METRIC_REQUIRED_VALUE_COVERAGE ||
+    Math.abs(denominator) <= 1e-12
+  ) {
     return null
   }
   return weightedTotal / denominator
@@ -853,8 +969,11 @@ function normalizedReturnSeries(series: HoldingReturnSeries | null | undefined) 
 }
 
 function calculationFrequencyForRows(rows: PortfolioHoldingRow[]): PortfolioCalculationFrequency {
-  const frequency = rows.find((row) => row.instrument_risk_frequency)?.instrument_risk_frequency
-  return frequency === 'weekly' || frequency === 'monthly' ? frequency : 'daily'
+  const frequencies = new Set(rows.map((row) => row.instrument_risk_frequency))
+  if (frequencies.has('monthly')) {
+    return 'monthly'
+  }
+  return frequencies.has('weekly') ? 'weekly' : 'daily'
 }
 
 function groupedReturnSeries(
@@ -862,7 +981,17 @@ function groupedReturnSeries(
   workspace: HoldingsWorkspaceResponse,
   seriesAccessor: (row: PortfolioHoldingRow) => HoldingReturnSeries | null | undefined,
 ): GroupVolatilitySeries | null {
-  const totalAbsValue = rows.reduce((sum, row) => sum + Math.abs(rowMarketValueBase(row, workspace) ?? 0), 0)
+  if (!rowsHaveCompatibleReturnCurrency(rows, workspace)) {
+    return null
+  }
+  const rowValues = rows.map((row) => rowMarketValueBase(row, workspace))
+  if (rowValues.some((value) => value == null)) {
+    return null
+  }
+  const totalAbsValue = rowValues.reduce<number>(
+    (sum, value) => sum + Math.abs(value ?? 0),
+    0,
+  )
   if (totalAbsValue <= 1e-12) {
     return null
   }
@@ -881,7 +1010,7 @@ function groupedReturnSeries(
   const eligibleAbsValue = eligibleRows.reduce((sum, item) => sum + Math.abs(item.value ?? 0), 0)
   const denominator = eligibleRows.reduce((sum, item) => sum + (item.value ?? 0), 0)
   if (
-    eligibleAbsValue / totalAbsValue < GROUP_METRIC_MIN_VALUE_COVERAGE ||
+    eligibleAbsValue / totalAbsValue < GROUP_METRIC_REQUIRED_VALUE_COVERAGE ||
     Math.abs(denominator) <= 1e-12
   ) {
     return null
@@ -1005,14 +1134,12 @@ function drawdownFromReturns(returns: number[]) {
   }
 }
 
-function groupedDrawdownSeries(rows: PortfolioHoldingRow[], workspace: HoldingsWorkspaceResponse, scope: 'all' | 'holding') {
-  return groupedReturnSeries(rows, workspace, (row) =>
-    scope === 'holding' ? row.instrument_holding_return_series : row.instrument_return_series_all,
-  )
+function groupedDrawdownSeries(rows: PortfolioHoldingRow[], workspace: HoldingsWorkspaceResponse) {
+  return groupedReturnSeries(rows, workspace, (row) => row.instrument_return_series_all)
 }
 
 function groupedCurrentDrawdown(rows: PortfolioHoldingRow[], workspace: HoldingsWorkspaceResponse) {
-  const series = groupedDrawdownSeries(rows, workspace, 'all')
+  const series = groupedDrawdownSeries(rows, workspace)
   if ((!series || !series.returns.length) && allValuedRowsAreBaseCash(rows, workspace)) {
     return 0
   }
@@ -1020,8 +1147,8 @@ function groupedCurrentDrawdown(rows: PortfolioHoldingRow[], workspace: Holdings
   return drawdown?.currentDrawdown ?? null
 }
 
-function groupedMaxDrawdown(rows: PortfolioHoldingRow[], workspace: HoldingsWorkspaceResponse, scope: 'all' | 'holding') {
-  const series = groupedDrawdownSeries(rows, workspace, scope)
+function groupedMaxDrawdown(rows: PortfolioHoldingRow[], workspace: HoldingsWorkspaceResponse) {
+  const series = groupedDrawdownSeries(rows, workspace)
   if ((!series || !series.returns.length) && allValuedRowsAreBaseCash(rows, workspace)) {
     return 0
   }
@@ -1331,13 +1458,45 @@ function normalizeHoldingsViewStore(value: unknown): HoldingsViewStore {
     if (!storedView) {
       return defaultView
     }
-    if (
-      defaultView.id === 'return-risk' &&
-      !storedView.state.columns.includes('instrument_return_1m')
-    ) {
+    if (defaultView.id === 'return-risk') {
       const columns = [...storedView.state.columns]
-      const oneWeekIndex = columns.indexOf('instrument_return_1w')
-      columns.splice(oneWeekIndex >= 0 ? oneWeekIndex + 1 : columns.length, 0, 'instrument_return_1m')
+      if (!columns.includes('holding_date')) {
+        const instrumentTypeIndex = columns.indexOf('instrument_type')
+        columns.splice(
+          instrumentTypeIndex >= 0 ? instrumentTypeIndex + 1 : 1,
+          0,
+          'holding_date',
+        )
+      }
+      const requiredReturnColumns: HoldingsColumnKey[] = [
+        'instrument_return_1m',
+        'instrument_return_3m',
+        'instrument_return_6m',
+      ]
+      let insertionIndex = columns.indexOf('instrument_return_1w')
+      insertionIndex = insertionIndex >= 0 ? insertionIndex + 1 : columns.length
+      requiredReturnColumns.forEach((column) => {
+        const existingIndex = columns.indexOf(column)
+        if (existingIndex >= 0) {
+          insertionIndex = existingIndex + 1
+          return
+        }
+        columns.splice(insertionIndex, 0, column)
+        insertionIndex += 1
+      })
+      if (!columns.includes('instrument_return_1y')) {
+        const yearToDateIndex = columns.indexOf('instrument_return_ytd')
+        const sixMonthIndex = columns.indexOf('instrument_return_6m')
+        columns.splice(
+          yearToDateIndex >= 0
+            ? yearToDateIndex + 1
+            : sixMonthIndex >= 0
+              ? sixMonthIndex + 1
+              : columns.length,
+          0,
+          'instrument_return_1y',
+        )
+      }
       return {
         ...storedView,
         readonly: true,
@@ -1432,7 +1591,7 @@ function holdingColumnExportValue(
     case 'currency':
       return row.instrument_core.currency
     case 'holding_date':
-      return context.workspace.as_of_date
+      return row.instrument_holding_start_date ?? null
     case 'quantity':
       return row.quantity
     case 'cost_method':
@@ -1475,6 +1634,10 @@ function holdingColumnExportValue(
       return row.instrument_return_1w ?? null
     case 'instrument_return_1m':
       return row.instrument_return_1m ?? null
+    case 'instrument_return_3m':
+      return row.instrument_return_3m ?? null
+    case 'instrument_return_6m':
+      return row.instrument_return_6m ?? null
     case 'instrument_return_mtd':
       return row.instrument_return_mtd ?? null
     case 'instrument_return_ytd':
@@ -1513,13 +1676,14 @@ function holdingColumnTotalExportValue(
   column: HoldingsColumnKey,
   rows: PortfolioHoldingRow[],
   context: HoldingsColumnContext,
-  allowBlendedInstrumentReturn = true,
 ): string | number | null {
+  if (column === 'instrument') {
+    return `Portfolio Total (${context.workspace.base_currency})`
+  }
+  if (HOLDINGS_GROUP_AGGREGATION_KIND[column] === 'none') {
+    return null
+  }
   switch (column) {
-    case 'instrument':
-      return `Portfolio Total (${context.workspace.base_currency})`
-    case 'holding_date':
-      return context.workspace.as_of_date
     case 'market_value':
     case 'market_value_base':
       return totalMarketValueBase(rows, context.workspace)
@@ -1539,25 +1703,19 @@ function holdingColumnTotalExportValue(
     case 'unrealized_pct':
       return totalUnrealizedPct(rows, context.workspace)
     case 'instrument_return_1w':
-      return allowBlendedInstrumentReturn
-        ? weightedHoldingMetric(rows, context.workspace, (row) => row.instrument_return_1w)
-        : null
+      return weightedHoldingMetric(rows, context.workspace, (row) => row.instrument_return_1w)
     case 'instrument_return_1m':
-      return allowBlendedInstrumentReturn
-        ? weightedHoldingMetric(rows, context.workspace, (row) => row.instrument_return_1m)
-        : null
+      return weightedHoldingMetric(rows, context.workspace, (row) => row.instrument_return_1m)
+    case 'instrument_return_3m':
+      return weightedHoldingMetric(rows, context.workspace, (row) => row.instrument_return_3m)
+    case 'instrument_return_6m':
+      return weightedHoldingMetric(rows, context.workspace, (row) => row.instrument_return_6m)
     case 'instrument_return_mtd':
-      return allowBlendedInstrumentReturn
-        ? weightedHoldingMetric(rows, context.workspace, (row) => row.instrument_return_mtd)
-        : null
+      return weightedHoldingMetric(rows, context.workspace, (row) => row.instrument_return_mtd)
     case 'instrument_return_ytd':
-      return allowBlendedInstrumentReturn
-        ? weightedHoldingMetric(rows, context.workspace, (row) => row.instrument_return_ytd)
-        : null
+      return weightedHoldingMetric(rows, context.workspace, (row) => row.instrument_return_ytd)
     case 'instrument_return_1y':
-      return allowBlendedInstrumentReturn
-        ? weightedHoldingMetric(rows, context.workspace, (row) => row.instrument_return_1y)
-        : null
+      return weightedHoldingMetric(rows, context.workspace, (row) => row.instrument_return_1y)
     case 'instrument_current_drawdown':
       return groupedCurrentDrawdown(rows, context.workspace)
     case 'instrument_volatility_1m':
@@ -1569,11 +1727,13 @@ function holdingColumnTotalExportValue(
     case 'instrument_volatility_1y':
       return groupedAnnualizedVolatility(rows, context.workspace, '1y')
     case 'forward_risk_share':
-      return sumNumbers(rows, (row) => row.forward_risk_share)
+      return context.workspace.forward_risk?.status === 'ok'
+        ? sumCompleteNumbers(rows, (row) => row.forward_risk_share)
+        : null
     case 'instrument_max_drawdown':
-      return groupedMaxDrawdown(rows, context.workspace, 'all')
+      return groupedMaxDrawdown(rows, context.workspace)
     case 'instrument_holding_max_drawdown':
-      return groupedMaxDrawdown(rows, context.workspace, 'holding')
+      return null
     default:
       return null
   }
@@ -1650,11 +1810,10 @@ const HOLDINGS_COLUMN_DEFINITIONS: Record<HoldingsColumnKey, HoldingsColumnDefin
   },
   holding_date: {
     key: 'holding_date',
-    label: 'Holding Date',
+    label: 'Holding Since',
     align: 'center',
-    render: (_row, context) => context.workspace.as_of_date,
-    sortValue: (_row, context) => context.workspace.as_of_date,
-    total: (_rows, context) => context.workspace.as_of_date,
+    render: (row) => row.instrument_holding_start_date ?? '—',
+    sortValue: (row) => row.instrument_holding_start_date,
   },
   quantity: {
     key: 'quantity',
@@ -1832,6 +1991,26 @@ const HOLDINGS_COLUMN_DEFINITIONS: Record<HoldingsColumnKey, HoldingsColumnDefin
     total: (rows, context) => signedPercent(weightedHoldingMetric(rows, context.workspace, (row) => row.instrument_return_1m)),
     totalClassName: (rows, context) => signedValueClass(weightedHoldingMetric(rows, context.workspace, (row) => row.instrument_return_1m)),
   },
+  instrument_return_3m: {
+    key: 'instrument_return_3m',
+    label: '3M Return',
+    align: 'right',
+    render: (row) => signedPercent(row.instrument_return_3m),
+    sortValue: (row) => row.instrument_return_3m,
+    className: (row) => signedValueClass(row.instrument_return_3m),
+    total: (rows, context) => signedPercent(weightedHoldingMetric(rows, context.workspace, (row) => row.instrument_return_3m)),
+    totalClassName: (rows, context) => signedValueClass(weightedHoldingMetric(rows, context.workspace, (row) => row.instrument_return_3m)),
+  },
+  instrument_return_6m: {
+    key: 'instrument_return_6m',
+    label: '6M Return',
+    align: 'right',
+    render: (row) => signedPercent(row.instrument_return_6m),
+    sortValue: (row) => row.instrument_return_6m,
+    className: (row) => signedValueClass(row.instrument_return_6m),
+    total: (rows, context) => signedPercent(weightedHoldingMetric(rows, context.workspace, (row) => row.instrument_return_6m)),
+    totalClassName: (rows, context) => signedValueClass(weightedHoldingMetric(rows, context.workspace, (row) => row.instrument_return_6m)),
+  },
   instrument_return_mtd: {
     key: 'instrument_return_mtd',
     label: 'MTD',
@@ -1912,9 +2091,13 @@ const HOLDINGS_COLUMN_DEFINITIONS: Record<HoldingsColumnKey, HoldingsColumnDefin
     sortValue: (row) => row.forward_risk_share,
     className: (row) => signedValueClass(row.forward_risk_share),
     total: (rows, context) =>
-      context.workspace.forward_risk?.status === 'ok' ? signedPercent(sumNumbers(rows, (row) => row.forward_risk_share)) : '—',
+      context.workspace.forward_risk?.status === 'ok'
+        ? signedPercent(sumCompleteNumbers(rows, (row) => row.forward_risk_share))
+        : '—',
     totalClassName: (rows, context) =>
-      context.workspace.forward_risk?.status === 'ok' ? signedValueClass(sumNumbers(rows, (row) => row.forward_risk_share)) : '',
+      context.workspace.forward_risk?.status === 'ok'
+        ? signedValueClass(sumCompleteNumbers(rows, (row) => row.forward_risk_share))
+        : '',
   },
   instrument_max_drawdown: {
     key: 'instrument_max_drawdown',
@@ -1923,8 +2106,8 @@ const HOLDINGS_COLUMN_DEFINITIONS: Record<HoldingsColumnKey, HoldingsColumnDefin
     render: (row) => signedPercent(row.instrument_max_drawdown),
     sortValue: (row) => row.instrument_max_drawdown,
     className: (row) => signedValueClass(row.instrument_max_drawdown),
-    total: (rows, context) => signedPercent(groupedMaxDrawdown(rows, context.workspace, 'all')),
-    totalClassName: (rows, context) => signedValueClass(groupedMaxDrawdown(rows, context.workspace, 'all')),
+    total: (rows, context) => signedPercent(groupedMaxDrawdown(rows, context.workspace)),
+    totalClassName: (rows, context) => signedValueClass(groupedMaxDrawdown(rows, context.workspace)),
   },
   instrument_holding_max_drawdown: {
     key: 'instrument_holding_max_drawdown',
@@ -1933,8 +2116,8 @@ const HOLDINGS_COLUMN_DEFINITIONS: Record<HoldingsColumnKey, HoldingsColumnDefin
     render: (row) => signedPercent(row.instrument_holding_max_drawdown),
     sortValue: (row) => row.instrument_holding_max_drawdown,
     className: (row) => signedValueClass(row.instrument_holding_max_drawdown),
-    total: (rows, context) => signedPercent(groupedMaxDrawdown(rows, context.workspace, 'holding')),
-    totalClassName: (rows, context) => signedValueClass(groupedMaxDrawdown(rows, context.workspace, 'holding')),
+    total: () => '',
+    totalClassName: () => '',
   },
   price_chart_1m: {
     key: 'price_chart_1m',
@@ -2073,6 +2256,7 @@ export default function PortfolioHomePage() {
   const [holdingsViewStoreError, setHoldingsViewStoreError] = useState<string | null>(null)
   const [activeHoldingsViewId, setActiveHoldingsViewId] = useState(initialHoldingsViewStore.activeViewId)
   const [holdingsColumns, setHoldingsColumns] = useState<HoldingsColumnKey[]>(() => initialHoldingsViewState.columns)
+  const holdingsNeedsDetails = holdingsColumns.some((column) => HOLDINGS_COLUMNS_REQUIRING_DETAILS.has(column))
   const [holdingsColumnWidths, setHoldingsColumnWidths] = useState<Partial<Record<HoldingsColumnKey, number>>>(() =>
     Object.keys(initialHoldingsViewState.columnWidths).length
       ? initialHoldingsViewState.columnWidths
@@ -2517,7 +2701,7 @@ export default function PortfolioHomePage() {
         ...visibleColumns.map((column, index) =>
           index === 0
             ? nonCashPortfolioLabel
-            : holdingColumnTotalExportValue(column.key, nonCashPortfolioRows, columnContext, false),
+            : holdingColumnTotalExportValue(column.key, nonCashPortfolioRows, columnContext),
           ),
       ])
     }
@@ -2552,7 +2736,7 @@ export default function PortfolioHomePage() {
     rows.push([
       ...(holdingsGroupBy !== 'none' ? ['Portfolio Total'] : []),
       ...visibleColumns.map((column) =>
-        holdingColumnTotalExportValue(column.key, sortedHoldingRows, columnContext, false),
+        holdingColumnTotalExportValue(column.key, sortedHoldingRows, columnContext),
       ),
     ])
 
@@ -2625,19 +2809,21 @@ export default function PortfolioHomePage() {
         className={className}
         label={label}
         cells={visibleColumns.map((column, index) => {
-          const withholdInstrumentReturn = isPortfolioReturnColumn(column.key)
+          const aggregationKind = HOLDINGS_GROUP_AGGREGATION_KIND[column.key]
+          const canAggregate = aggregationKind !== 'none'
           const classNames = [
             holdingsAlignmentClass(column),
             isHoldingsChartColumn(column.key) ? 'chart-cell' : '',
-            withholdInstrumentReturn ? '' : column.totalClassName?.(rows, columnContext) ?? '',
+            canAggregate ? column.totalClassName?.(rows, columnContext) ?? '' : '',
           ]
             .filter(Boolean)
             .join(' ')
           return {
             key: column.key,
+            aggregationKind,
             className: classNames || undefined,
             content:
-              index === 0 || withholdInstrumentReturn
+              index === 0 || !canAggregate
                 ? undefined
                 : column.total?.(rows, columnContext) ?? '',
           }
@@ -2653,23 +2839,30 @@ export default function PortfolioHomePage() {
     return (
       <tr className="holdings-group-row">
         {visibleColumns.map((column, index) => {
+          const aggregationKind = HOLDINGS_GROUP_AGGREGATION_KIND[column.key]
+          const canAggregate = aggregationKind !== 'none'
           const classNames = [
             holdingsAlignmentClass(column),
             isHoldingsChartColumn(column.key) ? 'chart-cell' : '',
-            column.totalClassName?.(group.rows, columnContext) ?? '',
+            canAggregate ? column.totalClassName?.(group.rows, columnContext) ?? '' : '',
             index === 0 ? 'holdings-group-name-cell' : '',
           ]
             .filter(Boolean)
             .join(' ')
           return (
-            <td key={column.key} className={classNames || undefined}>
+            <td
+              key={column.key}
+              data-column-key={column.key}
+              data-aggregation-kind={aggregationKind}
+              className={classNames || undefined}
+            >
               {index === 0 ? (
                 <div className="holdings-group-header">
                   <span className="holdings-group-title">{group.label || 'Unassigned'}</span>
                   <span className="holdings-group-count">{formatNumber(group.rows.length, 0)}</span>
                 </div>
               ) : (
-                column.total?.(group.rows, columnContext) ?? ''
+                canAggregate ? column.total?.(group.rows, columnContext) ?? '' : ''
               )}
             </td>
           )
@@ -2810,6 +3003,7 @@ export default function PortfolioHomePage() {
     Promise.allSettled([
       getHoldingsWorkspace(portfolioId || undefined, {
         as_of_date: requestedAsOfDate || undefined,
+        ...(holdingsNeedsDetails ? { include_details: true } : {}),
       }),
       getPortfolioTaxonomyCatalog(portfolioId),
     ])
@@ -2851,7 +3045,7 @@ export default function PortfolioHomePage() {
     return () => {
       cancelled = true
     }
-  }, [portfolioId, requestedAsOfDate, riskPolicyRevision])
+  }, [holdingsNeedsDetails, portfolioId, requestedAsOfDate, riskPolicyRevision])
 
   useEffect(() => {
     if (!workspace || !selectedInstrumentId) {

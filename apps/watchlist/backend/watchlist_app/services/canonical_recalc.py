@@ -3006,6 +3006,8 @@ class CanonicalRecalcService:
                     "return_1w": getattr(performance_snapshot, "return_1w", None),
                     "return_mtd": getattr(performance_snapshot, "return_mtd", None),
                     "return_1m": getattr(performance_snapshot, "return_1m", None),
+                    "return_3m": getattr(performance_snapshot, "return_3m", None),
+                    "return_6m": getattr(performance_snapshot, "return_6m", None),
                     "return_1y": getattr(performance_snapshot, "return_1y", None),
                     "annualized_return": getattr(performance_snapshot, "annualized_return", None),
                     "return_3y": getattr(performance_snapshot, "return_3y_annualized", None),

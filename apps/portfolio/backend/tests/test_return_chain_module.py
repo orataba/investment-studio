@@ -117,7 +117,6 @@ def test_reliable_window_clamp_and_start_boundary_golden_contract() -> None:
     kwargs = {
         "requested_start_date": date(2026, 1, 1),
         "requested_end_date": date(2026, 1, 2),
-        "include_start_boundary": True,
     }
 
     extracted = return_chain.resolve_reliable_snapshot_window(deepcopy(snapshots), **kwargs)
@@ -126,27 +125,36 @@ def test_reliable_window_clamp_and_start_boundary_golden_contract() -> None:
     assert extracted["effective_end_date"] == date(2026, 1, 1)
     assert extracted["as_of_clamp_reason"] == "requested_end_stale_price"
     assert [point["as_of_date"] for point in extracted["snapshots"]] == [
-        date(2025, 12, 31),
         date(2026, 1, 1),
     ]
 
 
 def test_period_coverage_requires_a_complete_start_boundary() -> None:
-    boundary = _snapshot(date(2025, 12, 31), nav=100.0, daily_twr=0.0)
+    boundary = _snapshot(
+        date(2026, 1, 1),
+        nav=110.0,
+        daily_twr=None,
+        return_coverage_state="unavailable",
+    )
     visible = [
-        _snapshot(date(2026, 1, 1), nav=110.0, daily_twr=0.10),
+        boundary,
         _snapshot(date(2026, 1, 2), nav=110.0, daily_twr=0.0),
     ]
     kwargs = {
         "requested_start_date": date(2026, 1, 1),
         "effective_end_date": date(2026, 1, 2),
         "inception_date": date(2025, 12, 31),
+        "start_is_close_boundary": True,
     }
 
     extracted_complete = return_chain.period_return_coverage_state(
-        [boundary, *visible], visible, **kwargs
+        visible, visible, **kwargs
     )
-    extracted_missing = return_chain.period_return_coverage_state(visible, visible, **kwargs)
+    extracted_missing = return_chain.period_return_coverage_state(
+        visible[1:],
+        visible[1:],
+        **kwargs,
+    )
 
     assert extracted_complete == "complete"
     assert extracted_missing == "partial"
@@ -193,7 +201,7 @@ def test_initial_valuation_anchor_starts_rebased_twr_without_a_synthetic_return(
 
     assert extracted_coverage == "complete"
     assert extracted_series[0]["return_chain_continuous"] is True
-    assert extracted_series[0]["cumulative_twr"] is None
+    assert extracted_series[0]["cumulative_twr"] == pytest.approx(0.0)
     assert extracted_series[1]["cumulative_twr"] == pytest.approx(0.10)
     assert extracted_series[2]["cumulative_twr"] == pytest.approx(0.045)
 

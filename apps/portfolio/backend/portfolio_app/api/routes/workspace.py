@@ -64,6 +64,8 @@ _HOLDINGS_TREND_FIELD_NAMES = (
     "instrument_risk_frequency",
     "instrument_return_1w",
     "instrument_return_1m",
+    "instrument_return_3m",
+    "instrument_return_6m",
     "instrument_return_mtd",
     "instrument_return_ytd",
     "instrument_return_1y",
@@ -129,11 +131,7 @@ def _public_holdings_workspace_response(
         if isinstance(row, dict)
         and isinstance((instrument_core := row.get("instrument_core")), dict)
     }
-    instrument_ids = {
-        str(row.get("instrument_id") or "").strip()
-        for row in row_items
-        if isinstance(row, dict) and str(row.get("instrument_id") or "").strip()
-    }
+    instrument_ids = set(_instrument_ids_from_holdings_workspace(workspace))
     portfolio_id = str(workspace.get("portfolio_id") or "").strip()
     if portfolio_id:
         reconcile_instrument_event_tasks(

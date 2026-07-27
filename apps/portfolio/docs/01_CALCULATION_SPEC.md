@@ -7,6 +7,7 @@
 关联文档：
 
 - [`02_GIPS_ALIGNMENT.md`](./02_GIPS_ALIGNMENT.md)
+- [`03_HOLDINGS_FIELD_REFERENCE.md`](./03_HOLDINGS_FIELD_REFERENCE.md)：Holdings 每个 UI / export 字段的完整映射和分组合同。
 
 ## 1. 文档目标
 
@@ -103,7 +104,13 @@
 - 当日价格、FX、benchmark level 都视为当日收盘或该日最终可用估值；
 - 当日 `MVB` 等于上一估值日的 `MVE`；
 - 当日 `MVE` 为当日收盘后的组合总市值与现金合计。
-- 物化 daily snapshot 必须同时保存 `beginning_nav` 与 `ending_nav`；任意用户查询区间 `[start_date, end_date]` 的 `initial value` 使用 `start_date` 当天的 `beginning_nav`，语义等同于上一估值日 EOD，`final value` 使用 `end_date` 的 `ending_nav`。
+- 物化 daily snapshot 必须同时保存 `beginning_nav` 与 `ending_nav`。组合已经存在时，显式查询中的 `start_date`、`end_date` 都是 **EOD valuation boundary**：`initial value` 使用 `start_date` 的 `ending_nav`，`final value` 使用 `end_date` 的 `ending_nav`，收益子期间为 `(start_date, end_date]`。
+- 因此 `2026-01-01` 到 `2026-01-07` 表示 `2026-01-01` 收盘到 `2026-01-07` 收盘，几何链接 `2026-01-02` 至 `2026-01-07` 的 daily returns。起始日交易、现金流、收益和成本状态已经包含在期初 EOD 状态中，不得再次列入区间 flow / P&L。
+- 对已有组合，`start_date = end_date` 是零长度 close-to-close 区间：起止 NAV 相同，区间收益、资金流和 P&L 为 0，不生成一日收益观察。
+- MTD、QTD、YTD 的目标锚点分别是上月末、上季末和上年 `12-31`；rolling `1Y` 使用一年前同一日，闰日按目标月份最后一日截断。组合优先使用目标日的完整 EOD valuation state（休市日可以是完整的 carry state）；标的与 benchmark 使用目标日或之前最近一个可用且语义合格的收盘点。
+- 日期边界例外是 **funded-segment start**：若请求起点正好是组合首次入金成立日，或组合 NAV 真正归零后的再次入金日，此前没有可用的有资本 EOD 基数，因此必须从 0 BOD capital 加当日流入的分母开始，保留该日 BOD-to-EOD 子期间。导入式 `opening_balance` 本身是已有资产的 EOD anchor，不产生导入首日收益。
+- 留存现金即使无收益、无市场风险暴露，仍属于组合 NAV 和 TWR 分母，不构成零资本或 segment restart。后续新增 instrument 也不会重置组合 inception。若组合 1 日成立、3 日盘中新增资产，选择 3 日到 7 日仍表示组合 3 日 EOD 到 7 日 EOD，不含该资产成交到 3 日收盘的收益；要包含 3 日子期间，应选择 2 日作为起点。
+- 若组合 NAV 归零并连续若干日没有资本，零资本日没有可定义的收益观察，不得伪造为 0%。跨越该 inactive gap 的连续 TWR 必须 fail closed；归零前后分别展示。再次入金日作为新 funded segment 可从当日 BOD contribution 分母重新计算。
 
 ### 2.1.1 全球 EOD 规则
 
@@ -257,7 +264,8 @@
 
 默认采用以下年化约定：
 
-- Return / IRR：`ACT/365.25`
+- TWR annualization：calendar-anniversary Actual/Actual；相同月日的一周年（29 February 按目标年 2 月最后一日截断）精确记为 1 年
+- XIRR 现金流折现：沿用独立的 daily year-fraction policy
 - Daily volatility / tracking error：优先使用实际有效收益观察密度推断 `periods_per_year`
 - Weekly volatility：`52`
 - Monthly volatility：`12`
@@ -267,7 +275,7 @@
 - 可以展示 period TWR / period MWR；
 - 不得发布 annualized TWR、annualized MWR / XIRR、Calmar 等依赖年化收益的指标；
 - API 必须返回 `null / unavailable` 及原因，不能只依赖前端隐藏；
-- 满一年门槛按实际日期计算，首选 `ACT/365.25 >= 1`，并在 API 与 UI 共用同一 eligibility 判定。
+- 满一年门槛按 calendar anniversary 判定，并在 API 与 UI 共用同一 eligibility；不得因平年只有 365 天而把同日到次年同日误判为不足一年。
 
 若观察频率是稳定交易日频，`periods_per_year` 通常接近 `252`；若存在节假日、缺价或非交易日 carry-forward，系统必须记录并使用实际有效收益观察密度，避免把无市场观察的 0 return 当作风险样本。
 
@@ -312,7 +320,7 @@ Coverage 必须按职责拆分，至少返回：
 
 这四个状态不得互相替代。成本或归因不完整不能阻断已经完整的 fair-value NAV/TWR；反之，完整账面成本也不能修补缺失估值或收益链。
 
-Return chain 只链接连续且 `return_coverage_state = complete` 的可靠观察。若不可靠估值 gap 内发生 external flow，gap 后第一个可靠点必须作为新 anchor，其当日不发布跨 gap 的 bridging return；后续从该 anchor 继续链接。月度、MTD、QTD、YTD 等闭合区间只有在可靠起点、可靠终点和中间连续覆盖同时满足时才可发布完整收益；inception 落在期间内部只能是 partial / unavailable，不能伪装成完整自然期间收益。Performance 明细页的滚动或手动区间若请求起点早于组合 inception，则必须保留 requested start，同时把 effective start 明确收敛到 inception，并按该有效区间发布结果；不得把成立前尚不存在的日期误报为 return coverage gap。此规则不改变前述自然月/季度/年度闭合区间的完整性要求。
+Return chain 只链接连续且 `return_coverage_state = complete` 的可靠观察。显式 close-to-close 区间把起始 EOD 仅作为 growth index 的 0% anchor，第一条可链接收益必须晚于起始边界。若不可靠估值 gap 内发生 external flow，gap 后第一个可靠点必须作为新 anchor，其当日不发布跨 gap 的 bridging return；后续从该 anchor 继续链接。月度、MTD、QTD、YTD 等闭合区间只有在可靠起点、可靠终点和中间连续覆盖同时满足时才可发布完整收益；inception 落在期间内部只能是 partial / unavailable，不能伪装成完整自然期间收益。Performance 明细页的滚动或手动区间若请求起点早于组合 inception，则必须保留 requested start，同时把 effective start 明确收敛到 inception，并按该有效区间发布结果；不得把成立前尚不存在的日期误报为 return coverage gap。此规则不改变前述自然月/季度/年度闭合区间的完整性要求。
 
 用户请求的终点晚于 latest reliable endpoint 时，后端应 clamp 到该 endpoint，并同时返回 requested/effective as-of 与 `as_of_clamp_reason`。summary、chart、drawdown、calendar 和 Calculation 必须使用同一 effective window。
 
@@ -382,6 +390,7 @@ Transaction 是可修改的业务事实，但修改必须保留可追溯性，�
 - 同一 portfolio 的 idempotency key 只可重放同一 operation 与同一 request hash；同 key 不同 payload 必须冲突失败；
 - update / delete 使用 `row_version` 做 optimistic concurrency，版本不匹配时拒绝覆盖较新的事实；
 - 源 `quantity / price / amount / fx / fees / taxes` 使用 practical NUMERIC 精度保存，同时保留 float64 projection 供现有计算与统计使用。不得用显示舍入值反写源事实。
+- 对 buy / sell 等证券成交，`quantity` 与 `gross_amount` 是份额和成交金额事实，lot 的隐含成交价按 `gross_amount / quantity / price_scale` 计算；输入 `price` 可以是该隐含价格四位小数的展示值。校验可以接受精确乘积或与隐含价格四位小数一致的展示价，但账本不得反过来用舍入后的 `price × quantity` 改写源金额。
 
 ### 3.5 Cost Basis / Purchase Value
 
@@ -434,6 +443,13 @@ $$
 
 Holdings 是当前持仓状态表，只展示当前仍然 open 的 position quantity、settled cash balance、quote、market value、weight、open-position cost basis 与 unrealized P&L。资产级 TWR、period contribution、realized gain、dividend / coupon income、fees / taxes impact 和 closed positions 属于 `Performance` / security detail 的区间绩效视图，不进入 Holdings 默认列，也不作为 Holdings 的 canonical 语义。
 
+分红与未实现收益必须严格分层：
+
+- 普通 `dividend / coupon` 在 entitlement date 确认为已实现 `Income`，税费进入独立 expense/tax bucket；它不释放或冲减 open-position cost basis，也不进入 Holdings `Unrealized P&L`；
+- `dividend_reinvestment` 同时确认原持仓的已实现 `Income`，并按 reinvested gross amount 形成新的 open lot cost；不得把新份额零成本入账，也不得把同一分红再记现金；
+- 只有明确的 `return_of_capital` 才冲减当前 open lots 的 remaining cost basis。它不是 dividend income；超过剩余成本的事实在支持超额资本返还收益分类前必须失败关闭；
+- 除息后的 valuation price / NAV 下降会降低持仓未实现资本利得，已确认的分红则在 `Income` 中抵补经济收益。二者可以共同解释总 P&L，但不得相互改写分类。
+
 Holdings 中的现金行按 settled cash ledger 逐币种生成，`instrument_id = cash:{currency}`：
 
 - `market_value` 等于该币种 settled cash amount；
@@ -445,23 +461,29 @@ Holdings 中的现金行按 settled cash ledger 逐币种生成，`instrument_id
 
 `Market Value Base` 是任意 holding row 的 base-currency fair value。对非现金资产，它等于 `quantity * selected valuation quote` 再按 as-of date FX 转换；对现金，它等于 settled cash amount 的 base-currency value。Holdings `Portfolio Total` 的 market value 包含非现金市值与 settled cash，不包含 pending settlement；NAV 另行等于 market value 加 pending settlement。
 
-`Day Change` / `Day Return` 是 as-of date 当前持仓规模上的一天市场变动，不是区间绩效：
+Holdings 行级 `Weight = market_value_base / portfolio NAV`，沿用包含 pending settlement 的 canonical NAV 分母。因此 rows 的权重合计等于 `Holdings market value / NAV`，有 pending settlement 时不要求正好为 100%。当前篮子 Return / Risk 则只在实际参与的 Holdings 成员内部按 market value 归一；pending settlement 没有 instrument return series，不得被伪造成现金或 0-return 成员。
 
-- 非现金资产使用当前 selected valuation quote 与同一 quote basis 的上一可用 quote，`day_return = current_quote / previous_quote - 1`；
-- 非现金资产的 `day_change_value` 使用当前 quantity 乘以 quote 变动；`day_change_value_base` 再按 as-of date FX 转 base currency；
+`Day Change` / `Day Return` 是 as-of date 当前持仓规模上的一天经济市场变动，不是历史实际持仓区间绩效：
+
+- 非现金资产优先使用 `quote_selection_policy.total_return` 选出的当前点与上一可用同 basis 点；只有 total-return basis 不可用时才回退到 selected valuation basis。这样已确认的拆分、分配或分红不会被误判为单日价格暴跌；
+- `day_return = current_return_point / previous_return_point - 1`；`day_change_value` 把该收益应用到 as-of date 当前 market value，等价于 `current_market_value - current_market_value / (1 + day_return)`，再按 as-of date FX 转为 `day_change_value_base`；
+- total-return basis 中包含的分配只用于描述当前持仓篮子的单日经济市场收益，不改变 dividend 的已实现 `Income` 分类，也不进入 book `Unrealized P&L`；
 - base-currency cash 的 day change 为 `0`；
 - non-base cash 的 day return 使用当前 FX 与上一可用 FX，`day_change_value_base = cash_amount * (current_fx - previous_fx)`；
-- 若缺少当前点、上一点或 FX，相关字段必须为空，不得用 0 或 chart sample 补齐。
+- 若缺少当前 valuation point、可比 return point、上一点或 FX，相关字段必须为空，不得用 0 或 chart sample 补齐。可见 `Quote` / `Quote Date` 仍只描述 valuation point，不能拿 chart 日期补成 quote 日期。
 
 Holdings 可以展示 quote-derived instrument market trend 指标，作为扫描当前持仓标的自身近期市场表现的辅助列：
 
 - `Chart 1M / 3M / 6M / 1Y` 是前端展示用的 sampled path；
-- `1W / 1M Return / MTD / YTD / 1Y` 只使用标的自身 selected quote series，计算为 `latest_quote / anchor_quote - 1`；
-- selected quote series 按 `quote_selection_policy.total_return -> chart -> valuation -> reference` 选择；若策略为空，则选用截至 as-of 最新的一条 quote basis，不能混用多个 basis；
-- `1W Return` / `1M Return` / `1Y` 的 anchor quote 是目标日期或之前最近 quote；`1M` 的目标日期按自然月回看，不按固定 30/31 天截断；
+- `1W / 1M / 3M / 6M / MTD / YTD / 1Y Return` 只使用标的自身经 Registry 明确确认的 total-return series，计算为 `latest_total_return_level / anchor_total_return_level - 1`；不得用 `official_nav`、普通 `close / last` 或 valuation price 冒充 total return；
+- total-return series 严格保持 `quote_selection_policy` 的顺序和单一 basis。优先 basis 有数据但历史不足时返回空值，不得因为次选价格序列更长就切换口径；Portfolio 与 Watchlist 各自实现读路径，但在相同 instrument、as-of date、total-return basis 和窗口边界下数值必须一致；
+- `Chart *` 可以展示策略允许的 price-return 或 total-return path，但必须保留真实 return semantics；图表序列不得反向充当上述 Return、Volatility 或 Drawdown 字段的替代输入；
+- `1W Return` / `1M Return` / `3M Return` / `6M Return` / `1Y` 的窗口目标日期从请求的 as-of date 回看，anchor quote 是该目标日期或之前最近 quote；终点值则是 as-of date 或之前的最新可用 total-return point。即使终点点位略早于 as-of，也不得把窗口锚点随之向前挪；月度目标日期按自然月回看，不按固定天数截断；
 - `MTD` / `YTD` 的 anchor quote 是严格早于月初 / 年初的最近 quote；若该锚点不存在则返回空值，禁止拿期间内第一条 quote 冒充完整自然期间收益；
-- `Current DD` 计算为 `latest_quote / max_available_selected_quote_to_date - 1`；
-- `Vol 1M / 3M / 6M / 1Y` 使用同一 selected quote series 先按组合 resolved risk frequency 取 daily / weekly / monthly period returns，再按实际 elapsed days 年化；不得使用 `Chart *` sampled points；
+- `Current DD` 使用 confirmed total-return series，计算为 `latest_total_return_level / max_available_total_return_level_to_date - 1`；
+- `Max DD` 使用同一序列，计算历史各点相对此前峰值的最小值 `min(level_t / running_peak_t - 1)`；
+- `Held Max DD` 只在 instrument row 计算，起点是当前开放头寸中最早的 holding start date；它不纳入已经平掉的旧头寸；
+- `Vol 1M / 3M / 6M / 1Y` 使用同一 confirmed total-return series 先按组合 resolved risk frequency 取 daily / weekly / monthly period returns，再按实际 elapsed days 年化；不得使用 `Chart *` sampled points；
 - volatility 窗口必须有接近窗口起点的初始 quote、足够 elapsed-day 覆盖和最小收益样本数，否则为空。当前门槛为 daily `10 / 30 / 60 / 120`、weekly `3 / 6 / 12 / 24`、monthly `2 / 2 / 4 / 6`，分别对应 `1M / 3M / 6M / 1Y`；
 - 这些指标不读取 quantity、cash flow、cost basis、FIFO / moving average、realized gain 或 income，因此不属于组合 TWR、holding contribution 或 book P&L。
 
@@ -476,11 +498,26 @@ Holdings `Forward RC` 是当前持仓的组合级 forward risk contribution：
 Holdings group rows 不是后端 period-performance group：
 
 - market value、cost basis、day change、open lots 等绝对量按组内 rows 汇总；
-- unrealized return 使用组内非现金 `unrealized P&L / cost basis`，不是成员百分比的加权平均；若任一 group / subtotal / `Portfolio Total` 同时包含非现金 row 与 cash row，则 cash 以 0 unrealized P&L、cash market value 作为分母的一部分稀释该比例；纯 cash group 因 cost basis 不适用而为空；
-- `1W / 1M / MTD / YTD / 1Y Return` 使用 as-of date base-currency market value 权重对成员自身 return 加权；覆盖不足时为空；
+- unrealized return 使用组内当前非现金 open-position `unrealized P&L / cost basis`，不是成员百分比的加权平均；cash 不产生 unrealized P&L，也不进入分母，纯 cash group 因 cost basis 不适用而为空；
+- `1W / 1M / 3M / 6M / MTD / YTD / 1Y Return` 使用 as-of date base-currency market value 权重对当前成员自身 total return 加权；group、`Non-cash Portfolio` 与 `Portfolio Total` 均按这套当前持仓篮子口径展示，覆盖不足时为空。它们不是历史实际组合 TWR，后者只属于 Overview / Performance；
 - group volatility / drawdown 用组内成员 return series 在共同 period 上组成当前权重的组 return series 后计算，包含协方差效果，不等于成员 volatility 或 drawdown 的加权平均；
+- `Held Max DD` 不计算 group、`Non-cash Portfolio` 或 `Portfolio Total`：成员持有起点不同，截断长度不同的持有期序列没有可稳定解释的共同分组起点；
 - base-currency cash 可作为 0-return 成员参与覆盖；non-base cash 使用其 FX return series；
+- group return / volatility / drawdown 只在所有有当前市值的成员 return currency 一致时计算。非现金 instrument return 默认是标的本币 total return，cash FX return 是 base-currency return；在后端尚未提供逐期 base-currency instrument return 前，跨 return currency 的本地收益不得直接加权拼接，必须留空；
 - UI 中的 `Non-cash Portfolio` 行是当前 rows 的非现金 subtotal，只服务展示和导出，不是源事实、不参与 group、sort、detail 或 portfolio totals。
+
+每个 Holdings 字段的 group / subtotal / total 处理必须属于以下明确类别；未列为可聚合的字段一律留空：
+
+| 类别 | 字段 | 分组规则 |
+| --- | --- | --- |
+| 点位绝对量 | `Market Value (Base)`、`Cost Basis (Base)`、`Weight`、`Open Lots`、`Day Change`、`Unrealized P&L` | 对当前 rows 加总；跨币种金额先转 base currency |
+| 重新计算的比例 | `Day Return`、`Unrealized Return` | 分别用组级 `Day Change / prior market value`、`Unrealized P&L / non-cash open cost` 重算，禁止平均成员百分比 |
+| 当前权重历史收益 | `1W / 1M / 3M / 6M / MTD / YTD / 1Y Return` | 用 as-of base-market-value 权重合成；除 base cash 的明确 0 return 外，当前市值覆盖必须完整，且 return currency 必须一致，否则为空 |
+| 当前篮子路径风险 | `1M / 3M / 6M / 1Y Vol`、`Current DD`、`Max DD` | 用共同 period 的成员 total-return series 与当前权重先生成组 return path，再计算风险；return currency 不一致时为空 |
+| 组合风险贡献 | `Forward RC` | 仅当 workspace forward-risk status 完整时，对成员相对于同一全组合 variance 的 risk share 加总；任一成员缺失则为空 |
+| 仅 instrument row | Instrument / Ticker / Instrument Type / Taxonomy / Taxonomy Leaf / Currency、`Holding Since`、`Quantity`、`Cost Method`、`Avg Cost`、Quote 及其日期/口径/provider/status、`Accounts`、`Chart *`、`Coverage`、`Held Max DD` | 不生成 group、subtotal 或 portfolio total 值 |
+
+`Holding Since` 是当前开放头寸最早的 holding start date，不是 workspace as-of date；不同 instrument 的份额单位、报价单位、平均成本和起始日期不可直接相加或平均。
 
 #### Unrealized P&L
 
@@ -561,7 +598,7 @@ $$
 - 拆分不改变账户总成本基础；旧 lot 关闭并以 lineage 连接到 carry-cost successor lot，单位成本按 ratio 反向变化。
 - provider factor/价格连续性只能生成 `detected` 候选，不能入账；只有 issuer / exchange / CSD 确认事件才可形成数量 posting。
 - 若登记日与生效日之间存在交易而系统没有 due-bill 事实，计算必须 fail closed；`cash_in_lieu` 没有金额/应收事实时也必须 fail closed。
-- 原始 `close / official_nav` 用于交易与市值；`adjusted_close / total_return_nav` 只用于收益、风险、图表和拆分日持仓涨跌解释。
+- 原始 `close / official_nav` 用于交易校验与市值；`adjusted_close / total_return_nav` 用于 confirmed total-return Return / Risk。Chart 可以展示策略允许的 valuation、price-return 或 total-return path，但必须标明真实 semantics；Holdings Day Change 优先使用完整 total-return pair，仅在其不可用时才使用完整 valuation pair，不能把两个 basis 混配。
 - `dividend / coupon` 进入 `Events` 时，若已经入账，则必须引用对应 `Transaction`；不得在事件层再次形成独立 ledger posting。
 
 ## 4. FX 口径
@@ -613,16 +650,16 @@ GIPS-informed 规则：
 - MWR / IRR 是补充资金效率指标，不得在 UI 或 API summary 中替代 TWR；
 - 若 IRR 因现金流符号、同日窗口或数学求根原因不可得，不能据此把已完整计算的 TWR 结果标记为失败。
 
-Overview 展示 `Monthly Return Matrix`，按 year x month 展示月度 TWR，YTD 为可用月份的复合收益。
+Overview 展示 `Monthly Return Matrix`，按 year x month 展示月度 TWR。完整 YTD 必须从上年 `12-31` EOD anchor 开始链接；若缺少该锚点，不得只把年内可用月份复合后冒充完整 YTD。
 
-Overview 的组合收益、benchmark 对比、1M / 3M VOL 和 drawdown 使用组合 fresh complete as-of 作为窗口终点。若组合最新物化日期中只有部分持仓资产更新，Overview 不得使用该日期计算组合层 return / risk；例如组合 fresh complete as-of 为 `2026-05-20` 时，`1W Return` 的 TWR 使用 `2026-05-13` EOD 到 `2026-05-20` EOD 的端点口径，几何链接 `2026-05-14` 至 `2026-05-20` 的 daily returns。单资产 holdings trend metrics 仍使用标的自身 selected quote series 的最后行情日。
+Overview 的组合收益、benchmark 对比、1M / 3M VOL 和 drawdown 使用组合 fresh complete as-of 作为窗口终点。若组合最新物化日期中只有部分持仓资产更新，Overview 不得使用该日期计算组合层 return / risk；例如组合 fresh complete as-of 为 `2026-05-20` 时，`1W Return` 的 TWR 使用 `2026-05-13` EOD 到 `2026-05-20` EOD 的端点口径，几何链接 `2026-05-14` 至 `2026-05-20` 的 daily returns。单资产 Holdings Return / Volatility / Drawdown 使用其 confirmed total-return series，窗口仍由请求的 Holdings `as_of_date` 锚定，实际终点取不晚于该日期的最新有效点；Chart 可以沿用策略允许且明确标注 semantics 的展示序列。
 
 Performance 页面使用用户选择的区间作为唯一窗口。UI 的主要结构为：
 
 - `Return & Risk Metrics`：组合级 TWR / annualized TWR、IRR / MWR、risk、drawdown。return / risk 类指标可选择 benchmark price series 做 period return、annualized return、volatility、drawdown 的轻量对比；
 - `Calculation`：合并 realized risk attribution、initial value、group rows、external flow、portfolio total 与 final value。表格有和 Holdings 一致的 view selector；系统默认视图命名为 `Default`，展示区间期初权重、平均权重、期末权重、区间收益、收益贡献、标的自身风险、相关性和风险贡献；`Beta to Portfolio` 保留为高级可选列，不进入默认视图。Group By 默认是 `None`，语义是直接展示 instrument lines，不做额外分组；也可按 instrument type / currency / account / default planning taxonomy 聚合。instrument type 与 currency 是底层 contribution axis，不允许仅在前端把 instrument rows 相加；taxonomy 聚合用于期间复盘时优先使用区间期末 assignment 并保留 cash 独立组，不把 reclassification residual 当成真实 P&L；若 instrument 期末已清仓且期末不再有 active assignment，则使用其区间内有效 assignment 承接历史 P&L，不归入 Unassigned。`TWR` 来自对应 group 的 daily return slices；`Contribution` 来自 daily contribution 聚合。表格采用 `Initial Value + Deposits - Withdrawals + Period P&L = Final Value` 的桥接口径。
 - Performance group daily return 使用组内 `total_pnl / (beginning_value + period capital flow in)`；直接 axis、taxonomy regroup 与 calculation detail 聚合必须沿用同一分母，不能在聚合后退化成只除以 beginning value。
-- Calculation 底层的 `Capital Gain` 使用期间绩效成本，而不是账户 book cost；它是 reconciliation 派生值，不作为默认表格列展示。期初已有持仓按 start date 的 beginning market value 重置为期间成本，区间内买入按成交 gross amount 建立期间成本，期末未卖出的持仓用 end date market value 计算 `Unrealized Gain`。
+- Calculation 底层的 `Capital Gain` 使用期间绩效成本，而不是账户 book cost；它是 reconciliation 派生值，不作为默认表格列展示。显式区间的期初已有持仓按 `start_date` EOD market value 重置为期间成本，只重放 `(start_date, end_date]` 内交易；期末未卖出的持仓用 `end_date` EOD market value 计算 `Unrealized Gain`。
 - `Capital Gain = Realized Gain + Unrealized Gain`；`Realized Gain` 是期间卖出部分相对于期间成本的资本利得，`Unrealized Gain` 是期末仍持有部分相对于期间成本的资本利得。FIFO / moving average 只影响 Holdings / book P&L，不改变 Performance Calculation 的期间资本利得拆分。
 - `Income` 只包含 dividend / coupon / interest / dividend reinvestment 收益确认，不包含 realized capital gain。fees、taxes、FX P&L 分列。P&L 与 book attribution 不和 benchmark 对比。
 - Performance 中的区间风险贡献是 realized attribution，不另设 Risk tab。对每个 group，`Vol / Sharpe` 使用 group 自身 daily return；`Corr to Portfolio` 使用 group daily return 与 portfolio daily TWR，且 portfolio 包含该 group；`Beta to Portfolio = Cov(R_g, R_p) / Var(R_p)` 保留为高级可选列；`Realized RC` 使用 `Cov(Contribution_g, R_p) / Var(R_p)`，衡量该 group 的 contribution 路径对组合已实现方差的协方差占比。顶层 group 的 `Realized RC` 应加总为 100%，分散化 group 可以为负值。行级 `Obs` 表示该 group 自身 return 与 portfolio 对齐后用于 Vol / Sharpe / Corr / Beta 的 observation count，不得用 portfolio 的公共 observation count 填充 cash 等无自身收益样本的行。少于 12 个对齐 period 的 Corr / Realized RC 可以计算，但 UI 必须明确标记为 low-sample preliminary estimate。这些指标服务区间复盘，不使用 Risk 页的 point-in-time covariance lookback。
@@ -649,8 +686,12 @@ $$
 - 外部流入放在分母，视作在当日开始投入；
 - 外部流出加回分子，视作在当日结束取出；
 - 这样可以把 external flows 从业绩中中性化。
+- buy / sell 是组合内部的现金与证券转换，不进入 `CF_in / CF_out`。头寸按实际 `quantity` 和 `gross_amount` 入账，未结算款进入 pending settlement；日末用收盘 fair value 估值，所以区间中买入的 `EOD market value - actual trade cost - attached charges` 只进入当日经济 P&L 一次。不得用收盘价反推成交成本，也不得在 NAV 已扣现金后再次从 TWR 分子减买入金额。
+- 除 funded-segment start 外，显式 `start_date` 当日的 buy / sell 已包含在 start-date EOD anchor；若需要观察该笔成交到当日收盘的收益，应把查询起点设为前一 EOD boundary。中途新增 instrument 不是新的组合 inception；组合保留现金也不是 segment restart。
+- deposit / withdrawal 的绩效生效日使用显式 `external_flow_date`，否则使用 settlement date，再否则使用 trade date。内部证券交易仍使用 trade-date 经济确认，并通过 pending settlement 保持 NAV 连续。
+- 当前 daily engine 对外部流采用确定性的 BOD contribution / EOD withdrawal convention。`trade_at` 只控制同日事实顺序，不能替代盘中组合估值；若盘中大额外部流需要精确 TWR，必须在流发生前后保存完整组合估值并几何链接子期间，不能用交易时间或单只证券成交价臆造 intraday NAV。
 - 当前 daily snapshot engine 对每个 `as_of_date` 估值，因此外部现金流发生日天然有估值；若未来支持非日频估值，必须引入 large cash flow policy 与子期间收益几何链接，不能静默改用近似 MWR 方法。
-- 对显式区间 `2026-04-01` 到 `2026-04-20`，`initial value` 是 `2026-04-01` 的 `MVB / beginning_nav`，即 `2026-03-31` EOD；`final value` 是 `2026-04-20` 的 `MVE / ending_nav`。区间 TWR 几何链接 `2026-04-01` 至 `2026-04-20` 的 daily returns。
+- 对显式区间 `2026-04-01` 到 `2026-04-20`，`initial value` 是 `2026-04-01` 的 `MVE / ending_nav`，`final value` 是 `2026-04-20` 的 `MVE / ending_nav`。区间 TWR 几何链接 `2026-04-02` 至 `2026-04-20` 的 daily returns；`2026-04-01` 当日交易和收益已进入期初状态。
 
 ### 5.3 Cumulative TWR
 
@@ -666,7 +707,7 @@ $$
 
 ### 5.4 Annualized TWR
 
-若区间长度为 `Y` 年（按 `ACT/365.25` 计算）：
+若区间长度为 `Y` 年（按 calendar-anniversary Actual/Actual 计算）：
 
 $$
 R_{ann} = (1 + R_{cum})^{1/Y} - 1
@@ -745,9 +786,9 @@ $$
 
 `RealizedCapitalGain` 和 `UnrealizedCapitalGain` 在 Performance Calculation 中使用期间绩效成本：
 
-- 期初已有持仓按期初市值重置为期间成本；
-- 区间买入按成交 gross amount 建立期间成本；
-- 区间卖出释放对应期间成本并形成 `RealizedCapitalGain`；
+- 期初已有持仓按 `start_date` EOD 市值重置为期间成本；
+- `(start_date, end_date]` 内买入按成交 gross amount 建立期间成本；
+- `(start_date, end_date]` 内卖出释放对应期间成本并形成 `RealizedCapitalGain`；
 - 期末仍持有的剩余数量形成 `UnrealizedCapitalGain`；
 - 已在期末完全卖出的资产没有剩余 period lot，因此 `UnrealizedCapitalGain = 0`。
 

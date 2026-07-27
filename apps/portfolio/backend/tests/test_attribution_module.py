@@ -5,7 +5,7 @@ from datetime import date
 
 import pytest
 
-from portfolio_app.services import attribution, performance
+from portfolio_app.services import attribution, performance, period_metrics
 
 
 def _complete_slice(
@@ -323,6 +323,66 @@ def test_contribution_report_core_and_filter_golden_contract() -> None:
     assert unfiltered["lines"]
 
 
+def test_average_group_weights_zero_fill_dates_when_group_is_absent() -> None:
+    snapshots = [
+        {
+            "as_of_date": as_of_date,
+            "beginning_nav": 100.0,
+            "ending_nav": 100.0,
+            "daily_twr": 0.0,
+            "return_observation_eligible": True,
+            "market_observation_count": 1,
+            "coverage_state": "complete",
+        }
+        for as_of_date in ("2026-01-02", "2026-01-03")
+    ]
+    slices = [
+        _complete_slice(
+            as_of_date=date(2026, 1, 2),
+            group_key="asset-a",
+            group_label="Asset A",
+            beginning_value=60.0,
+            ending_value=60.0,
+            pnl=0.0,
+            contribution=0.0,
+        ),
+        _complete_slice(
+            as_of_date=date(2026, 1, 2),
+            group_key="asset-b",
+            group_label="Asset B",
+            beginning_value=40.0,
+            ending_value=40.0,
+            pnl=0.0,
+            contribution=0.0,
+        ),
+        _complete_slice(
+            as_of_date=date(2026, 1, 3),
+            group_key="asset-b",
+            group_label="Asset B",
+            beginning_value=100.0,
+            ending_value=100.0,
+            pnl=0.0,
+            contribution=0.0,
+        ),
+    ]
+    report = attribution.build_contribution_report_from_daily_slices_core(
+        portfolio_id="average-weight-test",
+        base_currency="USD",
+        valuation_timezone="Asia/Shanghai",
+        valuation_cutoff_policy="latest_complete_eod",
+        snapshots=snapshots,
+        daily_slices=slices,
+    )
+    lines = {
+        str(line["group_key"]): line for line in list(report.get("lines") or [])
+    }
+    assert lines["asset-a"]["average_weight"] == pytest.approx(0.30)
+    assert lines["asset-b"]["average_weight"] == pytest.approx(0.70)
+    assert sum(float(line["average_weight"]) for line in lines.values()) == (
+        pytest.approx(1.0)
+    )
+
+
 def test_detail_merge_and_period_returns_golden_contract() -> None:
     first = _complete_slice(
         as_of_date=date(2026, 1, 2),
@@ -354,6 +414,34 @@ def test_detail_merge_and_period_returns_golden_contract() -> None:
     ]
     extracted_returns = attribution.period_returns_by_group(return_slices)
     assert extracted_returns == {"asset-1": pytest.approx(0.045)}
+
+
+def test_period_group_return_fails_closed_on_active_incomplete_row() -> None:
+    contracts = attribution.period_return_contracts_by_group(
+        [
+            {
+                "group_key": "asset-1",
+                "coverage_state": "complete",
+                "beginning_value_base": 100.0,
+                "ending_value_base": 110.0,
+                "capital_flow_in_base": 0.0,
+                "capital_flow_out_base": 0.0,
+                "daily_return": 0.10,
+            },
+            {
+                "group_key": "asset-1",
+                "coverage_state": "partial",
+                "beginning_value_base": 110.0,
+                "ending_value_base": None,
+                "capital_flow_in_base": 0.0,
+                "capital_flow_out_base": 0.0,
+                "daily_return": None,
+            },
+        ]
+    )
+    assert contracts["asset-1"]["period_return"] is None
+    assert contracts["asset-1"]["coverage_state"] == "partial"
+    assert contracts["asset-1"]["observation_count"] == 1
 
 
 @pytest.mark.parametrize("calculation_frequency", ["daily", "weekly"])
@@ -445,6 +533,71 @@ def test_realized_risk_attribution_does_not_report_portfolio_observations_for_ca
     assert metrics["cash"]["realized_risk_contribution"] == pytest.approx(0.0)
 
 
+def test_group_risk_annualization_uses_each_groups_actual_exposure_span() -> None:
+    portfolio_daily_series = [
+        {
+            "as_of_date": as_of_date,
+            "daily_twr": daily_return,
+            "return_observation_eligible": True,
+        }
+        for as_of_date, daily_return in (
+            (date(2026, 1, 5), 0.01),
+            (date(2026, 1, 9), -0.01),
+            (date(2026, 1, 10), 0.02),
+        )
+    ]
+    daily_slices: list[dict[str, object]] = []
+    for as_of_date in [
+        date(2026, 1, day) for day in range(2, 11)
+    ]:
+        eligible = as_of_date in {date(2026, 1, 5), date(2026, 1, 10)}
+        daily_slices.append(
+            {
+                "as_of_date": as_of_date,
+                "group_key": "full-window-asset",
+                "beginning_value_base": 100.0,
+                "ending_value_base": 100.0,
+                "capital_flow_in_base": 0.0,
+                "capital_flow_out_base": 0.0,
+                "daily_return": 0.01 if eligible else 0.0,
+                "daily_contribution": 0.005 if eligible else 0.0,
+                "return_observation_eligible": eligible,
+            }
+        )
+    for as_of_date in [
+        date(2026, 1, day) for day in range(8, 11)
+    ]:
+        eligible = as_of_date in {date(2026, 1, 9), date(2026, 1, 10)}
+        daily_slices.append(
+            {
+                "as_of_date": as_of_date,
+                "group_key": "late-entry-asset",
+                "beginning_value_base": 50.0,
+                "ending_value_base": 50.0,
+                "capital_flow_in_base": 0.0,
+                "capital_flow_out_base": 0.0,
+                "daily_return": 0.01 if eligible else 0.0,
+                "daily_contribution": 0.005 if eligible else 0.0,
+                "return_observation_eligible": eligible,
+            }
+        )
+
+    metrics = attribution.realized_risk_attribution_by_group(
+        daily_slices,
+        portfolio_daily_series,
+        calculation_frequency="daily",
+        start_date=date(2026, 1, 1),
+        final_date=date(2026, 1, 10),
+    )
+
+    assert metrics["full-window-asset"][
+        "risk_annualization_periods_per_year"
+    ] == pytest.approx(2 / 9 * period_metrics.DAYS_PER_YEAR)
+    assert metrics["late-entry-asset"][
+        "risk_annualization_periods_per_year"
+    ] == pytest.approx(2 / 3 * period_metrics.DAYS_PER_YEAR)
+
+
 def test_performance_orchestrator_keeps_portfolio_metadata_boundary(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -485,4 +638,5 @@ def test_performance_orchestrator_keeps_portfolio_metadata_boundary(
         "end_date": date(2026, 1, 2),
         "axis": "account",
         "group_key": "broker-1",
+        "start_is_close_boundary": False,
     }

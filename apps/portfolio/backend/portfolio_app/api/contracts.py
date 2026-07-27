@@ -1039,6 +1039,11 @@ class PeriodCalculationLine(BaseModel):
 class PeriodCalculationSummary(BaseModel):
     start_date: date | None = None
     end_date: date | None = None
+    requested_start_date: date | None = None
+    requested_end_date: date | None = None
+    effective_start_date: date | None = None
+    effective_end_date: date | None = None
+    as_of_clamp_reason: str | None = None
     coverage_state: CoverageState
     stale_price_flag: bool = False
     stale_fx_flag: bool = False
@@ -2354,6 +2359,7 @@ class ContributionEntryRecord(BaseModel):
     transaction_type: str
     trade_date: date | None = None
     settlement_date: date | None = None
+    effective_date: date | None = None
     group_key: str
     group_label: str
     account_id: str | None = None
@@ -2473,6 +2479,7 @@ class PeriodCalculationGroupChildRecord(BaseModel):
     average_weight: float | None = None
     ending_weight: float | None = None
     period_return: float | None = None
+    period_return_coverage_state: CoverageState = "unavailable"
     initial_value: float | None = None
     final_value: float | None = None
     delta: float | None = None
@@ -2508,6 +2515,7 @@ class PeriodCalculationGroupRecord(BaseModel):
     average_weight: float | None = None
     ending_weight: float | None = None
     period_return: float | None = None
+    period_return_coverage_state: CoverageState = "unavailable"
     initial_value: float | None = None
     final_value: float | None = None
     delta: float | None = None
@@ -2552,6 +2560,9 @@ class PeriodCalculationGroupsSummary(BaseModel):
     contribution_residual: float | None = None
     risk_calculation_frequency: PortfolioCalculationFrequency
     risk_frequency_status_label: str | None
+    risk_basis_coverage_state: CoverageState = "unavailable"
+    risk_basis_requested_instrument_count: int = 0
+    risk_basis_resolved_instrument_count: int = 0
     risk_return_observation_count: int
     risk_annualization_periods_per_year: float | None
     annualized_volatility: float | None
@@ -2670,6 +2681,7 @@ class PeriodCalculationEntryRecord(BaseModel):
     transaction_type: str
     trade_date: date | None = None
     settlement_date: date | None = None
+    effective_date: date | None = None
     group_key: str
     group_label: str
     account_id: str | None = None

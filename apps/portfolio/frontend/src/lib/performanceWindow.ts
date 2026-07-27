@@ -45,14 +45,20 @@ export function performancePresetStartDate(
     return ''
   }
   if (preset === 'mtd') {
-    return `${year}-${String(month).padStart(2, '0')}-01`
+    return shiftIsoDate(
+      `${year}-${String(month).padStart(2, '0')}-01`,
+      -1,
+    )
   }
   if (preset === 'qtd') {
     const quarterStartMonth = Math.floor((month - 1) / 3) * 3 + 1
-    return `${year}-${String(quarterStartMonth).padStart(2, '0')}-01`
+    return shiftIsoDate(
+      `${year}-${String(quarterStartMonth).padStart(2, '0')}-01`,
+      -1,
+    )
   }
   if (preset === 'ytd') {
-    return `${year}-01-01`
+    return `${year - 1}-12-31`
   }
   const previousYear = year - 1
   const finalDayOfTargetMonth = new Date(previousYear, month, 0).getDate()
@@ -107,7 +113,7 @@ export function resolvePerformanceWindow({
     appliedEndDate || validIsoDate(portfolioAsOfDate) || validIsoDate(todayDate)
   const defaultStartDate = shiftIsoDate(
     effectiveEndDate,
-    -(defaultLookbackDays - 1),
+    -defaultLookbackDays,
   )
   const effectiveStartDate = appliedSinceInception
     ? ''

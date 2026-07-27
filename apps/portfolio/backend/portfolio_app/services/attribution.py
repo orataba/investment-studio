@@ -12,6 +12,7 @@ from collections import defaultdict
 from copy import deepcopy
 from datetime import date, timedelta
 from math import isfinite, prod, sqrt
+from typing import cast
 
 from portfolio_app.services import period_metrics, valuation_fx
 from portfolio_app.services.calculation_frequency import CalculationFrequency, period_end_date
@@ -78,6 +79,26 @@ def _safe_float(value: object) -> float | None:
         return None
 
 
+def _period_initial_slice_value(
+    daily_slice: dict[str, object],
+    *,
+    value_field: str,
+    anchor_value_field: str,
+) -> object:
+    """Select the economically valid start boundary for a period slice.
+
+    Explicit close-to-close starts and imported opening rows are EOD valuation
+    anchors, not return subperiods. Their ending value/weight is therefore the
+    period's opening boundary. Every normal row starts at its BOD value/weight.
+    """
+
+    return daily_slice.get(
+        anchor_value_field
+        if bool(daily_slice.get("_is_initial_valuation_anchor"))
+        else value_field
+    )
+
+
 def _parse_iso_date(value: object) -> date | None:
     if isinstance(value, date):
         return value
@@ -97,6 +118,73 @@ def _iter_dates(start_date: date, end_date: date) -> list[date]:
         return []
     span = (end_date - start_date).days
     return [start_date + timedelta(days=offset) for offset in range(span + 1)]
+
+
+def _snapshot_as_close_boundary(
+    snapshot: dict[str, object],
+) -> dict[str, object]:
+    boundary = dict(snapshot)
+    ending_nav = _safe_float(snapshot.get("ending_nav"))
+    if ending_nav is None:
+        ending_nav = _safe_float(snapshot.get("nav"))
+    boundary["_is_initial_valuation_anchor"] = True
+    boundary["_is_period_start_close_anchor"] = True
+    boundary["beginning_nav"] = ending_nav
+    boundary["ending_nav"] = ending_nav
+    boundary["nav"] = ending_nav
+    boundary["external_cash_in"] = 0.0
+    boundary["external_cash_out"] = 0.0
+    boundary["net_external_inflow"] = 0.0
+    boundary["absolute_change"] = 0.0 if ending_nav is not None else None
+    boundary["delta"] = 0.0 if ending_nav is not None else None
+    boundary["daily_twr"] = None
+    boundary["return_observation_eligible"] = False
+    boundary["return_chain_continuous"] = ending_nav is not None
+    return boundary
+
+
+def _slice_as_close_boundary(
+    daily_slice: dict[str, object],
+) -> dict[str, object]:
+    boundary = dict(daily_slice)
+    boundary["_is_initial_valuation_anchor"] = True
+    boundary["_is_period_start_close_anchor"] = True
+    boundary["beginning_value_base"] = daily_slice.get("ending_value_base")
+    boundary["beginning_weight"] = daily_slice.get("ending_weight")
+    boundary["daily_return"] = None
+    boundary["return_observation_eligible"] = False
+    for field_name in (
+        "realized_pnl",
+        "unrealized_pnl_change",
+        "income_cash_amount",
+        "expense_cash_amount",
+        "fee_amount",
+        "tax_amount",
+        "cash_currency_gains",
+        "pending_settlement_currency_gains",
+        "instrument_currency_gains",
+        GROUP_CAPITAL_FLOW_IN_FIELD,
+        GROUP_CAPITAL_FLOW_OUT_FIELD,
+        "total_pnl",
+    ):
+        boundary[field_name] = 0.0
+    if (
+        axis_includes_cash_balance(str(daily_slice.get("axis") or ""))
+        and _safe_float(
+            daily_slice.get("pending_settlement_currency_gains")
+        )
+        is None
+    ):
+        # A close boundary removes the start day's known additive movement,
+        # but it must not turn an unknown monetary-FX component into a proven
+        # zero.  The line accumulator uses this missing component to keep the
+        # dependent total P&L and contribution decomposition fail-closed.
+        boundary["pending_settlement_currency_gains"] = None
+    # The start close is a valuation state, not a return/contribution
+    # observation.  Keep additive bridge fields at zero, while preserving the
+    # distinction between "zero contribution" and "no subperiod".
+    boundary["daily_contribution"] = None
+    return boundary
 
 
 def calculation_detail_axis(axis: str) -> str:
@@ -579,6 +667,7 @@ def group_contribution_slices_by_taxonomy(
                 "group_label": taxonomy_group_label,
                 "coverage_state": "complete",
                 "market_observation_count": 0,
+                "_is_initial_valuation_anchor": False,
                 "beginning_value_base": 0.0,
                 "ending_value_base": 0.0,
                 "beginning_weight": 0.0,
@@ -610,6 +699,10 @@ def group_contribution_slices_by_taxonomy(
         grouped_slice["market_observation_count"] = (
             int(grouped_slice.get("market_observation_count") or 0)
             + int(base_slice.get("market_observation_count") or 0)
+        )
+        grouped_slice["_is_initial_valuation_anchor"] = bool(
+            grouped_slice.get("_is_initial_valuation_anchor")
+            or base_slice.get("_is_initial_valuation_anchor")
         )
 
         for field_name in (
@@ -967,6 +1060,7 @@ def build_contribution_report_from_daily_slices_core(
     end_date: date | None = None,
     axis: str = "instrument",
     group_key: str | None = None,
+    start_is_close_boundary: bool = False,
 ) -> dict[str, object]:
     normalized_snapshots: list[dict[str, object]] = []
     for snapshot in snapshots:
@@ -1023,6 +1117,46 @@ def build_contribution_report_from_daily_slices_core(
             "_portfolio_daily_series": [],
         }
 
+    start_snapshot = next(
+        (
+            snapshot
+            for snapshot in normalized_snapshots
+            if snapshot.get("as_of_date") == resolved_start_date
+        ),
+        None,
+    )
+    starts_on_valuation_anchor = bool(
+        start_is_close_boundary
+        or any(
+            daily_slice.get("as_of_date") == resolved_start_date
+            and bool(daily_slice.get("_is_initial_valuation_anchor"))
+            for daily_slice in normalized_slices
+        )
+        or (
+            start_snapshot is not None
+            and _safe_float(start_snapshot.get("nav")) is not None
+            and _safe_float(start_snapshot.get("daily_twr")) is None
+            and bool(start_snapshot.get("return_chain_continuous"))
+        )
+    )
+    if starts_on_valuation_anchor:
+        normalized_snapshots = [
+            (
+                _snapshot_as_close_boundary(snapshot)
+                if snapshot.get("as_of_date") == resolved_start_date
+                else snapshot
+            )
+            for snapshot in normalized_snapshots
+        ]
+        normalized_slices = [
+            (
+                _slice_as_close_boundary(daily_slice)
+                if daily_slice.get("as_of_date") == resolved_start_date
+                else daily_slice
+            )
+            for daily_slice in normalized_slices
+        ]
+
     snapshots_by_date = {
         snapshot["as_of_date"]: snapshot
         for snapshot in normalized_snapshots
@@ -1034,6 +1168,23 @@ def build_contribution_report_from_daily_slices_core(
         if isinstance(daily_slice.get("as_of_date"), date)
         and resolved_start_date <= daily_slice["as_of_date"] <= resolved_end_date
     ]
+    weight_observation_dates = {
+        cast(date, daily_slice["as_of_date"])
+        for daily_slice in in_period_slices
+        if isinstance(daily_slice.get("as_of_date"), date)
+        and not bool(daily_slice.get("_is_initial_valuation_anchor"))
+        and _safe_float(daily_slice.get("beginning_weight")) is not None
+    }
+    weight_observation_count = len(weight_observation_dates)
+    first_period_slices = [
+        daily_slice
+        for daily_slice in in_period_slices
+        if daily_slice.get("as_of_date") == resolved_start_date
+    ]
+    starts_on_initial_valuation_anchor = any(
+        bool(daily_slice.get("_is_initial_valuation_anchor"))
+        for daily_slice in first_period_slices
+    )
 
     contribution_growth_index = 1.0
     has_return_observation = False
@@ -1061,11 +1212,18 @@ def build_contribution_report_from_daily_slices_core(
                 "axis": axis,
                 "group_key": line_group_key,
                 "group_label": str(daily_slice.get("group_label") or line_group_key),
-                "start_value_base": daily_slice.get("beginning_value_base"),
+                "start_value_base": _period_initial_slice_value(
+                    daily_slice,
+                    value_field="beginning_value_base",
+                    anchor_value_field="ending_value_base",
+                ),
                 "end_value_base": daily_slice.get("ending_value_base"),
-                "beginning_weight": daily_slice.get("beginning_weight"),
+                "beginning_weight": _period_initial_slice_value(
+                    daily_slice,
+                    value_field="beginning_weight",
+                    anchor_value_field="ending_weight",
+                ),
                 "average_weight": 0.0,
-                "_weight_count": 0,
                 "ending_weight": daily_slice.get("ending_weight"),
                 "realized_pnl": 0.0,
                 "unrealized_pnl_change": 0.0,
@@ -1084,20 +1242,28 @@ def build_contribution_report_from_daily_slices_core(
             line_group_key not in line_first_slice_dates
             or as_of_date < line_first_slice_dates[line_group_key]
         ):
-            accumulator["start_value_base"] = daily_slice.get("beginning_value_base")
-            accumulator["beginning_weight"] = daily_slice.get("beginning_weight")
+            accumulator["start_value_base"] = _period_initial_slice_value(
+                daily_slice,
+                value_field="beginning_value_base",
+                anchor_value_field="ending_value_base",
+            )
+            accumulator["beginning_weight"] = _period_initial_slice_value(
+                daily_slice,
+                value_field="beginning_weight",
+                anchor_value_field="ending_weight",
+            )
             line_first_slice_dates[line_group_key] = as_of_date
         accumulator["end_value_base"] = daily_slice.get("ending_value_base")
         accumulator["ending_weight"] = daily_slice.get("ending_weight")
         beginning_weight = _safe_float(daily_slice.get("beginning_weight"))
-        if beginning_weight is not None:
+        if (
+            beginning_weight is not None
+            and not bool(daily_slice.get("_is_initial_valuation_anchor"))
+        ):
             accumulator["average_weight"] = (
                 (_safe_float(accumulator.get("average_weight")) or 0.0)
                 + beginning_weight
             )
-            accumulator["_weight_count"] = int(
-                accumulator.get("_weight_count") or 0
-            ) + 1
         for field_name in (
             "realized_pnl",
             "unrealized_pnl_change",
@@ -1131,10 +1297,11 @@ def build_contribution_report_from_daily_slices_core(
 
     lines: list[dict[str, object]] = []
     for accumulator in line_accumulators.values():
-        weight_count = int(accumulator.pop("_weight_count", 0))
         average_weight_total = _safe_float(accumulator.get("average_weight")) or 0.0
         accumulator["average_weight"] = (
-            average_weight_total / weight_count if weight_count > 0 else None
+            average_weight_total / weight_observation_count
+            if weight_observation_count > 0
+            else None
         )
         lines.append(accumulator)
     lines.sort(
@@ -1173,7 +1340,12 @@ def build_contribution_report_from_daily_slices_core(
         ):
             coverage_state = "partial"
         if any(
-            str(item.get("coverage_state") or "unavailable") != "complete"
+            (
+                _safe_float(item.get("ending_value_base")) is None
+                if bool(item.get("_is_initial_valuation_anchor"))
+                else str(item.get("coverage_state") or "unavailable")
+                != "complete"
+            )
             for item in in_period_slices
         ):
             coverage_state = "partial"
@@ -1181,9 +1353,21 @@ def build_contribution_report_from_daily_slices_core(
     total_period_contribution = sum(
         (_safe_float(line.get("period_contribution")) or 0.0) for line in lines
     )
-    portfolio_arithmetic_return = arithmetic_return if observation_count > 0 else None
+    zero_length_close_interval = bool(
+        starts_on_initial_valuation_anchor
+        and resolved_start_date == resolved_end_date
+        and in_period_snapshots
+        and coverage_state == "complete"
+    )
+    portfolio_arithmetic_return = (
+        arithmetic_return
+        if observation_count > 0
+        else (0.0 if zero_length_close_interval else None)
+    )
     portfolio_cumulative_twr = (
-        contribution_growth_index - 1.0 if has_return_observation else None
+        contribution_growth_index - 1.0
+        if has_return_observation
+        else (0.0 if zero_length_close_interval else None)
     )
     contribution_residual = (
         portfolio_arithmetic_return - total_period_contribution
@@ -1208,7 +1392,11 @@ def build_contribution_report_from_daily_slices_core(
             "observation_count": observation_count,
             "start_nav": _safe_float(
                 (in_period_snapshots[0] if in_period_snapshots else {}).get(
-                    "beginning_nav"
+                    (
+                        "ending_nav"
+                        if starts_on_initial_valuation_anchor
+                        else "beginning_nav"
+                    )
                 )
             ),
             "end_nav": _safe_float(
@@ -1254,6 +1442,9 @@ def merge_calculation_detail_daily_slices(
                 "return_observation_eligible": bool(
                     daily_slice.get("return_observation_eligible")
                 ),
+                "_is_initial_valuation_anchor": bool(
+                    daily_slice.get("_is_initial_valuation_anchor")
+                ),
                 "daily_return": None,
                 **{
                     field_name: 0.0
@@ -1267,6 +1458,10 @@ def merge_calculation_detail_daily_slices(
         grouped_slice["market_observation_count"] = max(
             int(grouped_slice.get("market_observation_count") or 0),
             int(daily_slice.get("market_observation_count") or 0),
+        )
+        grouped_slice["_is_initial_valuation_anchor"] = bool(
+            grouped_slice.get("_is_initial_valuation_anchor")
+            or daily_slice.get("_is_initial_valuation_anchor")
         )
         for field_name in _CALCULATION_DETAIL_ADDITIVE_SLICE_FIELDS:
             value = _safe_float(daily_slice.get(field_name))
@@ -1514,11 +1709,74 @@ def bucketed_realized_contribution_matrix(
     return bucket_dates, portfolio_bucket_returns, group_bucket_contributions
 
 
+def _daily_slice_has_risk_exposure(daily_slice: dict[str, object]) -> bool:
+    return any(
+        value is not None and abs(value) > 1e-12
+        for value in (
+            _safe_float(daily_slice.get("beginning_value_base")),
+            _safe_float(daily_slice.get("ending_value_base")),
+            _safe_float(daily_slice.get(GROUP_CAPITAL_FLOW_IN_FIELD)),
+            _safe_float(daily_slice.get(GROUP_CAPITAL_FLOW_OUT_FIELD)),
+        )
+    )
+
+
+def _group_risk_elapsed_boundaries(
+    daily_slices: list[dict[str, object]],
+    *,
+    portfolio_start_boundary_date: date | None,
+    portfolio_end_date: date | None,
+) -> dict[str, tuple[date, date]]:
+    """Return exposure-specific EOD boundaries for group risk annualization."""
+
+    rows_by_group: dict[str, list[tuple[date, dict[str, object]]]] = defaultdict(
+        list
+    )
+    for daily_slice in daily_slices:
+        group_key = str(daily_slice.get("group_key") or "")
+        slice_date = _parse_iso_date(daily_slice.get("as_of_date"))
+        if (
+            not group_key
+            or slice_date is None
+            or not _daily_slice_has_risk_exposure(daily_slice)
+        ):
+            continue
+        rows_by_group[group_key].append((slice_date, daily_slice))
+
+    boundaries: dict[str, tuple[date, date]] = {}
+    for group_key, dated_rows in rows_by_group.items():
+        dated_rows.sort(key=lambda item: item[0])
+        first_date, first_row = dated_rows[0]
+        last_date = dated_rows[-1][0]
+        group_start_boundary = (
+            first_date
+            if bool(first_row.get("_is_initial_valuation_anchor"))
+            else first_date - timedelta(days=1)
+        )
+        if (
+            portfolio_start_boundary_date is not None
+            and group_start_boundary < portfolio_start_boundary_date
+        ):
+            group_start_boundary = portfolio_start_boundary_date
+        group_end_boundary = (
+            min(last_date, portfolio_end_date)
+            if portfolio_end_date is not None
+            else last_date
+        )
+        if group_end_boundary > group_start_boundary:
+            boundaries[group_key] = (
+                group_start_boundary,
+                group_end_boundary,
+            )
+    return boundaries
+
+
 def realized_risk_attribution_by_group(
     daily_slices: list[dict[str, object]],
     portfolio_daily_series: list[dict[str, object]],
     *,
     calculation_frequency: CalculationFrequency,
+    start_date: date | None = None,
     final_date: date | None,
 ) -> dict[str, dict[str, object]]:
     portfolio_returns = bucketed_portfolio_returns(
@@ -1530,6 +1788,11 @@ def realized_risk_attribution_by_group(
         daily_slices,
         calculation_frequency=calculation_frequency,
         final_date=final_date,
+    )
+    elapsed_boundaries_by_group = _group_risk_elapsed_boundaries(
+        daily_slices,
+        portfolio_start_boundary_date=start_date,
+        portfolio_end_date=final_date,
     )
     risk_by_group: dict[str, dict[str, object]] = {}
     for group_key, buckets in grouped_inputs.items():
@@ -1547,9 +1810,18 @@ def realized_risk_attribution_by_group(
 
         own_dates = sorted(own_returns_by_date)
         own_values = [own_returns_by_date[item] for item in own_dates]
-        periods_per_year = period_metrics.annualization_periods_per_year_from_dates(
-            own_dates,
-            observation_count=len(own_values),
+        group_elapsed_boundaries = elapsed_boundaries_by_group.get(group_key)
+        periods_per_year = (
+            period_metrics.periods_per_year_from_observations(
+                observation_count=len(own_values),
+                start_date=group_elapsed_boundaries[0],
+                end_date=group_elapsed_boundaries[1],
+            )
+            if group_elapsed_boundaries is not None
+            else period_metrics.annualization_periods_per_year_from_dates(
+                own_dates,
+                observation_count=len(own_values),
+            )
         )
         volatility = period_metrics.sample_stddev(own_values)
         annualized_volatility = (
@@ -1637,6 +1909,7 @@ def portfolio_realized_risk_summary(
     portfolio_daily_series: list[dict[str, object]],
     *,
     calculation_frequency: CalculationFrequency,
+    start_date: date | None = None,
     final_date: date | None,
 ) -> dict[str, object]:
     portfolio_returns_by_date = bucketed_portfolio_returns(
@@ -1646,9 +1919,17 @@ def portfolio_realized_risk_summary(
     )
     return_dates = sorted(portfolio_returns_by_date)
     returns = [portfolio_returns_by_date[item] for item in return_dates]
-    periods_per_year = period_metrics.annualization_periods_per_year_from_dates(
-        return_dates,
-        observation_count=len(returns),
+    periods_per_year = (
+        period_metrics.periods_per_year_from_observations(
+            observation_count=len(returns),
+            start_date=start_date,
+            end_date=final_date,
+        )
+        if start_date is not None and final_date is not None
+        else period_metrics.annualization_periods_per_year_from_dates(
+            return_dates,
+            observation_count=len(returns),
+        )
     )
     volatility = period_metrics.sample_stddev(returns)
     annualized_volatility = (
@@ -1678,17 +1959,86 @@ def portfolio_realized_risk_summary(
     }
 
 
+def period_return_contracts_by_group(
+    daily_slices: list[dict[str, object]],
+) -> dict[str, dict[str, object]]:
+    rows_by_group: dict[str, list[dict[str, object]]] = defaultdict(list)
+    for daily_slice in daily_slices:
+        group_key = str(daily_slice.get("group_key") or "")
+        if not group_key:
+            continue
+        rows_by_group[group_key].append(daily_slice)
+
+    contracts: dict[str, dict[str, object]] = {}
+    for group_key, group_rows in rows_by_group.items():
+        returns: list[float] = []
+        invalid_active_row = False
+        has_active_row = False
+        for row in group_rows:
+            if bool(row.get("_is_initial_valuation_anchor")):
+                continue
+            active_amounts = [
+                _safe_float(row.get("beginning_value_base")),
+                _safe_float(row.get("ending_value_base")),
+                _safe_float(row.get(GROUP_CAPITAL_FLOW_IN_FIELD)),
+                _safe_float(row.get(GROUP_CAPITAL_FLOW_OUT_FIELD)),
+            ]
+            row_is_active = any(
+                value is not None and abs(value) > 1e-12
+                for value in active_amounts
+            )
+            has_active_row = has_active_row or row_is_active
+            daily_return = _safe_float(row.get("daily_return"))
+            # Historical callers supplied a compact ``{group_key,
+            # daily_return}`` row.  Keep that read contract valid when the
+            # return itself is finite; all production slices carry an explicit
+            # coverage state and therefore still fail closed.
+            row_is_complete = (
+                str(row.get("coverage_state") or "") == "complete"
+                or (
+                    "coverage_state" not in row
+                    and daily_return is not None
+                    and isfinite(daily_return)
+                )
+            )
+            if (
+                row_is_active
+                and (
+                    not row_is_complete
+                    or daily_return is None
+                    or not isfinite(daily_return)
+                )
+            ):
+                invalid_active_row = True
+            if (
+                row_is_complete
+                and daily_return is not None
+                and isfinite(daily_return)
+            ):
+                returns.append(daily_return)
+
+        coverage_state = "unavailable"
+        period_return = None
+        if returns and not invalid_active_row:
+            coverage_state = "complete"
+            period_return = compound_returns(returns)
+        elif returns or has_active_row:
+            coverage_state = "partial"
+        contracts[group_key] = {
+            "period_return": period_return,
+            "coverage_state": coverage_state,
+            "observation_count": len(returns),
+        }
+    return contracts
+
+
 def period_returns_by_group(
     daily_slices: list[dict[str, object]],
 ) -> dict[str, float | None]:
-    returns_by_group: dict[str, list[float]] = defaultdict(list)
-    for daily_slice in daily_slices:
-        group_key = str(daily_slice.get("group_key") or "")
-        daily_return = _safe_float(daily_slice.get("daily_return"))
-        if not group_key or daily_return is None or not isfinite(daily_return):
-            continue
-        returns_by_group[group_key].append(daily_return)
     return {
-        group_key: compound_returns(group_returns)
-        for group_key, group_returns in returns_by_group.items()
+        group_key: cast(float | None, contract.get("period_return"))
+        for group_key, contract in period_return_contracts_by_group(
+            daily_slices
+        ).items()
+        if contract.get("period_return") is not None
     }

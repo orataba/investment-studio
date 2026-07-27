@@ -19,7 +19,12 @@ from portfolio_app.db.models import (
     TransactionRecordModel,
 )
 from portfolio_app.db.session import get_session_factory
-from portfolio_app.services import attribution, holdings_market_profile, performance
+from portfolio_app.services import (
+    attribution,
+    holdings_market_profile,
+    performance,
+    return_chain,
+)
 from portfolio_app.services.instrument_charts import HOLDINGS_PRICE_CHART_RANGE_KEYS
 from portfolio_app.services.portfolio_store import (
     _resolve_live_portfolio_as_of_date,
@@ -29,6 +34,9 @@ from portfolio_app.services.portfolio_store import (
 )
 from portfolio_app.services.snapshot_selection import (
     default_portfolio_snapshot,
+)
+from portfolio_app.services.transaction_dates import (
+    transaction_performance_effective_date,
 )
 
 _LOCAL_REFRESH_LOCKS: dict[str, Lock] = {}
@@ -41,7 +49,7 @@ _SOURCE_GENERATION_CHANGED_BEFORE_PUBLISH_REASON = "source_generation_changed_be
 DAILY_SNAPSHOT_CALCULATION_VERSION = (
     "portfolio-daily-v20260715-split-coverage-return-chain-quote-identity-market-history"
     "-source-generation-fence-pending-settlement-fx-recorded-attached-charges"
-    "-portfolio-instrument-return-windows-v1"
+    "-portfolio-instrument-total-return-windows-v2-gips-funded-segment-boundaries-v4"
 )
 
 
@@ -320,6 +328,7 @@ def _incremental_snapshot_seed(
             prior_payload.get("pending_settlement_currency_gains")
         ),
         "instrument_currency_gains": _safe_float(prior_payload.get("instrument_currency_gains")),
+        "total_pnl": _safe_float(prior_payload.get("total_pnl")),
     }
 
 
@@ -341,6 +350,7 @@ def _rebase_incremental_snapshots(
         seed.get("pending_settlement_currency_gains")
     )
     prefix_instrument_fx = _safe_float(seed.get("instrument_currency_gains"))
+    prefix_total_pnl = _safe_float(seed.get("total_pnl"))
 
     for snapshot in snapshots:
         snapshot_date = _parse_date(snapshot.get("as_of_date"))
@@ -393,20 +403,11 @@ def _rebase_incremental_snapshots(
             else None
         )
         total_pnl = _safe_float(snapshot.get("total_pnl"))
-        if total_pnl is not None:
-            if (
-                prefix_cash_fx is None
-                or prefix_pending_settlement_fx is None
-                or prefix_instrument_fx is None
-            ):
-                snapshot["total_pnl"] = None
-            else:
-                snapshot["total_pnl"] = (
-                    total_pnl
-                    + prefix_cash_fx
-                    + prefix_pending_settlement_fx
-                    + prefix_instrument_fx
-                )
+        snapshot["total_pnl"] = (
+            prefix_total_pnl + total_pnl
+            if prefix_total_pnl is not None and total_pnl is not None
+            else None
+        )
 
 
 def _current_refresh_result(session, portfolio_id: str) -> dict[str, object] | None:
@@ -1278,10 +1279,14 @@ def build_materialized_performance_report(
         portfolio = _serialize_portfolio_row(portfolio_record)
         transactions = [_serialize_transaction_row(item) for item in _load_transactions(session, portfolio_id)]
 
-    calculation_start_date = start_date - timedelta(days=1) if start_date is not None else None
+    snapshot_context_start = (
+        start_date - timedelta(days=1)
+        if start_date is not None
+        else None
+    )
     snapshots = list_materialized_daily_snapshots(
         portfolio_id,
-        start_date=calculation_start_date,
+        start_date=snapshot_context_start,
         end_date=end_date,
         ensure_current=False,
     )
@@ -1310,6 +1315,24 @@ def _first_present(rows: list[dict[str, object]], key: str) -> object | None:
         if value not in (None, ""):
             return value
     return None
+
+
+def _earliest_holding_profile_row(
+    rows: list[dict[str, object]],
+) -> dict[str, object]:
+    dated_rows = [
+        (holding_start_date, index, row)
+        for index, row in enumerate(rows)
+        if (
+            holding_start_date := _parse_date(
+                row.get("instrument_holding_start_date")
+            )
+        )
+        is not None
+    ]
+    if dated_rows:
+        return min(dated_rows, key=lambda item: (item[0], item[1]))[2]
+    return rows[0] if rows else {}
 
 
 def _is_cash_holding_payload(row: dict[str, object]) -> bool:
@@ -1344,6 +1367,7 @@ def _aggregate_holding_rows(
         market_value_base = _sum_complete([row.get("market_value_base") for row in instrument_rows])
         cost_basis_base = _sum_complete([row.get("cost_basis_base") for row in instrument_rows])
         first_row = instrument_rows[0] if instrument_rows else {}
+        holding_profile_row = _earliest_holding_profile_row(instrument_rows)
         cost_basis_methods = sorted(
             {
                 str(row.get("cost_basis_method") or "")
@@ -1366,6 +1390,8 @@ def _aggregate_holding_rows(
         trend_metrics = {
             "instrument_return_1w": _first_present(instrument_rows, "instrument_return_1w"),
             "instrument_return_1m": _first_present(instrument_rows, "instrument_return_1m"),
+            "instrument_return_3m": _first_present(instrument_rows, "instrument_return_3m"),
+            "instrument_return_6m": _first_present(instrument_rows, "instrument_return_6m"),
             "instrument_return_mtd": _first_present(instrument_rows, "instrument_return_mtd"),
             "instrument_return_ytd": _first_present(instrument_rows, "instrument_return_ytd"),
             "instrument_return_1y": _first_present(instrument_rows, "instrument_return_1y"),
@@ -1378,11 +1404,17 @@ def _aggregate_holding_rows(
             "instrument_return_series_6m": _first_present(instrument_rows, "instrument_return_series_6m"),
             "instrument_return_series_1y": _first_present(instrument_rows, "instrument_return_series_1y"),
             "instrument_return_series_all": _first_present(instrument_rows, "instrument_return_series_all"),
-            "instrument_holding_return_series": _first_present(instrument_rows, "instrument_holding_return_series"),
+            "instrument_holding_return_series": holding_profile_row.get(
+                "instrument_holding_return_series"
+            ),
             "instrument_current_drawdown": _first_present(instrument_rows, "instrument_current_drawdown"),
             "instrument_max_drawdown": _first_present(instrument_rows, "instrument_max_drawdown"),
-            "instrument_holding_max_drawdown": _first_present(instrument_rows, "instrument_holding_max_drawdown"),
-            "instrument_holding_start_date": _first_present(instrument_rows, "instrument_holding_start_date"),
+            "instrument_holding_max_drawdown": holding_profile_row.get(
+                "instrument_holding_max_drawdown"
+            ),
+            "instrument_holding_start_date": holding_profile_row.get(
+                "instrument_holding_start_date"
+            ),
             "instrument_trend_as_of_date": _first_present(instrument_rows, "instrument_trend_as_of_date"),
             "instrument_trend_basis": _first_present(instrument_rows, "instrument_trend_basis"),
             "instrument_trend_coverage": _first_present(instrument_rows, "instrument_trend_coverage"),
@@ -1441,6 +1473,7 @@ def _aggregate_holding_rows(
                     if market_value_base is not None
                     else "unpriced"
                 ),
+                "account_ids": account_ids,
                 "account_count": len(account_ids),
                 "open_position_lot_count": sum(int(row.get("open_position_lot_count") or 0) for row in instrument_rows),
             }
@@ -1706,10 +1739,22 @@ def build_materialized_contribution_report(
             return None
         portfolio = _serialize_portfolio_row(portfolio_record)
         portfolio_as_of_date = portfolio_record.as_of_date
-        first_transaction_date = session.scalar(
-            select(func.min(TransactionRecordModel.trade_date)).where(
-                TransactionRecordModel.portfolio_id == portfolio_id
-            )
+        transaction_payloads = [
+            _serialize_transaction_row(item)
+            for item in _load_transactions(session, portfolio_id)
+        ]
+        first_transaction_date = min(
+            (
+                effective_date
+                for transaction in transaction_payloads
+                if (
+                    effective_date := transaction_performance_effective_date(
+                        transaction
+                    )
+                )
+                is not None
+            ),
+            default=None,
         )
         snapshot_bounds = session.execute(
             select(
@@ -1720,6 +1765,14 @@ def build_materialized_contribution_report(
         first_snapshot_date = snapshot_bounds[0]
         last_snapshot_date = snapshot_bounds[1]
 
+    start_is_close_boundary = bool(
+        start_date is not None
+        and performance._period_start_is_close_boundary(
+            transaction_payloads,
+            requested_start_date=start_date,
+            resolved_start_date=start_date,
+        )
+    )
     effective_end_date = end_date
     if (
         effective_end_date is not None
@@ -1738,6 +1791,7 @@ def build_materialized_contribution_report(
             end_date=effective_end_date,
             axis=axis,
             group_key=group_key,
+            start_is_close_boundary=start_is_close_boundary,
         )
     requested_start_date = start_date or first_snapshot_date
     requested_end_date = effective_end_date or last_snapshot_date
@@ -1762,6 +1816,7 @@ def build_materialized_contribution_report(
             end_date=requested_end_date,
             axis=axis,
             group_key=group_key,
+            start_is_close_boundary=start_is_close_boundary,
         )
     resolved_start_date = max(requested_start_date, first_snapshot_date)
     resolved_end_date = min(requested_end_date, last_snapshot_date)
@@ -1773,6 +1828,31 @@ def build_materialized_contribution_report(
     )
     if not snapshots:
         return None
+    reliable_window = return_chain.resolve_reliable_snapshot_window(
+        snapshots,
+        requested_start_date=resolved_start_date,
+        requested_end_date=resolved_end_date,
+        default_end_date=last_snapshot_date,
+    )
+    snapshots = list(reliable_window["snapshots"])
+    reliable_end_date = _parse_date(reliable_window.get("effective_end_date"))
+    if not snapshots or reliable_end_date is None:
+        return None
+    resolved_end_date = reliable_end_date
+    raw_start_snapshot = next(
+        (
+            snapshot
+            for snapshot in snapshots
+            if _parse_date(snapshot.get("as_of_date")) == resolved_start_date
+        ),
+        None,
+    )
+    start_is_close_boundary = performance._period_start_is_close_boundary(
+        transaction_payloads,
+        requested_start_date=start_date,
+        resolved_start_date=resolved_start_date,
+        start_snapshot=raw_start_snapshot,
+    )
     available_dates = [
         parsed_date
         for parsed_date in (_parse_date(snapshot.get("as_of_date")) for snapshot in snapshots)
@@ -1800,4 +1880,5 @@ def build_materialized_contribution_report(
         end_date=resolved_end_date,
         axis=axis,
         group_key=group_key,
+        start_is_close_boundary=start_is_close_boundary,
     )

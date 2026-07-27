@@ -1,4 +1,4 @@
-import { act, render, screen, within } from '@testing-library/react'
+import { act, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter, Route, Routes, useNavigate } from 'react-router'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
@@ -218,16 +218,30 @@ describe('Holdings rendered page contract', () => {
     await user.click(screen.getByRole('button', { name: /View\s*: Default/ }))
     await user.click(screen.getByRole('option', { name: 'Return & Risk' }))
 
+    await waitFor(() => {
+      expect(apiMocks.getHoldingsWorkspace).toHaveBeenCalledWith('3', {
+        as_of_date: undefined,
+        include_details: true,
+      })
+    })
     expect(screen.getByRole('columnheader', { name: /1W Return/ })).toBeInTheDocument()
     expect(screen.getByRole('columnheader', { name: /1M Return/ })).toBeInTheDocument()
+    expect(screen.getByRole('columnheader', { name: /3M Return/ })).toBeInTheDocument()
+    expect(screen.getByRole('columnheader', { name: /6M Return/ })).toBeInTheDocument()
+    expect(screen.getByRole('columnheader', { name: /Holding Since/ })).toBeInTheDocument()
     expect(screen.getByRole('columnheader', { name: /^MTD/ })).toBeInTheDocument()
     expect(screen.getByRole('columnheader', { name: /^YTD/ })).toBeInTheDocument()
+    expect(screen.getByRole('columnheader', { name: /^1Y Resize/ })).toBeInTheDocument()
 
     const holdingRow = screen.getByRole('cell', { name: /Alpha Fund/ }).closest('tr')
     expect(holdingRow).not.toBeNull()
     expect(within(holdingRow!).getByText('+1.23%')).toBeInTheDocument()
+    expect(within(holdingRow!).getByText('2026-06-23')).toBeInTheDocument()
     expect(within(holdingRow!).getByText('+3.45%')).toBeInTheDocument()
+    expect(within(holdingRow!).getByText('+4.56%')).toBeInTheDocument()
+    expect(within(holdingRow!).getByText('+6.78%')).toBeInTheDocument()
     expect(within(holdingRow!).getByText('+2.34%')).toBeInTheDocument()
+    expect(within(holdingRow!).getByText('+10.00%')).toBeInTheDocument()
 
     const ytdHeader = screen.getByRole('columnheader', { name: /^YTD/ })
     const ytdColumnIndex = Array.from(ytdHeader.parentElement!.children).indexOf(ytdHeader)
@@ -236,20 +250,320 @@ describe('Holdings rendered page contract', () => {
     const refreshedTotalRow = screen.getByText('Portfolio Total (USD)').closest('tr')
     expect(refreshedTotalRow).not.toBeNull()
     expect(refreshedTotalRow).not.toHaveTextContent(/TWR/i)
-    for (const columnKey of [
-      'instrument_return_1w',
-      'instrument_return_1m',
-      'instrument_return_mtd',
-      'instrument_return_ytd',
-    ]) {
+    const expectedTotalReturns = {
+      instrument_return_1w: '+1.23%',
+      instrument_return_1m: '+3.45%',
+      instrument_return_3m: '+4.56%',
+      instrument_return_6m: '+6.78%',
+      instrument_return_mtd: '+2.34%',
+      instrument_return_ytd: '—',
+      instrument_return_1y: '+10.00%',
+    }
+    for (const [columnKey, expectedReturn] of Object.entries(expectedTotalReturns)) {
       const totalCell = refreshedTotalRow!.querySelector(`[data-column-key="${columnKey}"]`)
       expect(totalCell).not.toBeNull()
-      expect(totalCell).toHaveTextContent('—')
+      expect(totalCell).toHaveTextContent(expectedReturn)
       expect(totalCell).toHaveAttribute(
         'title',
-        'Portfolio return is reported as TWR on Overview and Performance.',
+        'Current-holdings basket market return using as-of market-value weights; it may include distributions and is neither book unrealized P&L nor historical portfolio TWR.',
       )
     }
+  })
+
+  it('excludes cash from the unrealized-return denominator', async () => {
+    apiMocks.getHoldingsWorkspace.mockResolvedValueOnce(
+      holdingsWorkspaceFixture({
+        rows: [
+          holdingFixture({
+            quantity: 10,
+            last_price: 12,
+            market_value: 120,
+            market_value_base: 120,
+            cost_basis: 100,
+            cost_basis_base: 100,
+            allocation: 0.6,
+          }),
+          holdingFixture({
+            line_id: 'cash:USD',
+            instrument_core: {
+              instrument_id: 'cash:USD',
+              instrument_name: 'USD Cash',
+              instrument_type: 'cash',
+              currency: 'USD',
+              identifiers: [],
+            },
+            quantity: 80,
+            last_price: 1,
+            market_value: 80,
+            market_value_base: 80,
+            cost_basis_method: null,
+            cost_basis: null,
+            cost_basis_base: null,
+            allocation: 0.4,
+            day_change_pct: 0,
+            day_change_value: 0,
+            day_change_value_base: 0,
+            price_chart_1m: [],
+            price_chart_3m: [],
+            price_chart_6m: [],
+            price_chart_1y: [],
+            coverage_status: 'cash',
+            account_ids: ['cash-account'],
+            account_count: 1,
+            open_position_lot_count: 0,
+          }),
+        ],
+        totals: {
+          market_value: 200,
+          day_change_pct: 0,
+          day_change_value: 0,
+          cost_basis: 100,
+          allocation: 1,
+        },
+      }),
+    )
+
+    renderPortfolioPage(
+      <PortfolioHomePage />,
+      '/portfolios/3/holdings',
+      '/portfolios/:portfolioId/holdings',
+    )
+
+    const totalRow = (await screen.findByText('Portfolio Total (USD)')).closest('tr')
+    expect(totalRow).not.toBeNull()
+    expect(totalRow!.querySelector('[data-column-key="unrealized_pct"]')).toHaveTextContent('+20.00%')
+  })
+
+  it('uses current base-market-value weights for group and total instrument returns', async () => {
+    apiMocks.getHoldingsWorkspace.mockResolvedValue(
+      holdingsWorkspaceFixture({
+        rows: [
+          holdingFixture({
+            line_id: 'holding:fund-a',
+            instrument_core: {
+              instrument_id: 'fund-a',
+              instrument_name: 'Fund A',
+              instrument_type: 'fund',
+              currency: 'USD',
+              identifiers: [{ identifier_type: 'ticker', identifier_value: 'FUNDA', is_primary: true }],
+            },
+            market_value: 750,
+            market_value_base: 750,
+            cost_basis: 750,
+            cost_basis_base: 750,
+            allocation: 0.75,
+            instrument_return_1m: 0.10,
+          }),
+          holdingFixture({
+            line_id: 'holding:fund-b',
+            instrument_core: {
+              instrument_id: 'fund-b',
+              instrument_name: 'Fund B',
+              instrument_type: 'fund',
+              currency: 'USD',
+              identifiers: [{ identifier_type: 'ticker', identifier_value: 'FUNDB', is_primary: true }],
+            },
+            market_value: 250,
+            market_value_base: 250,
+            cost_basis: 250,
+            cost_basis_base: 250,
+            allocation: 0.25,
+            instrument_return_1m: -0.10,
+          }),
+        ],
+        totals: {
+          market_value: 1000,
+          day_change_pct: 0.01,
+          day_change_value: 10,
+          cost_basis: 1000,
+          allocation: 1,
+        },
+      }),
+    )
+    const user = userEvent.setup()
+
+    renderPortfolioPage(
+      <PortfolioHomePage />,
+      '/portfolios/3/holdings',
+      '/portfolios/:portfolioId/holdings',
+    )
+
+    await screen.findByRole('cell', { name: /Fund A/ })
+    await user.click(screen.getByRole('button', { name: /View\s*: Default/ }))
+    await user.click(screen.getByRole('option', { name: 'Return & Risk' }))
+    await user.click(screen.getByRole('button', { name: /Group By\s*: None/ }))
+    await user.click(screen.getByRole('button', { name: 'Instrument Type' }))
+
+    const groupRow = document.querySelector('.holdings-group-row')
+    const totalRow = screen.getByText('Portfolio Total (USD)').closest('tr')
+    expect(groupRow).not.toBeNull()
+    expect(totalRow).not.toBeNull()
+    expect(groupRow!.querySelector('[data-column-key="instrument_return_1m"]')).toHaveTextContent('+5.00%')
+    expect(totalRow!.querySelector('[data-column-key="instrument_return_1m"]')).toHaveTextContent('+5.00%')
+    expect(groupRow!.querySelector('[data-column-key="instrument_holding_max_drawdown"]')?.textContent?.trim()).toBe('')
+    expect(totalRow!.querySelector('[data-column-key="instrument_holding_max_drawdown"]')?.textContent?.trim()).toBe('')
+    expect(groupRow!.querySelector('[data-column-key="holding_date"]')?.textContent?.trim()).toBe('')
+    expect(totalRow!.querySelector('[data-column-key="holding_date"]')?.textContent?.trim()).toBe('')
+    expect(groupRow!.querySelector('[data-column-key="instrument_return_1m"]')).toHaveAttribute(
+      'data-aggregation-kind',
+      'current_weight_return',
+    )
+    expect(groupRow!.querySelector('[data-column-key="instrument_holding_max_drawdown"]')).toHaveAttribute(
+      'data-aggregation-kind',
+      'none',
+    )
+  })
+
+  it('withholds grouped local-currency returns when the current basket spans currencies', async () => {
+    apiMocks.getHoldingsWorkspace.mockResolvedValue(
+      holdingsWorkspaceFixture({
+        rows: [
+          holdingFixture({
+            line_id: 'holding:usd-fund',
+            instrument_core: {
+              instrument_id: 'usd-fund',
+              instrument_name: 'USD Fund',
+              instrument_type: 'fund',
+              currency: 'USD',
+              identifiers: [],
+            },
+            market_value: 500,
+            market_value_base: 500,
+            cost_basis: 500,
+            cost_basis_base: 500,
+            allocation: 0.5,
+            instrument_return_1m: 0.1,
+          }),
+          holdingFixture({
+            line_id: 'holding:cny-fund',
+            instrument_core: {
+              instrument_id: 'cny-fund',
+              instrument_name: 'CNY Fund',
+              instrument_type: 'fund',
+              currency: 'CNY',
+              identifiers: [],
+            },
+            market_value: 3_500,
+            market_value_base: 500,
+            cost_basis: 3_500,
+            cost_basis_base: 500,
+            allocation: 0.5,
+            instrument_return_1m: 0.1,
+          }),
+        ],
+        totals: {
+          market_value: 1000,
+          day_change_pct: 0,
+          day_change_value: 0,
+          cost_basis: 1000,
+          allocation: 1,
+        },
+      }),
+    )
+    const user = userEvent.setup()
+
+    renderPortfolioPage(
+      <PortfolioHomePage />,
+      '/portfolios/3/holdings',
+      '/portfolios/:portfolioId/holdings',
+    )
+
+    await screen.findByRole('cell', { name: /CNY Fund/ })
+    await user.click(screen.getByRole('button', { name: /View\s*: Default/ }))
+    await user.click(screen.getByRole('option', { name: 'Return & Risk' }))
+    await user.click(screen.getByRole('button', { name: /Group By\s*: None/ }))
+    await user.click(screen.getByRole('button', { name: 'Instrument Type' }))
+
+    const groupRow = document.querySelector('.holdings-group-row')
+    const totalRow = screen.getByText('Portfolio Total (USD)').closest('tr')
+    expect(groupRow).not.toBeNull()
+    expect(totalRow).not.toBeNull()
+    expect(groupRow!.querySelector('[data-column-key="instrument_return_1m"]')).toHaveTextContent('—')
+    expect(totalRow!.querySelector('[data-column-key="instrument_return_1m"]')).toHaveTextContent('—')
+  })
+
+  it('withholds a current-basket return when any material current holding lacks the window', async () => {
+    apiMocks.getHoldingsWorkspace.mockResolvedValue(
+      holdingsWorkspaceFixture({
+        rows: [
+          holdingFixture({
+            line_id: 'holding:covered',
+            market_value: 900,
+            market_value_base: 900,
+            cost_basis: 900,
+            cost_basis_base: 900,
+            allocation: 0.9,
+            instrument_return_1m: 0.10,
+          }),
+          holdingFixture({
+            line_id: 'holding:missing',
+            instrument_core: {
+              instrument_id: 'fund-missing',
+              instrument_name: 'Missing Return Fund',
+              instrument_type: 'fund',
+              currency: 'USD',
+              identifiers: [],
+            },
+            market_value: 100,
+            market_value_base: 100,
+            cost_basis: 100,
+            cost_basis_base: 100,
+            allocation: 0.1,
+            instrument_return_1m: null,
+          }),
+        ],
+        totals: {
+          market_value: 1000,
+          day_change_pct: 0.01,
+          day_change_value: 10,
+          cost_basis: 1000,
+          allocation: 1,
+        },
+      }),
+    )
+    const user = userEvent.setup()
+
+    renderPortfolioPage(
+      <PortfolioHomePage />,
+      '/portfolios/3/holdings',
+      '/portfolios/:portfolioId/holdings',
+    )
+
+    await screen.findByRole('cell', { name: /Missing Return Fund/ })
+    await user.click(screen.getByRole('button', { name: /View\s*: Default/ }))
+    await user.click(screen.getByRole('option', { name: 'Return & Risk' }))
+
+    const totalRow = screen.getByText('Portfolio Total (USD)').closest('tr')
+    expect(totalRow).not.toBeNull()
+    expect(totalRow!.querySelector('[data-column-key="instrument_return_1m"]')).toHaveTextContent('—')
+  })
+
+  it('does not substitute a chart date when the valuation quote date is unavailable', async () => {
+    apiMocks.getHoldingsWorkspace.mockResolvedValueOnce(
+      holdingsWorkspaceFixture({
+        rows: [
+          holdingFixture({
+            quote_as_of_date: null,
+            price_chart_6m: [
+              { date: '2026-06-15', value: 75 },
+              { date: '2026-07-15', value: 80 },
+            ],
+          }),
+        ],
+      }),
+    )
+
+    renderPortfolioPage(
+      <PortfolioHomePage />,
+      '/portfolios/3/holdings',
+      '/portfolios/:portfolioId/holdings',
+    )
+
+    const holdingRow = (await screen.findByRole('cell', { name: /Alpha Fund/ })).closest('tr')
+    const quoteDateHeader = screen.getByRole('columnheader', { name: /Quote Date/ })
+    const quoteDateColumnIndex = Array.from(quoteDateHeader.parentElement!.children).indexOf(quoteDateHeader)
+    expect(holdingRow!.children[quoteDateColumnIndex]).toHaveTextContent('—')
+    expect(holdingRow!.children[quoteDateColumnIndex]).not.toHaveTextContent('2026-07-15')
   })
 
   it('discloses alternate-basis selection and partial history instead of hiding the trend semantics', async () => {

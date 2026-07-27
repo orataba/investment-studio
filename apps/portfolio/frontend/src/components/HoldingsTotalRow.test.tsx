@@ -2,11 +2,11 @@ import { render, screen, within } from '@testing-library/react'
 import { describe, expect, it } from 'vitest'
 
 import HoldingsTotalRow, {
-  PORTFOLIO_RETURN_WITHHELD_REASON,
+  CURRENT_HOLDINGS_RETURN_BASIS,
 } from './HoldingsTotalRow'
 
 describe('HoldingsTotalRow extraction contract', () => {
-  it('renders ordinary totals but withholds instrument returns from Portfolio Total', () => {
+  it('renders current-holdings basket returns in Portfolio Total with an explicit basis', () => {
     render(
       <table>
         <tbody>
@@ -18,6 +18,8 @@ describe('HoldingsTotalRow extraction contract', () => {
               { key: 'market_value_base', content: '$1,000.00' },
               { key: 'instrument_return_1w', content: '+99.00%' },
               { key: 'instrument_return_1m', content: '+98.00%' },
+              { key: 'instrument_return_3m', content: '+97.00%' },
+              { key: 'instrument_return_6m', content: '+96.00%' },
               { key: 'instrument_return_1y', content: '+88.00%' },
             ]}
           />
@@ -28,12 +30,17 @@ describe('HoldingsTotalRow extraction contract', () => {
     const row = screen.getByText('Portfolio Total (USD)').closest('tr')
     expect(row).not.toBeNull()
     expect(within(row!).getByText('$1,000.00')).toBeInTheDocument()
-    expect(row).not.toHaveTextContent('+99.00%')
-    expect(row).not.toHaveTextContent('+88.00%')
-    for (const key of ['instrument_return_1w', 'instrument_return_1m', 'instrument_return_1y']) {
+    const expectedReturns = {
+      instrument_return_1w: '+99.00%',
+      instrument_return_1m: '+98.00%',
+      instrument_return_3m: '+97.00%',
+      instrument_return_6m: '+96.00%',
+      instrument_return_1y: '+88.00%',
+    }
+    for (const [key, expectedReturn] of Object.entries(expectedReturns)) {
       const cell = row!.querySelector(`[data-column-key="${key}"]`)
-      expect(cell).toHaveTextContent('—')
-      expect(cell).toHaveAttribute('title', PORTFOLIO_RETURN_WITHHELD_REASON)
+      expect(cell).toHaveTextContent(expectedReturn)
+      expect(cell).toHaveAttribute('title', CURRENT_HOLDINGS_RETURN_BASIS)
     }
   })
 })

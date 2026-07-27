@@ -902,7 +902,7 @@ function benchmarkPointByDate(points: PortfolioInstrumentPriceChartPoint[]) {
   return new Map(points.map((point) => [point.date, point]))
 }
 
-function eligiblePortfolioReturnDates(
+export function eligiblePortfolioReturnDates(
   portfolioDailySeries: PortfolioDailyPerformancePoint[],
   startDate: string,
   endDate: string,
@@ -965,13 +965,20 @@ function benchmarkAlignedDailyReturns(
   return dailyReturns
 }
 
-function buildBenchmarkPeriodMetrics(
+export function buildBenchmarkPeriodMetrics(
   points: PortfolioInstrumentPriceChartPoint[],
   startDate: string,
   endDate: string,
   portfolioDailySeries: PortfolioDailyPerformancePoint[] = [],
 ): BenchmarkPeriodMetrics | null {
-  const startBoundaryDate = shiftIsoDate(startDate, -1)
+  const includesStartDateReturn = eligiblePortfolioReturnDates(
+    portfolioDailySeries,
+    startDate,
+    endDate,
+  ).includes(startDate)
+  const startBoundaryDate = includesStartDateReturn
+    ? shiftIsoDate(startDate, -1)
+    : startDate
   const sortedPoints = points
     .filter((point) => Number.isFinite(point.value) && point.date <= endDate)
     .slice()
@@ -1531,16 +1538,29 @@ function PerformancePage() {
     load: loadPerformanceWorkspace,
     fallbackError: 'Failed to load performance workspace.',
   })
+  const calculationWindowFilters = useMemo(
+    () =>
+      buildPerformanceWindowFilters(
+        validIsoDate(workspace?.summary.effective_start_date) || effectiveStartDate,
+        validIsoDate(workspace?.summary.effective_end_date) || effectiveEndDate,
+      ),
+    [
+      effectiveEndDate,
+      effectiveStartDate,
+      workspace?.summary.effective_end_date,
+      workspace?.summary.effective_start_date,
+    ],
+  )
   const loadCalculationWorkspace = useCallback(
-    () => getPortfolioPerformanceCalculation(portfolioId ?? '', performanceWindowFilters),
-    [performanceWindowFilters, portfolioId],
+    () => getPortfolioPerformanceCalculation(portfolioId ?? '', calculationWindowFilters),
+    [calculationWindowFilters, portfolioId],
   )
   const {
     data: calculationWorkspace,
     loading: calculationLoading,
     error: calculationError,
   } = usePerformanceResource({
-    enabled: Boolean(portfolioId && !waitingForDefaultEndDate),
+    enabled: Boolean(portfolioId && workspace && !waitingForDefaultEndDate),
     resourceKey: portfolioId ?? '',
     load: loadCalculationWorkspace,
     fallbackError: 'Failed to load period calculation.',
@@ -1622,7 +1642,7 @@ function PerformancePage() {
     effectiveCalculationGroupBy === 'none' ? 'instrument' : effectiveCalculationGroupBy
   const calculationGroupsFilters = useMemo(
     () => ({
-      ...performanceWindowFilters,
+      ...calculationWindowFilters,
       axis: resolvedCalculationGroupBy,
       taxonomy_id:
         resolvedCalculationGroupBy === 'taxonomy'
@@ -1631,7 +1651,7 @@ function PerformancePage() {
     }),
     [
       defaultPlanningTaxonomy?.taxonomy_id,
-      performanceWindowFilters,
+      calculationWindowFilters,
       resolvedCalculationGroupBy,
     ],
   )
@@ -1648,7 +1668,7 @@ function PerformancePage() {
     loading: calculationGroupsLoading,
     error: calculationGroupsError,
   } = usePerformanceResource({
-    enabled: Boolean(portfolioId && !waitingForDefaultEndDate),
+    enabled: Boolean(portfolioId && workspace && !waitingForDefaultEndDate),
     resourceKey: portfolioId ?? '',
     load: loadCalculationGroupsWorkspace,
     fallbackError: 'Failed to load calculation groups.',
@@ -2051,11 +2071,13 @@ function PerformancePage() {
 
   const selectedBenchmarkInstrument =
     benchmarkInstruments.find((instrument) => instrument.instrument_id === benchmarkInstrumentId) ?? null
-  const benchmarkStartBoundaryDate = shiftIsoDate(reportStartDate, -1)
   const benchmarkEligibleDates = useMemo(
     () => eligiblePortfolioReturnDates(workspace?.daily_series ?? [], reportStartDate, reportEndDate),
     [reportEndDate, reportStartDate, workspace?.daily_series],
   )
+  const benchmarkStartBoundaryDate = benchmarkEligibleDates.includes(reportStartDate)
+    ? shiftIsoDate(reportStartDate, -1)
+    : reportStartDate
   const benchmarkGuard = useMemo(
     () =>
       selectedBenchmarkInstrument && benchmarkChart
@@ -2151,7 +2173,7 @@ function PerformancePage() {
   const calculationGroupsSummary = calculationGroupsWorkspace?.summary ?? null
   const initialValue = calculationSummary?.initial_value ?? summary?.start_nav ?? null
   const finalValue = calculationSummary?.final_value ?? summary?.end_nav ?? null
-  const portfolioRealizedGain = calculationSummary?.realized_capital_gains ?? summary?.realized_pnl ?? null
+  const portfolioRealizedGain = calculationSummary?.realized_capital_gains ?? null
   const portfolioUnrealizedGain = calculationSummary?.unrealized_capital_gains ?? null
   const portfolioIncome = calculationSummary?.earnings ?? summary?.income_cash_amount ?? null
   const portfolioFxPnl = sumNullable(calculationSummary?.cash_currency_gains, calculationSummary?.instrument_currency_gains)
@@ -2519,6 +2541,7 @@ function PerformancePage() {
               <input
                 className="transaction-filter-input"
                 type="date"
+                title="Normally an end-of-day boundary; a funded-segment start includes that day's BOD-to-EOD return."
                 value={effectiveStartDate}
                 onChange={(event) => updateWindowParams(event.target.value || null, effectiveEndDate || null)}
               />
@@ -2528,6 +2551,7 @@ function PerformancePage() {
               <input
                 className="transaction-filter-input"
                 type="date"
+                title="The interval ends at this date's end-of-day valuation."
                 value={effectiveEndDate}
                 onChange={(event) =>
                   updateWindowParams(

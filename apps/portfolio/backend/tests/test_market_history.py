@@ -69,7 +69,7 @@ def _split_event(**overrides: object) -> dict[str, object]:
     }
 
 
-def test_holdings_trend_selects_more_complete_alternate_without_splicing_bases() -> None:
+def test_holdings_total_return_does_not_switch_to_a_longer_price_series() -> None:
     detail = _detail(
         [
             _point("adjusted_close", "2026-07-15", "999"),
@@ -92,17 +92,17 @@ def test_holdings_trend_selects_more_complete_alternate_without_splicing_bases()
         range_key="all",
     )
 
-    assert trend["instrument_trend_basis"] == "close"
-    assert trend["instrument_trend_reason"] == "selected_more_complete_alternate_series"
+    assert trend["instrument_trend_basis"] == "adjusted_close"
+    assert trend["instrument_trend_reason"] == "selected_series_has_single_observation"
     assert trend["instrument_trend_coverage"] == {
-        "state": "complete",
-        "observation_count": 5,
-        "start_date": "2025-07-14",
+        "state": "partial",
+        "observation_count": 1,
+        "start_date": "2026-07-15",
         "end_date": "2026-07-15",
-        "available_return_windows": ["1w", "1m", "mtd", "ytd", "1y"],
+        "available_return_windows": [],
     }
-    assert trend["instrument_return_1w"] == pytest.approx(100 / 96 - 1)
-    assert trend["instrument_return_1m"] == pytest.approx(100 / 90 - 1)
+    assert trend["instrument_return_1w"] is None
+    assert trend["instrument_return_1m"] is None
     assert chart is not None
     assert chart["chart_basis"] == "close"
     assert chart["return_semantics"] == "unknown"
@@ -207,9 +207,9 @@ def test_one_year_return_uses_a_calendar_year_boundary() -> None:
     trend = build_instrument_trend_metrics_from_detail(
         _detail(
             [
-                _point("close", "2023-03-01", "100"),
-                _point("close", "2023-03-02", "105"),
-                _point("close", "2024-03-01", "120"),
+                _point("adjusted_close", "2023-03-01", "100"),
+                _point("adjusted_close", "2023-03-02", "105"),
+                _point("adjusted_close", "2024-03-01", "120"),
             ]
         ),
         as_of_date=date(2024, 3, 1),
@@ -219,9 +219,11 @@ def test_one_year_return_uses_a_calendar_year_boundary() -> None:
     assert "1y" in trend["instrument_trend_coverage"]["available_return_windows"]
 
 
-def test_one_month_return_uses_portfolio_on_or_before_subscription_anchor() -> None:
+def test_total_return_windows_match_watchlist_calendar_boundary_contract() -> None:
     detail = _detail(
         [
+            _point("total_return_nav", "2026-01-23", "1.0000"),
+            _point("total_return_nav", "2026-04-24", "1.1000"),
             _point("total_return_nav", "2026-06-23", "1.2018"),
             _point("total_return_nav", "2026-06-25", "1.1784"),
             _point("total_return_nav", "2026-07-24", "1.2849"),
@@ -240,6 +242,36 @@ def test_one_month_return_uses_portfolio_on_or_before_subscription_anchor() -> N
     )
 
     assert trend["instrument_return_1m"] == pytest.approx(1.2849 / 1.2018 - 1)
+    assert trend["instrument_return_3m"] == pytest.approx(1.2849 / 1.1000 - 1)
+    assert trend["instrument_return_6m"] == pytest.approx(1.2849 / 1.0000 - 1)
+    assert "1m" in trend["instrument_trend_coverage"]["available_return_windows"]
+    assert "3m" in trend["instrument_trend_coverage"]["available_return_windows"]
+    assert "6m" in trend["instrument_trend_coverage"]["available_return_windows"]
+
+
+def test_total_return_window_anchor_stays_on_requested_as_of_when_latest_nav_is_stale() -> None:
+    detail = _detail(
+        [
+            _point("total_return_nav", "2026-06-23", "1.20"),
+            _point("total_return_nav", "2026-06-24", "1.25"),
+            _point("total_return_nav", "2026-07-23", "1.30"),
+        ],
+        instrument_type="fund",
+    )
+    detail["quote_selection_policy"] = {
+        role: ["total_return_nav"]
+        for role in ("total_return", "chart", "valuation", "reference")
+    }
+    for point in detail["market_data"]:
+        point["metric_family"] = "nav"
+
+    trend = build_instrument_trend_metrics_from_detail(
+        detail,
+        as_of_date=date(2026, 7, 24),
+    )
+
+    assert trend["instrument_trend_as_of_date"] == "2026-07-23"
+    assert trend["instrument_return_1m"] == pytest.approx(1.30 / 1.25 - 1)
     assert "1m" in trend["instrument_trend_coverage"]["available_return_windows"]
 
 
@@ -275,8 +307,9 @@ def test_raw_close_history_is_adjusted_with_confirmed_split_ratio_within_one_bas
     assert chart["split_adjusted"] is True
     assert chart["selection_reason"] == "selected_split_adjusted_raw_price_series"
     assert [point["value"] for point in chart["points"]] == [50.0, 50.0, 55.0]
-    assert trend["instrument_trend_split_adjusted"] is True
-    assert trend["instrument_max_drawdown"] == pytest.approx(0.0)
+    assert trend["instrument_trend_basis"] is None
+    assert trend["instrument_trend_reason"] == "total_return_basis_unavailable"
+    assert trend["instrument_max_drawdown"] is None
 
 
 @pytest.mark.parametrize(
@@ -325,4 +358,4 @@ def test_raw_price_history_crossing_unsafe_split_is_withheld(
     assert chart["selection_reason"] == expected_reason
     assert trend["instrument_trend_basis"] is None
     assert trend["instrument_trend_coverage"]["state"] == "unavailable"
-    assert trend["instrument_trend_reason"] == expected_reason
+    assert trend["instrument_trend_reason"] == "total_return_series_unavailable"

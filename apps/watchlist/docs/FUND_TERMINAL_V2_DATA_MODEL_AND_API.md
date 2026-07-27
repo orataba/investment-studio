@@ -131,6 +131,8 @@ facts 路由已经统一到 instrument 主语：
 - summary / chart / performance / risk / exposure / ratings read models
 - instrument summary payload
 
+Performance snapshot 的 `return_1w / return_1m / return_3m / return_6m / return_mtd / return_ytd / return_1y` 必须完整投影到 `watchlist_row_read_model`、field registry、筛选/排序和导出。新增窗口时不能只改计算 snapshot 而遗漏 migration、repository 或 serializer。窗口边界及 return semantics 见 [RETURN_SERIES_CONTRACT.md](./RETURN_SERIES_CONTRACT.md)。
+
 ### 4.6 Recalc Jobs
 
 重算已经 durable 化，不再依赖临时线程：

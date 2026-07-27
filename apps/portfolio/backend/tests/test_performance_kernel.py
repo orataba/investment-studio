@@ -530,12 +530,12 @@ def test_seed_portfolio_performance_uses_external_boundary_flows(client):
 @pytest.mark.parametrize(
     ("end_date", "expected_years", "expected_eligible"),
     [
-        (date(2026, 12, 31), 364 / 365.25, False),
-        (date(2027, 1, 1), 365 / 365.25, False),
-        (date(2027, 1, 2), 366 / 365.25, True),
+        (date(2026, 12, 31), 364 / 365, False),
+        (date(2027, 1, 1), 1.0, True),
+        (date(2027, 1, 2), 1 + 1 / 365, True),
     ],
 )
-def test_annualization_eligibility_uses_act_365_25(
+def test_annualization_eligibility_uses_calendar_anniversary_actual_actual(
     end_date: date,
     expected_years: float,
     expected_eligible: bool,
@@ -545,6 +545,16 @@ def test_annualization_eligibility_uses_act_365_25(
     assert profile.years == pytest.approx(expected_years)
     assert profile.eligible is expected_eligible
     assert profile.unavailable_reason == (None if expected_eligible else SHORT_PERIOD_REASON)
+
+
+def test_annualization_treats_a_clamped_leap_day_anniversary_as_one_year() -> None:
+    profile = annualization_eligibility(
+        date(2024, 2, 29),
+        date(2025, 2, 28),
+    )
+
+    assert profile.years == pytest.approx(1.0)
+    assert profile.eligible is True
 
 
 def test_performance_endpoints_reuse_materialized_daily_snapshots(client, monkeypatch):
@@ -907,7 +917,47 @@ def test_inception_day_twr_includes_bod_funding_and_first_day_pnl(client, monkey
     assert payload["summary"]["start_nav"] == pytest.approx(0.0)
     assert payload["summary"]["external_cash_in"] == pytest.approx(100.0)
     assert payload["summary"]["delta"] == pytest.approx(10.0)
+    assert payload["summary"]["total_pnl"] == pytest.approx(10.0)
     assert payload["summary"]["cumulative_twr"] == pytest.approx(0.10)
+    assert payload["summary"]["risk_return_observation_count"] == 1
+    assert payload["summary"][
+        "risk_annualization_periods_per_year"
+    ] == pytest.approx(period_metrics.DAYS_PER_YEAR)
+
+    explicit_payload = client.get(
+        "/api/portfolios/inception-return-test/performance"
+        "?start_date=2026-01-01&end_date=2026-01-01"
+    ).json()
+    assert explicit_payload["summary"]["start_nav"] == pytest.approx(0.0)
+    assert explicit_payload["summary"]["end_nav"] == pytest.approx(110.0)
+    assert explicit_payload["summary"]["external_cash_in"] == pytest.approx(100.0)
+    assert explicit_payload["summary"]["delta"] == pytest.approx(10.0)
+    assert explicit_payload["summary"]["total_pnl"] == pytest.approx(10.0)
+    assert explicit_payload["summary"]["cumulative_twr"] == pytest.approx(0.10)
+    assert explicit_payload["summary"]["return_observation_count"] == 1
+    assert explicit_payload["daily_series"][0]["daily_twr"] == pytest.approx(0.10)
+    assert explicit_payload["daily_series"][0]["cumulative_twr"] == pytest.approx(
+        0.10
+    )
+
+    explicit_calculation = client.get(
+        "/api/portfolios/inception-return-test/performance/calculation"
+        "?start_date=2026-01-01&end_date=2026-01-01"
+    ).json()
+    assert explicit_calculation["summary"]["initial_value"] == pytest.approx(0.0)
+    assert explicit_calculation["summary"]["final_value"] == pytest.approx(110.0)
+    assert explicit_calculation["summary"]["deposits"] == pytest.approx(100.0)
+    assert explicit_calculation["summary"]["delta"] == pytest.approx(10.0)
+
+    start_day_deposit_entries = client.get(
+        "/api/portfolios/inception-return-test/performance/calculation/entries"
+        "?axis=instrument&bucket=deposits"
+        "&start_date=2026-01-01&end_date=2026-01-01"
+    ).json()
+    assert len(start_day_deposit_entries["entries"]) == 1
+    assert start_day_deposit_entries["entries"][0]["base_amount"] == pytest.approx(
+        100.0
+    )
 
     contribution_response = client.get(
         "/api/portfolios/inception-return-test/performance/contribution?axis=instrument"
@@ -917,6 +967,71 @@ def test_inception_day_twr_includes_bod_funding_and_first_day_pnl(client, monkey
     assert contribution_summary["portfolio_arithmetic_return"] == pytest.approx(0.10)
     assert contribution_summary["total_period_contribution"] == pytest.approx(0.10)
     assert contribution_summary["contribution_residual"] == pytest.approx(0.0)
+
+
+def test_external_flow_window_starts_on_settlement_effective_date(
+    client,
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        performance,
+        "get_platform_fx_rates",
+        lambda: {
+            "supported_currencies": ["USD"],
+            "maintained_pairs": [],
+            "rates": [],
+        },
+    )
+    portfolio_id = "settlement-effective-inception-test"
+    store = _minimal_store(
+        portfolio_id=portfolio_id,
+        transactions=[
+            {
+                "transaction_id": "txn-0001",
+                "portfolio_id": portfolio_id,
+                "transaction_type": "deposit",
+                "trade_date": "2026-07-14",
+                "settlement_date": "2026-07-15",
+                "account_id": "cash-usd-main",
+                "settlement_cash_account_id": None,
+                "instrument_id": None,
+                "instrument_ref": None,
+                "quantity": None,
+                "price": None,
+                "gross_amount": 100.0,
+                "fees": 0.0,
+                "taxes": 0.0,
+                "currency": "USD",
+                "created_at": "2026-07-14T09:00:00Z",
+            }
+        ],
+    )
+    store["portfolios"][0]["as_of_date"] = "2026-07-15"
+    _write_store(store)
+
+    response = client.get(f"/api/portfolios/{portfolio_id}/performance")
+    assert response.status_code == 200
+    payload = response.json()
+    assert [point["as_of_date"] for point in payload["daily_series"]] == [
+        "2026-07-15"
+    ]
+    summary = payload["summary"]
+    assert summary["effective_start_date"] == "2026-07-15"
+    assert summary["start_nav"] == pytest.approx(0.0)
+    assert summary["end_nav"] == pytest.approx(100.0)
+    assert summary["external_cash_in"] == pytest.approx(100.0)
+    assert summary["delta"] == pytest.approx(0.0)
+    assert summary["cumulative_twr"] == pytest.approx(0.0)
+
+    entries_response = client.get(
+        f"/api/portfolios/{portfolio_id}/performance/calculation/entries"
+        "?axis=instrument&bucket=deposits"
+    )
+    assert entries_response.status_code == 200
+    entry = entries_response.json()["entries"][0]
+    assert entry["trade_date"] == "2026-07-14"
+    assert entry["settlement_date"] == "2026-07-15"
+    assert entry["effective_date"] == "2026-07-15"
 
 
 def test_default_inception_calculation_counts_first_day_deposit_once(client, monkeypatch):
@@ -983,6 +1098,134 @@ def test_default_inception_calculation_counts_first_day_deposit_once(client, mon
     assert summary["capital_gains"] == pytest.approx(0.0)
     assert summary["realized_capital_gains"] == pytest.approx(0.0)
     assert summary["unrealized_capital_gains"] == pytest.approx(0.0)
+
+
+def test_imported_opening_anchor_matches_default_and_explicit_inception_windows(
+    client,
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        performance,
+        "get_platform_fx_rates",
+        lambda: {
+            "supported_currencies": ["USD"],
+            "maintained_pairs": [],
+            "rates": [],
+        },
+    )
+    portfolio_id = "imported-opening-anchor-test"
+    store = _minimal_store(
+        portfolio_id=portfolio_id,
+        transactions=[
+            {
+                "transaction_id": "txn-0001",
+                "portfolio_id": portfolio_id,
+                "transaction_type": "opening_balance",
+                "trade_date": "2026-01-01",
+                "settlement_date": "2026-01-01",
+                "account_id": "cash-usd-main",
+                "settlement_cash_account_id": None,
+                "instrument_id": None,
+                "instrument_ref": None,
+                "quantity": None,
+                "price": None,
+                "gross_amount": 100.0,
+                "fees": 0.0,
+                "taxes": 0.0,
+                "currency": "USD",
+                "created_at": "2026-01-01T08:00:00Z",
+            },
+            {
+                "transaction_id": "txn-0002",
+                "portfolio_id": portfolio_id,
+                "transaction_type": "interest",
+                "trade_date": "2026-01-02",
+                "settlement_date": "2026-01-02",
+                "account_id": "cash-usd-main",
+                "settlement_cash_account_id": None,
+                "instrument_id": None,
+                "instrument_ref": None,
+                "quantity": None,
+                "price": None,
+                "gross_amount": 10.0,
+                "fees": 0.0,
+                "taxes": 0.0,
+                "currency": "USD",
+                "created_at": "2026-01-02T08:00:00Z",
+            },
+        ],
+    )
+    store["portfolios"][0]["as_of_date"] = "2026-01-02"
+    _write_store(store)
+
+    explicit_query = "?start_date=2026-01-01&end_date=2026-01-02"
+    for query in ("", explicit_query):
+        performance_response = client.get(
+            f"/api/portfolios/{portfolio_id}/performance{query}"
+        )
+        assert performance_response.status_code == 200
+        performance_summary = performance_response.json()["summary"]
+        assert performance_summary["start_nav"] == pytest.approx(100.0)
+        assert performance_summary["end_nav"] == pytest.approx(110.0)
+        assert performance_summary["external_cash_in"] == pytest.approx(0.0)
+        assert performance_summary["delta"] == pytest.approx(10.0)
+        assert performance_summary["total_pnl"] == pytest.approx(10.0)
+        assert performance_summary["cumulative_twr"] == pytest.approx(0.10)
+
+        calculation_response = client.get(
+            f"/api/portfolios/{portfolio_id}/performance/calculation{query}"
+        )
+        assert calculation_response.status_code == 200
+        calculation_summary = calculation_response.json()["summary"]
+        assert calculation_summary["initial_value"] == pytest.approx(100.0)
+        assert calculation_summary["final_value"] == pytest.approx(110.0)
+        assert calculation_summary["deposits"] == pytest.approx(0.0)
+        assert calculation_summary["delta"] == pytest.approx(10.0)
+        assert calculation_summary["earnings"] == pytest.approx(10.0)
+
+    contribution_response = client.get(
+        f"/api/portfolios/{portfolio_id}/performance/contribution"
+        f"?axis=instrument&start_date=2026-01-01&end_date=2026-01-02"
+    )
+    assert contribution_response.status_code == 200
+    contribution_payload = contribution_response.json()
+    assert contribution_payload["summary"]["start_nav"] == pytest.approx(100.0)
+    cash_line = next(
+        item
+        for item in contribution_payload["lines"]
+        if item["group_key"] == "cash"
+    )
+    assert cash_line["start_value_base"] == pytest.approx(100.0)
+    assert cash_line["end_value_base"] == pytest.approx(110.0)
+    assert cash_line["total_pnl"] == pytest.approx(10.0)
+
+    groups_response = client.get(
+        f"/api/portfolios/{portfolio_id}/performance/calculation/groups"
+        f"?axis=instrument&start_date=2026-01-01&end_date=2026-01-02"
+    )
+    assert groups_response.status_code == 200
+    groups_payload = groups_response.json()
+    cash_group = next(
+        item for item in groups_payload["groups"] if item["group_key"] == "cash"
+    )
+    assert groups_payload["summary"]["total_initial_value"] == pytest.approx(
+        100.0
+    )
+    assert cash_group["initial_value"] == pytest.approx(100.0)
+    assert cash_group["total_pnl"] == pytest.approx(10.0)
+
+    calendar_response = client.get(
+        f"/api/portfolios/{portfolio_id}/performance/contribution/calendar"
+        "?axis=instrument&frequency=monthly"
+        "&start_date=2026-01-01&end_date=2026-01-02"
+    )
+    assert calendar_response.status_code == 200
+    cash_bucket = next(
+        item
+        for item in calendar_response.json()["buckets"]
+        if item["group_key"] == "cash"
+    )
+    assert cash_bucket["beginning_value_base"] == pytest.approx(100.0)
 
 
 def test_same_day_inception_cash_flows_have_no_money_weighted_return(client, monkeypatch):
@@ -1190,7 +1433,7 @@ def test_dividend_receivable_is_accrued_on_entitlement_date(client, monkeypatch)
     assert by_date["2026-01-03"]["daily_twr"] == pytest.approx(0.0)
 
 
-def test_explicit_performance_period_uses_beginning_nav_boundary(client, monkeypatch):
+def test_explicit_performance_period_uses_requested_eod_close_boundary(client, monkeypatch):
     instrument_detail = _test_instrument_detail(
         instrument_id="equity-us-test",
         instrument_name="Test Equity",
@@ -1282,20 +1525,274 @@ def test_explicit_performance_period_uses_beginning_nav_boundary(client, monkeyp
 
     assert summary["start_date"] == "2026-04-01"
     assert summary["end_date"] == "2026-04-20"
-    assert isclose(summary["start_nav"], 100.0, rel_tol=0.0, abs_tol=1e-12)
+    assert isclose(summary["start_nav"], 110.0, rel_tol=0.0, abs_tol=1e-12)
     assert isclose(summary["end_nav"], 120.0, rel_tol=0.0, abs_tol=1e-12)
+    assert isclose(
+        summary["cumulative_twr"],
+        (120.0 / 110.0) - 1.0,
+        rel_tol=0.0,
+        abs_tol=1e-12,
+    )
     assert first_point["as_of_date"] == "2026-04-01"
-    assert isclose(first_point["beginning_nav"], 100.0, rel_tol=0.0, abs_tol=1e-12)
+    assert isclose(first_point["beginning_nav"], 110.0, rel_tol=0.0, abs_tol=1e-12)
     assert isclose(first_point["ending_nav"], 110.0, rel_tol=0.0, abs_tol=1e-12)
+    assert first_point["daily_twr"] is None
+    assert first_point["cumulative_twr"] == pytest.approx(0.0)
 
     calculation_response = client.get(
         "/api/portfolios/period-boundary-nav-test/performance/calculation?start_date=2026-04-01&end_date=2026-04-20"
     )
     assert calculation_response.status_code == 200
     calculation_summary = calculation_response.json()["summary"]
-    assert isclose(calculation_summary["initial_value"], 100.0, rel_tol=0.0, abs_tol=1e-12)
+    assert isclose(calculation_summary["initial_value"], 110.0, rel_tol=0.0, abs_tol=1e-12)
     assert isclose(calculation_summary["final_value"], 120.0, rel_tol=0.0, abs_tol=1e-12)
-    assert isclose(calculation_summary["delta"], 20.0, rel_tol=0.0, abs_tol=1e-12)
+    assert isclose(calculation_summary["delta"], 10.0, rel_tol=0.0, abs_tol=1e-12)
+
+
+def test_close_to_close_twr_uses_trade_cost_and_neutralizes_midperiod_external_flows(
+    client,
+    monkeypatch,
+):
+    instrument_details = {
+        "equity-us-alpha": _test_instrument_detail(
+            instrument_id="equity-us-alpha",
+            instrument_name="Alpha Equity",
+            history=[
+                ("2026-01-01", "100.00"),
+                ("2026-01-02", "110.00"),
+                ("2026-01-03", "110.00"),
+            ],
+        ),
+        "equity-us-beta": _test_instrument_detail(
+            instrument_id="equity-us-beta",
+            instrument_name="Beta Equity",
+            history=[
+                ("2026-01-02", "100.00"),
+                ("2026-01-03", "100.00"),
+            ],
+        ),
+    }
+    monkeypatch.setattr(
+        performance,
+        "get_registry_instrument_detail",
+        lambda instrument_id: deepcopy(instrument_details.get(instrument_id)),
+    )
+    monkeypatch.setattr(
+        performance,
+        "get_platform_fx_rates",
+        lambda: {
+            "supported_currencies": ["USD"],
+            "maintained_pairs": [],
+            "rates": [],
+        },
+    )
+
+    portfolio_id = "intraperiod-trade-flow-twr-test"
+    alpha_ref = {
+        "instrument_id": "equity-us-alpha",
+        "instrument_name": "Alpha Equity",
+        "instrument_type": "equity",
+        "currency": "USD",
+        "identifiers": [],
+    }
+    beta_ref = {
+        "instrument_id": "equity-us-beta",
+        "instrument_name": "Beta Equity",
+        "instrument_type": "equity",
+        "currency": "USD",
+        "identifiers": [],
+    }
+    store = _minimal_store(
+        portfolio_id=portfolio_id,
+        transactions=[
+            {
+                "transaction_id": "txn-0001",
+                "portfolio_id": portfolio_id,
+                "transaction_type": "opening_balance",
+                "trade_date": "2025-12-31",
+                "settlement_date": "2025-12-31",
+                "account_id": "cash-usd-main",
+                "instrument_id": None,
+                "instrument_ref": None,
+                "quantity": None,
+                "price": None,
+                "gross_amount": 100.0,
+                "fees": 0.0,
+                "taxes": 0.0,
+                "currency": "USD",
+                "created_at": "2025-12-31T08:00:00Z",
+            },
+            {
+                # The start-date trade executes at 90 but closes at 100.  Its
+                # execution-to-close gain belongs before the queried anchor.
+                "transaction_id": "txn-0002",
+                "portfolio_id": portfolio_id,
+                "transaction_type": "buy",
+                "trade_date": "2026-01-01",
+                "settlement_date": "2026-01-03",
+                "account_id": "broker-us-core",
+                "settlement_cash_account_id": "cash-usd-main",
+                "instrument_id": "equity-us-alpha",
+                "instrument_ref": alpha_ref,
+                "quantity": 1.0,
+                "price": 90.0,
+                "gross_amount": 90.0,
+                "fees": 0.0,
+                "taxes": 0.0,
+                "currency": "USD",
+                "created_at": "2026-01-01T09:30:00Z",
+            },
+            {
+                "transaction_id": "txn-0003",
+                "portfolio_id": portfolio_id,
+                "transaction_type": "deposit",
+                "trade_date": "2026-01-02",
+                "settlement_date": "2026-01-02",
+                "account_id": "cash-usd-main",
+                "instrument_id": None,
+                "instrument_ref": None,
+                "quantity": None,
+                "price": None,
+                "gross_amount": 100.0,
+                "fees": 0.0,
+                "taxes": 0.0,
+                "currency": "USD",
+                "created_at": "2026-01-02T08:00:00Z",
+            },
+            {
+                # This mid-period trade executes at 80 and closes at 100.
+                # The 20 mark-to-market gain must enter Jan 2 P&L exactly once.
+                "transaction_id": "txn-0004",
+                "portfolio_id": portfolio_id,
+                "transaction_type": "buy",
+                "trade_date": "2026-01-02",
+                "settlement_date": "2026-01-04",
+                "account_id": "broker-us-core",
+                "settlement_cash_account_id": "cash-usd-main",
+                "instrument_id": "equity-us-beta",
+                "instrument_ref": beta_ref,
+                "quantity": 1.0,
+                "price": 80.0,
+                "gross_amount": 80.0,
+                "fees": 0.0,
+                "taxes": 0.0,
+                "currency": "USD",
+                "created_at": "2026-01-02T09:30:00Z",
+            },
+            {
+                "transaction_id": "txn-0005",
+                "portfolio_id": portfolio_id,
+                "transaction_type": "withdrawal",
+                "trade_date": "2026-01-03",
+                "settlement_date": "2026-01-03",
+                "account_id": "cash-usd-main",
+                "instrument_id": None,
+                "instrument_ref": None,
+                "quantity": None,
+                "price": None,
+                "gross_amount": 50.0,
+                "fees": 0.0,
+                "taxes": 0.0,
+                "currency": "USD",
+                "created_at": "2026-01-03T14:00:00Z",
+            },
+        ],
+    )
+    store["portfolios"][0]["as_of_date"] = "2026-01-03"
+    _write_store(store)
+
+    query = "?start_date=2026-01-01&end_date=2026-01-03"
+    response = client.get(
+        f"/api/portfolios/{portfolio_id}/performance{query}"
+    )
+    assert response.status_code == 200
+    payload = response.json()
+    summary = payload["summary"]
+    points = {item["as_of_date"]: item for item in payload["daily_series"]}
+
+    assert summary["start_nav"] == pytest.approx(110.0)
+    assert summary["end_nav"] == pytest.approx(190.0)
+    assert summary["external_cash_in"] == pytest.approx(100.0)
+    assert summary["external_cash_out"] == pytest.approx(50.0)
+    assert summary["delta"] == pytest.approx(30.0)
+    assert points["2026-01-01"]["daily_twr"] is None
+    assert points["2026-01-02"]["daily_twr"] == pytest.approx(
+        240.0 / (110.0 + 100.0) - 1.0
+    )
+    assert points["2026-01-03"]["daily_twr"] == pytest.approx(
+        (190.0 + 50.0) / 240.0 - 1.0
+    )
+    assert summary["cumulative_twr"] == pytest.approx(
+        240.0 / 210.0 - 1.0
+    )
+
+    calculation_response = client.get(
+        f"/api/portfolios/{portfolio_id}/performance/calculation{query}"
+    )
+    assert calculation_response.status_code == 200
+    calculation_summary = calculation_response.json()["summary"]
+    assert calculation_summary["initial_value"] == pytest.approx(110.0)
+    assert calculation_summary["final_value"] == pytest.approx(190.0)
+    assert calculation_summary["deposits"] == pytest.approx(100.0)
+    assert calculation_summary["withdrawals"] == pytest.approx(50.0)
+    assert calculation_summary["delta"] == pytest.approx(30.0)
+    assert calculation_summary["realized_capital_gains"] == pytest.approx(0.0)
+    assert calculation_summary["unrealized_capital_gains"] == pytest.approx(
+        30.0
+    )
+
+    contribution_response = client.get(
+        f"/api/portfolios/{portfolio_id}/performance/contribution"
+        f"{query}&axis=instrument"
+    )
+    assert contribution_response.status_code == 200
+    contribution_payload = contribution_response.json()
+    assert contribution_payload["summary"][
+        "portfolio_arithmetic_return"
+    ] == pytest.approx(240.0 / 210.0 - 1.0)
+    assert contribution_payload["summary"][
+        "total_period_contribution"
+    ] == pytest.approx(240.0 / 210.0 - 1.0)
+    assert contribution_payload["summary"]["contribution_residual"] == pytest.approx(
+        0.0
+    )
+    line_by_key = {
+        item["group_key"]: item for item in contribution_payload["lines"]
+    }
+    assert line_by_key["equity-us-alpha"]["total_pnl"] == pytest.approx(10.0)
+    assert line_by_key["equity-us-beta"]["total_pnl"] == pytest.approx(20.0)
+
+    # Starting on the later purchase date is still a portfolio EOD boundary,
+    # not a new inception.  The Jan 2 deposit, trade-cost alpha, and
+    # execution-to-close gain are all embedded in the 240 opening state.
+    purchase_date_query = "?start_date=2026-01-02&end_date=2026-01-03"
+    purchase_date_payload = client.get(
+        f"/api/portfolios/{portfolio_id}/performance{purchase_date_query}"
+    ).json()
+    assert purchase_date_payload["summary"]["start_nav"] == pytest.approx(240.0)
+    assert purchase_date_payload["summary"]["external_cash_in"] == pytest.approx(
+        0.0
+    )
+    assert purchase_date_payload["summary"]["external_cash_out"] == pytest.approx(
+        50.0
+    )
+    assert purchase_date_payload["summary"]["delta"] == pytest.approx(0.0)
+    assert purchase_date_payload["summary"]["cumulative_twr"] == pytest.approx(
+        0.0
+    )
+    assert purchase_date_payload["daily_series"][0]["daily_twr"] is None
+
+    purchase_date_calculation = client.get(
+        f"/api/portfolios/{portfolio_id}/performance/calculation"
+        f"{purchase_date_query}"
+    ).json()["summary"]
+    assert purchase_date_calculation["initial_value"] == pytest.approx(240.0)
+    assert purchase_date_calculation["deposits"] == pytest.approx(0.0)
+    assert purchase_date_calculation["withdrawals"] == pytest.approx(50.0)
+    assert purchase_date_calculation["delta"] == pytest.approx(0.0)
+    assert purchase_date_calculation["unrealized_capital_gains"] == pytest.approx(
+        0.0
+    )
 
 
 def test_period_calculation_clamps_future_end_date_to_portfolio_as_of(client):
@@ -1457,7 +1954,379 @@ def test_daily_twr_ignores_internal_sale_but_cuts_on_withdrawal(client, monkeypa
     assert by_date["2026-01-03"]["daily_twr"] == 0.0
 
 
-def test_performance_summary_reports_full_act_365_25_year_twr_annualized_and_irr(client, monkeypatch):
+def test_retained_cash_remains_in_portfolio_twr_denominator(client, monkeypatch):
+    portfolio_id = "retained-cash-denominator-test"
+    instrument_id = "equity-us-retained-cash"
+    instrument_detail = _test_instrument_detail(
+        instrument_id=instrument_id,
+        instrument_name="Retained Cash Equity",
+        history=[
+            ("2026-01-01", "100.00"),
+            ("2026-01-02", "100.00"),
+            ("2026-01-04", "110.00"),
+        ],
+    )
+    monkeypatch.setattr(
+        performance,
+        "get_registry_instrument_detail",
+        lambda candidate: deepcopy(instrument_detail)
+        if candidate == instrument_id
+        else None,
+    )
+    monkeypatch.setattr(
+        performance,
+        "get_platform_fx_rates",
+        lambda: {
+            "supported_currencies": ["USD"],
+            "maintained_pairs": [],
+            "rates": [],
+        },
+    )
+    instrument_ref = {
+        "instrument_id": instrument_id,
+        "instrument_name": "Retained Cash Equity",
+        "instrument_type": "equity",
+        "currency": "USD",
+        "identifiers": [],
+    }
+
+    def cash_transaction(
+        transaction_id: str,
+        transaction_type: str,
+        trade_date: str,
+        amount: float,
+        created_at: str,
+    ) -> dict[str, object]:
+        return {
+            "transaction_id": transaction_id,
+            "portfolio_id": portfolio_id,
+            "transaction_type": transaction_type,
+            "trade_date": trade_date,
+            "settlement_date": trade_date,
+            "account_id": "cash-usd-main",
+            "instrument_id": None,
+            "instrument_ref": None,
+            "quantity": None,
+            "price": None,
+            "gross_amount": amount,
+            "fees": 0.0,
+            "taxes": 0.0,
+            "currency": "USD",
+            "created_at": created_at,
+        }
+
+    def trade_transaction(
+        transaction_id: str,
+        transaction_type: str,
+        trade_date: str,
+        price: float,
+        created_at: str,
+    ) -> dict[str, object]:
+        return {
+            "transaction_id": transaction_id,
+            "portfolio_id": portfolio_id,
+            "transaction_type": transaction_type,
+            "trade_date": trade_date,
+            "settlement_date": trade_date,
+            "account_id": "broker-us-core",
+            "settlement_cash_account_id": "cash-usd-main",
+            "instrument_id": instrument_id,
+            "instrument_ref": instrument_ref,
+            "quantity": 1.0,
+            "price": price,
+            "gross_amount": price,
+            "fees": 0.0,
+            "taxes": 0.0,
+            "currency": "USD",
+            "created_at": created_at,
+        }
+
+    store = _minimal_store(
+        portfolio_id=portfolio_id,
+        transactions=[
+            cash_transaction(
+                "txn-0001",
+                "opening_balance",
+                "2026-01-01",
+                200.0,
+                "2026-01-01T08:00:00Z",
+            ),
+            trade_transaction(
+                "txn-0002",
+                "buy",
+                "2026-01-01",
+                100.0,
+                "2026-01-01T09:00:00Z",
+            ),
+            trade_transaction(
+                "txn-0003",
+                "sell",
+                "2026-01-02",
+                100.0,
+                "2026-01-02T09:00:00Z",
+            ),
+            cash_transaction(
+                "txn-0004",
+                "withdrawal",
+                "2026-01-02",
+                100.0,
+                "2026-01-02T15:00:00Z",
+            ),
+            cash_transaction(
+                "txn-0005",
+                "deposit",
+                "2026-01-04",
+                100.0,
+                "2026-01-04T08:00:00Z",
+            ),
+            trade_transaction(
+                "txn-0006",
+                "buy",
+                "2026-01-04",
+                100.0,
+                "2026-01-04T09:00:00Z",
+            ),
+        ],
+    )
+    store["portfolios"][0]["as_of_date"] = "2026-01-04"
+    _write_store(store)
+
+    payload = client.get(
+        f"/api/portfolios/{portfolio_id}/performance"
+        "?start_date=2026-01-02&end_date=2026-01-04"
+    ).json()
+    points = {item["as_of_date"]: item for item in payload["daily_series"]}
+    assert points["2026-01-03"]["beginning_nav"] == pytest.approx(100.0)
+    assert points["2026-01-03"]["daily_twr"] == pytest.approx(0.0)
+    assert points["2026-01-04"]["beginning_nav"] == pytest.approx(100.0)
+    assert points["2026-01-04"]["external_cash_in"] == pytest.approx(100.0)
+    assert points["2026-01-04"]["ending_nav"] == pytest.approx(210.0)
+    assert points["2026-01-04"]["daily_twr"] == pytest.approx(0.05)
+    assert payload["summary"]["cumulative_twr"] == pytest.approx(0.05)
+
+    same_day_payload = client.get(
+        f"/api/portfolios/{portfolio_id}/performance"
+        "?start_date=2026-01-04&end_date=2026-01-04"
+    ).json()
+    assert same_day_payload["summary"]["start_nav"] == pytest.approx(210.0)
+    assert same_day_payload["summary"]["external_cash_in"] == pytest.approx(0.0)
+    assert same_day_payload["summary"]["cumulative_twr"] == pytest.approx(0.0)
+    assert same_day_payload["daily_series"][0]["daily_twr"] is None
+
+
+def test_zero_nav_gap_breaks_history_and_refunding_starts_new_segment(
+    client,
+    monkeypatch,
+):
+    portfolio_id = "zero-nav-refunding-test"
+    instrument_id = "equity-us-refunding"
+    instrument_detail = _test_instrument_detail(
+        instrument_id=instrument_id,
+        instrument_name="Refunded Equity",
+        history=[
+            ("2026-01-01", "110.00"),
+            ("2026-01-02", "110.00"),
+            ("2026-01-05", "120.00"),
+            ("2026-01-06", "132.00"),
+        ],
+    )
+    monkeypatch.setattr(
+        performance,
+        "get_registry_instrument_detail",
+        lambda candidate: deepcopy(instrument_detail)
+        if candidate == instrument_id
+        else None,
+    )
+    monkeypatch.setattr(
+        performance,
+        "get_platform_fx_rates",
+        lambda: {
+            "supported_currencies": ["USD"],
+            "maintained_pairs": [],
+            "rates": [],
+        },
+    )
+    instrument_ref = {
+        "instrument_id": instrument_id,
+        "instrument_name": "Refunded Equity",
+        "instrument_type": "equity",
+        "currency": "USD",
+        "identifiers": [],
+    }
+
+    def cash_transaction(
+        transaction_id: str,
+        transaction_type: str,
+        trade_date: str,
+        amount: float,
+        created_at: str,
+    ) -> dict[str, object]:
+        return {
+            "transaction_id": transaction_id,
+            "portfolio_id": portfolio_id,
+            "transaction_type": transaction_type,
+            "trade_date": trade_date,
+            "settlement_date": trade_date,
+            "account_id": "cash-usd-main",
+            "instrument_id": None,
+            "instrument_ref": None,
+            "quantity": None,
+            "price": None,
+            "gross_amount": amount,
+            "fees": 0.0,
+            "taxes": 0.0,
+            "currency": "USD",
+            "created_at": created_at,
+        }
+
+    def trade_transaction(
+        transaction_id: str,
+        transaction_type: str,
+        trade_date: str,
+        price: float,
+        created_at: str,
+    ) -> dict[str, object]:
+        return {
+            "transaction_id": transaction_id,
+            "portfolio_id": portfolio_id,
+            "transaction_type": transaction_type,
+            "trade_date": trade_date,
+            "settlement_date": trade_date,
+            "account_id": "broker-us-core",
+            "settlement_cash_account_id": "cash-usd-main",
+            "instrument_id": instrument_id,
+            "instrument_ref": instrument_ref,
+            "quantity": 1.0,
+            "price": price,
+            "gross_amount": price,
+            "fees": 0.0,
+            "taxes": 0.0,
+            "currency": "USD",
+            "created_at": created_at,
+        }
+
+    store = _minimal_store(
+        portfolio_id=portfolio_id,
+        transactions=[
+            cash_transaction(
+                "txn-0001",
+                "deposit",
+                "2026-01-01",
+                100.0,
+                "2026-01-01T08:00:00Z",
+            ),
+            trade_transaction(
+                "txn-0002",
+                "buy",
+                "2026-01-01",
+                100.0,
+                "2026-01-01T09:00:00Z",
+            ),
+            trade_transaction(
+                "txn-0003",
+                "sell",
+                "2026-01-02",
+                110.0,
+                "2026-01-02T09:00:00Z",
+            ),
+            cash_transaction(
+                "txn-0004",
+                "withdrawal",
+                "2026-01-02",
+                110.0,
+                "2026-01-02T15:00:00Z",
+            ),
+            cash_transaction(
+                "txn-0005",
+                "deposit",
+                "2026-01-05",
+                100.0,
+                "2026-01-05T08:00:00Z",
+            ),
+            trade_transaction(
+                "txn-0006",
+                "buy",
+                "2026-01-05",
+                100.0,
+                "2026-01-05T09:00:00Z",
+            ),
+        ],
+    )
+    store["portfolios"][0]["as_of_date"] = "2026-01-06"
+    _write_store(store)
+
+    full_payload = client.get(
+        f"/api/portfolios/{portfolio_id}/performance"
+    ).json()
+    full_points = {
+        item["as_of_date"]: item for item in full_payload["daily_series"]
+    }
+    assert full_points["2026-01-03"]["beginning_nav"] == pytest.approx(0.0)
+    assert full_points["2026-01-03"]["ending_nav"] == pytest.approx(0.0)
+    assert full_points["2026-01-03"]["daily_twr"] is None
+    assert full_points["2026-01-04"]["daily_twr"] is None
+    assert full_payload["summary"]["return_coverage_state"] == "partial"
+    assert full_payload["summary"]["cumulative_twr"] is None
+
+    segment_query = "?start_date=2026-01-05&end_date=2026-01-06"
+    segment_payload = client.get(
+        f"/api/portfolios/{portfolio_id}/performance{segment_query}"
+    ).json()
+    segment_points = {
+        item["as_of_date"]: item for item in segment_payload["daily_series"]
+    }
+    assert segment_payload["summary"]["return_coverage_state"] == "complete"
+    assert segment_payload["summary"]["start_nav"] == pytest.approx(0.0)
+    assert segment_payload["summary"]["end_nav"] == pytest.approx(132.0)
+    assert segment_payload["summary"]["external_cash_in"] == pytest.approx(
+        100.0
+    )
+    assert segment_payload["summary"]["delta"] == pytest.approx(32.0)
+    assert segment_payload["summary"]["realized_pnl"] == pytest.approx(0.0)
+    assert segment_payload["summary"]["unrealized_pnl"] == pytest.approx(32.0)
+    assert segment_payload["summary"]["total_pnl"] == pytest.approx(32.0)
+    assert segment_payload["summary"]["cumulative_twr"] == pytest.approx(0.32)
+    assert segment_points["2026-01-05"]["daily_twr"] == pytest.approx(0.20)
+    assert segment_points["2026-01-06"]["daily_twr"] == pytest.approx(0.10)
+
+    calculation_payload = client.get(
+        f"/api/portfolios/{portfolio_id}/performance/calculation"
+        f"{segment_query}"
+    ).json()
+    calculation_summary = calculation_payload["summary"]
+    assert calculation_summary["initial_value"] == pytest.approx(0.0)
+    assert calculation_summary["final_value"] == pytest.approx(132.0)
+    assert calculation_summary["deposits"] == pytest.approx(100.0)
+    assert calculation_summary["delta"] == pytest.approx(32.0)
+    assert calculation_summary["realized_capital_gains"] == pytest.approx(0.0)
+    assert calculation_summary["unrealized_capital_gains"] == pytest.approx(
+        32.0
+    )
+
+    contribution_payload = client.get(
+        f"/api/portfolios/{portfolio_id}/performance/contribution"
+        f"{segment_query}&axis=instrument"
+    ).json()
+    assert contribution_payload["summary"][
+        "portfolio_cumulative_twr"
+    ] == pytest.approx(0.32)
+    assert contribution_payload["summary"][
+        "contribution_residual"
+    ] == pytest.approx(0.0)
+
+    prior_zero_anchor_payload = client.get(
+        f"/api/portfolios/{portfolio_id}/performance"
+        "?start_date=2026-01-04&end_date=2026-01-06"
+    ).json()
+    assert prior_zero_anchor_payload["summary"][
+        "return_coverage_state"
+    ] == "complete"
+    assert prior_zero_anchor_payload["summary"]["cumulative_twr"] == pytest.approx(
+        0.32
+    )
+
+
+def test_performance_summary_reports_full_calendar_year_twr_annualized_and_irr(client, monkeypatch):
     instrument_detail = _test_instrument_detail(
         instrument_id="equity-us-test",
         instrument_name="Test Equity",
@@ -1542,14 +2411,16 @@ def test_performance_summary_reports_full_act_365_25_year_twr_annualized_and_irr
     payload = response.json()
     summary = payload["summary"]
     last_point = payload["daily_series"][-1]
-    expected_annualized = (1.1 ** (365.25 / 366.0)) - 1.0
+    expected_annualization_years = 1.0 + (1.0 / 365.0)
+    expected_annualized_twr = (1.1 ** (1.0 / expected_annualization_years)) - 1.0
+    expected_irr = (1.1 ** (365.25 / 366.0)) - 1.0
 
     assert isclose(summary["cumulative_twr"], 0.1, rel_tol=0.0, abs_tol=1e-12)
     assert summary["annualization_eligible"] is True
-    assert summary["annualization_years"] == pytest.approx(366 / 365.25)
+    assert summary["annualization_years"] == pytest.approx(expected_annualization_years)
     assert summary["annualization_unavailable_reason"] is None
-    assert isclose(summary["annualized_twr"], expected_annualized, rel_tol=0.0, abs_tol=1e-12)
-    assert isclose(summary["irr"], expected_annualized, rel_tol=0.0, abs_tol=1e-10)
+    assert isclose(summary["annualized_twr"], expected_annualized_twr, rel_tol=0.0, abs_tol=1e-12)
+    assert isclose(summary["irr"], expected_irr, rel_tol=0.0, abs_tol=1e-10)
     assert isclose(summary["mwror"], summary["irr"], rel_tol=0.0, abs_tol=1e-12)
     assert summary["irr_solver_status"] == "unique_root"
     assert summary["irr_unavailable_reason"] is None
@@ -1860,8 +2731,13 @@ def test_risk_metrics_exclude_carry_forward_non_trading_days(client, monkeypatch
     assert window_response.status_code == 200
     window_payload = window_response.json()
     assert window_payload["summary"]["start_date"] == "2026-01-05"
-    assert window_payload["summary"]["start_nav"] == 100.0
-    assert isclose(window_payload["summary"]["cumulative_twr"], 0.05, rel_tol=0.0, abs_tol=1e-12)
+    assert window_payload["summary"]["start_nav"] == 110.0
+    assert isclose(
+        window_payload["summary"]["cumulative_twr"],
+        105.0 / 110.0 - 1.0,
+        rel_tol=0.0,
+        abs_tol=1e-12,
+    )
 
 
 def test_materialized_window_summary_rebases_twr_and_drawdown(client, monkeypatch):
@@ -1963,16 +2839,16 @@ def test_materialized_window_summary_rebases_twr_and_drawdown(client, monkeypatc
 
     assert summary["start_date"] == first_point["as_of_date"] == "2026-01-03"
     assert summary["end_date"] == last_point["as_of_date"] == "2026-01-04"
-    assert isclose(summary["start_nav"], first_point["beginning_nav"], rel_tol=0.0, abs_tol=1e-12)
+    assert isclose(summary["start_nav"], first_point["ending_nav"], rel_tol=0.0, abs_tol=1e-12)
     assert isclose(summary["end_nav"], last_point["ending_nav"], rel_tol=0.0, abs_tol=1e-12)
-    assert isclose(first_point["daily_twr"], 0.10, rel_tol=0.0, abs_tol=1e-12)
-    assert isclose(first_point["cumulative_twr"], first_point["daily_twr"], rel_tol=0.0, abs_tol=1e-12)
+    assert first_point["daily_twr"] is None
+    assert isclose(first_point["cumulative_twr"], 0.0, rel_tol=0.0, abs_tol=1e-12)
     assert isclose(summary["cumulative_twr"], last_point["cumulative_twr"], rel_tol=0.0, abs_tol=1e-12)
-    assert isclose(summary["cumulative_twr"], -0.01, rel_tol=0.0, abs_tol=1e-12)
+    assert isclose(summary["cumulative_twr"], -0.10, rel_tol=0.0, abs_tol=1e-12)
     assert isclose(summary["current_drawdown"], -0.10, rel_tol=0.0, abs_tol=1e-12)
     assert isclose(summary["max_drawdown"], -0.10, rel_tol=0.0, abs_tol=1e-12)
-    assert isclose(by_date["2026-01-03"]["cumulative_twr"], 0.10, rel_tol=0.0, abs_tol=1e-12)
-    assert isclose(by_date["2026-01-04"]["cumulative_twr"], -0.01, rel_tol=0.0, abs_tol=1e-12)
+    assert isclose(by_date["2026-01-03"]["cumulative_twr"], 0.0, rel_tol=0.0, abs_tol=1e-12)
+    assert isclose(by_date["2026-01-04"]["cumulative_twr"], -0.10, rel_tol=0.0, abs_tol=1e-12)
     assert isclose(by_date["2026-01-04"]["drawdown"], -0.10, rel_tol=0.0, abs_tol=1e-12)
 
 
@@ -2058,7 +2934,7 @@ def test_window_drawdown_uses_period_start_anchor_when_first_return_is_loss(clie
     _write_store(store)
 
     response = client.get(
-        "/api/portfolios/drawdown-anchor-test/performance?start_date=2026-01-02&end_date=2026-01-03"
+        "/api/portfolios/drawdown-anchor-test/performance?start_date=2026-01-01&end_date=2026-01-03"
     )
     assert response.status_code == 200
     payload = response.json()
@@ -2068,6 +2944,7 @@ def test_window_drawdown_uses_period_start_anchor_when_first_return_is_loss(clie
     assert isclose(summary["max_drawdown"], -0.10, rel_tol=0.0, abs_tol=1e-12)
     assert summary["max_drawdown_days"] == 1
     assert summary["drawdown_duration_days"] == 2
+    assert isclose(by_date["2026-01-01"]["drawdown"], 0.0, rel_tol=0.0, abs_tol=1e-12)
     assert isclose(by_date["2026-01-02"]["drawdown"], -0.10, rel_tol=0.0, abs_tol=1e-12)
     assert isclose(by_date["2026-01-03"]["drawdown"], 0.0, rel_tol=0.0, abs_tol=1e-12)
 
@@ -2847,12 +3724,14 @@ def test_return_calendar_report_rolls_daily_returns_into_monthly_buckets(client,
     buckets = {item["bucket_key"]: item for item in payload["buckets"]}
 
     assert payload["summary"]["frequency"] == "monthly"
-    assert payload["summary"]["bucket_count"] == 3
-    assert buckets["2026-01"]["cumulative_twr"] is None
+    assert payload["summary"]["bucket_count"] == 2
+    assert "2026-01" not in buckets
     assert buckets["2026-02"]["cumulative_twr"] == 0.10000000000000009
     assert buckets["2026-03"]["cumulative_twr"] == 0.10000000000000009
+    assert buckets["2026-02"]["start_date"] == "2026-01-31"
     assert buckets["2026-02"]["start_nav"] == 100.0
     assert buckets["2026-02"]["end_nav"] == 110.0
+    assert buckets["2026-03"]["start_date"] == "2026-02-28"
     assert buckets["2026-03"]["start_nav"] == 110.0
     assert buckets["2026-03"]["end_nav"] == 121.0
 
@@ -3614,6 +4493,256 @@ def test_instrument_contribution_and_calculation_capture_attached_buy_charges(cl
     assert isclose(calculation_summary["fees"], 5.0, rel_tol=0.0, abs_tol=1e-12)
     assert isclose(calculation_summary["taxes"], 2.0, rel_tol=0.0, abs_tol=1e-12)
     assert "residual_gains" not in calculation_summary
+
+
+def test_attached_sell_charges_are_not_double_counted_in_performance_pnl(
+    client,
+    monkeypatch,
+):
+    instrument_id = "equity-us-sell-fee-test"
+    instrument_detail = _test_instrument_detail(
+        instrument_id=instrument_id,
+        instrument_name="Sell Fee Equity",
+        history=[
+            ("2026-01-01", "100.00"),
+            ("2026-01-02", "110.00"),
+        ],
+    )
+    monkeypatch.setattr(
+        performance,
+        "get_registry_instrument_detail",
+        lambda requested_id: (
+            deepcopy(instrument_detail)
+            if requested_id == instrument_id
+            else None
+        ),
+    )
+    monkeypatch.setattr(
+        performance,
+        "get_platform_fx_rates",
+        lambda: {
+            "supported_currencies": ["USD"],
+            "maintained_pairs": [],
+            "rates": [],
+        },
+    )
+    portfolio_id = "attached-sell-charge-performance-test"
+    instrument_ref = {
+        "instrument_id": instrument_id,
+        "instrument_name": "Sell Fee Equity",
+        "instrument_type": "equity",
+        "currency": "USD",
+        "identifiers": [],
+    }
+    _write_store(
+        _minimal_store(
+            portfolio_id=portfolio_id,
+            transactions=[
+                {
+                    "transaction_id": "txn-0001",
+                    "portfolio_id": portfolio_id,
+                    "transaction_type": "opening_balance",
+                    "trade_date": "2026-01-01",
+                    "settlement_date": "2026-01-01",
+                    "account_id": "cash-usd-main",
+                    "settlement_cash_account_id": None,
+                    "instrument_id": None,
+                    "instrument_ref": None,
+                    "quantity": None,
+                    "price": None,
+                    "gross_amount": 100.0,
+                    "fees": 0.0,
+                    "taxes": 0.0,
+                    "currency": "USD",
+                    "created_at": "2026-01-01T08:00:00Z",
+                },
+                {
+                    "transaction_id": "txn-0002",
+                    "portfolio_id": portfolio_id,
+                    "transaction_type": "buy",
+                    "trade_date": "2026-01-01",
+                    "settlement_date": "2026-01-01",
+                    "account_id": "broker-us-core",
+                    "settlement_cash_account_id": "cash-usd-main",
+                    "instrument_id": instrument_id,
+                    "instrument_ref": instrument_ref,
+                    "quantity": 1.0,
+                    "price": 100.0,
+                    "gross_amount": 100.0,
+                    "fees": 0.0,
+                    "taxes": 0.0,
+                    "currency": "USD",
+                    "created_at": "2026-01-01T09:00:00Z",
+                },
+                {
+                    "transaction_id": "txn-0003",
+                    "portfolio_id": portfolio_id,
+                    "transaction_type": "sell",
+                    "trade_date": "2026-01-02",
+                    "settlement_date": "2026-01-02",
+                    "account_id": "broker-us-core",
+                    "settlement_cash_account_id": "cash-usd-main",
+                    "instrument_id": instrument_id,
+                    "instrument_ref": instrument_ref,
+                    "quantity": 1.0,
+                    "price": 110.0,
+                    "gross_amount": 110.0,
+                    "fees": 5.0,
+                    "taxes": 2.0,
+                    "currency": "USD",
+                    "created_at": "2026-01-02T10:00:00Z",
+                },
+            ],
+        )
+    )
+
+    performance_response = client.get(
+        f"/api/portfolios/{portfolio_id}/performance"
+    )
+    assert performance_response.status_code == 200
+    summary = performance_response.json()["summary"]
+    assert summary["start_nav"] == pytest.approx(100.0)
+    assert summary["end_nav"] == pytest.approx(103.0)
+    assert summary["delta"] == pytest.approx(3.0)
+    assert summary["realized_pnl"] == pytest.approx(3.0)
+    assert summary["expense_cash_amount"] == pytest.approx(7.0)
+    assert summary["total_pnl"] == pytest.approx(summary["delta"])
+
+    calculation_response = client.get(
+        f"/api/portfolios/{portfolio_id}/performance/calculation"
+    )
+    assert calculation_response.status_code == 200
+    calculation_summary = calculation_response.json()["summary"]
+    assert calculation_summary["delta"] == pytest.approx(3.0)
+    assert calculation_summary["capital_gains"] == pytest.approx(10.0)
+    assert calculation_summary["realized_capital_gains"] == pytest.approx(10.0)
+    assert calculation_summary["fees"] == pytest.approx(5.0)
+    assert calculation_summary["taxes"] == pytest.approx(2.0)
+
+
+def test_period_gain_split_replays_confirmed_share_adjustment(
+    client,
+    monkeypatch,
+):
+    instrument_id = "equity-us-period-split-test"
+    instrument_detail = _test_instrument_detail(
+        instrument_id=instrument_id,
+        instrument_name="Period Split Equity",
+        history=[
+            ("2026-01-01", "10.00"),
+            ("2026-01-02", "6.00"),
+        ],
+    )
+    monkeypatch.setattr(
+        performance,
+        "get_registry_instrument_detail",
+        lambda requested_id: (
+            deepcopy(instrument_detail)
+            if requested_id == instrument_id
+            else None
+        ),
+    )
+    monkeypatch.setattr(
+        performance,
+        "get_platform_fx_rates",
+        lambda: {
+            "supported_currencies": ["USD"],
+            "maintained_pairs": [],
+            "rates": [],
+        },
+    )
+    corporate_action = {
+        "corporate_action_event_id": "ca-split-0001",
+        "instrument_id": instrument_id,
+        "action_type": "share_split",
+        "effective_date": "2026-01-02",
+        "record_date": "2026-01-01",
+        "new_units": "2",
+        "old_units": "1",
+        "quantity_rounding": "exact",
+        "quantity_precision": 0,
+        "cost_basis_treatment": "carry",
+        "status": "confirmed",
+    }
+
+    def corporate_actions(_instrument_ids, *, effective_on_or_before=None):
+        if (
+            effective_on_or_before is not None
+            and effective_on_or_before < date(2026, 1, 2)
+        ):
+            return []
+        return [deepcopy(corporate_action)]
+
+    monkeypatch.setattr(
+        performance,
+        "list_registry_corporate_actions",
+        corporate_actions,
+    )
+    monkeypatch.setattr(
+        ledger,
+        "list_registry_corporate_actions",
+        corporate_actions,
+    )
+    portfolio_id = "period-share-adjustment-test"
+    instrument_ref = {
+        "instrument_id": instrument_id,
+        "instrument_name": "Period Split Equity",
+        "instrument_type": "equity",
+        "currency": "USD",
+        "identifiers": [],
+    }
+    _write_store(
+        _minimal_store(
+            portfolio_id=portfolio_id,
+            transactions=[
+                {
+                    "transaction_id": "txn-0001",
+                    "portfolio_id": portfolio_id,
+                    "transaction_type": "opening_balance",
+                    "trade_date": "2026-01-01",
+                    "settlement_date": "2026-01-01",
+                    "account_id": "broker-us-core",
+                    "settlement_cash_account_id": None,
+                    "instrument_id": instrument_id,
+                    "instrument_ref": instrument_ref,
+                    "quantity": 10.0,
+                    "price": 10.0,
+                    "gross_amount": 100.0,
+                    "fees": 0.0,
+                    "taxes": 0.0,
+                    "currency": "USD",
+                    "created_at": "2026-01-01T09:00:00Z",
+                },
+                {
+                    "transaction_id": "txn-0002",
+                    "portfolio_id": portfolio_id,
+                    "transaction_type": "sell",
+                    "trade_date": "2026-01-02",
+                    "settlement_date": "2026-01-02",
+                    "account_id": "broker-us-core",
+                    "settlement_cash_account_id": "cash-usd-main",
+                    "instrument_id": instrument_id,
+                    "instrument_ref": instrument_ref,
+                    "quantity": 10.0,
+                    "price": 6.0,
+                    "gross_amount": 60.0,
+                    "fees": 0.0,
+                    "taxes": 0.0,
+                    "currency": "USD",
+                    "created_at": "2026-01-02T10:00:00Z",
+                },
+            ],
+        )
+    )
+
+    response = client.get(f"/api/portfolios/{portfolio_id}/performance/calculation")
+    assert response.status_code == 200
+    summary = response.json()["summary"]
+    assert summary["initial_value"] == pytest.approx(100.0)
+    assert summary["final_value"] == pytest.approx(120.0)
+    assert summary["capital_gains"] == pytest.approx(20.0)
+    assert summary["realized_capital_gains"] == pytest.approx(10.0)
+    assert summary["unrealized_capital_gains"] == pytest.approx(10.0)
 
 
 def test_instrument_contribution_report_can_filter_by_group_key(client, monkeypatch):
@@ -5081,7 +6210,7 @@ def test_taxonomy_group_return_uses_capital_flow_denominator_for_in_period_buys(
 
     contribution_response = client.get(
         "/api/portfolios/taxonomy-flow-return-test/performance/contribution"
-        "?axis=taxonomy&taxonomy_id=tax-sector&start_date=2026-01-02&end_date=2026-01-02"
+        "?axis=taxonomy&taxonomy_id=tax-sector&start_date=2026-01-01&end_date=2026-01-02"
     )
     assert contribution_response.status_code == 200
     contribution_payload = contribution_response.json()
@@ -5094,7 +6223,7 @@ def test_taxonomy_group_return_uses_capital_flow_denominator_for_in_period_buys(
 
     groups_response = client.get(
         "/api/portfolios/taxonomy-flow-return-test/performance/calculation/groups"
-        "?axis=taxonomy&taxonomy_id=tax-sector&start_date=2026-01-02&end_date=2026-01-02"
+        "?axis=taxonomy&taxonomy_id=tax-sector&start_date=2026-01-01&end_date=2026-01-02"
     )
     assert groups_response.status_code == 200
     groups_payload = groups_response.json()
@@ -6110,18 +7239,18 @@ def test_period_calculation_groups_calendar_rolls_monthly_instrument_bridge(clie
     assert payload["summary"]["axis"] == "instrument"
     assert payload["summary"]["frequency"] == "monthly"
     assert payload["summary"]["bucket_count"] == 1
-    assert isclose(payload["summary"]["total_delta"], 110.0, rel_tol=0.0, abs_tol=1e-12)
+    assert isclose(payload["summary"]["total_delta"], 10.0, rel_tol=0.0, abs_tol=1e-12)
     assert isclose(payload["summary"]["total_pnl"], 10.0, rel_tol=0.0, abs_tol=1e-12)
-    assert isclose(payload["summary"]["total_residual_delta"], 100.0, rel_tol=0.0, abs_tol=1e-12)
+    assert isclose(payload["summary"]["total_residual_delta"], 0.0, rel_tol=0.0, abs_tol=1e-12)
 
     bucket = payload["buckets"][0]
     assert bucket["bucket_key"] == "2026-01"
     assert bucket["group_key"] == "equity-us-test"
-    assert isclose(bucket["initial_value"], 0.0, rel_tol=0.0, abs_tol=1e-12)
+    assert isclose(bucket["initial_value"], 100.0, rel_tol=0.0, abs_tol=1e-12)
     assert isclose(bucket["final_value"], 110.0, rel_tol=0.0, abs_tol=1e-12)
-    assert isclose(bucket["delta"], 110.0, rel_tol=0.0, abs_tol=1e-12)
+    assert isclose(bucket["delta"], 10.0, rel_tol=0.0, abs_tol=1e-12)
     assert isclose(bucket["total_pnl"], 10.0, rel_tol=0.0, abs_tol=1e-12)
-    assert isclose(bucket["residual_delta"], 100.0, rel_tol=0.0, abs_tol=1e-12)
+    assert isclose(bucket["residual_delta"], 0.0, rel_tol=0.0, abs_tol=1e-12)
 
 
 def test_period_calculation_groups_support_instrument_type_axis(client, monkeypatch):
@@ -6418,12 +7547,21 @@ def test_period_calculation_groups_use_unified_weekly_risk_basis_for_mixed_frequ
     assert payload["summary"]["risk_calculation_frequency"] == "weekly"
     assert payload["summary"]["risk_frequency_status_label"] == "Weekly risk basis - mixed daily/weekly data"
     assert payload["summary"]["risk_return_observation_count"] == 3
+    assert payload["summary"]["risk_annualization_periods_per_year"] == pytest.approx(
+        3 / 15 * period_metrics.DAYS_PER_YEAR
+    )
     groups = {item["group_key"]: item for item in payload["groups"]}
 
     assert groups["equity-us-daily-risk-test"]["risk_calculation_frequency"] == "weekly"
     assert groups["fund-us-weekly-risk-test"]["risk_calculation_frequency"] == "weekly"
     assert groups["equity-us-daily-risk-test"]["risk_return_observation_count"] == 3
     assert groups["fund-us-weekly-risk-test"]["risk_return_observation_count"] == 2
+    assert groups["equity-us-daily-risk-test"][
+        "risk_annualization_periods_per_year"
+    ] == pytest.approx(3 / 15 * period_metrics.DAYS_PER_YEAR)
+    assert groups["fund-us-weekly-risk-test"][
+        "risk_annualization_periods_per_year"
+    ] == pytest.approx(2 / 15 * period_metrics.DAYS_PER_YEAR)
     assert groups["equity-us-daily-risk-test"]["annualized_volatility"] is not None
     assert groups["fund-us-weekly-risk-test"]["annualized_volatility"] is not None
 
@@ -6562,9 +7700,9 @@ def test_period_calculation_groups_instrument_includes_cash_balance(client, monk
     )
     assert explicit_calculation_response.status_code == 200
     explicit_calculation_summary = explicit_calculation_response.json()["summary"]
-    assert isclose(explicit_calculation_summary["initial_value"], 150.0, rel_tol=0.0, abs_tol=1e-12)
+    assert isclose(explicit_calculation_summary["initial_value"], 160.0, rel_tol=0.0, abs_tol=1e-12)
     assert isclose(explicit_calculation_summary["final_value"], 160.0, rel_tol=0.0, abs_tol=1e-12)
-    assert isclose(explicit_calculation_summary["delta"], 10.0, rel_tol=0.0, abs_tol=1e-12)
+    assert isclose(explicit_calculation_summary["delta"], 0.0, rel_tol=0.0, abs_tol=1e-12)
 
     explicit_groups_response = client.get(
         f"/api/portfolios/{portfolio_id}/performance/calculation/groups"
@@ -6575,7 +7713,7 @@ def test_period_calculation_groups_instrument_includes_cash_balance(client, monk
     explicit_groups = {item["group_key"]: item for item in explicit_groups_payload["groups"]}
     assert isclose(
         explicit_groups_payload["summary"]["total_initial_value"],
-        150.0,
+        160.0,
         rel_tol=0.0,
         abs_tol=1e-12,
     )
@@ -6587,10 +7725,10 @@ def test_period_calculation_groups_instrument_includes_cash_balance(client, monk
     )
     assert isclose(explicit_groups["cash"]["initial_value"], 50.0, rel_tol=0.0, abs_tol=1e-12)
     assert isclose(explicit_groups["cash"]["final_value"], 50.0, rel_tol=0.0, abs_tol=1e-12)
-    assert isclose(explicit_groups["cash"]["beginning_weight"], 50.0 / 150.0, rel_tol=0.0, abs_tol=1e-12)
+    assert isclose(explicit_groups["cash"]["beginning_weight"], 50.0 / 160.0, rel_tol=0.0, abs_tol=1e-12)
     assert isclose(
         explicit_groups["equity-us-cash-line-test"]["initial_value"],
-        100.0,
+        110.0,
         rel_tol=0.0,
         abs_tol=1e-12,
     )
@@ -6602,7 +7740,7 @@ def test_period_calculation_groups_instrument_includes_cash_balance(client, monk
     )
     assert isclose(
         explicit_groups["equity-us-cash-line-test"]["beginning_weight"],
-        100.0 / 150.0,
+        110.0 / 160.0,
         rel_tol=0.0,
         abs_tol=1e-12,
     )
@@ -6612,35 +7750,10 @@ def test_period_calculation_groups_instrument_includes_cash_balance(client, monk
         "?axis=instrument&frequency=weekly&start_date=2026-01-02&end_date=2026-01-02"
     )
     assert explicit_calendar_response.status_code == 200
-    explicit_calendar_buckets = {
-        item["group_key"]: item for item in explicit_calendar_response.json()["buckets"]
-    }
-    assert isclose(explicit_calendar_buckets["cash"]["initial_value"], 50.0, rel_tol=0.0, abs_tol=1e-12)
-    assert isclose(explicit_calendar_buckets["cash"]["final_value"], 50.0, rel_tol=0.0, abs_tol=1e-12)
-    assert isclose(
-        explicit_calendar_buckets["cash"]["beginning_weight"],
-        50.0 / 150.0,
-        rel_tol=0.0,
-        abs_tol=1e-12,
-    )
-    assert isclose(
-        explicit_calendar_buckets["equity-us-cash-line-test"]["initial_value"],
-        100.0,
-        rel_tol=0.0,
-        abs_tol=1e-12,
-    )
-    assert isclose(
-        explicit_calendar_buckets["equity-us-cash-line-test"]["final_value"],
-        110.0,
-        rel_tol=0.0,
-        abs_tol=1e-12,
-    )
-    assert isclose(
-        explicit_calendar_buckets["equity-us-cash-line-test"]["beginning_weight"],
-        100.0 / 150.0,
-        rel_tol=0.0,
-        abs_tol=1e-12,
-    )
+    explicit_calendar_payload = explicit_calendar_response.json()
+    assert explicit_calendar_payload["summary"]["bucket_count"] == 0
+    assert explicit_calendar_payload["summary"]["observation_count"] == 0
+    assert explicit_calendar_payload["buckets"] == []
 
 
 def test_period_calculation_groups_calendar_supports_monthly_taxonomy_bridge(client, monkeypatch):
@@ -6773,17 +7886,17 @@ def test_period_calculation_groups_calendar_supports_monthly_taxonomy_bridge(cli
     assert payload["summary"]["axis"] == "taxonomy"
     assert payload["summary"]["taxonomy_id"] == "tax-sector"
     assert payload["summary"]["frequency"] == "monthly"
-    assert isclose(payload["summary"]["total_delta"], 121.0, rel_tol=0.0, abs_tol=1e-12)
+    assert isclose(payload["summary"]["total_delta"], 21.0, rel_tol=0.0, abs_tol=1e-12)
     assert isclose(payload["summary"]["total_pnl"], 21.0, rel_tol=0.0, abs_tol=1e-12)
-    assert isclose(payload["summary"]["total_residual_delta"], 100.0, rel_tol=0.0, abs_tol=1e-12)
+    assert isclose(payload["summary"]["total_residual_delta"], 0.0, rel_tol=0.0, abs_tol=1e-12)
 
     bucket = payload["buckets"][0]
     assert bucket["group_key"] == "tax-sector-value"
-    assert isclose(bucket["initial_value"], 0.0, rel_tol=0.0, abs_tol=1e-12)
+    assert isclose(bucket["initial_value"], 100.0, rel_tol=0.0, abs_tol=1e-12)
     assert isclose(bucket["final_value"], 121.0, rel_tol=0.0, abs_tol=1e-12)
-    assert isclose(bucket["delta"], 121.0, rel_tol=0.0, abs_tol=1e-12)
+    assert isclose(bucket["delta"], 21.0, rel_tol=0.0, abs_tol=1e-12)
     assert isclose(bucket["total_pnl"], 21.0, rel_tol=0.0, abs_tol=1e-12)
-    assert isclose(bucket["residual_delta"], 100.0, rel_tol=0.0, abs_tol=1e-12)
+    assert isclose(bucket["residual_delta"], 0.0, rel_tol=0.0, abs_tol=1e-12)
 
 
 def test_period_calculation_groups_calendar_can_filter_by_group_key(client, monkeypatch):
@@ -6916,9 +8029,9 @@ def test_period_calculation_groups_calendar_can_filter_by_group_key(client, monk
     assert payload["summary"]["bucket_count"] == 1
     assert payload["summary"]["group_count"] == 1
     assert payload["summary"]["observation_count"] == 1
-    assert isclose(payload["summary"]["total_delta"], 110.0, rel_tol=0.0, abs_tol=1e-12)
+    assert isclose(payload["summary"]["total_delta"], 10.0, rel_tol=0.0, abs_tol=1e-12)
     assert isclose(payload["summary"]["total_pnl"], 10.0, rel_tol=0.0, abs_tol=1e-12)
-    assert isclose(payload["summary"]["total_residual_delta"], 100.0, rel_tol=0.0, abs_tol=1e-12)
+    assert isclose(payload["summary"]["total_residual_delta"], 0.0, rel_tol=0.0, abs_tol=1e-12)
     assert isclose(payload["summary"]["total_bucket_contribution"], 0.05, rel_tol=0.0, abs_tol=1e-12)
     assert isclose(payload["summary"]["contribution_residual"], 0.0, rel_tol=0.0, abs_tol=1e-12)
     assert len(payload["buckets"]) == 1
@@ -6927,7 +8040,7 @@ def test_period_calculation_groups_calendar_can_filter_by_group_key(client, monk
     assert isclose(bucket["bucket_contribution"], 0.05, rel_tol=0.0, abs_tol=1e-12)
 
 
-def test_taxonomy_boundary_groups_report_uses_current_assignment_on_start_and_end_dates(client, monkeypatch):
+def test_taxonomy_boundary_groups_report_uses_current_assignment_at_both_boundaries(client, monkeypatch):
     instrument_detail = _test_instrument_detail(
         instrument_id="equity-us-test",
         instrument_name="Test Equity",
@@ -8877,6 +9990,194 @@ def test_instrument_currency_gains_flow_through_performance_and_calculation(clie
     assert isclose(line_by_key["instrument_currency_gains"]["amount"], 4.0, rel_tol=0.0, abs_tol=1e-12)
 
 
+def test_multiday_foreign_price_and_fx_moves_do_not_create_phantom_realized_gain(
+    client,
+    monkeypatch,
+):
+    fx_detail = {
+        "instrument_id": "fx-usd-hkd",
+        "instrument_name": "USD/HKD",
+        "instrument_type": "fx",
+        "currency": "HKD",
+        "identifiers": [],
+        "quote_selection_policy": {"valuation": ["spot"], "reference": ["spot"]},
+        "market_data": [
+            {
+                "metric_family": "fx",
+                "quote_basis": "spot",
+                "as_of_date": as_of_date,
+                "value": value,
+                "currency": "HKD",
+                "price_unit": "rate",
+                "price_scale": 1.0,
+                "status": "complete",
+            }
+            for as_of_date, value in [
+                ("2026-01-01", "7.50"),
+                ("2026-01-02", "8.00"),
+                ("2026-01-03", "7.50"),
+            ]
+        ],
+    }
+    fund_detail = {
+        "instrument_id": "fund-hk-price-fx-test",
+        "instrument_name": "HK Price and FX Fund",
+        "instrument_type": "fund",
+        "currency": "HKD",
+        "identifiers": [],
+        "quote_selection_policy": {
+            "valuation": ["official_nav"],
+            "reference": ["official_nav"],
+        },
+        "market_data": [
+            {
+                "metric_family": "nav",
+                "quote_basis": "official_nav",
+                "as_of_date": as_of_date,
+                "value": value,
+                "currency": "HKD",
+                "price_unit": "per_unit",
+                "price_scale": 1.0,
+                "status": "complete",
+            }
+            for as_of_date, value in [
+                ("2026-01-01", "75.00"),
+                ("2026-01-02", "80.00"),
+                ("2026-01-03", "90.00"),
+            ]
+        ],
+    }
+    details = {
+        "fx-usd-hkd": fx_detail,
+        "fund-hk-price-fx-test": fund_detail,
+    }
+    monkeypatch.setattr(
+        performance,
+        "get_registry_instrument_detail",
+        lambda instrument_id: deepcopy(details.get(instrument_id)),
+    )
+    monkeypatch.setattr(
+        performance,
+        "get_platform_fx_rates",
+        lambda: {
+            "supported_currencies": ["USD", "HKD"],
+            "maintained_pairs": ["USD/HKD"],
+            "rates": [
+                {
+                    "base_currency": "USD",
+                    "quote_currency": "HKD",
+                    "rate": 7.50,
+                    "as_of_date": "2026-01-03",
+                    "source_kind": "direct",
+                    "instrument_id": "fx-usd-hkd",
+                    "source_instrument_ids": ["fx-usd-hkd"],
+                    "status": "complete",
+                }
+            ],
+        },
+    )
+    portfolio_id = "multiday-price-fx-split-test"
+    _write_store(
+        {
+            "portfolios": [
+                {
+                    "portfolio_id": portfolio_id,
+                    "portfolio_name": portfolio_id,
+                    "base_currency": "USD",
+                    "valuation_timezone": "Asia/Shanghai",
+                    "valuation_cutoff_policy": "latest_complete_eod",
+                    "as_of_date": "2026-01-03",
+                    "nav": 0.0,
+                    "day_change_value": 0.0,
+                    "day_change_pct": 0.0,
+                    "securities_count": 1,
+                    "sort_order": 0,
+                }
+            ],
+            "accounts": [
+                {
+                    "account_id": "broker-hk-core",
+                    "portfolio_id": portfolio_id,
+                    "account_name": "HK Brokerage",
+                    "account_type": "securities_account",
+                    "currency": "HKD",
+                    "institution": "Test Broker",
+                    "default_settlement_cash_account_id": None,
+                    "cost_basis_method": "fifo",
+                    "allowed_instrument_types": ["fund"],
+                    "opened_at": "2026-01-01",
+                    "status": "active",
+                }
+            ],
+            "transactions": [
+                {
+                    "transaction_id": "txn-0001",
+                    "portfolio_id": portfolio_id,
+                    "transaction_type": "opening_balance",
+                    "trade_date": "2026-01-01",
+                    "settlement_date": "2026-01-01",
+                    "account_id": "broker-hk-core",
+                    "settlement_cash_account_id": None,
+                    "instrument_id": "fund-hk-price-fx-test",
+                    "instrument_ref": {
+                        "instrument_id": "fund-hk-price-fx-test",
+                        "instrument_name": "HK Price and FX Fund",
+                        "instrument_type": "fund",
+                        "currency": "HKD",
+                        "identifiers": [],
+                    },
+                    "quantity": 10.0,
+                    "price": 75.0,
+                    "gross_amount": 750.0,
+                    "fees": 0.0,
+                    "taxes": 0.0,
+                    "currency": "HKD",
+                    "transfer_scope": None,
+                    "transfer_object_type": None,
+                    "transfer_group_id": None,
+                    "counterparty_account_id": None,
+                    "note": "Opening foreign fund position.",
+                    "created_at": "2026-01-01T09:00:00Z",
+                }
+            ],
+        }
+    )
+
+    response = client.get(f"/api/portfolios/{portfolio_id}/performance/calculation")
+    assert response.status_code == 200
+    summary = response.json()["summary"]
+    expected_instrument_fx = (-6.25) + (800.0 / 7.5 - 800.0 / 8.0)
+    expected_capital_gain = 20.0 - expected_instrument_fx
+    assert summary["initial_value"] == pytest.approx(100.0)
+    assert summary["final_value"] == pytest.approx(120.0)
+    assert summary["delta"] == pytest.approx(20.0)
+    assert summary["instrument_currency_gains"] == pytest.approx(
+        expected_instrument_fx
+    )
+    assert summary["capital_gains"] == pytest.approx(expected_capital_gain)
+    assert summary["unrealized_capital_gains"] == pytest.approx(
+        expected_capital_gain
+    )
+    assert summary["realized_capital_gains"] == pytest.approx(0.0)
+    assert (
+        summary["capital_gains"] + summary["instrument_currency_gains"]
+        == pytest.approx(summary["delta"])
+    )
+
+    groups_response = client.get(
+        f"/api/portfolios/{portfolio_id}/performance/calculation/groups"
+        "?axis=instrument"
+    )
+    assert groups_response.status_code == 200
+    group = next(
+        item
+        for item in groups_response.json()["groups"]
+        if item["group_key"] == "fund-hk-price-fx-test"
+    )
+    assert group["realized_capital_gains"] == pytest.approx(0.0)
+    assert group["unrealized_pnl_change"] == pytest.approx(expected_capital_gain)
+
+
 def test_foreign_currency_income_and_realized_pnl_are_reported_in_base_currency(client, monkeypatch):
     fx_detail = {
         "instrument_id": "fx-usd-hkd",
@@ -9359,17 +10660,17 @@ def test_performance_summary_custom_period_uses_period_deltas(client, monkeypatc
 
     assert summary["start_date"] == "2026-01-02"
     assert summary["end_date"] == "2026-01-03"
-    assert isclose(summary["start_nav"], 100.0, rel_tol=0.0, abs_tol=1e-12)
+    assert isclose(summary["start_nav"], 105.0, rel_tol=0.0, abs_tol=1e-12)
     assert isclose(summary["end_nav"], 112.0, rel_tol=0.0, abs_tol=1e-12)
-    assert isclose(summary["absolute_change"], 12.0, rel_tol=0.0, abs_tol=1e-12)
-    assert isclose(summary["delta"], 12.0, rel_tol=0.0, abs_tol=1e-12)
-    assert isclose(summary["income_cash_amount"], 12.0, rel_tol=0.0, abs_tol=1e-12)
+    assert isclose(summary["absolute_change"], 7.0, rel_tol=0.0, abs_tol=1e-12)
+    assert isclose(summary["delta"], 7.0, rel_tol=0.0, abs_tol=1e-12)
+    assert isclose(summary["income_cash_amount"], 7.0, rel_tol=0.0, abs_tol=1e-12)
     assert isclose(summary["realized_pnl"], 0.0, rel_tol=0.0, abs_tol=1e-12)
     assert isclose(summary["unrealized_pnl"], 0.0, rel_tol=0.0, abs_tol=1e-12)
     assert isclose(summary["expense_cash_amount"], 0.0, rel_tol=0.0, abs_tol=1e-12)
     assert isclose(summary["external_cash_in"], 0.0, rel_tol=0.0, abs_tol=1e-12)
     assert isclose(summary["external_cash_out"], 0.0, rel_tol=0.0, abs_tol=1e-12)
-    assert isclose(summary["total_pnl"], 12.0, rel_tol=0.0, abs_tol=1e-12)
+    assert isclose(summary["total_pnl"], 7.0, rel_tol=0.0, abs_tol=1e-12)
 
 
 def test_performance_summary_ignores_flows_before_first_complete_snapshot(client, monkeypatch):

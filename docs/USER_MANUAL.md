@@ -137,7 +137,7 @@ Watchlist 管理“哪些资产进入观察范围”和“如何展示这些资�
 
 ### 5.4 视图和字段
 
-Watchlist 的字段来自 field registry 和 instrument attributes。字段可能只适用于特定 instrument type。例如基金字段不一定适用于指数；指数 performance/risk 字段依赖 close 序列；基金收益风险字段只依赖可信的分红再投资复权累计净值，缺失时为 NA，不回退单位净值。
+Watchlist 的字段来自 field registry 和 instrument attributes。字段可能只适用于特定 instrument type。例如基金字段不一定适用于指数；指数 performance/risk 字段依赖 Registry 允许的行情序列；基金收益风险字段只依赖可信的分红再投资复权累计净值，缺失时为 NA，不回退单位净值。常用标的收益窗口包括 `1W / 1M / 3M / 6M / MTD / YTD / 1Y`。
 
 列配置用于当前分析任务，不改变底层数据。若某个字段长期需要在团队视图中出现，应创建或调整 view，而不是让每个人临时改列。
 
@@ -164,14 +164,14 @@ Watchlist 的字段来自 field registry 和 instrument attributes。字段可�
 
 ### 5.7 指数详情页
 
-指数详情页是轻量工作面，重点是 Overview、Performance、Risk。指数不使用基金专属的 people、strategy、fee 等字段。指数可基于 close 序列计算：
+指数详情页是轻量工作面，重点是 Overview、Performance、Risk。指数不使用基金专属的 people、strategy、fee 等字段。指数可基于 Registry quote selection policy 选中的序列计算：
 
-- YTD、MTD、1M 和年化收益。
+- `1W / 1M / 3M / 6M / MTD / YTD / 1Y` 和年化收益。
 - 最大回撤、当前回撤。
 - 年化波动率、Sharpe。
 - 与 benchmark 或其他资产的图表对比。
 
-若指数指标为空，优先检查 Platform 中该指数是否维护 close，日期是否覆盖分析区间，Watchlist recalc 是否完成。
+`close / last` 只是字段身份；是否为 total return 或 price return 必须由 Registry `return_semantics` 明确声明。未声明时可以保留独立行情展示，但需要同类收益语义的相对指标会失败关闭。若指数指标为空，优先检查 Platform 中是否有 policy 允许的完整行情、日期是否覆盖分析区间、return semantics 是否明确，以及 Watchlist recalc 是否完成。
 
 ### 5.8 Monitoring 和 recalc
 
@@ -233,7 +233,7 @@ Transactions 是组合事实入口。新增交易前确认账户、资产、币�
 - `transfer_out` / `transfer_in`：内部账户转账，由 Internal Transfer 表单成对创建。
 - `opening_balance`：期初现金或期初证券持仓。
 
-买入、卖出和证券期初持仓要求 gross amount 与 quantity × price 一致。卖出、到期兑付和仓位转移会校验可用数量。分红、票息、费用、税费等若带 entitlement date，日期不能晚于 trade date。settlement date 不能早于 trade date。
+买入、卖出和证券期初持仓以 quantity 与 gross amount 作为份额和成交金额事实，隐含成交价按 `gross amount / quantity / price scale` 计算；输入 price 可以是该隐含价格保留四位小数的展示值。系统接受精确乘积或与隐含价格四位小数一致的价格，但不会用舍入后的 `quantity × price` 反写 gross amount。卖出、到期兑付和仓位转移会校验可用数量。分红、票息、费用、税费等若带 entitlement date，日期不能晚于 trade date。settlement date 不能早于 trade date。
 
 债券交易的 quantity 是 face quantity，percent-of-par price 按 `0.01` scale 计算；例如 face `1000`、price `98.5` 的 gross amount 是 `985`。费用应选择可证明的 fee category；来源无法分类时保留 `Unknown`，不要猜测。重复提交会通过 idempotency key 去重；若页面提示记录版本冲突，说明事实已在别处更新，应刷新后重新核对，不能覆盖较新版本。
 
@@ -245,7 +245,18 @@ Transactions 是组合事实入口。新增交易前确认账户、资产、币�
 
 Holdings 展示当前或指定 as-of 的持仓、数量、价格、市值、权重、成本和未实现盈亏。持仓来自交易、行情和账户计算，不手工录入。若持仓数量不对，优先检查 Transactions；若市值不对，优先检查 Platform 行情和 FX；若成本不对，检查账户成本法和历史交易顺序。
 
-默认列表使用 compact payload；sparkline 是有界采样，打开 Security Detail 后再加载 lots、交易和完整图表。子资源尚未返回时显示 Loading/skeleton，不把 `$0.00` 当成真实数据。`Portfolio Total` 只汇总当前持仓状态，其 instrument trend return 显示 `—`，组合 TWR 请到 Performance 查看。
+Holdings 的指标分成两种主要口径：
+
+- 当前账面状态：Quantity、Market Value、Weight、Cost Basis、Avg Cost、Unrealized P&L。FIFO / moving average 只影响剩余成本、已实现/未实现账面盈亏和 lot，不影响组合 TWR。
+- 当前持仓回看：标的 `1W / 1M / 3M / 6M / MTD / YTD / 1Y Return` 使用自身已确认 total-return series；Vol / Drawdown 使用同一收益序列。它们不读取历史买卖份额或成本。
+
+普通 dividend / coupon 是 entitlement-date 已实现 `Income`，不进入 Unrealized P&L；分红再投资同时确认 Income 并以再投资金额建立新 lot；只有 `return_of_capital` 冲减剩余成本。
+
+Group、Non-cash subtotal 和 `Portfolio Total` 仍然是**当前持仓篮子**：金额加总、比例用组级分子分母重算；Return 用当前 base-market-value 权重合成；Vol / Drawdown 用共同历史区间先生成当前权重篮子路径再算；Forward RC 只加总相对于同一全组合风险分母的贡献。当前成员收益或市值覆盖不足、return currency 无法统一时显示 `—`，不剔除缺失成员后重新归一。Holding Since、Quantity、Avg Cost、Quote、Accounts、Chart、Coverage 和 Held Max DD 等没有稳定分组含义的字段只在 instrument row 展示。
+
+`Portfolio Total` 的上述 Return 不是组合实际 TWR；组合真实历史表现仍到 Performance 查看。相同 instrument、相同 as-of 和 total-return basis 下，Holdings 行级窗口收益应与 Watchlist 相同，但两个 app 各自计算、互不调用。完整字段标准见 [Holdings 字段计算与分组标准](../apps/portfolio/docs/03_HOLDINGS_FIELD_REFERENCE.md)。
+
+默认列表使用 compact payload；sparkline 是有界采样，打开 Security Detail 后再加载 lots、交易和完整图表。子资源尚未返回时显示 Loading/skeleton，不把 `$0.00` 当成真实数据；真正缺失或不适用的指标显示 `—`。
 
 ### 6.5 Overview
 
@@ -263,6 +274,10 @@ Overview 的质量提示只在检测到实际问题时出现，并给出受影�
 ### 6.6 Performance
 
 Performance 用于真实组合区间复盘。核心口径是日频 TWR、期间 P&L、资金流、贡献拆分和分组归因。
+
+组合已经存在时，Performance 选择 `1 日` 到 `7 日` 表示 1 日收盘到 7 日收盘，收益从 2 日开始链接；1 日发生的交易和现金流已经体现在期初状态，不会在期间内重复计算。相同起止日是 0 长度区间。例外是请求起点正好等于 funded-segment start：组合首次入金日，或 NAV 真正归零后的再次入金日，会计入该日 BOD-to-EOD 收益。保留的现金即使无收益也仍属于组合 NAV，不算归零；后来某日新买一项资产也不算组合重新成立。要包含普通买入日至收盘的收益，需要把起始日选为前一日。若跨越连续零 NAV 的无资本空档，系统不会伪造零收益并强行链接，而会把整段 TWR 标记为不完整，归零前后分别计算。MTD、QTD、YTD 分别从上月末、上季末、上年 12 月 31 日的收盘状态开始；目标日休市时，组合使用该日完整 EOD 状态，标的和 benchmark 使用不晚于目标日的最近有效收盘。
+
+区间中的买卖不是入金或出金：系统按实际份额和成交金额记账，再按当日收盘估值，成交价到收盘价的变化进入当日收益。未结算交易通过 pending settlement 维持 NAV 连续。入金默认在 settlement / external-flow date 作为日初流入，出金作为日末流出；若业务要求精确处理盘中大额现金流，需要补充流发生时点的完整组合估值，只有交易时间而没有盘中 NAV 不足以精确切分 TWR。
 
 选择 benchmark 后，系统会把组合和基准都按所选区间起点归一化。已确认的全收益指数作为 canonical comparator；已确认的价格指数也会计算差值、tracking error、information ratio、beta 和 capture ratio，但页面会提示价格指数可能不含分红或利息再投资，因此相对结果包含这部分口径差异。收益语义仍为 Unknown 的行情只展示基准自身曲线和指标，不计算相对统计。
 
@@ -399,7 +414,7 @@ Research 列表默认只取 compact run summary；选择某一 run 后再加载�
 ### 7.4 做一次组合区间复盘
 
 1. Portfolio 进入 Performance。
-2. 选择起止日期和 benchmark。
+2. 选择 Start Date、End Date 和 benchmark；除 funded-segment start 外，这是“起始日收盘到结束日收盘”的区间。
 3. 查看 TWR、drawdown、P&L、资金流。
 4. 进入 Calculation / Groups 查看按资产、账户、币种或 taxonomy 的分组贡献。
 5. 检查 Boundary holdings，确认区间开始和结束持仓合理。

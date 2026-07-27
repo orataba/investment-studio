@@ -66,7 +66,6 @@ def resolve_reliable_snapshot_window(
     requested_start_date: date | None = None,
     requested_end_date: date | None = None,
     default_end_date: date | None = None,
-    include_start_boundary: bool = False,
 ) -> dict[str, object]:
     normalized_snapshots: list[dict[str, object]] = []
     for snapshot in snapshots:
@@ -98,30 +97,19 @@ def resolve_reliable_snapshot_window(
         if latest_reliable is not None
         else None
     )
-    lower_bound = (
-        requested_start_date - timedelta(days=1)
-        if include_start_boundary and requested_start_date is not None
-        else requested_start_date
-    )
     selected_snapshots = [
         snapshot
         for snapshot in candidates
         if effective_end_date is not None
         and cast(date, snapshot["as_of_date"]) <= effective_end_date
         and (
-            lower_bound is None
-            or cast(date, snapshot["as_of_date"]) >= lower_bound
+            requested_start_date is None
+            or cast(date, snapshot["as_of_date"]) >= requested_start_date
         )
     ]
-    visible_snapshots = [
-        snapshot
-        for snapshot in selected_snapshots
-        if requested_start_date is None
-        or cast(date, snapshot["as_of_date"]) >= requested_start_date
-    ]
     effective_start_date = (
-        cast(date, visible_snapshots[0]["as_of_date"])
-        if visible_snapshots
+        cast(date, selected_snapshots[0]["as_of_date"])
+        if selected_snapshots
         else None
     )
 
@@ -183,85 +171,114 @@ def period_return_coverage_state(
     requested_start_date: date | None,
     effective_end_date: date | None,
     inception_date: date | None,
+    start_is_close_boundary: bool = False,
+    start_is_funded_segment: bool = False,
 ) -> str:
     if not visible_snapshots or effective_end_date is None:
         return "unavailable"
-    first_date = cast(date, visible_snapshots[0]["as_of_date"])
+    normalized_visible = sorted(
+        (
+            snapshot
+            for snapshot in visible_snapshots
+            if isinstance(snapshot.get("as_of_date"), date)
+        ),
+        key=lambda item: cast(date, item["as_of_date"]),
+    )
+    if not normalized_visible:
+        return "unavailable"
+
+    first_snapshot = normalized_visible[0]
+    first_date = cast(date, first_snapshot["as_of_date"])
+    inferred_initial_valuation_anchor = bool(
+        has_complete_valuation(first_snapshot)
+        and _safe_float(first_snapshot.get("daily_twr")) is None
+        and bool(first_snapshot.get("return_chain_continuous"))
+    )
     initial_valuation_anchor = bool(
-        requested_start_date is None
-        and inception_date == first_date
-        and has_complete_valuation(visible_snapshots[0])
-        and _safe_float(visible_snapshots[0].get("daily_twr")) is None
-        and bool(visible_snapshots[0].get("return_chain_continuous"))
+        start_is_close_boundary or inferred_initial_valuation_anchor
     )
-    requested_start_precedes_inception = bool(
-        requested_start_date is not None
-        and inception_date is not None
-        and requested_start_date < inception_date
+    anchor_date = (
+        requested_start_date
+        if start_is_close_boundary and requested_start_date is not None
+        else (first_date if initial_valuation_anchor else None)
     )
-    return_snapshots = visible_snapshots[1:] if initial_valuation_anchor else visible_snapshots
-    period_start_date = (
-        first_date + timedelta(days=1)
+    start_boundary_complete = bool(
+        (
+            anchor_date is not None
+            and first_date == anchor_date
+            and has_complete_valuation(first_snapshot)
+        )
         if initial_valuation_anchor
         else (
-            inception_date
-            if requested_start_precedes_inception
-            else (requested_start_date or first_date)
+            (
+                first_date == (inception_date or first_date)
+                or (
+                    start_is_funded_segment
+                    and requested_start_date is not None
+                    and first_date == requested_start_date
+                )
+            )
+            and snapshot_coverage_state(first_snapshot, "return") == "complete"
+            and (daily_twr := _safe_float(first_snapshot.get("daily_twr")))
+            is not None
+            and isfinite(daily_twr)
         )
+    )
+    return_snapshots = (
+        normalized_visible[1:]
+        if initial_valuation_anchor and first_date == anchor_date
+        else normalized_visible
+    )
+    period_start_date = (
+        cast(date, anchor_date) + timedelta(days=1)
+        if initial_valuation_anchor and anchor_date is not None
+        else first_date
     )
     has_any_return = any(
         _safe_float(snapshot.get("daily_twr")) is not None
         for snapshot in return_snapshots
     )
 
-    start_boundary_complete = True
-    if requested_start_date is not None:
-        boundary_date = requested_start_date - timedelta(days=1)
-        boundary_snapshot = next(
-            (
-                snapshot
-                for snapshot in snapshots
-                if snapshot.get("as_of_date") == boundary_date
-            ),
-            None,
-        )
-        starts_at_inception = (
-            inception_date is not None
-            and requested_start_date <= inception_date
-            and first_date == inception_date
-            and snapshot_coverage_state(visible_snapshots[0], "return") == "complete"
-            and _safe_float(visible_snapshots[0].get("daily_twr")) is not None
-        )
-        start_boundary_complete = bool(
-            first_date
-            == (inception_date if requested_start_precedes_inception else requested_start_date)
-            and (
-                (boundary_snapshot is not None and has_complete_valuation(boundary_snapshot))
-                or starts_at_inception
-            )
-        )
-
-    expected_observation_count = (effective_end_date - period_start_date).days + 1
+    expected_observation_count = max(
+        (effective_end_date - period_start_date).days + 1,
+        0,
+    )
     observations_are_contiguous = bool(
-        expected_observation_count > 0
-        and len(return_snapshots) == expected_observation_count
-        and cast(date, return_snapshots[0]["as_of_date"]) == period_start_date
-        and cast(date, return_snapshots[-1]["as_of_date"]) == effective_end_date
-        and all(
-            cast(date, snapshot["as_of_date"]) == period_start_date + timedelta(days=index)
-            for index, snapshot in enumerate(return_snapshots)
+        (
+            expected_observation_count == 0
+            and not return_snapshots
+        )
+        or (
+            expected_observation_count > 0
+            and len(return_snapshots) == expected_observation_count
+            and cast(date, return_snapshots[0]["as_of_date"]) == period_start_date
+            and cast(date, return_snapshots[-1]["as_of_date"]) == effective_end_date
+            and all(
+                cast(date, snapshot["as_of_date"])
+                == period_start_date + timedelta(days=index)
+                for index, snapshot in enumerate(return_snapshots)
+            )
         )
     )
     returns_are_continuous = all(
         snapshot_coverage_state(snapshot, "return") == "complete"
         and (daily_twr := _safe_float(snapshot.get("daily_twr"))) is not None
         and isfinite(daily_twr)
+        and bool(snapshot.get("return_chain_continuous"))
         for snapshot in return_snapshots
     )
     end_boundary_complete = bool(
-        return_snapshots
-        and cast(date, return_snapshots[-1]["as_of_date"]) == effective_end_date
-        and has_complete_valuation(return_snapshots[-1])
+        (
+            expected_observation_count == 0
+            and first_date == effective_end_date
+            and has_complete_valuation(first_snapshot)
+        )
+        or (
+            return_snapshots
+            and cast(date, return_snapshots[-1]["as_of_date"])
+            == effective_end_date
+            and has_complete_valuation(return_snapshots[-1])
+        )
     )
     if (
         start_boundary_complete
@@ -270,7 +287,7 @@ def period_return_coverage_state(
         and end_boundary_complete
     ):
         return "complete"
-    return "partial" if has_any_return or visible_snapshots else "unavailable"
+    return "partial" if has_any_return or normalized_visible else "unavailable"
 
 
 def aggregate_snapshot_coverage(
@@ -364,7 +381,7 @@ def rebased_twr_series(snapshots: list[dict[str, object]]) -> list[dict[str, obj
         rendered_snapshot["cumulative_twr"] = (
             (growth_index - 1.0)
             if has_return_history and return_chain_continuous
-            else None
+            else (0.0 if is_initial_valuation_anchor else None)
         )
         rendered_snapshots.append(rendered_snapshot)
 

@@ -216,7 +216,7 @@ def test_unsettled_foreign_security_fx_is_not_absorbed_by_asset_capital_gain(
         _portfolio(),
         _accounts(),
         _transactions(),
-        start_date=date(2026, 1, 2),
+        start_date=date(2026, 1, 1),
         end_date=date(2026, 1, 2),
     )
     summary = calculation["summary"]
@@ -239,7 +239,7 @@ def test_unsettled_foreign_security_fx_is_not_absorbed_by_asset_capital_gain(
         _portfolio(),
         _accounts(),
         _transactions(),
-        start_date=date(2026, 1, 2),
+        start_date=date(2026, 1, 1),
         end_date=date(2026, 1, 2),
         axis="account",
     )

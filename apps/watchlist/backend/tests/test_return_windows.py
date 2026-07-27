@@ -83,6 +83,43 @@ def test_calendar_month_lookback_clamps_month_end() -> None:
     assert spec.anchor_mode == "on_or_before"
 
 
+def test_total_return_windows_use_the_same_calendar_anchors_as_portfolio_holdings() -> None:
+    points = _points(
+        ("2026-01-23", 1.0000),
+        ("2026-04-24", 1.1000),
+        ("2026-06-23", 1.2018),
+        ("2026-06-25", 1.1784),
+        ("2026-07-24", 1.2849),
+    )
+
+    expected = {
+        "1M": 1.2849 / 1.2018 - 1,
+        "3M": 1.2849 / 1.1000 - 1,
+        "6M": 1.2849 / 1.0000 - 1,
+    }
+    for window_name, expected_return in expected.items():
+        spec = named_return_window_spec(window_name, date(2026, 7, 24))
+        window = resolve_return_window(points, **vars(spec))
+
+        assert window is not None
+        assert period_return_percent(window) / 100 == pytest.approx(expected_return)
+
+
+def test_total_return_window_anchor_stays_on_requested_as_of_when_latest_nav_is_stale() -> None:
+    points = _points(
+        ("2026-06-23", 1.20),
+        ("2026-06-24", 1.25),
+        ("2026-07-23", 1.30),
+    )
+    spec = named_return_window_spec("1M", date(2026, 7, 24))
+    window = resolve_return_window(points, **vars(spec))
+
+    assert window is not None
+    assert window.anchor_date == date(2026, 6, 24)
+    assert window.end_date == date(2026, 7, 23)
+    assert period_return_percent(window) / 100 == pytest.approx(1.30 / 1.25 - 1)
+
+
 def test_sparkline_is_normalized_by_calendar_window_and_keeps_quality_metadata() -> None:
     chart = SimpleNamespace(
         instrument_id="private-fund",

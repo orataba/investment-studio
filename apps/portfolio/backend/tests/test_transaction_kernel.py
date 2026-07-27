@@ -828,7 +828,7 @@ def test_holdings_workspace_includes_shared_price_sparklines(client):
     assert abbv_row["price_chart_6m"][-1]["value"] == pytest.approx(206.47)
     assert abbv_row["price_chart_1y"][-1]["value"] == pytest.approx(206.47)
     assert abbv_row["instrument_trend_as_of_date"] == "2026-04-15"
-    assert abbv_row["instrument_trend_basis"] == "close"
+    assert abbv_row["instrument_trend_basis"] == "adjusted_close"
     assert abbv_row["day_change_pct"] == pytest.approx(206.47 / 207.18 - 1)
     assert abbv_row["day_change_value"] == pytest.approx(abbv_row["quantity"] * (206.47 - 207.18))
     assert abbv_row["instrument_return_1w"] == pytest.approx(206.47 / 207.18 - 1)
@@ -888,7 +888,7 @@ def test_instrument_price_chart_endpoint_returns_filtered_shared_history(client)
     assert payload["portfolio_id"] == "portfolio-ops"
     assert payload["instrument_core"]["instrument_id"] == "equity-us-abbv"
     assert payload["range_key"] == "1m"
-    assert payload["chart_basis"] == "close"
+    assert payload["chart_basis"] == "adjusted_close"
     assert [point["date"] for point in payload["points"]] == ["2026-03-15", "2026-04-08", "2026-04-15"]
     assert payload["summary"]["point_count"] == 3
     assert payload["summary"]["change_value"] == pytest.approx(-3.73)
@@ -1537,6 +1537,20 @@ def test_dividend_and_return_of_capital_keep_gross_income_and_separate_expense_a
         },
     )
     assert dividend_response.status_code == 200
+
+    lots_after_dividend_response = client.get(
+        "/api/portfolios/portfolio-ops/position-lots",
+        params={
+            "account_id": account["account_id"],
+            "instrument_id": "equity-us-abbv",
+        },
+    )
+    assert lots_after_dividend_response.status_code == 200
+    lot_after_dividend = lots_after_dividend_response.json()["position_lots"][0]
+    assert lot_after_dividend["income_cash_amount"] == pytest.approx(100.0)
+    assert lot_after_dividend["expense_cash_amount"] == pytest.approx(15.0)
+    assert lot_after_dividend["remaining_cost_basis"] == pytest.approx(10000.0)
+    assert lot_after_dividend["realized_pnl"] == pytest.approx(0.0)
 
     roc_response = client.post(
         "/api/portfolios/portfolio-ops/transactions",

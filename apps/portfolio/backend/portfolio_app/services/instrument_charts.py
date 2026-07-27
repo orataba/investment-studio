@@ -50,7 +50,15 @@ ASSET_RISK_MAX_START_GAP_DAYS: dict[CalculationFrequency, int] = {
 ASSET_RISK_MIN_WINDOW_COVERAGE_RATIO = 0.8
 DAYS_PER_YEAR = 365.25
 RAW_SPLIT_SENSITIVE_BASES = frozenset({"close", "last"})
-TREND_RETURN_WINDOWS: tuple[str, ...] = ("1w", "1m", "mtd", "ytd", "1y")
+TREND_RETURN_WINDOWS: tuple[str, ...] = (
+    "1w",
+    "1m",
+    "3m",
+    "6m",
+    "mtd",
+    "ytd",
+    "1y",
+)
 SUPPORTED_SPLIT_FRACTION_TREATMENTS = frozenset({"exact", "truncate", "round_half_up"})
 
 
@@ -115,6 +123,8 @@ def empty_instrument_trend_metrics(
         "instrument_risk_frequency": calculation_frequency,
         "instrument_return_1w": None,
         "instrument_return_1m": None,
+        "instrument_return_3m": None,
+        "instrument_return_6m": None,
         "instrument_return_mtd": None,
         "instrument_return_ytd": None,
         "instrument_return_1y": None,
@@ -198,6 +208,14 @@ def _candidate_chart_bases(detail: dict[str, object]) -> list[str]:
     return analytical_return_quote_bases(detail)
 
 
+def _candidate_total_return_bases(detail: dict[str, object]) -> list[str]:
+    return [
+        quote_basis
+        for quote_basis in analytical_return_quote_bases(detail)
+        if chart_return_semantics(detail, selected_basis=quote_basis) == "total_return"
+    ]
+
+
 def _downsample_points(points: list[dict[str, object]], max_points: int | None) -> list[dict[str, object]]:
     if max_points is None or max_points <= 0 or len(points) <= max_points:
         return points
@@ -219,10 +237,14 @@ def _shift_calendar_months(value: date, months: int) -> date:
     return date(target_year, target_month, target_day)
 
 
-def _return_window_names(points: list[dict[str, object]]) -> list[str]:
+def _return_window_names(
+    points: list[dict[str, object]],
+    *,
+    window_end_date: date | None = None,
+) -> list[str]:
     if len(points) < 2:
         return []
-    end_date = points[-1].get("date")
+    end_date = window_end_date or points[-1].get("date")
     if not isinstance(end_date, date):
         return []
     windows: list[str] = []
@@ -239,10 +261,14 @@ def _return_window_names(points: list[dict[str, object]]) -> list[str]:
     return windows
 
 
-def _trend_coverage(points: list[dict[str, object]]) -> dict[str, object]:
+def _trend_coverage(
+    points: list[dict[str, object]],
+    *,
+    window_end_date: date | None = None,
+) -> dict[str, object]:
     if not points:
         return _empty_trend_coverage()
-    windows = _return_window_names(points)
+    windows = _return_window_names(points, window_end_date=window_end_date)
     start_date = points[0].get("date")
     end_date = points[-1].get("date")
     return {
@@ -341,9 +367,6 @@ def _selection_rank(
         else 0
     )
     end_ordinal = end_date.toordinal() if isinstance(end_date, date) else 0
-    # Semantic window coverage is the primary selection signal. Once two
-    # candidates support the same return windows, keep the policy-preferred
-    # basis instead of allowing one incidental extra observation to displace it.
     return (
         len(windows),
         int(len(points) >= 2),
@@ -361,7 +384,10 @@ def _select_chart_series(
 ) -> ChartSeriesSelection:
     candidate_bases = _candidate_chart_bases(detail)
     if not candidate_bases:
-        return ChartSeriesSelection(reason="quote_policy_unavailable", coverage=_empty_trend_coverage())
+        return ChartSeriesSelection(
+            reason="quote_policy_unavailable",
+            coverage=_empty_trend_coverage(),
+        )
 
     candidates: list[
         tuple[tuple[int, int, int, int, int, int], int, str, list[dict[str, object]], bool]
@@ -433,6 +459,76 @@ def _select_chart_series(
         coverage=_trend_coverage(selected_points),
         reason=reason,
         split_adjusted=split_adjusted,
+    )
+
+
+def _select_total_return_series(
+    detail: dict[str, object],
+    *,
+    as_of_date: date,
+) -> ChartSeriesSelection:
+    analytical_bases = analytical_return_quote_bases(detail)
+    candidate_bases = _candidate_total_return_bases(detail)
+    if not candidate_bases:
+        return ChartSeriesSelection(
+            reason=(
+                "total_return_basis_unavailable"
+                if analytical_bases
+                else "quote_policy_unavailable"
+            ),
+            coverage=_empty_trend_coverage(),
+        )
+
+    unavailable_reasons: list[str] = []
+    for policy_index, quote_basis in enumerate(candidate_bases):
+        resolution = resolve_quote_series(
+            detail,
+            candidate_bases=[quote_basis],
+            end_date=as_of_date,
+        )
+        if not resolution.available:
+            if resolution.unavailable_reason:
+                unavailable_reasons.append(resolution.unavailable_reason)
+            continue
+        points = [
+            {
+                "date": point["as_of_date"],
+                "date_iso": point["as_of_date"].isoformat(),
+                "value": point["value"],
+                "currency": point["currency"],
+                "metric_family": point["metric_family"],
+                "quote_basis": point["quote_basis"],
+                "price_unit": point.get("price_unit"),
+                "price_scale": point.get("price_scale"),
+            }
+            for point in resolution.points
+            if isinstance(point.get("as_of_date"), date)
+        ]
+        if len(points) < 2:
+            reason = "selected_series_has_single_observation"
+        elif policy_index > 0:
+            reason = "selected_alternate_total_return_series"
+        else:
+            reason = "selected_policy_series"
+        return ChartSeriesSelection(
+            points=tuple(points),
+            selected_basis=str(resolution.quote_basis or quote_basis),
+            coverage=_trend_coverage(points, window_end_date=as_of_date),
+            reason=reason,
+            split_adjusted=False,
+        )
+
+    blocking_reason = next(
+        (
+            reason
+            for reason in unavailable_reasons
+            if reason not in {"quote_series_unavailable", "quote_policy_unavailable"}
+        ),
+        "total_return_series_unavailable",
+    )
+    return ChartSeriesSelection(
+        reason=blocking_reason,
+        coverage=_empty_trend_coverage(),
     )
 
 
@@ -759,6 +855,10 @@ def _named_period_return(
         anchor_date = end_date - timedelta(days=7)
     elif normalized_window == "1m":
         anchor_date = _shift_calendar_months(end_date, -1)
+    elif normalized_window == "3m":
+        anchor_date = _shift_calendar_months(end_date, -3)
+    elif normalized_window == "6m":
+        anchor_date = _shift_calendar_months(end_date, -6)
     elif normalized_window == "mtd":
         anchor_date = date(end_date.year, end_date.month, 1) - timedelta(days=1)
     elif normalized_window == "ytd":
@@ -779,7 +879,7 @@ def build_instrument_trend_metrics_from_detail(
     holding_start_date: date | None = None,
     calculation_frequency: CalculationFrequency = "daily",
 ) -> dict[str, object]:
-    selection = _select_chart_series(detail, as_of_date=as_of_date)
+    selection = _select_total_return_series(detail, as_of_date=as_of_date)
     selected_points = list(selection.points)
     selected_basis = selection.selected_basis
     if not selected_points:
@@ -805,27 +905,37 @@ def build_instrument_trend_metrics_from_detail(
         "instrument_risk_frequency": calculation_frequency,
         "instrument_return_1w": _named_period_return(
             selected_points,
-            end_date=end_date,
+            end_date=as_of_date,
             window_name="1w",
         ),
         "instrument_return_1m": _named_period_return(
             selected_points,
-            end_date=end_date,
+            end_date=as_of_date,
             window_name="1m",
+        ),
+        "instrument_return_3m": _named_period_return(
+            selected_points,
+            end_date=as_of_date,
+            window_name="3m",
+        ),
+        "instrument_return_6m": _named_period_return(
+            selected_points,
+            end_date=as_of_date,
+            window_name="6m",
         ),
         "instrument_return_mtd": _named_period_return(
             selected_points,
-            end_date=end_date,
+            end_date=as_of_date,
             window_name="mtd",
         ),
         "instrument_return_ytd": _named_period_return(
             selected_points,
-            end_date=end_date,
+            end_date=as_of_date,
             window_name="ytd",
         ),
         "instrument_return_1y": _named_period_return(
             selected_points,
-            end_date=end_date,
+            end_date=as_of_date,
             window_name="1y",
         ),
         "instrument_volatility_1m": _annualized_window_volatility(

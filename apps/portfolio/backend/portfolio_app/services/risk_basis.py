@@ -29,15 +29,21 @@ def calculation_frequency_profile_for_instruments(
 
     source_frequencies: list[CalculationFrequency] = []
     source_frequency_by_instrument: dict[str, CalculationFrequency] = {}
+    missing_instrument_ids: list[str] = []
+    insufficient_history_instrument_ids: list[str] = []
     for instrument_id in normalized_instrument_ids:
         detail = detail_loader(instrument_id)
         if not isinstance(detail, dict):
+            missing_instrument_ids.append(instrument_id)
             continue
         dates = [
             point_date
             for point_date in selected_observation_dates_from_detail(detail, end_date=end_date)
             if start_date <= point_date <= end_date
         ]
+        if len(set(dates)) < 2:
+            insufficient_history_instrument_ids.append(instrument_id)
+            continue
         frequency = infer_observation_frequency(dates)
         source_frequencies.append(frequency)
         source_frequency_by_instrument[instrument_id] = frequency
@@ -48,4 +54,28 @@ def calculation_frequency_profile_for_instruments(
     )
     profile["instrument_ids"] = normalized_instrument_ids
     profile["source_frequency_by_instrument"] = source_frequency_by_instrument
+    profile["requested_instrument_count"] = len(normalized_instrument_ids)
+    profile["resolved_instrument_count"] = len(source_frequency_by_instrument)
+    profile["missing_instrument_ids"] = missing_instrument_ids
+    profile["insufficient_history_instrument_ids"] = (
+        insufficient_history_instrument_ids
+    )
+    if (
+        normalized_instrument_ids
+        and len(source_frequency_by_instrument) == len(normalized_instrument_ids)
+    ):
+        profile["coverage_state"] = "complete"
+    elif source_frequency_by_instrument:
+        profile["coverage_state"] = "partial"
+        profile["status_label"] = (
+            f"Risk basis partial - {len(source_frequency_by_instrument)}/"
+            f"{len(normalized_instrument_ids)} instruments resolved"
+        )
+    else:
+        profile["coverage_state"] = "unavailable"
+        profile["status_label"] = (
+            "Risk basis unavailable - no active non-cash instruments"
+            if not normalized_instrument_ids
+            else "Risk basis unavailable - instrument return history missing"
+        )
     return profile

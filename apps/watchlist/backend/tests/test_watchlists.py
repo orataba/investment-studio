@@ -1116,6 +1116,8 @@ def test_adding_shared_nav_instrument_recalculates_last_nav_fields(
                 "data_freshness_status",
                 "return_1w",
                 "return_mtd",
+                "return_3m",
+                "return_6m",
                 "annualized_return",
             ],
             "sort": [],
@@ -1133,6 +1135,8 @@ def test_adding_shared_nav_instrument_recalculates_last_nav_fields(
     assert payload["rows"][0]["data_freshness_status"] == "fresh"
     assert payload["rows"][0]["return_1w"] == pytest.approx(1.236476, abs=1e-6)
     assert payload["rows"][0]["return_mtd"] == pytest.approx(2.259067, abs=1e-6)
+    assert payload["rows"][0]["return_3m"] == pytest.approx(3.832283, abs=1e-6)
+    assert payload["rows"][0]["return_6m"] is None
     assert payload["rows"][0]["annualized_return"] == pytest.approx(14.119462, abs=1e-6)
     assert payload["snapshot_metadata"]["as_of_date"] == "2026-04-14"
 
@@ -1353,6 +1357,7 @@ def test_index_close_series_calculates_watchlist_performance_metrics(
                     "status": "complete",
                 }
                 for as_of_date, value in (
+                    ("2025-10-15", "90.000000"),
                     ("2025-12-31", "100.000000"),
                     ("2026-03-15", "110.000000"),
                     ("2026-04-01", "115.000000"),
@@ -1386,6 +1391,8 @@ def test_index_close_series_calculates_watchlist_performance_metrics(
                 "return_ytd",
                 "return_mtd",
                 "return_1m",
+                "return_3m",
+                "return_6m",
                 "annualized_return",
                 "max_drawdown",
                 "volatility",
@@ -1404,6 +1411,8 @@ def test_index_close_series_calculates_watchlist_performance_metrics(
     assert row["return_ytd"] == pytest.approx(21.0, abs=1e-6)
     assert row["return_mtd"] == pytest.approx(10.0, abs=1e-6)
     assert row["return_1m"] == pytest.approx(10.0, abs=1e-6)
+    assert row["return_3m"] == pytest.approx(21.0, abs=1e-6)
+    assert row["return_6m"] == pytest.approx(34.444444, abs=1e-6)
     assert row["annualized_return"] is not None
     assert row["max_drawdown"] == pytest.approx(0.0, abs=1e-6)
     assert row["volatility"] is not None
@@ -1417,6 +1426,8 @@ def test_index_close_series_calculates_watchlist_performance_metrics(
         "return_ytd",
         "return_mtd",
         "return_1m",
+        "return_3m",
+        "return_6m",
         "annualized_return",
         "max_drawdown",
         "volatility",
@@ -4097,6 +4108,8 @@ def test_seeded_private_fund_watchlist_tags_are_available(client: TestClient) ->
     assert fields_by_key["return_mtd"]["label"] == "MTD"
     assert fields_by_key["return_ytd"]["label"] == "YTD"
     assert fields_by_key["return_1m"]["label"] == "1M"
+    assert fields_by_key["return_3m"]["label"] == "3M"
+    assert fields_by_key["return_6m"]["label"] == "6M"
     assert fields_by_key["return_1y"]["label"] == "1Y"
     assert fields_by_key["annualized_return"]["label"] == "Ann."
     assert fields_by_key["return_3y"]["label"] == "3Y"

@@ -14,13 +14,15 @@
    `Platform / Watchlist / Portfolio / instrument-core / instrument_registry / platform schema` 之间的当前职责和数据边界。
 5. [FRONTEND_DESIGN_BASELINE.md](./FRONTEND_DESIGN_BASELINE.md)
    当前前端设计基线：白底数据终端、tab-to-content 节奏、字体层级和跨 app UI 边界。
-6. [FUND_NAV_EVENT_AND_RECALCULATION_MODEL.md](./FUND_NAV_EVENT_AND_RECALCULATION_MODEL.md)
+6. [apps/portfolio/docs/01_CALCULATION_SPEC.md](../apps/portfolio/docs/01_CALCULATION_SPEC.md)
+   Portfolio canonical 计算合同；Holdings 的逐字段映射另见 [03_HOLDINGS_FIELD_REFERENCE.md](../apps/portfolio/docs/03_HOLDINGS_FIELD_REFERENCE.md)。
+7. [FUND_NAV_EVENT_AND_RECALCULATION_MODEL.md](./FUND_NAV_EVENT_AND_RECALCULATION_MODEL.md)
    私募基金单位净值、不可变行为/复投证据、复权因子、人工修订和下游重算的当前合同。
-7. [SERVER_DEPLOYMENT.md](./SERVER_DEPLOYMENT.md)
+8. [SERVER_DEPLOYMENT.md](./SERVER_DEPLOYMENT.md)
    当前 Linux/systemd 服务部署、迁移、健康检查和运维边界。
-8. [NEW_MACHINE_RESTORE.md](./NEW_MACHINE_RESTORE.md)
+9. [NEW_MACHINE_RESTORE.md](./NEW_MACHINE_RESTORE.md)
    新电脑从私有 GitHub 仓库恢复项目、数据库、运行环境和定时任务的步骤参考。
-9. [LOCAL_MACOS_SERVICE.md](./LOCAL_MACOS_SERVICE.md)
+10. [LOCAL_MACOS_SERVICE.md](./LOCAL_MACOS_SERVICE.md)
    在 macOS 上安装、检查和移除本地 `launchd` 常驻服务与每日 21:00 刷新/重算任务。
 
 按 app 深入时：

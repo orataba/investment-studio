@@ -158,7 +158,9 @@ describe('Performance rendered page contract', () => {
     expect(within(periodReturnRow).getByText('+3.02%')).toBeInTheDocument()
     expect(screen.getByText('Calculation')).toBeInTheDocument()
     expect(screen.getAllByText(/2026-07-06 to 2026-07-15/)).toHaveLength(2)
-    expect(screen.getByRole('row', { name: /Portfolio Total/ })).toBeInTheDocument()
+    expect(
+      await screen.findByRole('row', { name: /Portfolio Total/ }),
+    ).toBeInTheDocument()
 
     expect(apiMocks.getPortfolioPerformance).toHaveBeenCalledWith('3', windowFilters)
     expect(apiMocks.getPortfolioPerformanceCalculation).toHaveBeenCalledWith('3', windowFilters)
@@ -257,7 +259,7 @@ describe('Performance rendered page contract', () => {
     await user.click(within(controls).getByRole('button', { name: 'MTD' }))
     await waitFor(() =>
       expect(apiMocks.getPortfolioPerformance).toHaveBeenLastCalledWith('3', {
-        start_date: '2026-05-01',
+        start_date: '2026-04-30',
         end_date: '2026-05-15',
       }),
     )
@@ -265,7 +267,7 @@ describe('Performance rendered page contract', () => {
     await user.click(within(controls).getByRole('button', { name: 'QTD' }))
     await waitFor(() =>
       expect(apiMocks.getPortfolioPerformance).toHaveBeenLastCalledWith('3', {
-        start_date: '2026-04-01',
+        start_date: '2026-03-31',
         end_date: '2026-05-15',
       }),
     )
@@ -273,7 +275,7 @@ describe('Performance rendered page contract', () => {
     await user.click(within(controls).getByRole('button', { name: 'YTD' }))
     await waitFor(() =>
       expect(apiMocks.getPortfolioPerformanceCalculation).toHaveBeenLastCalledWith('3', {
-        start_date: '2026-01-01',
+        start_date: '2025-12-31',
         end_date: '2026-05-15',
       }),
     )
@@ -362,11 +364,11 @@ describe('Performance rendered page contract', () => {
     await user.click(within(controls).getByRole('button', { name: 'Reset' }))
     await waitFor(() =>
       expect(apiMocks.getPortfolioPerformance).toHaveBeenLastCalledWith('3', {
-        start_date: '2026-06-16',
+        start_date: '2026-06-15',
         end_date: '2026-07-15',
       }),
     )
-    expect(screen.getByLabelText('Start Date')).toHaveValue('2026-06-16')
+    expect(screen.getByLabelText('Start Date')).toHaveValue('2026-06-15')
     expect(window.localStorage.getItem('portfolio_ops.portfolio.performance.window.v1')).toBe('{}')
   })
 
@@ -421,7 +423,7 @@ describe('Performance rendered page contract', () => {
     expect(
       await screen.findByRole('columnheader', { name: /Pending Settlement Monetary FX/ }),
     ).toBeInTheDocument()
-    const portfolioTotal = screen.getByRole('row', { name: /Portfolio Total/ })
+    const portfolioTotal = await screen.findByRole('row', { name: /Portfolio Total/ })
     expect(within(portfolioTotal).getByText('-$0.51')).toBeInTheDocument()
   })
 

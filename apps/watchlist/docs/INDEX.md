@@ -17,7 +17,7 @@
 6. [FUND_TERMINAL_V2_DATA_MODEL_AND_API.md](./FUND_TERMINAL_V2_DATA_MODEL_AND_API.md)
    当前后端数据分层、关键表、API 分组与路由边界。
 7. [RETURN_SERIES_CONTRACT.md](./RETURN_SERIES_CONTRACT.md)
-   主图、Sparkline、MTD/YTD、自定义区间和私募复权收益的统一边界契约。
+   主图、Sparkline、1W/1M/3M/6M/MTD/YTD/1Y、自定义区间和私募复权收益的统一边界契约。
 8. [FUND_TERMINAL_V2_AI_COPILOT.md](./FUND_TERMINAL_V2_AI_COPILOT.md)
    保留中的 Copilot 后端接口、上下文范围、返回协议与 provider 边界；当前 UI 默认关闭。
 

@@ -49,7 +49,8 @@
 - Weight Target / Current Drift 可以展示现金资本权重；Risk Target Gap 完全排除现金。若同一布局为上下文保留现金行，Risk Target 单元格显示 `— / N/A`，不能显示可配置的 `0.00%`。
 - Performance 主页面保留 scorecard、风险摘要、区间图和 Calculation attribution。逐日计算审计、publication lineage、rounding trace 等内部诊断不得作为主页面常驻内容；必要时进入受控 drilldown、日志或开发诊断面。
 - Overview、Holdings、Performance、Risk、Taxonomies、Research 等成熟页面发生结构或指标改动时，必须有真实渲染的 DOM/browser contract test；只读取 TSX 源码并做字符串断言不能作为页面回归保护。
-- Holdings 的 `Portfolio Total` 是当前持仓状态合计，不是 portfolio TWR。总行的 instrument trend return 默认显示 `—`，并通过 title 指向 Performance TWR；若未来展示 current-weight blended instrument return，必须显式命名并携带 coverage；
+- Holdings 的 `Portfolio Total` 是当前持仓状态合计，不是 portfolio TWR。`1W / 1M / 3M / 6M / MTD / YTD / 1Y Return` 在当前成员市值和 total-return series 100% 覆盖、return currency 可共同解释时，展示当前权重持仓篮子收益；覆盖不足时显示 `—`。该总行必须与 Performance TWR 明确区分；
+- Holdings group / subtotal / total 只计算有稳定业务含义的字段：绝对量加总、比例重算、当前权重 return、共同路径 risk 和同一全组合分母下的 Forward RC。Quantity、Avg Cost、Quote、Holding Since、Chart、Coverage、Held Max DD 等单标的字段留空；完整映射见 [Holdings 字段计算与分组标准](../apps/portfolio/docs/03_HOLDINGS_FIELD_REFERENCE.md)；
 - Performance 的 Latest / Reset 与 MTD / QTD / YTD / 1Y / SI 是同一期间选择器的便捷入口；summary、chart、Calculation 和 Groups 必须共享同一个 resolved window，不能各自解释日期；
 - Overview 的质量提示只在检测到真实问题时出现，并包含受影响对象/日期及可执行修复方向；不显示没有事实依据的通用 corporate-action 警告；
 - Research 列表区分 `Held / Observed / Former` 与 eligibility。Former instrument 的正目标在未经 PM approval 时必须显示人工复核状态，不能作为普通已批准建议。

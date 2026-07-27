@@ -1286,10 +1286,15 @@ def test_research_backtest_metrics_require_ytd_anchor_and_use_arithmetic_mean_sh
     values = np.asarray(list(returns.values()), dtype="float64")
     expected_volatility = float(np.std(values, ddof=1) * sqrt(periods_per_year))
     expected_sharpe = float(np.mean(values) * periods_per_year / expected_volatility)
+    expected_annualization_years = 1.0 + (2.0 / 365.0)
 
     assert metrics["annualization_eligible"] is True
-    assert metrics["annualization_years"] == pytest.approx(367 / 365.25)
-    assert metrics["annualized_return"] == pytest.approx(1.2 ** (365.25 / 367) - 1.0)
+    assert metrics["annualization_years"] == pytest.approx(
+        expected_annualization_years
+    )
+    assert metrics["annualized_return"] == pytest.approx(
+        1.2 ** (1.0 / expected_annualization_years) - 1.0
+    )
     assert metrics["ytd_return"] == pytest.approx(1.2 / 0.99 - 1.0)
     assert metrics["sharpe_ratio"] == pytest.approx(expected_sharpe)
     assert metrics["calmar_ratio"] is not None
@@ -1698,7 +1703,7 @@ def test_fund_analytics_remain_unavailable_without_total_return_nav() -> None:
         as_of_date=date(2026, 4, 15),
     )
     assert metrics["instrument_trend_basis"] is None
-    assert metrics["instrument_trend_reason"] == "quote_series_unavailable"
+    assert metrics["instrument_trend_reason"] == "total_return_series_unavailable"
 
 
 def test_research_series_uses_only_complete_market_data() -> None:
@@ -1839,11 +1844,11 @@ def test_holdings_instrument_volatility_requires_window_start_coverage() -> None
     detail = {
         "instrument_type": "equity",
         "currency": "USD",
-        "quote_selection_policy": {"total_return": ["close"]},
+        "quote_selection_policy": {"total_return": ["adjusted_close"]},
         "market_data": [
             {
                 "metric_family": "price",
-                "quote_basis": "close",
+                "quote_basis": "adjusted_close",
                 "as_of_date": (date(2026, 1, 1) + timedelta(days=offset)).isoformat(),
                 "value": str(100.0 + offset / 10),
                 "currency": "USD",
@@ -1868,11 +1873,11 @@ def test_holdings_instrument_volatility_allows_complete_weekly_window() -> None:
     detail = {
         "instrument_type": "equity",
         "currency": "USD",
-        "quote_selection_policy": {"total_return": ["close"]},
+        "quote_selection_policy": {"total_return": ["adjusted_close"]},
         "market_data": [
             {
                 "metric_family": "price",
-                "quote_basis": "close",
+                "quote_basis": "adjusted_close",
                 "as_of_date": (date(2025, 10, 16) + timedelta(days=offset)).isoformat(),
                 "value": str(100.0 + offset / 10),
                 "currency": "USD",

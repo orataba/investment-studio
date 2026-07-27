@@ -10,10 +10,10 @@ import {
 } from './lib/performanceWindow'
 
 describe('performance window extraction contract', () => {
-  it('preserves MTD, QTD, YTD and leap-day-clamped 1Y boundaries', () => {
-    expect(performancePresetStartDate('mtd', '2026-07-15')).toBe('2026-07-01')
-    expect(performancePresetStartDate('qtd', '2026-07-15')).toBe('2026-07-01')
-    expect(performancePresetStartDate('ytd', '2026-07-15')).toBe('2026-01-01')
+  it('uses prior-close anchors for MTD, QTD, YTD and a leap-day-clamped 1Y anchor', () => {
+    expect(performancePresetStartDate('mtd', '2026-07-15')).toBe('2026-06-30')
+    expect(performancePresetStartDate('qtd', '2026-07-15')).toBe('2026-06-30')
+    expect(performancePresetStartDate('ytd', '2026-07-15')).toBe('2025-12-31')
     expect(performancePresetStartDate('1y', '2024-02-29')).toBe('2023-02-28')
     expect(shiftIsoDate('2026-03-01', -1)).toBe('2026-02-28')
   })
@@ -84,7 +84,7 @@ describe('performance window extraction contract', () => {
       }),
     ).toMatchObject({
       waitingForDefaultEndDate: true,
-      effectiveStartDate: '2026-06-16',
+      effectiveStartDate: '2026-06-15',
       effectiveEndDate: '2026-07-15',
     })
     expect(buildPerformanceWindowFilters('', '2026-07-15')).toEqual({

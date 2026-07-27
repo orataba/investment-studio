@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+from datetime import date
+from types import SimpleNamespace
+
 from portfolio_app.api.routes import workspace as workspace_routes
-from portfolio_app.services import instrument_charts, performance
+from portfolio_app.services import daily_snapshots, instrument_charts, performance
 from portfolio_app.services.instrument_registry import get_registry_instrument_details
 
 
@@ -24,9 +27,163 @@ def test_registry_batch_loads_full_details_and_marks_missing() -> None:
     assert list(details) == ["equity-us-abbv", "fund-us-agg", "missing-instrument"]
     assert details["missing-instrument"] is None
     assert details["equity-us-abbv"] is not None
-    assert len(details["equity-us-abbv"]["market_data"]) == 4
+    assert len(details["equity-us-abbv"]["market_data"]) == 8
     assert details["fund-us-agg"] is not None
     assert len(details["fund-us-agg"]["market_data"]) == 4
+
+
+def test_public_holdings_response_uses_canonical_instrument_core_ids(
+    monkeypatch,
+) -> None:
+    reconciliation_calls: list[dict[str, object]] = []
+    warning_calls: list[tuple[set[str], set[str]]] = []
+
+    monkeypatch.setattr(
+        workspace_routes,
+        "reconcile_instrument_event_tasks",
+        lambda **kwargs: reconciliation_calls.append(kwargs) or {"portfolio-1": 0},
+    )
+
+    def capture_warnings(instrument_types, instrument_ids, **_kwargs):
+        warning_calls.append((set(instrument_types), set(instrument_ids)))
+        return []
+
+    monkeypatch.setattr(
+        workspace_routes,
+        "corporate_action_quality_warnings",
+        capture_warnings,
+    )
+    monkeypatch.setattr(
+        workspace_routes,
+        "instrument_event_task_quality_warnings",
+        lambda _portfolio_id: [],
+    )
+
+    payload = workspace_routes._public_holdings_workspace_response(
+        {
+            "portfolio_id": "portfolio-1",
+            "rows": [
+                {
+                    "line_id": "equity-1",
+                    "instrument_core": {
+                        "instrument_id": "equity-1",
+                        "instrument_type": "equity",
+                    },
+                    "price_chart_1m": [],
+                    "price_chart_3m": [],
+                    "price_chart_6m": [],
+                    "price_chart_1y": [],
+                },
+                {
+                    "line_id": "cash:CNY",
+                    "instrument_core": {
+                        "instrument_id": "cash:CNY",
+                        "instrument_type": "cash",
+                    },
+                    "price_chart_1m": [],
+                    "price_chart_3m": [],
+                    "price_chart_6m": [],
+                    "price_chart_1y": [],
+                },
+            ],
+        },
+        include_details=False,
+        transactions=[],
+        as_of_date=date(2026, 7, 24),
+    )
+
+    assert payload["detail_level"] == "compact"
+    assert reconciliation_calls == [
+        {
+            "portfolio_ids": ["portfolio-1"],
+            "instrument_ids": {"equity-1"},
+        }
+    ]
+    assert warning_calls == [({"equity", "cash"}, {"equity-1"})]
+
+
+def test_snapshot_holding_aggregation_preserves_accounts_and_earliest_holding_profile() -> None:
+    def snapshot_row(
+        *,
+        account_id: str,
+        holding_start_date: str,
+        holding_max_drawdown: float,
+    ) -> SimpleNamespace:
+        holding_series = {
+            "first_return_start_date": holding_start_date,
+            "points": [
+                {
+                    "start_date": holding_start_date,
+                    "date": "2026-07-24",
+                    "value": holding_max_drawdown,
+                }
+            ],
+        }
+        return SimpleNamespace(
+            as_of_date=date(2026, 7, 24),
+            instrument_id="fund-1",
+            holding_json={
+                "account_id": account_id,
+                "account_ids": [account_id],
+                "instrument_id": "fund-1",
+                "instrument_ref": {
+                    "instrument_id": "fund-1",
+                    "instrument_name": "Fund 1",
+                    "instrument_type": "fund",
+                    "currency": "CNY",
+                    "identifiers": [],
+                },
+                "quantity": 1,
+                "last_price": 100,
+                "market_value": 100,
+                "market_value_base": 100,
+                "day_change_pct": 0,
+                "day_change_value": 0,
+                "day_change_value_base": 0,
+                "cost_basis_method": "fifo",
+                "cost_basis": 90,
+                "cost_basis_base": 90,
+                "open_position_lot_count": 1,
+                "instrument_holding_start_date": holding_start_date,
+                "instrument_holding_return_series": holding_series,
+                "instrument_holding_max_drawdown": holding_max_drawdown,
+                "coverage_status": "price-nav-fx",
+            },
+        )
+
+    rows = [
+        snapshot_row(
+            account_id="account-a",
+            holding_start_date="2026-07-20",
+            holding_max_drawdown=-0.01,
+        ),
+        snapshot_row(
+            account_id="account-b",
+            holding_start_date="2026-06-01",
+            holding_max_drawdown=-0.20,
+        ),
+    ]
+
+    aggregated = daily_snapshots._aggregate_holding_rows(
+        rows,  # type: ignore[arg-type]
+        total_nav_base=200,
+    )
+
+    assert len(aggregated) == 1
+    assert aggregated[0]["account_ids"] == ["account-a", "account-b"]
+    assert aggregated[0]["account_count"] == 2
+    assert aggregated[0]["instrument_holding_start_date"] == "2026-06-01"
+    assert aggregated[0]["instrument_holding_max_drawdown"] == -0.20
+    assert aggregated[0]["instrument_holding_return_series"] == {
+        "first_return_start_date": "2026-06-01",
+        "points": [
+            {
+                "start_date": "2026-06-01",
+                "date": "2026-07-24",
+                "value": -0.20,
+            }
+        ],
+    }
 
 
 def test_materialized_holdings_uses_one_bulk_detail_map(client, monkeypatch) -> None:

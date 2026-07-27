@@ -120,7 +120,7 @@ npm --prefix apps/watchlist/frontend run build
 - Instrument Detail 里的 canonical quote/NAV history 现在是只读视图；导入、编辑、刷新共享行情/净值要去 `Database Dashboard`，这里只保留本地 basis / benchmark 设置。派生层必须保留真实 `metric_family / quote_basis / role`，不能把 `close`、`official_nav`、`total_return_nav` 混成一个无来源的 NAV 字段。
 - canonical recalc 只消费 Registry 中 `status=complete`、currency 与 instrument master currency 一致的 quote/NAV，并严格使用 Registry `quote_selection_policy` 的顺序。Registry 无有效序列或缺 policy 时明确产出 unavailable；旧 Watchlist `nav_fact` 仅可审计读取，不再参与行情、收益、风险或图表计算。
 - Instrument Detail 的 benchmark 选择在 Quote / Performance / Risk 三个工作面共用同一状态；Performance matrix 和 Risk rolling charts 使用同一 benchmark calculation series，不再维护第二套 metric benchmark。Quote / Performance 图表在比较 benchmark 时只绘制双方重叠日期窗口，并按真实日期比例投影横轴，不按样本序号拉伸。Rolling risk chart 支持 1M / 3M / 6M / 12M / 24M / 36M 窗口；benchmark 曲线只在存在重叠 calculation series 时展示，不补齐缺失序列。
-- `return_ytd / return_mtd / return_1w / return_1m / return_1y / annualized_return / return_3y / return_5y / max_drawdown / current_drawdown / volatility / sharpe_ratio` 当前对 fund 与 index 都可见；普通 fund 默认用 `total_return_nav`，场内 ETF/指数按 `quote_selection_policy` 可用 `close`，read model 会记录实际选中的 quote basis。
+- `return_ytd / return_mtd / return_1w / return_1m / return_3m / return_6m / return_1y / annualized_return / return_3y / return_5y / max_drawdown / current_drawdown / volatility / sharpe_ratio` 当前对适用的 fund / ETF / index 可见，并完整投影到 performance snapshot 与 watchlist row read model。普通 fund 只使用 `total_return_nav`；场内 ETF/指数按 `quote_selection_policy` 选择 calculation series，read model 同时记录实际 quote basis 与 `total_return / price_return / unknown` 语义，不能把普通 `close` 自动写成 total return。
 
 ## 当前文档
 

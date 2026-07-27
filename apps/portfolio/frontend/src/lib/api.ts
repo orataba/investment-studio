@@ -261,6 +261,11 @@ export type PortfolioPeriodCalculationLine = {
 export type PortfolioPeriodCalculationSummary = {
   start_date: string | null
   end_date: string | null
+  requested_start_date?: string | null
+  requested_end_date?: string | null
+  effective_start_date?: string | null
+  effective_end_date?: string | null
+  as_of_clamp_reason?: string | null
   coverage_state: PortfolioPerformanceCoverageState
   stale_price_flag: boolean
   stale_fx_flag: boolean
@@ -326,6 +331,7 @@ export type PortfolioPeriodCalculationGroupMetrics = {
   average_weight: number | null
   ending_weight: number | null
   period_return: number | null
+  period_return_coverage_state: PortfolioPerformanceCoverageState
   initial_value: number | null
   final_value: number | null
   delta: number | null
@@ -387,6 +393,9 @@ export type PortfolioPeriodCalculationGroupsSummary = {
   contribution_residual: number | null
   risk_calculation_frequency: PortfolioCalculationFrequency
   risk_frequency_status_label: string | null
+  risk_basis_coverage_state: PortfolioPerformanceCoverageState
+  risk_basis_requested_instrument_count: number
+  risk_basis_resolved_instrument_count: number
   risk_return_observation_count: number
   risk_annualization_periods_per_year: number | null
   annualized_volatility: number | null
@@ -559,6 +568,8 @@ export type PortfolioHoldingRow = {
   instrument_risk_frequency?: PortfolioCalculationFrequency | null
   instrument_return_1w?: number | null
   instrument_return_1m?: number | null
+  instrument_return_3m?: number | null
+  instrument_return_6m?: number | null
   instrument_return_mtd?: number | null
   instrument_return_ytd?: number | null
   instrument_return_1y?: number | null

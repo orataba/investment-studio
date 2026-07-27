@@ -94,6 +94,20 @@ def test_holding_day_change_uses_injected_market_value_calculation() -> None:
     assert len(calls) == 1
 
 
+def test_holding_day_change_never_mixes_total_return_and_valuation_pairs() -> None:
+    change_pct, change_value = holdings_market_profile.holding_day_change_metrics(
+        quantity=2.0,
+        current_price=110.0,
+        previous_price=100.0,
+        instrument_ref=_instrument_ref(),
+        current_return_price=55.0,
+        previous_return_price=None,
+    )
+
+    assert change_pct == pytest.approx(0.10)
+    assert change_value == pytest.approx(20.0)
+
+
 def test_cash_profile_uses_injected_fx_and_identity_dependencies() -> None:
     def current_fx(**_kwargs):
         return {"rate": "1.20", "as_of_date": "2026-01-03"}

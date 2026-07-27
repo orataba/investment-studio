@@ -64,7 +64,7 @@ export function buildPerformanceHistoryReliability(
     annualizationMessage: annualizedReturnEligible
       ? null
       : summary.annualization_unavailable_reason === 'measurement_period_shorter_than_one_year'
-        ? 'Insufficient history: annualized TWR and IRR / MWRR require at least one ACT/365.25 year. Period TWR remains the primary return.'
+        ? 'Insufficient history: annualized TWR and IRR / MWRR require one full calendar-anniversary year. Period TWR remains the primary return.'
         : 'Annualized TWR and IRR / MWRR are unavailable until a valid measurement period is established. Period TWR remains the primary return.',
   }
 }

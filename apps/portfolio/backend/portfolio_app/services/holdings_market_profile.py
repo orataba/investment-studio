@@ -173,11 +173,14 @@ def holding_day_change_metrics(
     price_scale: float | None = None,
     position_market_value: PositionMarketValue = valuation_fx.position_market_value,
 ) -> tuple[float | None, float | None]:
+    has_complete_total_return_pair = (
+        current_return_price is not None and previous_return_price is not None
+    )
     resolved_current_return_price = (
-        current_return_price if current_return_price is not None else current_price
+        current_return_price if has_complete_total_return_pair else current_price
     )
     resolved_previous_return_price = (
-        previous_return_price if previous_return_price is not None else previous_price
+        previous_return_price if has_complete_total_return_pair else previous_price
     )
     if (
         current_price is None

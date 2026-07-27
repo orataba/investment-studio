@@ -100,6 +100,10 @@ REGISTRY_INSTRUMENT_DETAILS = [
             _market_point("price", "close", "2026-03-15", "210.20", "USD"),
             _market_point("price", "close", "2026-04-08", "207.18", "USD"),
             _market_point("price", "close", "2026-04-15", "206.47", "USD"),
+            _market_point("price", "adjusted_close", "2026-02-10", "206.47", "USD"),
+            _market_point("price", "adjusted_close", "2026-03-15", "210.20", "USD"),
+            _market_point("price", "adjusted_close", "2026-04-08", "207.18", "USD"),
+            _market_point("price", "adjusted_close", "2026-04-15", "206.47", "USD"),
         ],
     },
     {
