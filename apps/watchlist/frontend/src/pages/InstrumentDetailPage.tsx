@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Link, useParams, useSearchParams } from 'react-router-dom'
+import { Link, useParams, useSearchParams } from 'react-router'
 
 import FundDetailPage from './FundDetailPage'
 import ListedInstrumentDetailPage from './ListedInstrumentDetailPage'

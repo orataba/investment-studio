@@ -1,6 +1,6 @@
 import type { ReactElement, ReactNode } from 'react'
 import { render } from '@testing-library/react'
-import { MemoryRouter, Route, Routes } from 'react-router-dom'
+import { MemoryRouter, Route, Routes } from 'react-router'
 
 export function renderPortfolioPage(
   element: ReactElement,
@@ -8,10 +8,7 @@ export function renderPortfolioPage(
   routePath: string,
 ) {
   return render(
-    <MemoryRouter
-      initialEntries={[route]}
-      future={{ v7_startTransition: true, v7_relativeSplatPath: true }}
-    >
+    <MemoryRouter initialEntries={[route]}>
       <Routes>
         <Route path={routePath} element={element} />
       </Routes>

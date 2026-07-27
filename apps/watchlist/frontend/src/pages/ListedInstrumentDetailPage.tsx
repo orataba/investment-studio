@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState, type MouseEvent as ReactMouseEvent } from 'react'
-import { Link } from 'react-router-dom'
+import { Link } from 'react-router'
 
 import LoadingOverlay from '../components/LoadingOverlay'
 import {

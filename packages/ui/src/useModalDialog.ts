@@ -19,7 +19,7 @@ export function useModalDialog(
   open: boolean,
   onClose: () => void,
   initialFocusRef?: ElementRef,
-): RefObject<HTMLDivElement> {
+): RefObject<HTMLDivElement | null> {
   const dialogRef = useRef<HTMLDivElement>(null)
   const onCloseRef = useRef(onClose)
   const modalTokenRef = useRef(Symbol('portfolio-ops-modal'))

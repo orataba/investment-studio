@@ -14,6 +14,7 @@ function expectReadonlyField(markup: string, label: string, value: string) {
   expect(markup).toMatch(
     new RegExp(
       `<input(?=[^>]*aria-label="${label}")(?=[^>]*readonly="")(?=[^>]*value="${value}")[^>]*>`,
+      'i',
     ),
   )
 }

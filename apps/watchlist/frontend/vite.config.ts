@@ -25,6 +25,15 @@ export default defineConfig(({ mode }) => {
       ],
       dedupe: ['react', 'react-dom'],
     },
+    build: {
+      rollupOptions: {
+        output: {
+          manualChunks: {
+            'react-vendor': ['react', 'react-dom', 'react-router'],
+          },
+        },
+      },
+    },
     server: {
       host: '127.0.0.1',
       port: 5173,

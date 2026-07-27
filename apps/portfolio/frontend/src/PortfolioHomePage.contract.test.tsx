@@ -1,6 +1,6 @@
 import { act, render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { MemoryRouter, Route, Routes, useNavigate } from 'react-router-dom'
+import { MemoryRouter, Route, Routes, useNavigate } from 'react-router'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import PortfolioHomePage from './pages/PortfolioHomePage'
@@ -121,10 +121,7 @@ describe('Holdings rendered page contract', () => {
 
     const user = userEvent.setup()
     render(
-      <MemoryRouter
-        initialEntries={['/portfolios/3/holdings']}
-        future={{ v7_startTransition: true, v7_relativeSplatPath: true }}
-      >
+      <MemoryRouter initialEntries={['/portfolios/3/holdings']}>
         <HoldingsRouteHarness />
       </MemoryRouter>,
     )

@@ -1,4 +1,4 @@
-import { Link } from 'react-router-dom'
+import { Link } from 'react-router'
 
 import { PLATFORM_HOME_URL } from '../lib/navigation'
 

@@ -8,7 +8,7 @@ import {
   type MouseEvent as ReactMouseEvent,
   type ReactNode,
 } from 'react'
-import { useNavigate, useParams, useSearchParams } from 'react-router-dom'
+import { useNavigate, useParams, useSearchParams } from 'react-router'
 
 import CalculationStatus from '../components/CalculationStatus'
 import HoldingsTotalRow, { isPortfolioReturnColumn } from '../components/HoldingsTotalRow'

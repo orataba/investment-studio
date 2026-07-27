@@ -1,5 +1,5 @@
-import { FormEvent, useEffect, useMemo, useRef, useState, type DragEvent as ReactDragEvent, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type ReactNode } from 'react'
-import { useParams, useSearchParams } from 'react-router-dom'
+import { FormEvent, useEffect, useMemo, useRef, useState, type DragEvent as ReactDragEvent, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type ReactElement, type ReactNode } from 'react'
+import { useParams, useSearchParams } from 'react-router'
 
 import CalculationStatus from '../components/CalculationStatus'
 import PortfolioWorkspaceLayout from '../components/PortfolioWorkspaceLayout'
@@ -2669,7 +2669,7 @@ export default function TaxonomiesPage() {
     )
   }
 
-  function renderCashTreeRows(depth: number): Array<JSX.Element> {
+  function renderCashTreeRows(depth: number): ReactElement[] {
     if (!showSystemCashNode) {
       return []
     }
@@ -2686,7 +2686,7 @@ export default function TaxonomiesPage() {
     const editable = targetEditMode && Boolean(selectedTaxonomy?.planning_enabled) && Boolean(targetDraftsByScope[ROOT_TARGET_SCOPE_KEY])
     const isTargetScopeMember = currentScopeMemberKeySet.has(cashTargetMember.member_key)
     const isCollapsed = collapsedNodeIds.has(TAXONOMY_CASH_ROW_ID)
-    const rows: Array<JSX.Element> = [
+    const rows: ReactElement[] = [
       <tr
         key={TAXONOMY_CASH_ROW_ID}
         className={['taxonomy-node-table-row', 'taxonomy-system-cash-row', 'taxonomy-node-depth-1', isTargetScopeMember ? 'taxonomy-scope-row' : '']
@@ -2729,8 +2729,8 @@ export default function TaxonomiesPage() {
     return rows
   }
 
-  function renderNodeTreeRows(parentId: string | null, depth: number): Array<JSX.Element> {
-    const rows: Array<JSX.Element> = []
+  function renderNodeTreeRows(parentId: string | null, depth: number): ReactElement[] {
+    const rows: ReactElement[] = []
     ;(childrenByParent.get(parentId) ?? []).forEach((node) => {
       const childCount = (childrenByParent.get(node.taxonomy_node_id) ?? []).length
       const treeRow: TreeRow = {

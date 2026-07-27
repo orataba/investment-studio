@@ -16,7 +16,7 @@
       "react/jsx-dev-runtime": ["node_modules/@types/react/jsx-dev-runtime"]
     },
     "module": "ESNext",
-    "moduleResolution": "Node",
+    "moduleResolution": "Bundler",
     "resolveJsonModule": true,
     "isolatedModules": true,
     "noEmit": true,

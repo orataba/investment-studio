@@ -1,4 +1,4 @@
-import { Navigate, Route, Routes } from 'react-router-dom'
+import { Navigate, Route, Routes } from 'react-router'
 import { LanguageSelector } from '../../../../packages/ui/src/i18n'
 
 import MonitoringPage from './pages/MonitoringPage'

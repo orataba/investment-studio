@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
-import { useParams } from 'react-router-dom'
+import { useParams } from 'react-router'
 
 import BenchmarkSearchBox, {
   benchmarkInstrumentLabel,

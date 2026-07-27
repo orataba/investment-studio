@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { Link, useParams, useSearchParams } from 'react-router-dom'
+import { Link, useParams, useSearchParams } from 'react-router'
 
 import InstrumentPriceChart from '../components/InstrumentPriceChart'
 import CalculationStatus from '../components/CalculationStatus'
