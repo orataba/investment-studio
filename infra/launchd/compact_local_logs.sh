@@ -22,7 +22,21 @@ mkdir -p "$LOG_DIR"
 
 file_size_bytes() {
   local path="$1"
-  stat -f '%z' "$path" 2>/dev/null || stat -c '%s' "$path"
+  local size_bytes
+
+  if size_bytes="$(stat -f '%z' "$path" 2>/dev/null)" \
+    && [[ "$size_bytes" =~ ^[0-9]+$ ]]; then
+    printf '%s\n' "$size_bytes"
+    return 0
+  fi
+  if size_bytes="$(stat -c '%s' "$path" 2>/dev/null)" \
+    && [[ "$size_bytes" =~ ^[0-9]+$ ]]; then
+    printf '%s\n' "$size_bytes"
+    return 0
+  fi
+
+  echo "Unable to determine the size of $path." >&2
+  return 1
 }
 
 while IFS= read -r -d '' log_file; do

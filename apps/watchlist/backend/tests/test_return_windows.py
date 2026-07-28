@@ -7,6 +7,7 @@ import pytest
 
 from watchlist_app.services.read_models import build_sparkline_payload
 from watchlist_app.services.return_windows import (
+    annualized_return_percent,
     named_return_window_spec,
     period_return_percent,
     resolve_return_window,
@@ -81,6 +82,24 @@ def test_calendar_month_lookback_clamps_month_end() -> None:
     assert spec.requested_start_date == date(2026, 2, 28)
     assert spec.requested_end_date == date(2026, 3, 31)
     assert spec.anchor_mode == "on_or_before"
+
+
+def test_annualized_return_is_withheld_until_the_first_calendar_anniversary() -> None:
+    short_window = resolve_return_window(
+        _points(("2024-02-29", 100), ("2025-02-27", 110)),
+        requested_start_date=date(2024, 2, 29),
+        requested_end_date=date(2025, 2, 27),
+    )
+    anniversary_window = resolve_return_window(
+        _points(("2024-02-29", 100), ("2025-02-28", 110)),
+        requested_start_date=date(2024, 2, 29),
+        requested_end_date=date(2025, 2, 28),
+    )
+
+    assert short_window is not None
+    assert anniversary_window is not None
+    assert annualized_return_percent(short_window) is None
+    assert annualized_return_percent(anniversary_window) == pytest.approx(10.0)
 
 
 def test_total_return_windows_use_the_same_calendar_anchors_as_portfolio_holdings() -> None:

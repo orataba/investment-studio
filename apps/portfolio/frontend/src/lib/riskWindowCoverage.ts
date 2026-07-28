@@ -25,6 +25,11 @@ const RISK_MAX_START_GAP_DAYS: Record<CalculationFrequency, number> = {
   weekly: 21,
   monthly: 45,
 }
+const RISK_MAX_TRAILING_STALENESS_DAYS: Record<CalculationFrequency, number> = {
+  daily: 5,
+  weekly: 14,
+  monthly: 62,
+}
 const RISK_WINDOW_LABELS_BY_DAYS: Record<number, string> = {
   30: '1M',
   90: '3M',
@@ -67,6 +72,7 @@ export function assessRiskWindowCoverage(
   lookbackDays: number,
   frequency: CalculationFrequency,
   parameters?: Record<string, unknown>,
+  firstPeriodStartDate?: string | null,
 ): RiskWindowCoverage {
   const sortedDates = [...new Set(dateKeys)].filter(Boolean).sort()
   const observationCount = sortedDates.length
@@ -88,7 +94,28 @@ export function assessRiskWindowCoverage(
   const requiredStartDate = riskWindowStart(asOfDate, lookbackDays)
   const firstDate = sortedDates[0]
   const lastDate = sortedDates[sortedDates.length - 1]
-  const startGapDays = absoluteDayDiff(firstDate, requiredStartDate)
+  if (lastDate > asOfDate) {
+    return {
+      ok: false,
+      observationCount,
+      error: `Risk window contains an observation after its as-of date: ${lastDate}.`,
+    }
+  }
+  const configuredTrailingStaleness = parameters?.max_trailing_staleness_days
+  const maxTrailingStalenessDays =
+    typeof configuredTrailingStaleness === 'number' && Number.isFinite(configuredTrailingStaleness)
+      ? Math.max(0, Math.floor(configuredTrailingStaleness))
+      : RISK_MAX_TRAILING_STALENESS_DAYS[frequency]
+  const trailingStalenessDays = dayDiff(lastDate, asOfDate)
+  if (trailingStalenessDays == null || trailingStalenessDays > maxTrailingStalenessDays) {
+    return {
+      ok: false,
+      observationCount,
+      error: `Risk window latest observation is ${trailingStalenessDays ?? 'unknown'} days before ${asOfDate}; maximum allowed for ${frequency} is ${maxTrailingStalenessDays} days.`,
+    }
+  }
+  const coverageStartDate = firstPeriodStartDate || firstDate
+  const startGapDays = absoluteDayDiff(coverageStartDate, requiredStartDate)
   if (startGapDays == null || startGapDays > RISK_MAX_START_GAP_DAYS[frequency]) {
     return {
       ok: false,
@@ -96,8 +123,11 @@ export function assessRiskWindowCoverage(
       error: `Risk window lacks a valid ${frequency} start anchor near ${requiredStartDate}.`,
     }
   }
-  const elapsedDays = dayDiff(firstDate, lastDate)
-  const minElapsedDays = Math.floor(lookbackDays * RISK_MIN_WINDOW_COVERAGE_RATIO)
+  const elapsedDays = dayDiff(coverageStartDate, lastDate)
+  const requiredWindowDays = dayDiff(requiredStartDate, asOfDate)
+  const minElapsedDays = Math.floor(
+    (requiredWindowDays ?? lookbackDays) * RISK_MIN_WINDOW_COVERAGE_RATIO,
+  )
   if (elapsedDays == null || elapsedDays <= 0 || elapsedDays < minElapsedDays) {
     return {
       ok: false,

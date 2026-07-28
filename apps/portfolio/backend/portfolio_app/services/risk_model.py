@@ -21,6 +21,7 @@ from portfolio_app.services.research_solver import (
     prepare_return_window_for_covariance,
     research_covariance_parameters_for_window,
     research_min_observations_for_window,
+    research_window_start_date,
     risk_contribution_shares,
 )
 
@@ -219,21 +220,131 @@ def _return_series_points(row: dict[str, object]) -> list[dict[str, object]]:
     return points if isinstance(points, list) else []
 
 
-def _returns_by_date(row: dict[str, object]) -> pd.Series:
+def _return_series_with_periods(row: dict[str, object]) -> tuple[pd.Series, dict[date, date]]:
     values: dict[date, float] = {}
+    starts: dict[date, date] = {}
     for point in _return_series_points(row):
         if not isinstance(point, dict):
-            continue
+            raise ValueError("return series contains a non-object observation")
         raw_date = point.get("date")
         raw_value = _safe_float(point.get("value"))
         if raw_date is None or raw_value is None:
-            continue
+            raise ValueError("return series contains an observation without a period end or finite value")
         try:
             point_date = date.fromisoformat(str(raw_date)[:10])
-        except ValueError:
-            continue
+        except ValueError as error:
+            raise ValueError(f"return series contains invalid period end {raw_date}") from error
+        raw_start_date = point.get("start_date")
+        if raw_start_date is None:
+            raise ValueError(f"return ending {point_date.isoformat()} is missing its period start")
+        try:
+            start_date = date.fromisoformat(str(raw_start_date)[:10])
+        except ValueError as error:
+            raise ValueError(f"return ending {point_date.isoformat()} has invalid period start {raw_start_date}") from error
+        if start_date >= point_date:
+            raise ValueError(
+                f"return period {start_date.isoformat()} -> {point_date.isoformat()} is not strictly increasing"
+            )
+        if point_date in values:
+            raise ValueError(f"return series contains duplicate period end {point_date.isoformat()}")
+        if not np.isfinite(raw_value):
+            raise ValueError(f"return ending {point_date.isoformat()} is non-finite")
         values[point_date] = raw_value
-    return pd.Series(values, dtype="float64").sort_index()
+        starts[point_date] = start_date
+    ordered_period_ends = sorted(values)
+    for index in range(1, len(ordered_period_ends)):
+        previous_end = ordered_period_ends[index - 1]
+        current_end = ordered_period_ends[index]
+        current_start = starts[current_end]
+        if current_start != previous_end:
+            raise ValueError(
+                "return series is not contiguous: "
+                f"period ending {current_end.isoformat()} starts at "
+                f"{current_start.isoformat()} instead of the preceding "
+                f"period end {previous_end.isoformat()}"
+            )
+    return pd.Series(values, dtype="float64").sort_index(), starts
+
+
+def _forward_risk_coverage_snapshot(
+    returns: pd.DataFrame,
+    *,
+    as_of_date: date,
+    lookback_days: int,
+    missing_return_policy: str,
+    labels_by_key: dict[str, str],
+) -> dict[str, object]:
+    window_start_date = research_window_start_date(as_of_date, lookback_days)
+    window = returns.loc[
+        (returns.index > window_start_date) & (returns.index <= as_of_date)
+    ].sort_index()
+    missing_mask = window.isna().any(axis=1) if not window.empty else pd.Series(dtype="bool")
+    complete = window.loc[~missing_mask] if not window.empty else window
+    missing_rows: list[dict[str, object]] = []
+    if not window.empty:
+        for raw_date, row in window.loc[missing_mask].iterrows():
+            missing_rows.append(
+                {
+                    "date": pd.Timestamp(raw_date).date().isoformat(),
+                    "missing_members": [
+                        labels_by_key.get(str(column), str(column))
+                        for column, value in row.items()
+                        if pd.isna(value)
+                    ],
+                }
+            )
+    latest_complete_date = pd.Timestamp(max(complete.index)).date() if len(complete) else None
+    missing_row_count = int(missing_mask.sum()) if len(missing_mask) else 0
+    return {
+        "policy": missing_return_policy,
+        "window_start_date": window_start_date.isoformat(),
+        "window_end_date": as_of_date.isoformat(),
+        "return_interval": (
+            f"({window_start_date.isoformat()} EOD, {as_of_date.isoformat()} EOD]"
+        ),
+        "rows_before": int(len(window)),
+        "rows_after": int(len(complete)),
+        "complete_row_count": int(len(complete)),
+        "missing_row_count": missing_row_count,
+        "missing_row_fraction": float(missing_row_count / len(window)) if len(window) else 0.0,
+        "missing_rows": missing_rows,
+        "latest_complete_date": latest_complete_date.isoformat() if latest_complete_date else None,
+        "trailing_staleness_days": (
+            int((as_of_date - latest_complete_date).days)
+            if latest_complete_date is not None
+            else None
+        ),
+    }
+
+
+def _validate_aligned_return_periods(
+    complete_returns: pd.DataFrame,
+    *,
+    period_starts_by_key: dict[str, dict[date, date]],
+    labels_by_key: dict[str, str],
+) -> None:
+    for raw_end_date in complete_returns.index:
+        end_date = pd.Timestamp(raw_end_date).date()
+        starts_by_member = {
+            labels_by_key.get(key, key): period_starts_by_key.get(key, {}).get(end_date)
+            for key in complete_returns.columns
+        }
+        missing_members = [label for label, start_date in starts_by_member.items() if start_date is None]
+        if missing_members:
+            raise ValueError(
+                f"Forward risk contribution return ending {end_date.isoformat()} is missing period starts for "
+                f"{', '.join(missing_members)}."
+            )
+        distinct_starts = sorted({start_date for start_date in starts_by_member.values() if start_date is not None})
+        if len(distinct_starts) > 1:
+            rendered = ", ".join(
+                f"{label}={start_date.isoformat() if start_date else 'missing'}"
+                for label, start_date in starts_by_member.items()
+            )
+            raise ValueError(
+                f"Forward risk contribution requires identical return periods; ending {end_date.isoformat()} "
+                f"has mismatched starts: {rendered}."
+            )
 
 
 def _clear_forward_risk_fields(row: dict[str, object], *, cash: bool = False) -> None:
@@ -263,33 +374,98 @@ def enrich_holdings_forward_risk(
     snapshot = portfolio_risk_model_snapshot(risk_policy, calculation_frequency=calculation_frequency)
     workspace["risk_policy"] = snapshot
 
-    active: list[tuple[str, dict[str, object], pd.Series]] = []
+    risk_basis = (
+        workspace.get("risk_basis")
+        if isinstance(workspace.get("risk_basis"), dict)
+        else None
+    )
+    risk_basis_coverage_state = (
+        str(risk_basis.get("coverage_state") or "").strip().lower()
+        if risk_basis is not None
+        else ""
+    )
+    if risk_basis_coverage_state and risk_basis_coverage_state != "complete":
+        for raw_row in rows:
+            if isinstance(raw_row, dict):
+                _clear_forward_risk_fields(raw_row)
+        workspace["forward_risk"] = {
+            "status": "unavailable",
+            "errors": [
+                str(
+                    risk_basis.get("status_label")
+                    or f"Forward RC requires a complete risk basis; got {risk_basis_coverage_state}."
+                )
+            ],
+            "risk_model": snapshot,
+        }
+        return workspace
+
+    base_currency = str(workspace.get("base_currency") or "").strip().upper()
+    if not base_currency:
+        for raw_row in rows:
+            if isinstance(raw_row, dict):
+                _clear_forward_risk_fields(raw_row)
+        workspace["forward_risk"] = {
+            "status": "unavailable",
+            "errors": ["Forward RC requires the portfolio base currency."],
+            "risk_model": snapshot,
+        }
+        return workspace
+
+    active: list[tuple[str, dict[str, object], pd.Series, dict[date, date]]] = []
     errors: list[str] = []
     for index, raw_row in enumerate(rows):
         if not isinstance(raw_row, dict):
             continue
-        if _holding_row_is_cash(raw_row):
-            _clear_forward_risk_fields(raw_row, cash=True)
-            continue
+        instrument_core = raw_row.get("instrument_core") if isinstance(raw_row.get("instrument_core"), dict) else {}
+        instrument_currency = str(instrument_core.get("currency") or "").strip().upper()
         weight = _safe_float(raw_row.get("allocation"))
         market_value = _safe_float(raw_row.get("market_value_base"))
         has_exposure = abs(weight or 0.0) > 1e-12 or abs(market_value or 0.0) > 1e-9
+        if _holding_row_is_cash(raw_row):
+            if not has_exposure or (base_currency and instrument_currency == base_currency):
+                _clear_forward_risk_fields(raw_row, cash=True)
+            else:
+                _clear_forward_risk_fields(raw_row)
+                errors.append(
+                    f"Forward RC requires an FX total-return series for non-base cash {_row_label(raw_row)} "
+                    f"({instrument_currency or 'unknown'} versus {base_currency or 'unknown'})."
+                )
+            continue
         if not has_exposure:
             _clear_forward_risk_fields(raw_row)
             raw_row["forward_risk_status"] = "no_exposure"
+            continue
+        if not instrument_currency:
+            _clear_forward_risk_fields(raw_row)
+            errors.append(f"Forward RC requires a return currency for {_row_label(raw_row)}.")
+            continue
+        if instrument_currency != base_currency:
+            _clear_forward_risk_fields(raw_row)
+            errors.append(
+                f"Forward RC requires base-currency total returns; {_row_label(raw_row)} is "
+                f"{instrument_currency} while the portfolio base currency is {base_currency}."
+            )
             continue
         if weight is None:
             _clear_forward_risk_fields(raw_row)
             errors.append(f"Forward RC requires a current portfolio weight for {_row_label(raw_row)}.")
             continue
-        series = _returns_by_date(raw_row)
+        try:
+            series, period_starts = _return_series_with_periods(raw_row)
+        except ValueError as error:
+            _clear_forward_risk_fields(raw_row)
+            errors.append(f"Forward RC {_row_label(raw_row)} {error}.")
+            continue
         if series.empty:
             _clear_forward_risk_fields(raw_row)
             errors.append(f"Forward RC requires full-history return series for {_row_label(raw_row)}.")
             continue
-        active.append((_row_key(raw_row, index), raw_row, series))
+        active.append((_row_key(raw_row, index), raw_row, series, period_starts))
 
     if errors:
+        for _key, row, _series, _starts in active:
+            _clear_forward_risk_fields(row)
         workspace["forward_risk"] = {
             "status": "unavailable",
             "errors": errors,
@@ -304,8 +480,20 @@ def enrich_holdings_forward_risk(
         }
         return workspace
 
-    returns = pd.DataFrame({key: series for key, _row, series in active}).sort_index()
-    weights = np.asarray([_safe_float(row.get("allocation")) or 0.0 for _key, row, _series in active], dtype="float64")
+    returns = pd.DataFrame({key: series for key, _row, series, _starts in active}).sort_index()
+    labels_by_key = {key: _row_label(row) for key, row, _series, _starts in active}
+    period_starts_by_key = {key: starts for key, _row, _series, starts in active}
+    weights = np.asarray(
+        [_safe_float(row.get("allocation")) or 0.0 for _key, row, _series, _starts in active],
+        dtype="float64",
+    )
+    coverage_snapshot = _forward_risk_coverage_snapshot(
+        returns,
+        as_of_date=as_of_date,
+        lookback_days=int(snapshot["lookback_days"]),
+        missing_return_policy=str(snapshot["missing_return_policy"]),
+        labels_by_key=labels_by_key,
+    )
     try:
         parameters = dict(snapshot.get("parameters") if isinstance(snapshot.get("parameters"), dict) else {})
         coverage = prepare_return_window_for_covariance(
@@ -316,6 +504,11 @@ def enrich_holdings_forward_risk(
             missing_return_policy=str(snapshot["missing_return_policy"]),
             calculation_frequency=calculation_frequency,
             as_of_date=as_of_date,
+        )
+        _validate_aligned_return_periods(
+            coverage.returns,
+            period_starts_by_key=period_starts_by_key,
+            labels_by_key=labels_by_key,
         )
         covariance = estimate_covariance(
             returns,
@@ -336,26 +529,28 @@ def enrich_holdings_forward_risk(
             contribution_mode=str(snapshot["contribution_mode"]),
         )
     except ValueError as error:
-        for _key, row, _series in active:
+        for _key, row, _series, _starts in active:
             _clear_forward_risk_fields(row)
         workspace["forward_risk"] = {
             "status": "unavailable",
             "errors": [str(error)],
             "risk_model": snapshot,
+            "coverage": coverage_snapshot,
         }
         return workspace
 
     if not np.isfinite(variance) or variance <= 1e-12:
-        for _key, row, _series in active:
+        for _key, row, _series, _starts in active:
             _clear_forward_risk_fields(row)
         workspace["forward_risk"] = {
             "status": "unavailable",
             "errors": ["Forward RC requires positive finite portfolio variance."],
             "risk_model": snapshot,
+            "coverage": coverage_snapshot,
         }
         return workspace
 
-    for index, (_key, row, _series) in enumerate(active):
+    for index, (_key, row, _series, _starts) in enumerate(active):
         row["forward_risk_share"] = float(shares[index])
         row["forward_contribution_to_variance"] = float(signed_contributions[index])
         own_variance = float(covariance_matrix[index, index])
@@ -370,5 +565,6 @@ def enrich_holdings_forward_risk(
         "portfolio_variance": variance,
         "portfolio_volatility": sqrt(variance),
         "observation_count": int(len(coverage.returns)),
+        "coverage": coverage_snapshot,
     }
     return workspace

@@ -111,6 +111,17 @@ router = APIRouter()
 _MATERIALIZED_CALCULATION_GROUP_AXES = {"instrument", "account", "instrument_type", "currency"}
 
 
+def _validate_date_window(
+    start_date: date | None,
+    end_date: date | None,
+) -> None:
+    if start_date is not None and end_date is not None and start_date > end_date:
+        raise HTTPException(
+            status_code=422,
+            detail="start_date must be on or before end_date",
+        )
+
+
 def _calculation_group_detail_axis(axis: str) -> str:
     return "cash_detail" if axis == "instrument" else f"{axis}_detail"
 
@@ -191,6 +202,7 @@ def list_daily_snapshots(
     start_date: date | None = None,
     end_date: date | None = None,
 ) -> DailySnapshotListResponse:
+    _validate_date_window(start_date, end_date)
     portfolio = get_portfolio(portfolio_id)
     if portfolio is None:
         raise HTTPException(status_code=404, detail="Portfolio not found")
@@ -240,6 +252,7 @@ def get_portfolio_performance(
     start_date: date | None = None,
     end_date: date | None = None,
 ) -> PerformanceResponse:
+    _validate_date_window(start_date, end_date)
     portfolio = get_portfolio(portfolio_id)
     if portfolio is None:
         raise HTTPException(status_code=404, detail="Portfolio not found")
@@ -271,6 +284,7 @@ def get_portfolio_period_calculation(
     start_date: date | None = None,
     end_date: date | None = None,
 ) -> PeriodCalculationResponse:
+    _validate_date_window(start_date, end_date)
     portfolio = get_portfolio(portfolio_id)
     if portfolio is None:
         raise HTTPException(status_code=404, detail="Portfolio not found")
@@ -305,6 +319,7 @@ def get_portfolio_period_calculation_groups(
     taxonomy_id: str | None = None,
     group_key: str | None = None,
 ) -> PeriodCalculationGroupsResponse:
+    _validate_date_window(start_date, end_date)
     portfolio = get_portfolio(portfolio_id)
     if portfolio is None:
         raise HTTPException(status_code=404, detail="Portfolio not found")
@@ -485,6 +500,7 @@ def get_portfolio_period_calculation_groups_calendar(
     taxonomy_id: str | None = None,
     group_key: str | None = None,
 ) -> PeriodCalculationGroupsCalendarResponse:
+    _validate_date_window(start_date, end_date)
     portfolio = get_portfolio(portfolio_id)
     if portfolio is None:
         raise HTTPException(status_code=404, detail="Portfolio not found")
@@ -531,6 +547,7 @@ def get_portfolio_period_calculation_drilldown(
     taxonomy_id: str | None = None,
     group_key: str | None = None,
 ) -> PeriodCalculationBucketResponse:
+    _validate_date_window(start_date, end_date)
     portfolio = get_portfolio(portfolio_id)
     if portfolio is None:
         raise HTTPException(status_code=404, detail="Portfolio not found")
@@ -577,6 +594,7 @@ def get_portfolio_period_calculation_entries(
     taxonomy_id: str | None = None,
     group_key: str | None = None,
 ) -> PeriodCalculationEntriesResponse:
+    _validate_date_window(start_date, end_date)
     portfolio = get_portfolio(portfolio_id)
     if portfolio is None:
         raise HTTPException(status_code=404, detail="Portfolio not found")
@@ -627,6 +645,7 @@ def get_portfolio_period_calculation_entries_calendar(
     taxonomy_id: str | None = None,
     group_key: str | None = None,
 ) -> PeriodCalculationEntryCalendarResponse:
+    _validate_date_window(start_date, end_date)
     portfolio = get_portfolio(portfolio_id)
     if portfolio is None:
         raise HTTPException(status_code=404, detail="Portfolio not found")
@@ -673,6 +692,7 @@ def get_portfolio_period_boundary_holdings(
     taxonomy_id: str | None = None,
     group_key: str | None = None,
 ) -> PeriodBoundaryHoldingsResponse:
+    _validate_date_window(start_date, end_date)
     portfolio = get_portfolio(portfolio_id)
     if portfolio is None:
         raise HTTPException(status_code=404, detail="Portfolio not found")
@@ -716,6 +736,7 @@ def get_portfolio_period_boundary_groups(
     end_date: date | None = None,
     taxonomy_id: str | None = None,
 ) -> BoundaryGroupsResponse:
+    _validate_date_window(start_date, end_date)
     portfolio = get_portfolio(portfolio_id)
     if portfolio is None:
         raise HTTPException(status_code=404, detail="Portfolio not found")
@@ -755,6 +776,7 @@ def get_portfolio_return_calendar(
     end_date: date | None = None,
     frequency: str = "monthly",
 ) -> ReturnCalendarResponse:
+    _validate_date_window(start_date, end_date)
     portfolio = get_portfolio(portfolio_id)
     if portfolio is None:
         raise HTTPException(status_code=404, detail="Portfolio not found")
@@ -798,6 +820,7 @@ def get_portfolio_contribution_report(
     taxonomy_id: str | None = None,
     group_key: str | None = None,
 ) -> ContributionReportResponse:
+    _validate_date_window(start_date, end_date)
     portfolio = get_portfolio(portfolio_id)
     if portfolio is None:
         raise HTTPException(status_code=404, detail="Portfolio not found")
@@ -856,6 +879,7 @@ def get_portfolio_contribution_calendar(
     frequency: str = "monthly",
     group_key: str | None = None,
 ) -> ContributionCalendarResponse:
+    _validate_date_window(start_date, end_date)
     portfolio = get_portfolio(portfolio_id)
     if portfolio is None:
         raise HTTPException(status_code=404, detail="Portfolio not found")
@@ -904,6 +928,7 @@ def get_portfolio_contribution_drilldown(
     taxonomy_id: str | None = None,
     group_key: str | None = None,
 ) -> ContributionBucketResponse:
+    _validate_date_window(start_date, end_date)
     portfolio = get_portfolio(portfolio_id)
     if portfolio is None:
         raise HTTPException(status_code=404, detail="Portfolio not found")
@@ -954,6 +979,7 @@ def get_portfolio_contribution_calendar_drilldown(
     frequency: str = "monthly",
     group_key: str | None = None,
 ) -> ContributionBucketCalendarResponse:
+    _validate_date_window(start_date, end_date)
     portfolio = get_portfolio(portfolio_id)
     if portfolio is None:
         raise HTTPException(status_code=404, detail="Portfolio not found")
@@ -1003,6 +1029,7 @@ def get_portfolio_contribution_entries(
     taxonomy_id: str | None = None,
     group_key: str | None = None,
 ) -> ContributionEntriesResponse:
+    _validate_date_window(start_date, end_date)
     portfolio = get_portfolio(portfolio_id)
     if portfolio is None:
         raise HTTPException(status_code=404, detail="Portfolio not found")
@@ -1053,6 +1080,7 @@ def get_portfolio_contribution_entries_calendar(
     taxonomy_id: str | None = None,
     group_key: str | None = None,
 ) -> ContributionEntryCalendarResponse:
+    _validate_date_window(start_date, end_date)
     portfolio = get_portfolio(portfolio_id)
     if portfolio is None:
         raise HTTPException(status_code=404, detail="Portfolio not found")

@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useMemo, useRef, useState } from 'react'
+import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { useParams } from 'react-router'
 
 import BenchmarkSearchBox, { benchmarkInstrumentLabel } from '../components/BenchmarkSearchBox'
@@ -937,7 +937,7 @@ export default function ResearchPage() {
       return () => document.removeEventListener('mousedown', handleClick)
     }, [boundsMenuOpen, frozenMenuOpen])
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!workbench || workbench.portfolio_id !== portfolioId) {
       return
     }

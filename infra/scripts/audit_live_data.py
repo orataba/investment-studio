@@ -924,10 +924,13 @@ def _run_flat_table_audit(database_url: str) -> list[AuditCheck]:
                             as_of_date,
                             drawdown,
                             1 + cumulative_twr AS wealth_index,
-                            max(1 + cumulative_twr) OVER (
-                                PARTITION BY portfolio_id
-                                ORDER BY as_of_date
-                                ROWS UNBOUNDED PRECEDING
+                            greatest(
+                                1.0,
+                                max(1 + cumulative_twr) OVER (
+                                    PARTITION BY portfolio_id
+                                    ORDER BY as_of_date
+                                    ROWS UNBOUNDED PRECEDING
+                                )
                             ) AS peak_index
                         FROM portfolio.portfolio_daily_snapshot
                         WHERE cumulative_twr IS NOT NULL

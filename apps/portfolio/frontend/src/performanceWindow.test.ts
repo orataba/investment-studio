@@ -4,6 +4,7 @@ import {
   buildPerformanceWindowFilters,
   normalizePerformanceWindowSelection,
   performancePresetStartDate,
+  performanceWindowError,
   resolvePerformanceWindow,
   shiftIsoDate,
   validIsoDate,
@@ -57,6 +58,7 @@ describe('performance window extraction contract', () => {
       waitingForDefaultEndDate: false,
       effectiveStartDate: '2026-04-01',
       effectiveEndDate: '2026-06-30',
+      windowError: null,
     })
 
     expect(
@@ -94,5 +96,9 @@ describe('performance window extraction contract', () => {
       start_date: '2026-07-01',
       end_date: '2026-07-15',
     })
+    expect(performanceWindowError('2026-07-16', '2026-07-15')).toBe(
+      'Start Date must be on or before End Date.',
+    )
+    expect(performanceWindowError('2026-07-15', '2026-07-15')).toBeNull()
   })
 })

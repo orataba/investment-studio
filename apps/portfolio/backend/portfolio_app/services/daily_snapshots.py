@@ -1765,6 +1765,7 @@ def build_materialized_contribution_report(
         first_snapshot_date = snapshot_bounds[0]
         last_snapshot_date = snapshot_bounds[1]
 
+    requested_report_end_date = end_date or portfolio_as_of_date or last_snapshot_date
     start_is_close_boundary = bool(
         start_date is not None
         and performance._period_start_is_close_boundary(
@@ -1773,6 +1774,59 @@ def build_materialized_contribution_report(
             resolved_start_date=start_date,
         )
     )
+
+    def with_window_metadata(
+        report: dict[str, object],
+        *,
+        effective_start_date: date | None,
+        effective_end_date: date | None,
+        clamp_reason: str | None = None,
+        start_snapshot: dict[str, object] | None = None,
+    ) -> dict[str, object]:
+        report_summary = report.get("summary")
+        if not isinstance(report_summary, dict):
+            return report
+        starts_on_imported_anchor = bool(
+            effective_start_date is not None
+            and performance._starts_on_imported_valuation_anchor(
+                transaction_payloads,
+                resolved_start_date=effective_start_date,
+            )
+        )
+        starts_funded_segment = bool(
+            effective_start_date is not None
+            and performance._snapshot_starts_funded_segment(
+                start_snapshot,
+                resolved_start_date=effective_start_date,
+            )
+        )
+        report_summary.update(
+            {
+                "start_date": effective_start_date,
+                "end_date": effective_end_date,
+                "requested_start_date": start_date,
+                "requested_end_date": requested_report_end_date,
+                "effective_start_date": effective_start_date,
+                "effective_end_date": effective_end_date,
+                "as_of_clamp_reason": clamp_reason,
+                "start_boundary_kind": (
+                    (
+                        "funded_bod"
+                        if starts_funded_segment
+                        else (
+                            "imported_opening_eod"
+                            if starts_on_imported_anchor
+                            else "close_eod"
+                        )
+                    )
+                    if effective_start_date is not None
+                    else None
+                ),
+                "include_start_date_return": starts_funded_segment,
+            }
+        )
+        return report
+
     effective_end_date = end_date
     if (
         effective_end_date is not None
@@ -1783,15 +1837,19 @@ def build_materialized_contribution_report(
     if first_snapshot_date is None or last_snapshot_date is None:
         if first_transaction_date is not None:
             return None
-        return performance.build_contribution_report_from_daily_slices(
-            portfolio,
-            [],
-            [],
-            start_date=start_date,
-            end_date=effective_end_date,
-            axis=axis,
-            group_key=group_key,
-            start_is_close_boundary=start_is_close_boundary,
+        return with_window_metadata(
+            performance.build_contribution_report_from_daily_slices(
+                portfolio,
+                [],
+                [],
+                start_date=start_date,
+                end_date=effective_end_date,
+                axis=axis,
+                group_key=group_key,
+                start_is_close_boundary=start_is_close_boundary,
+            ),
+            effective_start_date=None,
+            effective_end_date=None,
         )
     requested_start_date = start_date or first_snapshot_date
     requested_end_date = effective_end_date or last_snapshot_date
@@ -1808,15 +1866,19 @@ def build_materialized_contribution_report(
     ):
         return None
     if requested_end_date < first_snapshot_date or requested_start_date > last_snapshot_date:
-        return performance.build_contribution_report_from_daily_slices(
-            portfolio,
-            [],
-            [],
-            start_date=requested_start_date,
-            end_date=requested_end_date,
-            axis=axis,
-            group_key=group_key,
-            start_is_close_boundary=start_is_close_boundary,
+        return with_window_metadata(
+            performance.build_contribution_report_from_daily_slices(
+                portfolio,
+                [],
+                [],
+                start_date=requested_start_date,
+                end_date=requested_end_date,
+                axis=axis,
+                group_key=group_key,
+                start_is_close_boundary=start_is_close_boundary,
+            ),
+            effective_start_date=None,
+            effective_end_date=None,
         )
     resolved_start_date = max(requested_start_date, first_snapshot_date)
     resolved_end_date = min(requested_end_date, last_snapshot_date)
@@ -1831,7 +1893,7 @@ def build_materialized_contribution_report(
     reliable_window = return_chain.resolve_reliable_snapshot_window(
         snapshots,
         requested_start_date=resolved_start_date,
-        requested_end_date=resolved_end_date,
+        requested_end_date=requested_report_end_date,
         default_end_date=last_snapshot_date,
     )
     snapshots = list(reliable_window["snapshots"])
@@ -1872,7 +1934,7 @@ def build_materialized_contribution_report(
         end_date=resolved_end_date,
         ensure_current=False,
     )
-    return performance.build_contribution_report_from_daily_slices(
+    report = performance.build_contribution_report_from_daily_slices(
         portfolio,
         snapshots,
         slices,
@@ -1881,4 +1943,16 @@ def build_materialized_contribution_report(
         axis=axis,
         group_key=group_key,
         start_is_close_boundary=start_is_close_boundary,
+    )
+    raw_clamp_reason = reliable_window.get("as_of_clamp_reason")
+    return with_window_metadata(
+        report,
+        effective_start_date=resolved_start_date,
+        effective_end_date=resolved_end_date,
+        clamp_reason=(
+            str(raw_clamp_reason)
+            if raw_clamp_reason is not None
+            else None
+        ),
+        start_snapshot=raw_start_snapshot,
     )

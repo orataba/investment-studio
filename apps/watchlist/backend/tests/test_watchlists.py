@@ -91,6 +91,206 @@ def test_calculation_frequency_context_resamples_declared_weekly_points() -> Non
     ]
 
 
+def test_registry_expected_frequency_overrides_legacy_point_labels() -> None:
+    from watchlist_app.services.calculation_frequency import build_calculation_frequency_context
+
+    nav_points = [
+        {"as_of_date": date(2026, 1, 5), "value": 100.0, "frequency": "weekly"},
+        {"as_of_date": date(2026, 1, 6), "value": 101.0, "frequency": "daily"},
+        {"as_of_date": date(2026, 1, 7), "value": 102.0, "frequency": "daily"},
+    ]
+
+    context = build_calculation_frequency_context(
+        nav_points,
+        expected_frequency="daily",
+    )
+
+    assert context["profile"]["expected_frequency"] == "daily"
+    assert context["profile"]["resolved_frequency"] == "daily"
+    assert context["profile"]["frequency_source"] == "registry_expected"
+    assert context["profile"]["observation_count"] == 3
+
+
+def test_market_calendar_gap_detection_ignores_holidays_but_detects_missing_sessions(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from watchlist_app.services import calculation_frequency
+
+    sessions = (
+        date(2026, 2, 13),
+        date(2026, 2, 24),
+        date(2026, 2, 25),
+    )
+    monkeypatch.setattr(
+        calculation_frequency,
+        "_market_calendar_sessions",
+        lambda _calendar, _start, _end: sessions,
+    )
+    aligned = calculation_frequency.build_calculation_frequency_context(
+        [
+            {"as_of_date": session_date, "value": float(index + 100)}
+            for index, session_date in enumerate(sessions)
+        ],
+        expected_frequency="daily",
+        market_calendar="XSHG",
+    )
+    missing = calculation_frequency.build_calculation_frequency_context(
+        [
+            {"as_of_date": sessions[0], "value": 100.0},
+            {"as_of_date": sessions[-1], "value": 102.0},
+        ],
+        expected_frequency="daily",
+        market_calendar="XSHG",
+    )
+
+    assert aligned["profile"]["largest_gap_days"] == 11
+    assert aligned["profile"]["gap_count"] == 0
+    assert aligned["profile"]["gap_detection_basis"] == "market_calendar:XSHG"
+    assert missing["profile"]["gap_count"] == 1
+    assert missing["profile"]["missing_observation_date_sample"] == ["2026-02-24"]
+
+
+def test_xshg_calendar_treats_lunar_new_year_closure_as_non_sessions() -> None:
+    from watchlist_app.services import calculation_frequency
+
+    if calculation_frequency.exchange_calendars is None:
+        pytest.skip("exchange_calendars is not installed in this legacy local test environment.")
+
+    context = calculation_frequency.build_calculation_frequency_context(
+        [
+            {"as_of_date": date(2026, 2, 13), "value": 100.0},
+            {"as_of_date": date(2026, 2, 24), "value": 101.0},
+            {"as_of_date": date(2026, 2, 25), "value": 102.0},
+        ],
+        expected_frequency="daily",
+        market_calendar="XSHG",
+    )
+
+    assert context["profile"]["largest_gap_days"] == 11
+    assert context["profile"]["gap_count"] == 0
+    assert context["profile"]["gap_detection_basis"] == "market_calendar:XSHG"
+
+
+def test_daily_freshness_uses_instrument_calendar_and_release_lag(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from watchlist_app.services import calculation_frequency
+
+    monkeypatch.setattr(
+        calculation_frequency,
+        "_market_calendar_sessions",
+        lambda _calendar, _start, _end: (
+            date(2026, 7, 23),
+            date(2026, 7, 24),
+            date(2026, 7, 27),
+            date(2026, 7, 28),
+        ),
+    )
+
+    fresh = calculation_frequency.assess_latest_observation_freshness(
+        latest_observation_date=date(2026, 7, 24),
+        current_date=date(2026, 7, 28),
+        resolved_frequency="daily",
+        expected_frequency="daily",
+        market_calendar="XSHG",
+        release_lag_days=1,
+    )
+    stale = calculation_frequency.assess_latest_observation_freshness(
+        latest_observation_date=date(2026, 7, 23),
+        current_date=date(2026, 7, 28),
+        resolved_frequency="daily",
+        expected_frequency="daily",
+        market_calendar="XSHG",
+        release_lag_days=1,
+    )
+    future = calculation_frequency.assess_latest_observation_freshness(
+        latest_observation_date=date(2026, 7, 29),
+        current_date=date(2026, 7, 28),
+        resolved_frequency="daily",
+        expected_frequency="daily",
+        market_calendar="XSHG",
+        release_lag_days=1,
+    )
+
+    assert fresh["status"] == "fresh"
+    assert fresh["expected_latest_date"] == "2026-07-24"
+    assert stale["status"] == "stale"
+    assert stale["expected_latest_date"] == "2026-07-24"
+    assert future["status"] == "stale"
+    assert "future-dated" in str(future["reason"])
+
+
+def test_daily_freshness_treats_release_lag_as_calendar_days_across_a_weekend(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from watchlist_app.services import calculation_frequency
+
+    monkeypatch.setattr(
+        calculation_frequency,
+        "_market_calendar_sessions",
+        lambda _calendar, _start, _end: (
+            date(2026, 7, 23),
+            date(2026, 7, 24),
+            date(2026, 7, 27),
+        ),
+    )
+
+    freshness = calculation_frequency.assess_latest_observation_freshness(
+        latest_observation_date=date(2026, 7, 24),
+        current_date=date(2026, 7, 27),
+        resolved_frequency="daily",
+        expected_frequency="daily",
+        market_calendar="XSHG",
+        release_lag_days=1,
+    )
+
+    assert freshness["status"] == "fresh"
+    assert freshness["expected_latest_date"] == "2026-07-24"
+
+
+def test_daily_freshness_does_not_require_an_observation_on_its_release_day(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from watchlist_app.services import calculation_frequency
+
+    monkeypatch.setattr(
+        calculation_frequency,
+        "_market_calendar_sessions",
+        lambda _calendar, _start, _end: (
+            date(2026, 7, 24),
+            date(2026, 7, 27),
+            date(2026, 7, 28),
+        ),
+    )
+
+    freshness = calculation_frequency.assess_latest_observation_freshness(
+        latest_observation_date=date(2026, 7, 24),
+        current_date=date(2026, 7, 28),
+        resolved_frequency="daily",
+        expected_frequency="daily",
+        market_calendar="XSHG",
+        release_lag_days=1,
+    )
+
+    assert freshness["status"] == "fresh"
+    assert freshness["expected_latest_date"] == "2026-07-24"
+
+
+def test_downside_deviation_uses_all_observations_in_the_denominator() -> None:
+    from watchlist_app.services.canonical_recalc import _compute_downside_deviation
+
+    nav_points = [
+        {"as_of_date": date(2026, 1, 1), "value": 100.0},
+        {"as_of_date": date(2026, 1, 2), "value": 110.0},
+        {"as_of_date": date(2026, 1, 3), "value": 99.0},
+        {"as_of_date": date(2026, 1, 4), "value": 108.9},
+    ]
+    periods_per_year = 3 / 3 * 365.25
+    expected = math.sqrt((0.1 ** 2) / 3) * math.sqrt(periods_per_year) * 100
+
+    assert _compute_downside_deviation(nav_points) == pytest.approx(expected, abs=1e-12)
+
+
 def test_return_nav_basis_does_not_fallback_to_ordinary_nav() -> None:
     from watchlist_app.services.canonical_recalc import _select_quote_series, _shared_quote_points_by_basis
 
@@ -185,6 +385,9 @@ def test_completed_recalc_marks_missing_canonical_series_unavailable() -> None:
         "last_recalculated_at": "2026-07-16T08:00:00Z",
         "last_successful_snapshot_at": "2026-07-16T08:00:00Z",
         "staleness_reason": "No canonical series available.",
+        "latest_observation_date": None,
+        "expected_latest_date": None,
+        "observation_lag_days": None,
     }
 
 
@@ -1132,12 +1335,12 @@ def test_adding_shared_nav_instrument_recalculates_last_nav_fields(
     assert payload["rows"][0]["latest_quote"] == pytest.approx(101.2365, abs=1e-6)
     assert payload["rows"][0]["latest_quote_date"] == "2026-04-14"
     assert payload["rows"][0]["last_nav_date"] == "2026-04-14"
-    assert payload["rows"][0]["data_freshness_status"] == "fresh"
+    assert payload["rows"][0]["data_freshness_status"] == "stale"
     assert payload["rows"][0]["return_1w"] == pytest.approx(1.236476, abs=1e-6)
     assert payload["rows"][0]["return_mtd"] == pytest.approx(2.259067, abs=1e-6)
     assert payload["rows"][0]["return_3m"] == pytest.approx(3.832283, abs=1e-6)
     assert payload["rows"][0]["return_6m"] is None
-    assert payload["rows"][0]["annualized_return"] == pytest.approx(14.119462, abs=1e-6)
+    assert payload["rows"][0]["annualized_return"] is None
     assert payload["snapshot_metadata"]["as_of_date"] == "2026-04-14"
 
 
@@ -1413,11 +1616,14 @@ def test_index_close_series_calculates_watchlist_performance_metrics(
     assert row["return_1m"] == pytest.approx(10.0, abs=1e-6)
     assert row["return_3m"] == pytest.approx(21.0, abs=1e-6)
     assert row["return_6m"] == pytest.approx(34.444444, abs=1e-6)
-    assert row["annualized_return"] is not None
-    assert row["max_drawdown"] == pytest.approx(0.0, abs=1e-6)
-    assert row["volatility"] is not None
-    assert row["sharpe_ratio"] is not None
-    assert row["attr.current_drawdown"] == pytest.approx(0.0, abs=1e-6)
+    # The fixture has less than one year of history and intentionally sparse
+    # daily observations. Scalar endpoint returns remain valid, while
+    # annualized and path-dependent risk metrics fail closed.
+    assert row["annualized_return"] is None
+    assert row["max_drawdown"] is None
+    assert row["volatility"] is None
+    assert row["sharpe_ratio"] is None
+    assert row["attr.current_drawdown"] is None
 
     field_registry = client.get("/api/field-registry", params={"instrument_type": "index"})
     assert field_registry.status_code == 200
@@ -1433,6 +1639,98 @@ def test_index_close_series_calculates_watchlist_performance_metrics(
         "volatility",
         "sharpe_ratio",
     }.issubset(index_field_keys)
+
+
+def test_screener_returns_are_anchored_to_each_instruments_own_as_of_date(
+    client: TestClient,
+) -> None:
+    for instrument_id, instrument_name, ticker, observations in (
+        (
+            "asof-fund-0724",
+            "As Of July 24 Fund",
+            "AOF24",
+            (("2026-06-23", "100.000000"), ("2026-07-24", "110.000000")),
+        ),
+        (
+            "asof-fund-0727",
+            "As Of July 27 Fund",
+            "AOF27",
+            (("2026-06-26", "100.000000"), ("2026-07-27", "120.000000")),
+        ),
+    ):
+        seed_shared_instrument(
+            {
+                "instrument_id": instrument_id,
+                "instrument_name": instrument_name,
+                "instrument_type": "fund",
+                "currency": "USD",
+                "quote_selection_policy": canonical_quote_policy("fund"),
+                "identifiers": [
+                    {
+                        "identifier_type": "ticker",
+                        "identifier_value": ticker,
+                        "is_primary": True,
+                    },
+                ],
+                "market_data": [
+                    {
+                        "metric_family": "nav",
+                        "quote_basis": "total_return_nav",
+                        "nav_lineage": {
+                            "kind": "provider_explicit",
+                            "evidence": {"source_field": "test_total_return_nav"},
+                        },
+                        "as_of_date": as_of_date,
+                        "value": value,
+                        "currency": "USD",
+                        "price_unit": "per_unit",
+                        "price_scale": "1",
+                        "status": "complete",
+                    }
+                    for as_of_date, value in observations
+                ],
+                "lifecycle_state": {"status": "active"},
+            }
+        )
+
+    created_watchlist = client.post(
+        "/api/watchlists",
+        json={"name": "Independent As Of Coverage", "description": None},
+    )
+    watchlist_id = created_watchlist.json()["watchlist_id"]
+    add_response = client.post(
+        f"/api/watchlists/{watchlist_id}/items",
+        json={"instrument_ids": ["asof-fund-0724", "asof-fund-0727"]},
+    )
+    assert add_response.status_code == 200
+
+    screener = client.post(
+        "/api/screener/query",
+        json={
+            "watchlist_id": watchlist_id,
+            "view_id": "overview",
+            # Deliberately do not select the as-of column: the API must still
+            # expose the endpoint required to interpret each return.
+            "selected_fields": ["instrument_name", "return_1m"],
+            "sort": [{"field": "instrument_name", "direction": "asc"}],
+            "group_by": "none",
+            "pagination": {"page": 1, "page_size": 20},
+        },
+    )
+
+    assert screener.status_code == 200
+    payload = screener.json()
+    rows_by_id = {row["instrument_id"]: row for row in payload["rows"]}
+    assert rows_by_id["asof-fund-0724"]["metric_as_of_date"] == "2026-07-24"
+    assert rows_by_id["asof-fund-0724"]["return_1m"] == pytest.approx(10.0)
+    assert rows_by_id["asof-fund-0727"]["metric_as_of_date"] == "2026-07-27"
+    assert rows_by_id["asof-fund-0727"]["return_1m"] == pytest.approx(20.0)
+    assert payload["snapshot_metadata"]["as_of_date"] == "2026-07-27"
+    assert payload["snapshot_metadata"]["as_of_date_min"] == "2026-07-24"
+    assert payload["snapshot_metadata"]["as_of_date_max"] == "2026-07-27"
+    assert payload["snapshot_metadata"]["has_mixed_as_of_dates"] is True
+    assert payload["snapshot_metadata"]["as_of_date_missing_count"] == 0
+    assert payload["snapshot_metadata"]["methodology_version"] == "watchlist-row/v2"
 
 
 def test_instrument_performance_and_risk_payloads_include_materialized_metrics(
@@ -1465,8 +1763,8 @@ def test_instrument_performance_and_risk_payloads_include_materialized_metrics(
     assert trailing_by_window["MTD"]["end_date"] == "2026-04-14"
     assert trailing_by_window["YTD"]["investment_nav"] == pytest.approx(3.832283, abs=1e-6)
     assert trailing_by_window["YTD"]["anchor_date"] == "2025-12-31"
-    assert trailing_by_window["Ann."]["investment_nav"] == pytest.approx(14.119462, abs=1e-6)
-    assert performance_payload["return_window_policy"] == "return-window/v1"
+    assert trailing_by_window["Ann."]["investment_nav"] is None
+    assert performance_payload["return_window_policy"] == "return-window/v2"
 
     risk_response = client.get("/api/instruments/sxv264/risk")
     assert risk_response.status_code == 200
@@ -1476,20 +1774,15 @@ def test_instrument_performance_and_risk_payloads_include_materialized_metrics(
         for row in risk_payload["risk_metrics"]
     }
     assert risk_payload["snapshot_metadata"]["as_of_date"] == "2026-04-14"
-    assert len(risk_payload["scatter_points"]) == 1
-    assert risk_payload["scatter_points"][0]["name"] == "Investment"
-    assert risk_payload["scatter_points"][0]["return"] == pytest.approx(14.119462, abs=1e-6)
-    assert risk_payload["scatter_points"][0]["volatility"] == pytest.approx(
-        risk_metrics["volatility"]["investment"],
-        abs=1e-9,
-    )
-    assert risk_metrics["annualized_return"]["investment"] == pytest.approx(14.119462, abs=1e-6)
-    assert risk_metrics["volatility"]["investment"] is not None
-    assert risk_payload["drawdown_summary"]["maximum"] is not None
-    assert risk_payload["risk_structure"]["rows"]
-    assert risk_payload["current_watch"]["overall_level"] in {"Normal", "Elevated", "High"}
-    assert risk_payload["current_watch"]["rows"]
-    assert risk_payload["change_monitor"]["rows"]
+    assert risk_payload["scatter_points"] == []
+    assert risk_metrics["annualized_return"]["investment"] is None
+    assert risk_metrics["volatility"]["investment"] is None
+    assert risk_payload["drawdown_summary"] is None
+    assert risk_payload["risk_structure"]["rows"] == []
+    assert risk_payload["current_watch"]["overall_level"] is None
+    assert risk_payload["current_watch"]["rows"] == []
+    assert risk_payload["change_monitor"]["rows"] == []
+    assert risk_payload["data_quality"]["status"] == "withheld_missing_observations"
     assert risk_payload["calculation_frequency_profile"]["resolved_frequency"] == "daily"
     assert risk_payload["calculation_frequency_profile"]["gap_count"] > 0
     assert performance_payload["calculation_frequency_profile"]["resolved_frequency"] == "daily"
@@ -1504,6 +1797,11 @@ def test_instrument_detail_payload_exposes_weekly_calculation_frequency(
             "instrument_name": "Weekly Risk Fund",
             "instrument_type": "fund",
             "currency": "USD",
+            "source_settings": {
+                "expected_frequency": "weekly",
+                "market_calendar": None,
+                "release_lag_days": 2,
+            },
             "quote_selection_policy": canonical_quote_policy("fund"),
             "identifiers": [
                 {"identifier_type": "ticker", "identifier_value": "WRF", "is_primary": True},
@@ -1561,7 +1859,7 @@ def test_instrument_detail_payload_exposes_weekly_calculation_frequency(
     risk_response = client.get("/api/instruments/weekly-risk-fund/risk")
     assert risk_response.status_code == 200
     risk_payload = risk_response.json()
-    assert risk_payload["snapshot_metadata"]["methodology_version"] == "canonical-risk/v4"
+    assert risk_payload["snapshot_metadata"]["methodology_version"] == "canonical-risk/v5"
     assert risk_payload["calculation_frequency_profile"]["resolved_frequency"] == "weekly"
     assert risk_payload["calculation_frequency_profile"]["annualization_periods_per_year"] == pytest.approx(
         52.178571,
@@ -1626,6 +1924,44 @@ def test_instrument_performance_payload_includes_taxonomy_peer_ranking(
             }
         )
 
+    seed_shared_instrument(
+        {
+            "instrument_id": "peer-stale-date",
+            "instrument_name": "Peer Stale Date Fund",
+            "instrument_type": "fund",
+            "currency": "USD",
+            "quote_selection_policy": canonical_quote_policy("fund"),
+            "identifiers": [
+                {
+                    "identifier_type": "ticker",
+                    "identifier_value": "PSTALE",
+                    "is_primary": True,
+                },
+            ],
+            "market_data": [
+                {
+                    "metric_family": "nav",
+                    "quote_basis": "total_return_nav",
+                    "nav_lineage": {
+                        "kind": "provider_explicit",
+                        "evidence": {"source_field": "test_total_return_nav"},
+                    },
+                    "as_of_date": as_of_date,
+                    "value": value,
+                    "currency": "USD",
+                    "price_unit": "per_unit",
+                    "price_scale": "1",
+                    "status": "complete",
+                }
+                for as_of_date, value in zip(
+                    ["2025-12-31", "2026-03-13", "2026-04-06", "2026-04-13"],
+                    ["99.000000", "100.000000", "101.000000", "102.000000"],
+                )
+            ],
+            "lifecycle_state": {"status": "active"},
+        }
+    )
+
     created_watchlist = client.post(
         "/api/watchlists",
         json={"name": "Peer Ranking Coverage", "description": None},
@@ -1633,11 +1969,25 @@ def test_instrument_performance_payload_includes_taxonomy_peer_ranking(
     watchlist_id = created_watchlist.json()["watchlist_id"]
     add_response = client.post(
         f"/api/watchlists/{watchlist_id}/items",
-        json={"instrument_ids": ["sxv264", "peer-strong", "peer-weak", "peer-archived"]},
+        json={
+            "instrument_ids": [
+                "sxv264",
+                "peer-strong",
+                "peer-weak",
+                "peer-archived",
+                "peer-stale-date",
+            ]
+        },
     )
     assert add_response.status_code == 200
 
-    for instrument_id in ("sxv264", "peer-strong", "peer-weak", "peer-archived"):
+    for instrument_id in (
+        "sxv264",
+        "peer-strong",
+        "peer-weak",
+        "peer-archived",
+        "peer-stale-date",
+    ):
         update_response = client.put(
             f"/api/taxonomies/fund-taxonomy/instruments/{instrument_id}",
             json={"node_id": "fund-private-equity-quant-long-500", "updated_by": "test"},
@@ -1692,16 +2042,21 @@ def test_instrument_performance_payload_includes_taxonomy_peer_ranking(
     peer_comparison = payload["peer_comparison"]
     assert peer_comparison["status"] == "ready"
     assert peer_comparison["peer_node_id"] == "fund-private-equity-quant-long-500"
+    assert peer_comparison["candidate_count"] == 4
     assert peer_comparison["sample_count"] == 3
+    assert peer_comparison["excluded_mismatched_as_of_count"] == 1
     assert payload["ranking"]["sample_count"] == 3
     assert payload["ranking"]["rank"] == 2
     assert payload["ranking"]["quartile"] == 2
 
     metrics_by_key = {row["metric_key"]: row for row in peer_comparison["metrics"]}
-    assert metrics_by_key["annualized_return"]["rank"] == 2
-    assert metrics_by_key["annualized_return"]["percentile"] == pytest.approx(50.0)
+    assert metrics_by_key["return_ytd"]["rank"] == 2
+    assert metrics_by_key["return_ytd"]["percentile"] == pytest.approx(50.0)
+    assert metrics_by_key["return_ytd"]["excluded_mismatched_as_of_count"] == 1
+    assert "annualized_return" not in metrics_by_key
     trailing_by_window = {row["window"]: row for row in payload["trailing_returns"]}
-    assert trailing_by_window["Ann."]["category_nav"] is not None
+    assert trailing_by_window["1M"]["category_nav"] is not None
+    assert trailing_by_window["Ann."]["category_nav"] is None
 
     screener_response = client.post(
         "/api/screener/query",
@@ -1730,7 +2085,7 @@ def test_instrument_performance_payload_includes_taxonomy_peer_ranking(
     assert sxv_row["attr.peer_sample_count"] == 3
     assert sxv_row["attr.peer_return_1w_percentile"] == pytest.approx(50.0)
     assert sxv_row["attr.peer_return_1m_percentile"] == pytest.approx(50.0)
-    assert sxv_row["attr.peer_annualized_return_percentile"] == pytest.approx(50.0)
+    assert sxv_row["attr.peer_annualized_return_percentile"] is None
 
 
 def test_instrument_nav_settings_round_trip_and_surface_compare_settings(
@@ -4550,7 +4905,7 @@ def test_monitoring_dashboard_surfaces_missing_labels_quotes_and_open_recalc_job
     assert payload["overview"] == {
         "watchlist_count": 1,
         "unique_instrument_count": 2,
-        "needs_refresh_count": 1,
+        "needs_refresh_count": 2,
         "missing_quote_count": 1,
         "missing_label_count": 2,
         "open_recalc_job_count": 1,
@@ -4560,7 +4915,7 @@ def test_monitoring_dashboard_surfaces_missing_labels_quotes_and_open_recalc_job
     watchlist_summary = payload["watchlists"][0]
     assert watchlist_summary["watchlist_id"] == watchlist_id
     assert watchlist_summary["item_count"] == 2
-    assert watchlist_summary["needs_refresh_count"] == 1
+    assert watchlist_summary["needs_refresh_count"] == 2
     assert watchlist_summary["missing_quote_count"] == 1
     assert watchlist_summary["missing_label_count"] == 2
     assert watchlist_summary["open_recalc_job_count"] == 1

@@ -690,6 +690,30 @@ def test_materialized_contribution_rejects_missing_tail_snapshot(client):
     assert report is None
 
 
+def test_materialized_contribution_outside_snapshot_range_preserves_request_metadata(
+    client,
+):
+    response = client.get("/api/portfolios/portfolio-ops/snapshots/daily")
+    assert response.status_code == 200
+
+    contribution_response = client.get(
+        "/api/portfolios/portfolio-ops/performance/contribution"
+        "?axis=instrument&start_date=2027-01-01&end_date=2027-01-02"
+    )
+
+    assert contribution_response.status_code == 200
+    summary = contribution_response.json()["summary"]
+    assert summary["requested_start_date"] == "2027-01-01"
+    assert summary["requested_end_date"] == "2027-01-02"
+    assert summary["effective_start_date"] is None
+    assert summary["effective_end_date"] is None
+    assert summary["start_date"] is None
+    assert summary["end_date"] is None
+    assert summary["start_boundary_kind"] is None
+    assert summary["include_start_date_return"] is False
+    assert summary["coverage_state"] == "unavailable"
+
+
 def test_daily_snapshot_recalculation_endpoint_enqueues_impacted_portfolios(client):
     initial_response = client.get("/api/portfolios/portfolio-ops/snapshots/daily")
     assert initial_response.status_code == 200
@@ -935,6 +959,8 @@ def test_inception_day_twr_includes_bod_funding_and_first_day_pnl(client, monkey
     assert explicit_payload["summary"]["total_pnl"] == pytest.approx(10.0)
     assert explicit_payload["summary"]["cumulative_twr"] == pytest.approx(0.10)
     assert explicit_payload["summary"]["return_observation_count"] == 1
+    assert explicit_payload["summary"]["start_boundary_kind"] == "funded_bod"
+    assert explicit_payload["summary"]["include_start_date_return"] is True
     assert explicit_payload["daily_series"][0]["daily_twr"] == pytest.approx(0.10)
     assert explicit_payload["daily_series"][0]["cumulative_twr"] == pytest.approx(
         0.10
@@ -948,6 +974,8 @@ def test_inception_day_twr_includes_bod_funding_and_first_day_pnl(client, monkey
     assert explicit_calculation["summary"]["final_value"] == pytest.approx(110.0)
     assert explicit_calculation["summary"]["deposits"] == pytest.approx(100.0)
     assert explicit_calculation["summary"]["delta"] == pytest.approx(10.0)
+    assert explicit_calculation["summary"]["start_boundary_kind"] == "funded_bod"
+    assert explicit_calculation["summary"]["include_start_date_return"] is True
 
     start_day_deposit_entries = client.get(
         "/api/portfolios/inception-return-test/performance/calculation/entries"
@@ -967,6 +995,8 @@ def test_inception_day_twr_includes_bod_funding_and_first_day_pnl(client, monkey
     assert contribution_summary["portfolio_arithmetic_return"] == pytest.approx(0.10)
     assert contribution_summary["total_period_contribution"] == pytest.approx(0.10)
     assert contribution_summary["contribution_residual"] == pytest.approx(0.0)
+    assert contribution_summary["start_boundary_kind"] == "funded_bod"
+    assert contribution_summary["include_start_date_return"] is True
 
 
 def test_external_flow_window_starts_on_settlement_effective_date(
@@ -1171,6 +1201,8 @@ def test_imported_opening_anchor_matches_default_and_explicit_inception_windows(
         assert performance_summary["delta"] == pytest.approx(10.0)
         assert performance_summary["total_pnl"] == pytest.approx(10.0)
         assert performance_summary["cumulative_twr"] == pytest.approx(0.10)
+        assert performance_summary["start_boundary_kind"] == "imported_opening_eod"
+        assert performance_summary["include_start_date_return"] is False
 
         calculation_response = client.get(
             f"/api/portfolios/{portfolio_id}/performance/calculation{query}"
@@ -1182,6 +1214,8 @@ def test_imported_opening_anchor_matches_default_and_explicit_inception_windows(
         assert calculation_summary["deposits"] == pytest.approx(0.0)
         assert calculation_summary["delta"] == pytest.approx(10.0)
         assert calculation_summary["earnings"] == pytest.approx(10.0)
+        assert calculation_summary["start_boundary_kind"] == "imported_opening_eod"
+        assert calculation_summary["include_start_date_return"] is False
 
     contribution_response = client.get(
         f"/api/portfolios/{portfolio_id}/performance/contribution"
@@ -1800,14 +1834,63 @@ def test_period_calculation_clamps_future_end_date_to_portfolio_as_of(client):
         "/api/portfolios/portfolio-ops/performance/calculation?start_date=2026-04-12&end_date=2026-05-11"
     )
     assert response.status_code == 200
-    assert response.json()["summary"]["end_date"] == "2026-04-15"
+    calculation_summary = response.json()["summary"]
+    assert calculation_summary["end_date"] == "2026-04-15"
+    assert calculation_summary["requested_end_date"] == "2026-05-11"
+    assert calculation_summary["effective_end_date"] == "2026-04-15"
+    assert (
+        calculation_summary["as_of_clamp_reason"]
+        == "requested_end_after_latest_reliable_endpoint"
+    )
 
     groups_response = client.get(
         "/api/portfolios/portfolio-ops/performance/calculation/groups"
         "?axis=instrument&start_date=2026-04-12&end_date=2026-05-11"
     )
     assert groups_response.status_code == 200
-    assert groups_response.json()["summary"]["end_date"] == "2026-04-15"
+    groups_summary = groups_response.json()["summary"]
+    assert groups_summary["end_date"] == "2026-04-15"
+    assert groups_summary["requested_end_date"] == "2026-05-11"
+    assert groups_summary["effective_end_date"] == "2026-04-15"
+    assert (
+        groups_summary["as_of_clamp_reason"]
+        == "requested_end_after_latest_reliable_endpoint"
+    )
+
+    contribution_response = client.get(
+        "/api/portfolios/portfolio-ops/performance/contribution"
+        "?axis=instrument&start_date=2026-04-12&end_date=2026-05-11"
+    )
+    assert contribution_response.status_code == 200
+    contribution_summary = contribution_response.json()["summary"]
+    assert contribution_summary["requested_end_date"] == "2026-05-11"
+    assert contribution_summary["effective_end_date"] == "2026-04-15"
+    assert (
+        contribution_summary["as_of_clamp_reason"]
+        == "requested_end_after_latest_reliable_endpoint"
+    )
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/api/portfolios/portfolio-ops/snapshots/daily",
+        "/api/portfolios/portfolio-ops/performance",
+        "/api/portfolios/portfolio-ops/performance/calculation",
+        "/api/portfolios/portfolio-ops/performance/calculation/groups",
+        "/api/portfolios/portfolio-ops/performance/calendar",
+        "/api/portfolios/portfolio-ops/performance/contribution",
+        "/api/portfolios/portfolio-ops/performance/boundary-holdings",
+    ],
+)
+def test_performance_endpoints_reject_reversed_date_windows(client, path):
+    separator = "&" if "?" in path else "?"
+    response = client.get(
+        f"{path}{separator}start_date=2026-04-15&end_date=2026-04-14"
+    )
+
+    assert response.status_code == 422
+    assert response.json()["detail"] == "start_date must be on or before end_date"
 
 
 def test_daily_twr_ignores_internal_sale_but_cuts_on_withdrawal(client, monkeypatch):

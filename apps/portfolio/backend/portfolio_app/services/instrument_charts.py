@@ -16,11 +16,11 @@ from portfolio_app.services.market_data import (
 
 SUPPORTED_CHART_RANGE_KEYS: tuple[str, ...] = ("1m", "3m", "6m", "ytd", "1y", "all")
 HOLDINGS_PRICE_CHART_RANGE_KEYS: tuple[str, ...] = ("1m", "3m", "6m", "1y")
-ASSET_RISK_WINDOW_DAYS: dict[str, int] = {
-    "1m": 31,
-    "3m": 92,
-    "6m": 183,
-    "1y": 366,
+ASSET_RISK_WINDOW_MONTHS: dict[str, int] = {
+    "1m": 1,
+    "3m": 3,
+    "6m": 6,
+    "1y": 12,
 }
 ASSET_RISK_MIN_RETURN_OBSERVATIONS: dict[CalculationFrequency, dict[str, int]] = {
     "daily": {
@@ -46,6 +46,11 @@ ASSET_RISK_MAX_START_GAP_DAYS: dict[CalculationFrequency, int] = {
     "daily": 10,
     "weekly": 21,
     "monthly": 45,
+}
+ASSET_RISK_MAX_TRAILING_STALENESS_DAYS: dict[CalculationFrequency, int] = {
+    "daily": 5,
+    "weekly": 14,
+    "monthly": 62,
 }
 ASSET_RISK_MIN_WINDOW_COVERAGE_RATIO = 0.8
 DAYS_PER_YEAR = 365.25
@@ -576,10 +581,9 @@ def _window_points(
     points: list[dict[str, object]],
     *,
     as_of_date: date,
-    days: int,
+    start_date: date,
     max_anchor_gap_days: int | None = None,
 ) -> list[dict[str, object]]:
-    start_date = as_of_date - timedelta(days=days)
     anchor_point = _latest_point_on_or_before(points, start_date)
     visible_points = [
         point
@@ -702,6 +706,8 @@ def _annualized_volatility(
     required_start_date: date | None = None,
     max_start_gap_days: int | None = None,
     min_elapsed_days: int | None = None,
+    required_end_date: date | None = None,
+    max_trailing_staleness_days: int | None = None,
 ) -> float | None:
     sampled_points = _points_for_calculation_frequency(
         points,
@@ -717,6 +723,13 @@ def _annualized_volatility(
     if required_start_date is not None and max_start_gap_days is not None:
         start_gap_days = abs((first_return_start_date - required_start_date).days)
         if start_gap_days > max_start_gap_days:
+            return None
+    if required_end_date is not None and max_trailing_staleness_days is not None:
+        trailing_staleness_days = (required_end_date - last_return_end_date).days
+        if (
+            trailing_staleness_days < 0
+            or trailing_staleness_days > max_trailing_staleness_days
+        ):
             return None
     elapsed_days = (last_return_end_date - first_return_start_date).days
     if elapsed_days <= 0:
@@ -734,13 +747,16 @@ def _annualized_window_volatility(
     as_of_date: date,
     calculation_frequency: CalculationFrequency = "daily",
 ) -> float | None:
-    window_days = ASSET_RISK_WINDOW_DAYS[range_key]
-    window_start_date = as_of_date - timedelta(days=window_days)
+    window_start_date = _shift_calendar_months(
+        as_of_date,
+        -ASSET_RISK_WINDOW_MONTHS[range_key],
+    )
+    window_days = (as_of_date - window_start_date).days
     max_start_gap_days = ASSET_RISK_MAX_START_GAP_DAYS[calculation_frequency]
     window_points = _window_points(
         points,
         as_of_date=as_of_date,
-        days=window_days,
+        start_date=window_start_date,
         max_anchor_gap_days=max_start_gap_days,
     )
     return _annualized_volatility(
@@ -751,6 +767,10 @@ def _annualized_window_volatility(
         required_start_date=window_start_date,
         max_start_gap_days=max_start_gap_days,
         min_elapsed_days=int(window_days * ASSET_RISK_MIN_WINDOW_COVERAGE_RATIO),
+        required_end_date=as_of_date,
+        max_trailing_staleness_days=ASSET_RISK_MAX_TRAILING_STALENESS_DAYS[
+            calculation_frequency
+        ],
     )
 
 
@@ -786,13 +806,16 @@ def _window_return_series_payload(
     as_of_date: date,
     calculation_frequency: CalculationFrequency = "daily",
 ) -> dict[str, object]:
-    window_days = ASSET_RISK_WINDOW_DAYS[range_key]
-    window_start_date = as_of_date - timedelta(days=window_days)
+    window_start_date = _shift_calendar_months(
+        as_of_date,
+        -ASSET_RISK_WINDOW_MONTHS[range_key],
+    )
+    window_days = (as_of_date - window_start_date).days
     max_start_gap_days = ASSET_RISK_MAX_START_GAP_DAYS[calculation_frequency]
     window_points = _window_points(
         points,
         as_of_date=as_of_date,
-        days=window_days,
+        start_date=window_start_date,
         max_anchor_gap_days=max_start_gap_days,
     )
     sampled_points = _points_for_calculation_frequency(
@@ -804,6 +827,13 @@ def _window_return_series_payload(
     if len(returns) < ASSET_RISK_MIN_RETURN_OBSERVATIONS[calculation_frequency][range_key]:
         return _empty_return_series_payload()
     if first_return_start_date is None or last_return_end_date is None:
+        return _empty_return_series_payload()
+    trailing_staleness_days = (as_of_date - last_return_end_date).days
+    if (
+        trailing_staleness_days < 0
+        or trailing_staleness_days
+        > ASSET_RISK_MAX_TRAILING_STALENESS_DAYS[calculation_frequency]
+    ):
         return _empty_return_series_payload()
     start_gap_days = abs((first_return_start_date - window_start_date).days)
     if start_gap_days > max_start_gap_days:
@@ -941,49 +971,49 @@ def build_instrument_trend_metrics_from_detail(
         "instrument_volatility_1m": _annualized_window_volatility(
             selected_points,
             range_key="1m",
-            as_of_date=end_date,
+            as_of_date=as_of_date,
             calculation_frequency=calculation_frequency,
         ),
         "instrument_volatility_3m": _annualized_window_volatility(
             selected_points,
             range_key="3m",
-            as_of_date=end_date,
+            as_of_date=as_of_date,
             calculation_frequency=calculation_frequency,
         ),
         "instrument_volatility_6m": _annualized_window_volatility(
             selected_points,
             range_key="6m",
-            as_of_date=end_date,
+            as_of_date=as_of_date,
             calculation_frequency=calculation_frequency,
         ),
         "instrument_volatility_1y": _annualized_window_volatility(
             selected_points,
             range_key="1y",
-            as_of_date=end_date,
+            as_of_date=as_of_date,
             calculation_frequency=calculation_frequency,
         ),
         "instrument_return_series_1m": _window_return_series_payload(
             selected_points,
             range_key="1m",
-            as_of_date=end_date,
+            as_of_date=as_of_date,
             calculation_frequency=calculation_frequency,
         ),
         "instrument_return_series_3m": _window_return_series_payload(
             selected_points,
             range_key="3m",
-            as_of_date=end_date,
+            as_of_date=as_of_date,
             calculation_frequency=calculation_frequency,
         ),
         "instrument_return_series_6m": _window_return_series_payload(
             selected_points,
             range_key="6m",
-            as_of_date=end_date,
+            as_of_date=as_of_date,
             calculation_frequency=calculation_frequency,
         ),
         "instrument_return_series_1y": _window_return_series_payload(
             selected_points,
             range_key="1y",
-            as_of_date=end_date,
+            as_of_date=as_of_date,
             calculation_frequency=calculation_frequency,
         ),
         "instrument_return_series_all": _return_series_payload(

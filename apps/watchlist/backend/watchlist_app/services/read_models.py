@@ -556,21 +556,34 @@ def _latest_datetime(rows: Sequence[dict[str, object]]) -> datetime | None:
     return max(candidates) if candidates else None
 
 
-def _latest_date(rows: Sequence[dict[str, object]]) -> date | None:
-    candidates: list[date] = []
+def _metric_as_of_dates(rows: Sequence[dict[str, object]]) -> list[date]:
+    candidates: set[date] = set()
     for row in rows:
-        for key in ("latest_quote_date", "last_nav_date"):
-            value = row.get(key)
-            if isinstance(value, date):
-                candidates.append(value)
-                break
-            if isinstance(value, str) and value:
-                try:
-                    candidates.append(date.fromisoformat(value[:10]))
-                    break
-                except ValueError:
-                    continue
-    return max(candidates) if candidates else None
+        value = row.get("last_nav_date")
+        if isinstance(value, date):
+            candidates.add(value)
+        elif isinstance(value, str) and value:
+            try:
+                candidates.add(date.fromisoformat(value[:10]))
+            except ValueError:
+                continue
+    return sorted(candidates)
+
+
+def _missing_metric_as_of_count(rows: Sequence[dict[str, object]]) -> int:
+    count = 0
+    for row in rows:
+        value = row.get("last_nav_date")
+        if isinstance(value, date):
+            continue
+        if isinstance(value, str) and value:
+            try:
+                date.fromisoformat(value[:10])
+                continue
+            except ValueError:
+                pass
+        count += 1
+    return count
 
 
 def execute_watchlist_query(
@@ -639,6 +652,9 @@ def execute_watchlist_query(
             "instrument_id": row["instrument_id"],
             "instrument_type": row["instrument_type"],
             **{field: _resolve_field_value(row, field) for field in selected_fields},
+            # Always expose the endpoint used by row-level performance/risk
+            # metrics, even when the user did not select the date as a column.
+            "metric_as_of_date": row.get("last_nav_date"),
         }
         for row in filtered_rows
     ]
@@ -669,6 +685,10 @@ def execute_watchlist_query(
 
     page_rows = projected_rows[start:end]
     page_instrument_ids = [str(row["instrument_id"]) for row in page_rows]
+    metric_as_of_dates = _metric_as_of_dates(filtered_rows)
+    missing_metric_as_of_count = _missing_metric_as_of_count(filtered_rows)
+    earliest_metric_as_of = metric_as_of_dates[0] if metric_as_of_dates else None
+    latest_metric_as_of = metric_as_of_dates[-1] if metric_as_of_dates else None
 
     return {
         "rows": page_rows,
@@ -681,8 +701,14 @@ def execute_watchlist_query(
             selected_fields=selected_fields,
         ),
         "snapshot_metadata": {
-            "as_of_date": _serialize_scalar(_latest_date(filtered_rows)),
-            "methodology_version": "watchlist-row/v1",
+            # Compatibility field: the latest row endpoint, not a shared
+            # Watchlist calculation date.
+            "as_of_date": _serialize_scalar(latest_metric_as_of),
+            "as_of_date_min": _serialize_scalar(earliest_metric_as_of),
+            "as_of_date_max": _serialize_scalar(latest_metric_as_of),
+            "has_mixed_as_of_dates": len(metric_as_of_dates) > 1,
+            "as_of_date_missing_count": missing_metric_as_of_count,
+            "methodology_version": "watchlist-row/v2",
             "source_cutoff_at": _serialize_scalar(_latest_datetime(filtered_rows)),
             "is_current": True,
             "advanced_filter_applied": advanced_filters is not None,

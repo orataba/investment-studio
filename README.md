@@ -14,7 +14,7 @@
 当前架构约束：
 
 - 提供统一的平台目录
-- 保持两个 app 可独立开发与独立运行
+- 保持 Platform、Watchlist、Portfolio 三个运行面可独立开发与独立运行
 - 共享数据库只抽最小公共底座
 
 ## 目录
@@ -75,7 +75,7 @@ portfolio-operations-workbench/
 
 ## 当前原则
 
-- 两个 app 保持解耦，不做业务模型融合。
+- Watchlist 与 Portfolio 两个业务 app 保持解耦，不做业务模型融合；Platform 只提供统一入口、共享主数据维护和自己的摄取状态。
 - `Watchlist` 与 `Portfolio` 直接访问同一个 PostgreSQL 中的 `instrument_registry` + 各自私有 schema，不通过 app-to-app HTTP 互相取数。
 - 共享资产身份与 typed market facts / selector policy，不共享上层业务 read model。
 - 私募基金 canonical NAV 只有单位净值 `official_nav` 与分红再投资复权累计净值 `total_return_nav`；现金分红简单累加值只保留为私有原始证据，不能进入回报曲线。
@@ -120,6 +120,9 @@ ENV_ROOT="$HOME/.config/orataba/secrets/portfolio-operations-workbench" \
 
 - 统一迁移入口只读取显式进程环境或上述仓库外目录中的
   `platform.env / portfolio.env / watchlist.env`；Platform、Instrument Registry、Portfolio、Watchlist 的 database URL 必须显式存在并指向同一个 canonical PostgreSQL。
+- 迁移开始前会比较四个 runtime URL、所有显式 Alembic override，以及可选的
+  `PORTFOLIO_OPS_MIGRATION_EXPECTED_DATABASE`。主机、端口或数据库名不一致会直接
+  拒绝执行，诊断信息不会输出用户名或密码。
 - `instrument_registry` schema 由 `infra/instrument_registry` 统一管理。
 - `platform` backend 直接使用共享表，但不拥有 Registry 的迁移入口；`apps/platform/backend/alembic` 只管理私有 `platform` schema。
 - 统一迁移入口会在 destructive NAV cleanup 前先建立 Platform 原始证据表，不要把它替换为各 migration chain 无序的独立 `upgrade head`。
@@ -139,6 +142,36 @@ chain，并在破坏性阶段失败时保持托管服务停止。
 
 - `portfolio` 不会再自动生成默认 demo 组合；需要时请在 `/portfolios` 页面显式创建，或运行导入脚本。
 - `watchlist` 不会再自动写入示例标签值；标签与研究判断都只来自显式录入或后续真实数据处理。
+
+### 统一质量门
+
+仓库固定使用 Python `3.12.13`、uv `0.11.28` 和 Node.js `24.18.0` 作为 CI 可复现版本。依赖安装完成后，提交前从仓库根目录运行：
+
+```bash
+infra/scripts/verify_repository.sh all-local
+```
+
+这条命令依次校验仓库静态卫生和本地 Markdown 链接、三个后端快速测试、三个前端测试与生产构建，以及全部基础设施测试。其中数据库恢复/失败回滚测试会创建两个临时 PostgreSQL 数据库；本机需要已有可连接、可建库的测试角色。也可以只运行某一层或某个 app：
+
+```bash
+infra/scripts/verify_repository.sh static
+infra/scripts/verify_repository.sh backend portfolio
+infra/scripts/verify_repository.sh frontend watchlist
+infra/scripts/verify_repository.sh infra portable
+PORTFOLIO_OPS_TEST_DB_USER='test_role' \
+PORTFOLIO_OPS_TEST_DB_PASSWORD='...' \
+  infra/scripts/verify_repository.sh infra postgresql
+```
+
+PostgreSQL 迁移链和 integration tests 使用独立、可创建临时数据库的测试角色：
+
+```bash
+infra/scripts/verify_repository.sh migration-heads
+PORTFOLIO_OPS_TEST_POSTGRES_URL='postgresql+psycopg://test_role@127.0.0.1:5432/postgres' \
+  infra/scripts/verify_repository.sh postgres-integration all
+```
+
+CI 对 pull request 和 `main` push 强制执行相同的三块门禁：应用/仓库、前端、PostgreSQL。便携基础设施测试在应用任务执行；真实数据库恢复/失败回滚测试在隔离的 PostgreSQL 17 任务执行。PostgreSQL integration suite 若收集为 0 或出现 skip，门禁直接失败，不能把数据库未配置伪装成通过。
 
 ### 后端测试
 
@@ -161,9 +194,12 @@ infra/scripts/sync_python_env.sh
 - 上面这组测试主要是快速 SQLite / isolated path。
 - `instrument_registry` 的 cross-schema FK 和 search_path 需要额外用 PostgreSQL integration tests 验证，命令见 [docs/DATABASE_WORKFLOW.md](./docs/DATABASE_WORKFLOW.md)。
 
-### 前端构建
+### 前端测试与构建
 
 ```bash
+npm --prefix apps/platform/frontend test
+npm --prefix apps/portfolio/frontend test
+npm --prefix apps/watchlist/frontend test
 npm --prefix apps/platform/frontend run build
 npm --prefix apps/portfolio/frontend run build
 npm --prefix apps/watchlist/frontend run build
@@ -193,4 +229,4 @@ PORTFOLIO_OPS_LOCAL_DATABASE_URL='postgresql+psycopg://portfolio_ops@127.0.0.1:5
 - 三个 backend 目录只保留 `.env.example` 作为键名模板，不创建 `.env` 文件或软链接；真实 secrets 位于仓库外的 `~/.config/orataba/secrets/portfolio-operations-workbench/`，运行时必须显式提供指向同一 PostgreSQL 的 canonical database URL。
 - `node_modules/`、`dist/`、`*.db`、`*.sqlite*`、`__pycache__/`、`.pytest_cache/` 都是本地产物，不应进入提交。
 - `.local-pg/`、`ref/`、虚拟环境和用户级 `systemd --user` unit 都是本机状态，不作为跨机器 Git 迁移载体；`.env.example` 模板仍保留在 Git 里用于说明配置项。
-- 提交前至少跑一次三个后端测试和三个前端 build；PostgreSQL cross-schema 行为按需补跑 [docs/DATABASE_WORKFLOW.md](./docs/DATABASE_WORKFLOW.md) 里的 integration tests。
+- 提交前以 `infra/scripts/verify_repository.sh all-local` 为统一入口；涉及 migration、cross-schema FK 或 PostgreSQL 专属约束时，再执行 [docs/DATABASE_WORKFLOW.md](./docs/DATABASE_WORKFLOW.md) 中的 migration-head 与 integration tests。

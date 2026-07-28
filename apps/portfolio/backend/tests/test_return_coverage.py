@@ -127,6 +127,27 @@ def _snapshot(
     }
 
 
+def test_never_funded_zero_nav_snapshot_does_not_publish_zero_return() -> None:
+    portfolio = _portfolio("never-funded-test", date(2026, 1, 1))
+    report = performance.build_portfolio_performance_report_from_snapshots(
+        portfolio,
+        [
+            _snapshot(
+                date(2026, 1, 1),
+                nav=0.0,
+                daily_twr=None,
+            )
+        ],
+        transactions=[],
+        start_date=date(2026, 1, 1),
+        end_date=date(2026, 1, 1),
+    )
+
+    assert report["summary"]["return_coverage_state"] == "unavailable"
+    assert report["summary"]["cumulative_twr"] is None
+    assert report["summary"]["return_observation_count"] == 0
+
+
 def test_fair_value_nav_and_twr_do_not_depend_on_book_pnl_coverage(monkeypatch) -> None:
     portfolio_id = "coverage-split-test"
     monkeypatch.setattr(

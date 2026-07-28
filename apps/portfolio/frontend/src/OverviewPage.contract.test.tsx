@@ -2,8 +2,12 @@ import { screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-import OverviewPage from './pages/OverviewPage'
+import OverviewPage, {
+  buildPortfolioReturnMetrics,
+  trailingAnnualizedVolatility,
+} from './pages/OverviewPage'
 import {
+  dailyPerformancePoint,
   holdingFixture,
   holdingsWorkspaceFixture,
   instrumentFixture,
@@ -53,6 +57,70 @@ describe('Overview rendered page contract', () => {
     })
     apiMocks.getPortfolioPerformance.mockResolvedValue(performanceFixture())
     apiMocks.getPortfolioInstruments.mockResolvedValue({ instruments: [] })
+  })
+
+  it('includes a funded-segment start when it is exactly the rolling return boundary', () => {
+    const points = Array.from({ length: 8 }, (_, index) => {
+      const day = String(index + 23).padStart(2, '0')
+      const point = dailyPerformancePoint(
+        `2026-06-${day}`,
+        110,
+        index === 0 ? 0.1 : 0,
+        0.1,
+      )
+      return index === 0
+        ? {
+            ...point,
+            beginning_nav: 0,
+            ending_nav: 110,
+            external_cash_in: 100,
+            net_external_inflow: 100,
+          }
+        : point
+    })
+
+    expect(buildPortfolioReturnMetrics(points, '2026-06-30').oneWeek).toBeCloseTo(0.1)
+  })
+
+  it('uses a natural-month anchor for overview volatility', () => {
+    const returns = [
+      { date: '2026-02-28', value: 0 },
+      { date: '2026-03-01', value: 0.1 },
+      ...Array.from({ length: 30 }, (_, index) => ({
+        date: `2026-03-${String(index + 2).padStart(2, '0')}`,
+        value: 0,
+      })),
+    ]
+
+    expect(
+      trailingAnnualizedVolatility(returns, new Date(2026, 2, 31), 1),
+    ).toBeGreaterThan(0)
+  })
+
+  it('withholds overview volatility when the latest return is stale', () => {
+    const returns = [
+      { date: '2026-06-28', value: 0 },
+      ...Array.from({ length: 22 }, (_, index) => ({
+        date: `2026-07-${String(index + 1).padStart(2, '0')}`,
+        value: index % 2 === 0 ? 0.01 : -0.005,
+      })),
+    ]
+
+    expect(
+      trailingAnnualizedVolatility(returns, new Date(2026, 6, 28), 1),
+    ).toBeNull()
+  })
+
+  it('withholds overview volatility when the return count is too sparse', () => {
+    const returns = [
+      { date: '2026-06-28', value: 0 },
+      { date: '2026-07-14', value: 0.01 },
+      { date: '2026-07-28', value: -0.005 },
+    ]
+
+    expect(
+      trailingAnnualizedVolatility(returns, new Date(2026, 6, 28), 1),
+    ).toBeNull()
   })
 
   it('renders the TWR chart, matching period return, range controls, and an actionable holding warning', async () => {

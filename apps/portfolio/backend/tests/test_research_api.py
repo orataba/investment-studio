@@ -1898,6 +1898,76 @@ def test_holdings_instrument_volatility_allows_complete_weekly_window() -> None:
     assert metrics["instrument_volatility_6m"] is not None
 
 
+def test_holdings_risk_window_stays_anchored_to_requested_as_of_calendar_month() -> None:
+    first_date = date(2026, 6, 20)
+    last_quote_date = date(2026, 7, 24)
+    detail = {
+        "instrument_type": "fund",
+        "currency": "USD",
+        "quote_selection_policy": {"total_return": ["total_return_nav"]},
+        "market_data": [
+            {
+                "metric_family": "nav",
+                "quote_basis": "total_return_nav",
+                "as_of_date": (first_date + timedelta(days=offset)).isoformat(),
+                "value": str(100.0 + offset * 0.1 + (0.25 if offset % 2 else 0.0)),
+                "currency": "USD",
+                "price_unit": "per_unit",
+                "price_scale": 1.0,
+                "status": "complete",
+            }
+            for offset in range((last_quote_date - first_date).days + 1)
+        ],
+    }
+
+    metrics = build_instrument_trend_metrics_from_detail(
+        detail,
+        as_of_date=date(2026, 7, 28),
+        calculation_frequency="daily",
+    )
+
+    assert metrics["instrument_trend_as_of_date"] == "2026-07-24"
+    assert metrics["instrument_return_series_1m"]["first_return_start_date"] == "2026-06-28"
+    assert metrics["instrument_return_series_1m"]["points"][0]["start_date"] == "2026-06-28"
+    assert metrics["instrument_volatility_1m"] is not None
+
+
+def test_holdings_risk_window_withholds_uniformly_stale_tail_data() -> None:
+    first_date = date(2026, 6, 20)
+    last_quote_date = date(2026, 7, 24)
+    detail = {
+        "instrument_type": "fund",
+        "currency": "USD",
+        "quote_selection_policy": {"total_return": ["total_return_nav"]},
+        "market_data": [
+            {
+                "metric_family": "nav",
+                "quote_basis": "total_return_nav",
+                "as_of_date": (first_date + timedelta(days=offset)).isoformat(),
+                "value": str(100.0 + offset * 0.1 + (0.25 if offset % 2 else 0.0)),
+                "currency": "USD",
+                "price_unit": "per_unit",
+                "price_scale": 1.0,
+                "status": "complete",
+            }
+            for offset in range((last_quote_date - first_date).days + 1)
+        ],
+    }
+
+    metrics = build_instrument_trend_metrics_from_detail(
+        detail,
+        as_of_date=date(2026, 7, 30),
+        calculation_frequency="daily",
+    )
+
+    assert metrics["instrument_trend_as_of_date"] == "2026-07-24"
+    assert metrics["instrument_volatility_1m"] is None
+    assert metrics["instrument_return_series_1m"] == {
+        "first_return_start_date": None,
+        "points": [],
+    }
+
+
 def test_research_series_prefers_adjusted_close_for_equities() -> None:
     detail = {
         "instrument_id": "equity-test",

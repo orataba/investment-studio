@@ -85,6 +85,8 @@ for required_database_variable in \
 done
 export PORTFOLIO_OPS_INSTRUMENT_REGISTRY_SCHEMA="${PORTFOLIO_OPS_INSTRUMENT_REGISTRY_SCHEMA:-instrument_registry}"
 
+"$PYTHON_BIN" "$SCRIPT_DIR/validate_migration_targets.py"
+
 run_migration() {
   local label="$1"
   local migration_root="$2"

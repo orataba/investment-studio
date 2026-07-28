@@ -110,6 +110,7 @@ export function returnWindowCoverage(
     lookbackDays,
     frequency,
     parameters,
+    points[0]?.start_date,
   )
 }
 
@@ -270,7 +271,7 @@ export function buildCorrelationMatrix(
         windowReturnPoints(item, asOfDate, lookbackDays).map((point) => point.date),
       ),
     ),
-  ].filter((dateKey) => dateKey >= windowStartDate && dateKey <= asOfDate).sort()
+  ].filter((dateKey) => dateKey > windowStartDate && dateKey <= asOfDate).sort()
   assessedSeries.forEach(({ item }) => {
     const memberDateSet = new Set(windowReturnPoints(item, asOfDate, lookbackDays).map((point) => point.date))
     const missingDates = sampleDates.filter((dateKey) => !memberDateSet.has(dateKey))

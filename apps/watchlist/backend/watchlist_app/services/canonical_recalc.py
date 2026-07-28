@@ -47,6 +47,7 @@ from watchlist_app.services.fund_taxonomy import (
     merge_taxonomy_attributes,
 )
 from watchlist_app.services.calculation_frequency import (
+    assess_latest_observation_freshness,
     build_calculation_frequency_context,
     normalize_frequency,
 )
@@ -87,8 +88,9 @@ DEFAULT_TABS = [
     "monitoring",
 ]
 
-PERFORMANCE_METHODOLOGY_VERSION = "canonical-performance/v5"
-RISK_METHODOLOGY_VERSION = "canonical-risk/v4"
+PERFORMANCE_METHODOLOGY_VERSION = "canonical-performance/v6"
+RISK_METHODOLOGY_VERSION = "canonical-risk/v5"
+PEER_COMPARISON_POLICY_VERSION = "peer-comparison/v2"
 
 
 class RecalcJobLeaseLostError(RuntimeError):
@@ -476,7 +478,7 @@ def _primary_peer_ranking(peer_comparison: dict[str, object] | None) -> dict[str
         for row in metric_rows
         if isinstance(row, dict)
     }
-    for metric_key in ("annualized_return", "return_1y", "return_ytd", "return_1m"):
+    for metric_key in ("return_1y", "return_ytd", "return_1m", "annualized_return"):
         row = by_key.get(metric_key)
         if not row:
             continue
@@ -697,25 +699,29 @@ def _annualization_periods_per_year(nav_points: list[dict[str, Any]], return_cou
 
 def _compute_downside_deviation(nav_points: list[dict[str, Any]]) -> float | None:
     periodic_returns = _periodic_returns(nav_points)
-    downside_returns = [value for value in periodic_returns if value < 0]
-    if len(periodic_returns) < 2 or not downside_returns:
+    if len(periodic_returns) < 2 or not any(value < 0 for value in periodic_returns):
         return None
     periods_per_year = _annualization_periods_per_year(nav_points, len(periodic_returns))
     if periods_per_year is None:
         return None
-    downside_variance = sum(value ** 2 for value in downside_returns) / len(downside_returns)
+    downside_variance = (
+        sum(min(value, 0.0) ** 2 for value in periodic_returns)
+        / len(periodic_returns)
+    )
     return math.sqrt(max(downside_variance, 0)) * math.sqrt(periods_per_year) * 100
 
 
 def _compute_sortino(nav_points: list[dict[str, Any]]) -> float | None:
     periodic_returns = _periodic_returns(nav_points)
-    downside_returns = [value for value in periodic_returns if value < 0]
-    if len(periodic_returns) < 2 or not downside_returns:
+    if len(periodic_returns) < 2 or not any(value < 0 for value in periodic_returns):
         return None
     periods_per_year = _annualization_periods_per_year(nav_points, len(periodic_returns))
     if periods_per_year is None:
         return None
-    downside_variance = sum(value ** 2 for value in downside_returns) / len(downside_returns)
+    downside_variance = (
+        sum(min(value, 0.0) ** 2 for value in periodic_returns)
+        / len(periodic_returns)
+    )
     downside_deviation = math.sqrt(max(downside_variance, 0))
     if downside_deviation == 0:
         return None
@@ -1116,7 +1122,7 @@ def _performance_window_metadata(
     if len(nav_points) < 2:
         return {}
     as_of_date = nav_points[-1]["as_of_date"]
-    if window_name in {"1W", "MTD", "YTD", "3M", "6M", "1Y"}:
+    if window_name in {"1W", "1M", "MTD", "YTD", "3M", "6M", "1Y"}:
         spec = named_return_window_spec(window_name, as_of_date)
         window = resolve_return_window(
             nav_points,
@@ -1659,7 +1665,16 @@ class CanonicalRecalcService:
         )
         nav_rows = _rows_with_selected_series(nav_rows, selection)
         selection["rows"] = nav_rows
-        frequency_context = build_calculation_frequency_context(selection["points"])
+        source_settings = (
+            dict(shared_instrument.get("source_settings") or {})
+            if isinstance(shared_instrument, dict)
+            else {}
+        )
+        frequency_context = build_calculation_frequency_context(
+            selection["points"],
+            expected_frequency=source_settings.get("expected_frequency"),
+            market_calendar=str(source_settings.get("market_calendar") or "") or None,
+        )
         calculation_dates = {
             point["as_of_date"]
             for point in frequency_context["points"]
@@ -2029,7 +2044,16 @@ class CanonicalRecalcService:
         )
         nav_rows = _rows_with_selected_series(nav_rows, nav_selection)
         nav_selection["rows"] = nav_rows
-        frequency_context = build_calculation_frequency_context(nav_selection["points"])
+        source_settings = (
+            dict(shared_instrument.get("source_settings") or {})
+            if isinstance(shared_instrument, dict)
+            else {}
+        )
+        frequency_context = build_calculation_frequency_context(
+            nav_selection["points"],
+            expected_frequency=source_settings.get("expected_frequency"),
+            market_calendar=str(source_settings.get("market_calendar") or "") or None,
+        )
         calculation_nav_points = frequency_context["points"]
         calculation_frequency_profile = frequency_context["profile"]
         quote_selection = _select_quote_series(
@@ -2063,8 +2087,13 @@ class CanonicalRecalcService:
             instrument_attributes=raw_attributes,
         )
         current_drawdown = _current_drawdown(calculation_nav_points)
-        if current_drawdown is not None:
+        if (
+            current_drawdown is not None
+            and int(calculation_frequency_profile.get("gap_count") or 0) == 0
+        ):
             watchlist_attributes["current_drawdown"] = current_drawdown
+        else:
+            watchlist_attributes.pop("current_drawdown", None)
 
         performance_snapshot = self.snapshot_repository.get_current_performance(session, instrument_id)
         risk_snapshot = self.snapshot_repository.get_current_risk(session, instrument_id)
@@ -2129,6 +2158,8 @@ class CanonicalRecalcService:
             score_snapshot=score_snapshot,
             attributes=raw_attributes,
             taxonomy_context=taxonomy_context,
+            calculation_frequency_profile=calculation_frequency_profile,
+            source_settings=source_settings,
             source_cutoff_at=materialized_market_source_cutoff,
             now=now,
         )
@@ -2296,7 +2327,12 @@ class CanonicalRecalcService:
                 if window is not None
                 else None
             )
-        max_drawdown = _compute_drawdown(nav_points)
+        has_unresolved_gaps = int(
+            calculation_frequency_profile.get("gap_count") or 0
+        ) > 0
+        max_drawdown = (
+            None if has_unresolved_gaps else _compute_drawdown(nav_points)
+        )
         calmar = annualized_return / abs(max_drawdown) if annualized_return is not None and max_drawdown not in {None, 0} else None
         return self.snapshot_repository.replace_performance(
             session,
@@ -2343,10 +2379,15 @@ class CanonicalRecalcService:
         now: datetime,
     ):
         latest = nav_points[-1]
-        volatility = _compute_volatility(nav_points)
-        downside_volatility = _compute_downside_deviation(nav_points)
-        sharpe_ratio = _compute_sharpe(nav_points)
-        sortino_ratio = _compute_sortino(nav_points)
+        has_unresolved_gaps = int(
+            calculation_frequency_profile.get("gap_count") or 0
+        ) > 0
+        volatility = None if has_unresolved_gaps else _compute_volatility(nav_points)
+        downside_volatility = (
+            None if has_unresolved_gaps else _compute_downside_deviation(nav_points)
+        )
+        sharpe_ratio = None if has_unresolved_gaps else _compute_sharpe(nav_points)
+        sortino_ratio = None if has_unresolved_gaps else _compute_sortino(nav_points)
         return self.snapshot_repository.replace_risk(
             session,
             snapshot_id=f"risk:{instrument_id}:{latest['as_of_date'].isoformat()}:{make_recalc_job_id()}",
@@ -2508,10 +2549,19 @@ class CanonicalRecalcService:
         taxonomy_context: dict[str, object],
         source_cutoff_at: datetime,
         now: datetime,
+        calculation_frequency_profile: dict[str, object] | None = None,
+        source_settings: dict[str, object] | None = None,
     ) -> dict[str, object]:
-        last_nav_date = (
-            nav_selection["points"][-1]["as_of_date"].isoformat()
+        calculation_frequency_profile = calculation_frequency_profile or {}
+        source_settings = source_settings or {}
+        latest_observation_date = (
+            nav_selection["points"][-1]["as_of_date"]
             if nav_selection["points"]
+            else None
+        )
+        last_nav_date = (
+            latest_observation_date.isoformat()
+            if isinstance(latest_observation_date, date)
             else None
         )
         selected_series = _selection_metadata(nav_selection)
@@ -2525,11 +2575,30 @@ class CanonicalRecalcService:
         has_unconfirmed_return_break = bool(
             return_series_status == "partial" and return_segment_breaks
         )
+        resolved_frequency = str(
+            calculation_frequency_profile.get("resolved_frequency") or "daily"
+        ).strip().lower()
+        if resolved_frequency not in {"daily", "weekly", "monthly"}:
+            resolved_frequency = "daily"
+        observation_freshness = assess_latest_observation_freshness(
+            latest_observation_date=(
+                latest_observation_date
+                if isinstance(latest_observation_date, date)
+                else None
+            ),
+            current_date=now.date(),
+            resolved_frequency=resolved_frequency,
+            expected_frequency=source_settings.get("expected_frequency"),
+            market_calendar=source_settings.get("market_calendar"),
+            release_lag_days=source_settings.get("release_lag_days"),
+        )
         freshness_status = (
             "unavailable"
             if not nav_selection["points"]
             else "partial"
             if has_unconfirmed_return_break
+            else "stale"
+            if observation_freshness["status"] == "stale"
             else "fresh"
         )
         staleness_reason = (
@@ -2537,6 +2606,8 @@ class CanonicalRecalcService:
             if not nav_selection["points"]
             else "Canonical total-return series stops at an unconfirmed fund event."
             if has_unconfirmed_return_break
+            else observation_freshness.get("reason")
+            if observation_freshness["status"] == "stale"
             else None
         )
         return {
@@ -2613,6 +2684,11 @@ class CanonicalRecalcService:
                 "last_recalculated_at": now.isoformat().replace("+00:00", "Z"),
                 "last_successful_snapshot_at": now.isoformat().replace("+00:00", "Z"),
                 "staleness_reason": staleness_reason,
+                "latest_observation_date": last_nav_date,
+                "expected_latest_date": observation_freshness.get(
+                    "expected_latest_date"
+                ),
+                "observation_lag_days": observation_freshness.get("lag_days"),
             },
             "quick_monitoring_items": [],
             "tabs": DEFAULT_TABS,
@@ -2631,13 +2707,21 @@ class CanonicalRecalcService:
         if taxonomy_node is None or not assigned_path_node_ids:
             return {
                 "status": "missing_taxonomy",
+                "comparison_policy_version": PEER_COMPARISON_POLICY_VERSION,
+                "as_of_date": (
+                    performance_snapshot.as_of_date.isoformat()
+                    if performance_snapshot is not None
+                    else None
+                ),
                 "taxonomy_code": FUND_TAXONOMY_CODE,
                 "assigned_node_id": None,
                 "assigned_path": [],
                 "peer_node_id": None,
                 "peer_path": [],
                 "fallback_levels": 0,
+                "candidate_count": 0,
                 "sample_count": 0,
+                "excluded_mismatched_as_of_count": 0,
                 "metrics": [],
                 "summary": {},
             }
@@ -2675,6 +2759,16 @@ class CanonicalRecalcService:
         if risk_snapshot is not None and instrument_id in active_peer_instrument_ids:
             risk_by_asset[str(instrument_id)] = risk_snapshot
 
+        performance_as_of_date = getattr(
+            performance_snapshot, "as_of_date", None
+        )
+        comparable_performance_ids = {
+            candidate_instrument_id
+            for candidate_instrument_id, candidate_snapshot in performance_by_asset.items()
+            if getattr(candidate_snapshot, "as_of_date", None)
+            == performance_as_of_date
+        }
+
         selected_peer_node_id = assigned_path_node_ids[-1]
         selected_instrument_ids: list[str] = []
         for candidate_node_id in reversed(assigned_path_node_ids):
@@ -2682,7 +2776,7 @@ class CanonicalRecalcService:
                 candidate_instrument_id
                 for candidate_instrument_id, assigned_node in assigned_node_by_asset.items()
                 if candidate_node_id in _node_path_node_ids(assigned_node)
-                and candidate_instrument_id in performance_by_asset
+                and candidate_instrument_id in comparable_performance_ids
             ]
             selected_peer_node_id = candidate_node_id
             selected_instrument_ids = sorted(candidate_instrument_ids)
@@ -2697,6 +2791,24 @@ class CanonicalRecalcService:
             selected_instrument_ids = sorted([*selected_instrument_ids, instrument_id])
 
         peer_node = node_by_id.get(selected_peer_node_id) or taxonomy_node
+        selected_taxonomy_instrument_ids = sorted(
+            candidate_instrument_id
+            for candidate_instrument_id, assigned_node in assigned_node_by_asset.items()
+            if selected_peer_node_id in _node_path_node_ids(assigned_node)
+        )
+        excluded_mismatched_as_of_count = sum(
+            1
+            for candidate_instrument_id in selected_taxonomy_instrument_ids
+            if (
+                performance_by_asset.get(candidate_instrument_id) is not None
+                and getattr(
+                    performance_by_asset[candidate_instrument_id],
+                    "as_of_date",
+                    None,
+                )
+                != performance_as_of_date
+            )
+        )
         fallback_levels = max(
             0,
             len(assigned_path_node_ids) - 1 - assigned_path_node_ids.index(selected_peer_node_id),
@@ -2713,12 +2825,21 @@ class CanonicalRecalcService:
                 continue
 
             samples: list[tuple[str, float]] = []
-            for candidate_instrument_id in selected_instrument_ids:
+            mismatched_as_of_count = 0
+            target_as_of_date = getattr(target_snapshot, "as_of_date", None)
+            for candidate_instrument_id in selected_taxonomy_instrument_ids:
                 candidate_snapshot = (
                     performance_by_asset.get(candidate_instrument_id)
                     if source == "performance"
                     else risk_by_asset.get(candidate_instrument_id)
                 )
+                if (
+                    candidate_snapshot is not None
+                    and getattr(candidate_snapshot, "as_of_date", None)
+                    != target_as_of_date
+                ):
+                    mismatched_as_of_count += 1
+                    continue
                 candidate_value = _safe_float(getattr(candidate_snapshot, attr, None))
                 if candidate_value is not None:
                     samples.append((candidate_instrument_id, candidate_value))
@@ -2747,6 +2868,12 @@ class CanonicalRecalcService:
                     "peer_p25": _quantile(peer_values, 0.25),
                     "peer_p75": _quantile(peer_values, 0.75),
                     "peer_sample_count": len(peer_values),
+                    "as_of_date": (
+                        target_as_of_date.isoformat()
+                        if isinstance(target_as_of_date, date)
+                        else None
+                    ),
+                    "excluded_mismatched_as_of_count": mismatched_as_of_count,
                     **ranking,
                 }
             )
@@ -2765,13 +2892,21 @@ class CanonicalRecalcService:
         )
         return {
             "status": status,
+            "comparison_policy_version": PEER_COMPARISON_POLICY_VERSION,
+            "as_of_date": (
+                performance_as_of_date.isoformat()
+                if isinstance(performance_as_of_date, date)
+                else None
+            ),
             "taxonomy_code": FUND_TAXONOMY_CODE,
             "assigned_node_id": getattr(taxonomy_node, "node_id", None),
             "assigned_path": _node_path_labels(taxonomy_node),
             "peer_node_id": selected_peer_node_id,
             "peer_path": _node_path_labels(peer_node),
             "fallback_levels": fallback_levels,
+            "candidate_count": len(selected_taxonomy_instrument_ids),
             "sample_count": len(selected_instrument_ids),
+            "excluded_mismatched_as_of_count": excluded_mismatched_as_of_count,
             "metrics": metric_rows,
             "summary": {
                 "return_percentile": return_percentile,
@@ -2801,6 +2936,7 @@ class CanonicalRecalcService:
         }
         category_value_by_window = {
             "1W": _safe_float(peer_metrics_by_key.get("return_1w", {}).get("peer_median")),
+            "1M": _safe_float(peer_metrics_by_key.get("return_1m", {}).get("peer_median")),
             "MTD": _safe_float(peer_metrics_by_key.get("return_mtd", {}).get("peer_median")),
             "YTD": _safe_float(peer_metrics_by_key.get("return_ytd", {}).get("peer_median")),
             "3M": _safe_float(peer_metrics_by_key.get("return_3m", {}).get("peer_median")),
@@ -2813,6 +2949,7 @@ class CanonicalRecalcService:
         if performance_snapshot is not None:
             trailing_returns = [
                 {"window": "1W", "investment_nav": _safe_float(performance_snapshot.return_1w), "category_nav": category_value_by_window["1W"], "index_nav": None},
+                {"window": "1M", "investment_nav": _safe_float(performance_snapshot.return_1m), "category_nav": category_value_by_window["1M"], "index_nav": None},
                 {"window": "MTD", "investment_nav": _safe_float(performance_snapshot.return_mtd), "category_nav": category_value_by_window["MTD"], "index_nav": None},
                 {"window": "YTD", "investment_nav": _safe_float(performance_snapshot.return_ytd), "category_nav": category_value_by_window["YTD"], "index_nav": None},
                 {"window": "3M", "investment_nav": _safe_float(performance_snapshot.return_3m), "category_nav": category_value_by_window["3M"], "index_nav": None},
@@ -2821,9 +2958,6 @@ class CanonicalRecalcService:
                 {"window": "3Y", "investment_nav": _safe_float(performance_snapshot.return_3y_annualized), "category_nav": category_value_by_window["3Y"], "index_nav": None},
                 {"window": "5Y", "investment_nav": _safe_float(performance_snapshot.return_5y_annualized), "category_nav": category_value_by_window["5Y"], "index_nav": None},
                 {"window": "Ann.", "investment_nav": _safe_float(performance_snapshot.annualized_return), "category_nav": category_value_by_window["Ann."], "index_nav": None},
-            ]
-            trailing_returns = [
-                row for row in trailing_returns if any(row[key] is not None for key in ("investment_nav", "category_nav", "index_nav"))
             ]
             trailing_returns = [
                 {
@@ -2855,13 +2989,39 @@ class CanonicalRecalcService:
         nav_points: list[dict[str, Any]],
         calculation_frequency_profile: dict[str, object],
     ) -> dict[str, object]:
+        has_unresolved_gaps = int(
+            calculation_frequency_profile.get("gap_count") or 0
+        ) > 0
         volatility = _safe_float(getattr(risk_snapshot, "volatility", None))
         annualized_return = _safe_float(getattr(performance_snapshot, "annualized_return", None))
-        drawdown_summary = _compute_drawdown_summary(nav_points)
-        current_drawdown = _current_drawdown(nav_points)
-        current_watch = _build_current_risk_watch(nav_points, drawdown_summary)
-        risk_structure = _build_risk_structure(nav_points, drawdown_summary, current_watch)
-        change_monitor = _build_risk_change_monitor(nav_points, drawdown_summary, current_watch)
+        drawdown_summary = (
+            None if has_unresolved_gaps else _compute_drawdown_summary(nav_points)
+        )
+        current_drawdown = (
+            None if has_unresolved_gaps else _current_drawdown(nav_points)
+        )
+        current_watch = (
+            {
+                "overall_level": None,
+                "rows": [],
+                "note": "Path-dependent risk metrics are withheld because expected observations are missing.",
+            }
+            if has_unresolved_gaps
+            else _build_current_risk_watch(nav_points, drawdown_summary)
+        )
+        risk_structure = (
+            {"rows": []}
+            if has_unresolved_gaps
+            else _build_risk_structure(nav_points, drawdown_summary, current_watch)
+        )
+        change_monitor = (
+            {
+                "rows": [],
+                "note": "Change monitoring is withheld because expected observations are missing.",
+            }
+            if has_unresolved_gaps
+            else _build_risk_change_monitor(nav_points, drawdown_summary, current_watch)
+        )
         peer_metrics_by_key = {
             str(row.get("metric_key")): row
             for row in (peer_comparison or {}).get("metrics", [])
@@ -2906,6 +3066,19 @@ class CanonicalRecalcService:
             "risk_structure": risk_structure,
             "current_watch": current_watch,
             "change_monitor": change_monitor,
+            "data_quality": {
+                "status": (
+                    "withheld_missing_observations"
+                    if has_unresolved_gaps
+                    else "ready"
+                ),
+                "gap_count": int(
+                    calculation_frequency_profile.get("gap_count") or 0
+                ),
+                "gap_detection_basis": calculation_frequency_profile.get(
+                    "gap_detection_basis"
+                ),
+            },
             "calculation_frequency_profile": calculation_frequency_profile,
             "snapshot_metadata": _snapshot_metadata(risk_snapshot),
         }
@@ -3020,11 +3193,8 @@ class CanonicalRecalcService:
                     "aum": None,
                     "avg_credit_rating": getattr(exposure_snapshot, "avg_credit_rating", None),
                     "exposure_updated_at": getattr(exposure_snapshot, "calculated_at", None),
-                    "last_nav_date": (
-                        date.fromisoformat(str(summary_payload["key_stats"][0]["value"]))
-                        if summary_payload.get("key_stats")
-                        and str(summary_payload["key_stats"][0].get("value") or "") != "—"
-                        else None
+                    "last_nav_date": getattr(
+                        performance_snapshot, "as_of_date", None
                     ),
                 },
             )

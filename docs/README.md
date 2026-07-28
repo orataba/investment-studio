@@ -46,13 +46,10 @@
 - 前端视觉调整以 [FRONTEND_DESIGN_BASELINE.md](./FRONTEND_DESIGN_BASELINE.md) 为准；不要再引入米黄、沙色或暖灰页面背景。
 - `nav/` 和 `.env.example` 是仓库恢复资产；`data/migration/` 只记录恢复制品政策。真实数据库 dump、backend `.env`、runtime DB、构建产物、依赖目录和缓存均不得进入 Git。
 
-提交前快速检查：
+提交前统一检查：
 
 ```bash
-(cd apps/platform/backend && pytest)
-(cd apps/portfolio/backend && pytest)
-(cd apps/watchlist/backend && pytest)
-npm --prefix apps/platform/frontend run build
-npm --prefix apps/portfolio/frontend run build
-npm --prefix apps/watchlist/frontend run build
+infra/scripts/verify_repository.sh all-local
 ```
+
+该入口覆盖静态仓库卫生、活动文档本地链接、三个 backend suite、三个 frontend test/build 和全部便携 infra tests。涉及数据库迁移或 PostgreSQL 专属行为时，再执行 `infra/scripts/verify_repository.sh migration-heads` 与 `postgres-integration all`；完整环境要求见 [DATABASE_WORKFLOW.md](./DATABASE_WORKFLOW.md)。

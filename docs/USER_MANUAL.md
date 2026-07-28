@@ -135,6 +135,8 @@ Watchlist 管理“哪些资产进入观察范围”和“如何展示这些资�
 
 导出前应确认当前筛选、排序、分组和日期区间符合沟通口径。导出的 CSV 可用于复核和会议讨论，但不要把导出文件当作新的事实来源再回灌系统。
 
+Watchlist 允许不同 instrument 的最新数据日期不同。`1M / 3M / YTD` 等字段各自从该行显示的 `Metric As Of` 回看，不使用名单中最晚日期统一截断。页脚会显示当前结果的 as-of 范围；若同一分组内终点不同，收益和风险平均显示 `—`，不要把它理解为 0。Peer 排名只使用同一 as-of 的可比样本。
+
 ### 5.4 视图和字段
 
 Watchlist 的字段来自 field registry 和 instrument attributes。字段可能只适用于特定 instrument type。例如基金字段不一定适用于指数；指数 performance/risk 字段依赖 Registry 允许的行情序列；基金收益风险字段只依赖可信的分红再投资复权累计净值，缺失时为 NA，不回退单位净值。常用标的收益窗口包括 `1W / 1M / 3M / 6M / MTD / YTD / 1Y`。
@@ -161,6 +163,8 @@ Watchlist 的字段来自 field registry 和 instrument attributes。字段可�
 - Monitoring：查看需要关注的缺失数据、标签、刷新任务和监控判断。
 
 在 Quote / Performance / Risk 中选择 benchmark 后，图表会展示基金与 benchmark 的相对表现。benchmark 本身必须有可用行情，且双方收益语义必须明确并一致；否则只保留可验证的独立展示，不计算相对统计。
+
+基金自身指标默认截至自己的最新观测日。选择 benchmark 后，比较矩阵只使用双方日期完全相同的共同观测收盘点：双方都截到最晚共同观测日，SI 从最早共同观测日开始，中间收益也按同一对起止收盘计算。少于一个完整日历年的历史不显示年化收益。若 daily 序列缺少应有交易日，端点收益仍可用，但回撤、波动率、Sharpe 等路径风险指标会显示不可用；周末和交易所休市日不会被当成缺点。
 
 ### 5.7 指数详情页
 
@@ -252,7 +256,7 @@ Holdings 的指标分成两种主要口径：
 
 普通 dividend / coupon 是 entitlement-date 已实现 `Income`，不进入 Unrealized P&L；分红再投资同时确认 Income 并以再投资金额建立新 lot；只有 `return_of_capital` 冲减剩余成本。
 
-Group、Non-cash subtotal 和 `Portfolio Total` 仍然是**当前持仓篮子**：金额加总、比例用组级分子分母重算；Return 用当前 base-market-value 权重合成；Vol / Drawdown 用共同历史区间先生成当前权重篮子路径再算；Forward RC 只加总相对于同一全组合风险分母的贡献。当前成员收益或市值覆盖不足、return currency 无法统一时显示 `—`，不剔除缺失成员后重新归一。Holding Since、Quantity、Avg Cost、Quote、Accounts、Chart、Coverage 和 Held Max DD 等没有稳定分组含义的字段只在 instrument row 展示。
+Group、Non-cash subtotal 和 `Portfolio Total` 仍然是**当前持仓篮子**：金额加总、比例用组级分子分母重算；Return 用当前 base-market-value 权重合成；Vol / Drawdown 用内部连续、起止完全一致且尾部仍新鲜的共同历史区间先生成当前权重篮子路径再算；Forward RC 只加总相对于同一全组合风险分母的贡献。当前成员收益或市值覆盖不足、return currency 无法统一、共同路径中间缺段或整条路径已经陈旧时显示 `—`，不剔除缺失成员后重新归一。Holding Since、Quantity、Avg Cost、Quote、Accounts、Chart、Coverage 和 Held Max DD 等没有稳定分组含义的字段只在 instrument row 展示。
 
 `Portfolio Total` 的上述 Return 不是组合实际 TWR；组合真实历史表现仍到 Performance 查看。相同 instrument、相同 as-of 和 total-return basis 下，Holdings 行级窗口收益应与 Watchlist 相同，但两个 app 各自计算、互不调用。完整字段标准见 [Holdings 字段计算与分组标准](../apps/portfolio/docs/03_HOLDINGS_FIELD_REFERENCE.md)。
 
@@ -277,6 +281,8 @@ Performance 用于真实组合区间复盘。核心口径是日频 TWR、期间 
 
 组合已经存在时，Performance 选择 `1 日` 到 `7 日` 表示 1 日收盘到 7 日收盘，收益从 2 日开始链接；1 日发生的交易和现金流已经体现在期初状态，不会在期间内重复计算。相同起止日是 0 长度区间。例外是请求起点正好等于 funded-segment start：组合首次入金日，或 NAV 真正归零后的再次入金日，会计入该日 BOD-to-EOD 收益。保留的现金即使无收益也仍属于组合 NAV，不算归零；后来某日新买一项资产也不算组合重新成立。要包含普通买入日至收盘的收益，需要把起始日选为前一日。若跨越连续零 NAV 的无资本空档，系统不会伪造零收益并强行链接，而会把整段 TWR 标记为不完整，归零前后分别计算。MTD、QTD、YTD 分别从上月末、上季末、上年 12 月 31 日的收盘状态开始；目标日休市时，组合使用该日完整 EOD 状态，标的和 benchmark 使用不晚于目标日的最近有效收盘。
 
+从未入资的空组合没有收益分母，因此即使已有零 NAV 快照也显示不可用，不显示 0%。开始日期晚于结束日期时，页面会直接提示区间无效；请求结束日期晚于最后可靠估值日时，页面保留原请求日期，同时明确显示实际计算到哪一天以及收缩原因。Performance、Calculation、Contribution 和 Groups 使用同一组 requested/effective 区间及起始边界语义，不会各自把首次入资日解释成不同的区间。
+
 区间中的买卖不是入金或出金：系统按实际份额和成交金额记账，再按当日收盘估值，成交价到收盘价的变化进入当日收益。未结算交易通过 pending settlement 维持 NAV 连续。入金默认在 settlement / external-flow date 作为日初流入，出金作为日末流出；若业务要求精确处理盘中大额现金流，需要补充流发生时点的完整组合估值，只有交易时间而没有盘中 NAV 不足以精确切分 TWR。
 
 选择 benchmark 后，系统会把组合和基准都按所选区间起点归一化。已确认的全收益指数作为 canonical comparator；已确认的价格指数也会计算差值、tracking error、information ratio、beta 和 capture ratio，但页面会提示价格指数可能不含分红或利息再投资，因此相对结果包含这部分口径差异。收益语义仍为 Unknown 的行情只展示基准自身曲线和指标，不计算相对统计。
@@ -298,19 +304,22 @@ Performance 反映真实历史组合，不是当前权重假设。若与 Risk �
 
 Risk 是当前权重口径的风险工作台，使用当前非现金持仓权重和资产历史收益窗口。它适合回答“现在这组持仓的风险结构如何”，不适合替代历史绩效归因。
 
-现金会进入组合 NAV 和 Weight Target / Current Drift 的资本权重，但不设置 Risk Target。`Risk Target Gap` 只比较承担市场风险的非现金 sleeve：现金不显示 risk-target row，不进入风险预算 100% 分母，默认风险贡献为 0。
+现金会进入组合 NAV 和 Weight Target / Current Drift 的资本权重，但不设置 Risk Target。当前现金包含所有账户的现金余额与待交收；证券账户里的持仓市值不会被重复计算。`Risk Target Gap` 只比较承担市场风险的非现金 sleeve：现金不显示 risk-target row，不进入风险预算 100% 分母。只有组合本币现金可以直接视为 0 风险；外币现金需要 FX 收益序列。
 
 常用内容：
 
+- Risk Health：看 forward volatility 与样本覆盖、风险预算总偏离、Top-3/HHI 集中度、现金与待交收。
 - rolling volatility / Sharpe：看风险和风险调整收益随时间变化。
 - correlation matrix：默认查看 Current Holdings；需要研究未持有资产时可显式切到 Full Universe。
 - current drift：看当前权重相对目标或分类的偏离。
 - risk contribution：看各资产或分组对组合风险的贡献。
 - benchmark：选择可用 benchmark 后比较风险曲线。
 
-风险结果依赖资产收益序列。缺少历史行情、日期不重叠或缺少 FX 时，结果可能为空或覆盖不足。
+风险结果依赖资产收益序列。Production Risk Model 的 `1M / 3M / 6M / 12M / 24M` 从 holdings as-of date 按自然月回看，不是 30/90 个交易日；起止日都是 EOD boundary，只使用 `(start EOD, as-of EOD]` 的收益行。计算频率优先读取 Registry expected frequency，daily 数据按 instrument 自己的 market calendar 区分休市和缺点；即使所有持仓共同漏掉同一个预期交易日，也不会把“彼此仍对齐”误当成完整数据。若 start 落在周末或休市日，首条收益从此前最近有效收盘连接到此后首个有效交易日；不会虚构非交易日 close，也不会因为最新数据较早就把窗口整体向前挪。缺少历史行情、只有期末净值但没有对应期初净值、期间起止不一致、尾部数据陈旧或缺少 FX 时，结果会明确显示 unavailable。
 
-Correlation Matrix 要求所有 scope members 使用完全一致的 period start/end 与日期序列。缺少成员、缺少日期、日期逆序、常数收益或窗口覆盖不足时，页面列出具体成员与日期并保持 unavailable；不会补 0，也不会用每对资产不同的日期拼出矩阵。
+Forward RC 先对当前 leaf instruments 运行一次组合级 covariance；taxonomy/sleeve 只加总这些资产相对于同一组合 variance 的贡献，不会在分组后重新估计一套风险。Rolling Risk 和 Correlation Matrix 都要求所有 active members 在共同历史内使用完全一致的 period start/end 与日期序列。缺少成员、缺少日期、日期逆序、常数收益或窗口覆盖不足时，页面列出具体成员与日期并保持 unavailable；不会补 0、静默取交集或用每对资产不同的日期拼矩阵。
+
+Benchmark 对比要求 benchmark 与组合本币一致，并且收益语义已确认为 total return 或 price return。价格收益可以查看，但页面会提示其不含分红；币种不一致或收益语义未知时不绘制比较曲线。
 
 ### 6.8 Taxonomies
 

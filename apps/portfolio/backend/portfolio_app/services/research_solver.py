@@ -103,7 +103,6 @@ RESEARCH_MAX_RISK_BUDGET_SHARE_GAP = 1e-4
 RESEARCH_COVARIANCE_PSD_TOLERANCE = 1e-10
 RISK_BUDGET_NORMALIZED_GAP_FLOOR_EQUAL_SHARE_FRACTION = 0.25
 RISK_BUDGET_NORMALIZED_GAP_MAX_FLOOR = 0.05
-ABS_RC_SMOOTHING_EPS = 1e-12
 MISSING_RETURN_POLICY_STRICT = "strict"
 MISSING_RETURN_POLICY_COMPLETE_CASE_DROP = "complete_case_drop"
 RESEARCH_DEFAULT_MISSING_RETURN_POLICY = MISSING_RETURN_POLICY_STRICT
@@ -685,7 +684,9 @@ def _validate_complete_return_coverage(
         missing_dates = _format_index_sample(missing_rows.index)
         raise ValueError(
             f"{label} requires complete aligned return observations; "
-            f"missing return values were found on {missing_dates}."
+            f"missing return values were found for period ends {missing_dates}. "
+            "A NAV or price at a period end is not a return unless the aligned "
+            "period start is also available."
         )
     if len(returns) < required:
         raise ValueError(
@@ -697,13 +698,24 @@ def _return_window_for_lookback(
     returns: pd.DataFrame,
     *,
     lookback_days: int,
+    as_of_date: date | None = None,
 ) -> pd.DataFrame:
     cleaned = _clean_return_frame(returns)
     if cleaned.empty:
         raise ValueError("Covariance estimation requires non-empty returns.")
-    end_date = max(cleaned.index)
-    start_day = research_window_start_date(pd.Timestamp(end_date).date(), lookback_days)
-    return cleaned.loc[cleaned.index >= start_day].copy()
+    end_day = as_of_date or pd.Timestamp(max(cleaned.index)).date()
+    start_day = research_window_start_date(end_day, lookback_days)
+    # ``start_day`` and ``end_day`` are EOD valuation boundaries. Return rows
+    # are labelled by their period end, so a close-to-close window links
+    # observations in (start_day, end_day]. A return ending on start_day belongs
+    # to the preceding interval and must not leak into this window.
+    window = cleaned.loc[(cleaned.index > start_day) & (cleaned.index <= end_day)].copy()
+    if window.empty:
+        raise ValueError(
+            f"Covariance estimation has no return observations in the requested "
+            f"({start_day.isoformat()}, {end_day.isoformat()}] EOD window."
+        )
+    return window
 
 
 def _render_missing_return_rows(returns: pd.DataFrame) -> list[dict[str, object]]:
@@ -753,23 +765,26 @@ def _apply_missing_return_policy(
                 f"{label} complete-case drop would remove {missing_count} of {len(returns)} return rows "
                 f"({missing_fraction:.2%}), exceeding the "
                 f"{RESEARCH_COMPLETE_CASE_DROP_MAX_MISSING_ROW_FRACTION:.2%} limit. "
-                f"Missing rows: {_format_index_sample(returns.loc[missing_mask].index)}."
+                f"Missing return period ends: {_format_index_sample(returns.loc[missing_mask].index)}. "
+                "A NAV or price on a period end alone is insufficient without "
+                "an aligned period start."
             )
         if len(complete) < required:
             raise ValueError(
                 f"{label} complete-case drop requires at least {required} complete aligned return observations; "
                 f"got {len(complete)} after dropping {missing_count} rows."
             )
-        if as_of_date is not None and len(complete):
-            latest_date = pd.Timestamp(max(complete.index)).date()
-            staleness_days = int((as_of_date - latest_date).days)
-            max_staleness_days = _max_complete_case_drop_staleness_days(calculation_frequency)
-            if staleness_days > max_staleness_days:
-                raise ValueError(
-                    f"{label} complete-case drop latest complete return observation is "
-                    f"{latest_date.isoformat()} ({staleness_days} days before {as_of_date.isoformat()}); "
-                    f"maximum allowed for {calculation_frequency} is {max_staleness_days} days."
-                )
+    if as_of_date is not None and len(complete):
+        latest_date = pd.Timestamp(max(complete.index)).date()
+        staleness_days = int((as_of_date - latest_date).days)
+        max_staleness_days = _max_complete_case_drop_staleness_days(calculation_frequency)
+        if staleness_days > max_staleness_days:
+            policy_label = "complete-case drop" if policy == MISSING_RETURN_POLICY_COMPLETE_CASE_DROP else "strict"
+            raise ValueError(
+                f"{label} {policy_label} latest complete return observation is "
+                f"{latest_date.isoformat()} ({staleness_days} days before {as_of_date.isoformat()}); "
+                f"maximum allowed for {calculation_frequency} is {max_staleness_days} days."
+            )
     if len(complete) < required:
         raise ValueError(f"{label} requires at least {required} complete aligned return observations; got {len(complete)}.")
 
@@ -802,7 +817,11 @@ def _prepare_return_window_for_covariance(
     calculation_frequency: CalculationFrequency = "daily",
     as_of_date: date | None = None,
 ) -> ReturnCoveragePolicyResult:
-    window = _return_window_for_lookback(returns, lookback_days=lookback_days)
+    window = _return_window_for_lookback(
+        returns,
+        lookback_days=lookback_days,
+        as_of_date=as_of_date,
+    )
     return _apply_missing_return_policy(
         window,
         min_observations=min_observations,
@@ -1101,7 +1120,7 @@ def _risk_contribution_shares(
     if mode == "signed":
         contributions = signed
     elif mode == "abs":
-        contributions = np.sqrt(np.square(signed) + ABS_RC_SMOOTHING_EPS)
+        contributions = np.abs(signed)
     else:
         raise ValueError(f"Unsupported risk contribution mode: {contribution_mode}.")
     contribution_total = float(contributions.sum())

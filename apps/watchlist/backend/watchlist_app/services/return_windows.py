@@ -7,7 +7,7 @@ from math import isfinite
 from typing import Any, Literal
 
 
-RETURN_WINDOW_POLICY_VERSION = "return-window/v1"
+RETURN_WINDOW_POLICY_VERSION = "return-window/v2"
 AnchorMode = Literal["on_or_before", "strictly_before"]
 
 
@@ -38,6 +38,26 @@ def _shift_months(value: date, months: int) -> date:
     target_month = target_month_index + 1
     target_day = min(value.day, monthrange(target_year, target_month)[1])
     return date(target_year, target_month, target_day)
+
+
+def _actual_year_fraction(start_date: date, end_date: date) -> float:
+    if end_date < start_date:
+        return -_actual_year_fraction(end_date, start_date)
+
+    def anniversary(years: int) -> date:
+        return _shift_months(start_date, years * 12)
+
+    whole_years = max(end_date.year - start_date.year, 0)
+    while whole_years > 0 and anniversary(whole_years) > end_date:
+        whole_years -= 1
+    current_anniversary = anniversary(whole_years)
+    if current_anniversary == end_date:
+        return float(whole_years)
+    next_anniversary = anniversary(whole_years + 1)
+    return float(whole_years) + (
+        (end_date - current_anniversary).days
+        / (next_anniversary - current_anniversary).days
+    )
 
 
 def named_return_window_spec(window: str, as_of_date: date) -> ReturnWindowSpec:
@@ -146,11 +166,12 @@ def period_return_percent(window: ReturnWindow) -> float:
 
 
 def annualized_return_percent(window: ReturnWindow) -> float | None:
-    if window.elapsed_days <= 0:
+    years = _actual_year_fraction(window.anchor_date, window.end_date)
+    if window.elapsed_days <= 0 or years < 1:
         return None
     first_value = float(window.points[0]["value"])
     last_value = float(window.points[-1]["value"])
-    return (pow(last_value / first_value, 365.25 / window.elapsed_days) - 1) * 100
+    return (pow(last_value / first_value, 1 / years) - 1) * 100
 
 
 def normalized_return_points(window: ReturnWindow) -> list[dict[str, object]]:

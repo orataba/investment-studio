@@ -1154,7 +1154,7 @@ FIELD_REGISTRY = [
     {
         "field_key": "return_ytd",
         "label": "YTD",
-        "description": "Year-to-date return from the selected calculation series.",
+        "description": "Year-to-date return from the selected calculation series, ending at this instrument's own latest observation.",
         "category_code": "performance_risk",
         "data_type": "number",
         "formatter_code": "percent",
@@ -1172,7 +1172,7 @@ FIELD_REGISTRY = [
     {
         "field_key": "return_mtd",
         "label": "MTD",
-        "description": "Month-to-date return from the selected calculation series.",
+        "description": "Month-to-date return from the selected calculation series, ending at this instrument's own latest observation.",
         "category_code": "performance_risk",
         "data_type": "number",
         "formatter_code": "percent",
@@ -1190,7 +1190,7 @@ FIELD_REGISTRY = [
     {
         "field_key": "return_1w",
         "label": "1W Return",
-        "description": "1-week return from the selected calculation series.",
+        "description": "Calendar 1-week return from the selected calculation series, ending at this instrument's own latest observation.",
         "category_code": "performance_risk",
         "data_type": "number",
         "formatter_code": "percent",
@@ -1208,7 +1208,7 @@ FIELD_REGISTRY = [
     {
         "field_key": "return_1m",
         "label": "1M",
-        "description": "1-month return from the selected calculation series.",
+        "description": "Calendar 1-month return from the selected calculation series, ending at this instrument's own latest observation.",
         "category_code": "performance_risk",
         "data_type": "number",
         "formatter_code": "percent",
@@ -1226,7 +1226,7 @@ FIELD_REGISTRY = [
     {
         "field_key": "return_3m",
         "label": "3M",
-        "description": "3-month return from the selected calculation series.",
+        "description": "Calendar 3-month return from the selected calculation series, ending at this instrument's own latest observation.",
         "category_code": "performance_risk",
         "data_type": "number",
         "formatter_code": "percent",
@@ -1244,7 +1244,7 @@ FIELD_REGISTRY = [
     {
         "field_key": "return_6m",
         "label": "6M",
-        "description": "6-month return from the selected calculation series.",
+        "description": "Calendar 6-month return from the selected calculation series, ending at this instrument's own latest observation.",
         "category_code": "performance_risk",
         "data_type": "number",
         "formatter_code": "percent",
@@ -1262,7 +1262,7 @@ FIELD_REGISTRY = [
     {
         "field_key": "return_1y",
         "label": "1Y",
-        "description": "Trailing 1-year return from the selected calculation series.",
+        "description": "Trailing 1-year return from the selected calculation series, ending at this instrument's own latest observation.",
         "category_code": "performance_risk",
         "data_type": "number",
         "formatter_code": "percent",
@@ -1280,7 +1280,7 @@ FIELD_REGISTRY = [
     {
         "field_key": "annualized_return",
         "label": "Ann.",
-        "description": "Since-inception annualized return from the selected calculation series.",
+        "description": "Since-inception annualized return through this instrument's own latest observation; withheld before the first calendar anniversary.",
         "category_code": "performance_risk",
         "data_type": "number",
         "formatter_code": "percent",
@@ -1298,7 +1298,7 @@ FIELD_REGISTRY = [
     {
         "field_key": "return_3y",
         "label": "3Y",
-        "description": "Trailing 3-year annualized return from the selected calculation series.",
+        "description": "Trailing 3-year annualized return ending at this instrument's own latest calculation-series observation.",
         "category_code": "performance_risk",
         "data_type": "number",
         "formatter_code": "percent",
@@ -1316,7 +1316,7 @@ FIELD_REGISTRY = [
     {
         "field_key": "return_5y",
         "label": "5Y",
-        "description": "Trailing 5-year annualized return from the selected calculation series.",
+        "description": "Trailing 5-year annualized return ending at this instrument's own latest calculation-series observation.",
         "category_code": "performance_risk",
         "data_type": "number",
         "formatter_code": "percent",
@@ -1334,7 +1334,7 @@ FIELD_REGISTRY = [
     {
         "field_key": "max_drawdown",
         "label": "Max DD",
-        "description": "Maximum drawdown from the active performance snapshot.",
+        "description": "Since-inception maximum drawdown through this instrument's own latest observation; withheld when expected observations are missing.",
         "category_code": "performance_risk",
         "data_type": "number",
         "formatter_code": "percent",
@@ -1352,7 +1352,7 @@ FIELD_REGISTRY = [
     {
         "field_key": "attr.current_drawdown",
         "label": "Current DD",
-        "description": "Current drawdown of the selected calculation series relative to its prior high watermark.",
+        "description": "Current drawdown through this instrument's own latest observation relative to its prior high watermark; withheld when expected observations are missing.",
         "category_code": "performance_risk",
         "data_type": "number",
         "formatter_code": "percent",
@@ -1370,7 +1370,7 @@ FIELD_REGISTRY = [
     {
         "field_key": "volatility",
         "label": "Volatility",
-        "description": "Risk snapshot volatility for the selected window.",
+        "description": "Since-inception annualized volatility through this instrument's own latest observation; withheld when expected observations are missing.",
         "category_code": "performance_risk",
         "data_type": "number",
         "formatter_code": "percent",
@@ -1388,7 +1388,7 @@ FIELD_REGISTRY = [
     {
         "field_key": "sharpe_ratio",
         "label": "Sharpe Ratio",
-        "description": "Current risk-adjusted return metric.",
+        "description": "Since-inception zero-risk-free Sharpe ratio through this instrument's own latest observation; withheld when expected observations are missing.",
         "category_code": "performance_risk",
         "data_type": "number",
         "formatter_code": "decimal",
@@ -1765,8 +1765,8 @@ FIELD_REGISTRY = [
     },
     {
         "field_key": "last_nav_date",
-        "label": "Last Quote Date",
-        "description": "Most recent selected quote-series date adopted for the instrument.",
+        "label": "Metric As Of",
+        "description": "Instrument-specific endpoint used by the materialized return and risk fields; Watchlist rows need not share one date.",
         "category_code": "monitoring",
         "data_type": "date",
         "formatter_code": "date",

@@ -43,6 +43,11 @@ are all required explicitly before any migration begins; the Registry target
 never falls back to the Platform runtime variable.
 Already-exported process variables always take precedence over external env-file
 entries; this prevents a release or restore command from being silently redirected.
+Before Alembic runs, the entry point compares the host, port, and database name
+for all four runtime URLs and every explicit `*_ALEMBIC_DATABASE_URL`. Set
+`PORTFOLIO_OPS_MIGRATION_EXPECTED_DATABASE` when the release environment also
+needs an exact database-name assertion. A mismatch fails closed, and the
+diagnostic output never includes URL usernames or passwords.
 
 The runner owns the dependency order. It first brings Registry to the revision
 required by Platform's evidence schema, then migrates `platform`, advances Registry

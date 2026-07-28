@@ -482,6 +482,31 @@ def seed_shared_instrument(instrument: dict[str, object]) -> None:
             quote_selection_policy=deepcopy(instrument["quote_selection_policy"]),
         )
 
+    source_settings = instrument.get("source_settings")
+    if isinstance(source_settings, dict):
+        shared_store.upsert_source_settings(
+            session_factory,
+            instrument_id=target_instrument_id,
+            source_mode=str(source_settings.get("source_mode") or "manual"),
+            source_email=str(source_settings.get("source_email") or ""),
+            source_location=str(
+                source_settings.get("source_location") or "Shared data ops"
+            ),
+            source_api_profile=str(source_settings.get("source_api_profile") or ""),
+            source_email_rules=list(source_settings.get("source_email_rules") or []),
+            expected_frequency=(
+                str(source_settings["expected_frequency"])
+                if source_settings.get("expected_frequency") is not None
+                else None
+            ),
+            market_calendar=source_settings.get("market_calendar"),
+            release_lag_days=(
+                int(source_settings["release_lag_days"])
+                if source_settings.get("release_lag_days") is not None
+                else None
+            ),
+        )
+
     non_nav_rows = [
         {
             key: deepcopy(point[key])

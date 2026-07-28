@@ -56,6 +56,7 @@ import {
   buildPortfolioValueChartPoints,
   buildTwrIndexPoints,
 } from '../lib/performanceSeries'
+import { assessRiskWindowCoverage } from '../lib/riskWindowCoverage'
 
 type AllocationBucket = {
   id: string
@@ -235,6 +236,35 @@ function previousDateKey(dateKey: string | null) {
   return parsedDate ? formatDateKey(addDays(parsedDate, -1)) : null
 }
 
+function shiftCalendarMonths(input: Date, months: number) {
+  const targetMonth = new Date(input.getFullYear(), input.getMonth() + months, 1)
+  const targetMonthLastDay = new Date(
+    targetMonth.getFullYear(),
+    targetMonth.getMonth() + 1,
+    0,
+  ).getDate()
+  return new Date(
+    targetMonth.getFullYear(),
+    targetMonth.getMonth(),
+    Math.min(input.getDate(), targetMonthLastDay),
+  )
+}
+
+function isFundedSegmentStart(
+  point: PortfolioDailyPerformancePoint | undefined,
+  targetDate: string,
+) {
+  return Boolean(
+    point?.as_of_date === targetDate &&
+      point.beginning_nav != null &&
+      Math.abs(point.beginning_nav) <= 1e-9 &&
+      point.external_cash_in > 1e-9 &&
+      point.daily_twr != null &&
+      Number.isFinite(point.daily_twr) &&
+      point.return_coverage_state === 'complete',
+  )
+}
+
 function periodReturnFromTwr(
   points: PortfolioDailyPerformancePoint[],
   targetDate: string | null,
@@ -272,6 +302,13 @@ function periodReturnFromTwr(
       point.ending_nav != null &&
       point.valuation_coverage_state === 'complete'
     const continuousPath = candidatePoints.every((point, index) => {
+      if (includeTargetDate && index === 0 && point.as_of_date === targetDate) {
+        return (
+          point.return_coverage_state === 'complete' &&
+          point.daily_twr != null &&
+          Number.isFinite(point.daily_twr)
+        )
+      }
       const previousDate = index === 0 ? anchorPoint?.as_of_date : candidatePoints[index - 1]?.as_of_date
       const dayGap = previousDate ? dayDiff(previousDate, point.as_of_date) : null
       return (
@@ -295,7 +332,7 @@ function periodReturnFromTwr(
   return returnPoints.reduce((growthIndex, point) => growthIndex * (1 + (point.daily_twr ?? 0)), 1) - 1
 }
 
-function buildPortfolioReturnMetrics(
+export function buildPortfolioReturnMetrics(
   points: PortfolioDailyPerformancePoint[],
   effectiveEndDate?: string | null,
 ) {
@@ -318,16 +355,27 @@ function buildPortfolioReturnMetrics(
   const priorMonthEnd = addDays(monthStart, -1)
   const priorYearEnd = addDays(yearStart, -1)
   const effectiveOptions = { requireReliableBoundaries: true, effectiveEndDate }
+  const includesFundedStart = (targetDate: string) =>
+    isFundedSegmentStart(
+      sortedPoints.find((point) => point.as_of_date === targetDate),
+      targetDate,
+    )
+  const oneWeekTarget = formatDateKey(addDays(latestDate, -7))
+  const mtdTarget = formatDateKey(priorMonthEnd)
+  const ytdTarget = formatDateKey(priorYearEnd)
 
   return {
-    oneWeek: periodReturnFromTwr(sortedPoints, formatDateKey(addDays(latestDate, -7)), {
+    oneWeek: periodReturnFromTwr(sortedPoints, oneWeekTarget, {
       ...effectiveOptions,
+      includeTargetDate: includesFundedStart(oneWeekTarget),
     }),
-    mtd: periodReturnFromTwr(sortedPoints, formatDateKey(priorMonthEnd), {
+    mtd: periodReturnFromTwr(sortedPoints, mtdTarget, {
       ...effectiveOptions,
+      includeTargetDate: includesFundedStart(mtdTarget),
     }),
-    ytd: periodReturnFromTwr(sortedPoints, formatDateKey(priorYearEnd), {
+    ytd: periodReturnFromTwr(sortedPoints, ytdTarget, {
       ...effectiveOptions,
+      includeTargetDate: includesFundedStart(ytdTarget),
     }),
   }
 }
@@ -390,18 +438,53 @@ function annualizedMeanReturn(values: number[], periodsPerYear: number | null) {
   return (values.reduce((sum, value) => sum + value, 0) / values.length) * periodsPerYear
 }
 
-function trailingAnnualizedVolatility(
+export function trailingAnnualizedVolatility(
   points: Array<{ date: string; value: number }>,
-  latestDate: Date,
-  lookbackDays: number,
+  requestedEndDate: Date,
+  lookbackMonths: number,
 ) {
-  const startDate = formatDateKey(addDays(latestDate, -lookbackDays))
-  const hasStartAnchor = points.some((point) => point.date <= startDate)
-  if (!hasStartAnchor) {
+  const endDate = formatDateKey(requestedEndDate)
+  const startDate = formatDateKey(shiftCalendarMonths(requestedEndDate, -lookbackMonths))
+  const orderedPoints = points
+    .filter(
+      (point) =>
+        Boolean(point.date) &&
+        point.date <= endDate &&
+        Number.isFinite(point.value),
+    )
+    .slice()
+    .sort((left, right) => left.date.localeCompare(right.date))
+  const startAnchor = orderedPoints.reduce<{ date: string; value: number } | null>(
+    (selected, point) => (point.date <= startDate ? point : selected),
+    null,
+  )
+  if (!startAnchor) {
     return null
   }
-  const windowPoints = points.filter((point) => point.date > startDate)
-  if (windowPoints.length < 2) {
+  const windowPoints = orderedPoints.filter(
+    (point) => point.date > startDate && point.date <= endDate,
+  )
+  const lookbackDays =
+    lookbackMonths === 1
+      ? 30
+      : lookbackMonths === 3
+        ? 90
+        : lookbackMonths === 6
+          ? 180
+          : lookbackMonths === 12
+            ? 366
+            : lookbackMonths === 24
+              ? 730
+              : Math.max(2, Math.round((lookbackMonths * 365.25) / 12))
+  const coverage = assessRiskWindowCoverage(
+    windowPoints.map((point) => point.date),
+    endDate,
+    lookbackDays,
+    'daily',
+    undefined,
+    startAnchor.date,
+  )
+  if (!coverage.ok) {
     return null
   }
   const values = windowPoints.map((point) => point.value)
@@ -414,7 +497,10 @@ function trailingAnnualizedVolatility(
   return volatility == null || periodsPerYear == null ? null : volatility * Math.sqrt(periodsPerYear)
 }
 
-function buildPortfolioRiskMetrics(points: PortfolioDailyPerformancePoint[]) {
+function buildPortfolioRiskMetrics(
+  points: PortfolioDailyPerformancePoint[],
+  effectiveEndDate?: string | null,
+) {
   const sortedPoints = points
     .filter(
       (point) =>
@@ -425,8 +511,10 @@ function buildPortfolioRiskMetrics(points: PortfolioDailyPerformancePoint[]) {
     .map((point) => ({ date: point.as_of_date, value: point.daily_twr as number }))
     .sort((left, right) => left.date.localeCompare(right.date))
   const latestPoint = sortedPoints[sortedPoints.length - 1]
-  const latestDate = latestPoint ? dateFromString(latestPoint.date) : null
-  if (!latestDate) {
+  const requestedEndDate =
+    dateFromString(effectiveEndDate ?? '') ??
+    (latestPoint ? dateFromString(latestPoint.date) : null)
+  if (!requestedEndDate) {
     return {
       volatility1m: null,
       volatility3m: null,
@@ -434,8 +522,8 @@ function buildPortfolioRiskMetrics(points: PortfolioDailyPerformancePoint[]) {
   }
 
   return {
-    volatility1m: trailingAnnualizedVolatility(sortedPoints, latestDate, 30),
-    volatility3m: trailingAnnualizedVolatility(sortedPoints, latestDate, 90),
+    volatility1m: trailingAnnualizedVolatility(sortedPoints, requestedEndDate, 1),
+    volatility3m: trailingAnnualizedVolatility(sortedPoints, requestedEndDate, 3),
   }
 }
 
@@ -473,7 +561,8 @@ function buildBenchmarkMetrics(
     : []
   const latestPoint = metricPoints[metricPoints.length - 1]
   const latestDate = latestPoint ? dateFromString(latestPoint.date) : null
-  if (!firstPoint || !latestPoint || !latestDate) {
+  const requestedEndDate = dateFromString(portfolioEndDate ?? '') ?? latestDate
+  if (!firstPoint || !latestPoint || !latestDate || !requestedEndDate) {
     return null
   }
 
@@ -519,8 +608,8 @@ function buildBenchmarkMetrics(
     sinceInception,
     annualizedReturn,
     annualizedVolatility,
-    volatility1m: trailingAnnualizedVolatility(dailyReturns, latestDate, 30),
-    volatility3m: trailingAnnualizedVolatility(dailyReturns, latestDate, 90),
+    volatility1m: trailingAnnualizedVolatility(dailyReturns, requestedEndDate, 1),
+    volatility3m: trailingAnnualizedVolatility(dailyReturns, requestedEndDate, 3),
     sharpe:
       annualizedMean != null && annualizedVolatility != null && annualizedVolatility !== 0
         ? annualizedMean / annualizedVolatility
@@ -1133,7 +1222,11 @@ export default function OverviewPage() {
     [performanceWorkspace],
   )
   const portfolioRiskMetrics = useMemo(
-    () => buildPortfolioRiskMetrics(performanceWorkspace?.daily_series ?? []),
+    () =>
+      buildPortfolioRiskMetrics(
+        performanceWorkspace?.daily_series ?? [],
+        performanceWorkspace?.summary.effective_end_date ?? performanceWorkspace?.summary.end_date,
+      ),
     [performanceWorkspace],
   )
   const monthlyBuckets = useMemo(

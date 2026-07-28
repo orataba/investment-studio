@@ -109,6 +109,7 @@ npm --prefix apps/watchlist/frontend run build
 - Group By 后只允许对明确可写分组拖动 instrument：fund taxonomy 和离散 custom attribute。拖放需要调用对应后端写接口同步，不对 read-model / score / bucket 等只读分组做错误兼容
 - Watchlist filter 菜单会基于当前 watchlist 的全量行构建选项，不再只采样前几页；当前页执行 add / delete / move 后，filter 选项也会随之刷新
 - Watchlist 的 `move` / `copy` 只允许操作 source watchlist 里已经存在的资产，不再把这两个接口当成隐式 `add`
+- Watchlist 的收益和风险不使用一个名单级日期统一截断：每行以该 instrument 自己的最新 calculation-series observation 为 as-of。Screener 始终返回行级 `metric_as_of_date`，页脚展示最早至最晚终点；不同终点的收益/风险分组平均会失败关闭。
 - 自定义 view 会把展示名称映射成 path-safe 的 slug id；复制 watchlist 时也会清洗 legacy custom view id，避免把不可路由的旧 id 继续扩散
 - Watchlist 和 Instrument Detail 已改成三层产品框架：`Fund Taxonomy / Research Tags / Monitoring Assessment`；详情页入口调整为 `Overview`，把基础信息和产品 taxonomy 放到第一屏
 - `Peer Category` 仍然保留为外部同类比较口径；内部基金分类已经独立成 fund taxonomy tree，二者不再混用
@@ -119,8 +120,9 @@ npm --prefix apps/watchlist/frontend run build
 - 后端主语已经统一到 `instrument`，当前只暴露 `/api/instruments/...` 明确接口；旧 `/api/funds/...` 兼容路由已移除
 - Instrument Detail 里的 canonical quote/NAV history 现在是只读视图；导入、编辑、刷新共享行情/净值要去 `Database Dashboard`，这里只保留本地 basis / benchmark 设置。派生层必须保留真实 `metric_family / quote_basis / role`，不能把 `close`、`official_nav`、`total_return_nav` 混成一个无来源的 NAV 字段。
 - canonical recalc 只消费 Registry 中 `status=complete`、currency 与 instrument master currency 一致的 quote/NAV，并严格使用 Registry `quote_selection_policy` 的顺序。Registry 无有效序列或缺 policy 时明确产出 unavailable；旧 Watchlist `nav_fact` 仅可审计读取，不再参与行情、收益、风险或图表计算。
-- Instrument Detail 的 benchmark 选择在 Quote / Performance / Risk 三个工作面共用同一状态；Performance matrix 和 Risk rolling charts 使用同一 benchmark calculation series，不再维护第二套 metric benchmark。Quote / Performance 图表在比较 benchmark 时只绘制双方重叠日期窗口，并按真实日期比例投影横轴，不按样本序号拉伸。Rolling risk chart 支持 1M / 3M / 6M / 12M / 24M / 36M 窗口；benchmark 曲线只在存在重叠 calculation series 时展示，不补齐缺失序列。
+- Instrument Detail 的 benchmark 选择在 Quote / Performance / Risk 三个工作面共用同一状态；Performance matrix 和 Risk rolling charts 使用同一 benchmark calculation series，不再维护第二套 metric benchmark。Quote / Performance 图表和相对指标只使用双方日期完全相同的共同观测收盘点，起点、终点及每个中间 return period 都保持同一 identity；不再用“各自不晚于目标日的不同收盘”相减。横轴按真实日期比例投影，不按样本序号拉伸。比较矩阵共用最晚共同观测终点，SI 共用最早共同观测起点。Rolling risk chart 支持 1M / 3M / 6M / 12M / 24M / 36M 窗口；benchmark 曲线只在存在完整共同 calculation period 时展示，不补齐缺失序列。
 - `return_ytd / return_mtd / return_1w / return_1m / return_3m / return_6m / return_1y / annualized_return / return_3y / return_5y / max_drawdown / current_drawdown / volatility / sharpe_ratio` 当前对适用的 fund / ETF / index 可见，并完整投影到 performance snapshot 与 watchlist row read model。普通 fund 只使用 `total_return_nav`；场内 ETF/指数按 `quote_selection_policy` 选择 calculation series，read model 同时记录实际 quote basis 与 `total_return / price_return / unknown` 语义，不能把普通 `close` 自动写成 total return。
+- 年化收益在首个日历周年前为空；daily 风险路径按 Registry expected frequency 和 market calendar 检查真实 session。休市不算缺点，实际缺少预期观测时只保留可验证的端点收益，路径风险指标不做插值或前端回退。
 
 ## 当前文档
 

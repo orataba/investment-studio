@@ -36,6 +36,14 @@ export function validIsoDate(value: string | null | undefined) {
   return typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value) ? value : ''
 }
 
+export function performanceWindowError(startDate: string, endDate: string) {
+  const normalizedStartDate = validIsoDate(startDate)
+  const normalizedEndDate = validIsoDate(endDate)
+  return normalizedStartDate && normalizedEndDate && normalizedStartDate > normalizedEndDate
+    ? 'Start Date must be on or before End Date.'
+    : null
+}
+
 export function performancePresetStartDate(
   preset: Exclude<PerformancePeriodPreset, 'si'>,
   endDate: string,
@@ -118,6 +126,7 @@ export function resolvePerformanceWindow({
   const effectiveStartDate = appliedSinceInception
     ? ''
     : appliedStartDate || defaultStartDate
+  const windowError = performanceWindowError(effectiveStartDate, effectiveEndDate)
 
   return {
     appliedSinceInception,
@@ -126,6 +135,7 @@ export function resolvePerformanceWindow({
     waitingForDefaultEndDate,
     effectiveStartDate,
     effectiveEndDate,
+    windowError,
   }
 }
 

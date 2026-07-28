@@ -132,6 +132,48 @@ describe('Risk target cash boundary', () => {
     expect(result.value.map((row) => row.label)).toEqual(expect.arrayContaining(['Risk Assets', 'Cash']))
   })
 
+  it('compares one direct cash bucket against aggregate current cash without double-counting taxonomy groups', () => {
+    const result = buildTargetGapRows({
+      targetSet,
+      targetLines: [
+        targetLine('risk-line', 'taxonomy_node', 'risk-assets', 1, 1),
+        targetLine('cash-bucket-line', 'cash_bucket', '__cash__', 0, 0),
+      ],
+      currentGroups: [
+        {
+          ...currentGroups[0],
+          marketWeight: 0.7,
+          marketValueBase: 700,
+          cashWeight: 0,
+          cashValueBase: 0,
+        },
+        {
+          ...currentGroups[1],
+          marketWeight: 0,
+          marketValueBase: 0,
+          cashWeight: 0.3,
+          cashValueBase: 300,
+        },
+      ],
+      riskSharesByGroup: new Map(),
+      nodeById,
+      dimension: 'weight',
+      baseCurrency: 'USD',
+    })
+
+    expect(result.errors).toEqual([])
+    expect(result.value).toHaveLength(2)
+    expect(result.value.find((row) => row.label === 'Risk Assets')).toMatchObject({
+      current: 0.7,
+      target: 1,
+    })
+    expect(result.value.find((row) => row.label === 'Cash')).toMatchObject({
+      key: 'cash_bucket:__cash__',
+      current: 0.3,
+      target: 0,
+    })
+  })
+
   it('filters an all-cash assignment subtree even when its label is not Cash', () => {
     const result = buildTargetGapRows({
       targetSet,

@@ -228,6 +228,16 @@ def test_twr_audit_cte_projects_daily_twr(
         linked_projection.group("projection"),
         flags=re.MULTILINE,
     )
+    drawdown_query = next(
+        query
+        for query in queries
+        if "AS peak_index" in query and "drawdown" in query
+    )
+    assert re.search(
+        r"greatest\(\s*1\.0,\s*max\(1 \+ cumulative_twr\)",
+        drawdown_query,
+        flags=re.DOTALL,
+    )
     fund_nav_projection_query = next(
         query
         for query in queries

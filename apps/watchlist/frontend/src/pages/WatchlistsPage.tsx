@@ -37,6 +37,10 @@ import {
   PLATFORM_HOME_URL,
 } from '../lib/navigation'
 import { clampColumnWidth, nextSortAction } from '../lib/tableControls'
+import {
+  isMetricAsOfSensitiveField,
+  summarizeMetricAsOfDates,
+} from '../lib/watchlistMetricSemantics'
 import LoadingOverlay from '../components/LoadingOverlay'
 import DownloadFormatMenu from '../../../../../packages/ui/src/DownloadFormatMenu'
 import NoticeToast, { type NoticeToastMessage } from '../../../../../packages/ui/src/NoticeToast'
@@ -82,9 +86,11 @@ type GroupDropTarget = {
   rowPatch: Record<string, unknown>
 }
 type GroupAverageCell = {
-  value: number
+  value: number | null
   count: number
   total: number
+  asOfDate: string | null
+  unavailableReason: string | null
 }
 type ActiveFilterEntry = {
   fieldKey: string
@@ -479,10 +485,25 @@ function buildGroupAverageCell(
   if (!values.length) {
     return null
   }
+  const asOfSummary = summarizeMetricAsOfDates(fieldKey, rows)
+  if (!asOfSummary.comparable) {
+    return {
+      value: null,
+      count: values.length,
+      total: rows.length,
+      asOfDate: null,
+      unavailableReason:
+        asOfSummary.missingDateCount > 0
+          ? 'Average withheld because one or more populated rows have no metric as-of date.'
+          : `Average withheld because rows use different metric endpoints (${asOfSummary.dates.join(', ')}).`,
+    }
+  }
   return {
     value: values.reduce((sum, value) => sum + value, 0) / values.length,
     count: values.length,
     total: rows.length,
+    asOfDate: asOfSummary.asOfDate,
+    unavailableReason: null,
   }
 }
 
@@ -508,6 +529,8 @@ function renderCell(
   instrumentId: string,
   watchlistId: string,
   sparkline: ReturnSparklineSeries | undefined,
+  field: FieldRegistryRecord | undefined,
+  row: Record<string, unknown>,
 ) {
   if (fieldKey === 'instrument_name') {
     return (
@@ -558,21 +581,34 @@ function renderCell(
     return numericValue == null ? '—' : `${formatNumber(numericValue, 0)} pct`
   }
 
-  if (
-    isReturnMetricField(fieldKey) ||
-    fieldKey.endsWith('_ratio')
-  ) {
+  if (isReturnMetricField(fieldKey) || field?.formatter_code === 'percent') {
     const numericValue = asNumber(value)
     const renderedValue = formatPercent(numericValue)
+    const metricAsOfDate = String(row.metric_as_of_date || '').slice(0, 10)
+    const title =
+      isMetricAsOfSensitiveField(fieldKey) && metricAsOfDate
+        ? `${field?.label || formatLabel(fieldKey)} through ${metricAsOfDate}; each Watchlist row uses that instrument's own latest calculation date.`
+        : undefined
     return isReturnMetricField(fieldKey) ? (
-      <span className={signedValueClass(numericValue)}>{renderedValue}</span>
+      <span className={signedValueClass(numericValue)} title={title}>{renderedValue}</span>
     ) : (
-      renderedValue
+      <span title={title}>{renderedValue}</span>
     )
   }
 
-  if (fieldKey === 'duration' || fieldKey === 'volatility' || fieldKey === 'sharpe_ratio') {
-    return formatNumber(asNumber(value))
+  if (field?.formatter_code === 'decimal' || fieldKey === 'duration' || fieldKey === 'sharpe_ratio') {
+    const metricAsOfDate = String(row.metric_as_of_date || '').slice(0, 10)
+    return (
+      <span
+        title={
+          isMetricAsOfSensitiveField(fieldKey) && metricAsOfDate
+            ? `${field?.label || formatLabel(fieldKey)} through ${metricAsOfDate}; each Watchlist row uses that instrument's own latest calculation date.`
+            : undefined
+        }
+      >
+        {formatNumber(asNumber(value), 2)}
+      </span>
+    )
   }
 
   if (fieldKey.endsWith('_date')) {
@@ -1956,6 +1992,23 @@ export default function WatchlistsPage() {
     () => renderedGroupedRows.reduce((total, group) => total + group.rows.length, 0),
     [renderedGroupedRows],
   )
+  const metricAsOfRangeLabel = (() => {
+    const metadata = screenerResult?.snapshot_metadata
+    const missingSuffix = metadata?.as_of_date_missing_count
+      ? ` · ${metadata.as_of_date_missing_count} unavailable`
+      : ''
+    if (!metadata?.as_of_date_max) {
+      return `Metric as-of unavailable${missingSuffix}`
+    }
+    if (
+      metadata.has_mixed_as_of_dates &&
+      metadata.as_of_date_min &&
+      metadata.as_of_date_min !== metadata.as_of_date_max
+    ) {
+      return `Per-instrument metric as-of ${metadata.as_of_date_min} to ${metadata.as_of_date_max}${missingSuffix}`
+    }
+    return `Metrics as of ${metadata.as_of_date_max}${missingSuffix}`
+  })()
 
   const sortabilityByKey = useMemo(() => {
     const map = new Map<string, string>()
@@ -2929,10 +2982,13 @@ export default function WatchlistsPage() {
                                   .filter(Boolean)
                                   .join(' ')}
                               >
-                                {average ? (
+                                {average && average.value != null ? (
                                   <span
                                     className="watchlists-group-summary-value"
-                                    title={`Equal-weight average of ${average.count}/${average.total} rows`}
+                                    title={[
+                                      `Equal-weight average of ${average.count}/${average.total} rows`,
+                                      average.asOfDate ? `metric as of ${average.asOfDate}` : '',
+                                    ].filter(Boolean).join('; ')}
                                   >
                                     <span>{formatGroupAverageCell(column, field, average.value)}</span>
                                     {average.count !== average.total ? (
@@ -2940,7 +2996,12 @@ export default function WatchlistsPage() {
                                     ) : null}
                                   </span>
                                 ) : (
-                                  <span className="watchlists-group-summary-empty">—</span>
+                                  <span
+                                    className="watchlists-group-summary-empty"
+                                    title={average?.unavailableReason || undefined}
+                                  >
+                                    —
+                                  </span>
                                 )}
                               </td>
                             )
@@ -3003,6 +3064,8 @@ export default function WatchlistsPage() {
                                     instrumentId,
                                     watchlistId,
                                     sparklineMap[instrumentId]?.[column],
+                                    fieldByKey.get(column),
+                                    row,
                                   )}
                                 </td>
                               )
@@ -3035,11 +3098,16 @@ export default function WatchlistsPage() {
         {screenerResult ? (
           <div className="watchlists-pagination">
             <div className="watchlists-pagination-summary">
-              {screenerResult.total_rows
-                ? watchlistSearchQuery
-                  ? `Showing ${renderedInstrumentCount} of ${searchedRows.length} matched rows`
-                  : `Showing ${renderedInstrumentCount} of ${screenerResult.total_rows} rows`
-                : 'No rows in this watchlist view'}
+              <span>
+                {screenerResult.total_rows
+                  ? watchlistSearchQuery
+                    ? `Showing ${renderedInstrumentCount} of ${searchedRows.length} matched rows`
+                    : `Showing ${renderedInstrumentCount} of ${screenerResult.total_rows} rows`
+                  : 'No rows in this watchlist view'}
+              </span>
+              <span title="Return and risk windows are anchored independently for each instrument.">
+                {metricAsOfRangeLabel}
+              </span>
             </div>
             {renderedInstrumentCount < searchedRows.length ? (
               <div className="watchlists-pagination-actions">

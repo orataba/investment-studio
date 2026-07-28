@@ -4,8 +4,18 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="${PROJECT_ROOT:-$(cd "$SCRIPT_DIR/../.." && pwd)}"
 VENV_ROOT="${VENV_ROOT:-$PROJECT_ROOT/.venv}"
-PYTHON_VERSION="${PYTHON_VERSION:-3.12}"
 UV_BIN="${UV_BIN:-$(command -v uv || true)}"
+
+if [[ ! -f "$PROJECT_ROOT/.python-version" ]]; then
+  echo "Missing Python version pin: $PROJECT_ROOT/.python-version" >&2
+  exit 1
+fi
+PINNED_PYTHON_VERSION="$(tr -d '[:space:]' < "$PROJECT_ROOT/.python-version")"
+if [[ -z "$PINNED_PYTHON_VERSION" ]]; then
+  echo "Python version pin is empty: $PROJECT_ROOT/.python-version" >&2
+  exit 1
+fi
+PYTHON_VERSION="${PYTHON_VERSION:-$PINNED_PYTHON_VERSION}"
 
 if [[ -z "$UV_BIN" || ! -x "$UV_BIN" ]]; then
   echo "uv is required to reproduce the locked Python environment." >&2

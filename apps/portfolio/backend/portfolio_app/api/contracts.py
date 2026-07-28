@@ -96,6 +96,11 @@ ResearchBacktestRebalanceFrequency = Literal["1w", "1m", "3m"]
 PortfolioCalculationFrequency = Literal["daily", "weekly", "monthly"]
 PortfolioRiskCalculationFrequency = Literal["auto", "daily", "weekly", "monthly"]
 PortfolioRiskResultStatus = Literal["available", "insufficient_samples", "unavailable"]
+PerformanceStartBoundaryKind = Literal[
+    "close_eod",
+    "funded_bod",
+    "imported_opening_eod",
+]
 XirrSolverStatus = Literal[
     "unique_root",
     "invalid_cash_flows",
@@ -970,6 +975,8 @@ class PerformanceSummary(BaseModel):
     effective_start_date: date | None = None
     effective_end_date: date | None = None
     as_of_clamp_reason: str | None = None
+    start_boundary_kind: PerformanceStartBoundaryKind | None = None
+    include_start_date_return: bool = False
     snapshot_count: int
     return_observation_count: int
     risk_return_observation_count: int = 0
@@ -1044,6 +1051,8 @@ class PeriodCalculationSummary(BaseModel):
     effective_start_date: date | None = None
     effective_end_date: date | None = None
     as_of_clamp_reason: str | None = None
+    start_boundary_kind: PerformanceStartBoundaryKind | None = None
+    include_start_date_return: bool = False
     coverage_state: CoverageState
     stale_price_flag: bool = False
     stale_fx_flag: bool = False
@@ -2169,6 +2178,13 @@ class ContributionReportSummary(BaseModel):
     group_label: str | None = None
     start_date: date | None = None
     end_date: date | None = None
+    requested_start_date: date | None = None
+    requested_end_date: date | None = None
+    effective_start_date: date | None = None
+    effective_end_date: date | None = None
+    as_of_clamp_reason: str | None = None
+    start_boundary_kind: PerformanceStartBoundaryKind | None = None
+    include_start_date_return: bool = False
     coverage_state: CoverageState
     slice_count: int = 0
     group_count: int = 0
@@ -2550,6 +2566,13 @@ class PeriodCalculationGroupsSummary(BaseModel):
     group_label: str | None = None
     start_date: date | None = None
     end_date: date | None = None
+    requested_start_date: date | None = None
+    requested_end_date: date | None = None
+    effective_start_date: date | None = None
+    effective_end_date: date | None = None
+    as_of_clamp_reason: str | None = None
+    start_boundary_kind: PerformanceStartBoundaryKind | None = None
+    include_start_date_return: bool = False
     group_count: int = 0
     total_initial_value: float | None = None
     total_final_value: float | None = None

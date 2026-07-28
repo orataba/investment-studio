@@ -96,7 +96,7 @@ Holdings 中允许出现 `Chart 1M / 3M / 6M / 1Y`、`1W / 1M / 3M / 6M / MTD / 
 
 Holdings group / subtotal / total 的 Return 和 Risk 是当前 market-value 权重篮子在共同历史区间上的假设回看，不是实际组合 TWR、period contribution 或 GIPS-informed performance disclosure。真实历史组合表现仍只来自 Overview / Performance；逐字段边界见 [`03_HOLDINGS_FIELD_REFERENCE.md`](./03_HOLDINGS_FIELD_REFERENCE.md)。
 
-Risk / Research 的风险统计也必须保持估值频率一致性：先按 daily / weekly / monthly calculation basis 对齐目标 period，再用 period-end 有效观测计算收益；共同节假日不生成样本，单资产缺价默认进入 `strict` missing-return 诊断。不得用跨 period stale price、缺失收益补 0、pairwise covariance entry 或不同长度持有期收益去补 covariance、correlation、Sharpe 或 target-volatility overlay。Research 只有在用户显式选择 `complete_case_drop` 且通过缺失行比例、latest complete row 新鲜度和最小完整观测数约束时，才允许整行删除缺失 period 后继续求解。
+Risk / Research 的风险统计也必须保持估值频率一致性：1M / 3M 等窗口按请求 as-of 回看自然月形成 EOD boundary，并只链接 `(start EOD, end EOD]` 的 return rows；不能把 start 当天结束的前一区间收益带入。先按 daily / weekly / monthly calculation basis 对齐目标 period，再用 period-end 有效观测计算收益；同一矩阵行的 period start 与 end 都必须一致。共同节假日不生成样本，单资产缺价默认进入 `strict` missing-return 诊断。不得用跨 period stale price、缺失收益补 0、静默取日期交集、pairwise covariance entry 或不同长度持有期收益去补 covariance、correlation、Sharpe 或 target-volatility overlay。`strict` 也必须校验 latest complete row 的尾部新鲜度；Research 只有在用户显式选择 `complete_case_drop` 且通过缺失行比例、latest complete row 新鲜度和最小完整观测数约束时，才允许整行删除缺失 period 后继续求解。
 
 Research target solve 不允许把不可解问题包装成正常 target：多成员 scope 必须有完整有效的 `SAA` 或 `TAA` target set；`sample_covariance` 使用同一组完整对齐收益的样本估计量 `n - 1`；risk-budget 求解在完整有效收益不足、目标加总错误、missing-return policy 失败、求解误差超过 `1e-4` share units 或 signed risk share 为负时必须失败或显式 unavailable，不回退到目标权重、等权或 alternate contribution mode。
 

@@ -37,12 +37,12 @@ chmod +x "$FAKE_PYTHON"
 
 export CAPTURE_PATH
 export COMMAND_CAPTURE_PATH
-export PORTFOLIO_OPS_INSTRUMENT_REGISTRY_DATABASE_URL="postgresql://explicit/instrument"
-export PORTFOLIO_OPS_INSTRUMENT_REGISTRY_ALEMBIC_DATABASE_URL="postgresql://explicit/instrument-alembic"
-export PORTFOLIO_OPS_PLATFORM_DATABASE_URL="postgresql://explicit/platform"
-export PORTFOLIO_OPS_PORTFOLIO_DATABASE_URL="postgresql://explicit/portfolio"
-export PORTFOLIO_OPS_PORTFOLIO_ALEMBIC_DATABASE_URL="postgresql://explicit/portfolio-alembic"
-export PORTFOLIO_OPS_WATCHLIST_DATABASE_URL="postgresql://explicit/watchlist"
+export PORTFOLIO_OPS_INSTRUMENT_REGISTRY_DATABASE_URL="postgresql://instrument@explicit/portfolio_ops"
+export PORTFOLIO_OPS_INSTRUMENT_REGISTRY_ALEMBIC_DATABASE_URL="postgresql://instrument-alembic@explicit/portfolio_ops"
+export PORTFOLIO_OPS_PLATFORM_DATABASE_URL="postgresql://platform@explicit/portfolio_ops"
+export PORTFOLIO_OPS_PORTFOLIO_DATABASE_URL="postgresql://portfolio@explicit/portfolio_ops"
+export PORTFOLIO_OPS_PORTFOLIO_ALEMBIC_DATABASE_URL="postgresql://portfolio-alembic@explicit/portfolio_ops"
+export PORTFOLIO_OPS_WATCHLIST_DATABASE_URL="postgresql://watchlist@explicit/portfolio_ops"
 unset PORTFOLIO_OPS_WATCHLIST_ALEMBIC_DATABASE_URL
 
 PROJECT_ROOT="$TEST_ROOT" PYTHON_BIN="$FAKE_PYTHON" ENV_ROOT="" \
@@ -52,12 +52,12 @@ if grep -q 'from-env-file' "$CAPTURE_PATH"; then
   echo "A .env value overrode the explicit process environment." >&2
   exit 1
 fi
-grep -q 'postgresql://explicit/instrument' "$CAPTURE_PATH"
-grep -q 'postgresql://explicit/instrument-alembic' "$CAPTURE_PATH"
-grep -q 'postgresql://explicit/platform' "$CAPTURE_PATH"
-grep -q 'postgresql://explicit/portfolio' "$CAPTURE_PATH"
-grep -q 'postgresql://explicit/portfolio-alembic' "$CAPTURE_PATH"
-grep -q 'postgresql://explicit/watchlist' "$CAPTURE_PATH"
+grep -q 'postgresql://instrument@explicit/portfolio_ops' "$CAPTURE_PATH"
+grep -q 'postgresql://instrument-alembic@explicit/portfolio_ops' "$CAPTURE_PATH"
+grep -q 'postgresql://platform@explicit/portfolio_ops' "$CAPTURE_PATH"
+grep -q 'postgresql://portfolio@explicit/portfolio_ops' "$CAPTURE_PATH"
+grep -q 'postgresql://portfolio-alembic@explicit/portfolio_ops' "$CAPTURE_PATH"
+grep -q 'postgresql://watchlist@explicit/portfolio_ops' "$CAPTURE_PATH"
 
 : > "$COMMAND_CAPTURE_PATH"
 export FAKE_REGISTRY_CURRENT="20260717_0015"

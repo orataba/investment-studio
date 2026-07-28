@@ -62,4 +62,18 @@ describe('price bars', () => {
     expect(priceRiskStats(bars).maximumDrawdown).toBeCloseTo(-25)
     expect(priceRiskStats(bars).observationCount).toBe(3)
   })
+
+  it('withholds YTD when no prior-year close is available', () => {
+    const currentYearOnly = adjustPriceBars(
+      [bar('2026-01-02', '100', '1'), bar('2026-07-24', '110', '1')],
+      'raw',
+    )
+    const withYearEndAnchor = adjustPriceBars(
+      [bar('2025-12-31', '100', '1'), bar('2026-07-24', '110', '1')],
+      'raw',
+    )
+
+    expect(priceReturnStats(currentYearOnly).ytd).toBeNull()
+    expect(priceReturnStats(withYearEndAnchor).ytd).toBeCloseTo(10)
+  })
 })

@@ -47,7 +47,7 @@ watchlist 和 fund detail 已经不再使用“平铺 fund tags”模型，而�
 - Fund Detail UI 分区
 - Monitoring 缺失项检查
 
-当前产品可用范围明确是 `fund` 资产类型；shared registry 可继续覆盖更广资产，但 watchlist detail 只对 fund 开放。
+当前产品可用范围是 `fund` 与 `index`：fund 使用完整三层产品框架和详情工作面，index 使用聚焦 Overview / Performance / Risk 的轻量详情。shared registry 可继续覆盖更广资产，但其他资产类型不进入 watchlist detail 主链路。
 
 ## 4. 当前最该相信的行为边界
 
@@ -64,6 +64,8 @@ watchlist 和 fund detail 已经不再使用“平铺 fund tags”模型，而�
 - 自定义 view 的 `view_id` 会做 path-safe slug 化；创建冲突会重试；复制 watchlist 时也会清洗 legacy custom view id
 - canonical quote/NAV history 在 watchlist detail 是只读视图；导入、刷新、编辑共享行情/净值要回到 `Database Dashboard`。watchlist 派生层必须保留真实 `metric_family / quote_basis / role`，例如 `price/close/chart` 和 `nav/total_return_nav/total_return` 不能再只压成 NAV 文案。
 - 主图和 Sparkline 统一展示区间累计收益并返回真实锚点；Overview 主图只使用双端拖动范围条。标量 performance 字段已覆盖 `1W / 1M / 3M / 6M / MTD / YTD / 1Y` 并投影到 watchlist row read model；MTD/YTD 按期初前一有效收盘，滚动窗口按请求 `as_of_date` 回看，不随 stale 实际终点平移。指数的 `close/last` 只表示字段身份，收益口径必须来自 Registry 的显式 `return_semantics`；未确认时保持 Unknown 并停止相对指标。完整规则见 [RETURN_SERIES_CONTRACT.md](./RETURN_SERIES_CONTRACT.md)。
+- Watchlist 每个 instrument 使用自己的最新 calculation-series observation 作为 as-of；名单级 metadata 只报告行终点范围，不代表共同计算日。不同终点不能直接做收益/风险分组平均或 peer 排名；benchmark 比较只使用双方完全相同的共同观测收盘点构造共同起止和中间 period。
+- 年化收益至少需要一个完整日历年。Registry expected frequency 是计算频率主口径；daily 序列按配置的 market calendar 检查真实 session，内部缺点时回撤、波动率、Sharpe 等路径指标明确 withheld，节假日不误报。
 - monitoring 的缺失项检查是 taxonomy-aware；它既检查当前分类下适用且 `required_for_monitoring` 的字段，也检查 `fund_regime` 和分类叶子是否完整
 - 后端 API 已统一到 `instrument` 主语；旧 `/api/funds/...` 兼容路由已删除
 - 前端详情 canonical 路由是 `/instruments/:instrumentId`

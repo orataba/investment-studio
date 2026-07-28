@@ -189,17 +189,39 @@ def period_return_coverage_state(
 
     first_snapshot = normalized_visible[0]
     first_date = cast(date, first_snapshot["as_of_date"])
+    first_nav = _safe_float(first_snapshot.get("nav"))
+    next_snapshot = normalized_visible[1] if len(normalized_visible) > 1 else None
+    next_snapshot_starts_funded_segment = bool(
+        next_snapshot is not None
+        and cast(date, next_snapshot["as_of_date"]) == first_date + timedelta(days=1)
+        and abs(_safe_float(next_snapshot.get("beginning_nav")) or 0.0) <= 1e-12
+        and (_safe_float(next_snapshot.get("external_cash_in")) or 0.0) > 1e-9
+        and (next_daily_twr := _safe_float(next_snapshot.get("daily_twr")))
+        is not None
+        and isfinite(next_daily_twr)
+        and snapshot_coverage_state(next_snapshot, "return") == "complete"
+    )
+    explicit_close_boundary_anchor = bool(
+        start_is_close_boundary
+        and first_nav is not None
+        and (
+            abs(first_nav) > 1e-12
+            or next_snapshot_starts_funded_segment
+        )
+    )
     inferred_initial_valuation_anchor = bool(
         has_complete_valuation(first_snapshot)
+        and first_nav is not None
+        and abs(first_nav) > 1e-12
         and _safe_float(first_snapshot.get("daily_twr")) is None
         and bool(first_snapshot.get("return_chain_continuous"))
     )
     initial_valuation_anchor = bool(
-        start_is_close_boundary or inferred_initial_valuation_anchor
+        explicit_close_boundary_anchor or inferred_initial_valuation_anchor
     )
     anchor_date = (
         requested_start_date
-        if start_is_close_boundary and requested_start_date is not None
+        if explicit_close_boundary_anchor and requested_start_date is not None
         else (first_date if initial_valuation_anchor else None)
     )
     start_boundary_complete = bool(
@@ -287,7 +309,12 @@ def period_return_coverage_state(
         and end_boundary_complete
     ):
         return "complete"
-    return "partial" if has_any_return or normalized_visible else "unavailable"
+    has_material_capital = any(
+        (nav := _safe_float(snapshot.get("nav"))) is not None
+        and abs(nav) > 1e-12
+        for snapshot in normalized_visible
+    )
+    return "partial" if has_any_return or has_material_capital else "unavailable"
 
 
 def aggregate_snapshot_coverage(

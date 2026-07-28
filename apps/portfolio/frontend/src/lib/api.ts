@@ -182,6 +182,8 @@ export type PortfolioPerformanceSummary = {
   effective_start_date?: string | null
   effective_end_date?: string | null
   as_of_clamp_reason?: string | null
+  start_boundary_kind?: 'close_eod' | 'funded_bod' | 'imported_opening_eod' | null
+  include_start_date_return?: boolean
   coverage_state: PortfolioPerformanceCoverageState
   valuation_coverage_state: PortfolioPerformanceCoverageState
   return_coverage_state: PortfolioPerformanceCoverageState
@@ -266,6 +268,8 @@ export type PortfolioPeriodCalculationSummary = {
   effective_start_date?: string | null
   effective_end_date?: string | null
   as_of_clamp_reason?: string | null
+  start_boundary_kind?: 'close_eod' | 'funded_bod' | 'imported_opening_eod' | null
+  include_start_date_return?: boolean
   coverage_state: PortfolioPerformanceCoverageState
   stale_price_flag: boolean
   stale_fx_flag: boolean
@@ -324,6 +328,23 @@ export type PortfolioForwardRiskSummary = {
   portfolio_variance?: number | null
   portfolio_volatility?: number | null
   observation_count?: number | null
+  coverage?: {
+    policy: PortfolioResearchMissingReturnPolicy
+    window_start_date: string
+    window_end_date: string
+    return_interval?: string | null
+    rows_before: number
+    rows_after: number
+    complete_row_count: number
+    missing_row_count: number
+    missing_row_fraction: number
+    missing_rows: Array<{
+      date: string
+      missing_members: string[]
+    }>
+    latest_complete_date?: string | null
+    trailing_staleness_days?: number | null
+  } | null
 }
 
 export type PortfolioPeriodCalculationGroupMetrics = {
@@ -383,6 +404,13 @@ export type PortfolioPeriodCalculationGroupsSummary = {
   group_label: string | null
   start_date: string | null
   end_date: string | null
+  requested_start_date?: string | null
+  requested_end_date?: string | null
+  effective_start_date?: string | null
+  effective_end_date?: string | null
+  as_of_clamp_reason?: string | null
+  start_boundary_kind?: 'close_eod' | 'funded_bod' | 'imported_opening_eod' | null
+  include_start_date_return?: boolean
   group_count: number
   total_initial_value: number | null
   total_final_value: number | null
@@ -481,6 +509,13 @@ export type PortfolioContributionReportSummary = {
   group_label: string | null
   start_date: string | null
   end_date: string | null
+  requested_start_date?: string | null
+  requested_end_date?: string | null
+  effective_start_date?: string | null
+  effective_end_date?: string | null
+  as_of_clamp_reason?: string | null
+  start_boundary_kind?: 'close_eod' | 'funded_bod' | 'imported_opening_eod' | null
+  include_start_date_return?: boolean
   coverage_state: PortfolioPerformanceCoverageState
   slice_count: number
   group_count: number
@@ -613,6 +648,15 @@ export type HoldingsWorkspaceResponse = {
     default_frequency: PortfolioCalculationFrequency
     source_frequency_counts: Record<string, number>
     status_label: string
+    coverage_state?: PortfolioPerformanceCoverageState
+    gap_count?: number
+    gap_instrument_ids?: string[]
+    gap_details?: Array<{
+      instrument_id: string
+      gap_count: number
+      gap_detection_basis: string
+      gap_date_sample: string[]
+    }>
   }
   risk_policy?: PortfolioRiskPolicyRecord | null
   forward_risk?: PortfolioForwardRiskSummary | null
@@ -810,6 +854,9 @@ export type PortfolioTaxonomyCatalogResponse = {
     default_frequency: PortfolioCalculationFrequency
     source_frequency_counts: Record<string, number>
     status_label: string
+    coverage_state?: PortfolioPerformanceCoverageState
+    gap_count?: number
+    gap_instrument_ids?: string[]
   } | null
   taxonomies: PortfolioTaxonomyRecord[]
   taxonomy_nodes: PortfolioTaxonomyNodeRecord[]

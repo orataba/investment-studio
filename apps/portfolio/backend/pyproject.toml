@@ -9,6 +9,7 @@ description = "Portfolio Operations Portfolio backend"
 requires-python = ">=3.12"
 dependencies = [
   "alembic>=1.16,<2.0",
+  "exchange-calendars>=4.13,<5.0",
   "fastapi>=0.115,<1.0",
   "numpy>=1.26,<3.0",
   "pandas>=2.2,<3.0",

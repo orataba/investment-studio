@@ -59,34 +59,45 @@ function percentValue(value: number | null) {
   return value === null ? '—' : formatPercent(value)
 }
 
+type StandardizedMetric = {
+  present: boolean
+  value: number | null
+}
+
 function standardizedReturn(
   performance: FundPerformanceResponse | null,
   window: string,
-): number | null {
+): StandardizedMetric {
   const row = performance?.trailing_returns.find(
     (item) => String(item.window || '').toUpperCase() === window.toUpperCase(),
   )
+  if (!row) return { present: false, value: null }
   const value = row?.investment_nav
-  if (typeof value === 'number' && Number.isFinite(value)) return value
-  if (typeof value === 'string' && value.trim() && Number.isFinite(Number(value))) {
-    return Number(value)
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return { present: true, value }
   }
-  return null
+  if (typeof value === 'string' && value.trim() && Number.isFinite(Number(value))) {
+    return { present: true, value: Number(value) }
+  }
+  return { present: true, value: null }
 }
 
 function standardizedRiskMetric(
   risk: FundRiskResponse | null,
   metric: string,
-): number | null {
+): StandardizedMetric {
   const row = risk?.risk_metrics.find(
     (item) => String(item.metric || '').toLowerCase() === metric.toLowerCase(),
   )
+  if (!row) return { present: false, value: null }
   const value = row?.investment
-  if (typeof value === 'number' && Number.isFinite(value)) return value
-  if (typeof value === 'string' && value.trim() && Number.isFinite(Number(value))) {
-    return Number(value)
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return { present: true, value }
   }
-  return null
+  if (typeof value === 'string' && value.trim() && Number.isFinite(Number(value))) {
+    return { present: true, value: Number(value) }
+  }
+  return { present: true, value: null }
 }
 
 function MetricCard({
@@ -408,21 +419,54 @@ export default function ListedInstrumentDetailPage({ instrument, watchlistContex
   const visibleBars = useMemo(() => slicePriceBars(allBars, range), [allBars, range])
   const visibleAnalysisBars = useMemo(() => slicePriceBars(analysisBars, range), [analysisBars, range])
   const returns = useMemo(() => priceReturnStats(analysisBars), [analysisBars])
+  const standardizedReturns = useMemo(
+    () => ({
+      oneMonth: standardizedReturn(performance, '1M'),
+      threeMonth: standardizedReturn(performance, '3M'),
+      sixMonth: standardizedReturn(performance, '6M'),
+      ytd: standardizedReturn(performance, 'YTD'),
+      oneYear: standardizedReturn(performance, '1Y'),
+    }),
+    [performance],
+  )
   const displayReturns = useMemo(() => ({
     ...returns,
-    threeMonth: standardizedReturn(performance, '3M') ?? returns.threeMonth,
-    sixMonth: standardizedReturn(performance, '6M') ?? returns.sixMonth,
-    ytd: standardizedReturn(performance, 'YTD') ?? returns.ytd,
-    oneYear: standardizedReturn(performance, '1Y') ?? returns.oneYear,
-  }), [performance, returns])
+    oneMonth: standardizedReturns.oneMonth.present
+      ? standardizedReturns.oneMonth.value
+      : returns.oneMonth,
+    threeMonth: standardizedReturns.threeMonth.present
+      ? standardizedReturns.threeMonth.value
+      : returns.threeMonth,
+    sixMonth: standardizedReturns.sixMonth.present
+      ? standardizedReturns.sixMonth.value
+      : returns.sixMonth,
+    ytd: standardizedReturns.ytd.present
+      ? standardizedReturns.ytd.value
+      : returns.ytd,
+    oneYear: standardizedReturns.oneYear.present
+      ? standardizedReturns.oneYear.value
+      : returns.oneYear,
+  }), [returns, standardizedReturns])
   const riskStats = useMemo(() => priceRiskStats(analysisBars), [analysisBars])
+  const standardizedRisk = useMemo(
+    () => ({
+      annualizedVolatility: standardizedRiskMetric(risk, 'volatility'),
+      maximumDrawdown: standardizedRiskMetric(risk, 'max_drawdown'),
+    }),
+    [risk],
+  )
+  const riskPathMetricsWithheld =
+    risk?.data_quality?.status === 'withheld_missing_observations'
   const displayRiskStats = useMemo(() => ({
     ...riskStats,
-    annualizedVolatility:
-      standardizedRiskMetric(risk, 'volatility') ?? riskStats.annualizedVolatility,
-    maximumDrawdown:
-      standardizedRiskMetric(risk, 'max_drawdown') ?? riskStats.maximumDrawdown,
-  }), [risk, riskStats])
+    annualizedVolatility: standardizedRisk.annualizedVolatility.present
+      ? standardizedRisk.annualizedVolatility.value
+      : riskStats.annualizedVolatility,
+    maximumDrawdown: standardizedRisk.maximumDrawdown.present
+      ? standardizedRisk.maximumDrawdown.value
+      : riskStats.maximumDrawdown,
+    currentDrawdown: riskPathMetricsWithheld ? null : riskStats.currentDrawdown,
+  }), [riskPathMetricsWithheld, riskStats, standardizedRisk])
   const latest = analysisBars[analysisBars.length - 1]
   const latestPriceBar = allBars[allBars.length - 1]
   const visibleHigh = visibleAnalysisBars.length ? Math.max(...visibleAnalysisBars.map((bar) => bar.high)) : null
@@ -431,6 +475,14 @@ export default function ListedInstrumentDetailPage({ instrument, watchlistContex
   const analysisBasisLabel = allBars.length
     ? mode === 'qfq' ? 'QFQ price' : 'raw price'
     : chart?.selected_series?.label || chart?.base_series_type || 'canonical close series'
+  const performanceAsOfNote = performance?.snapshot_metadata?.as_of_date
+    ? `Standardized · as of ${formatDate(performance.snapshot_metadata.as_of_date)}`
+    : analysisBasisLabel
+  const riskAsOfNote = riskPathMetricsWithheld
+    ? `Withheld · ${risk?.data_quality?.gap_count ?? 0} missing observation(s)`
+    : risk?.snapshot_metadata?.as_of_date
+      ? `Standardized · as of ${formatDate(risk.snapshot_metadata.as_of_date)}`
+      : analysisBasisLabel
 
   if (loading) return <LoadingOverlay label="Loading market detail" />
 
@@ -532,10 +584,10 @@ export default function ListedInstrumentDetailPage({ instrument, watchlistContex
           </section>
           {chartPanel}
           <section className="listed-metric-grid listed-return-strip">
-            <MetricCard label="1 Month" value={percentValue(displayReturns.oneMonth)} tone={signedValueClass(displayReturns.oneMonth)} />
-            <MetricCard label="3 Months" value={percentValue(displayReturns.threeMonth)} tone={signedValueClass(displayReturns.threeMonth)} />
-            <MetricCard label="YTD" value={percentValue(displayReturns.ytd)} tone={signedValueClass(displayReturns.ytd)} />
-            <MetricCard label="1 Year" value={percentValue(displayReturns.oneYear)} tone={signedValueClass(displayReturns.oneYear)} />
+            <MetricCard label="1 Month" value={percentValue(displayReturns.oneMonth)} tone={signedValueClass(displayReturns.oneMonth)} note={performanceAsOfNote} />
+            <MetricCard label="3 Months" value={percentValue(displayReturns.threeMonth)} tone={signedValueClass(displayReturns.threeMonth)} note={performanceAsOfNote} />
+            <MetricCard label="YTD" value={percentValue(displayReturns.ytd)} tone={signedValueClass(displayReturns.ytd)} note={performanceAsOfNote} />
+            <MetricCard label="1 Year" value={percentValue(displayReturns.oneYear)} tone={signedValueClass(displayReturns.oneYear)} note={performanceAsOfNote} />
           </section>
         </div>
       ) : null}
@@ -543,11 +595,11 @@ export default function ListedInstrumentDetailPage({ instrument, watchlistContex
       {tab === 'performance' ? (
         <div className="listed-tab-stack">
           <section className="listed-metric-grid">
-            <MetricCard label="1 Month" value={percentValue(displayReturns.oneMonth)} tone={signedValueClass(displayReturns.oneMonth)} />
-            <MetricCard label="3 Months" value={percentValue(displayReturns.threeMonth)} tone={signedValueClass(displayReturns.threeMonth)} />
-            <MetricCard label="6 Months" value={percentValue(displayReturns.sixMonth)} tone={signedValueClass(displayReturns.sixMonth)} />
-            <MetricCard label="YTD" value={percentValue(displayReturns.ytd)} tone={signedValueClass(displayReturns.ytd)} />
-            <MetricCard label="1 Year" value={percentValue(displayReturns.oneYear)} tone={signedValueClass(displayReturns.oneYear)} />
+            <MetricCard label="1 Month" value={percentValue(displayReturns.oneMonth)} tone={signedValueClass(displayReturns.oneMonth)} note={performanceAsOfNote} />
+            <MetricCard label="3 Months" value={percentValue(displayReturns.threeMonth)} tone={signedValueClass(displayReturns.threeMonth)} note={performanceAsOfNote} />
+            <MetricCard label="6 Months" value={percentValue(displayReturns.sixMonth)} tone={signedValueClass(displayReturns.sixMonth)} note={performanceAsOfNote} />
+            <MetricCard label="YTD" value={percentValue(displayReturns.ytd)} tone={signedValueClass(displayReturns.ytd)} note={performanceAsOfNote} />
+            <MetricCard label="1 Year" value={percentValue(displayReturns.oneYear)} tone={signedValueClass(displayReturns.oneYear)} note={performanceAsOfNote} />
             <MetricCard label="Available History" value={percentValue(displayReturns.sinceStart)} tone={signedValueClass(displayReturns.sinceStart)} />
           </section>
           <section className="panel listed-chart-panel">
@@ -562,8 +614,8 @@ export default function ListedInstrumentDetailPage({ instrument, watchlistContex
       {tab === 'risk' ? (
         <div className="listed-tab-stack">
           <section className="listed-metric-grid">
-            <MetricCard label="Annualized Volatility" value={percentValue(displayRiskStats.annualizedVolatility)} note="Standardized engine" />
-            <MetricCard label="Maximum Drawdown" value={percentValue(displayRiskStats.maximumDrawdown)} tone={signedValueClass(displayRiskStats.maximumDrawdown)} note="Standardized engine" />
+            <MetricCard label="Annualized Volatility" value={percentValue(displayRiskStats.annualizedVolatility)} note={riskAsOfNote} />
+            <MetricCard label="Maximum Drawdown" value={percentValue(displayRiskStats.maximumDrawdown)} tone={signedValueClass(displayRiskStats.maximumDrawdown)} note={riskAsOfNote} />
             <MetricCard label="Current Drawdown" value={percentValue(displayRiskStats.currentDrawdown)} tone={signedValueClass(displayRiskStats.currentDrawdown)} note={analysisBasisLabel} />
             <MetricCard label="Observations" value={String(displayRiskStats.observationCount)} />
           </section>

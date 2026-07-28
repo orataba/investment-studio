@@ -152,7 +152,7 @@ export function priceReturnStats(bars: DisplayPriceBar[]) {
     ? bars.findIndex((bar) => bar.date.startsWith(latestYear))
     : -1
   const ytdAnchorIndex =
-    firstCurrentYearIndex > 0 ? firstCurrentYearIndex - 1 : firstCurrentYearIndex
+    firstCurrentYearIndex > 0 ? firstCurrentYearIndex - 1 : -1
   const ytdAnchor = ytdAnchorIndex >= 0 ? bars[ytdAnchorIndex]?.close : null
   const ytd = latest && ytdAnchor ? (latest.close / ytdAnchor - 1) * 100 : null
   const dailyChange =

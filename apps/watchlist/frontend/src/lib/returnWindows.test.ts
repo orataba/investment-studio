@@ -1,10 +1,13 @@
 import { describe, expect, it } from 'vitest'
 
 import {
+  annualizedReturnPercent,
+  commonObservationDateWindow,
   cumulativeReturnPercentToGrowthIndex100,
   namedReturnWindowSpec,
   normalizeCumulativeReturn,
   periodReturnPercent,
+  resolveAlignedReturnWindows,
   resolveReturnWindow,
 } from './returnWindows'
 
@@ -68,5 +71,89 @@ describe('canonical return window policy', () => {
       end: '2026-03-31',
       anchorMode: 'on_or_before',
     })
+  })
+
+  it('withholds annualized returns before the first calendar anniversary', () => {
+    const shortWindow = resolveReturnWindow(
+      [
+        { date: '2024-02-29', value: 100 },
+        { date: '2025-02-27', value: 110 },
+      ],
+      '2024-02-29',
+      '2025-02-27',
+    )
+    const anniversaryWindow = resolveReturnWindow(
+      [
+        { date: '2024-02-29', value: 100 },
+        { date: '2025-02-28', value: 110 },
+      ],
+      '2024-02-29',
+      '2025-02-28',
+    )
+
+    expect(shortWindow && annualizedReturnPercent(shortWindow)).toBeNull()
+    expect(anniversaryWindow && annualizedReturnPercent(anniversaryWindow)).toBeCloseTo(10)
+  })
+
+  it('uses exact common closes for benchmark comparison windows', () => {
+    const aligned = resolveAlignedReturnWindows(
+      [
+        { date: '2026-06-27', value: 100 },
+        { date: '2026-06-30', value: 102 },
+        { date: '2026-07-27', value: 110 },
+      ],
+      [
+        { date: '2026-06-26', value: 200 },
+        { date: '2026-06-27', value: 201 },
+        { date: '2026-07-24', value: 208 },
+        { date: '2026-07-27', value: 210 },
+      ],
+      '2026-06-27',
+      '2026-07-28',
+    )
+
+    expect(aligned?.left.points.map((point) => point.date)).toEqual([
+      '2026-06-27',
+      '2026-07-27',
+    ])
+    expect(aligned?.right.points.map((point) => point.date)).toEqual([
+      '2026-06-27',
+      '2026-07-27',
+    ])
+    expect(aligned?.left.anchorDate).toBe(aligned?.right.anchorDate)
+    expect(aligned?.left.endDate).toBe(aligned?.right.endDate)
+  })
+
+  it('withholds a comparison when no complete exact common period exists', () => {
+    expect(
+      resolveAlignedReturnWindows(
+        [
+          { date: '2026-06-27', value: 100 },
+          { date: '2026-07-27', value: 110 },
+        ],
+        [
+          { date: '2026-06-26', value: 200 },
+          { date: '2026-07-24', value: 210 },
+        ],
+        '2026-06-27',
+        '2026-07-28',
+      ),
+    ).toBeNull()
+  })
+
+  it('exposes the exact common-observation bounds separately from overlap bounds', () => {
+    expect(
+      commonObservationDateWindow(
+        [
+          { date: '2026-06-27', value: 100 },
+          { date: '2026-07-27', value: 110 },
+        ],
+        [
+          { date: '2026-06-26', value: 200 },
+          { date: '2026-06-27', value: 201 },
+          { date: '2026-07-27', value: 210 },
+        ],
+      ),
+    ).toEqual({ start: '2026-06-27', end: '2026-07-27' })
   })
 })

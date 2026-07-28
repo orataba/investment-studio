@@ -951,6 +951,9 @@ th {
 }
 
 .watchlists-pagination-summary {
+  display: inline-flex;
+  gap: 12px;
+  flex-wrap: wrap;
   font-size: 13px;
   color: #4b5563;
 }

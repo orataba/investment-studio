@@ -31,7 +31,29 @@ export function shiftIsoDate(isoDate: string, days: number) {
   return localDateIso(nextDate)
 }
 
+const RISK_WINDOW_MONTHS_BY_LOOKBACK_DAYS: Record<number, number> = {
+  30: 1,
+  90: 3,
+  180: 6,
+  366: 12,
+  730: 24,
+}
+
+export function shiftIsoCalendarMonths(isoDate: string, months: number) {
+  const [year, month, day] = isoDate.split('-').map(Number)
+  const sourceMonthIndex = (month || 1) - 1
+  const targetMonthStart = new Date(year, sourceMonthIndex + months, 1)
+  const targetYear = targetMonthStart.getFullYear()
+  const targetMonthIndex = targetMonthStart.getMonth()
+  const targetMonthLastDay = new Date(targetYear, targetMonthIndex + 1, 0).getDate()
+  return localDateIso(new Date(targetYear, targetMonthIndex, Math.min(day || 1, targetMonthLastDay)))
+}
+
 export function riskWindowStart(asOfDate: string, lookbackDays: number) {
+  const calendarMonths = RISK_WINDOW_MONTHS_BY_LOOKBACK_DAYS[lookbackDays]
+  if (calendarMonths) {
+    return shiftIsoCalendarMonths(asOfDate, -calendarMonths)
+  }
   return shiftIsoDate(asOfDate, -Math.max(lookbackDays - 1, 0))
 }
 
@@ -141,18 +163,26 @@ export function alignReturnPointsToFrequency(
   if (frequency === 'daily' || !finalDate) {
     return returnPoints
   }
-  const buckets = new Map<string, number[]>()
+  const buckets = new Map<string, ReturnPoint[]>()
   returnPoints.forEach((point) => {
     if (!Number.isFinite(point.value) || point.date > finalDate) {
       return
     }
     const bucketKey = periodEndKey(point.date, frequency, finalDate)
     const bucket = buckets.get(bucketKey) ?? []
-    bucket.push(point.value)
+    bucket.push(point)
     buckets.set(bucketKey, bucket)
   })
   return [...buckets.entries()]
-    .map(([dateKey, values]) => ({ date: dateKey, value: compoundReturns(values) }))
+    .map(([dateKey, points]) => {
+      const sortedPoints = points.slice().sort((left, right) => left.date.localeCompare(right.date))
+      const startDate = sortedPoints[0]?.start_date
+      return {
+        date: dateKey,
+        value: compoundReturns(sortedPoints.map((point) => point.value)),
+        ...(startDate ? { start_date: startDate } : {}),
+      }
+    })
     .sort((left, right) => left.date.localeCompare(right.date))
 }
 
@@ -173,7 +203,7 @@ export function commonReturnDateKeys(
     return []
   }
   return [...firstSeries.returnsByDate.keys()]
-    .filter((dateKey) => (!startDate || dateKey >= startDate) && (!endDate || dateKey <= endDate))
+    .filter((dateKey) => (!startDate || dateKey > startDate) && (!endDate || dateKey <= endDate))
     .filter((dateKey) =>
       activeSeries.every((item) => {
         const value = item.returnsByDate.get(dateKey)
@@ -188,7 +218,7 @@ export function returnPointsInWindow(returnPoints: ReturnPoint[], asOfDate: stri
     return []
   }
   const startDate = riskWindowStart(asOfDate, lookbackDays)
-  return returnPoints.filter((point) => point.date >= startDate && point.date <= asOfDate)
+  return returnPoints.filter((point) => point.date > startDate && point.date <= asOfDate)
 }
 
 export function pairWindowReturns(
@@ -200,7 +230,7 @@ export function pairWindowReturns(
   const startDate = riskWindowStart(asOfDate, lookbackDays)
   const pairs: Array<{ date: string; left: number; right: number }> = []
   left.forEach((leftValue, dateKey) => {
-    if (dateKey < startDate || dateKey > asOfDate) {
+    if (dateKey <= startDate || dateKey > asOfDate) {
       return
     }
     const rightValue = right.get(dateKey)
@@ -215,8 +245,12 @@ export function windowReturnPoints(series: GroupReturnSeries, asOfDate: string, 
   const startDate = riskWindowStart(asOfDate, lookbackDays)
   const points: ReturnPoint[] = []
   series.returnsByDate.forEach((value, dateKey) => {
-    if (dateKey >= startDate && dateKey <= asOfDate && Number.isFinite(value)) {
-      points.push({ date: dateKey, value })
+    if (dateKey > startDate && dateKey <= asOfDate && Number.isFinite(value)) {
+      points.push({
+        date: dateKey,
+        value,
+        start_date: series.periodStartByDate.get(dateKey) ?? null,
+      })
     }
   })
   return points.sort((left, right) => left.date.localeCompare(right.date))

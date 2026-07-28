@@ -36,10 +36,7 @@ import {
   commonReturnDateKeys,
   dayDiff,
   localDateIso,
-  pairWindowReturns,
   returnPointsInWindow,
-  riskWindowStart,
-  windowReturnPoints,
   type CalculationFrequency,
   type GroupReturnSeries,
   type ReturnPoint,
@@ -47,10 +44,7 @@ import {
 import {
   buildCorrelationMatrix,
   correlationCoverageIssue,
-  returnWindowCoverage,
-  sampleCorrelation,
   sampleCovariance,
-  weightAtOrBefore,
   type CorrelationMatrix,
   type CorrelationMatrixBuildResult,
   type CorrelationMatrixCoverageIssue,
@@ -58,7 +52,6 @@ import {
 } from '../lib/riskCorrelation'
 import {
   assessRiskWindowCoverage,
-  riskMinObservationsForWindow,
   windowLabel,
 } from '../lib/riskWindowCoverage'
 
@@ -69,7 +62,6 @@ const DEFAULT_RISK_MODEL_ID = 'ewma_vol_shrinkage_corr_covariance'
 const MATRIX_SCOPE_CURRENT_HOLDINGS = '__current_holdings__'
 const MATRIX_SCOPE_FULL_UNIVERSE = '__full_universe__'
 const RISK_PAGE_SETTINGS_STORAGE_KEY = 'portfolio_ops.portfolio.risk.settings.v1'
-const INSUFFICIENT_DATA_MESSAGE = 'Insufficient data.'
 
 type RiskModelId = 'ewma_vol_shrinkage_corr_covariance' | 'ewma_covariance' | 'sample_covariance'
 type RiskContributionMode = 'signed' | 'abs'
@@ -110,6 +102,10 @@ type CurrentPlanningGroup = {
   label: string
   currentWeight: number | null
   currentValueBase: number | null
+  marketWeight?: number | null
+  marketValueBase?: number | null
+  cashWeight?: number | null
+  cashValueBase?: number | null
   hasMarketRiskInput: boolean
   hasCashLikeInput: boolean
 }
@@ -175,24 +171,6 @@ const DEFAULT_RISK_SETTINGS: RiskSettingsState = {
   lookbackDays: DEFAULT_RISK_LOOKBACK_DAYS,
   modelId: DEFAULT_RISK_MODEL_ID,
   contributionMode: 'signed',
-}
-
-const DEFAULT_RISK_MODEL_PARAMETERS: Record<CalculationFrequency, Record<string, number>> = {
-  daily: {
-    decay: 0.94,
-    vol_decay: 0.9945,
-    corr_shrinkage: 0.15,
-  },
-  weekly: {
-    decay: 0.94,
-    vol_decay: 0.9737,
-    corr_shrinkage: 0.15,
-  },
-  monthly: {
-    decay: 0.94,
-    vol_decay: 0.8909,
-    corr_shrinkage: 0.15,
-  },
 }
 
 const DEFAULT_ROLLING_SETTINGS: RollingRiskSettingsState = {
@@ -272,7 +250,7 @@ function isCalculationFrequency(value: string | null | undefined): value is Calc
   return value === 'daily' || value === 'weekly' || value === 'monthly'
 }
 
-function riskFrequencyProfileFromHoldingsWorkspace(
+export function riskFrequencyProfileFromHoldingsWorkspace(
   holdingsWorkspace: HoldingsWorkspaceResponse | null,
 ): RiskCalculationResult<RiskFrequencyProfile> {
   const unavailableProfile = {
@@ -281,6 +259,14 @@ function riskFrequencyProfileFromHoldingsWorkspace(
   } satisfies RiskFrequencyProfile
   if (!holdingsWorkspace) {
     return riskFail('Risk basis requires the holdings workspace response.', unavailableProfile)
+  }
+  const coverageState = holdingsWorkspace.risk_basis?.coverage_state
+  if (coverageState && coverageState !== 'complete') {
+    return riskFail(
+      holdingsWorkspace.risk_basis?.status_label ||
+        `Risk basis coverage is ${coverageState}.`,
+      unavailableProfile,
+    )
   }
   const riskyHoldingCount = holdingsWorkspace.rows.filter((row) => !isCashHoldingRow(row)).length
   const sourceFrequencyCount = Object.values(holdingsWorkspace.risk_basis?.source_frequency_counts ?? {}).reduce(
@@ -355,16 +341,6 @@ function numericParameter(parameters: Record<string, unknown> | undefined, key: 
   return typeof value === 'number' && Number.isFinite(value) ? value : fallback
 }
 
-function riskModelParameters(settings: RiskSettingsState, frequency: CalculationFrequency) {
-  const minObservations = riskMinObservationsForWindow(frequency, settings.lookbackDays)
-  return {
-    ...DEFAULT_RISK_MODEL_PARAMETERS[frequency],
-    min_observations: minObservations,
-    corr_min_observations: minObservations,
-    ...(settings.parameters ?? {}),
-  }
-}
-
 function riskSettingsFromPolicy(policy: HoldingsWorkspaceResponse['risk_policy'] | undefined | null): RiskSettingsState {
   const modelId = isRiskModelId(policy?.covariance_model_id) ? policy.covariance_model_id : DEFAULT_RISK_SETTINGS.modelId
   const contributionMode = isRiskContributionMode(policy?.contribution_mode)
@@ -388,22 +364,71 @@ function buildBenchmarkReturnPoints(chart: PortfolioInstrumentPriceChartResponse
     const previous = points[index - 1]
     const current = points[index]
     if (previous.value > 0 && current.value > 0) {
-      returns.push({ date: current.date, value: current.value / previous.value - 1 })
+      returns.push({
+        start_date: previous.date,
+        date: current.date,
+        value: current.value / previous.value - 1,
+      })
     }
   }
   return returns
 }
 
+export function benchmarkRiskBasisAssessment(
+  chart: PortfolioInstrumentPriceChartResponse | null,
+  portfolioBaseCurrency: string,
+) {
+  if (!chart) {
+    return { blocking: false, message: null as string | null }
+  }
+  const baseCurrency = portfolioBaseCurrency.trim().toUpperCase()
+  const benchmarkCurrency = chart.currency.trim().toUpperCase()
+  if (!baseCurrency || !benchmarkCurrency || benchmarkCurrency !== baseCurrency) {
+    return {
+      blocking: true,
+      message: `Benchmark risk comparison requires a base-currency return series; got ${benchmarkCurrency || 'unknown'} versus ${baseCurrency || 'unknown'}.`,
+    }
+  }
+  if (chart.coverage_state === 'unavailable') {
+    return {
+      blocking: true,
+      message: chart.selection_reason || 'Benchmark return history is unavailable.',
+    }
+  }
+  if (!chart.return_semantics || chart.return_semantics === 'unknown') {
+    return {
+      blocking: true,
+      message: 'Benchmark risk comparison requires confirmed price-return or total-return semantics.',
+    }
+  }
+  if (chart.return_semantics === 'price_return') {
+    return {
+      blocking: false,
+      message: 'Benchmark uses price returns; volatility and Sharpe exclude distributions and are not fully comparable with portfolio total returns.',
+    }
+  }
+  return { blocking: false, message: null as string | null }
+}
+
 function buildCurrentWeightedPortfolioReturnPoints(series: GroupReturnSeries[]) {
   const activeSeries = series.filter((item) => Math.abs(item.latestWeight ?? 0) > 1e-9)
   const commonDates = commonReturnDateKeys(activeSeries)
-  return commonDates.map((dateKey) => ({
-    date: dateKey,
-    value: activeSeries.reduce(
-      (total, item) => total + (item.latestWeight ?? 0) * (item.returnsByDate.get(dateKey) ?? 0),
-      0,
-    ),
-  }))
+  return commonDates.map((dateKey) => {
+    const periodStarts = new Set(
+      activeSeries.map((item) => item.periodStartByDate.get(dateKey) ?? null),
+    )
+    return {
+      date: dateKey,
+      value: activeSeries.reduce(
+        (total, item) => total + (item.latestWeight ?? 0) * (item.returnsByDate.get(dateKey) ?? 0),
+        0,
+      ),
+      start_date:
+        periodStarts.size === 1
+          ? activeSeries[0]?.periodStartByDate.get(dateKey) ?? null
+          : null,
+    }
+  })
 }
 
 function weightedMean(values: number[], weights: number[]) {
@@ -431,66 +456,6 @@ function ewmaCovariance(leftValues: number[], rightValues: number[], decay: numb
   ) / totalWeight
 }
 
-function estimateCovarianceFromValues(
-  leftValues: number[],
-  rightValues: number[],
-  modelId: RiskModelId,
-  parameters: Record<string, unknown>,
-) {
-  if (leftValues.length < 2 || rightValues.length !== leftValues.length) {
-    return null
-  }
-  if (modelId === 'sample_covariance') {
-    return sampleCovariance(leftValues, rightValues)
-  }
-  if (modelId === 'ewma_covariance') {
-    return ewmaCovariance(leftValues, rightValues, numericParameter(parameters, 'decay', 0.94))
-  }
-
-  const volDecay = numericParameter(parameters, 'vol_decay', 0.9945)
-  const leftVariance = ewmaCovariance(leftValues, leftValues, volDecay)
-  const rightVariance = ewmaCovariance(rightValues, rightValues, volDecay)
-  if (leftVariance == null || rightVariance == null || leftVariance < 0 || rightVariance < 0) {
-    return null
-  }
-  if (leftValues === rightValues || leftValues.every((value, index) => value === rightValues[index])) {
-    return leftVariance
-  }
-  const correlation = sampleCorrelation(leftValues, rightValues)
-  if (correlation == null) {
-    return null
-  }
-  const shrunkCorrelation = correlation * (1 - numericParameter(parameters, 'corr_shrinkage', 0.15))
-  return shrunkCorrelation * Math.sqrt(Math.max(leftVariance, 0)) * Math.sqrt(Math.max(rightVariance, 0))
-}
-
-function estimateCorrelationFromValues(
-  leftValues: number[],
-  rightValues: number[],
-  modelId: RiskModelId,
-  parameters: Record<string, unknown>,
-) {
-  if (leftValues.length < 2 || rightValues.length !== leftValues.length) {
-    return null
-  }
-  if (modelId === 'sample_covariance') {
-    return sampleCorrelation(leftValues, rightValues)
-  }
-  if (modelId === 'ewma_covariance') {
-    const decay = numericParameter(parameters, 'decay', 0.94)
-    const covariance = ewmaCovariance(leftValues, rightValues, decay)
-    const leftVariance = ewmaCovariance(leftValues, leftValues, decay)
-    const rightVariance = ewmaCovariance(rightValues, rightValues, decay)
-    if (covariance == null || leftVariance == null || rightVariance == null || leftVariance <= 0 || rightVariance <= 0) {
-      return null
-    }
-    return covariance / Math.sqrt(leftVariance * rightVariance)
-  }
-
-  const correlation = sampleCorrelation(leftValues, rightValues)
-  return correlation == null ? null : correlation * (1 - numericParameter(parameters, 'corr_shrinkage', 0.15))
-}
-
 function annualizedVarianceFromValues(
   values: number[],
   dates: string[],
@@ -514,18 +479,6 @@ function annualizedVarianceFromValues(
   return variance == null || periodsPerYear == null ? null : variance * periodsPerYear
 }
 
-function annualizedCovarianceFromValues(
-  leftValues: number[],
-  rightValues: number[],
-  dates: string[],
-  modelId: RiskModelId,
-  parameters: Record<string, unknown>,
-) {
-  const covariance = estimateCovarianceFromValues(leftValues, rightValues, modelId, parameters)
-  const periodsPerYear = annualizationPeriodsPerYear(dates, leftValues.length)
-  return covariance == null || periodsPerYear == null ? null : covariance * periodsPerYear
-}
-
 function estimateWindowRisk(
   returnPoints: ReturnPoint[],
   asOfDate: string,
@@ -537,7 +490,14 @@ function estimateWindowRisk(
   const windowPoints = returnPointsInWindow(returnPoints, asOfDate, lookbackDays)
   const values = windowPoints.map((point) => point.value)
   const dates = windowPoints.map((point) => point.date)
-  const coverage = assessRiskWindowCoverage(dates, asOfDate, lookbackDays, frequency, parameters)
+  const coverage = assessRiskWindowCoverage(
+    dates,
+    asOfDate,
+    lookbackDays,
+    frequency,
+    parameters,
+    windowPoints[0]?.start_date,
+  )
   if (!coverage.ok) {
     return { volatility: null, sharpe: null, observationCount: values.length }
   }
@@ -585,103 +545,6 @@ function buildRollingMetricPoints(
     }
   })
   return rollingPoints
-}
-
-function covarianceCell(
-  left: GroupReturnSeries,
-  right: GroupReturnSeries,
-  asOfDate: string,
-  lookbackDays: number,
-  modelId: RiskModelId,
-  parameters: Record<string, unknown>,
-  frequency: CalculationFrequency,
-) {
-  if (left.groupKey === right.groupKey) {
-    const points = windowReturnPoints(left, asOfDate, lookbackDays)
-    const values = points.map((point) => point.value)
-    const dates = points.map((point) => point.date)
-    const coverage = assessRiskWindowCoverage(dates, asOfDate, lookbackDays, frequency, parameters)
-    if (!coverage.ok) {
-      return {
-        value: null,
-        observationCount: values.length,
-      }
-    }
-    return {
-      value: annualizedVarianceFromValues(values, dates, modelId, parameters),
-      observationCount: values.length,
-    }
-  }
-
-  const pairs = pairWindowReturns(left.returnsByDate, right.returnsByDate, asOfDate, lookbackDays)
-  if (pairs.length < 2) {
-    return { value: null, observationCount: pairs.length }
-  }
-  const leftWindowPoints = windowReturnPoints(left, asOfDate, lookbackDays)
-  const rightWindowPoints = windowReturnPoints(right, asOfDate, lookbackDays)
-  if (
-    leftWindowPoints.length !== pairs.length ||
-    rightWindowPoints.length !== pairs.length ||
-    leftWindowPoints.some((point, index) => point.date !== pairs[index]?.date) ||
-    rightWindowPoints.some((point, index) => point.date !== pairs[index]?.date)
-  ) {
-    return { value: null, observationCount: pairs.length }
-  }
-  const leftValues = pairs.map((pair) => pair.left)
-  const rightValues = pairs.map((pair) => pair.right)
-  const dates = pairs.map((pair) => pair.date)
-  const coverage = assessRiskWindowCoverage(dates, asOfDate, lookbackDays, frequency, parameters)
-  if (!coverage.ok) {
-    return { value: null, observationCount: pairs.length }
-  }
-  if (modelId === 'ewma_vol_shrinkage_corr_covariance') {
-    const leftCoverage = assessRiskWindowCoverage(
-      leftWindowPoints.map((point) => point.date),
-      asOfDate,
-      lookbackDays,
-      frequency,
-      parameters,
-    )
-    const rightCoverage = assessRiskWindowCoverage(
-      rightWindowPoints.map((point) => point.date),
-      asOfDate,
-      lookbackDays,
-      frequency,
-      parameters,
-    )
-    if (!leftCoverage.ok || !rightCoverage.ok) {
-      return { value: null, observationCount: pairs.length }
-    }
-    const leftVariance = annualizedVarianceFromValues(
-      leftWindowPoints.map((point) => point.value),
-      leftWindowPoints.map((point) => point.date),
-      modelId,
-      parameters,
-    )
-    const rightVariance = annualizedVarianceFromValues(
-      rightWindowPoints.map((point) => point.value),
-      rightWindowPoints.map((point) => point.date),
-      modelId,
-      parameters,
-    )
-    const correlation = estimateCorrelationFromValues(leftValues, rightValues, modelId, parameters)
-    if (leftVariance == null || rightVariance == null || correlation == null) {
-      return { value: null, observationCount: pairs.length }
-    }
-    const leftVolatility = sqrtNonNegative(leftVariance)
-    const rightVolatility = sqrtNonNegative(rightVariance)
-    if (leftVolatility == null || rightVolatility == null) {
-      return { value: null, observationCount: pairs.length }
-    }
-    return {
-      value: correlation * leftVolatility * rightVolatility,
-      observationCount: pairs.length,
-    }
-  }
-  return {
-    value: annualizedCovarianceFromValues(leftValues, rightValues, dates, modelId, parameters),
-    observationCount: pairs.length,
-  }
 }
 
 function holdingRiskLabel(row: HoldingsWorkspaceResponse['rows'][number]) {
@@ -741,7 +604,7 @@ function returnPointsToGroupSeries({
   } satisfies GroupReturnSeries
 }
 
-function buildCurrentInstrumentReturnSeries(holdingsWorkspace: HoldingsWorkspaceResponse | null) {
+export function buildCurrentInstrumentReturnSeries(holdingsWorkspace: HoldingsWorkspaceResponse | null) {
   if (!holdingsWorkspace) {
     return riskFail('Current risk requires the holdings workspace.', [] satisfies GroupReturnSeries[])
   }
@@ -751,6 +614,23 @@ function buildCurrentInstrumentReturnSeries(holdingsWorkspace: HoldingsWorkspace
   }
 
   const errors: string[] = []
+  const baseCurrency = holdingsWorkspace.base_currency.trim().toUpperCase()
+  if (!baseCurrency) {
+    return riskFail('Current risk requires the portfolio base currency.', [] satisfies GroupReturnSeries[])
+  }
+  holdingsWorkspace.rows
+    .filter((row) => isCashHoldingRow(row))
+    .forEach((row) => {
+      const currency = row.instrument_core.currency.trim().toUpperCase()
+      const hasExposure =
+        Math.abs(finiteNumber(row.allocation) ?? 0) > 1e-9 ||
+        Math.abs(finiteNumber(row.market_value_base) ?? 0) > 1e-9
+      if (hasExposure && currency !== baseCurrency) {
+        errors.push(
+          `Current risk requires an FX total-return series for non-base cash ${holdingRiskLabel(row)} (${currency || 'unknown'} versus ${baseCurrency}).`,
+        )
+      }
+    })
   const series = holdingsWorkspace.rows
     .filter((row) => !isCashHoldingRow(row))
     .map((row): GroupReturnSeries | null => {
@@ -765,10 +645,30 @@ function buildCurrentInstrumentReturnSeries(holdingsWorkspace: HoldingsWorkspace
         return null
       }
       const label = holdingRiskLabel(row)
+      const returnCurrency = row.instrument_core.currency.trim().toUpperCase()
+      if (!returnCurrency) {
+        errors.push(`Current risk requires a return currency for ${label}.`)
+        return null
+      }
+      if (returnCurrency !== baseCurrency) {
+        errors.push(
+          `Current risk requires base-currency total returns; ${label} is ${returnCurrency} while the portfolio base currency is ${baseCurrency}.`,
+        )
+        return null
+      }
       if (currentWeight == null) {
         errors.push(`Current risk requires a current portfolio weight for ${label}.`)
         return null
       }
+      const inputIssues = matrixReturnInputIssues({
+        memberKey: row.instrument_core.instrument_id,
+        memberLabel: label,
+        returnPoints: row.instrument_return_series_all?.points ?? [],
+        asOfDate,
+      })
+      inputIssues.forEach((issue) => {
+        errors.push(`${label}: ${issue.coverageReason}`)
+      })
       const series = returnPointsToGroupSeries({
         groupKey: row.instrument_core.instrument_id,
         groupLabel: label,
@@ -787,6 +687,50 @@ function buildCurrentInstrumentReturnSeries(holdingsWorkspace: HoldingsWorkspace
       const weightDelta = Math.abs(right.latestWeight ?? 0) - Math.abs(left.latestWeight ?? 0)
       return weightDelta || left.groupLabel.localeCompare(right.groupLabel)
     })
+
+  const activeSeries = series.filter((item) => Math.abs(item.latestWeight ?? 0) > 1e-9)
+  const historyStarts = activeSeries
+    .map((item) => [...item.returnsByDate.keys()].sort()[0] ?? '')
+    .filter(Boolean)
+    .sort()
+  const commonHistoryStart = historyStarts[historyStarts.length - 1]
+  if (commonHistoryStart) {
+    const alignedDates = [
+      ...new Set(
+        activeSeries.flatMap((item) =>
+          [...item.returnsByDate.keys()].filter(
+            (dateKey) => dateKey >= commonHistoryStart && dateKey <= asOfDate,
+          ),
+        ),
+      ),
+    ].sort()
+    activeSeries.forEach((item) => {
+      const missingDates = alignedDates.filter((dateKey) => !item.returnsByDate.has(dateKey))
+      if (missingDates.length) {
+        errors.push(
+          `${item.groupLabel}: Current rolling risk requires identical return dates after all active holdings have history; missing ${missingDates.length} date(s), beginning ${missingDates
+            .slice(0, 3)
+            .join(', ')}${missingDates.length > 3 ? ', ...' : ''}.`,
+        )
+      }
+    })
+    alignedDates.forEach((dateKey) => {
+      const startsByMember = activeSeries
+        .filter((item) => item.returnsByDate.has(dateKey))
+        .map((item) => ({
+          label: item.groupLabel,
+          startDate: item.periodStartByDate.get(dateKey) ?? null,
+        }))
+      const distinctStarts = new Set(startsByMember.map((item) => item.startDate))
+      if (distinctStarts.size > 1) {
+        errors.push(
+          `Current rolling risk requires one period identity for the return ending ${dateKey}; ${startsByMember
+            .map((item) => `${item.label}=${item.startDate ?? 'missing'}`)
+            .join(', ')}.`,
+        )
+      }
+    })
+  }
 
   return errors.length ? riskFail(errors, [] satisfies GroupReturnSeries[]) : riskOk(series)
 }
@@ -911,6 +855,26 @@ function buildCurrentHoldingsMatrixScope(
       ],
     }
   }
+  const baseCurrency = holdingsWorkspace.base_currency.trim().toUpperCase()
+  const issues: CorrelationMatrixCoverageIssue[] = []
+  holdingsWorkspace.rows
+    .filter((row) => isCashHoldingRow(row))
+    .forEach((row) => {
+      const currency = row.instrument_core.currency.trim().toUpperCase()
+      const hasExposure =
+        Math.abs(finiteNumber(row.allocation) ?? 0) > 1e-9 ||
+        Math.abs(finiteNumber(row.market_value_base) ?? 0) > 1e-9
+      if (hasExposure && currency !== baseCurrency) {
+        issues.push(
+          correlationCoverageIssue({
+            memberKey: row.instrument_core.instrument_id || row.line_id,
+            memberLabel: holdingRiskLabel(row),
+            reason: 'scope_unavailable',
+            coverageReason: `Non-base cash requires an FX total-return series (${currency || 'unknown'} versus ${baseCurrency || 'unknown'}).`,
+          }),
+        )
+      }
+    })
   const rows = holdingsWorkspace.rows.filter((row) => {
     if (isCashHoldingRow(row)) {
       return false
@@ -924,7 +888,6 @@ function buildCurrentHoldingsMatrixScope(
       Math.abs(currentValueBase ?? 0) > 1e-9
     )
   })
-  const issues: CorrelationMatrixCoverageIssue[] = []
   const seenMembers = new Set<string>()
   const series = rows.flatMap((row): GroupReturnSeries[] => {
     const memberKey = row.instrument_core.instrument_id
@@ -943,6 +906,18 @@ function buildCurrentHoldingsMatrixScope(
       return []
     }
     seenMembers.add(memberKey)
+    const returnCurrency = row.instrument_core.currency.trim().toUpperCase()
+    if (!baseCurrency || !returnCurrency || returnCurrency !== baseCurrency) {
+      issues.push(
+        correlationCoverageIssue({
+          memberKey,
+          memberLabel,
+          reason: 'scope_unavailable',
+          coverageReason: `Correlation requires base-currency total returns (${returnCurrency || 'unknown'} versus ${baseCurrency || 'unknown'}).`,
+        }),
+      )
+      return []
+    }
     const currentWeight = finiteNumber(row.allocation)
     if (currentWeight == null) {
       issues.push(
@@ -1030,6 +1005,7 @@ function buildFullUniverseMatrixScope({
       ],
     }
   }
+  const baseCurrency = holdingsWorkspace.base_currency.trim().toUpperCase()
 
   const universeRecords = catalog.instrument_universe.filter(
     (record) => record.status === 'active' && !isCashUniverseInstrument(record),
@@ -1075,6 +1051,19 @@ function buildFullUniverseMatrixScope({
             coverageReason: 'Active universe member is missing instrument metadata.',
           }),
         )
+        return []
+      }
+      const returnCurrency = instrument.currency.trim().toUpperCase()
+      if (!baseCurrency || !returnCurrency || returnCurrency !== baseCurrency) {
+        issues.push(
+          correlationCoverageIssue({
+            memberKey,
+            memberLabel,
+            reason: 'scope_unavailable',
+            coverageReason: `Correlation requires base-currency total returns (${returnCurrency || 'unknown'} versus ${baseCurrency || 'unknown'}).`,
+          }),
+        )
+        return []
       }
       const returnPoints = record.instrument_return_series_all?.points ?? []
       if (!returnPoints.length) {
@@ -1256,162 +1245,114 @@ function buildCurrentTaxonomyReturnSeries({
   return riskOk(taxonomySeries)
 }
 
-function buildRiskContributionRows(
-  series: GroupReturnSeries[],
-  asOfDate: string,
-  settings: RiskSettingsState,
-  frequency: CalculationFrequency,
-) {
-  if (!asOfDate) {
-    return riskFail('Risk contribution requires an as-of date.', [] satisfies RiskContributionRow[])
-  }
-  const parameters = riskModelParameters(settings, frequency)
-  const weightedSeries = series
-    .map((item) => ({
-      item,
-      weight: weightAtOrBefore(item, asOfDate),
-      coverage: returnWindowCoverage(item, asOfDate, settings.lookbackDays, frequency, parameters),
-    }))
-    .filter((item) => Math.abs(item.weight ?? 0) > 1e-9)
-  const insufficientSeries = weightedSeries.filter((item) => !item.coverage.ok)
-  if (insufficientSeries.length) {
+export function buildCanonicalTaxonomyRiskContributionRows({
+  holdingsWorkspace,
+  catalog,
+  taxonomy,
+  referenceDate,
+}: {
+  holdingsWorkspace: HoldingsWorkspaceResponse | null
+  catalog: PortfolioTaxonomyCatalogResponse | null
+  taxonomy: PortfolioTaxonomyRecord | null
+  referenceDate: string | null
+}) {
+  if (!holdingsWorkspace || !catalog || !taxonomy || !referenceDate) {
     return riskFail(
-      `Risk contribution requires a complete ${windowLabel(settings.lookbackDays)} ${frequency} return window for every active weighted group; insufficient: ${insufficientSeries
-        .map(({ item, coverage }) => `${item.groupLabel} (${coverage.error || `${coverage.observationCount} observations`})`)
-        .join(', ')}.`,
+      'Current taxonomy risk contribution requires holdings, taxonomy, and an as-of date.',
       [] satisfies RiskContributionRow[],
     )
   }
-  const activeSeries = weightedSeries
-  const grossWeight = activeSeries.reduce((total, item) => total + Math.abs(item.weight ?? 0), 0)
-  if (!activeSeries.length || grossWeight <= 1e-12) {
+  const forwardRisk = holdingsWorkspace.forward_risk
+  if (forwardRisk?.status !== 'ok') {
     return riskFail(
-      'Risk contribution requires at least one active weighted group with valid point-in-time weight.',
+      forwardRisk?.errors?.length
+        ? forwardRisk.errors
+        : 'Production forward risk contribution is unavailable.',
+      [] satisfies RiskContributionRow[],
+    )
+  }
+  if (taxonomy.primary_assignment_scope !== 'instrument') {
+    return riskFail(
+      `Current taxonomy risk contribution requires an instrument-scope planning taxonomy; got ${taxonomy.primary_assignment_scope}.`,
       [] satisfies RiskContributionRow[],
     )
   }
 
-  const weights = activeSeries.map((item) => item.weight ?? 0)
-  const firstActiveSeries = activeSeries[0]
-  if (!firstActiveSeries) {
-    return riskFail('Risk contribution requires at least one active weighted group.', [] satisfies RiskContributionRow[])
-  }
-  const startDate = riskWindowStart(asOfDate, settings.lookbackDays)
-  const windowDateSets = activeSeries.map(({ item }) => ({
-    item,
-    dates: windowReturnPoints(item, asOfDate, settings.lookbackDays).map((point) => point.date),
-  }))
-  const unionDates = [...new Set(windowDateSets.flatMap((entry) => entry.dates))].sort()
-  const incompleteDateSets = windowDateSets
-    .map((entry) => {
-      const dateSet = new Set(entry.dates)
-      const missingDates = unionDates.filter((dateKey) => !dateSet.has(dateKey))
-      return { ...entry, missingDates }
-    })
-    .filter((entry) => entry.missingDates.length > 0)
-  if (incompleteDateSets.length) {
-    return riskFail(
-      `Risk contribution requires identical complete ${frequency} return dates for every active weighted group; missing aligned dates: ${incompleteDateSets
-        .map(({ item, missingDates }) => `${item.groupLabel} (${missingDates.slice(0, 3).join(', ')}${missingDates.length > 3 ? ', ...' : ''})`)
-        .join('; ')}.`,
-      [] satisfies RiskContributionRow[],
-    )
-  }
-  const commonDates = unionDates.filter((dateKey) => dateKey >= startDate && dateKey <= asOfDate)
-  if (commonDates.length < 2) {
-    return riskFail(
-      `Risk contribution requires at least two common return dates across all active weighted groups; got ${commonDates.length}.`,
-      [] satisfies RiskContributionRow[],
-    )
-  }
-  const commonCoverage = assessRiskWindowCoverage(commonDates, asOfDate, settings.lookbackDays, frequency, parameters)
-  if (!commonCoverage.ok) {
-    return riskFail(
-      `Risk contribution requires a complete common ${windowLabel(settings.lookbackDays)} ${frequency} return window; ${commonCoverage.error}`,
-      [] satisfies RiskContributionRow[],
-    )
-  }
-  const valuesByGroup = new Map(
-    activeSeries.map((series) => [
-      series.item.groupKey,
-      commonDates.map((dateKey) => series.item.returnsByDate.get(dateKey) as number),
-    ]),
-  )
-  const covarianceMatrix: number[][] = []
-  for (const rowSeries of activeSeries) {
-    const covarianceRow: number[] = []
-    for (const columnSeries of activeSeries) {
-      const leftValues = valuesByGroup.get(rowSeries.item.groupKey)
-      const rightValues = valuesByGroup.get(columnSeries.item.groupKey)
-      if (!leftValues || !rightValues) {
-        return riskFail(
-          `Risk contribution internal return lookup failed for ${rowSeries.item.groupLabel} x ${columnSeries.item.groupLabel}.`,
-          [] satisfies RiskContributionRow[],
-        )
+  const nodeById = buildNodeLookup(catalog, taxonomy.taxonomy_id)
+  const grouped = new Map<string, RiskContributionRow>()
+  const errors: string[] = []
+  holdingsWorkspace.rows
+    .filter((row) => {
+      if (isCashHoldingRow(row)) {
+        return false
       }
-      const covarianceValue = annualizedCovarianceFromValues(
-        leftValues,
-        rightValues,
-        commonDates,
-        settings.modelId,
-        parameters,
+      return (
+        Math.abs(finiteNumber(row.allocation) ?? 0) > 1e-9 ||
+        Math.abs(finiteNumber(row.market_value_base) ?? 0) > 1e-9 ||
+        Math.abs(finiteNumber(row.quantity) ?? 0) > 1e-9
       )
-      if (covarianceValue == null || !Number.isFinite(covarianceValue)) {
-        return riskFail(
-          `Risk contribution covariance failed for ${rowSeries.item.groupLabel} x ${columnSeries.item.groupLabel}.`,
-          [] satisfies RiskContributionRow[],
-        )
-      }
-      covarianceRow.push(covarianceValue)
-    }
-    covarianceMatrix.push(covarianceRow)
-  }
-  const marginal = covarianceMatrix.map((row) =>
-    row.reduce((total, covarianceValue, columnIndex) => total + covarianceValue * weights[columnIndex], 0),
-  )
-  const variance = weights.reduce((total, weight, index) => total + weight * marginal[index], 0)
-  if (!Number.isFinite(variance) || variance <= 1e-12) {
-    return riskFail(
-      `Risk contribution requires positive finite portfolio variance; got ${Number.isFinite(variance) ? formatNumber(variance, 6) : 'non-finite'}.`,
-      [] satisfies RiskContributionRow[],
-    )
-  }
-  const signedContributions = activeSeries.map((_, index) => weights[index] * marginal[index])
-  const absoluteContributionTotal = signedContributions.reduce((total, contribution) => total + Math.abs(contribution), 0)
-  if (settings.contributionMode === 'abs' && absoluteContributionTotal <= 1e-12) {
-    return riskFail(
-      'Absolute risk contribution requires a positive aggregate absolute contribution.',
-      [] satisfies RiskContributionRow[],
-    )
-  }
-  const invalidOwnVariance = activeSeries.find(({ item }, index) => sqrtNonNegative(covarianceMatrix[index]?.[index]) == null)
-  if (invalidOwnVariance) {
-    return riskFail(
-      `Risk contribution produced invalid own variance for ${invalidOwnVariance.item.groupLabel}.`,
-      [] satisfies RiskContributionRow[],
-    )
-  }
-
-  const rows = activeSeries
-    .map(({ item }, index) => {
-      const ownVariance = covarianceMatrix[index]?.[index] ?? null
-      const ownVolatility = sqrtNonNegative(ownVariance) as number
-      const contributionToVariance = signedContributions[index]
-      const riskShare =
-        settings.contributionMode === 'abs'
-          ? Math.abs(contributionToVariance) / absoluteContributionTotal
-          : contributionToVariance / variance
-      return {
-        groupKey: item.groupKey,
-        groupLabel: item.groupLabel,
-        weight: weights[index],
-        annualizedVolatility: ownVolatility,
-        riskShare,
-        contributionToVariance,
-        observationCount: commonDates.length,
-      } satisfies RiskContributionRow
     })
-    .sort((left, right) => Math.abs(right.riskShare ?? 0) - Math.abs(left.riskShare ?? 0))
+    .forEach((row) => {
+      const label = holdingRiskLabel(row)
+      const riskShare = finiteNumber(row.forward_risk_share)
+      const contributionToVariance = finiteNumber(row.forward_contribution_to_variance)
+      const currentWeight = finiteNumber(row.allocation)
+      if (row.forward_risk_status !== 'ok' || riskShare == null || contributionToVariance == null) {
+        errors.push(`Production forward risk contribution is missing for ${label}.`)
+        return
+      }
+      if (currentWeight == null) {
+        errors.push(`Production forward risk contribution is missing current weight for ${label}.`)
+        return
+      }
+      const assignmentResult = resolveActiveAssignment(
+        catalog,
+        taxonomy.taxonomy_id,
+        'instrument',
+        row.instrument_core.instrument_id,
+        referenceDate,
+      )
+      if (assignmentResult.error) {
+        errors.push(assignmentResult.error)
+        return
+      }
+      const topLevelNode = resolveScopedTaxonomyNode(
+        assignmentResult.assignment?.taxonomy_node_id,
+        nodeById,
+        '',
+      )
+      const groupKey = topLevelNode?.taxonomy_node_id ?? `unassigned:${taxonomy.taxonomy_id}`
+      const groupLabel = topLevelNode?.node_name ?? 'Unassigned'
+      const current = grouped.get(groupKey) ?? {
+        groupKey,
+        groupLabel,
+        weight: 0,
+        annualizedVolatility: null,
+        riskShare: 0,
+        contributionToVariance: 0,
+        observationCount: forwardRisk.observation_count ?? 0,
+      }
+      current.weight = (current.weight ?? 0) + currentWeight
+      current.riskShare = (current.riskShare ?? 0) + riskShare
+      current.contributionToVariance = (current.contributionToVariance ?? 0) + contributionToVariance
+      grouped.set(groupKey, current)
+    })
+
+  if (errors.length) {
+    return riskFail(errors, [] satisfies RiskContributionRow[])
+  }
+  const rows = [...grouped.values()].sort(
+    (left, right) =>
+      Math.abs(right.riskShare ?? 0) - Math.abs(left.riskShare ?? 0) ||
+      left.groupLabel.localeCompare(right.groupLabel),
+  )
+  const totalRiskShare = rows.reduce((total, row) => total + (row.riskShare ?? 0), 0)
+  if (!rows.length || Math.abs(totalRiskShare - 1) > 1e-6) {
+    return riskFail(
+      `Production forward risk shares must aggregate to 100% before taxonomy grouping; got ${formatPercent(totalRiskShare)}.`,
+      [] satisfies RiskContributionRow[],
+    )
+  }
   return riskOk(rows)
 }
 
@@ -1484,7 +1425,16 @@ function accountValueBase(accountRow: PortfolioAccountsWorkspaceResponse['accoun
   return finiteNumber(accountRow.account_value_base)
 }
 
-function buildCurrentPlanningGroups({
+function accountLiquidityBase(accountRow: PortfolioAccountsWorkspaceResponse['accounts'][number]) {
+  const cashBalanceBase = finiteNumber(accountRow.derived_cash_balance_base)
+  const pendingSettlementBase = finiteNumber(accountRow.pending_settlement_base)
+  if (cashBalanceBase == null || pendingSettlementBase == null) {
+    return null
+  }
+  return cashBalanceBase + pendingSettlementBase
+}
+
+export function buildCurrentPlanningGroups({
   holdingsWorkspace,
   accountsWorkspace,
   catalog,
@@ -1535,14 +1485,28 @@ function buildCurrentPlanningGroups({
       label,
       currentWeight: null,
       currentValueBase: null,
+      marketWeight: null,
+      marketValueBase: null,
+      cashWeight: null,
+      cashValueBase: null,
       hasMarketRiskInput: false,
       hasCashLikeInput: false,
     }
     if (weightInput != null) {
       current.currentWeight = (current.currentWeight ?? 0) + weightInput
+      if (cashLike) {
+        current.cashWeight = (current.cashWeight ?? 0) + weightInput
+      } else {
+        current.marketWeight = (current.marketWeight ?? 0) + weightInput
+      }
     }
     if (valueBase != null) {
       current.currentValueBase = (current.currentValueBase ?? 0) + valueBase
+      if (cashLike) {
+        current.cashValueBase = (current.cashValueBase ?? 0) + valueBase
+      } else {
+        current.marketValueBase = (current.marketValueBase ?? 0) + valueBase
+      }
     }
     if (hasExposure) {
       current.hasMarketRiskInput = current.hasMarketRiskInput || !cashLike
@@ -1559,9 +1523,13 @@ function buildCurrentPlanningGroups({
       )
     }
     const accountRows = accountsWorkspace.accounts
-    const cashAccounts = taxonomy.planning_enabled
+    const liquidityAccounts = taxonomy.planning_enabled
       ? accountRows.filter((accountRow) => {
-          if (accountRow.account.account_type !== 'deposit_account') {
+          const liquidityBase = accountLiquidityBase(accountRow)
+          if (liquidityBase == null) {
+            errors.push(
+              `Current drift requires base-currency cash and pending settlement for account ${accountRow.account.account_id}.`,
+            )
             return false
           }
           const activeCashAssignmentResult = resolveActiveAssignment(
@@ -1575,12 +1543,7 @@ function buildCurrentPlanningGroups({
             errors.push(activeCashAssignmentResult.error)
             return false
           }
-          const valueBase = accountValueBase(accountRow)
-          if (valueBase == null) {
-            errors.push(`Current drift requires account_value_base for cash account ${accountRow.account.account_id}.`)
-            return false
-          }
-          return Boolean(activeCashAssignmentResult.assignment) || Math.abs(valueBase) > 1e-9
+          return Boolean(activeCashAssignmentResult.assignment) || Math.abs(liquidityBase) > 1e-9
         })
       : []
     const nonCashHoldingRows = holdingsWorkspace.rows.filter((row) => !isCashHoldingRow(row))
@@ -1594,9 +1557,9 @@ function buildCurrentPlanningGroups({
     }
     const totalValueBase =
       nonCashHoldingRows.reduce((total, row) => total + (finiteNumber(row.market_value_base) ?? 0), 0) +
-      cashAccounts.reduce((total, accountRow) => total + (accountValueBase(accountRow) ?? 0), 0)
-    if (totalValueBase <= 1e-9 && (nonCashHoldingRows.length || cashAccounts.length)) {
-      errors.push('Current drift requires positive portfolio NAV from holdings plus cash account values.')
+      liquidityAccounts.reduce((total, accountRow) => total + (accountLiquidityBase(accountRow) ?? 0), 0)
+    if (totalValueBase <= 1e-9 && (nonCashHoldingRows.length || liquidityAccounts.length)) {
+      errors.push('Current drift requires positive portfolio NAV from holdings plus account cash and pending settlement.')
     }
 
     nonCashHoldingRows.forEach((row) => {
@@ -1614,8 +1577,8 @@ function buildCurrentPlanningGroups({
       })
     })
 
-    cashAccounts.forEach((accountRow) => {
-      const valueBase = accountValueBase(accountRow)
+    liquidityAccounts.forEach((accountRow) => {
+      const valueBase = accountLiquidityBase(accountRow)
       if (valueBase == null || totalValueBase <= 1e-9) {
         return
       }
@@ -1631,23 +1594,24 @@ function buildCurrentPlanningGroups({
     if (!accountsWorkspace) {
       return riskFail('Current drift requires the accounts workspace for cash-bucket taxonomies.', [] satisfies CurrentPlanningGroup[])
     }
-    const cashAccounts = accountsWorkspace.accounts.filter(
-      (accountRow) => accountRow.account.account_type === 'deposit_account',
-    )
-    const missingAccountValueRows = cashAccounts.filter((accountRow) => accountValueBase(accountRow) == null)
+    const liquidityAccounts = accountsWorkspace.accounts
+    const missingAccountValueRows = liquidityAccounts.filter((accountRow) => accountLiquidityBase(accountRow) == null)
     if (missingAccountValueRows.length) {
       errors.push(
-        `Current drift requires account_value_base for every cash account; missing: ${missingAccountValueRows
+        `Current drift requires base-currency cash and pending settlement for every account; missing: ${missingAccountValueRows
           .map((accountRow) => accountRow.account.account_id)
           .join(', ')}.`,
       )
     }
-    const totalValueBase = cashAccounts.reduce((total, accountRow) => total + (accountValueBase(accountRow) ?? 0), 0)
-    if (totalValueBase <= 1e-9 && cashAccounts.length) {
-      errors.push('Current drift requires positive cash account value for cash-bucket taxonomies.')
+    const totalValueBase = liquidityAccounts.reduce(
+      (total, accountRow) => total + (accountLiquidityBase(accountRow) ?? 0),
+      0,
+    )
+    if (totalValueBase <= 1e-9 && liquidityAccounts.length) {
+      errors.push('Current drift requires positive cash and pending settlement for cash-bucket taxonomies.')
     }
-    cashAccounts.forEach((accountRow) => {
-      const valueBase = accountValueBase(accountRow)
+    liquidityAccounts.forEach((accountRow) => {
+      const valueBase = accountLiquidityBase(accountRow)
       if (valueBase == null || totalValueBase <= 1e-9) {
         return
       }
@@ -1872,16 +1836,32 @@ export function buildTargetGapRows({
       [] satisfies TargetGapComparatorRow[],
     )
   }
-  const nonNodeLines = eligibleTargetLines.filter((line) => line.target_member_type !== 'taxonomy_node')
-  if (nonNodeLines.length) {
+  const directCashTargetLines =
+    dimension === 'weight'
+      ? eligibleTargetLines.filter((line) => line.target_member_type === 'cash_bucket')
+      : []
+  if (directCashTargetLines.length > 1) {
     return riskFail(
-      `${targetSet.name} root target drift must be defined on taxonomy_node budgeting members; unsupported direct members: ${nonNodeLines
+      `${targetSet.name} root weight drift supports one aggregate direct cash bucket; got ${directCashTargetLines
+        .map((line) => line.target_member_id)
+        .join(', ')}.`,
+      [] satisfies TargetGapComparatorRow[],
+    )
+  }
+  const unsupportedDirectLines = eligibleTargetLines.filter(
+    (line) => line.target_member_type !== 'taxonomy_node' && line.target_member_type !== 'cash_bucket',
+  )
+  if (unsupportedDirectLines.length) {
+    return riskFail(
+      `${targetSet.name} root target drift must be defined on taxonomy_node budgeting members with an optional aggregate cash bucket; unsupported direct members: ${unsupportedDirectLines
         .map((line) => `${line.target_member_type}:${line.target_member_id}`)
         .join(', ')}.`,
       [] satisfies TargetGapComparatorRow[],
     )
   }
-  const missingTargetNodes = eligibleTargetLines.filter((line) => !nodeById.has(line.target_member_id))
+  const missingTargetNodes = eligibleTargetLines.filter(
+    (line) => line.target_member_type === 'taxonomy_node' && !nodeById.has(line.target_member_id),
+  )
   if (missingTargetNodes.length) {
     return riskFail(
       `${targetSet.name} references missing taxonomy nodes: ${missingTargetNodes.map((line) => line.target_member_id).join(', ')}.`,
@@ -1889,7 +1869,24 @@ export function buildTargetGapRows({
     )
   }
   if (dimension === 'risk_budget' && riskShareErrors.length) {
-    return riskFail(INSUFFICIENT_DATA_MESSAGE, [] satisfies TargetGapComparatorRow[])
+    return riskFail(riskShareErrors, [] satisfies TargetGapComparatorRow[])
+  }
+  const directCashTargetLine = directCashTargetLines[0] ?? null
+  if (directCashTargetLine) {
+    const duplicateCashTaxonomyLines = eligibleTargetLines.filter(
+      (line) =>
+        line.target_member_type === 'taxonomy_node' &&
+        (cashLikeNodeIds.has(line.target_member_id) ||
+          isCashLikeTaxonomyNodeId(line.target_member_id, nodeById)),
+    )
+    if (duplicateCashTaxonomyLines.length) {
+      return riskFail(
+        `${targetSet.name} defines cash both as a direct cash bucket and as taxonomy node(s): ${duplicateCashTaxonomyLines
+          .map((line) => lineDisplayLabel(line, nodeById))
+          .join(', ')}.`,
+        [] satisfies TargetGapComparatorRow[],
+      )
+    }
   }
   const targetLineErrors = eligibleTargetLines
     .filter((line) => (dimension === 'weight' ? line.target_weight : line.target_risk_share) == null)
@@ -1916,7 +1913,61 @@ export function buildTargetGapRows({
     )
   }
 
-  const currentGroupByKey = new Map(eligibleCurrentGroups.map((group) => [group.groupKey, group] as const))
+  const comparisonCurrentGroups = directCashTargetLine
+    ? [
+        ...eligibleCurrentGroups.map((group) => {
+          const marketWeight =
+            group.marketWeight ??
+            (group.hasCashLikeInput && !group.hasMarketRiskInput ? 0 : group.currentWeight)
+          const marketValueBase =
+            group.marketValueBase ??
+            (group.hasCashLikeInput && !group.hasMarketRiskInput ? 0 : group.currentValueBase)
+          return {
+            ...group,
+            currentWeight: marketWeight,
+            currentValueBase: marketValueBase,
+            hasCashLikeInput: false,
+          }
+        }),
+        {
+          groupKey: lineDisplayKey(directCashTargetLine),
+          label: 'Cash',
+          currentWeight: eligibleCurrentGroups.reduce(
+            (total, group) =>
+              total +
+              (group.cashWeight ??
+                (group.hasCashLikeInput && !group.hasMarketRiskInput ? group.currentWeight ?? 0 : 0)),
+            0,
+          ),
+          currentValueBase: eligibleCurrentGroups.reduce(
+            (total, group) =>
+              total +
+              (group.cashValueBase ??
+                (group.hasCashLikeInput && !group.hasMarketRiskInput ? group.currentValueBase ?? 0 : 0)),
+            0,
+          ),
+          marketWeight: 0,
+          marketValueBase: 0,
+          cashWeight: eligibleCurrentGroups.reduce(
+            (total, group) =>
+              total +
+              (group.cashWeight ??
+                (group.hasCashLikeInput && !group.hasMarketRiskInput ? group.currentWeight ?? 0 : 0)),
+            0,
+          ),
+          cashValueBase: eligibleCurrentGroups.reduce(
+            (total, group) =>
+              total +
+              (group.cashValueBase ??
+                (group.hasCashLikeInput && !group.hasMarketRiskInput ? group.currentValueBase ?? 0 : 0)),
+            0,
+          ),
+          hasMarketRiskInput: false,
+          hasCashLikeInput: true,
+        } satisfies CurrentPlanningGroup,
+      ]
+    : eligibleCurrentGroups
+  const currentGroupByKey = new Map(comparisonCurrentGroups.map((group) => [group.groupKey, group] as const))
   const lineByKey = new Map(eligibleTargetLines.map((line) => [lineDisplayKey(line), line] as const))
   const allKeys = new Set([...currentGroupByKey.keys(), ...lineByKey.keys()])
   const rows: TargetGapComparatorRow[] = []
@@ -2443,10 +2494,11 @@ export default function RiskPage() {
       productionRiskPolicyParametersKey,
     ],
   )
-  const driftSettings = productionRiskSettings
   const productionRiskDescription = `${windowLabel(productionRiskSettings.lookbackDays)} ${riskModelLabel(
     productionRiskSettings.modelId,
-  )}; ${formatLabel(productionRiskSettings.contributionMode)} RC`
+  )}; ${formatLabel(productionRiskSettings.contributionMode)} RC; ${formatLabel(
+    productionRiskPolicy?.missing_return_policy ?? 'strict',
+  )}`
   const productionRiskMeta = `Production Risk Model; ${productionRiskDescription}`
   const riskBasisFinalDate = holdingsWorkspace?.as_of_date ?? riskWindowEndDate
   const rawInstrumentReturnSeriesResult = useMemo(
@@ -2524,7 +2576,14 @@ export default function RiskPage() {
     () => buildCurrentWeightedPortfolioReturnPoints(instrumentReturnSeries),
     [instrumentReturnSeries],
   )
-  const benchmarkReturnPointsRaw = useMemo(() => buildBenchmarkReturnPoints(benchmarkChart), [benchmarkChart])
+  const benchmarkBasisAssessment = useMemo(
+    () => benchmarkRiskBasisAssessment(benchmarkChart, holdingsWorkspace?.base_currency ?? ''),
+    [benchmarkChart, holdingsWorkspace?.base_currency],
+  )
+  const benchmarkReturnPointsRaw = useMemo(
+    () => (benchmarkBasisAssessment.blocking ? [] : buildBenchmarkReturnPoints(benchmarkChart)),
+    [benchmarkBasisAssessment.blocking, benchmarkChart],
+  )
   const benchmarkReturnPoints = useMemo(
     () =>
       riskInputsReady
@@ -2670,34 +2729,6 @@ export default function RiskPage() {
     matrixTaxonomyScopeNodeId,
     matrixTaxonomySeriesResult.errors,
   ])
-  const topLevelTaxonomySeriesResult = useMemo(
-    () =>
-      buildCurrentTaxonomyReturnSeries({
-        instrumentSeries: instrumentReturnSeries,
-        catalog: taxonomyCatalog,
-        taxonomy: defaultPlanningTaxonomy,
-        referenceDate: holdingsWorkspace?.as_of_date ?? null,
-      }),
-    [defaultPlanningTaxonomy, holdingsWorkspace?.as_of_date, instrumentReturnSeries, taxonomyCatalog],
-  )
-  const topLevelTaxonomySeries = topLevelTaxonomySeriesResult.value
-  const alignedTopLevelTaxonomySeries = useMemo(
-    () =>
-      riskInputsReady && !topLevelTaxonomySeriesResult.errors.length
-        ? alignReturnSeriesToFrequency(
-            topLevelTaxonomySeries,
-            portfolioRiskFrequency.frequency,
-            riskBasisFinalDate,
-          )
-        : [],
-    [
-      portfolioRiskFrequency.frequency,
-      riskBasisFinalDate,
-      riskInputsReady,
-      topLevelTaxonomySeries,
-      topLevelTaxonomySeriesResult.errors.length,
-    ],
-  )
   const selectedMatrixScope = matrixUsesCurrentHoldings
     ? currentHoldingsMatrixScope
     : matrixUsesFullUniverse
@@ -2738,25 +2769,17 @@ export default function RiskPage() {
   const selectedMatrixEmptyLabel = matrixUsesTaxonomy && !defaultPlanningTaxonomy ? 'No taxonomy.' : 'No matrix.'
   const topLevelRiskContributionResult = useMemo(
     () =>
-      riskInputsReady && !topLevelTaxonomySeriesResult.errors.length
-        ? buildRiskContributionRows(
-            alignedTopLevelTaxonomySeries,
-            holdingsWorkspace?.as_of_date ?? '',
-            driftSettings,
-            portfolioRiskFrequency.frequency,
-          )
-        : riskFail(
-            [...currentRiskInputErrors, ...topLevelTaxonomySeriesResult.errors],
-            [] satisfies RiskContributionRow[],
-          ),
+      buildCanonicalTaxonomyRiskContributionRows({
+        holdingsWorkspace,
+        catalog: taxonomyCatalog,
+        taxonomy: defaultPlanningTaxonomy,
+        referenceDate: holdingsWorkspace?.as_of_date ?? null,
+      }),
     [
-      alignedTopLevelTaxonomySeries,
-      currentRiskInputErrors,
-      driftSettings,
+      defaultPlanningTaxonomy,
       holdingsWorkspace?.as_of_date,
-      portfolioRiskFrequency.frequency,
-      riskInputsReady,
-      topLevelTaxonomySeriesResult.errors,
+      holdingsWorkspace,
+      taxonomyCatalog,
     ],
   )
   const topLevelRiskContributionRows = topLevelRiskContributionResult.value
@@ -2890,6 +2913,93 @@ export default function RiskPage() {
     () => [...saaRiskGapResult.errors, ...taaRiskGapResult.errors],
     [saaRiskGapResult.errors, taaRiskGapResult.errors],
   )
+  const concentrationMetrics = useMemo(() => {
+    const activeRows = (holdingsWorkspace?.rows ?? []).filter((row) => {
+      if (isCashHoldingRow(row)) {
+        return false
+      }
+      return (
+        Math.abs(finiteNumber(row.quantity) ?? 0) > 1e-9 ||
+        Math.abs(finiteNumber(row.market_value_base) ?? 0) > 1e-9 ||
+        Math.abs(finiteNumber(row.allocation) ?? 0) > 1e-9
+      )
+    })
+    if (activeRows.some((row) => finiteNumber(row.allocation) == null)) {
+      return { topThree: null as number | null, hhi: null as number | null }
+    }
+    const grossWeights = activeRows
+      .map((row) => Math.abs(finiteNumber(row.allocation) ?? 0))
+      .filter((weight) => weight > 1e-12)
+      .sort((left, right) => right - left)
+    const grossTotal = grossWeights.reduce((total, weight) => total + weight, 0)
+    if (grossTotal <= 1e-12) {
+      return { topThree: null as number | null, hhi: null as number | null }
+    }
+    const normalizedWeights = grossWeights.map((weight) => weight / grossTotal)
+    return {
+      topThree: normalizedWeights.slice(0, 3).reduce((total, weight) => total + weight, 0),
+      hhi: normalizedWeights.reduce((total, weight) => total + weight * weight, 0),
+    }
+  }, [holdingsWorkspace?.rows])
+  const liquidityMetrics = useMemo(() => {
+    const accounts = accountsWorkspace?.accounts ?? []
+    if (!accounts.length) {
+      return {
+        cashBase: null as number | null,
+        pendingBase: null as number | null,
+        liquidityBase: null as number | null,
+        liquidityWeight: null as number | null,
+      }
+    }
+    const cashValues = accounts.map((account) => finiteNumber(account.derived_cash_balance_base))
+    const pendingValues = accounts.map((account) => finiteNumber(account.pending_settlement_base))
+    if (cashValues.some((value) => value == null) || pendingValues.some((value) => value == null)) {
+      return {
+        cashBase: null as number | null,
+        pendingBase: null as number | null,
+        liquidityBase: null as number | null,
+        liquidityWeight: null as number | null,
+      }
+    }
+    const cashBase = cashValues.reduce<number>((total, value) => total + (value as number), 0)
+    const pendingBase = pendingValues.reduce<number>((total, value) => total + (value as number), 0)
+    const liquidityWeight = currentPlanningGroupsResult.errors.length
+      ? null
+      : currentPlanningGroups.reduce<number>(
+          (total, group) =>
+            total +
+            (group.cashWeight ??
+              (group.hasCashLikeInput && !group.hasMarketRiskInput ? group.currentWeight ?? 0 : 0)),
+          0,
+        )
+    return {
+      cashBase,
+      pendingBase,
+      liquidityBase: cashBase + pendingBase,
+      liquidityWeight,
+    }
+  }, [accountsWorkspace?.accounts, currentPlanningGroups, currentPlanningGroupsResult.errors.length])
+  const saaTotalRiskGap =
+    activeRootSaaTargetSet && !saaRiskGapResult.errors.length
+      ? saaRiskGapRows.reduce((total, row) => total + Math.abs(row.gap ?? 0), 0)
+      : null
+  const taaTotalRiskGap =
+    activeRootTaaTargetSet && !taaRiskGapResult.errors.length
+      ? taaRiskGapRows.reduce((total, row) => total + Math.abs(row.gap ?? 0), 0)
+      : null
+  const riskGapSummary = [
+    ...(saaTotalRiskGap != null ? [`SAA ${formatPercent(saaTotalRiskGap)}`] : []),
+    ...(taaTotalRiskGap != null ? [`TAA ${formatPercent(taaTotalRiskGap)}`] : []),
+  ].join(' · ')
+  const forwardRiskCoverage = holdingsWorkspace?.forward_risk?.coverage ?? null
+  const forwardRiskCoverageLabel = forwardRiskCoverage
+    ? `${forwardRiskCoverage.rows_after}/${forwardRiskCoverage.rows_before} complete return rows in ${
+        forwardRiskCoverage.return_interval ??
+        `(${forwardRiskCoverage.window_start_date} EOD, ${forwardRiskCoverage.window_end_date} EOD]`
+      }; ${formatPercent(
+        forwardRiskCoverage.missing_row_fraction,
+      )} missing; latest ${forwardRiskCoverage.latest_complete_date ?? '—'}`
+    : 'Coverage unavailable'
   function renderRiskErrors(errors: string[]) {
     const uniqueErrors = [...new Set(errors.filter(Boolean))]
     if (!uniqueErrors.length) {
@@ -3006,13 +3116,8 @@ export default function RiskPage() {
   }) {
     const uniqueErrors = [...new Set(errors.filter(Boolean))]
     if (uniqueErrors.length && !rows.length) {
-      const insufficientDataOnly = uniqueErrors.every((error) => error === INSUFFICIENT_DATA_MESSAGE)
       return (
-        <div
-          className={
-            insufficientDataOnly ? 'risk-chart-empty' : 'risk-chart-empty risk-chart-empty-error'
-          }
-        >
+        <div className="risk-chart-empty risk-chart-empty-error">
           {uniqueErrors.map((error, index) => (
             <div key={`${index}:${error}`}>{error}</div>
           ))}
@@ -3054,6 +3159,72 @@ export default function RiskPage() {
 
         {holdingsWorkspace ? (
           <>
+            <section className="performance-section-block" aria-label="Risk health">
+              <div className="portfolio-detail-toolbar performance-subsection-toolbar risk-section-toolbar">
+                <div>
+                  <div className="panel-title">Risk Health</div>
+                  <div className="portfolio-detail-meta">
+                    {holdingsWorkspace.as_of_date}; {portfolioRiskFrequency.statusLabel}; {productionRiskMeta}
+                  </div>
+                </div>
+              </div>
+              <div className="portfolio-summary-strip risk-health-strip">
+                <article
+                  className={
+                    holdingsWorkspace.forward_risk?.status === 'ok'
+                      ? 'summary-card'
+                      : 'summary-card summary-card-warning'
+                  }
+                >
+                  <span className="summary-card-label">Forward Volatility</span>
+                  <strong className="summary-card-value">
+                    {holdingsWorkspace.forward_risk?.status === 'ok' &&
+                    holdingsWorkspace.forward_risk.portfolio_volatility != null
+                      ? formatPercent(holdingsWorkspace.forward_risk.portfolio_volatility)
+                      : 'Unavailable'}
+                  </strong>
+                  <span className="portfolio-detail-meta">{forwardRiskCoverageLabel}</span>
+                </article>
+                <article className="summary-card">
+                  <span className="summary-card-label">Total Risk Budget Gap</span>
+                  <strong className="summary-card-value">
+                    {riskGapSummary || '—'}
+                  </strong>
+                  <span className="portfolio-detail-meta">
+                    {riskGapSummary ? 'Sum of absolute sleeve gaps' : 'Comparator unavailable'}
+                  </span>
+                </article>
+                <article className="summary-card">
+                  <span className="summary-card-label">Top 3 Concentration</span>
+                  <strong className="summary-card-value">
+                    {concentrationMetrics.topThree != null ? formatPercent(concentrationMetrics.topThree) : '—'}
+                  </strong>
+                  <span className="portfolio-detail-meta">
+                    {concentrationMetrics.hhi != null
+                      ? `Non-cash normalized HHI ${formatNumber(concentrationMetrics.hhi, 3)}`
+                      : 'Non-cash exposure unavailable'}
+                  </span>
+                </article>
+                <article className="summary-card">
+                  <span className="summary-card-label">Cash + Pending Settlement</span>
+                  <strong className="summary-card-value">
+                    {liquidityMetrics.liquidityWeight != null
+                      ? formatPercent(liquidityMetrics.liquidityWeight)
+                      : '—'}
+                  </strong>
+                  <span className="portfolio-detail-meta">
+                    {liquidityMetrics.liquidityBase != null
+                      ? `${formatCurrency(liquidityMetrics.liquidityBase, holdingsWorkspace.base_currency)}; pending ${formatCurrency(
+                          liquidityMetrics.pendingBase ?? 0,
+                          holdingsWorkspace.base_currency,
+                        )}`
+                      : 'Account liquidity unavailable'}
+                  </span>
+                </article>
+              </div>
+              {renderRiskErrors(holdingsWorkspace.forward_risk?.errors ?? [])}
+            </section>
+
             <section className="performance-section-block">
               <div className="portfolio-detail-toolbar performance-subsection-toolbar risk-section-toolbar">
                 <div>
@@ -3068,7 +3239,6 @@ export default function RiskPage() {
               {renderRiskErrors([
                 ...activeRootSaaTargetSetResult.errors,
                 ...activeRootTaaTargetSetResult.errors,
-                ...topLevelTaxonomySeriesResult.errors,
                 ...currentPlanningGroupsResult.errors,
               ])}
               <div className="risk-target-grid">
@@ -3130,6 +3300,17 @@ export default function RiskPage() {
               </div>
               {benchmarkLoading ? <div className="portfolio-detail-meta">Loading</div> : null}
               {benchmarkError ? <div className="overview-benchmark-error">{benchmarkError}</div> : null}
+              {benchmarkBasisAssessment.message ? (
+                <div
+                  className={
+                    benchmarkBasisAssessment.blocking
+                      ? 'inline-notice inline-notice-error'
+                      : 'inline-notice'
+                  }
+                >
+                  {benchmarkBasisAssessment.message}
+                </div>
+              ) : null}
               <div className="risk-rolling-grid">
                 <RollingRiskMetricChart
                   title="Annualized Volatility"

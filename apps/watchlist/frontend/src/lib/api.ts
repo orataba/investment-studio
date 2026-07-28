@@ -275,7 +275,12 @@ export type ScreenerGroup = {
 }
 
 export type ScreenerSnapshotMetadata = {
+  /** Latest row metric endpoint retained for backward compatibility; not a shared Watchlist as-of. */
   as_of_date: string | null
+  as_of_date_min: string | null
+  as_of_date_max: string | null
+  has_mixed_as_of_dates: boolean
+  as_of_date_missing_count: number
   methodology_version: string
   source_cutoff_at: string | null
   is_current: boolean
@@ -443,9 +448,11 @@ export type CalculationFrequency = 'daily' | 'weekly' | 'monthly'
 
 export type CalculationFrequencyProfile = {
   requested_frequency: 'auto'
+  expected_frequency?: CalculationFrequency | null
   resolved_frequency: CalculationFrequency
   inferred_frequency: CalculationFrequency
   source_frequency_counts: Record<CalculationFrequency | 'unknown', number>
+  frequency_source?: 'registry_expected' | 'mixed_declared' | 'declared' | 'inferred'
   raw_observation_count: number
   observation_count: number
   start_date: string | null
@@ -454,6 +461,8 @@ export type CalculationFrequencyProfile = {
   largest_gap_days: number | null
   gap_count: number
   gap_status: 'aligned' | 'calendar_gaps'
+  gap_detection_basis?: string
+  missing_observation_date_sample?: string[]
   status_label: string
 }
 
@@ -504,13 +513,17 @@ export type FundPerformanceResponse = {
   } | null
   peer_comparison?: {
     status: string
+    comparison_policy_version?: string
+    as_of_date?: string | null
     taxonomy_code: string
     assigned_node_id: string | null
     assigned_path: string[]
     peer_node_id: string | null
     peer_path: string[]
     fallback_levels: number
+    candidate_count?: number
     sample_count: number
+    excluded_mismatched_as_of_count?: number
     metrics: Array<{
       metric_key: string
       label: string
@@ -526,6 +539,8 @@ export type FundPerformanceResponse = {
       rank: number | null
       sample_count: number | null
       peer_sample_count: number | null
+      as_of_date?: string | null
+      excluded_mismatched_as_of_count?: number
     }>
     summary: {
       return_percentile?: number | null
@@ -559,6 +574,11 @@ export type FundRiskResponse = {
     rows: Array<Record<string, unknown>>
     note: string | null
   } | null
+  data_quality?: {
+    status: 'ready' | 'withheld_missing_observations' | string
+    gap_count: number
+    gap_detection_basis?: string | null
+  }
   calculation_frequency_profile: CalculationFrequencyProfile | null
   snapshot_metadata: {
     as_of_date: string | null

@@ -1,7 +1,15 @@
 from __future__ import annotations
 
 from datetime import date, timedelta
+from functools import lru_cache
 from typing import Callable
+
+try:
+    import exchange_calendars
+    from exchange_calendars.errors import CalendarError
+except ImportError:  # pragma: no cover - dependency fallback for partial local envs.
+    exchange_calendars = None
+    CalendarError = ValueError
 
 from portfolio_app.services.calculation_frequency import (
     CalculationFrequency,
@@ -10,6 +18,91 @@ from portfolio_app.services.calculation_frequency import (
     selected_observation_dates_from_detail,
 )
 from portfolio_app.services.instrument_registry import get_registry_instrument_detail
+
+
+_EXPECTED_MAX_GAP_DAYS: dict[CalculationFrequency, int] = {
+    "daily": 4,
+    "weekly": 10,
+    "monthly": 45,
+}
+
+
+@lru_cache(maxsize=64)
+def _market_calendar_sessions(
+    calendar_name: str,
+    start_date: date,
+    end_date: date,
+) -> tuple[date, ...] | None:
+    if exchange_calendars is None:
+        return None
+    try:
+        calendar = exchange_calendars.get_calendar(calendar_name)
+        return tuple(
+            session.date()
+            for session in calendar.sessions_in_range(
+                start_date.isoformat(),
+                end_date.isoformat(),
+            )
+        )
+    except (CalendarError, ValueError):
+        return None
+
+
+def _normalized_expected_frequency(value: object) -> CalculationFrequency | None:
+    normalized = str(value or "").strip().lower().replace("-", "_")
+    if normalized in {"d", "day", "daily", "trading_day", "business_day"}:
+        return "daily"
+    if normalized in {"w", "week", "weekly"}:
+        return "weekly"
+    if normalized in {"m", "month", "monthly"}:
+        return "monthly"
+    return None
+
+
+def _source_schedule(detail: dict[str, object]) -> tuple[CalculationFrequency | None, str | None]:
+    source_settings = detail.get("source_settings")
+    if not isinstance(source_settings, dict):
+        return None, None
+    expected_frequency = _normalized_expected_frequency(
+        source_settings.get("expected_frequency")
+    )
+    market_calendar = str(source_settings.get("market_calendar") or "").strip() or None
+    return expected_frequency, market_calendar
+
+
+def _missing_observation_dates(
+    dates: list[date],
+    *,
+    frequency: CalculationFrequency,
+    market_calendar: str | None,
+) -> tuple[list[date], str]:
+    ordered_dates = sorted(set(dates))
+    if len(ordered_dates) < 2:
+        return [], "insufficient_history"
+    if frequency == "daily" and market_calendar:
+        sessions = _market_calendar_sessions(
+            market_calendar,
+            ordered_dates[0],
+            ordered_dates[-1],
+        )
+        if sessions is not None:
+            actual_dates = set(ordered_dates)
+            return (
+                [
+                    session_date
+                    for session_date in sessions
+                    if session_date not in actual_dates
+                ],
+                f"market_calendar:{market_calendar}",
+            )
+    missing_dates: list[date] = []
+    max_gap_days = _EXPECTED_MAX_GAP_DAYS[frequency]
+    for index in range(1, len(ordered_dates)):
+        previous_date = ordered_dates[index - 1]
+        point_date = ordered_dates[index]
+        if (point_date - previous_date).days > max_gap_days:
+            missing_dates.append(point_date)
+    return missing_dates, "calendar_day_threshold"
 
 
 def calculation_frequency_profile_for_instruments(
@@ -31,6 +124,8 @@ def calculation_frequency_profile_for_instruments(
     source_frequency_by_instrument: dict[str, CalculationFrequency] = {}
     missing_instrument_ids: list[str] = []
     insufficient_history_instrument_ids: list[str] = []
+    gap_instrument_ids: list[str] = []
+    gap_details: list[dict[str, object]] = []
     for instrument_id in normalized_instrument_ids:
         detail = detail_loader(instrument_id)
         if not isinstance(detail, dict):
@@ -44,9 +139,32 @@ def calculation_frequency_profile_for_instruments(
         if len(set(dates)) < 2:
             insufficient_history_instrument_ids.append(instrument_id)
             continue
-        frequency = infer_observation_frequency(dates)
+        expected_frequency, market_calendar = _source_schedule(detail)
+        frequency = expected_frequency or infer_observation_frequency(dates)
         source_frequencies.append(frequency)
         source_frequency_by_instrument[instrument_id] = frequency
+        missing_dates, detection_basis = _missing_observation_dates(
+            dates,
+            frequency=frequency,
+            market_calendar=market_calendar,
+        )
+        if missing_dates:
+            gap_instrument_ids.append(instrument_id)
+            gap_details.append(
+                {
+                    "instrument_id": instrument_id,
+                    "gap_count": len(missing_dates),
+                    "gap_detection_basis": detection_basis,
+                    "gap_date_sample": [
+                        point_date.isoformat()
+                        for point_date in (
+                            missing_dates
+                            if len(missing_dates) <= 20
+                            else [*missing_dates[:10], *missing_dates[-10:]]
+                        )
+                    ],
+                }
+            )
 
     profile = calculation_frequency_profile(
         requested_frequency=requested_frequency,
@@ -60,16 +178,28 @@ def calculation_frequency_profile_for_instruments(
     profile["insufficient_history_instrument_ids"] = (
         insufficient_history_instrument_ids
     )
+    profile["gap_instrument_ids"] = gap_instrument_ids
+    profile["gap_count"] = sum(
+        int(detail.get("gap_count") or 0)
+        for detail in gap_details
+    )
+    profile["gap_details"] = gap_details
     if (
         normalized_instrument_ids
         and len(source_frequency_by_instrument) == len(normalized_instrument_ids)
+        and not gap_instrument_ids
     ):
         profile["coverage_state"] = "complete"
     elif source_frequency_by_instrument:
         profile["coverage_state"] = "partial"
         profile["status_label"] = (
-            f"Risk basis partial - {len(source_frequency_by_instrument)}/"
-            f"{len(normalized_instrument_ids)} instruments resolved"
+            f"Risk basis partial - {len(gap_instrument_ids)} instrument(s) have "
+            f"observation gaps"
+            if gap_instrument_ids
+            else (
+                f"Risk basis partial - {len(source_frequency_by_instrument)}/"
+                f"{len(normalized_instrument_ids)} instruments resolved"
+            )
         )
     else:
         profile["coverage_state"] = "unavailable"

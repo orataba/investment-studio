@@ -1497,6 +1497,7 @@ function PerformancePage() {
     waitingForDefaultEndDate: unresolvedDefaultEndDate,
     effectiveEndDate,
     effectiveStartDate,
+    windowError,
   } = useMemo(
     () =>
       resolvePerformanceWindow({
@@ -1533,7 +1534,7 @@ function PerformancePage() {
     loading,
     error,
   } = usePerformanceResource({
-    enabled: Boolean(portfolioId && !waitingForDefaultEndDate),
+    enabled: Boolean(portfolioId && !waitingForDefaultEndDate && !windowError),
     resourceKey: portfolioId ?? '',
     load: loadPerformanceWorkspace,
     fallbackError: 'Failed to load performance workspace.',
@@ -2622,6 +2623,11 @@ function PerformancePage() {
             placeholder="Compare benchmark..."
           />
         </div>
+        {windowError ? (
+          <div className="inline-notice inline-notice-error" role="alert">
+            {windowError}
+          </div>
+        ) : null}
 
         {error ? <div className="inline-notice inline-notice-error">{error}</div> : null}
         {calculationTableViewStoreError ? (

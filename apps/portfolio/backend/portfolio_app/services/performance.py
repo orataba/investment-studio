@@ -2565,6 +2565,22 @@ def build_portfolio_performance_report_from_snapshots(
         and start_anchor_date is not None
         and start_anchor_date == inception_date
     )
+    starts_on_imported_anchor = bool(
+        start_anchor_date is not None
+        and _starts_on_imported_valuation_anchor(
+            transactions or [],
+            resolved_start_date=start_anchor_date,
+        )
+    )
+    start_boundary_kind = (
+        "funded_bod"
+        if funded_segment_window
+        else (
+            "imported_opening_eod"
+            if starts_on_imported_anchor
+            else ("close_eod" if start_anchor_date is not None else None)
+        )
+    )
     # Dates label EOD observations.  A funded-segment start row is a real
     # start-day BOD-to-EOD subperiod, so its elapsed-time boundary is
     # represented as the preceding calendar date.  An imported opening
@@ -2821,6 +2837,8 @@ def build_portfolio_performance_report_from_snapshots(
             "effective_start_date": snapshot_window["effective_start_date"],
             "effective_end_date": snapshot_window["effective_end_date"],
             "as_of_clamp_reason": snapshot_window["as_of_clamp_reason"],
+            "start_boundary_kind": start_boundary_kind,
+            "include_start_date_return": funded_segment_window,
             "snapshot_count": len(visible_snapshots),
             "return_observation_count": return_observation_count,
             "risk_return_observation_count": risk_return_observation_count,
@@ -2950,6 +2968,13 @@ def build_period_calculation_report(
             "summary": {
                 "start_date": start_date,
                 "end_date": end_date,
+                "requested_start_date": start_date,
+                "requested_end_date": end_date,
+                "effective_start_date": None,
+                "effective_end_date": None,
+                "as_of_clamp_reason": None,
+                "start_boundary_kind": None,
+                "include_start_date_return": False,
                 "coverage_state": "unavailable",
                 "stale_price_flag": False,
                 "stale_fx_flag": False,
@@ -2973,7 +2998,7 @@ def build_period_calculation_report(
         }
 
     resolved_start_date, resolved_end_date = window
-    requested_resolved_end_date = resolved_end_date
+    requested_resolved_end_date = end_date or resolved_end_date
     reliability_snapshots = build_daily_portfolio_snapshots(
         portfolio,
         accounts,
@@ -2984,7 +3009,7 @@ def build_period_calculation_report(
     reliable_window = return_chain.resolve_reliable_snapshot_window(
         reliability_snapshots,
         requested_start_date=resolved_start_date,
-        requested_end_date=resolved_end_date,
+        requested_end_date=requested_resolved_end_date,
         default_end_date=resolved_end_date,
     )
     reliable_end_date = cast(
@@ -3009,6 +3034,23 @@ def build_period_calculation_report(
         requested_start_date=start_date,
         resolved_start_date=resolved_start_date,
         start_snapshot=raw_start_snapshot,
+    )
+    starts_on_imported_anchor = _starts_on_imported_valuation_anchor(
+        sorted_transactions,
+        resolved_start_date=resolved_start_date,
+    )
+    starts_funded_segment = _snapshot_starts_funded_segment(
+        raw_start_snapshot,
+        resolved_start_date=resolved_start_date,
+    )
+    start_boundary_kind = (
+        "funded_bod"
+        if starts_funded_segment
+        else (
+            "imported_opening_eod"
+            if starts_on_imported_anchor
+            else "close_eod"
+        )
     )
     start_boundary_transactions = (
         _transactions_as_of_end_date(
@@ -3360,6 +3402,8 @@ def build_period_calculation_report(
             "as_of_clamp_reason": reliable_window.get(
                 "as_of_clamp_reason"
             ),
+            "start_boundary_kind": start_boundary_kind,
+            "include_start_date_return": starts_funded_segment,
             "coverage_state": coverage_state,
             "stale_price_flag": stale_price_flag,
             "stale_fx_flag": stale_fx_flag,
@@ -5622,6 +5666,13 @@ def build_contribution_report(
                 "group_label": None,
                 "start_date": start_date,
                 "end_date": end_date,
+                "requested_start_date": start_date,
+                "requested_end_date": end_date,
+                "effective_start_date": None,
+                "effective_end_date": None,
+                "as_of_clamp_reason": None,
+                "start_boundary_kind": None,
+                "include_start_date_return": False,
                 "coverage_state": "unavailable",
                 "slice_count": 0,
                 "group_count": 0,
@@ -5638,6 +5689,7 @@ def build_contribution_report(
         }
 
     resolved_start_date, resolved_end_date = window
+    requested_resolved_end_date = end_date or resolved_end_date
     sorted_transactions = sorted(transactions, key=transaction_sort_key)
     boundary_start_date = resolved_start_date - timedelta(days=1)
     portfolio_view = deepcopy(portfolio)
@@ -5652,7 +5704,7 @@ def build_contribution_report(
     reliable_window = return_chain.resolve_reliable_snapshot_window(
         snapshots,
         requested_start_date=resolved_start_date,
-        requested_end_date=resolved_end_date,
+        requested_end_date=requested_resolved_end_date,
         default_end_date=resolved_end_date,
     )
     snapshots = list(
@@ -5673,6 +5725,23 @@ def build_contribution_report(
         requested_start_date=start_date,
         resolved_start_date=resolved_start_date,
         start_snapshot=snapshots_by_date.get(resolved_start_date),
+    )
+    starts_on_imported_anchor = _starts_on_imported_valuation_anchor(
+        sorted_transactions,
+        resolved_start_date=resolved_start_date,
+    )
+    starts_funded_segment = _snapshot_starts_funded_segment(
+        snapshots_by_date.get(resolved_start_date),
+        resolved_start_date=resolved_start_date,
+    )
+    start_boundary_kind = (
+        "funded_bod"
+        if starts_funded_segment
+        else (
+            "imported_opening_eod"
+            if starts_on_imported_anchor
+            else "close_eod"
+        )
     )
 
     transactions_by_date: dict[str, list[dict[str, object]]] = defaultdict(list)
@@ -5755,7 +5824,7 @@ def build_contribution_report(
             )
         )
 
-    return build_contribution_report_from_daily_slices(
+    report = build_contribution_report_from_daily_slices(
         portfolio,
         snapshots,
         daily_slices,
@@ -5765,6 +5834,22 @@ def build_contribution_report(
         group_key=group_key,
         start_is_close_boundary=start_is_close_boundary,
     )
+    report_summary = report.get("summary")
+    if isinstance(report_summary, dict):
+        report_summary.update(
+            {
+                "requested_start_date": start_date,
+                "requested_end_date": requested_resolved_end_date,
+                "effective_start_date": resolved_start_date,
+                "effective_end_date": resolved_end_date,
+                "as_of_clamp_reason": reliable_window.get(
+                    "as_of_clamp_reason"
+                ),
+                "start_boundary_kind": start_boundary_kind,
+                "include_start_date_return": starts_funded_segment,
+            }
+        )
+    return report
 
 
 def build_contribution_calendar_report(
@@ -7411,6 +7496,15 @@ def build_period_calculation_groups_report(
             "group_label": group_label,
             "start_date": summary.get("start_date"),
             "end_date": summary.get("end_date"),
+            "requested_start_date": summary.get("requested_start_date"),
+            "requested_end_date": summary.get("requested_end_date"),
+            "effective_start_date": summary.get("effective_start_date"),
+            "effective_end_date": summary.get("effective_end_date"),
+            "as_of_clamp_reason": summary.get("as_of_clamp_reason"),
+            "start_boundary_kind": summary.get("start_boundary_kind"),
+            "include_start_date_return": bool(
+                summary.get("include_start_date_return")
+            ),
             "group_count": len(groups),
             "total_initial_value": total_initial_value if initial_value_complete else None,
             "total_final_value": total_final_value if final_value_complete else None,

@@ -214,13 +214,18 @@ type GroupVolatilitySeries = {
 
 const DAYS_PER_YEAR = 365.25
 const GROUP_METRIC_REQUIRED_VALUE_COVERAGE = 1 - 1e-9
-const GROUP_VOL_WINDOW_DAYS: Record<GroupVolatilityRangeKey, number> = {
-  '1m': 31,
-  '3m': 92,
-  '6m': 183,
-  '1y': 366,
+const GROUP_VOL_WINDOW_MONTHS: Record<GroupVolatilityRangeKey, number> = {
+  '1m': 1,
+  '3m': 3,
+  '6m': 6,
+  '1y': 12,
 }
 const GROUP_VOL_MIN_WINDOW_COVERAGE_RATIO = 0.8
+const GROUP_RISK_MAX_TRAILING_STALENESS_DAYS: Record<PortfolioCalculationFrequency, number> = {
+  daily: 5,
+  weekly: 14,
+  monthly: 62,
+}
 const GROUP_VOL_MIN_RETURN_OBSERVATIONS: Record<PortfolioCalculationFrequency, Record<GroupVolatilityRangeKey, number>> = {
   daily: {
     '1m': 10,
@@ -929,6 +934,21 @@ function dayDiff(left: string, right: string) {
   return Math.max(0, (rightTime - leftTime) / 86_400_000)
 }
 
+function shiftIsoCalendarMonthsForHoldings(isoDate: string, months: number) {
+  const [year, month, day] = isoDate.split('-').map(Number)
+  if (!year || !month || !day) {
+    return null
+  }
+  const targetMonth = new Date(year, month - 1 + months, 1)
+  const targetMonthLastDay = new Date(
+    targetMonth.getFullYear(),
+    targetMonth.getMonth() + 1,
+    0,
+  ).getDate()
+  const targetDay = Math.min(day, targetMonthLastDay)
+  return `${targetMonth.getFullYear()}-${String(targetMonth.getMonth() + 1).padStart(2, '0')}-${String(targetDay).padStart(2, '0')}`
+}
+
 function sampleStddev(values: number[]) {
   if (values.length < 2) {
     return null
@@ -976,7 +996,7 @@ function calculationFrequencyForRows(rows: PortfolioHoldingRow[]): PortfolioCalc
   return frequencies.has('weekly') ? 'weekly' : 'daily'
 }
 
-function groupedReturnSeries(
+export function groupedReturnSeries(
   rows: PortfolioHoldingRow[],
   workspace: HoldingsWorkspaceResponse,
   seriesAccessor: (row: PortfolioHoldingRow) => HoldingReturnSeries | null | undefined,
@@ -1018,23 +1038,52 @@ function groupedReturnSeries(
   if (!returnRows.length) {
     return zeroReturnRows.length ? { dates: [], returns: [], firstReturnStartDate: null } : null
   }
+  if (
+    returnRows.some((item) =>
+      item.points.some(
+        (point, index) =>
+          !point.startDate ||
+          point.startDate >= point.date ||
+          (index > 0 && point.startDate !== item.points[index - 1].date),
+      ),
+    )
+  ) {
+    return null
+  }
+
+  const firstPeriodStarts = returnRows.map((item) => item.points[0]?.startDate ?? null)
+  if (firstPeriodStarts.some((startDate) => !startDate)) {
+    return null
+  }
+  const completeFirstPeriodStarts = firstPeriodStarts.filter(
+    (startDate): startDate is string => startDate != null,
+  )
+  const commonStartDate = completeFirstPeriodStarts.reduce<string>(
+    (latest, startDate) => (startDate > latest ? startDate : latest),
+    '',
+  )
+  const periodKeysByRow = returnRows.map((item) =>
+    item.points
+      .filter((point) => point.startDate != null && point.startDate >= commonStartDate)
+      .map((point) => `${point.startDate}|${point.date}`),
+  )
+  const periodKeys = periodKeysByRow[0] ?? []
+  if (
+    !periodKeys.length ||
+    periodKeysByRow.some(
+      (keys) =>
+        keys.length !== periodKeys.length ||
+        keys.some((periodKey, index) => periodKey !== periodKeys[index]),
+    )
+  ) {
+    return null
+  }
 
   const pointMaps = eligibleRows.map((item) => ({
     weight: (item.value ?? 0) / denominator,
     zeroReturn: item.points.length < 2 && isBaseCashHoldingRow(item.row, workspace),
     byPeriod: new Map(item.points.map((point) => [`${point.startDate || ''}|${point.date}`, point.value])),
   }))
-  const periodCounts = new Map<string, number>()
-  for (const item of returnRows) {
-    for (const point of item.points) {
-      const periodKey = `${point.startDate || ''}|${point.date}`
-      periodCounts.set(periodKey, (periodCounts.get(periodKey) ?? 0) + 1)
-    }
-  }
-  const periodKeys = [...periodCounts.entries()]
-    .filter(([, count]) => count === returnRows.length)
-    .map(([periodKey]) => periodKey)
-    .sort()
   const returns: number[] = []
   const returnDates: string[] = []
 
@@ -1082,7 +1131,25 @@ function groupedVolatilitySeries(
   return groupedReturnSeries(rows, workspace, (row) => returnSeriesForVolatilityRange(row, rangeKey))
 }
 
-function groupedAnnualizedVolatility(
+function groupedRiskSeriesIsFresh(
+  series: GroupVolatilitySeries,
+  rows: PortfolioHoldingRow[],
+  workspace: HoldingsWorkspaceResponse,
+) {
+  const lastDate = series.dates[series.dates.length - 1]
+  if (!lastDate || lastDate > workspace.as_of_date) {
+    return false
+  }
+  const calculationFrequency = calculationFrequencyForRows(rows)
+  const trailingStalenessDays = dayDiff(lastDate, workspace.as_of_date)
+  return (
+    trailingStalenessDays != null &&
+    trailingStalenessDays <=
+      GROUP_RISK_MAX_TRAILING_STALENESS_DAYS[calculationFrequency]
+  )
+}
+
+export function groupedAnnualizedVolatility(
   rows: PortfolioHoldingRow[],
   workspace: HoldingsWorkspaceResponse,
   rangeKey: GroupVolatilityRangeKey,
@@ -1100,14 +1167,24 @@ function groupedAnnualizedVolatility(
     return null
   }
   const lastDate = series.dates[series.dates.length - 1]
-  if (!lastDate) {
+  if (!lastDate || !groupedRiskSeriesIsFresh(series, rows, workspace)) {
     return null
   }
   const elapsedDays = dayDiff(series.firstReturnStartDate, lastDate)
   if (elapsedDays == null || elapsedDays <= 0) {
     return null
   }
-  if (elapsedDays < Math.floor(GROUP_VOL_WINDOW_DAYS[rangeKey] * GROUP_VOL_MIN_WINDOW_COVERAGE_RATIO)) {
+  const requiredStartDate = shiftIsoCalendarMonthsForHoldings(
+    workspace.as_of_date,
+    -GROUP_VOL_WINDOW_MONTHS[rangeKey],
+  )
+  const requiredWindowDays = requiredStartDate
+    ? dayDiff(requiredStartDate, workspace.as_of_date)
+    : null
+  if (
+    requiredWindowDays == null ||
+    elapsedDays < Math.floor(requiredWindowDays * GROUP_VOL_MIN_WINDOW_COVERAGE_RATIO)
+  ) {
     return null
   }
   const stddev = sampleStddev(series.returns)
@@ -1138,19 +1215,25 @@ function groupedDrawdownSeries(rows: PortfolioHoldingRow[], workspace: HoldingsW
   return groupedReturnSeries(rows, workspace, (row) => row.instrument_return_series_all)
 }
 
-function groupedCurrentDrawdown(rows: PortfolioHoldingRow[], workspace: HoldingsWorkspaceResponse) {
+export function groupedCurrentDrawdown(rows: PortfolioHoldingRow[], workspace: HoldingsWorkspaceResponse) {
   const series = groupedDrawdownSeries(rows, workspace)
   if ((!series || !series.returns.length) && allValuedRowsAreBaseCash(rows, workspace)) {
     return 0
+  }
+  if (series && !groupedRiskSeriesIsFresh(series, rows, workspace)) {
+    return null
   }
   const drawdown = series ? drawdownFromReturns(series.returns) : null
   return drawdown?.currentDrawdown ?? null
 }
 
-function groupedMaxDrawdown(rows: PortfolioHoldingRow[], workspace: HoldingsWorkspaceResponse) {
+export function groupedMaxDrawdown(rows: PortfolioHoldingRow[], workspace: HoldingsWorkspaceResponse) {
   const series = groupedDrawdownSeries(rows, workspace)
   if ((!series || !series.returns.length) && allValuedRowsAreBaseCash(rows, workspace)) {
     return 0
+  }
+  if (series && !groupedRiskSeriesIsFresh(series, rows, workspace)) {
+    return null
   }
   const drawdown = series ? drawdownFromReturns(series.returns) : null
   return drawdown?.maxDrawdown ?? null

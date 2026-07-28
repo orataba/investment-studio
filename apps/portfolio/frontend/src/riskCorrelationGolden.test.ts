@@ -63,6 +63,27 @@ function trendingValues(scale = 1) {
 }
 
 describe('Risk correlation numeric golden contract', () => {
+  it('applies the coverage ratio to the actual calendar-month span', () => {
+    const dates = Array.from({ length: 23 }, (_, index) =>
+      shiftUtcDate('2026-03-01', index),
+    )
+
+    expect(
+      assessRiskWindowCoverage(
+        dates,
+        '2026-03-28',
+        30,
+        'daily',
+        undefined,
+        '2026-02-28',
+      ),
+    ).toEqual({
+      ok: true,
+      observationCount: 23,
+      error: null,
+    })
+  })
+
   it('keeps weekly return compounding, period identity, weights, and window coverage semantics', () => {
     const weeklySource = matrixSeries({
       key: 'weekly',
