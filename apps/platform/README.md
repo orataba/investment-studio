@@ -13,8 +13,11 @@
 
 - 展示 `Portfolio Operations Workbench` 平台首页
 - 提供到 `Watchlist` 与 `Portfolio` 的入口
-- 提供 `Database Dashboard` API 与页面，维护 `Instruments / FX / NAV / market facts`
-- 在 `Database Dashboard` 里支持手工录入、CSV/Excel 导入、邮件刷新，并展示选中资产的共享市场数据与净值历史
+- 平台首页保持为轻量 app switcher，只提供 `Watchlist / Portfolio / Instrument Registry` 入口，不承载运行状态、摄取队列或数据明细
+- 提供 `Database Dashboard` API 和独立的 `Instrument Registry` 管理工作区，维护 `Instruments / FX / NAV / market facts`
+- `Instrument Registry` 按“定位 canonical 对象 → 判断数据覆盖与来源状态 → 受控修订或导入 → 生命周期和审计治理”组织；列表只承担发现，单对象检查器承担序列、来源与治理，低频写操作进入独立操作抽屉
+- 支持单品种完整 typed series 的筛选、分页和 CSV 下载；非基金数据点按既有 typed key 做 upsert 修订，基金 NAV 继续使用批量导入、分红/拆分证据和 revision chain，不暴露绕过 lineage 的直接编辑
+- instrument 的“删除”采用可恢复 archive/restore 语义：默认 downstream discovery 隐藏 archived instrument，但保留 identifiers、market facts 和审计历史；前端不提供 hard delete
 - 持久化邮箱目录游标、原始 NAV 证据、附件解析、重试和候选路由，使定时任务可增量、幂等恢复
 - 在共享市场数据更新后，触发 `Watchlist` 资产 read model 重算，并触发 `Portfolio` daily snapshots 刷新
 - 在前端用 `/api/apps` 暴露 app registry
@@ -29,7 +32,7 @@
 ## 目录
 
 - `frontend/`
-  平台 landing / app switcher / Database Dashboard
+  极简 landing / app switcher / Instrument Registry
 - `backend/`
   平台 backend，提供健康检查、app registry 与 `Database Dashboard` API
 

@@ -19,6 +19,9 @@ from portfolio_app.services import valuation_fx
 from portfolio_app.services.market_data import is_usable_market_data_point
 from portfolio_app.services.market_data import quote_policy_bases, resolve_quote_point
 from portfolio_app.services.transaction_dates import (
+    transaction_ledger_activity_date,
+    transaction_performance_effective_date,
+    transaction_position_effective_date,
     transaction_precedes_entitlement_bod,
     transaction_sort_key,
 )
@@ -221,6 +224,7 @@ def _transaction_timeline_sort_key(
     transaction: dict[str, object],
 ) -> tuple[str, int, str, str, str, str]:
     trade_date = str(transaction.get("trade_date") or "")
+    effective_date = transaction_performance_effective_date(transaction)
     acquisition_date = str(transaction.get("acquisition_date") or "")
     is_prior_opening_balance = (
         str(transaction.get("transaction_type") or "") == "opening_balance"
@@ -228,7 +232,7 @@ def _transaction_timeline_sort_key(
         and acquisition_date < trade_date
     )
     return (
-        trade_date,
+        effective_date.isoformat() if effective_date is not None else trade_date,
         -1 if is_prior_opening_balance else 1,
         str(transaction.get("trade_at") or ""),
         str(transaction.get("created_at") or ""),
@@ -280,8 +284,14 @@ def _resolved_corporate_actions(
             for transaction in transactions
             if str(transaction.get("instrument_id") or "")
             == str(event.get("instrument_id") or "")
-            and (trade_date := _parse_iso_date(transaction.get("trade_date"))) is not None
-            and record_date < trade_date < effective_date
+            and (
+                position_date := (
+                    transaction_position_effective_date(transaction)
+                    or _parse_iso_date(transaction.get("trade_date"))
+                )
+            )
+            is not None
+            and record_date < position_date < effective_date
         ]
         if intervening:
             raise ValueError(
@@ -385,6 +395,89 @@ def ledger_posting_effective_date_iso(posting: dict[str, object]) -> str:
     if _safe_float(posting.get("cash_amount_delta")) is not None:
         return str(posting.get("settlement_date") or posting.get("trade_date") or "")
     return str(posting.get("trade_date") or posting.get("settlement_date") or "")
+
+
+def ledger_posting_pending_amount_as_of(
+    posting: dict[str, object],
+    as_of_date: date | None,
+) -> float | None:
+    """Return an active monetary bridge balance for one posting."""
+
+    pending_amount = _safe_float(posting.get("pending_amount_delta"))
+    if pending_amount is None:
+        return None
+    if as_of_date is None:
+        return 0.0
+    recognition_start_date = _parse_iso_date(
+        posting.get("recognition_start_date")
+        or posting.get("settlement_date")
+    )
+    recognition_end_date = _parse_iso_date(posting.get("effective_date"))
+    if (
+        recognition_start_date is not None
+        and recognition_end_date is not None
+        and recognition_start_date <= as_of_date < recognition_end_date
+    ):
+        return pending_amount
+    return 0.0
+
+
+def _transaction_is_recognized_as_of(
+    transaction: dict[str, object],
+    as_of_date: date | None,
+) -> bool:
+    if as_of_date is None:
+        return True
+    effective_date = transaction_performance_effective_date(transaction)
+    return effective_date is not None and effective_date <= as_of_date
+
+
+def _transaction_has_ledger_activity_as_of(
+    transaction: dict[str, object],
+    as_of_date: date | None,
+) -> bool:
+    if as_of_date is None:
+        return True
+    activity_date = transaction_ledger_activity_date(transaction)
+    return activity_date is not None and activity_date <= as_of_date
+
+
+def _position_recognition_bridge(
+    transaction: dict[str, object],
+) -> dict[str, object] | None:
+    transaction_type = str(transaction.get("transaction_type") or "")
+    if transaction_type not in {"buy", "sell", "maturity_redemption"}:
+        return None
+    settlement_cash_account_id = str(
+        transaction.get("settlement_cash_account_id") or ""
+    ).strip()
+    if not settlement_cash_account_id:
+        return None
+    settlement_date = _parse_iso_date(transaction.get("settlement_date"))
+    position_effective_date = transaction_position_effective_date(transaction)
+    if (
+        settlement_date is None
+        or position_effective_date is None
+        or settlement_date >= position_effective_date
+    ):
+        return None
+
+    gross_amount = _safe_float(transaction.get("gross_amount")) or 0.0
+    fees = _safe_float(transaction.get("fees")) or 0.0
+    taxes = _safe_float(transaction.get("taxes")) or 0.0
+    if transaction_type == "buy":
+        pending_amount = gross_amount + fees + taxes
+    else:
+        pending_amount = -(gross_amount - fees - taxes)
+
+    return {
+        "account_id": str(transaction.get("account_id") or ""),
+        "settlement_cash_account_id": settlement_cash_account_id,
+        "recognition_start_date": settlement_date,
+        "recognition_end_date": position_effective_date,
+        "pending_amount_delta": pending_amount,
+        "settlement_cash_delta": -pending_amount,
+    }
 
 
 def _resolve_cost_basis_method(account_cost_methods: dict[str, str] | None, account_id: str) -> str:
@@ -663,9 +756,17 @@ def _build_position_state(
         corporate_actions=corporate_actions,
         as_of_date=as_of_date,
     )
+    recognized_transactions = [
+        transaction
+        for transaction in transactions
+        if _transaction_is_recognized_as_of(transaction, as_of_date)
+    ]
     timeline: list[tuple[str, dict[str, object]]] = [
         ("corporate_action", event) for event in resolved_actions
-    ] + [("transaction", transaction) for transaction in transactions]
+    ] + [
+        ("transaction", transaction)
+        for transaction in recognized_transactions
+    ]
     timeline.sort(
         key=lambda item: (
             _corporate_action_sort_key(item[1])
@@ -723,7 +824,7 @@ def _build_position_state(
                 instrument_id,
                 quantity=quantity or 0.0,
                 cost_basis_method=cost_basis_method,
-                error_message="Transaction quantity exceeds account position as of trade_date.",
+                error_message="Transaction quantity exceeds account position as of position_effective_date.",
             )
             continue
 
@@ -804,9 +905,13 @@ def derive_ledger_postings(
         posting_role: str,
         account_id: str,
         cash_amount_delta: float | None = None,
+        pending_amount_delta: float | None = None,
         quantity_delta: float | None = None,
         cost_basis_delta: float | None = None,
         currency: str | None = None,
+        recognition_start_date: date | None = None,
+        explicit_effective_date: date | None = None,
+        attribution_account_id: str | None = None,
     ) -> None:
         posting_currency = valuation_fx.required_currency(
             currency if currency is not None else transaction.get("currency"),
@@ -819,19 +924,36 @@ def derive_ledger_postings(
                 "transaction_id": transaction["transaction_id"],
                 "portfolio_id": portfolio_id,
                 "account_id": account_id,
+                "attribution_account_id": attribution_account_id,
                 "posting_role": posting_role,
                 "source_transaction_type": transaction["transaction_type"],
                 "trade_date": transaction["trade_date"],
                 "trade_at": transaction.get("trade_at"),
                 "settlement_date": transaction["settlement_date"],
                 "effective_date": (
-                    transaction["settlement_date"]
-                    if cash_amount_delta is not None
-                    else transaction["trade_date"]
+                    explicit_effective_date.isoformat()
+                    if explicit_effective_date is not None
+                    else (
+                        transaction["settlement_date"]
+                        if cash_amount_delta is not None
+                        else (
+                            transaction_position_effective_date(transaction)
+                            or _parse_iso_date(transaction.get("trade_date"))
+                        ).isoformat()
+                    )
+                ),
+                "recognition_start_date": (
+                    recognition_start_date.isoformat()
+                    if recognition_start_date is not None
+                    else None
+                ),
+                "settlement_cash_account_id": transaction.get(
+                    "settlement_cash_account_id"
                 ),
                 "instrument_id": transaction.get("instrument_id"),
                 "instrument_ref": deepcopy(transaction.get("instrument_ref")),
                 "cash_amount_delta": cash_amount_delta,
+                "pending_amount_delta": pending_amount_delta,
                 "quantity_delta": quantity_delta,
                 "cost_basis_delta": cost_basis_delta,
                 "currency": posting_currency,
@@ -841,14 +963,55 @@ def derive_ledger_postings(
             }
         )
 
+    for transaction in transactions:
+        bridge = _position_recognition_bridge(transaction)
+        if bridge is None:
+            continue
+        recognition_start_date = bridge["recognition_start_date"]
+        recognition_end_date = bridge["recognition_end_date"]
+        append_posting(
+            transaction,
+            posting_role="position_recognition_bridge",
+            account_id=str(bridge["settlement_cash_account_id"]),
+            attribution_account_id=str(bridge["account_id"]),
+            pending_amount_delta=float(bridge["pending_amount_delta"]),
+            currency=str(transaction.get("currency") or ""),
+            recognition_start_date=recognition_start_date,
+            explicit_effective_date=recognition_end_date,
+        )
+        if (
+            as_of_date is not None
+            and recognition_start_date <= as_of_date < recognition_end_date
+        ):
+            transaction_type = str(transaction.get("transaction_type") or "")
+            append_posting(
+                transaction,
+                posting_role=(
+                    "security_redemption_cash"
+                    if transaction_type == "maturity_redemption"
+                    else "security_settlement_cash"
+                ),
+                account_id=str(bridge["settlement_cash_account_id"]),
+                cash_amount_delta=float(bridge["settlement_cash_delta"]),
+                currency=str(transaction.get("currency") or ""),
+            )
+
     resolved_actions = _resolved_corporate_actions(
         transactions,
         corporate_actions=corporate_actions,
         as_of_date=as_of_date,
     )
+    recognized_transactions = [
+        transaction
+        for transaction in transactions
+        if _transaction_is_recognized_as_of(transaction, as_of_date)
+    ]
     timeline: list[tuple[str, dict[str, object]]] = [
         ("corporate_action", event) for event in resolved_actions
-    ] + [("transaction", transaction) for transaction in transactions]
+    ] + [
+        ("transaction", transaction)
+        for transaction in recognized_transactions
+    ]
     timeline.sort(
         key=lambda item: (
             _corporate_action_sort_key(item[1])
@@ -1017,7 +1180,7 @@ def derive_ledger_postings(
                 instrument_id,
                 quantity=sold_quantity,
                 cost_basis_method=cost_basis_method,
-                error_message="Transaction quantity exceeds account position as of trade_date.",
+                error_message="Transaction quantity exceeds account position as of position_effective_date.",
             )
             append_posting(
                 transaction,
@@ -1112,7 +1275,7 @@ def derive_ledger_postings(
                 instrument_id,
                 quantity=redeemed_quantity,
                 cost_basis_method=cost_basis_method,
-                error_message="Transaction quantity exceeds account position as of trade_date.",
+                error_message="Transaction quantity exceeds account position as of position_effective_date.",
             )
             append_posting(
                 transaction,
@@ -1583,7 +1746,10 @@ def _consume_position_lots(
 
     total_open_quantity = sum((_safe_float(lot.get("remaining_quantity")) or 0.0) for lot in active_lots)
     if total_open_quantity <= 1e-9 or quantity > total_open_quantity + 1e-9:
-        raise ValueError(error_message or "Position quantity exceeds available position lots as of trade_date.")
+        raise ValueError(
+            error_message
+            or "Position quantity exceeds available position lots as of position_effective_date."
+        )
     target_quantity = min(quantity, total_open_quantity)
     if target_quantity <= 1e-9:
         return []
@@ -1756,7 +1922,14 @@ def build_position_lots(
     all_position_lots: list[dict[str, object]] = []
     position_lot_by_id: dict[str, dict[str, object]] = {}
     lot_sequence = 0
-    sorted_transactions = sorted(transactions, key=transaction_sort_key)
+    sorted_transactions = sorted(
+        [
+            transaction
+            for transaction in transactions
+            if _transaction_is_recognized_as_of(transaction, as_of_date)
+        ],
+        key=transaction_sort_key,
+    )
     resolved_actions = _resolved_corporate_actions(
         sorted_transactions,
         corporate_actions=corporate_actions,
@@ -2038,6 +2211,15 @@ def build_position_lots(
         transaction_id = str(transaction.get("transaction_id") or "")
         transaction_type = str(transaction.get("transaction_type") or "")
         trade_date = str(transaction.get("trade_date") or "")
+        position_effective_date = (
+            transaction_position_effective_date(transaction)
+            or _parse_iso_date(trade_date)
+        )
+        position_effective_date_iso = (
+            position_effective_date.isoformat()
+            if position_effective_date is not None
+            else trade_date
+        )
         entitlement_date = _parse_iso_date(transaction.get("entitlement_date")) or _parse_iso_date(trade_date)
         currency = str(transaction.get("currency") or "")
         account_key = str(transaction.get("account_id") or "")
@@ -2060,8 +2242,8 @@ def build_position_lots(
             acquisition_date = (
                 str(transaction.get("acquisition_date") or "").strip()
                 if transaction_type == "opening_balance"
-                else trade_date
-            ) or trade_date
+                else position_effective_date_iso
+            ) or position_effective_date_iso
             append_position_lot(
                 target_account_id=account_key,
                 target_instrument_id=resolved_instrument_id,
@@ -2069,7 +2251,7 @@ def build_position_lots(
                 currency=currency,
                 opened_by_transaction_id=transaction_id,
                 opening_transaction_type=transaction_type,
-                opened_at=trade_date,
+                opened_at=position_effective_date_iso,
                 acquisition_date=acquisition_date,
                 entry_quantity=quantity,
                 entry_gross_amount=gross_amount,
@@ -2102,8 +2284,8 @@ def build_position_lots(
                 currency=currency,
                 opened_by_transaction_id=transaction_id,
                 opening_transaction_type=transaction_type,
-                opened_at=trade_date,
-                acquisition_date=trade_date,
+                opened_at=position_effective_date_iso,
+                acquisition_date=position_effective_date_iso,
                 entry_quantity=quantity,
                 entry_gross_amount=gross_amount,
                 entry_fee_amount=0.0,
@@ -2119,7 +2301,7 @@ def build_position_lots(
                 instrument_id=resolved_instrument_id,
                 quantity=quantity,
                 cost_basis_method=cost_basis_method,
-                error_message="Transaction quantity exceeds account position as of trade_date.",
+                error_message="Transaction quantity exceeds account position as of position_effective_date.",
             )
             net_proceeds = gross_amount - fees - taxes
             quantity_weights = [(_safe_float(slice_item.get("quantity")) or 0.0) for slice_item in disposal_slices]
@@ -2159,6 +2341,7 @@ def build_position_lots(
                             "transaction_id": transaction_id,
                             "transaction_type": transaction_type,
                             "trade_date": trade_date,
+                            "position_effective_date": position_effective_date_iso,
                             "quantity": matched_quantity,
                             "gross_proceeds": gross_proceeds,
                             "proceeds": proceeds,
@@ -2174,7 +2357,7 @@ def build_position_lots(
                 _touch_position_lot(position_lot, transaction_id)
                 _close_position_lot_if_needed(
                     position_lot,
-                    close_date=trade_date,
+                    close_date=position_effective_date_iso,
                     close_reason="disposed",
                 )
             continue
@@ -2625,7 +2808,7 @@ def build_account_workspace(
         boundary_transactions = [
             transaction
             for transaction in transactions
-            if (_parse_iso_date(transaction.get("trade_date")) or date.min) <= as_of_date
+            if _transaction_has_ledger_activity_as_of(transaction, as_of_date)
         ]
     corporate_actions = _resolved_corporate_actions(
         boundary_transactions,
@@ -2681,6 +2864,14 @@ def build_account_workspace(
         account_id = str(posting.get("account_id") or "")
         linked_posting_count[account_id] += 1
         linked_transaction_ids[account_id].add(str(posting.get("transaction_id") or ""))
+
+        pending_amount_delta = ledger_posting_pending_amount_as_of(
+            posting,
+            as_of_date,
+        )
+        if pending_amount_delta is not None:
+            pending_settlement[account_id] += pending_amount_delta
+            continue
 
         cash_delta = _safe_float(posting.get("cash_amount_delta"))
         if cash_delta is None:
@@ -2940,11 +3131,23 @@ def list_ledger_postings(
         if instrument_id and posting.get("instrument_id") != instrument_id:
             continue
 
+        pending_amount_delta = _safe_float(posting.get("pending_amount_delta"))
         effective_date_value = ledger_posting_effective_date_iso(posting)
-        if start_date and effective_date_value < start_date.isoformat():
-            continue
-        if end_date and effective_date_value > end_date.isoformat():
-            continue
+        if pending_amount_delta is not None:
+            recognition_start_value = str(
+                posting.get("recognition_start_date")
+                or posting.get("settlement_date")
+                or ""
+            )
+            if start_date and effective_date_value < start_date.isoformat():
+                continue
+            if end_date and recognition_start_value > end_date.isoformat():
+                continue
+        else:
+            if start_date and effective_date_value < start_date.isoformat():
+                continue
+            if end_date and effective_date_value > end_date.isoformat():
+                continue
 
         filtered.append(posting)
     return filtered
@@ -2954,6 +3157,11 @@ def summarize_ledger_postings(postings: list[dict[str, object]]) -> dict[str, in
     return {
         "posting_count": len(postings),
         "cash_posting_count": sum(1 for posting in postings if posting.get("cash_amount_delta") is not None),
+        "pending_posting_count": sum(
+            1
+            for posting in postings
+            if posting.get("pending_amount_delta") is not None
+        ),
         "position_posting_count": sum(
             1
             for posting in postings

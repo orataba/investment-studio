@@ -10,6 +10,7 @@ from pathlib import Path
 from alembic import command
 from alembic.config import Config
 import pytest
+import sqlalchemy as sa
 from fastapi.testclient import TestClient
 
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
@@ -331,6 +332,28 @@ def isolated_portfolio_store(request, tmp_path, monkeypatch):
         initial_revision = migration_base.args[0]
     _run_alembic_upgrade(database_url, initial_revision)
     InstrumentRegistryBase.metadata.create_all(bind=session_module.get_engine())
+
+    # Migration tests intentionally pin the database below head while the
+    # reusable store seed follows the current runtime model.  Bridge additive
+    # runtime columns only for the duration of seeding, then restore the exact
+    # historical schema before the test runs.
+    temporary_seed_columns: list[tuple[str, str]] = []
+    if migration_base is not None:
+        engine = session_module.get_engine()
+        with engine.begin() as connection:
+            transaction_columns = {
+                str(column["name"])
+                for column in sa.inspect(connection).get_columns("transaction_record")
+            }
+            if "position_effective_date" not in transaction_columns:
+                connection.exec_driver_sql(
+                    "ALTER TABLE transaction_record "
+                    "ADD COLUMN position_effective_date DATE"
+                )
+                temporary_seed_columns.append(
+                    ("transaction_record", "position_effective_date")
+                )
+
     portfolio_store.reset_store(deepcopy(TEST_PORTFOLIO_STORE))
     shared_store.reset_store(
         session_module.get_session_factory(),
@@ -339,6 +362,13 @@ def isolated_portfolio_store(request, tmp_path, monkeypatch):
             "instruments": deepcopy(REGISTRY_INSTRUMENT_DETAILS),
         },
     )
+    if temporary_seed_columns:
+        engine = session_module.get_engine()
+        with engine.begin() as connection:
+            for table_name, column_name in reversed(temporary_seed_columns):
+                connection.exec_driver_sql(
+                    f"ALTER TABLE {table_name} DROP COLUMN {column_name}"
+                )
 
     monkeypatch.setattr(transaction_routes, "get_registry_instrument", _get_registry_instrument)
     monkeypatch.setattr(transaction_routes, "list_registry_instruments", lambda: deepcopy(REGISTRY_INSTRUMENTS))

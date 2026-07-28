@@ -34,6 +34,8 @@ MATERIALIZED_CONTRIBUTION_AXES: tuple[str, ...] = (
 )
 GROUP_CAPITAL_FLOW_IN_FIELD = "capital_flow_in_base"
 GROUP_CAPITAL_FLOW_OUT_FIELD = "capital_flow_out_base"
+GROUP_CAPITAL_FLOW_IN_EOD_FIELD = "capital_flow_in_eod_base"
+GROUP_CAPITAL_FLOW_OUT_EOD_FIELD = "capital_flow_out_eod_base"
 
 _CALCULATION_DETAIL_SUFFIX = "_detail"
 _CALCULATION_DETAIL_GROUP_SEPARATOR = "\x1f"
@@ -65,6 +67,8 @@ _CALCULATION_DETAIL_ADDITIVE_SLICE_FIELDS = (
     "instrument_currency_gains",
     GROUP_CAPITAL_FLOW_IN_FIELD,
     GROUP_CAPITAL_FLOW_OUT_FIELD,
+    GROUP_CAPITAL_FLOW_IN_EOD_FIELD,
+    GROUP_CAPITAL_FLOW_OUT_EOD_FIELD,
     "total_pnl",
     "daily_contribution",
 )
@@ -165,6 +169,8 @@ def _slice_as_close_boundary(
         "instrument_currency_gains",
         GROUP_CAPITAL_FLOW_IN_FIELD,
         GROUP_CAPITAL_FLOW_OUT_FIELD,
+        GROUP_CAPITAL_FLOW_IN_EOD_FIELD,
+        GROUP_CAPITAL_FLOW_OUT_EOD_FIELD,
         "total_pnl",
     ):
         boundary[field_name] = 0.0
@@ -387,7 +393,11 @@ def transaction_group_for_axis(
     account_name_map: dict[str, str],
     base_currency: str,
 ) -> tuple[str, str]:
-    account_id = str(transaction.get("account_id") or "")
+    account_id = str(
+        transaction.get("attribution_account_id")
+        or transaction.get("account_id")
+        or ""
+    )
     instrument_ref = instrument_ref_from_mapping(transaction)
     instrument_id = str(
         transaction.get("instrument_id") or instrument_ref.get("instrument_id") or ""
@@ -471,6 +481,7 @@ def daily_group_return_from_components(
     total_pnl: float | None,
     capital_flow_in_base: float | None,
     capital_flow_out_base: float | None,
+    capital_flow_in_eod_base: float | None = 0.0,
 ) -> float | None:
     if (
         beginning_value_base is None
@@ -478,15 +489,22 @@ def daily_group_return_from_components(
         or total_pnl is None
         or capital_flow_in_base is None
         or capital_flow_out_base is None
+        or capital_flow_in_eod_base is None
     ):
         return None
 
-    implied_capital_flow_in = 0.0
+    eod_capital_flow_in = max(capital_flow_in_eod_base, 0.0)
+    weighted_capital_flow_in = max(
+        capital_flow_in_base - eod_capital_flow_in,
+        0.0,
+    )
     implied_net_flow = ending_value_base - beginning_value_base - total_pnl
-    if implied_net_flow > 1e-9:
-        implied_capital_flow_in = implied_net_flow
+    implied_capital_flow_in = max(
+        implied_net_flow - eod_capital_flow_in,
+        0.0,
+    )
     return_denominator = beginning_value_base + max(
-        capital_flow_in_base,
+        weighted_capital_flow_in,
         implied_capital_flow_in,
     )
     if return_denominator <= 1e-9:
@@ -687,6 +705,8 @@ def group_contribution_slices_by_taxonomy(
                 "instrument_currency_gains": 0.0,
                 GROUP_CAPITAL_FLOW_IN_FIELD: 0.0,
                 GROUP_CAPITAL_FLOW_OUT_FIELD: 0.0,
+                GROUP_CAPITAL_FLOW_IN_EOD_FIELD: 0.0,
+                GROUP_CAPITAL_FLOW_OUT_EOD_FIELD: 0.0,
                 "total_pnl": 0.0,
                 "daily_return": None,
                 "daily_contribution": 0.0,
@@ -725,10 +745,24 @@ def group_contribution_slices_by_taxonomy(
             "instrument_currency_gains",
             GROUP_CAPITAL_FLOW_IN_FIELD,
             GROUP_CAPITAL_FLOW_OUT_FIELD,
+            GROUP_CAPITAL_FLOW_IN_EOD_FIELD,
+            GROUP_CAPITAL_FLOW_OUT_EOD_FIELD,
             "total_pnl",
             "daily_contribution",
         ):
             value = _safe_float(base_slice.get(field_name))
+            if (
+                value is None
+                and field_name
+                in {
+                    GROUP_CAPITAL_FLOW_IN_EOD_FIELD,
+                    GROUP_CAPITAL_FLOW_OUT_EOD_FIELD,
+                }
+            ):
+                # Older materialized slices predate explicit EOD flow
+                # classification; absence means the whole flow used the
+                # established BOD-in/EOD-out convention.
+                value = 0.0
             if value is None:
                 grouped_slice[field_name] = None
                 continue
@@ -755,12 +789,16 @@ def group_contribution_slices_by_taxonomy(
         capital_flow_out_base = _safe_float(
             grouped_slice.get(GROUP_CAPITAL_FLOW_OUT_FIELD)
         )
+        capital_flow_in_eod_base = _safe_float(
+            grouped_slice.get(GROUP_CAPITAL_FLOW_IN_EOD_FIELD)
+        )
         grouped_slice["daily_return"] = daily_group_return_from_components(
             beginning_value_base=beginning_value_base,
             ending_value_base=ending_value_base,
             total_pnl=total_pnl,
             capital_flow_in_base=capital_flow_in_base,
             capital_flow_out_base=capital_flow_out_base,
+            capital_flow_in_eod_base=capital_flow_in_eod_base,
         )
         grouped_slice["return_observation_eligible"] = (
             grouped_slice["daily_return"] is not None
@@ -1465,6 +1503,15 @@ def merge_calculation_detail_daily_slices(
         )
         for field_name in _CALCULATION_DETAIL_ADDITIVE_SLICE_FIELDS:
             value = _safe_float(daily_slice.get(field_name))
+            if (
+                value is None
+                and field_name
+                in {
+                    GROUP_CAPITAL_FLOW_IN_EOD_FIELD,
+                    GROUP_CAPITAL_FLOW_OUT_EOD_FIELD,
+                }
+            ):
+                value = 0.0
             if value is None:
                 grouped_slice[field_name] = None
                 continue
@@ -1492,6 +1539,9 @@ def merge_calculation_detail_daily_slices(
             ),
             capital_flow_out_base=_safe_float(
                 grouped_slice.get(GROUP_CAPITAL_FLOW_OUT_FIELD)
+            ),
+            capital_flow_in_eod_base=_safe_float(
+                grouped_slice.get(GROUP_CAPITAL_FLOW_IN_EOD_FIELD)
             ),
         )
         grouped_slice["return_observation_eligible"] = (

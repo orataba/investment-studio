@@ -65,6 +65,7 @@ describe('transaction presentation', () => {
       trade_timezone: 'Asia/Shanghai',
       trade_time_is_estimated: false,
       settlement_date: '2026-07-02',
+      position_effective_date: '2026-07-03',
       economic_date: '2026-07-03',
       external_flow_date: null,
       entitlement_date: null,
@@ -118,6 +119,7 @@ describe('transaction presentation', () => {
     expect(rows[0]).toEqual(TRANSACTION_EXPORT_HEADERS)
     expect(rows[1][column('Quantity')]).toBe(100)
     expect(rows[1][column('Gross Amount')]).toBe(125)
+    expect(rows[1][column('Position Effective Date')]).toBe('2026-07-03')
     expect(rows[1][column('Economic Date')]).toBe('2026-07-03')
     expect(rows[1][column('Fee Category')]).toBe('transaction_cost')
     expect(rows[1][column('Note')]).toBe('=unsafe')

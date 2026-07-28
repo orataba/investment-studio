@@ -42,6 +42,9 @@ from portfolio_app.services.ledger import (
     validate_transaction_position_history,
 )
 from portfolio_app.services.snapshot_selection import default_portfolio_snapshot
+from portfolio_app.services.transaction_dates import (
+    transaction_performance_effective_date,
+)
 from portfolio_app.services.research_eligibility import (
     derive_research_lifecycle,
     enrich_instrument_research_state,
@@ -299,6 +302,8 @@ def _normalize_store(store: dict[str, object]) -> dict[str, object]:
             transaction["counter_amount"] = None
         if "fx_rate" not in transaction:
             transaction["fx_rate"] = None
+        if "position_effective_date" not in transaction:
+            transaction["position_effective_date"] = None
         trade_date_value = transaction.get("trade_date")
         try:
             resolved_trade_date = (
@@ -853,6 +858,7 @@ def _save_store_to_db(session, data: dict[str, object]) -> None:
             continue
         entitlement_date = raw_transaction.get("entitlement_date")
         acquisition_date = raw_transaction.get("acquisition_date")
+        position_effective_date = raw_transaction.get("position_effective_date")
         source_quantity = _transaction_source_from_mapping(
             raw_transaction,
             source_key="source_quantity",
@@ -907,6 +913,11 @@ def _save_store_to_db(session, data: dict[str, object]) -> None:
                 trade_time_is_estimated=bool(raw_transaction.get("trade_time_is_estimated")),
                 settlement_date=date.fromisoformat(
                     str(raw_transaction.get("settlement_date") or date.today().isoformat())
+                ),
+                position_effective_date=(
+                    date.fromisoformat(str(position_effective_date))
+                    if position_effective_date
+                    else None
                 ),
                 entitlement_date=date.fromisoformat(str(entitlement_date)) if entitlement_date else None,
                 acquisition_date=date.fromisoformat(str(acquisition_date)) if acquisition_date else None,
@@ -1021,6 +1032,7 @@ def _max_transaction_activity_date(transactions: list[TransactionRecordModel]) -
         for candidate in (
             transaction.trade_date,
             transaction.settlement_date,
+            transaction.position_effective_date,
             transaction.entitlement_date,
         )
         if candidate is not None
@@ -1078,7 +1090,11 @@ def _resolve_live_portfolio_as_of_date(
     boundary_transactions = [
         transaction
         for transaction in transaction_rows
-        if (_safe_date(transaction.get("trade_date")) or date.min) <= candidate_as_of_date
+        if (
+            transaction_performance_effective_date(transaction)
+            or date.min
+        )
+        <= candidate_as_of_date
     ]
     open_instrument_ids = {
         str(position_lot.get("instrument_id") or "")
@@ -1259,6 +1275,11 @@ def _serialize_transaction_row(item: TransactionRecordModel) -> dict[str, object
         "trade_timezone": item.trade_timezone,
         "trade_time_is_estimated": item.trade_time_is_estimated,
         "settlement_date": item.settlement_date.isoformat(),
+        "position_effective_date": (
+            item.position_effective_date.isoformat()
+            if item.position_effective_date is not None
+            else None
+        ),
         "entitlement_date": item.entitlement_date.isoformat() if item.entitlement_date is not None else None,
         "acquisition_date": item.acquisition_date.isoformat() if item.acquisition_date is not None else None,
         "account_id": item.account_id,
@@ -3816,6 +3837,13 @@ def copy_portfolio(portfolio_id: str) -> dict[str, object] | None:
                     trade_timezone=str(copied_transaction["trade_timezone"]),
                     trade_time_is_estimated=bool(copied_transaction["trade_time_is_estimated"]),
                     settlement_date=date.fromisoformat(str(copied_transaction["settlement_date"])),
+                    position_effective_date=(
+                        date.fromisoformat(
+                            str(copied_transaction["position_effective_date"])
+                        )
+                        if copied_transaction.get("position_effective_date")
+                        else None
+                    ),
                     entitlement_date=(
                         date.fromisoformat(str(copied_transaction["entitlement_date"]))
                         if copied_transaction.get("entitlement_date")
@@ -4265,6 +4293,7 @@ def create_transaction(
     note: str | None,
     fee_category: str = "unknown",
     created_at: str | None = None,
+    position_effective_date: date | None = None,
     idempotency_key: str | None = None,
     idempotency_payload: dict[str, Any] | None = None,
     idempotency_operation: str = "create",
@@ -4277,6 +4306,7 @@ def create_transaction(
                 "trade_date": trade_date,
                 "trade_time": trade_time,
                 "settlement_date": settlement_date,
+                "position_effective_date": position_effective_date,
                 "entitlement_date": entitlement_date,
                 "acquisition_date": acquisition_date,
                 "account_id": account_id,
@@ -4397,6 +4427,7 @@ def create_transactions(
                 trade_date=values["trade_date"],
                 trade_time=values.get("trade_time"),
                 settlement_date=values["settlement_date"],
+                position_effective_date=values.get("position_effective_date"),
                 entitlement_date=values.get("entitlement_date"),
                 acquisition_date=values.get("acquisition_date"),
                 account_id=str(values["account_id"]),
@@ -4505,6 +4536,7 @@ def update_transaction(
     note: str | None,
     fee_category: str = "unknown",
     created_at: str | None = None,
+    position_effective_date: date | None = None,
     expected_row_version: int | None = None,
 ) -> dict[str, object] | None:
     session_factory = get_session_factory()
@@ -4537,6 +4569,7 @@ def update_transaction(
             trade_date=trade_date,
             trade_time=trade_time,
             settlement_date=settlement_date,
+            position_effective_date=position_effective_date,
             entitlement_date=entitlement_date,
             acquisition_date=acquisition_date,
             account_id=account_id,
@@ -4673,6 +4706,7 @@ def _apply_transaction_record(
     trade_date: date,
     trade_time: str | None,
     settlement_date: date,
+    position_effective_date: date | None,
     entitlement_date: date | None,
     acquisition_date: date | None,
     account_id: str,
@@ -4750,6 +4784,7 @@ def _apply_transaction_record(
     record.trade_timezone = str(resolved_timing["trade_timezone"])
     record.trade_time_is_estimated = bool(resolved_timing["trade_time_is_estimated"])
     record.settlement_date = settlement_date
+    record.position_effective_date = position_effective_date
     record.entitlement_date = entitlement_date
     record.acquisition_date = acquisition_date
     record.account_id = account_id

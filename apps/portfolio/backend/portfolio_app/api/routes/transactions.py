@@ -18,6 +18,7 @@ from portfolio_app.api.contracts import (
     SharedInstrumentListResponse,
     LedgerPostingListSummary,
     PositionLotListSummary,
+    POSITION_EFFECTIVE_COMMAND_TYPES,
     TransactionBatchResponse,
     TransactionChangeLogResponse,
     TransactionChangeLogSummary,
@@ -64,7 +65,7 @@ from portfolio_app.services.portfolio_store import (
     resolve_trade_timing,
     update_transaction,
 )
-from portfolio_app.services.transaction_dates import transaction_sort_key
+from portfolio_app.services.transaction_dates import transaction_execution_sort_key
 
 
 router = APIRouter()
@@ -290,7 +291,7 @@ def _list_transactions_as_of_trade_moment(
             trade_date,
             exclude_transaction_ids=exclude_transaction_ids,
         )
-        if transaction_sort_key(record) <= pending_sort_key
+        if transaction_execution_sort_key(record) <= pending_sort_key
     ]
 
 
@@ -804,6 +805,11 @@ def _persist_transaction_record(
     if account is None:
         raise HTTPException(status_code=400, detail="Account not found")
     settlement_date = payload.settlement_date or payload.trade_date
+    resolved_position_effective_date = (
+        (payload.position_effective_date or payload.trade_date)
+        if payload.transaction_type in POSITION_EFFECTIVE_COMMAND_TYPES
+        else None
+    )
     entitlement_date = payload.entitlement_date or payload.trade_date
     resolved_trade_timing = resolve_trade_timing(
         trade_date=payload.trade_date,
@@ -819,7 +825,15 @@ def _persist_transaction_record(
     )
     _validate_account_fact_window(
         account,
-        event_dates=[payload.trade_date, settlement_date],
+        event_dates=[
+            payload.trade_date,
+            settlement_date,
+            *(
+                [resolved_position_effective_date]
+                if resolved_position_effective_date is not None
+                else []
+            ),
+        ],
         role_label="Account",
     )
     account_cost_methods = _account_cost_methods(portfolio_id)
@@ -965,10 +979,17 @@ def _persist_transaction_record(
             account_id=payload.account_id,
             instrument_id=instrument_id,
             account_cost_methods=account_cost_methods,
+            as_of_date=payload.trade_date,
         )
         requested_quantity = float(payload.quantity or 0.0)
         if requested_quantity > available_quantity + 1e-9:
-            raise HTTPException(status_code=400, detail="Transaction quantity exceeds account position as of trade_date.")
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "Transaction quantity exceeds account position as of "
+                    "trade_date."
+                ),
+            )
 
     if transaction_type in {"dividend", "dividend_reinvestment", "coupon"} or (
         transaction_type in {"fee", "tax"} and instrument_id
@@ -1002,6 +1023,7 @@ def _persist_transaction_record(
             account_id=payload.account_id,
             instrument_id=instrument_id,
             account_cost_methods=account_cost_methods,
+            as_of_date=payload.trade_date,
         )
         if float(payload.gross_amount or 0.0) > available_cost_basis + 1e-9:
             raise HTTPException(
@@ -1027,6 +1049,7 @@ def _persist_transaction_record(
         "trade_date": payload.trade_date,
         "trade_time": payload.trade_time,
         "settlement_date": settlement_date,
+        "position_effective_date": payload.position_effective_date,
         "entitlement_date": payload.entitlement_date,
         "acquisition_date": payload.acquisition_date,
         "account_id": payload.account_id,
@@ -1295,6 +1318,7 @@ def create_internal_transfer_records(
             account_id=payload.from_account_id,
             instrument_id=instrument_id,
             account_cost_methods=account_cost_methods,
+            as_of_date=payload.trade_date,
         )
         requested_quantity = float(payload.quantity or 0.0)
         if requested_quantity > available_quantity + 1e-9:
@@ -1309,6 +1333,7 @@ def create_internal_transfer_records(
             instrument_id=instrument_id or "",
             quantity=float(payload.quantity or 0.0),
             account_cost_methods=account_cost_methods,
+            as_of_date=payload.trade_date,
         )
         if estimated_transferred_amount < -1e-9:
             raise HTTPException(

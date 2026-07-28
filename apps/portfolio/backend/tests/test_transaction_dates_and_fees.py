@@ -9,7 +9,10 @@ from portfolio_app.services import performance
 from portfolio_app.services.transaction_dates import (
     transaction_economic_date,
     transaction_external_flow_date,
+    transaction_ledger_activity_date,
     transaction_performance_effective_date,
+    transaction_position_cash_transfer_date,
+    transaction_position_effective_date,
     transaction_sort_key,
 )
 
@@ -93,6 +96,95 @@ def test_external_flow_date_is_distinct_from_economic_trade_date() -> None:
     assert transaction_economic_date(coupon) == date(2026, 7, 10)
     assert transaction_external_flow_date(coupon) is None
     assert transaction_performance_effective_date(coupon) == date(2026, 7, 10)
+
+
+def test_position_effective_date_can_follow_trade_without_rewriting_execution() -> None:
+    subscription = {
+        "transaction_id": "txn-subscription",
+        "transaction_type": "buy",
+        "trade_date": "2026-07-24",
+        "trade_at": "2026-07-24T08:00:00Z",
+        "position_effective_date": "2026-07-27",
+        "settlement_date": "2026-07-27",
+        "instrument_id": "017847-of",
+    }
+
+    assert transaction_position_effective_date(subscription) == date(2026, 7, 27)
+    assert transaction_economic_date(subscription) == date(2026, 7, 27)
+    assert transaction_performance_effective_date(subscription) == date(2026, 7, 27)
+    assert transaction_sort_key(subscription)[0] == "2026-07-27"
+
+
+def test_early_cash_starts_position_bridge_without_moving_economic_date() -> None:
+    subscription = {
+        "transaction_id": "txn-subscription",
+        "transaction_type": "buy",
+        "trade_date": "2026-07-24",
+        "position_effective_date": "2026-07-27",
+        "settlement_date": "2026-07-24",
+        "account_id": "broker-cny",
+        "settlement_cash_account_id": "cash-cny",
+        "instrument_id": "017847-of",
+    }
+
+    assert transaction_performance_effective_date(subscription) == date(
+        2026, 7, 27
+    )
+    assert transaction_position_cash_transfer_date(subscription) == date(
+        2026, 7, 24
+    )
+    assert transaction_ledger_activity_date(subscription) == date(2026, 7, 24)
+
+
+def test_same_day_position_effective_date_is_the_legacy_default() -> None:
+    trade = {
+        "transaction_type": "buy",
+        "trade_date": "2026-07-24",
+        "instrument_id": "017847-of",
+    }
+
+    assert transaction_position_effective_date(trade) == date(2026, 7, 24)
+    assert transaction_economic_date(trade) == date(2026, 7, 24)
+
+
+def test_position_effective_date_requires_trade_ordering_and_allows_early_cash() -> None:
+    with pytest.raises(
+        ValueError,
+        match="position_effective_date must not be earlier than trade_date",
+    ):
+        TransactionCreateRequest.model_validate(
+            {
+                "transaction_type": "buy",
+                "trade_date": "2026-07-24",
+                "position_effective_date": "2026-07-23",
+                "settlement_date": "2026-07-24",
+                "account_id": "broker-cny",
+                "settlement_cash_account_id": "cash-cny",
+                "instrument_id": "017847-of",
+                "quantity": "1",
+                "price": "1",
+                "gross_amount": "1",
+                "currency": "CNY",
+            }
+        )
+
+    early_settled_subscription = TransactionCreateRequest.model_validate(
+        {
+            "transaction_type": "buy",
+            "trade_date": "2026-07-24",
+            "position_effective_date": "2026-07-27",
+            "settlement_date": "2026-07-24",
+            "account_id": "broker-cny",
+            "settlement_cash_account_id": "cash-cny",
+            "instrument_id": "017847-of",
+            "quantity": "1",
+            "price": "1",
+            "gross_amount": "1",
+            "currency": "CNY",
+        }
+    )
+    assert early_settled_subscription.settlement_date == date(2026, 7, 24)
+    assert early_settled_subscription.position_effective_date == date(2026, 7, 27)
 
 
 def test_daily_external_flow_is_neutralized_on_settlement_not_trade_date() -> None:

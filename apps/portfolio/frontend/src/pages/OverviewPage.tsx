@@ -157,6 +157,16 @@ function isCashHoldingRow(row: PortfolioHoldingRow) {
   )
 }
 
+function isPendingMonetaryHoldingRow(row: PortfolioHoldingRow) {
+  return (
+    row.holding_kind?.startsWith('pending_') === true ||
+    row.holding_kind === 'settlement_receivable' ||
+    row.holding_kind === 'settlement_payable' ||
+    row.holding_kind === 'position_recognition_adjustment' ||
+    row.line_id.toLowerCase().startsWith('pending:')
+  )
+}
+
 function hasFiniteAllocation(
   row: PortfolioHoldingRow,
 ): row is PortfolioHoldingRow & { allocation: number } {
@@ -934,7 +944,15 @@ export default function OverviewPage() {
   }, [benchmarkInstrumentId, holdingsWorkspace?.as_of_date, portfolioId, summary?.as_of_date])
 
   const holdingsRows = holdingsWorkspace?.rows ?? []
-  const nonCashHoldingsRows = useMemo(() => holdingsRows.filter((row) => !isCashHoldingRow(row)), [holdingsRows])
+  const nonCashHoldingsRows = useMemo(
+    () =>
+      holdingsRows.filter(
+        (row) =>
+          !isCashHoldingRow(row) &&
+          !isPendingMonetaryHoldingRow(row),
+      ),
+    [holdingsRows],
+  )
   const resolvedBaseCurrency =
     summary?.base_currency ?? holdingsWorkspace?.base_currency ?? performanceWorkspace?.base_currency ?? 'USD'
   const sortedHoldings = useMemo(
@@ -992,11 +1010,39 @@ export default function OverviewPage() {
       ),
     [nonCashHoldingsRows, resolvedBaseCurrency],
   )
-  const cashValue =
-    summary?.nav != null && holdingsMarketValueBase != null
-      ? summary.nav - holdingsMarketValueBase
-      : null
+  const cashRows = holdingsRows.filter((row) => isCashHoldingRow(row))
+  const cashValue = cashRows.length
+    ? completeAmountSum(
+        cashRows.map((row) =>
+          baseAmountForRow(
+            row,
+            resolvedBaseCurrency,
+            row.market_value_base,
+            row.market_value,
+          ),
+        ),
+      )
+    : holdingsWorkspace?.totals.cash_balance ?? null
+  const pendingSettlementRows = holdingsRows.filter((row) =>
+    isPendingMonetaryHoldingRow(row),
+  )
+  const pendingSettlementValue = pendingSettlementRows.length
+    ? completeAmountSum(
+        pendingSettlementRows.map((row) =>
+        baseAmountForRow(
+          row,
+          resolvedBaseCurrency,
+          row.market_value_base,
+          row.market_value,
+        ),
+      ),
+      )
+    : holdingsWorkspace?.totals.pending_settlement ?? null
   const cashWeight = summary?.nav && cashValue != null ? cashValue / summary.nav : null
+  const pendingSettlementWeight =
+    summary?.nav && pendingSettlementValue != null
+      ? pendingSettlementValue / summary.nav
+      : null
   const holdingsAllocationsComplete = nonCashHoldingsRows.every(hasFiniteAllocation)
   const top5Holdings = sortedHoldings.slice(0, 5)
   const top5Weight = holdingsAllocationsComplete
@@ -1353,6 +1399,14 @@ export default function OverviewPage() {
           toneClassName: signedValueClass(performanceWorkspace?.summary.total_pnl),
         },
         { label: 'Cash Weight', value: formatPercent(cashWeight) },
+        ...(Math.abs(pendingSettlementValue ?? 0) > 1e-9
+          ? [
+              {
+                label: 'Pending Settlement Weight',
+                value: formatPercent(pendingSettlementWeight),
+              },
+            ]
+          : []),
         { label: 'Top 5 Weight', value: formatPercent(top5Weight) },
       ],
     },

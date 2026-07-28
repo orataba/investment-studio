@@ -268,7 +268,7 @@ export function riskFrequencyProfileFromHoldingsWorkspace(
       unavailableProfile,
     )
   }
-  const riskyHoldingCount = holdingsWorkspace.rows.filter((row) => !isCashHoldingRow(row)).length
+  const riskyHoldingCount = holdingsWorkspace.rows.filter((row) => isRiskBearingHoldingRow(row)).length
   const sourceFrequencyCount = Object.values(holdingsWorkspace.risk_basis?.source_frequency_counts ?? {}).reduce(
     (total, count) => total + (Number.isFinite(count) ? count : 0),
     0,
@@ -555,6 +555,20 @@ function isCashHoldingRow(row: HoldingsWorkspaceResponse['rows'][number]) {
   return row.instrument_core.instrument_type.trim().toLowerCase() === 'cash'
 }
 
+function isPendingMonetaryHoldingRow(row: HoldingsWorkspaceResponse['rows'][number]) {
+  return (
+    row.holding_kind?.startsWith('pending_') === true ||
+    row.holding_kind === 'settlement_receivable' ||
+    row.holding_kind === 'settlement_payable' ||
+    row.holding_kind === 'position_recognition_adjustment' ||
+    row.line_id.trim().toLowerCase().startsWith('pending:')
+  )
+}
+
+function isRiskBearingHoldingRow(row: HoldingsWorkspaceResponse['rows'][number]) {
+  return !isCashHoldingRow(row) && !isPendingMonetaryHoldingRow(row)
+}
+
 function isCashUniverseInstrument(record: PortfolioTaxonomyCatalogResponse['instrument_universe'][number]) {
   const instrument = record.instrument_ref
   return (
@@ -632,7 +646,7 @@ export function buildCurrentInstrumentReturnSeries(holdingsWorkspace: HoldingsWo
       }
     })
   const series = holdingsWorkspace.rows
-    .filter((row) => !isCashHoldingRow(row))
+    .filter((row) => isRiskBearingHoldingRow(row))
     .map((row): GroupReturnSeries | null => {
       const currentWeight = finiteNumber(row.allocation)
       const currentValueBase = finiteNumber(row.market_value_base)
@@ -876,7 +890,7 @@ function buildCurrentHoldingsMatrixScope(
       }
     })
   const rows = holdingsWorkspace.rows.filter((row) => {
-    if (isCashHoldingRow(row)) {
+    if (!isRiskBearingHoldingRow(row)) {
       return false
     }
     const quantity = finiteNumber(row.quantity)
@@ -1013,7 +1027,7 @@ function buildFullUniverseMatrixScope({
 
   const currentWeightByInstrumentId = new Map<string, number>()
   holdingsWorkspace.rows
-    .filter((row) => !isCashHoldingRow(row))
+    .filter((row) => isRiskBearingHoldingRow(row))
     .forEach((row) => {
       const currentWeight = finiteNumber(row.allocation)
       if (currentWeight != null) {
@@ -1283,7 +1297,7 @@ export function buildCanonicalTaxonomyRiskContributionRows({
   const errors: string[] = []
   holdingsWorkspace.rows
     .filter((row) => {
-      if (isCashHoldingRow(row)) {
+      if (!isRiskBearingHoldingRow(row)) {
         return false
       }
       return (
@@ -1546,7 +1560,7 @@ export function buildCurrentPlanningGroups({
           return Boolean(activeCashAssignmentResult.assignment) || Math.abs(liquidityBase) > 1e-9
         })
       : []
-    const nonCashHoldingRows = holdingsWorkspace.rows.filter((row) => !isCashHoldingRow(row))
+    const nonCashHoldingRows = holdingsWorkspace.rows.filter((row) => isRiskBearingHoldingRow(row))
     const missingHoldingValueRows = nonCashHoldingRows.filter((row) => finiteNumber(row.market_value_base) == null)
     if (missingHoldingValueRows.length) {
       errors.push(
@@ -2915,7 +2929,7 @@ export default function RiskPage() {
   )
   const concentrationMetrics = useMemo(() => {
     const activeRows = (holdingsWorkspace?.rows ?? []).filter((row) => {
-      if (isCashHoldingRow(row)) {
+      if (!isRiskBearingHoldingRow(row)) {
         return false
       }
       return (

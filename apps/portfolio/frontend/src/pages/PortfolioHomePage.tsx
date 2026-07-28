@@ -685,12 +685,27 @@ function isCashHoldingRow(row: PortfolioHoldingRow) {
   )
 }
 
+function isPendingMonetaryHoldingRow(row: PortfolioHoldingRow) {
+  return (
+    row.holding_kind?.startsWith('pending_') === true ||
+    row.holding_kind === 'settlement_receivable' ||
+    row.holding_kind === 'settlement_payable' ||
+    row.holding_kind === 'position_recognition_adjustment' ||
+    row.instrument_core.instrument_id.toLowerCase().startsWith('pending:') ||
+    row.line_id.toLowerCase().startsWith('pending:')
+  )
+}
+
+function isMonetaryHoldingRow(row: PortfolioHoldingRow) {
+  return isCashHoldingRow(row) || isPendingMonetaryHoldingRow(row)
+}
+
 function isBaseCashHoldingRow(row: PortfolioHoldingRow, workspace: HoldingsWorkspaceResponse) {
   return isCashHoldingRow(row) && normalizedCurrency(row.instrument_core.currency) === normalizedCurrency(workspace.base_currency)
 }
 
 function nonCashHoldingRows(rows: PortfolioHoldingRow[]) {
-  return rows.filter((row) => !isCashHoldingRow(row))
+  return rows.filter((row) => !isMonetaryHoldingRow(row))
 }
 
 function compareCashHoldingRows(left: PortfolioHoldingRow, right: PortfolioHoldingRow) {
@@ -862,7 +877,7 @@ function returnCurrencyForRow(
   row: PortfolioHoldingRow,
   workspace: HoldingsWorkspaceResponse,
 ) {
-  if (row.instrument_core.instrument_type === 'cash') {
+  if (isMonetaryHoldingRow(row)) {
     return workspace.base_currency.trim().toUpperCase()
   }
   return row.instrument_core.currency.trim().toUpperCase()
@@ -874,6 +889,7 @@ function rowsHaveCompatibleReturnCurrency(
 ) {
   const currencies = new Set(
     rows
+      .filter((row) => !isPendingMonetaryHoldingRow(row))
       .filter((row) => {
         const value = rowMarketValueBase(row, workspace)
         return value != null && Math.abs(value) > 1e-12
@@ -888,10 +904,13 @@ function weightedHoldingMetric(
   workspace: HoldingsWorkspaceResponse,
   accessor: (row: PortfolioHoldingRow) => number | null | undefined,
 ) {
-  if (!rowsHaveCompatibleReturnCurrency(rows, workspace)) {
+  const metricRows = rows.filter(
+    (row) => !isPendingMonetaryHoldingRow(row),
+  )
+  if (!metricRows.length || !rowsHaveCompatibleReturnCurrency(metricRows, workspace)) {
     return null
   }
-  const rowValues = rows.map((row) => rowMarketValueBase(row, workspace))
+  const rowValues = metricRows.map((row) => rowMarketValueBase(row, workspace))
   if (rowValues.some((value) => value == null)) {
     return null
   }
@@ -905,7 +924,7 @@ function weightedHoldingMetric(
   let eligibleAbsValue = 0
   let weightedTotal = 0
   let denominator = 0
-  for (const row of rows) {
+  for (const row of metricRows) {
     const value = rowMarketValueBase(row, workspace)
     const rawMetric = finiteNumber(accessor(row))
     const metric = rawMetric ?? (isBaseCashHoldingRow(row, workspace) ? 0 : null)
@@ -989,7 +1008,11 @@ function normalizedReturnSeries(series: HoldingReturnSeries | null | undefined) 
 }
 
 function calculationFrequencyForRows(rows: PortfolioHoldingRow[]): PortfolioCalculationFrequency {
-  const frequencies = new Set(rows.map((row) => row.instrument_risk_frequency))
+  const frequencies = new Set(
+    rows
+      .filter((row) => !isPendingMonetaryHoldingRow(row))
+      .map((row) => row.instrument_risk_frequency),
+  )
   if (frequencies.has('monthly')) {
     return 'monthly'
   }
@@ -1001,10 +1024,18 @@ export function groupedReturnSeries(
   workspace: HoldingsWorkspaceResponse,
   seriesAccessor: (row: PortfolioHoldingRow) => HoldingReturnSeries | null | undefined,
 ): GroupVolatilitySeries | null {
-  if (!rowsHaveCompatibleReturnCurrency(rows, workspace)) {
+  const returnEligibleRows = rows.filter(
+    (row) => !isPendingMonetaryHoldingRow(row),
+  )
+  if (
+    !returnEligibleRows.length ||
+    !rowsHaveCompatibleReturnCurrency(returnEligibleRows, workspace)
+  ) {
     return null
   }
-  const rowValues = rows.map((row) => rowMarketValueBase(row, workspace))
+  const rowValues = returnEligibleRows.map((row) =>
+    rowMarketValueBase(row, workspace),
+  )
   if (rowValues.some((value) => value == null)) {
     return null
   }
@@ -1016,7 +1047,7 @@ export function groupedReturnSeries(
     return null
   }
 
-  const valuedRows = rows
+  const valuedRows = returnEligibleRows
     .map((row) => ({
       row,
       value: rowMarketValueBase(row, workspace),
@@ -1024,7 +1055,9 @@ export function groupedReturnSeries(
     }))
     .filter((item) => item.value != null)
   const returnRows = valuedRows.filter((item) => item.points.length >= 2)
-  const zeroReturnRows = valuedRows.filter((item) => item.points.length < 2 && isBaseCashHoldingRow(item.row, workspace))
+  const zeroReturnRows = valuedRows.filter(
+    (item) => item.points.length < 2 && isBaseCashHoldingRow(item.row, workspace),
+  )
   const eligibleRows = [...returnRows, ...zeroReturnRows]
 
   const eligibleAbsValue = eligibleRows.reduce((sum, item) => sum + Math.abs(item.value ?? 0), 0)
@@ -1366,7 +1399,7 @@ function taxonomyLabelsForHoldingRow(
   row: PortfolioHoldingRow,
   taxonomyByInstrumentId: Map<string, HoldingTaxonomyLabels>,
 ) {
-  if (!isCashHoldingRow(row)) {
+  if (!isMonetaryHoldingRow(row)) {
     return taxonomyByInstrumentId.get(row.instrument_core.instrument_id) ?? null
   }
 
@@ -1869,8 +1902,17 @@ const HOLDINGS_COLUMN_DEFINITIONS: Record<HoldingsColumnKey, HoldingsColumnDefin
     key: 'instrument_type',
     label: 'Instrument Type',
     align: 'center',
-    render: (row) => formatLabel(row.instrument_core.instrument_type),
-    sortValue: (row) => row.instrument_core.instrument_type,
+    render: (row) =>
+      row.holding_kind === 'pending_subscription'
+        ? 'Pending Subscription'
+        : row.holding_kind === 'settlement_receivable'
+          ? 'Settlement Receivable'
+          : row.holding_kind === 'settlement_payable'
+            ? 'Settlement Payable'
+            : row.holding_kind === 'position_recognition_adjustment'
+              ? 'Recognition Adjustment'
+              : formatLabel(row.instrument_core.instrument_type),
+    sortValue: (row) => row.holding_kind ?? row.instrument_core.instrument_type,
   },
   taxonomy_top: {
     key: 'taxonomy_top',
@@ -2265,6 +2307,19 @@ function resolveGroupForRow(
     }
   }
   if (groupBy === 'instrument_type') {
+    if (isPendingMonetaryHoldingRow(row)) {
+      return {
+        key: row.holding_kind ?? 'pending_settlement',
+        label:
+          row.holding_kind === 'pending_subscription'
+            ? 'Pending Subscription'
+            : row.holding_kind === 'settlement_receivable'
+              ? 'Settlement Receivable'
+              : row.holding_kind === 'settlement_payable'
+                ? 'Settlement Payable'
+                : 'Pending Settlement',
+      }
+    }
     return { key: row.instrument_core.instrument_type, label: formatLabel(row.instrument_core.instrument_type) }
   }
   if (groupBy === 'currency') {
@@ -2491,14 +2546,14 @@ export default function PortfolioHomePage() {
   }, [columnContext, holdingsSortDirection, holdingsSortField, workspace?.rows])
   const nonCashPortfolioRows = useMemo(() => nonCashHoldingRows(sortedHoldingRows), [sortedHoldingRows])
   const cashPortfolioRows = useMemo(
-    () => sortedHoldingRows.filter((row) => isCashHoldingRow(row)).sort(compareCashHoldingRows),
+    () => sortedHoldingRows.filter((row) => isMonetaryHoldingRow(row)).sort(compareCashHoldingRows),
     [sortedHoldingRows],
   )
   const showNonCashPortfolioRow = nonCashPortfolioRows.length > 0 && cashPortfolioRows.length > 0
   const separateCashTaxonomyGroups = holdingsGroupBy === 'taxonomy_top' || holdingsGroupBy === 'taxonomy_leaf'
   const nonCashPortfolioLabel = workspace
-    ? `Non-cash Portfolio (${workspace.base_currency})`
-    : 'Non-cash Portfolio'
+    ? `Investment Positions (${workspace.base_currency})`
+    : 'Investment Positions'
   const ungroupedHoldingDisplayItems = useMemo<HoldingsDisplayItem[]>(() => {
     const items: HoldingsDisplayItem[] = nonCashPortfolioRows.map((row) => ({ kind: 'holding', row }))
     if (showNonCashPortfolioRow) {
@@ -2850,16 +2905,18 @@ export default function PortfolioHomePage() {
     if (!columnContext) {
       return null
     }
-    const isActive = selectedInstrumentId === row.instrument_core.instrument_id
+    const selectionInstrumentId =
+      row.economic_instrument_id || row.instrument_core.instrument_id
+    const isActive = selectedInstrumentId === selectionInstrumentId
     return (
       <tr
         key={row.line_id}
         className={isActive ? 'holdings-row-active' : undefined}
         tabIndex={0}
-        onClick={() => handleSelectInstrument(row.instrument_core.instrument_id)}
+        onClick={() => handleSelectInstrument(selectionInstrumentId)}
         onKeyDown={(event) => {
           if (event.key === 'Enter') {
-            handleSelectInstrument(row.instrument_core.instrument_id)
+            handleSelectInstrument(selectionInstrumentId)
           }
         }}
       >
@@ -3135,7 +3192,13 @@ export default function PortfolioHomePage() {
       return
     }
 
-    if (workspace.rows.some((row) => row.instrument_core.instrument_id === selectedInstrumentId)) {
+    if (
+      workspace.rows.some(
+        (row) =>
+          row.instrument_core.instrument_id === selectedInstrumentId ||
+          row.economic_instrument_id === selectedInstrumentId,
+      )
+    ) {
       return
     }
 

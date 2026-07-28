@@ -117,6 +117,24 @@ describe('Current planning cash and pending settlement', () => {
           market_value: 800,
           market_value_base: 800,
         }),
+        holdingFixture({
+          line_id: 'pending:pending_subscription:broker:asset-1:USD',
+          holding_kind: 'pending_subscription',
+          available_for_trading: false,
+          economic_instrument_id: 'asset-1',
+          instrument_core: {
+            instrument_id: 'pending:pending_subscription:broker:asset-1:USD',
+            instrument_name: 'Subscription receivable · Asset 1',
+            instrument_type: 'other',
+            currency: 'USD',
+            identifiers: [],
+          },
+          allocation: 0.08,
+          market_value: 80,
+          market_value_base: 80,
+          cost_basis: null,
+          cost_basis_base: null,
+        }),
       ],
     })
     const accountsWorkspace: PortfolioAccountsWorkspaceResponse = {

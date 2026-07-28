@@ -42,6 +42,7 @@ from portfolio_app.services.performance import (
 )
 from portfolio_app.services.holdings_market_profile import (
     is_cash_holding_instrument_id,
+    is_pending_monetary_holding,
     summarize_holding_day_change,
 )
 from portfolio_app.services.portfolio_store import (
@@ -209,6 +210,8 @@ def _instrument_ids_from_holdings_workspace(workspace: dict[str, object]) -> lis
     for row in rows:
         if not isinstance(row, dict):
             continue
+        if is_pending_monetary_holding(row):
+            continue
         instrument_core = row.get("instrument_core") if isinstance(row.get("instrument_core"), dict) else {}
         if (
             str(instrument_core.get("instrument_type") or "").strip().lower() == "cash"
@@ -277,7 +280,9 @@ def _enrich_holdings_workspace_market_data(
         instrument_core = row.get("instrument_core") if isinstance(row.get("instrument_core"), dict) else {}
         instrument_id = str(instrument_core.get("instrument_id") or row.get("line_id") or "")
         if (
-            str(instrument_core.get("instrument_type") or "").strip().lower() == "cash"
+            is_pending_monetary_holding(row)
+            or str(instrument_core.get("instrument_type") or "").strip().lower()
+            == "cash"
             or is_cash_holding_instrument_id(instrument_id)
         ):
             row.pop("price_chart", None)
@@ -581,18 +586,29 @@ def holdings_workspace(
             for position in statement.get("positions", [])
             if (instrument_id := str(position.get("instrument_id") or ""))
             and not is_cash_holding_instrument_id(instrument_id)
+            and not is_pending_monetary_holding(position)
             and isinstance((detail := instrument_details.get(instrument_id)), dict)
         }
     except InstrumentRegistryError as error:
         raise HTTPException(status_code=502, detail=str(error)) from error
     positions = list(statement["positions"])
-    position_count = len(positions)
-    priced_position_count = sum(1 for position in positions if position.get("last_price") is not None)
+    formal_positions = [
+        position
+        for position in positions
+        if str(position.get("holding_kind") or "position") == "position"
+    ]
+    position_count = len(formal_positions)
+    priced_position_count = sum(
+        1 for position in formal_positions if position.get("last_price") is not None
+    )
     position_lot_summary = summarize_position_lots(position_lots)
 
     def market_profile_for_position(position: dict[str, object]) -> dict[str, object]:
         instrument_id = str(position.get("instrument_id") or "")
-        if is_cash_holding_instrument_id(instrument_id):
+        if (
+            is_cash_holding_instrument_id(instrument_id)
+            or is_pending_monetary_holding(position)
+        ):
             profile = {
                 f"price_chart_{range_key}": (
                     position.get(f"price_chart_{range_key}")
@@ -618,6 +634,11 @@ def holdings_workspace(
     rows = [
         {
             "line_id": str(position.get("position_id") or position.get("instrument_id") or ""),
+            "holding_kind": position.get("holding_kind") or "position",
+            "available_for_trading": position.get("available_for_trading", True),
+            "economic_instrument_id": position.get("economic_instrument_id"),
+            "economic_instrument_ref": position.get("economic_instrument_ref"),
+            "transaction_ids": list(position.get("transaction_ids") or []),
             "instrument_core": position["instrument_ref"],
             "quantity": position["quantity"],
             "last_price": position.get("last_price"),
@@ -659,7 +680,12 @@ def holdings_workspace(
             or is_cash_holding_instrument_id(instrument_core.get("instrument_id") or row.get("line_id"))
         )
 
-    cost_basis_rows = [row for row in rows if not is_cash_workspace_row(row)]
+    cost_basis_rows = [
+        row
+        for row in rows
+        if not is_cash_workspace_row(row)
+        and not is_pending_monetary_holding(row)
+    ]
     total_cost_basis_base = (
         sum(float(row["cost_basis_base"]) for row in cost_basis_rows)
         if cost_basis_rows and all(row.get("cost_basis_base") is not None for row in cost_basis_rows)

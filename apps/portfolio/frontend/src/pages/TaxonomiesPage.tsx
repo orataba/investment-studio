@@ -232,6 +232,28 @@ function isCashHoldingRow(row: HoldingsWorkspaceResponse['rows'][number]) {
   return isCashInstrument(row.instrument_core) || row.line_id.trim().toLowerCase().startsWith('cash:')
 }
 
+function isPendingMonetaryHoldingRow(row: HoldingsWorkspaceResponse['rows'][number]) {
+  return (
+    row.holding_kind?.startsWith('pending_') === true ||
+    row.holding_kind === 'settlement_receivable' ||
+    row.holding_kind === 'settlement_payable' ||
+    row.holding_kind === 'position_recognition_adjustment' ||
+    row.line_id.trim().toLowerCase().startsWith('pending:')
+  )
+}
+
+function accountMonetaryBalanceBase(
+  row: PortfolioAccountsWorkspaceResponse['accounts'][number],
+) {
+  if (
+    row.derived_cash_balance_base == null ||
+    row.pending_settlement_base == null
+  ) {
+    return null
+  }
+  return row.derived_cash_balance_base + row.pending_settlement_base
+}
+
 function TableStatusRow({
   colSpan,
   label,
@@ -970,15 +992,25 @@ export default function TaxonomiesPage() {
     if (selectedTaxonomy.primary_assignment_scope === 'instrument') {
       const includeCashBuckets = true
       const visibleCashAccounts = accountRows.filter((accountRow) => {
-        return accountRow.account.account_type === 'deposit_account'
+        const monetaryBalance = accountMonetaryBalanceBase(accountRow)
+        return (
+          accountRow.account.account_type === 'deposit_account' ||
+          (monetaryBalance != null && Math.abs(monetaryBalance) > 1e-9)
+        )
       })
       const holdingRowsForEntities = includeCashBuckets
-        ? holdingsRows.filter((row) => !isCashHoldingRow(row))
+        ? holdingsRows.filter(
+            (row) =>
+              !isCashHoldingRow(row) &&
+              !isPendingMonetaryHoldingRow(row),
+          )
         : holdingsRows
       const totalEntityValueBase = completeAmountSum([
         ...holdingRowsForEntities.map((row) => row.market_value_base),
         ...(includeCashBuckets
-          ? visibleCashAccounts.map((accountRow) => accountRow.derived_cash_balance_base)
+          ? visibleCashAccounts.map((accountRow) =>
+              accountMonetaryBalanceBase(accountRow),
+            )
           : []),
       ])
 
@@ -1082,16 +1114,17 @@ export default function TaxonomiesPage() {
       }
 
       const cashEntities = visibleCashAccounts.map((accountRow) => {
+        const monetaryBalanceBase = accountMonetaryBalanceBase(accountRow)
         return {
           entity_id: accountRow.account.account_id,
           target_scope: 'cash_bucket' as const,
           label: accountRow.account.account_name,
           supporting_label: accountRow.account.currency,
           allocation:
-            accountRow.derived_cash_balance_base != null && totalEntityValueBase != null && totalEntityValueBase > 1e-9
-              ? accountRow.derived_cash_balance_base / totalEntityValueBase
+            monetaryBalanceBase != null && totalEntityValueBase != null && totalEntityValueBase > 1e-9
+              ? monetaryBalanceBase / totalEntityValueBase
               : null,
-          market_value_base: accountRow.derived_cash_balance_base ?? null,
+          market_value_base: monetaryBalanceBase,
           current_assignment: null,
           current_node: null,
           holding_state: 'held',
@@ -1106,7 +1139,13 @@ export default function TaxonomiesPage() {
 
     if (selectedTaxonomy.primary_assignment_scope === 'cash_bucket') {
       return accountRows
-        .filter((accountRow) => accountRow.account.account_type === 'deposit_account')
+        .filter((accountRow) => {
+          const monetaryBalance = accountMonetaryBalanceBase(accountRow)
+          return (
+            accountRow.account.account_type === 'deposit_account' ||
+            (monetaryBalance != null && Math.abs(monetaryBalance) > 1e-9)
+          )
+        })
         .map((accountRow): CoverageEntity => {
           const assignments =
             activeAssignmentsByEntityKey.get(coverageEntityKey('cash_bucket', accountRow.account.account_id)) ?? []
@@ -1124,10 +1163,10 @@ export default function TaxonomiesPage() {
           return {
             entity_id: accountRow.account.account_id,
             target_scope: 'cash_bucket',
-            label: `${accountRow.account.account_name} · Cash`,
+            label: `${accountRow.account.account_name} · Cash & Settlement`,
             supporting_label: accountRow.account.currency,
             allocation: null,
-            market_value_base: accountRow.derived_cash_balance_base ?? null,
+            market_value_base: accountMonetaryBalanceBase(accountRow),
             current_assignment: assignment,
             current_node: currentNode,
             holding_state: 'held',

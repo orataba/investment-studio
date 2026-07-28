@@ -505,6 +505,7 @@ type TransactionFormState = {
   trade_date: string
   trade_time: string
   settlement_date: string
+  position_effective_date: string
   entitlement_date: string
   acquisition_date: string
   account_id: string
@@ -538,6 +539,7 @@ function buildInitialFormState(accounts: PortfolioAccountRecord[]): TransactionF
     trade_date: defaultFormDate,
     trade_time: DEFAULT_FORM_TIME,
     settlement_date: defaultFormDate,
+    position_effective_date: defaultFormDate,
     entitlement_date: '',
     acquisition_date: '',
     account_id: defaultSecurityAccount?.account_id ?? accounts[0]?.account_id ?? '',
@@ -564,6 +566,8 @@ function buildFormStateFromTransaction(transaction: PortfolioTransactionRecord):
     trade_date: transaction.trade_date,
     trade_time: transaction.trade_time || DEFAULT_FORM_TIME,
     settlement_date: transaction.settlement_date,
+    position_effective_date:
+      transaction.position_effective_date || transaction.trade_date,
     entitlement_date: transaction.entitlement_date || '',
     acquisition_date: transaction.acquisition_date || '',
     account_id: transaction.account.account_id,
@@ -591,6 +595,15 @@ function supportsEntitlementDate(transactionType: string) {
     transactionType === 'coupon' ||
     transactionType === 'fee' ||
     transactionType === 'tax'
+  )
+}
+
+function supportsPositionEffectiveDate(transactionType: string) {
+  return (
+    transactionType === 'buy' ||
+    transactionType === 'sell' ||
+    transactionType === 'dividend_reinvestment' ||
+    transactionType === 'maturity_redemption'
   )
 }
 
@@ -1965,6 +1978,9 @@ export default function TransactionsPage() {
       trade_date: form.trade_date,
       trade_time: form.trade_time || null,
       settlement_date: form.settlement_date || form.trade_date,
+      position_effective_date: supportsPositionEffectiveDate(form.transaction_type)
+        ? form.position_effective_date || form.trade_date
+        : null,
       entitlement_date: supportsEntitlementDate(form.transaction_type)
         ? form.entitlement_date || form.trade_date
         : null,
@@ -2505,6 +2521,10 @@ export default function TransactionsPage() {
                               <strong>{transaction.trade_date}</strong>
                               <span className="holding-secondary">
                                 {timeMeta.primary} · settle {transaction.settlement_date}
+                                {transaction.position_effective_date &&
+                                transaction.position_effective_date !== transaction.trade_date
+                                  ? ` · position ${transaction.position_effective_date}`
+                                  : ''}
                               </span>
                             </div>
                           </td>
@@ -2663,12 +2683,16 @@ export default function TransactionsPage() {
                           <dd>{selectedTransaction.settlement_cash_account?.account_name ?? (selectedTransaction.counterparty_account_id ? accountNameById[selectedTransaction.counterparty_account_id] || selectedTransaction.counterparty_account_id : '—')}</dd>
                         </div>
                         <div>
-                          <dt>Trade / settle</dt>
-                          <dd>{selectedTransaction.trade_date} {selectedTransaction.trade_time}<br /><span>{selectedTransaction.settlement_date}</span></dd>
+                          <dt>Trade / position effective</dt>
+                          <dd>{selectedTransaction.trade_date} {selectedTransaction.trade_time}<br /><span>{selectedTransaction.position_effective_date ?? '—'}</span></dd>
                         </div>
                         <div>
-                          <dt>Economic / external flow</dt>
-                          <dd>{selectedTransaction.economic_date}<br /><span>{selectedTransaction.external_flow_date ?? '—'}</span></dd>
+                          <dt>Settlement / economic</dt>
+                          <dd>{selectedTransaction.settlement_date}<br /><span>{selectedTransaction.economic_date}</span></dd>
+                        </div>
+                        <div>
+                          <dt>External flow date</dt>
+                          <dd>{selectedTransaction.external_flow_date ?? '—'}</dd>
                         </div>
                         <div>
                           <dt>Quantity / price</dt>
@@ -2732,10 +2756,15 @@ export default function TransactionsPage() {
                               <strong>{formatLabel(posting.posting_role)}</strong>
                               <span>{accountNameById[posting.account_id] || posting.account_id}</span>
                             </div>
-                            <span>{posting.settlement_date}</span>
+                            <span>
+                              {posting.recognition_start_date
+                                ? `${posting.recognition_start_date} → ${posting.effective_date}`
+                                : posting.settlement_date}
+                            </span>
                           </div>
                           <dl className="transaction-inspector-card-metrics">
                             <div><dt>Cash</dt><dd>{formatSignedCurrency(posting.cash_amount_delta, posting.currency)}</dd></div>
+                            <div><dt>Pending</dt><dd>{formatSignedCurrency(posting.pending_amount_delta, posting.currency)}</dd></div>
                             <div><dt>Quantity</dt><dd>{formatNumber(posting.quantity_delta, 2)}</dd></div>
                             <div><dt>Cost basis</dt><dd>{posting.cost_basis_delta != null ? formatSignedCurrency(posting.cost_basis_delta, posting.currency) : '—'}</dd></div>
                           </dl>
@@ -2994,12 +3023,27 @@ export default function TransactionsPage() {
                   <input
                     type="date"
                     value={form.trade_date}
-                    onChange={(event) =>
-                      setForm((current) => ({
-                        ...current,
-                        trade_date: event.target.value,
-                      }))
-                    }
+                    onChange={(event) => {
+                      const nextTradeDate = event.target.value
+                      setForm((current) => {
+                        const nextPositionEffectiveDate =
+                          current.position_effective_date === current.trade_date ||
+                          current.position_effective_date < nextTradeDate
+                            ? nextTradeDate
+                            : current.position_effective_date
+                        const nextSettlementDate =
+                          current.settlement_date === current.trade_date ||
+                          current.settlement_date < nextTradeDate
+                            ? nextTradeDate
+                            : current.settlement_date
+                        return {
+                          ...current,
+                          trade_date: nextTradeDate,
+                          settlement_date: nextSettlementDate,
+                          position_effective_date: nextPositionEffectiveDate,
+                        }
+                      })
+                    }}
                   />
                 </label>
 
@@ -3007,6 +3051,7 @@ export default function TransactionsPage() {
                   <span>{transactionDateLabels(form.transaction_type).settlement}</span>
                   <input
                     type="date"
+                    min={form.trade_date}
                     value={form.settlement_date}
                     onChange={(event) =>
                       setForm((current) => ({
@@ -3016,6 +3061,27 @@ export default function TransactionsPage() {
                     }
                   />
                 </label>
+
+                {supportsPositionEffectiveDate(form.transaction_type) ? (
+                  <label className="transaction-ticket-field">
+                    <span>Position Effective Date</span>
+                    <input
+                      type="date"
+                      min={form.trade_date}
+                      value={form.position_effective_date}
+                      onChange={(event) =>
+                        setForm((current) => ({
+                          ...current,
+                          position_effective_date: event.target.value,
+                        }))
+                      }
+                    />
+                    <span className="transaction-ticket-hint">
+                      Use the trade date for same-day EOD holdings; use the confirmed
+                      share date when a fund begins later.
+                    </span>
+                  </label>
+                ) : null}
 
                 <label className="transaction-ticket-field">
                   <span>Trade Time</span>

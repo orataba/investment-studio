@@ -565,7 +565,9 @@ def _validate_processed_transactions(
                 )
             income_transactions.append(transaction)
             income_types.add(transaction_type)
-        elif transaction.trade_date < entitlement_date:
+        elif (
+            transaction.position_effective_date or transaction.trade_date
+        ) < entitlement_date:
             raise InstrumentEventTaskConflictError(
                 "Reinvestment purchase cannot precede the distribution entitlement date."
             )
@@ -779,6 +781,11 @@ def _linked_transaction_payload(transaction: TransactionRecordModel) -> dict[str
         "transaction_id": transaction.transaction_id,
         "transaction_type": transaction.transaction_type,
         "trade_date": transaction.trade_date.isoformat(),
+        "position_effective_date": (
+            transaction.position_effective_date.isoformat()
+            if transaction.position_effective_date is not None
+            else None
+        ),
         "settlement_date": transaction.settlement_date.isoformat(),
         "entitlement_date": (
             transaction.entitlement_date.isoformat()

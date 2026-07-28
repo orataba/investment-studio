@@ -3322,6 +3322,241 @@ def test_security_trade_cash_posting_uses_settlement_effective_date(client):
     assert cash_posting["effective_date"] == "2026-04-12"
 
 
+def test_confirmed_later_trade_enters_holdings_on_position_effective_date(client):
+    account = client.post(
+        "/api/portfolios/portfolio-ops/accounts",
+        json={
+            "account_name": "T Plus One Fund Account",
+            "account_type": "securities_account",
+            "currency": "USD",
+            "institution": "Test Broker",
+            "default_settlement_cash_account_id": "cash-usd-main",
+            "cost_basis_method": "fifo",
+            "allowed_instrument_types": ["equity"],
+            "opened_at": "2026-04-01",
+            "status": "active",
+        },
+    ).json()
+
+    buy_response = client.post(
+        "/api/portfolios/portfolio-ops/transactions",
+        json={
+            "transaction_type": "buy",
+            "trade_date": "2026-04-10",
+            "trade_time": "15:00",
+            "position_effective_date": "2026-04-12",
+            "settlement_date": "2026-04-10",
+            "account_id": account["account_id"],
+            "settlement_cash_account_id": "cash-usd-main",
+            "instrument_id": "equity-us-abbv",
+            "quantity": 10.0,
+            "price": 100.0,
+            "gross_amount": 1000.0,
+            "fees": 0.0,
+            "taxes": 0.0,
+            "currency": "USD",
+        },
+    )
+    assert buy_response.status_code == 200
+    transaction = buy_response.json()
+    assert transaction["trade_date"] == "2026-04-10"
+    assert transaction["position_effective_date"] == "2026-04-12"
+    assert transaction["economic_date"] == "2026-04-12"
+
+    trade_day_positions = client.get(
+        "/api/portfolios/portfolio-ops/accounts/workspace",
+        params={
+            "account_id": account["account_id"],
+            "as_of_date": "2026-04-10",
+        },
+    )
+    assert trade_day_positions.status_code == 200
+    assert not any(
+        row["instrument_id"] == "equity-us-abbv"
+        for row in trade_day_positions.json()["positions"]
+    )
+    trade_day_account = next(
+        row
+        for row in trade_day_positions.json()["accounts"]
+        if row["account"]["account_id"] == account["account_id"]
+    )
+    trade_day_cash_account = next(
+        row
+        for row in trade_day_positions.json()["accounts"]
+        if row["account"]["account_id"] == "cash-usd-main"
+    )
+    assert trade_day_account["pending_settlement"] == pytest.approx(0.0)
+    assert trade_day_account["account_value_base"] == pytest.approx(0.0)
+    assert trade_day_cash_account["pending_settlement"] == pytest.approx(
+        1000.0
+    )
+
+    effective_day_positions = client.get(
+        "/api/portfolios/portfolio-ops/accounts/workspace",
+        params={
+            "account_id": account["account_id"],
+            "as_of_date": "2026-04-12",
+        },
+    )
+    assert effective_day_positions.status_code == 200
+    effective_position = next(
+        row
+        for row in effective_day_positions.json()["positions"]
+        if row["instrument_id"] == "equity-us-abbv"
+    )
+    assert effective_position["quantity"] == pytest.approx(10.0)
+    effective_day_account = next(
+        row
+        for row in effective_day_positions.json()["accounts"]
+        if row["account"]["account_id"] == account["account_id"]
+    )
+    assert effective_day_account["pending_settlement"] == pytest.approx(0.0)
+    effective_day_cash_account = next(
+        row
+        for row in effective_day_positions.json()["accounts"]
+        if row["account"]["account_id"] == "cash-usd-main"
+    )
+    assert effective_day_cash_account["pending_settlement"] == pytest.approx(
+        0.0
+    )
+
+    ledger_response = client.get(
+        f"/api/portfolios/portfolio-ops/transactions/{transaction['transaction_id']}/ledger-postings"
+    )
+    assert ledger_response.status_code == 200
+    postings = ledger_response.json()["ledger_postings"]
+    position_posting = next(
+        item for item in postings if item["posting_role"] == "security_position"
+    )
+    cash_posting = next(
+        item for item in postings if item["posting_role"] == "security_settlement_cash"
+    )
+    bridge_posting = next(
+        item
+        for item in postings
+        if item["posting_role"] == "position_recognition_bridge"
+    )
+    assert position_posting["effective_date"] == "2026-04-12"
+    assert cash_posting["effective_date"] == "2026-04-10"
+    assert bridge_posting["recognition_start_date"] == "2026-04-10"
+    assert bridge_posting["effective_date"] == "2026-04-12"
+    assert bridge_posting["pending_amount_delta"] == pytest.approx(1000.0)
+    assert bridge_posting["account_id"] == "cash-usd-main"
+    assert bridge_posting["attribution_account_id"] == account["account_id"]
+
+    lots_response = client.get(
+        "/api/portfolios/portfolio-ops/position-lots",
+        params={
+            "account_id": account["account_id"],
+            "instrument_id": "equity-us-abbv",
+            "as_of_date": "2026-04-12",
+        },
+    )
+    assert lots_response.status_code == 200
+    assert lots_response.json()["position_lots"][0]["opened_at"] == "2026-04-12"
+
+
+def test_confirmed_later_position_cannot_be_sold_before_it_is_effective(client):
+    account = client.post(
+        "/api/portfolios/portfolio-ops/accounts",
+        json={
+            "account_name": "Confirmed Later Disposal Review",
+            "account_type": "securities_account",
+            "currency": "USD",
+            "institution": "Test Broker",
+            "default_settlement_cash_account_id": "cash-usd-main",
+            "cost_basis_method": "fifo",
+            "allowed_instrument_types": ["equity"],
+            "opened_at": "2026-04-01",
+            "status": "active",
+        },
+    ).json()
+
+    buy_response = client.post(
+        "/api/portfolios/portfolio-ops/transactions",
+        json={
+            "transaction_type": "buy",
+            "trade_date": "2026-04-10",
+            "position_effective_date": "2026-04-12",
+            "settlement_date": "2026-04-12",
+            "account_id": account["account_id"],
+            "settlement_cash_account_id": "cash-usd-main",
+            "instrument_id": "equity-us-abbv",
+            "quantity": 10.0,
+            "price": 100.0,
+            "gross_amount": 1000.0,
+            "currency": "USD",
+        },
+    )
+    assert buy_response.status_code == 200
+
+    premature_sale = client.post(
+        "/api/portfolios/portfolio-ops/transactions",
+        json={
+            "transaction_type": "sell",
+            "trade_date": "2026-04-11",
+            "position_effective_date": "2026-04-12",
+            "settlement_date": "2026-04-12",
+            "account_id": account["account_id"],
+            "settlement_cash_account_id": "cash-usd-main",
+            "instrument_id": "equity-us-abbv",
+            "quantity": 1.0,
+            "price": 110.0,
+            "gross_amount": 110.0,
+            "currency": "USD",
+        },
+    )
+    assert premature_sale.status_code == 400
+    assert "as of trade_date" in premature_sale.json()["detail"]
+
+    delayed_sale = client.post(
+        "/api/portfolios/portfolio-ops/transactions",
+        json={
+            "transaction_type": "sell",
+            "trade_date": "2026-04-12",
+            "position_effective_date": "2026-04-13",
+            "settlement_date": "2026-04-13",
+            "account_id": account["account_id"],
+            "settlement_cash_account_id": "cash-usd-main",
+            "instrument_id": "equity-us-abbv",
+            "quantity": 5.0,
+            "price": 120.0,
+            "gross_amount": 600.0,
+            "currency": "USD",
+        },
+    )
+    assert delayed_sale.status_code == 200
+
+    trade_day = client.get(
+        "/api/portfolios/portfolio-ops/accounts/workspace",
+        params={
+            "account_id": account["account_id"],
+            "as_of_date": "2026-04-12",
+        },
+    )
+    effective_day = client.get(
+        "/api/portfolios/portfolio-ops/accounts/workspace",
+        params={
+            "account_id": account["account_id"],
+            "as_of_date": "2026-04-13",
+        },
+    )
+    assert trade_day.status_code == 200
+    assert effective_day.status_code == 200
+    trade_day_position = next(
+        row
+        for row in trade_day.json()["positions"]
+        if row["instrument_id"] == "equity-us-abbv"
+    )
+    effective_day_position = next(
+        row
+        for row in effective_day.json()["positions"]
+        if row["instrument_id"] == "equity-us-abbv"
+    )
+    assert trade_day_position["quantity"] == pytest.approx(10.0)
+    assert effective_day_position["quantity"] == pytest.approx(5.0)
+
+
 def test_security_opening_balance_preserves_acquisition_date_in_position_lots(client):
     account = client.post(
         "/api/portfolios/portfolio-ops/accounts",

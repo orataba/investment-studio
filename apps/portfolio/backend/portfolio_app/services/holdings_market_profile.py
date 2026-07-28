@@ -135,6 +135,17 @@ def is_cash_holding_instrument_id(instrument_id: object) -> bool:
     return str(instrument_id or "").strip().lower().startswith("cash:")
 
 
+def is_pending_monetary_holding_instrument_id(instrument_id: object) -> bool:
+    return str(instrument_id or "").strip().lower().startswith("pending:")
+
+
+def is_pending_monetary_holding(row: dict[str, object]) -> bool:
+    holding_kind = str(row.get("holding_kind") or "").strip().lower()
+    return holding_kind.startswith("pending_") or is_pending_monetary_holding_instrument_id(
+        row.get("instrument_id") or row.get("line_id")
+    )
+
+
 def cash_holding_instrument_ref(
     currency: str,
     *,
@@ -312,6 +323,8 @@ def build_cash_holding_rows(
                 "instrument_id": instrument_id,
                 "account_id": instrument_id,
                 "line_id": instrument_id,
+                "holding_kind": "settled_cash",
+                "available_for_trading": True,
                 "instrument_ref": cash_instrument_ref(currency),
                 "quantity": amount,
                 "cost_basis_method": None,
@@ -338,6 +351,160 @@ def build_cash_holding_rows(
             }
         )
     rows.sort(key=lambda item: str(item.get("currency") or ""))
+    return rows
+
+
+_PENDING_MONETARY_LABELS = {
+    "pending_subscription": "Subscription receivable",
+    "settlement_receivable": "Settlement receivable",
+    "settlement_payable": "Settlement payable",
+    "position_recognition_adjustment": "Position recognition adjustment",
+}
+
+
+def _pending_monetary_instrument_id(balance: dict[str, object], currency: str) -> str:
+    holding_kind = str(balance.get("holding_kind") or "pending_settlement").strip().lower()
+    account_id = str(balance.get("account_id") or "unassigned").strip()
+    economic_instrument_id = str(
+        balance.get("economic_instrument_id") or "cash"
+    ).strip()
+    return f"pending:{holding_kind}:{account_id}:{economic_instrument_id}:{currency}"
+
+
+def build_pending_monetary_holding_rows(
+    *,
+    pending_balances: list[dict[str, object]],
+    as_of_date: date,
+    base_currency: str,
+    direct_fx_instruments: dict[tuple[str, str], str],
+    instrument_detail_cache: dict[str, dict[str, object] | None],
+    cash_day_change: CashDayChange,
+    normalize_currency: NormalizeCurrency = valuation_fx.normalized_currency,
+    safe_float: SafeFloat = _safe_float,
+) -> list[dict[str, object]]:
+    """Render unsettled monetary balances without calling them cash or positions."""
+
+    normalized_base_currency = _required_currency(
+        base_currency,
+        normalize_currency=normalize_currency,
+        field_name="portfolio base currency",
+    )
+    rows: list[dict[str, object]] = []
+    for balance in pending_balances:
+        currency = _required_currency(
+            balance.get("currency"),
+            normalize_currency=normalize_currency,
+            field_name="pending-balance currency",
+        )
+        amount = safe_float(balance.get("amount"))
+        if amount is None or abs(amount) <= 1e-9:
+            continue
+        amount_base = safe_float(balance.get("amount_base"))
+        holding_kind = str(
+            balance.get("holding_kind") or "pending_settlement"
+        ).strip().lower()
+        account_id = str(balance.get("account_id") or "").strip()
+        economic_instrument_id = str(
+            balance.get("economic_instrument_id") or ""
+        ).strip()
+        economic_instrument_ref = (
+            deepcopy(balance.get("economic_instrument_ref"))
+            if isinstance(balance.get("economic_instrument_ref"), dict)
+            else None
+        )
+        economic_name = str(
+            (economic_instrument_ref or {}).get("instrument_name")
+            or economic_instrument_id
+        ).strip()
+        label = _PENDING_MONETARY_LABELS.get(
+            holding_kind,
+            "Pending settlement",
+        )
+        instrument_name = f"{label} · {economic_name}" if economic_name else label
+        instrument_id = _pending_monetary_instrument_id(balance, currency)
+        day_change_pct, day_change_value_base = cash_day_change(
+            amount=amount,
+            currency=currency,
+            base_currency=base_currency,
+            as_of_date=as_of_date,
+            direct_fx_instruments=direct_fx_instruments,
+            instrument_detail_cache=instrument_detail_cache,
+        )
+        account_ids = sorted(
+            {
+                str(candidate)
+                for candidate in [
+                    account_id,
+                    *list(balance.get("account_ids") or []),
+                ]
+                if str(candidate or "")
+            }
+        )
+        rows.append(
+            {
+                "position_id": instrument_id,
+                "instrument_id": instrument_id,
+                "account_id": account_id or instrument_id,
+                "line_id": instrument_id,
+                "holding_kind": holding_kind,
+                "available_for_trading": False,
+                "economic_instrument_id": economic_instrument_id or None,
+                "economic_instrument_ref": economic_instrument_ref,
+                "transaction_ids": sorted(
+                    {
+                        str(transaction_id)
+                        for transaction_id in list(
+                            balance.get("transaction_ids") or []
+                        )
+                        if str(transaction_id or "")
+                    }
+                ),
+                "instrument_ref": {
+                    "instrument_id": instrument_id,
+                    "instrument_name": instrument_name,
+                    "instrument_type": "other",
+                    "currency": currency,
+                    "identifiers": [],
+                },
+                "quantity": amount,
+                "cost_basis_method": None,
+                "cost_basis": None,
+                "cost_basis_base": None,
+                "last_price": 1.0,
+                "quote_as_of_date": as_of_date.isoformat(),
+                "quote_metric_family": "cash",
+                "quote_basis": "pending_settlement",
+                "quote_provider": "ledger",
+                "quote_status": (
+                    "complete" if amount_base is not None else "unpriced"
+                ),
+                "market_value": amount,
+                "market_value_base": amount_base,
+                "day_change_pct": day_change_pct,
+                "day_change_value": (
+                    0.0 if currency == normalized_base_currency else None
+                ),
+                "day_change_value_base": day_change_value_base,
+                "currency": currency,
+                "portfolio_weight": None,
+                "account_ids": account_ids,
+                "account_count": len(account_ids) if account_ids else 1,
+                "open_position_lot_count": 0,
+                "instrument_holding_start_date": None,
+                "coverage_status": (
+                    "pending-settlement"
+                    if amount_base is not None
+                    else "unpriced"
+                ),
+            }
+        )
+    rows.sort(
+        key=lambda item: (
+            str(item.get("holding_kind") or ""),
+            str(item.get("account_id") or ""),
+            str(item.get("economic_instrument_id") or ""),
+        )
+    )
     return rows
 
 
@@ -487,6 +654,7 @@ def build_materialized_holding_rows(
     *,
     account_instrument_buckets: list[dict[str, object]],
     cash_balances: list[dict[str, object]] | None = None,
+    pending_balances: list[dict[str, object]] | None = None,
     as_of_date: date,
     base_currency: str,
     direct_fx_instruments: dict[tuple[str, str], str],
@@ -503,6 +671,7 @@ def build_materialized_holding_rows(
     holding_day_change: CashDayChange,
     normalize_instrument: Callable[..., dict[str, object]],
     build_cash_rows: Callable[..., list[dict[str, object]]],
+    build_pending_rows: Callable[..., list[dict[str, object]]],
     apply_portfolio_weights: Callable[[list[dict[str, object]], float | None], None],
 ) -> list[dict[str, object]]:
     rows: list[dict[str, object]] = []
@@ -612,6 +781,8 @@ def build_materialized_holding_rows(
                 "line_id": f"{account_id}:{instrument_id}",
                 "account_id": account_id,
                 "instrument_id": instrument_id,
+                "holding_kind": "position",
+                "available_for_trading": True,
                 "instrument_ref": instrument_core,
                 "quantity": quantity,
                 "cost_basis_method": str(bucket.get("cost_basis_method") or "fifo"),
@@ -657,6 +828,15 @@ def build_materialized_holding_rows(
     rows.extend(
         build_cash_rows(
             cash_balances=list(cash_balances or []),
+            as_of_date=as_of_date,
+            base_currency=base_currency,
+            direct_fx_instruments=direct_fx_instruments,
+            instrument_detail_cache=instrument_detail_cache,
+        )
+    )
+    rows.extend(
+        build_pending_rows(
+            pending_balances=list(pending_balances or []),
             as_of_date=as_of_date,
             base_currency=base_currency,
             direct_fx_instruments=direct_fx_instruments,

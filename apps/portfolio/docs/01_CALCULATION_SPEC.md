@@ -240,7 +240,11 @@
 - `deposit` / `withdrawal` 必须记入 `deposit_account`；`buy` / `sell` / `dividend` / `coupon` / `maturity_redemption` 默认记入 `securities_account`。
 - 若 `transfer_object_type = cash`，只更新 `deposit_account` 现金账本；若 `transfer_object_type = position`，只更新 `securities_account` 持仓账本。
 - account-level cash / position ledger 必须通过 `Transaction -> LedgerPosting` 的确定性展开生成；`deposit_account` 账本是派生视图，不要求用户为同一结算再录入第二条现金交易。
-- 证券现金腿的 settled cash 进入账户账本的业务日期是 `LedgerPosting.effective_date = settlement_date`；证券头寸 posting 的 `effective_date = trade_date`。
+- 证券现金腿的 settled cash 进入账户账本的业务日期是 `LedgerPosting.effective_date = settlement_date`；证券头寸 posting 的 `effective_date = position_effective_date`。未显式填写 `position_effective_date` 的历史记录与普通交易默认回退到 `trade_date`。
+- 绩效核算遵循 GIPS 2.A.9 的 trade-date accounting 原则，不采用“到交收日才确认整笔交易”的 settlement-date accounting。这里的 accounting trade date 是资产/负债实际被确认的日期；对 pooled fund 申购，order date 与所有权/确定份额转移日可以不同，因此原始下单/定价日保留在 `trade_date`，确定份额归属的日末边界记录为 `position_effective_date`，二者都不得被 `settlement_date` 覆盖。
+- 开盘前或盘中完成、应进入当天 EOD 持仓的交易使用 `position_effective_date = trade_date`。以当日收盘净值定价、下一个交易日确认份额的基金申购/赎回，保留真实 `trade_date`，并把确认日写入 `position_effective_date`，不得通过伪造下一日成交来隐藏当天持仓。
+- 当前账本不隐式猜测 T+N，也不从成交时钟推断确认规则；确认日必须来自成交回单、注册登记或托管事实。`settlement_date < position_effective_date` 时，现金先按结算日出账，同时在对应结算现金账户的 settlement subledger 确认等额 `position_recognition_bridge`；买入场景对外呈现为 `pending_subscription`（申购结算应收/待份额确认），不得伪造成证券账户中的基金份额。确认日桥接余额消失并转为真实份额，NAV 不得在等待确认期间凭空下降。
+- 交易可用份额按真实 `trade_date + trade_at` 检查，持仓与成本按 `position_effective_date` 排序确认；因此尚未确认的申购份额不能被提前卖出，而延后确认的赎回在确认日前仍保留于 EOD 持仓。数据库同时约束 `trade_date <= position_effective_date` 及可用交易类型，绕过 API 的非法事实也必须失败。
 - `opening_balance` 是 bootstrap event，不属于正常运行期的 external / internal recurring flow。
 
 ### 2.4.1 opening_balance 处理
@@ -302,11 +306,11 @@ Risk 与 Research 的 covariance / correlation / risk contribution 必须先确�
 - Holdings `Forward RC` 和 Risk 页 Current Drift 是当前权重口径：用当前持仓权重与资产自身历史收益窗口估计当前组合风险，语义上等同于“当前组合如果在历史窗口内一直以当前权重持有”。Forward covariance 必须先在全组合 leaf instrument 上估计一次；taxonomy / sleeve 的 current risk share 只能把这些 leaf contribution 按同一个全组合 variance 分母相加，禁止先合成 sleeve return、再对 sleeve 重新做 shrinkage covariance。真实成立以来/真实持仓期间的 realized attribution 留在 Performance `Calculation`。Risk 页不再提供单独的 point-in-time Risk Contribution 表；风险预算偏离只在 Current Drift 中展示。
 - Risk 页 Rolling Risk 是窗口内 sample volatility / sample Sharpe 展示层，只受 rolling lookback、calculation frequency 和 coverage 影响；不提供 EWMA / shrinkage 等 covariance model 选择。当前权重篮子同样要求所有 active members 在共同 inception 之后具有完全一致的 dates 与 period identity；不能先取交集静默丢掉缺失日再计算。凡是用于 risk-budget drift、rebalance trigger、Research solve 或 Holdings Forward RC 的 RC 相关指标，必须使用组合级 `Production Risk Model`，不能在不同页面各自硬编码 decay、shrinkage、lookback 或 contribution mode。
 - Risk 页 Correlation Matrix 是窗口内 sample correlation 展示层，只受 lookback、calculation frequency、coverage 和 scope 影响；不提供 EWMA、vol shrinkage 或 correlation shrinkage 方法选择。EWMA / shrinkage 是 forward covariance 估计模型，应保留在 Production Risk Model 驱动的 Current Drift risk gap、Research solve 和 Holdings Forward RC 中。
-- Risk 页 instrument-scope planning taxonomy 的 Current Drift 用非现金 Holdings rows 与 Accounts workspace 的 `derived_cash_balance_base + pending_settlement_base` 合成当前 NAV；deposit 与 securities account 的现金、待交收都必须计入，证券账户的 position market value 只通过 Holdings 进入一次。现金 exposure 来自 Accounts，Holdings cash rows 不得再作为 instrument leg 参与分母或分组。一个 root target 可以用直接 `cash_bucket` 表示汇总现金；此时 current cash 先跨 taxonomy nodes 汇总成一条 Cash comparator，不能重复展示或计数。
+- Risk 页 instrument-scope planning taxonomy 的 Current Drift 用正式风险持仓 Holdings rows 与 Accounts workspace 的 `derived_cash_balance_base + pending_settlement_base` 合成当前 NAV；deposit 与 securities account 的现金、待交收都必须计入，证券账户的 position market value 只通过 Holdings 进入一次。Holdings 中为对账而展示的 settled-cash 与 pending-monetary rows 不得再次作为 instrument leg 参与分母或分组；它们的规划归属来自结算现金账户的 `cash_bucket`。一个 root target 可以用直接 `cash_bucket` 表示汇总 cash-and-settlement；此时 current monetary balance 先跨 taxonomy nodes 汇总成一条 comparator，不能重复展示或计数。
 - 只有 base-currency cash 可以天然按 0 return / 0 market risk 处理。Non-base cash 需要 FX total-return series；非本币资产的本地币种 total return 也不能直接与 base-currency returns 拼接。在显式产出 base-currency total-return series 之前，Forward RC、Rolling Risk 与 Correlation 都必须 fail closed。
 - Risk benchmark 只有在 return semantics 已确认为 `total_return` 或 `price_return` 且 currency 与 portfolio base currency 一致时才参与 rolling comparison。`price_return` 可以作为探索性比较，但必须提示分红口径差异；unknown semantics、raw-currency 或 unavailable coverage 不输出相对风险曲线。
 - Risk Health 的基础监控包括 Production Forward Volatility 及 coverage、SAA/TAA risk-budget absolute gap、非现金 gross-normalized Top-3/HHI、以及 Accounts cash + pending settlement。任何组成字段缺失时对应指标显示 unavailable，不得把缺失金额或权重当成 0。
-- Taxonomy 页 instrument-scope planning taxonomy 的当前覆盖视图使用同一现金口径：当前实体池由非现金 Holdings rows 加 Accounts cash bucket 组成，不把 Holdings 的 `cash:{currency}` 行再作为 instrument 实体展示或计入分母。根行 `Actual Weight` 表示当前实体池整体，必须约等于 100%；各 node 行表示已分类实体，`Without Classification` 只表示未分类残差。
+- Taxonomy 页 instrument-scope planning taxonomy 的当前覆盖视图使用同一 monetary-account 口径：当前实体池由正式风险持仓 Holdings rows 加 Accounts cash-and-settlement bucket 组成，不把 Holdings 的 `cash:{currency}` 或 `pending:*` 行再作为 instrument 实体展示或计入分母。根行 `Actual Weight` 表示当前实体池整体，必须约等于 100%；各 node 行表示已分类实体，`Without Classification` 只表示未分类残差。
 - Risk 页 rolling metrics 与 correlation matrix 必须进一步校验 lookback window 覆盖率：按 resolved frequency 使用最小收益样本数、窗口起点最大偏离和至少 80% elapsed-day 覆盖。覆盖不足时结果为 insufficient-history / unavailable，不用更短窗口、pairwise dates、0 return 或前向填充替代。
 
 ### 2.7 缺失数据与覆盖率
@@ -364,7 +368,7 @@ $$
 MVP 中：
 
 - `SettledCash_t^{base}` 表示截至 `t` 已经按 `effective_date` 生效的现金 posting；
-- `PendingSettlementNet_t^{base}` 表示 trade date 已确认、但 cash leg 尚未到 `effective_date` 的证券结算应收 / 应付款；该值在 settlement 前继续留在 NAV 中，settlement 当日转入 `SettledCash_t^{base}`；
+- `PendingSettlementNet_t^{base}` 包括两类 monetary exposure：头寸已确认而 cash leg 尚未到 `settlement_date` 的证券结算应收 / 应付款，以及 cash 已结算而头寸尚未到 `position_effective_date` 的 `position_recognition_bridge`。前者在 settlement 当日转入 `SettledCash_t^{base}`；后者在确认日转为真实份额/头寸。两类都必须在有效区间内继续留在 NAV 中；
 - 非基准货币的 `PendingSettlementNet` 是独立 monetary exposure。结算前的汇率重估必须记为 `PendingSettlementCurrencyGain`，与 settled cash FX、instrument FX 和资产 capital gain 分列；不得把待结算应收 / 应付的 FX 变动吸收到资产的 realized / unrealized capital gain；
 - `Accounts` workspace、account-axis contribution、Research current context / actual rows 在任意 `as_of_date = t` 都必须复用同一条 settled-vs-pending 口径；不能出现 settled cash 已按 `effective_date` 截断，但 ending value / actual rows 又漏掉 pending settlement 的情况；
 - `OtherAssets_t` 可先默认为 `0`，除非显式支持应收项；
@@ -389,9 +393,10 @@ $$
 
 Transaction 是可修改的业务事实，但修改必须保留可追溯性，并与 ledger 派生结果分层：
 
-- `transaction_economic_date` 默认取 `trade_date`；dividend / coupon 有合法 `entitlement_date` 时在 entitlement date 确认经济收益；
+- `transaction_economic_date` 对 position-changing 事实取 `position_effective_date`（缺省回退 `trade_date`）；dividend / coupon 有合法 `entitlement_date` 时在 entitlement date 确认经济收益；
 - deposit / withdrawal 的 `external_flow_date` 优先使用显式导入值，其次 `settlement_date`，最后才回退 `trade_date`。TWR 必须在该实际收付日中性化 external flow；
-- 证券头寸 posting 在 trade date 生效，结算现金 posting 在 settlement date 生效；pending settlement 在两者之间作为独立 monetary exposure 留在 NAV；
+- 证券头寸 posting 在 position effective date 生效，结算现金 posting 在 settlement date 生效；当 `position_effective_date <= settlement_date` 时，两者之间的 pending settlement 作为独立 monetary exposure 留在 NAV；
+- `trade_date` 是成交/定价事实，`position_effective_date` 是 EOD 持仓确认事实，`settlement_date` 是现金结算事实，`entitlement_date` 是收入权利事实；四者不得因界面或计算方便互相覆盖；
 - `fee_category` 必须显式保存；无法分类的历史或导入事实使用 `unknown`，不得猜测 management / custody / transaction cost；
 - create / update / delete 必须写入 additive change log，记录 before / after、row version、时间与可用的 idempotency key；这不是 event-sourcing ledger replacement；
 - 同一 portfolio 的 idempotency key 只可重放同一 operation 与同一 request hash；同 key 不同 payload 必须冲突失败；
@@ -448,7 +453,7 @@ $$
 
 它不是某一笔交易的 purchase price。真实交易价格在 lot 层用 `entry_price = entry_gross_amount / entry_quantity` 表示，且不包含资本化费用和税费；`entry_cost_per_unit` 才包含资本化费用和税费。`moving_average` 的 synthetic lot 没有真实 tax-lot purchase price，展示时应优先使用当前 `Avg Cost`。
 
-Holdings 是当前持仓状态表，只展示当前仍然 open 的 position quantity、settled cash balance、quote、market value、weight、open-position cost basis 与 unrealized P&L。资产级 TWR、period contribution、realized gain、dividend / coupon income、fees / taxes impact 和 closed positions 属于 `Performance` / security detail 的区间绩效视图，不进入 Holdings 默认列，也不作为 Holdings 的 canonical 语义。
+Holdings 是 as-of balance sheet view，展示当前仍然 open 的正式 position、settled cash 及用于把 NAV 对平的 pending monetary balance。只有正式 position 才有证券 quantity、open-position cost basis 与 unrealized P&L；pending monetary row 不是基金/证券持仓。资产级 TWR、period contribution、realized gain、dividend / coupon income、fees / taxes impact 和 closed positions 属于 `Performance` / security detail 的区间绩效视图，不进入 Holdings 默认列，也不作为 Holdings 的 canonical 语义。
 
 分红与未实现收益必须严格分层：
 
@@ -457,18 +462,23 @@ Holdings 是当前持仓状态表，只展示当前仍然 open 的 position quan
 - 只有明确的 `return_of_capital` 才冲减当前 open lots 的 remaining cost basis。它不是 dividend income；超过剩余成本的事实在支持超额资本返还收益分类前必须失败关闭；
 - 除息后的 valuation price / NAV 下降会降低持仓未实现资本利得，已确认的分红则在 `Income` 中抵补经济收益。二者可以共同解释总 P&L，但不得相互改写分类。
 
-Holdings 中的现金行按 settled cash ledger 逐币种生成，`instrument_id = cash:{currency}`：
+Holdings 的 monetary 部分按结算现金账户子账拆分：
 
-- `market_value` 等于该币种 settled cash amount；
-- `market_value_base` 等于该现金金额按 as-of date FX 转成组合 base currency 后的值；
-- `cost_basis`、`cost_basis_base`、`Avg Cost` 与 unrealized P&L 对现金不适用；
+- `settled_cash`：真正已经入账且可支配的现金，按币种生成 `instrument_id = cash:{currency}`；只有这一层进入可用现金金额/比例；
+- `restricted_cash`：法律上仍属现金但已冻结、质押或受限，必须有显式 restriction fact 才能确认；当前系统不得仅因存在一笔未完成交易就自行猜测为冻结现金；
+- `pending_subscription`：现金已经划出而份额尚未在 EOD 持仓生效的申购结算应收；
+- `settlement_receivable`：资产已按 position-effective boundary 减少但出售款尚未到账；
+- `settlement_payable`：资产已按 position-effective boundary 增加但购买款尚未支付；
+- pending monetary row 使用 `instrument_id = pending:{kind}:{cash_account}:{economic_instrument}:{currency}`，归属于结算现金账户，并保留 `economic_instrument_id` 与 `transaction_ids` 以便穿透追踪；它不是对应资产账户的一笔虚构 position；
+- monetary row 的 `market_value` 等于该币种余额，`market_value_base` 等于按 as-of date FX 转成组合 base currency 后的值；
+- `cost_basis`、`cost_basis_base`、`Avg Cost` 与 unrealized P&L 对所有 monetary rows 都不适用；
 - base-currency cash 的 instrument return、day return 和 volatility 为 `0`；
 - non-base cash 的 instrument return / day return 来自该现金币种兑 base currency 的 FX series；
-- pending settlement 不生成 Holdings cash row，但仍进入组合 NAV 与 pending settlement total。
+- pending monetary balance 不属于现金、没有 instrument total-return series、不得进入资产协方差矩阵；其 FX 重估仍按 `PendingSettlementCurrencyGain` 单独入账。
 
-`Market Value Base` 是任意 holding row 的 base-currency fair value。对非现金资产，它等于 `quantity * selected valuation quote` 再按 as-of date FX 转换；对现金，它等于 settled cash amount 的 base-currency value。Holdings `Portfolio Total` 的 market value 包含非现金市值与 settled cash，不包含 pending settlement；NAV 另行等于 market value 加 pending settlement。
+`Market Value Base` 是任意 holding row 的 base-currency fair value。对正式资产，它等于 `quantity * selected valuation quote` 再按 as-of date FX 转换；对 settled cash 与 pending monetary balance，它等于对应 monetary balance 的 base-currency value。Holdings `Portfolio Total` 包含正式资产、settled cash 与 pending monetary balance，必须与同日 canonical NAV 对平。
 
-Holdings 行级 `Weight = market_value_base / portfolio NAV`，沿用包含 pending settlement 的 canonical NAV 分母。因此 rows 的权重合计等于 `Holdings market value / NAV`，有 pending settlement 时不要求正好为 100%。当前篮子 Return / Risk 则只在实际参与的 Holdings 成员内部按 market value 归一；pending settlement 没有 instrument return series，不得被伪造成现金或 0-return 成员。
+Holdings 行级 `Weight = market_value_base / portfolio NAV`。在估值与 FX 完整时，正式资产、settled cash 与 pending monetary rows 的权重合计必须为 100%。当前篮子 Return / Risk 只使用正式风险持仓；pending monetary balance 没有 instrument return series，不得被伪造成现金、基金持仓或 0-return 风险成员。Forward volatility 仍使用正式持仓相对总 NAV 的原始权重，因此现金与待交收占用资本时会自然降低总组合预测波动率。
 
 `Day Change` / `Day Return` 是 as-of date 当前持仓规模上的一天经济市场变动，不是历史实际持仓区间绩效：
 
@@ -494,26 +504,27 @@ Holdings 可以展示 quote-derived instrument market trend 指标，作为扫�
 - volatility 窗口必须有接近窗口起点的初始 quote、足够 elapsed-day 覆盖和最小收益样本数，否则为空。当前门槛为 daily `10 / 30 / 60 / 120`、weekly `3 / 6 / 12 / 24`、monthly `2 / 2 / 4 / 6`，分别对应 `1M / 3M / 6M / 1Y`；
 - 这些指标不读取 quantity、cash flow、cost basis、FIFO / moving average、realized gain 或 income，因此不属于组合 TWR、holding contribution 或 book P&L。
 
-Holdings `Forward RC` 是当前持仓的组合级 forward risk contribution：
+Holdings `Forward RC` 是当前正式风险持仓的组合级 forward risk contribution：
 
-- 只对 active non-cash holdings 参与协方差矩阵；现金行的 `forward_risk_share = 0`；
+- 只对 active formal risk positions 参与协方差矩阵；现金行的 `forward_risk_share = 0`，pending monetary row 标记为 `pending_settlement` 并排除；
 - 权重使用当前 holdings row 的组合权重，分母是全组合非现金风险组合的 variance，不是 instrument 自身风险，也不是 sleeve local denominator；
 - covariance model、lookback、calculation frequency、missing-return policy 与 contribution mode 必须来自组合级 `Production Risk Model`；
 - 窗口固定锚在请求的 holdings as-of date；较早的 latest observation 只能触发 trailing-staleness 诊断，不能把整个 lookback window 一起向前移动；
 - 每个 leaf return 必须有合法且与其他成员一致的 period start/end；taxonomy group 的 Forward RC 只加总 leaf `forward_risk_share` 和 contribution，不重新估计 group covariance；
-- 若任一 active non-cash holding 缺少完整收益窗口、权重或正的组合 variance，Forward RC 进入 `unavailable`，不得用短窗口、0 return、pairwise covariance 或现金归一化兜底；
+- 若任一 active formal risk position 缺少完整收益窗口、权重或正的组合 variance，Forward RC 进入 `unavailable`，不得用短窗口、0 return、pairwise covariance 或现金归一化兜底；
 - Holdings 的 `Vol 1M / 3M / 6M / 1Y` 仍是标的自身 trailing sample volatility 观测列，不受 Production Risk Model 的 lookback 或 covariance model 影响，也不能替代 Forward RC。
 
 Holdings group rows 不是后端 period-performance group：
 
 - market value、cost basis、day change、open lots 等绝对量按组内 rows 汇总；
 - unrealized return 使用组内当前非现金 open-position `unrealized P&L / cost basis`，不是成员百分比的加权平均；cash 不产生 unrealized P&L，也不进入分母，纯 cash group 因 cost basis 不适用而为空；
-- `1W / 1M / 3M / 6M / MTD / YTD / 1Y Return` 使用 as-of date base-currency market value 权重对当前成员自身 total return 加权；group、`Non-cash Portfolio` 与 `Portfolio Total` 均按这套当前持仓篮子口径展示，覆盖不足时为空。它们不是历史实际组合 TWR，后者只属于 Overview / Performance；
+- `1W / 1M / 3M / 6M / MTD / YTD / 1Y Return` 使用 as-of date base-currency market value 权重对当前正式 position 与 settled cash 的自身 total return 加权；pending monetary rows 不参与收益分母。group、`Investment Positions` 与 `Portfolio Total` 均按这套当前持仓篮子口径展示，覆盖不足时为空。它们不是历史实际组合 TWR，后者只属于 Overview / Performance；
 - group volatility / drawdown 用组内成员 return series 在共同 period 上组成当前权重的组 return series 后计算，包含协方差效果，不等于成员 volatility 或 drawdown 的加权平均；
 - `Held Max DD` 不计算 group、`Non-cash Portfolio` 或 `Portfolio Total`：成员持有起点不同，截断长度不同的持有期序列没有可稳定解释的共同分组起点；
 - base-currency cash 可作为 0-return 成员参与覆盖；non-base cash 使用其 FX return series；
+- pending monetary row 没有 instrument return series；仅含 pending 的分组收益/风险为空，不能按 base-currency 余额把它冒充 0-return cash；
 - group return / volatility / drawdown 只在所有有当前市值的成员 return currency 一致时计算。非现金 instrument return 默认是标的本币 total return，cash FX return 是 base-currency return；在后端尚未提供逐期 base-currency instrument return 前，跨 return currency 的本地收益不得直接加权拼接，必须留空；
-- UI 中的 `Non-cash Portfolio` 行是当前 rows 的非现金 subtotal，只服务展示和导出，不是源事实、不参与 group、sort、detail 或 portfolio totals。
+- UI 中的 `Investment Positions` 行是当前正式 position rows 的 subtotal；cash 与 pending monetary rows 位于 monetary section。该 subtotal 只服务展示和导出，不是源事实、不参与 group、sort、detail 或 portfolio totals。
 
 每个 Holdings 字段的 group / subtotal / total 处理必须属于以下明确类别；未列为可聚合的字段一律留空：
 
@@ -667,7 +678,7 @@ Performance 页面使用用户选择的区间作为唯一窗口。UI 的主要�
 
 - `Return & Risk Metrics`：组合级 TWR / annualized TWR、IRR / MWR、risk、drawdown。return / risk 类指标可选择 benchmark price series 做 period return、annualized return、volatility、drawdown 的轻量对比；
 - `Calculation`：合并 realized risk attribution、initial value、group rows、external flow、portfolio total 与 final value。表格有和 Holdings 一致的 view selector；系统默认视图命名为 `Default`，展示区间期初权重、平均权重、期末权重、区间收益、收益贡献、标的自身风险、相关性和风险贡献；`Beta to Portfolio` 保留为高级可选列，不进入默认视图。Group By 默认是 `None`，语义是直接展示 instrument lines，不做额外分组；也可按 instrument type / currency / account / default planning taxonomy 聚合。instrument type 与 currency 是底层 contribution axis，不允许仅在前端把 instrument rows 相加；taxonomy 聚合用于期间复盘时优先使用区间期末 assignment 并保留 cash 独立组，不把 reclassification residual 当成真实 P&L；若 instrument 期末已清仓且期末不再有 active assignment，则使用其区间内有效 assignment 承接历史 P&L，不归入 Unassigned。`TWR` 来自对应 group 的 daily return slices；`Contribution` 来自 daily contribution 聚合。表格采用 `Initial Value + Deposits - Withdrawals + Period P&L = Final Value` 的桥接口径。
-- Performance group daily return 使用组内 `total_pnl / (beginning_value + period capital flow in)`；直接 axis、taxonomy regroup 与 calculation detail 聚合必须沿用同一分母，不能在聚合后退化成只除以 beginning value。
+- Performance group daily return 使用组内 flow-neutral `total_pnl`。普通内部买入按既有 `BOD-in / EOD-out` 约定，分母为 `beginning_value + weighted capital flow in`；但 cash 先结算、头寸下一 EOD 才确认的 `position_recognition_bridge` 是结算日的 **EOD flow**，不得进入结算日收益分母，而应作为下一日 beginning value。这样收盘后申购不会稀释当天原有持仓收益，确认日又能完整计入成交成本至确认日收盘的价格变化。直接 axis、taxonomy regroup 与 calculation detail 聚合必须保留同一 flow-timing 分类，不能在聚合时丢失或重置。
 - Calculation 底层的 `Capital Gain` 使用期间绩效成本，而不是账户 book cost；它是 reconciliation 派生值，不作为默认表格列展示。显式区间的期初已有持仓按 `start_date` EOD market value 重置为期间成本，只重放 `(start_date, end_date]` 内交易；期末未卖出的持仓用 `end_date` EOD market value 计算 `Unrealized Gain`。
 - `Capital Gain = Realized Gain + Unrealized Gain`；`Realized Gain` 是期间卖出部分相对于期间成本的资本利得，`Unrealized Gain` 是期末仍持有部分相对于期间成本的资本利得。FIFO / moving average 只影响 Holdings / book P&L，不改变 Performance Calculation 的期间资本利得拆分。
 - `Income` 只包含 dividend / coupon / interest / dividend reinvestment 收益确认，不包含 realized capital gain。fees、taxes、FX P&L 分列。P&L 与 book attribution 不和 benchmark 对比。
@@ -697,7 +708,7 @@ $$
 - 这样可以把 external flows 从业绩中中性化。
 - buy / sell 是组合内部的现金与证券转换，不进入 `CF_in / CF_out`。头寸按实际 `quantity` 和 `gross_amount` 入账，未结算款进入 pending settlement；日末用收盘 fair value 估值，所以区间中买入的 `EOD market value - actual trade cost - attached charges` 只进入当日经济 P&L 一次。不得用收盘价反推成交成本，也不得在 NAV 已扣现金后再次从 TWR 分子减买入金额。
 - 除 funded-segment start 外，显式 `start_date` 当日的 buy / sell 已包含在 start-date EOD anchor；若需要观察该笔成交到当日收盘的收益，应把查询起点设为前一 EOD boundary。中途新增 instrument 不是新的组合 inception；组合保留现金也不是 segment restart。
-- deposit / withdrawal 的绩效生效日使用显式 `external_flow_date`，否则使用 settlement date，再否则使用 trade date。内部证券交易仍使用 trade-date 经济确认，并通过 pending settlement 保持 NAV 连续。
+- deposit / withdrawal 的绩效生效日使用显式 `external_flow_date`，否则使用 settlement date，再否则使用 trade date。内部证券交易的头寸与经济收益使用 `position_effective_date`（缺省回退 trade date）；现金腿使用 settlement date。两者不同时通过 pending settlement / position-recognition bridge 保持 NAV 连续，不得重新把确认较晚的基金申购压回 trade date。
 - 当前 daily engine 对外部流采用确定性的 BOD contribution / EOD withdrawal convention。`trade_at` 只控制同日事实顺序，不能替代盘中组合估值；若盘中大额外部流需要精确 TWR，必须在流发生前后保存完整组合估值并几何链接子期间，不能用交易时间或单只证券成交价臆造 intraday NAV。
 - 当前 daily snapshot engine 对每个 `as_of_date` 估值，因此外部现金流发生日天然有估值；若未来支持非日频估值，必须引入 large cash flow policy 与子期间收益几何链接，不能静默改用近似 MWR 方法。
 - 对显式区间 `2026-04-01` 到 `2026-04-20`，`initial value` 是 `2026-04-01` 的 `MVE / ending_nav`，`final value` 是 `2026-04-20` 的 `MVE / ending_nav`。区间 TWR 几何链接 `2026-04-02` 至 `2026-04-20` 的 daily returns；`2026-04-01` 当日交易和收益已进入期初状态。
@@ -1270,7 +1281,7 @@ $$
 默认规则：
 
 - `risk share` 基于参与风险计算的头寸权重；
-- covariance 使用相对组合总 NAV 的真实当前权重；现金和待交收的 0-return 资本占用因此会降低组合 forward volatility。计算 risk share 时，全体风险头寸同时按同一常数缩放不会改变份额，但不得为了计算 volatility 把非现金权重重新归一到 100%；
+- covariance 使用正式风险持仓相对组合总 NAV 的真实当前权重；现金和待交收的非风险资本占用因此会降低组合 forward volatility，但待交收不得伪造成一条 0-return series。计算 risk share 时，全体风险头寸同时按同一常数缩放不会改变份额，但不得为了计算 volatility 把风险持仓权重重新归一到 100%；
 - 现金默认不贡献市场风险，除非显式建模为风险因子。
 
 如果 selected planning taxonomy 需要把 cash 作为独立节点展示：

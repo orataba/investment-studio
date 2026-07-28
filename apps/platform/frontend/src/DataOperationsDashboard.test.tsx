@@ -1,6 +1,8 @@
 import { renderToStaticMarkup } from 'react-dom/server'
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
+import { LanguageProvider } from '../../../../packages/ui/src/i18n'
+import DataOperationsDashboard from './DataOperationsDashboard'
 import {
   EmailNavInventoryPanel,
   type EmailNavInventoryPayload,
@@ -85,6 +87,37 @@ const inventory: EmailNavInventoryPayload = {
   automatic_fund_creation: false,
 }
 
+afterEach(() => {
+  vi.unstubAllGlobals()
+})
+
+describe('DataOperationsDashboard', () => {
+  it('renders only the three workspace entrances on Home', () => {
+    vi.stubGlobal('window', {
+      location: {
+        hostname: '127.0.0.1',
+        protocol: 'http:',
+        search: '',
+      },
+    })
+
+    const markup = renderToStaticMarkup(
+      <LanguageProvider>
+        <DataOperationsDashboard />
+      </LanguageProvider>,
+    )
+
+    expect(markup).toContain('href="http://127.0.0.1:5173"')
+    expect(markup).toContain('href="http://127.0.0.1:5174"')
+    expect(markup).toContain('href="/instruments"')
+    expect(markup).toContain('Watchlist')
+    expect(markup).toContain('Portfolio')
+    expect(markup).toContain('Instrument Registry')
+    expect(markup).not.toContain('Email NAV')
+    expect(markup).not.toContain('operational status')
+    expect(markup).not.toContain('/api/dashboard')
+  })
+})
 
 describe('EmailNavInventoryPanel', () => {
   it('renders durable identity, folder, and failure review without an auto-create action', () => {

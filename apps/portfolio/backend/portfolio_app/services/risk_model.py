@@ -10,7 +10,10 @@ import pandas as pd
 from portfolio_app.db.models import PortfolioRecordModel
 from portfolio_app.db.session import get_session_factory
 from portfolio_app.services.calculation_frequency import CalculationFrequency
-from portfolio_app.services.holdings_market_profile import is_cash_holding_instrument_id
+from portfolio_app.services.holdings_market_profile import (
+    is_cash_holding_instrument_id,
+    is_pending_monetary_holding,
+)
 from portfolio_app.services.research_solver import (
     RESEARCH_COVARIANCE_MODEL_ID,
     RESEARCH_DEFAULT_MISSING_RETURN_POLICY,
@@ -422,6 +425,10 @@ def enrich_holdings_forward_risk(
         weight = _safe_float(raw_row.get("allocation"))
         market_value = _safe_float(raw_row.get("market_value_base"))
         has_exposure = abs(weight or 0.0) > 1e-12 or abs(market_value or 0.0) > 1e-9
+        if is_pending_monetary_holding(raw_row):
+            _clear_forward_risk_fields(raw_row)
+            raw_row["forward_risk_status"] = "pending_settlement"
+            continue
         if _holding_row_is_cash(raw_row):
             if not has_exposure or (base_currency and instrument_currency == base_currency):
                 _clear_forward_risk_fields(raw_row, cash=True)

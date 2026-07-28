@@ -37,6 +37,7 @@ from portfolio_app.services.ledger import (
     build_position_lots,
     derive_ledger_postings,
     ledger_posting_effective_date_iso,
+    ledger_posting_pending_amount_as_of,
 )
 from portfolio_app.services.market_data import (
     previous_quote_point,
@@ -46,7 +47,9 @@ from portfolio_app.services.market_data import (
 from portfolio_app.services.risk_basis import calculation_frequency_profile_for_instruments
 from portfolio_app.services.transaction_dates import (
     transaction_external_flow_date,
+    transaction_ledger_activity_date,
     transaction_performance_effective_date,
+    transaction_position_cash_transfer_date,
     transaction_precedes_entitlement_bod,
     transaction_sort_key,
 )
@@ -286,6 +289,15 @@ def _transaction_is_recognized_as_of(
     return effective_date is not None and effective_date <= as_of_date
 
 
+def _transaction_has_ledger_activity_as_of(
+    transaction: dict[str, object],
+    *,
+    as_of_date: date,
+) -> bool:
+    activity_date = transaction_ledger_activity_date(transaction)
+    return activity_date is not None and activity_date <= as_of_date
+
+
 def _iter_dates(start_date: date, end_date: date) -> list[date]:
     if end_date < start_date:
         return []
@@ -354,10 +366,10 @@ def _resolve_snapshot_window(
     end_date: date | None,
 ) -> tuple[date, date] | None:
     transaction_dates = [
-        effective_date
+        activity_date
         for item in transactions
         if (
-            effective_date := transaction_performance_effective_date(item)
+            activity_date := transaction_ledger_activity_date(item)
         )
         is not None
     ]
@@ -404,10 +416,10 @@ def _build_single_date_snapshot(
     portfolio_view["as_of_date"] = as_of_date.isoformat()
     historical_start_date = min(
         (
-            effective_date
+            activity_date
             for item in transactions
             if (
-                effective_date := transaction_performance_effective_date(item)
+                activity_date := transaction_ledger_activity_date(item)
             )
             is not None
         ),
@@ -491,6 +503,23 @@ def _transactions_as_of_end_date(
         if (
             (effective_date := transaction_performance_effective_date(transaction)) is not None
             and effective_date.isoformat() <= end_iso
+        )
+    ]
+
+
+def _transactions_with_ledger_activity_as_of_end_date(
+    transactions: list[dict[str, object]],
+    *,
+    end_date: date,
+) -> list[dict[str, object]]:
+    end_iso = end_date.isoformat()
+    return [
+        transaction
+        for transaction in sorted(transactions, key=transaction_sort_key)
+        if (
+            (activity_date := transaction_ledger_activity_date(transaction))
+            is not None
+            and activity_date.isoformat() <= end_iso
         )
     ]
 
@@ -1591,9 +1620,16 @@ def build_daily_portfolio_snapshots(
     transactions_by_date: dict[str, list[dict[str, object]]] = defaultdict(list)
     if include_materialized_rows:
         for transaction in sorted_transactions:
-            effective_date = transaction_performance_effective_date(transaction)
-            if effective_date is not None:
-                transactions_by_date[effective_date.isoformat()].append(transaction)
+            event_dates = {
+                candidate
+                for candidate in (
+                    transaction_performance_effective_date(transaction),
+                    transaction_position_cash_transfer_date(transaction),
+                )
+                if candidate is not None
+            }
+            for event_date in event_dates:
+                transactions_by_date[event_date.isoformat()].append(transaction)
     snapshots: list[dict[str, object]] = []
     last_complete_nav: float | None = None
     growth_index = 1.0
@@ -1625,7 +1661,10 @@ def build_daily_portfolio_snapshots(
         transactions_as_of = [
             item
             for item in sorted_transactions
-            if _transaction_is_recognized_as_of(item, as_of_date=as_of_date)
+            if _transaction_has_ledger_activity_as_of(
+                item,
+                as_of_date=as_of_date,
+            )
         ]
         postings = derive_ledger_postings(
             portfolio_id,
@@ -1680,6 +1719,36 @@ def build_daily_portfolio_snapshots(
         pending_settlement_balances_by_currency: dict[str, float] = defaultdict(float)
         cash_account_ids_by_currency: dict[str, set[str]] = defaultdict(set)
         for posting in postings:
+            pending_amount_delta = ledger_posting_pending_amount_as_of(
+                posting,
+                as_of_date,
+            )
+            if pending_amount_delta is not None:
+                if abs(pending_amount_delta) <= 1e-9:
+                    continue
+                posting_currency = valuation_fx.required_currency(
+                    posting.get("currency"),
+                    field_name="ledger-posting currency",
+                )
+                converted_pending_delta, is_stale = valuation_fx.convert_amount_on(
+                    pending_amount_delta,
+                    as_of_date=as_of_date,
+                    from_currency=posting_currency,
+                    to_currency=base_currency,
+                    direct_fx_instruments=direct_fx_instruments,
+                    instrument_detail_cache=instrument_detail_cache,
+                    instrument_detail_loader=get_registry_instrument_detail,
+                )
+                pending_settlement_balances_by_currency[
+                    posting_currency
+                ] += pending_amount_delta
+                if converted_pending_delta is None:
+                    pending_settlement_complete = False
+                else:
+                    pending_settlement_base += converted_pending_delta
+                    stale_fx_flag = stale_fx_flag or is_stale
+                continue
+
             cash_delta = _safe_float(posting.get("cash_amount_delta"))
             if cash_delta is None:
                 continue
@@ -2179,6 +2248,13 @@ def build_daily_portfolio_snapshots(
                         for currency, amount in sorted(cash_balances_by_currency.items())
                         if abs(amount) > 1e-9
                     ],
+                    pending_balances=_pending_monetary_balances_from_postings(
+                        postings=postings,
+                        as_of_date=as_of_date,
+                        base_currency=base_currency,
+                        direct_fx_instruments=direct_fx_instruments,
+                        instrument_detail_cache=instrument_detail_cache,
+                    ),
                     as_of_date=as_of_date,
                     base_currency=base_currency,
                     direct_fx_instruments=direct_fx_instruments,
@@ -2208,6 +2284,20 @@ def build_daily_portfolio_snapshots(
                     ),
                     build_cash_rows=partial(
                         holdings_market_profile.build_cash_holding_rows,
+                        cash_day_change=partial(
+                            holdings_market_profile.cash_day_change_metrics,
+                            resolve_fx_rate_on=partial(
+                                valuation_fx.resolve_fx_rate_on,
+                                instrument_detail_loader=get_registry_instrument_detail,
+                            ),
+                            resolve_previous_fx_rate_before=partial(
+                                valuation_fx.resolve_previous_fx_rate_before,
+                                instrument_detail_loader=get_registry_instrument_detail,
+                            ),
+                        ),
+                    ),
+                    build_pending_rows=partial(
+                        holdings_market_profile.build_pending_monetary_holding_rows,
                         cash_day_change=partial(
                             holdings_market_profile.cash_day_change_metrics,
                             resolve_fx_rate_on=partial(
@@ -3535,6 +3625,8 @@ def _build_boundary_holding_records(
             {
                 "position_id": str(bucket.get("instrument_id") or ""),
                 "instrument_id": str(bucket.get("instrument_id") or ""),
+                "holding_kind": "position",
+                "available_for_trading": True,
                 "instrument_ref": holdings_market_profile.normalize_instrument_core(
                     str(bucket.get("instrument_id") or ""),
                     instrument_ref,
@@ -3576,6 +3668,147 @@ def _build_boundary_holding_records(
     return rendered_positions, resolved_total_market_value_base
 
 
+def _pending_monetary_balances_from_postings(
+    *,
+    postings: list[dict[str, object]],
+    as_of_date: date,
+    base_currency: str,
+    direct_fx_instruments: dict[tuple[str, str], str],
+    instrument_detail_cache: dict[str, dict[str, object] | None],
+) -> list[dict[str, object]]:
+    """Build cash-account settlement subledger balances for Holdings."""
+
+    grouped: dict[
+        tuple[str, str, str, str],
+        dict[str, object],
+    ] = {}
+    as_of_iso = as_of_date.isoformat()
+    for posting in postings:
+        pending_amount = ledger_posting_pending_amount_as_of(posting, as_of_date)
+        if pending_amount is not None:
+            if abs(pending_amount) <= 1e-9:
+                continue
+            source_transaction_type = str(
+                posting.get("source_transaction_type") or ""
+            ).strip()
+            if (
+                str(posting.get("posting_role") or "")
+                == "position_recognition_bridge"
+                and source_transaction_type == "buy"
+                and pending_amount > 0
+            ):
+                holding_kind = "pending_subscription"
+            else:
+                holding_kind = "position_recognition_adjustment"
+            amount = pending_amount
+            account_id = str(
+                posting.get("settlement_cash_account_id")
+                or posting.get("account_id")
+                or ""
+            ).strip()
+        else:
+            cash_delta = _safe_float(posting.get("cash_amount_delta"))
+            if cash_delta is None or abs(cash_delta) <= 1e-9:
+                continue
+            if ledger_posting_effective_date_iso(posting) <= as_of_iso:
+                continue
+            amount = cash_delta
+            holding_kind = (
+                "settlement_receivable"
+                if cash_delta > 0
+                else "settlement_payable"
+            )
+            account_id = str(posting.get("account_id") or "").strip()
+
+        currency = valuation_fx.required_currency(
+            posting.get("currency"),
+            field_name="ledger-posting currency",
+        )
+        economic_instrument_id = str(
+            posting.get("instrument_id") or ""
+        ).strip()
+        key = (
+            holding_kind,
+            account_id,
+            economic_instrument_id,
+            currency,
+        )
+        bucket = grouped.setdefault(
+            key,
+            {
+                "holding_kind": holding_kind,
+                "account_id": account_id,
+                "account_ids": [account_id] if account_id else [],
+                "economic_instrument_id": economic_instrument_id or None,
+                "economic_instrument_ref": (
+                    deepcopy(posting.get("instrument_ref"))
+                    if isinstance(posting.get("instrument_ref"), dict)
+                    else None
+                ),
+                "currency": currency,
+                "amount": 0.0,
+                "amount_base": 0.0,
+                "amount_base_complete": True,
+                "transaction_ids": set(),
+            },
+        )
+        bucket["amount"] = (_safe_float(bucket.get("amount")) or 0.0) + amount
+        converted_amount, _ = valuation_fx.convert_amount_on(
+            amount,
+            as_of_date=as_of_date,
+            from_currency=currency,
+            to_currency=base_currency,
+            direct_fx_instruments=direct_fx_instruments,
+            instrument_detail_cache=instrument_detail_cache,
+            instrument_detail_loader=get_registry_instrument_detail,
+        )
+        if converted_amount is None:
+            bucket["amount_base_complete"] = False
+        else:
+            bucket["amount_base"] = (
+                _safe_float(bucket.get("amount_base")) or 0.0
+            ) + converted_amount
+        transaction_id = str(posting.get("transaction_id") or "").strip()
+        if transaction_id:
+            transaction_ids = bucket.get("transaction_ids")
+            if isinstance(transaction_ids, set):
+                transaction_ids.add(transaction_id)
+
+    rendered: list[dict[str, object]] = []
+    for bucket in grouped.values():
+        amount = _safe_float(bucket.get("amount")) or 0.0
+        if abs(amount) <= 1e-9:
+            continue
+        transaction_ids = bucket.pop("transaction_ids", set())
+        amount_base_complete = bool(
+            bucket.pop("amount_base_complete", False)
+        )
+        rendered.append(
+            {
+                **bucket,
+                "amount_base": (
+                    bucket.get("amount_base")
+                    if amount_base_complete
+                    else None
+                ),
+                "transaction_ids": sorted(
+                    transaction_ids
+                    if isinstance(transaction_ids, set)
+                    else []
+                ),
+            }
+        )
+    rendered.sort(
+        key=lambda item: (
+            str(item.get("holding_kind") or ""),
+            str(item.get("account_id") or ""),
+            str(item.get("economic_instrument_id") or ""),
+            str(item.get("currency") or ""),
+        )
+    )
+    return rendered
+
+
 def _statement_cash_nav_components(
     *,
     portfolio_id: str,
@@ -3603,6 +3836,32 @@ def _statement_cash_nav_components(
     cash_balance_complete_by_currency: dict[str, bool] = defaultdict(lambda: True)
     cash_account_ids_by_currency: dict[str, set[str]] = defaultdict(set)
     for posting in postings:
+        pending_amount_delta = ledger_posting_pending_amount_as_of(
+            posting,
+            as_of_date,
+        )
+        if pending_amount_delta is not None:
+            if abs(pending_amount_delta) <= 1e-9:
+                continue
+            posting_currency = valuation_fx.required_currency(
+                posting.get("currency"),
+                field_name="ledger-posting currency",
+            )
+            converted_pending_delta, _ = valuation_fx.convert_amount_on(
+                pending_amount_delta,
+                as_of_date=as_of_date,
+                from_currency=posting_currency,
+                to_currency=base_currency,
+                direct_fx_instruments=direct_fx_instruments,
+                instrument_detail_cache=instrument_detail_cache,
+                instrument_detail_loader=get_registry_instrument_detail,
+            )
+            if converted_pending_delta is None:
+                pending_settlement_complete = False
+            else:
+                pending_settlement_base += converted_pending_delta
+            continue
+
         cash_delta = _safe_float(posting.get("cash_amount_delta"))
         if cash_delta is None:
             continue
@@ -3656,6 +3915,13 @@ def _statement_cash_nav_components(
             for currency, amount in sorted(cash_balances_by_currency.items())
             if abs(amount) > 1e-9
         ],
+        "pending_balances": _pending_monetary_balances_from_postings(
+            postings=postings,
+            as_of_date=as_of_date,
+            base_currency=base_currency,
+            direct_fx_instruments=direct_fx_instruments,
+            instrument_detail_cache=instrument_detail_cache,
+        ),
     }
 
 
@@ -3675,7 +3941,16 @@ def build_holdings_report(
     valuation_timezone = _resolve_portfolio_valuation_timezone(portfolio)
     valuation_cutoff_policy = _resolve_portfolio_valuation_cutoff_policy(portfolio)
     sorted_transactions = sorted(transactions, key=transaction_sort_key)
-    boundary_transactions = _transactions_as_of_end_date(sorted_transactions, end_date=as_of_date)
+    boundary_transactions = _transactions_as_of_end_date(
+        sorted_transactions,
+        end_date=as_of_date,
+    )
+    ledger_boundary_transactions = (
+        _transactions_with_ledger_activity_as_of_end_date(
+            sorted_transactions,
+            end_date=as_of_date,
+        )
+    )
 
     fx_payload = get_platform_fx_rates()
     direct_fx_instruments = valuation_fx.fx_direct_instrument_map(fx_payload)
@@ -3695,7 +3970,7 @@ def build_holdings_report(
     cash_components = _statement_cash_nav_components(
         portfolio_id=str(portfolio.get("portfolio_id") or ""),
         accounts=accounts,
-        transactions=boundary_transactions,
+        transactions=ledger_boundary_transactions,
         as_of_date=as_of_date,
         base_currency=base_currency,
         direct_fx_instruments=direct_fx_instruments,
@@ -3733,11 +4008,34 @@ def build_holdings_report(
                     ),
                 ),
             ),
+            *holdings_market_profile.build_pending_monetary_holding_rows(
+                pending_balances=list(cash_components.get("pending_balances") or []),
+                as_of_date=as_of_date,
+                base_currency=base_currency,
+                direct_fx_instruments=direct_fx_instruments,
+                instrument_detail_cache=resolved_instrument_detail_cache,
+                cash_day_change=partial(
+                    holdings_market_profile.cash_day_change_metrics,
+                    resolve_fx_rate_on=partial(
+                        valuation_fx.resolve_fx_rate_on,
+                        instrument_detail_loader=get_registry_instrument_detail,
+                    ),
+                    resolve_previous_fx_rate_before=partial(
+                        valuation_fx.resolve_previous_fx_rate_before,
+                        instrument_detail_loader=get_registry_instrument_detail,
+                    ),
+                ),
+            ),
         ]
     holdings_market_profile.apply_position_portfolio_weights(positions, total_nav_base)
     total_market_value_base = (
-        (position_market_value_base + cash_balance_base)
-        if include_cash_rows and position_market_value_base is not None and cash_balance_base is not None
+        (position_market_value_base + cash_balance_base + pending_settlement_base)
+        if (
+            include_cash_rows
+            and position_market_value_base is not None
+            and cash_balance_base is not None
+            and pending_settlement_base is not None
+        )
         else position_market_value_base
     )
     return {
@@ -4695,18 +4993,44 @@ def _build_contribution_group_end_states(
             )
         )
         for posting in resolved_postings:
-            cash_amount_delta = _safe_float(posting.get("cash_amount_delta"))
-            if cash_amount_delta is None:
-                continue
+            pending_amount_delta = ledger_posting_pending_amount_as_of(
+                posting,
+                as_of_date,
+            )
+            if pending_amount_delta is not None:
+                if abs(pending_amount_delta) <= 1e-9:
+                    continue
+                cash_amount_delta = pending_amount_delta
+                posting_is_settled = False
+            else:
+                cash_amount_delta = _safe_float(posting.get("cash_amount_delta"))
+                if cash_amount_delta is None:
+                    continue
+                posting_is_settled = (
+                    ledger_posting_effective_date_iso(posting)
+                    <= as_of_date.isoformat()
+                )
             posting_currency = valuation_fx.required_currency(
                 posting.get("currency"), field_name="ledger-posting currency"
             )
-            group_key, group_label = attribution.cash_group_for_axis(
-                axis=axis,
-                account_id=str(posting.get("account_id") or ""),
-                currency=posting_currency,
-                account_name_map=account_name_map,
-            )
+            if (
+                pending_amount_delta is not None
+                and str(posting.get("posting_role") or "")
+                == "position_recognition_bridge"
+            ):
+                group_key, group_label = attribution.transaction_group_for_axis(
+                    axis=axis,
+                    transaction=posting,
+                    account_name_map=account_name_map,
+                    base_currency=base_currency,
+                )
+            else:
+                group_key, group_label = attribution.cash_group_for_axis(
+                    axis=axis,
+                    account_id=str(posting.get("account_id") or ""),
+                    currency=posting_currency,
+                    account_name_map=account_name_map,
+                )
             if not group_key:
                 continue
             state = _ensure_contribution_group_state(
@@ -4714,9 +5038,6 @@ def _build_contribution_group_end_states(
                 group_key=group_key,
                 group_label=group_label,
                 axis=axis,
-            )
-            posting_is_settled = (
-                ledger_posting_effective_date_iso(posting) <= as_of_date.isoformat()
             )
             local_balance_field = (
                 "_cash_balance_local_by_currency"
@@ -4829,6 +5150,8 @@ def _build_contribution_daily_events(
                 "instrument_currency_gains": 0.0,
                 attribution.GROUP_CAPITAL_FLOW_IN_FIELD: 0.0,
                 attribution.GROUP_CAPITAL_FLOW_OUT_FIELD: 0.0,
+                attribution.GROUP_CAPITAL_FLOW_IN_EOD_FIELD: 0.0,
+                attribution.GROUP_CAPITAL_FLOW_OUT_EOD_FIELD: 0.0,
             },
         )
 
@@ -4900,6 +5223,7 @@ def _build_contribution_daily_events(
         amount: float,
         trade_date: date,
         currency: str,
+        eod: bool = False,
     ) -> None:
         if amount <= 1e-9:
             return
@@ -4913,6 +5237,15 @@ def _build_contribution_daily_events(
             trade_date=trade_date,
             currency=currency,
         )
+        if eod:
+            add_flow(
+                group_key=source_group_key,
+                group_label=source_group_label,
+                field_name=attribution.GROUP_CAPITAL_FLOW_OUT_EOD_FIELD,
+                amount=amount,
+                trade_date=trade_date,
+                currency=currency,
+            )
         add_flow(
             group_key=target_group_key,
             group_label=target_group_label,
@@ -4921,6 +5254,15 @@ def _build_contribution_daily_events(
             trade_date=trade_date,
             currency=currency,
         )
+        if eod:
+            add_flow(
+                group_key=target_group_key,
+                group_label=target_group_label,
+                field_name=attribution.GROUP_CAPITAL_FLOW_IN_EOD_FIELD,
+                amount=amount,
+                trade_date=trade_date,
+                currency=currency,
+            )
 
     for position_lot in position_lots:
         group_key, group_label = attribution.position_group_for_axis(
@@ -4954,6 +5296,16 @@ def _build_contribution_daily_events(
 
     for transaction in transactions_on_date:
         transaction_type = str(transaction.get("transaction_type") or "")
+        performance_effective_date = transaction_performance_effective_date(
+            transaction
+        )
+        position_cash_transfer_date = transaction_position_cash_transfer_date(
+            transaction
+        )
+        is_performance_effective_date = performance_effective_date == as_of_date
+        is_position_cash_transfer_date = (
+            position_cash_transfer_date == as_of_date
+        )
         instrument_id = str(transaction.get("instrument_id") or "")
         account_id = str(transaction.get("account_id") or "")
         currency = valuation_fx.required_currency(
@@ -4981,7 +5333,7 @@ def _build_contribution_daily_events(
         tax_amount = _safe_float(transaction.get("taxes")) or 0.0
         settlement_cash_account_id = transaction.get("settlement_cash_account_id")
 
-        if transaction_type == "opening_balance":
+        if transaction_type == "opening_balance" and is_performance_effective_date:
             add_flow(
                 group_key=group_key,
                 group_label=group_label,
@@ -4990,7 +5342,7 @@ def _build_contribution_daily_events(
                 trade_date=as_of_date,
                 currency=currency,
             )
-        elif transaction_type == "deposit":
+        elif transaction_type == "deposit" and is_performance_effective_date:
             add_flow(
                 group_key=group_key,
                 group_label=group_label,
@@ -4999,7 +5351,7 @@ def _build_contribution_daily_events(
                 trade_date=as_of_date,
                 currency=currency,
             )
-        elif transaction_type == "withdrawal":
+        elif transaction_type == "withdrawal" and is_performance_effective_date:
             add_flow(
                 group_key=group_key,
                 group_label=group_label,
@@ -5008,7 +5360,7 @@ def _build_contribution_daily_events(
                 trade_date=as_of_date,
                 currency=currency,
             )
-        elif transaction_type == "buy":
+        elif transaction_type == "buy" and is_position_cash_transfer_date:
             source_group_key, source_group_label = cash_group(settlement_cash_account_id, currency)
             add_transfer_flow(
                 source_group_key=source_group_key,
@@ -5018,8 +5370,17 @@ def _build_contribution_daily_events(
                 amount=gross_amount + fee_amount + tax_amount,
                 trade_date=as_of_date,
                 currency=currency,
+                eod=(
+                    performance_effective_date is not None
+                    and position_cash_transfer_date is not None
+                    and position_cash_transfer_date
+                    < performance_effective_date
+                ),
             )
-        elif transaction_type in {"sell", "maturity_redemption"}:
+        elif (
+            transaction_type in {"sell", "maturity_redemption"}
+            and is_position_cash_transfer_date
+        ):
             target_group_key, target_group_label = cash_group(settlement_cash_account_id, currency)
             add_transfer_flow(
                 source_group_key=group_key,
@@ -5029,8 +5390,17 @@ def _build_contribution_daily_events(
                 amount=max(gross_amount - fee_amount - tax_amount, 0.0),
                 trade_date=as_of_date,
                 currency=currency,
+                eod=(
+                    performance_effective_date is not None
+                    and position_cash_transfer_date is not None
+                    and position_cash_transfer_date
+                    < performance_effective_date
+                ),
             )
-        elif transaction_type == "return_of_capital":
+        elif (
+            transaction_type == "return_of_capital"
+            and is_performance_effective_date
+        ):
             target_group_key, target_group_label = cash_group(settlement_cash_account_id, currency)
             if target_group_key and target_group_key != group_key:
                 add_transfer_flow(
@@ -5043,7 +5413,10 @@ def _build_contribution_daily_events(
                     currency=currency,
                 )
 
-        if transaction_type in {"dividend", "coupon", "dividend_reinvestment"}:
+        if (
+            transaction_type in {"dividend", "coupon", "dividend_reinvestment"}
+            and is_performance_effective_date
+        ):
             if axis == "instrument" and not instrument_id:
                 continue
             add_amount(
@@ -5066,7 +5439,11 @@ def _build_contribution_daily_events(
                         trade_date=as_of_date,
                         currency=currency,
                     )
-        elif transaction_type == "interest" and attribution.axis_includes_cash_balance(axis):
+        elif (
+            transaction_type == "interest"
+            and is_performance_effective_date
+            and attribution.axis_includes_cash_balance(axis)
+        ):
             add_amount(
                 group_key=group_key,
                 group_label=group_label,
@@ -5076,7 +5453,10 @@ def _build_contribution_daily_events(
                 currency=currency,
             )
 
-        if transaction_type in {"fee", "tax"}:
+        if (
+            transaction_type in {"fee", "tax"}
+            and is_performance_effective_date
+        ):
             add_amount(
                 group_key=group_key,
                 group_label=group_label,
@@ -5094,7 +5474,10 @@ def _build_contribution_daily_events(
                 currency=currency,
             )
 
-        if fee_amount > 0 or tax_amount > 0:
+        if (
+            is_performance_effective_date
+            and (fee_amount > 0 or tax_amount > 0)
+        ):
             attached_expense = fee_amount + tax_amount
             if attached_expense > 0 and (
                 transaction_type in NON_CAPITALIZED_ATTACHED_CHARGE_TRANSACTION_TYPES
@@ -5193,6 +5576,16 @@ def _build_contribution_slices_for_date(
         tax_amount = _safe_float((current_event or {}).get("tax_amount"))
         capital_flow_in_base = _safe_float((current_event or {}).get(attribution.GROUP_CAPITAL_FLOW_IN_FIELD))
         capital_flow_out_base = _safe_float((current_event or {}).get(attribution.GROUP_CAPITAL_FLOW_OUT_FIELD))
+        capital_flow_in_eod_base = _safe_float(
+            (current_event or {}).get(
+                attribution.GROUP_CAPITAL_FLOW_IN_EOD_FIELD
+            )
+        )
+        capital_flow_out_eod_base = _safe_float(
+            (current_event or {}).get(
+                attribution.GROUP_CAPITAL_FLOW_OUT_EOD_FIELD
+            )
+        )
         cash_currency_gains = None
         pending_settlement_currency_gains = None
         instrument_currency_gains = None
@@ -5242,6 +5635,10 @@ def _build_contribution_slices_for_date(
             capital_flow_in_base = 0.0
         if capital_flow_out_base is None and current_event is None:
             capital_flow_out_base = 0.0
+        if capital_flow_in_eod_base is None and current_event is None:
+            capital_flow_in_eod_base = 0.0
+        if capital_flow_out_eod_base is None and current_event is None:
+            capital_flow_out_eod_base = 0.0
         if instrument_currency_gains is None and current_event is None:
             instrument_currency_gains = 0.0
         if attribution.axis_includes_cash_balance(axis) and cash_currency_gains is None and current_event is None:
@@ -5286,6 +5683,8 @@ def _build_contribution_slices_for_date(
             )
             or capital_flow_in_base is None
             or capital_flow_out_base is None
+            or capital_flow_in_eod_base is None
+            or capital_flow_out_eod_base is None
             or total_pnl is None
         ):
             if slice_coverage_state == "complete":
@@ -5297,6 +5696,7 @@ def _build_contribution_slices_for_date(
             total_pnl=total_pnl,
             capital_flow_in_base=capital_flow_in_base,
             capital_flow_out_base=capital_flow_out_base,
+            capital_flow_in_eod_base=capital_flow_in_eod_base,
         )
         # Contribution is an arithmetic decomposition of the portfolio's
         # daily TWR.  Use the same BOD external-flow denominator as the
@@ -5365,6 +5765,12 @@ def _build_contribution_slices_for_date(
                 "instrument_currency_gains": instrument_currency_gains,
                 attribution.GROUP_CAPITAL_FLOW_IN_FIELD: capital_flow_in_base,
                 attribution.GROUP_CAPITAL_FLOW_OUT_FIELD: capital_flow_out_base,
+                attribution.GROUP_CAPITAL_FLOW_IN_EOD_FIELD: (
+                    capital_flow_in_eod_base
+                ),
+                attribution.GROUP_CAPITAL_FLOW_OUT_EOD_FIELD: (
+                    capital_flow_out_eod_base
+                ),
                 "total_pnl": total_pnl,
                 "daily_return": daily_return,
                 "daily_contribution": daily_contribution,
@@ -5746,11 +6152,16 @@ def build_contribution_report(
 
     transactions_by_date: dict[str, list[dict[str, object]]] = defaultdict(list)
     for transaction in sorted_transactions:
-        effective_date = transaction_performance_effective_date(transaction)
-        if effective_date is not None:
-            transactions_by_date[effective_date.isoformat()].append(
-                transaction
+        event_dates = {
+            candidate
+            for candidate in (
+                transaction_performance_effective_date(transaction),
+                transaction_position_cash_transfer_date(transaction),
             )
+            if candidate is not None
+        }
+        for event_date in event_dates:
+            transactions_by_date[event_date.isoformat()].append(transaction)
 
     portfolio_id = str(portfolio.get("portfolio_id") or "")
     account_cost_methods = _account_cost_methods(accounts)
@@ -5764,7 +6175,10 @@ def build_contribution_report(
     group_events_by_date: dict[date, dict[str, dict[str, object]]] = {}
 
     for as_of_date in _iter_dates(boundary_start_date, resolved_end_date):
-        transactions_as_of = _transactions_as_of_end_date(sorted_transactions, end_date=as_of_date)
+        transactions_as_of = _transactions_with_ledger_activity_as_of_end_date(
+            sorted_transactions,
+            end_date=as_of_date,
+        )
         position_lots = (
             []
             if axis == "cash_detail"
@@ -6374,6 +6788,8 @@ _CALCULATION_DETAIL_ADDITIVE_SLICE_FIELDS = (
     "instrument_currency_gains",
     attribution.GROUP_CAPITAL_FLOW_IN_FIELD,
     attribution.GROUP_CAPITAL_FLOW_OUT_FIELD,
+    attribution.GROUP_CAPITAL_FLOW_IN_EOD_FIELD,
+    attribution.GROUP_CAPITAL_FLOW_OUT_EOD_FIELD,
     "total_pnl",
     "daily_contribution",
 )
@@ -8340,21 +8756,25 @@ def build_contribution_entries_report(
                 if transaction_type not in REALIZED_GAIN_TRANSACTION_TYPES:
                     continue
                 trade_date = _parse_iso_date(realization.get("trade_date"))
-                if trade_date is None:
+                realization_date = _parse_iso_date(
+                    realization.get("position_effective_date")
+                    or realization.get("trade_date")
+                )
+                if trade_date is None or realization_date is None:
                     continue
                 if (
-                    trade_date > resolved_end_date
+                    realization_date > resolved_end_date
                     or (
-                        trade_date <= resolved_start_date
+                        realization_date <= resolved_start_date
                         if start_is_close_boundary
-                        else trade_date < resolved_start_date
+                        else realization_date < resolved_start_date
                     )
                 ):
                     continue
                 local_amount = _safe_float(realization.get("realized_pnl"))
                 realization_group_key, realization_group_label = _resolve_calculation_entry_group(
                     axis=axis,
-                    effective_date=trade_date,
+                    effective_date=realization_date,
                     account_id=account_id,
                     account_name_map=account_name_map,
                     instrument_id=instrument_id,
@@ -8368,7 +8788,7 @@ def build_contribution_entries_report(
                 if local_amount is not None:
                     base_amount, stale_fx_flag = valuation_fx.convert_amount_on(
                         local_amount,
-                        as_of_date=trade_date,
+                        as_of_date=realization_date,
                         from_currency=currency,
                         to_currency=base_currency,
                         direct_fx_instruments=direct_fx_instruments,
@@ -8386,7 +8806,7 @@ def build_contribution_entries_report(
                         "transaction_type": transaction_type,
                         "trade_date": trade_date,
                         "settlement_date": None,
-                        "effective_date": trade_date,
+                        "effective_date": realization_date,
                         "group_key": realization_group_key,
                         "group_label": realization_group_label,
                         "account_id": account_id,
@@ -8815,21 +9235,25 @@ def build_period_calculation_entries_report(
                 if transaction_type not in REALIZED_GAIN_TRANSACTION_TYPES:
                     continue
                 trade_date = _parse_iso_date(realization.get("trade_date"))
-                if trade_date is None:
+                realization_date = _parse_iso_date(
+                    realization.get("position_effective_date")
+                    or realization.get("trade_date")
+                )
+                if trade_date is None or realization_date is None:
                     continue
                 if (
-                    trade_date > resolved_end_date
+                    realization_date > resolved_end_date
                     or (
-                        trade_date <= resolved_start_date
+                        realization_date <= resolved_start_date
                         if start_is_close_boundary
-                        else trade_date < resolved_start_date
+                        else realization_date < resolved_start_date
                     )
                 ):
                     continue
                 local_amount = _safe_float(realization.get("realized_pnl"))
                 realization_group_key, realization_group_label = _resolve_calculation_entry_group(
                     axis=axis,
-                    effective_date=trade_date,
+                    effective_date=realization_date,
                     account_id=account_id,
                     account_name_map=account_name_map,
                     instrument_id=instrument_id,
@@ -8843,7 +9267,7 @@ def build_period_calculation_entries_report(
                 if local_amount is not None:
                     base_amount, stale_fx_flag = valuation_fx.convert_amount_on(
                         local_amount,
-                        as_of_date=trade_date,
+                        as_of_date=realization_date,
                         from_currency=currency,
                         to_currency=base_currency,
                         direct_fx_instruments=direct_fx_instruments,
@@ -8861,7 +9285,7 @@ def build_period_calculation_entries_report(
                         "transaction_type": transaction_type,
                         "trade_date": trade_date,
                         "settlement_date": None,
-                        "effective_date": trade_date,
+                        "effective_date": realization_date,
                         "group_key": realization_group_key,
                         "group_label": realization_group_label,
                         "account_id": account_id,

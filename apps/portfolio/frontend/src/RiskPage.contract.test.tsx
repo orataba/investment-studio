@@ -337,6 +337,33 @@ describe('Risk rendered page contract', () => {
     expect(result.value.statusLabel).toBe('Risk basis unavailable')
   })
 
+  it('excludes cash-account pending settlement rows from the risk member count', () => {
+    const workspace = twoHoldingWorkspace()
+    workspace.rows.push(
+      holdingFixture({
+        line_id: 'pending:pending_subscription:cash-1:asset-1:USD',
+        holding_kind: 'pending_subscription',
+        available_for_trading: false,
+        economic_instrument_id: 'asset-1',
+        instrument_core: instrumentFixture({
+          instrument_id:
+            'pending:pending_subscription:cash-1:asset-1:USD',
+          instrument_name: 'Subscription receivable · Alpha Fund',
+          instrument_type: 'other',
+          identifiers: [],
+        }),
+        market_value: 100,
+        market_value_base: 100,
+        allocation: 0.1,
+      }),
+    )
+
+    const result = riskFrequencyProfileFromHoldingsWorkspace(workspace)
+
+    expect(result.errors).toEqual([])
+    expect(result.value.statusLabel).toBe('Daily risk basis')
+  })
+
   it('shows cash in capital drift, excludes it from risk drift, and compares SAA with TAA', async () => {
     renderRiskPage()
 

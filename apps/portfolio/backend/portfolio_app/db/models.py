@@ -277,6 +277,14 @@ class AccountRecordModel(Base):
 class TransactionRecordModel(Base):
     __tablename__ = "transaction_record"
     __table_args__ = (
+        CheckConstraint(
+            "position_effective_date IS NULL OR ("
+            "transaction_type IN ('buy', 'sell', 'dividend_reinvestment', "
+            "'maturity_redemption') "
+            "AND position_effective_date >= trade_date"
+            ")",
+            name="position_effective_date",
+        ),
         Index(
             "ix_transaction_record_portfolio_trade_sort",
             "portfolio_id",
@@ -295,6 +303,11 @@ class TransactionRecordModel(Base):
         ),
         Index("ix_transaction_record_portfolio_type_trade", "portfolio_id", "transaction_type", "trade_date", "trade_at"),
         Index("ix_transaction_record_portfolio_instrument_trade", "portfolio_id", "instrument_id", "trade_date", "trade_at"),
+        Index(
+            "ix_transaction_record_portfolio_position_effective",
+            "portfolio_id",
+            "position_effective_date",
+        ),
     )
 
     transaction_id: Mapped[str] = mapped_column(String, primary_key=True)
@@ -309,6 +322,7 @@ class TransactionRecordModel(Base):
     trade_timezone: Mapped[str] = mapped_column(String, nullable=False)
     trade_time_is_estimated: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     settlement_date: Mapped[date] = mapped_column(Date, nullable=False)
+    position_effective_date: Mapped[date | None] = mapped_column(Date)
     entitlement_date: Mapped[date | None] = mapped_column(Date)
     acquisition_date: Mapped[date | None] = mapped_column(Date)
     account_id: Mapped[str] = mapped_column(String, nullable=False)

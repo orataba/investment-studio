@@ -50,6 +50,8 @@ DAILY_SNAPSHOT_CALCULATION_VERSION = (
     "portfolio-daily-v20260715-split-coverage-return-chain-quote-identity-market-history"
     "-source-generation-fence-pending-settlement-fx-recorded-attached-charges"
     "-portfolio-instrument-total-return-windows-v2-gips-funded-segment-boundaries-v4"
+    "-position-effective-recognition-bridge-v1"
+    "-pending-monetary-holdings-v1"
 )
 
 
@@ -1343,6 +1345,10 @@ def _is_cash_holding_payload(row: dict[str, object]) -> bool:
     )
 
 
+def _is_pending_monetary_holding_payload(row: dict[str, object]) -> bool:
+    return holdings_market_profile.is_pending_monetary_holding(row)
+
+
 def _aggregate_holding_rows(
     rows: list[PortfolioDailyHoldingSnapshotModel],
     *,
@@ -1429,9 +1435,36 @@ def _aggregate_holding_rows(
         day_change_value = _sum_complete([row.get("day_change_value") for row in instrument_rows])
         day_change_value_base = _sum_complete([row.get("day_change_value_base") for row in instrument_rows])
         is_cash_row = _is_cash_holding_payload(first_row)
+        is_pending_row = _is_pending_monetary_holding_payload(first_row)
         aggregated_rows.append(
             {
                 "line_id": instrument_id,
+                "holding_kind": (
+                    str(first_row.get("holding_kind") or "")
+                    or ("settled_cash" if is_cash_row else "position")
+                ),
+                "available_for_trading": bool(
+                    first_row.get(
+                        "available_for_trading",
+                        not is_pending_row,
+                    )
+                ),
+                "economic_instrument_id": first_row.get(
+                    "economic_instrument_id"
+                ),
+                "economic_instrument_ref": deepcopy(
+                    first_row.get("economic_instrument_ref")
+                ),
+                "transaction_ids": sorted(
+                    {
+                        str(transaction_id)
+                        for row in instrument_rows
+                        for transaction_id in list(
+                            row.get("transaction_ids") or []
+                        )
+                        if str(transaction_id or "")
+                    }
+                ),
                 "instrument_core": holdings_market_profile.normalize_instrument_core(
                     instrument_id,
                     first_row.get("instrument_ref") if isinstance(first_row.get("instrument_ref"), dict) else None,
@@ -1450,7 +1483,7 @@ def _aggregate_holding_rows(
                 "day_change_value_base": day_change_value_base,
                 "cost_basis_method": (
                     None
-                    if is_cash_row
+                    if is_cash_row or is_pending_row
                     else cost_basis_methods[0]
                     if len(cost_basis_methods) == 1
                     else "mixed"
@@ -1468,7 +1501,7 @@ def _aggregate_holding_rows(
                 **trend_metrics,
                 "coverage_status": (
                     _first_present(instrument_rows, "coverage_status")
-                    if is_cash_row
+                    if is_cash_row or is_pending_row
                     else "price-nav-fx"
                     if market_value_base is not None
                     else "unpriced"
@@ -1546,12 +1579,24 @@ def build_materialized_holdings_workspace(
         row
         for row in rows
         if not holdings_market_profile.is_cash_holding_instrument_id(row.instrument_id)
+        and not holdings_market_profile.is_pending_monetary_holding(
+            row.holding_json if isinstance(row.holding_json, dict) else {}
+        )
     ]
     total_cost_basis_base = (
         _sum_complete([row.cost_basis_base for row in noncash_snapshot_rows]) if noncash_snapshot_rows else 0.0
     )
-    position_count = len(aggregated_rows)
-    priced_position_count = sum(1 for row in aggregated_rows if row.get("market_value_base") is not None)
+    formal_position_rows = [
+        row
+        for row in aggregated_rows
+        if str(row.get("holding_kind") or "position") == "position"
+    ]
+    position_count = len(formal_position_rows)
+    priced_position_count = sum(
+        1
+        for row in formal_position_rows
+        if row.get("market_value_base") is not None
+    )
 
     return {
         "portfolio_id": portfolio["portfolio_id"],
@@ -1597,6 +1642,11 @@ def build_materialized_holdings_workspace(
 
 _INSTRUMENT_HOLDING_PROJECTION_FIELDS = (
     "line_id",
+    "holding_kind",
+    "available_for_trading",
+    "economic_instrument_id",
+    "economic_instrument_ref",
+    "transaction_ids",
     "instrument_core",
     "quantity",
     "last_price",

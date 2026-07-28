@@ -2037,6 +2037,228 @@ def test_daily_twr_ignores_internal_sale_but_cuts_on_withdrawal(client, monkeypa
     assert by_date["2026-01-03"]["daily_twr"] == 0.0
 
 
+def test_confirmed_later_purchase_starts_return_on_position_effective_day(
+    client,
+    monkeypatch,
+):
+    portfolio_id = "t-plus-one-position-return-test"
+    instrument_id = "equity-us-t-plus-one"
+    instrument_detail = _test_instrument_detail(
+        instrument_id=instrument_id,
+        instrument_name="T Plus One Position",
+        history=[
+            ("2026-01-01", "100.00"),
+            ("2026-01-02", "110.00"),
+        ],
+    )
+    monkeypatch.setattr(
+        performance,
+        "get_registry_instrument_detail",
+        lambda candidate: (
+            deepcopy(instrument_detail)
+            if candidate == instrument_id
+            else None
+        ),
+    )
+    monkeypatch.setattr(
+        performance,
+        "get_platform_fx_rates",
+        lambda: {
+            "supported_currencies": ["USD"],
+            "maintained_pairs": [],
+            "rates": [],
+        },
+    )
+
+    instrument_ref = {
+        "instrument_id": instrument_id,
+        "instrument_name": "T Plus One Position",
+        "instrument_type": "equity",
+        "currency": "USD",
+        "identifiers": [
+            {
+                "identifier_type": "ticker",
+                "identifier_value": "TPLUS1",
+                "is_primary": True,
+            }
+        ],
+    }
+    store = _minimal_store(
+        portfolio_id=portfolio_id,
+        transactions=[
+            {
+                "transaction_id": "txn-0001",
+                "portfolio_id": portfolio_id,
+                "transaction_type": "opening_balance",
+                "trade_date": "2026-01-01",
+                "settlement_date": "2026-01-01",
+                "account_id": "cash-usd-main",
+                "settlement_cash_account_id": None,
+                "instrument_id": None,
+                "instrument_ref": None,
+                "quantity": None,
+                "price": None,
+                "gross_amount": 100.0,
+                "fees": 0.0,
+                "taxes": 0.0,
+                "currency": "USD",
+                "created_at": "2026-01-01T09:00:00Z",
+            },
+            {
+                "transaction_id": "txn-0002",
+                "portfolio_id": portfolio_id,
+                "transaction_type": "buy",
+                "trade_date": "2026-01-01",
+                "trade_time": "15:00",
+                "position_effective_date": "2026-01-02",
+                "settlement_date": "2026-01-01",
+                "account_id": "broker-us-core",
+                "settlement_cash_account_id": "cash-usd-main",
+                "instrument_id": instrument_id,
+                "instrument_ref": instrument_ref,
+                "quantity": 1.0,
+                "price": 100.0,
+                "gross_amount": 100.0,
+                "fees": 0.0,
+                "taxes": 0.0,
+                "currency": "USD",
+                "created_at": "2026-01-01T15:00:00Z",
+            },
+        ],
+    )
+    store["portfolios"][0]["as_of_date"] = "2026-01-02"
+    _write_store(store)
+
+    response = client.get(
+        f"/api/portfolios/{portfolio_id}/performance",
+        params={"start_date": "2026-01-01", "end_date": "2026-01-02"},
+    )
+    assert response.status_code == 200
+    by_date = {
+        item["as_of_date"]: item
+        for item in response.json()["daily_series"]
+    }
+
+    assert by_date["2026-01-01"]["ending_nav"] == pytest.approx(100.0)
+    assert by_date["2026-01-01"]["pending_settlement"] == pytest.approx(100.0)
+    assert by_date["2026-01-02"]["ending_nav"] == pytest.approx(110.0)
+    assert by_date["2026-01-02"]["pending_settlement"] == pytest.approx(0.0)
+    assert by_date["2026-01-02"]["daily_twr"] == pytest.approx(0.10)
+
+    materialized_snapshots = performance.build_daily_portfolio_snapshots(
+        store["portfolios"][0],
+        store["accounts"],
+        store["transactions"],
+        start_date=date(2026, 1, 1),
+        end_date=date(2026, 1, 2),
+        include_materialized_rows=True,
+    )
+    materialized_by_date = {
+        str(item["as_of_date"]): item
+        for item in materialized_snapshots
+    }
+    trade_day_holding_rows = materialized_by_date["2026-01-01"][
+        "_holding_rows"
+    ]
+    pending_subscription = next(
+        row
+        for row in trade_day_holding_rows
+        if row["holding_kind"] == "pending_subscription"
+    )
+    assert pending_subscription["account_id"] == "cash-usd-main"
+    assert pending_subscription["economic_instrument_id"] == instrument_id
+    assert pending_subscription["market_value_base"] == pytest.approx(100.0)
+    assert pending_subscription["portfolio_weight"] == pytest.approx(1.0)
+    assert pending_subscription["available_for_trading"] is False
+    assert sum(
+        row["market_value_base"] for row in trade_day_holding_rows
+    ) == pytest.approx(100.0)
+    assert not any(
+        row["holding_kind"] == "position"
+        and row["instrument_id"] == instrument_id
+        for row in trade_day_holding_rows
+    )
+
+    effective_day_holding_rows = materialized_by_date["2026-01-02"][
+        "_holding_rows"
+    ]
+    assert not any(
+        str(row["holding_kind"]).startswith("pending_")
+        for row in effective_day_holding_rows
+    )
+    effective_position = next(
+        row
+        for row in effective_day_holding_rows
+        if row["holding_kind"] == "position"
+        and row["instrument_id"] == instrument_id
+    )
+    assert effective_position["quantity"] == pytest.approx(1.0)
+    assert sum(
+        row["market_value_base"] for row in effective_day_holding_rows
+    ) == pytest.approx(110.0)
+
+    account_contribution_response = client.get(
+        f"/api/portfolios/{portfolio_id}/performance/contribution",
+        params={
+            "axis": "account",
+            "start_date": "2026-01-01",
+            "end_date": "2026-01-02",
+        },
+    )
+    assert account_contribution_response.status_code == 200
+    account_slices = {
+        (item["as_of_date"], item["group_key"]): item
+        for item in account_contribution_response.json()["daily_slices"]
+    }
+    trade_day_cash = account_slices[("2026-01-01", "cash-usd-main")]
+    trade_day_security = account_slices[
+        ("2026-01-01", "broker-us-core")
+    ]
+    effective_day_security = account_slices[
+        ("2026-01-02", "broker-us-core")
+    ]
+    assert trade_day_cash["ending_value_base"] == pytest.approx(0.0)
+    assert trade_day_cash["total_pnl"] == pytest.approx(0.0)
+    assert trade_day_security["ending_value_base"] == pytest.approx(100.0)
+    assert trade_day_security["total_pnl"] == pytest.approx(0.0)
+    assert effective_day_security["beginning_value_base"] == pytest.approx(
+        100.0
+    )
+    assert effective_day_security["ending_value_base"] == pytest.approx(110.0)
+    assert effective_day_security["total_pnl"] == pytest.approx(10.0)
+    assert effective_day_security["daily_return"] == pytest.approx(0.10)
+
+    instrument_contribution_response = client.get(
+        f"/api/portfolios/{portfolio_id}/performance/contribution",
+        params={
+            "axis": "instrument",
+            "start_date": "2026-01-01",
+            "end_date": "2026-01-02",
+        },
+    )
+    assert instrument_contribution_response.status_code == 200
+    instrument_slices = {
+        (item["as_of_date"], item["group_key"]): item
+        for item in instrument_contribution_response.json()["daily_slices"]
+    }
+    trade_day_instrument = instrument_slices[
+        ("2026-01-01", instrument_id)
+    ]
+    effective_day_instrument = instrument_slices[
+        ("2026-01-02", instrument_id)
+    ]
+    assert trade_day_instrument["ending_value_base"] == pytest.approx(100.0)
+    assert trade_day_instrument["total_pnl"] == pytest.approx(0.0)
+    assert effective_day_instrument["beginning_value_base"] == pytest.approx(
+        100.0
+    )
+    assert effective_day_instrument["ending_value_base"] == pytest.approx(
+        110.0
+    )
+    assert effective_day_instrument["total_pnl"] == pytest.approx(10.0)
+    assert effective_day_instrument["daily_return"] == pytest.approx(0.10)
+
+
 def test_retained_cash_remains_in_portfolio_twr_denominator(client, monkeypatch):
     portfolio_id = "retained-cash-denominator-test"
     instrument_id = "equity-us-retained-cash"

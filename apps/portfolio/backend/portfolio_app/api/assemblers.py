@@ -13,6 +13,7 @@ from portfolio_app.api.contracts import (
 from portfolio_app.services.transaction_dates import (
     transaction_economic_date,
     transaction_external_flow_date,
+    transaction_position_effective_date,
 )
 
 
@@ -74,6 +75,7 @@ def serialize_transaction(
     if economic_date is None:
         raise HTTPException(status_code=400, detail="Transaction economic date is invalid")
     external_flow_date = transaction_external_flow_date(record)
+    position_effective_date = transaction_position_effective_date(record)
     return TransactionRecord(
         transaction_id=str(record.get("transaction_id") or ""),
         portfolio_id=portfolio_id,
@@ -85,6 +87,7 @@ def serialize_transaction(
         trade_timezone=str(record.get("trade_timezone") or ""),
         trade_time_is_estimated=bool(record.get("trade_time_is_estimated")),
         settlement_date=date.fromisoformat(str(record.get("settlement_date") or date.today().isoformat())),
+        position_effective_date=position_effective_date,
         economic_date=economic_date,
         external_flow_date=external_flow_date,
         entitlement_date=(

@@ -170,6 +170,47 @@ def test_cash_profile_uses_injected_fx_and_identity_dependencies() -> None:
     assert rows[1]["account_ids"] == ["cash-a", "cash-b"]
 
 
+def test_pending_subscription_is_a_cash_account_receivable_not_cash_or_position() -> None:
+    rows = holdings_market_profile.build_pending_monetary_holding_rows(
+        pending_balances=[
+            {
+                "holding_kind": "pending_subscription",
+                "account_id": "cash-main",
+                "economic_instrument_id": "fund-a",
+                "economic_instrument_ref": {
+                    "instrument_id": "fund-a",
+                    "instrument_name": "Fund A",
+                    "instrument_type": "fund",
+                    "currency": "USD",
+                    "identifiers": [],
+                },
+                "currency": "USD",
+                "amount": 250.0,
+                "amount_base": 250.0,
+                "transaction_ids": ["txn-a"],
+            }
+        ],
+        as_of_date=date(2026, 7, 24),
+        base_currency="USD",
+        direct_fx_instruments={},
+        instrument_detail_cache={},
+        cash_day_change=lambda **_kwargs: (0.0, 0.0),
+    )
+
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["holding_kind"] == "pending_subscription"
+    assert row["account_id"] == "cash-main"
+    assert row["economic_instrument_id"] == "fund-a"
+    assert row["instrument_ref"]["instrument_type"] == "other"
+    assert row["market_value_base"] == pytest.approx(250.0)
+    assert row["available_for_trading"] is False
+    assert not holdings_market_profile.is_cash_holding_instrument_id(
+        row["instrument_id"]
+    )
+    assert holdings_market_profile.is_pending_monetary_holding(row)
+
+
 def test_position_lot_aggregations_golden_contract() -> None:
     lots = [
         {
@@ -333,6 +374,7 @@ def test_materialized_holding_market_profile_uses_injected_dependencies() -> Non
         holding_day_change=fake_holding_day_change,
         normalize_instrument=fake_normalize_instrument,
         build_cash_rows=fake_build_cash_rows,
+        build_pending_rows=lambda **_kwargs: [],
         apply_portfolio_weights=fake_apply_weights,
     )
 

@@ -568,6 +568,19 @@ export type PortfolioContributionReportResponse = {
 
 export type PortfolioHoldingRow = {
   line_id: string
+  holding_kind?:
+    | 'position'
+    | 'settled_cash'
+    | 'restricted_cash'
+    | 'pending_subscription'
+    | 'settlement_receivable'
+    | 'settlement_payable'
+    | 'position_recognition_adjustment'
+    | string
+  available_for_trading?: boolean
+  economic_instrument_id?: string | null
+  economic_instrument_ref?: InstrumentCore | null
+  transaction_ids?: string[]
   instrument_core: InstrumentCore
   quantity: number
   last_price: number | null
@@ -664,6 +677,9 @@ export type HoldingsWorkspaceResponse = {
   rows: PortfolioHoldingRow[]
   totals: {
     market_value: number | null
+    cash_balance?: number | null
+    pending_settlement?: number | null
+    nav?: number | null
     day_change_pct: number | null
     day_change_value: number | null
     cost_basis: number | null
@@ -1476,13 +1492,18 @@ export type PortfolioLedgerPostingRecord = {
   transaction_id: string
   portfolio_id: string
   account_id: string
+  attribution_account_id?: string | null
+  settlement_cash_account_id?: string | null
   posting_role: string
   source_transaction_type: string
   trade_date: string
   settlement_date: string
+  effective_date: string
+  recognition_start_date?: string | null
   instrument_id?: string | null
   instrument_ref?: InstrumentCore | null
   cash_amount_delta?: number | null
+  pending_amount_delta?: number | null
   quantity_delta?: number | null
   cost_basis_delta?: number | null
   currency: string
@@ -1550,6 +1571,7 @@ export type PortfolioLedgerPostingListResponse = {
     posting_count: number
     cash_posting_count: number
     position_posting_count: number
+    pending_posting_count?: number
   }
   ledger_postings: PortfolioLedgerPostingRecord[]
 }
@@ -1565,6 +1587,7 @@ export type PortfolioTransactionRecord = {
   trade_timezone: string
   trade_time_is_estimated: boolean
   settlement_date: string
+  position_effective_date: string | null
   economic_date: string
   external_flow_date: string | null
   entitlement_date: string | null
@@ -1652,6 +1675,7 @@ export type PortfolioInstrumentEventTaskLinkedTransaction = {
   transaction_id: string
   transaction_type: string
   trade_date: string
+  position_effective_date: string | null
   settlement_date: string
   entitlement_date: string | null
   gross_amount: number
@@ -1751,6 +1775,7 @@ export type PortfolioPositionLotRealizationRecord = {
   transaction_id: string
   transaction_type: string
   trade_date: string
+  position_effective_date: string
   quantity: number
   proceeds?: number | null
   cost_basis_released: number
@@ -1842,6 +1867,7 @@ export type PortfolioTransactionCreatePayload = {
   trade_date: string
   trade_time?: string | null
   settlement_date?: string | null
+  position_effective_date?: string | null
   entitlement_date?: string | null
   acquisition_date?: string | null
   account_id: string

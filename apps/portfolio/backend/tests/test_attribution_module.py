@@ -179,6 +179,17 @@ def test_attribution_grouping_helpers_golden_contract() -> None:
             },
             None,
         ),
+        (
+            {
+                "beginning_value_base": 100.0,
+                "ending_value_base": 190.0,
+                "total_pnl": -10.0,
+                "capital_flow_in_base": 100.0,
+                "capital_flow_out_base": 0.0,
+                "capital_flow_in_eod_base": 100.0,
+            },
+            -0.1,
+        ),
     ],
 )
 def test_daily_group_return_golden(

@@ -116,6 +116,7 @@ const selectedTransaction = {
   trade_timezone: 'Asia/Shanghai',
   trade_time_is_estimated: false,
   settlement_date: '2026-07-15',
+  position_effective_date: '2026-07-14',
   economic_date: '2026-07-14',
   external_flow_date: null,
   entitlement_date: null,

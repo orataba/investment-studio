@@ -51,6 +51,18 @@ const baseMessages: LanguageMessages = {
     Home: '首页',
     Watchlist: '关注列表',
     Portfolio: '组合',
+    'Portfolio Operations': '投资组合运营',
+    Workbench: '工作台',
+    Workspace: '工作区',
+    'Choose where to work.': '选择工作区。',
+    'Open an investment workspace or maintain the shared instrument database.':
+      '进入投资工作区，或维护共享标的数据库。',
+    'Research and monitoring': '研究与监控',
+    'Review funds, indexes, watchlists, and instrument research.':
+      '查看基金、指数、关注列表和标的研究。',
+    'Manage holdings, transactions, performance, risk, and research.':
+      '管理持仓、交易、绩效、风险和组合研究。',
+    'Shared instruments and market data': '共享标的与市场数据',
     Platform: '平台',
     'Database Dashboard': '数据库面板',
     API: 'API',

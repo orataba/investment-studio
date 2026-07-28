@@ -47,6 +47,14 @@ TransactionCommandType = Literal[
     "opening_balance",
 ]
 TransactionType = TransactionCommandType | Literal["transfer_in", "transfer_out"]
+POSITION_EFFECTIVE_COMMAND_TYPES = frozenset(
+    {
+        "buy",
+        "sell",
+        "dividend_reinvestment",
+        "maturity_redemption",
+    }
+)
 FeeCategory = Literal[
     "unknown",
     "transaction_cost",
@@ -70,6 +78,7 @@ PostingRole = Literal[
     "internal_position_transfer",
     "security_settlement_cash",
     "security_position",
+    "position_recognition_bridge",
     "security_income_cash",
     "security_redemption_cash",
     "security_reinvestment_position",
@@ -400,6 +409,7 @@ class TransactionRecord(BaseModel):
     trade_timezone: str
     trade_time_is_estimated: bool = False
     settlement_date: date
+    position_effective_date: date | None = None
     economic_date: date
     external_flow_date: date | None = None
     entitlement_date: date | None = None
@@ -461,14 +471,18 @@ class LedgerPostingRecord(BaseModel):
     transaction_id: str
     portfolio_id: str
     account_id: str
+    attribution_account_id: str | None = None
+    settlement_cash_account_id: str | None = None
     posting_role: PostingRole
     source_transaction_type: LedgerSourceType
     trade_date: date
     settlement_date: date
     effective_date: date
+    recognition_start_date: date | None = None
     instrument_id: str | None = None
     instrument_ref: InstrumentCoreContract | None = None
     cash_amount_delta: float | None = None
+    pending_amount_delta: float | None = None
     quantity_delta: float | None = None
     cost_basis_delta: float | None = None
     currency: str
@@ -626,6 +640,7 @@ class PositionLotRealizationRecord(BaseModel):
     transaction_id: str
     transaction_type: TransactionType
     trade_date: date
+    position_effective_date: date
     quantity: float
     gross_proceeds: float | None = None
     proceeds: float | None = None
@@ -731,6 +746,7 @@ class InstrumentEventTaskLinkedTransaction(BaseModel):
     transaction_type: str
     trade_date: date
     settlement_date: date
+    position_effective_date: date | None = None
     entitlement_date: date | None = None
     gross_amount: Decimal
     quantity: Decimal | None = None
@@ -2822,6 +2838,7 @@ class LedgerPostingListSummary(BaseModel):
     posting_count: int
     cash_posting_count: int
     position_posting_count: int
+    pending_posting_count: int = 0
 
 
 class LedgerPostingListResponse(BaseModel):
@@ -2837,6 +2854,7 @@ class TransactionCreateRequest(BaseModel):
     trade_date: date
     trade_time: str | None = None
     settlement_date: date | None = None
+    position_effective_date: date | None = None
     entitlement_date: date | None = None
     acquisition_date: date | None = None
     account_id: str
@@ -2905,6 +2923,16 @@ class TransactionCreateRequest(BaseModel):
         settlement_date = self.settlement_date or self.trade_date
         if settlement_date < self.trade_date:
             raise ValueError("settlement_date must not be earlier than trade_date.")
+        if self.position_effective_date is not None:
+            if self.transaction_type not in POSITION_EFFECTIVE_COMMAND_TYPES:
+                raise ValueError(
+                    "position_effective_date is only allowed for position-changing "
+                    "security transactions."
+                )
+            if self.position_effective_date < self.trade_date:
+                raise ValueError(
+                    "position_effective_date must not be earlier than trade_date."
+                )
         if self.entitlement_date is not None and self.entitlement_date > self.trade_date:
             raise ValueError("entitlement_date must not be later than trade_date.")
         if self.acquisition_date is not None and self.acquisition_date > self.trade_date:
