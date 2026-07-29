@@ -6,6 +6,8 @@ import {
   buildTransactionExportRows,
   countActiveTransactionFilters,
   TRANSACTION_EXPORT_HEADERS,
+  transactionActivityLabel,
+  transactionChangedFields,
   transactionDateLabels,
 } from './lib/transactionPresentation'
 
@@ -147,5 +149,31 @@ describe('transaction presentation', () => {
       settlement: 'Settlement Date',
       entitlement: 'Entitlement Date',
     })
+  })
+
+  it('uses fund subscription language without changing the stored transaction command', () => {
+    expect(transactionActivityLabel('buy', 'fund')).toBe('Subscription')
+    expect(transactionActivityLabel('sell', 'fund')).toBe('Redemption')
+    expect(transactionActivityLabel('buy', 'etf')).toBe('Buy')
+  })
+
+  it('summarizes only the fields changed by an audited correction', () => {
+    expect(
+      transactionChangedFields({
+        change_type: 'update',
+        before: {
+          transaction_id: 'txn-1',
+          row_version: 1,
+          trade_date: '2026-07-01',
+          gross_amount: '250.00',
+        },
+        after: {
+          transaction_id: 'txn-1',
+          row_version: 2,
+          trade_date: '2026-07-02',
+          gross_amount: '250.00',
+        },
+      }),
+    ).toEqual(['Trade date'])
   })
 })

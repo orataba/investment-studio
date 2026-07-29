@@ -47,6 +47,22 @@ const cashAccount = {
   status: 'active',
 }
 
+const fundCashAccount = {
+  ...cashAccount,
+  account_id: 'cash-cny-1',
+  account_name: 'CNY Settlement Cash',
+  currency: 'CNY',
+}
+
+const fundSecuritiesAccount = {
+  ...securitiesAccount,
+  account_id: 'fund-brokerage-1',
+  account_name: 'Fund Account',
+  currency: 'CNY',
+  default_settlement_cash_account_id: 'cash-cny-1',
+  allowed_instrument_types: ['fund'],
+}
+
 const bondSecuritiesAccount = {
   ...securitiesAccount,
   account_id: 'bond-brokerage-1',
@@ -99,6 +115,29 @@ const bondInstrument = {
       currency: 'USD',
       price_unit: 'percent_of_par' as const,
       price_scale: '0.01',
+      status: 'complete' as const,
+    },
+  ],
+  coverage_state: 'complete' as const,
+}
+
+const fundInstrument = {
+  ...instrumentFixture({
+    instrument_id: 'fund-1',
+    instrument_name: 'Confirmed Allocation Fund',
+    instrument_type: 'fund',
+    currency: 'CNY',
+    identifiers: [{ identifier_type: 'ticker' as const, identifier_value: 'FUND1', is_primary: true }],
+  }),
+  latest_market_data: [
+    {
+      metric_family: 'nav' as const,
+      quote_basis: 'official_nav' as const,
+      as_of_date: '2026-07-15',
+      value: '1.2',
+      currency: 'CNY',
+      price_unit: 'per_unit' as const,
+      price_scale: '1',
       status: 'complete' as const,
     },
   ],
@@ -238,6 +277,26 @@ describe('Transactions rendered page contract', () => {
         realized_pnl: 0,
       },
       related_position_lots: [],
+      change_log_summary: {
+        change_count: 1,
+      },
+      change_log: [
+        {
+          change_id: 'change-1',
+          portfolio_id: '3',
+          transaction_id: 'txn-1',
+          change_type: 'create',
+          row_version: 1,
+          before: null,
+          after: {
+            transaction_id: 'txn-1',
+            transaction_type: 'buy',
+            trade_date: '2026-07-14',
+          },
+          request_idempotency_key: 'fixture-request',
+          changed_at: '2026-07-14T04:00:00Z',
+        },
+      ],
     })
   })
 
@@ -258,10 +317,11 @@ describe('Transactions rendered page contract', () => {
     )
     expect(within(transactionInspector).getByRole('tab', { name: 'Lots 0' })).toBeInTheDocument()
     expect(within(transactionInspector).getByRole('tab', { name: 'Postings 1' })).toBeInTheDocument()
+    expect(within(transactionInspector).getByRole('tab', { name: 'History 1' })).toBeInTheDocument()
     expect(within(transactionInspector).getByText('Opening ETF purchase')).toBeInTheDocument()
 
-    await user.click(screen.getByRole('button', { name: 'Add Transaction' }))
-    const dialog = screen.getByRole('dialog', { name: 'Add transaction' })
+    await user.click(screen.getByRole('button', { name: 'Record Transaction' }))
+    const dialog = screen.getByRole('dialog', { name: 'Record transaction' })
     expect(within(dialog).getByText('Accounting impact')).toBeInTheDocument()
 
     const securitySearch = within(dialog).getByRole('searchbox', { name: 'Security' })
@@ -334,8 +394,8 @@ describe('Transactions rendered page contract', () => {
       '/portfolios/:portfolioId/transactions',
     )
 
-    await user.click(await screen.findByRole('button', { name: 'Add Transaction' }))
-    const dialog = screen.getByRole('dialog', { name: 'Add transaction' })
+    await user.click(await screen.findByRole('button', { name: 'Record Transaction' }))
+    const dialog = screen.getByRole('dialog', { name: 'Record transaction' })
     await waitFor(() =>
       expect(within(dialog).getByRole('combobox', { name: 'Account' })).toHaveValue(
         'multi-asset-brokerage-1',
@@ -351,7 +411,7 @@ describe('Transactions rendered page contract', () => {
       ),
     )
     const quantityInput = within(dialog).getByRole('spinbutton', { name: /^Shares/ })
-    const quoteInput = within(dialog).getByRole('spinbutton', { name: /^Quote/ })
+    const quoteInput = within(dialog).getByRole('spinbutton', { name: /^Execution Price/ })
     const amountInput = within(dialog).getByRole('spinbutton', { name: 'Amount' })
     await user.type(quantityInput, '1000')
     await user.type(quoteInput, '98.5')
@@ -404,8 +464,8 @@ describe('Transactions rendered page contract', () => {
       '/portfolios/:portfolioId/transactions',
     )
 
-    await user.click(await screen.findByRole('button', { name: 'Add Transaction' }))
-    const dialog = screen.getByRole('dialog', { name: 'Add transaction' })
+    await user.click(await screen.findByRole('button', { name: 'Record Transaction' }))
+    const dialog = screen.getByRole('dialog', { name: 'Record transaction' })
     await waitFor(() =>
       expect(within(dialog).getByRole('combobox', { name: 'Account' })).toHaveValue(
         'bond-brokerage-1',
@@ -421,7 +481,7 @@ describe('Transactions rendered page contract', () => {
     )
 
     const quantityInput = within(dialog).getByRole('spinbutton', { name: /^Shares/ })
-    const quoteInput = within(dialog).getByRole('spinbutton', { name: /^Quote/ })
+    const quoteInput = within(dialog).getByRole('spinbutton', { name: /^Execution Price/ })
     const amountInput = within(dialog).getByRole('spinbutton', { name: 'Amount' })
     await waitFor(() => expect(quoteInput).toHaveValue(98.5))
     await user.type(quantityInput, '1000')
@@ -482,14 +542,14 @@ describe('Transactions rendered page contract', () => {
       '/portfolios/:portfolioId/transactions',
     )
 
-    await user.click(await screen.findByRole('button', { name: 'Add Transaction' }))
-    const dialog = screen.getByRole('dialog', { name: 'Add transaction' })
+    await user.click(await screen.findByRole('button', { name: 'Record Transaction' }))
+    const dialog = screen.getByRole('dialog', { name: 'Record transaction' })
     await waitFor(() =>
       expect(within(dialog).getByRole('combobox', { name: 'Account' })).toHaveValue(
         'bond-brokerage-1',
       ),
     )
-    await user.selectOptions(within(dialog).getByRole('combobox', { name: 'Type' }), 'sell')
+    await user.selectOptions(within(dialog).getByRole('combobox', { name: 'Transaction Type' }), 'sell')
     const securitySearch = within(dialog).getByRole('searchbox', { name: 'Security' })
     await user.type(securitySearch, 'TBOND')
     await user.click(
@@ -501,7 +561,7 @@ describe('Transactions rendered page contract', () => {
         'Clean bond price requires matching same-date accrued interest, so no execution quote was applied.',
       ),
     ).toBeInTheDocument()
-    const quoteInput = within(dialog).getByRole('spinbutton', { name: /^Quote/ })
+    const quoteInput = within(dialog).getByRole('spinbutton', { name: /^Execution Price/ })
     const amountInput = within(dialog).getByRole('spinbutton', { name: 'Amount' })
     expect(quoteInput).toHaveValue(null)
     expect(amountInput).toHaveValue(null)
@@ -514,17 +574,100 @@ describe('Transactions rendered page contract', () => {
       within(within(dialog).getByRole('complementary', { name: 'Transaction review' })).getByText('+$985.00'),
     ).toBeInTheDocument()
 
-    await user.click(within(dialog).getByRole('button', { name: 'Save Transaction' }))
+    await user.click(within(dialog).getByRole('button', { name: 'Record Transaction' }))
     await waitFor(() =>
       expect(apiMocks.createPortfolioTransaction).toHaveBeenCalledWith(
         '3',
         expect.objectContaining({
           transaction_type: 'sell',
+          trade_time: null,
           instrument_id: 'bond-1',
           quantity: 1_000,
           price: 98.5,
           gross_amount: 985,
         }),
+        expect.stringMatching(/^transaction-create-/),
+      ),
+    )
+  })
+
+  it('keeps confirmed fund amount and shares authoritative and derives the unit price', async () => {
+    apiMocks.getPortfolioAccounts.mockResolvedValue({
+      portfolio_id: '3',
+      accounts: [fundSecuritiesAccount, fundCashAccount],
+    })
+    apiMocks.getPortfolioInstruments.mockResolvedValue({
+      portfolio_id: '3',
+      instruments: [fundInstrument],
+    })
+    apiMocks.getPortfolioTransactionExecutionQuote.mockResolvedValue({
+      portfolio_id: '3',
+      instrument_id: 'fund-1',
+      requested_as_of_date: '2026-07-15',
+      selection_role: 'trading',
+      value: 1.2,
+      quote_date: '2026-07-15',
+      quote_basis: 'official_nav',
+      metric_family: 'nav',
+      currency: 'CNY',
+      provider: 'fixture',
+      status: 'complete',
+      stale: false,
+      price_unit: 'per_unit',
+      price_scale: 1,
+      unavailable_reason: null,
+    })
+    apiMocks.createPortfolioTransaction.mockResolvedValue({
+      ...selectedTransaction,
+      transaction_id: 'txn-fund-subscription',
+      account: fundSecuritiesAccount,
+      settlement_cash_account: fundCashAccount,
+      instrument_id: 'fund-1',
+      instrument_ref: fundInstrument,
+      quantity: 199_872.08,
+      price: 1.250800011687,
+      gross_amount: 250_000,
+      currency: 'CNY',
+    })
+
+    const user = userEvent.setup()
+    renderPortfolioPage(
+      <TransactionsPage />,
+      '/portfolios/3/transactions?transaction_id=txn-1',
+      '/portfolios/:portfolioId/transactions',
+    )
+
+    await user.click(await screen.findByRole('button', { name: 'Record Transaction' }))
+    const dialog = screen.getByRole('dialog', { name: 'Record transaction' })
+    const securitySearch = within(dialog).getByRole('searchbox', { name: 'Security' })
+    await user.type(securitySearch, 'FUND1')
+    await user.click(
+      await within(dialog).findByRole('button', { name: /FUND1.*Confirmed Allocation Fund.*CNY/ }),
+    )
+
+    const sharesInput = within(dialog).getByRole('spinbutton', { name: 'Confirmed Shares' })
+    const amountInput = within(dialog).getByRole('spinbutton', { name: 'Confirmed Amount' })
+    const priceInput = within(dialog).getByRole('spinbutton', { name: 'Derived Unit Price' })
+    await user.type(sharesInput, '199872.08')
+    await user.type(amountInput, '250000')
+
+    expect(priceInput).toHaveValue(1.250800011687)
+    expect(priceInput).toHaveAttribute('readonly')
+    expect(priceInput).not.toHaveValue(1.2)
+
+    await user.click(within(dialog).getByRole('button', { name: 'Record Transaction' }))
+    await waitFor(() =>
+      expect(apiMocks.createPortfolioTransaction).toHaveBeenCalledWith(
+        '3',
+        expect.objectContaining({
+          transaction_type: 'buy',
+          trade_time: null,
+          instrument_id: 'fund-1',
+          quantity: 199_872.08,
+          price: 1.250800011687,
+          gross_amount: 250_000,
+        }),
+        expect.stringMatching(/^transaction-create-/),
       ),
     )
   })

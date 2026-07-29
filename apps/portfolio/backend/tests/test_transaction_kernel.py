@@ -485,6 +485,7 @@ def test_transaction_fact_can_be_updated_and_deleted(client):
             "gross_amount": 1250.0,
             "currency": "USD",
             "note": "Corrected note",
+            "expected_row_version": created_response.json()["row_version"],
         },
     )
     assert updated_response.status_code == 200

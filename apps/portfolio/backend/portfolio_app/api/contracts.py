@@ -717,6 +717,28 @@ class PositionLotListResponse(BaseModel):
     position_lots: list[PositionLotRecord]
 
 
+class TransactionChangeLogRecord(BaseModel):
+    change_id: str
+    portfolio_id: str
+    transaction_id: str
+    change_type: Literal["create", "update", "delete"]
+    row_version: int = Field(ge=1)
+    before: dict[str, object] | None = None
+    after: dict[str, object] | None = None
+    request_idempotency_key: str | None = None
+    changed_at: str
+
+
+class TransactionChangeLogSummary(BaseModel):
+    change_count: int
+
+
+class TransactionChangeLogResponse(BaseModel):
+    portfolio_id: str
+    summary: TransactionChangeLogSummary
+    changes: list[TransactionChangeLogRecord] = Field(default_factory=list)
+
+
 class TransactionWorkspaceResponse(BaseModel):
     portfolio_id: str
     summary: TransactionListSummary
@@ -729,6 +751,8 @@ class TransactionWorkspaceResponse(BaseModel):
     ledger_postings: list[LedgerPostingRecord]
     related_position_lot_summary: PositionLotListSummary
     related_position_lots: list[PositionLotRecord]
+    change_log_summary: TransactionChangeLogSummary
+    change_log: list[TransactionChangeLogRecord] = Field(default_factory=list)
 
 
 InstrumentEventTaskStatus = Literal[
@@ -3082,7 +3106,7 @@ class TransactionCreateRequest(BaseModel):
 
 
 class TransactionUpdateRequest(TransactionCreateRequest):
-    expected_row_version: int | None = Field(default=None, ge=1)
+    expected_row_version: int = Field(ge=1)
 
 
 class InternalTransferCreateRequest(BaseModel):
@@ -3175,25 +3199,3 @@ class TransactionDeleteResponse(BaseModel):
     deleted_count: int
     deleted_transaction_ids: list[str]
     transfer_group_id: str | None = None
-
-
-class TransactionChangeLogRecord(BaseModel):
-    change_id: str
-    portfolio_id: str
-    transaction_id: str
-    change_type: Literal["create", "update", "delete"]
-    row_version: int = Field(ge=1)
-    before: dict[str, object] | None = None
-    after: dict[str, object] | None = None
-    request_idempotency_key: str | None = None
-    changed_at: str
-
-
-class TransactionChangeLogSummary(BaseModel):
-    change_count: int
-
-
-class TransactionChangeLogResponse(BaseModel):
-    portfolio_id: str
-    summary: TransactionChangeLogSummary
-    changes: list[TransactionChangeLogRecord] = Field(default_factory=list)

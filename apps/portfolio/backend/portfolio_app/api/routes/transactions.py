@@ -682,6 +682,15 @@ def get_transaction_workspace(
         if not related_position_lots_raw:
             related_position_lots_raw = candidate_position_lots
 
+    change_log = (
+        list_transaction_change_logs(
+            portfolio_id,
+            transaction_id=selected_transaction_id,
+        )
+        if selected_transaction_id
+        else []
+    )
+
     return TransactionWorkspaceResponse(
         portfolio_id=portfolio_id,
         summary=summarize_transactions(filtered_records),
@@ -702,6 +711,8 @@ def get_transaction_workspace(
             summarize_position_lots(related_position_lots_raw)
         ),
         related_position_lots=related_position_lots_raw,
+        change_log_summary=TransactionChangeLogSummary(change_count=len(change_log)),
+        change_log=change_log,
     )
 
 
@@ -1156,10 +1167,7 @@ def update_transaction_record(
             detail="Paired internal transfer facts must be deleted and recreated as a batch.",
         )
     current_row_version = int(existing_transaction.get("row_version") or 1)
-    if (
-        payload.expected_row_version is not None
-        and payload.expected_row_version != current_row_version
-    ):
+    if payload.expected_row_version != current_row_version:
         raise HTTPException(
             status_code=409,
             detail=(

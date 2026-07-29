@@ -9262,10 +9262,10 @@ input[type='date']::-webkit-calendar-picker-indicator {
 
 .transaction-workbench-grid {
   display: grid;
-  grid-template-columns: minmax(0, 1.7fr) minmax(330px, 0.54fr);
-  gap: 20px;
+  grid-template-columns: minmax(0, 1fr) 332px;
+  gap: 16px;
   align-items: start;
-  padding-top: 12px;
+  padding-top: 10px;
 }
 
 .transaction-ledger-panel {
@@ -9276,8 +9276,8 @@ input[type='date']::-webkit-calendar-picker-indicator {
   display: flex;
   align-items: center;
   gap: 12px;
-  min-height: 34px;
-  padding: 0 10px;
+  min-height: 32px;
+  padding: 0 9px;
   border: 1px solid var(--portfolio-line);
   border-bottom: 0;
   color: var(--portfolio-muted);
@@ -9304,7 +9304,7 @@ input[type='date']::-webkit-calendar-picker-indicator {
 
 .transaction-table-shell {
   position: relative;
-  max-height: min(720px, calc(100vh - 290px));
+  max-height: min(760px, calc(100vh - 244px));
   padding-top: 0;
   overflow: auto;
   border: 1px solid var(--portfolio-line);
@@ -9326,7 +9326,7 @@ input[type='date']::-webkit-calendar-picker-indicator {
 
 .transaction-ledger-table {
   width: 100%;
-  min-width: 1010px;
+  min-width: 820px;
   table-layout: fixed;
 }
 
@@ -9351,13 +9351,12 @@ input[type='date']::-webkit-calendar-picker-indicator {
 }
 
 .transaction-ledger-table th:nth-child(1) { width: 36px; }
-.transaction-ledger-table th:nth-child(2) { width: 122px; }
-.transaction-ledger-table th:nth-child(3) { width: 112px; }
-.transaction-ledger-table th:nth-child(4) { width: 170px; }
-.transaction-ledger-table th:nth-child(5) { width: 190px; }
-.transaction-ledger-table th:nth-child(6) { width: 120px; }
-.transaction-ledger-table th:nth-child(7) { width: 150px; }
-.transaction-ledger-table th:nth-child(8) { width: 220px; }
+.transaction-ledger-table th:nth-child(2) { width: 108px; }
+.transaction-ledger-table th:nth-child(3) { width: 176px; }
+.transaction-ledger-table th:nth-child(4) { width: 148px; }
+.transaction-ledger-table th:nth-child(5) { width: 116px; }
+.transaction-ledger-table th:nth-child(6) { width: 134px; }
+.transaction-ledger-table th:nth-child(7) { width: 142px; }
 
 .transaction-select-column {
   padding-right: 2px !important;
@@ -9369,13 +9368,28 @@ input[type='date']::-webkit-calendar-picker-indicator {
   font-variant-numeric: tabular-nums;
 }
 
-.transaction-note-cell .holding-name-stack > span:first-child,
-.portfolio-security-transactions-table .transaction-note-cell {
-  display: -webkit-box;
+.transaction-activity-cell .transaction-type-pill {
+  margin-bottom: 2px;
+}
+
+.transaction-ledger-table .holding-name-stack {
+  min-width: 0;
+}
+
+.transaction-ledger-table .holding-name-stack > strong,
+.transaction-ledger-table .holding-name-stack > .holding-secondary,
+.transaction-ledger-table .holding-name-stack > .table-inline-link {
+  display: block;
   overflow: hidden;
-  white-space: normal;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.transaction-id-caption {
+  max-width: 160px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .transaction-inspector {
@@ -9413,7 +9427,7 @@ input[type='date']::-webkit-calendar-picker-indicator {
 
 .transaction-inspector-tabs {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   border-top: 1px solid var(--portfolio-line);
   border-bottom: 1px solid var(--portfolio-line-strong);
 }
@@ -9559,6 +9573,14 @@ input[type='date']::-webkit-calendar-picker-indicator {
   border-top: 1px solid var(--portfolio-line);
 }
 
+.transaction-audit-request {
+  margin-top: 8px;
+  overflow-wrap: anywhere;
+  color: var(--portfolio-muted);
+  font-size: 10px;
+  line-height: 1.45;
+}
+
 .transaction-inspector-card-metrics > div {
   min-width: 0;
 }
@@ -9582,8 +9604,8 @@ input[type='date']::-webkit-calendar-picker-indicator {
 
 /* Transaction entry ticket */
 .transaction-entry-modal {
-  width: min(1080px, calc(100vw - 48px));
-  max-height: min(92vh, 900px);
+  width: min(1000px, calc(100vw - 48px));
+  max-height: min(calc(100vh - 32px), 900px);
 }
 
 .transaction-entry-modal-header {
@@ -9594,7 +9616,7 @@ input[type='date']::-webkit-calendar-picker-indicator {
 }
 
 .transaction-form {
-  grid-template-columns: minmax(0, 1fr) 310px;
+  grid-template-columns: minmax(0, 1fr) 286px;
   gap: 0;
   padding: 0;
 }
@@ -9602,7 +9624,7 @@ input[type='date']::-webkit-calendar-picker-indicator {
 .transaction-ticket-main {
   display: grid;
   align-content: start;
-  gap: 16px;
+  gap: 14px;
   min-width: 0;
   padding: 18px 20px 22px;
 }
@@ -9612,7 +9634,7 @@ input[type='date']::-webkit-calendar-picker-indicator {
   align-content: start;
   gap: 14px;
   min-width: 0;
-  padding: 18px;
+  padding: 18px 16px;
   border-left: 1px solid var(--portfolio-line-strong);
   background: var(--portfolio-band);
 }
@@ -9646,6 +9668,30 @@ input[type='date']::-webkit-calendar-picker-indicator {
 
 .transaction-ticket-grid {
   grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px 14px;
+  align-items: start;
+}
+
+.transaction-entry-kind-row {
+  display: grid;
+  grid-template-columns: minmax(220px, 0.72fr) minmax(0, 1.28fr);
+  gap: 16px;
+  align-items: end;
+  padding: 12px;
+  border: 1px solid var(--portfolio-line);
+  background: var(--portfolio-band);
+}
+
+.transaction-entry-kind-row p {
+  margin: 0;
+  color: var(--portfolio-muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.transaction-form input[readonly] {
+  background: color-mix(in srgb, var(--portfolio-band) 72%, #ffffff);
+  color: var(--portfolio-ink);
 }
 
 .transaction-ticket-review .transaction-ticket-summary {
@@ -9850,7 +9896,7 @@ input[type='date']::-webkit-calendar-picker-indicator {
   border-bottom: 1px solid var(--portfolio-line);
 }
 
-@media (max-width: 1280px) {
+@media (max-width: 1080px) {
   .transaction-workbench-grid,
   .position-lot-workbench {
     grid-template-columns: 1fr;
@@ -9924,6 +9970,7 @@ input[type='date']::-webkit-calendar-picker-indicator {
   }
 
   .transaction-ticket-grid,
+  .transaction-entry-kind-row,
   .portfolio-security-hero-metrics {
     grid-template-columns: 1fr;
   }

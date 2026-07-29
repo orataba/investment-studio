@@ -1622,6 +1622,18 @@ export type PortfolioTransactionRecord = {
   row_version: number
 }
 
+export type PortfolioTransactionChangeLogRecord = {
+  change_id: string
+  portfolio_id: string
+  transaction_id: string
+  change_type: 'create' | 'update' | 'delete'
+  row_version: number
+  before: Record<string, unknown> | null
+  after: Record<string, unknown> | null
+  request_idempotency_key: string | null
+  changed_at: string
+}
+
 export type PortfolioFeeCategory =
   | 'unknown'
   | 'transaction_cost'
@@ -1661,6 +1673,10 @@ export type PortfolioTransactionWorkspaceResponse = {
   ledger_postings: PortfolioLedgerPostingRecord[]
   related_position_lot_summary: PortfolioPositionLotListResponse['summary']
   related_position_lots: PortfolioPositionLotRecord[]
+  change_log_summary?: {
+    change_count: number
+  }
+  change_log?: PortfolioTransactionChangeLogRecord[]
 }
 
 export type PortfolioInstrumentEventTaskStatus =
@@ -1884,7 +1900,10 @@ export type PortfolioTransactionCreatePayload = {
   currency: string
   counterparty_account_id?: string | null
   note?: string | null
-  expected_row_version?: number | null
+}
+
+export type PortfolioTransactionUpdatePayload = PortfolioTransactionCreatePayload & {
+  expected_row_version: number
 }
 
 export type PortfolioPerformanceFilters = {
@@ -2623,12 +2642,16 @@ export function deletePortfolioTargetSet(portfolioId: string, taxonomyId: string
 export function createPortfolioTransaction(
   portfolioId: string,
   payload: PortfolioTransactionCreatePayload,
+  idempotencyKey: string,
 ) {
   return fetchJson<PortfolioTransactionRecord>(
     API_BASE_URL,
     `/api/portfolios/${portfolioId}/transactions`,
     {
       method: 'POST',
+      headers: {
+        'Idempotency-Key': idempotencyKey,
+      },
       body: JSON.stringify(payload),
     },
   )
@@ -2663,7 +2686,7 @@ export function reviewPortfolioInstrumentEventTask(
 export function updatePortfolioTransaction(
   portfolioId: string,
   transactionId: string,
-  payload: PortfolioTransactionCreatePayload,
+  payload: PortfolioTransactionUpdatePayload,
 ) {
   return fetchJson<PortfolioTransactionRecord>(
     API_BASE_URL,
@@ -2693,12 +2716,16 @@ export function deletePortfolioTransaction(
 export function createPortfolioInternalTransfer(
   portfolioId: string,
   payload: PortfolioInternalTransferCreatePayload,
+  idempotencyKey: string,
 ) {
   return fetchJson<PortfolioTransactionBatchResponse>(
     API_BASE_URL,
     `/api/portfolios/${portfolioId}/transactions/internal-transfer`,
     {
       method: 'POST',
+      headers: {
+        'Idempotency-Key': idempotencyKey,
+      },
       body: JSON.stringify(payload),
     },
   )

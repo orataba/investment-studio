@@ -98,6 +98,7 @@ def test_bond_trade_amount_contract_and_lot_display_use_percent_of_par(
         **buy_payload,
         "price": 99.0,
         "gross_amount": 990.0,
+        "expected_row_version": buy_response.json()["row_version"],
     }
     update_response = client.put(
         f"/api/portfolios/portfolio-ops/transactions/{buy_response.json()['transaction_id']}",

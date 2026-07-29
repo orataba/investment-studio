@@ -7,8 +7,9 @@
 - `backend/` 与 `frontend/` 都已可运行
 - 组合内核当前以 `portfolio / account / transaction` 为数据库主事实
 - 持仓、lots、ledger、performance 由内核服务按需推导
-- `Holdings / Accounts / Transactions / Performance` 已有真实 API 与页面支撑
-  `Transactions` 当前支持 create / update / delete 原始事实；内部转仓仍按成对事实管理
+- `Holdings / Accounts / Transactions / Performance` 已有真实 API 与页面支撑。
+  `Transactions` 支持带幂等保护的 create、强制 row-version 的 update / delete、成对内部转仓、
+  交易变更历史，以及 trade / position-effective / settlement / entitlement 日期的独立录入。
 - `Risk` 已有真实工作台，包含 rolling annualized volatility / Sharpe、sample 相关性矩阵和 Current Drift；Production Risk Model 的风险窗口固定为 `1M / 3M / 6M / 12M / 24M`，协方差方法和风险贡献模式与 Research 使用同一组严格口径，相关性矩阵只暴露窗口和 scope，不混入协方差模型选择
 - `Taxonomies` 已有真实配置工作台，支持层级 sleeve tree、assignment、`TargetSet`、`default planning taxonomy` 与 `cash_bucket` 维护。现金可以参与 capital / weight target，但不得建立 `target_risk_share`，也不进入 `risk_budget` target completeness。
 - `Research` 已有真实工作台，支持基于 planning taxonomy / TargetSet / 当前持仓的递归 target-weight solve、top sleeve bounds、vol target/cap、1W/1M/3M rebalance backtest、benchmark 动态比较、风险预算诊断、回撤指标和调仓缺口。资产状态区分 Held / Observed / Former；former instrument 的正目标在未经 PM approval 时标记为人工复核。新 run 只有成功完成后才替换上一轮成功结果；失败 run 会保留上一轮 completed run 供继续查看。
@@ -26,6 +27,8 @@
   GIPS-informed 绩效方法治理边界。
 - [docs/03_HOLDINGS_FIELD_REFERENCE.md](./docs/03_HOLDINGS_FIELD_REFERENCE.md)
   Holdings 全字段的行级公式、分组类型、缺失条件与跨 Watchlist 数值一致性合同。
+- [docs/04_TRANSACTION_OPERATIONS.md](./docs/04_TRANSACTION_OPERATIONS.md)
+  Transactions 工作台、录入事实、日期、基金金额份额、幂等与修改审计的操作合同。
 - [docs/archive/2026-07-15_OPTIMIZATION_HANDOFF_COMPLETED.md](./docs/archive/2026-07-15_OPTIMIZATION_HANDOFF_COMPLETED.md)
   2026-07-15 优化轮次的历史执行记录；仅用于追溯，不定义当前产品合同。
 

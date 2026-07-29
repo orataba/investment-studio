@@ -84,6 +84,14 @@ def test_transaction_post_idempotency_replays_same_result_and_rejects_payload_re
     assert created["after"]["row_version"] == 1
     assert created["request_idempotency_key"] == "deposit-request-001"
 
+    workspace = client.get(
+        "/api/portfolios/portfolio-ops/transactions/workspace",
+        params={"transaction_id": transaction_id},
+    )
+    assert workspace.status_code == 200
+    assert workspace.json()["change_log_summary"] == {"change_count": 1}
+    assert workspace.json()["change_log"] == [created]
+
 
 def test_transaction_update_uses_optimistic_version_and_audits_delete_tombstone(client) -> None:
     created = client.post(
@@ -93,6 +101,13 @@ def test_transaction_update_uses_optimistic_version_and_audits_delete_tombstone(
     assert created.status_code == 200
     transaction_id = created.json()["transaction_id"]
     assert created.json()["row_version"] == 1
+
+    missing_version = client.put(
+        f"/api/portfolios/portfolio-ops/transactions/{transaction_id}",
+        json=_deposit_payload(amount=1250.0, note="Unversioned correction"),
+    )
+    assert missing_version.status_code == 422
+    assert "expected_row_version" in missing_version.text
 
     update_payload = {
         **_deposit_payload(amount=1250.0, note="Corrected deposit"),

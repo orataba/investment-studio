@@ -397,12 +397,14 @@ Transaction 是可修改的业务事实，但修改必须保留可追溯性，�
 - deposit / withdrawal 的 `external_flow_date` 优先使用显式导入值，其次 `settlement_date`，最后才回退 `trade_date`。TWR 必须在该实际收付日中性化 external flow；
 - 证券头寸 posting 在 position effective date 生效，结算现金 posting 在 settlement date 生效；当 `position_effective_date <= settlement_date` 时，两者之间的 pending settlement 作为独立 monetary exposure 留在 NAV；
 - `trade_date` 是成交/定价事实，`position_effective_date` 是 EOD 持仓确认事实，`settlement_date` 是现金结算事实，`entitlement_date` 是收入权利事实；四者不得因界面或计算方便互相覆盖；
+- `trade_time` 是可选事实。已知开盘前、盘中或收盘后成交时必须录入真实时间；未知时客户端提交 `null`，服务端用配置的日内默认时点形成确定性排序，并显式保存 `trade_time_is_estimated = true`。客户端不得把默认时点预填成看似精确的用户输入，修改既有 estimated 记录时也不得静默改成精确时间；
 - `fee_category` 必须显式保存；无法分类的历史或导入事实使用 `unknown`，不得猜测 management / custody / transaction cost；
 - create / update / delete 必须写入 additive change log，记录 before / after、row version、时间与可用的 idempotency key；这不是 event-sourcing ledger replacement；
 - 同一 portfolio 的 idempotency key 只可重放同一 operation 与同一 request hash；同 key 不同 payload 必须冲突失败；
-- update / delete 使用 `row_version` 做 optimistic concurrency，版本不匹配时拒绝覆盖较新的事实；
+- 交互式 create / internal transfer 必须生成 request-scoped idempotency key，并在请求完成前锁定重复提交；update / delete 的 `row_version` 是必填 optimistic-concurrency 前置条件，缺失或不匹配时都必须拒绝覆盖较新的事实；
 - 源 `quantity / price / amount / fx / fees / taxes` 使用 practical NUMERIC 精度保存，同时保留 float64 projection 供现有计算与统计使用。不得用显示舍入值反写源事实。
 - 对 buy / sell 等证券成交，`quantity` 与 `gross_amount` 是份额和成交金额事实，lot 的隐含成交价按 `gross_amount / quantity / price_scale` 计算；输入 `price` 可以是该隐含价格四位小数的展示值。校验可以接受精确乘积或与隐含价格四位小数一致的展示价，但账本不得反过来用舍入后的 `price × quantity` 改写源金额。
+- 对 pooled fund 申购 / 赎回，成交确认单的 `quantity` 与 `gross_amount` 是 authoritative facts，录入界面必须由二者按 canonical `price_scale` 反算 source `price`；Registry 的当日 NAV 只作参考，不得自动覆盖确认金额、确认份额或反算价格。ETF、股票和债券仍以实际 execution price + quantity 为正常录入锚点。
 
 ### 3.5 Cost Basis / Purchase Value
 
