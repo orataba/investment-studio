@@ -262,6 +262,8 @@ Group、Non-cash subtotal 和 `Portfolio Total` 仍然是**当前持仓篮子**�
 
 默认列表使用 compact payload；sparkline 是有界采样，打开 Security Detail 后再加载 lots、交易和完整图表。子资源尚未返回时显示 Loading/skeleton，不把 `$0.00` 当成真实数据；真正缺失或不适用的指标显示 `—`。
 
+Security Detail 分成三个互不混杂的视图：`Overview` 展示标的行情序列、当前仓位口径和分账户持仓；`Transactions` 展示该标的截至 as-of 的已确认经济事实及持仓生效、结算日期；`Position Lots` 展示开放成本批次、剩余数量和账面盈亏。卖出匹配记录附属于具体 lot，选择 lot 后在右侧 `Matched exits` 查看，不作为独立顶层页面。
+
 ### 6.5 Overview
 
 Overview 是组合默认首页，展示组合市值、TWR index、回撤、sleeve 结构、top holdings 和 benchmark 对比。页面只在数据完整时展示计算结果；缺少 fresh snapshot、关键行情或 FX 时，不会用部分数据硬算。

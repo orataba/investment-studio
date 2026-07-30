@@ -203,4 +203,191 @@ describe('Security Detail lazy-load contract', () => {
     }))
     expect(await screen.findByText('1 detail chart points')).toBeInTheDocument()
   })
+
+  it('maps legacy realization links to lots and does not synthesize empty-ledger values', async () => {
+    renderPortfolioPage(
+      <PortfolioSecurityDetailPage />,
+      '/portfolios/3/holdings/asset-1?detail_tab=realizations',
+      '/portfolios/:portfolioId/holdings/:instrumentId',
+    )
+
+    expect(await screen.findByRole('heading', { name: 'Position lots' })).toBeInTheDocument()
+    await waitFor(() => {
+      expect(apiMocks.getPortfolioPositionLots).toHaveBeenCalled()
+    })
+
+    expect(screen.getByRole('tab', { name: 'Position Lots 0' })).toHaveAttribute('aria-selected', 'true')
+    expect(screen.queryByRole('tab', { name: /Realizations/ })).not.toBeInTheDocument()
+    expect(screen.getByText('Remaining quantity').parentElement).toHaveTextContent('—')
+    expect(screen.getByText('Remaining cost').parentElement).toHaveTextContent('—')
+    expect(screen.getByText('Realized P/L').parentElement).toHaveTextContent('—')
+    expect(apiMocks.getPortfolioInstrumentPriceChart).not.toHaveBeenCalled()
+  })
+
+  it('separates transactions from overview and keeps realizations inside the selected lot', async () => {
+    const user = userEvent.setup()
+    apiMocks.getPortfolioTransactions.mockResolvedValue({
+      portfolio_id: '3',
+      summary: {
+        total_transactions: 1,
+        instrument_transactions: 1,
+        external_cash_flows: 0,
+        opening_balance_records: 0,
+      },
+      derivation_boundary: {
+        ledger_postings: 'derived',
+        positions: 'derived',
+        holdings: 'derived',
+        snapshot: 'derived',
+      },
+      transactions: [
+        {
+          transaction_id: 'txn-buy',
+          portfolio_id: '3',
+          transaction_type: 'buy',
+          flow_scope: 'internal',
+          trade_date: '2026-07-03',
+          trade_time: '12:00',
+          trade_at: '2026-07-03T12:00:00+08:00',
+          trade_timezone: 'Asia/Shanghai',
+          trade_time_is_estimated: true,
+          settlement_date: '2026-07-03',
+          position_effective_date: '2026-07-04',
+          economic_date: '2026-07-04',
+          external_flow_date: null,
+          entitlement_date: null,
+          acquisition_date: null,
+          account: {
+            account_id: 'account-1',
+            account_name: 'Fund Account',
+            account_type: 'securities_account',
+            currency: 'USD',
+          },
+          settlement_cash_account: {
+            account_id: 'cash-1',
+            account_name: 'Cash Account',
+            account_type: 'deposit_account',
+            currency: 'USD',
+          },
+          instrument_id: 'asset-1',
+          instrument_ref: instrumentFixture(),
+          quantity: 10,
+          source_quantity: '10',
+          price: 70,
+          source_price: '70',
+          gross_amount: 700,
+          source_gross_amount: '700',
+          counter_amount: null,
+          source_counter_amount: null,
+          fx_rate: null,
+          source_fx_rate: null,
+          fees: 0,
+          source_fees: '0',
+          fee_category: 'unknown',
+          taxes: 0,
+          source_taxes: '0',
+          currency: 'USD',
+          transfer_scope: null,
+          transfer_object_type: null,
+          transfer_group_id: null,
+          counterparty_account_id: null,
+          net_cash_effect: -700,
+          note: 'Confirmed subscription.',
+          created_at: '2026-07-03T12:00:00+08:00',
+          row_version: 1,
+        },
+      ],
+    })
+    apiMocks.getPortfolioPositionLots.mockResolvedValue({
+      portfolio_id: '3',
+      summary: {
+        position_lot_count: 1,
+        open_position_lot_count: 1,
+        closed_position_lot_count: 0,
+        realized_pnl: 25,
+      },
+      position_lots: [
+        {
+          position_lot_id: 'lot-1',
+          portfolio_id: '3',
+          account_id: 'account-1',
+          instrument_id: 'asset-1',
+          instrument_ref: instrumentFixture(),
+          currency: 'USD',
+          cost_basis_method: 'fifo',
+          opened_by_transaction_id: 'txn-buy',
+          opening_transaction_type: 'buy',
+          opened_at: '2026-07-03',
+          closed_at: null,
+          status: 'open',
+          entry_quantity: 10,
+          remaining_quantity: 8,
+          realized_quantity: 2,
+          transferred_quantity: 0,
+          entry_gross_amount: 700,
+          entry_fee_amount: 0,
+          entry_tax_amount: 0,
+          entry_cost_basis: 700,
+          remaining_cost_basis: 560,
+          realized_cost_basis: 140,
+          transferred_cost_basis: 0,
+          realized_proceeds: 165,
+          realized_pnl: 25,
+          income_cash_amount: 0,
+          expense_cash_amount: 0,
+          return_of_capital_amount: 0,
+          entry_price: 70,
+          average_exit_price: 82.5,
+          current_market_value: 640,
+          unrealized_pnl: 80,
+          holding_period_days: 25.4,
+          linked_transaction_count: 2,
+          realization_count: 1,
+          realizations: [
+            {
+              realization_id: 'realization-1',
+              transaction_id: 'txn-sell',
+              transaction_type: 'sell',
+              trade_date: '2026-07-20',
+              position_effective_date: '2026-07-20',
+              quantity: 2,
+              proceeds: 165,
+              cost_basis_released: 140,
+              realized_pnl: 25,
+              price: 82.5,
+              remaining_quantity_after: 8,
+              remaining_cost_basis_after: 560,
+              status_after: 'open',
+            },
+          ],
+        },
+      ],
+    })
+
+    renderPortfolioPage(
+      <PortfolioSecurityDetailPage />,
+      '/portfolios/3/holdings/asset-1?detail_tab=transactions',
+      '/portfolios/:portfolioId/holdings/:instrumentId',
+    )
+
+    expect(await screen.findByRole('heading', { name: 'Alpha Fund' })).toBeInTheDocument()
+    expect(await screen.findByText('Subscription')).toBeInTheDocument()
+    expect(screen.getByText('Position EOD 2026-07-04')).toBeInTheDocument()
+    expect(screen.queryByTestId('instrument-price-chart')).not.toBeInTheDocument()
+    expect(apiMocks.getPortfolioInstrumentPriceChart).not.toHaveBeenCalled()
+    expect(screen.queryByRole('tab', { name: 'Realizations 1' })).not.toBeInTheDocument()
+
+    await user.click(screen.getByRole('tab', { name: 'Position Lots 1' }))
+
+    expect(await screen.findByText('25 days held')).toBeInTheDocument()
+    expect(screen.getByText('Matched exits')).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: 'Opening transaction' })).toHaveAttribute(
+      'href',
+      '/portfolios/3/transactions?transaction_id=txn-buy',
+    )
+    expect(screen.getByRole('link', { name: '2026-07-20' })).toHaveAttribute(
+      'href',
+      '/portfolios/3/transactions?transaction_id=txn-sell',
+    )
+  })
 })

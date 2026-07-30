@@ -60,6 +60,7 @@
 - Portfolio workspace tabs 和 Watchlist fund detail tabs 可以有不同 header，但 tabs 以下的间距、section title、图表和 facts 结构应保持同一语言。
 - tabs 到首个内容块之间不留大空白；首个内容块直接从细线、section title 或 chart/table 开始。
 - Portfolio 是更重的独立 app，因此顶部 portfolio selector / portfolio headline 可以比 fund detail 更强，但不要把这种层级扩散到 tabs 以下。
+- Portfolio Holdings 的 instrument detail 固定分成 `Overview / Transactions / Position Lots`：Overview 承载行情与当前仓位摘要，Transactions 承载已确认交易事实，Position Lots 承载开放成本批次；matched exits 属于所选 lot 的上下文，不再作为与 lot 平级的顶层 tab。
 
 ## Chart And Data Surfaces
 
