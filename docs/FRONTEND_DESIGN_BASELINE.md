@@ -61,6 +61,7 @@
 - tabs 到首个内容块之间不留大空白；首个内容块直接从细线、section title 或 chart/table 开始。
 - Portfolio 是更重的独立 app，因此顶部 portfolio selector / portfolio headline 可以比 fund detail 更强，但不要把这种层级扩散到 tabs 以下。
 - Portfolio Holdings 的 instrument detail 固定分成 `Overview / Transactions / Position Lots`：Overview 承载行情与当前仓位摘要，Transactions 承载已确认交易事实，Position Lots 承载开放成本批次；matched exits 属于所选 lot 的上下文，不再作为与 lot 平级的顶层 tab。
+- Portfolio Accounts 使用左侧账户目录和右侧单账户工作区。账户身份与余额摘要常驻；`Overview / Positions / Transactions / Ledger` 分别承载配置、当前仓位、源交易和派生分录，不能把四类内容纵向堆叠成一个长页面。页签写入 URL，刷新和深链必须保持当前上下文。
 
 ## Chart And Data Surfaces
 
@@ -77,6 +78,7 @@
 - 被锁定的对象名称列不应在 column picker 中再次作为普通 checkbox 字段出现；列配置应用前必须去重并保留锁定列顺序。
 - 短列名优先，例如 `YTD`、`1M VOL`、`3M VOL`；缺少窗口锚点等不可用原因放在 hover title 或诊断状态里，不拉长表头。
 - Holdings 与 Research 的列表请求默认返回 compact rows。图表 sparkline 只保留有界采样点，重型 return/detail arrays 通过显式 detail 请求懒加载；切换选中项不得把旧 detail 短暂显示到新对象上。
+- Accounts 的 transaction 表必须同时显示 trade date 与 position recognition / settlement date；基金 `buy / sell` 在活动标签中显示为 `Subscription / Redemption`，但不得改写底层交易类型。Ledger 只组合展示实际存在的 cash、pending、quantity、cost delta，长 note 限制在两行并保留到源交易的链接。
 - Taxonomies 不得注册全局 Tab 或裸 Enter mutation。键盘变更只在对应编辑 scope 获得焦点时生效，并使用 `Ctrl/Cmd + Enter` 等带 modifier 的提交组合；浏览器和辅助技术的默认 Tab 导航必须保留。
 
 ## Shared UI Boundary

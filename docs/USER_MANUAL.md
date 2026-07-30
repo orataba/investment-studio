@@ -200,6 +200,13 @@ Portfolio 以交易和行情为事实来源。持仓、市值、绩效、风险�
 
 Accounts 管理组合内账户。账户类型通常包括证券账户和现金/存款账户。证券账户可设置默认 settlement cash account，用于买卖、分红、债券兑付等交易的现金结算。
 
+页面左侧是账户目录，右侧是所选账户工作区。账户价值、现金余额、持仓市值和待交收余额始终显示在顶部；下方视图分开处理：
+
+- `Overview`：账户配置和交易派生结果的数量摘要。
+- `Positions`：该账户当前开放持仓、成本、市值和未实现盈亏，可进入对应 Security Detail 的 Position Lots。
+- `Transactions`：直接记入该账户的源交易，同时显示 trade date 和 position recognition / settlement date。基金买卖在界面中显示为 `Subscription / Redemption`，底层仍保留 `buy / sell` 交易类型。
+- `Ledger`：源交易生成的只读 postings，分别列示 cash、pending settlement、quantity 和 cost basis 变动。发现错误时应进入源交易修改，不能直接改 posting。
+
 账户关键字段：
 
 - account name：账户名称。

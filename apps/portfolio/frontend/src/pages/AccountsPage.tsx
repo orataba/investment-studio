@@ -17,7 +17,14 @@ import {
   type PortfolioLedgerPostingRecord,
   type PortfolioTransactionRecord,
 } from '../lib/api'
-import { formatCurrency, formatLabel, formatNumber, formatSignedCurrency, formatUnitPrice } from '../lib/format'
+import {
+  formatCurrency,
+  formatLabel,
+  formatNumber,
+  formatSignedCurrency,
+  formatUnitPrice,
+  signedValueClass,
+} from '../lib/format'
 import { useModalDialog } from '../../../../../packages/ui/src/useModalDialog'
 import {
   beginRequest,
@@ -31,8 +38,29 @@ import {
   resolveWorkspaceAccountSelection,
   shouldLoadAccountWorkspace,
 } from '../lib/accountWorkspace'
+import { transactionActivityLabel } from '../lib/transactionPresentation'
 
 const ACCOUNT_SCOPE_OPTIONS = ['equity', 'etf', 'fund', 'bond', 'other'] as const
+type AccountDetailTab = 'overview' | 'positions' | 'transactions' | 'ledger'
+
+function parseAccountDetailTab(value: string | null): AccountDetailTab {
+  if (value === 'positions' || value === 'transactions' || value === 'ledger') {
+    return value
+  }
+  return 'overview'
+}
+
+function countLabel(count: number, singular: string, plural = `${singular}s`) {
+  return `${formatNumber(count, 0)} ${count === 1 ? singular : plural}`
+}
+
+function formatSignedNumber(value: number | null | undefined, digits = 2) {
+  if (value == null || Number.isNaN(value)) {
+    return '—'
+  }
+  const absolute = formatNumber(Math.abs(value), digits)
+  return value > 0 ? `+${absolute}` : value < 0 ? `-${absolute}` : absolute
+}
 
 function localTodayIso() {
   const now = new Date()
@@ -76,6 +104,7 @@ export default function AccountsPage() {
   const { portfolioId = '' } = useParams()
   const [searchParams, setSearchParams] = useSearchParams()
   const requestedAccountId = searchParams.get('account_id') ?? ''
+  const accountDetailTab = parseAccountDetailTab(searchParams.get('account_tab'))
   const [workspace, setWorkspace] = useState<PortfolioAccountsWorkspaceResponse | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -329,6 +358,16 @@ export default function AccountsPage() {
   const displayedLedgerPostings = showAllLedgerEntries
     ? visibleLedgerPostings
     : visibleLedgerPostings.slice(0, 12)
+  const accountDetailTabs = [
+    { key: 'overview', label: 'Overview', meta: 'Setup' },
+    { key: 'positions', label: 'Positions', meta: String(visiblePositions.length) },
+    {
+      key: 'transactions',
+      label: 'Transactions',
+      meta: String(workspace?.linked_transactions_summary?.total_transactions ?? directTransactions.length),
+    },
+    { key: 'ledger', label: 'Ledger', meta: String(visibleLedgerPostings.length) },
+  ] as const
 
   useEffect(() => {
     setShowAllDirectTransactions(false)
@@ -452,6 +491,18 @@ export default function AccountsPage() {
     setSearchParams(next, { replace: true })
   }
 
+  function selectAccountDetailTab(tab: AccountDetailTab) {
+    setSearchParams((current) => {
+      const next = new URLSearchParams(current)
+      if (tab === 'overview') {
+        next.delete('account_tab')
+      } else {
+        next.set('account_tab', tab)
+      }
+      return next
+    }, { replace: true })
+  }
+
   function openCreateAccountDrawer() {
     setDrawerMode('create')
     setEditingAccountId(null)
@@ -476,348 +527,407 @@ export default function AccountsPage() {
       activeSection="Accounts"
       toolbarLabel="View: Account Ledger"
       busy={loading}
-      controls={
-        workspace ? (
-          <div className="portfolio-summary-strip">
-            <article className="summary-card">
-              <span className="summary-card-label">Accounts</span>
-              <strong className="summary-card-value">{workspace.summary.account_count}</strong>
-            </article>
-            <article className="summary-card">
-              <span className="summary-card-label">Cash Accounts</span>
-              <strong className="summary-card-value">{workspace.summary.deposit_account_count}</strong>
-            </article>
-            <article className="summary-card">
-              <span className="summary-card-label">Securities Accounts</span>
-              <strong className="summary-card-value">{workspace.summary.securities_account_count}</strong>
-            </article>
-            <article className="summary-card">
-              <span className="summary-card-label">Ledger Entries</span>
-              <strong className="summary-card-value">{workspace.summary.ledger_posting_count}</strong>
-            </article>
-          </div>
-        ) : undefined
-      }
     >
-      <section className="portfolio-detail-surface">
-        <div className="portfolio-detail-toolbar account-page-heading">
+      <section className="portfolio-detail-surface account-page">
+        <header className="account-page-heading">
           <div className="account-page-title-stack">
-            <div className="panel-title">Accounts</div>
-            <div className="portfolio-detail-meta">
-              Configure custody accounts and inspect their transaction-derived balances.
-            </div>
+            <span className="account-page-eyebrow">Custody</span>
+            <h1>Accounts</h1>
+            <p>Custody accounts and their transaction-derived balances.</p>
           </div>
-          <button type="button" className="toolbar-link button-primary" onClick={openCreateAccountDrawer}>
-            Add Account
-          </button>
-        </div>
+          <div className="account-page-heading-actions">
+            {workspace ? (
+              <span className="account-page-inventory">
+                {countLabel(workspace.summary.account_count, 'account')} ·{' '}
+                {countLabel(workspace.summary.deposit_account_count, 'cash account')} ·{' '}
+                {countLabel(workspace.summary.securities_account_count, 'securities account')}
+              </span>
+            ) : null}
+            <button type="button" className="toolbar-link button-primary" onClick={openCreateAccountDrawer}>
+              Add Account
+            </button>
+          </div>
+        </header>
 
         {notice ? <div className="inline-notice inline-notice-success">{notice}</div> : null}
         {loading ? <CalculationStatus /> : null}
         {error ? <div className="error-state">{error}</div> : null}
 
         {!loading && !error && workspace ? (
-          <>
-            <div className="account-derivation-note">
-              <span className="account-source-badge">Transaction-derived</span>
-              <span>
-                Balances, positions, and ledger entries are read-only outputs. Edit the source transaction to change them.
-              </span>
-            </div>
-
-            <section className="accounts-workbench">
-              <article className="panel account-directory-panel">
-                <div className="panel-header">
-                  <div>
-                    <div className="panel-title">Account Directory</div>
-                    <div className="portfolio-detail-meta">{visibleAccounts.length} configured</div>
-                  </div>
+          <section className="accounts-workbench">
+            <aside className="account-directory-panel">
+              <div className="account-directory-header">
+                <div>
+                  <span className="account-section-kicker">Directory</span>
+                  <h2>Accounts</h2>
                 </div>
-                <nav className="account-directory-list" aria-label="Accounts">
-                  {visibleAccounts.map((accountRow) => {
-                    const isActive = accountRow.account.account_id === resolvedSelectedAccountId
-                    return (
-                      <button
-                        key={accountRow.account.account_id}
-                        type="button"
-                        aria-current={isActive ? 'true' : undefined}
-                        className={`account-directory-item${isActive ? ' account-directory-item-active' : ''}`}
-                        onClick={() => selectAccount(accountRow.account.account_id)}
-                      >
-                        <span className="account-directory-item-head">
-                          <span className="account-directory-name">{accountRow.account.account_name}</span>
-                          <span className={`account-status-pill account-status-${accountRow.account.status}`}>
-                            {formatLabel(accountRow.account.status)}
-                          </span>
+                <span>{formatNumber(visibleAccounts.length, 0)} configured</span>
+              </div>
+              <nav className="account-directory-list" aria-label="Accounts">
+                {visibleAccounts.map((accountRow) => {
+                  const isActive = accountRow.account.account_id === resolvedSelectedAccountId
+                  return (
+                    <button
+                      key={accountRow.account.account_id}
+                      type="button"
+                      aria-current={isActive ? 'true' : undefined}
+                      className={`account-directory-item${isActive ? ' account-directory-item-active' : ''}`}
+                      onClick={() => selectAccount(accountRow.account.account_id)}
+                    >
+                      <span className="account-directory-item-head">
+                        <span className="account-directory-name">{accountRow.account.account_name}</span>
+                        <span className={`account-status-pill account-status-${accountRow.account.status}`}>
+                          {formatLabel(accountRow.account.status)}
                         </span>
-                        <span className="account-directory-meta">
-                          {formatLabel(accountRow.account.account_type)} · {accountRow.account.currency}
-                          {accountRow.account.institution ? ` · ${accountRow.account.institution}` : ''}
+                      </span>
+                      <span className="account-directory-meta">
+                        {formatLabel(accountRow.account.account_type)} · {accountRow.account.currency}
+                        {accountRow.account.institution ? ` · ${accountRow.account.institution}` : ''}
+                      </span>
+                      <span className="account-directory-stats">
+                        <span>
+                          <small>Account value</small>
+                          <strong>
+                            {accountRow.account_value_base != null
+                              ? formatCurrency(accountRow.account_value_base, workspace.base_currency)
+                              : '—'}
+                          </strong>
                         </span>
-                        <span className="account-directory-stats">
-                          <span>
-                            <small>Account Value</small>
-                            <strong>
-                              {accountRow.account_value_base != null
-                                ? formatCurrency(accountRow.account_value_base, workspace.base_currency)
-                                : '—'}
-                            </strong>
-                          </span>
-                          <span>
-                            <small>Positions</small>
-                            <strong>{accountRow.position_line_count}</strong>
-                          </span>
+                        <span>
+                          <small>Positions</small>
+                          <strong>{formatNumber(accountRow.position_line_count, 0)}</strong>
                         </span>
-                      </button>
-                    )
-                  })}
-                </nav>
-              </article>
+                      </span>
+                    </button>
+                  )
+                })}
+              </nav>
+            </aside>
 
-              <article className="panel account-detail-panel">
-                {selectedAccount ? (
-                  <>
-                    <div className="account-detail-header">
-                      <div className="account-detail-identity">
-                        <div className="account-detail-eyebrow">Selected Account</div>
-                        <h2>{selectedAccount.account.account_name}</h2>
-                        <div className="account-detail-tags">
-                          <span>{formatLabel(selectedAccount.account.account_type)}</span>
-                          <span>{selectedAccount.account.currency}</span>
-                          <span className={`account-status-pill account-status-${selectedAccount.account.status}`}>
-                            {formatLabel(selectedAccount.account.status)}
-                          </span>
+            <section className="account-detail-panel">
+              {selectedAccount ? (
+                <>
+                  <header className="account-detail-header">
+                    <div className="account-detail-identity">
+                      <span className="account-detail-eyebrow">Selected account</span>
+                      <h2>{selectedAccount.account.account_name}</h2>
+                      <div className="account-detail-tags">
+                        <span>{formatLabel(selectedAccount.account.account_type)}</span>
+                        <span>{selectedAccount.account.currency}</span>
+                        <span className={`account-status-pill account-status-${selectedAccount.account.status}`}>
+                          {formatLabel(selectedAccount.account.status)}
+                        </span>
+                      </div>
+                    </div>
+                    <div className="account-detail-actions">
+                      <Link
+                        className="toolbar-link"
+                        to={`/portfolios/${portfolioId}/transactions?account_id=${encodeURIComponent(
+                          selectedAccount.account.account_id,
+                        )}`}
+                      >
+                        Transaction Workbench
+                      </Link>
+                      <button type="button" className="toolbar-link" onClick={openEditAccountDrawer}>
+                        Edit Account
+                      </button>
+                    </div>
+                  </header>
+
+                  <div className="account-balance-grid">
+                    <div>
+                      <span>Account value · {workspace.base_currency}</span>
+                      <strong>
+                        {selectedAccount.account_value_base != null
+                          ? formatCurrency(selectedAccount.account_value_base, workspace.base_currency)
+                          : '—'}
+                      </strong>
+                    </div>
+                    <div>
+                      <span>Cash balance · {selectedAccount.account.currency}</span>
+                      <strong>
+                        {formatCurrency(selectedAccount.derived_cash_balance, selectedAccount.account.currency)}
+                      </strong>
+                    </div>
+                    <div>
+                      <span>
+                        Position value · {selectedAccount.position_market_value_currency ?? workspace.base_currency}
+                      </span>
+                      <strong>
+                        {selectedAccount.position_market_value != null
+                          ? formatCurrency(
+                              selectedAccount.position_market_value,
+                              selectedAccount.position_market_value_currency ?? workspace.base_currency,
+                            )
+                          : '—'}
+                      </strong>
+                    </div>
+                    <div>
+                      <span>Pending settlement · {selectedAccount.account.currency}</span>
+                      <strong>
+                        {formatCurrency(selectedAccount.pending_settlement, selectedAccount.account.currency)}
+                      </strong>
+                    </div>
+                  </div>
+
+                  <div className="account-detail-tabbar" role="tablist" aria-label="Account detail">
+                    {accountDetailTabs.map((tab) => {
+                      const isActive = accountDetailTab === tab.key
+                      return (
+                        <button
+                          key={tab.key}
+                          type="button"
+                          id={`account-detail-tab-${tab.key}`}
+                          role="tab"
+                          aria-label={`${tab.label} ${tab.meta}`}
+                          aria-selected={isActive}
+                          aria-controls={`account-detail-panel-${tab.key}`}
+                          tabIndex={isActive ? 0 : -1}
+                          className={`account-detail-tab${isActive ? ' account-detail-tab-active' : ''}`}
+                          onClick={() => selectAccountDetailTab(tab.key)}
+                        >
+                          <span>{tab.label}</span>
+                          <small>{tab.meta}</small>
+                        </button>
+                      )
+                    })}
+                  </div>
+
+                  {accountDetailTab === 'overview' ? (
+                    <div
+                      id="account-detail-panel-overview"
+                      className="account-tab-panel account-overview-grid"
+                      role="tabpanel"
+                      aria-labelledby="account-detail-tab-overview"
+                    >
+                      <section className="account-overview-section">
+                        <div className="account-section-heading">
+                          <div>
+                            <span className="account-section-kicker">Configuration</span>
+                            <h3>Account setup</h3>
+                          </div>
+                        </div>
+                        <dl className="account-profile-grid">
+                          <div>
+                            <dt>Institution</dt>
+                            <dd>{selectedAccount.account.institution || '—'}</dd>
+                          </div>
+                          <div>
+                            <dt>Default settlement</dt>
+                            <dd>{selectedAccount.default_settlement_cash_account_name || '—'}</dd>
+                          </div>
+                          <div>
+                            <dt>Cost method</dt>
+                            <dd>
+                              {selectedAccount.account.cost_basis_method
+                                ? formatCostMethodLabel(selectedAccount.account.cost_basis_method)
+                                : '—'}
+                            </dd>
+                          </div>
+                          <div>
+                            <dt>Instrument scope</dt>
+                            <dd>{formatAccountInstrumentScope(selectedAccount.account)}</dd>
+                          </div>
+                          <div>
+                            <dt>Opened</dt>
+                            <dd>{selectedAccount.account.opened_at || '—'}</dd>
+                          </div>
+                          <div>
+                            <dt>Closed</dt>
+                            <dd>{selectedAccount.account.closed_at || '—'}</dd>
+                          </div>
+                        </dl>
+                      </section>
+
+                      <aside className="account-derived-summary">
+                        <div className="account-section-heading">
+                          <div>
+                            <span className="account-section-kicker">Accounting basis</span>
+                            <h3>Transaction-derived</h3>
+                          </div>
+                        </div>
+                        <p>
+                          Balances, positions, and postings are read-only outputs. Correct the source
+                          transaction when an accounting fact is wrong.
+                        </p>
+                        <div className="account-activity-counts">
+                          <div>
+                            <strong>{formatNumber(selectedAccount.position_line_count, 0)}</strong>
+                            <span>Open positions</span>
+                          </div>
+                          <div>
+                            <strong>{formatNumber(selectedAccount.linked_transaction_count, 0)}</strong>
+                            <span>Affecting transactions</span>
+                          </div>
+                          <div>
+                            <strong>{formatNumber(selectedAccount.linked_posting_count, 0)}</strong>
+                            <span>Ledger entries</span>
+                          </div>
+                        </div>
+                      </aside>
+                    </div>
+                  ) : null}
+
+                  {accountDetailTab === 'positions' ? (
+                    <section
+                      id="account-detail-panel-positions"
+                      className="account-tab-panel account-data-panel"
+                      role="tabpanel"
+                      aria-labelledby="account-detail-tab-positions"
+                    >
+                      <div className="account-panel-header">
+                        <div>
+                          <span className="account-section-kicker">Current custody</span>
+                          <h3>Open positions</h3>
+                        </div>
+                        <span>{countLabel(visiblePositions.length, 'line')}</span>
+                      </div>
+                      {visiblePositions.length ? (
+                        <div className="table-shell">
+                          <table className="accounts-data-table accounts-responsive-table account-position-table">
+                            <thead>
+                              <tr>
+                                <th>Instrument</th>
+                                <th>Quantity / Price</th>
+                                <th>Cost Basis</th>
+                                <th>Market Value</th>
+                                <th>Unrealized P/L</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {visiblePositions.map((position) => (
+                                <PositionRow
+                                  key={`${position.account_id}-${position.instrument_id}`}
+                                  portfolioId={portfolioId}
+                                  position={position}
+                                />
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                      ) : (
+                        <div className="account-empty-state">No open positions in this account.</div>
+                      )}
+                    </section>
+                  ) : null}
+
+                  {accountDetailTab === 'transactions' ? (
+                    <section
+                      id="account-detail-panel-transactions"
+                      className="account-tab-panel account-data-panel"
+                      role="tabpanel"
+                      aria-labelledby="account-detail-tab-transactions"
+                    >
+                      <div className="account-panel-header">
+                        <div>
+                          <span className="account-section-kicker">Source facts</span>
+                          <h3>Direct transactions</h3>
+                          <p>Transactions booked to this account; settlement-only effects stay in Ledger.</p>
+                        </div>
+                        <div className="account-panel-header-actions">
+                          <span>{countLabel(directTransactions.length, 'transaction')}</span>
+                          {directTransactions.length > 8 ? (
+                            <button
+                              type="button"
+                              className="account-inline-action"
+                              onClick={() => setShowAllDirectTransactions((current) => !current)}
+                            >
+                              {showAllDirectTransactions ? 'Show Recent' : 'Show All'}
+                            </button>
+                          ) : null}
                         </div>
                       </div>
-                      <div className="account-detail-actions">
-                        <Link
-                          className="toolbar-link"
-                          to={`/portfolios/${portfolioId}/transactions?account_id=${encodeURIComponent(
-                            selectedAccount.account.account_id,
-                          )}`}
-                        >
-                          View Transactions
-                        </Link>
-                        <button type="button" className="toolbar-link" onClick={openEditAccountDrawer}>
-                          Edit Account
-                        </button>
-                      </div>
-                    </div>
-
-                    <div className="account-balance-grid">
-                      <article>
-                        <span>Account Value · {workspace.base_currency}</span>
-                        <strong>
-                          {selectedAccount.account_value_base != null
-                            ? formatCurrency(selectedAccount.account_value_base, workspace.base_currency)
-                            : '—'}
-                        </strong>
-                      </article>
-                      <article>
-                        <span>Cash Balance · {selectedAccount.account.currency}</span>
-                        <strong>
-                          {formatCurrency(selectedAccount.derived_cash_balance, selectedAccount.account.currency)}
-                        </strong>
-                      </article>
-                      <article>
-                        <span>
-                          Position Value · {selectedAccount.position_market_value_currency ?? workspace.base_currency}
-                        </span>
-                        <strong>
-                          {selectedAccount.position_market_value != null
-                            ? formatCurrency(
-                                selectedAccount.position_market_value,
-                                selectedAccount.position_market_value_currency ?? workspace.base_currency,
-                              )
-                            : '—'}
-                        </strong>
-                      </article>
-                      <article>
-                        <span>Pending Settlement · {selectedAccount.account.currency}</span>
-                        <strong>
-                          {formatCurrency(selectedAccount.pending_settlement, selectedAccount.account.currency)}
-                        </strong>
-                      </article>
-                    </div>
-
-                    <div className="account-detail-section-heading">
-                      <div className="panel-title">Account Setup</div>
-                    </div>
-                    <dl className="account-profile-grid">
-                      <div>
-                        <dt>Institution</dt>
-                        <dd>{selectedAccount.account.institution || '—'}</dd>
-                      </div>
-                      <div>
-                        <dt>Default Settlement</dt>
-                        <dd>{selectedAccount.default_settlement_cash_account_name || '—'}</dd>
-                      </div>
-                      <div>
-                        <dt>Cost Method</dt>
-                        <dd>
-                          {selectedAccount.account.cost_basis_method
-                            ? formatLabel(selectedAccount.account.cost_basis_method)
-                            : '—'}
-                        </dd>
-                      </div>
-                      <div>
-                        <dt>Instrument Scope</dt>
-                        <dd>{formatAccountInstrumentScope(selectedAccount.account)}</dd>
-                      </div>
-                      <div>
-                        <dt>Opened</dt>
-                        <dd>{selectedAccount.account.opened_at || '—'}</dd>
-                      </div>
-                      <div>
-                        <dt>Closed</dt>
-                        <dd>{selectedAccount.account.closed_at || '—'}</dd>
-                      </div>
-                    </dl>
-
-                    <div className="account-activity-counts">
-                      <span><strong>{selectedAccount.position_line_count}</strong> position lines</span>
-                      <span><strong>{selectedAccount.linked_transaction_count}</strong> affecting transactions</span>
-                      <span><strong>{selectedAccount.linked_posting_count}</strong> ledger entries</span>
-                    </div>
-                  </>
-                ) : (
-                  <div className="empty-state">No account.</div>
-                )}
-              </article>
-            </section>
-
-            <section className="panel account-data-panel">
-              <div className="panel-header">
-                <div>
-                  <div className="panel-title">Open Positions</div>
-                  <div className="portfolio-detail-meta">{selectedAccount?.account.account_name || 'No account selected'}</div>
-                </div>
-                <div className="portfolio-detail-meta">{visiblePositions.length} lines</div>
-              </div>
-              {visiblePositions.length ? (
-                <div className="table-shell">
-                  <table className="accounts-data-table accounts-responsive-table">
-                    <thead>
-                      <tr>
-                        <th>Instrument</th>
-                        <th>Quantity</th>
-                        <th>Cost Basis</th>
-                        <th>Last Price</th>
-                        <th>Market Value</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {visiblePositions.map((position) => (
-                        <PositionRow key={`${position.account_id}-${position.instrument_id}`} position={position} />
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              ) : (
-                <div className="account-empty-state">No open positions in this account.</div>
-              )}
-            </section>
-
-            <section className="panel account-data-panel">
-              <div className="panel-header">
-                <div>
-                  <div className="panel-title">Direct Transactions</div>
-                  <div className="portfolio-detail-meta">
-                    Transactions booked directly to this account; settlement-only effects remain in the ledger.
-                  </div>
-                </div>
-                <div className="account-panel-header-actions">
-                  <span className="portfolio-detail-meta">
-                    {workspace.linked_transactions_summary?.total_transactions ?? 0} direct
-                  </span>
-                  {directTransactions.length > 8 ? (
-                    <button
-                      type="button"
-                      className="account-inline-action"
-                      onClick={() => setShowAllDirectTransactions((current) => !current)}
-                    >
-                      {showAllDirectTransactions ? 'Show Recent' : 'Show All'}
-                    </button>
+                      {directTransactions.length ? (
+                        <div className="table-shell">
+                          <table className="accounts-data-table accounts-responsive-table account-transaction-table">
+                            <thead>
+                              <tr>
+                                <th>Trade / Recognition</th>
+                                <th>Activity</th>
+                                <th>Instrument</th>
+                                <th>Gross / Net Cash</th>
+                                <th>Source</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {displayedDirectTransactions.map((transaction) => (
+                                <AccountTransactionRow
+                                  key={transaction.transaction_id}
+                                  portfolioId={portfolioId}
+                                  transaction={transaction}
+                                  accountId={resolvedSelectedAccountId}
+                                />
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                      ) : (
+                        <div className="account-empty-state">No transactions are booked directly to this account.</div>
+                      )}
+                    </section>
                   ) : null}
-                </div>
-              </div>
-              {directTransactions.length ? (
-                <div className="table-shell">
-                  <table className="accounts-data-table accounts-responsive-table">
-                    <thead>
-                      <tr>
-                        <th>Trade Date</th>
-                        <th>Type</th>
-                        <th>Instrument</th>
-                        <th>Gross</th>
-                        <th>Net Cash</th>
-                        <th>Open</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {displayedDirectTransactions.map((transaction) => (
-                        <AccountTransactionRow
-                          key={transaction.transaction_id}
-                          portfolioId={portfolioId}
-                          transaction={transaction}
-                          accountId={resolvedSelectedAccountId}
-                        />
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              ) : (
-                <div className="account-empty-state">No transactions are booked directly to this account.</div>
-              )}
-            </section>
 
-            <section className="panel account-data-panel">
-              <div className="panel-header">
-                <div>
-                  <div className="panel-title">Ledger Entries</div>
-                  <div className="portfolio-detail-meta">Immutable postings generated by source transactions</div>
-                </div>
-                <div className="account-panel-header-actions">
-                  <span className="portfolio-detail-meta">
-                    {visibleLedgerPostings.length} entries · {selectedAccount?.account.account_name || 'No account selected'}
-                  </span>
-                  {visibleLedgerPostings.length > 12 ? (
-                    <button
-                      type="button"
-                      className="account-inline-action"
-                      onClick={() => setShowAllLedgerEntries((current) => !current)}
+                  {accountDetailTab === 'ledger' ? (
+                    <section
+                      id="account-detail-panel-ledger"
+                      className="account-tab-panel account-data-panel"
+                      role="tabpanel"
+                      aria-labelledby="account-detail-tab-ledger"
                     >
-                      {showAllLedgerEntries ? 'Show Recent' : 'Show All'}
-                    </button>
+                      <div className="account-panel-header">
+                        <div>
+                          <span className="account-section-kicker">Derived postings</span>
+                          <h3>Ledger entries</h3>
+                          <p>Immutable postings generated from source transactions.</p>
+                        </div>
+                        <div className="account-panel-header-actions">
+                          <span>{countLabel(visibleLedgerPostings.length, 'entry', 'entries')}</span>
+                          {visibleLedgerPostings.length > 12 ? (
+                            <button
+                              type="button"
+                              className="account-inline-action"
+                              onClick={() => setShowAllLedgerEntries((current) => !current)}
+                            >
+                              {showAllLedgerEntries ? 'Show Recent' : 'Show All'}
+                            </button>
+                          ) : null}
+                        </div>
+                      </div>
+                      {visibleLedgerPostings.length ? (
+                        <div className="table-shell">
+                          <table className="accounts-data-table accounts-responsive-table account-ledger-table">
+                            <thead>
+                              <tr>
+                                <th>Effective / Dates</th>
+                                <th>Posting</th>
+                                <th>Instrument</th>
+                                <th>Deltas</th>
+                                <th>Source</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {displayedLedgerPostings.map((posting) => (
+                                <LedgerPostingRow
+                                  key={posting.posting_id}
+                                  posting={posting}
+                                  portfolioId={portfolioId}
+                                  accountId={resolvedSelectedAccountId}
+                                />
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                      ) : (
+                        <div className="account-empty-state">No ledger entries for this account.</div>
+                      )}
+                    </section>
                   ) : null}
-                </div>
-              </div>
-              {visibleLedgerPostings.length ? (
-                <div className="table-shell">
-                  <table className="accounts-data-table accounts-responsive-table account-ledger-table">
-                    <thead>
-                      <tr>
-                        <th>Dates</th>
-                        <th>Entry</th>
-                        <th>Instrument</th>
-                        <th>Cash Delta</th>
-                        <th>Quantity Delta</th>
-                        <th>Cost Basis Delta</th>
-                        <th>Reference</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {displayedLedgerPostings.map((posting) => (
-                        <LedgerPostingRow key={posting.posting_id} posting={posting} />
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
+                </>
               ) : (
-                <div className="account-empty-state">No ledger entries for this account.</div>
+                <div className="empty-state">No account.</div>
               )}
             </section>
-          </>
+          </section>
         ) : null}
       </section>
 
@@ -1177,105 +1287,204 @@ function AccountTransactionRow({
   transaction: PortfolioTransactionRecord
   accountId: string
 }) {
+  const instrumentType = transaction.instrument_ref?.instrument_type
   return (
     <tr>
-      <td data-label="Trade Date">{transaction.trade_date}</td>
-      <td data-label="Type">
-        <span className="transaction-type-pill">{formatLabel(transaction.transaction_type)}</span>
+      <td data-label="Trade / Recognition">
+        <div className="account-transaction-date-stack">
+          <span>{transaction.trade_date}</span>
+          <span>
+            {transaction.position_effective_date
+              ? `Position EOD ${transaction.position_effective_date}`
+              : `Settles ${transaction.settlement_date}`}
+          </span>
+        </div>
+      </td>
+      <td data-label="Activity">
+        <span className="transaction-type-pill">
+          {transactionActivityLabel(transaction.transaction_type, instrumentType)}
+        </span>
       </td>
       <td className="holding-name-cell" data-label="Instrument">
         {transaction.instrument_ref ? (
           <div className="holding-name-stack">
-            <span>{primaryIdentifier(transaction.instrument_ref)}</span>
+            <span>
+              {primaryIdentifier({
+                instrument_id: transaction.instrument_id,
+                instrument_ref: transaction.instrument_ref,
+              })}
+            </span>
             <span className="holding-secondary">{transaction.instrument_ref.instrument_name}</span>
           </div>
         ) : (
           <span className="holding-secondary">Cash ledger</span>
         )}
       </td>
-      <td data-label="Gross">{formatCurrency(transaction.gross_amount, transaction.currency)}</td>
-      <td
-        data-label="Net Cash"
-        className={transaction.net_cash_effect != null && transaction.net_cash_effect < 0 ? 'negative-cell' : ''}
-      >
-        {formatSignedCurrency(transaction.net_cash_effect, transaction.currency)}
+      <td data-label="Gross / Net Cash">
+        <div className="account-transaction-cash-stack">
+          <span>{formatCurrency(transaction.gross_amount, transaction.currency)}</span>
+          <span className={signedValueClass(transaction.net_cash_effect)}>
+            Net {formatSignedCurrency(transaction.net_cash_effect, transaction.currency)}
+          </span>
+        </div>
       </td>
-      <td data-label="Open">
+      <td className="account-source-link" data-label="Source">
         <Link
           className="table-inline-link"
           to={accountTransactionHref(portfolioId, accountId, transaction.transaction_id)}
         >
-          Ledger Inspector
+          View
         </Link>
+        <span>{transaction.transaction_id}</span>
       </td>
     </tr>
   )
 }
 
-function PositionRow({ position }: { position: PortfolioAccountPositionRecord }) {
+function PositionRow({
+  portfolioId,
+  position,
+}: {
+  portfolioId: string
+  position: PortfolioAccountPositionRecord
+}) {
+  const unrealizedPnl =
+    position.market_value != null && position.cost_basis != null
+      ? position.market_value - position.cost_basis
+      : null
+
   return (
     <tr>
       <td className="holding-name-cell" data-label="Instrument">
         <div className="holding-name-stack">
-          <span>{primaryIdentifier(position)}</span>
+          <Link
+            className="table-inline-link"
+            to={`/portfolios/${portfolioId}/holdings/${encodeURIComponent(position.instrument_id)}?detail_tab=lots`}
+          >
+            {primaryIdentifier(position)}
+          </Link>
           <span className="holding-secondary">{position.instrument_ref.instrument_name}</span>
         </div>
       </td>
-      <td data-label="Quantity">{formatNumber(position.quantity, 2)}</td>
+      <td data-label="Quantity / Price">
+        <div className="account-position-quantity-stack">
+          <span>{formatNumber(position.quantity, 2)}</span>
+          <span>
+            {position.last_price != null ? formatUnitPrice(position.last_price, position.currency) : 'No price'}
+          </span>
+        </div>
+      </td>
       <td data-label="Cost Basis">
         {position.cost_basis != null ? formatCurrency(position.cost_basis, position.currency) : '—'}
       </td>
-      <td data-label="Last Price">
-        {position.last_price != null ? formatUnitPrice(position.last_price, position.currency) : '—'}
-      </td>
       <td data-label="Market Value">
         {position.market_value != null ? formatCurrency(position.market_value, position.currency) : '—'}
+      </td>
+      <td data-label="Unrealized P/L" className={signedValueClass(unrealizedPnl)}>
+        {formatSignedCurrency(unrealizedPnl, position.currency)}
       </td>
     </tr>
   )
 }
 
-function LedgerPostingRow({ posting }: { posting: PortfolioLedgerPostingRecord }) {
+function LedgerPostingRow({
+  posting,
+  portfolioId,
+  accountId,
+}: {
+  posting: PortfolioLedgerPostingRecord
+  portfolioId: string
+  accountId: string
+}) {
+  const hasDeltas = [
+    posting.cash_amount_delta,
+    posting.pending_amount_delta,
+    posting.quantity_delta,
+    posting.cost_basis_delta,
+  ].some((value) => value != null)
+
   return (
     <tr>
-      <td data-label="Dates">
+      <td data-label="Effective / Dates">
         <div className="account-ledger-date-stack">
-          <span>{posting.trade_date}</span>
-          <span>Settles {posting.settlement_date}</span>
+          <span>{posting.effective_date}</span>
+          <span>Trade {posting.trade_date} · Settle {posting.settlement_date}</span>
         </div>
       </td>
-      <td data-label="Entry">
+      <td data-label="Posting">
         <div className="account-ledger-entry-stack">
           <span className="transaction-type-pill">{formatLabel(posting.posting_role)}</span>
-          <span>{formatLabel(posting.source_transaction_type)}</span>
+          <span>
+            {transactionActivityLabel(
+              posting.source_transaction_type,
+              posting.instrument_ref?.instrument_type,
+            )}
+          </span>
         </div>
       </td>
       <td className="holding-name-cell" data-label="Instrument">
         {posting.instrument_ref ? (
           <div className="holding-name-stack">
-            <span>{primaryIdentifier(posting)}</span>
+            <span>
+              {primaryIdentifier({
+                instrument_id: posting.instrument_id,
+                instrument_ref: posting.instrument_ref,
+              })}
+            </span>
             <span className="holding-secondary">{posting.instrument_ref.instrument_name}</span>
           </div>
         ) : (
           <span className="holding-secondary">Cash ledger</span>
         )}
       </td>
-      <td
-        data-label="Cash Delta"
-        className={posting.cash_amount_delta != null && posting.cash_amount_delta < 0 ? 'negative-cell' : ''}
-      >
-        {formatSignedCurrency(posting.cash_amount_delta, posting.currency)}
+      <td data-label="Deltas">
+        {hasDeltas ? (
+          <div className="account-ledger-delta-stack">
+            {posting.cash_amount_delta != null ? (
+              <span>
+                <small>Cash</small>
+                <strong className={signedValueClass(posting.cash_amount_delta)}>
+                  {formatSignedCurrency(posting.cash_amount_delta, posting.currency)}
+                </strong>
+              </span>
+            ) : null}
+            {posting.pending_amount_delta != null ? (
+              <span>
+                <small>Pending</small>
+                <strong className={signedValueClass(posting.pending_amount_delta)}>
+                  {formatSignedCurrency(posting.pending_amount_delta, posting.currency)}
+                </strong>
+              </span>
+            ) : null}
+            {posting.quantity_delta != null ? (
+              <span>
+                <small>Quantity</small>
+                <strong className={signedValueClass(posting.quantity_delta)}>
+                  {formatSignedNumber(posting.quantity_delta)}
+                </strong>
+              </span>
+            ) : null}
+            {posting.cost_basis_delta != null ? (
+              <span>
+                <small>Cost</small>
+                <strong className={signedValueClass(posting.cost_basis_delta)}>
+                  {formatSignedCurrency(posting.cost_basis_delta, posting.currency)}
+                </strong>
+              </span>
+            ) : null}
+          </div>
+        ) : (
+          '—'
+        )}
       </td>
-      <td data-label="Quantity Delta">{formatNumber(posting.quantity_delta, 2)}</td>
-      <td
-        data-label="Cost Basis Delta"
-        className={posting.cost_basis_delta != null && posting.cost_basis_delta < 0 ? 'negative-cell' : ''}
-      >
-        {posting.cost_basis_delta != null ? formatSignedCurrency(posting.cost_basis_delta, posting.currency) : '—'}
-      </td>
-      <td className="account-ledger-reference" data-label="Reference">
-        <span>{posting.transaction_id}</span>
-        <span>{posting.note || 'No note'}</span>
+      <td className="account-ledger-reference" data-label="Source">
+        <Link
+          className="table-inline-link"
+          to={accountTransactionHref(portfolioId, accountId, posting.transaction_id)}
+        >
+          {posting.transaction_id}
+        </Link>
+        <span title={posting.note ?? undefined}>{posting.note || 'No note'}</span>
       </td>
     </tr>
   )
