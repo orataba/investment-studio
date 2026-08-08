@@ -286,7 +286,7 @@ def _option_ref(
     }
 
 
-def test_option_obligation_coverage_allocates_underlying_once_in_expiry_order() -> None:
+def test_short_option_rows_do_not_allocate_or_require_underlying_holdings() -> None:
     obligations = []
     for instrument_id, expiry_date, strike in (
         ("option-near", "2026-01-10", "10"),
@@ -299,13 +299,13 @@ def test_option_obligation_coverage_allocates_underlying_once_in_expiry_order() 
                 "option_instrument_id": instrument_id,
                 "related_underlying_id": "equity-a",
                 "contract_currency": "USD",
-                "remaining_quantity": 100.0,
+                "remaining_quantity": 1.0,
                 "open_contract_quantity": 1.0,
-                "covered_underlying_quantity": 100.0,
+                "required_underlying_quantity": 100.0,
                 "premium_received_gross": 300.0,
                 "premium_basis_remaining": 300.0,
                 "carrying_liability": 300.0,
-                "coverage_type": "covered_call",
+                "coverage_type": "short_option",
                 "expiry_date": expiry_date,
                 "strike": strike,
                 "option_type": "call",
@@ -336,17 +336,19 @@ def test_option_obligation_coverage_allocates_underlying_once_in_expiry_order() 
     )
 
     assert [row["instrument_id"] for row in rows] == ["option-near", "option-far"]
-    assert rows[0]["covered_underlying_quantity"] == pytest.approx(100.0)
-    assert rows[0]["uncovered_underlying_quantity"] == pytest.approx(0.0)
-    assert rows[0]["covered_ratio"] == pytest.approx(1.0)
+    assert rows[0]["quantity"] == pytest.approx(-1.0)
+    assert rows[0]["required_underlying_quantity"] == pytest.approx(100.0)
+    assert rows[0]["covered_underlying_quantity"] is None
+    assert rows[0]["uncovered_underlying_quantity"] is None
+    assert rows[0]["covered_ratio"] is None
     assert rows[0]["assignment_notional"] == pytest.approx(1_000.0)
     assert rows[0]["assignment_notional_base"] == pytest.approx(2_000.0)
-    assert rows[1]["covered_underlying_quantity"] == pytest.approx(50.0)
-    assert rows[1]["uncovered_underlying_quantity"] == pytest.approx(50.0)
-    assert rows[1]["covered_ratio"] == pytest.approx(0.5)
+    assert rows[1]["quantity"] == pytest.approx(-1.0)
+    assert rows[1]["required_underlying_quantity"] == pytest.approx(100.0)
     assert rows[1]["assignment_notional"] == pytest.approx(2_000.0)
     assert rows[1]["assignment_notional_base"] == pytest.approx(4_000.0)
-    assert rows[1]["coverage_status"] == "uncovered-obligation"
+    assert rows[1]["coverage_status"] == "event-liability"
+    assert rows[1]["obligation_coverage_status"] == "not_applicable"
 
 
 def test_operational_summary_expiry_boundaries_settlement_net_and_alerts() -> None:
@@ -358,7 +360,6 @@ def test_operational_summary_expiry_boundaries_settlement_net_and_alerts() -> No
             "expiry_date": (as_of_date + timedelta(days=days)).isoformat(),
             "open_contract_quantity": 1.0,
             "required_underlying_quantity": 100.0,
-            "uncovered_underlying_quantity": 10.0 if days == 8 else 0.0,
             "liability_value_base": 25.0,
             "settlement_type": "physical",
             "assignment_notional_base": 1_000.0,
@@ -397,8 +398,8 @@ def test_operational_summary_expiry_boundaries_settlement_net_and_alerts() -> No
         ("next_90_days", 2),
         ("later", 1),
     ]
-    assert summary["uncovered_obligation_count"] == 1
-    assert summary["uncovered_underlying_quantity"] == pytest.approx(10.0)
+    assert summary["uncovered_obligation_count"] == 0
+    assert summary["uncovered_underlying_quantity"] == pytest.approx(0.0)
     assert summary["assignment_exposure"]["strike_notional_base"] == pytest.approx(
         8_000.0
     )
@@ -415,7 +416,6 @@ def test_operational_summary_expiry_boundaries_settlement_net_and_alerts() -> No
         str(alert["code"]): alert for alert in result["operational_alerts"]
     }
     assert set(alerts_by_code) == {
-        "uncovered_option_obligation",
         "option_expiry_due",
         "option_expiry_next_7_days",
         "pending_settlement_overdue",

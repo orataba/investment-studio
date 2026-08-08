@@ -887,12 +887,7 @@ export type SharedMarketDataPoint = {
   status: DataStatus
 }
 
-export type SharedInstrumentRecord = {
-  instrument_id: string
-  instrument_name: string
-  instrument_type: InstrumentCore['instrument_type']
-  currency: string
-  identifiers: InstrumentIdentifier[]
+export type SharedInstrumentRecord = InstrumentCore & {
   latest_market_data: SharedMarketDataPoint[]
   quote_selection_policy: QuoteSelectionPolicy
   coverage_state: DataStatus
@@ -1883,11 +1878,11 @@ export type PortfolioAccountPositionRecord = {
 }
 
 /**
- * Written-option obligation rows returned by the account ledger workspace.
+ * Short-option position rows returned by the account ledger workspace.
  *
  * These are liability read-model rows, not negative long positions.  The
  * backend intentionally keeps the lifecycle realization detail extensible;
- * the identity, coverage, premium basis, and liability fields below are the
+ * the identity, contract quantity, premium basis, and liability fields below are the
  * stable contract consumed by account and audit surfaces.
  */
 export type PortfolioOptionObligationRecord = {
@@ -1899,7 +1894,8 @@ export type PortfolioOptionObligationRecord = {
   instrument_ref?: InstrumentCore | null
   related_underlying_id: string
   open_contract_quantity: number
-  covered_underlying_quantity: number
+  required_underlying_quantity: number
+  covered_underlying_quantity?: number | null
   remaining_quantity: number
   premium_received_gross: number
   premium_basis_remaining: number
@@ -2319,8 +2315,6 @@ export type PortfolioTransactionCreatePayload = {
   counterparty_account_id?: string | null
   source_system?: string | null
   external_reference?: string | null
-  event_group_id?: string | null
-  related_instrument_id?: string | null
   note?: string | null
 }
 

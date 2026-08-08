@@ -64,6 +64,7 @@ import {
   calculateTransactionGrossAmount,
   calculateTransactionUnitPrice,
   resolveTransactionPriceContract,
+  transactionPriceContractForInstrument,
   type TransactionPriceContract,
 } from '../lib/transactionPricing'
 import { executionQuoteUnavailableMessage } from '../lib/executionQuotePresentation'
@@ -114,7 +115,6 @@ const LIFECYCLE_EVENT_OPTIONS = [
   'fcn_knock_in',
   'fcn_knock_out',
   'fcn_maturity',
-  'fcn_physical_settlement',
   'option_long_expiry',
   'option_long_exercise',
   'option_writer_expiry',
@@ -430,7 +430,12 @@ function usesQuantity(
 }
 
 function usesPrice(transactionType: string) {
-  return transactionType === 'buy' || transactionType === 'sell'
+  return (
+    transactionType === 'buy' ||
+    transactionType === 'sell' ||
+    transactionType === 'option_write' ||
+    transactionType === 'option_buy_to_close'
+  )
 }
 
 function grossAmountLabel(transactionType: string) {
@@ -610,8 +615,6 @@ type TransactionFormState = {
   settlement_cash_account_id: string
   transfer_object_type: string
   instrument_id: string
-  related_instrument_id: string
-  event_group_id: string
   quantity: string
   price: string
   gross_amount: string
@@ -649,8 +652,6 @@ function buildInitialFormState(accounts: PortfolioAccountRecord[]): TransactionF
     settlement_cash_account_id: defaultCashAccount?.account_id ?? '',
     transfer_object_type: 'cash',
     instrument_id: '',
-    related_instrument_id: '',
-    event_group_id: '',
     quantity: '',
     price: '',
     gross_amount: '',
@@ -682,8 +683,6 @@ function buildFormStateFromTransaction(transaction: PortfolioTransactionRecord):
     settlement_cash_account_id: transaction.settlement_cash_account?.account_id || '',
     transfer_object_type: transaction.transfer_object_type || 'cash',
     instrument_id: transaction.instrument_id || '',
-    related_instrument_id: transaction.related_instrument_id || '',
-    event_group_id: transaction.event_group_id || '',
     quantity: formatFormNumber(transaction.quantity, { zeroAsEmpty: true }),
     price: formatFormNumber(transaction.price, { zeroAsEmpty: true }),
     gross_amount: formatFormNumber(transaction.gross_amount, { zeroAsEmpty: true }),
@@ -1033,6 +1032,11 @@ export default function TransactionsPage() {
     (form.transaction_type === 'lifecycle_event' &&
       (form.lifecycle_event_type === 'option_writer_expiry' ||
         form.lifecycle_event_type === 'option_assignment'))
+  const shouldPreviewPosition =
+    shouldUseQuantity &&
+    form.transaction_type !== 'option_write' &&
+    form.transaction_type !== 'option_buy_to_close' &&
+    form.transaction_type !== 'lifecycle_event'
 
   if (!portfolioId) {
     return <Navigate replace to="/portfolios" />
@@ -1044,20 +1048,6 @@ export default function TransactionsPage() {
     form.transaction_type === 'fee' ||
     (shouldShowFees && Number.isFinite(Number(form.fees)) && Number(form.fees) > 0)
   const selectedInstrument = instruments.find((instrument) => instrument.instrument_id === form.instrument_id) ?? null
-  const requiresRelatedInstrument =
-    form.transaction_type === 'option_write' ||
-    form.transaction_type === 'option_buy_to_close' ||
-    form.lifecycle_event_type === 'fcn_physical_settlement' ||
-    form.lifecycle_event_type === 'option_long_exercise' ||
-    form.lifecycle_event_type === 'option_writer_expiry' ||
-    form.lifecycle_event_type === 'option_assignment'
-  const selectedRelatedInstrument =
-    instruments.find((instrument) => instrument.instrument_id === form.related_instrument_id) ?? null
-  const relatedInstrumentOptions = instruments.filter(
-    (instrument) =>
-      (instrument.instrument_type === 'equity' || instrument.instrument_type === 'etf') &&
-      (!selectedAccount || instrument.currency.toUpperCase() === selectedAccount.currency.toUpperCase()),
-  )
   const isFundTrade =
     shouldUsePrice && selectedInstrument?.instrument_type === 'fund'
   const transactionUnitPriceDecimals = isFundTrade ? 12 : 6
@@ -1143,10 +1133,18 @@ export default function TransactionsPage() {
     historicalQuote?.requestedAsOfDate === form.trade_date
       ? historicalQuote
       : null
-  const transactionPriceContract = resolveTransactionPriceContract([
-    ...(activeHistoricalQuote ? [activeHistoricalQuote] : []),
-    ...(selectedInstrument?.latest_market_data ?? []),
-  ])
+  const fallbackPriceContract = transactionPriceContractForInstrument(selectedInstrument)
+  const transactionPriceContract = resolveTransactionPriceContract(
+    selectedInstrument?.instrument_type === 'option' || selectedInstrument?.instrument_type === 'fcn'
+      ? fallbackPriceContract
+        ? [fallbackPriceContract]
+        : []
+      : [
+          ...(activeHistoricalQuote ? [activeHistoricalQuote] : []),
+          ...(selectedInstrument?.latest_market_data ?? []),
+          ...(fallbackPriceContract ? [fallbackPriceContract] : []),
+        ],
+  )
 
   const computedUnitPrice =
     form.price.trim() ||
@@ -1200,7 +1198,15 @@ export default function TransactionsPage() {
     })()
 
   useEffect(() => {
-    if (!drawerOpen || !portfolioId || !shouldUsePrice || !selectedInstrument || !form.trade_date) {
+    if (
+      !drawerOpen ||
+      !portfolioId ||
+      !shouldUsePrice ||
+      !selectedInstrument ||
+      selectedInstrument.instrument_type === 'option' ||
+      selectedInstrument.instrument_type === 'fcn' ||
+      !form.trade_date
+    ) {
       autoQuoteKeyRef.current = null
       autoGrossDerivedRef.current = false
       setHistoricalQuote(null)
@@ -1342,7 +1348,7 @@ export default function TransactionsPage() {
     if (
       !drawerOpen ||
       !portfolioId ||
-      !shouldUseQuantity ||
+      !shouldPreviewPosition ||
       !selectedInstrument ||
       !positionPreviewAccountId ||
       !form.trade_date
@@ -1449,7 +1455,7 @@ export default function TransactionsPage() {
     portfolioId,
     positionPreviewAccountId,
     selectedInstrument?.instrument_id,
-    shouldUseQuantity,
+    shouldPreviewPosition,
     transactionUnitPriceDecimals,
     transactionPriceContract?.price_scale,
     transactionPriceContract?.price_unit,
@@ -1502,18 +1508,6 @@ export default function TransactionsPage() {
           nextTransactionType === 'lifecycle_event' ||
           nextTransactionType === 'maturity_redemption'
             ? current.lifecycle_event_type
-            : '',
-        related_instrument_id:
-          nextTransactionType === 'option_write' ||
-          nextTransactionType === 'option_buy_to_close' ||
-          nextTransactionType === 'lifecycle_event' ||
-          nextTransactionType === 'maturity_redemption'
-            ? current.related_instrument_id
-            : '',
-        event_group_id:
-          nextTransactionType === 'lifecycle_event' ||
-          nextTransactionType === 'maturity_redemption'
-            ? current.event_group_id
             : '',
         quantity: shouldClearAutoSellQuantity ? '' : current.quantity,
         gross_amount:
@@ -2113,21 +2107,6 @@ export default function TransactionsPage() {
       return
     }
 
-    if (requiresRelatedInstrument && !selectedRelatedInstrument) {
-      setFormError('Select the related stock or ETF for this derivative event.')
-      return
-    }
-
-    if (
-      (form.lifecycle_event_type === 'fcn_physical_settlement' ||
-        form.lifecycle_event_type === 'option_long_exercise' ||
-        form.lifecycle_event_type === 'option_assignment') &&
-      !form.event_group_id.trim()
-    ) {
-      setFormError('Physical settlement and assignment require an event group id.')
-      return
-    }
-
     if (form.external_reference.trim() && !form.source_system.trim()) {
       setFormError('External reference requires a source system.')
       return
@@ -2357,10 +2336,6 @@ export default function TransactionsPage() {
       account_id: resolvedAccount.account_id,
       settlement_cash_account_id: shouldRequireSettlement ? form.settlement_cash_account_id || null : null,
       instrument_id: shouldAllowInstrument ? selectedInstrument?.instrument_id ?? null : null,
-      related_instrument_id: requiresRelatedInstrument
-        ? selectedRelatedInstrument?.instrument_id ?? null
-        : null,
-      event_group_id: form.event_group_id.trim() || null,
       quantity: shouldUseQuantity && form.quantity ? Number(form.quantity) : null,
       price: shouldUsePrice && computedUnitPrice ? Number(computedUnitPrice) : null,
       gross_amount: grossAmount,
@@ -3384,9 +3359,9 @@ export default function TransactionsPage() {
                         setForm((current) => ({
                           ...current,
                           lifecycle_event_type: event.target.value,
-                          related_instrument_id: '',
                           gross_amount:
                             event.target.value === 'option_long_expiry' ||
+                            event.target.value === 'option_long_exercise' ||
                             current.transaction_type === 'lifecycle_event'
                               ? '0'
                               : current.gross_amount,
@@ -3396,11 +3371,19 @@ export default function TransactionsPage() {
                       <option value="">Generic / not specified</option>
                       {LIFECYCLE_EVENT_OPTIONS.filter((eventType) =>
                         form.transaction_type === 'lifecycle_event'
-                          ? eventType === 'fcn_knock_in' ||
-                            eventType === 'option_writer_expiry'
-                          : eventType === 'fcn_knock_out' ||
-                            eventType === 'fcn_maturity' ||
-                            eventType === 'option_long_expiry',
+                          ? (selectedInstrument?.instrument_type == null ||
+                              selectedInstrument.instrument_type === 'option') &&
+                            (eventType === 'option_writer_expiry' ||
+                              eventType === 'option_assignment')
+                          : selectedInstrument?.instrument_type === 'fcn'
+                            ? eventType === 'fcn_knock_in' ||
+                              eventType === 'fcn_knock_out' ||
+                              eventType === 'fcn_maturity'
+                            : selectedInstrument?.instrument_type === 'option'
+                              ? eventType === 'option_long_expiry' ||
+                                eventType === 'option_long_exercise'
+                              : eventType !== 'option_writer_expiry' &&
+                                eventType !== 'option_assignment',
                       ).map((eventType) => (
                         <option key={eventType} value={eventType}>
                           {formatLabel(eventType)}
@@ -3409,8 +3392,8 @@ export default function TransactionsPage() {
                     </select>
                   </label>
                   <div className="portfolio-detail-meta">
-                    Physical FCN settlement, long-option exercise, and writer assignment
-                    are imported as two-leg CSV events so both facts commit atomically.
+                    This closes only the selected derivative contract. Record any stock
+                    purchase or sale as a separate transaction; use the note when helpful.
                   </div>
                 </div>
               ) : null}
@@ -3478,27 +3461,21 @@ export default function TransactionsPage() {
                 </section>
               ) : null}
 
-              {requiresRelatedInstrument ? (
-                <div className="transaction-form-grid transaction-ticket-grid">
-                  <label className="transaction-ticket-field">
-                    <span>Related Stock / ETF</span>
-                    <select
-                      value={form.related_instrument_id}
-                      onChange={(event) =>
-                        setForm((current) => ({
-                          ...current,
-                          related_instrument_id: event.target.value,
-                        }))
-                      }
-                    >
-                      <option value="">Select underlying instrument</option>
-                      {relatedInstrumentOptions.map((instrument) => (
-                        <option key={instrument.instrument_id} value={instrument.instrument_id}>
-                          {primaryIdentifier(instrument)} · {instrument.instrument_name}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
+              {selectedInstrument?.instrument_type === 'option' ? (
+                <div className="portfolio-detail-meta">
+                  {formatLabel(selectedInstrument.option_contract.option_type)} · underlying{' '}
+                  {selectedInstrument.option_contract.underlying_instrument_id} · strike{' '}
+                  {selectedInstrument.option_contract.strike} · expires{' '}
+                  {selectedInstrument.option_contract.expiry_date} · multiplier{' '}
+                  {selectedInstrument.option_contract.contract_multiplier} ·{' '}
+                  {formatLabel(selectedInstrument.option_contract.settlement_type)} settlement
+                </div>
+              ) : selectedInstrument?.instrument_type === 'fcn' ? (
+                <div className="portfolio-detail-meta">
+                  FCN · notional {selectedInstrument.fcn_contract.notional}{' '}
+                  {selectedInstrument.fcn_contract.contract_currency} · matures{' '}
+                  {selectedInstrument.fcn_contract.maturity_date} ·{' '}
+                  {selectedInstrument.fcn_contract.issuer}
                 </div>
               ) : null}
 
@@ -3746,12 +3723,26 @@ export default function TransactionsPage() {
                   </label>
                 ) : shouldUseQuantity ? (
                   <label className="transaction-ticket-field">
-                    <span>{isFundTrade ? 'Confirmed Shares' : 'Shares'}</span>
+                    <span>
+                      {isFundTrade
+                        ? 'Confirmed Shares'
+                        : selectedInstrument?.instrument_type === 'option' ||
+                            selectedInstrument?.instrument_type === 'fcn'
+                          ? 'Contracts'
+                          : 'Shares'}
+                    </span>
                     <input
                       type="number"
                       min="0"
                       step="any"
-                      aria-label={isFundTrade ? 'Confirmed Shares' : 'Shares'}
+                      aria-label={
+                        isFundTrade
+                          ? 'Confirmed Shares'
+                          : selectedInstrument?.instrument_type === 'option' ||
+                              selectedInstrument?.instrument_type === 'fcn'
+                            ? 'Contracts'
+                            : 'Shares'
+                      }
                       max={ticketQuantityDelta != null && ticketQuantityDelta < 0 ? positionPreview?.quantity : undefined}
                       value={form.quantity}
                       onChange={(event) => updatePricingField('quantity', event.target.value)}
@@ -3798,7 +3789,15 @@ export default function TransactionsPage() {
                   </label>
                 ) : shouldUsePrice ? (
                   <label className="transaction-ticket-field">
-                    <span>{isFundTrade ? 'Derived Unit Price' : 'Execution Price'}</span>
+                    <span>
+                      {isFundTrade
+                        ? 'Derived Unit Price'
+                        : selectedInstrument?.instrument_type === 'option'
+                          ? 'Premium per Underlying Unit'
+                          : selectedInstrument?.instrument_type === 'fcn'
+                            ? 'Contract Price'
+                            : 'Execution Price'}
+                    </span>
                     <input
                       type="number"
                       min="0"
@@ -3823,6 +3822,10 @@ export default function TransactionsPage() {
                       </span>
                     ) : historicalQuoteError ? (
                       <span className="transaction-ticket-hint">{historicalQuoteError}</span>
+                    ) : selectedInstrument?.instrument_type === 'option' ? (
+                      <span className="transaction-ticket-hint">
+                        Amount = contracts × premium × multiplier.
+                      </span>
                     ) : null}
                   </label>
                 ) : (

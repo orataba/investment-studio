@@ -19,6 +19,7 @@ from portfolio_app.services.ledger import (
 from portfolio_app.services.option_obligations import (
     build_option_obligations,
     derive_option_obligation_events,
+    open_option_obligations,
 )
 from portfolio_app.services.transaction_csv import (
     parse_transaction_csv,
@@ -206,6 +207,192 @@ def _equity_detail(
             for as_of_date, value in history
         ],
     }
+
+
+def test_simulated_stock_fund_option_and_fcn_chain_uses_independent_facts() -> None:
+    accounts = [
+        {
+            "account_id": "broker",
+            "account_type": "securities_account",
+            "cost_basis_method": "fifo",
+        }
+    ]
+    transactions = [
+        _transaction(
+            "txn-1",
+            "buy",
+            "2026-01-05",
+            instrument_id="equity-1",
+            instrument_type="equity",
+            quantity=100,
+            price=50,
+            gross_amount=5_000,
+        ),
+        _transaction(
+            "txn-2",
+            "buy",
+            "2026-01-06",
+            instrument_id="fund-1",
+            instrument_type="fund",
+            quantity=200,
+            price=10,
+            gross_amount=2_000,
+        ),
+        _transaction(
+            "txn-3",
+            "buy",
+            "2026-01-10",
+            instrument_id="call-1",
+            instrument_type="option",
+            option_underlying_id="equity-1",
+            quantity=2,
+            price=3,
+            gross_amount=600,
+        ),
+        _transaction(
+            "txn-4",
+            "sell",
+            "2026-02-10",
+            instrument_id="call-1",
+            instrument_type="option",
+            option_underlying_id="equity-1",
+            quantity=1,
+            price=5,
+            gross_amount=500,
+        ),
+        _transaction(
+            "txn-5",
+            "option_write",
+            "2026-02-15",
+            instrument_id="put-1",
+            instrument_type="option",
+            option_underlying_id="equity-1",
+            option_type="put",
+            quantity=3,
+            price=2,
+            gross_amount=600,
+        ),
+        _transaction(
+            "txn-6",
+            "option_buy_to_close",
+            "2026-03-15",
+            instrument_id="put-1",
+            instrument_type="option",
+            option_underlying_id="equity-1",
+            option_type="put",
+            quantity=1,
+            price=1,
+            gross_amount=100,
+        ),
+        _transaction(
+            "txn-7",
+            "lifecycle_event",
+            "2026-04-17",
+            settlement_cash_account_id=None,
+            instrument_id="put-1",
+            instrument_type="option",
+            option_underlying_id="equity-1",
+            option_type="put",
+            quantity=2,
+            gross_amount=0,
+            lifecycle_event_type="option_assignment",
+        ),
+        _transaction(
+            "txn-8",
+            "buy",
+            "2026-04-17",
+            instrument_id="equity-1",
+            instrument_type="equity",
+            quantity=200,
+            price=45,
+            gross_amount=9_000,
+        ),
+        _transaction(
+            "txn-9",
+            "buy",
+            "2026-05-01",
+            instrument_id="fcn-1",
+            instrument_type="fcn",
+            quantity=1,
+            price=100_000,
+            gross_amount=100_000,
+        ),
+        _transaction(
+            "txn-10",
+            "coupon",
+            "2026-06-01",
+            instrument_id="fcn-1",
+            instrument_type="fcn",
+            gross_amount=2_000,
+        ),
+        _transaction(
+            "txn-11",
+            "maturity_redemption",
+            "2026-09-01",
+            instrument_id="fcn-1",
+            instrument_type="fcn",
+            quantity=1,
+            gross_amount=100_000,
+            lifecycle_event_type="fcn_knock_in",
+        ),
+        _transaction(
+            "txn-12",
+            "buy",
+            "2026-09-01",
+            instrument_id="equity-1",
+            instrument_type="equity",
+            quantity=1_000,
+            price=100,
+            gross_amount=100_000,
+        ),
+    ]
+
+    assert all(not row.get("event_group_id") for row in transactions)
+    assert all(not row.get("related_instrument_id") for row in transactions)
+    validate_transaction_position_history(
+        "portfolio",
+        transactions,
+        account_cost_methods={"broker": "fifo"},
+    )
+
+    lots = build_position_lots(
+        "portfolio",
+        accounts,
+        transactions,
+        as_of_date=date(2026, 9, 1),
+        pricing_map={},
+        resolve_pricing=False,
+    )
+    open_quantities: dict[str, float] = {}
+    for lot in lots:
+        if lot["status"] != "open":
+            continue
+        instrument_id = str(lot["instrument_id"])
+        open_quantities[instrument_id] = open_quantities.get(
+            instrument_id, 0.0
+        ) + float(lot["remaining_quantity"])
+    assert open_quantities["equity-1"] == pytest.approx(1_300)
+    assert open_quantities["fund-1"] == pytest.approx(200)
+    assert open_quantities["call-1"] == pytest.approx(1)
+    assert "fcn-1" not in open_quantities
+
+    obligations = build_option_obligations(transactions)
+    assert obligations[0]["status"] == "assigned"
+    assert obligations[0]["realized_pnl"] == pytest.approx(500)
+    assert open_option_obligations(transactions) == []
+
+    postings = derive_ledger_postings(
+        "portfolio",
+        transactions,
+        account_cost_methods={"broker": "fifo"},
+        account_currency_map={"broker": "USD", "cash": "USD"},
+    )
+    fcn_income = [
+        posting
+        for posting in postings
+        if posting["transaction_id"] == "txn-10"
+    ]
+    assert sum(float(row.get("cash_amount_delta") or 0) for row in fcn_income) == pytest.approx(2_000)
 
 
 def test_event_valued_fcn_is_carried_at_remaining_cost_without_quote() -> None:
@@ -1366,7 +1553,7 @@ def test_written_option_lifecycle_reconciles_portfolio_calculation_and_attributi
     assert option_line["expense_cash_amount"] == pytest.approx(15.0)
 
 
-def test_covered_call_assignment_closes_obligation_before_stock_delivery() -> None:
+def test_short_call_assignment_and_stock_sale_are_independent_facts() -> None:
     transactions = [
         _transaction(
             "txn-1",
@@ -1384,9 +1571,9 @@ def test_covered_call_assignment_closes_obligation_before_stock_delivery() -> No
             "2026-01-02",
             instrument_id="option-1",
             instrument_type="option",
-            quantity=100.0,
+            quantity=1.0,
             gross_amount=300.0,
-            related_instrument_id="equity-1",
+            option_underlying_id="equity-1",
         ),
         _transaction(
             "txn-3",
@@ -1395,11 +1582,10 @@ def test_covered_call_assignment_closes_obligation_before_stock_delivery() -> No
             settlement_cash_account_id=None,
             instrument_id="option-1",
             instrument_type="option",
-            quantity=100.0,
+            quantity=1.0,
             gross_amount=0.0,
             lifecycle_event_type="option_assignment",
-            related_instrument_id="equity-1",
-            event_group_id="assignment-1",
+            option_underlying_id="equity-1",
         ),
         _transaction(
             "txn-4",
@@ -1410,7 +1596,6 @@ def test_covered_call_assignment_closes_obligation_before_stock_delivery() -> No
             quantity=100.0,
             price=110.0,
             gross_amount=11_000.0,
-            event_group_id="assignment-1",
         ),
     ]
 
@@ -1450,29 +1635,21 @@ def test_covered_call_assignment_closes_obligation_before_stock_delivery() -> No
     assert assignment_release_posting["liability_amount_delta"] == pytest.approx(-300.0)
     assert assignment_release_posting["realized_pnl_delta"] == pytest.approx(300.0)
 
-    mismatched_delivery = [dict(item) for item in transactions]
-    mismatched_delivery[-1]["quantity"] = 99.0
-    with pytest.raises(
-        ValueError,
-        match="assignment quantity must match",
-    ):
-        validate_transaction_position_history(
-            "portfolio",
-            mismatched_delivery,
-            account_cost_methods={"broker": "fifo"},
-        )
+    independently_entered_stock_sale = [dict(item) for item in transactions]
+    independently_entered_stock_sale[-1]["quantity"] = 99.0
+    validate_transaction_position_history(
+        "portfolio",
+        independently_entered_stock_sale,
+        account_cost_methods={"broker": "fifo"},
+    )
 
     over_written = [dict(item) for item in transactions[:2]]
-    over_written[-1]["quantity"] = 200.0
-    with pytest.raises(
-        ValueError,
-        match="Covered-call obligations exceed the underlying account position",
-    ):
-        validate_transaction_position_history(
-            "portfolio",
-            over_written,
-            account_cost_methods={"broker": "fifo"},
-        )
+    over_written[-1]["quantity"] = 2.0
+    validate_transaction_position_history(
+        "portfolio",
+        over_written,
+        account_cost_methods={"broker": "fifo"},
+    )
 
     identity_less = [dict(item) for item in transactions[:2]]
     identity_less[-1]["instrument_ref"] = {
@@ -1491,7 +1668,7 @@ def test_covered_call_assignment_closes_obligation_before_stock_delivery() -> No
         )
 
 
-def test_partial_assignment_preserves_remaining_obligation_and_coverage() -> None:
+def test_partial_assignment_preserves_remaining_short_option_position() -> None:
     transactions = [
         _transaction(
             "txn-1",
@@ -1509,9 +1686,9 @@ def test_partial_assignment_preserves_remaining_obligation_and_coverage() -> Non
             "2026-01-02",
             instrument_id="option-1",
             instrument_type="option",
-            quantity=200.0,
+            quantity=2.0,
             gross_amount=600.0,
-            related_instrument_id="equity-1",
+            option_underlying_id="equity-1",
         ),
         _transaction(
             "txn-3",
@@ -1520,11 +1697,10 @@ def test_partial_assignment_preserves_remaining_obligation_and_coverage() -> Non
             settlement_cash_account_id=None,
             instrument_id="option-1",
             instrument_type="option",
-            quantity=100.0,
+            quantity=1.0,
             gross_amount=0.0,
             lifecycle_event_type="option_assignment",
-            related_instrument_id="equity-1",
-            event_group_id="assignment-1",
+            option_underlying_id="equity-1",
         ),
         _transaction(
             "txn-4",
@@ -1535,7 +1711,6 @@ def test_partial_assignment_preserves_remaining_obligation_and_coverage() -> Non
             quantity=100.0,
             price=110.0,
             gross_amount=11_000.0,
-            event_group_id="assignment-1",
         ),
     ]
 
@@ -1550,17 +1725,18 @@ def test_partial_assignment_preserves_remaining_obligation_and_coverage() -> Non
         if event["transaction_id"] == "txn-3"
     )
     obligation = build_option_obligations(transactions)[0]
-    assert assignment_event["released_quantity"] == pytest.approx(100.0)
+    assert assignment_event["released_quantity"] == pytest.approx(1.0)
     assert assignment_event["released_premium_basis"] == pytest.approx(300.0)
     assert assignment_event["realized_pnl_delta"] == pytest.approx(300.0)
     assert obligation["status"] == "open"
-    assert obligation["remaining_quantity"] == pytest.approx(100.0)
+    assert obligation["remaining_quantity"] == pytest.approx(1.0)
     assert obligation["open_contract_quantity"] == pytest.approx(1.0)
+    assert obligation["required_underlying_quantity"] == pytest.approx(100.0)
     assert obligation["premium_basis_remaining"] == pytest.approx(300.0)
     assert obligation["carrying_liability"] == pytest.approx(300.0)
     assert obligation["realized_pnl"] == pytest.approx(300.0)
 
-    uncovered_sale = [
+    independent_sale = [
         *transactions,
         _transaction(
             "txn-5",
@@ -1573,15 +1749,11 @@ def test_partial_assignment_preserves_remaining_obligation_and_coverage() -> Non
             gross_amount=100.0,
         ),
     ]
-    with pytest.raises(
-        ValueError,
-        match="Covered-call obligations exceed the underlying account position",
-    ):
-        validate_transaction_position_history(
-            "portfolio",
-            uncovered_sale,
-            account_cost_methods={"broker": "fifo"},
-        )
+    validate_transaction_position_history(
+        "portfolio",
+        independent_sale,
+        account_cost_methods={"broker": "fifo"},
+    )
 
 
 def test_transaction_csv_preserves_source_precision_and_formula_safety() -> None:
@@ -1617,7 +1789,7 @@ def test_transaction_csv_preserves_source_precision_and_formula_safety() -> None
     assert rows[0].transaction.note == "=unsafe formula"
 
 
-def test_csv_api_previews_imports_and_replays_option_writer_fact(
+def test_csv_api_imports_short_option_and_independent_assignment_facts(
     client,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1628,7 +1800,7 @@ def test_csv_api_previews_imports_and_replays_option_writer_fact(
     assert account_response.status_code == 200
 
     option_ref = _instrument_ref(
-        "option-covered-call-1",
+        "option-short-call-1",
         "option",
         option_underlying_id="equity-us-abbv",
         option_strike="220",
@@ -1636,7 +1808,7 @@ def test_csv_api_previews_imports_and_replays_option_writer_fact(
     original_loader = transaction_routes._load_instrument_ref
 
     def load_instrument(instrument_id: str) -> dict[str, object]:
-        if instrument_id == "option-covered-call-1":
+        if instrument_id == "option-short-call-1":
             return option_ref
         return original_loader(instrument_id)
 
@@ -1645,14 +1817,14 @@ def test_csv_api_previews_imports_and_replays_option_writer_fact(
         [
             (
                 "transaction_type,trade_date,settlement_date,account_id,"
-                "settlement_cash_account_id,instrument_id,related_instrument_id,"
-                "quantity,gross_amount,fees,taxes,currency,source_system,"
+                "settlement_cash_account_id,instrument_id,quantity,price,"
+                "gross_amount,fees,taxes,currency,source_system,"
                 "external_reference"
             ),
             (
                 "option_write,2026-05-01,2026-05-01,broker-us-core,"
-                "cash-usd-main,option-covered-call-1,equity-us-abbv,"
-                "100,500,0,0,USD,colleague_project,CALL-001-WRITE"
+                "cash-usd-main,option-short-call-1,1,5,"
+                "500,0,0,USD,colleague_project,CALL-001-WRITE"
             ),
         ]
     )
@@ -1678,7 +1850,7 @@ def test_csv_api_previews_imports_and_replays_option_writer_fact(
     assert first_import.status_code == 200
     created = first_import.json()["transactions"][0]
     assert created["transaction_type"] == "option_write"
-    assert created["related_instrument_id"] == "equity-us-abbv"
+    assert created["related_instrument_id"] is None
     assert created["source_system"] == "colleague_project"
     assert created["net_cash_effect"] == pytest.approx(500.0)
 
@@ -1699,26 +1871,25 @@ def test_csv_api_previews_imports_and_replays_option_writer_fact(
 
     download = client.get("/api/portfolios/portfolio-ops/transactions.csv")
     assert download.status_code == 200
-    assert "related_instrument_id" in download.text
+    assert "related_instrument_id" not in download.text
+    assert "event_group_id" not in download.text
     assert "CALL-001-WRITE" in download.text
 
     assignment_csv = "\n".join(
         [
             (
                 "transaction_type,lifecycle_event_type,trade_date,settlement_date,"
-                "account_id,settlement_cash_account_id,instrument_id,"
-                "related_instrument_id,event_group_id,quantity,price,gross_amount,fees,"
+                "account_id,settlement_cash_account_id,instrument_id,quantity,price,gross_amount,fees,"
                 "taxes,currency,source_system,external_reference"
             ),
             (
                 "lifecycle_event,option_assignment,2026-05-10,2026-05-10,"
-                "broker-us-core,,option-covered-call-1,equity-us-abbv,"
-                "CALL-001-ASSIGN,100,,0,0,0,USD,colleague_project,"
+                "broker-us-core,,option-short-call-1,1,,0,0,0,USD,colleague_project,"
                 "CALL-001-ASSIGNMENT"
             ),
             (
                 "sell,,2026-05-10,2026-05-10,broker-us-core,cash-usd-main,"
-                "equity-us-abbv,,CALL-001-ASSIGN,100,220,22000,0,0,USD,"
+                "equity-us-abbv,100,220,22000,0,0,USD,"
                 "colleague_project,CALL-001-DELIVERY"
             ),
         ]
@@ -1746,8 +1917,7 @@ def test_csv_api_previews_imports_and_replays_option_writer_fact(
     assert assignment_transactions[1]["position_effective_date"] == "2026-05-10"
     assignment_id = assignment_transactions[0]["transaction_id"]
     expected_row_versions = {
-        transaction["transaction_id"]: transaction["row_version"]
-        for transaction in assignment_transactions
+        assignment_transactions[0]["transaction_id"]: assignment_transactions[0]["row_version"]
     }
 
     workspace_response = client.get(
@@ -1757,25 +1927,14 @@ def test_csv_api_previews_imports_and_replays_option_writer_fact(
     assert workspace_response.status_code == 200
     assert workspace_response.json()["delete_scope_row_versions"] == expected_row_versions
 
-    incomplete_delete = client.request(
-        "DELETE",
-        f"/api/portfolios/portfolio-ops/transactions/{assignment_id}",
-        json={
-            "expected_row_versions": {
-                assignment_id: expected_row_versions[assignment_id]
-            }
-        },
-    )
-    assert incomplete_delete.status_code == 409
-
     delete_response = client.request(
         "DELETE",
         f"/api/portfolios/portfolio-ops/transactions/{assignment_id}",
         json={"expected_row_versions": expected_row_versions},
     )
     assert delete_response.status_code == 200
-    assert delete_response.json()["deleted_count"] == 2
-    assert delete_response.json()["event_group_id"] == "CALL-001-ASSIGN"
+    assert delete_response.json()["deleted_count"] == 1
+    assert delete_response.json()["event_group_id"] is None
 
 
 def test_direct_transaction_source_identity_conflict_returns_409(client) -> None:
@@ -1806,12 +1965,12 @@ def test_direct_transaction_source_identity_conflict_returns_409(client) -> None
     ]
 
 
-def test_documented_fcn_to_covered_call_csv_previews_cleanly(
+def test_documented_multi_asset_independent_transactions_csv_imports_cleanly(
     client,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     account_response = client.patch(
-        "/api/portfolios/portfolio-ops/accounts/broker-hk-core",
+        "/api/portfolios/portfolio-ops/accounts/broker-us-core",
         json={
             "allowed_instrument_types": [
                 "equity",
@@ -1825,17 +1984,22 @@ def test_documented_fcn_to_covered_call_csv_previews_cleanly(
     assert account_response.status_code == 200
 
     instrument_refs = {
-        "fcn-demo-001": _instrument_ref("fcn-demo-001", "fcn", currency="HKD"),
+        "fcn-demo-001": _instrument_ref("fcn-demo-001", "fcn"),
         "equity-demo-001": _instrument_ref(
             "equity-demo-001",
             "equity",
-            currency="HKD",
         ),
+        "fund-demo-001": _instrument_ref("fund-demo-001", "fund"),
         "option-demo-call-001": _instrument_ref(
             "option-demo-call-001",
             "option",
-            currency="HKD",
             option_underlying_id="equity-demo-001",
+        ),
+        "option-demo-put-001": _instrument_ref(
+            "option-demo-put-001",
+            "option",
+            option_underlying_id="equity-demo-001",
+            option_type="put",
         ),
     }
     original_loader = transaction_routes._load_instrument_ref
@@ -1851,7 +2015,7 @@ def test_documented_fcn_to_covered_call_csv_previews_cleanly(
         workspace_root
         / "docs"
         / "examples"
-        / "transaction_import_fcn_covered_call.csv"
+        / "transaction_import_stock_fund_option_fcn.csv"
     ).read_text(encoding="utf-8")
 
     preview_response = client.post(
@@ -1860,8 +2024,8 @@ def test_documented_fcn_to_covered_call_csv_previews_cleanly(
     )
     assert preview_response.status_code == 200
     preview = preview_response.json()
-    assert preview["row_count"] == 7
-    assert preview["valid_count"] == 7, (
+    assert preview["row_count"] == 12
+    assert preview["valid_count"] == 12, (
         preview["rows"],
         preview["batch_errors"],
     )
@@ -1869,6 +2033,29 @@ def test_documented_fcn_to_covered_call_csv_previews_cleanly(
         preview["rows"],
         preview["batch_errors"],
     )
+
+    import_response = client.post(
+        "/api/portfolios/portfolio-ops/transactions/csv/import",
+        headers={"Idempotency-Key": "csv-mixed-independent-facts-1"},
+        json={
+            "csv_text": csv_text,
+            "preview_digest": preview["preview_digest"],
+        },
+    )
+    assert import_response.status_code == 200
+    created = import_response.json()["transactions"]
+    assert len(created) == 12
+    assert all(row["event_group_id"] is None for row in created)
+    assert all(row["related_instrument_id"] is None for row in created)
+
+    download_response = client.get(
+        "/api/portfolios/portfolio-ops/transactions.csv"
+    )
+    assert download_response.status_code == 200
+    exported_csv = download_response.text
+    assert "FCN-STOCK-001" in exported_csv
+    assert "related_instrument_id" not in exported_csv.splitlines()[0]
+    assert "event_group_id" not in exported_csv.splitlines()[0]
 
 
 def test_transaction_contract_distinguishes_long_and_writer_option_events() -> None:
@@ -1891,13 +2078,11 @@ def test_transaction_contract_distinguishes_long_and_writer_option_events() -> N
             "trade_date": "2026-06-01",
             "account_id": "broker",
             "instrument_id": "option-short-1",
-            "related_instrument_id": "equity-1",
-            "event_group_id": "assignment-1",
-            "quantity": 100,
+            "quantity": 1,
             "gross_amount": 0,
             "currency": "USD",
         }
     )
 
     assert long_expiry.gross_amount == 0
-    assert writer_assignment.quantity == 100
+    assert writer_assignment.quantity == 1

@@ -1,6 +1,6 @@
 # Portfolio database dictionary
 
-As of 2026-08-07. Verified against SQLAlchemy metadata and migration heads `instrument_registry@20260807_0019` and `portfolio@20260807_0044`.
+As of 2026-08-09. Verified against SQLAlchemy metadata and migration heads `instrument_registry@20260807_0019` and `portfolio@20260807_0044`.
 
 This file is for architecture and integration review. External systems should use the APIs documented in [`TRANSACTION_INTEGRATION.md`](TRANSACTION_INTEGRATION.md), not write these tables directly.
 
@@ -38,7 +38,7 @@ Cash and securities accounts owned by a portfolio.
 
 ### `portfolio.transaction_record`
 
-Canonical transaction fact. Long positions, cash movements, FCN lifecycle events, and option-writer obligations originate here.
+Canonical transaction fact. Long positions, cash movements, FCN lifecycle events, and short-option positions originate here.
 
 | Field group | Columns |
 |---|---|
@@ -52,7 +52,7 @@ Important constraints:
 
 - Unique `(portfolio_id, source_system, external_reference)` when a complete source identity is present.
 - `external_reference` requires `source_system`.
-- `event_group_id` links physical-delivery legs; `transfer_group_id` remains reserved for paired internal transfers.
+- `related_instrument_id` and `event_group_id` are retained for historical rows only. New derivative writes record each instrument independently and may describe relationships in `note`; `transfer_group_id` remains reserved for paired internal transfers.
 - The API preserves exact source decimals alongside float calculation projections.
 - Trade date, position-effective date, entitlement date, and settlement date are independent accounting facts.
 - `transaction_sequence` is a database-coordinated, immutable replay tie-breaker. It is not a business-facing source identifier and integrations must not allocate it.
@@ -97,7 +97,7 @@ Derived per-account/per-instrument holding lines.
 |---|
 | **PK** `(portfolio_id, as_of_date, account_id, instrument_id, holding_kind)`; **FK** `portfolio_id → portfolio_record.portfolio_id`; `holding_kind VARCHAR`; `currency VARCHAR`; `quantity FLOAT`; `cost_basis FLOAT?`; `cost_basis_base FLOAT?`; `last_price FLOAT?`; `market_value FLOAT?`; `market_value_base FLOAT?`; `portfolio_weight FLOAT?`; `holding_json JSON`; `calculated_at VARCHAR` |
 
-`holding_kind` keeps a long `position`, a written `option_obligation`, settled cash, and pending monetary lines distinct even when they reference the same canonical instrument. For FCN/option long positions, `holding_json.quote_basis=carried_cost` identifies event-valued cost carrying; it is not a Registry quote. Written obligations use `premium_liability`, a null `last_price`, and a negative NAV amount.
+`holding_kind` keeps a long `position`, a short `option_obligation`, settled cash, and pending monetary lines distinct even when they reference the same canonical instrument. For FCN/option long positions, `holding_json.quote_basis=carried_cost` identifies event-valued cost carrying; it is not a Registry quote. Short-option rows use `premium_liability`, a null `last_price`, and a negative NAV amount.
 
 ### `portfolio.portfolio_daily_contribution_slice`
 

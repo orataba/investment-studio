@@ -567,8 +567,7 @@ function instrumentTrendCoverageLabel(row: PortfolioHoldingRow) {
 function holdingValuationSummary(row: PortfolioHoldingRow) {
   if (isOptionObligationHolding(row)) {
     const status = row.obligation_status ? formatLabel(row.obligation_status) : 'N/A'
-    const coverageType = row.coverage_type ? formatLabel(row.coverage_type) : 'N/A'
-    return `Written option obligation · ${status} · ${coverageType}`
+    return `Short option position · ${status}`
   }
   if (holdingUsesEventValuation(row)) {
     return row.valuation_basis
@@ -580,7 +579,7 @@ function holdingValuationSummary(row: PortfolioHoldingRow) {
 
 function holdingValuationDetail(row: PortfolioHoldingRow) {
   if (isOptionObligationHolding(row)) {
-    return `${formatQuantity(row.open_contract_quantity)} open contracts · ${formatQuantity(row.required_underlying_quantity)} required · ${formatQuantity(row.covered_underlying_quantity)} covered · ${formatQuantity(row.uncovered_underlying_quantity)} uncovered`
+    return `${formatQuantity(row.open_contract_quantity)} open contracts · ${formatQuantity(row.required_underlying_quantity)} underlying units at expiry`
   }
   if (holdingUsesEventValuation(row)) {
     return 'Fair value and daily market return are unavailable.'
@@ -637,7 +636,7 @@ function finiteNumber(value: number | null | undefined) {
 const HOLDING_REGION_LABELS: Record<PortfolioHoldingRow['holding_region'], string> = {
   market_valued_positions: 'Market-valued Positions',
   structured_and_long_derivatives: 'Structured / Long Derivatives',
-  written_option_obligations: 'Written Option Obligations',
+  written_option_obligations: 'Short Option Positions',
   cash_and_settlement: 'Cash & Settlement',
 }
 
@@ -660,10 +659,7 @@ const CANONICAL_HOLDINGS_EXPORT_HEADER = [
   'Cost Basis Base',
   'Maturity/Expiry',
   'Open Contracts',
-  'Required Underlying',
-  'Covered Underlying',
-  'Uncovered Underlying',
-  'Covered Ratio',
+  'Underlying Units',
   'Strike',
   'Settlement Type',
   'Premium Basis',
@@ -717,8 +713,7 @@ function holdingSettlementTypeLabel(row: PortfolioHoldingRow) {
 
 function canonicalLifecycleStatus(row: PortfolioHoldingRow) {
   if (row.holding_region === 'written_option_obligations') {
-    const coverage = formatLabel(row.obligation_coverage_status ?? 'covered')
-    return `${coverage} / ${formatLabel(row.obligation_status ?? 'open')}`
+    return formatLabel(row.obligation_status ?? 'open')
   }
   if (row.holding_region === 'structured_and_long_derivatives') {
     return 'Open'
@@ -754,9 +749,6 @@ function canonicalHoldingsExportRow(row: PortfolioHoldingRow): TableCell[] {
     holdingMaturityOrExpiry(row) ?? 'N/A',
     obligation ? exportNumber(row.open_contract_quantity) : 'N/A',
     obligation ? exportNumber(row.required_underlying_quantity) : 'N/A',
-    obligation ? exportNumber(row.covered_underlying_quantity) : 'N/A',
-    obligation ? exportNumber(row.uncovered_underlying_quantity) : 'N/A',
-    obligation ? exportNumber(row.covered_ratio) : 'N/A',
     holdingStrike(row) ?? 'N/A',
     holdingSettlementTypeLabel(row),
     obligation ? exportNumber(row.premium_basis_remaining) : 'N/A',
@@ -765,7 +757,7 @@ function canonicalHoldingsExportRow(row: PortfolioHoldingRow): TableCell[] {
     pendingSettlement ? exportNumber(row.settlement_amount) : 'N/A',
     pendingSettlement ? exportNumber(row.settlement_amount_base) : 'N/A',
     formatLabel(row.analytics_scope),
-    formatLabel(row.obligation_coverage_status ?? row.coverage_status),
+    formatLabel(row.coverage_status),
   ]
 }
 
@@ -3382,7 +3374,10 @@ export default function PortfolioHomePage() {
     const dueOrNearExpiryCount = summary.expiry_buckets
       .filter((bucket) => bucket.bucket === 'expired_or_due' || bucket.bucket === 'next_7_days')
       .reduce((total, bucket) => total + bucket.obligation_count, 0)
-    const hasUncovered = summary.uncovered_underlying_quantity > 1e-9
+    const openShortOptionContracts = summary.expiry_buckets.reduce(
+      (total, bucket) => total + bucket.open_contract_quantity,
+      0,
+    )
 
     return (
       <section className="holdings-operational-status" aria-label="Holdings operational status">
@@ -3391,9 +3386,9 @@ export default function PortfolioHomePage() {
           <span>{workspace.as_of_date}</span>
         </div>
         <dl className="holdings-operational-metrics">
-          <div className={hasUncovered ? 'holdings-operational-metric-critical' : undefined}>
-            <dt>Uncovered underlying</dt>
-            <dd>{formatQuantity(summary.uncovered_underlying_quantity)}</dd>
+          <div>
+            <dt>Open short option contracts</dt>
+            <dd>{formatQuantity(openShortOptionContracts)}</dd>
           </div>
           <div>
             <dt>Expiry actions ≤ 7 days</dt>
@@ -3447,8 +3442,8 @@ export default function PortfolioHomePage() {
         note: 'Event-valued assets shown on carrying basis; daily market return and covariance risk are N/A.',
       },
       written_option_obligations: {
-        title: 'Written Option Obligations',
-        note: 'Open writer obligations and premium-basis liabilities.',
+        title: 'Short Option Positions',
+        note: 'Open short Call/Put contracts shown at remaining premium-basis liability.',
       },
       cash_and_settlement: {
         title: 'Cash & Settlement',
@@ -3537,15 +3532,12 @@ export default function PortfolioHomePage() {
               <>
                 <thead>
                   <tr>
-                    <th>Obligation</th>
+                    <th>Position</th>
                     <th>Expiry</th>
                     <th className="performance-cell-number">Strike</th>
                     <th>Settlement</th>
                     <th className="performance-cell-number">Open Contracts</th>
-                    <th className="performance-cell-number">Required</th>
-                    <th className="performance-cell-number">Covered</th>
-                    <th className="performance-cell-number">Uncovered</th>
-                    <th className="performance-cell-number">Covered Ratio</th>
+                    <th className="performance-cell-number">Underlying Units</th>
                     <th className="performance-cell-number">Premium Basis</th>
                     <th className="performance-cell-number">Carrying Liability</th>
                     <th>Status</th>
@@ -3562,17 +3554,6 @@ export default function PortfolioHomePage() {
                       <td>{holdingSettlementTypeLabel(row)}</td>
                       <td className="performance-cell-number">{formatQuantity(row.open_contract_quantity)}</td>
                       <td className="performance-cell-number">{formatQuantity(row.required_underlying_quantity)}</td>
-                      <td className="performance-cell-number">{formatQuantity(row.covered_underlying_quantity)}</td>
-                      <td
-                        className={`performance-cell-number ${
-                          (finiteNumber(row.uncovered_underlying_quantity) ?? 0) > 1e-9
-                            ? 'holdings-obligation-uncovered'
-                            : ''
-                        }`}
-                      >
-                        {formatQuantity(row.uncovered_underlying_quantity)}
-                      </td>
-                      <td className="performance-cell-number">{formatPercent(row.covered_ratio)}</td>
                       <td className="performance-cell-number">
                         {formatCurrency(row.premium_basis_remaining, row.instrument_core.currency)}
                       </td>
@@ -3582,17 +3563,9 @@ export default function PortfolioHomePage() {
                           workspace.base_currency,
                         )}
                       </td>
-                      <td
-                        className={
-                          row.obligation_coverage_status === 'uncovered'
-                            ? 'holdings-obligation-uncovered'
-                            : undefined
-                        }
-                      >
-                        {formatLabel(row.obligation_coverage_status ?? 'covered')}
-                      </td>
+                      <td>{formatLabel(row.obligation_status ?? 'open')}</td>
                     </tr>
-                  )) : <TableStatusRow colSpan={12} label="No holdings in this region." />}
+                  )) : <TableStatusRow colSpan={9} label="No holdings in this region." />}
                 </tbody>
               </>
             ) : null}

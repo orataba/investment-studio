@@ -102,6 +102,17 @@ export function transactionActivityLabel(
       return 'Redemption'
     }
   }
+  if (instrumentType === 'fcn') {
+    if (transactionType === 'buy') {
+      return 'FCN Contract Entry'
+    }
+    if (transactionType === 'coupon') {
+      return 'FCN Income'
+    }
+    if (transactionType === 'maturity_redemption') {
+      return 'FCN Contract Close'
+    }
+  }
   return transactionType
     .split('_')
     .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
@@ -116,10 +127,22 @@ export function transactionTypeChoiceLabel(
     return transactionActivityLabel(transactionType, instrumentType)
   }
   if (transactionType === 'buy') {
-    return 'Buy / Option Buy to Open'
+    return 'Buy / FCN Entry / Option Buy to Open'
   }
   if (transactionType === 'sell') {
     return 'Sell / Option Sell to Close'
+  }
+  if (transactionType === 'option_write') {
+    return 'Option Sell to Open'
+  }
+  if (transactionType === 'option_buy_to_close') {
+    return 'Option Buy to Close'
+  }
+  if (transactionType === 'coupon') {
+    return 'Coupon / FCN Income'
+  }
+  if (transactionType === 'maturity_redemption') {
+    return 'Contract Close / Maturity'
   }
   return transactionActivityLabel(transactionType)
 }

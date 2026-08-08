@@ -26,8 +26,6 @@ IMPORT_COLUMNS = (
     "account_id",
     "settlement_cash_account_id",
     "instrument_id",
-    "related_instrument_id",
-    "event_group_id",
     "quantity",
     "price",
     "gross_amount",

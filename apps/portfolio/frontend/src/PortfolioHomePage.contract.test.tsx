@@ -105,7 +105,7 @@ describe('Holdings rendered page contract', () => {
       name: 'Structured / Long Derivatives',
     })
     const obligationRegion = screen.getByRole('region', {
-      name: 'Written Option Obligations',
+      name: 'Short Option Positions',
     })
     const cashRegion = screen.getByRole('region', { name: 'Cash & Settlement' })
     expect(within(marketRegion).getByRole('columnheader', { name: 'Day Return' })).toBeInTheDocument()
@@ -115,15 +115,14 @@ describe('Holdings rendered page contract', () => {
     expect(within(obligationRegion).getByRole('columnheader', { name: 'Premium Basis' })).toBeInTheDocument()
     expect(within(obligationRegion).getByRole('columnheader', { name: 'Carrying Liability' })).toBeInTheDocument()
     expect(within(obligationRegion).getByRole('columnheader', { name: 'Expiry' })).toBeInTheDocument()
-    expect(within(obligationRegion).getByRole('columnheader', { name: 'Uncovered' })).toBeInTheDocument()
-    expect(within(obligationRegion).getByRole('columnheader', { name: 'Covered Ratio' })).toBeInTheDocument()
+    expect(within(obligationRegion).queryByRole('columnheader', { name: 'Uncovered' })).not.toBeInTheDocument()
     expect(within(cashRegion).getByRole('columnheader', { name: 'Settlement Date' })).toBeInTheDocument()
     expect(within(cashRegion).getByRole('columnheader', { name: 'Amount Base' })).toBeInTheDocument()
     expect(within(cashRegion).getByRole('columnheader', { name: 'Pending Status' })).toBeInTheDocument()
     expect(within(cashRegion).queryByRole('columnheader', { name: 'Day Return' })).not.toBeInTheDocument()
     expect(within(cashRegion).queryByRole('columnheader', { name: 'Scoped RC' })).not.toBeInTheDocument()
     const operationalStatus = screen.getByRole('region', { name: 'Holdings operational status' })
-    expect(within(operationalStatus).getByText('Uncovered underlying').nextElementSibling).toHaveTextContent('0.00')
+    expect(within(operationalStatus).getByText('Open short option contracts').nextElementSibling).toHaveTextContent('0.00')
     expect(within(operationalStatus).getByText('No operational exceptions.')).toBeInTheDocument()
 
     await openAdvancedTable(user)
@@ -243,10 +242,7 @@ describe('Holdings rendered page contract', () => {
       'Cost Basis Base',
       'Maturity/Expiry',
       'Open Contracts',
-      'Required Underlying',
-      'Covered Underlying',
-      'Uncovered Underlying',
-      'Covered Ratio',
+      'Underlying Units',
       'Strike',
       'Settlement Type',
       'Premium Basis',
@@ -268,18 +264,15 @@ describe('Holdings rendered page contract', () => {
     expect(fcnRow?.[6]).toBe('N/A')
     expect(fcnRow?.[7]).toBe(500)
     expect(fcnRow?.[9]).toBe('2026-12-31')
-    expect(obligationRow?.slice(10, 19)).toEqual([
+    expect(obligationRow?.slice(10, 16)).toEqual([
       1,
       100,
-      100,
-      0,
-      1,
       110,
       'Physical',
       300,
       300,
     ])
-    expect(settlementRow?.slice(19, 22)).toEqual(['2026-07-17', -250, -250])
+    expect(settlementRow?.slice(16, 19)).toEqual(['2026-07-17', -250, -250])
     expect(settlementRow?.[6]).toBe('N/A')
   })
 
@@ -472,7 +465,7 @@ describe('Holdings rendered page contract', () => {
     }
   })
 
-  it('shows written-option obligation facts by default and renders event day change as N/A', async () => {
+  it('shows short-option position facts without coverage pairing and renders event day change as N/A', async () => {
     apiMocks.getHoldingsWorkspace.mockResolvedValue(
       holdingsWorkspaceFixture({
         rows: [
@@ -482,7 +475,7 @@ describe('Holdings rendered page contract', () => {
             holding_region: 'written_option_obligations',
             instrument_core: optionInstrumentFixture({
               instrument_id: 'option-1',
-              instrument_name: 'Alpha 110 Covered Call',
+              instrument_name: 'Alpha 110 Call',
               identifiers: [
                 {
                   identifier_type: 'internal',
@@ -491,16 +484,16 @@ describe('Holdings rendered page contract', () => {
                 },
               ],
             }),
-            quantity: 200,
+            quantity: -2,
             open_contract_quantity: 2,
             required_underlying_quantity: 200,
-            underlying_position_quantity: 150,
-            covered_underlying_quantity: 150,
-            uncovered_underlying_quantity: 50,
-            covered_ratio: 0.75,
+            underlying_position_quantity: null,
+            covered_underlying_quantity: null,
+            uncovered_underlying_quantity: null,
+            covered_ratio: null,
             obligation_status: 'open',
-            obligation_coverage_status: 'uncovered',
-            coverage_type: 'covered_call',
+            obligation_coverage_status: 'not_applicable',
+            coverage_type: 'short_option',
             related_underlying_id: 'equity-1',
             expiry_date: '2026-12-18',
             days_to_expiry: 156,
@@ -524,7 +517,7 @@ describe('Holdings rendered page contract', () => {
             quote_basis: 'premium_liability',
             quote_provider: null,
             quote_status: 'event-cost',
-            coverage_status: 'uncovered-obligation',
+            coverage_status: 'event-liability',
             valuation_basis: 'premium_liability',
             fair_value: null,
             fair_value_coverage_status: 'unavailable',
@@ -549,15 +542,15 @@ describe('Holdings rendered page contract', () => {
           allocation: -0.03,
         },
         operational_summary: {
-          uncovered_obligation_count: 1,
-          uncovered_underlying_quantity: 50,
+          uncovered_obligation_count: 0,
+          uncovered_underlying_quantity: 0,
           expiry_buckets: [
             {
               bucket: 'later',
               obligation_count: 1,
               open_contract_quantity: 2,
               required_underlying_quantity: 200,
-              uncovered_underlying_quantity: 50,
+              uncovered_underlying_quantity: 0,
               carrying_liability_base: 300,
             },
           ],
@@ -565,7 +558,7 @@ describe('Holdings rendered page contract', () => {
             obligation_count: 1,
             open_contract_quantity: 2,
             deliverable_underlying_quantity: 200,
-            uncovered_underlying_quantity: 50,
+            uncovered_underlying_quantity: 0,
             strike_notional_base: 22_000,
           },
           settlement_exposure: {
@@ -578,15 +571,7 @@ describe('Holdings rendered page contract', () => {
             unavailable_base_line_count: 0,
           },
         },
-        operational_alerts: [
-          {
-            code: 'uncovered_option_obligation',
-            severity: 'critical',
-            title: 'Uncovered option obligation',
-            message: '1 obligation line(s) have 50 uncovered underlying units.',
-            related_line_ids: ['broker:option-1:obligation'],
-          },
-        ],
+        operational_alerts: [],
       }),
     )
     const user = userEvent.setup()
@@ -598,39 +583,34 @@ describe('Holdings rendered page contract', () => {
     )
 
     const obligationCell = await screen.findByRole('cell', {
-      name: /Alpha 110 Covered Call/,
+      name: /Alpha 110 Call/,
     })
     const regionRow = obligationCell.closest('tr')
     expect(regionRow).not.toBeNull()
     expect(within(regionRow!).getByText('2.00')).toBeInTheDocument()
     expect(within(regionRow!).getByText('200.00')).toBeInTheDocument()
-    expect(within(regionRow!).getByText('150.00')).toBeInTheDocument()
-    expect(within(regionRow!).getByText('50.00')).toHaveClass('holdings-obligation-uncovered')
-    expect(within(regionRow!).getByText('75.00%')).toBeInTheDocument()
     expect(within(regionRow!).getByText('2026-12-18')).toBeInTheDocument()
     expect(within(regionRow!).getByText('$110.0000')).toBeInTheDocument()
     expect(within(regionRow!).getByText('Physical')).toBeInTheDocument()
     expect(within(regionRow!).getAllByText('$300.00')).toHaveLength(2)
-    expect(within(regionRow!).getByText('Uncovered')).toHaveClass('holdings-obligation-uncovered')
-    expect(screen.getByRole('alert')).toHaveTextContent('Uncovered option obligation')
-    expect(screen.getByRole('alert')).toHaveTextContent('50 uncovered underlying units')
+    expect(screen.queryByText('Uncovered')).not.toBeInTheDocument()
 
     await openAdvancedTable(user)
     const advancedObligationCell = await screen.findByRole('cell', {
-      name: /Alpha 110 Covered Call/,
+      name: /Alpha 110 Call/,
     })
     expect(advancedObligationCell).toHaveTextContent(
-      'Written option obligation · Open · Covered Call',
+      'Short option position · Open',
     )
     expect(advancedObligationCell).toHaveTextContent(
-      '2.00 open contracts · 200.00 required · 150.00 covered · 50.00 uncovered',
+      '2.00 open contracts · 200.00 underlying units at expiry',
     )
     expect(advancedObligationCell).toHaveTextContent(
       'Remaining premium basis $300.00 · Carrying liability $300.00',
     )
     await user.click(screen.getByRole('button', { name: /View\s*: Default/ }))
     await user.click(screen.getByRole('option', { name: 'Return & Risk' }))
-    const obligationRow = screen.getByRole('cell', { name: /Alpha 110 Covered Call/ }).closest('tr')
+    const obligationRow = screen.getByRole('cell', { name: /Alpha 110 Call/ }).closest('tr')
     const dayChangeHeader = screen.getByRole('columnheader', { name: /Day Change/ })
     const dayReturnHeader = screen.getByRole('columnheader', { name: /Day Return/ })
     const dayChangeIndex = Array.from(dayChangeHeader.parentElement!.children).indexOf(dayChangeHeader)

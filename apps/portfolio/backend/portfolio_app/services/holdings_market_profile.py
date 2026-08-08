@@ -819,7 +819,7 @@ def build_option_obligation_holding_rows(
         group["remaining_quantity"] += remaining
         group["open_contract_quantity"] += safe_float(obligation.get("open_contract_quantity")) or 0.0
         group["required_underlying_quantity"] += safe_float(
-            obligation.get("covered_underlying_quantity")
+            obligation.get("required_underlying_quantity")
         ) or 0.0
         group["premium_received_gross"] += safe_float(obligation.get("premium_received_gross")) or 0.0
         group["premium_basis_remaining"] += safe_float(obligation.get("premium_basis_remaining")) or 0.0
@@ -827,23 +827,6 @@ def build_option_obligation_holding_rows(
         opened_by = str(obligation.get("_opened_by_transaction_id") or "")
         if opened_by:
             group["transaction_ids"].add(opened_by)
-
-    underlying_position_quantity: dict[tuple[str, str], float] = {}
-    for position in underlying_positions:
-        position_key = (
-            str(position.get("account_id") or "").strip(),
-            str(position.get("instrument_id") or "").strip(),
-        )
-        if not all(position_key):
-            continue
-        underlying_position_quantity[position_key] = (
-            underlying_position_quantity.get(position_key, 0.0)
-            + (safe_float(position.get("quantity")) or 0.0)
-        )
-    remaining_cover = {
-        key: max(quantity, 0.0)
-        for key, quantity in underlying_position_quantity.items()
-    }
 
     rows: list[dict[str, object]] = []
     ordered_groups = sorted(
@@ -866,25 +849,7 @@ def build_option_obligation_holding_rows(
         instrument_id = str(group["instrument_id"])
         currency = str(group["currency"])
         related_underlying_id = str(group["related_underlying_id"])
-        cover_key = (account_id, related_underlying_id)
         required_underlying_quantity = float(group["required_underlying_quantity"])
-        covered_underlying_quantity = min(
-            required_underlying_quantity,
-            remaining_cover.get(cover_key, 0.0),
-        )
-        remaining_cover[cover_key] = max(
-            remaining_cover.get(cover_key, 0.0) - covered_underlying_quantity,
-            0.0,
-        )
-        uncovered_underlying_quantity = max(
-            required_underlying_quantity - covered_underlying_quantity,
-            0.0,
-        )
-        covered_ratio = (
-            covered_underlying_quantity / required_underlying_quantity
-            if required_underlying_quantity > 1e-9
-            else None
-        )
         liability_value = float(group["liability_value"])
         liability_value_base, _ = convert_amount_on(
             liability_value,
@@ -940,22 +905,15 @@ def build_option_obligation_holding_rows(
                 "related_underlying_id": related_underlying_id,
                 "transaction_ids": sorted(group["transaction_ids"]),
                 "instrument_ref": normalize_instrument(instrument_id, instrument_ref),
-                "quantity": float(group["remaining_quantity"]),
+                "quantity": -float(group["open_contract_quantity"]),
                 "open_contract_quantity": float(group["open_contract_quantity"]),
                 "required_underlying_quantity": required_underlying_quantity,
-                "underlying_position_quantity": max(
-                    underlying_position_quantity.get(cover_key, 0.0),
-                    0.0,
-                ),
-                "covered_underlying_quantity": covered_underlying_quantity,
-                "uncovered_underlying_quantity": uncovered_underlying_quantity,
-                "covered_ratio": covered_ratio,
+                "underlying_position_quantity": None,
+                "covered_underlying_quantity": None,
+                "uncovered_underlying_quantity": None,
+                "covered_ratio": None,
                 "obligation_status": "open",
-                "obligation_coverage_status": (
-                    "uncovered"
-                    if uncovered_underlying_quantity > 1e-9
-                    else "covered"
-                ),
+                "obligation_coverage_status": "not_applicable",
                 "coverage_type": first.get("coverage_type"),
                 "related_underlying_id": related_underlying_id,
                 "expiry_date": expiry_date.isoformat() if expiry_date else None,
@@ -999,11 +957,7 @@ def build_option_obligation_holding_rows(
                 "account_count": 1,
                 "open_position_lot_count": 0,
                 "instrument_holding_start_date": first.get("opened_at"),
-                "coverage_status": (
-                    "uncovered-obligation"
-                    if uncovered_underlying_quantity > 1e-9
-                    else "event-liability"
-                ),
+                "coverage_status": "event-liability",
             }
         )
     return rows
@@ -1100,11 +1054,6 @@ def summarize_holdings_operational_status(
             bucket["carrying_liability_base"] = None
         expiry_buckets.append(bucket)
 
-    uncovered_rows = [
-        row
-        for row in obligation_rows
-        if (safe_float(row.get("uncovered_underlying_quantity")) or 0.0) > 1e-9
-    ]
     assignment_rows = [
         row
         for row in obligation_rows
@@ -1143,24 +1092,7 @@ def summarize_holdings_operational_status(
         if str(row.get("pending_status") or "") == "overdue"
     ]
 
-    uncovered_quantity = sum(
-        safe_float(row.get("uncovered_underlying_quantity")) or 0.0
-        for row in uncovered_rows
-    )
     operational_alerts: list[dict[str, object]] = []
-    if uncovered_rows:
-        operational_alerts.append(
-            {
-                "code": "uncovered_option_obligation",
-                "severity": "critical",
-                "title": "Uncovered option obligation",
-                "message": (
-                    f"{len(uncovered_rows)} obligation line(s) have "
-                    f"{uncovered_quantity:g} uncovered underlying units."
-                ),
-                "related_line_ids": [str(row.get("line_id") or "") for row in uncovered_rows],
-            }
-        )
     due_count = int(
         expiry_buckets_by_key.get("expired_or_due", {}).get("obligation_count") or 0
     )
@@ -1236,8 +1168,8 @@ def summarize_holdings_operational_status(
 
     return {
         "operational_summary": {
-            "uncovered_obligation_count": len(uncovered_rows),
-            "uncovered_underlying_quantity": uncovered_quantity,
+            "uncovered_obligation_count": 0,
+            "uncovered_underlying_quantity": 0.0,
             "expiry_buckets": expiry_buckets,
             "assignment_exposure": {
                 "obligation_count": len(assignment_rows),

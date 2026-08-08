@@ -1,6 +1,6 @@
-"""Replayable written-option obligation subledger.
+"""Replayable short-option obligation subledger.
 
-Written options are not represented as negative long lots.  This module keeps
+Short options are not represented as negative long lots.  This module keeps
 an auditable, deterministic read model that can be rebuilt from canonical
 transaction facts at any as-of date.  The carrying liability is the remaining
 unearned premium basis (no daily option quote is required in P0).
@@ -103,60 +103,26 @@ def option_contract_identity(
     }
 
 
-def _validate_writer_contract(
+def _validate_short_option_contract(
     transaction: dict[str, object],
-    *,
-    key: tuple[str, str, str],
-    covered_quantity: float,
 ) -> dict[str, object]:
-    """Validate the P0 covered-call convention against Registry identity.
+    """Validate the option identity used by a short-option fact."""
 
-    Writer quantity is the number of covered underlying units. The contract
-    multiplier makes the inferred exchange-contract count integral and auditable.
-    """
-
-    identity = option_contract_identity(transaction)
-    if identity.get("option_type") != "call":
-        raise ValueError("Only covered call writer transactions are supported in P0.")
-    if identity.get("settlement_type") != "physical":
-        raise ValueError(
-            "Only physically settled covered call writer transactions are supported in P0."
-        )
-    if str(identity.get("underlying_instrument_id") or "") != key[2]:
-        raise ValueError(
-            "Option contract underlying does not match related_instrument_id."
-        )
-    multiplier = _float(identity.get("contract_multiplier"))
-    if covered_quantity > EPSILON:
-        inferred_contracts = covered_quantity / multiplier
-        if abs(inferred_contracts - round(inferred_contracts)) > 1e-6:
-            raise ValueError(
-                "Option writer quantity must be an integral contract deliverable."
-            )
-    return identity
-
-
-def _covered_quantity(transaction: dict[str, object], quantity: float) -> tuple[float, float | None]:
-    """Return covered units and inferred exchange contracts.
-
-    The transaction schema defines option quantity as covered underlying units.
-    """
-
-    multiplier = _float(option_contract_identity(transaction).get("contract_multiplier"))
-    return quantity, quantity / multiplier
+    return option_contract_identity(transaction)
 
 
 def _key(transaction: dict[str, object]) -> tuple[str, str, str]:
+    contract = option_contract_identity(transaction)
     return (
         str(transaction.get("account_id") or "").strip(),
         str(transaction.get("instrument_id") or "").strip(),
-        str(transaction.get("related_instrument_id") or "").strip(),
+        str(contract.get("underlying_instrument_id") or "").strip(),
     )
 
 
 def _new_obligation(transaction: dict[str, object], quantity: float) -> dict[str, object]:
-    covered_quantity, inferred_contracts = _covered_quantity(transaction, quantity)
     contract = option_contract_identity(transaction)
+    required_underlying_quantity = quantity * _float(contract.get("contract_multiplier"))
     gross = _float(transaction.get("gross_amount"))
     opened_at = _date(
         transaction_performance_effective_date(transaction)
@@ -175,16 +141,17 @@ def _new_obligation(transaction: dict[str, object], quantity: float) -> dict[str
         if isinstance(transaction.get("instrument_ref"), dict)
         else None,
         "related_underlying_id": underlying_id,
-        "open_contract_quantity": inferred_contracts,
-        "covered_underlying_quantity": covered_quantity,
-        "remaining_quantity": covered_quantity,
+        "open_contract_quantity": quantity,
+        "required_underlying_quantity": required_underlying_quantity,
+        "covered_underlying_quantity": 0.0,
+        "remaining_quantity": quantity,
         "premium_received_gross": gross,
         "premium_basis_remaining": gross,
         "carrying_liability": gross,
         "opened_at": opened_at.isoformat() if opened_at else transaction.get("trade_date"),
         "expiry_date": expiry_date.isoformat() if expiry_date else None,
         "status": "open",
-        "coverage_type": "covered_call",
+        "coverage_type": "short_option",
         "option_type": contract.get("option_type"),
         "strike": contract.get("strike"),
         "contract_multiplier": contract.get("contract_multiplier"),
@@ -215,7 +182,7 @@ def _consume(
     if quantity <= EPSILON:
         quantity = remaining_quantity
     if quantity > remaining_quantity + EPSILON:
-        raise ValueError("Option writer close quantity exceeds the open obligation.")
+        raise ValueError("Short option close quantity exceeds the open position.")
     quantity = min(quantity, remaining_quantity)
     basis_remaining = _float(obligation.get("premium_basis_remaining"))
     released_basis = (
@@ -226,18 +193,18 @@ def _consume(
     # A buy-to-close has an explicit close cost.  Expiry/assignment do not.
     realized_pnl = released_basis - close_cost - fees - taxes
     obligation["remaining_quantity"] = max(remaining_quantity - quantity, 0.0)
-    obligation["covered_underlying_quantity"] = obligation["remaining_quantity"]
-    if _float(obligation.get("open_contract_quantity")) > EPSILON:
-        multiplier = _float(obligation.get("contract_multiplier"), 0.0)
-        if multiplier > EPSILON:
-            obligation["open_contract_quantity"] = obligation["remaining_quantity"] / multiplier
-        else:
-            obligation["open_contract_quantity"] = obligation["remaining_quantity"]
+    obligation["open_contract_quantity"] = obligation["remaining_quantity"]
+    obligation["required_underlying_quantity"] = (
+        obligation["remaining_quantity"]
+        * _float(obligation.get("contract_multiplier"), 0.0)
+    )
     obligation["premium_basis_remaining"] = max(basis_remaining - released_basis, 0.0)
     obligation["carrying_liability"] = obligation["premium_basis_remaining"]
     obligation["realized_pnl"] = _float(obligation.get("realized_pnl")) + realized_pnl
     if obligation["remaining_quantity"] <= EPSILON:
         obligation["remaining_quantity"] = 0.0
+        obligation["open_contract_quantity"] = 0.0
+        obligation["required_underlying_quantity"] = 0.0
         obligation["covered_underlying_quantity"] = 0.0
         obligation["premium_basis_remaining"] = 0.0
         obligation["carrying_liability"] = 0.0
@@ -282,7 +249,7 @@ def derive_option_obligation_events(
     *,
     as_of_date: date | None = None,
 ) -> list[dict[str, object]]:
-    """Replay writer facts and return one lifecycle event per affected row."""
+    """Replay short-option facts and return one lifecycle event per affected row."""
 
     ordered = sorted(list(transactions), key=transaction_sort_key)
     obligations: dict[tuple[str, str, str], list[dict[str, object]]] = {}
@@ -295,16 +262,12 @@ def derive_option_obligation_events(
             continue
         action = resolve_option_action(transaction)
         lifecycle = str(transaction.get("lifecycle_event_type") or "")
-        key = _key(transaction)
         quantity = _float(transaction.get("quantity"))
         if action == "sell_to_open":
             if quantity <= EPSILON:
-                raise ValueError("Option writer open requires positive quantity.")
-            identity = _validate_writer_contract(
-                transaction,
-                key=key,
-                covered_quantity=quantity,
-            )
+                raise ValueError("Short option open requires positive contract quantity.")
+            key = _key(transaction)
+            identity = _validate_short_option_contract(transaction)
             opened_at = effective_date or _date(transaction.get("trade_date"))
             expiry_date = _date(identity.get("expiry_date"))
             if (
@@ -312,7 +275,7 @@ def derive_option_obligation_events(
                 and expiry_date is not None
                 and opened_at > expiry_date
             ):
-                raise ValueError("Option writer open date must not be after contract expiry.")
+                raise ValueError("Short option open date must not be after contract expiry.")
             obligation = _new_obligation(transaction, quantity)
             obligations.setdefault(key, []).append(obligation)
             events.append(
@@ -347,16 +310,13 @@ def derive_option_obligation_events(
         if close_reason is None:
             continue
 
+        key = _key(transaction)
         open_rows = obligations.get(key, [])
         available = sum(_float(row.get("remaining_quantity")) for row in open_rows)
         requested = quantity if quantity > EPSILON else available
         if requested > available + EPSILON:
-            raise ValueError("Option writer close quantity exceeds the open obligation.")
-        identity = _validate_writer_contract(
-            transaction,
-            key=key,
-            covered_quantity=requested,
-        )
+            raise ValueError("Short option close quantity exceeds the open position.")
+        identity = _validate_short_option_contract(transaction)
         if lifecycle == "option_writer_expiry":
             expiry_date = _date(identity.get("expiry_date"))
             if (
@@ -365,7 +325,7 @@ def derive_option_obligation_events(
                 and effective_date < expiry_date
             ):
                 raise ValueError(
-                    "Option writer expiry event must not precede contract expiry."
+                    "Short option expiry event must not precede contract expiry."
                 )
         remaining = requested
         for obligation in open_rows:
@@ -445,6 +405,11 @@ def summarize_option_obligations(rows: Iterable[dict[str, object]]) -> dict[str,
         ),
         "covered_underlying_quantity": sum(
             _float(row.get("covered_underlying_quantity"))
+            for row in items
+            if row.get("status") == "open"
+        ),
+        "required_underlying_quantity": sum(
+            _float(row.get("required_underlying_quantity"))
             for row in items
             if row.get("status") == "open"
         ),

@@ -361,7 +361,7 @@ describe('Transactions rendered page contract', () => {
     })
     expect(
       within(transactionType).getByRole('option', {
-        name: 'Buy / Option Buy to Open',
+        name: 'Buy / FCN Entry / Option Buy to Open',
       }),
     ).toBeInTheDocument()
     await user.selectOptions(transactionType, 'lifecycle_event')

@@ -15,10 +15,13 @@ export function supportsTransactionInstrumentType(transactionType: string, instr
     return false
   }
 
+  if (transactionType === 'lifecycle_event') {
+    return normalizedInstrumentType === 'option'
+  }
+
   if (
     transactionType === 'buy' ||
     transactionType === 'sell' ||
-    transactionType === 'lifecycle_event' ||
     transactionType === 'opening_balance'
   ) {
     return POSITION_ASSET_TYPES.has(normalizedInstrumentType)

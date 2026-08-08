@@ -31,6 +31,7 @@ function instrument(
       reference: [],
     },
     coverage_state: 'complete',
+    broker_identifiers: [],
     identifiers: [
       {
         identifier_type: 'ticker',
@@ -163,17 +164,17 @@ describe('transaction presentation', () => {
   it('uses all four canonical option action labels', () => {
     expect(transactionActivityLabel('buy', 'option')).toBe('Option Buy to Open')
     expect(transactionActivityLabel('sell', 'option')).toBe('Option Sell to Close')
-    expect(transactionActivityLabel('option_write', 'option')).toBe('Covered Call Sell to Open')
+    expect(transactionActivityLabel('option_write', 'option')).toBe('Option Sell to Open')
     expect(transactionActivityLabel('option_buy_to_close', 'option')).toBe(
-      'Covered Call Buy to Close',
+      'Option Buy to Close',
     )
     expect(transactionActivityLabel('buy', null, 'buy_to_close')).toBe(
-      'Covered Call Buy to Close',
+      'Option Buy to Close',
     )
   })
 
   it('names the option meaning of buy and sell before security selection', () => {
-    expect(transactionTypeChoiceLabel('buy')).toBe('Buy / Option Buy to Open')
+    expect(transactionTypeChoiceLabel('buy')).toBe('Buy / FCN Entry / Option Buy to Open')
     expect(transactionTypeChoiceLabel('sell')).toBe('Sell / Option Sell to Close')
     expect(transactionTypeChoiceLabel('buy', 'option')).toBe('Option Buy to Open')
   })

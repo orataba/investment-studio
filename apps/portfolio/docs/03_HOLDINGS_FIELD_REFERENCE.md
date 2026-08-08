@@ -10,7 +10,7 @@ Holdings 是指定 `as_of_date` 的**当前资产负债快照**。一条普通�
 
 它主要回答两类问题：
 
-- 当前还持有什么或承担什么义务：数量、市值或 carrying amount、权重、剩余账面成本、未实现盈亏、written option premium liability 与 covered quantity；
+- 当前还持有什么或承担什么义务：数量、市值或 carrying amount、权重、剩余账面成本、未实现盈亏、short-option contract quantity 与 premium liability；
 - 以当前这些资产和当前权重回看，标的自身及当前持仓篮子的历史市场表现和风险如何。
 
 它不回答真实历史组合在某个区间内赚了多少。组合 TWR、期间贡献、已实现资本利得、Income、费用、税费和已经卖出的仓位属于 Overview / Performance。Holdings 的 group、subtotal 和 `Portfolio Total` 也不是 Performance group。
@@ -75,10 +75,10 @@ Regions 模式固定展示以下四个互斥区域；区域由后端 `holding_re
 | --- | --- | --- |
 | `market_valued_positions` | Market-valued Positions | 普通 quantity、quote、market value、cost basis、return/risk |
 | `structured_and_long_derivatives` | Structured / Long Derivatives | `carrying_value(_base)`、cost basis、FCN maturity 或 option expiry、lifecycle status |
-| `written_option_obligations` | Written Option Obligations | `open_contract_quantity`、`required_underlying_quantity`、`underlying_position_quantity`、`covered_underlying_quantity`、`uncovered_underlying_quantity`、`covered_ratio`、`obligation_status`、`obligation_coverage_status`、expiry/days、strike/type/multiplier/settlement、`assignment_notional(_base)`、premium received/basis、`liability_value(_base)` |
+| `written_option_obligations` | Short Option Positions | `open_contract_quantity`、`required_underlying_quantity`、`obligation_status`、expiry/days、strike/type/multiplier/settlement、`assignment_notional(_base)`、premium received/basis、`liability_value(_base)` |
 | `cash_and_settlement` | Cash & Settlement | `settlement_date`、`pending_until_date`、`pending_status`、`settlement_amount(_base)`；settled cash 的 settlement 字段不适用 |
 
-Written-option coverage 在 `account_id + related_underlying_id` 内共享一个实际标的池，按 expiry、account、option instrument 的稳定顺序分配。每一单位标的最多覆盖一份 obligation；每行满足 `required = covered + uncovered`，aggregate covered ratio 必须用 `sum(covered) / sum(required)` 重算，不能平均行级 ratio。`assignment_notional = strike × required underlying`，base amount 只有在 as-of FX 可用时才发布。
+Short-option row 不读取或分配股票持仓。`required_underlying_quantity = open_contract_quantity × contract_multiplier`，只表示合约对应的标的数量；`assignment_notional = strike × required underlying`，base amount 只有在 as-of FX 可用时才发布。covered call 等策略由用户通过独立股票和期权交易表达，不属于交易或持仓类型。
 
 Pending row 的 identity 固定为：
 
@@ -88,17 +88,16 @@ pending:{kind}:{cash_account}:{economic_instrument}:{currency}:{settlement_date}
 
 它防止相同账户/资产/币种但不同结算边界的余额发生主键冲突。`pending_status` 目前包括 `awaiting_settlement`、`settled_awaiting_position` 和 `overdue`；本币 signed amount 与 base amount 必须同时保留，base FX 不可用时本币金额仍可展示但 base aggregation 为 unavailable。
 
-Workspace `operational_summary` 固定返回 uncovered count/quantity、expiry buckets、physical assignment exposure 和 settlement receivable/payable/net；`operational_alerts` 返回 severity、code、message 和真实 `related_line_ids`。无异常也必须显示明确的 uncovered `0` 状态；uncovered obligation、到期已到和逾期结算是 critical，七日内到期与 settlement FX unavailable 是 warning。动态 workspace、materialized snapshot 和 instrument detail projection 对这些字段必须保持 parity。
+Workspace `operational_summary` 展示 open short-option contract count、expiry buckets、physical assignment exposure 和 settlement receivable/payable/net；`operational_alerts` 返回 severity、code、message 和真实 `related_line_ids`。到期已到和逾期结算是 critical，七日内到期与 settlement FX unavailable 是 warning。API 为兼容旧快照保留的 covered / uncovered 字段固定为空或零，不参与判断。动态 workspace、materialized snapshot 和 instrument detail projection 对当前字段必须保持 parity。
 
-Regions CSV 是固定 24 列 canonical export，顺序如下；任一区域不适用的单元格写字面量 `N/A`：
+Regions CSV 是固定 21 列 canonical export，顺序如下；任一区域不适用的单元格写字面量 `N/A`：
 
 ```text
 Region, Instrument, Identifier, Currency, Lifecycle/Pending Status, Quantity,
 Market Value Base, Carrying Value Base, Cost Basis Base, Maturity/Expiry,
-Open Contracts, Required Underlying, Covered Underlying, Uncovered Underlying,
-Covered Ratio, Strike, Settlement Type, Premium Basis, Carrying Liability Base,
-Settlement Date, Settlement Amount, Settlement Amount Base, Analytics Scope,
-Coverage Status
+Open Contracts, Underlying Units, Strike, Settlement Type, Premium Basis,
+Carrying Liability Base, Settlement Date,
+Settlement Amount, Settlement Amount Base, Analytics Scope, Coverage Status
 ```
 
 Advanced Table CSV 不使用这套固定表头，只导出用户当前可见列；两种模式都不得把不适用值改成 `0`。
@@ -117,7 +116,7 @@ Advanced Table CSV 不使用这套固定表头，只导出用户当前可见列�
 | `taxonomy_leaf` | Taxonomy Leaf | 当前默认 planning taxonomy 的叶节点；无 assignment 为 Unassigned | 留空；可作为 Group By 维度 | `none` |
 | `currency` | Currency | instrument currency；现金为该现金币种 | 留空；可作为 Group By 维度 | `none` |
 | `holding_date` | Holding Since | 当前开放头寸里最早的 holding start date；不包含已经平掉的旧头寸 | 留空，不拼接不同成员起点 | `none` |
-| `quantity` | Quantity | 当前开放 quantity；option obligation 为 covered underlying units；现金行是 settled cash amount | 留空，不跨不同份额单位求和 | `none` |
+| `quantity` | Quantity | 当前开放 quantity；short-option obligation 为负的 open contract count；现金行是 settled cash amount | 留空，不跨不同份额单位求和 | `none` |
 | `cost_method` | Cost Method | 账户成本法；跨账户不一致时为 Mixed | 留空 | `none` |
 | `avg_cost_book` | Avg Cost | market/event position 的 `remaining cost basis / remaining quantity`；option obligation 和 cash 不适用 | 留空，不平均成员成本 | `none` |
 | `last_price` | Quote | `as_of_date` 选中的 valuation quote；event-valued asset、option obligation 和 cash 不适用 | 留空 | `none` |

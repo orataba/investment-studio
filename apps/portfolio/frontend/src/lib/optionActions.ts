@@ -3,8 +3,8 @@ import type { PortfolioOptionAction } from './api'
 const OPTION_ACTION_LABELS: Readonly<Record<PortfolioOptionAction, string>> = {
   buy_to_open: 'Option Buy to Open',
   sell_to_close: 'Option Sell to Close',
-  sell_to_open: 'Covered Call Sell to Open',
-  buy_to_close: 'Covered Call Buy to Close',
+  sell_to_open: 'Option Sell to Open',
+  buy_to_close: 'Option Buy to Close',
 }
 
 export function resolveOptionAction(

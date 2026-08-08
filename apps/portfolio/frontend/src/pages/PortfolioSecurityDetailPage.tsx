@@ -641,7 +641,7 @@ export default function PortfolioSecurityDetailPage() {
           {writtenOptionObligation ? (
             <div
               className="portfolio-security-context-strip"
-              aria-label="Written option obligation"
+              aria-label="Short option position"
             >
               <div>
                 <span>Obligation status</span>
@@ -651,9 +651,7 @@ export default function PortfolioSecurityDetailPage() {
                     : 'N/A'}
                 </strong>
                 <em>
-                  {writtenOptionObligation.coverage_type
-                    ? formatLabel(writtenOptionObligation.coverage_type)
-                    : 'N/A'}
+                  Short {formatLabel(writtenOptionObligation.option_type ?? 'option')}
                 </em>
               </div>
               <div>
@@ -662,9 +660,9 @@ export default function PortfolioSecurityDetailPage() {
                 <em>Exchange contracts</em>
               </div>
               <div>
-                <span>Covered underlying</span>
-                <strong>{formatQuantity(writtenOptionObligation.covered_underlying_quantity)}</strong>
-                <em>Reserved deliverable units</em>
+                <span>Underlying units at expiry</span>
+                <strong>{formatQuantity(writtenOptionObligation.required_underlying_quantity)}</strong>
+                <em>Contracts × multiplier</em>
               </div>
               <div>
                 <span>Remaining premium / carrying liability</span>

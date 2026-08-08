@@ -1,4 +1,8 @@
-import type { PriceUnit } from '../../../../../packages/instrument-core/ts/src'
+import {
+  canonicalPriceContract,
+  type InstrumentCore,
+  type PriceUnit,
+} from '../../../../../packages/instrument-core/ts/src'
 
 export type TransactionPriceContractInput = {
   price_unit: PriceUnit
@@ -46,6 +50,23 @@ export function resolveTransactionPriceContract(
   )
     ? first
     : null
+}
+
+export function transactionPriceContractForInstrument(
+  instrument: InstrumentCore | null | undefined,
+): TransactionPriceContract | null {
+  if (!instrument) {
+    return null
+  }
+  if (instrument.instrument_type === 'option') {
+    return normalizePriceContract({
+      price_unit: 'per_unit',
+      price_scale: instrument.option_contract.contract_multiplier,
+    })
+  }
+  return normalizePriceContract(
+    canonicalPriceContract(instrument.instrument_type, 'price'),
+  )
 }
 
 export function calculateTransactionGrossAmount(

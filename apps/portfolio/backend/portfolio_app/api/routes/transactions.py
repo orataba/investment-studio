@@ -158,6 +158,11 @@ def _load_instrument_ref(instrument_id: str) -> dict[str, object]:
         "instrument_type": instrument["instrument_type"],
         "currency": instrument["currency"],
         "option_contract": instrument.get("option_contract"),
+        "fcn_contract": instrument.get("fcn_contract"),
+        "broker_identifiers": instrument.get("broker_identifiers", []),
+        "corporate_action_adjustment_policy": instrument.get(
+            "corporate_action_adjustment_policy"
+        ),
         "identifiers": instrument.get("identifiers", []),
     }
 
@@ -185,69 +190,21 @@ def _validated_option_contract_ref(
     return contract.model_dump(mode="json")
 
 
-def _validate_option_contract_relationship(
+def _validate_option_contract(
     *,
     instrument_ref: dict[str, object] | None,
     option_action: str | None,
     lifecycle_event_type: str | None,
-    related_instrument_id: str | None,
-    quantity: Decimal | None,
 ) -> None:
-    writer_fact = option_action in {"sell_to_open", "buy_to_close"} or (
-        lifecycle_event_type in {"option_writer_expiry", "option_assignment"}
-    )
     option_lifecycle_event = lifecycle_event_type in {
+        "option_long_expiry",
         "option_long_exercise",
+        "option_writer_expiry",
         "option_assignment",
     }
-    if not writer_fact and not option_lifecycle_event:
+    if option_action is None and not option_lifecycle_event:
         return
-
-    contract = _validated_option_contract_ref(instrument_ref)
-
-    contract_underlying_id = str(
-        contract.get("underlying_instrument_id") or ""
-    ).strip()
-    if contract_underlying_id != str(related_instrument_id or "").strip():
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                "Option contract underlying does not match "
-                "related_instrument_id."
-            ),
-        )
-
-    if lifecycle_event_type == "option_long_exercise":
-        if contract.get("settlement_type") != "physical":
-            raise HTTPException(
-                status_code=400,
-                detail="Long option exercise requires physical settlement.",
-            )
-        return
-
-    if contract.get("option_type") != "call" or contract.get(
-        "settlement_type"
-    ) != "physical":
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                "P0 option writer transactions support only physically settled "
-                "covered calls."
-            ),
-        )
-
-    covered_quantity = quantity or Decimal("0")
-    multiplier = Decimal(str(contract.get("contract_multiplier") or "0"))
-    if covered_quantity > 0 and multiplier > 0:
-        contract_count = covered_quantity / multiplier
-        if contract_count != contract_count.to_integral_value():
-            raise HTTPException(
-                status_code=400,
-                detail=(
-                    "Option writer quantity must be an integral contract "
-                    "deliverable."
-                ),
-            )
+    _validated_option_contract_ref(instrument_ref)
 
 
 def _validate_instrument_amount_contract(
@@ -260,6 +217,8 @@ def _validate_instrument_amount_contract(
     if payload.transaction_type not in {
         "buy",
         "sell",
+        "option_write",
+        "option_buy_to_close",
         "dividend_reinvestment",
         "opening_balance",
     }:
@@ -276,6 +235,8 @@ def _validate_instrument_amount_contract(
         contract_label = "security opening balance"
     elif payload.transaction_type == "dividend_reinvestment":
         contract_label = "dividend reinvestment"
+    elif payload.transaction_type in {"option_write", "option_buy_to_close"}:
+        contract_label = "short option trade"
     else:
         contract_label = "buy and sell"
     raise HTTPException(
@@ -295,6 +256,12 @@ def _serialize_instrument_option(record: dict[str, object]) -> dict[str, object]
             "instrument_type": record["instrument_type"],
             "currency": record["currency"],
             "identifiers": record["identifiers"],
+            "option_contract": record.get("option_contract"),
+            "fcn_contract": record.get("fcn_contract"),
+            "broker_identifiers": record.get("broker_identifiers", []),
+            "corporate_action_adjustment_policy": record.get(
+                "corporate_action_adjustment_policy"
+            ),
         },
         "coverage_state": record["coverage_state"],
         "latest_market_data": record["latest_market_data"],
@@ -870,58 +837,11 @@ def _prepare_csv_transaction_values(
     )
     _validate_instrument_amount_contract(payload=payload, instrument_ref=instrument_ref)
 
-    related_instrument_id = payload.related_instrument_id
-    related_instrument_ref = (
-        _load_instrument_ref(related_instrument_id)
-        if related_instrument_id
-        else None
-    )
-    requires_related_underlying = option_action in {"sell_to_open", "buy_to_close"} or lifecycle_event_type in {
-        "fcn_physical_settlement",
-        "option_long_exercise",
-        "option_writer_expiry",
-        "option_assignment",
-    }
-    if requires_related_underlying and related_instrument_ref is None:
-        raise HTTPException(
-            status_code=400,
-            detail="This transaction requires related_instrument_id.",
-        )
-    if related_instrument_ref is not None:
-        if related_instrument_id == instrument_id:
-            raise HTTPException(
-                status_code=400,
-                detail="related_instrument_id must differ from instrument_id.",
-            )
-        related_type = str(
-            related_instrument_ref.get("instrument_type") or ""
-        ).strip().lower()
-        if related_type not in {"equity", "etf"}:
-            raise HTTPException(
-                status_code=400,
-                detail="related_instrument_id must reference an equity or ETF.",
-            )
-        if not requires_related_underlying:
-            raise HTTPException(
-                status_code=400,
-                detail="related_instrument_id is not supported for this transaction.",
-            )
-    _validate_option_contract_relationship(
+    _validate_option_contract(
         instrument_ref=instrument_ref,
         option_action=option_action,
         lifecycle_event_type=lifecycle_event_type,
-        related_instrument_id=related_instrument_id,
-        quantity=payload.quantity,
     )
-    if lifecycle_event_type in {
-        "fcn_physical_settlement",
-        "option_long_exercise",
-        "option_assignment",
-    } and not payload.event_group_id:
-        raise HTTPException(
-            status_code=400,
-            detail="Physical settlement and assignment require event_group_id.",
-        )
 
     _validate_transaction_currency(
         transaction_type=transaction_type,
@@ -974,8 +894,8 @@ def _prepare_csv_transaction_values(
         ),
         "source_system": payload.source_system,
         "external_reference": payload.external_reference,
-        "event_group_id": payload.event_group_id,
-        "related_instrument_id": related_instrument_id,
+        "event_group_id": None,
+        "related_instrument_id": None,
         "note": payload.note,
         "created_at": created_at,
     }
@@ -1778,58 +1698,11 @@ def _persist_transaction_record(
         instrument_ref=instrument_ref,
     )
 
-    related_instrument_ref = None
-    related_instrument_id = payload.related_instrument_id
-    if related_instrument_id:
-        if related_instrument_id == instrument_id:
-            raise HTTPException(
-                status_code=400,
-                detail="related_instrument_id must differ from instrument_id.",
-            )
-        related_instrument_ref = _load_instrument_ref(related_instrument_id)
-
-    requires_related_underlying = option_action in {"sell_to_open", "buy_to_close"} or lifecycle_event_type in {
-        "fcn_physical_settlement",
-        "option_long_exercise",
-        "option_writer_expiry",
-        "option_assignment",
-    }
-    if requires_related_underlying and related_instrument_ref is None:
-        raise HTTPException(
-            status_code=400,
-            detail="This transaction requires related_instrument_id.",
-        )
-    if related_instrument_ref is not None:
-        related_type = str(
-            related_instrument_ref.get("instrument_type") or ""
-        ).strip().lower()
-        if related_type not in {"equity", "etf"}:
-            raise HTTPException(
-                status_code=400,
-                detail="related_instrument_id must reference an equity or ETF.",
-            )
-        if not requires_related_underlying:
-            raise HTTPException(
-                status_code=400,
-                detail="related_instrument_id is not supported for this transaction.",
-            )
-    _validate_option_contract_relationship(
+    _validate_option_contract(
         instrument_ref=instrument_ref,
         option_action=option_action,
         lifecycle_event_type=lifecycle_event_type,
-        related_instrument_id=related_instrument_id,
-        quantity=payload.quantity,
     )
-
-    if lifecycle_event_type in {
-        "fcn_physical_settlement",
-        "option_long_exercise",
-        "option_assignment",
-    } and not payload.event_group_id:
-        raise HTTPException(
-            status_code=400,
-            detail="Physical settlement and assignment require event_group_id.",
-        )
 
     transactions_as_of_trade_date: list[dict[str, object]] | None = None
     if transaction_type in {"sell", "maturity_redemption"} and instrument_id:
@@ -1874,29 +1747,6 @@ def _persist_transaction_record(
                     "Transaction quantity exceeds account position as of "
                     "trade_date."
                 ),
-            )
-
-    if lifecycle_event_type == "fcn_knock_in" and instrument_id:
-        transactions_as_of_trade_date = _list_transactions_as_of_trade_moment(
-            portfolio_id,
-            trade_date=payload.trade_date,
-            trade_at=str(resolved_trade_timing["trade_at"]),
-            created_at=pending_created_at,
-            settlement_date=settlement_date,
-            exclude_transaction_ids=excluded_transaction_ids,
-        )
-        available_quantity = estimate_position_quantity(
-            portfolio_id,
-            transactions_as_of_trade_date,
-            account_id=payload.account_id,
-            instrument_id=instrument_id,
-            account_cost_methods=account_cost_methods,
-            as_of_date=payload.trade_date,
-        )
-        if available_quantity <= 1e-9:
-            raise HTTPException(
-                status_code=400,
-                detail="Lifecycle event requires an open account position as of trade_date.",
             )
 
     if transaction_type in {"dividend", "dividend_reinvestment", "coupon"} or (
@@ -1984,8 +1834,8 @@ def _persist_transaction_record(
         ),
         "source_system": payload.source_system,
         "external_reference": payload.external_reference,
-        "event_group_id": payload.event_group_id,
-        "related_instrument_id": related_instrument_id,
+        "event_group_id": None,
+        "related_instrument_id": None,
         "note": payload.note,
         "created_at": pending_created_at,
     }

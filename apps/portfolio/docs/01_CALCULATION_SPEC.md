@@ -461,10 +461,10 @@ Holdings 是 as-of balance sheet view，展示当前仍然 open 的正式 positi
 
 - FCN 和长期权在没有可靠公允价值时按 remaining transaction basis carried，使用 `holding_kind=position`、`valuation_basis=carried_cost`、`fair_value=null`、空 quote identity 和 `quote_status=event-cost`；
 - event-valued purchase 的 fees / taxes 在交易日确认为 expense，不进入 carrying basis；
-- covered-call sell-to-open 同时增加 settlement cash 和等额 premium-basis liability；writer obligation 使用 `holding_kind=option_obligation`、`valuation_basis=premium_liability`、负的 NAV amount，并披露 open contracts、covered underlying、remaining premium basis 和 carrying liability；
-- partial/full buy-to-close、expiry 和 assignment 按关闭数量比例释放 premium basis。释放 basis 减去 close cost 与 charges 形成 realized option P&L；assignment 的 premium P&L 只归 option，不重复调整 linked stock proceeds；
-- FCN physical settlement 使用关联股票 `buy` 记录的 positive `gross_amount` 作为可审计的 terminal settlement value：FCN realized P&L 为 terminal value 减 actual released basis、再减 FCN 关闭腿费用和税费；收到的股票以同一 terminal value 建立新 lot，且该 gross 不产生本金现金腿；long-option exercise 仍把 released premium basis 加到 contract-validated strike cash 上形成 underlying basis，option realized P&L 为零；
-- delivered stock 必须继续使用可靠 EOD market value。缺少 quote 或 FX 时 valuation/performance fail closed；terminal settlement value 只确定 FCN 的终结损益和新股票 lot basis，不能冒充 EOD fair value。
+- Call / Put 的 sell-to-open 同时增加 settlement cash 和等额 premium-basis liability；short-option row 使用 `holding_kind=option_obligation`、`valuation_basis=premium_liability`、负的 NAV amount，并披露 open contract count、`contract count × multiplier` 的标的数量、remaining premium basis 和 carrying liability。它不判断也不分配标的持仓覆盖关系；
+- partial/full buy-to-close、expiry 和 assignment 按关闭的合约数量比例释放 premium basis。释放 basis 减去 close cost 与 charges 形成 realized option P&L；若产生股票买卖，人工另录一笔普通 `buy` / `sell`，两笔记录不绑定；
+- FCN close 独立记录正常到期、敲入或敲出结果，按关闭金额释放 carrying basis。若敲入后接收股票，人工另录一笔普通股票 `buy`；FCN 和股票记录不绑定，也不自动转移成本；
+- long-option exercise 同样拆成期权关闭与行权价股票买卖两笔独立交易。系统不生成组合交易，必要说明只写入各自 `notes`。
 
 只要期间内存在 material event-valued asset、writer liability 或 derivative lifecycle activity，账本仍可计算用于 NAV reconciliation 的 flow-neutral operational/carrying-basis daily return，但该观察必须标记为 return-ineligible。Overview / Performance 的正式 fair-value return chain、annualized return、volatility、Sharpe、drawdown、benchmark compare 和 risk budget 不得消费该观察，也不得把未知收益补成 `0`。FCN、长期权和 writer obligation 是 system-level derivative tracking scope：Taxonomy assignment 不能把它们重新纳入 Research universe、target solve、covariance、Risk Budget 或 point-in-time backtest；它们未分配 planning taxonomy 时也不得阻断普通证券 Research。
 
@@ -495,12 +495,12 @@ Holdings 默认按 read-model 语义固定分为四个区域，而不是强迫�
 | --- | --- | --- |
 | `Market-valued Positions` | 有可靠 market quote 的普通资产 | quantity、quote、market value、cost basis、return/risk |
 | `Structured / Long Derivatives` | FCN、长期权等 carried event asset | quantity、carrying value、cost basis、maturity、lifecycle status |
-| `Written Option Obligations` | covered-call writer liability | open contracts、required/covered/uncovered underlying、covered ratio、expiry、strike、settlement type、premium basis、liability、assignment notional |
+| `Short Option Positions` | short Call / Put liability | open contracts、required underlying、expiry、strike、settlement type、premium basis、liability、assignment notional |
 | `Cash & Settlement` | settled cash 与 pending monetary rows | currency、settlement/pending dates、pending status、local/base settlement amount |
 
-同一 `account_id + related_underlying_id` 的实际标的数量只能分配一次给 written-option obligations。分配顺序先按 expiry date，再按 account/instrument 作稳定排序；每行满足 `required = covered + uncovered`，`covered_ratio = covered / required`。不得让多份义务各自重复声称覆盖了同一批标的。Operational summary 必须聚合：未覆盖义务数及数量、`expired_or_due / next_7_days / next_30_days / next_90_days / later / unknown` 到期桶、physical-assignment strike exposure，以及 pending settlement 的 receivable、payable、net、最早结算日、逾期数和无法换算 base currency 的行数。Critical/warning alerts 至少覆盖 uncovered obligation、到期已到/七日内、逾期结算和 settlement FX unavailable，并返回真实 `related_line_ids`。
+Short-option row 的 `required_underlying_quantity = open_contract_quantity × contract_multiplier`，仅用于显示合约规模和 assignment strike exposure，不与股票持仓建立 covered / uncovered 关系。Operational summary 聚合 open contract count、`expired_or_due / next_7_days / next_30_days / next_90_days / later / unknown` 到期桶、physical-assignment strike exposure，以及 pending settlement 的 receivable、payable、net、最早结算日、逾期数和无法换算 base currency 的行数。Alerts 覆盖到期已到/七日内、逾期结算和 settlement FX unavailable，并返回真实 `related_line_ids`。
 
-Regions 模式的 CSV 使用固定 24 列 canonical schema，所有区域按同一表头导出，不适用值明确写 `N/A`；Advanced Table 导出继续严格跟随当前可见列。两种导出不得把 `N/A` 写成数值零，也不得用 carrying/liability amount 填充 fair-value 字段。
+Regions 模式的 CSV 使用固定 21 列 canonical schema，所有区域按同一表头导出，不适用值明确写 `N/A`；Advanced Table 导出继续严格跟随当前可见列。两种导出不得把 `N/A` 写成数值零，也不得用 carrying/liability amount 填充 fair-value 字段。
 
 Analytics scope 是独立于 taxonomy node 名称的 effective-dated policy。每条 policy 明确 `risk_eligible`、`risk_budget_eligible`、`performance_scope`、`valuation_basis` 和 exclusion reason；`risk_budget_eligible=true` 必须同时满足 `risk_eligible=true`。`performance_scope` 只允许 `ordinary / derivative_lifecycle / operational_only / unallocated`。Instrument row、transaction cash activity 和 materialized calculation identity 都必须携带 as-of 解析出的 policy/configuration/selection version；衍生品相关 cash leg 继承 originating instrument 的 performance scope，不得自动落入 ordinary sleeve。
 

@@ -3222,8 +3222,6 @@ class TransactionCreateRequest(BaseModel):
     counterparty_account_id: str | None = None
     source_system: str | None = Field(default=None, max_length=100)
     external_reference: str | None = Field(default=None, max_length=200)
-    event_group_id: str | None = Field(default=None, max_length=200)
-    related_instrument_id: str | None = Field(default=None, max_length=200)
     note: str | None = None
 
     @field_validator("currency", mode="before")
@@ -3255,8 +3253,6 @@ class TransactionCreateRequest(BaseModel):
     @field_validator(
         "source_system",
         "external_reference",
-        "event_group_id",
-        "related_instrument_id",
         mode="before",
     )
     @classmethod
@@ -3309,9 +3305,13 @@ class TransactionCreateRequest(BaseModel):
 
         if self.external_reference is not None and self.source_system is None:
             raise ValueError("external_reference requires source_system.")
+        if self.lifecycle_event_type == "fcn_physical_settlement":
+            raise ValueError(
+                "Use an FCN close result and record any received asset as a separate buy."
+            )
 
         lifecycle_transaction_types: dict[str, set[str]] = {
-            "fcn_knock_in": {"lifecycle_event"},
+            "fcn_knock_in": {"maturity_redemption"},
             "fcn_knock_out": {"maturity_redemption"},
             "fcn_maturity": {"maturity_redemption"},
             "fcn_physical_settlement": {"maturity_redemption"},
@@ -3333,25 +3333,6 @@ class TransactionCreateRequest(BaseModel):
         elif self.transaction_type == "lifecycle_event":
             raise ValueError("lifecycle_event requires lifecycle_event_type.")
 
-        physical_lifecycle_types = {
-            "fcn_physical_settlement",
-            "option_long_exercise",
-            "option_assignment",
-        }
-        if self.lifecycle_event_type in physical_lifecycle_types:
-            if not self.event_group_id:
-                raise ValueError(
-                    "Physical settlement and assignment require event_group_id."
-                )
-        elif self.event_group_id is not None and self.transaction_type not in {
-            "buy",
-            "sell",
-        }:
-            raise ValueError(
-                "event_group_id is reserved for physical lifecycle facts and their "
-                "linked buy or sell."
-            )
-
         if self.transaction_type == "lifecycle_event":
             if not self.instrument_id:
                 raise ValueError("Lifecycle events require instrument_id.")
@@ -3362,11 +3343,7 @@ class TransactionCreateRequest(BaseModel):
             if writer_close_event:
                 if self.quantity is None or self.quantity <= 0:
                     raise ValueError(
-                        "Writer expiry and assignment require positive quantity."
-                    )
-                if not self.related_instrument_id:
-                    raise ValueError(
-                        "Writer expiry and assignment require related_instrument_id."
+                        "Short option expiry and assignment require positive contract quantity."
                     )
             elif self.quantity is not None:
                 raise ValueError("This lifecycle event must not carry quantity.")
@@ -3389,19 +3366,15 @@ class TransactionCreateRequest(BaseModel):
 
         if self.transaction_type in {"option_write", "option_buy_to_close"}:
             if not self.instrument_id:
-                raise ValueError("Option writer transactions require instrument_id.")
-            if not self.related_instrument_id:
-                raise ValueError(
-                    "Option writer transactions require related_instrument_id."
-                )
+                raise ValueError("Short option transactions require instrument_id.")
             if self.quantity is None or self.quantity <= 0:
                 raise ValueError(
-                    "Option writer transactions require positive covered quantity."
+                    "Short option transactions require positive contract quantity."
                 )
             if self.gross_amount <= 0:
-                raise ValueError("Option writer transactions require positive gross_amount.")
-            if self.price is not None and self.price <= 0:
-                raise ValueError("Option writer price must be positive when provided.")
+                raise ValueError("Short option transactions require positive gross_amount.")
+            if self.price is None or self.price <= 0:
+                raise ValueError("Short option transactions require positive premium price.")
 
         if self.transaction_type in {"dividend", "coupon"}:
             if not self.instrument_id:
@@ -3450,13 +3423,11 @@ class TransactionCreateRequest(BaseModel):
             if self.price is not None:
                 raise ValueError("Maturity redemption must not carry price.")
             if self.lifecycle_event_type in {
-                "fcn_physical_settlement",
                 "option_long_expiry",
                 "option_long_exercise",
             } and self.gross_amount != 0:
                 raise ValueError(
-                    "Physical FCN settlement and long option closure must have "
-                    "zero gross_amount."
+                    "Long option closure must have zero gross_amount."
                 )
 
         if self.transaction_type in {"deposit", "withdrawal"}:

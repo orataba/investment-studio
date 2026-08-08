@@ -178,11 +178,13 @@ describe('Security Detail lazy-load contract', () => {
       line_id: 'option-1:obligation',
       holding_kind: 'option_obligation',
       instrument_core: optionCore,
-      quantity: 200,
+      quantity: -2,
       open_contract_quantity: 2,
-      covered_underlying_quantity: 200,
+      required_underlying_quantity: 200,
+      covered_underlying_quantity: null,
       obligation_status: 'open',
-      coverage_type: 'covered_call',
+      coverage_type: 'short_option',
+      option_type: 'call',
       premium_basis_remaining: 300,
       liability_value: 300,
       liability_value_base: 300,
@@ -228,9 +230,9 @@ describe('Security Detail lazy-load contract', () => {
     )
 
     expect(await screen.findByRole('heading', { name: 'Alpha 110 Call' })).toBeInTheDocument()
-    const obligationStrip = screen.getByLabelText('Written option obligation')
+    const obligationStrip = screen.getByLabelText('Short option position')
     expect(within(obligationStrip).getByText('Open')).toBeInTheDocument()
-    expect(within(obligationStrip).getByText('Covered Call')).toBeInTheDocument()
+    expect(within(obligationStrip).getByText('Short Call')).toBeInTheDocument()
     expect(within(obligationStrip).getByText('2.00')).toBeInTheDocument()
     expect(within(obligationStrip).getByText('200.00')).toBeInTheDocument()
     expect(within(obligationStrip).getByText('$300.00 / $300.00')).toBeInTheDocument()
