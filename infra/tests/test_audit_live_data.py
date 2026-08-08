@@ -42,7 +42,7 @@ def test_flat_table_profile_accepts_only_final_heads(
     audit_module: ModuleType,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    head_pair = ("20260717_0015", "20260716_0040")
+    head_pair = ("20260807_0019", "20260807_0044")
     versions = dict(zip(("instrument_registry", "portfolio"), head_pair, strict=True))
     monkeypatch.setattr(
         audit_module,
@@ -73,10 +73,10 @@ def test_flat_table_profile_accepts_only_final_heads(
     assert not hasattr(audit_module, "_run_overhaul_audit")
 
 
-def test_audit_contract_names_cover_registry_0015(
+def test_audit_contract_names_cover_registry_0019(
     audit_module: ModuleType,
 ) -> None:
-    assert len(audit_module.AUDIT_CHECK_NAMES) == 24
+    assert len(audit_module.AUDIT_CHECK_NAMES) == 27
     assert "instrument_quote_policy_contract" in audit_module.AUDIT_CHECK_NAMES
     assert "market_data_price_contract" in audit_module.AUDIT_CHECK_NAMES
     assert "market_data_fx_identity_contract" in audit_module.AUDIT_CHECK_NAMES
@@ -87,6 +87,12 @@ def test_audit_contract_names_cover_registry_0015(
     )
     assert "held_fund_recent_total_return_coverage" in audit_module.AUDIT_CHECK_NAMES
     assert "price_bar_contract" in audit_module.AUDIT_CHECK_NAMES
+    assert "holding_valuation_basis_contract" in audit_module.AUDIT_CHECK_NAMES
+    assert (
+        "analytics_scope_missing_effective_selection"
+        in audit_module.AUDIT_CHECK_NAMES
+    )
+    assert "analytics_scope_incomplete_configuration" in audit_module.AUDIT_CHECK_NAMES
     assert "cash_cumulative_nav_in_return_policy" not in audit_module.AUDIT_CHECK_NAMES
     assert not hasattr(audit_module, "CASH_CUMULATIVE_NAV_BASES_SQL")
     assert "fx-usd-hkd" in audit_module.MAINTAINED_FX_IDENTITIES_SQL
@@ -215,6 +221,43 @@ def test_twr_audit_cte_projects_daily_twr(
     database_url = "postgresql+psycopg://" + "user:" + "secret" + "@localhost/audit_db"
     audit_module._run_flat_table_audit(database_url)
 
+    nav_query = next(
+        query
+        for query in queries
+        if "materialized_pending_settlement" in query
+    )
+    assert "coalesce(holdings.market_value, 0)" in nav_query
+    assert "+ (snapshot.snapshot_json ->> 'pending_settlement')" not in nav_query
+    assert (
+        "coalesce(holdings.materialized_pending_settlement, 0)"
+        in nav_query
+    )
+    valuation_query = next(
+        query
+        for query in queries
+        if "selected_quote.expected_price" in query
+    )
+    assert "snapshot.instrument_id NOT LIKE 'pending:%'" in valuation_query
+    assert "snapshot.holding_kind = 'position'" in valuation_query
+    assert "= 'market_quote'" in valuation_query
+    holding_basis_query = next(
+        query
+        for query in queries
+        if "premium_liability" in query and "carried_cost" in query
+    )
+    assert "holding.last_price IS NULL" in holding_basis_query
+    assert "holding.last_price IS NOT NULL" in holding_basis_query
+
+    analytics_selection_query = next(
+        query
+        for query in queries
+        if "analytics_taxonomy_selection_record" in query
+        and "default_planning_taxonomy_id" in query
+    )
+    assert "portfolio.default_planning_taxonomy_id IS NOT NULL" in (
+        analytics_selection_query
+    )
+
     twr_query = next(query for query in queries if "AS recomputed_twr" in query)
     linked_projection = re.search(
         r"WITH linked AS \(\s*SELECT(?P<projection>.*?)"
@@ -268,6 +311,18 @@ def test_twr_audit_cte_projects_daily_twr(
     assert "published_return_kind" in index_semantics_query
     assert "IS DISTINCT FROM expected_return_kind" in index_semantics_query
     assert "IS DISTINCT FROM 'nav_with_dividend'" in index_semantics_query
+    missing_selection_query = next(
+        query
+        for query in queries
+        if "analytics_taxonomy_selection_record" in query
+        and "taxonomy_configuration_revision" not in query
+    )
+    assert "superseded_by_selection_id IS NULL" in missing_selection_query
+    incomplete_configuration_query = next(
+        query for query in queries if "taxonomy_configuration_revision" in query
+    )
+    assert "taxonomy_node_id = '__root__'" in incomplete_configuration_query
+    assert "taxonomy_node_id = '__unassigned__'" in incomplete_configuration_query
 
 
 def test_cli_requires_explicit_database_configuration(

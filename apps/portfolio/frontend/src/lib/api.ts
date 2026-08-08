@@ -139,6 +139,7 @@ export type PortfolioTransactionExecutionQuoteResponse =
     })
 
 export type PortfolioPerformanceCoverageState = 'complete' | 'partial' | 'unavailable'
+export type PortfolioPerformanceBasis = 'market_value' | 'operational_carrying_basis'
 
 export type PortfolioDailyPerformancePoint = {
   as_of_date: string
@@ -152,10 +153,14 @@ export type PortfolioDailyPerformancePoint = {
   stale_fx_flag: boolean
   market_observation_count: number
   return_observation_eligible: boolean
+  return_observation_exclusion_reason: string | null
+  performance_basis: PortfolioPerformanceBasis
+  performance_label: string
   beginning_nav: number | null
   ending_nav: number | null
   pending_settlement: number | null
   realized_pnl: number | null
+  derivative_lifecycle_realized_pnl: number | null
   unrealized_pnl: number | null
   income_cash_amount: number | null
   expense_cash_amount: number | null
@@ -198,6 +203,10 @@ export type PortfolioPerformanceSummary = {
   risk_sample_count: number
   risk_result_status: 'available' | 'insufficient_samples' | 'unavailable'
   risk_unavailable_reason: string | null
+  performance_basis: PortfolioPerformanceBasis
+  performance_label: string
+  ordinary_sleeve_twr_status: 'unavailable'
+  ordinary_sleeve_twr_reason: string
   latest_complete_as_of_date: string | null
   start_nav: number | null
   end_nav: number | null
@@ -221,6 +230,7 @@ export type PortfolioPerformanceSummary = {
   absolute_change: number | null
   delta: number | null
   realized_pnl: number | null
+  derivative_lifecycle_realized_pnl: number | null
   unrealized_pnl: number | null
   income_cash_amount: number | null
   expense_cash_amount: number | null
@@ -324,6 +334,19 @@ export type PortfolioRiskPolicyRecord = {
 export type PortfolioForwardRiskSummary = {
   status: 'ok' | 'unavailable' | string
   errors: string[]
+  scope_name: string
+  scope_policy_versions: number[]
+  configuration_versions: number[]
+  total_nav: number | null
+  modeled_net_exposure: number | null
+  modeled_gross_exposure: number | null
+  excluded_carrying_value: number | null
+  excluded_liability: number | null
+  cash_unallocated_exposure: number | null
+  coverage_ratio: number | null
+  excluded_rows: PortfolioAnalyticsScopeExcludedRow[]
+  calculation_frequency: PortfolioCalculationFrequency
+  modeled_weight_basis?: 'eligible_gross_exposure' | string
   risk_model?: PortfolioRiskPolicyRecord | null
   portfolio_variance?: number | null
   portfolio_volatility?: number | null
@@ -345,6 +368,51 @@ export type PortfolioForwardRiskSummary = {
     latest_complete_date?: string | null
     trailing_staleness_days?: number | null
   } | null
+}
+
+export type PortfolioHoldingRegion =
+  | 'market_valued_positions'
+  | 'structured_and_long_derivatives'
+  | 'written_option_obligations'
+  | 'cash_and_settlement'
+
+export type PortfolioPerformanceScope =
+  | 'ordinary'
+  | 'derivative_lifecycle'
+  | 'operational_only'
+  | 'unallocated'
+
+export type PortfolioAnalyticsScopeExcludedRow = {
+  line_id: string | null
+  instrument_id: string | null
+  instrument_name: string | null
+  holding_region: PortfolioHoldingRegion
+  exposure_base: number
+  exclusion_reason: string | null
+  scope_status: string
+}
+
+export type PortfolioAnalyticsScopeSummary = {
+  scope_name: string
+  scope_policy_versions: number[]
+  configuration_versions: number[]
+  taxonomy_selection_versions: number[]
+  total_nav: number | null
+  modeled_net_exposure: number
+  modeled_gross_exposure: number
+  excluded_carrying_value: number
+  excluded_liability: number
+  cash_unallocated_exposure: number
+  coverage_ratio: number | null
+  excluded_rows: PortfolioAnalyticsScopeExcludedRow[]
+  cash_scope_breakdown: Array<{
+    performance_scope: PortfolioPerformanceScope
+    currency: string
+    net_cash_effect: number
+    absolute_cash_activity: number
+  }>
+  ordinary_sleeve_twr_status: 'unavailable'
+  ordinary_sleeve_twr_reason: string
 }
 
 export type PortfolioPeriodCalculationGroupMetrics = {
@@ -568,8 +636,10 @@ export type PortfolioContributionReportResponse = {
 
 export type PortfolioHoldingRow = {
   line_id: string
+  holding_region: PortfolioHoldingRegion
   holding_kind?:
     | 'position'
+    | 'option_obligation'
     | 'settled_cash'
     | 'restricted_cash'
     | 'pending_subscription'
@@ -644,6 +714,101 @@ export type PortfolioHoldingRow = {
   account_ids?: string[]
   account_count?: number
   open_position_lot_count?: number
+  is_liability?: boolean
+  scope_status: string
+  taxonomy_id: string | null
+  taxonomy_node_id: string | null
+  resolved_policy_node_id: string | null
+  inherited_from_node_id: string | null
+  analytics_scope_policy_id: string | null
+  scope_policy_version: number | null
+  configuration_version: number | null
+  taxonomy_selection_version: number | null
+  analytics_scope_policy?: PortfolioPerformanceScope
+  analytics_scope_valuation_eligible?: boolean
+  analytics_scope_system_exclusion_reason?: string | null
+  analytics_scope: PortfolioPerformanceScope
+  performance_scope: PortfolioPerformanceScope
+  performance_eligible: boolean
+  risk_eligible: boolean
+  risk_budget_eligible: boolean
+  valuation_basis_policy: string
+  exclusion_reason: string | null
+  open_contract_quantity?: number | null
+  required_underlying_quantity?: number | null
+  underlying_position_quantity?: number | null
+  covered_underlying_quantity?: number | null
+  uncovered_underlying_quantity?: number | null
+  covered_ratio?: number | null
+  obligation_status?: string | null
+  obligation_coverage_status?: string | null
+  coverage_type?: string | null
+  related_underlying_id?: string | null
+  expiry_date?: string | null
+  days_to_expiry?: number | null
+  strike?: number | null
+  option_type?: 'call' | 'put' | string | null
+  contract_multiplier?: number | null
+  settlement_type?: 'physical' | 'cash' | string | null
+  assignment_notional?: number | null
+  assignment_notional_base?: number | null
+  premium_received_gross?: number | null
+  premium_basis_remaining?: number | null
+  liability_value?: number | null
+  liability_value_base?: number | null
+  carrying_value?: number | null
+  carrying_value_base?: number | null
+  fair_value?: number | null
+  fair_value_coverage_status?: string | null
+  valuation_basis?: string | null
+  settlement_date?: string | null
+  pending_until_date?: string | null
+  pending_status?: string | null
+  settlement_amount?: number | null
+  settlement_amount_base?: number | null
+}
+
+export type HoldingsOperationalSummary = {
+  uncovered_obligation_count: number
+  uncovered_underlying_quantity: number
+  expiry_buckets: Array<{
+    bucket:
+      | 'expired_or_due'
+      | 'next_7_days'
+      | 'next_30_days'
+      | 'next_90_days'
+      | 'later'
+      | 'unknown'
+    obligation_count: number
+    open_contract_quantity: number
+    required_underlying_quantity: number
+    uncovered_underlying_quantity: number
+    carrying_liability_base: number | null
+  }>
+  assignment_exposure: {
+    obligation_count: number
+    open_contract_quantity: number
+    deliverable_underlying_quantity: number
+    uncovered_underlying_quantity: number
+    strike_notional_base: number | null
+  }
+  settlement_exposure: {
+    pending_line_count: number
+    receivable_base: number | null
+    payable_base: number | null
+    net_base: number | null
+    earliest_settlement_date: string | null
+    overdue_line_count: number
+    unavailable_base_line_count: number
+  }
+}
+
+export type HoldingsOperationalAlert = {
+  code: string
+  severity: 'critical' | 'warning' | 'info' | string
+  title: string
+  message: string
+  related_line_ids: string[]
 }
 
 export type HoldingsWorkspaceResponse = {
@@ -673,6 +838,9 @@ export type HoldingsWorkspaceResponse = {
   }
   risk_policy?: PortfolioRiskPolicyRecord | null
   forward_risk?: PortfolioForwardRiskSummary | null
+  analytics_scope_summary: PortfolioAnalyticsScopeSummary
+  operational_summary: HoldingsOperationalSummary
+  operational_alerts: HoldingsOperationalAlert[]
   summary_cards: HoldingsSummaryCard[]
   rows: PortfolioHoldingRow[]
   totals: {
@@ -699,7 +867,7 @@ export type PortfolioInstrumentHoldingProjectionResponse = {
   as_of_date: string
   view_label: string
   quality_warnings: string[]
-  row: PortfolioInstrumentHoldingRow | null
+  rows: PortfolioInstrumentHoldingRow[]
 }
 
 export type HoldingsWorkspaceFilters = {
@@ -804,6 +972,34 @@ export type PortfolioTaxonomyAssignmentRecord = {
   status: string
 }
 
+export type PortfolioAnalyticsScopePolicyRecord = {
+  analytics_scope_policy_id: string
+  portfolio_id: string
+  taxonomy_id: string
+  taxonomy_node_id: string
+  risk_eligible: boolean
+  risk_budget_eligible: boolean
+  performance_scope: 'ordinary' | 'derivative_lifecycle' | 'operational_only' | 'unallocated'
+  valuation_basis: 'market' | 'fair_value' | 'carrying' | 'event' | 'obligation' | 'cash' | 'unknown'
+  exclusion_reason?: string | null
+  effective_from: string
+  effective_to?: string | null
+  policy_version: number
+  superseded_by_policy_id?: string | null
+  created_at: string
+}
+
+export type PortfolioAnalyticsTaxonomySelectionRecord = {
+  analytics_taxonomy_selection_id: string
+  portfolio_id: string
+  taxonomy_id?: string | null
+  effective_from: string
+  effective_to?: string | null
+  selection_version: number
+  superseded_by_selection_id?: string | null
+  created_at: string
+}
+
 export type PortfolioTargetSetType = 'saa' | 'taa'
 
 export type PortfolioTargetSetRecord = {
@@ -877,6 +1073,9 @@ export type PortfolioTaxonomyCatalogResponse = {
   taxonomies: PortfolioTaxonomyRecord[]
   taxonomy_nodes: PortfolioTaxonomyNodeRecord[]
   taxonomy_assignments: PortfolioTaxonomyAssignmentRecord[]
+  analytics_scope_policy_version: number
+  analytics_scope_policies: PortfolioAnalyticsScopePolicyRecord[]
+  analytics_taxonomy_selections: PortfolioAnalyticsTaxonomySelectionRecord[]
   instrument_universe: PortfolioInstrumentUniverseRecord[]
   target_sets: PortfolioTargetSetRecord[]
   target_set_lines: PortfolioTargetSetLineRecord[]
@@ -885,6 +1084,7 @@ export type PortfolioTaxonomyCatalogResponse = {
 
 export type PortfolioDefaultPlanningTaxonomyUpdatePayload = {
   taxonomy_id?: string | null
+  effective_from: string
 }
 
 export type PortfolioDefaultPlanningTaxonomyResponse = {
@@ -946,6 +1146,14 @@ export type PortfolioResearchSettingsRecord = {
   top_sleeve_weight_bounds: PortfolioResearchTopSleeveWeightBoundRecord[]
   backtest_rebalance_frequency: PortfolioResearchBacktestRebalanceFrequency
   backtest_benchmark_instrument_id?: string | null
+  backtest_cash_yield_annual: number
+  backtest_commission_bps: number
+  backtest_tax_bps: number
+  backtest_slippage_bps: number
+  backtest_implementation_delay_days: number
+  backtest_robustness_scenarios: PortfolioResearchBacktestRobustnessScenarioRecord[]
+  backtest_walk_forward_training_months: number
+  backtest_walk_forward_test_months: number
   notes?: string | null
   updated_at?: string | null
 }
@@ -969,7 +1177,25 @@ export type PortfolioResearchSettingsUpdatePayload = {
   top_sleeve_weight_bounds?: PortfolioResearchTopSleeveWeightBoundRecord[] | null
   backtest_rebalance_frequency?: PortfolioResearchBacktestRebalanceFrequency
   backtest_benchmark_instrument_id?: string | null
+  backtest_cash_yield_annual?: number
+  backtest_commission_bps?: number
+  backtest_tax_bps?: number
+  backtest_slippage_bps?: number
+  backtest_implementation_delay_days?: number
+  backtest_robustness_scenarios?: PortfolioResearchBacktestRobustnessScenarioRecord[] | null
+  backtest_walk_forward_training_months?: number
+  backtest_walk_forward_test_months?: number
   notes?: string | null
+}
+
+export type PortfolioResearchBacktestRobustnessScenarioRecord = {
+  scenario_id: string
+  label: string
+  cash_yield_annual: number
+  commission_bps: number
+  tax_bps: number
+  slippage_bps: number
+  implementation_delay_days: number
 }
 
 export type PortfolioResearchTopSleeveWeightBoundRecord = {
@@ -1223,6 +1449,67 @@ export type PortfolioResearchBacktestSleevePointRecord = {
   sleeves: PortfolioResearchBacktestSleeveValueRecord[]
 }
 
+export type PortfolioResearchBacktestTargetWeightRecord = {
+  instrument_id: string
+  target_weight: number
+  top_sleeve_id?: string | null
+  top_sleeve_label: string
+  top_sleeve_path?: string | null
+  first_usable_observation_date?: string | null
+}
+
+export type PortfolioResearchBacktestExecutionRecord = {
+  decision_date: string
+  scheduled_execution_date: string
+  actual_execution_date: string
+  taxonomy_configuration_version?: number | null
+  taxonomy_configuration_effective_from?: string | null
+  target_weights: PortfolioResearchBacktestTargetWeightRecord[]
+  cash_target_weight: number
+  risky_buy_turnover: number
+  risky_sell_turnover: number
+  cash_leg_turnover: number
+  one_way_turnover: number
+  commission_cost: number
+  tax_cost: number
+  slippage_cost: number
+  total_cost: number
+  nav_before_execution: number
+  nav_after_execution: number
+}
+
+export type PortfolioResearchBacktestContributionReconciliationRecord = {
+  date: string
+  nav_change: number
+  linked_contribution: number
+  residual: number
+  execution_cost_contribution: number
+}
+
+export type PortfolioResearchBacktestMethodologyRecord = {
+  name: string
+  point_in_time_universe: boolean
+  point_in_time_taxonomy: boolean
+  decision_rule: string
+  execution_rule: string
+  cash_return_rule: string
+  cost_rule: string
+  contribution_linking: string
+  assumptions: Record<string, number>
+}
+
+export type PortfolioResearchBacktestPointInTimeCoverageRecord = {
+  status: 'complete' | 'partial' | 'unavailable'
+  decision_count: number
+  first_decision_date?: string | null
+  last_decision_date?: string | null
+  configuration_versions_used: number[]
+  historical_instrument_count: number
+  first_usable_observation_by_instrument: Record<string, string>
+  skipped_rebalances: Array<{ date: string; reason: string }>
+  unavailable_reason?: string | null
+}
+
 export type PortfolioResearchBacktestMetricsRecord = {
   start_date?: string | null
   end_date?: string | null
@@ -1244,6 +1531,41 @@ export type PortfolioResearchBacktestMetricsRecord = {
   calmar_ratio?: number | null
 }
 
+export type PortfolioResearchBacktestRobustnessResultRecord = PortfolioResearchBacktestRobustnessScenarioRecord & {
+  metrics?: PortfolioResearchBacktestMetricsRecord | null
+  period_return_delta?: number | null
+  ending_value?: number | null
+  total_turnover?: number | null
+  total_cost?: number | null
+  warnings: string[]
+}
+
+export type PortfolioResearchBacktestWalkForwardWindowRecord = {
+  training_start_date: string
+  training_end_date: string
+  test_start_date: string
+  test_end_date: string
+  configuration_versions_used: number[]
+  points: PortfolioResearchBacktestPointRecord[]
+  metrics?: PortfolioResearchBacktestMetricsRecord | null
+  available: boolean
+  unavailable_reason?: string | null
+}
+
+export type PortfolioResearchBacktestWalkForwardRecord = {
+  validation_method?: 'rolling_temporal_holdout' | string
+  parameter_selection?: 'fixed_point_in_time_policy' | string
+  parameter_optimization?: boolean
+  methodology_note?: string | null
+  available: boolean
+  unavailable_reason?: string | null
+  training_months: number
+  test_months: number
+  windows: PortfolioResearchBacktestWalkForwardWindowRecord[]
+  oos_points: PortfolioResearchBacktestPointRecord[]
+  oos_metrics?: PortfolioResearchBacktestMetricsRecord | null
+}
+
 export type PortfolioResearchBacktestRecord = {
   rebalance_frequency: PortfolioResearchBacktestRebalanceFrequency
   common_history_start_date?: string | null
@@ -1254,6 +1576,14 @@ export type PortfolioResearchBacktestRecord = {
   metrics?: PortfolioResearchBacktestMetricsRecord | null
   top_sleeve_weight_points: PortfolioResearchBacktestSleevePointRecord[]
   top_sleeve_contribution_points: PortfolioResearchBacktestSleevePointRecord[]
+  contribution_reconciliation_points: PortfolioResearchBacktestContributionReconciliationRecord[]
+  execution_records: PortfolioResearchBacktestExecutionRecord[]
+  total_turnover: number
+  total_cost: number
+  methodology?: PortfolioResearchBacktestMethodologyRecord | null
+  point_in_time_coverage?: PortfolioResearchBacktestPointInTimeCoverageRecord | null
+  robustness_results: PortfolioResearchBacktestRobustnessResultRecord[]
+  walk_forward?: PortfolioResearchBacktestWalkForwardRecord | null
   warnings: string[]
 }
 
@@ -1362,6 +1692,7 @@ export type PortfolioResearchArtifactContentResponse = {
 }
 
 export type PortfolioTaxonomyCreatePayload = {
+  effective_from: string
   name: string
   taxonomy_type?: string
   purpose?: string | null
@@ -1374,6 +1705,7 @@ export type PortfolioTaxonomyCreatePayload = {
 }
 
 export type PortfolioTaxonomyNodeCreatePayload = {
+  effective_from: string
   node_name: string
   node_code?: string | null
   parent_taxonomy_node_id?: string | null
@@ -1384,6 +1716,7 @@ export type PortfolioTaxonomyNodeCreatePayload = {
 }
 
 export type PortfolioTaxonomyUpdatePayload = {
+  effective_from: string
   name?: string | null
   taxonomy_type?: string | null
   purpose?: string | null
@@ -1394,6 +1727,7 @@ export type PortfolioTaxonomyUpdatePayload = {
 }
 
 export type PortfolioTaxonomyNodeUpdatePayload = {
+  effective_from: string
   node_name?: string | null
   node_code?: string | null
   parent_taxonomy_node_id?: string | null
@@ -1403,6 +1737,7 @@ export type PortfolioTaxonomyNodeUpdatePayload = {
 }
 
 export type PortfolioTaxonomyAssignmentCreatePayload = {
+  effective_from: string
   target_scope: TaxonomyAssignmentScope
   target_entity_id: string
   taxonomy_node_id: string
@@ -1410,6 +1745,7 @@ export type PortfolioTaxonomyAssignmentCreatePayload = {
 }
 
 export type PortfolioTaxonomyAssignmentUpdatePayload = {
+  effective_from: string
   taxonomy_node_id?: string | null
   status?: string | null
 }
@@ -1424,6 +1760,7 @@ export type PortfolioTargetSetLinePayload = {
 }
 
 export type PortfolioTargetSetCreatePayload = {
+  effective_from: string
   comparator_taxonomy_node_id?: string | null
   target_set_type: PortfolioTargetSetType
   name: string
@@ -1435,12 +1772,23 @@ export type PortfolioTargetSetCreatePayload = {
 }
 
 export type PortfolioTargetSetUpdatePayload = {
+  effective_from: string
   name?: string | null
   weight_enabled?: boolean
   risk_budget_enabled?: boolean
   status?: string | null
   notes?: string | null
   lines?: PortfolioTargetSetLinePayload[]
+}
+
+export type PortfolioAnalyticsScopePolicyUpsertPayload = {
+  risk_eligible: boolean
+  risk_budget_eligible: boolean
+  performance_scope: PortfolioAnalyticsScopePolicyRecord['performance_scope']
+  valuation_basis: PortfolioAnalyticsScopePolicyRecord['valuation_basis']
+  exclusion_reason?: string | null
+  effective_from: string
+  effective_to?: string | null
 }
 
 export type PortfolioAccountRecord = {
@@ -1506,6 +1854,10 @@ export type PortfolioLedgerPostingRecord = {
   pending_amount_delta?: number | null
   quantity_delta?: number | null
   cost_basis_delta?: number | null
+  liability_amount_delta?: number | null
+  realized_pnl_delta?: number | null
+  option_action?: PortfolioOptionAction | null
+  obligation_id?: string | null
   currency: string
   transfer_group_id?: string | null
   note?: string | null
@@ -1520,9 +1872,50 @@ export type PortfolioAccountPositionRecord = {
   cost_basis?: number | null
   last_price?: number | null
   market_value?: number | null
+  carrying_value: number | null
+  fair_value: number | null
+  fair_value_coverage_status: 'complete' | 'partial' | 'unavailable'
+  valuation_basis: 'market_quote' | 'carried_cost'
+  coverage_status: string
   currency: string
   cost_basis_method?: 'moving_average' | 'fifo' | null
   open_position_lot_count?: number
+}
+
+/**
+ * Written-option obligation rows returned by the account ledger workspace.
+ *
+ * These are liability read-model rows, not negative long positions.  The
+ * backend intentionally keeps the lifecycle realization detail extensible;
+ * the identity, coverage, premium basis, and liability fields below are the
+ * stable contract consumed by account and audit surfaces.
+ */
+export type PortfolioOptionObligationRecord = {
+  obligation_id: string
+  portfolio_id?: string | null
+  account_id: string
+  option_instrument_id: string
+  instrument_id: string
+  instrument_ref?: InstrumentCore | null
+  related_underlying_id: string
+  open_contract_quantity: number
+  covered_underlying_quantity: number
+  remaining_quantity: number
+  premium_received_gross: number
+  premium_basis_remaining: number
+  carrying_liability: number
+  opened_at?: string | null
+  expiry_date?: string | null
+  status: string
+  coverage_type?: string | null
+  option_type?: 'call' | 'put' | string | null
+  strike?: number | null
+  contract_multiplier?: number | null
+  settlement_type?: 'physical' | 'cash' | string | null
+  contract_currency?: string | null
+  realized_pnl?: number
+  opening_fee_expense?: number
+  realizations?: Array<Record<string, unknown>>
 }
 
 export type PortfolioAccountWorkspaceAccount = {
@@ -1534,7 +1927,12 @@ export type PortfolioAccountWorkspaceAccount = {
   derived_cash_balance_base?: number | null
   pending_settlement: number
   pending_settlement_base?: number | null
+  derivative_liability: number
+  derivative_liability_base?: number | null
+  open_option_obligation_count: number
   account_value_base?: number | null
+  valuation_coverage_state: PortfolioPerformanceCoverageState
+  valuation_missing_components: string[]
   position_line_count: number
   position_market_value?: number | null
   position_market_value_currency?: string | null
@@ -1549,6 +1947,11 @@ export type PortfolioAccountsWorkspaceResponse = {
     securities_account_count: number
     ledger_posting_count: number
     position_line_count: number
+    valuation_coverage_state: PortfolioPerformanceCoverageState
+    valued_account_count: number
+    unvalued_account_count: number
+    open_option_obligation_count: number
+    derivative_liability_base: number | null
   }
   derivation_boundary: {
     ledger_postings: string
@@ -1561,6 +1964,7 @@ export type PortfolioAccountsWorkspaceResponse = {
   accounts: PortfolioAccountWorkspaceAccount[]
   ledger_postings: PortfolioLedgerPostingRecord[]
   positions: PortfolioAccountPositionRecord[]
+  option_obligations: PortfolioOptionObligationRecord[]
   linked_transactions_summary?: PortfolioTransactionListResponse['summary'] | null
   linked_transactions: PortfolioTransactionRecord[]
 }
@@ -1578,8 +1982,11 @@ export type PortfolioLedgerPostingListResponse = {
 
 export type PortfolioTransactionRecord = {
   transaction_id: string
+  transaction_sequence: number
   portfolio_id: string
   transaction_type: string
+  option_action?: PortfolioOptionAction | null
+  lifecycle_event_type?: string | null
   flow_scope: string
   trade_date: string
   trade_time: string
@@ -1616,11 +2023,21 @@ export type PortfolioTransactionRecord = {
   transfer_object_type: string | null
   transfer_group_id: string | null
   counterparty_account_id: string | null
+  source_system?: string | null
+  external_reference?: string | null
+  event_group_id?: string | null
+  related_instrument_id?: string | null
   net_cash_effect: number | null
   note: string | null
   created_at: string | null
   row_version: number
 }
+
+export type PortfolioOptionAction =
+  | 'buy_to_open'
+  | 'sell_to_close'
+  | 'sell_to_open'
+  | 'buy_to_close'
 
 export type PortfolioTransactionChangeLogRecord = {
   change_id: string
@@ -1880,6 +2297,7 @@ export type PortfolioTransactionFilters = {
 
 export type PortfolioTransactionCreatePayload = {
   transaction_type: string
+  lifecycle_event_type?: string | null
   trade_date: string
   trade_time?: string | null
   settlement_date?: string | null
@@ -1899,6 +2317,10 @@ export type PortfolioTransactionCreatePayload = {
   taxes?: number
   currency: string
   counterparty_account_id?: string | null
+  source_system?: string | null
+  external_reference?: string | null
+  event_group_id?: string | null
+  related_instrument_id?: string | null
   note?: string | null
 }
 
@@ -1931,11 +2353,37 @@ export type PortfolioTransactionBatchResponse = {
   transactions: PortfolioTransactionRecord[]
 }
 
+export type PortfolioTransactionCsvPreviewRow = {
+  row_number: number
+  transaction: PortfolioTransactionCreatePayload | null
+  errors: string[]
+}
+
+export type PortfolioTransactionCsvPreviewResponse = {
+  portfolio_id: string
+  preview_digest: string
+  headers: string[]
+  row_count: number
+  valid_count: number
+  error_count: number
+  warnings: string[]
+  batch_errors: string[]
+  rows: PortfolioTransactionCsvPreviewRow[]
+}
+
+export type PortfolioTransactionCsvImportResponse = {
+  portfolio_id: string
+  preview_digest: string
+  created_count: number
+  transactions: PortfolioTransactionRecord[]
+}
+
 export type PortfolioTransactionDeleteResponse = {
   portfolio_id: string
   deleted_count: number
   deleted_transaction_ids: string[]
   transfer_group_id?: string | null
+  event_group_id?: string | null
 }
 
 export type PortfolioTableViewScope = 'holdings' | 'performance_calculation'
@@ -2491,10 +2939,11 @@ export function createPortfolioTaxonomy(
   })
 }
 
-export function deletePortfolioTaxonomy(portfolioId: string, taxonomyId: string) {
+export function deletePortfolioTaxonomy(portfolioId: string, taxonomyId: string, effectiveFrom: string) {
+  const query = buildQuery({ effective_from: effectiveFrom })
   return fetchJson<{ portfolio_id: string; taxonomy_id: string; deleted: boolean }>(
     API_BASE_URL,
-    `/api/portfolios/${portfolioId}/taxonomies/${taxonomyId}`,
+    `/api/portfolios/${portfolioId}/taxonomies/${taxonomyId}${query}`,
     {
       method: 'DELETE',
     },
@@ -2543,10 +2992,16 @@ export function updatePortfolioTaxonomyNode(
   )
 }
 
-export function deletePortfolioTaxonomyNode(portfolioId: string, taxonomyId: string, taxonomyNodeId: string) {
+export function deletePortfolioTaxonomyNode(
+  portfolioId: string,
+  taxonomyId: string,
+  taxonomyNodeId: string,
+  effectiveFrom: string,
+) {
+  const query = buildQuery({ effective_from: effectiveFrom })
   return fetchJson<{ portfolio_id: string; taxonomy_id: string; taxonomy_node_id: string; deleted: boolean }>(
     API_BASE_URL,
-    `/api/portfolios/${portfolioId}/taxonomies/${taxonomyId}/nodes/${taxonomyNodeId}`,
+    `/api/portfolios/${portfolioId}/taxonomies/${taxonomyId}/nodes/${taxonomyNodeId}${query}`,
     {
       method: 'DELETE',
     },
@@ -2588,10 +3043,12 @@ export function deletePortfolioTaxonomyAssignment(
   portfolioId: string,
   taxonomyId: string,
   assignmentId: string,
+  effectiveFrom: string,
 ) {
+  const query = buildQuery({ effective_from: effectiveFrom })
   return fetchJson<{ portfolio_id: string; taxonomy_id: string; assignment_id: string; deleted: boolean }>(
     API_BASE_URL,
-    `/api/portfolios/${portfolioId}/taxonomies/${taxonomyId}/assignments/${assignmentId}`,
+    `/api/portfolios/${portfolioId}/taxonomies/${taxonomyId}/assignments/${assignmentId}${query}`,
     {
       method: 'DELETE',
     },
@@ -2629,12 +3086,34 @@ export function updatePortfolioTargetSet(
   )
 }
 
-export function deletePortfolioTargetSet(portfolioId: string, taxonomyId: string, targetSetId: string) {
+export function deletePortfolioTargetSet(
+  portfolioId: string,
+  taxonomyId: string,
+  targetSetId: string,
+  effectiveFrom: string,
+) {
+  const query = buildQuery({ effective_from: effectiveFrom })
   return fetchJson<{ portfolio_id: string; taxonomy_id: string; target_set_id: string; deleted: boolean }>(
     API_BASE_URL,
-    `/api/portfolios/${portfolioId}/taxonomies/${taxonomyId}/target-sets/${targetSetId}`,
+    `/api/portfolios/${portfolioId}/taxonomies/${taxonomyId}/target-sets/${targetSetId}${query}`,
     {
       method: 'DELETE',
+    },
+  )
+}
+
+export function replacePortfolioAnalyticsScopePolicy(
+  portfolioId: string,
+  taxonomyId: string,
+  taxonomyNodeId: string,
+  payload: PortfolioAnalyticsScopePolicyUpsertPayload,
+) {
+  return fetchJson<PortfolioAnalyticsScopePolicyRecord>(
+    API_BASE_URL,
+    `/api/portfolios/${portfolioId}/taxonomies/${taxonomyId}/analytics-scope-policies/${encodeURIComponent(taxonomyNodeId)}`,
+    {
+      method: 'PUT',
+      body: JSON.stringify(payload),
     },
   )
 }
@@ -2653,6 +3132,56 @@ export function createPortfolioTransaction(
         'Idempotency-Key': idempotencyKey,
       },
       body: JSON.stringify(payload),
+    },
+  )
+}
+
+export function portfolioTransactionCsvDownloadUrl(portfolioId: string) {
+  return `${API_BASE_URL}/api/portfolios/${encodeURIComponent(portfolioId)}/transactions.csv`
+}
+
+export function portfolioTransactionCsvTemplateUrl(portfolioId: string) {
+  return `${API_BASE_URL}/api/portfolios/${encodeURIComponent(portfolioId)}/transactions/csv-template`
+}
+
+export function previewPortfolioTransactionCsv(
+  portfolioId: string,
+  csvText: string,
+  defaultSourceSystem = 'portfolio_csv_upload',
+) {
+  return fetchJson<PortfolioTransactionCsvPreviewResponse>(
+    API_BASE_URL,
+    `/api/portfolios/${portfolioId}/transactions/csv/preview`,
+    {
+      method: 'POST',
+      body: JSON.stringify({
+        csv_text: csvText,
+        default_source_system: defaultSourceSystem,
+      }),
+    },
+  )
+}
+
+export function importPortfolioTransactionCsv(
+  portfolioId: string,
+  csvText: string,
+  previewDigest: string,
+  idempotencyKey: string,
+  defaultSourceSystem = 'portfolio_csv_upload',
+) {
+  return fetchJson<PortfolioTransactionCsvImportResponse>(
+    API_BASE_URL,
+    `/api/portfolios/${portfolioId}/transactions/csv/import`,
+    {
+      method: 'POST',
+      headers: {
+        'Idempotency-Key': idempotencyKey,
+      },
+      body: JSON.stringify({
+        csv_text: csvText,
+        default_source_system: defaultSourceSystem,
+        preview_digest: previewDigest,
+      }),
     },
   )
 }

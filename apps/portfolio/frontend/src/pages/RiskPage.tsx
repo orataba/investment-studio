@@ -261,7 +261,20 @@ export function riskFrequencyProfileFromHoldingsWorkspace(
     return riskFail('Risk basis requires the holdings workspace response.', unavailableProfile)
   }
   const coverageState = holdingsWorkspace.risk_basis?.coverage_state
-  if (coverageState && coverageState !== 'complete') {
+  const riskBearingInstrumentIds = new Set(
+    holdingsWorkspace.rows
+      .filter((row) => isRiskBearingHoldingRow(row))
+      .map((row) => row.instrument_core.instrument_id),
+  )
+  const gapInstrumentIds = holdingsWorkspace.risk_basis?.gap_instrument_ids ?? []
+  const scopedGapInstrumentIds = gapInstrumentIds.filter((instrumentId) =>
+    riskBearingInstrumentIds.has(instrumentId),
+  )
+  if (
+    coverageState &&
+    coverageState !== 'complete' &&
+    (!gapInstrumentIds.length || scopedGapInstrumentIds.length > 0)
+  ) {
     return riskFail(
       holdingsWorkspace.risk_basis?.status_label ||
         `Risk basis coverage is ${coverageState}.`,
@@ -286,8 +299,10 @@ export function riskFrequencyProfileFromHoldingsWorkspace(
   return riskOk({
     frequency,
     statusLabel:
-      holdingsWorkspace.risk_basis?.status_label ||
-      `${CALCULATION_FREQUENCY_LABELS[frequency]} risk basis`,
+      coverageState && coverageState !== 'complete'
+        ? `${CALCULATION_FREQUENCY_LABELS[frequency]} risk basis`
+        : holdingsWorkspace.risk_basis?.status_label ||
+          `${CALCULATION_FREQUENCY_LABELS[frequency]} risk basis`,
   } satisfies RiskFrequencyProfile)
 }
 
@@ -566,6 +581,14 @@ function isPendingMonetaryHoldingRow(row: HoldingsWorkspaceResponse['rows'][numb
 }
 
 function isRiskBearingHoldingRow(row: HoldingsWorkspaceResponse['rows'][number]) {
+  return (
+    row.risk_eligible === true &&
+    !isCashHoldingRow(row) &&
+    !isPendingMonetaryHoldingRow(row)
+  )
+}
+
+function isNonCashPositionHoldingRow(row: HoldingsWorkspaceResponse['rows'][number]) {
   return !isCashHoldingRow(row) && !isPendingMonetaryHoldingRow(row)
 }
 
@@ -632,19 +655,6 @@ export function buildCurrentInstrumentReturnSeries(holdingsWorkspace: HoldingsWo
   if (!baseCurrency) {
     return riskFail('Current risk requires the portfolio base currency.', [] satisfies GroupReturnSeries[])
   }
-  holdingsWorkspace.rows
-    .filter((row) => isCashHoldingRow(row))
-    .forEach((row) => {
-      const currency = row.instrument_core.currency.trim().toUpperCase()
-      const hasExposure =
-        Math.abs(finiteNumber(row.allocation) ?? 0) > 1e-9 ||
-        Math.abs(finiteNumber(row.market_value_base) ?? 0) > 1e-9
-      if (hasExposure && currency !== baseCurrency) {
-        errors.push(
-          `Current risk requires an FX total-return series for non-base cash ${holdingRiskLabel(row)} (${currency || 'unknown'} versus ${baseCurrency}).`,
-        )
-      }
-    })
   const series = holdingsWorkspace.rows
     .filter((row) => isRiskBearingHoldingRow(row))
     .map((row): GroupReturnSeries | null => {
@@ -871,24 +881,6 @@ function buildCurrentHoldingsMatrixScope(
   }
   const baseCurrency = holdingsWorkspace.base_currency.trim().toUpperCase()
   const issues: CorrelationMatrixCoverageIssue[] = []
-  holdingsWorkspace.rows
-    .filter((row) => isCashHoldingRow(row))
-    .forEach((row) => {
-      const currency = row.instrument_core.currency.trim().toUpperCase()
-      const hasExposure =
-        Math.abs(finiteNumber(row.allocation) ?? 0) > 1e-9 ||
-        Math.abs(finiteNumber(row.market_value_base) ?? 0) > 1e-9
-      if (hasExposure && currency !== baseCurrency) {
-        issues.push(
-          correlationCoverageIssue({
-            memberKey: row.instrument_core.instrument_id || row.line_id,
-            memberLabel: holdingRiskLabel(row),
-            reason: 'scope_unavailable',
-            coverageReason: `Non-base cash requires an FX total-return series (${currency || 'unknown'} versus ${baseCurrency || 'unknown'}).`,
-          }),
-        )
-      }
-    })
   const rows = holdingsWorkspace.rows.filter((row) => {
     if (!isRiskBearingHoldingRow(row)) {
       return false
@@ -1264,11 +1256,13 @@ export function buildCanonicalTaxonomyRiskContributionRows({
   catalog,
   taxonomy,
   referenceDate,
+  eligibility = 'risk',
 }: {
   holdingsWorkspace: HoldingsWorkspaceResponse | null
   catalog: PortfolioTaxonomyCatalogResponse | null
   taxonomy: PortfolioTaxonomyRecord | null
   referenceDate: string | null
+  eligibility?: 'risk' | 'risk_budget'
 }) {
   if (!holdingsWorkspace || !catalog || !taxonomy || !referenceDate) {
     return riskFail(
@@ -1297,7 +1291,10 @@ export function buildCanonicalTaxonomyRiskContributionRows({
   const errors: string[] = []
   holdingsWorkspace.rows
     .filter((row) => {
-      if (!isRiskBearingHoldingRow(row)) {
+      if (
+        !isRiskBearingHoldingRow(row) ||
+        (eligibility === 'risk_budget' && row.risk_budget_eligible !== true)
+      ) {
         return false
       }
       return (
@@ -1361,7 +1358,20 @@ export function buildCanonicalTaxonomyRiskContributionRows({
       left.groupLabel.localeCompare(right.groupLabel),
   )
   const totalRiskShare = rows.reduce((total, row) => total + (row.riskShare ?? 0), 0)
-  if (!rows.length || Math.abs(totalRiskShare - 1) > 1e-6) {
+  if (eligibility === 'risk_budget' && !rows.length) {
+    return riskOk([] satisfies RiskContributionRow[])
+  }
+  if (!rows.length || Math.abs(totalRiskShare) <= 1e-12) {
+    return riskFail(
+      `Production forward risk shares cannot be normalized for the ${eligibility === 'risk_budget' ? 'eligible risk-budget sleeve' : 'modeled risk sleeve'}; got ${formatPercent(totalRiskShare)}.`,
+      [] satisfies RiskContributionRow[],
+    )
+  }
+  if (eligibility === 'risk_budget') {
+    rows.forEach((row) => {
+      row.riskShare = (row.riskShare ?? 0) / totalRiskShare
+    })
+  } else if (Math.abs(totalRiskShare - 1) > 1e-6) {
     return riskFail(
       `Production forward risk shares must aggregate to 100% before taxonomy grouping; got ${formatPercent(totalRiskShare)}.`,
       [] satisfies RiskContributionRow[],
@@ -1388,6 +1398,55 @@ function buildNodePath(nodeId: string | null | undefined, nodeById: Map<string, 
     guard += 1
   }
   return path
+}
+
+export function buildRiskBudgetEligibleNodeIds({
+  catalog,
+  taxonomy,
+  referenceDate,
+}: {
+  catalog: PortfolioTaxonomyCatalogResponse | null
+  taxonomy: PortfolioTaxonomyRecord | null
+  referenceDate: string | null
+}) {
+  const eligibleNodeIds = new Set<string>()
+  if (!catalog || !taxonomy || !referenceDate) {
+    return eligibleNodeIds
+  }
+  const nodeById = buildNodeLookup(catalog, taxonomy.taxonomy_id)
+  const policyByNodeId = new Map<string, PortfolioTaxonomyCatalogResponse['analytics_scope_policies'][number]>()
+  catalog.analytics_scope_policies
+    .filter(
+      (policy) =>
+        policy.taxonomy_id === taxonomy.taxonomy_id &&
+        !policy.superseded_by_policy_id &&
+        policy.effective_from <= referenceDate &&
+        (!policy.effective_to || policy.effective_to >= referenceDate),
+    )
+    .sort((left, right) => left.policy_version - right.policy_version)
+    .forEach((policy) => policyByNodeId.set(policy.taxonomy_node_id, policy))
+
+  nodeById.forEach((node) => {
+    let candidateNodeId: string | null = node.taxonomy_node_id
+    const visited = new Set<string>()
+    let policy: PortfolioTaxonomyCatalogResponse['analytics_scope_policies'][number] | null = null
+    while (candidateNodeId && !visited.has(candidateNodeId)) {
+      visited.add(candidateNodeId)
+      policy = policyByNodeId.get(candidateNodeId) ?? null
+      if (policy) {
+        break
+      }
+      candidateNodeId = nodeById.get(candidateNodeId)?.parent_taxonomy_node_id ?? '__root__'
+    }
+    policy ??= policyByNodeId.get('__root__') ?? null
+    if (!policy?.risk_budget_eligible) {
+      return
+    }
+    buildNodePath(node.taxonomy_node_id, nodeById).forEach((pathNode) => {
+      eligibleNodeIds.add(pathNode.taxonomy_node_id)
+    })
+  })
+  return eligibleNodeIds
 }
 
 function resolveActiveAssignment(
@@ -1560,7 +1619,7 @@ export function buildCurrentPlanningGroups({
           return Boolean(activeCashAssignmentResult.assignment) || Math.abs(liquidityBase) > 1e-9
         })
       : []
-    const nonCashHoldingRows = holdingsWorkspace.rows.filter((row) => isRiskBearingHoldingRow(row))
+    const nonCashHoldingRows = holdingsWorkspace.rows.filter((row) => isNonCashPositionHoldingRow(row))
     const missingHoldingValueRows = nonCashHoldingRows.filter((row) => finiteNumber(row.market_value_base) == null)
     if (missingHoldingValueRows.length) {
       errors.push(
@@ -1809,6 +1868,7 @@ export function buildTargetGapRows({
   riskShareErrors = [],
   nodeById,
   cashLikeNodeIds = new Set<string>(),
+  riskBudgetEligibleNodeIds,
   dimension,
   baseCurrency,
 }: {
@@ -1819,6 +1879,7 @@ export function buildTargetGapRows({
   riskShareErrors?: string[]
   nodeById: Map<string, PortfolioTaxonomyNodeRecord>
   cashLikeNodeIds?: ReadonlySet<string>
+  riskBudgetEligibleNodeIds: ReadonlySet<string>
   dimension: 'weight' | 'risk_budget'
   baseCurrency: string
 }) {
@@ -1833,11 +1894,21 @@ export function buildTargetGapRows({
   }
   const eligibleTargetLines =
     dimension === 'risk_budget'
-      ? targetLines.filter((line) => !isCashLikeRiskTargetLine(line, nodeById, cashLikeNodeIds))
+      ? targetLines
+          .filter((line) => !isCashLikeRiskTargetLine(line, nodeById, cashLikeNodeIds))
+          .filter(
+            (line) =>
+              line.target_member_type !== 'taxonomy_node' ||
+              riskBudgetEligibleNodeIds.has(line.target_member_id),
+          )
       : targetLines
   const eligibleCurrentGroups =
     dimension === 'risk_budget'
-      ? currentGroups.filter((group) => !isCashLikeCurrentPlanningGroup(group, nodeById, cashLikeNodeIds))
+      ? currentGroups.filter(
+          (group) =>
+            riskSharesByGroup.has(group.groupKey) &&
+            !isCashLikeCurrentPlanningGroup(group, nodeById, cashLikeNodeIds),
+        )
       : currentGroups
   if (!eligibleTargetLines.length) {
     if (dimension === 'risk_budget' && !eligibleCurrentGroups.length) {
@@ -2797,9 +2868,39 @@ export default function RiskPage() {
     ],
   )
   const topLevelRiskContributionRows = topLevelRiskContributionResult.value
-  const riskSharesByTopLevelGroup = useMemo(
-    () => new Map(topLevelRiskContributionRows.map((row) => [row.groupKey, row.riskShare] as const)),
-    [topLevelRiskContributionRows],
+  const topLevelRiskBudgetContributionResult = useMemo(
+    () =>
+      buildCanonicalTaxonomyRiskContributionRows({
+        holdingsWorkspace,
+        catalog: taxonomyCatalog,
+        taxonomy: defaultPlanningTaxonomy,
+        referenceDate: holdingsWorkspace?.as_of_date ?? null,
+        eligibility: 'risk_budget',
+      }),
+    [
+      defaultPlanningTaxonomy,
+      holdingsWorkspace?.as_of_date,
+      holdingsWorkspace,
+      taxonomyCatalog,
+    ],
+  )
+  const riskBudgetSharesByTopLevelGroup = useMemo(
+    () =>
+      new Map(
+        topLevelRiskBudgetContributionResult.value.map(
+          (row) => [row.groupKey, row.riskShare] as const,
+        ),
+      ),
+    [topLevelRiskBudgetContributionResult.value],
+  )
+  const riskBudgetEligibleNodeIds = useMemo(
+    () =>
+      buildRiskBudgetEligibleNodeIds({
+        catalog: taxonomyCatalog,
+        taxonomy: defaultPlanningTaxonomy,
+        referenceDate: holdingsWorkspace?.as_of_date ?? null,
+      }),
+    [defaultPlanningTaxonomy, holdingsWorkspace?.as_of_date, taxonomyCatalog],
   )
   const currentPlanningGroupsResult = useMemo(
     () =>
@@ -2821,9 +2922,10 @@ export default function RiskPage() {
         targetSet: activeRootSaaTargetSet,
         targetLines: targetLinesByTargetSetId.get(activeRootSaaTargetSet?.target_set_id ?? '') ?? [],
         currentGroups: currentPlanningGroups,
-        riskSharesByGroup: riskSharesByTopLevelGroup,
+        riskSharesByGroup: riskBudgetSharesByTopLevelGroup,
         nodeById: defaultTaxonomyNodeById,
         cashLikeNodeIds: cashLikePlanningNodeIds,
+        riskBudgetEligibleNodeIds,
         dimension: 'weight',
         baseCurrency: portfolioBaseCurrency,
       }),
@@ -2833,7 +2935,8 @@ export default function RiskPage() {
       currentPlanningGroups,
       defaultTaxonomyNodeById,
       portfolioBaseCurrency,
-      riskSharesByTopLevelGroup,
+      riskBudgetEligibleNodeIds,
+      riskBudgetSharesByTopLevelGroup,
       targetLinesByTargetSetId,
     ],
   )
@@ -2844,9 +2947,10 @@ export default function RiskPage() {
         targetSet: activeRootTaaTargetSet,
         targetLines: targetLinesByTargetSetId.get(activeRootTaaTargetSet?.target_set_id ?? '') ?? [],
         currentGroups: currentPlanningGroups,
-        riskSharesByGroup: riskSharesByTopLevelGroup,
+        riskSharesByGroup: riskBudgetSharesByTopLevelGroup,
         nodeById: defaultTaxonomyNodeById,
         cashLikeNodeIds: cashLikePlanningNodeIds,
+        riskBudgetEligibleNodeIds,
         dimension: 'weight',
         baseCurrency: portfolioBaseCurrency,
       }),
@@ -2856,7 +2960,8 @@ export default function RiskPage() {
       currentPlanningGroups,
       defaultTaxonomyNodeById,
       portfolioBaseCurrency,
-      riskSharesByTopLevelGroup,
+      riskBudgetEligibleNodeIds,
+      riskBudgetSharesByTopLevelGroup,
       targetLinesByTargetSetId,
     ],
   )
@@ -2867,10 +2972,11 @@ export default function RiskPage() {
         targetSet: activeRootSaaTargetSet,
         targetLines: targetLinesByTargetSetId.get(activeRootSaaTargetSet?.target_set_id ?? '') ?? [],
         currentGroups: currentPlanningGroups,
-        riskSharesByGroup: riskSharesByTopLevelGroup,
-        riskShareErrors: topLevelRiskContributionResult.errors,
+        riskSharesByGroup: riskBudgetSharesByTopLevelGroup,
+        riskShareErrors: topLevelRiskBudgetContributionResult.errors,
         nodeById: defaultTaxonomyNodeById,
         cashLikeNodeIds: cashLikePlanningNodeIds,
+        riskBudgetEligibleNodeIds,
         dimension: 'risk_budget',
         baseCurrency: portfolioBaseCurrency,
       }),
@@ -2880,8 +2986,9 @@ export default function RiskPage() {
       currentPlanningGroups,
       defaultTaxonomyNodeById,
       portfolioBaseCurrency,
-      riskSharesByTopLevelGroup,
-      topLevelRiskContributionResult.errors,
+      riskBudgetEligibleNodeIds,
+      riskBudgetSharesByTopLevelGroup,
+      topLevelRiskBudgetContributionResult.errors,
       targetLinesByTargetSetId,
     ],
   )
@@ -2892,10 +2999,11 @@ export default function RiskPage() {
         targetSet: activeRootTaaTargetSet,
         targetLines: targetLinesByTargetSetId.get(activeRootTaaTargetSet?.target_set_id ?? '') ?? [],
         currentGroups: currentPlanningGroups,
-        riskSharesByGroup: riskSharesByTopLevelGroup,
-        riskShareErrors: topLevelRiskContributionResult.errors,
+        riskSharesByGroup: riskBudgetSharesByTopLevelGroup,
+        riskShareErrors: topLevelRiskBudgetContributionResult.errors,
         nodeById: defaultTaxonomyNodeById,
         cashLikeNodeIds: cashLikePlanningNodeIds,
+        riskBudgetEligibleNodeIds,
         dimension: 'risk_budget',
         baseCurrency: portfolioBaseCurrency,
       }),
@@ -2905,8 +3013,9 @@ export default function RiskPage() {
       currentPlanningGroups,
       defaultTaxonomyNodeById,
       portfolioBaseCurrency,
-      riskSharesByTopLevelGroup,
-      topLevelRiskContributionResult.errors,
+      riskBudgetEligibleNodeIds,
+      riskBudgetSharesByTopLevelGroup,
+      topLevelRiskBudgetContributionResult.errors,
       targetLinesByTargetSetId,
     ],
   )
@@ -2955,44 +3064,6 @@ export default function RiskPage() {
       hhi: normalizedWeights.reduce((total, weight) => total + weight * weight, 0),
     }
   }, [holdingsWorkspace?.rows])
-  const liquidityMetrics = useMemo(() => {
-    const accounts = accountsWorkspace?.accounts ?? []
-    if (!accounts.length) {
-      return {
-        cashBase: null as number | null,
-        pendingBase: null as number | null,
-        liquidityBase: null as number | null,
-        liquidityWeight: null as number | null,
-      }
-    }
-    const cashValues = accounts.map((account) => finiteNumber(account.derived_cash_balance_base))
-    const pendingValues = accounts.map((account) => finiteNumber(account.pending_settlement_base))
-    if (cashValues.some((value) => value == null) || pendingValues.some((value) => value == null)) {
-      return {
-        cashBase: null as number | null,
-        pendingBase: null as number | null,
-        liquidityBase: null as number | null,
-        liquidityWeight: null as number | null,
-      }
-    }
-    const cashBase = cashValues.reduce<number>((total, value) => total + (value as number), 0)
-    const pendingBase = pendingValues.reduce<number>((total, value) => total + (value as number), 0)
-    const liquidityWeight = currentPlanningGroupsResult.errors.length
-      ? null
-      : currentPlanningGroups.reduce<number>(
-          (total, group) =>
-            total +
-            (group.cashWeight ??
-              (group.hasCashLikeInput && !group.hasMarketRiskInput ? group.currentWeight ?? 0 : 0)),
-          0,
-        )
-    return {
-      cashBase,
-      pendingBase,
-      liquidityBase: cashBase + pendingBase,
-      liquidityWeight,
-    }
-  }, [accountsWorkspace?.accounts, currentPlanningGroups, currentPlanningGroupsResult.errors.length])
   const saaTotalRiskGap =
     activeRootSaaTargetSet && !saaRiskGapResult.errors.length
       ? saaRiskGapRows.reduce((total, row) => total + Math.abs(row.gap ?? 0), 0)
@@ -3014,6 +3085,15 @@ export default function RiskPage() {
         forwardRiskCoverage.missing_row_fraction,
       )} missing; latest ${forwardRiskCoverage.latest_complete_date ?? '—'}`
     : 'Coverage unavailable'
+  const analyticsScope = holdingsWorkspace?.analytics_scope_summary ?? null
+  const excludedExposure = analyticsScope
+    ? analyticsScope.excluded_carrying_value + analyticsScope.excluded_liability
+    : null
+  const analyticsVersionLabel = analyticsScope
+    ? `Policy ${analyticsScope.scope_policy_versions.join(', ') || 'none'}; configuration ${
+        analyticsScope.configuration_versions.join(', ') || 'none'
+      }; selection ${analyticsScope.taxonomy_selection_versions.join(', ') || 'none'}`
+    : 'Analytics scope identity unavailable'
   function renderRiskErrors(errors: string[]) {
     const uniqueErrors = [...new Set(errors.filter(Boolean))]
     if (!uniqueErrors.length) {
@@ -3190,7 +3270,7 @@ export default function RiskPage() {
                       : 'summary-card summary-card-warning'
                   }
                 >
-                  <span className="summary-card-label">Forward Volatility</span>
+                  <span className="summary-card-label">Modeled Market Sleeve Volatility</span>
                   <strong className="summary-card-value">
                     {holdingsWorkspace.forward_risk?.status === 'ok' &&
                     holdingsWorkspace.forward_risk.portfolio_volatility != null
@@ -3200,7 +3280,16 @@ export default function RiskPage() {
                   <span className="portfolio-detail-meta">{forwardRiskCoverageLabel}</span>
                 </article>
                 <article className="summary-card">
-                  <span className="summary-card-label">Total Risk Budget Gap</span>
+                  <span className="summary-card-label">Model Coverage</span>
+                  <strong className="summary-card-value">
+                    {analyticsScope?.coverage_ratio != null
+                      ? formatPercent(analyticsScope.coverage_ratio)
+                      : 'Unavailable'}
+                  </strong>
+                  <span className="portfolio-detail-meta">Eligible gross exposure / disclosed exposure</span>
+                </article>
+                <article className="summary-card">
+                  <span className="summary-card-label">Eligible Risk Budget Gap</span>
                   <strong className="summary-card-value">
                     {riskGapSummary || '—'}
                   </strong>
@@ -3209,34 +3298,114 @@ export default function RiskPage() {
                   </span>
                 </article>
                 <article className="summary-card">
-                  <span className="summary-card-label">Top 3 Concentration</span>
+                  <span className="summary-card-label">Modeled Gross Exposure</span>
+                  <strong className="summary-card-value">
+                    {analyticsScope
+                      ? formatCurrency(analyticsScope.modeled_gross_exposure, holdingsWorkspace.base_currency)
+                      : '—'}
+                  </strong>
+                  <span className="portfolio-detail-meta">
+                    {analyticsScope
+                      ? `Net ${formatCurrency(analyticsScope.modeled_net_exposure, holdingsWorkspace.base_currency)}`
+                      : 'Modeled exposure unavailable'}
+                  </span>
+                </article>
+                <article className="summary-card">
+                  <span className="summary-card-label">Excluded Exposure</span>
+                  <strong className="summary-card-value">
+                    {excludedExposure != null
+                      ? formatCurrency(excludedExposure, holdingsWorkspace.base_currency)
+                      : '—'}
+                  </strong>
+                  <span className="portfolio-detail-meta">
+                    {analyticsScope
+                      ? `Assets ${formatCurrency(analyticsScope.excluded_carrying_value, holdingsWorkspace.base_currency)}; liabilities ${formatCurrency(
+                          analyticsScope.excluded_liability,
+                          holdingsWorkspace.base_currency,
+                        )}`
+                      : 'Excluded exposure unavailable'}
+                  </span>
+                </article>
+                <article className="summary-card">
+                  <span className="summary-card-label">Cash / Unallocated</span>
+                  <strong className="summary-card-value">
+                    {analyticsScope
+                      ? formatCurrency(analyticsScope.cash_unallocated_exposure, holdingsWorkspace.base_currency)
+                      : '—'}
+                  </strong>
+                  <span className="portfolio-detail-meta">Disclosed outside covariance risk</span>
+                </article>
+                <article className="summary-card">
+                  <span className="summary-card-label">Top 3 Modeled Concentration</span>
                   <strong className="summary-card-value">
                     {concentrationMetrics.topThree != null ? formatPercent(concentrationMetrics.topThree) : '—'}
                   </strong>
                   <span className="portfolio-detail-meta">
                     {concentrationMetrics.hhi != null
-                      ? `Non-cash normalized HHI ${formatNumber(concentrationMetrics.hhi, 3)}`
-                      : 'Non-cash exposure unavailable'}
-                  </span>
-                </article>
-                <article className="summary-card">
-                  <span className="summary-card-label">Cash + Pending Settlement</span>
-                  <strong className="summary-card-value">
-                    {liquidityMetrics.liquidityWeight != null
-                      ? formatPercent(liquidityMetrics.liquidityWeight)
-                      : '—'}
-                  </strong>
-                  <span className="portfolio-detail-meta">
-                    {liquidityMetrics.liquidityBase != null
-                      ? `${formatCurrency(liquidityMetrics.liquidityBase, holdingsWorkspace.base_currency)}; pending ${formatCurrency(
-                          liquidityMetrics.pendingBase ?? 0,
-                          holdingsWorkspace.base_currency,
-                        )}`
-                      : 'Account liquidity unavailable'}
+                      ? `Eligible-sleeve normalized HHI ${formatNumber(concentrationMetrics.hhi, 3)}`
+                      : 'Eligible exposure unavailable'}
                   </span>
                 </article>
               </div>
               {renderRiskErrors(holdingsWorkspace.forward_risk?.errors ?? [])}
+              <div className="portfolio-detail-meta risk-scope-identity">{analyticsVersionLabel}</div>
+              {analyticsScope?.excluded_rows.length ? (
+                <div className="table-shell risk-scope-table-shell">
+                  <table className="transactions-table risk-scope-table">
+                    <thead>
+                      <tr>
+                        <th>Excluded Holding</th>
+                        <th>Region</th>
+                        <th>Reason</th>
+                        <th className="performance-cell-number">Exposure</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {analyticsScope.excluded_rows.map((row) => (
+                        <tr key={row.line_id ?? `${row.instrument_id}:${row.holding_region}`}>
+                          <td>{row.instrument_name ?? row.instrument_id ?? row.line_id ?? 'N/A'}</td>
+                          <td>{formatLabel(row.holding_region)}</td>
+                          <td>{row.exclusion_reason ?? 'No exclusion reason recorded.'}</td>
+                          <td className="performance-cell-number">
+                            {formatCurrency(row.exposure_base, holdingsWorkspace.base_currency)}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              ) : null}
+              <div className="portfolio-detail-toolbar performance-subsection-toolbar risk-section-toolbar risk-scoped-contribution-toolbar">
+                <div>
+                  <div className="panel-title">Scoped Risk Contribution</div>
+                  <div className="portfolio-detail-meta">Shares sum to 100% inside the eligible modeled sleeve.</div>
+                </div>
+              </div>
+              {renderRiskErrors(topLevelRiskContributionResult.errors)}
+              {topLevelRiskContributionRows.length ? (
+                <div className="table-shell risk-scope-table-shell">
+                  <table className="transactions-table risk-scope-table">
+                    <thead>
+                      <tr>
+                        <th>Sleeve</th>
+                        <th className="performance-cell-number">Eligible Weight</th>
+                        <th className="performance-cell-number">Risk Share</th>
+                        <th className="performance-cell-number">Observations</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {topLevelRiskContributionRows.map((row) => (
+                        <tr key={row.groupKey}>
+                          <td>{row.groupLabel}</td>
+                          <td className="performance-cell-number">{formatPercent(row.weight)}</td>
+                          <td className="performance-cell-number">{formatPercent(row.riskShare)}</td>
+                          <td className="performance-cell-number">{formatNumber(row.observationCount, 0)}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              ) : null}
             </section>
 
             <section className="performance-section-block">

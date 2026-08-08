@@ -11,6 +11,7 @@ from sqlalchemy import and_, case, delete, func, or_, select, update
 
 from portfolio_app.db.models import (
     AccountRecordModel,
+    PortfolioAnalyticsPolicyStateModel,
     PortfolioCalculationStateModel,
     PortfolioDailyContributionSliceModel,
     PortfolioDailyHoldingSnapshotModel,
@@ -47,11 +48,14 @@ _SOURCE_GENERATION_MAX_DISCARDS = 3
 _SOURCE_GENERATION_CHANGED_REASON = "source_generation_changed_during_calculation"
 _SOURCE_GENERATION_CHANGED_BEFORE_PUBLISH_REASON = "source_generation_changed_before_publish"
 DAILY_SNAPSHOT_CALCULATION_VERSION = (
-    "portfolio-daily-v20260715-split-coverage-return-chain-quote-identity-market-history"
+    "portfolio-daily-v20260806-derivative-liability-event-valuation-basis-transfer"
+    "-holding-kind-identity-split-coverage-return-chain-quote-identity-market-history"
     "-source-generation-fence-pending-settlement-fx-recorded-attached-charges"
     "-portfolio-instrument-total-return-windows-v2-gips-funded-segment-boundaries-v4"
     "-position-effective-recognition-bridge-v1"
     "-pending-monetary-holdings-v1"
+    "-effective-analytics-scope-policy-v1"
+    "-operational-obligation-settlement-v2"
 )
 
 
@@ -59,11 +63,13 @@ DAILY_SNAPSHOT_CALCULATION_VERSION = (
 class _SnapshotSourceGeneration:
     refresh_request_id: str | None
     market_data_updated_at: str | None
+    analytics_policy_version: int
 
-    def as_payload(self) -> dict[str, str | None]:
+    def as_payload(self) -> dict[str, object]:
         return {
             "refresh_request_id": self.refresh_request_id,
             "market_data_updated_at": self.market_data_updated_at,
+            "analytics_policy_version": self.analytics_policy_version,
         }
 
 
@@ -205,9 +211,15 @@ def _snapshot_source_generation(
     state = session.get(PortfolioCalculationStateModel, portfolio_id)
     if state is None:
         return None
+    analytics_state = session.get(PortfolioAnalyticsPolicyStateModel, portfolio_id)
     return _SnapshotSourceGeneration(
         refresh_request_id=state.refresh_request_id,
         market_data_updated_at=_source_market_data_watermark(session, portfolio_id),
+        analytics_policy_version=(
+            int(analytics_state.current_version)
+            if analytics_state is not None
+            else 0
+        ),
     )
 
 
@@ -247,7 +259,7 @@ def _load_transactions(session, portfolio_id: str) -> list[TransactionRecordMode
                 TransactionRecordModel.trade_date,
                 TransactionRecordModel.trade_at,
                 TransactionRecordModel.created_at,
-                TransactionRecordModel.transaction_id,
+                TransactionRecordModel.transaction_sequence,
                 TransactionRecordModel.settlement_date,
             )
         ).all()
@@ -712,9 +724,18 @@ def _recalculate_portfolio_daily_snapshots_once(
             accounts = [_serialize_account_row(item) for item in account_records]
             transactions = [_serialize_transaction_row(item) for item in transaction_records]
             source_market_data_updated_at = _source_market_data_watermark(session, portfolio_id)
+            analytics_state = session.get(
+                PortfolioAnalyticsPolicyStateModel,
+                portfolio_id,
+            )
             source_generation_before = _SnapshotSourceGeneration(
                 refresh_request_id=request_id,
                 market_data_updated_at=source_market_data_updated_at,
+                analytics_policy_version=(
+                    int(analytics_state.current_version)
+                    if analytics_state is not None
+                    else 0
+                ),
             )
             incremental_seed = (
                 _incremental_snapshot_seed(
@@ -837,12 +858,17 @@ def _recalculate_portfolio_daily_snapshots_once(
                     instrument_id = str(holding.get("instrument_id") or "")
                     if not account_id or not instrument_id:
                         continue
+                    holding_kind = (
+                        str(holding.get("holding_kind") or "position").strip()
+                        or "position"
+                    )
                     session.add(
                         PortfolioDailyHoldingSnapshotModel(
                             portfolio_id=portfolio_id,
                             as_of_date=snapshot_date,
                             account_id=account_id,
                             instrument_id=instrument_id,
+                            holding_kind=holding_kind,
                             currency=str(holding.get("currency") or portfolio.get("base_currency") or "USD"),
                             quantity=_safe_float(holding.get("quantity")) or 0.0,
                             cost_basis=_safe_float(holding.get("cost_basis")),
@@ -1354,14 +1380,20 @@ def _aggregate_holding_rows(
     *,
     total_nav_base: float | None,
 ) -> list[dict[str, object]]:
-    rows_by_instrument: dict[str, list[dict[str, object]]] = {}
+    rows_by_instrument: dict[tuple[str, str], list[dict[str, object]]] = {}
     for row in rows:
         payload = dict(row.holding_json) if isinstance(row.holding_json, dict) else {}
         payload["_snapshot_as_of_date"] = row.as_of_date
-        rows_by_instrument.setdefault(row.instrument_id, []).append(payload)
+        instrument_id = row.instrument_id
+        holding_kind = row.holding_kind
+        payload["instrument_id"] = instrument_id
+        payload["holding_kind"] = holding_kind
+        rows_by_instrument.setdefault((instrument_id, holding_kind), []).append(
+            payload
+        )
 
     aggregated_rows: list[dict[str, object]] = []
-    for instrument_id, instrument_rows in rows_by_instrument.items():
+    for (instrument_id, holding_kind), instrument_rows in rows_by_instrument.items():
         account_ids = sorted(
             {
                 str(account_id)
@@ -1436,13 +1468,31 @@ def _aggregate_holding_rows(
         day_change_value_base = _sum_complete([row.get("day_change_value_base") for row in instrument_rows])
         is_cash_row = _is_cash_holding_payload(first_row)
         is_pending_row = _is_pending_monetary_holding_payload(first_row)
+        required_underlying_quantity = _sum_complete(
+            [row.get("required_underlying_quantity") for row in instrument_rows]
+        )
+        covered_underlying_quantity = _sum_complete(
+            [row.get("covered_underlying_quantity") for row in instrument_rows]
+        )
+        uncovered_underlying_quantity = _sum_complete(
+            [row.get("uncovered_underlying_quantity") for row in instrument_rows]
+        )
+        covered_ratio = (
+            covered_underlying_quantity / required_underlying_quantity
+            if covered_underlying_quantity is not None
+            and required_underlying_quantity is not None
+            and required_underlying_quantity > 1e-9
+            else None
+        )
         aggregated_rows.append(
             {
-                "line_id": instrument_id,
-                "holding_kind": (
-                    str(first_row.get("holding_kind") or "")
-                    or ("settled_cash" if is_cash_row else "position")
+                "line_id": (
+                    f"{instrument_id}:obligation"
+                    if holding_kind == "option_obligation"
+                    else instrument_id
                 ),
+                "holding_kind": holding_kind
+                or ("settled_cash" if is_cash_row else "position"),
                 "available_for_trading": bool(
                     first_row.get(
                         "available_for_trading",
@@ -1501,7 +1551,11 @@ def _aggregate_holding_rows(
                 **trend_metrics,
                 "coverage_status": (
                     _first_present(instrument_rows, "coverage_status")
-                    if is_cash_row or is_pending_row
+                    if is_cash_row
+                    or is_pending_row
+                    or holding_kind == "option_obligation"
+                    or _first_present(instrument_rows, "coverage_status")
+                    in {"event-cost", "event-liability"}
                     else "price-nav-fx"
                     if market_value_base is not None
                     else "unpriced"
@@ -1509,6 +1563,96 @@ def _aggregate_holding_rows(
                 "account_ids": account_ids,
                 "account_count": len(account_ids),
                 "open_position_lot_count": sum(int(row.get("open_position_lot_count") or 0) for row in instrument_rows),
+                "is_liability": any(bool(row.get("is_liability")) for row in instrument_rows),
+                "performance_eligible": all(
+                    bool(row.get("performance_eligible", True)) for row in instrument_rows
+                ),
+                "risk_eligible": all(
+                    bool(row.get("risk_eligible", True)) for row in instrument_rows
+                ),
+                "open_contract_quantity": _sum_complete(
+                    [row.get("open_contract_quantity") for row in instrument_rows]
+                ),
+                "required_underlying_quantity": required_underlying_quantity,
+                "underlying_position_quantity": _sum_complete(
+                    [row.get("underlying_position_quantity") for row in instrument_rows]
+                ),
+                "covered_underlying_quantity": covered_underlying_quantity,
+                "uncovered_underlying_quantity": uncovered_underlying_quantity,
+                "covered_ratio": covered_ratio,
+                "obligation_status": _first_present(
+                    instrument_rows, "obligation_status"
+                ),
+                "obligation_coverage_status": (
+                    "uncovered"
+                    if uncovered_underlying_quantity is not None
+                    and uncovered_underlying_quantity > 1e-9
+                    else _first_present(
+                        instrument_rows, "obligation_coverage_status"
+                    )
+                ),
+                "coverage_type": _first_present(
+                    instrument_rows, "coverage_type"
+                ),
+                "related_underlying_id": _first_present(
+                    instrument_rows, "related_underlying_id"
+                ),
+                "expiry_date": _first_present(instrument_rows, "expiry_date"),
+                "days_to_expiry": _first_present(
+                    instrument_rows, "days_to_expiry"
+                ),
+                "strike": _first_present(instrument_rows, "strike"),
+                "option_type": _first_present(instrument_rows, "option_type"),
+                "contract_multiplier": _first_present(
+                    instrument_rows, "contract_multiplier"
+                ),
+                "settlement_type": _first_present(
+                    instrument_rows, "settlement_type"
+                ),
+                "assignment_notional": _sum_complete(
+                    [row.get("assignment_notional") for row in instrument_rows]
+                ),
+                "assignment_notional_base": _sum_complete(
+                    [row.get("assignment_notional_base") for row in instrument_rows]
+                ),
+                "premium_received_gross": _sum_complete(
+                    [row.get("premium_received_gross") for row in instrument_rows]
+                ),
+                "premium_basis_remaining": _sum_complete(
+                    [row.get("premium_basis_remaining") for row in instrument_rows]
+                ),
+                "liability_value": _sum_complete(
+                    [row.get("liability_value") for row in instrument_rows]
+                ),
+                "liability_value_base": _sum_complete(
+                    [row.get("liability_value_base") for row in instrument_rows]
+                ),
+                "carrying_value": _sum_complete(
+                    [row.get("carrying_value") for row in instrument_rows]
+                ),
+                "carrying_value_base": _sum_complete(
+                    [row.get("carrying_value_base") for row in instrument_rows]
+                ),
+                "fair_value": _sum_complete([row.get("fair_value") for row in instrument_rows]),
+                "fair_value_coverage_status": _first_present(
+                    instrument_rows, "fair_value_coverage_status"
+                ),
+                "valuation_basis": _first_present(instrument_rows, "valuation_basis"),
+                "settlement_date": _first_present(
+                    instrument_rows, "settlement_date"
+                ),
+                "pending_until_date": _first_present(
+                    instrument_rows, "pending_until_date"
+                ),
+                "pending_status": _first_present(
+                    instrument_rows, "pending_status"
+                ),
+                "settlement_amount": _sum_complete(
+                    [row.get("settlement_amount") for row in instrument_rows]
+                ),
+                "settlement_amount_base": _sum_complete(
+                    [row.get("settlement_amount_base") for row in instrument_rows]
+                ),
             }
         )
 
@@ -1582,6 +1726,7 @@ def build_materialized_holdings_workspace(
         and not holdings_market_profile.is_pending_monetary_holding(
             row.holding_json if isinstance(row.holding_json, dict) else {}
         )
+        and row.holding_kind != "option_obligation"
     ]
     total_cost_basis_base = (
         _sum_complete([row.cost_basis_base for row in noncash_snapshot_rows]) if noncash_snapshot_rows else 0.0
@@ -1595,7 +1740,7 @@ def build_materialized_holdings_workspace(
     priced_position_count = sum(
         1
         for row in formal_position_rows
-        if row.get("market_value_base") is not None
+        if holdings_market_profile.is_market_priced_holding(row)
     )
 
     return {
@@ -1667,6 +1812,41 @@ _INSTRUMENT_HOLDING_PROJECTION_FIELDS = (
     "coverage_status",
     "account_count",
     "open_position_lot_count",
+    "is_liability",
+    "performance_eligible",
+    "risk_eligible",
+    "open_contract_quantity",
+    "required_underlying_quantity",
+    "underlying_position_quantity",
+    "covered_underlying_quantity",
+    "uncovered_underlying_quantity",
+    "covered_ratio",
+    "obligation_status",
+    "obligation_coverage_status",
+    "coverage_type",
+    "related_underlying_id",
+    "expiry_date",
+    "days_to_expiry",
+    "strike",
+    "option_type",
+    "contract_multiplier",
+    "settlement_type",
+    "assignment_notional",
+    "assignment_notional_base",
+    "premium_received_gross",
+    "premium_basis_remaining",
+    "liability_value",
+    "liability_value_base",
+    "carrying_value",
+    "carrying_value_base",
+    "fair_value",
+    "fair_value_coverage_status",
+    "valuation_basis",
+    "settlement_date",
+    "pending_until_date",
+    "pending_status",
+    "settlement_amount",
+    "settlement_amount_base",
 )
 
 
@@ -1684,7 +1864,7 @@ def build_materialized_instrument_holding_projection(
     *,
     as_of_date: date | None = None,
 ) -> dict[str, object] | None:
-    """Read one holding directly from daily snapshots without portfolio-wide analytics."""
+    """Read one instrument's distinct holding kinds without portfolio-wide analytics."""
 
     ensure_portfolio_daily_snapshots(portfolio_id)
     session_factory = get_session_factory()
@@ -1718,7 +1898,10 @@ def build_materialized_instrument_holding_projection(
                     PortfolioDailyHoldingSnapshotModel.as_of_date == snapshot.as_of_date,
                     PortfolioDailyHoldingSnapshotModel.instrument_id == instrument_id,
                 )
-                .order_by(PortfolioDailyHoldingSnapshotModel.account_id)
+                .order_by(
+                    PortfolioDailyHoldingSnapshotModel.account_id,
+                    PortfolioDailyHoldingSnapshotModel.holding_kind,
+                )
             ).all()
         )
         snapshot_payload = _restore_snapshot(dict(snapshot.snapshot_json))
@@ -1727,15 +1910,17 @@ def build_materialized_instrument_holding_projection(
 
     total_nav_base = _safe_float(snapshot_payload.get("nav"))
     aggregated_rows = _aggregate_holding_rows(rows, total_nav_base=total_nav_base)
-    source_row = aggregated_rows[0] if aggregated_rows else None
-    projected_row = project_instrument_holding_row(source_row) if source_row is not None else None
+    projected_rows = [
+        project_instrument_holding_row(row)
+        for row in aggregated_rows
+    ]
     return {
         "portfolio_id": portfolio["portfolio_id"],
         "portfolio_name": portfolio["portfolio_name"],
         "base_currency": snapshot_payload.get("base_currency") or portfolio.get("base_currency", "USD"),
         "as_of_date": snapshot_as_of_date.isoformat(),
         "view_label": "View: Holdings",
-        "row": projected_row,
+        "rows": projected_rows,
     }
 
 

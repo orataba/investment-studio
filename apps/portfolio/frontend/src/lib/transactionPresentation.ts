@@ -1,9 +1,11 @@
 import type { TableCell } from '../../../../../packages/ui/src/tableExport'
 
 import type {
+  PortfolioOptionAction,
   PortfolioTransactionChangeLogRecord,
   PortfolioTransactionRecord,
 } from './api'
+import { optionActionLabel, resolveOptionAction } from './optionActions'
 
 export const TRANSACTION_EXPORT_HEADERS: TableCell[] = [
   'Transaction ID',
@@ -42,7 +44,11 @@ export function buildTransactionExportRows(transactions: PortfolioTransactionRec
       transaction.position_effective_date ?? '',
       transaction.economic_date,
       transaction.external_flow_date ?? '',
-      transaction.transaction_type,
+      transactionActivityLabel(
+        transaction.transaction_type,
+        transaction.instrument_ref?.instrument_type,
+        transaction.option_action,
+      ),
       transaction.flow_scope,
       transaction.account.account_name,
       transaction.instrument_id ?? '',
@@ -81,7 +87,13 @@ export function transactionDateLabels(transactionType: string) {
 export function transactionActivityLabel(
   transactionType: string,
   instrumentType?: string | null,
+  optionAction?: PortfolioOptionAction | null,
 ) {
+  const resolvedOptionAction =
+    optionAction ?? resolveOptionAction(transactionType, instrumentType)
+  if (resolvedOptionAction) {
+    return optionActionLabel(resolvedOptionAction)
+  }
   if (instrumentType === 'fund') {
     if (transactionType === 'buy') {
       return 'Subscription'
@@ -94,6 +106,22 @@ export function transactionActivityLabel(
     .split('_')
     .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
     .join(' ')
+}
+
+export function transactionTypeChoiceLabel(
+  transactionType: string,
+  instrumentType?: string | null,
+) {
+  if (instrumentType) {
+    return transactionActivityLabel(transactionType, instrumentType)
+  }
+  if (transactionType === 'buy') {
+    return 'Buy / Option Buy to Open'
+  }
+  if (transactionType === 'sell') {
+    return 'Sell / Option Sell to Close'
+  }
+  return transactionActivityLabel(transactionType)
 }
 
 const AUDIT_FIELD_LABELS: Record<string, string> = {

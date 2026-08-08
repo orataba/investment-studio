@@ -29,7 +29,7 @@ from portfolio_ops_instrument_core import (  # noqa: E402
 )
 
 
-FINAL_FLAT_TABLE_HEAD_PAIR = ("20260717_0015", "20260716_0040")
+FINAL_FLAT_TABLE_HEAD_PAIR = ("20260807_0019", "20260807_0044")
 FUND_NAV_PROJECTION_METHOD_VERSION = "fund_nav_reinvestment_projection/v7"
 
 AUDIT_CHECK_NAMES = (
@@ -46,12 +46,15 @@ AUDIT_CHECK_NAMES = (
     "portfolio_nav_reconciliation",
     "portfolio_twr_geometric_link",
     "portfolio_drawdown_from_twr",
+    "holding_valuation_basis_contract",
     "portfolio_valuation_quote_match",
     "taxonomy_target_sum",
     "taxonomy_negative_targets",
     "reserved_cash_taxonomy_nodes",
     "taxonomy_assignment_overlap",
     "current_unassigned_planning_holdings",
+    "analytics_scope_missing_effective_selection",
+    "analytics_scope_incomplete_configuration",
     "price_bar_contract",
     "corporate_action_event_integrity",
     "held_confirmed_share_split_events_covered",
@@ -843,15 +846,25 @@ def _run_flat_table_audit(database_url: str) -> list[AuditCheck]:
                         SELECT
                             portfolio_id,
                             as_of_date,
-                            sum(market_value_base)::numeric AS market_value
+                            sum(market_value_base)::numeric AS market_value,
+                            sum(
+                                CASE
+                                    WHEN instrument_id LIKE 'pending:%'
+                                    THEN market_value_base
+                                    ELSE 0
+                                END
+                            )::numeric AS materialized_pending_settlement
                         FROM portfolio.portfolio_daily_holding_snapshot
                         GROUP BY portfolio_id, as_of_date
                     )
                     SELECT greatest(
                         coalesce(max(abs(
                             coalesce(holdings.market_value, 0)
-                            + (snapshot.snapshot_json ->> 'pending_settlement')::numeric
                             - snapshot.nav::numeric
+                        )), 0),
+                        coalesce(max(abs(
+                            coalesce(holdings.materialized_pending_settlement, 0)
+                            - (snapshot.snapshot_json ->> 'pending_settlement')::numeric
                         )), 0),
                         CASE WHEN count(*) FILTER (
                             WHERE snapshot.nav IS NULL
@@ -870,7 +883,10 @@ def _run_flat_table_audit(database_url: str) -> list[AuditCheck]:
                     status="pass" if max_nav_error <= 1e-6 else "fail",
                     value=max_nav_error,
                     limit=1e-6,
-                    detail="NAV must equal holding market value plus pending settlement.",
+                    detail=(
+                        "NAV must equal all materialized holding value, and pending "
+                        "holding rows must reconcile to the snapshot pending-settlement total."
+                    ),
                 )
             )
 
@@ -958,6 +974,48 @@ def _run_flat_table_audit(database_url: str) -> list[AuditCheck]:
                 )
             )
 
+            checks.append(
+                _count_check(
+                    cursor,
+                    name="holding_valuation_basis_contract",
+                    query="""
+                        SELECT count(*)
+                        FROM portfolio.portfolio_daily_holding_snapshot holding
+                        WHERE (
+                                holding.holding_kind = 'position'
+                                AND coalesce(
+                                    holding.holding_json ->> 'valuation_basis',
+                                    ''
+                                ) NOT IN ('market_quote', 'carried_cost')
+                              )
+                           OR (
+                                holding.holding_kind = 'position'
+                                AND holding.holding_json ->> 'valuation_basis'
+                                    = 'market_quote'
+                                AND holding.last_price IS NULL
+                              )
+                           OR (
+                                holding.holding_kind = 'position'
+                                AND holding.holding_json ->> 'valuation_basis'
+                                    = 'carried_cost'
+                                AND holding.last_price IS NOT NULL
+                              )
+                           OR (
+                                holding.holding_kind = 'option_obligation'
+                                AND (
+                                    holding.holding_json ->> 'valuation_basis'
+                                        IS DISTINCT FROM 'premium_liability'
+                                    OR holding.last_price IS NOT NULL
+                                )
+                              )
+                    """,
+                    detail=(
+                        "Market-valued positions require a quote; event-carried positions "
+                        "and written-option liabilities must remain explicitly unquoted."
+                    ),
+                )
+            )
+
             valuation_mismatches = int(
                 _scalar(
                     cursor,
@@ -967,7 +1025,11 @@ def _run_flat_table_audit(database_url: str) -> list[AuditCheck]:
                             snapshot.*,
                             snapshot.holding_json ->> 'quote_basis' AS quote_basis
                         FROM portfolio.portfolio_daily_holding_snapshot snapshot
-                        WHERE snapshot.instrument_id NOT LIKE 'cash:%'
+                        WHERE snapshot.holding_kind = 'position'
+                          AND snapshot.holding_json ->> 'valuation_basis'
+                              = 'market_quote'
+                          AND snapshot.instrument_id NOT LIKE 'cash:%'
+                          AND snapshot.instrument_id NOT LIKE 'pending:%'
                     )
                     SELECT count(*)
                     FROM holdings
@@ -995,6 +1057,113 @@ def _run_flat_table_audit(database_url: str) -> list[AuditCheck]:
                     value=valuation_mismatches,
                     limit=0,
                     detail="Holding valuation must match its declared unadjusted valuation basis.",
+                )
+            )
+
+            checks.append(
+                _count_check(
+                    cursor,
+                    name="analytics_scope_missing_effective_selection",
+                    query="""
+                        SELECT count(*)
+                        FROM portfolio.portfolio_record portfolio
+                        WHERE portfolio.default_planning_taxonomy_id IS NOT NULL
+                          AND NOT EXISTS (
+                            SELECT 1
+                            FROM portfolio.analytics_taxonomy_selection_record selection
+                            WHERE selection.portfolio_id = portfolio.portfolio_id
+                              AND selection.taxonomy_id IS NOT NULL
+                              AND selection.superseded_by_selection_id IS NULL
+                              AND selection.effective_from <=
+                                  coalesce(portfolio.as_of_date, CURRENT_DATE)
+                              AND (
+                                  selection.effective_to IS NULL
+                                  OR selection.effective_to >=
+                                     coalesce(portfolio.as_of_date, CURRENT_DATE)
+                              )
+                        )
+                    """,
+                    detail=(
+                        "Every portfolio that declares a default planning taxonomy needs an "
+                        "effective, explicit analytics taxonomy selection before Risk or Risk "
+                        "Budget can be declared ready; the runtime intentionally fails closed "
+                        "without one."
+                    ),
+                    warning_only=True,
+                )
+            )
+            checks.append(
+                _count_check(
+                    cursor,
+                    name="analytics_scope_incomplete_configuration",
+                    query="""
+                        WITH effective_selection AS (
+                            SELECT DISTINCT ON (portfolio.portfolio_id)
+                                   portfolio.portfolio_id,
+                                   coalesce(portfolio.as_of_date, CURRENT_DATE) AS as_of_date,
+                                   selection.taxonomy_id
+                            FROM portfolio.portfolio_record portfolio
+                            JOIN portfolio.analytics_taxonomy_selection_record selection
+                              ON selection.portfolio_id = portfolio.portfolio_id
+                             AND selection.taxonomy_id IS NOT NULL
+                             AND selection.superseded_by_selection_id IS NULL
+                             AND selection.effective_from <=
+                                 coalesce(portfolio.as_of_date, CURRENT_DATE)
+                             AND (
+                                 selection.effective_to IS NULL
+                                 OR selection.effective_to >=
+                                    coalesce(portfolio.as_of_date, CURRENT_DATE)
+                             )
+                            ORDER BY portfolio.portfolio_id,
+                                     selection.effective_from DESC,
+                                     selection.selection_version DESC
+                        )
+                        SELECT count(*)
+                        FROM effective_selection selection
+                        WHERE NOT EXISTS (
+                            SELECT 1
+                            FROM portfolio.taxonomy_configuration_revision configuration
+                            WHERE configuration.portfolio_id = selection.portfolio_id
+                              AND configuration.taxonomy_id = selection.taxonomy_id
+                              AND configuration.superseded_by_revision_id IS NULL
+                              AND configuration.effective_from <= selection.as_of_date
+                              AND (
+                                  configuration.effective_to IS NULL
+                                  OR configuration.effective_to >= selection.as_of_date
+                              )
+                        )
+                           OR NOT EXISTS (
+                            SELECT 1
+                            FROM portfolio.analytics_scope_policy_record policy
+                            WHERE policy.portfolio_id = selection.portfolio_id
+                              AND policy.taxonomy_id = selection.taxonomy_id
+                              AND policy.taxonomy_node_id = '__root__'
+                              AND policy.superseded_by_policy_id IS NULL
+                              AND policy.effective_from <= selection.as_of_date
+                              AND (
+                                  policy.effective_to IS NULL
+                                  OR policy.effective_to >= selection.as_of_date
+                              )
+                        )
+                           OR NOT EXISTS (
+                            SELECT 1
+                            FROM portfolio.analytics_scope_policy_record policy
+                            WHERE policy.portfolio_id = selection.portfolio_id
+                              AND policy.taxonomy_id = selection.taxonomy_id
+                              AND policy.taxonomy_node_id = '__unassigned__'
+                              AND policy.superseded_by_policy_id IS NULL
+                              AND policy.effective_from <= selection.as_of_date
+                              AND (
+                                  policy.effective_to IS NULL
+                                  OR policy.effective_to >= selection.as_of_date
+                              )
+                        )
+                    """,
+                    detail=(
+                        "An effective analytics selection needs a point-in-time taxonomy "
+                        "configuration plus effective root and unassigned scope policies."
+                    ),
+                    warning_only=True,
                 )
             )
 
@@ -1159,6 +1328,9 @@ def _run_flat_table_audit(database_url: str) -> list[AuditCheck]:
                               ON latest.portfolio_id = holding.portfolio_id
                              AND latest.as_of_date = holding.as_of_date
                             WHERE holding.instrument_id NOT LIKE 'cash:%'
+                              AND holding.holding_kind = 'position'
+                              AND holding.holding_json ->> 'valuation_basis'
+                                  = 'market_quote'
                               AND holding.quantity <> 0
                         ), planning_taxonomies AS (
                             SELECT taxonomy_id, portfolio_id

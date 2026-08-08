@@ -8,6 +8,7 @@ import OverviewPage, {
 } from './pages/OverviewPage'
 import {
   dailyPerformancePoint,
+  fcnInstrumentFixture,
   holdingFixture,
   holdingsWorkspaceFixture,
   instrumentFixture,
@@ -151,6 +152,50 @@ describe('Overview rendered page contract', () => {
     expect(apiMocks.getPortfolioPerformance).toHaveBeenCalledWith('3', {
       end_date: '2026-07-15',
     })
+  })
+
+  it('keeps carried holdings unavailable in top-holding market analytics', async () => {
+    apiMocks.getHoldingsWorkspace.mockResolvedValue(
+      holdingsWorkspaceFixture({
+        rows: [
+          holdingFixture({
+            line_id: 'holding:fcn-1',
+            instrument_core: fcnInstrumentFixture({
+              instrument_id: 'fcn-1',
+              instrument_name: 'Carried FCN',
+            }),
+            market_value: 500,
+            market_value_base: 500,
+            cost_basis: 500,
+            cost_basis_base: 500,
+            carrying_value: 500,
+            carrying_value_base: 500,
+            valuation_basis: 'carried_cost',
+            coverage_status: 'event-cost',
+            performance_eligible: false,
+            risk_eligible: false,
+            day_change_pct: 0,
+            day_change_value: 0,
+            day_change_value_base: 0,
+          }),
+        ],
+      }),
+    )
+
+    renderPortfolioPage(
+      <OverviewPage />,
+      '/portfolios/3/overview',
+      '/portfolios/:portfolioId/overview',
+    )
+
+    const detailSection = (await screen.findByText('Top Holdings Detail')).closest('section')
+    expect(detailSection).not.toBeNull()
+    const holdingName = within(detailSection!).getByText('Carried FCN')
+    const holdingRow = holdingName.closest('tr')
+    expect(holdingRow).not.toBeNull()
+    expect(within(holdingRow!).getAllByText('N/A').length).toBeGreaterThanOrEqual(5)
+    expect(within(holdingRow!).queryByText('$0.00')).not.toBeInTheDocument()
+    expect(within(holdingRow!).queryByText('0.00%')).not.toBeInTheDocument()
   })
 
   it.each([

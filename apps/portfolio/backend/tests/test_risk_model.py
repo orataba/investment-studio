@@ -46,6 +46,8 @@ def _holding(
         "quantity": 100,
         "allocation": weight,
         "market_value_base": weight * 1_000_000,
+        "risk_eligible": True,
+        "risk_budget_eligible": True,
         "instrument_return_series_all": {
             "points": points if points is not None else _return_points(),
         },
@@ -110,6 +112,84 @@ def test_forward_risk_uses_one_canonical_leaf_model_and_reports_coverage() -> No
     assert sum(row["forward_contribution_to_variance"] for row in rows) == pytest.approx(
         result["forward_risk"]["portfolio_variance"]
     )
+
+
+def test_forward_risk_normalizes_inside_eligible_sleeve_and_discloses_exclusion() -> None:
+    eligible = _holding("equity", 0.4)
+    ineligible = {
+        **_holding("fcn", 0.6),
+        "holding_kind": "position",
+        "risk_eligible": False,
+        "risk_budget_eligible": False,
+        "market_value_base": 600_000.0,
+    }
+    ineligible["instrument_core"] = {
+        **ineligible["instrument_core"],
+        "instrument_type": "fcn",
+    }
+    workspace = {
+        "base_currency": "CNY",
+        "rows": [eligible, ineligible],
+        "analytics_scope_summary": {
+            "scope_name": "Modeled Market Sleeve",
+            "modeled_net_exposure": 400_000.0,
+            "modeled_gross_exposure": 400_000.0,
+            "excluded_carrying_value": 600_000.0,
+            "excluded_liability": 0.0,
+            "cash_unallocated_exposure": 0.0,
+            "coverage_ratio": 0.4,
+            "excluded_rows": [
+                {
+                    "line_id": "holding:fcn",
+                    "instrument_id": "fcn",
+                    "exposure_base": 600_000.0,
+                    "exclusion_reason": "Event-valued position.",
+                }
+            ],
+        },
+    }
+
+    result = enrich_holdings_forward_risk(
+        workspace,
+        as_of_date=AS_OF_DATE,
+        calculation_frequency="daily",
+        risk_policy=_risk_policy(),
+    )
+
+    assert result["forward_risk"]["status"] == "ok"
+    assert result["forward_risk"]["modeled_weight_basis"] == "eligible_gross_exposure"
+    assert result["forward_risk"]["coverage_ratio"] == pytest.approx(0.4)
+    assert result["forward_risk"]["excluded_carrying_value"] == pytest.approx(600_000.0)
+    assert result["forward_risk"]["excluded_rows"][0]["instrument_id"] == "fcn"
+    assert result["rows"][0]["forward_risk_status"] == "ok"
+    assert result["rows"][0]["forward_risk_share"] == pytest.approx(1.0)
+    assert result["rows"][1]["forward_risk_status"] == "policy_excluded"
+    assert result["rows"][1]["forward_risk_share"] is None
+
+
+def test_forward_risk_is_unavailable_when_every_exposure_is_policy_excluded() -> None:
+    excluded = {
+        **_holding("fcn", 1.0),
+        "risk_eligible": False,
+        "risk_budget_eligible": False,
+    }
+    excluded["instrument_core"] = {
+        **excluded["instrument_core"],
+        "instrument_type": "fcn",
+    }
+
+    result = enrich_holdings_forward_risk(
+        {"base_currency": "CNY", "rows": [excluded]},
+        as_of_date=AS_OF_DATE,
+        calculation_frequency="daily",
+        risk_policy=_risk_policy(),
+    )
+
+    assert result["forward_risk"]["status"] == "unavailable"
+    assert result["forward_risk"]["errors"] == [
+        "Modeled sleeve risk requires at least one eligible risky holding."
+    ]
+    assert result["rows"][0]["forward_risk_status"] == "policy_excluded"
 
 
 def test_forward_risk_fails_closed_when_one_member_has_an_internal_period_gap() -> None:
@@ -209,7 +289,7 @@ def test_forward_risk_reports_one_portfolio_level_error_when_base_currency_is_mi
     assert all(row["forward_risk_status"] == "unavailable" for row in result["rows"])
 
 
-def test_forward_risk_fails_closed_when_the_risk_basis_has_observation_gaps() -> None:
+def test_forward_risk_uses_scoped_series_instead_of_global_risk_basis_coverage() -> None:
     workspace = {
         "base_currency": "CNY",
         "risk_basis": {
@@ -229,11 +309,9 @@ def test_forward_risk_fails_closed_when_the_risk_basis_has_observation_gaps() ->
         risk_policy=_risk_policy(),
     )
 
-    assert result["forward_risk"]["status"] == "unavailable"
-    assert result["forward_risk"]["errors"] == [
-        "Risk basis partial - 2 instrument(s) have observation gaps"
-    ]
-    assert all(row["forward_risk_status"] == "unavailable" for row in result["rows"])
+    assert result["forward_risk"]["status"] == "ok"
+    assert result["forward_risk"]["errors"] == []
+    assert all(row["forward_risk_status"] == "ok" for row in result["rows"])
 
 
 def test_covariance_window_is_anchored_to_requested_as_of_date() -> None:

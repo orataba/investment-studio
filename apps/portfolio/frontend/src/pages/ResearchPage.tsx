@@ -26,6 +26,7 @@ import {
   type PortfolioResearchBacktestMetricsRecord,
   type PortfolioResearchBacktestPointRecord,
   type PortfolioResearchBacktestRebalanceFrequency,
+  type PortfolioResearchBacktestRobustnessScenarioRecord,
   type PortfolioResearchBacktestRelativeMetricsRecord,
   type PortfolioResearchBacktestSleevePointRecord,
   type PortfolioResearchAsOfMode,
@@ -72,6 +73,14 @@ type ResearchRunSetupDraft = {
   topSleeveBounds: ResearchTopSleeveBoundDraft[]
   backtestRebalanceFrequency: PortfolioResearchBacktestRebalanceFrequency
   benchmarkInstrumentId: string
+  cashYieldPct: string
+  commissionBps: string
+  taxBps: string
+  slippageBps: string
+  implementationDelayDays: string
+  robustnessScenarios: PortfolioResearchBacktestRobustnessScenarioRecord[]
+  walkForwardTrainingMonths: string
+  walkForwardTestMonths: string
 }
 
 type ResearchTopSleeveBoundDraft = {
@@ -798,6 +807,14 @@ export default function ResearchPage() {
     topSleeveBounds: [],
     backtestRebalanceFrequency: '1m',
     benchmarkInstrumentId: '',
+    cashYieldPct: '2',
+    commissionBps: '2',
+    taxBps: '10',
+    slippageBps: '5',
+    implementationDelayDays: '1',
+    robustnessScenarios: [],
+    walkForwardTrainingMonths: '24',
+    walkForwardTestMonths: '6',
   })
 
   const [planningTaxonomyId, setPlanningTaxonomyId] = useState('')
@@ -811,6 +828,14 @@ export default function ResearchPage() {
   const [topSleeveBounds, setTopSleeveBounds] = useState<ResearchTopSleeveBoundDraft[]>([])
   const [backtestRebalanceFrequency, setBacktestRebalanceFrequency] = useState<PortfolioResearchBacktestRebalanceFrequency>('1m')
   const [benchmarkInstrumentId, setBenchmarkInstrumentId] = useState('')
+  const [cashYieldPct, setCashYieldPct] = useState('2')
+  const [commissionBps, setCommissionBps] = useState('2')
+  const [taxBps, setTaxBps] = useState('10')
+  const [slippageBps, setSlippageBps] = useState('5')
+  const [implementationDelayDays, setImplementationDelayDays] = useState('1')
+  const [robustnessScenarios, setRobustnessScenarios] = useState<PortfolioResearchBacktestRobustnessScenarioRecord[]>([])
+  const [walkForwardTrainingMonths, setWalkForwardTrainingMonths] = useState('24')
+  const [walkForwardTestMonths, setWalkForwardTestMonths] = useState('6')
 
   currentPortfolioIdRef.current = portfolioId
 
@@ -967,6 +992,14 @@ export default function ResearchPage() {
       topSleeveBounds: nextTopSleeveBounds,
       backtestRebalanceFrequency: workbench.settings.backtest_rebalance_frequency ?? '1m',
       benchmarkInstrumentId: nextBenchmarkInstrumentId,
+      cashYieldPct: String(workbench.settings.backtest_cash_yield_annual * 100),
+      commissionBps: String(workbench.settings.backtest_commission_bps),
+      taxBps: String(workbench.settings.backtest_tax_bps),
+      slippageBps: String(workbench.settings.backtest_slippage_bps),
+      implementationDelayDays: String(workbench.settings.backtest_implementation_delay_days),
+      robustnessScenarios: workbench.settings.backtest_robustness_scenarios,
+      walkForwardTrainingMonths: String(workbench.settings.backtest_walk_forward_training_months),
+      walkForwardTestMonths: String(workbench.settings.backtest_walk_forward_test_months),
     }
     setPlanningTaxonomyId(workbench.default_planning_taxonomy_id ?? workbench.settings.planning_taxonomy_id ?? '')
     setAsOfMode(nextAsOf.asOfMode)
@@ -979,6 +1012,14 @@ export default function ResearchPage() {
     setTopSleeveBounds(nextTopSleeveBounds)
     setBacktestRebalanceFrequency(nextDraft.backtestRebalanceFrequency)
     setBenchmarkInstrumentId(nextBenchmarkInstrumentId)
+    setCashYieldPct(nextDraft.cashYieldPct)
+    setCommissionBps(nextDraft.commissionBps)
+    setTaxBps(nextDraft.taxBps)
+    setSlippageBps(nextDraft.slippageBps)
+    setImplementationDelayDays(nextDraft.implementationDelayDays)
+    setRobustnessScenarios(nextDraft.robustnessScenarios)
+    setWalkForwardTrainingMonths(nextDraft.walkForwardTrainingMonths)
+    setWalkForwardTestMonths(nextDraft.walkForwardTestMonths)
     runSetupDraftRef.current = nextDraft
   }, [workbench])
 
@@ -1243,6 +1284,54 @@ export default function ResearchPage() {
     return nextDraft
   }
 
+  function updateRobustnessScenario(
+    index: number,
+    field: keyof PortfolioResearchBacktestRobustnessScenarioRecord,
+    value: string,
+  ) {
+    setRobustnessScenarios((current) => {
+      const next = current.map((scenario, scenarioIndex) => {
+        if (scenarioIndex !== index) {
+          return scenario
+        }
+        if (field === 'scenario_id' || field === 'label') {
+          return { ...scenario, [field]: value }
+        }
+        return { ...scenario, [field]: Number(value) }
+      })
+      updateRunSetupDraft({ robustnessScenarios: next })
+      return next
+    })
+  }
+
+  function addRobustnessScenario() {
+    const existingIds = new Set(robustnessScenarios.map((scenario) => scenario.scenario_id))
+    let sequence = robustnessScenarios.length + 1
+    while (existingIds.has(`stress_${sequence}`)) {
+      sequence += 1
+    }
+    const next = [
+      ...robustnessScenarios,
+      {
+        scenario_id: `stress_${sequence}`,
+        label: `Stress ${sequence}`,
+        cash_yield_annual: 0,
+        commission_bps: 4,
+        tax_bps: 20,
+        slippage_bps: 10,
+        implementation_delay_days: 2,
+      },
+    ]
+    setRobustnessScenarios(next)
+    updateRunSetupDraft({ robustnessScenarios: next })
+  }
+
+  function removeRobustnessScenario(index: number) {
+    const next = robustnessScenarios.filter((_scenario, scenarioIndex) => scenarioIndex !== index)
+    setRobustnessScenarios(next)
+    updateRunSetupDraft({ robustnessScenarios: next })
+  }
+
     function toggleFrozenNode(nodeId: string) {
       setFrozenNodeIds((current) => {
       if (current.includes(nodeId)) {
@@ -1305,6 +1394,13 @@ export default function ResearchPage() {
     const parsedGrossExposure = draft.grossExposure.trim() ? Number(draft.grossExposure) : null
     const parsedTargetVolatility = draft.targetVolatilityPct.trim() ? Number(draft.targetVolatilityPct) / 100 : null
     const parsedMaxGrossExposure = draft.maxGrossExposure.trim() ? Number(draft.maxGrossExposure) : null
+    const parsedCashYield = Number(draft.cashYieldPct) / 100
+    const parsedCommissionBps = Number(draft.commissionBps)
+    const parsedTaxBps = Number(draft.taxBps)
+    const parsedSlippageBps = Number(draft.slippageBps)
+    const parsedImplementationDelayDays = Number(draft.implementationDelayDays)
+    const parsedWalkForwardTrainingMonths = Number(draft.walkForwardTrainingMonths)
+    const parsedWalkForwardTestMonths = Number(draft.walkForwardTestMonths)
     const volatilityMode = isVolatilityCapitalMode(draft.capitalMode)
     const riskPolicy = await getPortfolioRiskPolicy(targetPortfolioId)
     if (currentPortfolioIdRef.current !== targetPortfolioId) {
@@ -1338,6 +1434,14 @@ export default function ResearchPage() {
       top_sleeve_weight_bounds: topSleeveWeightBounds,
       backtest_rebalance_frequency: draft.backtestRebalanceFrequency,
       backtest_benchmark_instrument_id: draft.benchmarkInstrumentId || null,
+      backtest_cash_yield_annual: parsedCashYield,
+      backtest_commission_bps: parsedCommissionBps,
+      backtest_tax_bps: parsedTaxBps,
+      backtest_slippage_bps: parsedSlippageBps,
+      backtest_implementation_delay_days: parsedImplementationDelayDays,
+      backtest_robustness_scenarios: draft.robustnessScenarios,
+      backtest_walk_forward_training_months: parsedWalkForwardTrainingMonths,
+      backtest_walk_forward_test_months: parsedWalkForwardTestMonths,
       notes: draft.notes,
     })
   }
@@ -1435,6 +1539,16 @@ export default function ResearchPage() {
 
   const solvedGroups = latestRun?.detail?.solved_result_groups ?? []
   const backtest = latestRun?.detail?.backtest ?? null
+  const pointInTimeCoverage = backtest?.point_in_time_coverage ?? null
+  const skippedRebalances = pointInTimeCoverage?.skipped_rebalances ?? []
+  const configurationVersionsUsed = pointInTimeCoverage?.configuration_versions_used ?? []
+  const executionRecords = backtest?.execution_records ?? []
+  const robustnessResults = backtest?.robustness_results ?? []
+  const walkForward = backtest?.walk_forward ?? null
+  const contributionReconciliation = backtest?.contribution_reconciliation_points ?? []
+  const latestContributionReconciliation = contributionReconciliation.length
+    ? contributionReconciliation[contributionReconciliation.length - 1]
+    : null
   const staleRun = latestRun?.status === 'completed' && latestRun.reliability_state === 'stale'
   const solveEvents = (latestRun?.detail?.scope_solve_events ?? []).length
     ? latestRun?.detail?.scope_solve_events ?? []
@@ -1686,6 +1800,101 @@ export default function ResearchPage() {
                       ))}
                     </select>
                   </label>
+                  <label>
+                    <span>Cash Yield (%)</span>
+                    <input
+                      type="number"
+                      step="0.1"
+                      min="-100"
+                      max="100"
+                      value={cashYieldPct}
+                      onChange={(event) => {
+                        setCashYieldPct(event.target.value)
+                        updateRunSetupDraft({ cashYieldPct: event.target.value })
+                      }}
+                    />
+                  </label>
+                  <label>
+                    <span>Commission (bps)</span>
+                    <input
+                      type="number"
+                      step="0.1"
+                      min="0"
+                      value={commissionBps}
+                      onChange={(event) => {
+                        setCommissionBps(event.target.value)
+                        updateRunSetupDraft({ commissionBps: event.target.value })
+                      }}
+                    />
+                  </label>
+                  <label>
+                    <span>Sell Tax (bps)</span>
+                    <input
+                      type="number"
+                      step="0.1"
+                      min="0"
+                      value={taxBps}
+                      onChange={(event) => {
+                        setTaxBps(event.target.value)
+                        updateRunSetupDraft({ taxBps: event.target.value })
+                      }}
+                    />
+                  </label>
+                  <label>
+                    <span>Slippage (bps)</span>
+                    <input
+                      type="number"
+                      step="0.1"
+                      min="0"
+                      value={slippageBps}
+                      onChange={(event) => {
+                        setSlippageBps(event.target.value)
+                        updateRunSetupDraft({ slippageBps: event.target.value })
+                      }}
+                    />
+                  </label>
+                  <label>
+                    <span>Delay (days)</span>
+                    <input
+                      type="number"
+                      step="1"
+                      min="0"
+                      max="30"
+                      value={implementationDelayDays}
+                      onChange={(event) => {
+                        setImplementationDelayDays(event.target.value)
+                        updateRunSetupDraft({ implementationDelayDays: event.target.value })
+                      }}
+                    />
+                  </label>
+                  <label>
+                    <span>WF Train (months)</span>
+                    <input
+                      type="number"
+                      step="1"
+                      min="1"
+                      max="120"
+                      value={walkForwardTrainingMonths}
+                      onChange={(event) => {
+                        setWalkForwardTrainingMonths(event.target.value)
+                        updateRunSetupDraft({ walkForwardTrainingMonths: event.target.value })
+                      }}
+                    />
+                  </label>
+                  <label>
+                    <span>WF Test (months)</span>
+                    <input
+                      type="number"
+                      step="1"
+                      min="1"
+                      max="60"
+                      value={walkForwardTestMonths}
+                      onChange={(event) => {
+                        setWalkForwardTestMonths(event.target.value)
+                        updateRunSetupDraft({ walkForwardTestMonths: event.target.value })
+                      }}
+                    />
+                  </label>
                   <div className="research-benchmark-field">
                     <span>Benchmark</span>
                     <BenchmarkSearchBox
@@ -1718,6 +1927,111 @@ export default function ResearchPage() {
                     {actionPending === 'run' ? 'Running...' : 'Run'}
                   </button>
                 </div>
+                </div>
+                <div className="research-robustness-editor">
+                  <div className="research-robustness-header">
+                    <span>Robustness Scenarios</span>
+                    <button
+                      type="button"
+                      className="research-icon-button"
+                      onClick={addRobustnessScenario}
+                      aria-label="Add robustness scenario"
+                      title="Add robustness scenario"
+                    >
+                      +
+                    </button>
+                  </div>
+                  <div className="table-shell">
+                    <table className="transactions-table research-robustness-table">
+                      <thead>
+                        <tr>
+                          <th>ID</th>
+                          <th>Label</th>
+                          <th>Cash %</th>
+                          <th>Commission</th>
+                          <th>Tax</th>
+                          <th>Slippage</th>
+                          <th>Delay</th>
+                          <th aria-label="Actions" />
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {!robustnessScenarios.length ? (
+                          <TableStatusRow colSpan={8} label="No robustness scenarios configured." />
+                        ) : robustnessScenarios.map((scenario, index) => (
+                          <tr key={`${scenario.scenario_id}:${index}`}>
+                            <td>
+                              <input
+                                value={scenario.scenario_id}
+                                onChange={(event) => updateRobustnessScenario(index, 'scenario_id', event.target.value)}
+                                aria-label={`Scenario ${index + 1} ID`}
+                              />
+                            </td>
+                            <td>
+                              <input
+                                value={scenario.label}
+                                onChange={(event) => updateRobustnessScenario(index, 'label', event.target.value)}
+                                aria-label={`Scenario ${index + 1} label`}
+                              />
+                            </td>
+                            <td>
+                              <input
+                                type="number"
+                                step="0.1"
+                                min="-100"
+                                max="100"
+                                value={scenario.cash_yield_annual * 100}
+                                onChange={(event) => updateRobustnessScenario(
+                                  index,
+                                  'cash_yield_annual',
+                                  String(Number(event.target.value) / 100),
+                                )}
+                                aria-label={`Scenario ${index + 1} cash yield percent`}
+                              />
+                            </td>
+                            {(['commission_bps', 'tax_bps', 'slippage_bps'] as const).map((field) => (
+                              <td key={field}>
+                                <input
+                                  type="number"
+                                  step="0.1"
+                                  min="0"
+                                  value={scenario[field]}
+                                  onChange={(event) => updateRobustnessScenario(index, field, event.target.value)}
+                                  aria-label={`Scenario ${index + 1} ${field.replace(/_/g, ' ')}`}
+                                />
+                              </td>
+                            ))}
+                            <td>
+                              <input
+                                type="number"
+                                step="1"
+                                min="0"
+                                max="30"
+                                value={scenario.implementation_delay_days}
+                                onChange={(event) => updateRobustnessScenario(
+                                  index,
+                                  'implementation_delay_days',
+                                  event.target.value,
+                                )}
+                                aria-label={`Scenario ${index + 1} implementation delay days`}
+                              />
+                            </td>
+                            <td>
+                              <button
+                                type="button"
+                                className="research-icon-button"
+                                onClick={() => removeRobustnessScenario(index)}
+                                aria-label={`Remove ${scenario.label}`}
+                                title="Remove scenario"
+                              >
+                                x
+                              </button>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
                 </div>
                 {scopeOptionsError ? <div className="inline-notice inline-notice-error">{scopeOptionsError}</div> : null}
               </fieldset>
@@ -1986,6 +2300,194 @@ export default function ResearchPage() {
                     benchmark={displayBenchmark}
                     relativeMetrics={displayRelativeMetrics}
                   />
+                </div>
+              </section>
+
+              <section className="performance-block-grid research-validation-grid">
+                <div className="performance-section-block">
+                  <div className="panel-header panel-header-inline">
+                    <div><div className="panel-title">Point-in-Time Coverage</div></div>
+                  </div>
+                  <div className="table-shell">
+                    <table className="transactions-table research-validation-summary-table">
+                      <tbody>
+                        <tr>
+                          <th>Method</th>
+                          <td>{backtest?.methodology?.name ?? 'N/A'}</td>
+                        </tr>
+                        <tr>
+                          <th>Status</th>
+                          <td>{pointInTimeCoverage ? formatLabel(pointInTimeCoverage.status) : 'N/A'}</td>
+                        </tr>
+                        <tr>
+                          <th>Decisions</th>
+                          <td>{pointInTimeCoverage?.decision_count ?? 'N/A'}</td>
+                        </tr>
+                        <tr>
+                          <th>Skipped Decisions</th>
+                          <td>{pointInTimeCoverage ? skippedRebalances.length : 'N/A'}</td>
+                        </tr>
+                        <tr>
+                          <th>Configuration Versions</th>
+                          <td>{configurationVersionsUsed.length
+                            ? configurationVersionsUsed.join(', ')
+                            : 'N/A'}</td>
+                        </tr>
+                        <tr>
+                          <th>Decision Window</th>
+                          <td>{pointInTimeCoverage?.first_decision_date && pointInTimeCoverage.last_decision_date
+                            ? `${pointInTimeCoverage.first_decision_date} to ${pointInTimeCoverage.last_decision_date}`
+                            : 'N/A'}</td>
+                        </tr>
+                        <tr>
+                          <th>Total Turnover</th>
+                          <td>{formatMaybePercent(backtest?.total_turnover)}</td>
+                        </tr>
+                        <tr>
+                          <th>Total Cost</th>
+                          <td>{formatMaybePercent(backtest?.total_cost)}</td>
+                        </tr>
+                        <tr>
+                          <th>Contribution Residual</th>
+                          <td>{latestContributionReconciliation
+                            ? formatMaybeNumber(latestContributionReconciliation.residual, 8)
+                            : 'N/A'}</td>
+                        </tr>
+                      </tbody>
+                    </table>
+                  </div>
+                  {pointInTimeCoverage?.unavailable_reason ? (
+                    <div className="inline-notice">{pointInTimeCoverage.unavailable_reason}</div>
+                  ) : null}
+                  {skippedRebalances.length ? (
+                    <div className="inline-notice">
+                      {skippedRebalances.slice(0, 3).map((item) => `${item.date}: ${item.reason}`).join(' ')}
+                      {skippedRebalances.length > 3 ? ` (+${skippedRebalances.length - 3} more)` : ''}
+                    </div>
+                  ) : null}
+                </div>
+                <div className="performance-section-block">
+                  <div className="panel-header panel-header-inline">
+                    <div><div className="panel-title">Execution & Costs</div></div>
+                  </div>
+                  <div className="table-shell">
+                    <table className="transactions-table research-execution-table">
+                      <thead>
+                        <tr>
+                          <th>Decision</th>
+                          <th>Execution</th>
+                          <th>Config</th>
+                          <th>Buy</th>
+                          <th>Sell</th>
+                          <th>Turnover</th>
+                          <th>Cost</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {!executionRecords.length ? (
+                          <TableStatusRow colSpan={7} label="N/A" />
+                        ) : executionRecords.map((record, index) => (
+                          <tr key={`${record.decision_date}:${record.actual_execution_date}:${index}`}>
+                            <td>{record.decision_date}</td>
+                            <td>{record.actual_execution_date}</td>
+                            <td>{record.taxonomy_configuration_version ?? 'N/A'}</td>
+                            <td>{formatMaybePercent(record.risky_buy_turnover)}</td>
+                            <td>{formatMaybePercent(record.risky_sell_turnover)}</td>
+                            <td>{formatMaybePercent(record.one_way_turnover)}</td>
+                            <td>{formatMaybePercent(record.total_cost)}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              </section>
+
+              <section className="performance-block-grid research-validation-grid">
+                <div className="performance-section-block">
+                  <div className="panel-header panel-header-inline">
+                    <div><div className="panel-title">Robustness</div></div>
+                  </div>
+                  <div className="table-shell">
+                    <table className="transactions-table research-robustness-results-table">
+                      <thead>
+                        <tr>
+                          <th>Scenario</th>
+                          <th>Cash</th>
+                          <th>Commission</th>
+                          <th>Tax</th>
+                          <th>Slippage</th>
+                          <th>Delay</th>
+                          <th>Return</th>
+                          <th>Delta</th>
+                          <th>Max DD</th>
+                          <th>Cost</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {!robustnessResults.length ? (
+                          <TableStatusRow colSpan={10} label="N/A" />
+                        ) : robustnessResults.map((result) => (
+                          <tr key={result.scenario_id}>
+                            <td>{result.label}</td>
+                            <td>{formatMaybePercent(result.cash_yield_annual)}</td>
+                            <td>{formatMaybeNumber(result.commission_bps, 1)}</td>
+                            <td>{formatMaybeNumber(result.tax_bps, 1)}</td>
+                            <td>{formatMaybeNumber(result.slippage_bps, 1)}</td>
+                            <td>{result.implementation_delay_days}D</td>
+                            <td>{formatMaybePercent(result.metrics?.period_return)}</td>
+                            <td>{formatMaybePercent(result.period_return_delta)}</td>
+                            <td>{formatMaybePercent(result.metrics?.max_drawdown)}</td>
+                            <td>{formatMaybePercent(result.total_cost)}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+                <div className="performance-section-block">
+                  <div className="panel-header panel-header-inline">
+                    <div><div className="panel-title">Rolling OOS Holdout</div></div>
+                  </div>
+                  {walkForward?.methodology_note ? (
+                    <div className="inline-notice">{walkForward.methodology_note}</div>
+                  ) : null}
+                  <div className="research-oos-summary">
+                    <span>OOS Return <strong>{formatMaybePercent(walkForward?.oos_metrics?.period_return)}</strong></span>
+                    <span>OOS Volatility <strong>{formatMaybePercent(walkForward?.oos_metrics?.annualized_volatility)}</strong></span>
+                    <span>OOS Max DD <strong>{formatMaybePercent(walkForward?.oos_metrics?.max_drawdown)}</strong></span>
+                  </div>
+                  <div className="table-shell">
+                    <table className="transactions-table research-walk-forward-table">
+                      <thead>
+                        <tr>
+                          <th>Training (diagnostic)</th>
+                          <th>Test</th>
+                          <th>Configs</th>
+                          <th>OOS Return</th>
+                          <th>Status</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {!walkForward?.windows?.length ? (
+                          <TableStatusRow
+                            colSpan={5}
+                            label={walkForward?.unavailable_reason ?? 'N/A'}
+                          />
+                        ) : walkForward.windows.map((window) => (
+                          <tr key={`${window.training_start_date}:${window.test_start_date}`}>
+                            <td>{window.training_start_date} to {window.training_end_date}</td>
+                            <td>{window.test_start_date} to {window.test_end_date}</td>
+                            <td>{(window.configuration_versions_used ?? []).length
+                              ? (window.configuration_versions_used ?? []).join(', ')
+                              : 'N/A'}</td>
+                            <td>{formatMaybePercent(window.metrics?.period_return)}</td>
+                            <td>{window.available ? 'Available' : window.unavailable_reason ?? 'Unavailable'}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
                 </div>
               </section>
 

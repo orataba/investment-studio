@@ -68,6 +68,14 @@ Database Dashboard 的邮件刷新使用显式产品规则匹配发件人、主�
 
 Database Dashboard 也支持 Tushare SDK 兼容刷新。将 instrument 的 `Source Mode` 设为 `API`，`API Profile` 设为 `tushare` 后，所有调用都通过 [tushare_client.py](./backend/platform_app/services/tushare_client.py) 初始化 `pro`，并把 SDK 的 `_DataApi__http_url` 指向 `PORTFOLIO_OPS_PLATFORM_TUSHARE_API_URL`，默认值为 `https://ttx.dailyfetch.top/`；`pro_bar` 也统一由该模块按 `ts.pro_bar(api=pro, ...)` 调用。公募 `.OF` 代码通过 `fund_nav` 写入 `official_nav / total_return_nav`，场内基金 `.SH/.SZ` 通过 `fund_daily` 写入 `price/close`，指数 `.SH/.SZ/.CSI/.CNI` 通过 `index_daily` 写入 `price/close`。Tushare token 只从仓库外的 `platform.env` 或显式进程环境读取；backend 目录中的 `.env.example` 仅说明键名，不承载真实值。
 
+`H11001.CSI` 是显式例外：Registry 必须同时配置
+`source_api_fallback_profile=csindex` 与 `source_api_fallback_code=H11001`，
+系统才会在 Tushare `index_daily` 没有新行时调用中证指数官网的
+`/perf/index-perf` 公共接口。备用源只写官方 `close`，provider 记为
+`csindex:index-perf`；接口没有 OHLCV 时保持缺失，不根据收盘值合成 K 线。
+端点与超时可分别通过 `PORTFOLIO_OPS_PLATFORM_CSINDEX_API_URL` 和
+`PORTFOLIO_OPS_PLATFORM_CSINDEX_TIMEOUT_SECONDS` 覆盖。
+
 指数的 provider 字段名与收益口径分开管理。`close` 只说明行情字段，不能自动等同于全收益；Database Dashboard 的 `Index Return Semantics` 必须按指数公司代码说明标记为 `Price return`、`Total return` 或 `Unknown`。例如普通沪深300代码与其全收益衍生代码是两条不同指数。该标记进入共享 Registry，Portfolio 再据此决定基准比较口径。
 
 后台定时刷新使用 [backend/scripts/refresh_market_data_scheduled.py](./backend/scripts/refresh_market_data_scheduled.py)。默认依次刷新 Tushare、邮件，再用 Registry 精确查询只重建方法版本落后的当前基金净值投影；最后同步等待 Portfolio 刷新响应，并让 Watchlist 可靠入队后由 worker 异步重算。投影协调不访问行情源或邮箱，也可用 `--channel projection` 单独执行。安装每天 21:00 刷新 timer：

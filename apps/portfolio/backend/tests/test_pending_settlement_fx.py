@@ -58,6 +58,7 @@ def _transactions() -> list[dict[str, object]]:
     return [
         {
             "transaction_id": "txn-opening-cash",
+            "transaction_sequence": 1,
             "portfolio_id": PORTFOLIO_ID,
             "transaction_type": "opening_balance",
             "trade_date": "2026-01-01",
@@ -76,6 +77,7 @@ def _transactions() -> list[dict[str, object]]:
         },
         {
             "transaction_id": "txn-unsettled-buy",
+            "transaction_sequence": 2,
             "portfolio_id": PORTFOLIO_ID,
             "transaction_type": "buy",
             "trade_date": "2026-01-01",
@@ -204,6 +206,11 @@ def test_unsettled_foreign_security_fx_is_not_absorbed_by_asset_capital_gain(
         include_materialized_rows=True,
     )
     end_snapshot = snapshots[-1]
+    settlement_payable = next(
+        row
+        for row in end_snapshot["_holding_rows"]
+        if row["holding_kind"] == "settlement_payable"
+    )
 
     assert end_snapshot["cash_currency_gains"] == pytest.approx(expected_fx_change)
     assert end_snapshot["instrument_currency_gains"] == pytest.approx(expected_fx_change)
@@ -211,6 +218,11 @@ def test_unsettled_foreign_security_fx_is_not_absorbed_by_asset_capital_gain(
         -expected_fx_change
     )
     assert end_snapshot["total_pnl"] == pytest.approx(expected_fx_change)
+    assert settlement_payable["settlement_date"] == "2026-01-03"
+    assert settlement_payable["pending_until_date"] == "2026-01-03"
+    assert settlement_payable["pending_status"] == "awaiting_settlement"
+    assert settlement_payable["settlement_amount"] == pytest.approx(-100.0)
+    assert settlement_payable["settlement_amount_base"] == pytest.approx(-100.0 / 7.5)
 
     calculation = performance.build_period_calculation_report(
         _portfolio(),

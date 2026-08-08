@@ -88,6 +88,22 @@ def find_instrument_by_identifier(
     )
 
 
+def find_instrument_by_broker_identifier(
+    *,
+    broker: str,
+    identifier_type: str,
+    identifier_value: str,
+    include_inactive: bool = False,
+) -> dict[str, object] | None:
+    return shared_store.find_instrument_by_broker_identifier(
+        get_session_factory(),
+        broker=broker,
+        identifier_type=identifier_type,
+        identifier_value=identifier_value,
+        include_inactive=include_inactive,
+    )
+
+
 def create_instrument(
     *,
     instrument_name: str,
@@ -95,6 +111,10 @@ def create_instrument(
     currency: str,
     identifiers: list[dict[str, object]],
     quote_selection_policy: dict[str, object] | None = None,
+    option_contract: dict[str, object] | None = None,
+    fcn_contract: dict[str, object] | None = None,
+    broker_identifiers: list[dict[str, object]] | None = None,
+    corporate_action_adjustment_policy: dict[str, object] | None = None,
 ) -> dict[str, object]:
     return shared_store.create_instrument(
         get_session_factory(),
@@ -103,6 +123,26 @@ def create_instrument(
         currency=currency,
         identifiers=identifiers,
         quote_selection_policy=quote_selection_policy,
+        option_contract=option_contract,
+        fcn_contract=fcn_contract,
+        broker_identifiers=broker_identifiers,
+        corporate_action_adjustment_policy=corporate_action_adjustment_policy,
+    )
+
+
+def upsert_derivative_contract_metadata(
+    *,
+    instrument_id: str,
+    fcn_contract: dict[str, object] | None,
+    broker_identifiers: list[dict[str, object]],
+    corporate_action_adjustment_policy: dict[str, object],
+) -> dict[str, object] | None:
+    return shared_store.upsert_derivative_contract_metadata(
+        get_session_factory(),
+        instrument_id=instrument_id,
+        fcn_contract=fcn_contract,
+        broker_identifiers=broker_identifiers,
+        corporate_action_adjustment_policy=corporate_action_adjustment_policy,
     )
 
 

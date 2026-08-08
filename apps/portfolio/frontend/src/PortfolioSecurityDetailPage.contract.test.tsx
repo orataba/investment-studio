@@ -1,9 +1,13 @@
-import { act, screen, waitFor } from '@testing-library/react'
+import { act, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import PortfolioSecurityDetailPage from './pages/PortfolioSecurityDetailPage'
-import { holdingFixture, instrumentFixture } from './test/portfolioFixtures'
+import {
+  holdingFixture,
+  instrumentFixture,
+  optionInstrumentFixture,
+} from './test/portfolioFixtures'
 import { renderPortfolioPage } from './test/renderPortfolioPage'
 
 const apiMocks = vi.hoisted(() => ({
@@ -65,7 +69,7 @@ describe('Security Detail lazy-load contract', () => {
       as_of_date: '2026-07-15',
       view_label: 'View: Holdings',
       quality_warnings: [],
-      row: compactHoldingProjection(),
+      rows: [compactHoldingProjection()],
     })
     apiMocks.getPortfolioInstrumentPriceChart.mockResolvedValue({
       portfolio_id: '3',
@@ -145,6 +149,100 @@ describe('Security Detail lazy-load contract', () => {
         end_date: '2026-07-15',
       })
     })
+  })
+
+  it('keeps a written obligation beside the long option position in instrument detail', async () => {
+    const optionCore = optionInstrumentFixture({
+      instrument_id: 'option-1',
+      instrument_name: 'Alpha 110 Call',
+      identifiers: [],
+    })
+    const position = {
+      ...compactHoldingProjection(),
+      line_id: 'option-1',
+      holding_kind: 'position',
+      instrument_core: optionCore,
+      market_value: 500,
+      market_value_base: 500,
+      cost_basis: 500,
+      cost_basis_base: 500,
+      carrying_value: 500,
+      carrying_value_base: 500,
+      fair_value: null,
+      fair_value_coverage_status: 'unavailable',
+      valuation_basis: 'carried_cost',
+      coverage_status: 'event-cost',
+    }
+    const obligation = {
+      ...compactHoldingProjection(),
+      line_id: 'option-1:obligation',
+      holding_kind: 'option_obligation',
+      instrument_core: optionCore,
+      quantity: 200,
+      open_contract_quantity: 2,
+      covered_underlying_quantity: 200,
+      obligation_status: 'open',
+      coverage_type: 'covered_call',
+      premium_basis_remaining: 300,
+      liability_value: 300,
+      liability_value_base: 300,
+      market_value: -300,
+      market_value_base: -300,
+      cost_basis: null,
+      cost_basis_base: null,
+      valuation_basis: 'premium_liability',
+      coverage_status: 'event-liability',
+      is_liability: true,
+    }
+    apiMocks.getPortfolioInstrumentHoldingProjection.mockResolvedValue({
+      portfolio_id: '3',
+      portfolio_name: 'Contract Portfolio',
+      base_currency: 'USD',
+      as_of_date: '2026-07-15',
+      view_label: 'View: Holdings',
+      quality_warnings: [],
+      rows: [position, obligation],
+    })
+    apiMocks.getPortfolioInstrumentPriceChart.mockResolvedValue({
+      portfolio_id: '3',
+      instrument_core: optionCore,
+      as_of_date: '2026-07-15',
+      range_key: '1y',
+      chart_basis: null,
+      metric_family: null,
+      currency: 'USD',
+      points: [],
+      summary: {
+        point_count: 0,
+        change_value: null,
+        change_pct: null,
+        high: null,
+        low: null,
+      },
+    })
+
+    renderPortfolioPage(
+      <PortfolioSecurityDetailPage />,
+      '/portfolios/3/holdings/option-1',
+      '/portfolios/:portfolioId/holdings/:instrumentId',
+    )
+
+    expect(await screen.findByRole('heading', { name: 'Alpha 110 Call' })).toBeInTheDocument()
+    const obligationStrip = screen.getByLabelText('Written option obligation')
+    expect(within(obligationStrip).getByText('Open')).toBeInTheDocument()
+    expect(within(obligationStrip).getByText('Covered Call')).toBeInTheDocument()
+    expect(within(obligationStrip).getByText('2.00')).toBeInTheDocument()
+    expect(within(obligationStrip).getByText('200.00')).toBeInTheDocument()
+    expect(within(obligationStrip).getByText('$300.00 / $300.00')).toBeInTheDocument()
+    const heroMetrics = document.querySelector<HTMLElement>('.portfolio-security-hero-metrics')
+    expect(heroMetrics).not.toBeNull()
+    expect(within(heroMetrics!).getByText('Carrying value').parentElement).toHaveTextContent('$500.00')
+    expect(within(heroMetrics!).getByText('Unrealized P/L').parentElement).toHaveTextContent('N/A')
+    expect(within(heroMetrics!).getByText('Unrealized P/L').parentElement).not.toHaveTextContent('$0.00')
+    await waitFor(() => {
+      expect(apiMocks.getPortfolioPositionLots).toHaveBeenCalled()
+    })
+    expect(apiMocks.getPortfolioInstrumentPriceChart).not.toHaveBeenCalled()
   })
 
   it('clears the old chart while a newly selected range is loading', async () => {

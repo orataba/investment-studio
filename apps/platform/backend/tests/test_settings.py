@@ -28,6 +28,8 @@ def test_settings_define_a_private_operations_schema_and_migration_target() -> N
     assert settings.operations_database_schema == "platform"
     assert settings.migration_database_url == settings.database_url
     assert settings.tushare_api_url == "https://ttx.dailyfetch.top"
+    assert settings.csindex_api_url == "https://www.csindex.com.cn/csindex-home"
+    assert settings.csindex_timeout_seconds == 30
 
 
 def test_platform_search_path_precedes_the_shared_registry() -> None:

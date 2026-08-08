@@ -243,6 +243,126 @@ describe('Taxonomies rendered page contract', () => {
     await waitFor(() => expect(screen.getByTestId('portfolio-workspace')).toHaveAttribute('aria-busy', 'false'))
   })
 
+  it('hydrates policy editing from the nearest effective ancestor in a deep node chain', async () => {
+    apiMocks.getPortfolioTaxonomyCatalog.mockResolvedValueOnce({
+      ...taxonomyCatalog,
+      taxonomy_nodes: [
+        ...taxonomyCatalog.taxonomy_nodes,
+        {
+          taxonomy_node_id: 'structured',
+          taxonomy_id: 'taxonomy-1',
+          parent_taxonomy_node_id: null,
+          node_name: 'Structured',
+          node_code: 'STRUCT',
+          sort_order: 2,
+          is_terminal: false,
+          default_target_dimension: 'weight',
+          status: 'active',
+        },
+        {
+          taxonomy_node_id: 'options',
+          taxonomy_id: 'taxonomy-1',
+          parent_taxonomy_node_id: 'structured',
+          node_name: 'Options',
+          node_code: 'OPTIONS',
+          sort_order: 1,
+          is_terminal: false,
+          default_target_dimension: 'weight',
+          status: 'active',
+        },
+        {
+          taxonomy_node_id: 'written-calls',
+          taxonomy_id: 'taxonomy-1',
+          parent_taxonomy_node_id: 'options',
+          node_name: 'Written Calls',
+          node_code: 'WRITTEN',
+          sort_order: 1,
+          is_terminal: true,
+          default_target_dimension: 'weight',
+          status: 'active',
+        },
+      ],
+      analytics_scope_policy_version: 3,
+      analytics_scope_policies: [
+        {
+          analytics_scope_policy_id: 'policy-root',
+          portfolio_id: '3',
+          taxonomy_id: 'taxonomy-1',
+          taxonomy_node_id: '__root__',
+          risk_eligible: true,
+          risk_budget_eligible: true,
+          performance_scope: 'ordinary',
+          valuation_basis: 'market',
+          exclusion_reason: null,
+          effective_from: '2000-01-01',
+          effective_to: null,
+          policy_version: 1,
+          superseded_by_policy_id: null,
+          created_at: '2026-01-01T00:00:00Z',
+        },
+        {
+          analytics_scope_policy_id: 'policy-structured',
+          portfolio_id: '3',
+          taxonomy_id: 'taxonomy-1',
+          taxonomy_node_id: 'structured',
+          risk_eligible: true,
+          risk_budget_eligible: false,
+          performance_scope: 'operational_only',
+          valuation_basis: 'event',
+          exclusion_reason: 'Grandparent policy must not win.',
+          effective_from: '2000-01-01',
+          effective_to: null,
+          policy_version: 2,
+          superseded_by_policy_id: null,
+          created_at: '2026-01-02T00:00:00Z',
+        },
+        {
+          analytics_scope_policy_id: 'policy-options',
+          portfolio_id: '3',
+          taxonomy_id: 'taxonomy-1',
+          taxonomy_node_id: 'options',
+          risk_eligible: false,
+          risk_budget_eligible: false,
+          performance_scope: 'derivative_lifecycle',
+          valuation_basis: 'obligation',
+          exclusion_reason: 'Nearest option ancestor.',
+          effective_from: '2000-01-01',
+          effective_to: null,
+          policy_version: 3,
+          superseded_by_policy_id: null,
+          created_at: '2026-01-03T00:00:00Z',
+        },
+      ],
+      analytics_taxonomy_selections: [],
+    })
+    const user = userEvent.setup()
+
+    renderPortfolioPage(
+      <TaxonomiesPage />,
+      '/portfolios/3/taxonomies',
+      '/portfolios/:portfolioId/taxonomies',
+    )
+
+    await user.selectOptions(
+      await screen.findByRole('combobox', { name: 'Analytics Scope' }),
+      'written-calls',
+    )
+
+    await waitFor(() => {
+      expect(screen.getByRole('checkbox', { name: 'Risk Eligible' })).not.toBeChecked()
+      expect(screen.getByRole('checkbox', { name: 'Risk Budget' })).not.toBeChecked()
+      expect(screen.getByRole('combobox', { name: 'Performance Scope' })).toHaveValue(
+        'derivative_lifecycle',
+      )
+      expect(screen.getByRole('combobox', { name: 'Valuation' })).toHaveValue(
+        'obligation',
+      )
+      expect(screen.getByRole('textbox', { name: 'Exclusion Reason' })).toHaveValue(
+        'Nearest option ancestor.',
+      )
+    })
+  })
+
   it('keeps cash weight targets, renders cash risk as N/A, and submits null cash risk', async () => {
     const user = userEvent.setup()
     renderPortfolioPage(

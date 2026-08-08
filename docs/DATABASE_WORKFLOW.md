@@ -145,7 +145,7 @@ SQLite fast tests 不会覆盖 PostgreSQL 专属的 cross-schema FK / search_pat
 
 这些测试默认读取 `PORTFOLIO_OPS_TEST_POSTGRES_URL`。
 如果测试数据库地址不同，只在当前进程环境或仓库外的测试 secrets 中显式设置 `PORTFOLIO_OPS_TEST_POSTGRES_URL`；backend 目录不读取也不保存 `.env`。
-这两条测试会在同一个 PostgreSQL 实例里临时创建并删除独立数据库，所以运行用户还需要能连接 `postgres` 库并具备 `CREATE DATABASE / DROP DATABASE` 权限。
+Portfolio / Watchlist suites 会在同一个 PostgreSQL 实例里临时创建并删除独立数据库，所以运行用户需要具备 `CREATE DATABASE / DROP DATABASE` 权限。Platform suite 会在 URL 指向的数据库内创建并清理隔离 schema，因此该角色还必须对该数据库拥有 `CREATE` 权限。推荐预先创建一个由测试角色拥有的空控制数据库（例如 `portfolio_ops_test_control`），并让 URL 指向它；不要使用低权限生产角色或承载业务数据的数据库来满足集成测试权限。
 
 ## Repository Hygiene
 

@@ -15,6 +15,10 @@ import {
   getPortfolioTransactionExecutionQuote,
   getPortfolioTransactionPositionPreview,
   getPortfolioTransactionsWorkspace,
+  importPortfolioTransactionCsv,
+  portfolioTransactionCsvDownloadUrl,
+  portfolioTransactionCsvTemplateUrl,
+  previewPortfolioTransactionCsv,
   reviewPortfolioInstrumentEventTask,
   type PortfolioAccountRecord,
   type PortfolioFeeCategory,
@@ -23,6 +27,7 @@ import {
   type PortfolioTransactionPositionPreviewResponse,
   type SharedInstrumentRecord,
   type PortfolioTransactionCreatePayload,
+  type PortfolioTransactionCsvPreviewResponse,
   type PortfolioTransactionFilters,
   type PortfolioTransactionRecord,
   type PortfolioTransactionUpdatePayload,
@@ -48,6 +53,7 @@ import {
   transactionActivityLabel,
   transactionChangedFields,
   transactionDateLabels,
+  transactionTypeChoiceLabel,
 } from '../lib/transactionPresentation'
 import { supportsTransactionInstrumentType } from '../lib/transactionEligibility'
 import {
@@ -67,11 +73,15 @@ const DEFAULT_TRADE_TIMEZONE = import.meta.env.VITE_PORTFOLIO_DEFAULT_TRADE_TIME
 const TRANSACTION_TYPE_GROUPS = [
   {
     label: 'Trades',
-    types: ['buy', 'sell'],
+    types: ['buy', 'sell', 'option_write', 'option_buy_to_close'],
   },
   {
     label: 'Income and capital',
     types: ['dividend', 'dividend_reinvestment', 'coupon', 'interest', 'return_of_capital', 'maturity_redemption'],
+  },
+  {
+    label: 'Lifecycle facts',
+    types: ['lifecycle_event'],
   },
   {
     label: 'Cash and charges',
@@ -93,13 +103,29 @@ const FEE_CATEGORIES: Array<{ value: PortfolioFeeCategory; label: string }> = [
   { value: 'other', label: 'Other' },
 ]
 
-const ACCOUNT_SCOPE_ENFORCED_TRANSACTION_TYPES = new Set(['buy', 'dividend_reinvestment', 'opening_balance'])
+const ACCOUNT_SCOPE_ENFORCED_TRANSACTION_TYPES = new Set([
+  'buy',
+  'option_write',
+  'dividend_reinvestment',
+  'opening_balance',
+])
+
+const LIFECYCLE_EVENT_OPTIONS = [
+  'fcn_knock_in',
+  'fcn_knock_out',
+  'fcn_maturity',
+  'fcn_physical_settlement',
+  'option_long_expiry',
+  'option_long_exercise',
+  'option_writer_expiry',
+  'option_assignment',
+] as const
 
 type TransactionInspectorTab = 'fact' | 'postings' | 'lots' | 'history'
 
 let fallbackIdempotencySequence = 0
 
-function transactionIdempotencyKey(operation: 'create' | 'transfer') {
+function transactionIdempotencyKey(operation: 'create' | 'transfer' | 'csv-import') {
   const randomId = globalThis.crypto?.randomUUID?.()
   if (randomId) {
     return `transaction-${operation}-${randomId}`
@@ -187,11 +213,30 @@ function accountAllowsInstrumentType(
   return account.allowed_instrument_types.includes(instrumentType.trim().toLowerCase())
 }
 
-function requiresSettlement(transactionType: string, accountType?: string | null) {
+function requiresSettlement(
+  transactionType: string,
+  accountType?: string | null,
+  lifecycleEventType?: string | null,
+) {
   if (isFxConversionTransaction(transactionType)) {
     return false
   }
-  if (transactionType === 'buy' || transactionType === 'sell') {
+  if (transactionType === 'lifecycle_event') {
+    return false
+  }
+  if (
+    transactionType === 'maturity_redemption' &&
+    (lifecycleEventType === 'option_long_expiry' ||
+      lifecycleEventType === 'option_long_exercise')
+  ) {
+    return false
+  }
+  if (
+    transactionType === 'buy' ||
+    transactionType === 'sell' ||
+    transactionType === 'option_write' ||
+    transactionType === 'option_buy_to_close'
+  ) {
     return true
   }
 
@@ -199,7 +244,8 @@ function requiresSettlement(transactionType: string, accountType?: string | null
     transactionType === 'dividend' ||
     transactionType === 'coupon' ||
     transactionType === 'return_of_capital' ||
-    transactionType === 'maturity_redemption'
+    transactionType === 'maturity_redemption' ||
+    transactionType === 'lifecycle_event'
   ) {
     return true
   }
@@ -218,11 +264,14 @@ function requiresInstrument(
   if (
     transactionType === 'buy' ||
     transactionType === 'sell' ||
+    transactionType === 'option_write' ||
+    transactionType === 'option_buy_to_close' ||
     transactionType === 'dividend' ||
     transactionType === 'dividend_reinvestment' ||
     transactionType === 'coupon' ||
     transactionType === 'return_of_capital' ||
-    transactionType === 'maturity_redemption'
+    transactionType === 'maturity_redemption' ||
+    transactionType === 'lifecycle_event'
   ) {
     return true
   }
@@ -269,11 +318,14 @@ function eligibleAccounts(
   if (
     transactionType === 'buy' ||
     transactionType === 'sell' ||
+    transactionType === 'option_write' ||
+    transactionType === 'option_buy_to_close' ||
     transactionType === 'dividend' ||
     transactionType === 'dividend_reinvestment' ||
     transactionType === 'coupon' ||
     transactionType === 'return_of_capital' ||
-    transactionType === 'maturity_redemption'
+    transactionType === 'maturity_redemption' ||
+    transactionType === 'lifecycle_event'
   ) {
     return accounts.filter((account) => account.account_type === 'securities_account')
   }
@@ -333,11 +385,14 @@ function isSelectableInstrument(
   if (
     transactionType === 'buy' ||
     transactionType === 'sell' ||
+    transactionType === 'option_write' ||
+    transactionType === 'option_buy_to_close' ||
     transactionType === 'dividend' ||
     transactionType === 'dividend_reinvestment' ||
     transactionType === 'coupon' ||
     transactionType === 'return_of_capital' ||
     transactionType === 'maturity_redemption' ||
+    transactionType === 'lifecycle_event' ||
     transactionType === 'fee' ||
     transactionType === 'tax' ||
     (isTransferTransaction(transactionType) && transferObjectType === 'position')
@@ -359,6 +414,8 @@ function usesQuantity(
   if (
     transactionType === 'buy' ||
     transactionType === 'sell' ||
+    transactionType === 'option_write' ||
+    transactionType === 'option_buy_to_close' ||
     transactionType === 'dividend_reinvestment' ||
     transactionType === 'maturity_redemption'
   ) {
@@ -393,6 +450,18 @@ function grossAmountLabel(transactionType: string) {
     return 'Cash Amount'
   }
 
+  if (transactionType === 'option_write') {
+    return 'Premium Received'
+  }
+
+  if (transactionType === 'option_buy_to_close') {
+    return 'Close Cost'
+  }
+
+  if (transactionType === 'lifecycle_event') {
+    return 'Cash Amount (zero)'
+  }
+
   if (transactionType === 'dividend_reinvestment') {
     return 'Reinvested Amount'
   }
@@ -420,6 +489,8 @@ function showsFeeField(transactionType: string) {
   return (
     transactionType === 'buy' ||
     transactionType === 'sell' ||
+    transactionType === 'option_write' ||
+    transactionType === 'option_buy_to_close' ||
     transactionType === 'dividend' ||
     transactionType === 'coupon' ||
     transactionType === 'return_of_capital' ||
@@ -431,6 +502,8 @@ function showsTaxField(transactionType: string) {
   return (
     transactionType === 'buy' ||
     transactionType === 'sell' ||
+    transactionType === 'option_write' ||
+    transactionType === 'option_buy_to_close' ||
     transactionType === 'dividend' ||
     transactionType === 'coupon' ||
     transactionType === 'return_of_capital' ||
@@ -457,6 +530,12 @@ function previewNetCashEffect(
   if (transactionType === 'buy') {
     return -(grossAmount + fees + taxes)
   }
+  if (transactionType === 'option_write') {
+    return grossAmount - fees - taxes
+  }
+  if (transactionType === 'option_buy_to_close') {
+    return -(grossAmount + fees + taxes)
+  }
   if (
     transactionType === 'sell' ||
     transactionType === 'dividend' ||
@@ -470,6 +549,9 @@ function previewNetCashEffect(
     return grossAmount
   }
   if (transactionType === 'dividend_reinvestment') {
+    return 0
+  }
+  if (transactionType === 'lifecycle_event') {
     return 0
   }
   if (transactionType === 'fee' || transactionType === 'tax' || transactionType === 'withdrawal') {
@@ -516,6 +598,7 @@ function quantityDeltaForPreview(
 
 type TransactionFormState = {
   transaction_type: string
+  lifecycle_event_type: string
   trade_date: string
   trade_time: string
   settlement_date: string
@@ -527,6 +610,8 @@ type TransactionFormState = {
   settlement_cash_account_id: string
   transfer_object_type: string
   instrument_id: string
+  related_instrument_id: string
+  event_group_id: string
   quantity: string
   price: string
   gross_amount: string
@@ -536,6 +621,8 @@ type TransactionFormState = {
   fee_category: PortfolioFeeCategory
   taxes: string
   note: string
+  source_system: string
+  external_reference: string
   instrument_search: string
 }
 
@@ -550,6 +637,7 @@ function buildInitialFormState(accounts: PortfolioAccountRecord[]): TransactionF
 
   return {
     transaction_type: 'buy',
+    lifecycle_event_type: '',
     trade_date: defaultFormDate,
     trade_time: '',
     settlement_date: defaultFormDate,
@@ -561,6 +649,8 @@ function buildInitialFormState(accounts: PortfolioAccountRecord[]): TransactionF
     settlement_cash_account_id: defaultCashAccount?.account_id ?? '',
     transfer_object_type: 'cash',
     instrument_id: '',
+    related_instrument_id: '',
+    event_group_id: '',
     quantity: '',
     price: '',
     gross_amount: '',
@@ -570,6 +660,8 @@ function buildInitialFormState(accounts: PortfolioAccountRecord[]): TransactionF
     fee_category: 'unknown',
     taxes: '0',
     note: '',
+    source_system: '',
+    external_reference: '',
     instrument_search: '',
   }
 }
@@ -577,6 +669,7 @@ function buildInitialFormState(accounts: PortfolioAccountRecord[]): TransactionF
 function buildFormStateFromTransaction(transaction: PortfolioTransactionRecord): TransactionFormState {
   return {
     transaction_type: transaction.transaction_type,
+    lifecycle_event_type: transaction.lifecycle_event_type || '',
     trade_date: transaction.trade_date,
     trade_time: transaction.trade_time_is_estimated ? '' : transaction.trade_time,
     settlement_date: transaction.settlement_date,
@@ -589,6 +682,8 @@ function buildFormStateFromTransaction(transaction: PortfolioTransactionRecord):
     settlement_cash_account_id: transaction.settlement_cash_account?.account_id || '',
     transfer_object_type: transaction.transfer_object_type || 'cash',
     instrument_id: transaction.instrument_id || '',
+    related_instrument_id: transaction.related_instrument_id || '',
+    event_group_id: transaction.event_group_id || '',
     quantity: formatFormNumber(transaction.quantity, { zeroAsEmpty: true }),
     price: formatFormNumber(transaction.price, { zeroAsEmpty: true }),
     gross_amount: formatFormNumber(transaction.gross_amount, { zeroAsEmpty: true }),
@@ -598,6 +693,8 @@ function buildFormStateFromTransaction(transaction: PortfolioTransactionRecord):
     fee_category: transaction.fee_category,
     taxes: formatFormNumber(transaction.taxes),
     note: transaction.note || '',
+    source_system: transaction.source_system || '',
+    external_reference: transaction.external_reference || '',
     instrument_search: '',
   }
 }
@@ -629,7 +726,11 @@ function canEditTransaction(transaction: PortfolioTransactionRecord | null) {
   if (!transaction) {
     return false
   }
-  return !transaction.transfer_group_id && !isTransferTransaction(transaction.transaction_type)
+  return (
+    !transaction.transfer_group_id &&
+    !transaction.event_group_id &&
+    !isTransferTransaction(transaction.transaction_type)
+  )
 }
 
 function tradeTimeLabel(tradeTime: string, tradeTimezone: string, tradeTimeIsEstimated: boolean) {
@@ -690,6 +791,7 @@ export default function TransactionsPage() {
   const transactionTypeSelectRef = useRef<HTMLSelectElement | null>(null)
   const securitySearchRef = useRef<HTMLInputElement | null>(null)
   const accountSelectRef = useRef<HTMLSelectElement | null>(null)
+  const csvFileInputRef = useRef<HTMLInputElement | null>(null)
   const autoQuoteKeyRef = useRef<string | null>(null)
   const autoQuantityKeyRef = useRef<string | null>(null)
   const autoGrossDerivedRef = useRef(false)
@@ -711,6 +813,12 @@ export default function TransactionsPage() {
   const [drawerOpen, setDrawerOpen] = useState(false)
   const [editingTransactionId, setEditingTransactionId] = useState<string | null>(null)
   const [submittingTransaction, setSubmittingTransaction] = useState(false)
+  const [importingCsv, setImportingCsv] = useState(false)
+  const [pendingCsvImport, setPendingCsvImport] = useState<{
+    csvText: string
+    preview: PortfolioTransactionCsvPreviewResponse
+  } | null>(null)
+  const [csvImportError, setCsvImportError] = useState<string | null>(null)
   const [pendingDeleteTransaction, setPendingDeleteTransaction] = useState<PortfolioTransactionRecord | null>(null)
   const [deletingTransaction, setDeletingTransaction] = useState(false)
   const [deleteError, setDeleteError] = useState<string | null>(null)
@@ -911,12 +1019,20 @@ export default function TransactionsPage() {
     selectedAccount?.account_type,
     form.transfer_object_type,
   )
-  const shouldRequireSettlement = requiresSettlement(form.transaction_type, selectedAccount?.account_type)
-  const shouldUseQuantity = usesQuantity(
+  const shouldRequireSettlement = requiresSettlement(
     form.transaction_type,
     selectedAccount?.account_type,
-    form.transfer_object_type,
+    form.lifecycle_event_type,
   )
+  const shouldUseQuantity =
+    usesQuantity(
+      form.transaction_type,
+      selectedAccount?.account_type,
+      form.transfer_object_type,
+    ) ||
+    (form.transaction_type === 'lifecycle_event' &&
+      (form.lifecycle_event_type === 'option_writer_expiry' ||
+        form.lifecycle_event_type === 'option_assignment'))
 
   if (!portfolioId) {
     return <Navigate replace to="/portfolios" />
@@ -928,6 +1044,20 @@ export default function TransactionsPage() {
     form.transaction_type === 'fee' ||
     (shouldShowFees && Number.isFinite(Number(form.fees)) && Number(form.fees) > 0)
   const selectedInstrument = instruments.find((instrument) => instrument.instrument_id === form.instrument_id) ?? null
+  const requiresRelatedInstrument =
+    form.transaction_type === 'option_write' ||
+    form.transaction_type === 'option_buy_to_close' ||
+    form.lifecycle_event_type === 'fcn_physical_settlement' ||
+    form.lifecycle_event_type === 'option_long_exercise' ||
+    form.lifecycle_event_type === 'option_writer_expiry' ||
+    form.lifecycle_event_type === 'option_assignment'
+  const selectedRelatedInstrument =
+    instruments.find((instrument) => instrument.instrument_id === form.related_instrument_id) ?? null
+  const relatedInstrumentOptions = instruments.filter(
+    (instrument) =>
+      (instrument.instrument_type === 'equity' || instrument.instrument_type === 'etf') &&
+      (!selectedAccount || instrument.currency.toUpperCase() === selectedAccount.currency.toUpperCase()),
+  )
   const isFundTrade =
     shouldUsePrice && selectedInstrument?.instrument_type === 'fund'
   const transactionUnitPriceDecimals = isFundTrade ? 12 : 6
@@ -1368,8 +1498,30 @@ export default function TransactionsPage() {
       return {
         ...current,
         transaction_type: nextTransactionType,
+        lifecycle_event_type:
+          nextTransactionType === 'lifecycle_event' ||
+          nextTransactionType === 'maturity_redemption'
+            ? current.lifecycle_event_type
+            : '',
+        related_instrument_id:
+          nextTransactionType === 'option_write' ||
+          nextTransactionType === 'option_buy_to_close' ||
+          nextTransactionType === 'lifecycle_event' ||
+          nextTransactionType === 'maturity_redemption'
+            ? current.related_instrument_id
+            : '',
+        event_group_id:
+          nextTransactionType === 'lifecycle_event' ||
+          nextTransactionType === 'maturity_redemption'
+            ? current.event_group_id
+            : '',
         quantity: shouldClearAutoSellQuantity ? '' : current.quantity,
-        gross_amount: shouldClearAutoSellQuantity ? '' : current.gross_amount,
+        gross_amount:
+          nextTransactionType === 'lifecycle_event'
+            ? '0'
+            : shouldClearAutoSellQuantity
+              ? ''
+              : current.gross_amount,
       }
     })
   }
@@ -1727,6 +1879,76 @@ export default function TransactionsPage() {
     }
   }
 
+  async function handleTransactionCsvFile(file: File | null) {
+    if (!file || importingCsv) {
+      return
+    }
+    setImportingCsv(true)
+    setLedgerError(null)
+    setCsvImportError(null)
+    setNotice(null)
+    try {
+      const csvText = await file.text()
+      const preview = await previewPortfolioTransactionCsv(portfolioId, csvText)
+      if (preview.error_count > 0) {
+        const rowErrors = preview.rows
+          .filter((row) => row.errors.length)
+          .slice(0, 5)
+          .map((row) => `row ${row.row_number}: ${row.errors.join('; ')}`)
+        throw new Error(
+          [...preview.batch_errors, ...rowErrors].join(' ') ||
+            'CSV preview found invalid transaction rows.',
+        )
+      }
+      setPendingCsvImport({ csvText, preview })
+    } catch (error) {
+      setLedgerError(
+        error instanceof Error ? error.message : 'Failed to import transaction CSV.',
+      )
+    } finally {
+      setImportingCsv(false)
+      if (csvFileInputRef.current) {
+        csvFileInputRef.current.value = ''
+      }
+    }
+  }
+
+  async function confirmTransactionCsvImport() {
+    const pendingImport = pendingCsvImport
+    const targetPortfolioId = portfolioId
+    if (!pendingImport || !targetPortfolioId || importingCsv) {
+      return
+    }
+    setImportingCsv(true)
+    setCsvImportError(null)
+    setLedgerError(null)
+    try {
+      const imported = await importPortfolioTransactionCsv(
+        targetPortfolioId,
+        pendingImport.csvText,
+        pendingImport.preview.preview_digest,
+        transactionIdempotencyKey('csv-import'),
+      )
+      if (currentPortfolioIdRef.current !== targetPortfolioId) {
+        return
+      }
+      setPendingCsvImport(null)
+      setNotice(`Imported ${imported.created_count} transaction facts from CSV.`)
+      await refreshTransactions(
+        filters,
+        imported.transactions[0]?.transaction_id ?? null,
+      )
+    } catch (error) {
+      if (currentPortfolioIdRef.current === targetPortfolioId) {
+        setCsvImportError(
+          error instanceof Error ? error.message : 'Failed to import transaction CSV.',
+        )
+      }
+    } finally {
+      setImportingCsv(false)
+    }
+  }
+
   const pageErrors = [metadataError, ledgerError].filter(
     (message, index, messages): message is string => Boolean(message) && messages.indexOf(message) === index,
   )
@@ -1886,6 +2108,31 @@ export default function TransactionsPage() {
       return
     }
 
+    if (form.transaction_type === 'lifecycle_event' && !form.lifecycle_event_type) {
+      setFormError('Select the lifecycle event represented by this fact.')
+      return
+    }
+
+    if (requiresRelatedInstrument && !selectedRelatedInstrument) {
+      setFormError('Select the related stock or ETF for this derivative event.')
+      return
+    }
+
+    if (
+      (form.lifecycle_event_type === 'fcn_physical_settlement' ||
+        form.lifecycle_event_type === 'option_long_exercise' ||
+        form.lifecycle_event_type === 'option_assignment') &&
+      !form.event_group_id.trim()
+    ) {
+      setFormError('Physical settlement and assignment require an event group id.')
+      return
+    }
+
+    if (form.external_reference.trim() && !form.source_system.trim()) {
+      setFormError('External reference requires a source system.')
+      return
+    }
+
     if (isTransferTransaction(form.transaction_type) && !selectedCounterparty) {
       setFormError('Select the paired counterparty account for the internal transfer.')
       return
@@ -1965,6 +2212,8 @@ export default function TransactionsPage() {
         taxes: 0,
         currency: resolvedTransactionCurrency,
         counterparty_account_id: selectedCounterparty.account_id,
+        source_system: form.source_system.trim() || null,
+        external_reference: form.external_reference.trim() || null,
         note: form.note.trim() || null,
       }
 
@@ -2070,8 +2319,13 @@ export default function TransactionsPage() {
       return
     }
 
-    const grossAmount = Number(computedGrossAmount)
-    if (!Number.isFinite(grossAmount) || grossAmount <= 0) {
+    const zeroCashLifecycle =
+      form.transaction_type === 'lifecycle_event' ||
+      (form.transaction_type === 'maturity_redemption' &&
+        (form.lifecycle_event_type === 'option_long_expiry' ||
+          form.lifecycle_event_type === 'option_long_exercise'))
+    const grossAmount = zeroCashLifecycle ? 0 : Number(computedGrossAmount)
+    if (!Number.isFinite(grossAmount) || (!zeroCashLifecycle && grossAmount <= 0)) {
       setFormError('Enter a positive gross amount.')
       return
     }
@@ -2087,6 +2341,7 @@ export default function TransactionsPage() {
 
     const payload: PortfolioTransactionCreatePayload = {
       transaction_type: form.transaction_type,
+      lifecycle_event_type: form.lifecycle_event_type || null,
       trade_date: form.trade_date,
       trade_time: form.trade_time || null,
       settlement_date: form.settlement_date || form.trade_date,
@@ -2102,6 +2357,10 @@ export default function TransactionsPage() {
       account_id: resolvedAccount.account_id,
       settlement_cash_account_id: shouldRequireSettlement ? form.settlement_cash_account_id || null : null,
       instrument_id: shouldAllowInstrument ? selectedInstrument?.instrument_id ?? null : null,
+      related_instrument_id: requiresRelatedInstrument
+        ? selectedRelatedInstrument?.instrument_id ?? null
+        : null,
+      event_group_id: form.event_group_id.trim() || null,
       quantity: shouldUseQuantity && form.quantity ? Number(form.quantity) : null,
       price: shouldUsePrice && computedUnitPrice ? Number(computedUnitPrice) : null,
       gross_amount: grossAmount,
@@ -2111,6 +2370,8 @@ export default function TransactionsPage() {
       fee_category: shouldShowFeeCategory ? form.fee_category : 'unknown',
       taxes: shouldShowTaxes && form.taxes ? Number(form.taxes) : 0,
       currency: resolvedTransactionCurrency,
+      source_system: form.source_system.trim() || null,
+      external_reference: form.external_reference.trim() || null,
       note: form.note.trim() || null,
     }
 
@@ -2192,6 +2453,7 @@ export default function TransactionsPage() {
       return
     }
     const deletingTransferPair = Boolean(transaction.transfer_group_id)
+    const deletingEventGroup = Boolean(transaction.event_group_id)
     const expectedRowVersions = transactionsWorkspace?.delete_scope_row_versions
     if (!expectedRowVersions || expectedRowVersions[transaction.transaction_id] !== transaction.row_version) {
       setDeleteError('Transaction delete scope is stale. Reload the ledger and retry.')
@@ -2221,6 +2483,8 @@ export default function TransactionsPage() {
       setNotice(
         deletingTransferPair
           ? `Deleted transfer pair ${deleted.transfer_group_id}.`
+          : deletingEventGroup
+            ? `Deleted settlement event ${deleted.event_group_id}.`
           : `Deleted transaction ${transaction.transaction_id}.`,
       )
     } catch (error) {
@@ -2411,6 +2675,37 @@ export default function TransactionsPage() {
               disabled={!visibleTransactions.length}
               onSelect={exportTransactions}
             />
+            <a
+              className="toolbar-link"
+              href={portfolioTransactionCsvDownloadUrl(portfolioId)}
+              download
+            >
+              Download CSV
+            </a>
+            <a
+              className="toolbar-link"
+              href={portfolioTransactionCsvTemplateUrl(portfolioId)}
+              download
+            >
+              CSV Template
+            </a>
+            <input
+              ref={csvFileInputRef}
+              type="file"
+              accept=".csv,text/csv"
+              hidden
+              onChange={(event) =>
+                void handleTransactionCsvFile(event.target.files?.[0] ?? null)
+              }
+            />
+            <button
+              type="button"
+              className="toolbar-link"
+              disabled={importingCsv || metaLoading}
+              onClick={() => csvFileInputRef.current?.click()}
+            >
+              {importingCsv ? 'Validating CSV…' : 'Import CSV'}
+            </button>
             <button
               type="button"
               className="toolbar-link button-primary"
@@ -2652,6 +2947,7 @@ export default function TransactionsPage() {
                                   {transactionActivityLabel(
                                     transaction.transaction_type,
                                     transaction.instrument_ref?.instrument_type,
+                                    transaction.option_action,
                                   )}
                                 </span>
                               </span>
@@ -2744,6 +3040,7 @@ export default function TransactionsPage() {
                         {transactionActivityLabel(
                           selectedTransaction.transaction_type,
                           selectedTransaction.instrument_ref?.instrument_type,
+                          selectedTransaction.option_action,
                         )}
                       </div>
                       <div className="portfolio-detail-meta">{selectedTransaction.transaction_id}</div>
@@ -2765,7 +3062,11 @@ export default function TransactionsPage() {
                           setPendingDeleteTransaction(selectedTransaction)
                         }}
                       >
-                        {selectedTransaction.transfer_group_id ? 'Delete Pair' : 'Delete'}
+                        {selectedTransaction.transfer_group_id
+                          ? 'Delete Pair'
+                          : selectedTransaction.event_group_id
+                            ? 'Delete Event'
+                            : 'Delete'}
                       </button>
                     </div>
                   </div>
@@ -2846,6 +3147,33 @@ export default function TransactionsPage() {
                             <br /><span>{formatLabel(selectedTransaction.fee_category)}</span>
                           </dd>
                         </div>
+                        {selectedTransaction.lifecycle_event_type ? (
+                          <div>
+                            <dt>Lifecycle event</dt>
+                            <dd>{formatLabel(selectedTransaction.lifecycle_event_type)}</dd>
+                          </div>
+                        ) : null}
+                        {selectedTransaction.related_instrument_id ? (
+                          <div>
+                            <dt>Related stock / ETF</dt>
+                            <dd>{selectedTransaction.related_instrument_id}</dd>
+                          </div>
+                        ) : null}
+                        {selectedTransaction.event_group_id ? (
+                          <div>
+                            <dt>Settlement event</dt>
+                            <dd>{selectedTransaction.event_group_id}</dd>
+                          </div>
+                        ) : null}
+                        {selectedTransaction.source_system || selectedTransaction.external_reference ? (
+                          <div>
+                            <dt>External source</dt>
+                            <dd>
+                              {selectedTransaction.source_system ?? '—'}
+                              <br /><span>{selectedTransaction.external_reference ?? '—'}</span>
+                            </dd>
+                          </div>
+                        ) : null}
                       </dl>
                       {selectedTransaction.note ? (
                         <div className="transaction-inspector-note">
@@ -3029,7 +3357,7 @@ export default function TransactionsPage() {
                         <optgroup key={group.label} label={group.label}>
                           {group.types.map((transactionType) => (
                             <option key={transactionType} value={transactionType}>
-                              {transactionActivityLabel(
+                              {transactionTypeChoiceLabel(
                                 transactionType,
                                 selectedInstrument?.instrument_type,
                               )}
@@ -3045,6 +3373,47 @@ export default function TransactionsPage() {
                       : 'Choose the economic event first so account, date, and pricing fields stay in the correct scope.'}
                   </p>
                 </div>
+              {form.transaction_type === 'lifecycle_event' ||
+              form.transaction_type === 'maturity_redemption' ? (
+                <div className="transaction-form-grid transaction-ticket-grid">
+                  <label className="transaction-ticket-field">
+                    <span>Lifecycle Event</span>
+                    <select
+                      value={form.lifecycle_event_type}
+                      onChange={(event) =>
+                        setForm((current) => ({
+                          ...current,
+                          lifecycle_event_type: event.target.value,
+                          related_instrument_id: '',
+                          gross_amount:
+                            event.target.value === 'option_long_expiry' ||
+                            current.transaction_type === 'lifecycle_event'
+                              ? '0'
+                              : current.gross_amount,
+                        }))
+                      }
+                    >
+                      <option value="">Generic / not specified</option>
+                      {LIFECYCLE_EVENT_OPTIONS.filter((eventType) =>
+                        form.transaction_type === 'lifecycle_event'
+                          ? eventType === 'fcn_knock_in' ||
+                            eventType === 'option_writer_expiry'
+                          : eventType === 'fcn_knock_out' ||
+                            eventType === 'fcn_maturity' ||
+                            eventType === 'option_long_expiry',
+                      ).map((eventType) => (
+                        <option key={eventType} value={eventType}>
+                          {formatLabel(eventType)}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <div className="portfolio-detail-meta">
+                    Physical FCN settlement, long-option exercise, and writer assignment
+                    are imported as two-leg CSV events so both facts commit atomically.
+                  </div>
+                </div>
+              ) : null}
               {shouldAllowInstrument ? (
                 <section className="transaction-instrument-search transaction-instrument-search-top">
                   <label className="transaction-picker-search">
@@ -3107,6 +3476,30 @@ export default function TransactionsPage() {
                     </div>
                   ) : null}
                 </section>
+              ) : null}
+
+              {requiresRelatedInstrument ? (
+                <div className="transaction-form-grid transaction-ticket-grid">
+                  <label className="transaction-ticket-field">
+                    <span>Related Stock / ETF</span>
+                    <select
+                      value={form.related_instrument_id}
+                      onChange={(event) =>
+                        setForm((current) => ({
+                          ...current,
+                          related_instrument_id: event.target.value,
+                        }))
+                      }
+                    >
+                      <option value="">Select underlying instrument</option>
+                      {relatedInstrumentOptions.map((instrument) => (
+                        <option key={instrument.instrument_id} value={instrument.instrument_id}>
+                          {primaryIdentifier(instrument)} · {instrument.instrument_name}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                </div>
               ) : null}
 
               <div className="transaction-form-grid transaction-ticket-grid">
@@ -3585,6 +3978,35 @@ export default function TransactionsPage() {
                 </div>
               ) : null}
 
+              <div className="transaction-form-grid transaction-ticket-grid">
+                <label className="transaction-ticket-field">
+                  <span>Source System</span>
+                  <input
+                    value={form.source_system}
+                    placeholder="Optional; required with external reference"
+                    onChange={(event) =>
+                      setForm((current) => ({
+                        ...current,
+                        source_system: event.target.value,
+                      }))
+                    }
+                  />
+                </label>
+                <label className="transaction-ticket-field">
+                  <span>External Reference</span>
+                  <input
+                    value={form.external_reference}
+                    placeholder="Unique within this portfolio and source"
+                    onChange={(event) =>
+                      setForm((current) => ({
+                        ...current,
+                        external_reference: event.target.value,
+                      }))
+                    }
+                  />
+                </label>
+              </div>
+
               <label className="transaction-notes-field">
                 <span>Note</span>
                 <textarea
@@ -3633,16 +4055,64 @@ export default function TransactionsPage() {
         </div>
       ) : null}
       <ConfirmDialog
+        open={Boolean(pendingCsvImport)}
+        title="Import Transaction CSV"
+        description={
+          pendingCsvImport ? (
+            <div>
+              <p>
+                Import {pendingCsvImport.preview.valid_count} validated transaction row(s)?
+              </p>
+              {pendingCsvImport.preview.warnings.length ? (
+                <div>
+                  <strong>Warnings</strong>
+                  <ul>
+                    {pendingCsvImport.preview.warnings.map((warning) => (
+                      <li key={warning}>{warning}</li>
+                    ))}
+                  </ul>
+                </div>
+              ) : null}
+            </div>
+          ) : null
+        }
+        confirmLabel="Import Rows"
+        busyLabel="Importing…"
+        error={csvImportError}
+        busy={importingCsv}
+        onCancel={() => {
+          setPendingCsvImport(null)
+          setCsvImportError(null)
+        }}
+        onConfirm={confirmTransactionCsvImport}
+      />
+      <ConfirmDialog
         open={Boolean(pendingDeleteTransaction)}
-        title={pendingDeleteTransaction?.transfer_group_id ? 'Delete Transfer Pair' : 'Delete Transaction'}
+        title={
+          pendingDeleteTransaction?.transfer_group_id
+            ? 'Delete Transfer Pair'
+            : pendingDeleteTransaction?.event_group_id
+              ? 'Delete Settlement Event'
+              : 'Delete Transaction'
+        }
         description={
           pendingDeleteTransaction?.transfer_group_id
             ? `This permanently deletes both legs of transfer pair ${pendingDeleteTransaction.transfer_group_id}. This action cannot be undone.`
+            : pendingDeleteTransaction?.event_group_id
+              ? `This permanently deletes every fact in settlement event ${pendingDeleteTransaction.event_group_id}. This action cannot be undone.`
             : `This permanently deletes transaction ${pendingDeleteTransaction?.transaction_id ?? ''}. This action cannot be undone.`
         }
-        confirmLabel={pendingDeleteTransaction?.transfer_group_id ? 'Delete Pair' : 'Delete Transaction'}
+        confirmLabel={
+          pendingDeleteTransaction?.transfer_group_id
+            ? 'Delete Pair'
+            : pendingDeleteTransaction?.event_group_id
+              ? 'Delete Event'
+              : 'Delete Transaction'
+        }
         confirmationText={
-          pendingDeleteTransaction?.transfer_group_id ?? pendingDeleteTransaction?.transaction_id
+          pendingDeleteTransaction?.transfer_group_id ??
+          pendingDeleteTransaction?.event_group_id ??
+          pendingDeleteTransaction?.transaction_id
         }
         error={deleteError}
         busy={deletingTransaction}

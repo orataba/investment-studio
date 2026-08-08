@@ -163,11 +163,11 @@ PORTFOLIO_OPS_TEST_DB_PASSWORD='...' \
   infra/scripts/verify_repository.sh infra postgresql
 ```
 
-PostgreSQL 迁移链和 integration tests 使用独立、可创建临时数据库的测试角色：
+PostgreSQL 迁移链和 integration tests 使用独立测试角色。该角色既要能创建/删除临时数据库，也要对连接串指向的专用控制数据库拥有 `CREATE` 权限，因为 Platform suite 会在该数据库内创建并清理隔离 schema。不要把低权限生产角色或真实业务数据库当作测试控制面；推荐让测试角色拥有一个空的专用数据库：
 
 ```bash
 infra/scripts/verify_repository.sh migration-heads
-PORTFOLIO_OPS_TEST_POSTGRES_URL='postgresql+psycopg://test_role@127.0.0.1:5432/postgres' \
+PORTFOLIO_OPS_TEST_POSTGRES_URL='postgresql+psycopg://test_role@127.0.0.1:5432/portfolio_ops_test_control' \
   infra/scripts/verify_repository.sh postgres-integration all
 ```
 
@@ -197,6 +197,8 @@ infra/scripts/sync_python_env.sh
 ### 前端测试与构建
 
 ```bash
+npm --prefix packages/instrument-core/ts ci
+npm --prefix packages/instrument-core/ts run typecheck
 npm --prefix apps/platform/frontend test
 npm --prefix apps/portfolio/frontend test
 npm --prefix apps/watchlist/frontend test
@@ -204,6 +206,10 @@ npm --prefix apps/platform/frontend run build
 npm --prefix apps/portfolio/frontend run build
 npm --prefix apps/watchlist/frontend run build
 ```
+
+`packages/instrument-core/ts` 是 Platform 前端直接消费的共享 contract package；它有独立
+`tsconfig.json` 和 typecheck gate。CI 和 `infra/scripts/verify_repository.sh frontend all`
+都会先执行该 gate，不能只依赖某个页面恰好被编译到来判断 shared contract 完整。
 
 ### macOS 本地后台服务
 

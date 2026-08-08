@@ -14,17 +14,29 @@ import {
   isRequestCurrent,
 } from '../../../../packages/ui/src/requestIdentity'
 import type {
+  BrokerIdentifier,
+  BrokerIdentifierType,
+  CorporateActionAdjustmentPolicy,
   DataStatus,
+  DerivativeAdjustmentPolicyType,
   ExpectedFrequency,
+  FCNBarrierType,
   IdentifierType,
   InstrumentType,
   MetricFamily,
+  OptionSettlementType,
+  OptionType,
+  QuantityRounding,
   QuoteBasis,
   QuoteRole,
   ReturnSemantics,
 } from '../../../../packages/instrument-core/ts/src'
 import {
+  canonicalBrokerIdentifiers,
+  canonicalCorporateActionAdjustmentPolicy,
+  canonicalFCNContractMetadata,
   canonicalPriceContract,
+  canonicalOptionContractIdentity,
   supportsNavHistoryImport,
 } from '../../../../packages/instrument-core/ts/src'
 import { FundNavActionReview } from './FundNavActionReview'
@@ -72,6 +84,7 @@ import {
   type SourceMode,
   type TriggerChannelRefreshPayload,
   type TriggerRefreshPayload,
+  type UpdateDerivativeContractMetadataPayload,
   type UpdateSourceSettingsPayload,
   type UpsertFxRatePayload,
   type UpsertMarketDataPayload,
@@ -87,9 +100,423 @@ const ROLE_LABELS: Record<QuoteRole, string> = {
   reference: 'Reference',
 }
 
-type ActionPanel = 'create' | 'quote' | 'source' | 'nav' | 'fx'
+type ActionPanel = 'create' | 'quote' | 'source' | 'nav' | 'fx' | 'derivative'
 type InspectorTab = 'overview' | 'series' | 'source' | 'governance'
 type SortMode = 'name_asc' | 'quote_desc' | 'identifier_asc' | 'coverage'
+
+type DerivativeGovernanceDraft = {
+  fcnNotional: string
+  fcnIssueDate: string
+  fcnMaturityDate: string
+  fcnIssuer: string
+  fcnCounterparty: string
+  fcnUnderlyingInstrumentIds: string[]
+  fcnDeliverableInstrumentIds: string[]
+  fcnBarrierType: FCNBarrierType
+  fcnBarrierLevel: string
+  brokerIdentifiers: BrokerIdentifier[]
+  adjustmentPolicy: CorporateActionAdjustmentPolicy
+}
+
+function emptyDerivativeGovernanceDraft(): DerivativeGovernanceDraft {
+  return {
+    fcnNotional: '',
+    fcnIssueDate: '',
+    fcnMaturityDate: '',
+    fcnIssuer: '',
+    fcnCounterparty: '',
+    fcnUnderlyingInstrumentIds: [],
+    fcnDeliverableInstrumentIds: [],
+    fcnBarrierType: 'none',
+    fcnBarrierLevel: '',
+    brokerIdentifiers: [],
+    adjustmentPolicy: {
+      policy_type: 'contract_terms',
+      authority_reference: '',
+      quantity_rounding: 'exact',
+      adjust_strike: true,
+      adjust_multiplier: true,
+      adjust_deliverable: true,
+    },
+  }
+}
+
+function draftForDerivative(
+  instrument: Extract<PlatformInstrumentRecord, { instrument_type: 'fcn' | 'option' }>,
+): DerivativeGovernanceDraft {
+  const draft = emptyDerivativeGovernanceDraft()
+  draft.brokerIdentifiers = instrument.broker_identifiers.map((identifier) => ({
+    ...identifier,
+  }))
+  draft.adjustmentPolicy = { ...instrument.corporate_action_adjustment_policy }
+  if (instrument.instrument_type === 'fcn') {
+    draft.fcnNotional = instrument.fcn_contract.notional
+    draft.fcnIssueDate = instrument.fcn_contract.issue_date
+    draft.fcnMaturityDate = instrument.fcn_contract.maturity_date
+    draft.fcnIssuer = instrument.fcn_contract.issuer
+    draft.fcnCounterparty = instrument.fcn_contract.counterparty
+    draft.fcnUnderlyingInstrumentIds = [
+      ...instrument.fcn_contract.underlying_instrument_ids,
+    ]
+    draft.fcnDeliverableInstrumentIds = [
+      ...instrument.fcn_contract.deliverable_instrument_ids,
+    ]
+    draft.fcnBarrierType = instrument.fcn_contract.barrier_type
+    draft.fcnBarrierLevel = instrument.fcn_contract.barrier_level ?? ''
+  }
+  return draft
+}
+
+type DerivativeGovernanceFieldsProps = {
+  instrumentType: 'fcn' | 'option'
+  currency: string
+  instruments: PlatformInstrumentRecord[]
+  draft: DerivativeGovernanceDraft
+  onChange: (draft: DerivativeGovernanceDraft) => void
+}
+
+function DerivativeGovernanceFields({
+  instrumentType,
+  currency,
+  instruments,
+  draft,
+  onChange,
+}: DerivativeGovernanceFieldsProps) {
+  const referenceInstruments = instruments.filter(
+    (instrument) =>
+      instrument.lifecycle_state.status === 'active' &&
+      !['fcn', 'option', 'cash', 'fx'].includes(instrument.instrument_type),
+  )
+  const updateDraft = (patch: Partial<DerivativeGovernanceDraft>) =>
+    onChange({ ...draft, ...patch })
+  const updatePolicy = (patch: Partial<CorporateActionAdjustmentPolicy>) =>
+    updateDraft({ adjustmentPolicy: { ...draft.adjustmentPolicy, ...patch } })
+  const updateBrokerIdentifier = (
+    index: number,
+    patch: Partial<BrokerIdentifier>,
+  ) => {
+    updateDraft({
+      brokerIdentifiers: draft.brokerIdentifiers.map((identifier, itemIndex) =>
+        itemIndex === index ? { ...identifier, ...patch } : identifier,
+      ),
+    })
+  }
+
+  return (
+    <>
+      {instrumentType === 'fcn' ? (
+        <div className="ir-form-section">
+          <div>
+            <span>Contract terms</span>
+            <h3>FCN economics</h3>
+          </div>
+          <div className="registry-action-form-grid">
+            <label>
+              <span>Notional</span>
+              <input
+                type="number"
+                min="0"
+                step="any"
+                inputMode="decimal"
+                value={draft.fcnNotional}
+                onChange={(event) => updateDraft({ fcnNotional: event.target.value })}
+                required
+              />
+            </label>
+            <label>
+              <span>Contract currency</span>
+              <input value={currency.trim().toUpperCase()} readOnly required />
+            </label>
+            <label>
+              <span>Issue date</span>
+              <input
+                type="date"
+                value={draft.fcnIssueDate}
+                onChange={(event) => updateDraft({ fcnIssueDate: event.target.value })}
+                required
+              />
+            </label>
+            <label>
+              <span>Maturity date</span>
+              <input
+                type="date"
+                value={draft.fcnMaturityDate}
+                onChange={(event) => updateDraft({ fcnMaturityDate: event.target.value })}
+                required
+              />
+            </label>
+            <label>
+              <span>Issuer</span>
+              <input
+                value={draft.fcnIssuer}
+                onChange={(event) => updateDraft({ fcnIssuer: event.target.value })}
+                required
+              />
+            </label>
+            <label>
+              <span>Counterparty</span>
+              <input
+                value={draft.fcnCounterparty}
+                onChange={(event) => updateDraft({ fcnCounterparty: event.target.value })}
+                required
+              />
+            </label>
+            <label>
+              <span>Barrier type</span>
+              <select
+                value={draft.fcnBarrierType}
+                onChange={(event) =>
+                  updateDraft({
+                    fcnBarrierType: event.target.value as FCNBarrierType,
+                    fcnBarrierLevel:
+                      event.target.value === 'none' ? '' : draft.fcnBarrierLevel,
+                  })
+                }
+              >
+                <option value="none">None</option>
+                <option value="knock_in">Knock-in</option>
+                <option value="knock_out">Knock-out</option>
+                <option value="dual">Dual</option>
+              </select>
+            </label>
+            {draft.fcnBarrierType !== 'none' ? (
+              <label>
+                <span>Barrier level</span>
+                <input
+                  type="number"
+                  min="0"
+                  step="any"
+                  inputMode="decimal"
+                  value={draft.fcnBarrierLevel}
+                  onChange={(event) =>
+                    updateDraft({ fcnBarrierLevel: event.target.value })
+                  }
+                  required
+                />
+              </label>
+            ) : null}
+            <label className="registry-field-wide">
+              <span>Underlyings</span>
+              <select
+                multiple
+                size={Math.min(6, Math.max(3, referenceInstruments.length))}
+                value={draft.fcnUnderlyingInstrumentIds}
+                onChange={(event) =>
+                  updateDraft({
+                    fcnUnderlyingInstrumentIds: Array.from(
+                      event.target.selectedOptions,
+                      (option) => option.value,
+                    ),
+                  })
+                }
+                required
+              >
+                {referenceInstruments.map((instrument) => (
+                  <option key={instrument.instrument_id} value={instrument.instrument_id}>
+                    {instrument.instrument_name} · {instrument.instrument_id}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="registry-field-wide">
+              <span>Deliverables</span>
+              <select
+                multiple
+                size={Math.min(6, Math.max(3, referenceInstruments.length))}
+                value={draft.fcnDeliverableInstrumentIds}
+                onChange={(event) =>
+                  updateDraft({
+                    fcnDeliverableInstrumentIds: Array.from(
+                      event.target.selectedOptions,
+                      (option) => option.value,
+                    ),
+                  })
+                }
+                required
+              >
+                {referenceInstruments.map((instrument) => (
+                  <option key={instrument.instrument_id} value={instrument.instrument_id}>
+                    {instrument.instrument_name} · {instrument.instrument_id}
+                  </option>
+                ))}
+              </select>
+            </label>
+          </div>
+        </div>
+      ) : null}
+
+      <div className="ir-form-section">
+        <div>
+          <span>Reconciliation</span>
+          <h3>Broker identities</h3>
+        </div>
+        <div className="ir-broker-editor">
+          {draft.brokerIdentifiers.map((identifier, index) => (
+            <div
+              className="ir-broker-row"
+              key={`${index}-${identifier.identifier_type}`}
+            >
+              <label>
+                <span>Broker</span>
+                <input
+                  value={identifier.broker}
+                  onChange={(event) =>
+                    updateBrokerIdentifier(index, { broker: event.target.value })
+                  }
+                  required
+                />
+              </label>
+              <label>
+                <span>Identity type</span>
+                <select
+                  value={identifier.identifier_type}
+                  onChange={(event) =>
+                    updateBrokerIdentifier(index, {
+                      identifier_type: event.target.value as BrokerIdentifierType,
+                    })
+                  }
+                >
+                  <option value="contract_id">Contract ID</option>
+                  <option value="symbol">Symbol</option>
+                  <option value="product_code">Product code</option>
+                </select>
+              </label>
+              <label>
+                <span>Identity value</span>
+                <input
+                  value={identifier.identifier_value}
+                  onChange={(event) =>
+                    updateBrokerIdentifier(index, {
+                      identifier_value: event.target.value,
+                    })
+                  }
+                  required
+                />
+              </label>
+              <label className="ir-checkbox-field">
+                <input
+                  type="checkbox"
+                  checked={identifier.is_primary}
+                  onChange={(event) =>
+                    updateBrokerIdentifier(index, { is_primary: event.target.checked })
+                  }
+                />
+                <span>Primary</span>
+              </label>
+              <button
+                type="button"
+                className="ir-icon-action"
+                aria-label={`Remove broker identity ${index + 1}`}
+                title="Remove broker identity"
+                onClick={() =>
+                  updateDraft({
+                    brokerIdentifiers: draft.brokerIdentifiers.filter(
+                      (_item, itemIndex) => itemIndex !== index,
+                    ),
+                  })
+                }
+              >
+                ×
+              </button>
+            </div>
+          ))}
+          <button
+            type="button"
+            className="registry-submit secondary"
+            onClick={() =>
+              updateDraft({
+                brokerIdentifiers: [
+                  ...draft.brokerIdentifiers,
+                  {
+                    broker: '',
+                    identifier_type: 'contract_id',
+                    identifier_value: '',
+                    is_primary: true,
+                  },
+                ],
+              })
+            }
+          >
+            Add broker identity
+          </button>
+        </div>
+      </div>
+
+      <div className="ir-form-section">
+        <div>
+          <span>Corporate actions</span>
+          <h3>Adjustment policy</h3>
+        </div>
+        <div className="registry-action-form-grid">
+          <label>
+            <span>Policy type</span>
+            <select
+              value={draft.adjustmentPolicy.policy_type}
+              onChange={(event) =>
+                updatePolicy({
+                  policy_type: event.target.value as DerivativeAdjustmentPolicyType,
+                })
+              }
+            >
+              <option value="contract_terms">Contract terms</option>
+              <option value="exchange_rules">Exchange rules</option>
+              <option value="manual_review">Manual review</option>
+            </select>
+          </label>
+          <label>
+            <span>Quantity rounding</span>
+            <select
+              value={draft.adjustmentPolicy.quantity_rounding}
+              onChange={(event) =>
+                updatePolicy({
+                  quantity_rounding: event.target.value as QuantityRounding,
+                })
+              }
+            >
+              <option value="exact">Exact</option>
+              <option value="truncate">Truncate</option>
+              <option value="round_half_up">Round half up</option>
+              <option value="cash_in_lieu">Cash in lieu</option>
+            </select>
+          </label>
+          <label className="registry-field-wide">
+            <span>Authority reference</span>
+            <input
+              value={draft.adjustmentPolicy.authority_reference}
+              onChange={(event) =>
+                updatePolicy({ authority_reference: event.target.value })
+              }
+              required
+            />
+          </label>
+          <div className="ir-policy-toggles registry-field-wide">
+            {(
+              [
+                ['adjust_strike', 'Adjust strike'],
+                ['adjust_multiplier', 'Adjust multiplier'],
+                ['adjust_deliverable', 'Adjust deliverable'],
+              ] as Array<
+                [
+                  'adjust_strike' | 'adjust_multiplier' | 'adjust_deliverable',
+                  string,
+                ]
+              >
+            ).map(([field, label]) => (
+              <label className="ir-checkbox-field" key={field}>
+                <input
+                  type="checkbox"
+                  checked={draft.adjustmentPolicy[field]}
+                  onChange={(event) => updatePolicy({ [field]: event.target.checked })}
+                />
+                <span>{label}</span>
+              </label>
+            ))}
+          </div>
+        </div>
+      </div>
+    </>
+  )
+}
 
 type InstrumentRegistryPageProps = {
   instruments: PlatformInstrumentRecord[]
@@ -101,6 +528,9 @@ type InstrumentRegistryPageProps = {
   showInactive: boolean
   onToggleShowInactive: () => void
   onCreateInstrument: (payload: CreateInstrumentPayload) => Promise<void>
+  onUpdateDerivativeContractMetadata: (
+    payload: UpdateDerivativeContractMetadataPayload,
+  ) => Promise<void>
   onUpsertFxRate: (payload: UpsertFxRatePayload) => Promise<void>
   onUpsertMarketData: (payload: UpsertMarketDataPayload) => Promise<void>
   onUpdateSourceSettings: (payload: UpdateSourceSettingsPayload) => Promise<void>
@@ -153,6 +583,7 @@ export default function InstrumentRegistryPage({
   showInactive,
   onToggleShowInactive,
   onCreateInstrument,
+  onUpdateDerivativeContractMetadata,
   onUpsertFxRate,
   onUpsertMarketData,
   onUpdateSourceSettings,
@@ -169,6 +600,19 @@ export default function InstrumentRegistryPage({
   const [currency, setCurrency] = useState('CNY')
   const [identifierType, setIdentifierType] = useState<IdentifierType>('ticker')
   const [identifierValue, setIdentifierValue] = useState('')
+  const [optionUnderlyingInstrumentId, setOptionUnderlyingInstrumentId] = useState('')
+  const [optionType, setOptionType] = useState<OptionType>('call')
+  const [optionExpiryDate, setOptionExpiryDate] = useState('')
+  const [optionStrike, setOptionStrike] = useState('')
+  const [optionContractMultiplier, setOptionContractMultiplier] = useState('100')
+  const [optionSettlementType, setOptionSettlementType] =
+    useState<OptionSettlementType>('physical')
+  const [createDerivativeDraft, setCreateDerivativeDraft] = useState(
+    emptyDerivativeGovernanceDraft,
+  )
+  const [selectedDerivativeDraft, setSelectedDerivativeDraft] = useState(
+    emptyDerivativeGovernanceDraft,
+  )
   const [selectedInstrumentId, setSelectedInstrumentId] = useState(initialInstrumentSelection)
   const [metricFamily, setMetricFamily] = useState<MetricFamily>('price')
   const [quoteBasis, setQuoteBasis] = useState<QuoteBasis>('close')
@@ -504,6 +948,15 @@ export default function InstrumentRegistryPage({
   }, [selectedInstrument])
 
   useEffect(() => {
+    if (
+      selectedInstrument?.instrument_type === 'fcn' ||
+      selectedInstrument?.instrument_type === 'option'
+    ) {
+      setSelectedDerivativeDraft(draftForDerivative(selectedInstrument))
+    }
+  }, [selectedInstrument])
+
+  useEffect(() => {
     if (!allowedMetricFamilies.includes(metricFamily)) {
       const nextFamily = allowedMetricFamilies[0]
       setMetricFamily(nextFamily)
@@ -657,9 +1110,8 @@ export default function InstrumentRegistryPage({
 
   async function handleCreate(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
-    await onCreateInstrument({
+    const instrumentIdentity = {
       instrument_name: instrumentName.trim(),
-      instrument_type: instrumentType,
       currency: currency.trim().toUpperCase(),
       identifiers: [
         {
@@ -668,9 +1120,110 @@ export default function InstrumentRegistryPage({
           is_primary: true,
         },
       ],
-    })
+    }
+    const brokerIdentifiers =
+      instrumentType === 'fcn' || instrumentType === 'option'
+        ? canonicalBrokerIdentifiers(createDerivativeDraft.brokerIdentifiers)
+        : []
+    if (instrumentType === 'option') {
+      await onCreateInstrument({
+        ...instrumentIdentity,
+        instrument_type: 'option',
+        broker_identifiers: brokerIdentifiers,
+        option_contract: canonicalOptionContractIdentity({
+          underlying_instrument_id: optionUnderlyingInstrumentId,
+          option_type: optionType,
+          expiry_date: optionExpiryDate,
+          strike: optionStrike,
+          contract_multiplier: optionContractMultiplier,
+          settlement_type: optionSettlementType,
+          contract_currency: currency,
+        }),
+        corporate_action_adjustment_policy:
+          canonicalCorporateActionAdjustmentPolicy(
+            createDerivativeDraft.adjustmentPolicy,
+          ),
+      })
+    } else if (instrumentType === 'fcn') {
+      await onCreateInstrument({
+        ...instrumentIdentity,
+        instrument_type: 'fcn',
+        broker_identifiers: brokerIdentifiers,
+        fcn_contract: canonicalFCNContractMetadata({
+          notional: createDerivativeDraft.fcnNotional,
+          issue_date: createDerivativeDraft.fcnIssueDate,
+          maturity_date: createDerivativeDraft.fcnMaturityDate,
+          contract_currency: currency,
+          issuer: createDerivativeDraft.fcnIssuer,
+          counterparty: createDerivativeDraft.fcnCounterparty,
+          underlying_instrument_ids:
+            createDerivativeDraft.fcnUnderlyingInstrumentIds,
+          deliverable_instrument_ids:
+            createDerivativeDraft.fcnDeliverableInstrumentIds,
+          barrier_type: createDerivativeDraft.fcnBarrierType,
+          barrier_level: createDerivativeDraft.fcnBarrierLevel || null,
+        }),
+        corporate_action_adjustment_policy:
+          canonicalCorporateActionAdjustmentPolicy(
+            createDerivativeDraft.adjustmentPolicy,
+          ),
+      })
+    } else {
+      await onCreateInstrument({
+        ...instrumentIdentity,
+        instrument_type: instrumentType,
+        broker_identifiers: [],
+      })
+    }
     setInstrumentName('')
     setIdentifierValue('')
+    setOptionUnderlyingInstrumentId('')
+    setOptionExpiryDate('')
+    setOptionStrike('')
+    setOptionContractMultiplier('100')
+    setOptionType('call')
+    setOptionSettlementType('physical')
+    setCreateDerivativeDraft(emptyDerivativeGovernanceDraft())
+  }
+
+  async function handleDerivativeMetadataSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    const derivative = selectedInstrument
+    if (
+      derivative?.instrument_type !== 'fcn' &&
+      derivative?.instrument_type !== 'option'
+    ) {
+      return
+    }
+    await onUpdateDerivativeContractMetadata({
+      instrument_id: derivative.instrument_id,
+      fcn_contract:
+        derivative.instrument_type === 'fcn'
+          ? canonicalFCNContractMetadata({
+              notional: selectedDerivativeDraft.fcnNotional,
+              issue_date: selectedDerivativeDraft.fcnIssueDate,
+              maturity_date: selectedDerivativeDraft.fcnMaturityDate,
+              contract_currency: derivative.currency,
+              issuer: selectedDerivativeDraft.fcnIssuer,
+              counterparty: selectedDerivativeDraft.fcnCounterparty,
+              underlying_instrument_ids:
+                selectedDerivativeDraft.fcnUnderlyingInstrumentIds,
+              deliverable_instrument_ids:
+                selectedDerivativeDraft.fcnDeliverableInstrumentIds,
+              barrier_type: selectedDerivativeDraft.fcnBarrierType,
+              barrier_level: selectedDerivativeDraft.fcnBarrierLevel || null,
+            })
+          : null,
+      broker_identifiers: canonicalBrokerIdentifiers(
+        selectedDerivativeDraft.brokerIdentifiers,
+      ),
+      corporate_action_adjustment_policy:
+        canonicalCorporateActionAdjustmentPolicy(
+          selectedDerivativeDraft.adjustmentPolicy,
+        ),
+    })
+    setActivePanel(null)
+    await refreshSelectedInstrumentDetail(derivative.instrument_id)
   }
 
   async function handleMetricSubmit(event: FormEvent<HTMLFormElement>) {
@@ -1058,6 +1611,8 @@ export default function InstrumentRegistryPage({
                 <option value="fund">Fund</option>
                 <option value="etf">ETF</option>
                 <option value="bond">Bond</option>
+                <option value="fcn">FCN</option>
+                <option value="option">Option</option>
                 <option value="cash">Cash</option>
                 <option value="fx">FX</option>
                 <option value="other">Other</option>
@@ -1389,6 +1944,58 @@ export default function InstrumentRegistryPage({
                         {formatCoverageLabel(selectedInstrument.coverage_state)}
                       </span>
                     </section>
+
+                    {selectedInstrument.instrument_type === 'option' ? (
+                      <section className="ir-inspector-section">
+                        <div className="ir-subsection-head">
+                          <div>
+                            <span>Immutable identity</span>
+                            <h3>Option contract</h3>
+                          </div>
+                          <small>
+                            {selectedInstrument.option_contract.option_type.toUpperCase()}
+                          </small>
+                        </div>
+                        <div className="ir-role-list">
+                          <div>
+                            <span>Underlying</span>
+                            <strong>
+                              {instruments.find(
+                                (instrument) =>
+                                  instrument.instrument_id ===
+                                  selectedInstrument.option_contract
+                                    .underlying_instrument_id,
+                              )?.instrument_name ??
+                                selectedInstrument.option_contract
+                                  .underlying_instrument_id}
+                            </strong>
+                            <small>
+                              {selectedInstrument.option_contract.underlying_instrument_id}
+                            </small>
+                          </div>
+                          <div>
+                            <span>Expiry</span>
+                            <strong>{selectedInstrument.option_contract.expiry_date}</strong>
+                            <small>
+                              {selectedInstrument.option_contract.settlement_type} settlement
+                            </small>
+                          </div>
+                          <div>
+                            <span>Strike</span>
+                            <strong>
+                              {formatDecimalValue(selectedInstrument.option_contract.strike)}{' '}
+                              {selectedInstrument.option_contract.contract_currency}
+                            </strong>
+                            <small>
+                              Multiplier{' '}
+                              {formatDecimalValue(
+                                selectedInstrument.option_contract.contract_multiplier,
+                              )}
+                            </small>
+                          </div>
+                        </div>
+                      </section>
+                    ) : null}
 
                     <section className="ir-inspector-section">
                       <div className="ir-subsection-head">
@@ -1781,6 +2388,130 @@ export default function InstrumentRegistryPage({
 
                 {inspectorTab === 'governance' ? (
                   <div className="ir-inspector-stack">
+                    {selectedInstrument.instrument_type === 'fcn' ||
+                    selectedInstrument.instrument_type === 'option' ? (
+                      <section className="ir-inspector-section">
+                        <div className="ir-subsection-head">
+                          <div>
+                            <span>Contract reconciliation</span>
+                            <h3>Derivative governance</h3>
+                          </div>
+                          <span
+                            className={`ir-reconciliation-status is-${selectedInstrument.contract_reconciliation.status}`}
+                          >
+                            {selectedInstrument.contract_reconciliation.status.replace(
+                              /_/g,
+                              ' ',
+                            )}
+                          </span>
+                        </div>
+                        <dl className="ir-definition-list">
+                          <div>
+                            <dt>Canonical contract ID</dt>
+                            <dd>
+                              {selectedInstrument.contract_reconciliation
+                                .canonical_contract_id ?? 'Unavailable'}
+                            </dd>
+                          </div>
+                          <div>
+                            <dt>Adjustment authority</dt>
+                            <dd>
+                              {
+                                selectedInstrument.corporate_action_adjustment_policy
+                                  .authority_reference
+                              }
+                            </dd>
+                          </div>
+                          <div>
+                            <dt>Adjustment policy</dt>
+                            <dd>
+                              {selectedInstrument.corporate_action_adjustment_policy.policy_type.replace(
+                                /_/g,
+                                ' ',
+                              )}
+                            </dd>
+                          </div>
+                          <div>
+                            <dt>Broker keys</dt>
+                            <dd>
+                              {selectedInstrument.contract_reconciliation.broker_keys.join(
+                                ', ',
+                              ) || 'Unmatched'}
+                            </dd>
+                          </div>
+                          {selectedInstrument.instrument_type === 'fcn' ? (
+                            <>
+                              <div>
+                                <dt>Notional</dt>
+                                <dd>
+                                  {formatDecimalValue(
+                                    selectedInstrument.fcn_contract.notional,
+                                  )}{' '}
+                                  {selectedInstrument.fcn_contract.contract_currency}
+                                </dd>
+                              </div>
+                              <div>
+                                <dt>Maturity</dt>
+                                <dd>{selectedInstrument.fcn_contract.maturity_date}</dd>
+                              </div>
+                              <div>
+                                <dt>Issuer / counterparty</dt>
+                                <dd>
+                                  {selectedInstrument.fcn_contract.issuer} /{' '}
+                                  {selectedInstrument.fcn_contract.counterparty}
+                                </dd>
+                              </div>
+                              <div>
+                                <dt>Barrier</dt>
+                                <dd>
+                                  {selectedInstrument.fcn_contract.barrier_type.replace(
+                                    /_/g,
+                                    ' ',
+                                  )}
+                                  {selectedInstrument.fcn_contract.barrier_level
+                                    ? ` · ${formatDecimalValue(
+                                        selectedInstrument.fcn_contract.barrier_level,
+                                      )}`
+                                    : ''}
+                                </dd>
+                              </div>
+                            </>
+                          ) : null}
+                        </dl>
+                        {selectedInstrument.broker_identifiers.length ? (
+                          <div className="ir-identifier-list">
+                            {selectedInstrument.broker_identifiers.map((identifier) => (
+                              <div
+                                key={`${identifier.broker}-${identifier.identifier_type}-${identifier.identifier_value}`}
+                              >
+                                <span>
+                                  {identifier.broker} · {identifier.identifier_type}
+                                </span>
+                                <strong>{identifier.identifier_value}</strong>
+                                {identifier.is_primary ? <small>Primary</small> : null}
+                              </div>
+                            ))}
+                          </div>
+                        ) : null}
+                        {selectedInstrument.contract_reconciliation.issues.length ? (
+                          <ul className="ir-contract-issues">
+                            {selectedInstrument.contract_reconciliation.issues.map(
+                              (issue) => (
+                                <li key={issue}>{issue}</li>
+                              ),
+                            )}
+                          </ul>
+                        ) : null}
+                        <button
+                          type="button"
+                          className="registry-submit secondary"
+                          onClick={() => openActionPanel('derivative')}
+                        >
+                          Edit contract governance
+                        </button>
+                      </section>
+                    ) : null}
+
                     <section className="ir-inspector-section">
                       <div className="ir-subsection-head">
                         <div>
@@ -1954,8 +2685,10 @@ export default function InstrumentRegistryPage({
                         : 'Add data point'
                       : activePanel === 'source'
                         ? 'Source settings'
-                        : activePanel === 'nav'
+                      : activePanel === 'nav'
                           ? 'Import fund NAV'
+                          : activePanel === 'derivative'
+                            ? 'Contract governance'
                           : 'Maintain FX rates'}
                 </h2>
                 <p>
@@ -1967,6 +2700,8 @@ export default function InstrumentRegistryPage({
                         ? 'Define where data originates and when it is expected.'
                         : activePanel === 'nav'
                           ? 'Preview parsed rows before they enter the fund NAV history.'
+                          : activePanel === 'derivative'
+                            ? 'Canonical derivative terms and reconciliation identity.'
                           : 'Maintain the direct settlement pairs used for cross-currency valuation.'}
                 </p>
               </div>
@@ -2013,6 +2748,8 @@ export default function InstrumentRegistryPage({
                           <option value="fund">Fund</option>
                           <option value="etf">ETF</option>
                           <option value="bond">Bond</option>
+                          <option value="fcn">FCN</option>
+                          <option value="option">Option</option>
                           <option value="cash">Cash</option>
                           <option value="fx">FX</option>
                           <option value="other">Other</option>
@@ -2029,6 +2766,116 @@ export default function InstrumentRegistryPage({
                       </label>
                     </div>
                   </div>
+                  {instrumentType === 'option' ? (
+                    <div className="ir-form-section">
+                      <div>
+                        <span>Contract identity</span>
+                        <h3>Option terms</h3>
+                      </div>
+                      <div className="registry-action-form-grid">
+                        <label className="registry-field-wide">
+                          <span>Underlying instrument</span>
+                          <select
+                            value={optionUnderlyingInstrumentId}
+                            onChange={(event) =>
+                              setOptionUnderlyingInstrumentId(event.target.value)
+                            }
+                            required
+                          >
+                            <option value="">Select instrument</option>
+                            {instruments
+                              .filter(
+                                (instrument) =>
+                                  instrument.instrument_type !== 'option' &&
+                                  instrument.lifecycle_state.status === 'active',
+                              )
+                              .map((instrument) => (
+                                <option
+                                  key={instrument.instrument_id}
+                                  value={instrument.instrument_id}
+                                >
+                                  {instrument.instrument_name} · {instrument.instrument_id}
+                                </option>
+                              ))}
+                          </select>
+                        </label>
+                        <label>
+                          <span>Option type</span>
+                          <select
+                            value={optionType}
+                            onChange={(event) =>
+                              setOptionType(event.target.value as OptionType)
+                            }
+                          >
+                            <option value="call">Call</option>
+                            <option value="put">Put</option>
+                          </select>
+                        </label>
+                        <label>
+                          <span>Settlement</span>
+                          <select
+                            value={optionSettlementType}
+                            onChange={(event) =>
+                              setOptionSettlementType(
+                                event.target.value as OptionSettlementType,
+                              )
+                            }
+                          >
+                            <option value="physical">Physical</option>
+                            <option value="cash">Cash</option>
+                          </select>
+                        </label>
+                        <label>
+                          <span>Expiry date</span>
+                          <input
+                            type="date"
+                            value={optionExpiryDate}
+                            onChange={(event) => setOptionExpiryDate(event.target.value)}
+                            required
+                          />
+                        </label>
+                        <label>
+                          <span>Strike</span>
+                          <input
+                            type="number"
+                            min="0"
+                            step="any"
+                            inputMode="decimal"
+                            value={optionStrike}
+                            onChange={(event) => setOptionStrike(event.target.value)}
+                            required
+                          />
+                        </label>
+                        <label>
+                          <span>Contract multiplier</span>
+                          <input
+                            type="number"
+                            min="0"
+                            step="any"
+                            inputMode="decimal"
+                            value={optionContractMultiplier}
+                            onChange={(event) =>
+                              setOptionContractMultiplier(event.target.value)
+                            }
+                            required
+                          />
+                        </label>
+                        <label>
+                          <span>Contract currency</span>
+                          <input value={currency.trim().toUpperCase()} readOnly required />
+                        </label>
+                      </div>
+                    </div>
+                  ) : null}
+                  {instrumentType === 'fcn' || instrumentType === 'option' ? (
+                    <DerivativeGovernanceFields
+                      instrumentType={instrumentType}
+                      currency={currency}
+                      instruments={instruments}
+                      draft={createDerivativeDraft}
+                      onChange={setCreateDerivativeDraft}
+                    />
+                  ) : null}
                   <div className="ir-form-section">
                     <div>
                       <span>Resolution key</span>
@@ -2068,6 +2915,38 @@ export default function InstrumentRegistryPage({
                     </button>
                     <button type="submit" className="registry-submit">
                       Register instrument
+                    </button>
+                  </div>
+                </form>
+              ) : null}
+
+              {activePanel === 'derivative' &&
+              (selectedInstrument?.instrument_type === 'fcn' ||
+                selectedInstrument?.instrument_type === 'option') ? (
+                <form
+                  className="registry-form ir-drawer-form"
+                  onSubmit={(event) => void handleDerivativeMetadataSubmit(event)}
+                >
+                  <div className="ir-drawer-context">
+                    <span>{selectedInstrument.instrument_type.toUpperCase()}</span>
+                    <strong>{selectedInstrument.instrument_name}</strong>
+                    <small>
+                      {selectedInstrument.contract_reconciliation.status.replace(/_/g, ' ')}
+                    </small>
+                  </div>
+                  <DerivativeGovernanceFields
+                    instrumentType={selectedInstrument.instrument_type}
+                    currency={selectedInstrument.currency}
+                    instruments={instruments}
+                    draft={selectedDerivativeDraft}
+                    onChange={setSelectedDerivativeDraft}
+                  />
+                  <div className="ir-drawer-footer">
+                    <button type="button" onClick={() => setActivePanel(null)}>
+                      Cancel
+                    </button>
+                    <button type="submit" className="registry-submit">
+                      Save contract governance
                     </button>
                   </div>
                 </form>

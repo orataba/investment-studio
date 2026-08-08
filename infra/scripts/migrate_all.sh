@@ -123,23 +123,28 @@ current_migration_revision() {
   )
 }
 
+registry_revision_is_descendant() {
+  local current_output="$1"
+  local target_revision="$2"
+
+  PYTHONPATH="$INSTRUMENT_CORE_PYTHON${PYTHONPATH:+:$PYTHONPATH}" \
+    "$PYTHON_BIN" "$SCRIPT_DIR/alembic_revision_is_descendant.py" \
+      --migration-root "$REGISTRY_MIGRATION_ROOT" \
+      --current-output "$current_output" \
+      --target "$target_revision"
+}
+
 INSTRUMENT_CORE_PYTHON="$PROJECT_ROOT/packages/instrument-core/python"
 PLATFORM_BACKEND="$PROJECT_ROOT/apps/platform/backend"
 REGISTRY_MIGRATION_ROOT="$PROJECT_ROOT/infra/instrument_registry"
 REGISTRY_NAV_LEDGER_REVISION="20260715_0012"
-REGISTRY_NAV_CONTRACT_REVISION="20260716_0013"
-REGISTRY_NAV_CASH_RETURN_REVISION="20260717_0014"
-REGISTRY_PRICE_BAR_REVISION="20260717_0015"
 registry_current_revision="$(
   current_migration_revision \
     "instrument registry" \
     "$REGISTRY_MIGRATION_ROOT" \
     "$INSTRUMENT_CORE_PYTHON"
 )"
-if [[ "$registry_current_revision" == *"$REGISTRY_NAV_LEDGER_REVISION"* ]] || \
-   [[ "$registry_current_revision" == *"$REGISTRY_NAV_CONTRACT_REVISION"* ]] || \
-   [[ "$registry_current_revision" == *"$REGISTRY_NAV_CASH_RETURN_REVISION"* ]] || \
-   [[ "$registry_current_revision" == *"$REGISTRY_PRICE_BAR_REVISION"* ]]; then
+if registry_revision_is_descendant "$registry_current_revision" "$REGISTRY_NAV_LEDGER_REVISION"; then
   echo "Instrument registry NAV contract is already applied; prerequisite phase is complete."
 else
   run_migration \

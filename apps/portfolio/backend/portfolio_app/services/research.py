@@ -34,7 +34,9 @@ from portfolio_app.services.instrument_charts import (
 from portfolio_app.services.instrument_registry import InstrumentRegistryError
 from portfolio_app.services.ledger import build_account_workspace
 from portfolio_app.services.performance import build_holdings_report
+from portfolio_app.services.analytics_scope import taxonomy_configuration_as_of_in_session
 from portfolio_app.services.research_solver import (
+    RESEARCH_BACKTEST_METHODOLOGY_WARNINGS,
     RESEARCH_DEFAULT_MISSING_RETURN_POLICY,
     SYSTEM_CASH_TARGET_LABEL,
     SYSTEM_CASH_TARGET_MEMBER_ID,
@@ -64,7 +66,31 @@ HTML_SUFFIXES = {".html"}
 CURRENT_TARGET_RUN_TEMPLATE = "target_weight_solve"
 RESEARCH_AS_OF_MODE_DYNAMIC = "dynamic"
 RESEARCH_AS_OF_MODE_PINNED = "pinned"
-RESEARCH_PLANNING_STATE_FINGERPRINT_VERSION = 1
+RESEARCH_PLANNING_STATE_FINGERPRINT_VERSION = 2
+DEFAULT_BACKTEST_ROBUSTNESS_SCENARIOS: list[dict[str, object]] = [
+    {
+        "scenario_id": "friction_1_5x",
+        "label": "1.5x Friction",
+        "cash_yield_annual": 0.0,
+        "commission_bps": 3.0,
+        "tax_bps": 15.0,
+        "slippage_bps": 7.5,
+        "implementation_delay_days": 2,
+    },
+    {
+        "scenario_id": "friction_2x",
+        "label": "2x Friction",
+        "cash_yield_annual": 0.0,
+        "commission_bps": 4.0,
+        "tax_bps": 20.0,
+        "slippage_bps": 10.0,
+        "implementation_delay_days": 3,
+    },
+]
+# PUT settings fields use explicit-null and omitted as different operations.
+# The route passes this sentinel for omitted optional controls so older or
+# partial clients cannot silently restore backtest defaults.
+RESEARCH_SETTINGS_UNSET = object()
 
 
 def _utc_now() -> datetime:
@@ -86,6 +112,36 @@ def _safe_float(value: object) -> float | None:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def _normalized_backtest_robustness_scenarios(
+    scenarios: list[dict[str, object]] | None,
+) -> list[dict[str, object]]:
+    source = scenarios if scenarios is not None else DEFAULT_BACKTEST_ROBUSTNESS_SCENARIOS
+    normalized: list[dict[str, object]] = []
+    seen_ids: set[str] = set()
+    for item in source:
+        scenario_id = str(item.get("scenario_id") or "").strip()
+        label = str(item.get("label") or "").strip()
+        if not scenario_id or not label or scenario_id in seen_ids:
+            raise ValueError(
+                "Backtest robustness scenarios require unique scenario_id and label values."
+            )
+        seen_ids.add(scenario_id)
+        normalized.append(
+            {
+                "scenario_id": scenario_id,
+                "label": label,
+                "cash_yield_annual": float(item.get("cash_yield_annual") or 0.0),
+                "commission_bps": float(item.get("commission_bps") or 0.0),
+                "tax_bps": float(item.get("tax_bps") or 0.0),
+                "slippage_bps": float(item.get("slippage_bps") or 0.0),
+                "implementation_delay_days": int(
+                    item.get("implementation_delay_days") or 0
+                ),
+            }
+        )
+    return normalized
 
 
 def _normalize_research_max_gross_exposure(capital_mode: object, value: object) -> float | None:
@@ -267,6 +323,11 @@ def _ensure_research_settings_record(
         if not str(getattr(record, "backtest_rebalance_frequency", "") or "").strip():
             record.backtest_rebalance_frequency = "1m"
             changed = True
+        if record.backtest_robustness_scenarios_json is None:
+            record.backtest_robustness_scenarios_json = deepcopy(
+                DEFAULT_BACKTEST_ROBUSTNESS_SCENARIOS
+            )
+            changed = True
         if changed:
             record.updated_at = _utc_now_iso()
             session.commit()
@@ -290,6 +351,16 @@ def _ensure_research_settings_record(
         top_sleeve_weight_bounds_json=[],
         backtest_rebalance_frequency="1m",
         backtest_benchmark_instrument_id=None,
+        backtest_cash_yield_annual=0.02,
+        backtest_commission_bps=2.0,
+        backtest_tax_bps=10.0,
+        backtest_slippage_bps=5.0,
+        backtest_implementation_delay_days=1,
+        backtest_robustness_scenarios_json=deepcopy(
+            DEFAULT_BACKTEST_ROBUSTNESS_SCENARIOS
+        ),
+        backtest_walk_forward_training_months=24,
+        backtest_walk_forward_test_months=6,
         notes=None,
         updated_at=_utc_now_iso(),
     )
@@ -481,6 +552,22 @@ def _serialize_settings_row(
         "top_sleeve_weight_bounds": deepcopy(row.top_sleeve_weight_bounds_json or []),
         "backtest_rebalance_frequency": str(row.backtest_rebalance_frequency or "1m").strip() or "1m",
         "backtest_benchmark_instrument_id": str(row.backtest_benchmark_instrument_id or "").strip() or None,
+        "backtest_cash_yield_annual": float(row.backtest_cash_yield_annual),
+        "backtest_commission_bps": float(row.backtest_commission_bps),
+        "backtest_tax_bps": float(row.backtest_tax_bps),
+        "backtest_slippage_bps": float(row.backtest_slippage_bps),
+        "backtest_implementation_delay_days": int(
+            row.backtest_implementation_delay_days
+        ),
+        "backtest_robustness_scenarios": deepcopy(
+            row.backtest_robustness_scenarios_json or []
+        ),
+        "backtest_walk_forward_training_months": int(
+            row.backtest_walk_forward_training_months
+        ),
+        "backtest_walk_forward_test_months": int(
+            row.backtest_walk_forward_test_months
+        ),
         "notes": row.notes,
         "updated_at": row.updated_at,
     }
@@ -516,132 +603,30 @@ def _planning_state_fingerprint(
     *,
     portfolio_id: str,
     planning_taxonomy_id: str | None,
+    as_of_date: date,
 ) -> str | None:
     taxonomy_id = str(planning_taxonomy_id or "").strip()
     if not taxonomy_id:
         return None
 
-    taxonomy = session.scalar(
-        select(TaxonomyRecordModel).where(
-            TaxonomyRecordModel.portfolio_id == portfolio_id,
-            TaxonomyRecordModel.taxonomy_id == taxonomy_id,
-        )
+    taxonomy_configuration = taxonomy_configuration_as_of_in_session(
+        session,
+        portfolio_id,
+        taxonomy_id,
+        as_of_date,
     )
-    if taxonomy is None:
+    if taxonomy_configuration is None:
         return None
-
-    nodes = session.scalars(
-        select(TaxonomyNodeRecordModel).where(TaxonomyNodeRecordModel.taxonomy_id == taxonomy_id)
-    ).all()
-    assignments = session.scalars(
-        select(TaxonomyAssignmentRecordModel).where(
-            TaxonomyAssignmentRecordModel.taxonomy_id == taxonomy_id,
-            TaxonomyAssignmentRecordModel.status == "active",
-        )
-    ).all()
-    target_sets = session.scalars(
-        select(TargetSetRecordModel).where(
-            TargetSetRecordModel.taxonomy_id == taxonomy_id,
-            TargetSetRecordModel.status == "active",
-        )
-    ).all()
-    active_target_set_ids = [item.target_set_id for item in target_sets]
-    target_lines = (
-        session.scalars(
-            select(TargetSetLineRecordModel).where(
-                TargetSetLineRecordModel.target_set_id.in_(active_target_set_ids)
-            )
-        ).all()
-        if active_target_set_ids
-        else []
-    )
     instrument_universe = session.scalars(
         select(PortfolioInstrumentUniverseRecordModel).where(
             PortfolioInstrumentUniverseRecordModel.portfolio_id == portfolio_id,
             PortfolioInstrumentUniverseRecordModel.status == "active",
         )
     ).all()
-    lines_by_target_set_id: dict[str, list[dict[str, object]]] = {}
-    for item in target_lines:
-        lines_by_target_set_id.setdefault(item.target_set_id, []).append(
-            {
-                "target_member_type": item.target_member_type,
-                "target_member_id": item.target_member_id,
-                "taxonomy_node_id": item.taxonomy_node_id,
-                "target_weight": _safe_float(item.target_weight),
-                "target_risk_share": _safe_float(item.target_risk_share),
-            }
-        )
-    for lines in lines_by_target_set_id.values():
-        lines.sort(
-            key=lambda item: (
-                str(item.get("target_member_type") or ""),
-                str(item.get("target_member_id") or ""),
-            )
-        )
-
     state = {
         "schema_version": RESEARCH_PLANNING_STATE_FINGERPRINT_VERSION,
-        "taxonomy": {
-            "taxonomy_id": taxonomy.taxonomy_id,
-            "name": taxonomy.name,
-            "taxonomy_type": taxonomy.taxonomy_type,
-            "primary_assignment_scope": taxonomy.primary_assignment_scope,
-            "planning_enabled": bool(taxonomy.planning_enabled),
-            "budgeting_level": taxonomy.budgeting_level,
-            "root_default_target_dimension": taxonomy.root_default_target_dimension,
-            "status": taxonomy.status,
-        },
-        "nodes": sorted(
-            [
-                {
-                    "taxonomy_node_id": item.taxonomy_node_id,
-                    "parent_taxonomy_node_id": item.parent_taxonomy_node_id,
-                    "node_name": item.node_name,
-                    "node_code": item.node_code,
-                    "sort_order": item.sort_order,
-                    "is_terminal": bool(item.is_terminal),
-                    "default_target_dimension": item.default_target_dimension,
-                    "status": item.status,
-                }
-                for item in nodes
-            ],
-            key=lambda item: str(item["taxonomy_node_id"]),
-        ),
-        "active_assignments": sorted(
-            [
-                {
-                    "target_scope": item.target_scope,
-                    "target_entity_id": item.target_entity_id,
-                    "taxonomy_node_id": item.taxonomy_node_id,
-                }
-                for item in assignments
-            ],
-            key=lambda item: (
-                str(item["target_scope"]),
-                str(item["target_entity_id"]),
-                str(item["taxonomy_node_id"]),
-            ),
-        ),
-        "active_target_sets": sorted(
-            [
-                {
-                    "target_set_id": item.target_set_id,
-                    "comparator_taxonomy_node_id": item.comparator_taxonomy_node_id,
-                    "target_set_type": item.target_set_type,
-                    "name": item.name,
-                    "weight_enabled": bool(item.weight_enabled),
-                    "risk_budget_enabled": bool(item.risk_budget_enabled),
-                    "lines": lines_by_target_set_id.get(item.target_set_id, []),
-                }
-                for item in target_sets
-            ],
-            key=lambda item: (
-                str(item["comparator_taxonomy_node_id"] or ""),
-                str(item["target_set_type"]),
-                str(item["target_set_id"]),
-            ),
-        ),
+        "as_of_date": as_of_date.isoformat(),
+        "taxonomy_configuration": taxonomy_configuration,
         "research_instrument_eligibility": sorted(
             [
                 {
@@ -728,6 +713,27 @@ def _research_run_reliability(
             "top_sleeve_weight_bounds": settings_payload.get("top_sleeve_weight_bounds") or [],
             "backtest_rebalance_frequency": settings_payload.get("backtest_rebalance_frequency"),
             "backtest_benchmark_instrument_id": settings_payload.get("backtest_benchmark_instrument_id"),
+            "backtest_cash_yield_annual": settings_payload.get(
+                "backtest_cash_yield_annual"
+            ),
+            "backtest_commission_bps": settings_payload.get(
+                "backtest_commission_bps"
+            ),
+            "backtest_tax_bps": settings_payload.get("backtest_tax_bps"),
+            "backtest_slippage_bps": settings_payload.get("backtest_slippage_bps"),
+            "backtest_implementation_delay_days": settings_payload.get(
+                "backtest_implementation_delay_days"
+            ),
+            "backtest_robustness_scenarios": settings_payload.get(
+                "backtest_robustness_scenarios"
+            )
+            or [],
+            "backtest_walk_forward_training_months": settings_payload.get(
+                "backtest_walk_forward_training_months"
+            ),
+            "backtest_walk_forward_test_months": settings_payload.get(
+                "backtest_walk_forward_test_months"
+            ),
         }
         material_keys = list(expected_payload)
         request_material = {key: request_payload.get(key) for key in material_keys}
@@ -1419,11 +1425,14 @@ def _build_target_assumptions(
         assumptions.append("After recursive sleeve targets are resolved, Research applies a fixed gross-exposure overlay and leaves the residual in cash.")
     if any(str(item.get("source_label_override") or "") == "Single Member" for item in target_rows):
         assumptions.append("Single-member sleeves resolve to 100% of that member; multi-member scopes require an active complete SAA/TAA target set.")
-    assumptions.extend(
-        [
-            "The backtest applies the currently configured taxonomy membership and target policy across its full history; it is a policy simulation, not a point-in-time reconstruction of past classifications or mandates.",
-            "Backtest cash residual earns 0%, and reported simulated returns are gross of transaction costs, taxes, slippage, and implementation delay.",
-        ]
+    assumptions.extend(RESEARCH_BACKTEST_METHODOLOGY_WARNINGS)
+    assumptions.append(
+        "Base replay assumptions: "
+        f"cash yield {_format_pct(_safe_float(settings_payload.get('backtest_cash_yield_annual')))}, "
+        f"commission {_format_number(_safe_float(settings_payload.get('backtest_commission_bps')), 2)} bps, "
+        f"sell-side tax {_format_number(_safe_float(settings_payload.get('backtest_tax_bps')), 2)} bps, "
+        f"slippage {_format_number(_safe_float(settings_payload.get('backtest_slippage_bps')), 2)} bps, and "
+        f"implementation delay {int(_safe_float(settings_payload.get('backtest_implementation_delay_days')) or 0)} calendar day(s)."
     )
     return list(dict.fromkeys(assumptions))
 
@@ -1650,6 +1659,7 @@ def get_research_workbench(
             session,
             portfolio_id=portfolio_id,
             planning_taxonomy_id=str(settings_payload.get("planning_taxonomy_id") or "").strip() or None,
+            as_of_date=latest_portfolio_as_of_date,
         )
         run_rows = session.scalars(
             select(ResearchRunRecordModel)
@@ -1770,9 +1780,17 @@ def update_research_settings(
     max_gross_exposure: float | None,
     frozen_taxonomy_node_ids: list[str] | None,
     top_sleeve_weight_bounds: list[dict[str, object]] | None,
-    backtest_rebalance_frequency: str,
-    backtest_benchmark_instrument_id: str | None,
-    notes: str | None,
+    backtest_rebalance_frequency: object = RESEARCH_SETTINGS_UNSET,
+    backtest_benchmark_instrument_id: object = RESEARCH_SETTINGS_UNSET,
+    backtest_cash_yield_annual: object = RESEARCH_SETTINGS_UNSET,
+    backtest_commission_bps: object = RESEARCH_SETTINGS_UNSET,
+    backtest_tax_bps: object = RESEARCH_SETTINGS_UNSET,
+    backtest_slippage_bps: object = RESEARCH_SETTINGS_UNSET,
+    backtest_implementation_delay_days: object = RESEARCH_SETTINGS_UNSET,
+    backtest_robustness_scenarios: object = RESEARCH_SETTINGS_UNSET,
+    backtest_walk_forward_training_months: object = RESEARCH_SETTINGS_UNSET,
+    backtest_walk_forward_test_months: object = RESEARCH_SETTINGS_UNSET,
+    notes: str | None = None,
 ) -> dict[str, object] | None:
     portfolio = get_portfolio(portfolio_id)
     if portfolio is None:
@@ -1845,13 +1863,86 @@ def update_research_settings(
             row.frozen_taxonomy_node_ids_json = resolved_frozen_ids
         if resolved_top_sleeve_bounds is not None:
             row.top_sleeve_weight_bounds_json = resolved_top_sleeve_bounds
-        normalized_rebalance_frequency = str(backtest_rebalance_frequency or "").strip().lower()
-        row.backtest_rebalance_frequency = (
-            normalized_rebalance_frequency
-            if normalized_rebalance_frequency in {"1w", "1m", "3m"}
-            else "1m"
+        resolved_rebalance_frequency = (
+            row.backtest_rebalance_frequency
+            if backtest_rebalance_frequency is RESEARCH_SETTINGS_UNSET
+            else backtest_rebalance_frequency
         )
-        row.backtest_benchmark_instrument_id = str(backtest_benchmark_instrument_id or "").strip() or None
+        normalized_rebalance_frequency = str(
+            resolved_rebalance_frequency or ""
+        ).strip().lower()
+        if normalized_rebalance_frequency not in {"1w", "1m", "3m"}:
+            raise ValueError("Backtest rebalance frequency must be 1w, 1m, or 3m.")
+        resolved_cash_yield = (
+            row.backtest_cash_yield_annual
+            if backtest_cash_yield_annual is RESEARCH_SETTINGS_UNSET
+            else backtest_cash_yield_annual
+        )
+        resolved_commission_bps = (
+            row.backtest_commission_bps
+            if backtest_commission_bps is RESEARCH_SETTINGS_UNSET
+            else backtest_commission_bps
+        )
+        resolved_tax_bps = (
+            row.backtest_tax_bps
+            if backtest_tax_bps is RESEARCH_SETTINGS_UNSET
+            else backtest_tax_bps
+        )
+        resolved_slippage_bps = (
+            row.backtest_slippage_bps
+            if backtest_slippage_bps is RESEARCH_SETTINGS_UNSET
+            else backtest_slippage_bps
+        )
+        resolved_delay_days = (
+            row.backtest_implementation_delay_days
+            if backtest_implementation_delay_days is RESEARCH_SETTINGS_UNSET
+            else backtest_implementation_delay_days
+        )
+        resolved_training_months = (
+            row.backtest_walk_forward_training_months
+            if backtest_walk_forward_training_months is RESEARCH_SETTINGS_UNSET
+            else backtest_walk_forward_training_months
+        )
+        resolved_test_months = (
+            row.backtest_walk_forward_test_months
+            if backtest_walk_forward_test_months is RESEARCH_SETTINGS_UNSET
+            else backtest_walk_forward_test_months
+        )
+        if not -1.0 <= float(resolved_cash_yield) <= 1.0:
+            raise ValueError("Backtest cash yield must be between -100% and 100%.")
+        friction_values = (
+            resolved_commission_bps,
+            resolved_tax_bps,
+            resolved_slippage_bps,
+        )
+        if any(float(value) < 0.0 or float(value) > 1000.0 for value in friction_values):
+            raise ValueError("Backtest friction inputs must be between 0 and 1,000 bps.")
+        if not 0 <= int(resolved_delay_days) <= 30:
+            raise ValueError("Backtest implementation delay must be between 0 and 30 days.")
+        if not 1 <= int(resolved_training_months) <= 120:
+            raise ValueError("Walk-forward training window must be between 1 and 120 months.")
+        if not 1 <= int(resolved_test_months) <= 60:
+            raise ValueError("Walk-forward test window must be between 1 and 60 months.")
+        row.backtest_rebalance_frequency = normalized_rebalance_frequency
+        if backtest_benchmark_instrument_id is not RESEARCH_SETTINGS_UNSET:
+            row.backtest_benchmark_instrument_id = (
+                str(backtest_benchmark_instrument_id or "").strip() or None
+            )
+        row.backtest_cash_yield_annual = float(resolved_cash_yield)
+        row.backtest_commission_bps = float(resolved_commission_bps)
+        row.backtest_tax_bps = float(resolved_tax_bps)
+        row.backtest_slippage_bps = float(resolved_slippage_bps)
+        row.backtest_implementation_delay_days = int(resolved_delay_days)
+        if backtest_robustness_scenarios is not RESEARCH_SETTINGS_UNSET:
+            row.backtest_robustness_scenarios_json = (
+                _normalized_backtest_robustness_scenarios(
+                    backtest_robustness_scenarios
+                    if isinstance(backtest_robustness_scenarios, list)
+                    else None
+                )
+            )
+        row.backtest_walk_forward_training_months = int(resolved_training_months)
+        row.backtest_walk_forward_test_months = int(resolved_test_months)
         row.notes = notes
         row.updated_at = _utc_now_iso()
         portfolio_row = session.get(PortfolioRecordModel, portfolio_id)
@@ -1930,6 +2021,7 @@ def run_portfolio_research(
             session,
             portfolio_id=portfolio_id,
             planning_taxonomy_id=settings_row.planning_taxonomy_id,
+            as_of_date=effective_as_of_date,
         )
         if planning_state_fingerprint is None:
             raise ValueError("The selected planning taxonomy state is unavailable.")
@@ -1969,6 +2061,28 @@ def run_portfolio_research(
                 "top_sleeve_weight_bounds": deepcopy(settings_row.top_sleeve_weight_bounds_json or []),
                 "backtest_rebalance_frequency": str(settings_row.backtest_rebalance_frequency or "1m"),
                 "backtest_benchmark_instrument_id": str(settings_row.backtest_benchmark_instrument_id or "").strip() or None,
+                "backtest_cash_yield_annual": float(
+                    settings_row.backtest_cash_yield_annual
+                ),
+                "backtest_commission_bps": float(
+                    settings_row.backtest_commission_bps
+                ),
+                "backtest_tax_bps": float(settings_row.backtest_tax_bps),
+                "backtest_slippage_bps": float(
+                    settings_row.backtest_slippage_bps
+                ),
+                "backtest_implementation_delay_days": int(
+                    settings_row.backtest_implementation_delay_days
+                ),
+                "backtest_robustness_scenarios": deepcopy(
+                    settings_row.backtest_robustness_scenarios_json or []
+                ),
+                "backtest_walk_forward_training_months": int(
+                    settings_row.backtest_walk_forward_training_months
+                ),
+                "backtest_walk_forward_test_months": int(
+                    settings_row.backtest_walk_forward_test_months
+                ),
                 "notes": settings_row.notes,
             },
             error_message=None,
@@ -2022,6 +2136,22 @@ def run_portfolio_research(
                 risk_model_config=deepcopy(production_risk_model or {}),
                 rebalance_frequency=str(settings_row.backtest_rebalance_frequency or "1m"),
                 benchmark_instrument_id=str(settings_row.backtest_benchmark_instrument_id or "").strip() or None,
+                cash_yield_annual=float(settings_row.backtest_cash_yield_annual),
+                commission_bps=float(settings_row.backtest_commission_bps),
+                tax_bps=float(settings_row.backtest_tax_bps),
+                slippage_bps=float(settings_row.backtest_slippage_bps),
+                implementation_delay_days=int(
+                    settings_row.backtest_implementation_delay_days
+                ),
+                robustness_scenarios=deepcopy(
+                    settings_row.backtest_robustness_scenarios_json or []
+                ),
+                walk_forward_training_months=int(
+                    settings_row.backtest_walk_forward_training_months
+                ),
+                walk_forward_test_months=int(
+                    settings_row.backtest_walk_forward_test_months
+                ),
                 current_solution=solution,
                 _instrument_detail_cache=instrument_detail_cache,
             )

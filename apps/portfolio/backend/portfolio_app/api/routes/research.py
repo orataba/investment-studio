@@ -19,6 +19,7 @@ from portfolio_app.services.portfolio_store import (
     set_portfolio_instrument_research_pm_approval,
 )
 from portfolio_app.services.research import (
+    RESEARCH_SETTINGS_UNSET,
     get_research_backtest_benchmark_comparison,
     get_research_run,
     get_research_workbench,
@@ -83,6 +84,14 @@ def update_portfolio_research_settings(
 ) -> ResearchSettingsRecord:
     if get_portfolio(portfolio_id) is None:
         raise HTTPException(status_code=404, detail="Portfolio not found")
+
+    def optional_setting(field_name: str) -> object:
+        return (
+            getattr(payload, field_name)
+            if field_name in payload.model_fields_set
+            else RESEARCH_SETTINGS_UNSET
+        )
+
     try:
         settings = update_research_settings(
             portfolio_id,
@@ -106,8 +115,37 @@ def update_portfolio_research_settings(
                 if payload.top_sleeve_weight_bounds is not None
                 else None
             ),
-            backtest_rebalance_frequency=payload.backtest_rebalance_frequency,
-            backtest_benchmark_instrument_id=payload.backtest_benchmark_instrument_id,
+            backtest_rebalance_frequency=optional_setting(
+                "backtest_rebalance_frequency"
+            ),
+            backtest_benchmark_instrument_id=optional_setting(
+                "backtest_benchmark_instrument_id"
+            ),
+            backtest_cash_yield_annual=optional_setting(
+                "backtest_cash_yield_annual"
+            ),
+            backtest_commission_bps=optional_setting(
+                "backtest_commission_bps"
+            ),
+            backtest_tax_bps=optional_setting("backtest_tax_bps"),
+            backtest_slippage_bps=optional_setting("backtest_slippage_bps"),
+            backtest_implementation_delay_days=optional_setting(
+                "backtest_implementation_delay_days"
+            ),
+            backtest_robustness_scenarios=(
+                [item.model_dump() for item in payload.backtest_robustness_scenarios]
+                if "backtest_robustness_scenarios" in payload.model_fields_set
+                and payload.backtest_robustness_scenarios is not None
+                else None
+                if "backtest_robustness_scenarios" in payload.model_fields_set
+                else RESEARCH_SETTINGS_UNSET
+            ),
+            backtest_walk_forward_training_months=optional_setting(
+                "backtest_walk_forward_training_months"
+            ),
+            backtest_walk_forward_test_months=optional_setting(
+                "backtest_walk_forward_test_months"
+            ),
             notes=payload.notes,
         )
     except ValueError as error:

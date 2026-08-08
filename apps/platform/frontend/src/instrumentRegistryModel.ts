@@ -1,9 +1,16 @@
 import type {
+  BrokerIdentifier,
+  CorporateActionAdjustmentPolicy,
   DataStatus,
+  DerivativeContractReconciliation,
   ExpectedFrequency,
+  FCNContractMetadata,
+  InstrumentCore,
   InstrumentIdentifier,
   InstrumentType,
   MetricFamily,
+  NonDerivativeInstrumentType,
+  OptionContractIdentity,
   PriceUnit,
   QuoteBasis,
   QuoteSelectionPolicy,
@@ -35,12 +42,7 @@ export type PlatformLifecycleState = {
   canonical_instrument_id?: string | null
 }
 
-export type PlatformInstrumentRecord = {
-  instrument_id: string
-  instrument_name: string
-  instrument_type: InstrumentType
-  currency: string
-  identifiers: InstrumentIdentifier[]
+type PlatformInstrumentRecordBase = {
   latest_market_data: PlatformMarketDataPoint[]
   quote_selection_policy: QuoteSelectionPolicy
   coverage_state: DataStatus
@@ -54,7 +56,10 @@ export type PlatformInstrumentRecord = {
     last_successful_requested_at: string | null
   }
   lifecycle_state: PlatformLifecycleState
+  contract_reconciliation: DerivativeContractReconciliation
 }
+
+export type PlatformInstrumentRecord = InstrumentCore & PlatformInstrumentRecordBase
 
 export type PlatformInstrumentDetail = PlatformInstrumentRecord & {
   market_data: PlatformMarketDataPoint[]
@@ -124,11 +129,40 @@ export type PlatformNavImportPreviewResponse = {
   rows: PlatformNavImportPreviewRow[]
 }
 
-export type CreateInstrumentPayload = {
+type CreateInstrumentPayloadBase = {
   instrument_name: string
-  instrument_type: InstrumentType
   currency: string
   identifiers: InstrumentIdentifier[]
+  broker_identifiers: BrokerIdentifier[]
+}
+
+export type CreateInstrumentPayload = CreateInstrumentPayloadBase &
+  (
+    | {
+        instrument_type: 'option'
+        option_contract: OptionContractIdentity
+        fcn_contract?: never
+        corporate_action_adjustment_policy: CorporateActionAdjustmentPolicy
+      }
+    | {
+        instrument_type: 'fcn'
+        option_contract?: never
+        fcn_contract: FCNContractMetadata
+        corporate_action_adjustment_policy: CorporateActionAdjustmentPolicy
+      }
+    | {
+        instrument_type: NonDerivativeInstrumentType
+        option_contract?: never
+        fcn_contract?: never
+        corporate_action_adjustment_policy?: never
+      }
+  )
+
+export type UpdateDerivativeContractMetadataPayload = {
+  instrument_id: string
+  fcn_contract: FCNContractMetadata | null
+  broker_identifiers: BrokerIdentifier[]
+  corporate_action_adjustment_policy: CorporateActionAdjustmentPolicy
 }
 
 export type UpsertFxRatePayload = {

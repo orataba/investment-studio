@@ -136,6 +136,7 @@ source .venv/bin/activate
 npm --prefix apps/platform/frontend install
 npm --prefix apps/watchlist/frontend install
 npm --prefix apps/portfolio/frontend install
+npm --prefix packages/instrument-core/ts install
 ```
 
 ## 7. 启动后端
@@ -292,6 +293,7 @@ git diff --check
 npm --prefix apps/platform/frontend run build
 npm --prefix apps/watchlist/frontend run build
 npm --prefix apps/portfolio/frontend run build
+npm --prefix packages/instrument-core/ts run typecheck
 ```
 
 如果只是确认恢复能打开，至少完成数据库恢复、三个 health endpoints、三个前端页面访问。恢复日期晚于快照日期时，再补跑一次 `refresh_market_data_scheduled.py`。

@@ -21,6 +21,7 @@ import {
   type PlatformRegistrySummary,
   type TriggerChannelRefreshPayload,
   type TriggerRefreshPayload,
+  type UpdateDerivativeContractMetadataPayload,
   type UpdateSourceSettingsPayload,
   type UpsertFxRatePayload,
   type UpsertMarketDataPayload,
@@ -130,6 +131,40 @@ export default function App() {
           ? requestError.message
           : 'Failed to create instrument.',
       )
+    }
+  }
+
+  async function handleUpdateDerivativeContractMetadata(
+    payload: UpdateDerivativeContractMetadataPayload,
+  ) {
+    try {
+      const updated = await fetchJson<PlatformInstrumentRecord>(
+        `/api/instruments/${encodeURIComponent(
+          payload.instrument_id,
+        )}/derivative-contract-metadata`,
+        {
+          method: 'PUT',
+          body: JSON.stringify({
+            fcn_contract: payload.fcn_contract,
+            broker_identifiers: payload.broker_identifiers,
+            corporate_action_adjustment_policy:
+              payload.corporate_action_adjustment_policy,
+          }),
+        },
+      )
+      setInstruments((current) =>
+        upsertInstrumentRecord(current, updated, showInactive),
+      )
+      setAllInstruments((current) => upsertInstrumentRecord(current, updated, true))
+      setRegistryNotice(`Saved contract governance for “${updated.instrument_name}”.`)
+      setRegistryError(null)
+    } catch (requestError) {
+      setRegistryError(
+        requestError instanceof Error
+          ? requestError.message
+          : 'Failed to save derivative contract governance.',
+      )
+      throw requestError
     }
   }
 
@@ -439,6 +474,7 @@ export default function App() {
           })
         }
         onCreateInstrument={handleCreateInstrument}
+        onUpdateDerivativeContractMetadata={handleUpdateDerivativeContractMetadata}
         onUpsertFxRate={handleUpsertFxRate}
         onUpsertMarketData={handleUpsertMarketData}
         onUpdateSourceSettings={handleUpdateSourceSettings}

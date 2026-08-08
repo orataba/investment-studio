@@ -52,10 +52,12 @@ def _split_test_transaction(
     quantity: float,
     gross_amount: float,
     *,
+    transaction_sequence: int,
     trade_time: str = "10:00",
 ) -> dict[str, object]:
     return {
         "transaction_id": transaction_id,
+        "transaction_sequence": transaction_sequence,
         "portfolio_id": "p",
         "transaction_type": transaction_type,
         "trade_date": trade_date,
@@ -1958,6 +1960,7 @@ def test_entitlement_bod_excludes_same_day_buy_from_income_allocation():
             {
                 **common,
                 "transaction_id": "txn-prior-buy",
+                "transaction_sequence": 1,
                 "transaction_type": "buy",
                 "trade_date": "2026-04-09",
                 "settlement_date": "2026-04-09",
@@ -1968,6 +1971,7 @@ def test_entitlement_bod_excludes_same_day_buy_from_income_allocation():
             {
                 **common,
                 "transaction_id": "txn-ex-date-buy",
+                "transaction_sequence": 2,
                 "transaction_type": "buy",
                 "trade_date": "2026-04-10",
                 "settlement_date": "2026-04-10",
@@ -1978,6 +1982,7 @@ def test_entitlement_bod_excludes_same_day_buy_from_income_allocation():
             {
                 **common,
                 "transaction_id": "txn-dividend",
+                "transaction_sequence": 3,
                 "transaction_type": "dividend",
                 "trade_date": "2026-04-15",
                 "entitlement_date": "2026-04-10",
@@ -2023,6 +2028,7 @@ def test_entitlement_bod_keeps_same_day_sale_in_income_allocation():
             {
                 **common,
                 "transaction_id": "txn-prior-buy",
+                "transaction_sequence": 1,
                 "transaction_type": "buy",
                 "trade_date": "2026-04-09",
                 "settlement_date": "2026-04-09",
@@ -2033,6 +2039,7 @@ def test_entitlement_bod_keeps_same_day_sale_in_income_allocation():
             {
                 **common,
                 "transaction_id": "txn-ex-date-sell",
+                "transaction_sequence": 2,
                 "transaction_type": "sell",
                 "trade_date": "2026-04-10",
                 "settlement_date": "2026-04-10",
@@ -2043,6 +2050,7 @@ def test_entitlement_bod_keeps_same_day_sale_in_income_allocation():
             {
                 **common,
                 "transaction_id": "txn-dividend",
+                "transaction_sequence": 3,
                 "transaction_type": "dividend",
                 "trade_date": "2026-04-15",
                 "entitlement_date": "2026-04-10",
@@ -2088,6 +2096,7 @@ def test_entitlement_bod_accepts_same_day_opening_balance_with_prior_acquisition
             {
                 **common,
                 "transaction_id": "txn-opening",
+                "transaction_sequence": 1,
                 "transaction_type": "opening_balance",
                 "trade_date": "2026-04-10",
                 "acquisition_date": "2026-04-01",
@@ -2099,6 +2108,7 @@ def test_entitlement_bod_accepts_same_day_opening_balance_with_prior_acquisition
             {
                 **common,
                 "transaction_id": "txn-dividend",
+                "transaction_sequence": 2,
                 "transaction_type": "dividend",
                 "trade_date": "2026-04-15",
                 "entitlement_date": "2026-04-10",
@@ -2215,6 +2225,7 @@ def test_ledger_postings_sort_by_trade_time_within_same_day():
     transactions = [
         {
             "transaction_id": "fee-1",
+            "transaction_sequence": 1,
             "portfolio_id": "p",
             "transaction_type": "fee",
             "trade_date": "2026-04-15",
@@ -2230,6 +2241,7 @@ def test_ledger_postings_sort_by_trade_time_within_same_day():
         },
         {
             "transaction_id": "buy-1",
+            "transaction_sequence": 2,
             "portfolio_id": "p",
             "transaction_type": "buy",
             "trade_date": "2026-04-15",
@@ -2249,6 +2261,7 @@ def test_ledger_postings_sort_by_trade_time_within_same_day():
         },
         {
             "transaction_id": "sell-1",
+            "transaction_sequence": 3,
             "portfolio_id": "p",
             "transaction_type": "sell",
             "trade_date": "2026-04-15",
@@ -2361,6 +2374,7 @@ def test_transfer_derivation_rejects_missing_source_lots():
     malformed_transactions = [
         {
             "transaction_id": "t1",
+            "transaction_sequence": 1,
             "portfolio_id": "p",
             "transaction_type": "transfer_out",
             "trade_date": "2026-04-10",
@@ -2383,6 +2397,7 @@ def test_transfer_derivation_rejects_missing_source_lots():
         },
         {
             "transaction_id": "t2",
+            "transaction_sequence": 2,
             "portfolio_id": "p",
             "transaction_type": "transfer_in",
             "trade_date": "2026-04-10",
@@ -2439,6 +2454,7 @@ def test_lot_kernels_reject_oversell_when_route_validation_is_bypassed():
     malformed_transactions = [
         {
             "transaction_id": "buy-1",
+            "transaction_sequence": 1,
             "portfolio_id": "p",
             "transaction_type": "buy",
             "trade_date": "2026-04-10",
@@ -2458,6 +2474,7 @@ def test_lot_kernels_reject_oversell_when_route_validation_is_bypassed():
         },
         {
             "transaction_id": "sell-1",
+            "transaction_sequence": 2,
             "portfolio_id": "p",
             "transaction_type": "sell",
             "trade_date": "2026-04-11",
@@ -2663,9 +2680,15 @@ def test_transaction_list_sorts_same_day_by_trade_time_not_creation_order(client
 
 def test_confirmed_share_split_applies_at_effective_bod_before_same_day_buy() -> None:
     transactions = [
-        _split_test_transaction("buy-before", "buy", "2026-07-08", 100.0, 1000.0),
-        _split_test_transaction("sell-record", "sell", "2026-07-09", 20.0, 240.0),
-        _split_test_transaction("buy-effective", "buy", "2026-07-10", 10.0, 100.0),
+        _split_test_transaction(
+            "buy-before", "buy", "2026-07-08", 100.0, 1000.0, transaction_sequence=1
+        ),
+        _split_test_transaction(
+            "sell-record", "sell", "2026-07-09", 20.0, 240.0, transaction_sequence=2
+        ),
+        _split_test_transaction(
+            "buy-effective", "buy", "2026-07-10", 10.0, 100.0, transaction_sequence=3
+        ),
     ]
     event = _share_split_event()
 
@@ -2699,10 +2722,30 @@ def test_confirmed_share_split_applies_at_effective_bod_before_same_day_buy() ->
 
 def test_share_split_record_date_buys_and_sells_define_entitled_eod_quantity() -> None:
     transactions = [
-        _split_test_transaction("buy-before", "buy", "2026-07-08", 100.0, 1000.0),
-        _split_test_transaction("buy-record", "buy", "2026-07-09", 20.0, 220.0, trade_time="09:30"),
-        _split_test_transaction("sell-record", "sell", "2026-07-09", 10.0, 120.0, trade_time="14:30"),
-        _split_test_transaction("buy-effective", "buy", "2026-07-10", 5.0, 50.0),
+        _split_test_transaction(
+            "buy-before", "buy", "2026-07-08", 100.0, 1000.0, transaction_sequence=1
+        ),
+        _split_test_transaction(
+            "buy-record",
+            "buy",
+            "2026-07-09",
+            20.0,
+            220.0,
+            transaction_sequence=2,
+            trade_time="09:30",
+        ),
+        _split_test_transaction(
+            "sell-record",
+            "sell",
+            "2026-07-09",
+            10.0,
+            120.0,
+            transaction_sequence=3,
+            trade_time="14:30",
+        ),
+        _split_test_transaction(
+            "buy-effective", "buy", "2026-07-10", 5.0, 50.0, transaction_sequence=4
+        ),
     ]
     state = _build_position_state(
         transactions,
@@ -2717,8 +2760,24 @@ def test_share_split_record_date_buys_and_sells_define_entitled_eod_quantity() -
 
 def test_share_split_truncates_once_at_account_total_then_allocates_lots() -> None:
     transactions = [
-        _split_test_transaction("lot-a", "buy", "2026-07-08", 10.2, 102.0, trade_time="09:30"),
-        _split_test_transaction("lot-b", "buy", "2026-07-08", 5.3, 53.0, trade_time="14:30"),
+        _split_test_transaction(
+            "lot-a",
+            "buy",
+            "2026-07-08",
+            10.2,
+            102.0,
+            transaction_sequence=1,
+            trade_time="09:30",
+        ),
+        _split_test_transaction(
+            "lot-b",
+            "buy",
+            "2026-07-08",
+            5.3,
+            53.0,
+            transaction_sequence=2,
+            trade_time="14:30",
+        ),
     ]
     event = _share_split_event(
         new_units="3",
@@ -2744,8 +2803,12 @@ def test_share_split_truncates_once_at_account_total_then_allocates_lots() -> No
 
 def test_share_split_rejects_unmodeled_due_bill_interval_trades() -> None:
     transactions = [
-        _split_test_transaction("buy-record", "buy", "2026-07-09", 100.0, 1000.0),
-        _split_test_transaction("sell-between", "sell", "2026-07-10", 10.0, 110.0),
+        _split_test_transaction(
+            "buy-record", "buy", "2026-07-09", 100.0, 1000.0, transaction_sequence=1
+        ),
+        _split_test_transaction(
+            "sell-between", "sell", "2026-07-10", 10.0, 110.0, transaction_sequence=2
+        ),
     ]
     event = _share_split_event(effective_date="2026-07-11", record_date="2026-07-09")
     with pytest.raises(ValueError, match="due-bill processing"):
@@ -2759,7 +2822,9 @@ def test_share_split_rejects_unmodeled_due_bill_interval_trades() -> None:
 
 def test_provider_detected_split_never_changes_portfolio_quantity() -> None:
     transactions = [
-        _split_test_transaction("buy-before", "buy", "2026-07-08", 100.0, 1000.0),
+        _split_test_transaction(
+            "buy-before", "buy", "2026-07-08", 100.0, 1000.0, transaction_sequence=1
+        ),
     ]
     state = _build_position_state(
         transactions,
@@ -2772,7 +2837,9 @@ def test_provider_detected_split_never_changes_portfolio_quantity() -> None:
 
 def test_confirmed_cash_in_lieu_split_fails_closed_without_cash_fact() -> None:
     transactions = [
-        _split_test_transaction("buy-before", "buy", "2026-07-08", 101.0, 1010.0),
+        _split_test_transaction(
+            "buy-before", "buy", "2026-07-08", 101.0, 1010.0, transaction_sequence=1
+        ),
     ]
     event = _share_split_event(new_units="1", old_units="2")
     event["quantity_rounding"] = "cash_in_lieu"

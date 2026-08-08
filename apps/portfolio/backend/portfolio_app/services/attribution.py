@@ -645,6 +645,9 @@ def group_contribution_slices_by_taxonomy(
 
     grouped: dict[tuple[date, str], dict[str, object]] = {}
     coverage_states_by_group: dict[tuple[date, str], list[str]] = defaultdict(list)
+    market_return_eligibility_by_group: dict[
+        tuple[date, str], list[bool]
+    ] = defaultdict(list)
     entities_present_at_assignment_date: set[str] = set()
     if assignment_as_of_date is not None:
         for base_slice in base_daily_slices:
@@ -716,6 +719,14 @@ def group_contribution_slices_by_taxonomy(
         coverage_states_by_group[slice_key].append(
             str(base_slice.get("coverage_state") or "unavailable")
         )
+        if (
+            abs(_safe_float(base_slice.get("position_market_value_base")) or 0.0)
+            > 1e-12
+            or int(base_slice.get("market_observation_count") or 0) > 0
+        ):
+            market_return_eligibility_by_group[slice_key].append(
+                bool(base_slice.get("return_observation_eligible"))
+            )
         grouped_slice["market_observation_count"] = (
             int(grouped_slice.get("market_observation_count") or 0)
             + int(base_slice.get("market_observation_count") or 0)
@@ -803,6 +814,10 @@ def group_contribution_slices_by_taxonomy(
         grouped_slice["return_observation_eligible"] = (
             grouped_slice["daily_return"] is not None
             and grouped_slice["coverage_state"] == "complete"
+            and (
+                not market_return_eligibility_by_group[slice_key]
+                or all(market_return_eligibility_by_group[slice_key])
+            )
             and (
                 int(grouped_slice.get("market_observation_count") or 0) > 0
                 or abs(float(grouped_slice["daily_return"])) > 1e-12
@@ -1909,7 +1924,7 @@ def realized_risk_attribution_by_group(
 
         risk_by_group[group_key] = {
             "risk_calculation_frequency": calculation_frequency,
-            "risk_return_observation_count": len(own_pair_dates),
+            "risk_return_observation_count": len(own_values),
             "risk_annualization_periods_per_year": periods_per_year,
             "annualized_volatility": annualized_volatility,
             "sharpe_ratio": sharpe_ratio,

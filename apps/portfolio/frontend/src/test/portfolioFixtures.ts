@@ -5,15 +5,95 @@ import type {
   PortfolioPerformanceResponse,
   PortfolioWorkspaceSummary,
 } from '../lib/api'
-import type { InstrumentCore } from '../../../../../packages/instrument-core/ts/src'
+import type {
+  InstrumentCore,
+  NonDerivativeInstrumentType,
+} from '../../../../../packages/instrument-core/ts/src'
 
-export function instrumentFixture(overrides: Partial<InstrumentCore> = {}): InstrumentCore {
+type NonDerivativeInstrumentCore = Extract<
+  InstrumentCore,
+  { instrument_type: NonDerivativeInstrumentType }
+>
+type FCNInstrumentCore = Extract<InstrumentCore, { instrument_type: 'fcn' }>
+type OptionInstrumentCore = Extract<InstrumentCore, { instrument_type: 'option' }>
+
+export function instrumentFixture(
+  overrides: Partial<NonDerivativeInstrumentCore> = {},
+): NonDerivativeInstrumentCore {
   return {
     instrument_id: 'asset-1',
     instrument_name: 'Alpha Fund',
     instrument_type: 'fund',
     currency: 'USD',
     identifiers: [{ identifier_type: 'ticker', identifier_value: 'ALPHA', is_primary: true }],
+    broker_identifiers: [],
+    ...overrides,
+  }
+}
+
+export function fcnInstrumentFixture(
+  overrides: Partial<FCNInstrumentCore> = {},
+): FCNInstrumentCore {
+  const currency = overrides.currency ?? 'USD'
+  return {
+    instrument_id: 'fcn-1',
+    instrument_name: 'Alpha FCN',
+    instrument_type: 'fcn',
+    currency,
+    identifiers: [{ identifier_type: 'internal', identifier_value: 'FCN-ALPHA-1', is_primary: true }],
+    broker_identifiers: [],
+    fcn_contract: {
+      notional: '250000',
+      issue_date: '2026-01-02',
+      maturity_date: '2026-12-31',
+      contract_currency: currency,
+      issuer: 'Fixture Issuer',
+      counterparty: 'Fixture Counterparty',
+      underlying_instrument_ids: ['asset-1'],
+      deliverable_instrument_ids: ['asset-1'],
+      barrier_type: 'knock_in',
+      barrier_level: '0.7',
+    },
+    corporate_action_adjustment_policy: {
+      policy_type: 'contract_terms',
+      authority_reference: 'Fixture FCN terms',
+      quantity_rounding: 'exact',
+      adjust_strike: true,
+      adjust_multiplier: true,
+      adjust_deliverable: true,
+    },
+    ...overrides,
+  }
+}
+
+export function optionInstrumentFixture(
+  overrides: Partial<OptionInstrumentCore> = {},
+): OptionInstrumentCore {
+  const currency = overrides.currency ?? 'USD'
+  return {
+    instrument_id: 'option-1',
+    instrument_name: 'Alpha 110 Call',
+    instrument_type: 'option',
+    currency,
+    identifiers: [{ identifier_type: 'internal', identifier_value: 'OPT-ALPHA-110C', is_primary: true }],
+    broker_identifiers: [],
+    option_contract: {
+      underlying_instrument_id: 'equity-1',
+      option_type: 'call',
+      expiry_date: '2026-12-18',
+      strike: '110',
+      contract_multiplier: '100',
+      settlement_type: 'physical',
+      contract_currency: currency,
+    },
+    corporate_action_adjustment_policy: {
+      policy_type: 'contract_terms',
+      authority_reference: 'Fixture option terms',
+      quantity_rounding: 'exact',
+      adjust_strike: true,
+      adjust_multiplier: true,
+      adjust_deliverable: true,
+    },
     ...overrides,
   }
 }
@@ -21,6 +101,7 @@ export function instrumentFixture(overrides: Partial<InstrumentCore> = {}): Inst
 export function holdingFixture(overrides: Partial<PortfolioHoldingRow> = {}): PortfolioHoldingRow {
   return {
     line_id: 'holding:asset-1',
+    holding_region: 'market_valued_positions',
     instrument_core: instrumentFixture(),
     quantity: 10,
     last_price: 80,
@@ -86,6 +167,22 @@ export function holdingFixture(overrides: Partial<PortfolioHoldingRow> = {}): Po
     forward_risk_observation_count: 61,
     forward_risk_status: 'ok',
     coverage_status: 'price-nav-fx',
+    scope_status: 'resolved',
+    taxonomy_id: 'tax-market-sleeves',
+    taxonomy_node_id: 'node-ordinary-assets',
+    resolved_policy_node_id: '__root__',
+    inherited_from_node_id: '__root__',
+    analytics_scope_policy_id: 'scope-policy-1',
+    scope_policy_version: 1,
+    configuration_version: 2,
+    taxonomy_selection_version: 3,
+    analytics_scope: 'ordinary',
+    performance_scope: 'ordinary',
+    performance_eligible: true,
+    risk_eligible: true,
+    risk_budget_eligible: true,
+    valuation_basis_policy: 'market',
+    exclusion_reason: null,
     account_ids: ['account-1'],
     account_count: 1,
     open_position_lot_count: 1,
@@ -126,6 +223,19 @@ export function holdingsWorkspaceFixture(
     forward_risk: {
       status: 'ok',
       errors: [],
+      scope_name: 'Modeled Market Sleeve',
+      scope_policy_versions: [1],
+      configuration_versions: [2],
+      total_nav: 1000,
+      modeled_net_exposure: 800,
+      modeled_gross_exposure: 800,
+      excluded_carrying_value: 0,
+      excluded_liability: 0,
+      cash_unallocated_exposure: 200,
+      coverage_ratio: 0.8,
+      excluded_rows: [],
+      calculation_frequency: 'daily',
+      modeled_weight_basis: 'eligible_gross_exposure',
       portfolio_variance: 0.01,
       portfolio_volatility: 0.1,
       observation_count: 61,
@@ -144,6 +254,45 @@ export function holdingsWorkspaceFixture(
         trailing_staleness_days: 0,
       },
     },
+    analytics_scope_summary: {
+      scope_name: 'Modeled Market Sleeve',
+      scope_policy_versions: [1],
+      configuration_versions: [2],
+      taxonomy_selection_versions: [3],
+      total_nav: 1000,
+      modeled_net_exposure: 800,
+      modeled_gross_exposure: 800,
+      excluded_carrying_value: 0,
+      excluded_liability: 0,
+      cash_unallocated_exposure: 200,
+      coverage_ratio: 0.8,
+      excluded_rows: [],
+      cash_scope_breakdown: [],
+      ordinary_sleeve_twr_status: 'unavailable',
+      ordinary_sleeve_twr_reason: 'Sleeve boundary cash flows are not maintained.',
+    },
+    operational_summary: {
+      uncovered_obligation_count: 0,
+      uncovered_underlying_quantity: 0,
+      expiry_buckets: [],
+      assignment_exposure: {
+        obligation_count: 0,
+        open_contract_quantity: 0,
+        deliverable_underlying_quantity: 0,
+        uncovered_underlying_quantity: 0,
+        strike_notional_base: 0,
+      },
+      settlement_exposure: {
+        pending_line_count: 0,
+        receivable_base: 0,
+        payable_base: 0,
+        net_base: 0,
+        earliest_settlement_date: null,
+        overdue_line_count: 0,
+        unavailable_base_line_count: 0,
+      },
+    },
+    operational_alerts: [],
     summary_cards: [],
     rows: [holdingFixture()],
     totals: {
@@ -193,10 +342,14 @@ export function dailyPerformancePoint(
     stale_fx_flag: false,
     market_observation_count: 1,
     return_observation_eligible: dailyTwr != null,
+    return_observation_exclusion_reason: dailyTwr == null ? 'missing_return' : null,
+    performance_basis: 'market_value',
+    performance_label: 'Total Portfolio Return',
     beginning_nav: endingNav,
     ending_nav: endingNav,
     pending_settlement: 0,
     realized_pnl: 0,
+    derivative_lifecycle_realized_pnl: 0,
     unrealized_pnl: 0,
     income_cash_amount: 0,
     expense_cash_amount: 0,
@@ -250,6 +403,10 @@ export function performanceFixture(
       risk_sample_count: 9,
       risk_result_status: 'available',
       risk_unavailable_reason: null,
+      performance_basis: 'market_value',
+      performance_label: 'Total Portfolio Return',
+      ordinary_sleeve_twr_status: 'unavailable',
+      ordinary_sleeve_twr_reason: 'Sleeve boundary cash flows are not maintained.',
       latest_complete_as_of_date: '2026-07-15',
       start_nav: 970,
       end_nav: 1000,
@@ -268,6 +425,7 @@ export function performanceFixture(
       absolute_change: 30,
       delta: 30,
       realized_pnl: 10,
+      derivative_lifecycle_realized_pnl: 0,
       unrealized_pnl: 20,
       income_cash_amount: 0,
       expense_cash_amount: 0,

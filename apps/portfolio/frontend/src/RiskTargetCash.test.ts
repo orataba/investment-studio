@@ -62,8 +62,11 @@ const cashChildNode = node('cash-child', 'Operating Liquidity', {
   sort_order: 3,
 })
 const assignmentCashNode = node('reserve-node', 'Reserve', { sort_order: 4 })
+const excludedDerivativeNode = node('derivatives', 'Structured Derivatives', { sort_order: 5 })
 const nodeById = new Map(
-  [riskAssetsNode, cashNode, cashChildNode, assignmentCashNode].map((item) => [item.taxonomy_node_id, item] as const),
+  [riskAssetsNode, cashNode, cashChildNode, assignmentCashNode, excludedDerivativeNode].map(
+    (item) => [item.taxonomy_node_id, item] as const,
+  ),
 )
 const currentGroups = [
   {
@@ -83,6 +86,7 @@ const currentGroups = [
     hasCashLikeInput: true,
   },
 ]
+const riskBudgetEligibleNodeIds = new Set(['risk-assets'])
 
 describe('Risk target cash boundary', () => {
   it('filters direct cash buckets, cash nodes, and descendants before risk completeness and totals', () => {
@@ -100,6 +104,7 @@ describe('Risk target cash boundary', () => {
         ['cash-node', null],
       ]),
       nodeById,
+      riskBudgetEligibleNodeIds,
       dimension: 'risk_budget',
       baseCurrency: 'USD',
     })
@@ -124,6 +129,7 @@ describe('Risk target cash boundary', () => {
       currentGroups,
       riskSharesByGroup: new Map(),
       nodeById,
+      riskBudgetEligibleNodeIds,
       dimension: 'weight',
       baseCurrency: 'USD',
     })
@@ -157,6 +163,7 @@ describe('Risk target cash boundary', () => {
       ],
       riskSharesByGroup: new Map(),
       nodeById,
+      riskBudgetEligibleNodeIds,
       dimension: 'weight',
       baseCurrency: 'USD',
     })
@@ -185,6 +192,7 @@ describe('Risk target cash boundary', () => {
       riskSharesByGroup: new Map([['risk-assets', 1]]),
       nodeById,
       cashLikeNodeIds: new Set(['reserve-node']),
+      riskBudgetEligibleNodeIds,
       dimension: 'risk_budget',
       baseCurrency: 'USD',
     })
@@ -200,11 +208,48 @@ describe('Risk target cash boundary', () => {
       currentGroups: [currentGroups[1]],
       riskSharesByGroup: new Map(),
       nodeById,
+      riskBudgetEligibleNodeIds,
       dimension: 'risk_budget',
       baseCurrency: 'USD',
     })
 
     expect(result.errors).toEqual([])
     expect(result.value).toEqual([])
+  })
+
+  it('omits excluded target nodes and excluded current capital from eligible risk-budget drift', () => {
+    const result = buildTargetGapRows({
+      targetSet,
+      targetLines: [
+        targetLine('risk-line', 'taxonomy_node', 'risk-assets', 0.4, 1),
+        targetLine('derivative-line', 'taxonomy_node', 'derivatives', 0.6, 0.6),
+      ],
+      currentGroups: [
+        currentGroups[0],
+        {
+          groupKey: 'derivatives',
+          label: 'Structured Derivatives',
+          currentWeight: 0.6,
+          currentValueBase: 600,
+          hasMarketRiskInput: true,
+          hasCashLikeInput: false,
+        },
+      ],
+      riskSharesByGroup: new Map([['risk-assets', 1]]),
+      nodeById,
+      riskBudgetEligibleNodeIds,
+      dimension: 'risk_budget',
+      baseCurrency: 'USD',
+    })
+
+    expect(result.errors).toEqual([])
+    expect(result.value).toEqual([
+      expect.objectContaining({
+        key: 'risk-assets',
+        current: 1,
+        target: 1,
+        gap: 0,
+      }),
+    ])
   })
 })

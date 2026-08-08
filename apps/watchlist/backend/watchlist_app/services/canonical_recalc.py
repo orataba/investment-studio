@@ -88,8 +88,8 @@ DEFAULT_TABS = [
     "monitoring",
 ]
 
-PERFORMANCE_METHODOLOGY_VERSION = "canonical-performance/v6"
-RISK_METHODOLOGY_VERSION = "canonical-risk/v5"
+PERFORMANCE_METHODOLOGY_VERSION = "canonical-performance/v7"
+RISK_METHODOLOGY_VERSION = "canonical-risk/v6"
 PEER_COMPARISON_POLICY_VERSION = "peer-comparison/v2"
 
 
@@ -590,7 +590,31 @@ def _primary_identifier(shared_instrument: dict[str, object] | None) -> str | No
     return value or None
 
 
+def _numeric_nav_points(nav_points: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Return the ordered, finite, positive numeric path used by analytics.
+
+    Shared market-data values are deliberately kept as ``Decimal`` objects at
+    the repository boundary.  The analytics kernels, however, use the
+    ``statistics`` and ``math`` modules, which operate on floats (and raise
+    when a ``Decimal`` is multiplied by a float square-root factor).  Keeping
+    this coercion at the calculation boundary makes every path-dependent
+    metric use the same validated numeric series and also makes the helpers
+    fail closed for malformed points.
+    """
+
+    normalized: list[dict[str, Any]] = []
+    for point in nav_points:
+        if not isinstance(point, dict) or not isinstance(point.get("as_of_date"), date):
+            continue
+        value = _safe_float(point.get("value"))
+        if value is None or value <= 0:
+            continue
+        normalized.append({**point, "value": value})
+    return sorted(normalized, key=lambda item: item["as_of_date"])
+
+
 def _compute_drawdown(nav_points: list[dict[str, Any]]) -> float | None:
+    nav_points = _numeric_nav_points(nav_points)
     if len(nav_points) < 2:
         return None
     peak_value = nav_points[0]["value"]
@@ -607,6 +631,7 @@ def _compute_drawdown(nav_points: list[dict[str, Any]]) -> float | None:
 
 
 def _current_drawdown(nav_points: list[dict[str, Any]]) -> float | None:
+    nav_points = _numeric_nav_points(nav_points)
     if len(nav_points) < 2:
         return None
     peak_value = nav_points[0]["value"]
@@ -622,6 +647,7 @@ def _current_drawdown(nav_points: list[dict[str, Any]]) -> float | None:
 
 
 def _compute_drawdown_summary(nav_points: list[dict[str, Any]]) -> dict[str, Any] | None:
+    nav_points = _numeric_nav_points(nav_points)
     if len(nav_points) < 2:
         return None
 
@@ -658,6 +684,7 @@ def _compute_drawdown_summary(nav_points: list[dict[str, Any]]) -> dict[str, Any
 
 
 def _compute_volatility(nav_points: list[dict[str, Any]]) -> float | None:
+    nav_points = _numeric_nav_points(nav_points)
     returns = _periodic_returns(nav_points)
     if len(returns) < 2:
         return None
@@ -668,6 +695,7 @@ def _compute_volatility(nav_points: list[dict[str, Any]]) -> float | None:
 
 
 def _compute_sharpe(nav_points: list[dict[str, Any]]) -> float | None:
+    nav_points = _numeric_nav_points(nav_points)
     returns = _periodic_returns(nav_points)
     if len(returns) < 2:
         return None
@@ -680,6 +708,7 @@ def _compute_sharpe(nav_points: list[dict[str, Any]]) -> float | None:
 
 
 def _periodic_returns(nav_points: list[dict[str, Any]]) -> list[float]:
+    nav_points = _numeric_nav_points(nav_points)
     returns: list[float] = []
     for previous, current in zip(nav_points, nav_points[1:]):
         if previous["value"] <= 0:
@@ -698,6 +727,7 @@ def _annualization_periods_per_year(nav_points: list[dict[str, Any]], return_cou
 
 
 def _compute_downside_deviation(nav_points: list[dict[str, Any]]) -> float | None:
+    nav_points = _numeric_nav_points(nav_points)
     periodic_returns = _periodic_returns(nav_points)
     if len(periodic_returns) < 2 or not any(value < 0 for value in periodic_returns):
         return None
@@ -712,6 +742,7 @@ def _compute_downside_deviation(nav_points: list[dict[str, Any]]) -> float | Non
 
 
 def _compute_sortino(nav_points: list[dict[str, Any]]) -> float | None:
+    nav_points = _numeric_nav_points(nav_points)
     periodic_returns = _periodic_returns(nav_points)
     if len(periodic_returns) < 2 or not any(value < 0 for value in periodic_returns):
         return None
@@ -730,17 +761,32 @@ def _compute_sortino(nav_points: list[dict[str, Any]]) -> float | None:
 
 
 def _monthly_close_points(nav_points: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    nav_points = _numeric_nav_points(nav_points)
     monthly: dict[tuple[int, int], dict[str, Any]] = {}
     for point in nav_points:
         monthly[(point["as_of_date"].year, point["as_of_date"].month)] = point
     return [monthly[key] for key in sorted(monthly)]
 
 
+def _calendar_month_index(value: date) -> int:
+    return value.year * 12 + value.month - 1
+
+
+def _is_next_calendar_month(previous: date, current: date) -> bool:
+    return _calendar_month_index(current) - _calendar_month_index(previous) == 1
+
+
 def _monthly_return_series(nav_points: list[dict[str, Any]]) -> list[dict[str, Any]]:
     closes = _monthly_close_points(nav_points)
     returns: list[dict[str, Any]] = []
     for previous, current in zip(closes, closes[1:]):
-        if previous["value"] <= 0:
+        if (
+            not _is_next_calendar_month(
+                previous["as_of_date"],
+                current["as_of_date"],
+            )
+            or previous["value"] <= 0
+        ):
             continue
         returns.append({
             "as_of_date": current["as_of_date"],
@@ -749,7 +795,22 @@ def _monthly_return_series(nav_points: list[dict[str, Any]]) -> list[dict[str, A
     return returns
 
 
+def _numeric_monthly_returns(
+    monthly_returns: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    normalized: list[dict[str, Any]] = []
+    for row in monthly_returns:
+        if not isinstance(row, dict) or not isinstance(row.get("as_of_date"), date):
+            continue
+        value = _safe_float(row.get("value"))
+        if value is None or not math.isfinite(value):
+            continue
+        normalized.append({**row, "value": value})
+    return sorted(normalized, key=lambda item: item["as_of_date"])
+
+
 def _monthly_drawdown_series(nav_points: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    nav_points = _numeric_nav_points(nav_points)
     if len(nav_points) < 2:
         return []
     peak_value = nav_points[0]["value"]
@@ -771,11 +832,21 @@ def _monthly_drawdown_series(nav_points: list[dict[str, Any]]) -> list[dict[str,
 
 
 def _rolling_annualized_volatility(monthly_returns: list[dict[str, Any]], window: int = 12) -> list[dict[str, Any]]:
+    monthly_returns = _numeric_monthly_returns(monthly_returns)
     if len(monthly_returns) < window:
         return []
     rolling: list[dict[str, Any]] = []
     for index in range(window - 1, len(monthly_returns)):
-        window_values = [row["value"] / 100 for row in monthly_returns[index - window + 1:index + 1]]
+        window_rows = monthly_returns[index - window + 1:index + 1]
+        if any(
+            not _is_next_calendar_month(
+                previous["as_of_date"],
+                current["as_of_date"],
+            )
+            for previous, current in zip(window_rows, window_rows[1:])
+        ):
+            continue
+        window_values = [float(row["value"]) / 100 for row in window_rows]
         if len(window_values) < 2:
             continue
         try:
@@ -806,11 +877,19 @@ def _percentile_rank(values: list[float], current: float) -> float | None:
 
 
 def _trailing_negative_month_count(monthly_returns: list[dict[str, Any]]) -> int:
+    monthly_returns = _numeric_monthly_returns(monthly_returns)
     count = 0
+    next_row: dict[str, Any] | None = None
     for row in reversed(monthly_returns):
+        if next_row is not None and not _is_next_calendar_month(
+            row["as_of_date"],
+            next_row["as_of_date"],
+        ):
+            break
         if row["value"] >= 0:
             break
         count += 1
+        next_row = row
     return count
 
 
@@ -1079,19 +1158,24 @@ def _build_risk_change_monitor(nav_points: list[dict[str, Any]], drawdown_summar
 
 
 def _compute_calendar_year_returns(nav_points: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    years = sorted({point["as_of_date"].year for point in nav_points}, reverse=True)
+    ordered_points = _numeric_nav_points(nav_points)
+    years = sorted({point["as_of_date"].year for point in ordered_points}, reverse=True)
     annual_returns: list[dict[str, Any]] = []
-    latest_as_of = nav_points[-1]["as_of_date"] if nav_points else None
+    latest_as_of = ordered_points[-1]["as_of_date"] if ordered_points else None
     for year in years:
         start_of_year = date(year, 1, 1)
         end_of_year = min(date(year, 12, 31), latest_as_of) if latest_as_of is not None else date(year, 12, 31)
         window = resolve_return_window(
-            nav_points,
+            ordered_points,
             requested_start_date=start_of_year,
             requested_end_date=end_of_year,
             anchor_mode="strictly_before",
         )
-        if window is None:
+        if (
+            window is None
+            or window.anchor_date.year != year - 1
+            or window.end_date.year != year
+        ):
             continue
         annual_returns.append(
             {
@@ -1151,6 +1235,7 @@ def _performance_window_metadata(
 
 
 def _growth_of_100(nav_points: list[dict[str, Any]]) -> float | None:
+    nav_points = _numeric_nav_points(nav_points)
     if len(nav_points) < 2 or nav_points[0]["value"] <= 0:
         return None
     return nav_points[-1]["value"] / nav_points[0]["value"] * 100

@@ -197,7 +197,7 @@ def test_single_instrument_legacy_source_date_does_not_requeue_forever(
         instrument_id="legacy-fund",
         local_latest_date=None,
         local_source_cutoff_at=datetime(2026, 7, 20, 8, 0, tzinfo=UTC),
-        local_materialization_version="watchlist-materialization/v4",
+        local_materialization_version="watchlist-materialization/v5",
         trigger_ref_type="detail_read",
     ) is False
 
@@ -315,7 +315,7 @@ def test_stale_generation_creates_one_durable_per_instrument_job(
         "2026-07-15T09:30:00.000001Z"
     )
     assert jobs[0].payload_json["target_materialization_version"] == (
-        "watchlist-materialization/v4"
+        "watchlist-materialization/v5"
     )
 
 

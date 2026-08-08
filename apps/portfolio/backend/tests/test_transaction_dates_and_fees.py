@@ -39,29 +39,25 @@ def test_transaction_sort_key_keeps_same_time_transactions_deterministic() -> No
             **common,
             "marker": "created-later",
             "created_at": "2026-07-15T09:31:00Z",
-            "transaction_id": "txn-001",
+            "transaction_id": "txn-10001",
+            "transaction_sequence": 10001,
             "settlement_date": "2026-07-16",
         },
         {
             **common,
-            "marker": "id-later",
+            "marker": "threshold-high",
             "created_at": "2026-07-15T09:30:30Z",
-            "transaction_id": "txn-002",
+            "transaction_id": "txn-10000",
+            "transaction_sequence": 10000,
             "settlement_date": "2026-07-16",
         },
         {
             **common,
-            "marker": "settles-later",
+            "marker": "threshold-low",
             "created_at": "2026-07-15T09:30:30Z",
-            "transaction_id": "txn-001",
+            "transaction_id": "txn-9999",
+            "transaction_sequence": 9999,
             "settlement_date": "2026-07-17",
-        },
-        {
-            **common,
-            "marker": "settles-earlier",
-            "created_at": "2026-07-15T09:30:30Z",
-            "transaction_id": "txn-001",
-            "settlement_date": "2026-07-16",
         },
     ]
 
@@ -69,13 +65,12 @@ def test_transaction_sort_key_keeps_same_time_transactions_deterministic() -> No
         "2026-07-15",
         "2026-07-15T09:30:00Z",
         "2026-07-15T09:31:00Z",
-        "txn-001",
+        10001,
         "2026-07-16",
     )
     assert [record["marker"] for record in sorted(records, key=transaction_sort_key)] == [
-        "settles-earlier",
-        "settles-later",
-        "id-later",
+        "threshold-low",
+        "threshold-high",
         "created-later",
     ]
 
@@ -101,6 +96,7 @@ def test_external_flow_date_is_distinct_from_economic_trade_date() -> None:
 def test_position_effective_date_can_follow_trade_without_rewriting_execution() -> None:
     subscription = {
         "transaction_id": "txn-subscription",
+        "transaction_sequence": 1,
         "transaction_type": "buy",
         "trade_date": "2026-07-24",
         "trade_at": "2026-07-24T08:00:00Z",

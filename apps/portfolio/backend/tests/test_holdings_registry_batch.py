@@ -1,9 +1,16 @@
 from __future__ import annotations
 
+from copy import deepcopy
 from datetime import date
 from types import SimpleNamespace
 
 from portfolio_app.api.routes import workspace as workspace_routes
+from portfolio_app.db.models import (
+    PortfolioCalculationStateModel,
+    PortfolioDailyHoldingSnapshotModel,
+    PortfolioDailySnapshotModel,
+)
+from portfolio_app.db.session import get_session_factory
 from portfolio_app.services import daily_snapshots, instrument_charts, performance
 from portfolio_app.services.instrument_registry import get_registry_instrument_details
 
@@ -17,6 +24,102 @@ def _noncash_instrument_ids(payload: dict[str, object]) -> set[str]:
         and str(instrument_core.get("instrument_type") or "") != "cash"
         and str(instrument_core.get("instrument_id") or "")
     }
+
+
+def _populated_market_profile() -> dict[str, object]:
+    profile = instrument_charts.empty_instrument_holdings_market_profile()
+    points = [
+        {"date": "2026-04-14", "value": 99.0},
+        {"date": "2026-04-15", "value": 100.0},
+    ]
+    for range_key in instrument_charts.HOLDINGS_PRICE_CHART_RANGE_KEYS:
+        profile[f"price_chart_{range_key}"] = deepcopy(points)
+    profile.update(
+        {
+            "instrument_trend_as_of_date": "2026-04-15",
+            "instrument_trend_basis": "adjusted_close",
+            "instrument_trend_coverage": {
+                "state": "complete",
+                "observation_count": 2,
+                "start_date": "2026-04-14",
+                "end_date": "2026-04-15",
+                "available_return_windows": ["1w"],
+            },
+            "instrument_return_1w": 0.01,
+            "instrument_return_1m": 0.02,
+            "instrument_return_3m": 0.03,
+            "instrument_return_6m": 0.04,
+            "instrument_return_mtd": 0.05,
+            "instrument_return_ytd": 0.06,
+            "instrument_return_1y": 0.07,
+            "instrument_volatility_1m": 0.08,
+            "instrument_volatility_3m": 0.09,
+            "instrument_volatility_6m": 0.10,
+            "instrument_volatility_1y": 0.11,
+            "instrument_current_drawdown": -0.01,
+            "instrument_max_drawdown": -0.02,
+            "instrument_holding_max_drawdown": -0.03,
+        }
+    )
+    for field_name in (
+        "instrument_return_series_1m",
+        "instrument_return_series_3m",
+        "instrument_return_series_6m",
+        "instrument_return_series_1y",
+        "instrument_return_series_all",
+        "instrument_holding_return_series",
+    ):
+        profile[field_name] = {
+            "first_return_start_date": "2026-04-14",
+            "points": [
+                {
+                    "start_date": "2026-04-14",
+                    "date": "2026-04-15",
+                    "value": 0.01,
+                }
+            ],
+        }
+    return profile
+
+
+def _assert_empty_market_profile(row: dict[str, object]) -> None:
+    for range_key in instrument_charts.HOLDINGS_PRICE_CHART_RANGE_KEYS:
+        assert row[f"price_chart_{range_key}"] == []
+    assert row["instrument_trend_as_of_date"] is None
+    assert row["instrument_trend_basis"] is None
+    assert row["instrument_trend_coverage"] == {
+        "state": "unavailable",
+        "observation_count": 0,
+        "start_date": None,
+        "end_date": None,
+        "available_return_windows": [],
+    }
+    for field_name in (
+        "instrument_return_1w",
+        "instrument_return_1m",
+        "instrument_return_3m",
+        "instrument_return_6m",
+        "instrument_return_mtd",
+        "instrument_return_ytd",
+        "instrument_return_1y",
+        "instrument_volatility_1m",
+        "instrument_volatility_3m",
+        "instrument_volatility_6m",
+        "instrument_volatility_1y",
+        "instrument_current_drawdown",
+        "instrument_max_drawdown",
+        "instrument_holding_max_drawdown",
+    ):
+        assert row[field_name] is None
+    for field_name in (
+        "instrument_return_series_1m",
+        "instrument_return_series_3m",
+        "instrument_return_series_6m",
+        "instrument_return_series_1y",
+        "instrument_return_series_all",
+        "instrument_holding_return_series",
+    ):
+        assert row[field_name]["points"] == []
 
 
 def test_registry_batch_loads_full_details_and_marks_missing() -> None:
@@ -122,6 +225,7 @@ def test_snapshot_holding_aggregation_preserves_accounts_and_earliest_holding_pr
         return SimpleNamespace(
             as_of_date=date(2026, 7, 24),
             instrument_id="fund-1",
+            holding_kind="position",
             holding_json={
                 "account_id": account_id,
                 "account_ids": [account_id],
@@ -243,12 +347,321 @@ def test_instrument_holding_projection_skips_portfolio_wide_analytics(client, mo
     assert response.status_code == 200
     payload = response.json()
     assert payload["as_of_date"] == "2026-04-15"
-    assert payload["row"]["instrument_core"]["instrument_id"] == "equity-us-abbv"
-    assert "rows" not in payload
-    assert "price_chart_1m" not in payload["row"]
-    assert "instrument_return_series_all" not in payload["row"]
-    assert "forward_risk_share" not in payload["row"]
+    assert len(payload["rows"]) == 1
+    assert payload["rows"][0]["instrument_core"]["instrument_id"] == "equity-us-abbv"
+    assert "row" not in payload
+    assert "price_chart_1m" not in payload["rows"][0]
+    assert "instrument_return_series_all" not in payload["rows"][0]
+    assert "forward_risk_share" not in payload["rows"][0]
     assert len(response.content) < 5_000
+
+
+def test_materialized_option_position_and_obligation_remain_distinct_in_api_and_detail(
+    client,
+    monkeypatch,
+) -> None:
+    portfolio_id = "portfolio-ops"
+    as_of_date = date(2026, 4, 15)
+    account_id = "account-us-brokerage"
+    instrument_id = "option-us-covered-call"
+    instrument_ref = {
+        "instrument_id": instrument_id,
+        "instrument_name": "Covered Call Contract",
+        "instrument_type": "option",
+        "currency": "USD",
+        "identifiers": [],
+        "broker_identifiers": [
+            {
+                "broker": "Test Broker",
+                "identifier_type": "contract_id",
+                "identifier_value": "TEST-COVERED-CALL",
+                "is_primary": True,
+            }
+        ],
+        "option_contract": {
+            "underlying_instrument_id": "equity-us-abbv",
+            "option_type": "call",
+            "expiry_date": "2026-12-18",
+            "strike": "220",
+            "contract_multiplier": "100",
+            "settlement_type": "physical",
+            "contract_currency": "USD",
+        },
+        "corporate_action_adjustment_policy": {
+            "policy_type": "exchange_rules",
+            "authority_reference": "Test exchange option rules",
+            "quantity_rounding": "exact",
+            "adjust_strike": True,
+            "adjust_multiplier": True,
+            "adjust_deliverable": True,
+        },
+    }
+    calculated_at = "2026-04-15T16:00:00Z"
+    position_payload = {
+        "line_id": instrument_id,
+        "account_id": account_id,
+        "account_ids": [account_id],
+        "instrument_id": instrument_id,
+        "holding_kind": "position",
+        "instrument_ref": deepcopy(instrument_ref),
+        "quantity": 1.0,
+        "cost_basis_method": "fifo",
+        "cost_basis": 500.0,
+        "cost_basis_base": 500.0,
+        "market_value": 500.0,
+        "market_value_base": 500.0,
+        "carrying_value": 500.0,
+        "carrying_value_base": 500.0,
+        "fair_value": None,
+        "fair_value_coverage_status": "unavailable",
+        "valuation_basis": "carried_cost",
+        "performance_eligible": False,
+        "risk_eligible": False,
+        "coverage_status": "event-cost",
+        "open_position_lot_count": 1,
+    }
+    obligation_payload = {
+        "line_id": f"{instrument_id}:obligation",
+        "account_id": account_id,
+        "account_ids": [account_id],
+        "instrument_id": instrument_id,
+        "holding_kind": "option_obligation",
+        "instrument_ref": deepcopy(instrument_ref),
+        "quantity": 100.0,
+        "open_contract_quantity": 1.0,
+        "covered_underlying_quantity": 100.0,
+        "obligation_status": "open",
+        "coverage_type": "covered_call",
+        "premium_received_gross": 300.0,
+        "premium_basis_remaining": 300.0,
+        "market_value": -300.0,
+        "market_value_base": -300.0,
+        "carrying_value": 300.0,
+        "carrying_value_base": 300.0,
+        "liability_value": 300.0,
+        "liability_value_base": 300.0,
+        "fair_value": None,
+        "fair_value_coverage_status": "unavailable",
+        "valuation_basis": "premium_liability",
+        "available_for_trading": False,
+        "is_liability": True,
+        "performance_eligible": False,
+        "risk_eligible": False,
+        "coverage_status": "event-liability",
+        "open_position_lot_count": 0,
+    }
+
+    session_factory = get_session_factory()
+    with session_factory() as session:
+        state = session.get(PortfolioCalculationStateModel, portfolio_id)
+        if state is None:
+            state = PortfolioCalculationStateModel(portfolio_id=portfolio_id)
+            session.add(state)
+        state.daily_snapshot_status = "current"
+        session.add(
+            PortfolioDailySnapshotModel(
+                portfolio_id=portfolio_id,
+                as_of_date=as_of_date,
+                coverage_state="complete",
+                valuation_coverage_state="complete",
+                return_coverage_state="unavailable",
+                book_pnl_coverage_state="complete",
+                attribution_coverage_state="complete",
+                nav=200.0,
+                beginning_nav=200.0,
+                ending_nav=200.0,
+                daily_twr=None,
+                cumulative_twr=None,
+                drawdown=None,
+                snapshot_json={
+                    "base_currency": "USD",
+                    "nav": 200.0,
+                    "cash_balance": 0.0,
+                    "pending_settlement": 0.0,
+                },
+                calculated_at=calculated_at,
+            )
+        )
+        session.add_all(
+            [
+                PortfolioDailyHoldingSnapshotModel(
+                    portfolio_id=portfolio_id,
+                    as_of_date=as_of_date,
+                    account_id=account_id,
+                    instrument_id=instrument_id,
+                    holding_kind="position",
+                    currency="USD",
+                    quantity=1.0,
+                    cost_basis=500.0,
+                    cost_basis_base=500.0,
+                    last_price=None,
+                    market_value=500.0,
+                    market_value_base=500.0,
+                    portfolio_weight=None,
+                    holding_json=position_payload,
+                    calculated_at=calculated_at,
+                ),
+                PortfolioDailyHoldingSnapshotModel(
+                    portfolio_id=portfolio_id,
+                    as_of_date=as_of_date,
+                    account_id=account_id,
+                    instrument_id=instrument_id,
+                    holding_kind="option_obligation",
+                    currency="USD",
+                    quantity=100.0,
+                    cost_basis=None,
+                    cost_basis_base=None,
+                    last_price=None,
+                    market_value=-300.0,
+                    market_value_base=-300.0,
+                    portfolio_weight=None,
+                    holding_json=obligation_payload,
+                    calculated_at=calculated_at,
+                ),
+            ]
+        )
+        session.commit()
+
+    monkeypatch.setattr(
+        daily_snapshots,
+        "ensure_portfolio_daily_snapshots",
+        lambda _portfolio_id: None,
+    )
+    materialized = daily_snapshots.build_materialized_holdings_workspace(
+        portfolio_id,
+        as_of_date=as_of_date,
+    )
+    assert materialized is not None
+    option_rows = [
+        row
+        for row in materialized["rows"]
+        if row["instrument_core"]["instrument_id"] == instrument_id
+    ]
+    assert len(option_rows) == 2
+    assert {row["holding_kind"] for row in option_rows} == {
+        "position",
+        "option_obligation",
+    }
+    assert {row["instrument_core"]["instrument_id"] for row in option_rows} == {
+        instrument_id
+    }
+    for row in option_rows:
+        row.update(_populated_market_profile())
+
+    monkeypatch.setattr(
+        workspace_routes,
+        "get_cached_materialized_holdings_workspace",
+        lambda *_args, **_kwargs: deepcopy(materialized),
+    )
+    monkeypatch.setattr(
+        workspace_routes,
+        "get_registry_instrument_details",
+        lambda instrument_ids: {
+            item: deepcopy(instrument_ref) if item == instrument_id else None
+            for item in instrument_ids
+        },
+    )
+    monkeypatch.setattr(
+        workspace_routes,
+        "calculation_frequency_profile_for_instruments",
+        lambda *_args, **_kwargs: {
+            "resolved_frequency": "daily",
+            "coverage_state": "complete",
+        },
+    )
+    monkeypatch.setattr(
+        workspace_routes,
+        "_holdings_workspace_has_market_profile",
+        lambda *_args, **_kwargs: True,
+    )
+    monkeypatch.setattr(
+        workspace_routes,
+        "enrich_holdings_forward_risk",
+        lambda response, **_kwargs: response,
+    )
+    monkeypatch.setattr(
+        workspace_routes,
+        "reconcile_instrument_event_tasks",
+        lambda **_kwargs: {},
+    )
+    monkeypatch.setattr(
+        workspace_routes,
+        "corporate_action_quality_warnings",
+        lambda *_args, **_kwargs: [],
+    )
+    monkeypatch.setattr(
+        workspace_routes,
+        "instrument_event_task_quality_warnings",
+        lambda _portfolio_id: [],
+    )
+
+    holdings_response = client.get(
+        "/api/workspace/holdings",
+        params={
+            "portfolio_id": portfolio_id,
+            "as_of_date": as_of_date.isoformat(),
+            "include_details": True,
+        },
+    )
+    assert holdings_response.status_code == 200
+    api_option_rows = [
+        row
+        for row in holdings_response.json()["rows"]
+        if row["instrument_core"]["instrument_id"] == instrument_id
+    ]
+    assert len(api_option_rows) == 2
+    assert {row["holding_kind"] for row in api_option_rows} == {
+        "position",
+        "option_obligation",
+    }
+    for row in api_option_rows:
+        _assert_empty_market_profile(row)
+    api_position = next(
+        row for row in api_option_rows if row["holding_kind"] == "position"
+    )
+    assert api_position["market_value"] == 500.0
+    assert api_position["carrying_value"] == 500.0
+    assert api_position["valuation_basis"] == "carried_cost"
+    api_obligation = next(
+        row for row in api_option_rows if row["holding_kind"] == "option_obligation"
+    )
+    assert api_obligation["open_contract_quantity"] == 1.0
+    assert api_obligation["covered_underlying_quantity"] == 100.0
+    assert api_obligation["obligation_status"] == "open"
+    assert api_obligation["coverage_type"] == "covered_call"
+    assert api_obligation["premium_basis_remaining"] == 300.0
+    assert api_obligation["liability_value"] == 300.0
+    assert api_obligation["market_value"] == -300.0
+    assert api_obligation["valuation_basis"] == "premium_liability"
+
+    detail_response = client.get(
+        "/api/workspace/holdings/instrument",
+        params={
+            "portfolio_id": portfolio_id,
+            "instrument_id": instrument_id,
+            "as_of_date": as_of_date.isoformat(),
+        },
+    )
+    assert detail_response.status_code == 200
+    detail_rows = detail_response.json()["rows"]
+    assert {row["holding_kind"] for row in detail_rows} == {
+        "position",
+        "option_obligation",
+    }
+    detail_obligation = next(
+        row for row in detail_rows if row["holding_kind"] == "option_obligation"
+    )
+    assert all("instrument_return_1m" not in row for row in detail_rows)
+    assert all("price_chart_1m" not in row for row in detail_rows)
+    for field_name in (
+        "open_contract_quantity",
+        "covered_underlying_quantity",
+        "obligation_status",
+        "coverage_type",
+        "premium_basis_remaining",
+        "liability_value",
+    ):
+        assert detail_obligation[field_name] == api_obligation[field_name]
 
 
 def test_instrument_holding_projection_fails_closed_when_snapshot_is_unavailable(client, monkeypatch) -> None:
@@ -278,6 +691,169 @@ def test_instrument_holding_projection_fails_closed_when_snapshot_is_unavailable
     assert response.json()["detail"] == (
         "Materialized holding projection is unavailable for the requested date."
     )
+
+
+def test_dynamic_event_holding_rejects_registry_market_profile(
+    monkeypatch,
+) -> None:
+    instrument_id = "option-dynamic-carried"
+    instrument_ref = {
+        "instrument_id": instrument_id,
+        "instrument_name": "Dynamic Carried Option",
+        "instrument_type": "option",
+        "currency": "USD",
+        "identifiers": [],
+        "option_contract": {
+            "underlying_instrument_id": "equity-us-abbv",
+            "option_type": "call",
+            "expiry_date": "2026-12-18",
+            "strike": "220",
+            "contract_multiplier": "100",
+            "settlement_type": "physical",
+            "contract_currency": "USD",
+        },
+    }
+    position = {
+        "position_id": instrument_id,
+        "instrument_id": instrument_id,
+        "instrument_ref": deepcopy(instrument_ref),
+        "holding_kind": "position",
+        "quantity": 1.0,
+        "last_price": None,
+        "quote_as_of_date": None,
+        "quote_metric_family": None,
+        "quote_basis": None,
+        "quote_provider": None,
+        "quote_status": "event-cost",
+        "market_value": 500.0,
+        "market_value_base": 500.0,
+        "day_change_pct": None,
+        "day_change_value": None,
+        "day_change_value_base": None,
+        "cost_basis_method": "fifo",
+        "cost_basis": 500.0,
+        "cost_basis_base": 500.0,
+        "portfolio_weight": 1.0,
+        "coverage_status": "event-cost",
+        "account_ids": ["account-us-brokerage"],
+        "account_count": 1,
+        "open_position_lot_count": 1,
+        "carrying_value": 500.0,
+        "carrying_value_base": 500.0,
+        "fair_value": None,
+        "fair_value_coverage_status": "unavailable",
+        "valuation_basis": "carried_cost",
+        "performance_eligible": False,
+        "risk_eligible": False,
+    }
+    profile_calls: list[str] = []
+
+    monkeypatch.setattr(
+        workspace_routes,
+        "_require_portfolio",
+        lambda *_args, **_kwargs: {
+            "portfolio_id": "portfolio-dynamic-event",
+            "portfolio_name": "Dynamic Event Portfolio",
+            "base_currency": "USD",
+            "as_of_date": "2026-04-15",
+        },
+    )
+    monkeypatch.setattr(
+        workspace_routes,
+        "get_cached_materialized_holdings_workspace",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(workspace_routes, "list_transactions", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(workspace_routes, "list_accounts", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(workspace_routes, "get_portfolio_risk_policy", lambda *_args: {})
+    monkeypatch.setattr(
+        workspace_routes,
+        "build_position_lots",
+        lambda *_args, **_kwargs: [
+            {
+                "status": "open",
+                "instrument_id": instrument_id,
+                "acquisition_date": "2026-04-01",
+            }
+        ],
+    )
+    monkeypatch.setattr(
+        workspace_routes,
+        "summarize_position_lots",
+        lambda *_args: {"open_position_lot_count": 1},
+    )
+    monkeypatch.setattr(
+        workspace_routes,
+        "get_registry_instrument_details",
+        lambda instrument_ids: {
+            item: deepcopy(instrument_ref) if item == instrument_id else None
+            for item in instrument_ids
+        },
+    )
+    monkeypatch.setattr(
+        workspace_routes,
+        "calculation_frequency_profile_for_instruments",
+        lambda *_args, **_kwargs: {
+            "resolved_frequency": "daily",
+            "coverage_state": "complete",
+        },
+    )
+    monkeypatch.setattr(
+        workspace_routes,
+        "build_holdings_report",
+        lambda *_args, **_kwargs: {
+            "base_currency": "USD",
+            "positions": [deepcopy(position)],
+            "total_market_value_base": 500.0,
+            "total_nav_base": 500.0,
+            "cash_balance_base": 0.0,
+            "pending_settlement_base": 0.0,
+        },
+    )
+
+    def populated_profile(*_args, instrument_id: str, **_kwargs):
+        profile_calls.append(instrument_id)
+        return _populated_market_profile()
+
+    monkeypatch.setattr(
+        workspace_routes,
+        "build_instrument_holdings_market_profile_from_detail",
+        populated_profile,
+    )
+    monkeypatch.setattr(
+        workspace_routes,
+        "enrich_holdings_forward_risk",
+        lambda response, **_kwargs: response,
+    )
+    monkeypatch.setattr(
+        workspace_routes,
+        "reconcile_instrument_event_tasks",
+        lambda **_kwargs: {},
+    )
+    monkeypatch.setattr(
+        workspace_routes,
+        "corporate_action_quality_warnings",
+        lambda *_args, **_kwargs: [],
+    )
+    monkeypatch.setattr(
+        workspace_routes,
+        "instrument_event_task_quality_warnings",
+        lambda *_args: [],
+    )
+
+    payload = workspace_routes.holdings_workspace(
+        portfolio_id="portfolio-dynamic-event",
+        as_of_date=date(2026, 4, 15),
+        include_details=True,
+    )
+
+    assert profile_calls == []
+    assert len(payload["rows"]) == 1
+    row = payload["rows"][0]
+    _assert_empty_market_profile(row)
+    assert row["market_value"] == 500.0
+    assert row["carrying_value"] == 500.0
+    assert row["valuation_basis"] == "carried_cost"
 
 
 def test_fallback_holdings_reuses_bulk_details_for_frequency_valuation_and_charts(

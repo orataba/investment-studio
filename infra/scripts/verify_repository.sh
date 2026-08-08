@@ -14,6 +14,7 @@ Commands:
   static
   backend [all|platform|portfolio|watchlist]
   frontend [all|platform|portfolio|watchlist]
+  shared-typescript
   infra [all|portable|postgresql]
   migration-heads
   postgres-integration [all|platform|portfolio|watchlist]
@@ -91,6 +92,9 @@ run_frontend() {
   local selected app_name
   selected="$(selected_apps "${1:-all}")"
   require_node
+  if [[ "${1:-all}" == "all" || "${1:-all}" == "platform" ]]; then
+    run_shared_typescript
+  fi
   while IFS= read -r app_name; do
     local frontend_root="$PROJECT_ROOT/apps/$app_name/frontend"
     if [[ ! -d "$frontend_root/node_modules" ]]; then
@@ -101,6 +105,17 @@ run_frontend() {
     npm --prefix "$frontend_root" test
     npm --prefix "$frontend_root" run build
   done <<< "$selected"
+}
+
+run_shared_typescript() {
+  require_node
+  local package_root="$PROJECT_ROOT/packages/instrument-core/ts"
+  if [[ ! -d "$package_root/node_modules" ]]; then
+    echo "Missing node_modules for instrument-core TypeScript package; run npm --prefix $package_root ci first." >&2
+    exit 1
+  fi
+  echo "Running instrument-core TypeScript contract typecheck."
+  npm --prefix "$package_root" run typecheck
 }
 
 run_infra() {
@@ -205,6 +220,9 @@ case "$command_name" in
     ;;
   frontend)
     run_frontend "${2:-all}"
+    ;;
+  shared-typescript)
+    run_shared_typescript
     ;;
   infra)
     run_infra "${2:-all}"

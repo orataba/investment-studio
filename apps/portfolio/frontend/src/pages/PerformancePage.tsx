@@ -33,6 +33,7 @@ import {
 } from '../lib/api'
 import {
   formatCurrency,
+  formatLabel,
   formatNumber,
   formatPercent,
   formatSignedCurrency,
@@ -1175,7 +1176,38 @@ function buildPerformanceMetricRows(
   const annualizedReturnEligible = historyReliability.annualizedReturnEligible
   const comparableBenchmarkMetrics = relativeComparisonEligible ? benchmarkMetrics : null
   const relativeMetrics = buildRelativePerformanceMetrics(dailySeries, comparableBenchmarkMetrics)
-  const showComparison = selectedBenchmarkInstrument != null || benchmarkLoading
+  const showComparison = relativeComparisonEligible && (selectedBenchmarkInstrument != null || benchmarkLoading)
+  const operationalReturn = summary.performance_basis === 'operational_carrying_basis'
+  if (operationalReturn) {
+    const expenseAmount = finiteNumber(summary.expense_cash_amount)
+    return [
+      {
+        metric: summary.performance_label,
+        value: signedPercent(summary.cumulative_twr),
+        valueClassName: signedValueClass(summary.cumulative_twr),
+      },
+      {
+        metric: 'Total P&L',
+        value: formatSignedCurrency(summary.total_pnl, baseCurrency),
+        valueClassName: signedValueClass(summary.total_pnl),
+      },
+      {
+        metric: 'Derivative Lifecycle Realized P&L',
+        value: formatSignedCurrency(summary.derivative_lifecycle_realized_pnl, baseCurrency),
+        valueClassName: signedValueClass(summary.derivative_lifecycle_realized_pnl),
+      },
+      {
+        metric: 'Income',
+        value: formatSignedCurrency(summary.income_cash_amount, baseCurrency),
+        valueClassName: signedValueClass(summary.income_cash_amount),
+      },
+      {
+        metric: 'Expenses',
+        value: formatSignedCurrency(expenseAmount == null ? null : -expenseAmount, baseCurrency),
+        valueClassName: signedValueClass(expenseAmount == null ? null : -expenseAmount),
+      },
+    ] satisfies PerformanceMetricRow[]
+  }
   const irr = finiteNumber(summary.irr) ?? finiteNumber(summary.mwror)
   const irrReliabilityNote = !annualizedReturnEligible
     ? 'Requires ≥ 1 year'
@@ -1230,14 +1262,14 @@ function buildPerformanceMetricRows(
 
   return [
     {
-      metric: 'Period TWR',
+      metric: summary.performance_label,
       value: signedPercent(summary.cumulative_twr),
       valueClassName: signedValueClass(summary.cumulative_twr),
-      benchmark: benchmarkMetricText(selectedBenchmarkInstrument, benchmarkLoading, benchmarkMetrics?.periodReturn),
+      benchmark: benchmarkMetricText(selectedBenchmarkInstrument, benchmarkLoading, comparableBenchmarkMetrics?.periodReturn),
       benchmarkClassName: benchmarkMetricClassName(
         selectedBenchmarkInstrument,
         benchmarkLoading,
-        benchmarkMetrics?.periodReturn,
+        comparableBenchmarkMetrics?.periodReturn,
       ),
       difference: benchmarkMetricText(selectedBenchmarkInstrument, benchmarkLoading, returnDifference),
       differenceClassName: benchmarkMetricClassName(selectedBenchmarkInstrument, benchmarkLoading, returnDifference),
@@ -1249,12 +1281,12 @@ function buildPerformanceMetricRows(
       valueClassName: annualizedReturnEligible ? signedValueClass(summary.annualized_twr) : 'performance-cell-muted',
       reliabilityNote: annualizedReturnEligible ? undefined : 'Requires ≥ 1 year',
       benchmark: annualizedReturnEligible
-        ? benchmarkMetricText(selectedBenchmarkInstrument, benchmarkLoading, benchmarkMetrics?.annualizedReturn)
+        ? benchmarkMetricText(selectedBenchmarkInstrument, benchmarkLoading, comparableBenchmarkMetrics?.annualizedReturn)
         : selectedBenchmarkInstrument
           ? 'N/A'
           : '—',
       benchmarkClassName: annualizedReturnEligible
-        ? benchmarkMetricClassName(selectedBenchmarkInstrument, benchmarkLoading, benchmarkMetrics?.annualizedReturn)
+        ? benchmarkMetricClassName(selectedBenchmarkInstrument, benchmarkLoading, comparableBenchmarkMetrics?.annualizedReturn)
         : 'performance-cell-muted',
       difference: annualizedReturnEligible
         ? benchmarkMetricText(selectedBenchmarkInstrument, benchmarkLoading, annualizedReturnDifference)
@@ -1279,6 +1311,11 @@ function buildPerformanceMetricRows(
       valueClassName: signedValueClass(summary.total_pnl),
     },
     {
+      metric: 'Derivative Lifecycle Realized P&L',
+      value: formatSignedCurrency(summary.derivative_lifecycle_realized_pnl, baseCurrency),
+      valueClassName: signedValueClass(summary.derivative_lifecycle_realized_pnl),
+    },
+    {
       metric: 'Mean Daily Return',
       value: signedPercent(summary.mean_daily_return, 3),
       valueClassName: signedValueClass(summary.mean_daily_return),
@@ -1289,7 +1326,7 @@ function buildPerformanceMetricRows(
       valueClassName: annualizedReturnEligible ? undefined : 'performance-cell-muted',
       reliabilityNote: annualizedReturnEligible ? undefined : 'Annualized-return dependent',
       benchmark: annualizedReturnEligible
-        ? benchmarkMetricText(selectedBenchmarkInstrument, benchmarkLoading, benchmarkMetrics?.calmar, formatRatio)
+        ? benchmarkMetricText(selectedBenchmarkInstrument, benchmarkLoading, comparableBenchmarkMetrics?.calmar, formatRatio)
         : selectedBenchmarkInstrument
           ? 'N/A'
           : '—',
@@ -1310,7 +1347,7 @@ function buildPerformanceMetricRows(
       benchmark: benchmarkMetricText(
         selectedBenchmarkInstrument,
         benchmarkLoading,
-        benchmarkMetrics?.annualizedVolatility,
+        comparableBenchmarkMetrics?.annualizedVolatility,
         formatPercent,
       ),
       benchmarkClassName: undefined,
@@ -1325,7 +1362,7 @@ function buildPerformanceMetricRows(
       benchmark: benchmarkMetricText(
         selectedBenchmarkInstrument,
         benchmarkLoading,
-        benchmarkMetrics?.annualizedDownsideVolatility,
+        comparableBenchmarkMetrics?.annualizedDownsideVolatility,
         formatPercent,
       ),
       difference: benchmarkMetricText(selectedBenchmarkInstrument, benchmarkLoading, downsideVolatilityDifference),
@@ -1340,7 +1377,7 @@ function buildPerformanceMetricRows(
       metric: 'Sharpe Ratio',
       value: formatRatio(summary.sharpe_ratio),
       reliabilityNote: riskReliabilityNote,
-      benchmark: benchmarkMetricText(selectedBenchmarkInstrument, benchmarkLoading, benchmarkMetrics?.sharpe, formatRatio),
+      benchmark: benchmarkMetricText(selectedBenchmarkInstrument, benchmarkLoading, comparableBenchmarkMetrics?.sharpe, formatRatio),
       difference: benchmarkMetricText(selectedBenchmarkInstrument, benchmarkLoading, sharpeDifference, signedRatio),
       differenceClassName: benchmarkMetricClassName(selectedBenchmarkInstrument, benchmarkLoading, sharpeDifference),
       showComparison,
@@ -1349,7 +1386,7 @@ function buildPerformanceMetricRows(
       metric: 'Sortino Ratio',
       value: formatRatio(summary.sortino_ratio),
       reliabilityNote: riskReliabilityNote,
-      benchmark: benchmarkMetricText(selectedBenchmarkInstrument, benchmarkLoading, benchmarkMetrics?.sortino, formatRatio),
+      benchmark: benchmarkMetricText(selectedBenchmarkInstrument, benchmarkLoading, comparableBenchmarkMetrics?.sortino, formatRatio),
       difference: benchmarkMetricText(selectedBenchmarkInstrument, benchmarkLoading, sortinoDifference, signedRatio),
       differenceClassName: benchmarkMetricClassName(selectedBenchmarkInstrument, benchmarkLoading, sortinoDifference),
       showComparison,
@@ -1358,11 +1395,11 @@ function buildPerformanceMetricRows(
       metric: 'Current DD',
       value: signedPercent(summary.current_drawdown),
       valueClassName: signedValueClass(summary.current_drawdown),
-      benchmark: benchmarkMetricText(selectedBenchmarkInstrument, benchmarkLoading, benchmarkMetrics?.currentDrawdown),
+      benchmark: benchmarkMetricText(selectedBenchmarkInstrument, benchmarkLoading, comparableBenchmarkMetrics?.currentDrawdown),
       benchmarkClassName: benchmarkMetricClassName(
         selectedBenchmarkInstrument,
         benchmarkLoading,
-        benchmarkMetrics?.currentDrawdown,
+        comparableBenchmarkMetrics?.currentDrawdown,
       ),
       difference: benchmarkMetricText(selectedBenchmarkInstrument, benchmarkLoading, currentDrawdownDifference),
       differenceClassName: benchmarkMetricClassName(selectedBenchmarkInstrument, benchmarkLoading, currentDrawdownDifference),
@@ -1372,8 +1409,8 @@ function buildPerformanceMetricRows(
       metric: 'Max DD',
       value: signedPercent(summary.max_drawdown),
       valueClassName: signedValueClass(summary.max_drawdown),
-      benchmark: benchmarkMetricText(selectedBenchmarkInstrument, benchmarkLoading, benchmarkMetrics?.maxDrawdown),
-      benchmarkClassName: benchmarkMetricClassName(selectedBenchmarkInstrument, benchmarkLoading, benchmarkMetrics?.maxDrawdown),
+      benchmark: benchmarkMetricText(selectedBenchmarkInstrument, benchmarkLoading, comparableBenchmarkMetrics?.maxDrawdown),
+      benchmarkClassName: benchmarkMetricClassName(selectedBenchmarkInstrument, benchmarkLoading, comparableBenchmarkMetrics?.maxDrawdown),
       difference: benchmarkMetricText(selectedBenchmarkInstrument, benchmarkLoading, maxDrawdownDifference),
       differenceClassName: benchmarkMetricClassName(selectedBenchmarkInstrument, benchmarkLoading, maxDrawdownDifference),
       showComparison,
@@ -1415,8 +1452,8 @@ function TableStatusRow({ colSpan, label, tone = 'muted' }: { colSpan: number; l
   )
 }
 
-function MetricGrid({ rows }: { rows: PerformanceMetricRow[] }) {
-  const columnLabels = ['Return', 'Risk', 'Relative']
+function MetricGrid({ rows, operational = false }: { rows: PerformanceMetricRow[]; operational?: boolean }) {
+  const columnLabels = operational ? ['Operational'] : ['Return', 'Risk', 'Relative']
   const columnCount = columnLabels.length
   const showComparisonColumns = rows.some((row) => row.showComparison)
   const rowsPerColumn = Math.ceil(rows.length / columnCount)
@@ -2058,6 +2095,7 @@ function PerformancePage() {
   }, [appliedSinceInception, effectiveEndDate, effectiveStartDate])
 
   const summary = workspace?.summary ?? null
+  const performanceIsOperational = summary?.performance_basis === 'operational_carrying_basis'
   const baseCurrency = workspace?.base_currency ?? calculationWorkspace?.base_currency ?? calculationGroupsWorkspace?.base_currency ?? 'USD'
   const reportStartDate =
     validIsoDate(summary?.effective_start_date) || validIsoDate(summary?.start_date) || effectiveStartDate
@@ -2130,7 +2168,7 @@ function PerformancePage() {
             selectedBenchmarkInstrument,
             benchmarkLoading,
             benchmarkMetrics,
-            benchmarkGuard?.relativeComparisonEligible ?? false,
+            !performanceIsOperational && (benchmarkGuard?.relativeComparisonEligible ?? false),
           )
         : [],
     [
@@ -2141,6 +2179,7 @@ function PerformancePage() {
       benchmarkLoading,
       benchmarkMetrics,
       benchmarkGuard?.relativeComparisonEligible,
+      performanceIsOperational,
     ],
   )
   const calculationRows = useMemo(() => {
@@ -2648,7 +2687,7 @@ function PerformancePage() {
             {normalizeBenchmarkCurrency(baseCurrency)}.
           </div>
         ) : null}
-        {benchmarkGuard && benchmarkBasisAssessment ? (
+        {benchmarkGuard && benchmarkBasisAssessment && !performanceIsOperational ? (
           <div
             className={`performance-benchmark-basis-status ${
               benchmarkGuard.mode === 'canonical'
@@ -2669,9 +2708,22 @@ function PerformancePage() {
             <span>{benchmarkBasisAssessment.label}</span>
           </div>
         ) : null}
-        {!benchmarkError && !benchmarkCurrencyMismatch && benchmarkGuard?.warning ? (
+        {!benchmarkError && !benchmarkCurrencyMismatch && benchmarkGuard?.warning && !performanceIsOperational ? (
           <div className="inline-notice inline-notice-warning performance-benchmark-basis-warning" role="status">
             {benchmarkGuard.warning}
+          </div>
+        ) : null}
+        {performanceIsOperational ? (
+          <div className="inline-notice inline-notice-warning" role="status">
+            <strong>{summary?.performance_label ?? 'Total Portfolio Operational Return'}.</strong>{' '}
+            Event-valued assets and obligations use carrying-basis measurements. This is an operational ledger return,
+            not a complete fair-value or GIPS-informed TWR, and it is not used as a portfolio risk input or benchmark-relative result.
+          </div>
+        ) : null}
+        {summary?.ordinary_sleeve_twr_status === 'unavailable' ? (
+          <div className="inline-notice" role="status">
+            <strong>Ordinary Assets Sleeve TWR unavailable.</strong>{' '}
+            {summary.ordinary_sleeve_twr_reason}
           </div>
         ) : null}
         <QualityWarningsNotice warnings={summary?.quality_warnings} />
@@ -2686,8 +2738,10 @@ function PerformancePage() {
             <section className="performance-section-block">
               <div className="portfolio-detail-toolbar performance-subsection-toolbar performance-section-toolbar">
                 <div>
-                  <div className="panel-title">Return &amp; Risk Metrics</div>
-                  <div className="portfolio-detail-meta">{performanceMetricsMeta}</div>
+                  <div className="panel-title">{summary.performance_label}</div>
+                  <div className="portfolio-detail-meta">
+                    {performanceMetricsMeta}; {formatLabel(summary.performance_basis)}
+                  </div>
                 </div>
               </div>
               {performanceHistoryReliability?.annualizationMessage ? (
@@ -2696,7 +2750,7 @@ function PerformancePage() {
                   <span>{performanceHistoryReliability.annualizationMessage}</span>
                 </div>
               ) : null}
-              <MetricGrid rows={metricRows} />
+              <MetricGrid rows={metricRows} operational={performanceIsOperational} />
             </section>
 
             <section className="performance-section-block">

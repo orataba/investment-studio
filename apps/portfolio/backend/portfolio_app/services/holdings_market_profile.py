@@ -4,10 +4,23 @@ from collections.abc import Callable
 from copy import deepcopy
 from datetime import date
 
+from portfolio_ops_instrument_core import InstrumentCore as SharedInstrumentCore
+
 from portfolio_app.services import valuation_fx
 
 
-_SUPPORTED_INSTRUMENT_TYPES = {"fund", "etf", "bond", "equity", "cash", "fx", "other"}
+_SUPPORTED_INSTRUMENT_TYPES = {
+    "fund",
+    "etf",
+    "bond",
+    "equity",
+    "fcn",
+    "option",
+    "cash",
+    "fx",
+    "other",
+}
+DERIVATIVE_TRACKING_INSTRUMENT_TYPES = frozenset({"fcn", "option"})
 _FORBIDDEN_INSTRUMENT_REF_KEYS = {"asset_id", "asset_name", "asset_type"}
 
 SafeFloat = Callable[[object], float | None]
@@ -108,14 +121,87 @@ def normalize_instrument_core(
     currency = str(instrument_ref.get("currency") or "").strip().upper()
     if not instrument_name or not currency:
         raise ValueError(f"Instrument reference for '{instrument_id}' is incomplete.")
-    identifiers = instrument_ref.get("identifiers")
-    return {
+    payload = {
         "instrument_id": resolved_id,
         "instrument_name": instrument_name,
         "instrument_type": resolved_type,
         "currency": currency,
-        "identifiers": list(identifiers or []) if isinstance(identifiers, list) else [],
+        "identifiers": deepcopy(instrument_ref.get("identifiers") or []),
+        "broker_identifiers": deepcopy(
+            instrument_ref.get("broker_identifiers") or []
+        ),
+        "option_contract": deepcopy(instrument_ref.get("option_contract")),
+        "fcn_contract": deepcopy(instrument_ref.get("fcn_contract")),
+        "corporate_action_adjustment_policy": deepcopy(
+            instrument_ref.get("corporate_action_adjustment_policy")
+        ),
     }
+    try:
+        return SharedInstrumentCore.model_validate(payload).model_dump(
+            mode="json",
+            exclude_none=True,
+        )
+    except ValueError as error:
+        raise ValueError(
+            f"Instrument reference for '{instrument_id}' violates the canonical contract: {error}"
+        ) from error
+
+
+def is_derivative_tracking_instrument_type(value: object) -> bool:
+    return str(value or "").strip().lower() in DERIVATIVE_TRACKING_INSTRUMENT_TYPES
+
+
+def is_derivative_tracking_instrument_ref(
+    instrument_ref: dict[str, object] | None,
+) -> bool:
+    if not isinstance(instrument_ref, dict):
+        return False
+    return is_derivative_tracking_instrument_type(
+        instrument_ref.get("instrument_type")
+    )
+
+
+def is_event_valued_instrument_ref(
+    instrument_ref: dict[str, object] | None,
+) -> bool:
+    return is_derivative_tracking_instrument_ref(instrument_ref)
+
+
+def resolve_position_valuation(
+    *,
+    quantity: float,
+    cost_basis: float | None,
+    instrument_ref: dict[str, object] | None,
+    quoted_price: float | None,
+    quoted_price_scale: float | None = None,
+    position_market_value: PositionMarketValue = valuation_fx.position_market_value,
+) -> tuple[float | None, float | None, bool]:
+    """Return display price, local market value, and event-valued status.
+
+    FCNs and options are intentionally carried at remaining transaction cost
+    between lifecycle events.  The derived per-unit value is a display aid,
+    not an observed market quote.
+    """
+
+    if is_event_valued_instrument_ref(instrument_ref):
+        if cost_basis is None:
+            return None, None, True
+        carrying_value = float(cost_basis)
+        carrying_price = (
+            carrying_value / quantity if abs(quantity) > 1e-12 else None
+        )
+        return carrying_price, carrying_value, True
+
+    return (
+        quoted_price,
+        position_market_value(
+            quantity=quantity,
+            last_price=quoted_price,
+            instrument_ref=instrument_ref,
+            price_scale=quoted_price_scale,
+        ),
+        False,
+    )
 
 
 def cash_holding_instrument_id(
@@ -143,6 +229,21 @@ def is_pending_monetary_holding(row: dict[str, object]) -> bool:
     holding_kind = str(row.get("holding_kind") or "").strip().lower()
     return holding_kind.startswith("pending_") or is_pending_monetary_holding_instrument_id(
         row.get("instrument_id") or row.get("line_id")
+    )
+
+
+def is_market_priced_holding(row: dict[str, object]) -> bool:
+    """Return whether a holding is backed by a complete market quote.
+
+    Carrying values and premium-basis liabilities populate operational NAV
+    amount fields. They are not priced lines merely because those amounts exist.
+    """
+
+    return bool(
+        str(row.get("holding_kind") or "position") == "position"
+        and str(row.get("valuation_basis") or "") == "market_quote"
+        and str(row.get("fair_value_coverage_status") or "") == "complete"
+        and row.get("last_price") is not None
     )
 
 
@@ -368,7 +469,12 @@ def _pending_monetary_instrument_id(balance: dict[str, object], currency: str) -
     economic_instrument_id = str(
         balance.get("economic_instrument_id") or "cash"
     ).strip()
-    return f"pending:{holding_kind}:{account_id}:{economic_instrument_id}:{currency}"
+    settlement_date = str(balance.get("settlement_date") or "undated").strip()
+    pending_until_date = str(balance.get("pending_until_date") or "undated").strip()
+    return (
+        f"pending:{holding_kind}:{account_id}:{economic_instrument_id}:{currency}:"
+        f"{settlement_date}:{pending_until_date}"
+    )
 
 
 def build_pending_monetary_holding_rows(
@@ -459,6 +565,11 @@ def build_pending_monetary_holding_rows(
                         if str(transaction_id or "")
                     }
                 ),
+                "settlement_date": balance.get("settlement_date"),
+                "pending_until_date": balance.get("pending_until_date"),
+                "pending_status": balance.get("pending_status") or "pending",
+                "settlement_amount": amount,
+                "settlement_amount_base": amount_base,
                 "instrument_ref": {
                     "instrument_id": instrument_id,
                     "instrument_name": instrument_name,
@@ -650,9 +761,528 @@ def position_buckets_by_account_instrument_from_lots(
     return rendered_buckets
 
 
+def build_option_obligation_holding_rows(
+    option_obligations: list[dict[str, object]] | None,
+    *,
+    underlying_positions: list[dict[str, object]],
+    as_of_date: date,
+    base_currency: str,
+    nav: float | None,
+    normalize_currency: NormalizeCurrency = valuation_fx.normalized_currency,
+    safe_float: SafeFloat = _safe_float,
+    convert_amount_on: Callable[..., tuple[float | None, bool]],
+    direct_fx_instruments: dict[tuple[str, str], str] | None = None,
+    instrument_detail_cache: dict[str, dict[str, object] | None] | None = None,
+    normalize_instrument: Callable[..., dict[str, object]] = normalize_instrument_core,
+) -> list[dict[str, object]]:
+    """Render written obligations as explicit negative holding rows."""
+
+    groups: dict[tuple[str, str, str, str], dict[str, object]] = {}
+    for obligation in option_obligations or []:
+        if str(obligation.get("status") or "") != "open":
+            continue
+        remaining = safe_float(obligation.get("remaining_quantity")) or 0.0
+        liability = safe_float(obligation.get("carrying_liability")) or 0.0
+        if remaining <= 1e-9 or liability <= 1e-9:
+            continue
+        account_id = str(obligation.get("account_id") or "")
+        instrument_id = str(
+            obligation.get("option_instrument_id")
+            or obligation.get("instrument_id")
+            or ""
+        )
+        related_underlying_id = str(
+            obligation.get("related_underlying_id") or ""
+        ).strip()
+        currency = _required_currency(
+            obligation.get("contract_currency") or base_currency,
+            normalize_currency=normalize_currency,
+            field_name="option obligation currency",
+        )
+        group = groups.setdefault(
+            (account_id, instrument_id, related_underlying_id, currency),
+            {
+                "account_id": account_id,
+                "instrument_id": instrument_id,
+                "currency": currency,
+                "related_underlying_id": related_underlying_id,
+                "remaining_quantity": 0.0,
+                "open_contract_quantity": 0.0,
+                "required_underlying_quantity": 0.0,
+                "premium_received_gross": 0.0,
+                "premium_basis_remaining": 0.0,
+                "liability_value": 0.0,
+                "transaction_ids": set(),
+                "first_obligation": obligation,
+            },
+        )
+        group["remaining_quantity"] += remaining
+        group["open_contract_quantity"] += safe_float(obligation.get("open_contract_quantity")) or 0.0
+        group["required_underlying_quantity"] += safe_float(
+            obligation.get("covered_underlying_quantity")
+        ) or 0.0
+        group["premium_received_gross"] += safe_float(obligation.get("premium_received_gross")) or 0.0
+        group["premium_basis_remaining"] += safe_float(obligation.get("premium_basis_remaining")) or 0.0
+        group["liability_value"] += liability
+        opened_by = str(obligation.get("_opened_by_transaction_id") or "")
+        if opened_by:
+            group["transaction_ids"].add(opened_by)
+
+    underlying_position_quantity: dict[tuple[str, str], float] = {}
+    for position in underlying_positions:
+        position_key = (
+            str(position.get("account_id") or "").strip(),
+            str(position.get("instrument_id") or "").strip(),
+        )
+        if not all(position_key):
+            continue
+        underlying_position_quantity[position_key] = (
+            underlying_position_quantity.get(position_key, 0.0)
+            + (safe_float(position.get("quantity")) or 0.0)
+        )
+    remaining_cover = {
+        key: max(quantity, 0.0)
+        for key, quantity in underlying_position_quantity.items()
+    }
+
+    rows: list[dict[str, object]] = []
+    ordered_groups = sorted(
+        groups.values(),
+        key=lambda group: (
+            str(
+                (
+                    group.get("first_obligation")
+                    if isinstance(group.get("first_obligation"), dict)
+                    else {}
+                ).get("expiry_date")
+                or "9999-12-31"
+            ),
+            str(group.get("account_id") or ""),
+            str(group.get("instrument_id") or ""),
+        ),
+    )
+    for group in ordered_groups:
+        account_id = str(group["account_id"])
+        instrument_id = str(group["instrument_id"])
+        currency = str(group["currency"])
+        related_underlying_id = str(group["related_underlying_id"])
+        cover_key = (account_id, related_underlying_id)
+        required_underlying_quantity = float(group["required_underlying_quantity"])
+        covered_underlying_quantity = min(
+            required_underlying_quantity,
+            remaining_cover.get(cover_key, 0.0),
+        )
+        remaining_cover[cover_key] = max(
+            remaining_cover.get(cover_key, 0.0) - covered_underlying_quantity,
+            0.0,
+        )
+        uncovered_underlying_quantity = max(
+            required_underlying_quantity - covered_underlying_quantity,
+            0.0,
+        )
+        covered_ratio = (
+            covered_underlying_quantity / required_underlying_quantity
+            if required_underlying_quantity > 1e-9
+            else None
+        )
+        liability_value = float(group["liability_value"])
+        liability_value_base, _ = convert_amount_on(
+            liability_value,
+            as_of_date=as_of_date,
+            from_currency=currency,
+            to_currency=base_currency,
+            direct_fx_instruments=direct_fx_instruments or {},
+            instrument_detail_cache=instrument_detail_cache or {},
+        )
+        first = group["first_obligation"]
+        if not isinstance(first, dict):
+            first = {}
+        if not isinstance(first.get("instrument_ref"), dict):
+            raise ValueError(
+                f"Option obligation '{instrument_id}' requires a complete instrument reference."
+            )
+        instrument_ref = deepcopy(first["instrument_ref"])
+        instrument_ref["instrument_id"] = instrument_id
+        instrument_ref["instrument_type"] = "option"
+        instrument_ref["currency"] = currency
+        strike = safe_float(first.get("strike"))
+        assignment_notional = (
+            strike * required_underlying_quantity if strike is not None else None
+        )
+        assignment_notional_base, _ = (
+            convert_amount_on(
+                assignment_notional,
+                as_of_date=as_of_date,
+                from_currency=currency,
+                to_currency=base_currency,
+                direct_fx_instruments=direct_fx_instruments or {},
+                instrument_detail_cache=instrument_detail_cache or {},
+            )
+            if assignment_notional is not None
+            else (None, False)
+        )
+        expiry_date = _parse_iso_date(first.get("expiry_date"))
+        days_to_expiry = (
+            (expiry_date - as_of_date).days if expiry_date is not None else None
+        )
+        rows.append(
+            {
+                "line_id": f"{account_id}:{instrument_id}:obligation",
+                "account_id": account_id,
+                "instrument_id": instrument_id,
+                "holding_kind": "option_obligation",
+                "available_for_trading": False,
+                "is_liability": True,
+                "performance_eligible": False,
+                "risk_eligible": False,
+                "economic_instrument_id": related_underlying_id,
+                "economic_instrument_ref": None,
+                "related_underlying_id": related_underlying_id,
+                "transaction_ids": sorted(group["transaction_ids"]),
+                "instrument_ref": normalize_instrument(instrument_id, instrument_ref),
+                "quantity": float(group["remaining_quantity"]),
+                "open_contract_quantity": float(group["open_contract_quantity"]),
+                "required_underlying_quantity": required_underlying_quantity,
+                "underlying_position_quantity": max(
+                    underlying_position_quantity.get(cover_key, 0.0),
+                    0.0,
+                ),
+                "covered_underlying_quantity": covered_underlying_quantity,
+                "uncovered_underlying_quantity": uncovered_underlying_quantity,
+                "covered_ratio": covered_ratio,
+                "obligation_status": "open",
+                "obligation_coverage_status": (
+                    "uncovered"
+                    if uncovered_underlying_quantity > 1e-9
+                    else "covered"
+                ),
+                "coverage_type": first.get("coverage_type"),
+                "related_underlying_id": related_underlying_id,
+                "expiry_date": expiry_date.isoformat() if expiry_date else None,
+                "days_to_expiry": days_to_expiry,
+                "strike": strike,
+                "option_type": first.get("option_type"),
+                "contract_multiplier": first.get("contract_multiplier"),
+                "settlement_type": first.get("settlement_type"),
+                "assignment_notional": assignment_notional,
+                "assignment_notional_base": assignment_notional_base,
+                "cost_basis_method": None,
+                "cost_basis": None,
+                "cost_basis_base": None,
+                "last_price": None,
+                "quote_as_of_date": None,
+                "quote_metric_family": None,
+                "quote_basis": "premium_liability",
+                "quote_provider": None,
+                "quote_status": "event-cost" if liability_value_base is not None else "unavailable",
+                "market_value": -liability_value,
+                "market_value_base": -liability_value_base if liability_value_base is not None else None,
+                "fair_value": None,
+                "fair_value_coverage_status": "unavailable",
+                "valuation_basis": "premium_liability",
+                "carrying_value": liability_value,
+                "carrying_value_base": liability_value_base,
+                "liability_value": liability_value,
+                "liability_value_base": liability_value_base,
+                "premium_received_gross": float(group["premium_received_gross"]),
+                "premium_basis_remaining": float(group["premium_basis_remaining"]),
+                "day_change_pct": None,
+                "day_change_value": None,
+                "day_change_value_base": None,
+                "currency": currency,
+                "portfolio_weight": (
+                    -liability_value_base / nav
+                    if liability_value_base is not None and nav is not None and nav > 1e-9
+                    else None
+                ),
+                "account_ids": [account_id],
+                "account_count": 1,
+                "open_position_lot_count": 0,
+                "instrument_holding_start_date": first.get("opened_at"),
+                "coverage_status": (
+                    "uncovered-obligation"
+                    if uncovered_underlying_quantity > 1e-9
+                    else "event-liability"
+                ),
+            }
+        )
+    return rows
+
+
+_PENDING_SETTLEMENT_KINDS = frozenset(
+    {
+        "pending_subscription",
+        "settlement_receivable",
+        "settlement_payable",
+        "position_recognition_adjustment",
+    }
+)
+
+
+def _expiry_bucket(days_to_expiry: int | None) -> str:
+    if days_to_expiry is None:
+        return "unknown"
+    if days_to_expiry <= 0:
+        return "expired_or_due"
+    if days_to_expiry <= 7:
+        return "next_7_days"
+    if days_to_expiry <= 30:
+        return "next_30_days"
+    if days_to_expiry <= 90:
+        return "next_90_days"
+    return "later"
+
+
+def summarize_holdings_operational_status(
+    rows: list[dict[str, object]],
+    *,
+    as_of_date: date,
+    safe_float: SafeFloat = _safe_float,
+) -> dict[str, object]:
+    """Summarize coverage, expiry, assignment, and settlement operations."""
+
+    obligation_rows = [
+        row
+        for row in rows
+        if str(row.get("holding_kind") or "") == "option_obligation"
+    ]
+    expiry_buckets_by_key: dict[str, dict[str, object]] = {}
+    for row in obligation_rows:
+        expiry_date = _parse_iso_date(row.get("expiry_date"))
+        days_to_expiry = (
+            (expiry_date - as_of_date).days if expiry_date is not None else None
+        )
+        bucket_key = _expiry_bucket(days_to_expiry)
+        bucket = expiry_buckets_by_key.setdefault(
+            bucket_key,
+            {
+                "bucket": bucket_key,
+                "obligation_count": 0,
+                "open_contract_quantity": 0.0,
+                "required_underlying_quantity": 0.0,
+                "uncovered_underlying_quantity": 0.0,
+                "carrying_liability_base": 0.0,
+                "carrying_liability_base_complete": True,
+            },
+        )
+        bucket["obligation_count"] = int(bucket["obligation_count"]) + 1
+        for field_name in (
+            "open_contract_quantity",
+            "required_underlying_quantity",
+            "uncovered_underlying_quantity",
+        ):
+            bucket[field_name] = float(bucket[field_name]) + (
+                safe_float(row.get(field_name)) or 0.0
+            )
+        liability_base = safe_float(row.get("liability_value_base"))
+        if liability_base is None:
+            bucket["carrying_liability_base_complete"] = False
+        else:
+            bucket["carrying_liability_base"] = (
+                float(bucket["carrying_liability_base"]) + liability_base
+            )
+
+    bucket_order = {
+        "expired_or_due": 0,
+        "next_7_days": 1,
+        "next_30_days": 2,
+        "next_90_days": 3,
+        "later": 4,
+        "unknown": 5,
+    }
+    expiry_buckets: list[dict[str, object]] = []
+    for bucket in sorted(
+        expiry_buckets_by_key.values(),
+        key=lambda item: bucket_order[str(item["bucket"])],
+    ):
+        complete = bool(bucket.pop("carrying_liability_base_complete"))
+        if not complete:
+            bucket["carrying_liability_base"] = None
+        expiry_buckets.append(bucket)
+
+    uncovered_rows = [
+        row
+        for row in obligation_rows
+        if (safe_float(row.get("uncovered_underlying_quantity")) or 0.0) > 1e-9
+    ]
+    assignment_rows = [
+        row
+        for row in obligation_rows
+        if str(row.get("settlement_type") or "") == "physical"
+    ]
+    assignment_notional_values = [
+        safe_float(row.get("assignment_notional_base")) for row in assignment_rows
+    ]
+    assignment_notional_complete = all(
+        value is not None for value in assignment_notional_values
+    )
+
+    settlement_rows = [
+        row
+        for row in rows
+        if str(row.get("holding_kind") or "") in _PENDING_SETTLEMENT_KINDS
+    ]
+    settlement_amounts = [
+        safe_float(row.get("settlement_amount_base")) for row in settlement_rows
+    ]
+    settlement_amounts_complete = all(value is not None for value in settlement_amounts)
+    receivable_base = sum(
+        value for value in settlement_amounts if value is not None and value > 0
+    )
+    payable_base = sum(
+        abs(value) for value in settlement_amounts if value is not None and value < 0
+    )
+    settlement_dates = sorted(
+        str(row.get("settlement_date"))
+        for row in settlement_rows
+        if str(row.get("settlement_date") or "")
+    )
+    overdue_rows = [
+        row
+        for row in settlement_rows
+        if str(row.get("pending_status") or "") == "overdue"
+    ]
+
+    uncovered_quantity = sum(
+        safe_float(row.get("uncovered_underlying_quantity")) or 0.0
+        for row in uncovered_rows
+    )
+    operational_alerts: list[dict[str, object]] = []
+    if uncovered_rows:
+        operational_alerts.append(
+            {
+                "code": "uncovered_option_obligation",
+                "severity": "critical",
+                "title": "Uncovered option obligation",
+                "message": (
+                    f"{len(uncovered_rows)} obligation line(s) have "
+                    f"{uncovered_quantity:g} uncovered underlying units."
+                ),
+                "related_line_ids": [str(row.get("line_id") or "") for row in uncovered_rows],
+            }
+        )
+    due_count = int(
+        expiry_buckets_by_key.get("expired_or_due", {}).get("obligation_count") or 0
+    )
+    if due_count:
+        due_line_ids = [
+            str(row.get("line_id") or "")
+            for row in obligation_rows
+            if _expiry_bucket(
+                (expiry_date - as_of_date).days
+                if (expiry_date := _parse_iso_date(row.get("expiry_date")))
+                is not None
+                else None
+            )
+            == "expired_or_due"
+        ]
+        operational_alerts.append(
+            {
+                "code": "option_expiry_due",
+                "severity": "critical",
+                "title": "Option expiry action due",
+                "message": f"{due_count} open obligation line(s) are at or past expiry.",
+                "related_line_ids": due_line_ids,
+            }
+        )
+    near_expiry_count = int(
+        expiry_buckets_by_key.get("next_7_days", {}).get("obligation_count") or 0
+    )
+    if near_expiry_count:
+        near_expiry_line_ids = [
+            str(row.get("line_id") or "")
+            for row in obligation_rows
+            if _expiry_bucket(
+                (expiry_date - as_of_date).days
+                if (expiry_date := _parse_iso_date(row.get("expiry_date")))
+                is not None
+                else None
+            )
+            == "next_7_days"
+        ]
+        operational_alerts.append(
+            {
+                "code": "option_expiry_next_7_days",
+                "severity": "warning",
+                "title": "Option expiry within 7 days",
+                "message": f"{near_expiry_count} open obligation line(s) require expiry review.",
+                "related_line_ids": near_expiry_line_ids,
+            }
+        )
+    if overdue_rows:
+        operational_alerts.append(
+            {
+                "code": "pending_settlement_overdue",
+                "severity": "critical",
+                "title": "Pending settlement overdue",
+                "message": f"{len(overdue_rows)} settlement line(s) are past their settlement date.",
+                "related_line_ids": [str(row.get("line_id") or "") for row in overdue_rows],
+            }
+        )
+    if settlement_rows and not settlement_amounts_complete:
+        operational_alerts.append(
+            {
+                "code": "pending_settlement_fx_unavailable",
+                "severity": "warning",
+                "title": "Settlement exposure conversion unavailable",
+                "message": "At least one pending settlement line cannot be converted to base currency.",
+                "related_line_ids": [
+                    str(row.get("line_id") or "")
+                    for row in settlement_rows
+                    if safe_float(row.get("settlement_amount_base")) is None
+                ],
+            }
+        )
+
+    return {
+        "operational_summary": {
+            "uncovered_obligation_count": len(uncovered_rows),
+            "uncovered_underlying_quantity": uncovered_quantity,
+            "expiry_buckets": expiry_buckets,
+            "assignment_exposure": {
+                "obligation_count": len(assignment_rows),
+                "open_contract_quantity": sum(
+                    safe_float(row.get("open_contract_quantity")) or 0.0
+                    for row in assignment_rows
+                ),
+                "deliverable_underlying_quantity": sum(
+                    safe_float(row.get("required_underlying_quantity")) or 0.0
+                    for row in assignment_rows
+                ),
+                "uncovered_underlying_quantity": sum(
+                    safe_float(row.get("uncovered_underlying_quantity")) or 0.0
+                    for row in assignment_rows
+                ),
+                "strike_notional_base": (
+                    sum(value for value in assignment_notional_values if value is not None)
+                    if assignment_notional_complete
+                    else None
+                ),
+            },
+            "settlement_exposure": {
+                "pending_line_count": len(settlement_rows),
+                "receivable_base": receivable_base if settlement_amounts_complete else None,
+                "payable_base": payable_base if settlement_amounts_complete else None,
+                "net_base": (
+                    receivable_base - payable_base
+                    if settlement_amounts_complete
+                    else None
+                ),
+                "earliest_settlement_date": settlement_dates[0] if settlement_dates else None,
+                "overdue_line_count": len(overdue_rows),
+                "unavailable_base_line_count": sum(
+                    value is None for value in settlement_amounts
+                ),
+            },
+        },
+        "operational_alerts": operational_alerts,
+    }
+
+
 def build_materialized_holding_rows(
     *,
     account_instrument_buckets: list[dict[str, object]],
+    option_obligations: list[dict[str, object]] | None = None,
     cash_balances: list[dict[str, object]] | None = None,
     pending_balances: list[dict[str, object]] | None = None,
     as_of_date: date,
@@ -696,7 +1326,17 @@ def build_materialized_holding_rows(
             direct_fx_instruments=direct_fx_instruments,
             instrument_detail_cache=instrument_detail_cache,
         )
-        detail = instrument_detail_cache_get(instrument_id, instrument_detail_cache)
+        instrument_ref = (
+            bucket.get("instrument_ref")
+            if isinstance(bucket.get("instrument_ref"), dict)
+            else None
+        )
+        event_valued = is_event_valued_instrument_ref(instrument_ref)
+        detail = (
+            None
+            if event_valued
+            else instrument_detail_cache_get(instrument_id, instrument_detail_cache)
+        )
         price_point = (
             select_market_point_as_of(
                 detail=detail,
@@ -732,37 +1372,43 @@ def build_materialized_holding_rows(
             else None
         )
         holding_start_date = parse_iso_date(bucket.get("holding_start_date"))
-        last_price = safe_float((price_point or {}).get("value"))
-        previous_price = safe_float((previous_price_point or {}).get("value"))
-        instrument_ref = (
-            bucket.get("instrument_ref")
-            if isinstance(bucket.get("instrument_ref"), dict)
-            else None
-        )
-        market_value = position_market_value(
+        quoted_price = safe_float((price_point or {}).get("value"))
+        last_price, market_value, event_valued = resolve_position_valuation(
             quantity=quantity,
-            last_price=last_price,
+            cost_basis=cost_basis,
             instrument_ref=instrument_ref,
-            price_scale=safe_float((price_point or {}).get("price_scale")),
+            quoted_price=quoted_price,
+            quoted_price_scale=safe_float((price_point or {}).get("price_scale")),
+            position_market_value=position_market_value,
         )
-        day_change_pct, day_change_value = holding_day_change(
-            quantity=quantity,
-            current_price=last_price,
-            previous_price=previous_price,
-            instrument_ref=instrument_ref,
-            current_return_price=safe_float((return_price_point or {}).get("value")),
-            previous_return_price=safe_float(
-                (previous_return_price_point or {}).get("value")
-            ),
-            price_scale=safe_float((price_point or {}).get("price_scale")),
-        )
-        converted_day_change_value, _ = convert_amount_on(
-            day_change_value,
-            as_of_date=as_of_date,
-            from_currency=currency,
-            to_currency=base_currency,
-            direct_fx_instruments=direct_fx_instruments,
-            instrument_detail_cache=instrument_detail_cache,
+        if event_valued:
+            # Carrying basis is a useful operational NAV input, but it is not
+            # an observed quote.  Never manufacture a zero daily return or a
+            # complete quote record for an event-valued asset.
+            day_change_pct, day_change_value = None, None
+        else:
+            day_change_pct, day_change_value = holding_day_change(
+                quantity=quantity,
+                current_price=last_price,
+                previous_price=safe_float((previous_price_point or {}).get("value")),
+                instrument_ref=instrument_ref,
+                current_return_price=safe_float((return_price_point or {}).get("value")),
+                previous_return_price=safe_float(
+                    (previous_return_price_point or {}).get("value")
+                ),
+                price_scale=safe_float((price_point or {}).get("price_scale")),
+            )
+        converted_day_change_value, _ = (
+            convert_amount_on(
+                day_change_value,
+                as_of_date=as_of_date,
+                from_currency=currency,
+                to_currency=base_currency,
+                direct_fx_instruments=direct_fx_instruments,
+                instrument_detail_cache=instrument_detail_cache,
+            )
+            if day_change_value is not None
+            else (None, False)
         )
         converted_market_value, _ = convert_amount_on(
             market_value,
@@ -789,15 +1435,44 @@ def build_materialized_holding_rows(
                 "cost_basis": cost_basis,
                 "cost_basis_base": converted_cost_basis,
                 "last_price": last_price,
-                "quote_as_of_date": (price_point or {}).get("as_of_date"),
-                "quote_metric_family": (price_point or {}).get("metric_family"),
-                "quote_basis": (price_point or {}).get("quote_basis"),
-                "quote_provider": (price_point or {}).get("provider"),
-                "quote_status": (price_point or {}).get("status"),
-                "quote_price_unit": (price_point or {}).get("price_unit"),
-                "quote_price_scale": (price_point or {}).get("price_scale"),
+                "quote_as_of_date": (
+                    None if event_valued else (price_point or {}).get("as_of_date")
+                ),
+                "quote_metric_family": (
+                    None if event_valued else (price_point or {}).get("metric_family")
+                ),
+                "quote_basis": (
+                    "carried_cost"
+                    if event_valued
+                    else (price_point or {}).get("quote_basis")
+                ),
+                "quote_provider": (
+                    None if event_valued else (price_point or {}).get("provider")
+                ),
+                "quote_status": (
+                    "event-cost" if event_valued and converted_market_value is not None
+                    else "unavailable" if event_valued
+                    else (price_point or {}).get("status")
+                ),
+                "quote_price_unit": (
+                    "per_unit"
+                    if event_valued
+                    else (price_point or {}).get("price_unit")
+                ),
+                "quote_price_scale": (
+                    1.0 if event_valued else (price_point or {}).get("price_scale")
+                ),
                 "market_value": market_value,
                 "market_value_base": converted_market_value,
+                "carrying_value": market_value if event_valued else None,
+                "carrying_value_base": converted_market_value if event_valued else None,
+                "fair_value": None if event_valued else market_value,
+                "fair_value_coverage_status": (
+                    "unavailable" if event_valued else "complete"
+                ),
+                "valuation_basis": "carried_cost" if event_valued else "market_quote",
+                "performance_eligible": not event_valued,
+                "risk_eligible": not event_valued,
                 "day_change_pct": day_change_pct,
                 "day_change_value": day_change_value,
                 "day_change_value_base": converted_day_change_value,
@@ -820,10 +1495,30 @@ def build_materialized_holding_rows(
                     else None
                 ),
                 "coverage_status": (
-                    "price-nav-fx" if converted_market_value is not None else "unpriced"
+                    "event-cost"
+                    if event_valued and converted_market_value is not None
+                    else "price-nav-fx"
+                    if converted_market_value is not None
+                    else "unpriced"
                 ),
             }
         )
+
+    rows.extend(
+        build_option_obligation_holding_rows(
+            option_obligations,
+            underlying_positions=account_instrument_buckets,
+            as_of_date=as_of_date,
+            base_currency=base_currency,
+            nav=nav,
+            normalize_currency=normalize_currency,
+            safe_float=safe_float,
+            convert_amount_on=convert_amount_on,
+            direct_fx_instruments=direct_fx_instruments,
+            instrument_detail_cache=instrument_detail_cache,
+            normalize_instrument=normalize_instrument,
+        )
+    )
 
     rows.extend(
         build_cash_rows(

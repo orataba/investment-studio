@@ -32,6 +32,12 @@ from portfolio_app.services import (
 
 
 def _write_store(store: dict[str, object]) -> None:
+    transactions = store.get("transactions")
+    if isinstance(transactions, list):
+        for transaction_sequence, transaction in enumerate(transactions, start=1):
+            if not isinstance(transaction, dict):
+                raise TypeError("Performance store transactions must be mappings.")
+            transaction["transaction_sequence"] = transaction_sequence
     portfolio_store.reset_store(store)
 
 
@@ -514,6 +520,14 @@ def test_seed_portfolio_performance_uses_external_boundary_flows(client):
     performance_payload = performance_response.json()
     summary = performance_payload["summary"]
     assert summary["latest_complete_as_of_date"] == "2026-04-15"
+    assert summary["performance_basis"] == "market_value"
+    assert summary["performance_label"] == "Total Portfolio Return"
+    assert summary["ordinary_sleeve_twr_status"] == "unavailable"
+    assert summary["ordinary_sleeve_twr_reason"] == (
+        "Sleeve boundary cash flows are not maintained as a cash subledger; "
+        "ordinary sleeve TWR is not derived by filtering total portfolio TWR."
+    )
+    assert summary["derivative_lifecycle_realized_pnl"] == pytest.approx(0.0)
     assert summary["external_cash_in"] == 50000.0
     assert summary["external_cash_out"] == 12000.0
     assert summary["net_external_inflow"] == 38000.0
@@ -2088,6 +2102,7 @@ def test_confirmed_later_purchase_starts_return_on_position_effective_day(
         transactions=[
             {
                 "transaction_id": "txn-0001",
+                "transaction_sequence": 1,
                 "portfolio_id": portfolio_id,
                 "transaction_type": "opening_balance",
                 "trade_date": "2026-01-01",
@@ -2106,6 +2121,7 @@ def test_confirmed_later_purchase_starts_return_on_position_effective_day(
             },
             {
                 "transaction_id": "txn-0002",
+                "transaction_sequence": 2,
                 "portfolio_id": portfolio_id,
                 "transaction_type": "buy",
                 "trade_date": "2026-01-01",
@@ -2167,6 +2183,11 @@ def test_confirmed_later_purchase_starts_return_on_position_effective_day(
     )
     assert pending_subscription["account_id"] == "cash-usd-main"
     assert pending_subscription["economic_instrument_id"] == instrument_id
+    assert pending_subscription["settlement_date"] == "2026-01-01"
+    assert pending_subscription["pending_until_date"] == "2026-01-02"
+    assert pending_subscription["pending_status"] == "settled_awaiting_position"
+    assert pending_subscription["settlement_amount"] == pytest.approx(100.0)
+    assert pending_subscription["settlement_amount_base"] == pytest.approx(100.0)
     assert pending_subscription["market_value_base"] == pytest.approx(100.0)
     assert pending_subscription["portfolio_weight"] == pytest.approx(1.0)
     assert pending_subscription["available_for_trading"] is False
@@ -7851,9 +7872,9 @@ def test_period_calculation_groups_use_unified_weekly_risk_basis_for_mixed_frequ
     payload = response.json()
     assert payload["summary"]["risk_calculation_frequency"] == "weekly"
     assert payload["summary"]["risk_frequency_status_label"] == "Weekly risk basis - mixed daily/weekly data"
-    assert payload["summary"]["risk_return_observation_count"] == 3
+    assert payload["summary"]["risk_return_observation_count"] == 2
     assert payload["summary"]["risk_annualization_periods_per_year"] == pytest.approx(
-        3 / 15 * period_metrics.DAYS_PER_YEAR
+        2 / 15 * period_metrics.DAYS_PER_YEAR
     )
     groups = {item["group_key"]: item for item in payload["groups"]}
 
@@ -7886,7 +7907,10 @@ def test_period_calculation_groups_use_unified_weekly_risk_basis_for_mixed_frequ
     )
 
     assert core_group["risk_calculation_frequency"] == "weekly"
-    assert core_group["risk_return_observation_count"] == 3
+    assert core_group["risk_return_observation_count"] == 2
+    assert core_group["risk_annualization_periods_per_year"] == pytest.approx(
+        2 / 15 * period_metrics.DAYS_PER_YEAR
+    )
     assert core_group["annualized_volatility"] is not None
     assert not isclose(core_group["annualized_volatility"], child_volatility, rel_tol=0.0, abs_tol=1e-12)
     assert isclose(core_group["total_pnl"], child_total_pnl, rel_tol=0.0, abs_tol=1e-12)

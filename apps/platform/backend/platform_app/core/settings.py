@@ -42,6 +42,8 @@ class Settings(BaseSettings):
     tushare_timeout_seconds: int = 30
     tushare_batch_max_workers: int = 4
     tushare_batch_timeout_seconds: int = 3600
+    csindex_api_url: str = "https://www.csindex.com.cn/csindex-home"
+    csindex_timeout_seconds: int = 30
 
     model_config = SettingsConfigDict(
         env_prefix="PORTFOLIO_OPS_PLATFORM_",
@@ -168,6 +170,14 @@ class Settings(BaseSettings):
         timeout = int(value)
         if timeout < 60 or timeout > 21600:
             raise ValueError("tushare_batch_timeout_seconds must be between 60 and 21600.")
+        return timeout
+
+    @field_validator("csindex_timeout_seconds", mode="before")
+    @classmethod
+    def _coerce_csindex_timeout(cls, value: object) -> int:
+        timeout = int(value)
+        if timeout < 1 or timeout > 300:
+            raise ValueError("csindex_timeout_seconds must be between 1 and 300.")
         return timeout
 
     @model_validator(mode="after")

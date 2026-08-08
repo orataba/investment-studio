@@ -191,6 +191,7 @@ def test_transaction_record_instrument_registry_fk_is_enforced(
         session.add(
             TransactionRecordModel(
                 transaction_id=valid_transaction_id,
+                transaction_sequence=1,
                 portfolio_id=portfolio_id,
                 transaction_type="buy",
                 trade_date=date(2026, 4, 21),
@@ -210,6 +211,7 @@ def test_transaction_record_instrument_registry_fk_is_enforced(
         session.add(
             TransactionRecordModel(
                 transaction_id=invalid_transaction_id,
+                transaction_sequence=2,
                 portfolio_id=portfolio_id,
                 transaction_type="buy",
                 trade_date=date(2026, 4, 21),

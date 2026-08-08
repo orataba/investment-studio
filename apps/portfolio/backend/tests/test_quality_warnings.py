@@ -9,9 +9,11 @@ def _trade(
     transaction_type: str,
     trade_date: str,
     quantity: float,
+    transaction_sequence: int,
 ) -> dict[str, object]:
     return {
         "transaction_id": transaction_id,
+        "transaction_sequence": transaction_sequence,
         "portfolio_id": "portfolio-1",
         "transaction_type": transaction_type,
         "trade_date": trade_date,
@@ -54,6 +56,7 @@ def test_equity_without_detected_corporate_action_has_no_generic_warning(monkeyp
                 transaction_type="buy",
                 trade_date="2026-05-01",
                 quantity=100,
+                transaction_sequence=1,
             )
         ],
     ) == []
@@ -81,6 +84,7 @@ def test_detected_corporate_action_warning_identifies_member_date_and_remedy(mon
                 transaction_type="buy",
                 trade_date="2026-06-01",
                 quantity=100,
+                transaction_sequence=1,
             )
         ],
     )
@@ -111,6 +115,7 @@ def test_non_equity_instruments_do_not_query_corporate_actions(monkeypatch) -> N
                     transaction_type="buy",
                     trade_date="2026-06-01",
                     quantity=100,
+                    transaction_sequence=1,
                 )
             ],
         )
@@ -141,6 +146,7 @@ def test_detected_action_before_first_purchase_does_not_warn(monkeypatch) -> Non
                     transaction_type="buy",
                     trade_date="2026-07-02",
                     quantity=100,
+                    transaction_sequence=1,
                 )
             ],
         )
@@ -166,12 +172,14 @@ def test_detected_action_after_position_is_closed_does_not_warn(monkeypatch) -> 
             transaction_type="buy",
             trade_date="2026-07-01",
             quantity=100,
+            transaction_sequence=1,
         ),
         _trade(
             transaction_id="sell-1",
             transaction_type="sell",
             trade_date="2026-07-05",
             quantity=100,
+            transaction_sequence=2,
         ),
     ]
 
@@ -204,12 +212,14 @@ def test_detected_action_uses_beginning_of_entitlement_day_position(monkeypatch)
             transaction_type="buy",
             trade_date="2026-07-01",
             quantity=100,
+            transaction_sequence=1,
         ),
         _trade(
             transaction_id="sell-1",
             transaction_type="sell",
             trade_date="2026-07-10",
             quantity=100,
+            transaction_sequence=2,
         ),
     ]
 
@@ -246,6 +256,7 @@ def test_detected_action_ignores_same_day_purchase(monkeypatch) -> None:
                     transaction_type="buy",
                     trade_date="2026-07-10",
                     quantity=100,
+                    transaction_sequence=1,
                 )
             ],
         )

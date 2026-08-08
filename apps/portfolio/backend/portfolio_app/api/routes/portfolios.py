@@ -42,7 +42,10 @@ def reorder_portfolio_records(payload: PortfolioReorderRequest) -> list[dict[str
 
 @router.post("/{portfolio_id}/copy")
 def copy_portfolio_record(portfolio_id: str) -> dict[str, object]:
-    record = copy_portfolio(portfolio_id)
+    try:
+        record = copy_portfolio(portfolio_id)
+    except ValueError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
     if record is None:
         raise HTTPException(status_code=404, detail="Portfolio not found")
     return record

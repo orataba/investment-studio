@@ -23,7 +23,15 @@ from portfolio_ops_instrument_core import (
 )
 
 
-AccountScopedInstrumentType = Literal["fund", "etf", "bond", "equity", "other"]
+AccountScopedInstrumentType = Literal[
+    "fund",
+    "etf",
+    "bond",
+    "equity",
+    "fcn",
+    "option",
+    "other",
+]
 AccountType = Literal["deposit_account", "securities_account"]
 CostBasisMethod = Literal["moving_average", "fifo"]
 SupportedCurrency = Literal["USD", "HKD", "CNY"]
@@ -33,6 +41,8 @@ DefaultTargetDimension = Literal["weight", "risk_budget"]
 TransactionCommandType = Literal[
     "buy",
     "sell",
+    "option_write",
+    "option_buy_to_close",
     "dividend",
     "dividend_reinvestment",
     "coupon",
@@ -44,9 +54,26 @@ TransactionCommandType = Literal[
     "deposit",
     "withdrawal",
     "fx_conversion",
+    "lifecycle_event",
     "opening_balance",
 ]
 TransactionType = TransactionCommandType | Literal["transfer_in", "transfer_out"]
+OptionAction = Literal[
+    "buy_to_open",
+    "sell_to_close",
+    "sell_to_open",
+    "buy_to_close",
+]
+LifecycleEventType = Literal[
+    "fcn_knock_in",
+    "fcn_knock_out",
+    "fcn_maturity",
+    "fcn_physical_settlement",
+    "option_long_expiry",
+    "option_long_exercise",
+    "option_writer_expiry",
+    "option_assignment",
+]
 POSITION_EFFECTIVE_COMMAND_TYPES = frozenset(
     {
         "buy",
@@ -85,6 +112,8 @@ PostingRole = Literal[
     "account_income_cash",
     "account_expense_cash",
     "corporate_action_position_adjustment",
+    "option_premium_liability",
+    "option_liability_release",
 ]
 PositionLotStatus = Literal["open", "closed"]
 PositionLotCloseReason = Literal["disposed", "transferred", "corporate_action"]
@@ -400,8 +429,12 @@ class AccountUpdateRequest(BaseModel):
 
 class TransactionRecord(BaseModel):
     transaction_id: str
+    transaction_sequence: int = Field(ge=1)
     portfolio_id: str
     transaction_type: TransactionType
+    # Read-only canonical meaning derived from the current persisted action.
+    option_action: OptionAction | None = None
+    lifecycle_event_type: LifecycleEventType | None = None
     flow_scope: FlowScope
     trade_date: date
     trade_time: str
@@ -438,6 +471,10 @@ class TransactionRecord(BaseModel):
     transfer_object_type: TransferObjectType | None = None
     transfer_group_id: str | None = None
     counterparty_account_id: str | None = None
+    source_system: str | None = None
+    external_reference: str | None = None
+    event_group_id: str | None = None
+    related_instrument_id: str | None = None
     net_cash_effect: float | None = None
     note: str | None = None
     created_at: str | None = None
@@ -485,6 +522,10 @@ class LedgerPostingRecord(BaseModel):
     pending_amount_delta: float | None = None
     quantity_delta: float | None = None
     cost_basis_delta: float | None = None
+    liability_amount_delta: float | None = None
+    realized_pnl_delta: float | None = None
+    option_action: OptionAction | None = None
+    obligation_id: str | None = None
     currency: str
     transfer_group_id: str | None = None
     note: str | None = None
@@ -500,6 +541,11 @@ class AccountPositionRecord(BaseModel):
     cost_basis: float | None = None
     last_price: float | None = None
     market_value: float | None = None
+    carrying_value: float | None = None
+    fair_value: float | None = None
+    fair_value_coverage_status: CoverageState
+    valuation_basis: Literal["market_quote", "carried_cost"]
+    coverage_status: str
     currency: str
     cost_basis_method: CostBasisMethod | None = None
     open_position_lot_count: int = 0
@@ -882,9 +928,14 @@ class DailySnapshotRecord(BaseModel):
     priced_position_count: int = 0
     market_observation_count: int = 0
     return_observation_eligible: bool = False
+    return_observation_exclusion_reason: str | None = None
     cash_balance: float | None = None
     pending_settlement: float | None = None
     position_market_value: float | None = None
+    derivative_liability_base: float | None = None
+    derivative_liability: float | None = None
+    open_option_obligation_count: int = 0
+    option_obligation_coverage_state: CoverageState = "complete"
     nav: float | None = None
     open_cost_basis: float | None = None
     unrealized_pnl: float | None = None
@@ -980,10 +1031,14 @@ class DailyPerformancePoint(BaseModel):
     stale_fx_flag: bool = False
     market_observation_count: int = 0
     return_observation_eligible: bool = False
+    return_observation_exclusion_reason: str | None = None
+    performance_basis: Literal["market_value", "operational_carrying_basis"] = "market_value"
+    performance_label: str = "Total Portfolio Return"
     beginning_nav: float | None = None
     ending_nav: float | None = None
     pending_settlement: float | None = None
     realized_pnl: float | None = None
+    derivative_lifecycle_realized_pnl: float | None = None
     unrealized_pnl: float | None = None
     income_cash_amount: float | None = None
     expense_cash_amount: float | None = None
@@ -1026,6 +1081,10 @@ class PerformanceSummary(BaseModel):
     risk_sample_count: int = 0
     risk_result_status: PortfolioRiskResultStatus = "unavailable"
     risk_unavailable_reason: str | None = None
+    performance_basis: Literal["market_value", "operational_carrying_basis"] = "market_value"
+    performance_label: str = "Total Portfolio Return"
+    ordinary_sleeve_twr_status: Literal["unavailable"] = "unavailable"
+    ordinary_sleeve_twr_reason: str
     latest_complete_as_of_date: date | None = None
     start_nav: float | None = None
     end_nav: float | None = None
@@ -1044,6 +1103,7 @@ class PerformanceSummary(BaseModel):
     absolute_change: float | None = None
     delta: float | None = None
     realized_pnl: float | None = None
+    derivative_lifecycle_realized_pnl: float | None = None
     unrealized_pnl: float | None = None
     income_cash_amount: float | None = None
     expense_cash_amount: float | None = None
@@ -1234,6 +1294,87 @@ class TaxonomyAssignmentRecord(BaseModel):
     status: str = "active"
 
 
+class AnalyticsScopePolicyRecord(BaseModel):
+    analytics_scope_policy_id: str
+    portfolio_id: str
+    taxonomy_id: str
+    taxonomy_node_id: str
+    risk_eligible: bool
+    risk_budget_eligible: bool
+    performance_scope: Literal[
+        "ordinary",
+        "derivative_lifecycle",
+        "operational_only",
+        "unallocated",
+    ]
+    valuation_basis: Literal[
+        "market",
+        "fair_value",
+        "carrying",
+        "event",
+        "obligation",
+        "cash",
+        "unknown",
+    ]
+    exclusion_reason: str | None = None
+    effective_from: date
+    effective_to: date | None = None
+    policy_version: int = Field(ge=1)
+    superseded_by_policy_id: str | None = None
+    created_at: str
+
+
+class AnalyticsScopePolicyUpsertRequest(BaseModel):
+    risk_eligible: bool
+    risk_budget_eligible: bool
+    performance_scope: Literal[
+        "ordinary",
+        "derivative_lifecycle",
+        "operational_only",
+        "unallocated",
+    ]
+    valuation_basis: Literal[
+        "market",
+        "fair_value",
+        "carrying",
+        "event",
+        "obligation",
+        "cash",
+        "unknown",
+    ]
+    exclusion_reason: str | None = None
+    effective_from: date
+    effective_to: date | None = None
+
+    @field_validator("exclusion_reason", mode="before")
+    @classmethod
+    def validate_optional_text(cls, value: object) -> object:
+        return _normalize_optional_text(value)
+
+    @model_validator(mode="after")
+    def validate_policy(self) -> "AnalyticsScopePolicyUpsertRequest":
+        if self.risk_budget_eligible and not self.risk_eligible:
+            raise ValueError("risk_budget_eligible requires risk_eligible.")
+        if self.effective_to is not None and self.effective_to < self.effective_from:
+            raise ValueError("effective_to must not precede effective_from.")
+        if (
+            not self.risk_eligible or self.performance_scope != "ordinary"
+        ) and not self.exclusion_reason:
+            raise ValueError("Excluded or non-ordinary policies require exclusion_reason.")
+        return self
+
+
+class AnalyticsTaxonomySelectionRecord(BaseModel):
+    analytics_taxonomy_selection_id: str
+    portfolio_id: str
+    taxonomy_id: str | None = None
+    effective_from: date
+    effective_to: date | None = None
+    selection_version: int = Field(ge=1)
+    superseded_by_selection_id: str | None = None
+    created_at: str
+
+
 class PortfolioInstrumentUniverseRecord(BaseModel):
     portfolio_id: str
     instrument_id: str
@@ -1309,6 +1450,13 @@ class TaxonomyCatalogResponse(BaseModel):
     taxonomies: list[TaxonomyRecord]
     taxonomy_nodes: list[TaxonomyNodeRecord]
     taxonomy_assignments: list[TaxonomyAssignmentRecord]
+    analytics_scope_policy_version: int = 0
+    analytics_scope_policies: list[AnalyticsScopePolicyRecord] = Field(
+        default_factory=list
+    )
+    analytics_taxonomy_selections: list[AnalyticsTaxonomySelectionRecord] = Field(
+        default_factory=list
+    )
     instrument_universe: list[PortfolioInstrumentUniverseRecord] = Field(default_factory=list)
     target_sets: list[TargetSetRecord] = Field(default_factory=list)
     target_set_lines: list[TargetSetLineRecord] = Field(default_factory=list)
@@ -1366,6 +1514,21 @@ class ResearchTopSleeveWeightBoundRecord(BaseModel):
         return self
 
 
+class ResearchBacktestRobustnessScenarioRecord(BaseModel):
+    scenario_id: str = Field(min_length=1, max_length=80)
+    label: str = Field(min_length=1, max_length=120)
+    cash_yield_annual: float = Field(ge=-1, le=1)
+    commission_bps: float = Field(ge=0, le=1000)
+    tax_bps: float = Field(ge=0, le=1000)
+    slippage_bps: float = Field(ge=0, le=1000)
+    implementation_delay_days: int = Field(ge=0, le=30)
+
+    @field_validator("scenario_id", "label", mode="before")
+    @classmethod
+    def validate_required_text(cls, value: object) -> object:
+        return _normalize_required_text(value)
+
+
 class ResearchSettingsRecord(BaseModel):
     portfolio_id: str
     planning_taxonomy_id: str | None = None
@@ -1387,6 +1550,16 @@ class ResearchSettingsRecord(BaseModel):
     top_sleeve_weight_bounds: list[ResearchTopSleeveWeightBoundRecord] = Field(default_factory=list)
     backtest_rebalance_frequency: ResearchBacktestRebalanceFrequency = "1m"
     backtest_benchmark_instrument_id: str | None = None
+    backtest_cash_yield_annual: float = Field(default=0.02, ge=-1, le=1)
+    backtest_commission_bps: float = Field(default=2, ge=0, le=1000)
+    backtest_tax_bps: float = Field(default=10, ge=0, le=1000)
+    backtest_slippage_bps: float = Field(default=5, ge=0, le=1000)
+    backtest_implementation_delay_days: int = Field(default=1, ge=0, le=30)
+    backtest_robustness_scenarios: list[
+        ResearchBacktestRobustnessScenarioRecord
+    ] = Field(default_factory=list)
+    backtest_walk_forward_training_months: int = Field(default=24, ge=1, le=120)
+    backtest_walk_forward_test_months: int = Field(default=6, ge=1, le=60)
     notes: str | None = None
     updated_at: str | None = None
 
@@ -1415,6 +1588,16 @@ class ResearchSettingsUpdateRequest(BaseModel):
     top_sleeve_weight_bounds: list[ResearchTopSleeveWeightBoundRecord] | None = None
     backtest_rebalance_frequency: ResearchBacktestRebalanceFrequency = "1m"
     backtest_benchmark_instrument_id: str | None = None
+    backtest_cash_yield_annual: float = Field(default=0.02, ge=-1, le=1)
+    backtest_commission_bps: float = Field(default=2, ge=0, le=1000)
+    backtest_tax_bps: float = Field(default=10, ge=0, le=1000)
+    backtest_slippage_bps: float = Field(default=5, ge=0, le=1000)
+    backtest_implementation_delay_days: int = Field(default=1, ge=0, le=30)
+    backtest_robustness_scenarios: list[
+        ResearchBacktestRobustnessScenarioRecord
+    ] | None = None
+    backtest_walk_forward_training_months: int = Field(default=24, ge=1, le=120)
+    backtest_walk_forward_test_months: int = Field(default=6, ge=1, le=60)
     notes: str | None = None
 
     @field_validator("lookback_days")
@@ -1442,6 +1625,11 @@ class ResearchSettingsUpdateRequest(BaseModel):
 
     @model_validator(mode="after")
     def validate_research_settings(self) -> "ResearchSettingsUpdateRequest":
+        scenario_ids = [
+            scenario.scenario_id for scenario in self.backtest_robustness_scenarios or []
+        ]
+        if len(scenario_ids) != len(set(scenario_ids)):
+            raise ValueError("backtest robustness scenario_id values must be unique.")
         if self.as_of_mode == "pinned" and self.as_of_date is None:
             raise ValueError("pinned research mode requires as_of_date.")
         if self.capital_mode == "unit_notional":
@@ -1738,6 +1926,72 @@ class ResearchBacktestSleevePointRecord(BaseModel):
     sleeves: list[ResearchBacktestSleeveValueRecord] = Field(default_factory=list)
 
 
+class ResearchBacktestTargetWeightRecord(BaseModel):
+    instrument_id: str
+    target_weight: float
+    top_sleeve_id: str | None = None
+    top_sleeve_label: str
+    top_sleeve_path: str | None = None
+    first_usable_observation_date: str | None = None
+
+
+class ResearchBacktestExecutionRecord(BaseModel):
+    decision_date: str
+    scheduled_execution_date: str
+    actual_execution_date: str
+    taxonomy_configuration_version: int | None = None
+    taxonomy_configuration_effective_from: str | None = None
+    target_weights: list[ResearchBacktestTargetWeightRecord] = Field(default_factory=list)
+    cash_target_weight: float
+    risky_buy_turnover: float
+    risky_sell_turnover: float
+    cash_leg_turnover: float
+    one_way_turnover: float
+    commission_cost: float
+    tax_cost: float
+    slippage_cost: float
+    total_cost: float
+    nav_before_execution: float
+    nav_after_execution: float
+
+
+class ResearchBacktestContributionReconciliationRecord(BaseModel):
+    date: str
+    nav_change: float
+    linked_contribution: float
+    residual: float
+    execution_cost_contribution: float
+
+
+class ResearchBacktestMethodologyRecord(BaseModel):
+    name: str
+    point_in_time_universe: bool
+    point_in_time_taxonomy: bool
+    decision_rule: str
+    execution_rule: str
+    cash_return_rule: str
+    cost_rule: str
+    contribution_linking: str
+    assumptions: dict[str, float | int] = Field(default_factory=dict)
+
+
+class ResearchBacktestSkippedRebalanceRecord(BaseModel):
+    date: str
+    reason: str
+
+
+class ResearchBacktestPointInTimeCoverageRecord(BaseModel):
+    status: Literal["complete", "partial", "unavailable"]
+    decision_count: int = 0
+    first_decision_date: str | None = None
+    last_decision_date: str | None = None
+    configuration_versions_used: list[int] = Field(default_factory=list)
+    historical_instrument_count: int = 0
+    first_usable_observation_by_instrument: dict[str, str] = Field(default_factory=dict)
+    skipped_rebalances: list[ResearchBacktestSkippedRebalanceRecord] = Field(default_factory=list)
+    unavailable_reason: str | None = None
+
+
 class ResearchBacktestMetricsRecord(BaseModel):
     start_date: str | None = None
     end_date: str | None = None
@@ -1759,6 +2013,48 @@ class ResearchBacktestMetricsRecord(BaseModel):
     calmar_ratio: float | None = None
 
 
+class ResearchBacktestRobustnessResultRecord(BaseModel):
+    scenario_id: str
+    label: str
+    cash_yield_annual: float
+    commission_bps: float
+    tax_bps: float
+    slippage_bps: float
+    implementation_delay_days: int
+    metrics: ResearchBacktestMetricsRecord | None = None
+    period_return_delta: float | None = None
+    ending_value: float | None = None
+    total_turnover: float | None = None
+    total_cost: float | None = None
+    warnings: list[str] = Field(default_factory=list)
+
+
+class ResearchBacktestWalkForwardWindowRecord(BaseModel):
+    training_start_date: str
+    training_end_date: str
+    test_start_date: str
+    test_end_date: str
+    configuration_versions_used: list[int] = Field(default_factory=list)
+    points: list[ResearchBacktestPointRecord] = Field(default_factory=list)
+    metrics: ResearchBacktestMetricsRecord | None = None
+    available: bool
+    unavailable_reason: str | None = None
+
+
+class ResearchBacktestWalkForwardRecord(BaseModel):
+    validation_method: Literal["rolling_temporal_holdout"] = "rolling_temporal_holdout"
+    parameter_selection: Literal["fixed_point_in_time_policy"] = "fixed_point_in_time_policy"
+    parameter_optimization: bool = False
+    methodology_note: str | None = None
+    available: bool
+    unavailable_reason: str | None = None
+    training_months: int
+    test_months: int
+    windows: list[ResearchBacktestWalkForwardWindowRecord] = Field(default_factory=list)
+    oos_points: list[ResearchBacktestPointRecord] = Field(default_factory=list)
+    oos_metrics: ResearchBacktestMetricsRecord | None = None
+
+
 class ResearchBacktestRecord(BaseModel):
     rebalance_frequency: ResearchBacktestRebalanceFrequency = "1m"
     common_history_start_date: str | None = None
@@ -1769,6 +2065,18 @@ class ResearchBacktestRecord(BaseModel):
     metrics: ResearchBacktestMetricsRecord | None = None
     top_sleeve_weight_points: list[ResearchBacktestSleevePointRecord] = Field(default_factory=list)
     top_sleeve_contribution_points: list[ResearchBacktestSleevePointRecord] = Field(default_factory=list)
+    contribution_reconciliation_points: list[
+        ResearchBacktestContributionReconciliationRecord
+    ] = Field(default_factory=list)
+    execution_records: list[ResearchBacktestExecutionRecord] = Field(default_factory=list)
+    total_turnover: float = 0.0
+    total_cost: float = 0.0
+    methodology: ResearchBacktestMethodologyRecord | None = None
+    point_in_time_coverage: ResearchBacktestPointInTimeCoverageRecord | None = None
+    robustness_results: list[ResearchBacktestRobustnessResultRecord] = Field(
+        default_factory=list
+    )
+    walk_forward: ResearchBacktestWalkForwardRecord | None = None
     warnings: list[str] = Field(default_factory=list)
 
     @field_validator("lookback_days")
@@ -1893,6 +2201,7 @@ class ResearchArtifactContentResponse(BaseModel):
 
 class DefaultPlanningTaxonomyUpdateRequest(BaseModel):
     taxonomy_id: str | None = None
+    effective_from: date
 
     @field_validator("taxonomy_id", mode="before")
     @classmethod
@@ -1906,6 +2215,7 @@ class DefaultPlanningTaxonomyResponse(BaseModel):
 
 
 class TaxonomyCreateRequest(BaseModel):
+    effective_from: date
     name: str = Field(min_length=1)
     taxonomy_type: str = "custom"
     purpose: str | None = None
@@ -1936,6 +2246,7 @@ class TaxonomyCreateRequest(BaseModel):
 
 
 class TaxonomyNodeCreateRequest(BaseModel):
+    effective_from: date
     node_name: str = Field(min_length=1)
     node_code: str | None = None
     parent_taxonomy_node_id: str | None = None
@@ -1956,6 +2267,7 @@ class TaxonomyNodeCreateRequest(BaseModel):
 
 
 class TaxonomyUpdateRequest(BaseModel):
+    effective_from: date
     name: str | None = None
     taxonomy_type: str | None = None
     purpose: str | None = None
@@ -1984,6 +2296,7 @@ class TaxonomyUpdateRequest(BaseModel):
 
 
 class TaxonomyNodeUpdateRequest(BaseModel):
+    effective_from: date
     node_name: str | None = None
     node_code: str | None = None
     parent_taxonomy_node_id: str | None = None
@@ -2005,6 +2318,7 @@ class TaxonomyNodeUpdateRequest(BaseModel):
 
 
 class TaxonomyAssignmentCreateRequest(BaseModel):
+    effective_from: date
     target_scope: TaxonomyAssignmentScope
     target_entity_id: str = Field(min_length=1)
     taxonomy_node_id: str = Field(min_length=1)
@@ -2017,6 +2331,7 @@ class TaxonomyAssignmentCreateRequest(BaseModel):
 
 
 class TaxonomyAssignmentUpdateRequest(BaseModel):
+    effective_from: date
     taxonomy_node_id: str | None = None
     status: str | None = None
 
@@ -2076,6 +2391,7 @@ class TargetSetLineInput(BaseModel):
 
 
 class TargetSetCreateRequest(BaseModel):
+    effective_from: date
     comparator_taxonomy_node_id: str | None = None
     target_set_type: TargetSetType
     name: str = Field(min_length=1)
@@ -2105,6 +2421,7 @@ class TargetSetCreateRequest(BaseModel):
 
 
 class TargetSetUpdateRequest(BaseModel):
+    effective_from: date
     name: str | None = None
     weight_enabled: bool | None = None
     risk_budget_enabled: bool | None = None
@@ -2826,6 +3143,9 @@ class AccountWorkspaceAccount(BaseModel):
     derived_cash_balance_base: float | None = None
     pending_settlement: float = 0.0
     pending_settlement_base: float | None = None
+    derivative_liability: float = 0.0
+    derivative_liability_base: float | None = None
+    open_option_obligation_count: int = 0
     account_value_base: float | None = None
     valuation_coverage_state: CoverageState = "complete"
     valuation_missing_components: list[str] = Field(default_factory=list)
@@ -2843,6 +3163,8 @@ class AccountsWorkspaceSummary(BaseModel):
     valuation_coverage_state: CoverageState = "complete"
     valued_account_count: int = 0
     unvalued_account_count: int = 0
+    open_option_obligation_count: int = 0
+    derivative_liability_base: float | None = None
 
 
 class AccountsWorkspaceResponse(BaseModel):
@@ -2854,6 +3176,7 @@ class AccountsWorkspaceResponse(BaseModel):
     accounts: list[AccountWorkspaceAccount]
     ledger_postings: list[LedgerPostingRecord]
     positions: list[AccountPositionRecord]
+    option_obligations: list[dict[str, object]] = Field(default_factory=list)
     linked_transactions_summary: TransactionListSummary | None = None
     linked_transactions: list[TransactionRecord] = Field(default_factory=list)
 
@@ -2863,6 +3186,8 @@ class LedgerPostingListSummary(BaseModel):
     cash_posting_count: int
     position_posting_count: int
     pending_posting_count: int = 0
+    liability_posting_count: int = 0
+    option_realized_pnl_posting_count: int = 0
 
 
 class LedgerPostingListResponse(BaseModel):
@@ -2875,6 +3200,7 @@ class TransactionCreateRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     transaction_type: TransactionCommandType
+    lifecycle_event_type: LifecycleEventType | None = None
     trade_date: date
     trade_time: str | None = None
     settlement_date: date | None = None
@@ -2894,6 +3220,10 @@ class TransactionCreateRequest(BaseModel):
     taxes: Decimal = Field(default=Decimal("0"), ge=0, lt=Decimal("1e20"))
     currency: str = Field(min_length=1, max_length=8)
     counterparty_account_id: str | None = None
+    source_system: str | None = Field(default=None, max_length=100)
+    external_reference: str | None = Field(default=None, max_length=200)
+    event_group_id: str | None = Field(default=None, max_length=200)
+    related_instrument_id: str | None = Field(default=None, max_length=200)
     note: str | None = None
 
     @field_validator("currency", mode="before")
@@ -2920,6 +3250,21 @@ class TransactionCreateRequest(BaseModel):
             except ValueError as exc:
                 raise ValueError("trade_time must use HH:MM format.") from exc
             return f"{parsed.hour:02d}:{parsed.minute:02d}"
+        return value
+
+    @field_validator(
+        "source_system",
+        "external_reference",
+        "event_group_id",
+        "related_instrument_id",
+        mode="before",
+    )
+    @classmethod
+    def normalize_source_identity(cls, value: object) -> object:
+        if value is None:
+            return None
+        if isinstance(value, str):
+            return value.strip() or None
         return value
 
     @field_validator("quantity", mode="before")
@@ -2962,6 +3307,78 @@ class TransactionCreateRequest(BaseModel):
         if self.acquisition_date is not None and self.acquisition_date > self.trade_date:
             raise ValueError("acquisition_date must not be later than trade_date.")
 
+        if self.external_reference is not None and self.source_system is None:
+            raise ValueError("external_reference requires source_system.")
+
+        lifecycle_transaction_types: dict[str, set[str]] = {
+            "fcn_knock_in": {"lifecycle_event"},
+            "fcn_knock_out": {"maturity_redemption"},
+            "fcn_maturity": {"maturity_redemption"},
+            "fcn_physical_settlement": {"maturity_redemption"},
+            "option_long_expiry": {"maturity_redemption"},
+            "option_long_exercise": {"maturity_redemption"},
+            "option_writer_expiry": {"lifecycle_event"},
+            "option_assignment": {"lifecycle_event"},
+        }
+        if self.lifecycle_event_type is not None:
+            allowed_transaction_types = lifecycle_transaction_types[
+                self.lifecycle_event_type
+            ]
+            if self.transaction_type not in allowed_transaction_types:
+                raise ValueError(
+                    f"{self.lifecycle_event_type} requires transaction_type "
+                    + " or ".join(sorted(allowed_transaction_types))
+                    + "."
+                )
+        elif self.transaction_type == "lifecycle_event":
+            raise ValueError("lifecycle_event requires lifecycle_event_type.")
+
+        physical_lifecycle_types = {
+            "fcn_physical_settlement",
+            "option_long_exercise",
+            "option_assignment",
+        }
+        if self.lifecycle_event_type in physical_lifecycle_types:
+            if not self.event_group_id:
+                raise ValueError(
+                    "Physical settlement and assignment require event_group_id."
+                )
+        elif self.event_group_id is not None and self.transaction_type not in {
+            "buy",
+            "sell",
+        }:
+            raise ValueError(
+                "event_group_id is reserved for physical lifecycle facts and their "
+                "linked buy or sell."
+            )
+
+        if self.transaction_type == "lifecycle_event":
+            if not self.instrument_id:
+                raise ValueError("Lifecycle events require instrument_id.")
+            writer_close_event = self.lifecycle_event_type in {
+                "option_writer_expiry",
+                "option_assignment",
+            }
+            if writer_close_event:
+                if self.quantity is None or self.quantity <= 0:
+                    raise ValueError(
+                        "Writer expiry and assignment require positive quantity."
+                    )
+                if not self.related_instrument_id:
+                    raise ValueError(
+                        "Writer expiry and assignment require related_instrument_id."
+                    )
+            elif self.quantity is not None:
+                raise ValueError("This lifecycle event must not carry quantity.")
+            if self.price is not None:
+                raise ValueError("Lifecycle events must not carry price.")
+            if self.gross_amount != 0 or self.fees != 0 or self.taxes != 0:
+                raise ValueError("Lifecycle events must not carry cash amounts.")
+            if self.settlement_cash_account_id is not None:
+                raise ValueError(
+                    "Non-economic lifecycle events must not carry settlement_cash_account_id."
+                )
+
         if self.transaction_type in {"buy", "sell"}:
             if not self.instrument_id:
                 raise ValueError("Security transactions require instrument_id.")
@@ -2969,6 +3386,22 @@ class TransactionCreateRequest(BaseModel):
                 raise ValueError("Security transactions require positive quantity.")
             if self.price is None or self.price <= 0:
                 raise ValueError("Security transactions require positive price.")
+
+        if self.transaction_type in {"option_write", "option_buy_to_close"}:
+            if not self.instrument_id:
+                raise ValueError("Option writer transactions require instrument_id.")
+            if not self.related_instrument_id:
+                raise ValueError(
+                    "Option writer transactions require related_instrument_id."
+                )
+            if self.quantity is None or self.quantity <= 0:
+                raise ValueError(
+                    "Option writer transactions require positive covered quantity."
+                )
+            if self.gross_amount <= 0:
+                raise ValueError("Option writer transactions require positive gross_amount.")
+            if self.price is not None and self.price <= 0:
+                raise ValueError("Option writer price must be positive when provided.")
 
         if self.transaction_type in {"dividend", "coupon"}:
             if not self.instrument_id:
@@ -3016,6 +3449,15 @@ class TransactionCreateRequest(BaseModel):
                 raise ValueError("Maturity redemption requires positive quantity.")
             if self.price is not None:
                 raise ValueError("Maturity redemption must not carry price.")
+            if self.lifecycle_event_type in {
+                "fcn_physical_settlement",
+                "option_long_expiry",
+                "option_long_exercise",
+            } and self.gross_amount != 0:
+                raise ValueError(
+                    "Physical FCN settlement and long option closure must have "
+                    "zero gross_amount."
+                )
 
         if self.transaction_type in {"deposit", "withdrawal"}:
             if self.instrument_id is not None:
@@ -3176,6 +3618,47 @@ class TransactionBatchResponse(BaseModel):
     transactions: list[TransactionRecord]
 
 
+class TransactionCsvPreviewRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    csv_text: str = Field(min_length=1)
+    default_source_system: str | None = Field(default=None, max_length=100)
+
+    @field_validator("default_source_system", mode="before")
+    @classmethod
+    def normalize_default_source_system(cls, value: object) -> object:
+        return _normalize_optional_text(value)
+
+
+class TransactionCsvImportRequest(TransactionCsvPreviewRequest):
+    preview_digest: str = Field(min_length=64, max_length=64)
+
+
+class TransactionCsvPreviewRow(BaseModel):
+    row_number: int = Field(ge=2)
+    transaction: TransactionCreateRequest | None = None
+    errors: list[str] = Field(default_factory=list)
+
+
+class TransactionCsvPreviewResponse(BaseModel):
+    portfolio_id: str
+    preview_digest: str
+    headers: list[str]
+    row_count: int
+    valid_count: int
+    error_count: int
+    warnings: list[str] = Field(default_factory=list)
+    batch_errors: list[str] = Field(default_factory=list)
+    rows: list[TransactionCsvPreviewRow]
+
+
+class TransactionCsvImportResponse(BaseModel):
+    portfolio_id: str
+    preview_digest: str
+    created_count: int
+    transactions: list[TransactionRecord]
+
+
 class TransactionDeleteRequest(BaseModel):
     expected_row_versions: dict[str, int] = Field(min_length=1)
 
@@ -3199,3 +3682,4 @@ class TransactionDeleteResponse(BaseModel):
     deleted_count: int
     deleted_transaction_ids: list[str]
     transfer_group_id: str | None = None
+    event_group_id: str | None = None

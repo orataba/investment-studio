@@ -84,8 +84,18 @@ GIPS-informed 绩效口径以 fair value、外部现金流中性化和几何链�
 本项目采用：
 
 - 账户级成本法只影响 `Cost Basis`、`Avg Cost`、realized capital gain、unrealized P&L 和 lot 展示；
-- 组合级 TWR、annualized TWR、drawdown、IRR/MWROR 的 fair-value calculation 不读取 FIFO/MA 作为收益率分支；
+- 公允价值覆盖完整时，组合级 TWR、annualized TWR、drawdown、IRR/MWROR 的 fair-value calculation 不读取 FIFO/MA 作为收益率分支；
 - 修改账户成本法时，系统从 transaction facts 重算成本相关 read models，而不是保留历史算法兼容层。
+
+FCN、长期权和期权卖方义务当前采用明确的 event-accounting boundary，不构成公允价值例外：
+
+- 没有可靠 fair value 的 FCN/长期权只按 remaining transaction basis carried；written option liability 只按 remaining premium basis carried；
+- event purchase charges 当日 expense，writer premium 在 sell-to-open 时先建立等额 liability，只在 close/expiry/assignment 释放时确认 option P&L；
+- 总 NAV 为了资产负债表对账仍包含这些 carrying amounts，内部也可以产生 flow-neutral operational/carrying-basis daily return；
+- 该 daily return 必须标记为 return-ineligible，不进入正式 TWR chain、annualized return、volatility、Sharpe、drawdown、benchmark compare 或 risk budget；
+- Holdings 的 event day change、fair value 和 quote identity 必须为空，priced coverage 不包含 event rows；Risk 只对 effective-dated policy 明确标记 `risk_eligible=true` 的 modeled market sleeve 建模，并披露 excluded carrying value/liability、coverage ratio 和 excluded rows；
+- 因此任何包含 material event-valued asset 或 derivative liability 的 total-portfolio result 都不能命名为完整 fair-value 或 GIPS-informed TWR。Taxonomy policy 可以形成独立 scoped risk object，但不能把 total portfolio 的估值缺口消除，也不能通过把未知收益填成零改变这一判断。
+- 当前没有逐日 sleeve cash subledger，ordinary-sleeve TWR 明确 unavailable；从 total operational return 中过滤 derivative rows 不是可接受的 performance scope 计算。
 
 Performance `Calculation` 使用 period bridge：`Initial Value + Net External Flow + Period P&L = Final Value`。其中 capital gain 使用 fair-value period basis：显式区间按 `start_date` EOD 市值重置期初持仓，只重放 `(start_date, end_date]` 内交易，期末仍持有部分形成 unrealized gain。这个拆分服务绩效解释，不读取 FIFO / moving average 的 book cost 分支。
 Calculation 的 group axis 包括 instrument、instrument type、currency、account 与 planning taxonomy；TWR 和 contribution 必须在后端按目标轴从 daily slices 计算，不能在前端简单汇总 instrument rows。Group daily return 必须使用组内 `total_pnl / (beginning_value + period capital flow in)`，taxonomy regroup 与 calculation detail 聚合也必须保留同一 capital-flow denominator。taxonomy period view 优先使用区间期末 assignment；期末已清仓且期末不再有 active assignment 的 instrument，使用其区间内有效 assignment 承接历史 P&L，避免把 closed-position attribution 误列为 Unassigned。
@@ -100,6 +110,8 @@ Risk / Research 的风险统计也必须保持估值频率一致性：1M / 3M �
 
 Research target solve 不允许把不可解问题包装成正常 target：多成员 scope 必须有完整有效的 `SAA` 或 `TAA` target set；`sample_covariance` 使用同一组完整对齐收益的样本估计量 `n - 1`；risk-budget 求解在完整有效收益不足、目标加总错误、missing-return policy 失败、求解误差超过 `1e-4` share units 或 signed risk share 为负时必须失败或显式 unavailable，不回退到目标权重、等权或 alternate contribution mode。
 
+Research 的历史结果属于 point-in-time target-policy simulation，不是实际客户组合绩效，也不是 GIPS presentation。每个决策日使用当时生效的 taxonomy configuration、assignments、targets 与当时可见市场数据；模拟现金收益，并从 NAV 扣除配置的 commission、sell-side tax 和 slippage，在 EOD implementation boundary 后的首个共同 observation 假设完整成交。Robustness scenarios 与 rolling temporal holdout OOS 窗口用于揭示摩擦敏感性和时间外推稳定性；holdout 使用固定 policy，不在 training window 内重新拟合参数，因此不等同于 walk-forward optimization。当前没有 order rejection、partial fill、流动性容量或 market-impact 模型。任何报告都必须同时展示这些假设、point-in-time coverage、skipped rebalances、execution records 和 contribution reconciliation，不能把模拟曲线描述为已实现收益或完整执行可行性证明。
+
 ### 2.6 风险统计必须来自收益序列
 
 GIPS 的 ex-post risk disclosure 与行业实践都要求风险统计基于收益率序列，而不是资产规模路径。
@@ -109,6 +121,7 @@ GIPS 的 ex-post risk disclosure 与行业实践都要求风险统计基于收�
 - portfolio realized volatility、rolling volatility 默认使用 `daily_twr` simple returns 做标准差并年化；Sharpe、Sortino 作为 additional risk measures，使用同一区间、同一 periodicity 的 arithmetic mean excess return 年化后除以年化 volatility / downside volatility（MVP `r_f = 0`）；
 - 若输出正式 GIPS Composite / Pooled Fund Report 风格披露，3-year ex-post standard deviation 必须使用 36 个 monthly returns，组合与 benchmark 必须使用同一 periodicity 与同一计算方法；
 - 非市场观察日的 stale-price carry-forward 0 return 不进入风险样本；
+- event-valued carrying asset、premium-basis liability 和 derivative lifecycle activity 对应的 operational return 不进入风险样本；
 - `NAV_t` 只用于资产规模和现金流调节，不作为组合级波动率输入。
 - 手动 benchmark 对比只有在币种一致、起点锚点存在且 benchmark 覆盖组合 eligible return dates 时才输出；当前未接入后端 benchmark FX conversion / coverage reporting，不能用 stale-filled 或 raw-currency 序列替代。
 
@@ -145,6 +158,8 @@ GIPS 的 ex-post risk disclosure 与行业实践都要求风险统计基于收�
 | 风险样本 | `return_observation_eligible` 控制 realized risk 的有效收益观察 |
 | 样本协方差 | Risk 页与 Research `sample_covariance` 使用 `n - 1` 样本估计 |
 | Research target solve | `_resolve_dimension_target_rows()` 校验完整 target set，`_solve_risk_budget_weights()` 在历史不足或求解失败时抛错 |
+| Scoped forward risk | effective-dated analytics selection/configuration/policy 只纳入 `risk_eligible=true` rows，并披露 excluded exposure 与 coverage；没有 eligible member 或 eligible matrix 不完整时 unavailable |
+| Research historical simulation | 每个 rebalance date point-in-time 重建 universe/taxonomy/targets，计入 cash yield、commission、sell tax、slippage 与 delay，输出 robustness、rolling temporal holdout OOS 和 contribution reconciliation；固定 policy，不声称 walk-forward optimization |
 | 物化读模型 | `PortfolioDailySnapshotModel` / holding snapshot / contribution slice |
 | 刷新治理 | `PortfolioCalculationStateModel.refresh_request_id` 对 stale 请求去重，刷新串行 claim；计算期间若收到新请求会再跑一轮 |
 | Source generation fence | snapshot 计算前、计算后与 publish 前核对源 generation；变化时丢弃并重试，不发布混合世代结果 |
@@ -187,5 +202,7 @@ GIPS 的 ex-post risk disclosure 与行业实践都要求风险统计基于收�
 - valuation / return / book-P&L / attribution coverage 是否保持分离；
 - materialized read path 和动态重建校验路径是否结果一致；
 - Research 是否拒绝缺失 target set、目标加总错误、历史不足或风险预算求解误差过大的 scope；
+- Research 历史模拟是否仍使用 point-in-time universe/taxonomy，完整披露现金收益、交易摩擦、延迟、robustness、walk-forward OOS 与尚未建模的成交限制；
+- scoped risk 是否披露 excluded carrying value/liability、coverage 与 excluded rows，且没有 eligible risky holding 时明确 unavailable；
 - `sample_covariance` 是否仍使用 `n - 1` 样本估计；
 - 文档中的 canonical 口径是否同步更新。

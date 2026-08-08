@@ -358,6 +358,32 @@ def _clear_forward_risk_fields(row: dict[str, object], *, cash: bool = False) ->
     row["forward_risk_status"] = "cash" if cash else "unavailable"
 
 
+def _forward_risk_scope_disclosure(
+    workspace: dict[str, object],
+    *,
+    calculation_frequency: CalculationFrequency,
+) -> dict[str, object]:
+    summary = (
+        workspace.get("analytics_scope_summary")
+        if isinstance(workspace.get("analytics_scope_summary"), dict)
+        else {}
+    )
+    return {
+        "scope_name": summary.get("scope_name") or "Modeled Market Sleeve",
+        "scope_policy_versions": list(summary.get("scope_policy_versions") or []),
+        "configuration_versions": list(summary.get("configuration_versions") or []),
+        "total_nav": summary.get("total_nav"),
+        "modeled_net_exposure": summary.get("modeled_net_exposure"),
+        "modeled_gross_exposure": summary.get("modeled_gross_exposure"),
+        "excluded_carrying_value": summary.get("excluded_carrying_value"),
+        "excluded_liability": summary.get("excluded_liability"),
+        "cash_unallocated_exposure": summary.get("cash_unallocated_exposure"),
+        "coverage_ratio": summary.get("coverage_ratio"),
+        "excluded_rows": list(summary.get("excluded_rows") or []),
+        "calculation_frequency": calculation_frequency,
+    }
+
+
 def enrich_holdings_forward_risk(
     workspace: dict[str, object],
     *,
@@ -376,32 +402,10 @@ def enrich_holdings_forward_risk(
 
     snapshot = portfolio_risk_model_snapshot(risk_policy, calculation_frequency=calculation_frequency)
     workspace["risk_policy"] = snapshot
-
-    risk_basis = (
-        workspace.get("risk_basis")
-        if isinstance(workspace.get("risk_basis"), dict)
-        else None
+    scope_disclosure = _forward_risk_scope_disclosure(
+        workspace,
+        calculation_frequency=calculation_frequency,
     )
-    risk_basis_coverage_state = (
-        str(risk_basis.get("coverage_state") or "").strip().lower()
-        if risk_basis is not None
-        else ""
-    )
-    if risk_basis_coverage_state and risk_basis_coverage_state != "complete":
-        for raw_row in rows:
-            if isinstance(raw_row, dict):
-                _clear_forward_risk_fields(raw_row)
-        workspace["forward_risk"] = {
-            "status": "unavailable",
-            "errors": [
-                str(
-                    risk_basis.get("status_label")
-                    or f"Forward RC requires a complete risk basis; got {risk_basis_coverage_state}."
-                )
-            ],
-            "risk_model": snapshot,
-        }
-        return workspace
 
     base_currency = str(workspace.get("base_currency") or "").strip().upper()
     if not base_currency:
@@ -412,6 +416,7 @@ def enrich_holdings_forward_risk(
             "status": "unavailable",
             "errors": ["Forward RC requires the portfolio base currency."],
             "risk_model": snapshot,
+            **scope_disclosure,
         }
         return workspace
 
@@ -422,9 +427,18 @@ def enrich_holdings_forward_risk(
             continue
         instrument_core = raw_row.get("instrument_core") if isinstance(raw_row.get("instrument_core"), dict) else {}
         instrument_currency = str(instrument_core.get("currency") or "").strip().upper()
-        weight = _safe_float(raw_row.get("allocation"))
         market_value = _safe_float(raw_row.get("market_value_base"))
-        has_exposure = abs(weight or 0.0) > 1e-12 or abs(market_value or 0.0) > 1e-9
+        has_exposure = abs(market_value or 0.0) > 1e-9
+        if raw_row.get("risk_eligible") is not True:
+            _clear_forward_risk_fields(raw_row)
+            raw_row["forward_risk_status"] = (
+                "pending_settlement"
+                if is_pending_monetary_holding(raw_row)
+                else "cash_unallocated"
+                if _holding_row_is_cash(raw_row)
+                else "policy_excluded"
+            )
+            continue
         if is_pending_monetary_holding(raw_row):
             _clear_forward_risk_fields(raw_row)
             raw_row["forward_risk_status"] = "pending_settlement"
@@ -454,10 +468,6 @@ def enrich_holdings_forward_risk(
                 f"{instrument_currency} while the portfolio base currency is {base_currency}."
             )
             continue
-        if weight is None:
-            _clear_forward_risk_fields(raw_row)
-            errors.append(f"Forward RC requires a current portfolio weight for {_row_label(raw_row)}.")
-            continue
         try:
             series, period_starts = _return_series_with_periods(raw_row)
         except ValueError as error:
@@ -477,23 +487,40 @@ def enrich_holdings_forward_risk(
             "status": "unavailable",
             "errors": errors,
             "risk_model": snapshot,
+            **scope_disclosure,
         }
         return workspace
     if not active:
         workspace["forward_risk"] = {
             "status": "unavailable",
-            "errors": ["Forward RC requires at least one active non-cash holding."],
+            "errors": ["Modeled sleeve risk requires at least one eligible risky holding."],
             "risk_model": snapshot,
+            **scope_disclosure,
         }
         return workspace
 
     returns = pd.DataFrame({key: series for key, _row, series, _starts in active}).sort_index()
     labels_by_key = {key: _row_label(row) for key, row, _series, _starts in active}
     period_starts_by_key = {key: starts for key, _row, _series, starts in active}
-    weights = np.asarray(
-        [_safe_float(row.get("allocation")) or 0.0 for _key, row, _series, _starts in active],
+    modeled_exposures = np.asarray(
+        [
+            _safe_float(row.get("market_value_base")) or 0.0
+            for _key, row, _series, _starts in active
+        ],
         dtype="float64",
     )
+    modeled_gross_exposure = float(np.sum(np.abs(modeled_exposures)))
+    if not np.isfinite(modeled_gross_exposure) or modeled_gross_exposure <= 1e-12:
+        for _key, row, _series, _starts in active:
+            _clear_forward_risk_fields(row)
+        workspace["forward_risk"] = {
+            "status": "unavailable",
+            "errors": ["Modeled sleeve risk requires positive eligible gross exposure."],
+            "risk_model": snapshot,
+            **scope_disclosure,
+        }
+        return workspace
+    weights = modeled_exposures / modeled_gross_exposure
     coverage_snapshot = _forward_risk_coverage_snapshot(
         returns,
         as_of_date=as_of_date,
@@ -543,6 +570,7 @@ def enrich_holdings_forward_risk(
             "errors": [str(error)],
             "risk_model": snapshot,
             "coverage": coverage_snapshot,
+            **scope_disclosure,
         }
         return workspace
 
@@ -554,6 +582,7 @@ def enrich_holdings_forward_risk(
             "errors": ["Forward RC requires positive finite portfolio variance."],
             "risk_model": snapshot,
             "coverage": coverage_snapshot,
+            **scope_disclosure,
         }
         return workspace
 
@@ -573,5 +602,7 @@ def enrich_holdings_forward_risk(
         "portfolio_volatility": sqrt(variance),
         "observation_count": int(len(coverage.returns)),
         "coverage": coverage_snapshot,
+        "modeled_weight_basis": "eligible_gross_exposure",
+        **scope_disclosure,
     }
     return workspace

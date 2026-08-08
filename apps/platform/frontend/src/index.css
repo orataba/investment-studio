@@ -3090,6 +3090,81 @@ textarea {
   font-size: 12px;
 }
 
+.ir-drawer-form select[multiple] {
+  height: auto;
+  min-height: 104px;
+  padding: 5px;
+}
+
+.ir-broker-editor {
+  display: grid;
+  gap: 10px;
+}
+
+.ir-broker-row {
+  display: grid;
+  grid-template-columns: minmax(110px, .85fr) minmax(118px, .8fr) minmax(150px, 1.2fr) auto 30px;
+  gap: 8px;
+  align-items: end;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--ir-line);
+}
+
+.ir-checkbox-field {
+  display: flex !important;
+  flex-direction: row !important;
+  gap: 7px !important;
+  align-items: center;
+  min-height: 36px;
+}
+
+.ir-drawer-form .ir-checkbox-field input {
+  width: 15px;
+  height: 15px;
+  margin: 0;
+}
+
+.ir-icon-action {
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border: 1px solid var(--platform-line-strong);
+  border-radius: 2px;
+  background: #fff;
+  color: var(--platform-muted);
+  cursor: pointer;
+  font-size: 16px;
+}
+
+.ir-policy-toggles {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 18px;
+}
+
+.ir-reconciliation-status {
+  color: var(--platform-faint);
+  font-size: 10px;
+  text-transform: capitalize;
+}
+
+.ir-reconciliation-status.is-ready {
+  color: var(--platform-positive);
+}
+
+.ir-reconciliation-status.is-unmatched,
+.ir-contract-issues {
+  color: #9a5b12;
+}
+
+.ir-contract-issues {
+  display: grid;
+  gap: 5px;
+  margin: 0;
+  padding-left: 18px;
+  font-size: 10px;
+}
+
 .ir-drawer-form textarea {
   min-height: 150px;
   border-radius: 2px;
@@ -3402,6 +3477,14 @@ textarea {
   .ir-drawer-form .registry-action-form-grid,
   .ir-series-filters {
     grid-template-columns: 1fr;
+  }
+
+  .ir-broker-row {
+    grid-template-columns: 1fr;
+  }
+
+  .ir-broker-row .ir-icon-action {
+    justify-self: end;
   }
 
   .ir-import-preview {

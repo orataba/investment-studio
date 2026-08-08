@@ -18,7 +18,10 @@ if str(BACKEND_ROOT) not in sys.path:
 from portfolio_app.db.models import AccountRecordModel, PortfolioRecordModel, TransactionRecordModel
 from portfolio_app.db.session import get_session_factory
 from portfolio_app.services.performance import build_holdings_report
-from portfolio_app.services.portfolio_store import _allocate_transaction_ids, resolve_trade_timing
+from portfolio_app.services.portfolio_store import (
+    _allocate_transaction_identities,
+    resolve_trade_timing,
+)
 
 DEFAULT_VALUATION_DATE = date.today()
 PRICE_DISPLAY_QUANTUM = Decimal("0.0001")
@@ -171,6 +174,7 @@ def decimal_to_float(value: Decimal | None) -> float | None:
 def trade_payload(
     *,
     transaction_id: str,
+    transaction_sequence: int,
     portfolio_id: str,
     transaction_type: str,
     trade_date: date,
@@ -190,6 +194,7 @@ def trade_payload(
     resolved_timing = resolve_trade_timing(trade_date=trade_date, trade_time=trade_time)
     transaction_record = TransactionRecordModel(
         transaction_id=transaction_id,
+        transaction_sequence=transaction_sequence,
         portfolio_id=portfolio_id,
         transaction_type=transaction_type,
         trade_date=trade_date,
@@ -220,6 +225,7 @@ def trade_payload(
     )
     transaction_payload = {
         "transaction_id": transaction_id,
+        "transaction_sequence": transaction_sequence,
         "portfolio_id": portfolio_id,
         "transaction_type": transaction_type,
         "trade_date": trade_date.isoformat(),
@@ -357,14 +363,20 @@ def main() -> None:
             },
         ]
 
-        transaction_ids = iter(_allocate_transaction_ids(session, len(rows) + 1))
+        transaction_identities = iter(
+            _allocate_transaction_identities(session, len(rows) + 1)
+        )
         current_created_at = datetime.now(UTC).replace(microsecond=0)
         transaction_payloads: list[dict[str, object]] = []
         imported_trade_date = min(row.trade_date for row in rows)
         total_gross_amount = sum(row.gross_amount for row in rows)
 
+        deposit_transaction_id, deposit_transaction_sequence = next(
+            transaction_identities
+        )
         deposit_record, deposit_payload = trade_payload(
-            transaction_id=next(transaction_ids),
+            transaction_id=deposit_transaction_id,
+            transaction_sequence=deposit_transaction_sequence,
             portfolio_id=args.portfolio_id,
             transaction_type="deposit",
             trade_date=imported_trade_date,
@@ -412,8 +424,10 @@ def main() -> None:
                 f"Imported from {csv_path.name}; CSV display price={row.display_price}; "
                 f"authoritative quantity/gross_amount preserved."
             )
+            transaction_id, transaction_sequence = next(transaction_identities)
             transaction_record, transaction_payload = trade_payload(
-                transaction_id=next(transaction_ids),
+                transaction_id=transaction_id,
+                transaction_sequence=transaction_sequence,
                 portfolio_id=args.portfolio_id,
                 transaction_type=row.transaction_type,
                 trade_date=row.trade_date,

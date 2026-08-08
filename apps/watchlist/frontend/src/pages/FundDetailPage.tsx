@@ -92,6 +92,12 @@ import {
   resolveReturnWindow,
   shiftIsoDate,
 } from '../lib/returnWindows'
+import {
+  areAdjacentCalendarMonths,
+  buildMonthlyReturnMatrix,
+  buildMonthlyReturnSeries,
+  monthBucket,
+} from '../lib/calendarReturns'
 
 type FundDetailBundle = {
   summary: FundSummaryResponse
@@ -2286,38 +2292,6 @@ function getLatestPointChangeStats(points: FundChartPoint[]) {
   }
 }
 
-function getMonthBucket(value: string) {
-  return value.slice(0, 7)
-}
-
-function getPreviousMonthBucket(monthBucket: string) {
-  const year = Number(monthBucket.slice(0, 4))
-  const month = Number(monthBucket.slice(5, 7))
-  if (!Number.isFinite(year) || !Number.isFinite(month) || month < 1 || month > 12) {
-    return null
-  }
-  const previousYear = month === 1 ? year - 1 : year
-  const previousMonth = month === 1 ? 12 : month - 1
-  return `${previousYear}-${String(previousMonth).padStart(2, '0')}`
-}
-
-function buildMonthlyCloseSeries(points: FundChartPoint[]) {
-  const sortedPoints = [...points].sort((left, right) => left.date.localeCompare(right.date))
-  const monthlyPoints: FundChartPoint[] = []
-
-  sortedPoints.forEach((point) => {
-    const currentBucket = getMonthBucket(point.date)
-    const previousPoint = monthlyPoints[monthlyPoints.length - 1]
-    if (!previousPoint || getMonthBucket(previousPoint.date) !== currentBucket) {
-      monthlyPoints.push(point)
-      return
-    }
-    monthlyPoints[monthlyPoints.length - 1] = point
-  })
-
-  return monthlyPoints
-}
-
 function resolveCommonChartWindow(
   commonWindow: { start: string; end: string } | null,
   selectedStartDate: string,
@@ -2364,29 +2338,6 @@ function getPointAtDate<T extends FundChartPoint>(points: T[], targetDate: strin
 
 function getPointAtOrNearestDate(points: FundChartPoint[], targetDate: string | undefined) {
   return getPointAtDate(points, targetDate) || findNearestChartPoint(points, targetDate)
-}
-
-function buildMonthlyReturnSeries(points: FundChartPoint[]) {
-  const monthlyCloses = buildMonthlyCloseSeries(points)
-  const monthlyCloseByBucket = new Map(monthlyCloses.map((point) => [getMonthBucket(point.date), point] as const))
-  const monthlyReturns: FundChartPoint[] = []
-
-  for (const currentPoint of monthlyCloses) {
-    const previousBucket = getPreviousMonthBucket(getMonthBucket(currentPoint.date))
-    const previousPoint = previousBucket ? monthlyCloseByBucket.get(previousBucket) : null
-    if (!previousPoint) {
-      continue
-    }
-    if (previousPoint.value === 0) {
-      continue
-    }
-    monthlyReturns.push({
-      date: currentPoint.date,
-      value: ((currentPoint.value / previousPoint.value) - 1) * 100,
-    })
-  }
-
-  return monthlyReturns
 }
 
 function getRollingWindowPoints(
@@ -2500,12 +2451,12 @@ function alignMonthlyReturnPairs(leftPoints: FundChartPoint[], rightPoints: Fund
   const leftMonthlyReturns = buildMonthlyReturnSeries(leftPoints)
   const rightMonthlyReturns = buildMonthlyReturnSeries(rightPoints)
   const rightMap = new Map(
-    rightMonthlyReturns.map((point) => [getMonthBucket(point.date), { date: point.date, value: point.value / 100 }] as const),
+    rightMonthlyReturns.map((point) => [monthBucket(point.date), { date: point.date, value: point.value / 100 }] as const),
   )
 
   return leftMonthlyReturns
     .map((point) => {
-      const bucket = getMonthBucket(point.date)
+      const bucket = monthBucket(point.date)
       const rightPoint = rightMap.get(bucket)
       if (!rightPoint) {
         return null
@@ -2543,6 +2494,14 @@ function buildRollingBetaSeries(
 
   for (let index = windowMonths - 1; index < alignedPairs.length; index += 1) {
     const windowPairs = alignedPairs.slice(index - windowMonths + 1, index + 1)
+    const hasCalendarGap = windowPairs.some(
+      (pair, pairIndex) =>
+        pairIndex > 0 &&
+        !areAdjacentCalendarMonths(windowPairs[pairIndex - 1].date, pair.date),
+    )
+    if (hasCalendarGap) {
+      continue
+    }
     const leftReturns = windowPairs.map((point) => point.left)
     const rightReturns = windowPairs.map((point) => point.right)
     const covariance = getSampleCovariance(leftReturns, rightReturns)
@@ -2564,9 +2523,9 @@ function buildMonthlyMinimumSeries(points: FundChartPoint[]) {
   const monthlyMinimums: FundChartPoint[] = []
 
   sortedPoints.forEach((point) => {
-    const currentBucket = getMonthBucket(point.date)
+    const currentBucket = monthBucket(point.date)
     const previousPoint = monthlyMinimums[monthlyMinimums.length - 1]
-    if (!previousPoint || getMonthBucket(previousPoint.date) !== currentBucket) {
+    if (!previousPoint || monthBucket(previousPoint.date) !== currentBucket) {
       monthlyMinimums.push(point)
       return
     }
@@ -2605,79 +2564,34 @@ function getSampleStandardDeviation(values: number[]) {
 }
 
 function buildMonthlyAnnualizedVolatilitySeries(points: FundChartPoint[]) {
-  const sortedPoints = [...points].sort((left, right) => left.date.localeCompare(right.date))
-  const returnCount = buildPeriodicReturnSeries(sortedPoints).length
-  const periodsPerYear = inferAnnualizationPeriodsPerYear(sortedPoints, returnCount)
-  if (periodsPerYear == null || periodsPerYear <= 0) {
-    return []
-  }
-  const returnsByMonth = new Map<string, { date: string; returns: number[] }>()
-
-  for (let index = 1; index < sortedPoints.length; index += 1) {
-    const previousPoint = sortedPoints[index - 1]
-    const currentPoint = sortedPoints[index]
-    if (previousPoint.value === 0) {
+  // Volatility shown on a monthly timeline must be based on the same
+  // close-to-close monthly returns as the Monthly Return Matrix.  Computing a
+  // standard deviation of all daily moves *inside* each month instead creates
+  // a different metric (and is undefined for a monthly NAV series).
+  const monthlyReturns = buildMonthlyReturnSeries(points)
+  const rollingWindow = 12
+  const volatility: FundChartPoint[] = []
+  for (let index = rollingWindow - 1; index < monthlyReturns.length; index += 1) {
+    const window = monthlyReturns.slice(index - rollingWindow + 1, index + 1)
+    if (
+      window.some(
+        (point, pointIndex) =>
+          pointIndex > 0 &&
+          !areAdjacentCalendarMonths(window[pointIndex - 1].date, point.date),
+      )
+    ) {
       continue
     }
-    const monthlyKey = getMonthBucket(currentPoint.date)
-    const bucket = returnsByMonth.get(monthlyKey) || { date: currentPoint.date, returns: [] }
-    bucket.date = currentPoint.date
-    bucket.returns.push((currentPoint.value / previousPoint.value) - 1)
-    returnsByMonth.set(monthlyKey, bucket)
-  }
-
-  return Array.from(returnsByMonth.entries())
-    .sort((left, right) => left[0].localeCompare(right[0]))
-    .map(([, bucket]) => {
-      const stdev = getSampleStandardDeviation(bucket.returns)
-      if (stdev == null) {
-        return null
-      }
-      return {
-        date: bucket.date,
-        value: stdev * Math.sqrt(periodsPerYear) * 100,
-      }
-    })
-    .filter((point): point is FundChartPoint => point !== null)
-}
-
-function buildMonthlyReturnMatrix(points: FundChartPoint[]) {
-  const monthlyReturns = buildMonthlyReturnSeries(points)
-  const monthlyCloses = buildMonthlyCloseSeries(points)
-  const monthlyCloseByBucket = new Map(monthlyCloses.map((point) => [getMonthBucket(point.date), point] as const))
-  const rows = new Map<number, { year: string; months: Array<number | null>; ytd: number | null }>()
-  const latestCloseByYear = new Map<number, FundChartPoint>()
-
-  monthlyReturns.forEach((point) => {
-    const year = Number(point.date.slice(0, 4))
-    const monthIndex = Number(point.date.slice(5, 7)) - 1
-    const row = rows.get(year) || {
-      year: String(year),
-      months: Array.from({ length: 12 }, () => null),
-      ytd: null,
+    const stdev = getSampleStandardDeviation(window.map((point) => point.value / 100))
+    if (stdev == null) {
+      continue
     }
-    row.months[monthIndex] = point.value
-    rows.set(year, row)
-  })
-
-  monthlyCloses.forEach((point) => {
-    latestCloseByYear.set(Number(point.date.slice(0, 4)), point)
-  })
-
-  return Array.from(rows.entries())
-    .sort((left, right) => right[0] - left[0])
-    .map(([year, row]) => {
-      const previousYearClose = monthlyCloseByBucket.get(`${year - 1}-12`)
-      const currentYearClose = latestCloseByYear.get(year)
-      const ytd =
-        previousYearClose && currentYearClose && previousYearClose.value !== 0
-          ? ((currentYearClose.value / previousYearClose.value) - 1) * 100
-          : null
-      return {
-        ...row,
-        ytd,
-      }
+    volatility.push({
+      date: window[window.length - 1].date,
+      value: stdev * Math.sqrt(12) * 100,
     })
+  }
+  return volatility
 }
 
 function sortSeriesByDate(points: FundChartPoint[]) {
@@ -2918,6 +2832,12 @@ function getPercentileRank(values: number[], targetValue: number) {
 function getTrailingNegativeMonthCount(points: FundChartPoint[]) {
   let count = 0
   for (let index = points.length - 1; index >= 0; index -= 1) {
+    if (
+      index < points.length - 1 &&
+      !areAdjacentCalendarMonths(points[index].date, points[index + 1].date)
+    ) {
+      break
+    }
     if (points[index].value >= 0) {
       break
     }
@@ -8717,6 +8637,11 @@ export default function FundDetailPage({
                               key={`${row.year}-${MONTH_SHORT_LABELS[index]}`}
                               className={`instrument-heatmap-cell${value == null ? ' instrument-heatmap-cell-empty' : ''}`}
                               style={getHeatmapCellStyle(value, monthlyReturnMatrixMaxAbs)}
+                              title={
+                                row.monthWindows[index]
+                                  ? `Anchor: ${row.monthWindows[index]?.anchorDate} · End: ${row.monthWindows[index]?.endDate}`
+                                  : undefined
+                              }
                             >
                               {value == null ? '—' : formatPercent(value, 2)}
                             </td>
@@ -8724,6 +8649,11 @@ export default function FundDetailPage({
                           <td
                             className={`instrument-heatmap-cell${row.ytd == null ? ' instrument-heatmap-cell-empty' : ''}`}
                             style={getHeatmapCellStyle(row.ytd, monthlyReturnMatrixMaxAbs)}
+                            title={
+                              row.ytdWindow
+                                ? `Anchor: ${row.ytdWindow.anchorDate} · End: ${row.ytdWindow.endDate}`
+                                : undefined
+                            }
                           >
                             {row.ytd == null ? '—' : formatPercent(row.ytd, 2)}
                           </td>

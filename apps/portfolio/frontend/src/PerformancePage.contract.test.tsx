@@ -154,7 +154,7 @@ describe('Performance rendered page contract', () => {
       '/portfolios/:portfolioId/performance',
     )
 
-    const periodReturnRow = await screen.findByRole('row', { name: /Period TWR/ })
+    const periodReturnRow = await screen.findByRole('row', { name: /Total Portfolio Return/ })
     expect(within(periodReturnRow).getByText('+3.02%')).toBeInTheDocument()
     expect(screen.getByText('Calculation')).toBeInTheDocument()
     expect(screen.getAllByText(/2026-07-06 to 2026-07-15/)).toHaveLength(2)
@@ -231,7 +231,7 @@ describe('Performance rendered page contract', () => {
     expect(await screen.findByText(/Benchmark uses close with confirmed price-return semantics/)).toHaveTextContent(
       /benchmark and relative metrics are shown/,
     )
-    const periodReturnCells = within(screen.getByRole('row', { name: /Period TWR/ })).getAllByRole('cell')
+    const periodReturnCells = within(screen.getByRole('row', { name: /Total Portfolio Return/ })).getAllByRole('cell')
     expect(periodReturnCells).toHaveLength(3)
     expect(periodReturnCells[1]).not.toHaveTextContent('—')
     expect(periodReturnCells[2]).not.toHaveTextContent('—')

@@ -72,6 +72,9 @@ const catalog: PortfolioTaxonomyCatalogResponse = {
   target_sets: [],
   target_set_lines: [],
   target_set_integrity_issues: [],
+  analytics_scope_policy_version: 0,
+  analytics_scope_policies: [],
+  analytics_taxonomy_selections: [],
 }
 
 function canonicalHolding(
@@ -79,6 +82,7 @@ function canonicalHolding(
   allocation: number,
   riskShare: number,
   contributionToVariance: number,
+  riskBudgetEligible = true,
 ) {
   return holdingFixture({
     line_id: `holding:${instrumentId}`,
@@ -92,6 +96,7 @@ function canonicalHolding(
     forward_risk_share: riskShare,
     forward_contribution_to_variance: contributionToVariance,
     forward_risk_status: 'ok',
+    risk_budget_eligible: riskBudgetEligible,
   })
 }
 
@@ -106,6 +111,19 @@ describe('Canonical taxonomy risk contribution aggregation', () => {
       forward_risk: {
         status: 'ok',
         errors: [],
+        scope_name: 'Modeled Market Sleeve',
+        scope_policy_versions: [1],
+        configuration_versions: [2],
+        total_nav: 1000,
+        modeled_net_exposure: 1000,
+        modeled_gross_exposure: 1000,
+        excluded_carrying_value: 0,
+        excluded_liability: 0,
+        cash_unallocated_exposure: 0,
+        coverage_ratio: 1,
+        excluded_rows: [],
+        calculation_frequency: 'daily',
+        modeled_weight_basis: 'eligible_gross_exposure',
         portfolio_variance: 0.01,
         portfolio_volatility: 0.1,
         observation_count: 61,
@@ -141,6 +159,18 @@ describe('Canonical taxonomy risk contribution aggregation', () => {
       forward_risk: {
         status: 'unavailable',
         errors: ['Strict return coverage is stale by 8 days.'],
+        scope_name: 'Modeled Market Sleeve',
+        scope_policy_versions: [1],
+        configuration_versions: [2],
+        total_nav: 1000,
+        modeled_net_exposure: 1000,
+        modeled_gross_exposure: 1000,
+        excluded_carrying_value: 0,
+        excluded_liability: 0,
+        cash_unallocated_exposure: 0,
+        coverage_ratio: 1,
+        excluded_rows: [],
+        calculation_frequency: 'daily',
       },
     })
 
@@ -153,5 +183,53 @@ describe('Canonical taxonomy risk contribution aggregation', () => {
 
     expect(result.value).toEqual([])
     expect(result.errors).toEqual(['Strict return coverage is stale by 8 days.'])
+  })
+
+  it('renormalizes risk contribution inside the risk-budget-eligible sleeve', () => {
+    const workspace = holdingsWorkspaceFixture({
+      rows: [
+        canonicalHolding('alpha', 0.2, 0.2, 0.002),
+        canonicalHolding('beta', 0.3, 0.3, 0.003),
+        canonicalHolding('gamma', 0.5, 0.5, 0.005, false),
+      ],
+      forward_risk: {
+        status: 'ok',
+        errors: [],
+        scope_name: 'Modeled Market Sleeve',
+        scope_policy_versions: [1],
+        configuration_versions: [2],
+        total_nav: 1000,
+        modeled_net_exposure: 1000,
+        modeled_gross_exposure: 1000,
+        excluded_carrying_value: 0,
+        excluded_liability: 0,
+        cash_unallocated_exposure: 0,
+        coverage_ratio: 1,
+        excluded_rows: [],
+        calculation_frequency: 'daily',
+        modeled_weight_basis: 'eligible_gross_exposure',
+        portfolio_variance: 0.01,
+        portfolio_volatility: 0.1,
+        observation_count: 61,
+      },
+    })
+
+    const result = buildCanonicalTaxonomyRiskContributionRows({
+      holdingsWorkspace: workspace,
+      catalog,
+      taxonomy,
+      referenceDate: workspace.as_of_date,
+      eligibility: 'risk_budget',
+    })
+
+    expect(result.errors).toEqual([])
+    expect(result.value).toEqual([
+      expect.objectContaining({
+        groupKey: 'equity',
+        weight: 0.5,
+        riskShare: 1,
+        contributionToVariance: 0.005,
+      }),
+    ])
   })
 })

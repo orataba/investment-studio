@@ -3,6 +3,8 @@ from __future__ import annotations
 from copy import deepcopy
 from datetime import date
 
+import pytest
+
 from portfolio_app.db.models import (
     AccountRecordModel,
     PortfolioCalculationStateModel,
@@ -21,6 +23,39 @@ def test_reset_store_without_payload_leaves_store_empty() -> None:
     assert portfolio_store.list_portfolios() == []
     assert portfolio_store.list_accounts("portfolio-ops") == []
     assert portfolio_store.list_transactions("portfolio-ops") == []
+
+
+def test_reset_store_rejects_missing_or_duplicate_transaction_sequence() -> None:
+    transaction = {
+        "transaction_id": "txn-sequence-contract",
+        "portfolio_id": "portfolio-sequence-contract",
+        "transaction_type": "deposit",
+        "trade_date": "2026-01-01",
+        "settlement_date": "2026-01-01",
+        "account_id": "cash-sequence-contract",
+        "gross_amount": 1.0,
+        "fees": 0.0,
+        "taxes": 0.0,
+        "currency": "USD",
+        "created_at": "2026-01-01T00:00:00Z",
+    }
+
+    with pytest.raises(ValueError, match="requires a positive transaction_sequence"):
+        portfolio_store.reset_store({"transactions": [transaction]})
+
+    with pytest.raises(ValueError, match="sequence '1' is duplicated"):
+        portfolio_store.reset_store(
+            {
+                "transactions": [
+                    {**transaction, "transaction_sequence": 1},
+                    {
+                        **transaction,
+                        "transaction_id": "txn-sequence-contract-2",
+                        "transaction_sequence": 1,
+                    },
+                ]
+            }
+        )
 
 
 def test_reset_store_round_trips_manual_instrument_universe() -> None:

@@ -16,4 +16,13 @@ describe('transaction instrument eligibility', () => {
     expect(supportsTransactionInstrumentType('coupon', 'etf')).toBe(false)
     expect(supportsTransactionInstrumentType('maturity_redemption', 'etf')).toBe(false)
   })
+
+  it('supports event-valued FCN and option facts', () => {
+    expect(supportsTransactionInstrumentType('buy', 'fcn')).toBe(true)
+    expect(supportsTransactionInstrumentType('coupon', 'fcn')).toBe(true)
+    expect(supportsTransactionInstrumentType('maturity_redemption', 'fcn')).toBe(true)
+    expect(supportsTransactionInstrumentType('option_write', 'option')).toBe(true)
+    expect(supportsTransactionInstrumentType('option_buy_to_close', 'option')).toBe(true)
+    expect(supportsTransactionInstrumentType('option_write', 'equity')).toBe(false)
+  })
 })

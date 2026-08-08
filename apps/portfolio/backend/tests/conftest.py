@@ -353,6 +353,49 @@ def isolated_portfolio_store(request, tmp_path, monkeypatch):
                 temporary_seed_columns.append(
                     ("transaction_record", "position_effective_date")
                 )
+            additive_transaction_columns = {
+                "transaction_sequence": "INTEGER NOT NULL DEFAULT 1",
+                "lifecycle_event_type": "VARCHAR",
+                "source_system": "VARCHAR(100)",
+                "external_reference": "VARCHAR(200)",
+                "event_group_id": "VARCHAR(200)",
+                "related_instrument_id": "VARCHAR(200)",
+            }
+            for column_name, column_type in additive_transaction_columns.items():
+                if column_name in transaction_columns:
+                    continue
+                connection.exec_driver_sql(
+                    f"ALTER TABLE transaction_record ADD COLUMN {column_name} {column_type}"
+                )
+                temporary_seed_columns.append(
+                    ("transaction_record", column_name)
+                )
+            research_settings_columns = {
+                str(column["name"])
+                for column in sa.inspect(connection).get_columns(
+                    "research_settings_record"
+                )
+            }
+            additive_research_settings_columns = {
+                "backtest_cash_yield_annual": "FLOAT NOT NULL DEFAULT 0",
+                "backtest_commission_bps": "FLOAT NOT NULL DEFAULT 0",
+                "backtest_tax_bps": "FLOAT NOT NULL DEFAULT 0",
+                "backtest_slippage_bps": "FLOAT NOT NULL DEFAULT 0",
+                "backtest_implementation_delay_days": "INTEGER NOT NULL DEFAULT 1",
+                "backtest_robustness_scenarios_json": "JSON",
+                "backtest_walk_forward_training_months": "INTEGER NOT NULL DEFAULT 24",
+                "backtest_walk_forward_test_months": "INTEGER NOT NULL DEFAULT 6",
+            }
+            for column_name, column_type in additive_research_settings_columns.items():
+                if column_name in research_settings_columns:
+                    continue
+                connection.exec_driver_sql(
+                    "ALTER TABLE research_settings_record "
+                    f"ADD COLUMN {column_name} {column_type}"
+                )
+                temporary_seed_columns.append(
+                    ("research_settings_record", column_name)
+                )
 
     portfolio_store.reset_store(deepcopy(TEST_PORTFOLIO_STORE))
     shared_store.reset_store(

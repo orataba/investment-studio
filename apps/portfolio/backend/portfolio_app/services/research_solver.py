@@ -12,13 +12,17 @@ import pandas as pd
 from scipy.optimize import minimize
 
 from portfolio_app.services.annualization import annualization_eligibility
+from portfolio_app.services.analytics_scope import (
+    taxonomy_configuration_as_of,
+    taxonomy_configuration_revisions_through,
+)
 from portfolio_app.services.calculation_frequency import (
     CalculationFrequency,
     calculation_frequency_profile,
     infer_observation_frequency,
     period_end_date,
 )
-from portfolio_app.services import valuation_fx
+from portfolio_app.services import holdings_market_profile, valuation_fx
 from portfolio_app.services.instrument_registry import (
     get_platform_fx_rates,
     get_registry_instrument_detail,
@@ -34,11 +38,6 @@ from portfolio_app.services.portfolio_store import (
     get_portfolio,
     list_accounts,
     list_portfolio_instrument_universe,
-    list_target_set_lines,
-    list_target_sets,
-    list_taxonomies,
-    list_taxonomy_assignments,
-    list_taxonomy_nodes,
     list_transactions,
 )
 from portfolio_app.services.research_eligibility import (
@@ -114,8 +113,11 @@ RESEARCH_COMPLETE_CASE_DROP_MAX_TRAILING_STALENESS_DAYS: dict[CalculationFrequen
 }
 SUPPORTED_RESEARCH_LOOKBACK_DAYS = frozenset(RESEARCH_WINDOW_MONTHS_BY_LOOKBACK_DAYS)
 RESEARCH_BACKTEST_METHODOLOGY_WARNINGS: tuple[str, ...] = (
-    "Backtest applies the currently configured taxonomy membership and target policy across the full historical simulation; it is not a point-in-time reconstruction of past classifications or mandates.",
-    "Backtest cash residual earns a 0% return, and simulated returns exclude transaction costs, taxes, slippage, and implementation delay.",
+    "Each rebalance uses the taxonomy membership and target policy revision effective on its decision date.",
+    "An instrument becomes usable only after its effective assignment and first usable market-data observation.",
+    "Simulation results include the configured cash yield, commission, sell-side tax, slippage, and implementation delay assumptions.",
+    "Market observations are EOD period-end returns: holdings earn the return ending before an EOD execution, and newly executed targets start with the next observation.",
+    "A scheduled execution is skipped rather than valued from stale NAV when any pre-trade holding lacks a complete EOD return observation; point-in-time coverage is marked partial.",
 )
 
 
@@ -238,6 +240,8 @@ class TaxonomyResearchState:
     direct_fx_instruments: dict[tuple[str, str], str]
     frozen_taxonomy_node_ids: frozenset[str]
     top_sleeve_weight_bounds: dict[str, dict[str, float | None]]
+    configuration_version: int | None = None
+    configuration_effective_from: date | None = None
     # A current-target solve walks the taxonomy recursively.  Current holdings
     # and account values are portfolio-level inputs, so rebuilding both ledgers
     # once per scope is redundant and can make deep taxonomies disproportionately
@@ -306,15 +310,25 @@ def _parse_iso_date(value: object) -> date | None:
         return None
 
 
+def _instrument_detail_from_cache(
+    instrument_detail_cache: dict[str, dict[str, object] | None],
+    instrument_id: str,
+) -> dict[str, object] | None:
+    if instrument_id not in instrument_detail_cache:
+        instrument_detail_cache[instrument_id] = get_registry_instrument_detail(
+            instrument_id
+        )
+    return instrument_detail_cache[instrument_id]
+
+
 def _instrument_detail(
     state: TaxonomyResearchState,
     instrument_id: str,
 ) -> dict[str, object] | None:
-    if instrument_id not in state.instrument_detail_cache:
-        state.instrument_detail_cache[instrument_id] = get_registry_instrument_detail(
-            instrument_id
-        )
-    return state.instrument_detail_cache[instrument_id]
+    return _instrument_detail_from_cache(
+        state.instrument_detail_cache,
+        instrument_id,
+    )
 
 
 def _candidate_quote_bases(detail: dict[str, object]) -> list[str]:
@@ -446,6 +460,16 @@ def _node_is_cash_subtree(state: TaxonomyResearchState, node_id: str) -> bool:
             if target_scope == TARGET_MEMBER_CASH:
                 has_cash_assignment = True
     return has_cash_assignment
+
+
+def _node_has_research_members(
+    state: TaxonomyResearchState,
+    node_id: str,
+) -> bool:
+    return any(
+        state.direct_assignments_by_node.get(subtree_node_id)
+        for subtree_node_id in state.node_subtree_by_id.get(node_id, {node_id})
+    )
 
 
 def _member_is_cash_like(state: TaxonomyResearchState, member: ScopeMemberRecord) -> bool:
@@ -2164,7 +2188,11 @@ def _scope_members(
     *,
     scope_node_id: str | None,
 ) -> tuple[list[ScopeMemberRecord], str]:
-    child_node_ids = state.children_by_parent.get(scope_node_id, [])
+    child_node_ids = [
+        node_id
+        for node_id in state.children_by_parent.get(scope_node_id, [])
+        if _node_has_research_members(state, node_id)
+    ]
     if child_node_ids:
         members = [
             ScopeMemberRecord(
@@ -3226,6 +3254,9 @@ def _current_scope_actuals(
     if isinstance(cached_valuation, dict):
         position_value_by_instrument = dict(cached_valuation.get("position_value_by_instrument") or {})
         cash_value_by_account = dict(cached_valuation.get("cash_value_by_account") or {})
+        excluded_derivative_instrument_ids = list(
+            cached_valuation.get("excluded_derivative_instrument_ids") or []
+        )
     else:
         portfolio = get_portfolio(state.portfolio_id)
         if portfolio is None:
@@ -3249,15 +3280,27 @@ def _current_scope_actuals(
         )
 
         position_value_by_instrument: dict[str, float] = {}
+        excluded_derivative_instrument_ids: list[str] = []
         for position in list(statement.get("positions") or []):
             instrument_id = str(position.get("instrument_id") or "")
-            if instrument_id:
-                market_value_base = _safe_float(position.get("market_value_base"))
-                if market_value_base is None:
-                    raise ValueError(
-                        "Current allocation valuation is incomplete; refresh price and FX coverage before solving."
-                    )
-                position_value_by_instrument[instrument_id] = market_value_base
+            if not instrument_id:
+                continue
+            instrument_ref = (
+                position.get("instrument_ref")
+                if isinstance(position.get("instrument_ref"), dict)
+                else _instrument_detail(state, instrument_id)
+            )
+            if holdings_market_profile.is_derivative_tracking_instrument_ref(
+                instrument_ref
+            ):
+                excluded_derivative_instrument_ids.append(instrument_id)
+                continue
+            market_value_base = _safe_float(position.get("market_value_base"))
+            if market_value_base is None:
+                raise ValueError(
+                    "Current allocation valuation is incomplete; refresh price and FX coverage before solving."
+                )
+            position_value_by_instrument[instrument_id] = market_value_base
 
         visible_cash_accounts = [
             account_row
@@ -3276,6 +3319,9 @@ def _current_scope_actuals(
         state.current_valuation_cache[cache_key] = {
             "position_value_by_instrument": dict(position_value_by_instrument),
             "cash_value_by_account": dict(cash_value_by_account),
+            "excluded_derivative_instrument_ids": sorted(
+                set(excluded_derivative_instrument_ids)
+            ),
         }
 
     cash_total_value = float(sum(cash_value_by_account.values()))
@@ -3320,6 +3366,12 @@ def _current_scope_actuals(
 
     rendered_rows: list[dict[str, object]] = []
     warnings: list[str] = []
+    if excluded_derivative_instrument_ids:
+        warnings.append(
+            "Derivative tracking holdings are excluded from Research and Risk Budget: "
+            + ", ".join(sorted(set(excluded_derivative_instrument_ids)))
+            + "."
+        )
     for member in scope_members:
         if member.member_type == TARGET_MEMBER_NODE:
             actual_value = node_value_map.get(member.member_id, 0.0)
@@ -3448,23 +3500,37 @@ def _build_taxonomy_state(
     portfolio = get_portfolio(portfolio_id)
     if portfolio is None:
         raise ValueError("Portfolio not found.")
+    resolved_instrument_detail_cache = (
+        instrument_detail_cache if instrument_detail_cache is not None else {}
+    )
 
-    taxonomy = next(
-        (
-            item
-            for item in list_taxonomies(portfolio_id)
-            if str(item.get("taxonomy_id") or "") == planning_taxonomy_id
-        ),
-        None,
+    configuration = taxonomy_configuration_as_of(
+        portfolio_id,
+        planning_taxonomy_id,
+        as_of_date,
+    )
+    if configuration is None:
+        raise ValueError(
+            "No effective point-in-time taxonomy configuration exists for the selected date."
+        )
+    taxonomy = (
+        configuration.get("taxonomy")
+        if isinstance(configuration.get("taxonomy"), dict)
+        else None
     )
     if taxonomy is None:
-        raise ValueError("Planning taxonomy not found.")
+        raise ValueError("The effective taxonomy configuration is incomplete.")
+    if str(taxonomy.get("status") or "") != "active":
+        raise ValueError("The effective taxonomy configuration is inactive or deleted.")
+    if not bool(taxonomy.get("planning_enabled")):
+        raise ValueError("The effective taxonomy configuration is not planning-enabled.")
+    if str(taxonomy.get("primary_assignment_scope") or "") != "instrument":
+        raise ValueError("Research requires an instrument planning taxonomy.")
 
     node_rows = [
         item
-        for item in list_taxonomy_nodes(portfolio_id)
-        if str(item.get("taxonomy_id") or "") == planning_taxonomy_id
-        and str(item.get("status") or "") == "active"
+        for item in list(configuration.get("taxonomy_nodes") or [])
+        if isinstance(item, dict) and str(item.get("status") or "") == "active"
     ]
     node_rows.sort(
         key=lambda item: (
@@ -3506,9 +3572,8 @@ def _build_taxonomy_state(
 
     assignments = [
         item
-        for item in list_taxonomy_assignments(portfolio_id)
-        if str(item.get("taxonomy_id") or "") == planning_taxonomy_id
-        and str(item.get("status") or "") == "active"
+        for item in list(configuration.get("taxonomy_assignments") or [])
+        if isinstance(item, dict) and str(item.get("status") or "") == "active"
     ]
     assignments.sort(
         key=lambda item: (
@@ -3522,12 +3587,21 @@ def _build_taxonomy_state(
         node_id = str(assignment.get("taxonomy_node_id") or "")
         if node_id not in node_by_id:
             continue
+        if str(assignment.get("target_scope") or "") == TARGET_MEMBER_INSTRUMENT:
+            instrument_id = str(assignment.get("target_entity_id") or "").strip()
+            if instrument_id and holdings_market_profile.is_derivative_tracking_instrument_ref(
+                _instrument_detail_from_cache(
+                    resolved_instrument_detail_cache,
+                    instrument_id,
+                )
+            ):
+                continue
         direct_assignments_by_node[node_id].append(assignment)
 
     target_sets = [
         item
-        for item in list_target_sets(portfolio_id, taxonomy_id=planning_taxonomy_id)
-        if str(item.get("status") or "") == "active"
+        for item in list(configuration.get("target_sets") or [])
+        if isinstance(item, dict) and str(item.get("status") or "") == "active"
     ]
     target_sets_by_scope_type: dict[tuple[str | None, str], list[dict[str, object]]] = defaultdict(list)
     for item in target_sets:
@@ -3535,7 +3609,9 @@ def _build_taxonomy_state(
         target_sets_by_scope_type[(comparator_node_id, str(item.get("target_set_type") or ""))].append(item)
 
     target_lines_by_set_id: dict[str, dict[tuple[str, str], dict[str, object]]] = defaultdict(dict)
-    for line in list_target_set_lines(portfolio_id, taxonomy_id=planning_taxonomy_id):
+    for line in list(configuration.get("target_set_lines") or []):
+        if not isinstance(line, dict):
+            continue
         target_set_id = str(line.get("target_set_id") or "")
         if not target_set_id:
             continue
@@ -3566,7 +3642,7 @@ def _build_taxonomy_state(
         target_sets_by_scope_type=target_sets_by_scope_type,
         target_lines_by_set_id=target_lines_by_set_id,
         account_name_by_id=account_name_by_id,
-        instrument_detail_cache=instrument_detail_cache if instrument_detail_cache is not None else {},
+        instrument_detail_cache=resolved_instrument_detail_cache,
         direct_fx_instruments=(
             direct_fx_instruments
             if direct_fx_instruments is not None
@@ -3576,6 +3652,14 @@ def _build_taxonomy_state(
             str(item).strip() for item in (frozen_taxonomy_node_ids or []) if str(item).strip()
         ),
         top_sleeve_weight_bounds=_normalize_top_sleeve_weight_bounds(top_sleeve_weight_bounds),
+        configuration_version=(
+            int(configuration["configuration_version"])
+            if configuration.get("configuration_version") is not None
+            else None
+        ),
+        configuration_effective_from=_parse_iso_date(
+            configuration.get("effective_from")
+        ),
     )
 
 
@@ -3599,10 +3683,15 @@ def build_research_scope_options(
             "path": ROOT_SCOPE_LABEL,
             "depth": 0,
             "default_target_dimension": state.root_default_target_dimension,
-            "has_children": bool(state.children_by_parent.get(None)),
+            "has_children": any(
+                _node_has_research_members(state, node_id)
+                for node_id in state.children_by_parent.get(None, [])
+            ),
         }
     ]
     for node_id in state.node_by_id:
+        if not _node_has_research_members(state, node_id):
+            continue
         node = state.node_by_id[node_id]
         options.append(
             {
@@ -4105,6 +4194,8 @@ def _is_rebalance_data_gap_error(error: ValueError) -> bool:
         "requires at least" in message
         or "return observations" in message
         or "complete aligned return observations" in message
+        or "has no active complete" in message
+        or "does not have usable market history" in message
     )
 
 
@@ -4394,14 +4485,732 @@ def build_research_backtest_benchmark_comparison(
     )
 
 
-def _active_backtest_leaf_ids(solution: dict[str, object]) -> list[str]:
-    instrument_ids = [
-        str(row.get("member_id") or "")
-        for row in list(solution.get("leaf_targets") or [])
-        if str(row.get("member_type") or "") == TARGET_MEMBER_INSTRUMENT
-        and abs(float(_safe_float(row.get("target_weight")) or 0.0)) > 1e-12
+def _historical_backtest_instrument_ids(
+    revisions: list[dict[str, object]],
+    *,
+    instrument_detail_cache: dict[str, dict[str, object] | None] | None = None,
+) -> list[str]:
+    instrument_ids: set[str] = set()
+    for revision in revisions:
+        for assignment in list(revision.get("taxonomy_assignments") or []):
+            if not isinstance(assignment, dict):
+                continue
+            if str(assignment.get("status") or "") != "active":
+                continue
+            if str(assignment.get("target_scope") or "") != TARGET_MEMBER_INSTRUMENT:
+                continue
+            instrument_id = str(assignment.get("target_entity_id") or "").strip()
+            if not instrument_id:
+                continue
+            if instrument_detail_cache is not None and (
+                holdings_market_profile.is_derivative_tracking_instrument_ref(
+                    _instrument_detail_from_cache(
+                        instrument_detail_cache,
+                        instrument_id,
+                    )
+                )
+            ):
+                continue
+            instrument_ids.add(instrument_id)
+    return sorted(instrument_ids)
+
+
+def _backtest_target_weights(
+    solution: dict[str, object],
+) -> dict[str, float]:
+    weights: dict[str, float] = {}
+    for row in list(solution.get("leaf_targets") or []):
+        if str(row.get("member_type") or "") != TARGET_MEMBER_INSTRUMENT:
+            continue
+        instrument_id = str(row.get("member_id") or "").strip()
+        weight = float(_safe_float(row.get("target_weight")) or 0.0)
+        if instrument_id and abs(weight) > 1e-12:
+            weights[instrument_id] = weight
+    return weights
+
+
+def _backtest_sleeve_point(
+    point_date: date,
+    weights_by_instrument: dict[str, float],
+    top_lookup: dict[str, tuple[str | None, str]],
+    *,
+    cash_weight: float,
+) -> dict[str, object]:
+    sleeve_by_key: dict[str, dict[str, object]] = {}
+    for instrument_id, weight in weights_by_instrument.items():
+        if abs(weight) <= 1e-12:
+            continue
+        top_id, top_label = top_lookup.get(instrument_id, (None, "Unassigned"))
+        top_key = top_id or "__unassigned__"
+        sleeve = sleeve_by_key.setdefault(
+            top_key,
+            {
+                "top_sleeve_id": top_id,
+                "top_sleeve_label": top_label,
+                "value": 0.0,
+            },
+        )
+        sleeve["value"] = float(sleeve["value"] or 0.0) + weight
+    if abs(cash_weight) > 1e-12:
+        sleeve_by_key[SYSTEM_CASH_TARGET_MEMBER_ID] = {
+            "top_sleeve_id": SYSTEM_CASH_TARGET_MEMBER_ID,
+            "top_sleeve_label": SYSTEM_CASH_TARGET_LABEL,
+            "value": cash_weight,
+        }
+    return {
+        "date": point_date.isoformat(),
+        "sleeves": sorted(
+            sleeve_by_key.values(),
+            key=lambda item: abs(_safe_float(item.get("value")) or 0.0),
+            reverse=True,
+        ),
+    }
+
+
+def _validate_backtest_assumptions(
+    *,
+    cash_yield_annual: float,
+    commission_bps: float,
+    tax_bps: float,
+    slippage_bps: float,
+    implementation_delay_days: int,
+) -> None:
+    if not -1.0 <= cash_yield_annual <= 1.0:
+        raise ValueError("Backtest annual cash yield must be between -100% and 100%.")
+    if min(commission_bps, tax_bps, slippage_bps) < 0.0:
+        raise ValueError("Backtest commission, tax, and slippage assumptions cannot be negative.")
+    if implementation_delay_days < 0:
+        raise ValueError("Backtest implementation delay cannot be negative.")
+
+
+def _first_common_return_date_on_or_after(
+    instrument_ids: list[str],
+    returns_by_instrument: dict[str, pd.Series],
+    earliest_date: date,
+    end_date: date,
+) -> date | None:
+    if not instrument_ids:
+        return earliest_date if earliest_date <= end_date else None
+    eligible_sets: list[set[date]] = []
+    for instrument_id in instrument_ids:
+        series = returns_by_instrument.get(instrument_id)
+        if series is None or series.empty:
+            return None
+        eligible_sets.append(
+            {
+                item
+                for item in series.index
+                if isinstance(item, date) and earliest_date <= item <= end_date
+            }
+        )
+    common_dates = set.intersection(*eligible_sets) if eligible_sets else set()
+    return min(common_dates) if common_dates else None
+
+
+def _replay_backtest_decisions(
+    decisions: list[dict[str, object]],
+    *,
+    returns_by_instrument: dict[str, pd.Series],
+    as_of_date: date,
+    cash_yield_annual: float,
+    commission_bps: float,
+    tax_bps: float,
+    slippage_bps: float,
+    implementation_delay_days: int,
+) -> dict[str, object]:
+    _validate_backtest_assumptions(
+        cash_yield_annual=cash_yield_annual,
+        commission_bps=commission_bps,
+        tax_bps=tax_bps,
+        slippage_bps=slippage_bps,
+        implementation_delay_days=implementation_delay_days,
+    )
+    if not decisions:
+        return {
+            "points": [],
+            "returns": {},
+            "top_sleeve_weight_points": [],
+            "top_sleeve_contribution_points": [],
+            "contribution_reconciliation_points": [],
+            "execution_records": [],
+            "skipped_executions": [],
+            "total_turnover": 0.0,
+            "total_cost": 0.0,
+            "warnings": [],
+        }
+
+    resolved_decisions: list[dict[str, object]] = []
+    replay_warnings: list[str] = []
+    skipped_executions: list[dict[str, str]] = []
+    for decision in decisions:
+        decision_date = _parse_iso_date(decision.get("decision_date"))
+        if decision_date is None:
+            raise ValueError("Backtest decision is missing a valid decision date.")
+        scheduled_date = decision_date + timedelta(days=implementation_delay_days)
+        target_weights = {
+            str(item.get("instrument_id") or ""): float(
+                _safe_float(item.get("target_weight")) or 0.0
+            )
+            for item in list(decision.get("target_weights") or [])
+            if isinstance(item, dict) and str(item.get("instrument_id") or "").strip()
+        }
+        actual_date = _first_common_return_date_on_or_after(
+            list(target_weights),
+            returns_by_instrument,
+            scheduled_date,
+            as_of_date,
+        )
+        if actual_date is None:
+            reason = (
+                f"{decision_date.isoformat()} decision could not execute by {as_of_date.isoformat()} "
+                "because its target instruments lack a common post-delay observation."
+            )
+            skipped_executions.append(
+                {"date": decision_date.isoformat(), "reason": reason}
+            )
+            replay_warnings.append(reason)
+            continue
+        resolved_decisions.append(
+            {
+                **deepcopy(decision),
+                "scheduled_execution_date": scheduled_date.isoformat(),
+                "actual_execution_date": actual_date.isoformat(),
+                "target_weight_map": target_weights,
+            }
+        )
+
+    if not resolved_decisions:
+        return {
+            "points": [],
+            "returns": {},
+            "top_sleeve_weight_points": [],
+            "top_sleeve_contribution_points": [],
+            "contribution_reconciliation_points": [],
+            "execution_records": [],
+            "skipped_executions": skipped_executions,
+            "total_turnover": 0.0,
+            "total_cost": 0.0,
+            "warnings": replay_warnings,
+        }
+
+    resolved_decisions.sort(
+        key=lambda item: (
+            str(item.get("actual_execution_date") or ""),
+            str(item.get("decision_date") or ""),
+        )
+    )
+    executions_by_date: dict[date, list[dict[str, object]]] = defaultdict(list)
+    for decision in resolved_decisions:
+        execution_date = _parse_iso_date(decision.get("actual_execution_date"))
+        if execution_date is not None:
+            executions_by_date[execution_date].append(decision)
+
+    all_return_dates = {
+        item
+        for series in returns_by_instrument.values()
+        for item in series.index
+        if isinstance(item, date) and item <= as_of_date
+    }
+    event_dates = sorted(all_return_dates.union(executions_by_date).union({as_of_date}))
+    first_execution_date = min(executions_by_date)
+    first_decision_date = min(
+        _parse_iso_date(item.get("decision_date")) or first_execution_date
+        for item in resolved_decisions
+    )
+    artificial_anchor = first_execution_date <= first_decision_date
+    anchor_date = (
+        first_execution_date - timedelta(days=1)
+        if artificial_anchor
+        else first_decision_date
+    )
+
+    risky_values: dict[str, float] = {}
+    top_lookup: dict[str, tuple[str | None, str]] = {}
+    cash_value = 1.0
+    nav_value = 1.0
+    previous_event_date = anchor_date
+    points: list[dict[str, object]] = [{"date": anchor_date.isoformat(), "value": nav_value}]
+    portfolio_returns: dict[str, float] = {}
+    weight_points: list[dict[str, object]] = [
+        _backtest_sleeve_point(
+            anchor_date,
+            {},
+            {},
+            cash_weight=1.0,
+        )
     ]
-    return list(dict.fromkeys(item for item in instrument_ids if item))
+    cumulative_contribution: dict[str, dict[str, object]] = {
+        SYSTEM_CASH_TARGET_MEMBER_ID: {
+            "top_sleeve_id": SYSTEM_CASH_TARGET_MEMBER_ID,
+            "top_sleeve_label": SYSTEM_CASH_TARGET_LABEL,
+            "value": 0.0,
+        },
+        "__execution_costs__": {
+            "top_sleeve_id": "__execution_costs__",
+            "top_sleeve_label": "Execution Costs",
+            "value": 0.0,
+        },
+    }
+    contribution_points: list[dict[str, object]] = []
+    reconciliation_points: list[dict[str, object]] = []
+    execution_records: list[dict[str, object]] = []
+    total_turnover = 0.0
+    total_cost = 0.0
+    first_processed_event = True
+
+    for event_date in event_dates:
+        if event_date < first_execution_date:
+            continue
+        due_executions = executions_by_date.get(event_date, [])
+        active_before = [
+            instrument_id
+            for instrument_id, value in risky_values.items()
+            if abs(value) > 1e-12
+        ]
+        complete_return_date = bool(active_before) and all(
+            event_date in returns_by_instrument[instrument_id].index
+            for instrument_id in active_before
+        )
+        if not due_executions and not complete_return_date:
+            if not active_before and event_date == as_of_date:
+                complete_return_date = True
+            else:
+                continue
+
+        if due_executions and active_before and not complete_return_date:
+            missing_instruments = sorted(
+                instrument_id
+                for instrument_id in active_before
+                if event_date not in returns_by_instrument[instrument_id].index
+            )
+            missing_label = ", ".join(missing_instruments)
+            for decision in due_executions:
+                decision_date = str(decision.get("decision_date") or event_date.isoformat())
+                reason = (
+                    f"{event_date.isoformat()} execution skipped because pre-trade holdings "
+                    f"lack a complete EOD return observation: {missing_label}."
+                )
+                skipped_executions.append({"date": decision_date, "reason": reason})
+                replay_warnings.append(reason)
+            # A stale pre-trade NAV is not an executable valuation.  Keep the
+            # existing holdings and wait for their next complete observation;
+            # the skipped target is disclosed through point-in-time coverage.
+            continue
+
+        prior_nav = nav_value
+        elapsed_days = max((event_date - previous_event_date).days, 0)
+        if artificial_anchor and first_processed_event:
+            elapsed_days = 0
+        cash_return = (
+            (1.0 + cash_yield_annual) ** (elapsed_days / 365.25) - 1.0
+            if elapsed_days > 0
+            else 0.0
+        )
+        cash_profit = cash_value * cash_return
+        cash_value += cash_profit
+        cumulative_contribution[SYSTEM_CASH_TARGET_MEMBER_ID]["value"] = (
+            float(cumulative_contribution[SYSTEM_CASH_TARGET_MEMBER_ID]["value"] or 0.0)
+            + cash_profit
+        )
+
+        # Registry observations are EOD period-end values.  Existing holdings
+        # earn the return ending on this date before an EOD rebalance is
+        # applied; a position bought at this date cannot consume the
+        # close-to-close return that ended at the execution observation.
+        if complete_return_date:
+            for instrument_id in active_before:
+                instrument_return = _safe_float(
+                    returns_by_instrument[instrument_id].get(event_date)
+                )
+                if instrument_return is None:
+                    raise ValueError(
+                        f"{event_date.isoformat()} has an invalid return for {instrument_id}."
+                    )
+                instrument_profit = risky_values[instrument_id] * instrument_return
+                risky_values[instrument_id] += instrument_profit
+                top_id, top_label = top_lookup.get(
+                    instrument_id, (None, "Unassigned")
+                )
+                top_key = top_id or "__unassigned__"
+                sleeve = cumulative_contribution.setdefault(
+                    top_key,
+                    {
+                        "top_sleeve_id": top_id,
+                        "top_sleeve_label": top_label,
+                        "value": 0.0,
+                    },
+                )
+                sleeve["value"] = float(sleeve["value"] or 0.0) + instrument_profit
+
+        for decision in due_executions:
+            nav_before_trade = cash_value + sum(risky_values.values())
+            if nav_before_trade <= 0.0:
+                raise ValueError(
+                    f"{event_date.isoformat()} backtest NAV became non-positive before execution."
+                )
+            target_weight_map = dict(decision.get("target_weight_map") or {})
+            target_values = {
+                instrument_id: float(weight) * nav_before_trade
+                for instrument_id, weight in target_weight_map.items()
+            }
+            all_instruments = set(risky_values).union(target_values)
+            trades = {
+                instrument_id: target_values.get(instrument_id, 0.0)
+                - risky_values.get(instrument_id, 0.0)
+                for instrument_id in all_instruments
+            }
+            buy_amount = sum(max(amount, 0.0) for amount in trades.values())
+            sell_amount = sum(max(-amount, 0.0) for amount in trades.values())
+            current_cash_weight = cash_value / nav_before_trade
+            target_cash_weight = 1.0 - sum(target_weight_map.values())
+            cash_leg = abs(target_cash_weight - current_cash_weight)
+            buy_turnover = buy_amount / nav_before_trade
+            sell_turnover = sell_amount / nav_before_trade
+            one_way_turnover = 0.5 * (buy_turnover + sell_turnover + cash_leg)
+            commission_cost = (buy_amount + sell_amount) * commission_bps / 10_000.0
+            tax_cost = sell_amount * tax_bps / 10_000.0
+            slippage_cost = (buy_amount + sell_amount) * slippage_bps / 10_000.0
+            execution_cost = commission_cost + tax_cost + slippage_cost
+
+            risky_values = {
+                instrument_id: value
+                for instrument_id, value in target_values.items()
+                if abs(value) > 1e-12
+            }
+            cash_value -= sum(trades.values()) + execution_cost
+            nav_after_trade = cash_value + sum(risky_values.values())
+            if nav_after_trade <= 0.0:
+                raise ValueError(
+                    f"{event_date.isoformat()} backtest NAV became non-positive after execution costs."
+                )
+            decision_top_lookup = {
+                str(item.get("instrument_id") or ""): (
+                    str(item.get("top_sleeve_id") or "") or None,
+                    str(item.get("top_sleeve_label") or "Unassigned"),
+                )
+                for item in list(decision.get("target_weights") or [])
+                if isinstance(item, dict) and str(item.get("instrument_id") or "").strip()
+            }
+            top_lookup = decision_top_lookup
+            cumulative_contribution["__execution_costs__"]["value"] = (
+                float(cumulative_contribution["__execution_costs__"]["value"] or 0.0)
+                - execution_cost
+            )
+            total_turnover += one_way_turnover
+            total_cost += execution_cost
+            execution_records.append(
+                {
+                    "decision_date": decision.get("decision_date"),
+                    "scheduled_execution_date": decision.get(
+                        "scheduled_execution_date"
+                    ),
+                    "actual_execution_date": event_date.isoformat(),
+                    "taxonomy_configuration_version": decision.get(
+                        "taxonomy_configuration_version"
+                    ),
+                    "taxonomy_configuration_effective_from": decision.get(
+                        "taxonomy_configuration_effective_from"
+                    ),
+                    "target_weights": deepcopy(decision.get("target_weights") or []),
+                    "cash_target_weight": target_cash_weight,
+                    "risky_buy_turnover": buy_turnover,
+                    "risky_sell_turnover": sell_turnover,
+                    "cash_leg_turnover": cash_leg,
+                    "one_way_turnover": one_way_turnover,
+                    "commission_cost": commission_cost,
+                    "tax_cost": tax_cost,
+                    "slippage_cost": slippage_cost,
+                    "total_cost": execution_cost,
+                    "nav_before_execution": nav_before_trade,
+                    "nav_after_execution": nav_after_trade,
+                }
+            )
+
+        nav_value = cash_value + sum(risky_values.values())
+        if nav_value <= 0.0:
+            raise ValueError(
+                f"{event_date.isoformat()} backtest portfolio NAV became non-positive."
+            )
+        date_key = event_date.isoformat()
+        if abs(prior_nav) > 1e-12:
+            portfolio_returns[date_key] = nav_value / prior_nav - 1.0
+        points.append({"date": date_key, "value": nav_value})
+        weights_by_instrument = {
+            instrument_id: value / nav_value
+            for instrument_id, value in risky_values.items()
+        }
+        weight_points.append(
+            _backtest_sleeve_point(
+                event_date,
+                weights_by_instrument,
+                top_lookup,
+                cash_weight=cash_value / nav_value,
+            )
+        )
+        sleeves = [
+            deepcopy(item)
+            for item in cumulative_contribution.values()
+            if abs(float(_safe_float(item.get("value")) or 0.0)) > 1e-15
+        ]
+        sleeves.sort(
+            key=lambda item: abs(_safe_float(item.get("value")) or 0.0),
+            reverse=True,
+        )
+        contribution_points.append({"date": date_key, "sleeves": sleeves})
+        cumulative_total = sum(
+            float(_safe_float(item.get("value")) or 0.0)
+            for item in cumulative_contribution.values()
+        )
+        reconciliation_points.append(
+            {
+                "date": date_key,
+                "nav_change": nav_value - 1.0,
+                "linked_contribution": cumulative_total,
+                "residual": nav_value - 1.0 - cumulative_total,
+                "execution_cost_contribution": float(
+                    cumulative_contribution["__execution_costs__"]["value"] or 0.0
+                ),
+            }
+        )
+        previous_event_date = event_date
+        first_processed_event = False
+
+    return {
+        "points": points,
+        "returns": portfolio_returns,
+        "top_sleeve_weight_points": weight_points,
+        "top_sleeve_contribution_points": contribution_points,
+        "contribution_reconciliation_points": reconciliation_points,
+        "execution_records": execution_records,
+        "skipped_executions": skipped_executions,
+        "total_turnover": total_turnover,
+        "total_cost": total_cost,
+        "warnings": replay_warnings,
+    }
+
+
+def _normalized_window_points(
+    points: list[dict[str, object]],
+    *,
+    start_date: date,
+    end_date: date,
+) -> list[dict[str, object]]:
+    normalized = _normalized_backtest_points(points)
+    anchor_candidates = [
+        item
+        for item in normalized
+        if (_parse_iso_date(item.get("date")) or date.max) <= start_date
+    ]
+    if not anchor_candidates:
+        return []
+    anchor = anchor_candidates[-1]
+    anchor_value = _safe_float(anchor.get("value"))
+    if anchor_value is None or anchor_value <= 0.0:
+        return []
+    selected = [anchor]
+    selected.extend(
+        item
+        for item in normalized
+        if start_date < (_parse_iso_date(item.get("date")) or date.min) <= end_date
+    )
+    return [
+        {"date": item["date"], "value": float(item["value"]) / anchor_value}
+        for item in selected
+    ]
+
+
+def _rolling_holdout_metadata() -> dict[str, object]:
+    return {
+        "validation_method": "rolling_temporal_holdout",
+        "parameter_selection": "fixed_point_in_time_policy",
+        "parameter_optimization": False,
+        "methodology_note": (
+            "Training and test dates are temporal diagnostics over the already replayed "
+            "fixed-policy series. No parameters are fitted on the training window and "
+            "frozen for a separate test rerun; this is not walk-forward optimization."
+        ),
+    }
+
+
+def _build_walk_forward_validation(
+    points: list[dict[str, object]],
+    decisions: list[dict[str, object]],
+    *,
+    training_months: int,
+    test_months: int,
+) -> dict[str, object]:
+    """Build rolling temporal holdout diagnostics for a fixed policy.
+
+    The public key remains ``walk_forward`` for API compatibility, but the
+    payload explicitly identifies that this function does not optimize or
+    refit parameters inside each training window.
+    """
+    if training_months <= 0 or test_months <= 0:
+        raise ValueError("Walk-forward training and test windows must be positive.")
+    normalized = _normalized_backtest_points(points)
+    if len(normalized) < 2:
+        return {
+            **_rolling_holdout_metadata(),
+            "available": False,
+            "unavailable_reason": "Rolling temporal holdout requires a non-empty backtest history.",
+            "training_months": training_months,
+            "test_months": test_months,
+            "windows": [],
+            "oos_points": [],
+            "oos_metrics": _build_backtest_metrics([], {}),
+        }
+    first_date = _parse_iso_date(normalized[0].get("date"))
+    last_date = _parse_iso_date(normalized[-1].get("date"))
+    if first_date is None or last_date is None:
+        raise ValueError("Backtest points contain invalid dates.")
+    test_start = (
+        pd.Timestamp(first_date) + pd.DateOffset(months=training_months)
+    ).date()
+    if test_start >= last_date:
+        return {
+            **_rolling_holdout_metadata(),
+            "available": False,
+            "unavailable_reason": (
+                f"History is shorter than the configured {training_months}-month training window "
+                "plus an out-of-sample observation."
+            ),
+            "training_months": training_months,
+            "test_months": test_months,
+            "windows": [],
+            "oos_points": [],
+            "oos_metrics": _build_backtest_metrics([], {}),
+        }
+
+    windows: list[dict[str, object]] = []
+    aggregate_oos_returns: dict[str, float] = {}
+    while test_start < last_date:
+        test_end = min(
+            (
+                pd.Timestamp(test_start) + pd.DateOffset(months=test_months)
+            ).date()
+            - timedelta(days=1),
+            last_date,
+        )
+        training_start = (
+            pd.Timestamp(test_start) - pd.DateOffset(months=training_months)
+        ).date()
+        training_end = test_start - timedelta(days=1)
+        window_points = _normalized_window_points(
+            normalized,
+            start_date=test_start,
+            end_date=test_end,
+        )
+        window_returns = _backtest_return_map_from_points(window_points)
+        aggregate_oos_returns.update(window_returns)
+        versions = sorted(
+            {
+                int(item["taxonomy_configuration_version"])
+                for item in decisions
+                if item.get("taxonomy_configuration_version") is not None
+                and test_start
+                <= (_parse_iso_date(item.get("decision_date")) or date.min)
+                <= test_end
+            }
+        )
+        windows.append(
+            {
+                "training_start_date": training_start.isoformat(),
+                "training_end_date": training_end.isoformat(),
+                "test_start_date": test_start.isoformat(),
+                "test_end_date": test_end.isoformat(),
+                "configuration_versions_used": versions,
+                "points": window_points,
+                "metrics": _build_backtest_metrics(window_points, window_returns),
+                "available": len(window_points) >= 2,
+                "unavailable_reason": (
+                    None
+                    if len(window_points) >= 2
+                    else "No complete out-of-sample return observation exists in this test window."
+                ),
+            }
+        )
+        test_start = (
+            pd.Timestamp(test_start) + pd.DateOffset(months=test_months)
+        ).date()
+
+    oos_points: list[dict[str, object]] = []
+    oos_nav = 1.0
+    if aggregate_oos_returns:
+        first_oos_date = min(date.fromisoformat(item) for item in aggregate_oos_returns)
+        oos_points.append(
+            {
+                "date": (first_oos_date - timedelta(days=1)).isoformat(),
+                "value": oos_nav,
+            }
+        )
+        for date_key in sorted(aggregate_oos_returns):
+            oos_nav *= 1.0 + aggregate_oos_returns[date_key]
+            oos_points.append({"date": date_key, "value": oos_nav})
+    available_windows = [item for item in windows if bool(item.get("available"))]
+    return {
+        **_rolling_holdout_metadata(),
+        "available": bool(available_windows),
+        "unavailable_reason": (
+            None
+            if available_windows
+            else "No configured rolling holdout test window contains a complete out-of-sample return."
+        ),
+        "training_months": training_months,
+        "test_months": test_months,
+        "windows": windows,
+        "oos_points": oos_points,
+        "oos_metrics": _build_backtest_metrics(oos_points, aggregate_oos_returns),
+    }
+
+
+def _empty_point_in_time_backtest(
+    *,
+    rebalance_frequency: str,
+    as_of_date: date,
+    lookback_days: int,
+    warnings: list[str],
+    unavailable_reason: str,
+    methodology: dict[str, object],
+) -> dict[str, object]:
+    return {
+        "rebalance_frequency": rebalance_frequency,
+        "common_history_start_date": None,
+        "start_date": None,
+        "end_date": as_of_date.isoformat(),
+        "lookback_days": lookback_days,
+        "points": [],
+        "metrics": _build_backtest_metrics([], {}),
+        "top_sleeve_weight_points": [],
+        "top_sleeve_contribution_points": [],
+        "contribution_reconciliation_points": [],
+        "execution_records": [],
+        "total_turnover": 0.0,
+        "total_cost": 0.0,
+        "methodology": methodology,
+        "point_in_time_coverage": {
+            "status": "unavailable",
+            "decision_count": 0,
+            "first_decision_date": None,
+            "last_decision_date": None,
+            "configuration_versions_used": [],
+            "historical_instrument_count": 0,
+            "first_usable_observation_by_instrument": {},
+            "skipped_rebalances": [],
+            "unavailable_reason": unavailable_reason,
+        },
+        "robustness_results": [],
+        "walk_forward": {
+            **_rolling_holdout_metadata(),
+            "available": False,
+            "unavailable_reason": unavailable_reason,
+            "training_months": 0,
+            "test_months": 0,
+            "windows": [],
+            "oos_points": [],
+            "oos_metrics": _build_backtest_metrics([], {}),
+        },
+        "warnings": list(dict.fromkeys([*warnings, unavailable_reason])),
+    }
 
 
 def build_current_target_backtest(
@@ -4423,19 +5232,117 @@ def build_current_target_backtest(
     risk_model_config: dict[str, object] | None = None,
     rebalance_frequency: str = "1m",
     benchmark_instrument_id: str | None = None,
+    cash_yield_annual: float = 0.02,
+    commission_bps: float = 2.0,
+    tax_bps: float = 10.0,
+    slippage_bps: float = 5.0,
+    implementation_delay_days: int = 1,
+    robustness_scenarios: list[dict[str, object]] | None = None,
+    walk_forward_training_months: int = 24,
+    walk_forward_test_months: int = 6,
     current_solution: dict[str, object] | None = None,
     _instrument_detail_cache: dict[str, dict[str, object] | None] | None = None,
     _direct_fx_instruments: dict[tuple[str, str], str] | None = None,
 ) -> dict[str, object]:
     frequency = _normalize_backtest_rebalance_frequency(rebalance_frequency)
-    state = _build_taxonomy_state(
+    _validate_backtest_assumptions(
+        cash_yield_annual=cash_yield_annual,
+        commission_bps=commission_bps,
+        tax_bps=tax_bps,
+        slippage_bps=slippage_bps,
+        implementation_delay_days=implementation_delay_days,
+    )
+    warnings: list[str] = list(RESEARCH_BACKTEST_METHODOLOGY_WARNINGS)
+    methodology = {
+        "name": "Point-in-time target-policy simulation",
+        "point_in_time_universe": True,
+        "point_in_time_taxonomy": True,
+        "decision_rule": (
+            "Each scheduled rebalance solves weights from only the taxonomy configuration, "
+            "targets, and market observations available on that decision date."
+        ),
+        "execution_rule": (
+            "Targets execute at the EOD boundary after the configured calendar-day delay "
+            "on the first common return observation for all target instruments; the return "
+            "ending on that observation belongs to the pre-execution holdings, so new targets "
+            "start accruing from the next observation. If a pre-trade holding lacks a complete "
+            "observation at the boundary, the execution is skipped and disclosed as partial "
+            "point-in-time coverage rather than using a stale NAV."
+        ),
+        "cash_return_rule": "Cash compounds from the configured annual yield using actual calendar days / 365.25.",
+        "cost_rule": "Commission and slippage apply to risky buys and sells; tax applies to risky sells.",
+        "contribution_linking": (
+            "Daily component profit is accumulated in starting-NAV units; cash and execution costs "
+            "are explicit components and the residual reconciles to ending NAV minus one."
+        ),
+        "assumptions": {
+            "cash_yield_annual": cash_yield_annual,
+            "commission_bps": commission_bps,
+            "tax_bps": tax_bps,
+            "slippage_bps": slippage_bps,
+            "implementation_delay_days": implementation_delay_days,
+        },
+    }
+
+    revisions = taxonomy_configuration_revisions_through(
+        portfolio_id,
+        planning_taxonomy_id,
+        as_of_date,
+    )
+    if not revisions:
+        empty_backtest = _empty_point_in_time_backtest(
+            rebalance_frequency=frequency,
+            as_of_date=as_of_date,
+            lookback_days=lookback_days,
+            warnings=warnings,
+            unavailable_reason=(
+                "Backtest requires at least one effective taxonomy configuration revision on or before the analysis date."
+            ),
+            methodology=methodology,
+        )
+        return {
+            "backtest": empty_backtest,
+            "backtest_benchmark": None,
+            "backtest_relative_metrics": None,
+        }
+
+    shared_detail_cache = (
+        _instrument_detail_cache if _instrument_detail_cache is not None else {}
+    )
+    historical_instrument_ids = _historical_backtest_instrument_ids(
+        revisions,
+        instrument_detail_cache=shared_detail_cache,
+    )
+    if not historical_instrument_ids:
+        empty_backtest = _empty_point_in_time_backtest(
+            rebalance_frequency=frequency,
+            as_of_date=as_of_date,
+            lookback_days=lookback_days,
+            warnings=warnings,
+            unavailable_reason=(
+                "Backtest requires at least one instrument assignment in the effective taxonomy revision history."
+            ),
+            methodology=methodology,
+        )
+        return {
+            "backtest": empty_backtest,
+            "backtest_benchmark": None,
+            "backtest_relative_metrics": None,
+        }
+
+    shared_fx_instruments = (
+        _direct_fx_instruments
+        if _direct_fx_instruments is not None
+        else valuation_fx.fx_direct_instrument_map(get_platform_fx_rates())
+    )
+    final_state = _build_taxonomy_state(
         portfolio_id,
         planning_taxonomy_id=planning_taxonomy_id,
         as_of_date=as_of_date,
         frozen_taxonomy_node_ids=frozen_taxonomy_node_ids,
         top_sleeve_weight_bounds=top_sleeve_weight_bounds,
-        instrument_detail_cache=_instrument_detail_cache,
-        direct_fx_instruments=_direct_fx_instruments,
+        instrument_detail_cache=shared_detail_cache,
+        direct_fx_instruments=shared_fx_instruments,
     )
     solution = current_solution or solve_current_target_weights(
         portfolio_id,
@@ -4453,38 +5360,16 @@ def build_current_target_backtest(
         frozen_taxonomy_node_ids=frozen_taxonomy_node_ids,
         top_sleeve_weight_bounds=top_sleeve_weight_bounds,
         risk_model_config=risk_model_config,
-        _instrument_detail_cache=state.instrument_detail_cache,
-        _direct_fx_instruments=state.direct_fx_instruments,
+        _instrument_detail_cache=shared_detail_cache,
+        _direct_fx_instruments=shared_fx_instruments,
     )
-    active_leaf_ids = _active_backtest_leaf_ids(solution)
-    warnings: list[str] = list(RESEARCH_BACKTEST_METHODOLOGY_WARNINGS)
-    if not active_leaf_ids:
-        empty_backtest = {
-            "rebalance_frequency": frequency,
-            "common_history_start_date": None,
-            "start_date": None,
-            "end_date": as_of_date.isoformat(),
-            "lookback_days": lookback_days,
-            "points": [],
-            "metrics": _build_backtest_metrics([], {}),
-            "top_sleeve_weight_points": [],
-            "top_sleeve_contribution_points": [],
-            "warnings": list(
-                dict.fromkeys(
-                    [
-                        *warnings,
-                        "Backtest requires at least one solved instrument.",
-                    ]
-                )
-            ),
-        }
-        return {"backtest": empty_backtest, "backtest_benchmark": None, "backtest_relative_metrics": None}
 
     nav_by_instrument: dict[str, pd.Series] = {}
-    for instrument_id in active_leaf_ids:
+    first_observation_by_instrument: dict[str, str] = {}
+    for instrument_id in historical_instrument_ids:
         try:
             nav_series, instrument_warnings = _build_instrument_nav_series(
-                state,
+                final_state,
                 instrument_id=instrument_id,
                 start_date=date(1900, 1, 1),
                 end_date=as_of_date,
@@ -4496,6 +5381,7 @@ def build_current_target_backtest(
         if nav_series.empty:
             continue
         nav_by_instrument[instrument_id] = nav_series
+        first_observation_by_instrument[instrument_id] = nav_series.index[0].isoformat()
         warnings.extend(instrument_warnings)
 
     backtest_calculation_frequency = _resolved_backtest_calculation_frequency(solution, calculation_frequency)
@@ -4504,49 +5390,54 @@ def build_current_target_backtest(
         calculation_frequency=backtest_calculation_frequency,
         end_date=as_of_date,
     )
-    portfolio_first_dates = [series.index[0] for series in sampled_nav_by_instrument.values() if not series.empty]
-
+    portfolio_first_dates = [
+        series.index[0]
+        for series in sampled_nav_by_instrument.values()
+        if not series.empty
+    ]
     if not sampled_nav_by_instrument or not portfolio_first_dates:
-        empty_backtest = {
-            "rebalance_frequency": frequency,
-            "common_history_start_date": None,
-            "start_date": None,
-            "end_date": as_of_date.isoformat(),
-            "lookback_days": lookback_days,
-            "points": [],
-            "metrics": _build_backtest_metrics([], {}),
-            "top_sleeve_weight_points": [],
-            "top_sleeve_contribution_points": [],
-            "warnings": list(dict.fromkeys(warnings or ["Backtest has no usable instrument history."])),
+        empty_backtest = _empty_point_in_time_backtest(
+            rebalance_frequency=frequency,
+            as_of_date=as_of_date,
+            lookback_days=lookback_days,
+            warnings=warnings,
+            unavailable_reason="Backtest has no usable point-in-time instrument history.",
+            methodology=methodology,
+        )
+        return {
+            "backtest": empty_backtest,
+            "backtest_benchmark": None,
+            "backtest_relative_metrics": None,
         }
-        return {"backtest": empty_backtest, "backtest_benchmark": None, "backtest_relative_metrics": None}
 
-    common_start = max(portfolio_first_dates)
+    earliest_revision_date = min(
+        _parse_iso_date(item.get("effective_from")) or as_of_date
+        for item in revisions
+    )
     earliest_start_date = (
-        pd.Timestamp(common_start) + pd.DateOffset(months=_research_window_months(lookback_days))
+        pd.Timestamp(earliest_revision_date)
+        + pd.DateOffset(months=int(_research_window_months(lookback_days)))
     ).date()
     if earliest_start_date > as_of_date:
-        empty_backtest = {
-            "rebalance_frequency": frequency,
-            "common_history_start_date": common_start.isoformat(),
-            "start_date": None,
-            "end_date": as_of_date.isoformat(),
-            "lookback_days": lookback_days,
-            "points": [],
-            "metrics": _build_backtest_metrics([], {}),
-            "top_sleeve_weight_points": [],
-            "top_sleeve_contribution_points": [],
-            "warnings": list(
-                dict.fromkeys(
-                    [
-                        *warnings,
-                        "Backtest requires portfolio member common history at least as long as the selected risk window.",
-                    ]
-                )
+        empty_backtest = _empty_point_in_time_backtest(
+            rebalance_frequency=frequency,
+            as_of_date=as_of_date,
+            lookback_days=lookback_days,
+            warnings=warnings,
+            unavailable_reason=(
+                "Backtest revision history is shorter than the selected risk lookback window."
             ),
+            methodology=methodology,
+        )
+        return {
+            "backtest": empty_backtest,
+            "backtest_benchmark": None,
+            "backtest_relative_metrics": None,
         }
-        return {"backtest": empty_backtest, "backtest_benchmark": None, "backtest_relative_metrics": None}
-    returns_by_instrument = {instrument_id: _nav_returns(nav) for instrument_id, nav in sampled_nav_by_instrument.items()}
+    returns_by_instrument = {
+        instrument_id: _nav_returns(nav)
+        for instrument_id, nav in sampled_nav_by_instrument.items()
+    }
     rebal_dates = _backtest_rebalance_dates(
         start_date=earliest_start_date,
         end_date=as_of_date,
@@ -4557,43 +5448,19 @@ def build_current_target_backtest(
     if not rebal_dates:
         rebal_dates = [earliest_start_date]
 
-    portfolio_nav = 1.0
-    points: list[dict[str, object]] = []
-    portfolio_returns: dict[str, float] = {}
-    contribution_accumulator: dict[str, float] = defaultdict(float)
-    weight_points: list[dict[str, object]] = []
-    contribution_points: list[dict[str, object]] = []
-    last_period_weights: dict[str, float] | None = None
-    last_top_by_instrument: dict[str, tuple[str | None, str]] = {}
-
-    def sleeve_weight_point(
-        date_key: str,
-        weights_by_instrument: dict[str, float],
-        top_lookup: dict[str, tuple[str | None, str]],
-    ) -> dict[str, object]:
-        top_weight_by_key: dict[str, dict[str, object]] = {}
-        for instrument_id, weight in weights_by_instrument.items():
-            if abs(weight) <= 1e-12:
-                continue
-            top_id, top_label = top_lookup.get(instrument_id, (None, "Unassigned"))
-            top_key = top_id or "__unassigned__"
-            sleeve = top_weight_by_key.setdefault(
-                top_key,
-                {"top_sleeve_id": top_id, "top_sleeve_label": top_label, "value": 0.0},
-            )
-            sleeve["value"] = float(sleeve["value"] or 0.0) + float(weight)
-        return {
-            "date": date_key,
-            "sleeves": sorted(
-                top_weight_by_key.values(),
-                key=lambda item: abs(_safe_float(item.get("value")) or 0.0),
-                reverse=True,
-            ),
-        }
-
-    for index, rebalance_date in enumerate(rebal_dates):
-        period_end = rebal_dates[index + 1] if index + 1 < len(rebal_dates) else as_of_date
+    decisions: list[dict[str, object]] = []
+    skipped_rebalance_dates: list[dict[str, str]] = []
+    for rebalance_date in rebal_dates:
         try:
+            decision_state = _build_taxonomy_state(
+                portfolio_id,
+                planning_taxonomy_id=planning_taxonomy_id,
+                as_of_date=rebalance_date,
+                frozen_taxonomy_node_ids=frozen_taxonomy_node_ids,
+                top_sleeve_weight_bounds=top_sleeve_weight_bounds,
+                instrument_detail_cache=shared_detail_cache,
+                direct_fx_instruments=shared_fx_instruments,
+            )
             period_solution = solve_current_target_weights(
                 portfolio_id,
                 planning_taxonomy_id=planning_taxonomy_id,
@@ -4612,119 +5479,180 @@ def build_current_target_backtest(
                 risk_model_config=risk_model_config,
                 include_actuals=False,
                 _resolve_frozen_actuals=True,
-                _instrument_detail_cache=state.instrument_detail_cache,
-                _direct_fx_instruments=state.direct_fx_instruments,
+                _instrument_detail_cache=shared_detail_cache,
+                _direct_fx_instruments=shared_fx_instruments,
             )
         except ValueError as error:
             if not _is_rebalance_data_gap_error(error):
                 raise ValueError(f"{rebalance_date.isoformat()} rebalance failed: {error}") from error
-            if not points:
-                warnings.append(
-                    f"{rebalance_date.isoformat()} rebalance skipped during backtest warm-up: {error}"
-                )
-                continue
-            if last_period_weights is None:
-                raise ValueError(f"{rebalance_date.isoformat()} rebalance failed: {error}") from error
+            skipped_rebalance_dates.append(
+                {"date": rebalance_date.isoformat(), "reason": str(error)}
+            )
             warnings.append(
-                f"{rebalance_date.isoformat()} rebalance skipped; previous weights carried forward: {error}"
+                f"{rebalance_date.isoformat()} rebalance skipped during point-in-time warm-up: {error}"
             )
-            period_weights = dict(last_period_weights)
-            top_by_instrument = dict(last_top_by_instrument)
-            weight_points.append(
-                sleeve_weight_point(rebalance_date.isoformat(), period_weights, top_by_instrument)
-            )
-        else:
-            if not points:
-                points.append({"date": rebalance_date.isoformat(), "value": portfolio_nav})
+            continue
 
-            leaf_weights = {
-                str(row.get("member_id") or ""): _safe_float(row.get("target_weight")) or 0.0
-                for row in list(period_solution.get("leaf_targets") or [])
-                if str(row.get("member_type") or "") == TARGET_MEMBER_INSTRUMENT
-            }
-            top_by_instrument = {}
-            for row in list(period_solution.get("leaf_targets") or []):
-                if str(row.get("member_type") or "") != TARGET_MEMBER_INSTRUMENT:
-                    continue
-                instrument_id = str(row.get("member_id") or "")
-                top_id, top_label, _path = _top_sleeve_for_member(
-                    state,
-                    member_type=TARGET_MEMBER_INSTRUMENT,
-                    member_id=instrument_id,
-                )
-                top_by_instrument[instrument_id] = (top_id, top_label)
-            period_weights = {
-                instrument_id: float(weight)
-                for instrument_id, weight in leaf_weights.items()
-                if instrument_id in returns_by_instrument
-            }
-            weight_points.append(
-                sleeve_weight_point(rebalance_date.isoformat(), period_weights, top_by_instrument)
-            )
-
-        active_instruments = [
+        target_weight_map = _backtest_target_weights(period_solution)
+        missing_history = sorted(
             instrument_id
-            for instrument_id, weight in period_weights.items()
-            if abs(weight) > 1e-12 and instrument_id in returns_by_instrument
-        ]
-        candidate_dates = sorted(
+            for instrument_id in target_weight_map
+            if instrument_id not in returns_by_instrument
+        )
+        if missing_history:
+            raise ValueError(
+                f"{rebalance_date.isoformat()} rebalance targets instruments without usable point-in-time history: "
+                f"{', '.join(missing_history)}."
+            )
+        target_weights: list[dict[str, object]] = []
+        for instrument_id, weight in sorted(target_weight_map.items()):
+            top_id, top_label, top_path = _top_sleeve_for_member(
+                decision_state,
+                member_type=TARGET_MEMBER_INSTRUMENT,
+                member_id=instrument_id,
+            )
+            target_weights.append(
+                {
+                    "instrument_id": instrument_id,
+                    "target_weight": weight,
+                    "top_sleeve_id": top_id,
+                    "top_sleeve_label": top_label,
+                    "top_sleeve_path": top_path,
+                    "first_usable_observation_date": first_observation_by_instrument.get(
+                        instrument_id
+                    ),
+                }
+            )
+        decisions.append(
             {
-                return_date
-                for instrument_id in active_instruments
-                for return_date in returns_by_instrument.get(instrument_id, pd.Series(dtype="float64")).index
-                if rebalance_date < return_date <= period_end
+                "decision_date": rebalance_date.isoformat(),
+                "taxonomy_configuration_version": period_solution.get(
+                    "taxonomy_configuration_version"
+                ),
+                "taxonomy_configuration_effective_from": period_solution.get(
+                    "taxonomy_configuration_effective_from"
+                ),
+                "target_weights": target_weights,
+                "cash_target_weight": 1.0 - sum(target_weight_map.values()),
             }
         )
-        for return_date in candidate_dates:
-            if any(return_date not in returns_by_instrument[instrument_id].index for instrument_id in active_instruments):
-                continue
-            sleeve_contribution: dict[str, dict[str, object]] = {}
-            portfolio_return = 0.0
-            for instrument_id in active_instruments:
-                instrument_return = _safe_float(returns_by_instrument[instrument_id].get(return_date))
-                if instrument_return is None:
-                    portfolio_return = np.nan
-                    break
-                weighted_return = float(period_weights[instrument_id]) * instrument_return
-                portfolio_return += weighted_return
-                top_id, top_label = top_by_instrument.get(instrument_id, (None, "Unassigned"))
-                top_key = top_id or "__unassigned__"
-                sleeve = sleeve_contribution.setdefault(
-                    top_key,
-                    {"top_sleeve_id": top_id, "top_sleeve_label": top_label, "value": 0.0},
-                )
-                sleeve["value"] = float(sleeve["value"] or 0.0) + weighted_return
-            if not np.isfinite(portfolio_return):
-                continue
-            date_key = return_date.isoformat()
-            portfolio_returns[date_key] = float(portfolio_return)
-            period_growth = 1.0 + float(portfolio_return)
-            if period_growth <= 0.0:
-                raise ValueError(f"{return_date.isoformat()} backtest portfolio NAV became non-positive.")
-            for instrument_id in active_instruments:
-                instrument_return = _safe_float(returns_by_instrument[instrument_id].get(return_date)) or 0.0
-                period_weights[instrument_id] = (
-                    float(period_weights[instrument_id]) * (1.0 + instrument_return) / period_growth
-                )
-            portfolio_nav *= period_growth
-            points.append({"date": date_key, "value": portfolio_nav})
-            weight_points.append(sleeve_weight_point(date_key, period_weights, top_by_instrument))
-            sleeves_for_date = []
-            for top_key, sleeve in sleeve_contribution.items():
-                contribution_accumulator[top_key] += float(sleeve.get("value") or 0.0)
-                sleeves_for_date.append(
-                    {
-                        "top_sleeve_id": sleeve.get("top_sleeve_id"),
-                        "top_sleeve_label": sleeve.get("top_sleeve_label"),
-                        "value": contribution_accumulator[top_key],
-                    }
-                )
-            contribution_points.append({"date": date_key, "sleeves": sleeves_for_date})
-        last_period_weights = dict(period_weights)
-        last_top_by_instrument = dict(top_by_instrument)
+
+    if not decisions:
+        empty_backtest = _empty_point_in_time_backtest(
+            rebalance_frequency=frequency,
+            as_of_date=as_of_date,
+            lookback_days=lookback_days,
+            warnings=warnings,
+            unavailable_reason=(
+                "No scheduled rebalance had sufficient point-in-time taxonomy and market history to solve."
+            ),
+            methodology=methodology,
+        )
+        empty_backtest["point_in_time_coverage"]["skipped_rebalances"] = (
+            skipped_rebalance_dates
+        )
+        return {
+            "backtest": empty_backtest,
+            "backtest_benchmark": None,
+            "backtest_relative_metrics": None,
+        }
+
+    base_replay = _replay_backtest_decisions(
+        decisions,
+        returns_by_instrument=returns_by_instrument,
+        as_of_date=as_of_date,
+        cash_yield_annual=cash_yield_annual,
+        commission_bps=commission_bps,
+        tax_bps=tax_bps,
+        slippage_bps=slippage_bps,
+        implementation_delay_days=implementation_delay_days,
+    )
+    warnings.extend(list(base_replay.get("warnings") or []))
+    skipped_rebalance_dates.extend(
+        {
+            "date": str(item.get("date") or ""),
+            "reason": str(item.get("reason") or ""),
+        }
+        for item in list(base_replay.get("skipped_executions") or [])
+        if isinstance(item, dict)
+        and str(item.get("date") or "").strip()
+        and str(item.get("reason") or "").strip()
+    )
+    points = list(base_replay.get("points") or [])
+    portfolio_returns = dict(base_replay.get("returns") or {})
+
+    robustness_results: list[dict[str, object]] = []
+    base_metrics = _build_backtest_metrics(points, portfolio_returns)
+    base_period_return = _safe_float(base_metrics.get("period_return"))
+    seen_scenario_ids: set[str] = set()
+    for scenario in robustness_scenarios or []:
+        scenario_id = str((scenario or {}).get("scenario_id") or "").strip()
+        if not scenario_id:
+            raise ValueError("Every robustness scenario requires a scenario_id.")
+        if scenario_id in seen_scenario_ids:
+            raise ValueError(f"Duplicate robustness scenario_id: {scenario_id}.")
+        seen_scenario_ids.add(scenario_id)
+        scenario_inputs = {
+            "cash_yield_annual": float(
+                _safe_float((scenario or {}).get("cash_yield_annual")) or 0.0
+            ),
+            "commission_bps": float(
+                _safe_float((scenario or {}).get("commission_bps")) or 0.0
+            ),
+            "tax_bps": float(_safe_float((scenario or {}).get("tax_bps")) or 0.0),
+            "slippage_bps": float(
+                _safe_float((scenario or {}).get("slippage_bps")) or 0.0
+            ),
+            "implementation_delay_days": int(
+                _safe_float((scenario or {}).get("implementation_delay_days")) or 0
+            ),
+        }
+        scenario_replay = _replay_backtest_decisions(
+            decisions,
+            returns_by_instrument=returns_by_instrument,
+            as_of_date=as_of_date,
+            **scenario_inputs,
+        )
+        scenario_points = list(scenario_replay.get("points") or [])
+        scenario_returns = dict(scenario_replay.get("returns") or {})
+        scenario_metrics = _build_backtest_metrics(
+            scenario_points, scenario_returns
+        )
+        scenario_period_return = _safe_float(scenario_metrics.get("period_return"))
+        robustness_results.append(
+            {
+                "scenario_id": scenario_id,
+                "label": str((scenario or {}).get("label") or scenario_id),
+                **scenario_inputs,
+                "metrics": scenario_metrics,
+                "period_return_delta": (
+                    scenario_period_return - base_period_return
+                    if scenario_period_return is not None
+                    and base_period_return is not None
+                    else None
+                ),
+                "ending_value": (
+                    _safe_float(scenario_points[-1].get("value"))
+                    if scenario_points
+                    else None
+                ),
+                "total_turnover": _safe_float(
+                    scenario_replay.get("total_turnover")
+                ),
+                "total_cost": _safe_float(scenario_replay.get("total_cost")),
+                "warnings": list(scenario_replay.get("warnings") or []),
+            }
+        )
+
+    walk_forward = _build_walk_forward_validation(
+        points,
+        decisions,
+        training_months=walk_forward_training_months,
+        test_months=walk_forward_test_months,
+    )
 
     comparison_payload = _build_backtest_benchmark_comparison_from_state(
-        state,
+        final_state,
         benchmark_instrument_id=benchmark_instrument_id,
         portfolio_points=points,
         portfolio_returns=portfolio_returns,
@@ -4732,14 +5660,44 @@ def build_current_target_backtest(
 
     backtest = {
         "rebalance_frequency": frequency,
-        "common_history_start_date": common_start.isoformat(),
+        "common_history_start_date": min(portfolio_first_dates).isoformat(),
         "start_date": points[0]["date"] if points else None,
         "end_date": points[-1]["date"] if points else as_of_date.isoformat(),
         "lookback_days": lookback_days,
         "points": points,
-        "metrics": _build_backtest_metrics(points, portfolio_returns),
-        "top_sleeve_weight_points": weight_points,
-        "top_sleeve_contribution_points": contribution_points,
+        "metrics": base_metrics,
+        "top_sleeve_weight_points": list(
+            base_replay.get("top_sleeve_weight_points") or []
+        ),
+        "top_sleeve_contribution_points": list(
+            base_replay.get("top_sleeve_contribution_points") or []
+        ),
+        "contribution_reconciliation_points": list(
+            base_replay.get("contribution_reconciliation_points") or []
+        ),
+        "execution_records": list(base_replay.get("execution_records") or []),
+        "total_turnover": _safe_float(base_replay.get("total_turnover")) or 0.0,
+        "total_cost": _safe_float(base_replay.get("total_cost")) or 0.0,
+        "methodology": methodology,
+        "point_in_time_coverage": {
+            "status": "complete" if not skipped_rebalance_dates else "partial",
+            "decision_count": len(decisions),
+            "first_decision_date": decisions[0]["decision_date"],
+            "last_decision_date": decisions[-1]["decision_date"],
+            "configuration_versions_used": sorted(
+                {
+                    int(item["taxonomy_configuration_version"])
+                    for item in decisions
+                    if item.get("taxonomy_configuration_version") is not None
+                }
+            ),
+            "historical_instrument_count": len(historical_instrument_ids),
+            "first_usable_observation_by_instrument": first_observation_by_instrument,
+            "skipped_rebalances": skipped_rebalance_dates,
+            "unavailable_reason": None,
+        },
+        "robustness_results": robustness_results,
+        "walk_forward": walk_forward,
         "warnings": list(dict.fromkeys(warnings)),
     }
     return {
@@ -4855,6 +5813,12 @@ def solve_current_target_weights(
         "portfolio_id": portfolio_id,
         "planning_taxonomy_id": planning_taxonomy_id,
         "planning_taxonomy_name": state.taxonomy_name,
+        "taxonomy_configuration_version": state.configuration_version,
+        "taxonomy_configuration_effective_from": (
+            state.configuration_effective_from.isoformat()
+            if state.configuration_effective_from is not None
+            else None
+        ),
         "scope": {
             "taxonomy_node_id": comparator_taxonomy_node_id,
             "label": scope_result.scope_label,

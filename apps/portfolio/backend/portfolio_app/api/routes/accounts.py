@@ -228,6 +228,7 @@ def get_accounts_workspace(
         accounts=[AccountWorkspaceAccount.model_validate(item) for item in workspace["accounts"]],
         ledger_postings=[LedgerPostingRecord.model_validate(item) for item in workspace["ledger_postings"]],
         positions=[AccountPositionRecord.model_validate(item) for item in workspace["positions"]],
+        option_obligations=list(workspace.get("option_obligations") or []),
         linked_transactions_summary=summarize_transactions(linked_transactions_raw) if selected_account_id else None,
         linked_transactions=[
             serialize_transaction(portfolio_id, item, account_lookup) for item in linked_transactions_raw

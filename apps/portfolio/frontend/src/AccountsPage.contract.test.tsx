@@ -1,4 +1,4 @@
-import { screen } from '@testing-library/react'
+import { screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -7,7 +7,7 @@ import type {
   PortfolioAccountsWorkspaceResponse,
   PortfolioTransactionRecord,
 } from './lib/api'
-import { instrumentFixture } from './test/portfolioFixtures'
+import { fcnInstrumentFixture, instrumentFixture } from './test/portfolioFixtures'
 import { renderPortfolioPage } from './test/renderPortfolioPage'
 
 const apiMocks = vi.hoisted(() => ({
@@ -56,6 +56,7 @@ const fundInstrument = instrumentFixture({
 
 const fundSubscription = {
   transaction_id: 'txn-subscription-1',
+  transaction_sequence: 1,
   portfolio_id: '3',
   transaction_type: 'buy',
   flow_scope: 'internal',
@@ -110,6 +111,11 @@ function accountsWorkspaceFixture(): PortfolioAccountsWorkspaceResponse {
       securities_account_count: 1,
       ledger_posting_count: 1,
       position_line_count: 1,
+      valuation_coverage_state: 'complete',
+      valued_account_count: 2,
+      unvalued_account_count: 0,
+      open_option_obligation_count: 0,
+      derivative_liability_base: 0,
     },
     derivation_boundary: {
       ledger_postings: 'Derived from immutable source transactions.',
@@ -124,7 +130,12 @@ function accountsWorkspaceFixture(): PortfolioAccountsWorkspaceResponse {
         linked_transaction_count: 1,
         linked_posting_count: 1,
         derived_cash_balance: 750_000,
+        derivative_liability: 0,
+        derivative_liability_base: 0,
+        open_option_obligation_count: 0,
         pending_settlement: 0,
+        valuation_coverage_state: 'complete',
+        valuation_missing_components: [],
         account_value_base: 750_000,
         position_line_count: 0,
         position_market_value: 0,
@@ -136,7 +147,12 @@ function accountsWorkspaceFixture(): PortfolioAccountsWorkspaceResponse {
         linked_transaction_count: 1,
         linked_posting_count: 1,
         derived_cash_balance: 0,
+        derivative_liability: 0,
+        derivative_liability_base: 0,
+        open_option_obligation_count: 0,
         pending_settlement: -250_000,
+        valuation_coverage_state: 'complete',
+        valuation_missing_components: [],
         account_value_base: 300_000,
         position_line_count: 1,
         position_market_value: 300_000,
@@ -153,11 +169,17 @@ function accountsWorkspaceFixture(): PortfolioAccountsWorkspaceResponse {
         cost_basis: 250_000,
         last_price: 1.50096,
         market_value: 300_000,
+        carrying_value: null,
+        fair_value: 300_000,
+        fair_value_coverage_status: 'complete',
+        valuation_basis: 'market_quote',
+        coverage_status: 'price-nav-fx',
         currency: 'CNY',
         cost_basis_method: 'fifo',
         open_position_lot_count: 1,
       },
     ],
+    option_obligations: [],
     linked_transactions_summary: {
       total_transactions: 1,
       instrument_transactions: 1,
@@ -236,6 +258,44 @@ describe('Accounts rendered page contract', () => {
       'href',
       '/portfolios/3/transactions?account_id=broker-1&transaction_id=txn-subscription-1',
     )
+  })
+
+  it('does not present carried account positions as zero unrealized P&L', async () => {
+    const workspace = accountsWorkspaceFixture()
+    workspace.positions = [
+      {
+        ...workspace.positions[0],
+        position_id: 'position-fcn-1',
+        instrument_id: 'fcn-1',
+        instrument_ref: fcnInstrumentFixture({
+          instrument_id: 'fcn-1',
+          instrument_name: 'Carried FCN',
+          currency: 'CNY',
+        }),
+        cost_basis: 250_000,
+        last_price: null,
+        market_value: 250_000,
+        carrying_value: 250_000,
+        fair_value: null,
+        fair_value_coverage_status: 'unavailable',
+        valuation_basis: 'carried_cost',
+        coverage_status: 'event-cost',
+      },
+    ]
+    apiMocks.getPortfolioAccountsWorkspace.mockResolvedValue(workspace)
+    const user = userEvent.setup()
+
+    renderPortfolioPage(
+      <AccountsPage />,
+      '/portfolios/3/accounts?account_id=broker-1&account_tab=positions',
+      '/portfolios/:portfolioId/accounts',
+    )
+
+    const positionLink = await screen.findByRole('link', { name: 'FCN-ALPHA-1' })
+    const positionRow = positionLink.closest('tr')
+    expect(positionRow).toHaveTextContent('Carried FCN')
+    expect(within(positionRow!).getByText('N/A')).toBeInTheDocument()
+    expect(positionRow).not.toHaveTextContent('$0.00')
   })
 
   it('restores a ledger deep link without rendering the other account detail sections', async () => {

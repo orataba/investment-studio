@@ -9,6 +9,7 @@ import {
   transactionActivityLabel,
   transactionChangedFields,
   transactionDateLabels,
+  transactionTypeChoiceLabel,
 } from './lib/transactionPresentation'
 
 function instrument(
@@ -58,6 +59,7 @@ describe('transaction presentation', () => {
   it('exports numeric ledger facts as numeric spreadsheet cells', () => {
     const transaction = {
       transaction_id: 'txn-1',
+      transaction_sequence: 1,
       portfolio_id: 'portfolio-1',
       transaction_type: 'buy',
       flow_scope: 'internal_portfolio',
@@ -88,6 +90,7 @@ describe('transaction presentation', () => {
         instrument_type: 'fund',
         currency: 'CNY',
         identifiers: [],
+        broker_identifiers: [],
       },
       quantity: 100,
       source_quantity: '100',
@@ -155,6 +158,24 @@ describe('transaction presentation', () => {
     expect(transactionActivityLabel('buy', 'fund')).toBe('Subscription')
     expect(transactionActivityLabel('sell', 'fund')).toBe('Redemption')
     expect(transactionActivityLabel('buy', 'etf')).toBe('Buy')
+  })
+
+  it('uses all four canonical option action labels', () => {
+    expect(transactionActivityLabel('buy', 'option')).toBe('Option Buy to Open')
+    expect(transactionActivityLabel('sell', 'option')).toBe('Option Sell to Close')
+    expect(transactionActivityLabel('option_write', 'option')).toBe('Covered Call Sell to Open')
+    expect(transactionActivityLabel('option_buy_to_close', 'option')).toBe(
+      'Covered Call Buy to Close',
+    )
+    expect(transactionActivityLabel('buy', null, 'buy_to_close')).toBe(
+      'Covered Call Buy to Close',
+    )
+  })
+
+  it('names the option meaning of buy and sell before security selection', () => {
+    expect(transactionTypeChoiceLabel('buy')).toBe('Buy / Option Buy to Open')
+    expect(transactionTypeChoiceLabel('sell')).toBe('Sell / Option Sell to Close')
+    expect(transactionTypeChoiceLabel('buy', 'option')).toBe('Option Buy to Open')
   })
 
   it('summarizes only the fields changed by an audited correction', () => {

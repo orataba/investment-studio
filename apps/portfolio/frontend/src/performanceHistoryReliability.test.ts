@@ -41,8 +41,11 @@ describe('performance short-history reliability policy', () => {
   })
 
   it('wires period return, N/A annualization, and the observed-sample banner into Performance', () => {
-    expect(performancePageSource).toContain("metric: 'Period TWR'")
-    expect(performancePageSource).toContain("metric: 'Annualized TWR'")
+    expect(performancePageSource).toContain('metric: summary.performance_label')
+    expect(performancePageSource).toContain('if (operationalReturn)')
+    expect(performancePageSource).not.toContain('Annualized Operational Return')
+    expect(performancePageSource).not.toContain('Mean Daily Operational Return')
+    expect(performancePageSource).toContain("metric: 'Derivative Lifecycle Realized P&L'")
     expect(performancePageSource).toContain("metric: 'IRR / MWRR'")
     expect(performancePageSource).toContain("annualizedReturnEligible ? signedPercent(summary.annualized_twr) : 'N/A'")
     expect(performancePageSource).toContain('performance-history-reliability-warning')

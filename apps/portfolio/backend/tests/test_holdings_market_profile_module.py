@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
-from datetime import date
+from datetime import date, timedelta
 
 import pytest
 
@@ -47,6 +47,7 @@ def test_holding_summary_instrument_core_and_cash_identity_golden_contract() -> 
         "instrument_type": "equity",
         "currency": "USD",
         "identifiers": instrument_ref["identifiers"],
+        "broker_identifiers": [],
     }
     invalid_ref = {**instrument_ref, "asset_id": "noncanonical-a"}
     with pytest.raises(ValueError, match="non-canonical fields: asset_id"):
@@ -209,6 +210,248 @@ def test_pending_subscription_is_a_cash_account_receivable_not_cash_or_position(
         row["instrument_id"]
     )
     assert holdings_market_profile.is_pending_monetary_holding(row)
+
+
+def test_pending_settlement_identity_includes_both_operational_dates() -> None:
+    shared = {
+        "holding_kind": "settlement_receivable",
+        "account_id": "cash-main",
+        "economic_instrument_id": "equity-a",
+        "economic_instrument_ref": _instrument_ref(),
+        "currency": "USD",
+        "amount": 100.0,
+        "amount_base": 100.0,
+    }
+    rows = holdings_market_profile.build_pending_monetary_holding_rows(
+        pending_balances=[
+            {
+                **shared,
+                "settlement_date": "2026-07-25",
+                "pending_until_date": "2026-07-25",
+            },
+            {
+                **shared,
+                "settlement_date": "2026-07-28",
+                "pending_until_date": "2026-07-28",
+            },
+        ],
+        as_of_date=date(2026, 7, 24),
+        base_currency="USD",
+        direct_fx_instruments={},
+        instrument_detail_cache={},
+        cash_day_change=lambda **_kwargs: (0.0, 0.0),
+    )
+
+    assert len(rows) == 2
+    assert len({str(row["instrument_id"]) for row in rows}) == 2
+
+
+def _option_ref(
+    instrument_id: str,
+    *,
+    expiry_date: str,
+    strike: str,
+) -> dict[str, object]:
+    return {
+        "instrument_id": instrument_id,
+        "instrument_name": instrument_id,
+        "instrument_type": "option",
+        "currency": "USD",
+        "identifiers": [],
+        "broker_identifiers": [
+            {
+                "broker": "Test Broker",
+                "identifier_type": "contract_id",
+                "identifier_value": f"TEST-{instrument_id}",
+                "is_primary": True,
+            }
+        ],
+        "option_contract": {
+            "underlying_instrument_id": "equity-a",
+            "option_type": "call",
+            "expiry_date": expiry_date,
+            "strike": strike,
+            "contract_multiplier": "100",
+            "settlement_type": "physical",
+            "contract_currency": "USD",
+        },
+        "corporate_action_adjustment_policy": {
+            "policy_type": "exchange_rules",
+            "authority_reference": "Test exchange rules",
+            "quantity_rounding": "exact",
+            "adjust_strike": True,
+            "adjust_multiplier": True,
+            "adjust_deliverable": True,
+        },
+    }
+
+
+def test_option_obligation_coverage_allocates_underlying_once_in_expiry_order() -> None:
+    obligations = []
+    for instrument_id, expiry_date, strike in (
+        ("option-near", "2026-01-10", "10"),
+        ("option-far", "2026-02-10", "20"),
+    ):
+        obligations.append(
+            {
+                "status": "open",
+                "account_id": "broker",
+                "option_instrument_id": instrument_id,
+                "related_underlying_id": "equity-a",
+                "contract_currency": "USD",
+                "remaining_quantity": 100.0,
+                "open_contract_quantity": 1.0,
+                "covered_underlying_quantity": 100.0,
+                "premium_received_gross": 300.0,
+                "premium_basis_remaining": 300.0,
+                "carrying_liability": 300.0,
+                "coverage_type": "covered_call",
+                "expiry_date": expiry_date,
+                "strike": strike,
+                "option_type": "call",
+                "contract_multiplier": 100.0,
+                "settlement_type": "physical",
+                "opened_at": "2026-01-01T10:00:00+08:00",
+                "instrument_ref": _option_ref(
+                    instrument_id,
+                    expiry_date=expiry_date,
+                    strike=strike,
+                ),
+            }
+        )
+
+    rows = holdings_market_profile.build_option_obligation_holding_rows(
+        obligations,
+        underlying_positions=[
+            {
+                "account_id": "broker",
+                "instrument_id": "equity-a",
+                "quantity": 150.0,
+            }
+        ],
+        as_of_date=date(2026, 1, 1),
+        base_currency="USD",
+        nav=10_000.0,
+        convert_amount_on=lambda amount, **_kwargs: (float(amount) * 2.0, False),
+    )
+
+    assert [row["instrument_id"] for row in rows] == ["option-near", "option-far"]
+    assert rows[0]["covered_underlying_quantity"] == pytest.approx(100.0)
+    assert rows[0]["uncovered_underlying_quantity"] == pytest.approx(0.0)
+    assert rows[0]["covered_ratio"] == pytest.approx(1.0)
+    assert rows[0]["assignment_notional"] == pytest.approx(1_000.0)
+    assert rows[0]["assignment_notional_base"] == pytest.approx(2_000.0)
+    assert rows[1]["covered_underlying_quantity"] == pytest.approx(50.0)
+    assert rows[1]["uncovered_underlying_quantity"] == pytest.approx(50.0)
+    assert rows[1]["covered_ratio"] == pytest.approx(0.5)
+    assert rows[1]["assignment_notional"] == pytest.approx(2_000.0)
+    assert rows[1]["assignment_notional_base"] == pytest.approx(4_000.0)
+    assert rows[1]["coverage_status"] == "uncovered-obligation"
+
+
+def test_operational_summary_expiry_boundaries_settlement_net_and_alerts() -> None:
+    as_of_date = date(2026, 1, 1)
+    obligation_rows = [
+        {
+            "line_id": f"option-{days}",
+            "holding_kind": "option_obligation",
+            "expiry_date": (as_of_date + timedelta(days=days)).isoformat(),
+            "open_contract_quantity": 1.0,
+            "required_underlying_quantity": 100.0,
+            "uncovered_underlying_quantity": 10.0 if days == 8 else 0.0,
+            "liability_value_base": 25.0,
+            "settlement_type": "physical",
+            "assignment_notional_base": 1_000.0,
+        }
+        for days in (0, 1, 7, 8, 30, 31, 90, 91)
+    ]
+    settlement_rows = [
+        {
+            "line_id": "receivable",
+            "holding_kind": "settlement_receivable",
+            "settlement_date": "2025-12-31",
+            "pending_status": "overdue",
+            "settlement_amount_base": 120.0,
+        },
+        {
+            "line_id": "payable",
+            "holding_kind": "settlement_payable",
+            "settlement_date": "2026-01-03",
+            "pending_status": "awaiting_settlement",
+            "settlement_amount_base": -40.0,
+        },
+    ]
+
+    result = holdings_market_profile.summarize_holdings_operational_status(
+        [*obligation_rows, *settlement_rows],
+        as_of_date=as_of_date,
+    )
+    summary = result["operational_summary"]
+    assert [
+        (bucket["bucket"], bucket["obligation_count"])
+        for bucket in summary["expiry_buckets"]
+    ] == [
+        ("expired_or_due", 1),
+        ("next_7_days", 2),
+        ("next_30_days", 2),
+        ("next_90_days", 2),
+        ("later", 1),
+    ]
+    assert summary["uncovered_obligation_count"] == 1
+    assert summary["uncovered_underlying_quantity"] == pytest.approx(10.0)
+    assert summary["assignment_exposure"]["strike_notional_base"] == pytest.approx(
+        8_000.0
+    )
+    assert summary["settlement_exposure"] == {
+        "pending_line_count": 2,
+        "receivable_base": 120.0,
+        "payable_base": 40.0,
+        "net_base": 80.0,
+        "earliest_settlement_date": "2025-12-31",
+        "overdue_line_count": 1,
+        "unavailable_base_line_count": 0,
+    }
+    alerts_by_code = {
+        str(alert["code"]): alert for alert in result["operational_alerts"]
+    }
+    assert set(alerts_by_code) == {
+        "uncovered_option_obligation",
+        "option_expiry_due",
+        "option_expiry_next_7_days",
+        "pending_settlement_overdue",
+    }
+    assert alerts_by_code["option_expiry_due"]["related_line_ids"] == [
+        "option-0"
+    ]
+    assert alerts_by_code["option_expiry_next_7_days"]["related_line_ids"] == [
+        "option-1",
+        "option-7",
+    ]
+
+    unavailable = holdings_market_profile.summarize_holdings_operational_status(
+        [
+            {
+                "line_id": "unconverted",
+                "holding_kind": "settlement_receivable",
+                "settlement_date": "2026-01-03",
+                "pending_status": "awaiting_settlement",
+                "settlement_amount_base": None,
+            }
+        ],
+        as_of_date=as_of_date,
+    )
+    assert unavailable["operational_summary"]["settlement_exposure"][
+        "net_base"
+    ] is None
+    assert unavailable["operational_alerts"] == [
+        {
+            "code": "pending_settlement_fx_unavailable",
+            "severity": "warning",
+            "title": "Settlement exposure conversion unavailable",
+            "message": "At least one pending settlement line cannot be converted to base currency.",
+            "related_line_ids": ["unconverted"],
+        }
+    ]
 
 
 def test_position_lot_aggregations_golden_contract() -> None:

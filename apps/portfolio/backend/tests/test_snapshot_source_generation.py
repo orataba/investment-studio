@@ -62,6 +62,63 @@ def test_stable_snapshot_refresh_persists_its_exact_source_generation() -> None:
         assert all(row.snapshot_json["source_generation"] == captured_generation for row in rows)
 
 
+def test_legacy_calculation_version_forces_full_snapshot_rebuild(monkeypatch) -> None:
+    result = daily_snapshots._run_portfolio_daily_snapshot_recalculation_synchronously(
+        "portfolio-ops"
+    )
+    assert result is not None
+
+    session_factory = get_session_factory()
+    with session_factory() as session:
+        state = session.get(PortfolioCalculationStateModel, "portfolio-ops")
+        latest = (
+            session.query(PortfolioDailySnapshotModel)
+            .filter(PortfolioDailySnapshotModel.portfolio_id == "portfolio-ops")
+            .order_by(PortfolioDailySnapshotModel.as_of_date.desc())
+            .first()
+        )
+        assert state is not None
+        assert latest is not None
+        legacy_payload = dict(latest.snapshot_json)
+        legacy_payload["calculation_version"] = "legacy-derivative-accounting"
+        latest.snapshot_json = legacy_payload
+        state.daily_snapshot_status = "current"
+        state.dirty_from = latest.as_of_date
+        session.commit()
+
+    original_builder = daily_snapshots.performance.build_daily_portfolio_snapshots
+    requested_start_dates: list[object] = []
+
+    def capture_rebuild_scope(*args, **kwargs):
+        requested_start_dates.append(kwargs.get("start_date"))
+        return original_builder(*args, **kwargs)
+
+    monkeypatch.setattr(
+        daily_snapshots.performance,
+        "build_daily_portfolio_snapshots",
+        capture_rebuild_scope,
+    )
+
+    daily_snapshots.ensure_portfolio_daily_snapshots("portfolio-ops")
+
+    assert requested_start_dates == [None]
+    with session_factory() as session:
+        rows = (
+            session.query(PortfolioDailySnapshotModel)
+            .filter(PortfolioDailySnapshotModel.portfolio_id == "portfolio-ops")
+            .all()
+        )
+        state = session.get(PortfolioCalculationStateModel, "portfolio-ops")
+        assert rows
+        assert state is not None
+        assert state.daily_snapshot_status == "current"
+        assert all(
+            row.snapshot_json["calculation_version"]
+            == daily_snapshots.DAILY_SNAPSHOT_CALCULATION_VERSION
+            for row in rows
+        )
+
+
 def test_source_generation_change_discards_first_output_then_replays(monkeypatch) -> None:
     assert (
         daily_snapshots._run_portfolio_daily_snapshot_recalculation_synchronously(

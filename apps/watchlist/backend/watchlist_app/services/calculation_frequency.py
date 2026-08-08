@@ -107,6 +107,27 @@ def _period_key(observation_date: date, frequency: CalculationFrequency) -> str:
     return observation_date.strftime("%Y-%m")
 
 
+def _calendar_period_distance(
+    previous: date,
+    current: date,
+    frequency: CalculationFrequency,
+) -> int | None:
+    """Return the number of natural periods between two observations.
+
+    Calendar-day thresholds are useful for daily data, but they can miss a
+    missing month when the surrounding observations happen to be near the
+    beginning/end of their months (for example January 31 -> March 1).  A
+    declared monthly series has an unambiguous natural-period index, so use it
+    to count missing months instead of relying on elapsed-day heuristics.
+    """
+
+    if frequency == "monthly":
+        return (current.year * 12 + current.month) - (
+            previous.year * 12 + previous.month
+        )
+    return None
+
+
 def resample_nav_points(
     nav_points: list[dict[str, Any]],
     frequency: CalculationFrequency,
@@ -196,9 +217,22 @@ def build_calculation_frequency_context(
         gap_count = len(missing_observation_dates)
         gap_detection_basis = f"market_calendar:{normalized_market_calendar}"
     else:
-        max_expected_gap = _EXPECTED_MAX_GAP_DAYS[resolved_frequency]
-        gap_count = len([gap for gap in gaps if gap > max_expected_gap])
-        gap_detection_basis = "calendar_day_threshold"
+        if resolved_frequency == "monthly":
+            missing_periods = 0
+            for previous, current in zip(calculation_points, calculation_points[1:]):
+                distance = _calendar_period_distance(
+                    previous["as_of_date"],
+                    current["as_of_date"],
+                    resolved_frequency,
+                )
+                if distance is not None and distance > 1:
+                    missing_periods += distance - 1
+            gap_count = missing_periods
+            gap_detection_basis = "calendar_month_period"
+        else:
+            max_expected_gap = _EXPECTED_MAX_GAP_DAYS[resolved_frequency]
+            gap_count = len([gap for gap in gaps if gap > max_expected_gap])
+            gap_detection_basis = "calendar_day_threshold"
     source_label = (
         f"registry expected {CALCULATION_FREQUENCY_LABELS[resolved_frequency].lower()} data"
         if normalized_expected_frequency

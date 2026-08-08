@@ -16,6 +16,7 @@ from portfolio_app.services.instrument_registry import (
     list_registry_instruments,
 )
 from portfolio_app.services import valuation_fx
+from portfolio_app.services.holdings_market_profile import resolve_position_valuation
 from portfolio_app.services.market_data import is_usable_market_data_point
 from portfolio_app.services.market_data import quote_policy_bases, resolve_quote_point
 from portfolio_app.services.transaction_dates import (
@@ -26,6 +27,12 @@ from portfolio_app.services.transaction_dates import (
     transaction_sort_key,
 )
 from portfolio_app.services.transaction_pricing import transaction_price_scale
+from portfolio_app.services.option_actions import resolve_option_action
+from portfolio_app.services.option_obligations import (
+    build_option_obligations,
+    derive_option_obligation_events,
+    option_contract_identity,
+)
 
 
 def _safe_float(value: object) -> float | None:
@@ -35,6 +42,15 @@ def _safe_float(value: object) -> float | None:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def _transaction_is_event_valued(transaction: dict[str, object]) -> bool:
+    instrument_ref = transaction.get("instrument_ref")
+    return (
+        isinstance(instrument_ref, dict)
+        and str(instrument_ref.get("instrument_type") or "").strip().lower()
+        in {"fcn", "option"}
+    )
 
 
 def _resolve_pricing_quote_map(
@@ -222,7 +238,7 @@ def _corporate_action_sort_key(event: dict[str, object]) -> tuple[str, int, str,
 
 def _transaction_timeline_sort_key(
     transaction: dict[str, object],
-) -> tuple[str, int, str, str, str, str]:
+) -> tuple[str, int, int, str, str, str, str]:
     trade_date = str(transaction.get("trade_date") or "")
     effective_date = transaction_performance_effective_date(transaction)
     acquisition_date = str(transaction.get("acquisition_date") or "")
@@ -234,6 +250,12 @@ def _transaction_timeline_sort_key(
     return (
         effective_date.isoformat() if effective_date is not None else trade_date,
         -1 if is_prior_opening_balance else 1,
+        # Physical lifecycle facts establish the transfer basis before the
+        # linked underlying leg, independent of source row order.
+        0
+        if str(transaction.get("lifecycle_event_type") or "")
+        in {"fcn_physical_settlement", "option_long_exercise", "option_assignment"}
+        else 1,
         str(transaction.get("trade_at") or ""),
         str(transaction.get("created_at") or ""),
         str(transaction.get("transaction_id") or ""),
@@ -442,8 +464,72 @@ def _transaction_has_ledger_activity_as_of(
     return activity_date is not None and activity_date <= as_of_date
 
 
+def _physical_lifecycle_types_by_group(
+    transactions: list[dict[str, object]],
+) -> dict[str, str]:
+    resolved: dict[str, str] = {}
+    for transaction in transactions:
+        event_group_id = str(transaction.get("event_group_id") or "").strip()
+        lifecycle_event_type = str(
+            transaction.get("lifecycle_event_type") or ""
+        ).strip()
+        if not event_group_id or lifecycle_event_type not in {
+            "fcn_physical_settlement",
+            "option_long_exercise",
+            "option_assignment",
+        }:
+            continue
+        previous = resolved.get(event_group_id)
+        if previous is not None and previous != lifecycle_event_type:
+            raise ValueError(
+                f"Physical event group '{event_group_id}' has conflicting lifecycle facts."
+            )
+        resolved[event_group_id] = lifecycle_event_type
+    return resolved
+
+
+def _fcn_terminal_values_by_group(
+    transactions: list[dict[str, object]],
+) -> dict[str, float]:
+    lifecycle_types = _physical_lifecycle_types_by_group(transactions)
+    fcn_group_ids = {
+        event_group_id
+        for event_group_id, lifecycle_type in lifecycle_types.items()
+        if lifecycle_type == "fcn_physical_settlement"
+    }
+    resolved: dict[str, float] = {}
+    for transaction in transactions:
+        event_group_id = str(transaction.get("event_group_id") or "").strip()
+        if (
+            event_group_id not in fcn_group_ids
+            or str(transaction.get("transaction_type") or "") != "buy"
+        ):
+            continue
+        terminal_value = _safe_float(transaction.get("gross_amount"))
+        if terminal_value is None or terminal_value <= 0:
+            raise ValueError(
+                "FCN physical settlement requires a positive delivered-position gross_amount as terminal value."
+            )
+        if event_group_id in resolved:
+            raise ValueError(
+                f"FCN physical event group '{event_group_id}' has multiple delivered-position legs."
+            )
+        resolved[event_group_id] = terminal_value
+
+    missing = sorted(fcn_group_ids - set(resolved))
+    if missing:
+        raise ValueError(
+            "FCN physical settlement requires one delivered-position buy with a terminal value: "
+            + ", ".join(missing)
+            + "."
+        )
+    return resolved
+
+
 def _position_recognition_bridge(
     transaction: dict[str, object],
+    *,
+    physical_lifecycle_type: str | None = None,
 ) -> dict[str, object] | None:
     transaction_type = str(transaction.get("transaction_type") or "")
     if transaction_type not in {"buy", "sell", "maturity_redemption"}:
@@ -465,7 +551,20 @@ def _position_recognition_bridge(
     gross_amount = _safe_float(transaction.get("gross_amount")) or 0.0
     fees = _safe_float(transaction.get("fees")) or 0.0
     taxes = _safe_float(transaction.get("taxes")) or 0.0
-    if transaction_type == "buy":
+    lifecycle_event_type = str(transaction.get("lifecycle_event_type") or "")
+    charge_only_physical_leg = lifecycle_event_type in {
+        "fcn_physical_settlement",
+        "option_long_exercise",
+    } or (
+        transaction_type == "buy"
+        and physical_lifecycle_type == "fcn_physical_settlement"
+    )
+    if charge_only_physical_leg:
+        # Physical FCN delivery transfers basis in kind.  A long-option
+        # lifecycle leg likewise carries no premium/strike cash; only explicit
+        # charges can settle before position recognition.
+        pending_amount = fees + taxes
+    elif transaction_type == "buy":
         pending_amount = gross_amount + fees + taxes
     else:
         pending_amount = -(gross_amount - fees - taxes)
@@ -750,6 +849,7 @@ def _build_position_state(
 ) -> dict[tuple[str, str], dict[str, object]]:
     position_state: dict[tuple[str, str], dict[str, object]] = {}
     position_transfer_lots_by_group: dict[str, list[dict[str, float]]] = {}
+    physical_lifecycle_by_group: dict[str, dict[str, object]] = {}
 
     resolved_actions = _resolved_corporate_actions(
         transactions,
@@ -761,6 +861,9 @@ def _build_position_state(
         for transaction in transactions
         if _transaction_is_recognized_as_of(transaction, as_of_date)
     ]
+    fcn_terminal_values_by_group = _fcn_terminal_values_by_group(
+        recognized_transactions
+    )
     timeline: list[tuple[str, dict[str, object]]] = [
         ("corporate_action", event) for event in resolved_actions
     ] + [
@@ -806,13 +909,67 @@ def _build_position_state(
             )
             continue
 
+        lifecycle_event_type = str(transaction.get("lifecycle_event_type") or "")
+        if (
+            transaction_type == "maturity_redemption"
+            and lifecycle_event_type
+            in {"fcn_physical_settlement", "option_long_exercise"}
+        ):
+            event_group_id = str(transaction.get("event_group_id") or "")
+            if not event_group_id:
+                raise ValueError(
+                    "Physical lifecycle settlement requires event_group_id."
+                )
+            released_basis, _ = _consume_position_state(
+                position_state,
+                account_id,
+                instrument_id,
+                quantity=quantity or 0.0,
+                cost_basis_method=cost_basis_method,
+                error_message=(
+                    "Physical lifecycle event quantity exceeds the derivative position."
+                ),
+            )
+            physical_lifecycle_by_group[event_group_id] = {
+                "event_type": lifecycle_event_type,
+                "source_instrument_id": instrument_id,
+                "related_instrument_id": transaction.get("related_instrument_id"),
+                "released_basis": released_basis,
+                "terminal_value": fcn_terminal_values_by_group.get(event_group_id),
+            }
+            continue
+
         if transaction_type == "buy":
+            event_group_id = str(transaction.get("event_group_id") or "")
+            physical_lifecycle = physical_lifecycle_by_group.get(event_group_id)
+            if physical_lifecycle is not None and str(
+                physical_lifecycle.get("related_instrument_id") or ""
+            ) != instrument_id:
+                raise ValueError(
+                    "Physical lifecycle event underlying does not match the linked buy."
+                )
+            transfer_type = str((physical_lifecycle or {}).get("event_type") or "")
+            transferred_basis = _safe_float(
+                (physical_lifecycle or {}).get("released_basis")
+            ) or 0.0
+            if transfer_type == "fcn_physical_settlement":
+                bought_cost_basis = _safe_float(
+                    (physical_lifecycle or {}).get("terminal_value")
+                ) or 0.0
+            elif transfer_type == "option_long_exercise":
+                bought_cost_basis = gross_amount + transferred_basis
+            else:
+                bought_cost_basis = (
+                    gross_amount
+                    if _transaction_is_event_valued(transaction)
+                    else gross_amount + fees + taxes
+                )
             _add_position_state(
                 position_state,
                 account_id,
                 instrument_id,
                 quantity=quantity or 0.0,
-                cost_basis=gross_amount + fees + taxes,
+                cost_basis=bought_cost_basis,
                 cost_basis_method=cost_basis_method,
             )
             continue
@@ -898,6 +1055,12 @@ def derive_ledger_postings(
     postings: list[dict[str, object]] = []
     position_state: dict[tuple[str, str], dict[str, object]] = {}
     position_transfer_lots_by_group: dict[str, list[dict[str, float]]] = {}
+    physical_lifecycle_by_group: dict[str, dict[str, object]] = {}
+    option_events_by_transaction: dict[str, list[dict[str, object]]] = defaultdict(list)
+    physical_lifecycle_types_by_group = _physical_lifecycle_types_by_group(
+        transactions
+    )
+    fcn_terminal_values_by_group = _fcn_terminal_values_by_group(transactions)
 
     def append_posting(
         transaction: dict[str, object],
@@ -912,6 +1075,9 @@ def derive_ledger_postings(
         recognition_start_date: date | None = None,
         explicit_effective_date: date | None = None,
         attribution_account_id: str | None = None,
+        liability_amount_delta: float | None = None,
+        realized_pnl_delta: float | None = None,
+        obligation_id: str | None = None,
     ) -> None:
         posting_currency = valuation_fx.required_currency(
             currency if currency is not None else transaction.get("currency"),
@@ -956,6 +1122,10 @@ def derive_ledger_postings(
                 "pending_amount_delta": pending_amount_delta,
                 "quantity_delta": quantity_delta,
                 "cost_basis_delta": cost_basis_delta,
+                "liability_amount_delta": liability_amount_delta,
+                "realized_pnl_delta": realized_pnl_delta,
+                "option_action": resolve_option_action(transaction),
+                "obligation_id": obligation_id,
                 "currency": posting_currency,
                 "transfer_group_id": transaction.get("transfer_group_id"),
                 "note": transaction.get("note"),
@@ -964,7 +1134,12 @@ def derive_ledger_postings(
         )
 
     for transaction in transactions:
-        bridge = _position_recognition_bridge(transaction)
+        bridge = _position_recognition_bridge(
+            transaction,
+            physical_lifecycle_type=physical_lifecycle_types_by_group.get(
+                str(transaction.get("event_group_id") or "")
+            ),
+        )
         if bridge is None:
             continue
         recognition_start_date = bridge["recognition_start_date"]
@@ -1006,6 +1181,13 @@ def derive_ledger_postings(
         for transaction in transactions
         if _transaction_is_recognized_as_of(transaction, as_of_date)
     ]
+    for event in derive_option_obligation_events(
+        recognized_transactions,
+        as_of_date=as_of_date,
+    ):
+        transaction_id = str(event.get("transaction_id") or "")
+        if transaction_id:
+            option_events_by_transaction[transaction_id].append(event)
     timeline: list[tuple[str, dict[str, object]]] = [
         ("corporate_action", event) for event in resolved_actions
     ] + [
@@ -1143,9 +1325,88 @@ def derive_ledger_postings(
                 )
             continue
 
+        lifecycle_event_type = str(transaction.get("lifecycle_event_type") or "")
+        if (
+            transaction_type == "maturity_redemption"
+            and lifecycle_event_type
+            in {"fcn_physical_settlement", "option_long_exercise"}
+        ):
+            event_group_id = str(transaction.get("event_group_id") or "")
+            if not event_group_id:
+                raise ValueError("Physical lifecycle settlement requires event_group_id.")
+            transferred_cost_basis, _ = _consume_position_state(
+                position_state,
+                account_id,
+                instrument_id,
+                quantity=quantity or 0.0,
+                cost_basis_method=cost_basis_method,
+                error_message="Physical lifecycle event quantity exceeds the derivative position.",
+            )
+            append_posting(
+                transaction,
+                posting_role="security_position",
+                account_id=account_id,
+                quantity_delta=-(quantity or 0.0),
+                cost_basis_delta=-transferred_cost_basis,
+                currency=currency,
+                realized_pnl_delta=(
+                    fcn_terminal_values_by_group[event_group_id]
+                    - fees
+                    - taxes
+                    - transferred_cost_basis
+                    if lifecycle_event_type == "fcn_physical_settlement"
+                    else None
+                ),
+            )
+            if isinstance(settlement_cash_account_id, str) and settlement_cash_account_id:
+                # FCN physical settlement has no principal cash leg.  Long
+                # option exercise likewise carries zero cash on the option
+                # lifecycle; the linked stock buy posts strike cash.
+                charge_cash = -(fees + taxes)
+                if abs(charge_cash) > 1e-12:
+                    append_posting(
+                        transaction,
+                        posting_role="security_redemption_cash",
+                        account_id=settlement_cash_account_id,
+                        cash_amount_delta=charge_cash,
+                        currency=currency,
+                    )
+            physical_lifecycle_by_group[event_group_id] = {
+                "event_type": lifecycle_event_type,
+                "source_instrument_id": instrument_id,
+                "related_instrument_id": transaction.get("related_instrument_id"),
+                "released_basis": transferred_cost_basis,
+                "terminal_value": fcn_terminal_values_by_group.get(event_group_id),
+                "source_transaction_id": transaction.get("transaction_id"),
+            }
+            continue
+
         if transaction_type == "buy":
             bought_quantity = quantity or 0.0
-            bought_cost_basis = gross_amount + fees + taxes
+            event_group_id = str(transaction.get("event_group_id") or "")
+            physical_lifecycle = physical_lifecycle_by_group.get(event_group_id)
+            if physical_lifecycle is not None and str(
+                physical_lifecycle.get("related_instrument_id") or ""
+            ) != instrument_id:
+                raise ValueError(
+                    "Physical lifecycle event underlying does not match the linked buy."
+                )
+            transfer_type = str((physical_lifecycle or {}).get("event_type") or "")
+            transferred_basis = _safe_float(
+                (physical_lifecycle or {}).get("released_basis")
+            ) or 0.0
+            if transfer_type == "fcn_physical_settlement":
+                bought_cost_basis = _safe_float(
+                    (physical_lifecycle or {}).get("terminal_value")
+                ) or 0.0
+            elif transfer_type == "option_long_exercise":
+                bought_cost_basis = gross_amount + transferred_basis
+            else:
+                bought_cost_basis = (
+                    gross_amount
+                    if _transaction_is_event_valued(transaction)
+                    else gross_amount + fees + taxes
+                )
             append_posting(
                 transaction,
                 posting_role="security_position",
@@ -1163,11 +1424,17 @@ def derive_ledger_postings(
                 cost_basis_method=cost_basis_method,
             )
             if isinstance(settlement_cash_account_id, str) and settlement_cash_account_id:
+                cash_amount = -(gross_amount + fees + taxes)
+                if transfer_type == "fcn_physical_settlement":
+                    # The linked buy is a deliverable, not a second principal
+                    # cash movement.  Only actual charges on this leg affect
+                    # cash; the FCN basis is transferred in kind.
+                    cash_amount = -(fees + taxes)
                 append_posting(
                     transaction,
                     posting_role="security_settlement_cash",
                     account_id=settlement_cash_account_id,
-                    cash_amount_delta=-(gross_amount + fees + taxes),
+                    cash_amount_delta=cash_amount,
                     currency=currency,
                 )
             continue
@@ -1208,6 +1475,53 @@ def derive_ledger_postings(
                     account_id=settlement_cash_account_id,
                     cash_amount_delta=gross_amount - fees - taxes,
                     currency=currency,
+                )
+            continue
+
+        option_action = resolve_option_action(transaction)
+        if option_action == "sell_to_open":
+            if isinstance(settlement_cash_account_id, str) and settlement_cash_account_id:
+                append_posting(
+                    transaction,
+                    posting_role="security_settlement_cash",
+                    account_id=settlement_cash_account_id,
+                    cash_amount_delta=gross_amount - fees - taxes,
+                    currency=currency,
+                )
+            for event in option_events_by_transaction.get(
+                str(transaction.get("transaction_id") or ""), []
+            ):
+                append_posting(
+                    transaction,
+                    posting_role="option_premium_liability",
+                    account_id=account_id,
+                    liability_amount_delta=float(event.get("liability_delta") or 0.0),
+                    realized_pnl_delta=float(event.get("realized_pnl_delta") or 0.0),
+                    currency=currency,
+                    obligation_id=str(event.get("obligation_id") or "") or None,
+                )
+            continue
+
+        if option_action == "buy_to_close":
+            if isinstance(settlement_cash_account_id, str) and settlement_cash_account_id:
+                append_posting(
+                    transaction,
+                    posting_role="security_settlement_cash",
+                    account_id=settlement_cash_account_id,
+                    cash_amount_delta=-(gross_amount + fees + taxes),
+                    currency=currency,
+                )
+            for event in option_events_by_transaction.get(
+                str(transaction.get("transaction_id") or ""), []
+            ):
+                append_posting(
+                    transaction,
+                    posting_role="option_liability_release",
+                    account_id=account_id,
+                    liability_amount_delta=float(event.get("liability_delta") or 0.0),
+                    realized_pnl_delta=float(event.get("realized_pnl_delta") or 0.0),
+                    currency=currency,
+                    obligation_id=str(event.get("obligation_id") or "") or None,
                 )
             continue
 
@@ -1292,6 +1606,23 @@ def derive_ledger_postings(
                     account_id=settlement_cash_account_id,
                     cash_amount_delta=gross_amount - fees - taxes,
                     currency=currency,
+                )
+            continue
+
+        if transaction_type == "lifecycle_event" and str(
+            transaction.get("lifecycle_event_type") or ""
+        ) in {"option_writer_expiry", "option_assignment"}:
+            for event in option_events_by_transaction.get(
+                str(transaction.get("transaction_id") or ""), []
+            ):
+                append_posting(
+                    transaction,
+                    posting_role="option_liability_release",
+                    account_id=account_id,
+                    liability_amount_delta=float(event.get("liability_delta") or 0.0),
+                    realized_pnl_delta=float(event.get("realized_pnl_delta") or 0.0),
+                    currency=currency,
+                    obligation_id=str(event.get("obligation_id") or "") or None,
                 )
             continue
 
@@ -1497,6 +1828,222 @@ def validate_transaction_position_history(
         account_cost_methods=account_cost_methods,
         corporate_actions=corporate_actions,
     )
+    # Rebuild the durable writer-obligation subledger as part of the same
+    # history validation.  This catches partial-close/expiry/assignment
+    # quantity errors before a transaction can be persisted.
+    derive_option_obligation_events(ordered_transactions)
+
+    # Option-writer facts are obligations rather than negative holdings.  The
+    # covered quantity must remain backed by the related stock/ETF throughout
+    # the transaction timeline.  Use the same replay model as NAV/ledger so
+    # validation cannot drift from reporting semantics.
+    transaction_prefix: list[dict[str, object]] = []
+    for transaction in ordered_transactions:
+        transaction_prefix.append(transaction)
+        transaction_type = str(transaction.get("transaction_type") or "")
+        lifecycle_event_type = str(transaction.get("lifecycle_event_type") or "")
+        account_id = str(transaction.get("account_id") or "")
+        instrument_id = str(transaction.get("instrument_id") or "")
+        related_instrument_id = str(
+            transaction.get("related_instrument_id") or ""
+        )
+        quantity = _safe_float(transaction.get("quantity")) or 0.0
+
+        if lifecycle_event_type == "fcn_knock_in":
+            available_fcn_quantity = estimate_position_quantity(
+                portfolio_id,
+                transaction_prefix,
+                account_id=account_id,
+                instrument_id=instrument_id,
+                account_cost_methods=account_cost_methods,
+                corporate_actions=corporate_actions,
+                as_of_date=_parse_iso_date(transaction.get("trade_date")),
+            )
+            if available_fcn_quantity <= 1e-9:
+                raise ValueError(
+                    "FCN knock-in requires an open account position as of trade_date."
+                )
+
+        option_action = resolve_option_action(transaction)
+        if option_action in {"sell_to_open", "buy_to_close"} or (
+            lifecycle_event_type in {"option_writer_expiry", "option_assignment"}
+        ):
+            affected_underlying_id = related_instrument_id
+        else:
+            # Ordinary stock/ETF activity affects coverage through its own
+            # instrument id.  In particular, a stock sale normally has no
+            # related_instrument_id and must not bypass the covered-call check.
+            affected_underlying_id = instrument_id
+        if not affected_underlying_id:
+            continue
+        obligation_rows = build_option_obligations(
+            transaction_prefix,
+            as_of_date=_parse_iso_date(transaction.get("trade_date")),
+        )
+        required_covered_quantity = sum(
+            _safe_float(row.get("covered_underlying_quantity")) or 0.0
+            for row in obligation_rows
+            if str(row.get("status") or "") == "open"
+            and str(row.get("account_id") or "") == account_id
+            and str(row.get("related_underlying_id") or "")
+            == affected_underlying_id
+        )
+        if required_covered_quantity <= 1e-9:
+            continue
+        available_quantity = estimate_position_quantity(
+            portfolio_id,
+            transaction_prefix,
+            account_id=account_id,
+            instrument_id=affected_underlying_id,
+            account_cost_methods=account_cost_methods,
+            corporate_actions=corporate_actions,
+            as_of_date=_parse_iso_date(transaction.get("trade_date")),
+        )
+        if required_covered_quantity > available_quantity + 1e-9:
+            raise ValueError(
+                "Covered-call obligations exceed the underlying account position."
+            )
+
+    grouped_transactions: dict[str, list[dict[str, object]]] = defaultdict(list)
+    for transaction in ordered_transactions:
+        event_group_id = str(transaction.get("event_group_id") or "")
+        if event_group_id:
+            grouped_transactions[event_group_id].append(transaction)
+
+    physical_lifecycle_types = {
+        "fcn_physical_settlement",
+        "option_long_exercise",
+        "option_assignment",
+    }
+    for event_group_id, grouped in grouped_transactions.items():
+        physical_events = [
+            transaction
+            for transaction in grouped
+            if str(transaction.get("lifecycle_event_type") or "")
+            in physical_lifecycle_types
+        ]
+        if len(physical_events) != 1 or len(grouped) != 2:
+            raise ValueError(
+                f"Physical event group '{event_group_id}' must contain exactly one "
+                "lifecycle fact and one underlying buy or sell."
+            )
+
+        transaction = physical_events[0]
+        lifecycle_event_type = str(transaction.get("lifecycle_event_type") or "")
+        related_instrument_id = str(
+            transaction.get("related_instrument_id") or ""
+        )
+        required_related_type = {
+            "fcn_physical_settlement": "buy",
+            "option_long_exercise": "buy",
+            "option_assignment": "sell",
+        }[lifecycle_event_type]
+        related_position_transactions = [
+            candidate
+            for candidate in grouped
+            if str(candidate.get("instrument_id") or "") == related_instrument_id
+            and str(candidate.get("account_id") or "")
+            == str(transaction.get("account_id") or "")
+            and str(candidate.get("transaction_type") or "")
+            == required_related_type
+            and candidate.get("trade_date") == transaction.get("trade_date")
+        ]
+        if len(related_position_transactions) != 1:
+            raise ValueError(
+                "Physical lifecycle event requires exactly one same-day linked "
+                "underlying position transaction in the same event_group_id."
+            )
+        related_position_transaction = related_position_transactions[0]
+        if lifecycle_event_type == "fcn_physical_settlement":
+            terminal_value = _safe_float(
+                related_position_transaction.get("gross_amount")
+            )
+            if terminal_value is None or terminal_value <= 0:
+                raise ValueError(
+                    "FCN physical settlement requires a positive delivered-position gross_amount as terminal value."
+                )
+            if related_position_transaction.get("currency") != transaction.get("currency"):
+                raise ValueError(
+                    "FCN physical settlement legs must use the same currency."
+                )
+        elif lifecycle_event_type == "option_long_exercise":
+            identity = option_contract_identity(transaction)
+            if identity.get("settlement_type") != "physical":
+                raise ValueError("Long option exercise requires physical settlement.")
+            if identity.get("option_type") not in {"call", "put"}:
+                raise ValueError("Long option exercise requires a valid option type.")
+            if str(identity.get("underlying_instrument_id")) != related_instrument_id:
+                raise ValueError(
+                    "Long option exercise underlying does not match related instrument."
+                )
+            contracts = _safe_float(transaction.get("quantity")) or 0.0
+            multiplier = _safe_float(identity.get("contract_multiplier")) or 0.0
+            delivered_quantity = _safe_float(related_position_transaction.get("quantity")) or 0.0
+            expected_delivered = contracts * multiplier
+            if abs(delivered_quantity - expected_delivered) > 1e-6:
+                raise ValueError(
+                    "Long option exercise quantity must match contract multiplier deliverable."
+                )
+            strike = _safe_float(identity.get("strike")) or 0.0
+            related_ref = (
+                related_position_transaction.get("instrument_ref")
+                if isinstance(related_position_transaction.get("instrument_ref"), dict)
+                else None
+            )
+            try:
+                underlying_scale = transaction_price_scale(related_ref)
+            except ValueError:
+                underlying_scale = 1.0
+            expected_strike_cash = delivered_quantity * strike * underlying_scale
+            actual_strike_cash = _safe_float(related_position_transaction.get("gross_amount")) or 0.0
+            if abs(actual_strike_cash - expected_strike_cash) > 1e-5:
+                raise ValueError(
+                    "Long option exercise strike cash does not match contract identity."
+                )
+        elif lifecycle_event_type == "option_assignment":
+            identity = option_contract_identity(transaction)
+            if identity.get("option_type") != "call" or identity.get("settlement_type") != "physical":
+                raise ValueError("Option assignment requires a physical call contract identity.")
+            if str(identity.get("underlying_instrument_id")) != related_instrument_id:
+                raise ValueError(
+                    "Option assignment underlying does not match related instrument."
+                )
+            if abs(
+                (_safe_float(related_position_transaction.get("quantity")) or 0.0)
+                - (_safe_float(transaction.get("quantity")) or 0.0)
+            ) > 1e-9:
+                raise ValueError(
+                    "Option assignment quantity must match the delivered stock quantity."
+                )
+            multiplier = _safe_float(identity.get("contract_multiplier")) or 0.0
+            covered_quantity = _safe_float(transaction.get("quantity")) or 0.0
+            contract_count = covered_quantity / multiplier if multiplier > 1e-9 else 0.0
+            if multiplier > 1e-9 and abs(contract_count - round(contract_count)) > 1e-6:
+                raise ValueError(
+                    "Option assignment quantity must be an integral contract deliverable."
+                )
+            strike = _safe_float(identity.get("strike")) or 0.0
+            related_ref = (
+                related_position_transaction.get("instrument_ref")
+                if isinstance(related_position_transaction.get("instrument_ref"), dict)
+                else None
+            )
+            try:
+                underlying_scale = transaction_price_scale(related_ref)
+            except ValueError:
+                underlying_scale = 1.0
+            expected_strike_cash = covered_quantity * strike * underlying_scale
+            actual_strike_cash = _safe_float(related_position_transaction.get("gross_amount")) or 0.0
+            if abs(actual_strike_cash - expected_strike_cash) > 1e-5:
+                raise ValueError(
+                    "Option assignment strike cash does not match contract identity."
+                )
+            if transaction_sort_key(transaction) >= transaction_sort_key(
+                related_position_transaction
+            ):
+                raise ValueError(
+                    "Option assignment must sort before the linked stock delivery."
+                )
 
     for transaction in ordered_transactions:
         transaction_type = str(transaction.get("transaction_type") or "")
@@ -1919,6 +2466,7 @@ def build_position_lots(
     }
     position_lots_by_key: dict[tuple[str, str], list[dict[str, object]]] = defaultdict(list)
     transfer_lot_slices_by_group: dict[str, list[dict[str, object]]] = {}
+    physical_lifecycle_by_group: dict[str, dict[str, object]] = {}
     all_position_lots: list[dict[str, object]] = []
     position_lot_by_id: dict[str, dict[str, object]] = {}
     lot_sequence = 0
@@ -1929,6 +2477,9 @@ def build_position_lots(
             if _transaction_is_recognized_as_of(transaction, as_of_date)
         ],
         key=transaction_sort_key,
+    )
+    fcn_terminal_values_by_group = _fcn_terminal_values_by_group(
+        sorted_transactions
     )
     resolved_actions = _resolved_corporate_actions(
         sorted_transactions,
@@ -2236,15 +2787,38 @@ def build_position_lots(
         cost_basis_method = _resolve_cost_basis_method(account_cost_methods, account_key)
 
         if transaction_type in {"opening_balance", "buy"} and resolved_instrument_id and quantity > 0:
+            event_group_id = str(transaction.get("event_group_id") or "")
+            physical_lifecycle = physical_lifecycle_by_group.get(event_group_id)
+            if physical_lifecycle is not None and str(
+                physical_lifecycle.get("related_instrument_id") or ""
+            ) != resolved_instrument_id:
+                raise ValueError(
+                    "Physical lifecycle event underlying does not match the linked buy."
+                )
             entry_cost_basis = gross_amount
             if transaction_type == "buy":
-                entry_cost_basis = gross_amount + fees + taxes
+                transfer_type = str((physical_lifecycle or {}).get("event_type") or "")
+                transferred_basis = _safe_float(
+                    (physical_lifecycle or {}).get("released_basis")
+                ) or 0.0
+                if transfer_type == "fcn_physical_settlement":
+                    entry_cost_basis = _safe_float(
+                        (physical_lifecycle or {}).get("terminal_value")
+                    ) or 0.0
+                elif transfer_type == "option_long_exercise":
+                    entry_cost_basis = gross_amount + transferred_basis
+                else:
+                    entry_cost_basis = (
+                        gross_amount
+                        if _transaction_is_event_valued(transaction)
+                        else gross_amount + fees + taxes
+                    )
             acquisition_date = (
                 str(transaction.get("acquisition_date") or "").strip()
                 if transaction_type == "opening_balance"
                 else position_effective_date_iso
             ) or position_effective_date_iso
-            append_position_lot(
+            opened_lot = append_position_lot(
                 target_account_id=account_key,
                 target_instrument_id=resolved_instrument_id,
                 instrument_ref=instrument_ref or {},
@@ -2259,6 +2833,21 @@ def build_position_lots(
                 entry_tax_amount=taxes if transaction_type == "buy" else 0.0,
                 entry_cost_basis=entry_cost_basis,
             )
+            if (
+                physical_lifecycle is not None
+                and str(physical_lifecycle.get("event_type") or "")
+                == "option_long_exercise"
+            ):
+                opened_lot["basis_transfer_event_group_id"] = event_group_id
+                opened_lot["transferred_derivative_basis"] = _safe_float(
+                    physical_lifecycle.get("released_basis")
+                ) or 0.0
+                opened_lot["basis_transfer_source_instrument_id"] = (
+                    physical_lifecycle.get("source_instrument_id")
+                )
+                opened_lot["expense_cash_amount"] = (
+                    _safe_float(opened_lot.get("expense_cash_amount")) or 0.0
+                ) + fees + taxes
             continue
 
         if transaction_type == "dividend_reinvestment" and resolved_instrument_id and quantity > 0:
@@ -2292,6 +2881,135 @@ def build_position_lots(
                 entry_tax_amount=0.0,
                 entry_cost_basis=gross_amount,
             )
+            continue
+
+        lifecycle_event_type = str(transaction.get("lifecycle_event_type") or "")
+        if (
+            transaction_type == "maturity_redemption"
+            and lifecycle_event_type
+            in {"fcn_physical_settlement", "option_long_exercise"}
+            and resolved_instrument_id
+            and quantity > 0
+        ):
+            event_group_id = str(transaction.get("event_group_id") or "")
+            if not event_group_id:
+                raise ValueError("Physical lifecycle settlement requires event_group_id.")
+            transfer_slices = _consume_position_lots(
+                position_lots_by_key,
+                account_id=account_key,
+                instrument_id=resolved_instrument_id,
+                quantity=quantity,
+                cost_basis_method=cost_basis_method,
+                error_message=(
+                    "Physical lifecycle event quantity exceeds the derivative position."
+                ),
+            )
+            released_basis = sum(
+                _safe_float(slice_item.get("cost_basis")) or 0.0
+                for slice_item in transfer_slices
+            )
+            terminal_value = (
+                fcn_terminal_values_by_group[event_group_id]
+                if lifecycle_event_type == "fcn_physical_settlement"
+                else None
+            )
+            terminal_value_allocations = _proportional_allocations(
+                terminal_value or 0.0,
+                [
+                    _safe_float(slice_item.get("quantity")) or 0.0
+                    for slice_item in transfer_slices
+                ],
+            )
+            terminal_proceeds_allocations = _proportional_allocations(
+                (terminal_value or 0.0) - fees - taxes,
+                [
+                    _safe_float(slice_item.get("quantity")) or 0.0
+                    for slice_item in transfer_slices
+                ],
+            )
+            for index, slice_item in enumerate(transfer_slices):
+                position_lot = slice_item["position_lot"]
+                matched_quantity = _safe_float(slice_item.get("quantity")) or 0.0
+                matched_cost_basis = _safe_float(slice_item.get("cost_basis")) or 0.0
+                if lifecycle_event_type == "fcn_physical_settlement":
+                    gross_proceeds = terminal_value_allocations[index]
+                    proceeds = terminal_proceeds_allocations[index]
+                    realized_pnl = proceeds - matched_cost_basis
+                    position_lot["realized_quantity"] = (
+                        _safe_float(position_lot.get("realized_quantity")) or 0.0
+                    ) + matched_quantity
+                    position_lot["realized_cost_basis"] = (
+                        _safe_float(position_lot.get("realized_cost_basis")) or 0.0
+                    ) + matched_cost_basis
+                    position_lot["realized_gross_proceeds"] = (
+                        _safe_float(position_lot.get("realized_gross_proceeds"))
+                        or 0.0
+                    ) + gross_proceeds
+                    position_lot["realized_proceeds"] = (
+                        _safe_float(position_lot.get("realized_proceeds")) or 0.0
+                    ) + proceeds
+                    position_lot["realized_pnl"] = (
+                        _safe_float(position_lot.get("realized_pnl")) or 0.0
+                    ) + realized_pnl
+                    cost_basis_released = matched_cost_basis
+                    basis_transferred = 0.0
+                    close_reason = "disposed"
+                else:
+                    gross_proceeds = 0.0
+                    proceeds = 0.0
+                    realized_pnl = 0.0
+                    position_lot["transferred_quantity"] = (
+                        _safe_float(position_lot.get("transferred_quantity")) or 0.0
+                    ) + matched_quantity
+                    position_lot["transferred_cost_basis"] = (
+                        _safe_float(position_lot.get("transferred_cost_basis")) or 0.0
+                    ) + matched_cost_basis
+                    cost_basis_released = 0.0
+                    basis_transferred = matched_cost_basis
+                    close_reason = "transferred"
+                realizations = position_lot.setdefault("realizations", [])
+                if isinstance(realizations, list):
+                    realizations.append(
+                        {
+                            "realization_id": f"{position_lot['position_lot_id']}-r{len(realizations) + 1}",
+                            "transaction_id": transaction_id,
+                            "transaction_type": transaction_type,
+                            "lifecycle_event_type": lifecycle_event_type,
+                            "trade_date": trade_date,
+                            "position_effective_date": position_effective_date_iso,
+                            "quantity": matched_quantity,
+                            "gross_proceeds": gross_proceeds,
+                            "proceeds": proceeds,
+                            "cost_basis_released": cost_basis_released,
+                            "basis_transferred": basis_transferred,
+                            "realized_pnl": realized_pnl,
+                            "event_group_id": event_group_id,
+                            "remaining_quantity_after": _safe_float(
+                                position_lot.get("remaining_quantity")
+                            )
+                            or 0.0,
+                            "remaining_cost_basis_after": _safe_float(
+                                position_lot.get("remaining_cost_basis")
+                            )
+                            or 0.0,
+                            "status_after": _position_lot_status(position_lot),
+                            "note": transaction.get("note"),
+                        }
+                    )
+                _touch_position_lot(position_lot, transaction_id)
+                _close_position_lot_if_needed(
+                    position_lot,
+                    close_date=position_effective_date_iso,
+                    close_reason=close_reason,
+                )
+            physical_lifecycle_by_group[event_group_id] = {
+                "event_type": lifecycle_event_type,
+                "source_instrument_id": resolved_instrument_id,
+                "related_instrument_id": transaction.get("related_instrument_id"),
+                "released_basis": released_basis,
+                "terminal_value": terminal_value,
+                "source_transaction_id": transaction_id,
+            }
             continue
 
         if transaction_type in {"sell", "maturity_redemption"} and resolved_instrument_id and quantity > 0:
@@ -2592,11 +3310,12 @@ def build_position_lots(
         holding_period_days = None
         if acquisition_date_value is not None and closed_at_value is not None:
             holding_period_days = max((closed_at_value - acquisition_date_value).days, 0)
-        current_market_value = valuation_fx.position_market_value(
+        instrument_price, current_market_value, _ = resolve_position_valuation(
             quantity=remaining_quantity,
-            last_price=instrument_price,
+            cost_basis=remaining_cost_basis,
             instrument_ref=instrument_ref,
-            price_scale=_pricing_scale(instrument_quote),
+            quoted_price=instrument_price,
+            quoted_price_scale=_pricing_scale(instrument_quote),
         )
 
         rendered_position_lots.append(
@@ -2734,7 +3453,18 @@ def build_portfolio_positions(
         if abs(quantity) <= 1e-9:
             continue
         pricing_quote = pricing_map.get(str(bucket.get("instrument_id") or ""))
-        last_price = _pricing_value(pricing_quote)
+        quoted_price = _pricing_value(pricing_quote)
+        last_price, market_value, _ = resolve_position_valuation(
+            quantity=quantity,
+            cost_basis=_safe_float(bucket.get("cost_basis")),
+            instrument_ref=(
+                bucket.get("instrument_ref")
+                if isinstance(bucket.get("instrument_ref"), dict)
+                else None
+            ),
+            quoted_price=quoted_price,
+            quoted_price_scale=_pricing_scale(pricing_quote),
+        )
         account_ids = sorted(account_id for account_id in bucket["account_ids"] if account_id)
         rendered_positions.append(
             {
@@ -2745,16 +3475,7 @@ def build_portfolio_positions(
                 "quantity": quantity,
                 "cost_basis": _safe_float(bucket.get("cost_basis")),
                 "last_price": last_price,
-                "market_value": valuation_fx.position_market_value(
-                    quantity=quantity,
-                    last_price=last_price,
-                    instrument_ref=(
-                        bucket.get("instrument_ref")
-                        if isinstance(bucket.get("instrument_ref"), dict)
-                        else None
-                    ),
-                    price_scale=_pricing_scale(pricing_quote),
-                ),
+                "market_value": market_value,
                 "currency": bucket["currency"],
                 "account_ids": account_ids,
                 "account_count": len(account_ids),
@@ -2881,6 +3602,41 @@ def build_account_workspace(
         else:
             pending_settlement[account_id] += cash_delta
 
+    # Written options are liabilities, not negative long positions.  Rebuild
+    # the obligation read model at the same boundary as cash and lots so the
+    # account NAV cannot recognize the received premium twice.
+    obligation_as_of = as_of_date or date.today()
+    option_obligation_rows = build_option_obligations(
+        boundary_transactions,
+        as_of_date=obligation_as_of,
+    )
+    open_option_obligation_rows = [
+        row
+        for row in option_obligation_rows
+        if str(row.get("status") or "") == "open"
+        and (_safe_float(row.get("remaining_quantity")) or 0.0) > 1e-9
+    ]
+    liability_by_account: dict[str, float] = defaultdict(float)
+    liability_base_by_account: dict[str, float] = defaultdict(float)
+    liability_fx_complete_by_account: dict[str, bool] = defaultdict(lambda: True)
+    for obligation in open_option_obligation_rows:
+        obligation_account_id = str(obligation.get("account_id") or "")
+        obligation_currency = str(
+            obligation.get("contract_currency")
+            or account_currency_map.get(obligation_account_id)
+            or ""
+        )
+        liability = _safe_float(obligation.get("carrying_liability")) or 0.0
+        liability_by_account[obligation_account_id] += liability
+        converted_liability = convert_to_base(
+            liability,
+            from_currency=obligation_currency,
+        )
+        if converted_liability is None and abs(liability) > 1e-9:
+            liability_fx_complete_by_account[obligation_account_id] = False
+        elif converted_liability is not None:
+            liability_base_by_account[obligation_account_id] += converted_liability
+
     pricing_map: dict[str, object] = {}
     position_lots = build_position_lots(
         portfolio_id,
@@ -2926,16 +3682,17 @@ def build_account_workspace(
             continue
         instrument_id = str(bucket["instrument_id"])
         pricing_quote = pricing_map.get(instrument_id)
-        last_price = _pricing_value(pricing_quote)
-        market_value = valuation_fx.position_market_value(
+        quoted_price = _pricing_value(pricing_quote)
+        last_price, market_value, event_valued = resolve_position_valuation(
             quantity=quantity,
-            last_price=last_price,
+            cost_basis=_safe_float(bucket.get("cost_basis")),
             instrument_ref=(
                 bucket["instrument_ref"]
                 if isinstance(bucket.get("instrument_ref"), dict)
                 else None
             ),
-            price_scale=_pricing_scale(pricing_quote),
+            quoted_price=quoted_price,
+            quoted_price_scale=_pricing_scale(pricing_quote),
         )
         account_id = str(bucket["account_id"])
         position_count_by_account[account_id] += 1
@@ -2963,8 +3720,25 @@ def build_account_workspace(
                 "instrument_ref": bucket["instrument_ref"],
                 "quantity": quantity,
                 "cost_basis": float(bucket["cost_basis"]),
-                "last_price": last_price,
+                "last_price": None if event_valued else last_price,
                 "market_value": market_value,
+                "carrying_value": market_value if event_valued else None,
+                "fair_value": None if event_valued else market_value,
+                "fair_value_coverage_status": (
+                    "unavailable"
+                    if event_valued or market_value is None
+                    else "complete"
+                ),
+                "valuation_basis": (
+                    "carried_cost" if event_valued else "market_quote"
+                ),
+                "coverage_status": (
+                    "event-cost"
+                    if event_valued and market_value is not None
+                    else "unavailable"
+                    if event_valued or market_value is None
+                    else "price-nav-fx"
+                ),
                 "currency": bucket["currency"],
                 "cost_basis_method": bucket["cost_basis_method"] or None,
                 "open_position_lot_count": int(bucket["open_position_lot_count"] or 0),
@@ -3014,15 +3788,28 @@ def build_account_workspace(
             if position_count_by_account[account_id]
             else 0.0
         )
+        derivative_liability_base = (
+            liability_base_by_account[account_id]
+            if liability_fx_complete_by_account[account_id]
+            else None
+        )
         account_value_base = (
-            derived_cash_balance_base + pending_settlement_base + account_position_market_value
+            derived_cash_balance_base
+            + pending_settlement_base
+            + account_position_market_value
+            - derivative_liability_base
             if (
                 derived_cash_balance_base is not None
                 and pending_settlement_base is not None
                 and account_position_market_value is not None
+                and derivative_liability_base is not None
             )
             else None
         )
+        if not liability_fx_complete_by_account[account_id]:
+            valuation_missing_components_by_account[account_id].add(
+                "derivative_liability_fx"
+            )
         missing_components = sorted(valuation_missing_components_by_account[account_id])
         if account_value_base is not None:
             valuation_coverage_state = "complete"
@@ -3047,6 +3834,13 @@ def build_account_workspace(
                 "derived_cash_balance_base": derived_cash_balance_base,
                 "pending_settlement": pending_settlement_amount,
                 "pending_settlement_base": pending_settlement_base,
+                "derivative_liability": liability_by_account[account_id],
+                "derivative_liability_base": derivative_liability_base,
+                "open_option_obligation_count": sum(
+                    1
+                    for row in open_option_obligation_rows
+                    if str(row.get("account_id") or "") == account_id
+                ),
                 "account_value_base": account_value_base,
                 "valuation_coverage_state": valuation_coverage_state,
                 "valuation_missing_components": missing_components,
@@ -3089,6 +3883,12 @@ def build_account_workspace(
             "valuation_coverage_state": valuation_coverage_state,
             "valued_account_count": valued_account_count,
             "unvalued_account_count": len(account_rows) - valued_account_count,
+            "open_option_obligation_count": len(open_option_obligation_rows),
+            "derivative_liability_base": (
+                sum(liability_base_by_account.values())
+                if all(liability_fx_complete_by_account.values())
+                else None
+            ),
         },
         "derivation_boundary": {
             "ledger_postings": "next_layer",
@@ -3101,6 +3901,15 @@ def build_account_workspace(
         "accounts": account_rows,
         "ledger_postings": visible_postings,
         "positions": visible_positions,
+        "option_obligations": (
+            open_option_obligation_rows
+            if not resolved_selected_account_id
+            else [
+                row
+                for row in open_option_obligation_rows
+                if str(row.get("account_id") or "") == resolved_selected_account_id
+            ]
+        ),
     }
 
 
@@ -3166,5 +3975,15 @@ def summarize_ledger_postings(postings: list[dict[str, object]]) -> dict[str, in
             1
             for posting in postings
             if posting.get("quantity_delta") is not None or posting.get("cost_basis_delta") is not None
+        ),
+        "liability_posting_count": sum(
+            1
+            for posting in postings
+            if posting.get("liability_amount_delta") is not None
+        ),
+        "option_realized_pnl_posting_count": sum(
+            1
+            for posting in postings
+            if posting.get("realized_pnl_delta") is not None
         ),
     }

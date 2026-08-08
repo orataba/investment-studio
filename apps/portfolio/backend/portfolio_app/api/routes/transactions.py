@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 from datetime import UTC, date, datetime
+from decimal import Decimal
 from uuid import NAMESPACE_URL, uuid4, uuid5
 
-from fastapi import APIRouter, Header, HTTPException, Query
+from fastapi import APIRouter, Header, HTTPException, Query, Response
+from sqlalchemy.exc import IntegrityError
+from portfolio_ops_instrument_core import OptionContractIdentity
 
 from portfolio_app.api.assemblers import (
-    serialize_transaction,
+    serialize_transactions,
     summarize_transactions,
 )
 from portfolio_app.api.contracts import (
@@ -23,6 +26,11 @@ from portfolio_app.api.contracts import (
     TransactionChangeLogResponse,
     TransactionChangeLogSummary,
     TransactionCreateRequest,
+    TransactionCsvImportRequest,
+    TransactionCsvImportResponse,
+    TransactionCsvPreviewRequest,
+    TransactionCsvPreviewResponse,
+    TransactionCsvPreviewRow,
     TransactionDeleteRequest,
     TransactionDeleteResponse,
     TransactionExecutionQuoteResponse,
@@ -40,6 +48,7 @@ from portfolio_app.services.ledger import (
     list_ledger_postings,
     summarize_ledger_postings,
     summarize_position_lots,
+    validate_transaction_position_history,
 )
 from portfolio_app.services.instrument_registry import (
     InstrumentRegistryError,
@@ -48,6 +57,13 @@ from portfolio_app.services.instrument_registry import (
 )
 from portfolio_app.services.execution_quotes import get_execution_quote_on_or_before
 from portfolio_app.services.transaction_pricing import transaction_price_scale
+from portfolio_app.services.option_actions import resolve_option_action
+from portfolio_app.services.transaction_csv import (
+    parse_transaction_csv,
+    render_transaction_csv,
+    render_transaction_csv_template,
+    transaction_csv_digest,
+)
 from portfolio_app.services.portfolio_store import (
     TransactionIdempotencyConflictError,
     TransactionIdempotencyKeyError,
@@ -70,17 +86,35 @@ from portfolio_app.services.transaction_dates import transaction_execution_sort_
 
 router = APIRouter()
 
-POSITION_ASSET_TYPES = {"fund", "etf", "bond", "equity", "other"}
-ACCOUNT_SCOPE_ENFORCED_TRANSACTION_TYPES = {"buy", "dividend_reinvestment", "opening_balance"}
+POSITION_ASSET_TYPES = {"fund", "etf", "bond", "equity", "fcn", "option", "other"}
+ACCOUNT_SCOPE_ENFORCED_TRANSACTION_TYPES = {
+    "buy",
+    "option_write",
+    "dividend_reinvestment",
+    "opening_balance",
+}
 INCOME_ASSET_TYPES: dict[str, set[str]] = {
     "dividend": {"fund", "etf", "equity"},
     "dividend_reinvestment": {"fund", "etf", "equity"},
-    "coupon": {"bond"},
+    "coupon": {"bond", "fcn"},
     "return_of_capital": {"fund", "etf", "equity"},
-    "maturity_redemption": {"bond"},
+    "maturity_redemption": {"bond", "fcn", "option"},
+    "option_write": {"option"},
+    "option_buy_to_close": {"option"},
+}
+LIFECYCLE_EVENT_INSTRUMENT_TYPES: dict[str, set[str]] = {
+    "fcn_knock_in": {"fcn"},
+    "fcn_knock_out": {"fcn"},
+    "fcn_maturity": {"fcn"},
+    "fcn_physical_settlement": {"fcn"},
+    "option_long_expiry": {"option"},
+    "option_long_exercise": {"option"},
+    "option_writer_expiry": {"option"},
+    "option_assignment": {"option"},
 }
 TRANSACTION_CREATE_IDEMPOTENCY_OPERATION = "create_transaction"
 INTERNAL_TRANSFER_IDEMPOTENCY_OPERATION = "create_internal_transfer"
+TRANSACTION_CSV_IMPORT_IDEMPOTENCY_OPERATION = "import_transactions_csv"
 
 
 def _request_payload_for_idempotency(
@@ -123,8 +157,97 @@ def _load_instrument_ref(instrument_id: str) -> dict[str, object]:
         "instrument_name": instrument["instrument_name"],
         "instrument_type": instrument["instrument_type"],
         "currency": instrument["currency"],
+        "option_contract": instrument.get("option_contract"),
         "identifiers": instrument.get("identifiers", []),
     }
+
+
+def _validated_option_contract_ref(
+    instrument_ref: dict[str, object] | None,
+) -> dict[str, object]:
+    raw = (
+        instrument_ref.get("option_contract")
+        if isinstance(instrument_ref, dict)
+        else None
+    )
+    if not isinstance(raw, dict):
+        raise HTTPException(
+            status_code=400,
+            detail="Option contract identity is required for option transactions.",
+        )
+    try:
+        contract = OptionContractIdentity.model_validate(raw)
+    except ValueError as error:
+        raise HTTPException(
+            status_code=400,
+            detail="Option contract identity is incomplete or invalid.",
+        ) from error
+    return contract.model_dump(mode="json")
+
+
+def _validate_option_contract_relationship(
+    *,
+    instrument_ref: dict[str, object] | None,
+    option_action: str | None,
+    lifecycle_event_type: str | None,
+    related_instrument_id: str | None,
+    quantity: Decimal | None,
+) -> None:
+    writer_fact = option_action in {"sell_to_open", "buy_to_close"} or (
+        lifecycle_event_type in {"option_writer_expiry", "option_assignment"}
+    )
+    option_lifecycle_event = lifecycle_event_type in {
+        "option_long_exercise",
+        "option_assignment",
+    }
+    if not writer_fact and not option_lifecycle_event:
+        return
+
+    contract = _validated_option_contract_ref(instrument_ref)
+
+    contract_underlying_id = str(
+        contract.get("underlying_instrument_id") or ""
+    ).strip()
+    if contract_underlying_id != str(related_instrument_id or "").strip():
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Option contract underlying does not match "
+                "related_instrument_id."
+            ),
+        )
+
+    if lifecycle_event_type == "option_long_exercise":
+        if contract.get("settlement_type") != "physical":
+            raise HTTPException(
+                status_code=400,
+                detail="Long option exercise requires physical settlement.",
+            )
+        return
+
+    if contract.get("option_type") != "call" or contract.get(
+        "settlement_type"
+    ) != "physical":
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "P0 option writer transactions support only physically settled "
+                "covered calls."
+            ),
+        )
+
+    covered_quantity = quantity or Decimal("0")
+    multiplier = Decimal(str(contract.get("contract_multiplier") or "0"))
+    if covered_quantity > 0 and multiplier > 0:
+        contract_count = covered_quantity / multiplier
+        if contract_count != contract_count.to_integral_value():
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "Option writer quantity must be an integral contract "
+                    "deliverable."
+                ),
+            )
 
 
 def _validate_instrument_amount_contract(
@@ -259,12 +382,12 @@ def _pending_transaction_sort_key(
     trade_at: str,
     created_at: str,
     settlement_date: date,
-) -> tuple[str, str, str, str, str]:
+) -> tuple[str, str, str, int, str]:
     return (
         trade_date.isoformat(),
         trade_at,
         created_at,
-        "~pending",
+        2**63 - 1,
         settlement_date.isoformat(),
     )
 
@@ -337,6 +460,14 @@ def _transfer_group_transaction_ids(portfolio_id: str, transfer_group_id: str) -
     ]
 
 
+def _event_group_transaction_ids(portfolio_id: str, event_group_id: str) -> list[str]:
+    return [
+        str(record.get("transaction_id") or "")
+        for record in list_transactions(portfolio_id)
+        if str(record.get("event_group_id") or "") == event_group_id
+    ]
+
+
 def _is_position_instrument_type(instrument_type: str) -> bool:
     return instrument_type in POSITION_ASSET_TYPES
 
@@ -388,6 +519,7 @@ def _validate_account_instrument_scope(
 def _validate_instrument_transaction_compatibility(
     *,
     transaction_type: str,
+    lifecycle_event_type: str | None,
     instrument_ref: dict[str, object] | None,
 ) -> None:
     if instrument_ref is None:
@@ -397,11 +529,45 @@ def _validate_instrument_transaction_compatibility(
     if not instrument_type:
         return
 
-    if transaction_type in {"buy", "sell", "opening_balance"}:
+    if lifecycle_event_type is not None:
+        allowed_event_instrument_types = LIFECYCLE_EVENT_INSTRUMENT_TYPES.get(
+            lifecycle_event_type
+        )
+        if (
+            allowed_event_instrument_types is None
+            or instrument_type not in allowed_event_instrument_types
+        ):
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"{lifecycle_event_type.replace('_', ' ').title()} is not "
+                    f"supported for instrument type '{instrument_type}'."
+                ),
+            )
+        if lifecycle_event_type in {"option_long_exercise", "option_assignment"}:
+            _validated_option_contract_ref(instrument_ref)
+
+    if transaction_type in {"buy", "sell", "opening_balance", "lifecycle_event"}:
         if not _is_position_instrument_type(instrument_type):
             raise HTTPException(
                 status_code=400,
                 detail=f"{transaction_type.replace('_', ' ').title()} is not supported for instrument type '{instrument_type}'.",
+            )
+        return
+
+    option_action = resolve_option_action(
+        transaction_type,
+        instrument_ref=instrument_ref,
+        instrument_type=instrument_type,
+    )
+    if option_action is not None:
+        if instrument_type != "option":
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"{transaction_type.replace('_', ' ').title()} requires an "
+                    "option instrument."
+                ),
             )
         return
 
@@ -515,6 +681,462 @@ def _validate_fx_conversion(
     return counterparty_account
 
 
+def _prepare_csv_transaction_values(
+    *,
+    portfolio_id: str,
+    payload: TransactionCreateRequest,
+    created_at: str,
+) -> dict[str, object]:
+    account = get_account(portfolio_id, payload.account_id)
+    if account is None:
+        raise HTTPException(status_code=400, detail="Account not found")
+
+    transaction_type = payload.transaction_type
+    lifecycle_event_type = payload.lifecycle_event_type
+    account_type = str(account.get("account_type") or "")
+    settlement_date = payload.settlement_date or payload.trade_date
+    resolved_position_effective_date = (
+        payload.position_effective_date or payload.trade_date
+        if transaction_type in POSITION_EFFECTIVE_COMMAND_TYPES
+        else None
+    )
+    _validate_account_fact_window(
+        account,
+        event_dates=[
+            payload.trade_date,
+            settlement_date,
+            *(
+                [resolved_position_effective_date]
+                if resolved_position_effective_date is not None
+                else []
+            ),
+        ],
+        role_label="Account",
+    )
+
+    deposit_only_types = {"deposit", "withdrawal", "interest", "fx_conversion"}
+    securities_only_types = {
+        "buy",
+        "sell",
+        "option_write",
+        "option_buy_to_close",
+        "dividend",
+        "dividend_reinvestment",
+        "coupon",
+        "return_of_capital",
+        "maturity_redemption",
+        "lifecycle_event",
+    }
+    if transaction_type in deposit_only_types and account_type != "deposit_account":
+        raise HTTPException(
+            status_code=400,
+            detail=f"{transaction_type.replace('_', ' ').title()} requires deposit_account.",
+        )
+    if transaction_type in securities_only_types and account_type != "securities_account":
+        raise HTTPException(
+            status_code=400,
+            detail=f"{transaction_type.replace('_', ' ').title()} requires securities_account.",
+        )
+
+    settlement_cash_account_id = payload.settlement_cash_account_id
+    settlement_cash_account = None
+    fx_conversion_target_account = None
+    if transaction_type == "fx_conversion":
+        settlement_cash_account_id = None
+        fx_conversion_target_account = _validate_fx_conversion(
+            portfolio_id=portfolio_id,
+            payload=payload,
+            account=account,
+        )
+
+    no_cash_long_option_closure = (
+        transaction_type == "maturity_redemption"
+        and lifecycle_event_type
+        in {"option_long_expiry", "option_long_exercise"}
+        and payload.gross_amount == 0
+        and payload.fees == 0
+        and payload.taxes == 0
+    )
+    requires_settlement_cash = (
+        transaction_type
+        in {
+            "buy",
+            "sell",
+            "option_write",
+            "option_buy_to_close",
+            "dividend",
+            "coupon",
+            "return_of_capital",
+            "maturity_redemption",
+        }
+        and not no_cash_long_option_closure
+    ) or (
+        transaction_type in {"fee", "tax"} and account_type == "securities_account"
+    )
+    if requires_settlement_cash:
+        settlement_cash_account_id = settlement_cash_account_id or str(
+            account.get("default_settlement_cash_account_id") or ""
+        )
+        if not settlement_cash_account_id:
+            raise HTTPException(
+                status_code=400,
+                detail="This transaction requires settlement cash account.",
+            )
+        settlement_cash_account = get_account(
+            portfolio_id,
+            settlement_cash_account_id,
+        )
+        if settlement_cash_account is None or str(
+            settlement_cash_account.get("account_type") or ""
+        ) != "deposit_account":
+            raise HTTPException(
+                status_code=400,
+                detail="Settlement cash account must be deposit_account.",
+            )
+        _validate_account_fact_window(
+            settlement_cash_account,
+            event_dates=[settlement_date],
+            role_label="Settlement cash account",
+        )
+    elif transaction_type == "opening_balance" and settlement_cash_account_id:
+        settlement_cash_account = get_account(
+            portfolio_id,
+            settlement_cash_account_id,
+        )
+
+    if fx_conversion_target_account is not None:
+        _validate_account_fact_window(
+            fx_conversion_target_account,
+            event_dates=[settlement_date],
+            role_label="FX conversion target account",
+        )
+
+    instrument_id = payload.instrument_id
+    instrument_ref = _load_instrument_ref(instrument_id) if instrument_id else None
+    option_action = resolve_option_action(
+        transaction_type,
+        instrument_ref=instrument_ref,
+    )
+    instrument_required_types = securities_only_types - {"dividend_reinvestment"}
+    if transaction_type in instrument_required_types and instrument_ref is None:
+        raise HTTPException(
+            status_code=400,
+            detail="This transaction type requires instrument.",
+        )
+    if transaction_type == "dividend_reinvestment" and instrument_ref is None:
+        raise HTTPException(
+            status_code=400,
+            detail="Dividend reinvestment requires instrument.",
+        )
+    if transaction_type == "opening_balance":
+        if account_type == "deposit_account" and instrument_id is not None:
+            raise HTTPException(
+                status_code=400,
+                detail="Cash opening balance must not reference instrument.",
+            )
+        if account_type == "securities_account" and instrument_ref is None:
+            raise HTTPException(
+                status_code=400,
+                detail="Instrument opening balance requires instrument.",
+            )
+    if (
+        transaction_type in {"fee", "tax"}
+        and account_type == "deposit_account"
+        and instrument_id is not None
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail="Deposit-account fee and tax must not reference instrument.",
+        )
+    if (
+        transaction_type in {"fee", "tax"}
+        and account_type == "deposit_account"
+        and settlement_cash_account_id is not None
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail="Deposit-account fee and tax must not carry settlement cash account.",
+        )
+
+    _validate_instrument_transaction_compatibility(
+        transaction_type=transaction_type,
+        lifecycle_event_type=lifecycle_event_type,
+        instrument_ref=instrument_ref,
+    )
+    _validate_account_instrument_scope(
+        account=account,
+        instrument_ref=instrument_ref,
+        transaction_type=transaction_type,
+    )
+    _validate_instrument_amount_contract(payload=payload, instrument_ref=instrument_ref)
+
+    related_instrument_id = payload.related_instrument_id
+    related_instrument_ref = (
+        _load_instrument_ref(related_instrument_id)
+        if related_instrument_id
+        else None
+    )
+    requires_related_underlying = option_action in {"sell_to_open", "buy_to_close"} or lifecycle_event_type in {
+        "fcn_physical_settlement",
+        "option_long_exercise",
+        "option_writer_expiry",
+        "option_assignment",
+    }
+    if requires_related_underlying and related_instrument_ref is None:
+        raise HTTPException(
+            status_code=400,
+            detail="This transaction requires related_instrument_id.",
+        )
+    if related_instrument_ref is not None:
+        if related_instrument_id == instrument_id:
+            raise HTTPException(
+                status_code=400,
+                detail="related_instrument_id must differ from instrument_id.",
+            )
+        related_type = str(
+            related_instrument_ref.get("instrument_type") or ""
+        ).strip().lower()
+        if related_type not in {"equity", "etf"}:
+            raise HTTPException(
+                status_code=400,
+                detail="related_instrument_id must reference an equity or ETF.",
+            )
+        if not requires_related_underlying:
+            raise HTTPException(
+                status_code=400,
+                detail="related_instrument_id is not supported for this transaction.",
+            )
+    _validate_option_contract_relationship(
+        instrument_ref=instrument_ref,
+        option_action=option_action,
+        lifecycle_event_type=lifecycle_event_type,
+        related_instrument_id=related_instrument_id,
+        quantity=payload.quantity,
+    )
+    if lifecycle_event_type in {
+        "fcn_physical_settlement",
+        "option_long_exercise",
+        "option_assignment",
+    } and not payload.event_group_id:
+        raise HTTPException(
+            status_code=400,
+            detail="Physical settlement and assignment require event_group_id.",
+        )
+
+    _validate_transaction_currency(
+        transaction_type=transaction_type,
+        transaction_currency=payload.currency.upper(),
+        account=account,
+        settlement_cash_account=settlement_cash_account,
+        instrument_ref=instrument_ref,
+    )
+    _validate_securities_account_currency_alignment(
+        account=account,
+        settlement_cash_account=settlement_cash_account,
+        instrument_ref=instrument_ref,
+    )
+
+    resolved_timing = resolve_trade_timing(
+        trade_date=payload.trade_date,
+        trade_time=payload.trade_time,
+    )
+    return {
+        "transaction_type": transaction_type,
+        "lifecycle_event_type": lifecycle_event_type,
+        "trade_date": payload.trade_date,
+        "trade_time": payload.trade_time,
+        "trade_at": resolved_timing["trade_at"],
+        "settlement_date": settlement_date,
+        "position_effective_date": resolved_position_effective_date,
+        "entitlement_date": payload.entitlement_date,
+        "acquisition_date": payload.acquisition_date,
+        "account_id": payload.account_id,
+        "settlement_cash_account_id": settlement_cash_account_id or None,
+        "instrument_id": instrument_id,
+        "instrument_ref": instrument_ref,
+        "option_action": option_action,
+        "quantity": payload.quantity,
+        "price": payload.price,
+        "gross_amount": payload.gross_amount,
+        "counter_amount": payload.counter_amount,
+        "fx_rate": payload.fx_rate,
+        "fees": payload.fees,
+        "fee_category": payload.fee_category,
+        "taxes": payload.taxes,
+        "currency": payload.currency,
+        "transfer_scope": None,
+        "transfer_object_type": None,
+        "transfer_group_id": None,
+        "counterparty_account_id": (
+            str(fx_conversion_target_account.get("account_id") or "")
+            if fx_conversion_target_account is not None
+            else payload.counterparty_account_id
+        ),
+        "source_system": payload.source_system,
+        "external_reference": payload.external_reference,
+        "event_group_id": payload.event_group_id,
+        "related_instrument_id": related_instrument_id,
+        "note": payload.note,
+        "created_at": created_at,
+    }
+
+
+def _build_transaction_csv_preview(
+    *,
+    portfolio_id: str,
+    request: TransactionCsvPreviewRequest,
+) -> tuple[TransactionCsvPreviewResponse, list[dict[str, object]]]:
+    if get_portfolio(portfolio_id) is None:
+        raise HTTPException(status_code=404, detail="Portfolio not found")
+    try:
+        headers, parsed_rows = parse_transaction_csv(
+            request.csv_text,
+            default_source_system=request.default_source_system,
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+
+    preview_digest = transaction_csv_digest(
+        request.csv_text,
+        default_source_system=request.default_source_system,
+    )
+    created_at = datetime.now(UTC).replace(microsecond=0).isoformat().replace(
+        "+00:00",
+        "Z",
+    )
+    response_rows: list[TransactionCsvPreviewRow] = []
+    prepared_records: list[dict[str, object]] = []
+    valid_payloads: list[TransactionCreateRequest] = []
+    for parsed_row in parsed_rows:
+        if parsed_row.transaction is None:
+            response_rows.append(
+                TransactionCsvPreviewRow(
+                    row_number=parsed_row.row_number,
+                    errors=list(parsed_row.errors),
+                )
+            )
+            continue
+        try:
+            values = _prepare_csv_transaction_values(
+                portfolio_id=portfolio_id,
+                payload=parsed_row.transaction,
+                created_at=created_at,
+            )
+        except (HTTPException, InstrumentRegistryError) as error:
+            detail = (
+                str(error.detail)
+                if isinstance(error, HTTPException)
+                else str(error)
+            )
+            response_rows.append(
+                TransactionCsvPreviewRow(
+                    row_number=parsed_row.row_number,
+                    transaction=parsed_row.transaction,
+                    errors=[detail],
+                )
+            )
+            continue
+        prepared_records.append(values)
+        valid_payloads.append(parsed_row.transaction)
+        response_rows.append(
+            TransactionCsvPreviewRow(
+                row_number=parsed_row.row_number,
+                transaction=parsed_row.transaction,
+            )
+        )
+
+    batch_errors: list[str] = []
+    existing_records = list_transactions(portfolio_id)
+    if len(prepared_records) == len(parsed_rows):
+        next_preview_sequence = max(
+            (
+                int(record["transaction_sequence"])
+                for record in existing_records
+            ),
+            default=0,
+        ) + 1
+        synthetic_records: list[dict[str, object]] = []
+        for index, values in enumerate(prepared_records, start=1):
+            synthetic_records.append(
+                {
+                    **values,
+                    "transaction_id": f"preview-{index:06d}",
+                    "transaction_sequence": next_preview_sequence + index - 1,
+                    "portfolio_id": portfolio_id,
+                }
+            )
+        try:
+            validate_transaction_position_history(
+                portfolio_id,
+                [*existing_records, *synthetic_records],
+                account_cost_methods=_account_cost_methods(portfolio_id),
+            )
+        except ValueError as error:
+            batch_errors.append(str(error))
+
+    source_identities: set[tuple[str, str]] = set()
+    duplicate_source_identities: set[tuple[str, str]] = set()
+    for payload in valid_payloads:
+        if payload.source_system and payload.external_reference:
+            identity = (payload.source_system, payload.external_reference)
+            if identity in source_identities:
+                duplicate_source_identities.add(identity)
+            source_identities.add(identity)
+    if duplicate_source_identities:
+        batch_errors.append(
+            "CSV repeats source_system/external_reference identities: "
+            + ", ".join(
+                f"{source}/{reference}"
+                for source, reference in sorted(duplicate_source_identities)
+            )
+            + "."
+        )
+    existing_source_identities = {
+        (
+            str(record.get("source_system") or ""),
+            str(record.get("external_reference") or ""),
+        )
+        for record in existing_records
+        if record.get("source_system") and record.get("external_reference")
+    }
+    already_imported_identities = source_identities & existing_source_identities
+    if already_imported_identities:
+        batch_errors.append(
+            "Source identities already exist in this portfolio: "
+            + ", ".join(
+                f"{source}/{reference}"
+                for source, reference in sorted(already_imported_identities)
+            )
+            + "."
+        )
+
+    warnings: list[str] = []
+    missing_source_identity_count = sum(
+        1
+        for payload in valid_payloads
+        if not payload.source_system or not payload.external_reference
+    )
+    if missing_source_identity_count:
+        warnings.append(
+            f"{missing_source_identity_count} row(s) lack a complete source identity; "
+            "only the batch Idempotency-Key protects replay."
+        )
+
+    row_error_count = sum(1 for row in response_rows if row.errors)
+    response = TransactionCsvPreviewResponse(
+        portfolio_id=portfolio_id,
+        preview_digest=preview_digest,
+        headers=list(headers),
+        row_count=len(response_rows),
+        valid_count=sum(1 for row in response_rows if not row.errors),
+        error_count=row_error_count + len(batch_errors),
+        warnings=warnings,
+        batch_errors=batch_errors,
+        rows=response_rows,
+    )
+    return response, prepared_records
+
+
 @router.get("/{portfolio_id}/instruments", response_model=SharedInstrumentListResponse)
 def list_portfolio_instruments(portfolio_id: str) -> SharedInstrumentListResponse:
     if get_portfolio(portfolio_id) is None:
@@ -552,12 +1174,163 @@ def list_transaction_records(
         start_date=start_date,
         end_date=end_date,
     )
+    context_records = (
+        records
+        if not any((account_id, transaction_type, instrument_id, start_date, end_date))
+        else list_transactions(portfolio_id)
+    )
 
     return TransactionListResponse(
         portfolio_id=portfolio_id,
         summary=summarize_transactions(records),
         derivation_boundary=DerivationBoundaryStatus(),
-        transactions=[serialize_transaction(portfolio_id, item, account_lookup) for item in records],
+        transactions=serialize_transactions(
+            portfolio_id,
+            records,
+            account_lookup,
+            context_records=context_records,
+        ),
+    )
+
+
+@router.get("/{portfolio_id}/transactions.csv")
+def download_transaction_csv(portfolio_id: str) -> Response:
+    if get_portfolio(portfolio_id) is None:
+        raise HTTPException(status_code=404, detail="Portfolio not found")
+    content = render_transaction_csv(list_transactions(portfolio_id))
+    return Response(
+        content=content,
+        media_type="text/csv; charset=utf-8",
+        headers={
+            "Content-Disposition": (
+                f'attachment; filename="{portfolio_id}-transactions.csv"'
+            )
+        },
+    )
+
+
+@router.get("/{portfolio_id}/transactions/csv-template")
+def download_transaction_csv_template(portfolio_id: str) -> Response:
+    if get_portfolio(portfolio_id) is None:
+        raise HTTPException(status_code=404, detail="Portfolio not found")
+    return Response(
+        content=render_transaction_csv_template(),
+        media_type="text/csv; charset=utf-8",
+        headers={
+            "Content-Disposition": (
+                f'attachment; filename="{portfolio_id}-transaction-template.csv"'
+            )
+        },
+    )
+
+
+@router.post(
+    "/{portfolio_id}/transactions/csv/preview",
+    response_model=TransactionCsvPreviewResponse,
+)
+def preview_transaction_csv(
+    portfolio_id: str,
+    payload: TransactionCsvPreviewRequest,
+) -> TransactionCsvPreviewResponse:
+    preview, _prepared_records = _build_transaction_csv_preview(
+        portfolio_id=portfolio_id,
+        request=payload,
+    )
+    return preview
+
+
+@router.post(
+    "/{portfolio_id}/transactions/csv/import",
+    response_model=TransactionCsvImportResponse,
+)
+def import_transaction_csv(
+    portfolio_id: str,
+    payload: TransactionCsvImportRequest,
+    idempotency_key: str = Header(..., alias="Idempotency-Key"),
+) -> TransactionCsvImportResponse:
+    expected_digest = transaction_csv_digest(
+        payload.csv_text,
+        default_source_system=payload.default_source_system,
+    )
+    if payload.preview_digest != expected_digest:
+        raise HTTPException(
+            status_code=409,
+            detail="CSV content changed after preview; preview the file again.",
+        )
+
+    idempotency_payload = {
+        "preview_digest": expected_digest,
+        "default_source_system": payload.default_source_system,
+    }
+    replayed = _idempotency_replay_or_error(
+        portfolio_id,
+        idempotency_key=idempotency_key,
+        operation=TRANSACTION_CSV_IMPORT_IDEMPOTENCY_OPERATION,
+        request_payload=idempotency_payload,
+    )
+    if replayed is not None:
+        account_lookup = {
+            item["account_id"]: item for item in list_accounts(portfolio_id)
+        }
+        return TransactionCsvImportResponse(
+            portfolio_id=portfolio_id,
+            preview_digest=expected_digest,
+            created_count=len(replayed),
+            transactions=serialize_transactions(
+                portfolio_id,
+                replayed,
+                account_lookup,
+            ),
+        )
+
+    preview, prepared_records = _build_transaction_csv_preview(
+        portfolio_id=portfolio_id,
+        request=TransactionCsvPreviewRequest(
+            csv_text=payload.csv_text,
+            default_source_system=payload.default_source_system,
+        ),
+    )
+    if preview.error_count:
+        raise HTTPException(
+            status_code=422,
+            detail=preview.model_dump(mode="json"),
+        )
+
+    try:
+        created = create_transactions(
+            portfolio_id=portfolio_id,
+            records=prepared_records,
+            idempotency_key=idempotency_key,
+            idempotency_payload=idempotency_payload,
+            idempotency_operation=TRANSACTION_CSV_IMPORT_IDEMPOTENCY_OPERATION,
+        )
+    except TransactionIdempotencyKeyError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    except TransactionIdempotencyConflictError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    except IntegrityError as error:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "A transaction with the same portfolio/source_system/"
+                "external_reference already exists."
+            ),
+        ) from error
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+
+    account_lookup = {
+        item["account_id"]: item for item in list_accounts(portfolio_id)
+    }
+    return TransactionCsvImportResponse(
+        portfolio_id=portfolio_id,
+        preview_digest=preview.preview_digest,
+        created_count=len(created),
+        transactions=serialize_transactions(
+            portfolio_id,
+            created,
+            account_lookup,
+        ),
     )
 
 
@@ -597,6 +1370,7 @@ def get_transaction_workspace(
 
     accounts = list_accounts(portfolio_id)
     account_lookup = {item["account_id"]: item for item in accounts}
+    all_transactions = list_transactions(portfolio_id)
     filtered_records = list_transactions(
         portfolio_id,
         account_id=account_id,
@@ -605,16 +1379,18 @@ def get_transaction_workspace(
         start_date=start_date,
         end_date=end_date,
     )
-    serialized_transactions = [
-        serialize_transaction(portfolio_id, item, account_lookup) for item in filtered_records
-    ]
+    serialized_transactions = serialize_transactions(
+        portfolio_id,
+        filtered_records,
+        account_lookup,
+        context_records=all_transactions,
+    )
     selected_transaction = next(
         (item for item in serialized_transactions if item.transaction_id == transaction_id),
         serialized_transactions[0] if serialized_transactions else None,
     )
     selected_transaction_id = selected_transaction.transaction_id if selected_transaction else None
 
-    all_transactions = list_transactions(portfolio_id)
     selected_transaction_record = next(
         (
             record
@@ -626,6 +1402,9 @@ def get_transaction_workspace(
     selected_transfer_group_id = str(
         (selected_transaction_record or {}).get("transfer_group_id") or ""
     ).strip()
+    selected_event_group_id = str(
+        (selected_transaction_record or {}).get("event_group_id") or ""
+    ).strip()
     delete_scope_records = (
         [
             record
@@ -634,7 +1413,16 @@ def get_transaction_workspace(
             == selected_transfer_group_id
         ]
         if selected_transfer_group_id
-        else ([selected_transaction_record] if selected_transaction_record else [])
+        else (
+            [
+                record
+                for record in all_transactions
+                if str(record.get("event_group_id") or "").strip()
+                == selected_event_group_id
+            ]
+            if selected_event_group_id
+            else ([selected_transaction_record] if selected_transaction_record else [])
+        )
     )
     delete_scope_row_versions = {
         str(record["transaction_id"]): int(record["row_version"])
@@ -850,6 +1638,7 @@ def _persist_transaction_record(
     account_cost_methods = _account_cost_methods(portfolio_id)
 
     transaction_type = payload.transaction_type
+    lifecycle_event_type = payload.lifecycle_event_type
     account_type = str(account.get("account_type") or "")
     if transaction_type in {"deposit", "withdrawal"} and account_type != "deposit_account":
         raise HTTPException(status_code=400, detail="Cash-flow transactions require deposit_account.")
@@ -865,6 +1654,9 @@ def _persist_transaction_record(
         "coupon",
         "return_of_capital",
         "maturity_redemption",
+        "lifecycle_event",
+        "option_write",
+        "option_buy_to_close",
     } and account_type != "securities_account":
         raise HTTPException(status_code=400, detail="Instrument income and trade transactions require securities_account.")
     settlement_cash_account = None
@@ -877,7 +1669,28 @@ def _persist_transaction_record(
             payload=payload,
             account=account,
         )
-    if transaction_type in {"buy", "sell", "dividend", "coupon", "return_of_capital", "maturity_redemption"} or (
+    long_option_closure_without_cash = (
+        transaction_type == "maturity_redemption"
+        and lifecycle_event_type
+        in {"option_long_expiry", "option_long_exercise"}
+        and payload.gross_amount == 0
+        and payload.fees == 0
+        and payload.taxes == 0
+    )
+    if (
+        transaction_type
+        in {
+            "buy",
+            "sell",
+            "option_write",
+            "option_buy_to_close",
+            "dividend",
+            "coupon",
+            "return_of_capital",
+            "maturity_redemption",
+        }
+        and not long_option_closure_without_cash
+    ) or (
         transaction_type in {"fee", "tax"} and account_type == "securities_account"
     ):
         settlement_cash_account_id = settlement_cash_account_id or str(
@@ -911,6 +1724,10 @@ def _persist_transaction_record(
     instrument_id = payload.instrument_id
     if instrument_id:
         instrument_ref = _load_instrument_ref(instrument_id)
+    option_action = resolve_option_action(
+        transaction_type,
+        instrument_ref=instrument_ref,
+    )
 
     if transaction_type in {
         "buy",
@@ -920,6 +1737,9 @@ def _persist_transaction_record(
         "coupon",
         "return_of_capital",
         "maturity_redemption",
+        "lifecycle_event",
+        "option_write",
+        "option_buy_to_close",
     } and instrument_ref is None:
         raise HTTPException(status_code=400, detail="This transaction type requires instrument.")
 
@@ -945,6 +1765,7 @@ def _persist_transaction_record(
 
     _validate_instrument_transaction_compatibility(
         transaction_type=transaction_type,
+        lifecycle_event_type=lifecycle_event_type,
         instrument_ref=instrument_ref,
     )
     _validate_account_instrument_scope(
@@ -956,6 +1777,59 @@ def _persist_transaction_record(
         payload=payload,
         instrument_ref=instrument_ref,
     )
+
+    related_instrument_ref = None
+    related_instrument_id = payload.related_instrument_id
+    if related_instrument_id:
+        if related_instrument_id == instrument_id:
+            raise HTTPException(
+                status_code=400,
+                detail="related_instrument_id must differ from instrument_id.",
+            )
+        related_instrument_ref = _load_instrument_ref(related_instrument_id)
+
+    requires_related_underlying = option_action in {"sell_to_open", "buy_to_close"} or lifecycle_event_type in {
+        "fcn_physical_settlement",
+        "option_long_exercise",
+        "option_writer_expiry",
+        "option_assignment",
+    }
+    if requires_related_underlying and related_instrument_ref is None:
+        raise HTTPException(
+            status_code=400,
+            detail="This transaction requires related_instrument_id.",
+        )
+    if related_instrument_ref is not None:
+        related_type = str(
+            related_instrument_ref.get("instrument_type") or ""
+        ).strip().lower()
+        if related_type not in {"equity", "etf"}:
+            raise HTTPException(
+                status_code=400,
+                detail="related_instrument_id must reference an equity or ETF.",
+            )
+        if not requires_related_underlying:
+            raise HTTPException(
+                status_code=400,
+                detail="related_instrument_id is not supported for this transaction.",
+            )
+    _validate_option_contract_relationship(
+        instrument_ref=instrument_ref,
+        option_action=option_action,
+        lifecycle_event_type=lifecycle_event_type,
+        related_instrument_id=related_instrument_id,
+        quantity=payload.quantity,
+    )
+
+    if lifecycle_event_type in {
+        "fcn_physical_settlement",
+        "option_long_exercise",
+        "option_assignment",
+    } and not payload.event_group_id:
+        raise HTTPException(
+            status_code=400,
+            detail="Physical settlement and assignment require event_group_id.",
+        )
 
     transactions_as_of_trade_date: list[dict[str, object]] | None = None
     if transaction_type in {"sell", "maturity_redemption"} and instrument_id:
@@ -1000,6 +1874,29 @@ def _persist_transaction_record(
                     "Transaction quantity exceeds account position as of "
                     "trade_date."
                 ),
+            )
+
+    if lifecycle_event_type == "fcn_knock_in" and instrument_id:
+        transactions_as_of_trade_date = _list_transactions_as_of_trade_moment(
+            portfolio_id,
+            trade_date=payload.trade_date,
+            trade_at=str(resolved_trade_timing["trade_at"]),
+            created_at=pending_created_at,
+            settlement_date=settlement_date,
+            exclude_transaction_ids=excluded_transaction_ids,
+        )
+        available_quantity = estimate_position_quantity(
+            portfolio_id,
+            transactions_as_of_trade_date,
+            account_id=payload.account_id,
+            instrument_id=instrument_id,
+            account_cost_methods=account_cost_methods,
+            as_of_date=payload.trade_date,
+        )
+        if available_quantity <= 1e-9:
+            raise HTTPException(
+                status_code=400,
+                detail="Lifecycle event requires an open account position as of trade_date.",
             )
 
     if transaction_type in {"dividend", "dividend_reinvestment", "coupon"} or (
@@ -1057,6 +1954,7 @@ def _persist_transaction_record(
 
     transaction_values = {
         "transaction_type": transaction_type,
+        "lifecycle_event_type": lifecycle_event_type,
         "trade_date": payload.trade_date,
         "trade_time": payload.trade_time,
         "settlement_date": settlement_date,
@@ -1084,6 +1982,10 @@ def _persist_transaction_record(
             if fx_conversion_target_account is not None
             else payload.counterparty_account_id
         ),
+        "source_system": payload.source_system,
+        "external_reference": payload.external_reference,
+        "event_group_id": payload.event_group_id,
+        "related_instrument_id": related_instrument_id,
         "note": payload.note,
         "created_at": pending_created_at,
     }
@@ -1110,6 +2012,14 @@ def _persist_transaction_record(
         TransactionRowVersionConflictError,
     ) as error:
         raise HTTPException(status_code=409, detail=str(error)) from error
+    except IntegrityError as error:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "A transaction with the same portfolio/source_system/"
+                "external_reference already exists."
+            ),
+        ) from error
     except ValueError as error:
         raise HTTPException(
             status_code=409,
@@ -1118,7 +2028,12 @@ def _persist_transaction_record(
     if persisted_record is None:
         raise HTTPException(status_code=404, detail="Transaction not found")
     account_lookup = {item["account_id"]: item for item in list_accounts(portfolio_id)}
-    return serialize_transaction(portfolio_id, persisted_record, account_lookup)
+    return serialize_transactions(
+        portfolio_id,
+        [persisted_record],
+        account_lookup,
+        context_records=list_transactions(portfolio_id),
+    )[0]
 
 
 @router.post("/{portfolio_id}/transactions", response_model=TransactionRecord)
@@ -1138,7 +2053,12 @@ def create_transaction_record(
         account_lookup = {
             item["account_id"]: item for item in list_accounts(portfolio_id)
         }
-        return serialize_transaction(portfolio_id, replayed[0], account_lookup)
+        return serialize_transactions(
+            portfolio_id,
+            [replayed[0]],
+            account_lookup,
+            context_records=list_transactions(portfolio_id),
+        )[0]
     return _persist_transaction_record(
         portfolio_id=portfolio_id,
         payload=payload,
@@ -1194,10 +2114,15 @@ def delete_transaction_record(
         raise HTTPException(status_code=404, detail="Transaction not found")
 
     transfer_group_id = str(existing_transaction.get("transfer_group_id") or "").strip() or None
+    event_group_id = str(existing_transaction.get("event_group_id") or "").strip() or None
     transaction_ids = (
         _transfer_group_transaction_ids(portfolio_id, transfer_group_id)
         if transfer_group_id
-        else [transaction_id]
+        else (
+            _event_group_transaction_ids(portfolio_id, event_group_id)
+            if event_group_id
+            else [transaction_id]
+        )
     )
     try:
         deleted_records = delete_transactions(
@@ -1220,6 +2145,7 @@ def delete_transaction_record(
             for record in deleted_records
         ],
         transfer_group_id=transfer_group_id,
+        event_group_id=event_group_id,
     )
 
 
@@ -1250,10 +2176,11 @@ def create_internal_transfer_records(
             portfolio_id=portfolio_id,
             created_count=len(replayed),
             transfer_group_id=transfer_group_id,
-            transactions=[
-                serialize_transaction(portfolio_id, item, account_lookup)
-                for item in replayed
-            ],
+            transactions=serialize_transactions(
+                portfolio_id,
+                replayed,
+                account_lookup,
+            ),
         )
 
     from_account = get_account(portfolio_id, payload.from_account_id)
@@ -1295,6 +2222,7 @@ def create_internal_transfer_records(
         instrument_ref = _load_instrument_ref(instrument_id)
         _validate_instrument_transaction_compatibility(
             transaction_type="opening_balance",
+            lifecycle_event_type=None,
             instrument_ref=instrument_ref,
         )
         _validate_account_instrument_scope(
@@ -1438,5 +2366,9 @@ def create_internal_transfer_records(
         portfolio_id=portfolio_id,
         created_count=len(created_records),
         transfer_group_id=transfer_group_id,
-        transactions=[serialize_transaction(portfolio_id, item, account_lookup) for item in created_records],
+        transactions=serialize_transactions(
+            portfolio_id,
+            created_records,
+            account_lookup,
+        ),
     )

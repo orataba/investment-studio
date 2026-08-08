@@ -114,6 +114,30 @@ PROJECT_ROOT="$PWD" PYTHON_BIN="$PWD/.venv/bin/python" \
   infra/scripts/migrate_all.sh
 ```
 
+## Release preflight and analytics readiness
+
+After migration and before declaring Risk/Risk Budget production-ready, run the
+read-only data audit against the exact canonical local database target:
+
+```bash
+PROJECT_ROOT="$PWD" PYTHON_BIN="$PWD/.venv/bin/python" \
+  PORTFOLIO_OPS_LOCAL_DATABASE_URL='postgresql+psycopg://portfolio_ops@127.0.0.1:5432/portfolio_ops' \
+  "$PWD/.venv/bin/python" infra/scripts/audit_live_data.py --fail-on-warning --json
+```
+
+The audit is deliberately fail-closed for schema and data integrity. It also
+warns when a portfolio has no effective-dated analytics taxonomy selection or
+when its point-in-time taxonomy configuration/root/unassigned policies are
+incomplete; `--fail-on-warning` turns that operational warning into a release
+gate. Do not create a default selection in runtime code or by an unreviewed
+SQL backfill. Configure the selection and scope policies through the Portfolio
+Taxonomies API, record the effective date and operator, then rerun the audit.
+
+An audit result of `passed` is therefore the data-integrity gate. An audit result
+of `warning` may still allow market-data refresh and ordinary operational pages,
+but Risk and Risk Budget must be labelled unavailable until the analytics scope
+warnings are cleared.
+
 Install and start the market-data timer:
 
 ```bash

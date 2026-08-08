@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import ast
+import json
 from pathlib import Path
 
 from alembic import command
 from alembic.config import Config
+import pytest
+import sqlalchemy as sa
 from sqlalchemy import create_engine, inspect, text
 
 from platform_app.core.settings import get_settings
@@ -67,6 +70,434 @@ def test_instrument_registry_migrations_upgrade_an_empty_database(tmp_path, monk
     command.upgrade(config, "head")
 
 
+def test_option_underlying_index_is_declared_in_registry_metadata() -> None:
+    from portfolio_ops_instrument_core.db_models import Instrument
+
+    assert "ix_instrument_option_underlying" in {
+        index.name for index in Instrument.__table__.indexes
+    }
+
+
+def test_event_valued_instrument_type_migration_is_guarded_and_reversible(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    database_url = f"sqlite+pysqlite:///{tmp_path / 'event-valued-types.db'}"
+    monkeypatch.setenv("PORTFOLIO_OPS_INSTRUMENT_REGISTRY_DATABASE_URL", database_url)
+    monkeypatch.setenv("PORTFOLIO_OPS_INSTRUMENT_REGISTRY_SCHEMA", "")
+    config = Config(str(MIGRATIONS_ROOT / "alembic.ini"))
+    config.set_main_option("script_location", str(MIGRATIONS_ROOT / "alembic"))
+    command.upgrade(config, "20260731_0016")
+
+    engine = create_engine(database_url)
+    command.upgrade(config, "20260804_0017")
+    with engine.begin() as connection:
+        for instrument_id, instrument_type in (
+            ("fcn-migration-test", "fcn"),
+            ("option-migration-test", "option"),
+        ):
+            connection.execute(
+                text(
+                    """
+                    INSERT INTO instrument (
+                        instrument_id, instrument_name, instrument_type, currency,
+                        quote_selection_policy_json, source_settings_json,
+                        refresh_status_json, lifecycle_state_json,
+                        market_data_updated_at
+                    ) VALUES (
+                        :instrument_id, :instrument_id, :instrument_type, 'USD',
+                        '{}', '{}', '{}', '{}', NULL
+                    )
+                    """
+                ),
+                {
+                    "instrument_id": instrument_id,
+                    "instrument_type": instrument_type,
+                },
+            )
+
+    with pytest.raises(RuntimeError, match="FCN or option instruments exist"):
+        command.downgrade(config, "20260731_0016")
+
+    with engine.begin() as connection:
+        connection.execute(
+            text("DELETE FROM instrument WHERE instrument_type IN ('fcn', 'option')")
+        )
+    command.downgrade(config, "20260731_0016")
+    try:
+        with engine.begin() as connection, pytest.raises(sa.exc.IntegrityError):
+            connection.execute(
+                text(
+                    """
+                    INSERT INTO instrument (
+                        instrument_id, instrument_name, instrument_type, currency,
+                        quote_selection_policy_json, source_settings_json,
+                        refresh_status_json, lifecycle_state_json,
+                        market_data_updated_at
+                    ) VALUES (
+                        'option-after-downgrade', 'option-after-downgrade',
+                        'option', 'USD', '{}', '{}', '{}', '{}', NULL
+                    )
+                    """
+                )
+            )
+    finally:
+        command.upgrade(config, "head")
+
+
+def test_option_contract_identity_migration_requires_backfill_and_complete_identity(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    database_url = f"sqlite+pysqlite:///{tmp_path / 'option-contract-identity.db'}"
+    monkeypatch.setenv("PORTFOLIO_OPS_INSTRUMENT_REGISTRY_DATABASE_URL", database_url)
+    monkeypatch.setenv("PORTFOLIO_OPS_INSTRUMENT_REGISTRY_SCHEMA", "")
+    config = Config(str(MIGRATIONS_ROOT / "alembic.ini"))
+    config.set_main_option("script_location", str(MIGRATIONS_ROOT / "alembic"))
+    command.upgrade(config, "20260804_0017")
+
+    engine = create_engine(database_url)
+    base_insert = text(
+        """
+        INSERT INTO instrument (
+            instrument_id, instrument_name, instrument_type, currency,
+            quote_selection_policy_json, source_settings_json,
+            refresh_status_json, lifecycle_state_json,
+            market_data_updated_at
+        ) VALUES (
+            :instrument_id, :instrument_id, :instrument_type, :currency,
+            '{}', '{}', '{}', '{}', NULL
+        )
+        """
+    )
+    with engine.begin() as connection:
+        connection.execute(
+            base_insert,
+            {
+                "instrument_id": "option-underlying",
+                "instrument_type": "equity",
+                "currency": "USD",
+            },
+        )
+        connection.execute(
+            base_insert,
+            {
+                "instrument_id": "legacy-option",
+                "instrument_type": "option",
+                "currency": "USD",
+            },
+        )
+
+    with pytest.raises(RuntimeError, match="identity-less option instruments exist"):
+        command.upgrade(config, "20260806_0018")
+
+    preflight_column_names = {
+        column["name"] for column in inspect(engine).get_columns("instrument")
+    }
+    identity_columns = {
+        "option_underlying_instrument_id",
+        "option_type",
+        "option_expiry_date",
+        "option_strike",
+        "option_contract_multiplier",
+        "option_settlement_type",
+        "option_contract_currency",
+    }
+    assert identity_columns.isdisjoint(preflight_column_names)
+
+    with engine.begin() as connection:
+        connection.execute(
+            text("DELETE FROM instrument WHERE instrument_id = 'legacy-option'")
+        )
+
+    command.upgrade(config, "20260806_0018")
+    column_names = {
+        column["name"] for column in inspect(engine).get_columns("instrument")
+    }
+    assert identity_columns.issubset(column_names)
+
+    with pytest.raises(sa.exc.IntegrityError), engine.begin() as connection:
+        connection.execute(
+            base_insert,
+            {
+                "instrument_id": "identity-less-option",
+                "instrument_type": "option",
+                "currency": "USD",
+            },
+        )
+
+    identity_insert = text(
+        """
+        INSERT INTO instrument (
+            instrument_id, instrument_name, instrument_type, currency,
+            option_underlying_instrument_id, option_type, option_expiry_date,
+            option_strike, option_contract_multiplier, option_settlement_type,
+            option_contract_currency, quote_selection_policy_json,
+            source_settings_json, refresh_status_json, lifecycle_state_json,
+            market_data_updated_at
+        ) VALUES (
+            :instrument_id, :instrument_id, :instrument_type, :currency,
+            :underlying_id, :option_type, :expiry_date,
+            :strike, :multiplier, :settlement_type,
+            :contract_currency, '{}', '{}', '{}', '{}', NULL
+        )
+        """
+    )
+
+    complete_identity = {
+        "instrument_id": "complete-option",
+        "instrument_type": "option",
+        "currency": "USD",
+        "underlying_id": "option-underlying",
+        "option_type": "call",
+        "expiry_date": "2026-12-18",
+        "strike": "100",
+        "multiplier": "100",
+        "settlement_type": "physical",
+        "contract_currency": "USD",
+    }
+    with engine.begin() as connection:
+        connection.execute(identity_insert, complete_identity)
+
+    invalid_identities = [
+        {
+            **complete_identity,
+            "instrument_id": "partial-option",
+            "contract_currency": None,
+        },
+        {
+            **complete_identity,
+            "instrument_id": "non-option-identity",
+            "instrument_type": "equity",
+        },
+        {
+            **complete_identity,
+            "instrument_id": "self-option",
+            "underlying_id": "self-option",
+        },
+    ]
+    for invalid_identity in invalid_identities:
+        with pytest.raises(sa.exc.IntegrityError), engine.begin() as connection:
+            connection.execute(identity_insert, invalid_identity)
+
+    with pytest.raises(RuntimeError, match="option contract identity exists"):
+        command.downgrade(config, "20260804_0017")
+
+    with engine.begin() as connection:
+        connection.execute(
+            text("DELETE FROM instrument WHERE instrument_id = 'complete-option'")
+        )
+    command.downgrade(config, "20260804_0017")
+    downgraded_columns = {
+        column["name"] for column in inspect(engine).get_columns("instrument")
+    }
+    assert identity_columns.isdisjoint(downgraded_columns)
+
+
+def test_derivative_contract_reconciliation_migration_is_strict_and_guarded(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    database_url = f"sqlite+pysqlite:///{tmp_path / 'derivative-reconciliation.db'}"
+    monkeypatch.setenv("PORTFOLIO_OPS_INSTRUMENT_REGISTRY_DATABASE_URL", database_url)
+    monkeypatch.setenv("PORTFOLIO_OPS_INSTRUMENT_REGISTRY_SCHEMA", "")
+    config = Config(str(MIGRATIONS_ROOT / "alembic.ini"))
+    config.set_main_option("script_location", str(MIGRATIONS_ROOT / "alembic"))
+    command.upgrade(config, "20260806_0018")
+
+    engine = create_engine(database_url)
+    base_insert = text(
+        """
+        INSERT INTO instrument (
+            instrument_id, instrument_name, instrument_type, currency,
+            quote_selection_policy_json, source_settings_json,
+            refresh_status_json, lifecycle_state_json,
+            market_data_updated_at
+        ) VALUES (
+            :instrument_id, :instrument_id, :instrument_type, 'USD',
+            '{}', '{}', '{}', '{}', NULL
+        )
+        """
+    )
+    with engine.begin() as connection:
+        connection.execute(
+            base_insert,
+            {"instrument_id": "contract-underlying", "instrument_type": "equity"},
+        )
+        connection.execute(
+            base_insert,
+            {"instrument_id": "ungoverned-fcn", "instrument_type": "fcn"},
+        )
+
+    with pytest.raises(RuntimeError, match="derivative instruments lack"):
+        command.upgrade(config, "20260807_0019")
+    assert {
+        column["name"] for column in inspect(engine).get_columns("instrument")
+    }.isdisjoint({"fcn_contract_json", "derivative_adjustment_policy_json"})
+    assert "instrument_broker_identifier" not in inspect(engine).get_table_names()
+
+    with engine.begin() as connection:
+        connection.execute(
+            text("DELETE FROM instrument WHERE instrument_id = 'ungoverned-fcn'")
+        )
+    command.upgrade(config, "20260807_0019")
+
+    inspector = inspect(engine)
+    assert {
+        "fcn_contract_json",
+        "derivative_adjustment_policy_json",
+    }.issubset({column["name"] for column in inspector.get_columns("instrument")})
+    assert "instrument_broker_identifier" in inspector.get_table_names()
+    assert {
+        constraint["name"] for constraint in inspector.get_check_constraints("instrument")
+    }.issuperset(
+        {
+            "ck_instrument_fcn_contract_metadata",
+            "ck_instrument_derivative_adjustment_policy",
+        }
+    )
+    assert {
+        constraint["name"]
+        for constraint in inspector.get_check_constraints(
+            "instrument_broker_identifier"
+        )
+    } == {"ck_instrument_broker_identifier_broker_identifier_type"}
+    assert {
+        constraint["name"]
+        for constraint in inspector.get_unique_constraints(
+            "instrument_broker_identifier"
+        )
+    } == {"uq_instrument_broker_identifier_identity"}
+
+    derivative_insert = text(
+        """
+        INSERT INTO instrument (
+            instrument_id, instrument_name, instrument_type, currency,
+            option_underlying_instrument_id, option_type, option_expiry_date,
+            option_strike, option_contract_multiplier, option_settlement_type,
+            option_contract_currency, fcn_contract_json,
+            derivative_adjustment_policy_json, quote_selection_policy_json,
+            source_settings_json, refresh_status_json, lifecycle_state_json,
+            market_data_updated_at
+        ) VALUES (
+            :instrument_id, :instrument_id, :instrument_type, 'USD',
+            :underlying_id, :option_type, :expiry_date,
+            :strike, :multiplier, :settlement_type,
+            :contract_currency, :fcn_contract,
+            :adjustment_policy, '{}', '{}', '{}', '{}', NULL
+        )
+        """
+    )
+    complete_option = {
+        "instrument_id": "governed-option",
+        "instrument_type": "option",
+        "underlying_id": "contract-underlying",
+        "option_type": "call",
+        "expiry_date": "2027-06-18",
+        "strike": "100",
+        "multiplier": "100",
+        "settlement_type": "physical",
+        "contract_currency": "USD",
+        "fcn_contract": None,
+        "adjustment_policy": json.dumps({"policy_type": "contract_terms"}),
+    }
+    complete_fcn = {
+        "instrument_id": "governed-fcn",
+        "instrument_type": "fcn",
+        "underlying_id": None,
+        "option_type": None,
+        "expiry_date": None,
+        "strike": None,
+        "multiplier": None,
+        "settlement_type": None,
+        "contract_currency": None,
+        "fcn_contract": json.dumps({"notional": "100000", "issuer": "Bank"}),
+        "adjustment_policy": json.dumps({"policy_type": "contract_terms"}),
+    }
+    with engine.begin() as connection:
+        connection.execute(derivative_insert, complete_option)
+        connection.execute(derivative_insert, complete_fcn)
+
+    invalid_derivatives = [
+        {**complete_option, "instrument_id": "option-without-policy", "adjustment_policy": None},
+        {
+            **complete_option,
+            "instrument_id": "option-with-json-null-policy",
+            "adjustment_policy": "null",
+        },
+        {**complete_fcn, "instrument_id": "fcn-without-contract", "fcn_contract": None},
+        {**complete_fcn, "instrument_id": "fcn-without-policy", "adjustment_policy": None},
+        {
+            **complete_fcn,
+            "instrument_id": "equity-with-derivative-metadata",
+            "instrument_type": "equity",
+        },
+    ]
+    for invalid_derivative in invalid_derivatives:
+        with pytest.raises(sa.exc.IntegrityError), engine.begin() as connection:
+            connection.execute(derivative_insert, invalid_derivative)
+
+    broker_insert = text(
+        """
+        INSERT INTO instrument_broker_identifier (
+            instrument_id, broker, identifier_type, identifier_value, is_primary
+        ) VALUES (
+            :instrument_id, :broker, :identifier_type, :identifier_value, 1
+        )
+        """
+    )
+    broker_identity = {
+        "instrument_id": "governed-option",
+        "broker": "ibkr",
+        "identifier_type": "contract_id",
+        "identifier_value": "987654321",
+    }
+    with engine.begin() as connection:
+        connection.execute(broker_insert, broker_identity)
+    with pytest.raises(sa.exc.IntegrityError), engine.begin() as connection:
+        connection.execute(
+            broker_insert,
+            {**broker_identity, "instrument_id": "governed-fcn"},
+        )
+    with pytest.raises(sa.exc.IntegrityError), engine.begin() as connection:
+        connection.execute(
+            broker_insert,
+            {
+                **broker_identity,
+                "identifier_type": "unsupported",
+                "identifier_value": "other",
+            },
+        )
+
+    with pytest.raises(RuntimeError, match="broker reconciliation identity"):
+        command.downgrade(config, "20260806_0018")
+
+    with engine.begin() as connection:
+        connection.execute(
+            text("DELETE FROM instrument WHERE instrument_type IN ('fcn', 'option')")
+        )
+        connection.execute(
+            broker_insert,
+            {
+                "instrument_id": "contract-underlying",
+                "broker": "custodian",
+                "identifier_type": "symbol",
+                "identifier_value": "UNDERLYING",
+            },
+        )
+    with pytest.raises(RuntimeError, match="broker reconciliation identity"):
+        command.downgrade(config, "20260806_0018")
+
+    with engine.begin() as connection:
+        connection.execute(text("DELETE FROM instrument_broker_identifier"))
+    command.downgrade(config, "20260806_0018")
+    downgraded_inspector = inspect(engine)
+    assert "instrument_broker_identifier" not in downgraded_inspector.get_table_names()
+    assert {
+        column["name"] for column in downgraded_inspector.get_columns("instrument")
+    }.isdisjoint({"fcn_contract_json", "derivative_adjustment_policy_json"})
+
+
 def test_platform_migrations_upgrade_an_empty_database(tmp_path, monkeypatch) -> None:
     database_url = f"sqlite+pysqlite:///{tmp_path / 'platform-migrations.db'}"
     monkeypatch.setenv("PORTFOLIO_OPS_PLATFORM_DATABASE_URL", database_url)
@@ -123,6 +554,109 @@ def test_platform_mailbox_lease_migrates_from_email_foundation_head(
 
     assert "email_mailbox_ingestion_lease" in set(
         inspect(create_engine(database_url)).get_table_names()
+    )
+
+
+def test_daily_api_source_metadata_migration_excludes_manual_instruments(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    database_url = f"sqlite+pysqlite:///{tmp_path / 'daily-api-source-metadata.db'}"
+    monkeypatch.setenv("PORTFOLIO_OPS_INSTRUMENT_REGISTRY_DATABASE_URL", database_url)
+    monkeypatch.setenv("PORTFOLIO_OPS_INSTRUMENT_REGISTRY_SCHEMA", "")
+    config = Config(str(MIGRATIONS_ROOT / "alembic.ini"))
+    config.set_main_option("script_location", str(MIGRATIONS_ROOT / "alembic"))
+    command.upgrade(config, "20260717_0015")
+
+    engine = create_engine(database_url)
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                """
+                INSERT INTO registry_metadata (
+                    registry_key, registry_name, market_data_updated_at
+                ) VALUES ('shared', 'Shared Registry', NULL)
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO instrument (
+                    instrument_id, instrument_name, instrument_type, currency,
+                    quote_selection_policy_json, source_settings_json,
+                    refresh_status_json, lifecycle_state_json, market_data_updated_at
+                ) VALUES
+                (
+                    '510300-sh', '沪深300ETF', 'etf', 'CNY',
+                    '{}',
+                    '{"source_mode":"api","source_api_profile":"tushare","source_location":"Tushare"}',
+                    '{}', '{"status":"active"}', NULL
+                ),
+                (
+                    'manual-etf', '手工ETF', 'etf', 'CNY',
+                    '{}',
+                    '{"source_mode":"manual","source_location":"CSV import"}',
+                    '{}', '{"status":"active"}', NULL
+                ),
+                (
+                    'weekly-api-etf', '显式周频ETF', 'etf', 'CNY',
+                    '{}',
+                    '{"source_mode":"api","source_api_profile":"tushare","expected_frequency":"weekly"}',
+                    '{}', '{"status":"active"}', NULL
+                ),
+                (
+                    'h11001-csi', '中证全债指数', 'index', 'CNY',
+                    '{}',
+                    '{"source_mode":"api","source_api_profile":"tushare","expected_frequency":"daily"}',
+                    '{}', '{"status":"active"}', NULL
+                )
+                """
+            )
+        )
+
+    command.upgrade(config, "head")
+
+    with engine.connect() as connection:
+        rows = {
+            row["instrument_id"]: row
+            for row in connection.execute(
+                text(
+                    """
+                    SELECT instrument_id, source_settings_json,
+                           market_data_updated_at
+                    FROM instrument
+                    WHERE instrument_id IN (
+                        '510300-sh', 'manual-etf', 'weekly-api-etf', 'h11001-csi'
+                    )
+                    """
+                )
+            ).mappings()
+        }
+
+    def source_settings(instrument_id: str) -> dict[str, object]:
+        value = rows[instrument_id]["source_settings_json"]
+        return json.loads(value) if isinstance(value, str) else dict(value)
+
+    daily_source = source_settings("510300-sh")
+    assert daily_source["expected_frequency"] == "daily"
+    assert daily_source["market_calendar"] == "XSHG"
+    assert daily_source["release_lag_days"] == 0
+    assert rows["510300-sh"]["market_data_updated_at"]
+
+    manual_source = source_settings("manual-etf")
+    assert "expected_frequency" not in manual_source
+    assert rows["manual-etf"]["market_data_updated_at"] is None
+
+    weekly_source = source_settings("weekly-api-etf")
+    assert weekly_source["expected_frequency"] == "weekly"
+    assert "market_calendar" not in weekly_source
+
+    h11001_source = source_settings("h11001-csi")
+    assert h11001_source["source_api_fallback_profile"] == "csindex"
+    assert h11001_source["source_api_fallback_code"] == "H11001"
+    assert h11001_source["source_api_fallback_location"] == (
+        "https://www.csindex.com.cn/csindex-home"
     )
 
 

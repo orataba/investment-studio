@@ -39,6 +39,11 @@ from portfolio_app.services.ledger import (
     ledger_posting_effective_date_iso,
     ledger_posting_pending_amount_as_of,
 )
+from portfolio_app.services.option_obligations import (
+    build_option_obligations,
+    derive_option_obligation_events,
+)
+from portfolio_app.services.option_actions import resolve_option_action
 from portfolio_app.services.market_data import (
     previous_quote_point,
     quote_policy_bases,
@@ -58,7 +63,12 @@ from portfolio_app.services.transaction_dates import (
 DEFAULT_VALUATION_CUTOFF_POLICY = "latest_complete_eod"
 EXTERNAL_CASH_IN_TYPES = {"deposit"}
 EXTERNAL_CASH_OUT_TYPES = {"withdrawal"}
-EARNINGS_TRANSACTION_TYPES = {"dividend", "coupon", "interest", "dividend_reinvestment"}
+EARNINGS_TRANSACTION_TYPES = {
+    "dividend",
+    "coupon",
+    "interest",
+    "dividend_reinvestment",
+}
 REALIZED_GAIN_TRANSACTION_TYPES = {"sell", "maturity_redemption"}
 NON_CAPITALIZED_ATTACHED_CHARGE_TRANSACTION_TYPES = {
     "dividend",
@@ -66,7 +76,30 @@ NON_CAPITALIZED_ATTACHED_CHARGE_TRANSACTION_TYPES = {
     "dividend_reinvestment",
     "interest",
     "return_of_capital",
+    "option_write",
 }
+
+
+def _has_derivative_lifecycle_activity(
+    transaction: dict[str, object],
+) -> bool:
+    if resolve_option_action(transaction) is not None:
+        return True
+    lifecycle_event_type = str(
+        transaction.get("lifecycle_event_type") or ""
+    ).strip()
+    if lifecycle_event_type.startswith(("fcn_", "option_")):
+        return True
+    instrument_ref = (
+        transaction.get("instrument_ref")
+        if isinstance(transaction.get("instrument_ref"), dict)
+        else None
+    )
+    return bool(
+        holdings_market_profile.is_event_valued_instrument_ref(instrument_ref)
+        and str(transaction.get("transaction_type") or "")
+        in {"buy", "sell", "opening_balance", "maturity_redemption"}
+    )
 
 
 # The Performance page requests the portfolio calculation and its grouped
@@ -827,6 +860,7 @@ def _sum_period_transaction_buckets(
 def _sum_period_realized_capital_gains(
     position_lots: list[dict[str, object]],
     *,
+    transactions: list[dict[str, object]] | None = None,
     start_date: date | None,
     end_date: date | None,
     base_currency: str,
@@ -834,6 +868,7 @@ def _sum_period_realized_capital_gains(
     instrument_detail_cache: dict[str, dict[str, object] | None],
 ) -> dict[str, object]:
     realized_capital_gains = 0.0
+    derivative_lifecycle_realized_pnl = 0.0
     coverage_complete = True
     stale_fx_flag = False
     start_iso = start_date.isoformat() if start_date is not None else None
@@ -877,10 +912,70 @@ def _sum_period_realized_capital_gains(
                 coverage_complete = False
                 continue
             realized_capital_gains += converted_amount
+            instrument_ref = (
+                position_lot.get("instrument_ref")
+                if isinstance(position_lot.get("instrument_ref"), dict)
+                else {}
+            )
+            if str(instrument_ref.get("instrument_type") or "").lower() in {
+                "fcn",
+                "option",
+            }:
+                derivative_lifecycle_realized_pnl += converted_amount
+            stale_fx_flag = stale_fx_flag or is_stale
+
+    # Written-option close/expiry/assignment results live in the obligation
+    # subledger rather than in long position lots.  Include them in the same
+    # realized-P&L bucket so Calculation, snapshots and attribution reconcile.
+    if transactions:
+        for event in derive_option_obligation_events(transactions, as_of_date=end_date):
+            realized_pnl = _safe_float(event.get("realized_pnl_delta"))
+            if realized_pnl is None or abs(realized_pnl) <= 1e-15:
+                continue
+            event_transaction = next(
+                (
+                    item
+                    for item in transactions
+                    if str(item.get("transaction_id") or "")
+                    == str(event.get("transaction_id") or "")
+                ),
+                None,
+            )
+            event_date = transaction_performance_effective_date(event_transaction or {})
+            if event_date is None:
+                raw_event_date = event.get("event_date")
+                event_date = (
+                    raw_event_date
+                    if isinstance(raw_event_date, date)
+                    else _parse_iso_date(raw_event_date)
+                )
+            if event_date is None:
+                continue
+            if start_date is not None and event_date < start_date:
+                continue
+            currency = valuation_fx.required_currency(
+                (event_transaction or {}).get("currency") or event.get("currency"),
+                field_name="option obligation currency",
+            )
+            converted_amount, is_stale = valuation_fx.convert_amount_on(
+                realized_pnl,
+                as_of_date=event_date,
+                from_currency=currency,
+                to_currency=base_currency,
+                direct_fx_instruments=direct_fx_instruments,
+                instrument_detail_cache=instrument_detail_cache,
+                instrument_detail_loader=get_registry_instrument_detail,
+            )
+            if converted_amount is None:
+                coverage_complete = False
+                continue
+            realized_capital_gains += converted_amount
+            derivative_lifecycle_realized_pnl += converted_amount
             stale_fx_flag = stale_fx_flag or is_stale
 
     return {
         "realized_capital_gains": realized_capital_gains,
+        "derivative_lifecycle_realized_pnl": derivative_lifecycle_realized_pnl,
         "coverage_complete": coverage_complete,
         "stale_fx_flag": stale_fx_flag,
     }
@@ -991,6 +1086,21 @@ def _period_lot_market_value_local(
     instrument_detail_cache: dict[str, dict[str, object] | None],
 ) -> float | None:
     instrument_id = str(lot.get("instrument_id") or "")
+    instrument_ref = (
+        lot.get("instrument_ref")
+        if isinstance(lot.get("instrument_ref"), dict)
+        else None
+    )
+    _carrying_price, carrying_value, event_valued = (
+        holdings_market_profile.resolve_position_valuation(
+            quantity=_safe_float(lot.get("quantity")) or 0.0,
+            cost_basis=_safe_float(lot.get("cost_local")),
+            instrument_ref=instrument_ref,
+            quoted_price=None,
+        )
+    )
+    if event_valued:
+        return carrying_value
     detail = valuation_fx.instrument_detail_cache_get(instrument_id, instrument_detail_cache, instrument_detail_loader=get_registry_instrument_detail)
     if not isinstance(detail, dict):
         return None
@@ -1001,16 +1111,14 @@ def _period_lot_market_value_local(
     )
     if price_point is None:
         return None
-    return valuation_fx.position_market_value(
+    _last_price, market_value, _ = holdings_market_profile.resolve_position_valuation(
         quantity=_safe_float(lot.get("quantity")) or 0.0,
-        last_price=_safe_float(price_point.get("value")),
-        instrument_ref=(
-            lot.get("instrument_ref")
-            if isinstance(lot.get("instrument_ref"), dict)
-            else None
-        ),
-        price_scale=_safe_float(price_point.get("price_scale")),
+        cost_basis=_safe_float(lot.get("cost_local")),
+        instrument_ref=instrument_ref,
+        quoted_price=_safe_float(price_point.get("value")),
+        quoted_price_scale=_safe_float(price_point.get("price_scale")),
     )
+    return market_value
 
 
 def _period_taxonomy_group_resolver(
@@ -1490,6 +1598,80 @@ def _period_unrealized_capital_gains_by_group(
             if group_key:
                 values[group_key] += unrealized_base
 
+    # Written options live in the obligation subledger rather than PositionLot.
+    # Teach the realized/unrealized splitter about their lifecycle so a close,
+    # expiry, or assignment is not mislabeled as an unrealized residual.
+    def obligation_as_period_lot(
+        obligation: dict[str, object],
+    ) -> dict[str, object]:
+        return {
+            "account_id": obligation.get("account_id"),
+            "instrument_id": obligation.get("option_instrument_id")
+            or obligation.get("instrument_id"),
+            "instrument_ref": obligation.get("instrument_ref"),
+            "currency": obligation.get("contract_currency") or base_currency,
+        }
+
+    for event in derive_option_obligation_events(
+        sorted_transactions,
+        as_of_date=end_date,
+    ):
+        if str(event.get("event_type") or "") == "open":
+            continue
+        event_date = event.get("event_date")
+        if isinstance(event_date, str):
+            event_date = _parse_iso_date(event_date)
+        if not isinstance(event_date, date) or not (
+            start_date < event_date <= end_date
+            if start_is_close_boundary
+            else start_date <= event_date <= end_date
+        ):
+            continue
+        if (_safe_float(event.get("released_premium_basis")) or 0.0) <= 1e-9:
+            continue
+        obligation = event.get("obligation")
+        if not isinstance(obligation, dict):
+            coverage_complete = False
+            continue
+        obligation_lot = obligation_as_period_lot(obligation)
+        group_key = resolve_group_key(obligation_lot)
+        if not group_key:
+            continue
+        disposed_group_keys.add(group_key)
+        if (
+            valuation_fx.required_currency(
+                obligation_lot.get("currency"),
+                field_name="option obligation currency",
+            )
+            != base_currency
+        ):
+            foreign_group_keys.add(group_key)
+
+    for obligation in build_option_obligations(
+        sorted_transactions,
+        as_of_date=end_date,
+    ):
+        if (
+            str(obligation.get("status") or "") != "open"
+            or (_safe_float(obligation.get("remaining_quantity")) or 0.0)
+            <= 1e-9
+        ):
+            continue
+        obligation_lot = obligation_as_period_lot(obligation)
+        group_key = resolve_group_key(obligation_lot)
+        if not group_key:
+            continue
+        open_group_keys.add(group_key)
+        values[group_key] += 0.0
+        if (
+            valuation_fx.required_currency(
+                obligation_lot.get("currency"),
+                field_name="option obligation currency",
+            )
+            != base_currency
+        ):
+            foreign_group_keys.add(group_key)
+
     return {
         "values": dict(values),
         "coverage_complete": coverage_complete,
@@ -1655,6 +1837,7 @@ def build_daily_portfolio_snapshots(
     external_flow_inside_unreliable_gap = False
     cumulative_performance_pnl = 0.0
     performance_pnl_history_complete = True
+    previous_derivative_exposure_present = False
 
     for as_of_date in _iter_dates(resolved_start_date, resolved_end_date):
         as_of_iso = as_of_date.isoformat()
@@ -1684,6 +1867,18 @@ def build_daily_portfolio_snapshots(
         all_position_lots = position_lots
         open_position_lots = [position_lot for position_lot in all_position_lots if position_lot.get("status") == "open"]
         position_buckets = holdings_market_profile.position_buckets_from_lots(open_position_lots)
+        option_obligation_rows = build_option_obligations(
+            transactions_as_of,
+            # Explicit lifecycle facts are canonical.  As-of replay keeps an
+            # obligation open until expiry/assignment/close is imported.
+            as_of_date=as_of_date,
+        )
+        open_option_obligation_rows = [
+            row
+            for row in option_obligation_rows
+            if str(row.get("status") or "") == "open"
+            and (_safe_float(row.get("remaining_quantity")) or 0.0) > 1e-9
+        ]
         account_instrument_buckets = (
             holdings_market_profile.position_buckets_by_account_instrument_from_lots(open_position_lots)
             if include_materialized_rows
@@ -1697,6 +1892,7 @@ def build_daily_portfolio_snapshots(
         )
         realized_pnl_summary = _sum_period_realized_capital_gains(
             position_lots,
+            transactions=transactions_as_of,
             start_date=None,
             end_date=as_of_date,
             base_currency=base_currency,
@@ -1706,7 +1902,10 @@ def build_daily_portfolio_snapshots(
         pnl_components = {
             "realized_pnl": realized_pnl_summary["realized_capital_gains"],
             "income_cash_amount": transaction_buckets["earnings"],
-            "expense_cash_amount": transaction_buckets["fees"] + transaction_buckets["taxes"],
+            "expense_cash_amount": (
+                transaction_buckets["fees"]
+                + transaction_buckets["taxes"]
+            ),
             "return_of_capital_amount": transaction_buckets["return_of_capital_amount"],
         }
 
@@ -1877,6 +2076,7 @@ def build_daily_portfolio_snapshots(
         stale_price_flag = False
         fresh_price_count = 0
         current_position_market_values_local_by_instrument: dict[str, dict[str, object]] = {}
+        event_valued_position_present = False
         for bucket in position_buckets:
             currency = valuation_fx.required_currency(
                 bucket.get("currency"), field_name="position-bucket currency"
@@ -1898,28 +2098,47 @@ def build_daily_portfolio_snapshots(
                 open_cost_basis_base += converted_cost_basis
                 stale_fx_flag = stale_fx_flag or cost_basis_fx_stale
 
-            detail = valuation_fx.instrument_detail_cache_get(str(bucket.get("instrument_id") or ""), instrument_detail_cache, instrument_detail_loader=get_registry_instrument_detail)
-            if not isinstance(detail, dict):
-                position_valuation_complete = False
-                continue
-            price_point = _select_market_point_as_of(
-                detail=detail,
-                role="valuation",
-                as_of_date=as_of_date,
+            instrument_ref = (
+                bucket.get("instrument_ref")
+                if isinstance(bucket.get("instrument_ref"), dict)
+                else None
             )
-            if price_point is None:
-                position_valuation_complete = False
-                continue
-            market_value_local = valuation_fx.position_market_value(
-                quantity=quantity,
-                last_price=_safe_float(price_point.get("value")),
-                instrument_ref=(
-                    bucket.get("instrument_ref")
-                    if isinstance(bucket.get("instrument_ref"), dict)
-                    else None
-                ),
-                price_scale=_safe_float(price_point.get("price_scale")),
+            _carrying_price, market_value_local, event_valued = (
+                holdings_market_profile.resolve_position_valuation(
+                    quantity=quantity,
+                    cost_basis=cost_basis,
+                    instrument_ref=instrument_ref,
+                    quoted_price=None,
+                )
             )
+            event_valued_position_present = event_valued_position_present or event_valued
+            price_point = None
+            if not event_valued:
+                detail = valuation_fx.instrument_detail_cache_get(
+                    str(bucket.get("instrument_id") or ""),
+                    instrument_detail_cache,
+                    instrument_detail_loader=get_registry_instrument_detail,
+                )
+                if not isinstance(detail, dict):
+                    position_valuation_complete = False
+                    continue
+                price_point = _select_market_point_as_of(
+                    detail=detail,
+                    role="valuation",
+                    as_of_date=as_of_date,
+                )
+                if price_point is None:
+                    position_valuation_complete = False
+                    continue
+                _last_price, market_value_local, _ = (
+                    holdings_market_profile.resolve_position_valuation(
+                        quantity=quantity,
+                        cost_basis=cost_basis,
+                        instrument_ref=instrument_ref,
+                        quoted_price=_safe_float(price_point.get("value")),
+                        quoted_price_scale=_safe_float(price_point.get("price_scale")),
+                    )
+                )
             converted_market_value, valuation_fx_stale = valuation_fx.convert_amount_on(
                 market_value_local,
                 as_of_date=as_of_date,
@@ -1932,16 +2151,19 @@ def build_daily_portfolio_snapshots(
             if market_value_local is None or converted_market_value is None:
                 position_valuation_complete = False
                 continue
-            price_point_date = _parse_iso_date(price_point.get("as_of_date"))
+            price_point_date = _parse_iso_date((price_point or {}).get("as_of_date"))
             if price_point_date == as_of_date:
                 fresh_price_count += 1
-            current_position_market_values_local_by_instrument[str(bucket.get("instrument_id") or "")] = {
+            current_position_market_values_local_by_instrument[
+                str(bucket.get("instrument_id") or "")
+            ] = {
                 "currency": currency,
                 "market_value_local": market_value_local,
             }
-            priced_position_count += 1
+            if not event_valued:
+                priced_position_count += 1
             position_market_value_base += converted_market_value
-            stale_price_flag = stale_price_flag or bool(price_point.get("stale"))
+            stale_price_flag = stale_price_flag or bool((price_point or {}).get("stale"))
             stale_fx_flag = stale_fx_flag or valuation_fx_stale
 
         daily_instrument_currency_gain = 0.0
@@ -1989,11 +2211,54 @@ def build_daily_portfolio_snapshots(
         else:
             instrument_currency_gain_history_complete = False
 
-        has_snapshot_content = bool(postings) or bool(position_buckets)
+        derivative_liability_base = 0.0
+        derivative_liability_complete = True
+        derivative_liability_local = 0.0
+        derivative_liability_currency_map: dict[str, float] = defaultdict(float)
+        for obligation in open_option_obligation_rows:
+            obligation_currency = valuation_fx.required_currency(
+                obligation.get("contract_currency")
+                or account_currency_map.get(str(obligation.get("account_id") or ""))
+                or base_currency,
+                field_name="option obligation currency",
+            )
+            liability = _safe_float(obligation.get("carrying_liability")) or 0.0
+            derivative_liability_local += liability
+            derivative_liability_currency_map[obligation_currency] += liability
+            converted_liability, liability_fx_stale = valuation_fx.convert_amount_on(
+                liability,
+                as_of_date=as_of_date,
+                from_currency=obligation_currency,
+                to_currency=base_currency,
+                direct_fx_instruments=direct_fx_instruments,
+                instrument_detail_cache=instrument_detail_cache,
+                instrument_detail_loader=get_registry_instrument_detail,
+            )
+            if converted_liability is None:
+                derivative_liability_complete = False
+            else:
+                derivative_liability_base += converted_liability
+                stale_fx_flag = stale_fx_flag or liability_fx_stale
+
+        has_derivative_exposure = (
+            bool(open_option_obligation_rows) or event_valued_position_present
+        )
+        has_derivative_lifecycle_activity = any(
+            transaction_performance_effective_date(transaction) == as_of_date
+            and _has_derivative_lifecycle_activity(transaction)
+            for transaction in sorted_transactions
+        )
+        derivative_return_observation_excluded = (
+            previous_derivative_exposure_present
+            or has_derivative_exposure
+            or has_derivative_lifecycle_activity
+        )
+        has_snapshot_content = bool(postings) or bool(position_buckets) or bool(open_option_obligation_rows)
         valuation_complete = (
             cash_complete
             and pending_settlement_complete
             and position_valuation_complete
+            and derivative_liability_complete
         )
         valuation_coverage_state = (
             "complete"
@@ -2034,7 +2299,12 @@ def build_daily_portfolio_snapshots(
             and resolved_position_market_value is not None
             and valuation_coverage_state == "complete"
         ):
-            nav = resolved_cash_balance + pending_settlement_base + resolved_position_market_value
+            nav = (
+                resolved_cash_balance
+                + pending_settlement_base
+                + resolved_position_market_value
+                - derivative_liability_base
+            )
             if resolved_open_cost_basis is not None:
                 unrealized_pnl = resolved_position_market_value - resolved_open_cost_basis
 
@@ -2197,14 +2467,37 @@ def build_daily_portfolio_snapshots(
                 and isfinite(daily_twr)
                 and return_coverage_state == "complete"
                 and (fresh_price_count > 0 or abs(daily_twr) > 1e-12)
+                and not stale_price_flag
+                and not stale_fx_flag
+                and not derivative_return_observation_excluded
+            ),
+            "return_observation_exclusion_reason": (
+                "event_valued_or_derivative_liability"
+                if derivative_return_observation_excluded
+                else "stale_market_or_fx_input"
+                if stale_price_flag or stale_fx_flag
+                else None
             ),
             "cash_balance": resolved_cash_balance,
             "pending_settlement": pending_settlement_base if pending_settlement_complete else None,
             "position_market_value": resolved_position_market_value,
+            "derivative_liability_base": (
+                derivative_liability_base if derivative_liability_complete else None
+            ),
+            "derivative_liability": (
+                derivative_liability_local if derivative_liability_complete else None
+            ),
+            "open_option_obligation_count": len(open_option_obligation_rows),
+            "option_obligation_coverage_state": (
+                "complete" if derivative_liability_complete else "unavailable"
+            ),
             "nav": nav,
             "open_cost_basis": resolved_open_cost_basis,
             "unrealized_pnl": unrealized_pnl,
             "realized_pnl": pnl_components["realized_pnl"],
+            "derivative_lifecycle_realized_pnl": realized_pnl_summary[
+                "derivative_lifecycle_realized_pnl"
+            ],
             "income_cash_amount": pnl_components["income_cash_amount"],
             "expense_cash_amount": pnl_components["expense_cash_amount"],
             "cash_currency_gains": cash_currency_gains,
@@ -2222,6 +2515,16 @@ def build_daily_portfolio_snapshots(
             "daily_twr": daily_twr,
             "cumulative_twr": cumulative_twr,
             "drawdown": drawdown,
+            "performance_basis": (
+                "operational_carrying_basis"
+                if derivative_return_observation_excluded
+                else "market_value"
+            ),
+            "performance_label": (
+                "Total Portfolio Operational Return"
+                if derivative_return_observation_excluded
+                else "Total Portfolio Return"
+            ),
         }
 
         if include_materialized_rows:
@@ -2255,6 +2558,7 @@ def build_daily_portfolio_snapshots(
                         direct_fx_instruments=direct_fx_instruments,
                         instrument_detail_cache=instrument_detail_cache,
                     ),
+                    option_obligations=open_option_obligation_rows,
                     as_of_date=as_of_date,
                     base_currency=base_currency,
                     direct_fx_instruments=direct_fx_instruments,
@@ -2337,6 +2641,7 @@ def build_daily_portfolio_snapshots(
                     as_of_date=as_of_date,
                     position_lots=all_position_lots,
                     transactions_on_date=transactions_by_date.get(as_of_iso, []),
+                    transactions_as_of=transactions_as_of,
                     base_currency=base_currency,
                     account_name_map=account_name_map,
                     direct_fx_instruments=direct_fx_instruments,
@@ -2376,6 +2681,7 @@ def build_daily_portfolio_snapshots(
         previous_pending_settlement_date = as_of_date
         previous_position_market_values_local_by_instrument = deepcopy(current_position_market_values_local_by_instrument)
         previous_position_market_value_date = as_of_date
+        previous_derivative_exposure_present = has_derivative_exposure
 
     return snapshots
 
@@ -2625,13 +2931,18 @@ def build_portfolio_performance_report_from_snapshots(
         for snapshot in visible_snapshots
         if return_chain.has_complete_valuation(snapshot)
     ]
+    performance_is_operational = any(
+        snapshot.get("performance_basis") == "operational_carrying_basis"
+        for snapshot in visible_snapshots
+    )
     return_observation_count = sum(
         1 for snapshot in visible_snapshots if _safe_float(snapshot.get("daily_twr")) is not None
     )
     risk_return_snapshots = [
         snapshot
         for snapshot in visible_snapshots
-        if return_coverage_state == "complete"
+        if not performance_is_operational
+        and return_coverage_state == "complete"
         and snapshot.get("daily_twr") is not None
         and bool(snapshot.get("return_observation_eligible"))
     ]
@@ -2718,9 +3029,15 @@ def build_portfolio_performance_report_from_snapshots(
     ):
         annualization_start_date = performance_start_boundary_date
     annualization = annualization_eligibility(annualization_start_date, end_anchor_date)
+    annualization_eligible = annualization.eligible and not performance_is_operational
+    annualization_unavailable_reason = (
+        "operational_carrying_basis_not_annualized"
+        if performance_is_operational
+        else annualization.unavailable_reason
+    )
     annualized_twr = None
     if (
-        annualization.eligible
+        annualization_eligible
         and annualization.years is not None
         and cumulative_twr is not None
         and 1.0 + cumulative_twr >= 0
@@ -2756,6 +3073,9 @@ def build_portfolio_performance_report_from_snapshots(
         else None
     )
     realized_pnl = snapshot_period_delta("realized_pnl")
+    derivative_lifecycle_realized_pnl = snapshot_period_delta(
+        "derivative_lifecycle_realized_pnl"
+    )
     unrealized_pnl = snapshot_period_delta("unrealized_pnl")
     income_cash_amount = snapshot_period_delta("income_cash_amount")
     expense_cash_amount = snapshot_period_delta("expense_cash_amount")
@@ -2781,11 +3101,13 @@ def build_portfolio_performance_report_from_snapshots(
         and start_anchor_date is not None
         and end_anchor_date is not None
     )
-    if return_coverage_state != "complete":
+    if performance_is_operational:
+        irr_unavailable_reason = "operational_carrying_basis_not_annualized"
+    elif return_coverage_state != "complete":
         irr_unavailable_reason = "return_coverage_incomplete"
-    elif not annualization.eligible:
+    elif not annualization_eligible:
         irr_unavailable_reason = (
-            annualization.unavailable_reason or "annualization_ineligible"
+            annualization_unavailable_reason or "annualization_ineligible"
         )
     elif not irr_inputs_available:
         irr_unavailable_reason = "cash_flow_window_unavailable"
@@ -2868,7 +3190,11 @@ def build_portfolio_performance_report_from_snapshots(
     )
 
     drawdown_stats = period_metrics.drawdown_stats(
-        visible_snapshots if return_coverage_state == "complete" else [],
+        (
+            visible_snapshots
+            if return_coverage_state == "complete" and not performance_is_operational
+            else []
+        ),
         start_anchor_date=performance_start_boundary_date,
     )
     current_drawdown = drawdown_stats["current_drawdown"]
@@ -2941,9 +3267,11 @@ def build_portfolio_performance_report_from_snapshots(
             "external_cash_out": external_cash_out,
             "net_external_inflow": net_external_inflow,
             "cumulative_twr": cumulative_twr,
-            "annualization_eligible": annualization.eligible,
-            "annualization_years": annualization.years,
-            "annualization_unavailable_reason": annualization.unavailable_reason,
+            "annualization_eligible": annualization_eligible,
+            "annualization_years": (
+                None if performance_is_operational else annualization.years
+            ),
+            "annualization_unavailable_reason": annualization_unavailable_reason,
             "annualized_twr": annualized_twr,
             "irr": irr,
             "mwror": irr,
@@ -2952,6 +3280,7 @@ def build_portfolio_performance_report_from_snapshots(
             "absolute_change": absolute_change,
             "delta": delta,
             "realized_pnl": realized_pnl,
+            "derivative_lifecycle_realized_pnl": derivative_lifecycle_realized_pnl,
             "unrealized_pnl": unrealized_pnl,
             "income_cash_amount": income_cash_amount,
             "expense_cash_amount": expense_cash_amount,
@@ -2960,6 +3289,21 @@ def build_portfolio_performance_report_from_snapshots(
             "instrument_currency_gains": instrument_currency_gains,
             "return_of_capital_amount": return_of_capital_amount,
             "total_pnl": total_pnl,
+            "performance_basis": (
+                "operational_carrying_basis"
+                if performance_is_operational
+                else "market_value"
+            ),
+            "performance_label": (
+                "Total Portfolio Operational Return"
+                if performance_is_operational
+                else "Total Portfolio Return"
+            ),
+            "ordinary_sleeve_twr_status": "unavailable",
+            "ordinary_sleeve_twr_reason": (
+                "Sleeve boundary cash flows are not maintained as a cash subledger; "
+                "ordinary sleeve TWR is not derived by filtering total portfolio TWR."
+            ),
             "mean_daily_return": mean_daily_return,
             "annualized_return_from_daily_mean": annualized_return_from_daily_mean,
             "annualized_volatility": annualized_volatility,
@@ -3002,10 +3346,20 @@ def build_portfolio_performance_report_from_snapshots(
                 "stale_fx_flag": snapshot["stale_fx_flag"],
                 "market_observation_count": snapshot.get("market_observation_count", 0),
                 "return_observation_eligible": bool(snapshot.get("return_observation_eligible")),
+                "return_observation_exclusion_reason": snapshot.get(
+                    "return_observation_exclusion_reason"
+                ),
+                "performance_basis": snapshot.get("performance_basis")
+                or "market_value",
+                "performance_label": snapshot.get("performance_label")
+                or "Total Portfolio Return",
                 "beginning_nav": snapshot["beginning_nav"],
                 "ending_nav": snapshot["ending_nav"],
                 "pending_settlement": snapshot.get("pending_settlement"),
                 "realized_pnl": snapshot.get("realized_pnl"),
+                "derivative_lifecycle_realized_pnl": snapshot.get(
+                    "derivative_lifecycle_realized_pnl"
+                ),
                 "unrealized_pnl": snapshot.get("unrealized_pnl"),
                 "income_cash_amount": snapshot.get("income_cash_amount"),
                 "expense_cash_amount": snapshot.get("expense_cash_amount"),
@@ -3527,6 +3881,7 @@ def _build_boundary_holding_records(
     direct_fx_instruments: dict[tuple[str, str], str],
     instrument_detail_cache: dict[str, dict[str, object] | None],
     boundary_nav: float | None,
+    option_obligations: list[dict[str, object]] | None = None,
 ) -> tuple[list[dict[str, object]], float | None]:
     position_lots = build_position_lots(
         portfolio_id,
@@ -3537,6 +3892,11 @@ def _build_boundary_holding_records(
         instrument_detail_cache=instrument_detail_cache,
     )
     position_buckets = holdings_market_profile.position_buckets_from_lots(position_lots)
+    account_instrument_buckets = (
+        holdings_market_profile.position_buckets_by_account_instrument_from_lots(
+            position_lots
+        )
+    )
     rendered_positions: list[dict[str, object]] = []
     total_market_value_base = 0.0
     total_market_value_complete = True
@@ -3556,19 +3916,46 @@ def _build_boundary_holding_records(
             instrument_detail_cache=instrument_detail_cache,
             instrument_detail_loader=get_registry_instrument_detail,
         )
-        detail = valuation_fx.instrument_detail_cache_get(str(bucket.get("instrument_id") or ""), instrument_detail_cache, instrument_detail_loader=get_registry_instrument_detail)
+        instrument_ref = (
+            bucket.get("instrument_ref")
+            if isinstance(bucket.get("instrument_ref"), dict)
+            else None
+        )
+        event_valued = holdings_market_profile.is_event_valued_instrument_ref(
+            instrument_ref
+        )
+        detail = (
+            None
+            if event_valued
+            else valuation_fx.instrument_detail_cache_get(
+                str(bucket.get("instrument_id") or ""),
+                instrument_detail_cache,
+                instrument_detail_loader=get_registry_instrument_detail,
+            )
+        )
         price_point = (
-            _select_market_point_as_of(detail=detail, role="valuation", as_of_date=as_of_date)
+            _select_market_point_as_of(
+                detail=detail,
+                role="valuation",
+                as_of_date=as_of_date,
+            )
             if isinstance(detail, dict)
             else None
         )
         previous_price_point = (
-            _previous_market_point_for_selected_point(detail=detail, selected_point=price_point)
+            _previous_market_point_for_selected_point(
+                detail=detail,
+                selected_point=price_point,
+            )
             if isinstance(detail, dict)
             else None
         )
         return_price_point = (
-            _select_market_point_as_of(detail=detail, role="total_return", as_of_date=as_of_date)
+            _select_market_point_as_of(
+                detail=detail,
+                role="total_return",
+                as_of_date=as_of_date,
+            )
             if isinstance(detail, dict)
             else None
         )
@@ -3580,32 +3967,49 @@ def _build_boundary_holding_records(
             if isinstance(detail, dict)
             else None
         )
-        last_price = _safe_float((price_point or {}).get("value"))
+        quoted_price = _safe_float((price_point or {}).get("value"))
         previous_price = _safe_float((previous_price_point or {}).get("value"))
-        instrument_ref = bucket.get("instrument_ref") if isinstance(bucket.get("instrument_ref"), dict) else None
-        market_value_local = valuation_fx.position_market_value(
-            quantity=quantity,
-            last_price=last_price,
-            instrument_ref=instrument_ref,
-            price_scale=_safe_float((price_point or {}).get("price_scale")),
+        last_price, market_value_local, event_valued = (
+            holdings_market_profile.resolve_position_valuation(
+                quantity=quantity,
+                cost_basis=cost_basis,
+                instrument_ref=instrument_ref,
+                quoted_price=quoted_price,
+                quoted_price_scale=_safe_float(
+                    (price_point or {}).get("price_scale")
+                ),
+            )
         )
-        day_change_pct, day_change_value = holdings_market_profile.holding_day_change_metrics(
-            quantity=quantity,
-            current_price=last_price,
-            previous_price=previous_price,
-            instrument_ref=instrument_ref,
-            current_return_price=_safe_float((return_price_point or {}).get("value")),
-            previous_return_price=_safe_float((previous_return_price_point or {}).get("value")),
-            price_scale=_safe_float((price_point or {}).get("price_scale")),
-        )
-        converted_day_change_value, _ = valuation_fx.convert_amount_on(
-            day_change_value,
-            as_of_date=as_of_date,
-            from_currency=currency,
-            to_currency=base_currency,
-            direct_fx_instruments=direct_fx_instruments,
-            instrument_detail_cache=instrument_detail_cache,
-            instrument_detail_loader=get_registry_instrument_detail,
+        if event_valued:
+            day_change_pct, day_change_value = None, None
+        else:
+            day_change_pct, day_change_value = (
+                holdings_market_profile.holding_day_change_metrics(
+                    quantity=quantity,
+                    current_price=last_price,
+                    previous_price=previous_price,
+                    instrument_ref=instrument_ref,
+                    current_return_price=_safe_float(
+                        (return_price_point or {}).get("value")
+                    ),
+                    previous_return_price=_safe_float(
+                        (previous_return_price_point or {}).get("value")
+                    ),
+                    price_scale=_safe_float((price_point or {}).get("price_scale")),
+                )
+            )
+        converted_day_change_value, _ = (
+            valuation_fx.convert_amount_on(
+                day_change_value,
+                as_of_date=as_of_date,
+                from_currency=currency,
+                to_currency=base_currency,
+                direct_fx_instruments=direct_fx_instruments,
+                instrument_detail_cache=instrument_detail_cache,
+                instrument_detail_loader=get_registry_instrument_detail,
+            )
+            if day_change_value is not None
+            else (None, False)
         )
         converted_market_value, _ = valuation_fx.convert_amount_on(
             market_value_local,
@@ -3636,15 +4040,48 @@ def _build_boundary_holding_records(
                 "cost_basis": cost_basis,
                 "cost_basis_base": converted_cost_basis,
                 "last_price": last_price,
-                "quote_as_of_date": (price_point or {}).get("as_of_date"),
-                "quote_metric_family": (price_point or {}).get("metric_family"),
-                "quote_basis": (price_point or {}).get("quote_basis"),
-                "quote_provider": (price_point or {}).get("provider"),
-                "quote_status": (price_point or {}).get("status"),
-                "quote_price_unit": (price_point or {}).get("price_unit"),
-                "quote_price_scale": (price_point or {}).get("price_scale"),
+                "quote_as_of_date": (
+                    None if event_valued else (price_point or {}).get("as_of_date")
+                ),
+                "quote_metric_family": (
+                    None
+                    if event_valued
+                    else (price_point or {}).get("metric_family")
+                ),
+                "quote_basis": (
+                    "carried_cost"
+                    if event_valued
+                    else (price_point or {}).get("quote_basis")
+                ),
+                "quote_provider": (
+                    None if event_valued else (price_point or {}).get("provider")
+                ),
+                "quote_status": (
+                    "event-cost"
+                    if event_valued and converted_market_value is not None
+                    else "unavailable"
+                    if event_valued
+                    else (price_point or {}).get("status")
+                ),
+                "quote_price_unit": (
+                    "per_unit"
+                    if event_valued
+                    else (price_point or {}).get("price_unit")
+                ),
+                "quote_price_scale": (
+                    1.0
+                    if event_valued
+                    else (price_point or {}).get("price_scale")
+                ),
                 "market_value": market_value_local,
                 "market_value_base": converted_market_value,
+                "carrying_value": market_value_local if event_valued else None,
+                "carrying_value_base": converted_market_value if event_valued else None,
+                "fair_value": None if event_valued else market_value_local,
+                "fair_value_coverage_status": "unavailable" if event_valued else "complete",
+                "valuation_basis": "carried_cost" if event_valued else "market_quote",
+                "performance_eligible": not event_valued,
+                "risk_eligible": not event_valued,
                 "day_change_pct": day_change_pct,
                 "day_change_value": day_change_value,
                 "day_change_value_base": converted_day_change_value,
@@ -3653,10 +4090,36 @@ def _build_boundary_holding_records(
                 "account_ids": list(bucket.get("account_ids") or []),
                 "account_count": int(bucket.get("account_count") or 0),
                 "open_position_lot_count": int(bucket.get("open_position_lot_count") or 0),
+                "coverage_status": (
+                    "event-cost"
+                    if event_valued and converted_market_value is not None
+                    else "price-nav-fx"
+                    if converted_market_value is not None
+                    else "unpriced"
+                ),
             }
         )
 
     resolved_total_market_value_base = total_market_value_base if total_market_value_complete else None
+    obligation_rows = holdings_market_profile.build_option_obligation_holding_rows(
+        option_obligations,
+        underlying_positions=account_instrument_buckets,
+        as_of_date=as_of_date,
+        base_currency=base_currency,
+        nav=boundary_nav,
+        convert_amount_on=partial(
+            valuation_fx.convert_amount_on,
+            direct_fx_instruments=direct_fx_instruments,
+            instrument_detail_cache=instrument_detail_cache,
+            instrument_detail_loader=get_registry_instrument_detail,
+        ),
+        direct_fx_instruments=direct_fx_instruments,
+        instrument_detail_cache=instrument_detail_cache,
+        normalize_instrument=holdings_market_profile.normalize_instrument_core,
+    )
+    # Keep the returned position market value as the positive asset component;
+    # callers subtract the separately disclosed liability when constructing NAV.
+    rendered_positions.extend(obligation_rows)
     holdings_market_profile.apply_position_portfolio_weights(rendered_positions, boundary_nav)
 
     rendered_positions.sort(
@@ -3679,7 +4142,7 @@ def _pending_monetary_balances_from_postings(
     """Build cash-account settlement subledger balances for Holdings."""
 
     grouped: dict[
-        tuple[str, str, str, str],
+        tuple[str, str, str, str, str, str],
         dict[str, object],
     ] = {}
     as_of_iso = as_of_date.isoformat()
@@ -3727,11 +4190,31 @@ def _pending_monetary_balances_from_postings(
         economic_instrument_id = str(
             posting.get("instrument_id") or ""
         ).strip()
+        settlement_date = str(
+            posting.get("settlement_date")
+            or posting.get("recognition_start_date")
+            or ""
+        )[:10]
+        pending_until_date = str(
+            posting.get("recognition_end_date")
+            or posting.get("effective_date")
+            or settlement_date
+        )[:10]
+        if settlement_date and settlement_date > as_of_iso:
+            pending_status = "awaiting_settlement"
+        elif pending_until_date and pending_until_date > as_of_iso:
+            pending_status = "settled_awaiting_position"
+        elif settlement_date and settlement_date < as_of_iso:
+            pending_status = "overdue"
+        else:
+            pending_status = "due_today"
         key = (
             holding_kind,
             account_id,
             economic_instrument_id,
             currency,
+            settlement_date,
+            pending_until_date,
         )
         bucket = grouped.setdefault(
             key,
@@ -3746,6 +4229,9 @@ def _pending_monetary_balances_from_postings(
                     else None
                 ),
                 "currency": currency,
+                "settlement_date": settlement_date or None,
+                "pending_until_date": pending_until_date or None,
+                "pending_status": pending_status,
                 "amount": 0.0,
                 "amount_base": 0.0,
                 "amount_base_complete": True,
@@ -3925,6 +4411,36 @@ def _statement_cash_nav_components(
     }
 
 
+def _converted_option_liability_base(
+    obligations: list[dict[str, object]],
+    *,
+    as_of_date: date,
+    base_currency: str,
+    direct_fx_instruments: dict[tuple[str, str], str],
+    instrument_detail_cache: dict[str, dict[str, object] | None],
+) -> float | None:
+    total = 0.0
+    for obligation in obligations:
+        liability = _safe_float(obligation.get("carrying_liability")) or 0.0
+        currency = valuation_fx.required_currency(
+            obligation.get("contract_currency") or base_currency,
+            field_name="option obligation currency",
+        )
+        converted, _ = valuation_fx.convert_amount_on(
+            liability,
+            as_of_date=as_of_date,
+            from_currency=currency,
+            to_currency=base_currency,
+            direct_fx_instruments=direct_fx_instruments,
+            instrument_detail_cache=instrument_detail_cache,
+            instrument_detail_loader=get_registry_instrument_detail,
+        )
+        if converted is None:
+            return None
+        total += converted
+    return total
+
+
 def build_holdings_report(
     portfolio: dict[str, object],
     accounts: list[dict[str, object]],
@@ -3957,6 +4473,16 @@ def build_holdings_report(
     resolved_instrument_detail_cache = (
         instrument_detail_cache if instrument_detail_cache is not None else {}
     )
+    option_obligation_rows = build_option_obligations(
+        boundary_transactions,
+        as_of_date=as_of_date,
+    )
+    open_option_obligation_rows = [
+        row
+        for row in option_obligation_rows
+        if str(row.get("status") or "") == "open"
+        and (_safe_float(row.get("remaining_quantity")) or 0.0) > 1e-9
+    ]
     positions, position_market_value_base = _build_boundary_holding_records(
         portfolio_id=str(portfolio.get("portfolio_id") or ""),
         accounts=accounts,
@@ -3966,6 +4492,7 @@ def build_holdings_report(
         direct_fx_instruments=direct_fx_instruments,
         instrument_detail_cache=resolved_instrument_detail_cache,
         boundary_nav=None,
+        option_obligations=open_option_obligation_rows,
     )
     cash_components = _statement_cash_nav_components(
         portfolio_id=str(portfolio.get("portfolio_id") or ""),
@@ -3978,12 +4505,23 @@ def build_holdings_report(
     )
     cash_balance_base = _safe_float(cash_components.get("cash_balance_base"))
     pending_settlement_base = _safe_float(cash_components.get("pending_settlement_base"))
+    derivative_liability_base = _converted_option_liability_base(
+        open_option_obligation_rows,
+        as_of_date=as_of_date,
+        base_currency=base_currency,
+        direct_fx_instruments=direct_fx_instruments,
+        instrument_detail_cache=resolved_instrument_detail_cache,
+    )
     total_nav_base = (
-        cash_balance_base + pending_settlement_base + position_market_value_base
+        cash_balance_base
+        + pending_settlement_base
+        + position_market_value_base
+        - derivative_liability_base
         if (
             cash_balance_base is not None
             and pending_settlement_base is not None
             and position_market_value_base is not None
+            and derivative_liability_base is not None
         )
         else None
     )
@@ -4029,14 +4567,20 @@ def build_holdings_report(
         ]
     holdings_market_profile.apply_position_portfolio_weights(positions, total_nav_base)
     total_market_value_base = (
-        (position_market_value_base + cash_balance_base + pending_settlement_base)
+        (position_market_value_base + cash_balance_base + pending_settlement_base - derivative_liability_base)
         if (
             include_cash_rows
             and position_market_value_base is not None
             and cash_balance_base is not None
             and pending_settlement_base is not None
+            and derivative_liability_base is not None
         )
-        else position_market_value_base
+        else (
+            position_market_value_base - derivative_liability_base
+            if position_market_value_base is not None
+            and derivative_liability_base is not None
+            else None
+        )
     )
     return {
         "portfolio_id": str(portfolio.get("portfolio_id") or ""),
@@ -4050,6 +4594,8 @@ def build_holdings_report(
         "position_market_value_base": position_market_value_base,
         "cash_balance_base": cash_balance_base,
         "pending_settlement_base": pending_settlement_base,
+        "derivative_liability_base": derivative_liability_base,
+        "open_option_obligation_count": len(open_option_obligation_rows),
         "total_nav_base": total_nav_base,
     }
 
@@ -4857,6 +5403,7 @@ def _ensure_contribution_group_state(
             "cash_balance_base": 0.0,
             "pending_settlement_base": 0.0,
             "position_market_value_base": 0.0,
+            "derivative_liability_base": 0.0,
             "open_cost_basis_base": 0.0,
             "unrealized_pnl": 0.0,
             "ending_value_base": 0.0,
@@ -4867,7 +5414,10 @@ def _ensure_contribution_group_state(
             "_pending_settlement_complete": True,
             "_position_complete": True,
             "_cost_complete": True,
+            "_liability_complete": True,
             "_market_observation_instrument_ids": set(),
+            "_has_event_valued_exposure": False,
+            "_has_derivative_liability_exposure": False,
         },
     )
 
@@ -4903,6 +5453,61 @@ def _build_contribution_group_end_states(
         position_lot for position_lot in resolved_position_lots if position_lot.get("status") == "open"
     ]
 
+    option_obligations = build_option_obligations(
+        transactions_as_of,
+        as_of_date=as_of_date,
+    )
+    open_option_obligations = [
+        row
+        for row in option_obligations
+        if str(row.get("status") or "") == "open"
+        and (_safe_float(row.get("remaining_quantity")) or 0.0) > 1e-9
+    ]
+    for obligation in open_option_obligations:
+        pseudo_lot = {
+            "account_id": obligation.get("account_id"),
+            "instrument_id": obligation.get("option_instrument_id")
+            or obligation.get("instrument_id"),
+            "instrument_ref": obligation.get("instrument_ref"),
+            "currency": obligation.get("contract_currency") or base_currency,
+        }
+        group_key, group_label = attribution.position_group_for_axis(
+            axis=axis,
+            position_lot=pseudo_lot,
+            account_name_map=account_name_map,
+            base_currency=base_currency,
+        )
+        if not group_key:
+            continue
+        state = _ensure_contribution_group_state(
+            states,
+            group_key=group_key,
+            group_label=group_label,
+            axis=axis,
+        )
+        state["_has_derivative_liability_exposure"] = True
+        currency = valuation_fx.required_currency(
+            obligation.get("contract_currency") or base_currency,
+            field_name="option obligation currency",
+        )
+        liability = _safe_float(obligation.get("carrying_liability")) or 0.0
+        converted_liability, liability_fx_stale = valuation_fx.convert_amount_on(
+            liability,
+            as_of_date=as_of_date,
+            from_currency=currency,
+            to_currency=base_currency,
+            direct_fx_instruments=direct_fx_instruments,
+            instrument_detail_cache=instrument_detail_cache,
+            instrument_detail_loader=get_registry_instrument_detail,
+        )
+        if converted_liability is None:
+            state["_liability_complete"] = False
+        else:
+            state["derivative_liability_base"] = (
+                _safe_float(state.get("derivative_liability_base")) or 0.0
+            ) + converted_liability
+            state["stale_fx_flag"] = bool(state.get("stale_fx_flag")) or liability_fx_stale
+
     for position_lot in open_position_lots:
         group_key, group_label = attribution.position_group_for_axis(
             axis=axis,
@@ -4937,9 +5542,31 @@ def _build_contribution_group_end_states(
             state["open_cost_basis_base"] = (_safe_float(state.get("open_cost_basis_base")) or 0.0) + converted_cost_basis
             state["stale_fx_flag"] = bool(state.get("stale_fx_flag")) or cost_basis_fx_stale
 
-        detail = valuation_fx.instrument_detail_cache_get(str(position_lot.get("instrument_id") or ""), instrument_detail_cache, instrument_detail_loader=get_registry_instrument_detail)
+        instrument_ref = (
+            position_lot.get("instrument_ref")
+            if isinstance(position_lot.get("instrument_ref"), dict)
+            else None
+        )
+        event_valued = holdings_market_profile.is_event_valued_instrument_ref(
+            instrument_ref
+        )
+        if event_valued:
+            state["_has_event_valued_exposure"] = True
+        detail = (
+            None
+            if event_valued
+            else valuation_fx.instrument_detail_cache_get(
+                str(position_lot.get("instrument_id") or ""),
+                instrument_detail_cache,
+                instrument_detail_loader=get_registry_instrument_detail,
+            )
+        )
         price_point = (
-            _select_market_point_as_of(detail=detail, role="valuation", as_of_date=as_of_date)
+            _select_market_point_as_of(
+                detail=detail,
+                role="valuation",
+                as_of_date=as_of_date,
+            )
             if isinstance(detail, dict)
             else None
         )
@@ -4948,16 +5575,16 @@ def _build_contribution_group_end_states(
             observed_instrument_ids = state.get("_market_observation_instrument_ids")
             if isinstance(observed_instrument_ids, set):
                 observed_instrument_ids.add(str(position_lot.get("instrument_id") or ""))
-        last_price = _safe_float((price_point or {}).get("value"))
-        market_value_local = valuation_fx.position_market_value(
-            quantity=_safe_float(position_lot.get("remaining_quantity")) or 0.0,
-            last_price=last_price,
-            instrument_ref=(
-                position_lot.get("instrument_ref")
-                if isinstance(position_lot.get("instrument_ref"), dict)
-                else None
-            ),
-            price_scale=_safe_float((price_point or {}).get("price_scale")),
+        _last_price, market_value_local, event_valued = (
+            holdings_market_profile.resolve_position_valuation(
+                quantity=_safe_float(position_lot.get("remaining_quantity")) or 0.0,
+                cost_basis=remaining_cost_basis,
+                instrument_ref=instrument_ref,
+                quoted_price=_safe_float((price_point or {}).get("value")),
+                quoted_price_scale=_safe_float(
+                    (price_point or {}).get("price_scale")
+                ),
+            )
         )
         converted_market_value, valuation_fx_stale = valuation_fx.convert_amount_on(
             market_value_local,
@@ -5076,6 +5703,8 @@ def _build_contribution_group_end_states(
             state["position_market_value_base"] = None
         if not state.get("_cost_complete"):
             state["open_cost_basis_base"] = None
+        if not state.get("_liability_complete"):
+            state["derivative_liability_base"] = None
         if attribution.axis_includes_cash_balance(axis) and not state.get("_cash_complete"):
             state["cash_balance_base"] = None
         if attribution.axis_includes_cash_balance(axis) and not state.get("_pending_settlement_complete"):
@@ -5092,6 +5721,7 @@ def _build_contribution_group_end_states(
         open_cost_basis_base = _safe_float(state.get("open_cost_basis_base"))
         cash_balance_base = _safe_float(state.get("cash_balance_base"))
         pending_settlement_base = _safe_float(state.get("pending_settlement_base"))
+        derivative_liability_base = _safe_float(state.get("derivative_liability_base"))
 
         if position_market_value_base is not None and open_cost_basis_base is not None:
             state["unrealized_pnl"] = position_market_value_base - open_cost_basis_base
@@ -5100,21 +5730,31 @@ def _build_contribution_group_end_states(
 
         if attribution.axis_includes_cash_balance(axis):
             state["ending_value_base"] = (
-                cash_balance_base + pending_settlement_base + position_market_value_base
+                cash_balance_base
+                + pending_settlement_base
+                + position_market_value_base
+                - (derivative_liability_base or 0.0)
                 if (
                     cash_balance_base is not None
                     and pending_settlement_base is not None
                     and position_market_value_base is not None
+                    and derivative_liability_base is not None
                 )
                 else None
             )
         else:
-            state["ending_value_base"] = position_market_value_base
+            state["ending_value_base"] = (
+                position_market_value_base - derivative_liability_base
+                if position_market_value_base is not None
+                and derivative_liability_base is not None
+                else None
+            )
 
         state.pop("_pending_settlement_complete", None)
         state.pop("_cash_complete", None)
         state.pop("_position_complete", None)
         state.pop("_cost_complete", None)
+        state.pop("_liability_complete", None)
 
     return states
 
@@ -5125,6 +5765,7 @@ def _build_contribution_daily_events(
     as_of_date: date,
     position_lots: list[dict[str, object]],
     transactions_on_date: list[dict[str, object]],
+    transactions_as_of: list[dict[str, object]] | None = None,
     base_currency: str,
     account_name_map: dict[str, str],
     direct_fx_instruments: dict[tuple[str, str], str],
@@ -5152,6 +5793,7 @@ def _build_contribution_daily_events(
                 attribution.GROUP_CAPITAL_FLOW_OUT_FIELD: 0.0,
                 attribution.GROUP_CAPITAL_FLOW_IN_EOD_FIELD: 0.0,
                 attribution.GROUP_CAPITAL_FLOW_OUT_EOD_FIELD: 0.0,
+                "_derivative_lifecycle_activity": False,
             },
         )
 
@@ -5296,6 +5938,7 @@ def _build_contribution_daily_events(
 
     for transaction in transactions_on_date:
         transaction_type = str(transaction.get("transaction_type") or "")
+        option_action = resolve_option_action(transaction)
         performance_effective_date = transaction_performance_effective_date(
             transaction
         )
@@ -5332,6 +5975,35 @@ def _build_contribution_daily_events(
         fee_amount = _safe_float(transaction.get("fees")) or 0.0
         tax_amount = _safe_float(transaction.get("taxes")) or 0.0
         settlement_cash_account_id = transaction.get("settlement_cash_account_id")
+
+        if option_action == "sell_to_open" and is_performance_effective_date:
+            target_group_key, target_group_label = cash_group(
+                settlement_cash_account_id,
+                currency,
+            )
+            add_transfer_flow(
+                source_group_key=group_key,
+                source_group_label=group_label,
+                target_group_key=target_group_key,
+                target_group_label=target_group_label,
+                amount=max(gross_amount - fee_amount - tax_amount, 0.0),
+                trade_date=as_of_date,
+                currency=currency,
+            )
+        elif option_action == "buy_to_close" and is_performance_effective_date:
+            source_group_key, source_group_label = cash_group(
+                settlement_cash_account_id,
+                currency,
+            )
+            add_transfer_flow(
+                source_group_key=source_group_key,
+                source_group_label=source_group_label,
+                target_group_key=group_key,
+                target_group_label=group_label,
+                amount=gross_amount + fee_amount + tax_amount,
+                trade_date=as_of_date,
+                currency=currency,
+            )
 
         if transaction_type == "opening_balance" and is_performance_effective_date:
             add_flow(
@@ -5509,6 +6181,53 @@ def _build_contribution_daily_events(
                     currency=currency,
                 )
 
+    # Writer lifecycle P&L belongs to the option instrument/account group,
+    # never to the settlement cash residual.  Replay the full as-of history so
+    # partial close/expiry/assignment events can release the correct FIFO
+    # premium basis even when the opening fact is not on today's date.
+    obligation_history = transactions_as_of or transactions_on_date
+    for obligation_event in derive_option_obligation_events(
+        obligation_history,
+        as_of_date=as_of_date,
+    ):
+        event_date = obligation_event.get("event_date")
+        if isinstance(event_date, str):
+            event_date = _parse_iso_date(event_date)
+        if event_date != as_of_date:
+            continue
+        obligation = obligation_event.get("obligation")
+        if not isinstance(obligation, dict):
+            continue
+        pseudo_transaction = {
+            "account_id": obligation.get("account_id"),
+            "instrument_id": obligation.get("option_instrument_id")
+            or obligation.get("instrument_id"),
+            "instrument_ref": obligation.get("instrument_ref"),
+            "currency": obligation_event.get("currency")
+            or obligation.get("contract_currency")
+            or base_currency,
+        }
+        group_key, group_label = attribution.transaction_group_for_axis(
+            axis=axis,
+            transaction=pseudo_transaction,
+            account_name_map=account_name_map,
+            base_currency=base_currency,
+        )
+        if not group_key:
+            continue
+        ensure_event(group_key, group_label)[
+            "_derivative_lifecycle_activity"
+        ] = True
+        realized = _safe_float(obligation_event.get("realized_pnl_delta"))
+        if realized is not None and abs(realized) > 1e-15:
+            add_amount(
+                group_key=group_key,
+                group_label=group_label,
+                field_name="realized_pnl",
+                amount=realized,
+                trade_date=as_of_date,
+                currency=str(pseudo_transaction["currency"]),
+            )
     return events
 
 
@@ -5717,11 +6436,29 @@ def _build_contribution_slices_for_date(
             else None
         )
         market_observation_count = int((current_state or {}).get("market_observation_count") or 0)
+        has_derivative_exposure = any(
+            bool((state or {}).get(field_name))
+            for state in (previous_state, current_state)
+            for field_name in (
+                "_has_event_valued_exposure",
+                "_has_derivative_liability_exposure",
+            )
+        )
+        has_derivative_lifecycle_activity = bool(
+            (current_event or {}).get("_derivative_lifecycle_activity")
+        )
+        has_stale_market_input = any(
+            bool((current_state or {}).get(field_name))
+            for field_name in ("stale_price_flag", "stale_fx_flag")
+        )
         return_observation_eligible = (
             daily_return is not None
             and isfinite(daily_return)
             and slice_coverage_state == "complete"
             and (market_observation_count > 0 or abs(daily_return) > 1e-12)
+            and not has_derivative_exposure
+            and not has_derivative_lifecycle_activity
+            and not has_stale_market_input
         )
 
         daily_slices.append(
@@ -6208,6 +6945,7 @@ def build_contribution_report(
             as_of_date=as_of_date,
             position_lots=position_lots,
             transactions_on_date=transactions_by_date.get(as_of_date.isoformat(), []),
+            transactions_as_of=transactions_as_of,
             base_currency=base_currency,
             account_name_map=account_name_map,
             direct_fx_instruments=direct_fx_instruments,

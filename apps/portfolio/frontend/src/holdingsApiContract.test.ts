@@ -54,7 +54,7 @@ describe('holdings workspace request contract', () => {
     )
   })
 
-  it('loads instrument detail through the single-row projection endpoint', async () => {
+  it('loads instrument detail through the holding-kind projection endpoint', async () => {
     const fetchMock = vi.fn(() =>
       Promise.resolve(new Response(JSON.stringify({}), { status: 200 })),
     )

@@ -114,6 +114,7 @@ TEST_PORTFOLIO_STORE: dict[str, list[dict[str, Any]]] = {
     "transactions": [
         {
             "transaction_id": "txn-0001",
+            "transaction_sequence": 1,
             "portfolio_id": "portfolio-ops",
             "transaction_type": "opening_balance",
             "trade_date": "2026-01-02",
@@ -137,6 +138,7 @@ TEST_PORTFOLIO_STORE: dict[str, list[dict[str, Any]]] = {
         },
         {
             "transaction_id": "txn-0002",
+            "transaction_sequence": 2,
             "portfolio_id": "portfolio-ops",
             "transaction_type": "deposit",
             "trade_date": "2026-02-03",
@@ -160,6 +162,7 @@ TEST_PORTFOLIO_STORE: dict[str, list[dict[str, Any]]] = {
         },
         {
             "transaction_id": "txn-0003",
+            "transaction_sequence": 3,
             "portfolio_id": "portfolio-ops",
             "transaction_type": "buy",
             "trade_date": "2026-02-10",
@@ -210,6 +213,7 @@ TEST_PORTFOLIO_STORE: dict[str, list[dict[str, Any]]] = {
         },
         {
             "transaction_id": "txn-0004",
+            "transaction_sequence": 4,
             "portfolio_id": "portfolio-ops",
             "transaction_type": "buy",
             "trade_date": "2026-03-05",
@@ -245,6 +249,7 @@ TEST_PORTFOLIO_STORE: dict[str, list[dict[str, Any]]] = {
         },
         {
             "transaction_id": "txn-0005",
+            "transaction_sequence": 5,
             "portfolio_id": "portfolio-ops",
             "transaction_type": "dividend",
             "trade_date": "2026-03-15",
@@ -285,6 +290,7 @@ TEST_PORTFOLIO_STORE: dict[str, list[dict[str, Any]]] = {
         },
         {
             "transaction_id": "txn-0006",
+            "transaction_sequence": 6,
             "portfolio_id": "portfolio-ops",
             "transaction_type": "dividend_reinvestment",
             "trade_date": "2026-03-28",
@@ -320,6 +326,7 @@ TEST_PORTFOLIO_STORE: dict[str, list[dict[str, Any]]] = {
         },
         {
             "transaction_id": "txn-0007",
+            "transaction_sequence": 7,
             "portfolio_id": "portfolio-ops",
             "transaction_type": "sell",
             "trade_date": "2026-04-08",
@@ -360,6 +367,7 @@ TEST_PORTFOLIO_STORE: dict[str, list[dict[str, Any]]] = {
         },
         {
             "transaction_id": "txn-0008",
+            "transaction_sequence": 8,
             "portfolio_id": "portfolio-ops",
             "transaction_type": "fee",
             "trade_date": "2026-04-09",
@@ -383,6 +391,7 @@ TEST_PORTFOLIO_STORE: dict[str, list[dict[str, Any]]] = {
         },
         {
             "transaction_id": "txn-0009",
+            "transaction_sequence": 9,
             "portfolio_id": "portfolio-ops",
             "transaction_type": "withdrawal",
             "trade_date": "2026-04-11",
@@ -406,6 +415,7 @@ TEST_PORTFOLIO_STORE: dict[str, list[dict[str, Any]]] = {
         },
         {
             "transaction_id": "txn-0010",
+            "transaction_sequence": 10,
             "portfolio_id": "portfolio-ops",
             "transaction_type": "transfer_out",
             "trade_date": "2026-04-12",
@@ -429,6 +439,7 @@ TEST_PORTFOLIO_STORE: dict[str, list[dict[str, Any]]] = {
         },
         {
             "transaction_id": "txn-0011",
+            "transaction_sequence": 11,
             "portfolio_id": "portfolio-ops",
             "transaction_type": "transfer_in",
             "trade_date": "2026-04-12",
@@ -452,6 +463,7 @@ TEST_PORTFOLIO_STORE: dict[str, list[dict[str, Any]]] = {
         },
         {
             "transaction_id": "txn-0012",
+            "transaction_sequence": 12,
             "portfolio_id": "portfolio-ops",
             "transaction_type": "transfer_out",
             "trade_date": "2026-04-13",
@@ -487,6 +499,7 @@ TEST_PORTFOLIO_STORE: dict[str, list[dict[str, Any]]] = {
         },
         {
             "transaction_id": "txn-0013",
+            "transaction_sequence": 13,
             "portfolio_id": "portfolio-ops",
             "transaction_type": "transfer_in",
             "trade_date": "2026-04-13",
@@ -522,6 +535,7 @@ TEST_PORTFOLIO_STORE: dict[str, list[dict[str, Any]]] = {
         },
         {
             "transaction_id": "txn-0014",
+            "transaction_sequence": 14,
             "portfolio_id": "portfolio-ops",
             "transaction_type": "sell",
             "trade_date": "2026-04-14",
@@ -557,6 +571,7 @@ TEST_PORTFOLIO_STORE: dict[str, list[dict[str, Any]]] = {
         },
         {
             "transaction_id": "txn-0015",
+            "transaction_sequence": 15,
             "portfolio_id": "portfolio-ops",
             "transaction_type": "interest",
             "trade_date": "2026-04-15",
@@ -580,6 +595,7 @@ TEST_PORTFOLIO_STORE: dict[str, list[dict[str, Any]]] = {
         },
         {
             "transaction_id": "txn-0016",
+            "transaction_sequence": 16,
             "portfolio_id": "portfolio-ops",
             "transaction_type": "opening_balance",
             "trade_date": "2026-02-20",
@@ -603,6 +619,7 @@ TEST_PORTFOLIO_STORE: dict[str, list[dict[str, Any]]] = {
         },
         {
             "transaction_id": "txn-0017",
+            "transaction_sequence": 17,
             "portfolio_id": "portfolio-ops",
             "transaction_type": "buy",
             "trade_date": "2026-03-04",
@@ -638,6 +655,7 @@ TEST_PORTFOLIO_STORE: dict[str, list[dict[str, Any]]] = {
         },
         {
             "transaction_id": "txn-0018",
+            "transaction_sequence": 18,
             "portfolio_id": "portfolio-ops",
             "transaction_type": "fx_conversion",
             "trade_date": "2026-04-02",

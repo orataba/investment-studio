@@ -38,6 +38,10 @@ Watchlist 主图把所选区间锚点归一为 `100` 的增长指数，不展示
 
 周频、节假日或停牌序列不得制造虚拟边界点。API 必须返回 `requested_start_date`、`anchor_date`、`requested_end_date` 和 `end_date`，让调用方看到请求边界与实际采用观测日期的差异。
 
+Performance 页的自然期矩阵另有一条闭合规则：月度收益使用当月最后一个有效收盘/净值与上一个自然月最后一个有效收盘/净值相除；年度收益使用相邻自然年的最后一个有效收盘/净值。缺少整个月或整年时，不把更早期间的点跨接后冒充当前月/年收益。基于月度收益的滚动波动率、Beta 和连续下跌月数也只使用连续自然期，遇到缺口即重新开始/暂不发布该窗口。
+
+矩阵单元格的 tooltip 会显示实际 `anchor_date` 与 `end_date`；因此当最新自然月/自然年尚未完整结束，或基金只提供月中/周频净值时，界面不会把实际采用的观察日伪装成月末/年末。
+
 少于一个完整日历年的区间不得展示年化收益。达到首个日历周年后，年化指数按实际日历周年分数计算，不用 `365.25 / days` 把短历史外推成年化数字。
 
 详情页 Overview 主图不提供固定窗口快捷按钮，只保留双端拖动范围条。拖动手柄绑定真实观测点，图例同时展示实际锚点和实际终点。标量 performance 字段覆盖 `1W / 1M / 3M / 6M / MTD / YTD / 1Y`；Sparkline 仍只物化 `1D / 1W / 1M / 1Y` 的有界展示路径。两类输出都使用本节边界规则，但字段集合不要求相同。
@@ -68,7 +72,7 @@ Watchlist 主图把所选区间锚点归一为 `100` 的增长指数，不展示
 
 - 后端区间策略：`watchlist_app.services.return_windows`。
 - 前端交互图策略：`src/lib/returnWindows.ts`，与后端使用同一组黄金边界测试。
-- Watchlist performance/risk snapshot 使用 `canonical-performance/v6`、`canonical-risk/v5` 和 `return-window/v2`；Watchlist row 使用 `watchlist-materialization/v4`。
+- Watchlist performance/risk snapshot 使用 `canonical-performance/v7`、`canonical-risk/v6` 和 `return-window/v2`；Watchlist row 使用 `watchlist-materialization/v5`。
 - `return_3m / return_6m` 与其他标量 performance 字段一样，从 canonical performance snapshot 投影到 watchlist row read model；迁移、repository、serializer、field registry 和导出不得缺少其中任一层。
 - Sparkline 字段为 `return_chart_1d / 1w / 1m / 1y`；旧 `price_chart_*` 字段已迁移并删除。
 - Portfolio 与 Watchlist 不共享业务 helper、read model 或运行时 API。两边以本文边界、Registry series identity 和黄金用例保持一致：同一 instrument、请求日期、已确认 total-return basis 和窗口下，Watchlist 标量收益与 Portfolio Holdings instrument row 必须相同；Portfolio group / total 的当前权重篮子计算仍只属于 Portfolio。

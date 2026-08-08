@@ -6,12 +6,19 @@ from fastapi import APIRouter, BackgroundTasks, HTTPException
 from sqlalchemy import select
 
 from portfolio_app.services.calculation_frequency import CalculationFrequency
+from portfolio_app.api.assemblers import (
+    physical_lifecycle_types_by_group,
+    resolve_transaction_net_cash_effect,
+)
 from portfolio_app.db.models import PortfolioCalculationStateModel, PortfolioDailySnapshotModel
 from portfolio_app.db.session import get_session_factory
 from portfolio_app.services.daily_snapshots import (
     DAILY_SNAPSHOT_CALCULATION_VERSION,
     build_materialized_instrument_holding_projection,
     ensure_portfolio_daily_snapshots,
+)
+from portfolio_app.services.analytics_scope import (
+    resolve_instrument_analytics_scopes,
 )
 from portfolio_app.services.instrument_charts import (
     HOLDINGS_PRICE_CHART_RANGE_KEYS,
@@ -41,8 +48,11 @@ from portfolio_app.services.performance import (
     corporate_action_quality_warnings,
 )
 from portfolio_app.services.holdings_market_profile import (
+    is_derivative_tracking_instrument_type,
     is_cash_holding_instrument_id,
+    is_market_priced_holding,
     is_pending_monetary_holding,
+    summarize_holdings_operational_status,
     summarize_holding_day_change,
 )
 from portfolio_app.services.portfolio_store import (
@@ -53,6 +63,7 @@ from portfolio_app.services.portfolio_store import (
 )
 from portfolio_app.services.risk_model import enrich_holdings_forward_risk, get_portfolio_risk_policy
 from portfolio_app.services.snapshot_selection import latest_fresh_complete_portfolio_snapshot
+from portfolio_app.services.transaction_dates import transaction_cash_activity_date
 
 router = APIRouter()
 
@@ -97,6 +108,345 @@ _HOLDINGS_CHART_FIELD_NAMES = tuple(
     f"price_chart_{range_key}" for range_key in HOLDINGS_PRICE_CHART_RANGE_KEYS
 )
 _COMPACT_HOLDINGS_SPARKLINE_POINT_LIMIT = 24
+_EVENT_VALUATION_BASES = frozenset({"carried_cost", "premium_liability"})
+_CASH_SCOPE_SYSTEM_EXCLUSION_REASON = (
+    "Cash and settlement exposure is disclosed outside covariance risk."
+)
+
+
+def _market_analytics_valuation_exclusion_reason(row: dict[str, object]) -> str | None:
+    """Explain why a policy-eligible row cannot enter modeled market exposure.
+
+    Taxonomy policy is an administrative eligibility assertion.  The holding
+    read model still has to satisfy the valuation contract before that
+    assertion can affect covariance, risk budget, or ordinary performance.
+    Keeping this gate here prevents a generic ``__root__`` policy from
+    accidentally re-enabling carried-cost FCN rows or premium liabilities.
+    """
+
+    instrument_core = (
+        row.get("instrument_core")
+        if isinstance(row.get("instrument_core"), dict)
+        else {}
+    )
+    if is_derivative_tracking_instrument_type(
+        instrument_core.get("instrument_type")
+    ):
+        return "derivative tracking instruments are outside ordinary analytics"
+
+    holding_kind = str(row.get("holding_kind") or "position").strip().lower()
+    if holding_kind != "position":
+        return f"holding_kind={holding_kind or 'unknown'} is not a market position"
+    valuation_basis = str(row.get("valuation_basis") or "").strip().lower()
+    if valuation_basis != "market_quote":
+        return f"valuation_basis={valuation_basis or 'unknown'} is not market_quote"
+    coverage_status = str(row.get("fair_value_coverage_status") or "").strip().lower()
+    if coverage_status != "complete":
+        return (
+            "fair_value_coverage_status="
+            f"{coverage_status or 'unknown'} is not complete"
+        )
+    if row.get("last_price") is None:
+        return "last_price is unavailable"
+    return None
+
+
+def _holding_scope_instrument_id(row: dict[str, object]) -> str:
+    instrument_core = (
+        row.get("instrument_core")
+        if isinstance(row.get("instrument_core"), dict)
+        else {}
+    )
+    instrument_type = str(instrument_core.get("instrument_type") or "").lower()
+    if instrument_type == "cash" or is_pending_monetary_holding(row):
+        return str(row.get("economic_instrument_id") or "").strip()
+    return str(instrument_core.get("instrument_id") or "").strip()
+
+
+def _transaction_is_derivative_tracking(
+    transaction: dict[str, object],
+    *,
+    physical_lifecycle_type: str | None,
+) -> bool:
+    if physical_lifecycle_type is not None:
+        return True
+    instrument_ref = (
+        transaction.get("instrument_ref")
+        if isinstance(transaction.get("instrument_ref"), dict)
+        else {}
+    )
+    return is_derivative_tracking_instrument_type(
+        transaction.get("instrument_type")
+        or instrument_ref.get("instrument_type")
+    )
+
+
+def _enrich_holdings_analytics_scope(
+    workspace: dict[str, object],
+    *,
+    portfolio_id: str,
+    as_of_date: date,
+    transactions: list[dict[str, object]],
+) -> dict[str, object]:
+    rows = workspace.get("rows")
+    if not isinstance(rows, list):
+        return workspace
+    scope_instrument_ids = [
+        instrument_id
+        for row in rows
+        if isinstance(row, dict)
+        and (instrument_id := _holding_scope_instrument_id(row))
+    ]
+    transaction_instrument_ids = [
+        str(transaction.get("instrument_id") or "").strip()
+        for transaction in transactions
+        if str(transaction.get("instrument_id") or "").strip()
+    ]
+    scopes = resolve_instrument_analytics_scopes(
+        portfolio_id,
+        as_of_date=as_of_date,
+        instrument_ids=[*scope_instrument_ids, *transaction_instrument_ids],
+    )
+
+    excluded_rows: list[dict[str, object]] = []
+    modeled_net_exposure = 0.0
+    modeled_gross_exposure = 0.0
+    excluded_carrying_value = 0.0
+    excluded_liability = 0.0
+    cash_unallocated_exposure = 0.0
+    policy_versions: set[int] = set()
+    configuration_versions: set[int] = set()
+    taxonomy_selection_versions: set[int] = set()
+
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        instrument_core = (
+            row.get("instrument_core")
+            if isinstance(row.get("instrument_core"), dict)
+            else {}
+        )
+        instrument_type = str(instrument_core.get("instrument_type") or "").lower()
+        instrument_id = _holding_scope_instrument_id(row)
+        is_cash_or_settlement = (
+            instrument_type == "cash"
+            or is_pending_monetary_holding(row)
+            or is_cash_holding_instrument_id(
+                instrument_core.get("instrument_id") or row.get("line_id")
+            )
+        )
+        scope = scopes.get(instrument_id) if instrument_id else None
+        if scope is None:
+            scope = {
+                "scope_status": "cash_or_settlement" if is_cash_or_settlement else "missing",
+                "taxonomy_id": None,
+                "taxonomy_node_id": None,
+                "resolved_policy_node_id": None,
+                "inherited_from_node_id": None,
+                "analytics_scope_policy_id": None,
+                "scope_policy_version": None,
+                "configuration_version": None,
+                "taxonomy_selection_version": None,
+                "risk_eligible": False,
+                "risk_budget_eligible": False,
+                "performance_scope": "unallocated",
+                "valuation_basis_policy": "cash" if is_cash_or_settlement else "unknown",
+                "exclusion_reason": (
+                    _CASH_SCOPE_SYSTEM_EXCLUSION_REASON
+                    if is_cash_or_settlement
+                    else "No effective analytics scope assignment or policy."
+                ),
+            }
+        row.update(scope)
+        policy_performance_scope = str(scope.get("performance_scope") or "unallocated")
+        policy_performance_eligible = policy_performance_scope == "ordinary"
+        policy_risk_eligible = bool(scope.get("risk_eligible"))
+        policy_risk_budget_eligible = bool(scope.get("risk_budget_eligible"))
+        valuation_exclusion_reason = (
+            _CASH_SCOPE_SYSTEM_EXCLUSION_REASON
+            if is_cash_or_settlement
+            else _market_analytics_valuation_exclusion_reason(row)
+        )
+        valuation_contract_eligible = valuation_exclusion_reason is None
+
+        # Preserve the resolved policy separately from the effective runtime
+        # scope.  A policy may say ``ordinary`` while the system valuation
+        # contract still excludes this particular row.
+        row["analytics_scope_policy"] = policy_performance_scope
+        row["analytics_scope_valuation_eligible"] = valuation_contract_eligible
+        row["analytics_scope_system_exclusion_reason"] = valuation_exclusion_reason
+        if (
+            valuation_exclusion_reason is not None
+            and policy_performance_scope == "ordinary"
+            and not is_cash_or_settlement
+        ):
+            row["exclusion_reason"] = (
+                "System valuation gate: " + valuation_exclusion_reason + "."
+            )
+            effective_performance_scope = "operational_only"
+        else:
+            effective_performance_scope = policy_performance_scope
+        row["analytics_scope"] = effective_performance_scope
+        row["performance_scope"] = effective_performance_scope
+        row["performance_eligible"] = (
+            policy_performance_eligible
+            and valuation_contract_eligible
+            and not is_cash_or_settlement
+        )
+        row["risk_eligible"] = (
+            policy_risk_eligible
+            and valuation_contract_eligible
+            and not is_cash_or_settlement
+        )
+        row["risk_budget_eligible"] = (
+            policy_risk_budget_eligible
+            and valuation_contract_eligible
+            and not is_cash_or_settlement
+        )
+
+        policy_version = scope.get("scope_policy_version")
+        if isinstance(policy_version, int):
+            policy_versions.add(policy_version)
+        configuration_version = scope.get("configuration_version")
+        if isinstance(configuration_version, int):
+            configuration_versions.add(configuration_version)
+        taxonomy_selection_version = scope.get("taxonomy_selection_version")
+        if isinstance(taxonomy_selection_version, int):
+            taxonomy_selection_versions.add(taxonomy_selection_version)
+
+        holding_kind = str(row.get("holding_kind") or "position")
+        if holding_kind == "option_obligation":
+            holding_region = "written_option_obligations"
+        elif is_cash_or_settlement:
+            holding_region = "cash_and_settlement"
+        elif instrument_type in {"fcn", "option"}:
+            holding_region = "structured_and_long_derivatives"
+        else:
+            holding_region = "market_valued_positions"
+        row["holding_region"] = holding_region
+
+        exposure = (
+            float(row["market_value_base"])
+            if row.get("market_value_base") is not None
+            else float(row["carrying_value_base"])
+            if row.get("carrying_value_base") is not None
+            else float(row["liability_value_base"])
+            if row.get("liability_value_base") is not None
+            else 0.0
+        )
+        if is_cash_or_settlement:
+            cash_unallocated_exposure += exposure
+        elif row["risk_eligible"]:
+            modeled_net_exposure += exposure
+            modeled_gross_exposure += abs(exposure)
+        else:
+            is_liability = bool(row.get("is_liability")) or exposure < 0
+            if is_liability:
+                excluded_liability += abs(exposure)
+            else:
+                excluded_carrying_value += max(exposure, 0.0)
+            if abs(exposure) > 1e-9:
+                excluded_rows.append(
+                    {
+                        "line_id": row.get("line_id"),
+                        "instrument_id": instrument_core.get("instrument_id"),
+                        "instrument_name": instrument_core.get("instrument_name"),
+                        "holding_region": holding_region,
+                        "exposure_base": exposure,
+                        "exclusion_reason": row.get("exclusion_reason"),
+                        "scope_status": row.get("scope_status"),
+                    }
+                )
+
+    # Transaction cash effects are denominated in each transaction's local
+    # currency.  Never add those amounts across currencies; this disclosure
+    # is intentionally local-currency activity, not a base-currency ledger.
+    cash_scope_breakdown: dict[tuple[str, str], dict[str, float]] = {}
+    physical_lifecycle_types = physical_lifecycle_types_by_group(transactions)
+    for transaction in transactions:
+        transaction_date = transaction_cash_activity_date(transaction)
+        if transaction_date is not None and transaction_date > as_of_date:
+            continue
+        physical_lifecycle_type = physical_lifecycle_types.get(
+            str(transaction.get("event_group_id") or "").strip()
+        )
+        cash_effect = resolve_transaction_net_cash_effect(
+            transaction,
+            physical_lifecycle_type=physical_lifecycle_type,
+        )
+        if cash_effect is None or abs(cash_effect) <= 1e-12:
+            continue
+        transaction_instrument_id = str(transaction.get("instrument_id") or "").strip()
+        transaction_scope = scopes.get(transaction_instrument_id, {})
+        performance_scope = (
+            "derivative_lifecycle"
+            if _transaction_is_derivative_tracking(
+                transaction,
+                physical_lifecycle_type=physical_lifecycle_type,
+            )
+            else str(transaction_scope.get("performance_scope") or "unallocated")
+        )
+        transaction_currency = str(
+            transaction.get("currency") or ""
+        ).strip().upper()
+        if not transaction_currency:
+            # Canonical transactions require currency.  Should an imported or
+            # historical row violate that contract, keep it isolated instead
+            # of silently mixing it with a real currency bucket.
+            transaction_currency = "UNKNOWN"
+        bucket = cash_scope_breakdown.setdefault(
+            (performance_scope, transaction_currency),
+            {"net_cash_effect": 0.0, "absolute_cash_activity": 0.0},
+        )
+        bucket["net_cash_effect"] += float(cash_effect)
+        bucket["absolute_cash_activity"] += abs(float(cash_effect))
+
+    totals = workspace.get("totals") if isinstance(workspace.get("totals"), dict) else {}
+    total_nav = (
+        float(totals["nav"])
+        if totals.get("nav") is not None
+        else None
+    )
+    coverage_denominator = (
+        modeled_gross_exposure
+        + excluded_carrying_value
+        + excluded_liability
+        + abs(cash_unallocated_exposure)
+    )
+    workspace["analytics_scope_summary"] = {
+        "scope_name": "Modeled Market Sleeve",
+        "scope_policy_versions": sorted(policy_versions),
+        "configuration_versions": sorted(configuration_versions),
+        "taxonomy_selection_versions": sorted(taxonomy_selection_versions),
+        "total_nav": total_nav,
+        "modeled_net_exposure": modeled_net_exposure,
+        "modeled_gross_exposure": modeled_gross_exposure,
+        "excluded_carrying_value": excluded_carrying_value,
+        "excluded_liability": excluded_liability,
+        "cash_unallocated_exposure": cash_unallocated_exposure,
+        "coverage_ratio": (
+            modeled_gross_exposure / coverage_denominator
+            if coverage_denominator > 1e-12
+            else None
+        ),
+        "excluded_rows": excluded_rows,
+        "cash_scope_breakdown": [
+            {
+                "performance_scope": performance_scope,
+                "currency": transaction_currency,
+                **value,
+            }
+            for (
+                performance_scope,
+                transaction_currency,
+            ), value in sorted(cash_scope_breakdown.items())
+        ],
+        "ordinary_sleeve_twr_status": "unavailable",
+        "ordinary_sleeve_twr_reason": (
+            "Sleeve boundary cash flows are not yet maintained as a cash subledger."
+        ),
+    }
+    return workspace
 
 
 def _compact_sparkline_points(value: object) -> list[object]:
@@ -152,6 +502,12 @@ def _public_holdings_workspace_response(
             else []
         )
     )
+    workspace.update(
+        summarize_holdings_operational_status(
+            [row for row in row_items if isinstance(row, dict)],
+            as_of_date=as_of_date,
+        )
+    )
     if include_details:
         workspace["detail_level"] = "full"
         return workspace
@@ -181,6 +537,50 @@ def _parse_iso_date(value: object) -> date | None:
         except ValueError:
             return None
     return None
+
+
+def _holding_requires_empty_market_profile(row: dict[str, object]) -> bool:
+    return bool(
+        row.get("risk_eligible") is False
+        or str(row.get("valuation_basis") or "").strip().lower()
+        in _EVENT_VALUATION_BASES
+        or str(row.get("holding_kind") or "position").strip().lower()
+        == "option_obligation"
+    )
+
+
+def _replace_with_empty_market_profile(
+    row: dict[str, object],
+    *,
+    calculation_frequency: CalculationFrequency,
+    holding_start_date: date | None = None,
+) -> None:
+    resolved_holding_start_date = holding_start_date or _parse_iso_date(
+        row.get("instrument_holding_start_date")
+    )
+    row.pop("price_chart", None)
+    row.update(
+        empty_instrument_holdings_market_profile(
+            holding_start_date=resolved_holding_start_date,
+            calculation_frequency=calculation_frequency,
+        )
+    )
+
+
+def _clear_ineligible_market_profiles(
+    workspace: dict[str, object],
+    *,
+    calculation_frequency: CalculationFrequency,
+) -> None:
+    rows = workspace.get("rows")
+    if not isinstance(rows, list):
+        return
+    for row in rows:
+        if isinstance(row, dict) and _holding_requires_empty_market_profile(row):
+            _replace_with_empty_market_profile(
+                row,
+                calculation_frequency=calculation_frequency,
+            )
 
 
 def _holding_start_dates_by_instrument(position_lots: list[dict[str, object]]) -> dict[str, date]:
@@ -254,6 +654,14 @@ def _materialized_holdings_workspace_response(
     response = deepcopy(workspace)
     response.pop("price_chart_range", None)
     response["risk_basis"] = risk_basis_profile
+    calculation_frequency = cast(
+        CalculationFrequency,
+        str(risk_basis_profile.get("resolved_frequency") or "daily"),
+    )
+    _clear_ineligible_market_profiles(
+        response,
+        calculation_frequency=calculation_frequency,
+    )
     return response
 
 
@@ -284,20 +692,18 @@ def _enrich_holdings_workspace_market_data(
             or str(instrument_core.get("instrument_type") or "").strip().lower()
             == "cash"
             or is_cash_holding_instrument_id(instrument_id)
+            or _holding_requires_empty_market_profile(row)
         ):
-            row.pop("price_chart", None)
-            row.update(
-                empty_instrument_holdings_market_profile(
-                    calculation_frequency=calculation_frequency,
-                )
+            _replace_with_empty_market_profile(
+                row,
+                calculation_frequency=calculation_frequency,
+                holding_start_date=holding_start_dates.get(instrument_id),
             )
             continue
         if not instrument_id:
-            row.pop("price_chart", None)
-            row.update(
-                empty_instrument_holdings_market_profile(
-                    calculation_frequency=calculation_frequency,
-                )
+            _replace_with_empty_market_profile(
+                row,
+                calculation_frequency=calculation_frequency,
             )
             continue
         holding_start_date = holding_start_dates.get(instrument_id)
@@ -491,8 +897,14 @@ def holdings_workspace(
                     materialized_workspace,
                     risk_basis_profile=risk_basis_profile,
                 )
-                enriched_response = enrich_holdings_forward_risk(
+                scoped_response = _enrich_holdings_analytics_scope(
                     response,
+                    portfolio_id=resolved_portfolio_id,
+                    as_of_date=resolved_as_of_date,
+                    transactions=transactions,
+                )
+                enriched_response = enrich_holdings_forward_risk(
+                    scoped_response,
                     as_of_date=resolved_as_of_date,
                     calculation_frequency=calculation_frequency,
                     risk_policy=risk_policy or {},
@@ -520,8 +932,14 @@ def holdings_workspace(
                 risk_basis_profile=risk_basis_profile,
                 instrument_details=instrument_details,
             )
-            enriched_response = enrich_holdings_forward_risk(
+            scoped_response = _enrich_holdings_analytics_scope(
                 response,
+                portfolio_id=resolved_portfolio_id,
+                as_of_date=resolved_as_of_date,
+                transactions=transactions,
+            )
+            enriched_response = enrich_holdings_forward_risk(
+                scoped_response,
                 as_of_date=resolved_as_of_date,
                 calculation_frequency=calculation_frequency,
                 risk_policy=risk_policy or {},
@@ -587,6 +1005,7 @@ def holdings_workspace(
             if (instrument_id := str(position.get("instrument_id") or ""))
             and not is_cash_holding_instrument_id(instrument_id)
             and not is_pending_monetary_holding(position)
+            and not _holding_requires_empty_market_profile(position)
             and isinstance((detail := instrument_details.get(instrument_id)), dict)
         }
     except InstrumentRegistryError as error:
@@ -599,12 +1018,19 @@ def holdings_workspace(
     ]
     position_count = len(formal_positions)
     priced_position_count = sum(
-        1 for position in formal_positions if position.get("last_price") is not None
+        1
+        for position in formal_positions
+        if is_market_priced_holding(position)
     )
     position_lot_summary = summarize_position_lots(position_lots)
 
     def market_profile_for_position(position: dict[str, object]) -> dict[str, object]:
         instrument_id = str(position.get("instrument_id") or "")
+        if _holding_requires_empty_market_profile(position):
+            return empty_instrument_holdings_market_profile(
+                holding_start_date=holding_start_dates.get(instrument_id),
+                calculation_frequency=calculation_frequency,
+            )
         if (
             is_cash_holding_instrument_id(instrument_id)
             or is_pending_monetary_holding(position)
@@ -666,6 +1092,51 @@ def holdings_workspace(
             ],
             "account_count": int(position.get("account_count") or 0),
             "open_position_lot_count": int(position.get("open_position_lot_count") or 0),
+            "is_liability": bool(position.get("is_liability", False)),
+            "performance_eligible": bool(position.get("performance_eligible", True)),
+            "risk_eligible": bool(position.get("risk_eligible", True)),
+            "open_contract_quantity": position.get("open_contract_quantity"),
+            "covered_underlying_quantity": position.get(
+                "covered_underlying_quantity"
+            ),
+            "required_underlying_quantity": position.get(
+                "required_underlying_quantity"
+            ),
+            "underlying_position_quantity": position.get(
+                "underlying_position_quantity"
+            ),
+            "uncovered_underlying_quantity": position.get(
+                "uncovered_underlying_quantity"
+            ),
+            "covered_ratio": position.get("covered_ratio"),
+            "obligation_status": position.get("obligation_status"),
+            "obligation_coverage_status": position.get(
+                "obligation_coverage_status"
+            ),
+            "coverage_type": position.get("coverage_type"),
+            "related_underlying_id": position.get("related_underlying_id"),
+            "expiry_date": position.get("expiry_date"),
+            "days_to_expiry": position.get("days_to_expiry"),
+            "strike": position.get("strike"),
+            "option_type": position.get("option_type"),
+            "contract_multiplier": position.get("contract_multiplier"),
+            "settlement_type": position.get("settlement_type"),
+            "assignment_notional": position.get("assignment_notional"),
+            "assignment_notional_base": position.get("assignment_notional_base"),
+            "premium_received_gross": position.get("premium_received_gross"),
+            "premium_basis_remaining": position.get("premium_basis_remaining"),
+            "liability_value": position.get("liability_value"),
+            "liability_value_base": position.get("liability_value_base"),
+            "carrying_value": position.get("carrying_value"),
+            "carrying_value_base": position.get("carrying_value_base"),
+            "fair_value": position.get("fair_value"),
+            "fair_value_coverage_status": position.get("fair_value_coverage_status"),
+            "valuation_basis": position.get("valuation_basis"),
+            "settlement_date": position.get("settlement_date"),
+            "pending_until_date": position.get("pending_until_date"),
+            "pending_status": position.get("pending_status"),
+            "settlement_amount": position.get("settlement_amount"),
+            "settlement_amount_base": position.get("settlement_amount_base"),
         }
         for position in positions
     ]
@@ -685,6 +1156,7 @@ def holdings_workspace(
         for row in rows
         if not is_cash_workspace_row(row)
         and not is_pending_monetary_holding(row)
+        and str(row.get("holding_kind") or "position") != "option_obligation"
     ]
     total_cost_basis_base = (
         sum(float(row["cost_basis_base"]) for row in cost_basis_rows)
@@ -736,8 +1208,14 @@ def holdings_workspace(
             ),
         },
     }
-    enriched_response = enrich_holdings_forward_risk(
+    scoped_response = _enrich_holdings_analytics_scope(
         response,
+        portfolio_id=resolved_portfolio_id,
+        as_of_date=resolved_as_of_date,
+        transactions=transactions,
+    )
+    enriched_response = enrich_holdings_forward_risk(
+        scoped_response,
         as_of_date=resolved_as_of_date,
         calculation_frequency=calculation_frequency,
         risk_policy=risk_policy or {},
@@ -775,14 +1253,15 @@ def instrument_holding_projection(
             detail="Materialized holding projection is unavailable for the requested date.",
         )
 
-    row = response.get("row")
-    if isinstance(row, dict):
-        instrument_core = row.get("instrument_core") if isinstance(row.get("instrument_core"), dict) else {}
-        instrument_types = {str(instrument_core.get("instrument_type") or "").strip().lower()}
-        instrument_ids = {normalized_instrument_id}
-    else:
-        instrument_types = set()
-        instrument_ids = set()
+    rows = response.get("rows")
+    row_items = rows if isinstance(rows, list) else []
+    instrument_types = {
+        str(instrument_core.get("instrument_type") or "").strip().lower()
+        for row in row_items
+        if isinstance(row, dict)
+        and isinstance((instrument_core := row.get("instrument_core")), dict)
+    }
+    instrument_ids = {normalized_instrument_id} if row_items else set()
     reconcile_instrument_event_tasks(
         portfolio_ids=[resolved_portfolio_id],
         instrument_ids=instrument_ids,

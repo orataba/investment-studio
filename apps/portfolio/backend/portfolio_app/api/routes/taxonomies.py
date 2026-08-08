@@ -3,10 +3,13 @@ from __future__ import annotations
 from datetime import date
 from typing import cast
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 
 from portfolio_app.services.calculation_frequency import CalculationFrequency
 from portfolio_app.api.contracts import (
+    AnalyticsScopePolicyUpsertRequest,
+    AnalyticsScopePolicyRecord,
+    AnalyticsTaxonomySelectionRecord,
     DefaultPlanningTaxonomyResponse,
     DefaultPlanningTaxonomyUpdateRequest,
     PortfolioInstrumentUniverseCreateRequest,
@@ -26,6 +29,12 @@ from portfolio_app.api.contracts import (
     TaxonomyNodeRecord,
     TaxonomyRecord,
     TaxonomyUpdateRequest,
+)
+from portfolio_app.services.analytics_scope import (
+    analytics_policy_version,
+    list_analytics_taxonomy_selections,
+    list_analytics_scope_policies,
+    replace_analytics_scope_policy,
 )
 from portfolio_app.services.instrument_charts import build_instrument_holdings_market_profile
 from portfolio_app.services.instrument_registry import InstrumentRegistryError, get_registry_instrument
@@ -166,6 +175,15 @@ def get_portfolio_taxonomies(
             TaxonomyAssignmentRecord.model_validate(item)
             for item in list_taxonomy_assignments(portfolio_id)
         ],
+        analytics_scope_policy_version=analytics_policy_version(portfolio_id),
+        analytics_scope_policies=[
+            AnalyticsScopePolicyRecord.model_validate(item)
+            for item in list_analytics_scope_policies(portfolio_id)
+        ],
+        analytics_taxonomy_selections=[
+            AnalyticsTaxonomySelectionRecord.model_validate(item)
+            for item in list_analytics_taxonomy_selections(portfolio_id)
+        ],
         instrument_universe=[
             PortfolioInstrumentUniverseRecord.model_validate(item)
             for item in universe_records
@@ -188,7 +206,11 @@ def update_default_planning_taxonomy(
         raise HTTPException(status_code=404, detail="Portfolio not found")
 
     try:
-        updated_portfolio = set_default_planning_taxonomy(portfolio_id, payload.taxonomy_id)
+        updated_portfolio = set_default_planning_taxonomy(
+            portfolio_id,
+            payload.taxonomy_id,
+            effective_from=payload.effective_from,
+        )
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
 
@@ -251,6 +273,7 @@ def create_portfolio_taxonomy(
 
     record = create_taxonomy(
         portfolio_id=portfolio_id,
+        effective_from=payload.effective_from,
         name=payload.name,
         taxonomy_type=payload.taxonomy_type,
         purpose=payload.purpose,
@@ -287,8 +310,16 @@ def update_portfolio_taxonomy(
 
 
 @router.delete("/{portfolio_id}/taxonomies/{taxonomy_id}")
-def delete_portfolio_taxonomy(portfolio_id: str, taxonomy_id: str) -> dict[str, object]:
-    deleted = delete_taxonomy(portfolio_id, taxonomy_id)
+def delete_portfolio_taxonomy(
+    portfolio_id: str,
+    taxonomy_id: str,
+    effective_from: date = Query(...),
+) -> dict[str, object]:
+    deleted = delete_taxonomy(
+        portfolio_id,
+        taxonomy_id,
+        effective_from=effective_from,
+    )
     if not deleted:
         if get_portfolio(portfolio_id) is None:
             raise HTTPException(status_code=404, detail="Portfolio not found")
@@ -311,6 +342,7 @@ def create_portfolio_taxonomy_node(
         record = create_taxonomy_node(
             portfolio_id=portfolio_id,
             taxonomy_id=taxonomy_id,
+            effective_from=payload.effective_from,
             parent_taxonomy_node_id=payload.parent_taxonomy_node_id,
             node_name=payload.node_name,
             node_code=payload.node_code,
@@ -353,9 +385,15 @@ def delete_portfolio_taxonomy_node(
     portfolio_id: str,
     taxonomy_id: str,
     taxonomy_node_id: str,
+    effective_from: date = Query(...),
 ) -> dict[str, object]:
     try:
-        deleted = delete_taxonomy_node(portfolio_id, taxonomy_id, taxonomy_node_id)
+        deleted = delete_taxonomy_node(
+            portfolio_id,
+            taxonomy_id,
+            taxonomy_node_id,
+            effective_from=effective_from,
+        )
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
 
@@ -388,6 +426,7 @@ def create_portfolio_taxonomy_assignment(
         record = create_taxonomy_assignment(
             portfolio_id=portfolio_id,
             taxonomy_id=taxonomy_id,
+            effective_from=payload.effective_from,
             target_scope=payload.target_scope,
             target_entity_id=payload.target_entity_id,
             taxonomy_node_id=payload.taxonomy_node_id,
@@ -427,8 +466,14 @@ def delete_portfolio_taxonomy_assignment(
     portfolio_id: str,
     taxonomy_id: str,
     assignment_id: str,
+    effective_from: date = Query(...),
 ) -> dict[str, object]:
-    deleted = delete_taxonomy_assignment(portfolio_id, taxonomy_id, assignment_id)
+    deleted = delete_taxonomy_assignment(
+        portfolio_id,
+        taxonomy_id,
+        assignment_id,
+        effective_from=effective_from,
+    )
     if not deleted:
         if get_portfolio(portfolio_id) is None:
             raise HTTPException(status_code=404, detail="Portfolio not found")
@@ -458,6 +503,7 @@ def create_portfolio_target_set(
         record = create_target_set(
             portfolio_id=portfolio_id,
             taxonomy_id=taxonomy_id,
+            effective_from=payload.effective_from,
             comparator_taxonomy_node_id=payload.comparator_taxonomy_node_id,
             target_set_type=payload.target_set_type,
             name=payload.name,
@@ -501,8 +547,14 @@ def delete_portfolio_target_set(
     portfolio_id: str,
     taxonomy_id: str,
     target_set_id: str,
+    effective_from: date = Query(...),
 ) -> dict[str, object]:
-    deleted = delete_target_set(portfolio_id, taxonomy_id, target_set_id)
+    deleted = delete_target_set(
+        portfolio_id,
+        taxonomy_id,
+        target_set_id,
+        effective_from=effective_from,
+    )
     if not deleted:
         if get_portfolio(portfolio_id) is None:
             raise HTTPException(status_code=404, detail="Portfolio not found")
@@ -515,3 +567,29 @@ def delete_portfolio_target_set(
         "target_set_id": target_set_id,
         "deleted": True,
     }
+
+
+@router.put(
+    "/{portfolio_id}/taxonomies/{taxonomy_id}/analytics-scope-policies/{taxonomy_node_id}",
+    response_model=AnalyticsScopePolicyRecord,
+)
+def replace_portfolio_analytics_scope_policy(
+    portfolio_id: str,
+    taxonomy_id: str,
+    taxonomy_node_id: str,
+    payload: AnalyticsScopePolicyUpsertRequest,
+) -> AnalyticsScopePolicyRecord:
+    if get_portfolio(portfolio_id) is None:
+        raise HTTPException(status_code=404, detail="Portfolio not found")
+    if get_taxonomy(portfolio_id, taxonomy_id) is None:
+        raise HTTPException(status_code=404, detail="Taxonomy not found")
+    try:
+        record = replace_analytics_scope_policy(
+            portfolio_id,
+            taxonomy_id=taxonomy_id,
+            taxonomy_node_id=taxonomy_node_id,
+            **payload.model_dump(),
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    return AnalyticsScopePolicyRecord.model_validate(record)

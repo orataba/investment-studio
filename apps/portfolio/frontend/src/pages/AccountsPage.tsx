@@ -39,8 +39,9 @@ import {
   shouldLoadAccountWorkspace,
 } from '../lib/accountWorkspace'
 import { transactionActivityLabel } from '../lib/transactionPresentation'
+import { holdingUsesEventValuation } from '../lib/holdingPresentation'
 
-const ACCOUNT_SCOPE_OPTIONS = ['equity', 'etf', 'fund', 'bond', 'other'] as const
+const ACCOUNT_SCOPE_OPTIONS = ['equity', 'etf', 'fund', 'bond', 'fcn', 'option', 'other'] as const
 type AccountDetailTab = 'overview' | 'positions' | 'transactions' | 'ledger'
 
 function parseAccountDetailTab(value: string | null): AccountDetailTab {
@@ -540,7 +541,8 @@ export default function AccountsPage() {
               <span className="account-page-inventory">
                 {countLabel(workspace.summary.account_count, 'account')} ·{' '}
                 {countLabel(workspace.summary.deposit_account_count, 'cash account')} ·{' '}
-                {countLabel(workspace.summary.securities_account_count, 'securities account')}
+                {countLabel(workspace.summary.securities_account_count, 'securities account')} ·{' '}
+                {countLabel(workspace.summary.open_option_obligation_count, 'open option obligation')}
               </span>
             ) : null}
             <button type="button" className="toolbar-link button-primary" onClick={openCreateAccountDrawer}>
@@ -596,6 +598,10 @@ export default function AccountsPage() {
                         <span>
                           <small>Positions</small>
                           <strong>{formatNumber(accountRow.position_line_count, 0)}</strong>
+                        </span>
+                        <span>
+                          <small>Option obligations</small>
+                          <strong>{formatNumber(accountRow.open_option_obligation_count, 0)}</strong>
                         </span>
                       </span>
                     </button>
@@ -666,6 +672,17 @@ export default function AccountsPage() {
                       <span>Pending settlement · {selectedAccount.account.currency}</span>
                       <strong>
                         {formatCurrency(selectedAccount.pending_settlement, selectedAccount.account.currency)}
+                      </strong>
+                    </div>
+                    <div>
+                      <span>Derivative liability · {workspace.base_currency}</span>
+                      <strong>
+                        {selectedAccount.derivative_liability_base != null
+                          ? formatCurrency(
+                              selectedAccount.derivative_liability_base,
+                              workspace.base_currency,
+                            )
+                          : '—'}
                       </strong>
                     </div>
                   </div>
@@ -762,6 +779,10 @@ export default function AccountsPage() {
                           <div>
                             <strong>{formatNumber(selectedAccount.linked_posting_count, 0)}</strong>
                             <span>Ledger entries</span>
+                          </div>
+                          <div>
+                            <strong>{formatNumber(selectedAccount.open_option_obligation_count, 0)}</strong>
+                            <span>Open option obligations</span>
                           </div>
                         </div>
                       </aside>
@@ -1302,7 +1323,11 @@ function AccountTransactionRow({
       </td>
       <td data-label="Activity">
         <span className="transaction-type-pill">
-          {transactionActivityLabel(transaction.transaction_type, instrumentType)}
+          {transactionActivityLabel(
+            transaction.transaction_type,
+            instrumentType,
+            transaction.option_action,
+          )}
         </span>
       </td>
       <td className="holding-name-cell" data-label="Instrument">
@@ -1348,8 +1373,9 @@ function PositionRow({
   portfolioId: string
   position: PortfolioAccountPositionRecord
 }) {
+  const eventValued = holdingUsesEventValuation(position)
   const unrealizedPnl =
-    position.market_value != null && position.cost_basis != null
+    !eventValued && position.market_value != null && position.cost_basis != null
       ? position.market_value - position.cost_basis
       : null
 
@@ -1380,8 +1406,8 @@ function PositionRow({
       <td data-label="Market Value">
         {position.market_value != null ? formatCurrency(position.market_value, position.currency) : '—'}
       </td>
-      <td data-label="Unrealized P/L" className={signedValueClass(unrealizedPnl)}>
-        {formatSignedCurrency(unrealizedPnl, position.currency)}
+      <td data-label="Unrealized P/L" className={eventValued ? undefined : signedValueClass(unrealizedPnl)}>
+        {eventValued ? 'N/A' : formatSignedCurrency(unrealizedPnl, position.currency)}
       </td>
     </tr>
   )
@@ -1418,6 +1444,7 @@ function LedgerPostingRow({
             {transactionActivityLabel(
               posting.source_transaction_type,
               posting.instrument_ref?.instrument_type,
+              posting.option_action,
             )}
           </span>
         </div>

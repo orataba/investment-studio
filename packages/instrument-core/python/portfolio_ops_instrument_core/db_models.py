@@ -77,12 +77,57 @@ class Instrument(InstrumentRegistryBase):
     __table_args__ = (
         CheckConstraint(
             "instrument_type IN ('fund', 'etf', 'index', 'bond', 'equity', "
-            "'cash', 'fx', 'other')",
+            "'fcn', 'option', 'cash', 'fx', 'other')",
             name="instrument_type_contract",
         ),
         CheckConstraint(
             "currency = upper(trim(currency)) AND length(currency) BETWEEN 1 AND 8",
             name="instrument_currency_contract",
+        ),
+        CheckConstraint(
+            "("
+            "instrument_type <> 'option' AND "
+            "option_underlying_instrument_id IS NULL AND option_type IS NULL AND "
+            "option_expiry_date IS NULL AND option_strike IS NULL AND "
+            "option_contract_multiplier IS NULL AND option_settlement_type IS NULL AND "
+            "option_contract_currency IS NULL"
+            ") OR ("
+            "instrument_type = 'option' AND "
+            "option_underlying_instrument_id IS NOT NULL AND option_type IS NOT NULL AND "
+            "option_type IN ('call', 'put') AND option_expiry_date IS NOT NULL AND "
+            "option_strike IS NOT NULL AND option_strike > 0 AND "
+            "option_contract_multiplier IS NOT NULL AND option_contract_multiplier > 0 AND "
+            "option_settlement_type IS NOT NULL AND "
+            "option_settlement_type IN ('physical', 'cash') AND "
+            "option_contract_currency IS NOT NULL AND "
+            "option_contract_currency = currency AND "
+            "option_contract_currency = upper(trim(option_contract_currency)) AND "
+            "length(option_contract_currency) BETWEEN 1 AND 8"
+            ")",
+            name="option_contract_identity",
+        ),
+        CheckConstraint(
+            "option_underlying_instrument_id IS NULL OR option_underlying_instrument_id <> instrument_id",
+            name="option_underlying_distinct",
+        ),
+        CheckConstraint(
+            "(instrument_type = 'fcn' AND fcn_contract_json IS NOT NULL AND "
+            "lower(trim(CAST(fcn_contract_json AS TEXT))) NOT IN ('null', '{}')) OR "
+            "(instrument_type <> 'fcn' AND fcn_contract_json IS NULL)",
+            name="fcn_contract_metadata",
+        ),
+        CheckConstraint(
+            "(instrument_type IN ('fcn', 'option') AND "
+            "derivative_adjustment_policy_json IS NOT NULL AND "
+            "lower(trim(CAST(derivative_adjustment_policy_json AS TEXT))) "
+            "NOT IN ('null', '{}')) OR "
+            "(instrument_type NOT IN ('fcn', 'option') AND "
+            "derivative_adjustment_policy_json IS NULL)",
+            name="derivative_adjustment_policy",
+        ),
+        Index(
+            "ix_instrument_option_underlying",
+            "option_underlying_instrument_id",
         ),
     )
 
@@ -90,6 +135,21 @@ class Instrument(InstrumentRegistryBase):
     instrument_name: Mapped[str] = mapped_column(String, nullable=False)
     instrument_type: Mapped[str] = mapped_column(String, nullable=False)
     currency: Mapped[str] = mapped_column(String, nullable=False)
+    option_underlying_instrument_id: Mapped[str | None] = mapped_column(
+        ForeignKey("instrument.instrument_id", ondelete="RESTRICT"),
+    )
+    option_type: Mapped[str | None] = mapped_column(String)
+    option_expiry_date: Mapped[date | None] = mapped_column(Date)
+    option_strike: Mapped[Decimal | None] = mapped_column(Numeric(28, 12))
+    option_contract_multiplier: Mapped[Decimal | None] = mapped_column(Numeric(28, 12))
+    option_settlement_type: Mapped[str | None] = mapped_column(String)
+    option_contract_currency: Mapped[str | None] = mapped_column(String)
+    fcn_contract_json: Mapped[dict[str, object] | None] = mapped_column(
+        JSON(none_as_null=True)
+    )
+    derivative_adjustment_policy_json: Mapped[dict[str, object] | None] = mapped_column(
+        JSON(none_as_null=True)
+    )
     quote_selection_policy_json: Mapped[dict[str, object]] = mapped_column(
         JSON,
         nullable=False,
@@ -111,7 +171,17 @@ class Instrument(InstrumentRegistryBase):
     )
     market_data_updated_at: Mapped[str | None] = mapped_column(String)
 
+    option_underlying_instrument: Mapped["Instrument | None"] = relationship(
+        remote_side="Instrument.instrument_id",
+        foreign_keys=[option_underlying_instrument_id],
+        uselist=False,
+    )
+
     identifiers: Mapped[list["InstrumentIdentifier"]] = relationship(
+        back_populates="instrument",
+        cascade="all, delete-orphan",
+    )
+    broker_identifiers: Mapped[list["InstrumentBrokerIdentifier"]] = relationship(
         back_populates="instrument",
         cascade="all, delete-orphan",
     )
@@ -165,6 +235,42 @@ class InstrumentIdentifier(InstrumentRegistryBase):
     is_primary: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
 
     instrument: Mapped[Instrument] = relationship(back_populates="identifiers")
+
+
+class InstrumentBrokerIdentifier(InstrumentRegistryBase):
+    __tablename__ = "instrument_broker_identifier"
+    __table_args__ = (
+        CheckConstraint(
+            "identifier_type IN ('contract_id', 'symbol', 'product_code')",
+            name="broker_identifier_type",
+        ),
+        UniqueConstraint(
+            "broker",
+            "identifier_type",
+            "identifier_value",
+            name="uq_instrument_broker_identifier_identity",
+        ),
+        Index(
+            "ix_instrument_broker_identifier_instrument",
+            "instrument_id",
+            "broker",
+        ),
+    )
+
+    instrument_broker_identifier_id: Mapped[int] = mapped_column(
+        primary_key=True,
+        autoincrement=True,
+    )
+    instrument_id: Mapped[str] = mapped_column(
+        ForeignKey("instrument.instrument_id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    broker: Mapped[str] = mapped_column(String, nullable=False)
+    identifier_type: Mapped[str] = mapped_column(String, nullable=False)
+    identifier_value: Mapped[str] = mapped_column(String, nullable=False)
+    is_primary: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+
+    instrument: Mapped[Instrument] = relationship(back_populates="broker_identifiers")
 
 
 class InstrumentMarketData(InstrumentRegistryBase):

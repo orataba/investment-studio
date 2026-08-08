@@ -2649,6 +2649,267 @@ input[type='checkbox'] {
   opacity: 0.48;
 }
 
+.holdings-layout-segmented {
+  display: inline-flex;
+  height: 30px;
+  border: 1px solid var(--portfolio-line-strong);
+  background: #ffffff;
+}
+
+.holdings-layout-segmented button {
+  min-width: 78px;
+  padding: 0 10px;
+  border: 0;
+  border-right: 1px solid var(--portfolio-line-strong);
+  border-radius: 0;
+  background: transparent;
+  color: var(--portfolio-muted);
+}
+
+.holdings-layout-segmented button:last-child {
+  border-right: 0;
+}
+
+.holdings-layout-segmented button.active {
+  background: var(--portfolio-ink);
+  color: #ffffff;
+}
+
+.holdings-region-stack {
+  display: grid;
+  gap: 24px;
+  margin-top: 16px;
+}
+
+.holdings-operational-status {
+  margin-top: 16px;
+  border-top: 2px solid var(--portfolio-ink);
+  border-bottom: 1px solid var(--portfolio-line-strong);
+}
+
+.holdings-operational-heading {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 9px 0;
+}
+
+.holdings-operational-heading h2 {
+  margin: 0;
+  font-size: 15px;
+  line-height: 1.3;
+  letter-spacing: 0;
+}
+
+.holdings-operational-heading span {
+  color: var(--portfolio-muted);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.holdings-operational-metrics {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  margin: 0;
+  border-top: 1px solid var(--portfolio-line-strong);
+}
+
+.holdings-operational-metrics > div {
+  min-width: 0;
+  padding: 10px 12px 11px;
+  border-right: 1px solid var(--portfolio-line);
+}
+
+.holdings-operational-metrics > div:first-child {
+  padding-left: 0;
+}
+
+.holdings-operational-metrics > div:last-child {
+  border-right: 0;
+}
+
+.holdings-operational-metrics dt {
+  overflow-wrap: anywhere;
+  color: var(--portfolio-muted);
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+.holdings-operational-metrics dd {
+  margin: 4px 0 0;
+  color: var(--portfolio-ink);
+  font-size: 15px;
+  font-weight: 600;
+  line-height: 1.25;
+  font-variant-numeric: tabular-nums;
+}
+
+.holdings-operational-metrics .holdings-operational-metric-critical dt,
+.holdings-operational-metrics .holdings-operational-metric-critical dd,
+.holdings-obligation-uncovered {
+  color: #b42318;
+  font-weight: 700;
+}
+
+.holdings-operational-alerts {
+  display: grid;
+  gap: 0;
+  border-top: 1px solid var(--portfolio-line-strong);
+}
+
+.holdings-operational-alert,
+.holdings-operational-clear {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 8px 10px;
+  border-top: 1px solid var(--portfolio-line);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.holdings-operational-alert:first-child,
+.holdings-operational-clear:first-child {
+  border-top: 0;
+}
+
+.holdings-operational-alert-critical {
+  border-left: 3px solid #b42318;
+  background: #fff7f6;
+  color: #7a271a;
+}
+
+.holdings-operational-alert-warning {
+  border-left: 3px solid #b54708;
+  background: #fffaeb;
+  color: #7a2e0e;
+}
+
+.holdings-operational-alert-info {
+  border-left: 3px solid #175cd3;
+  background: #f5f8ff;
+  color: #1849a9;
+}
+
+.holdings-operational-alert span,
+.holdings-operational-clear {
+  color: var(--portfolio-muted);
+}
+
+.holdings-operational-clear {
+  padding-left: 0;
+  color: var(--portfolio-positive);
+}
+
+.holdings-region {
+  min-width: 0;
+  border-top: 2px solid var(--portfolio-ink);
+}
+
+.holdings-region-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 20px;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--portfolio-line-strong);
+}
+
+.holdings-region-header h2 {
+  margin: 0;
+  font-size: 15px;
+  line-height: 1.3;
+  letter-spacing: 0;
+}
+
+.holdings-region-header p {
+  margin: 3px 0 0;
+  color: var(--portfolio-muted);
+  font-size: 12px;
+}
+
+.holdings-region-count {
+  min-width: 32px;
+  padding: 2px 7px;
+  border: 1px solid var(--portfolio-line-strong);
+  color: var(--portfolio-muted);
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+
+.holdings-region-table-shell {
+  border-top: 0;
+}
+
+.holdings-region-table {
+  min-width: 900px;
+}
+
+.holdings-region-table-written_option_obligations {
+  min-width: 1500px;
+}
+
+.holdings-region-table-cash_and_settlement {
+  min-width: 1120px;
+}
+
+.holdings-region-instrument {
+  display: grid;
+  gap: 2px;
+  width: 100%;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--portfolio-ink);
+  text-align: left;
+}
+
+.holdings-region-instrument:hover span:first-child,
+.holdings-region-instrument:focus-visible span:first-child {
+  color: var(--portfolio-accent);
+  text-decoration: underline;
+}
+
+.holdings-region-instrument span:first-child {
+  font-weight: 600;
+}
+
+.holdings-region-instrument span:last-child {
+  color: var(--portfolio-faint);
+  font-size: 11px;
+}
+
+@media (max-width: 900px) {
+  .holdings-operational-metrics {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .holdings-operational-metrics > div {
+    border-top: 1px solid var(--portfolio-line);
+  }
+
+  .holdings-operational-metrics > div:nth-child(-n + 2) {
+    border-top: 0;
+  }
+
+  .holdings-operational-metrics > div:nth-child(2n) {
+    border-right: 0;
+  }
+
+  .holdings-operational-metrics > div:first-child {
+    padding-left: 12px;
+  }
+}
+
+@media (max-width: 560px) {
+  .holdings-operational-alert {
+    display: grid;
+    gap: 2px;
+  }
+}
+
 .portfolio-download-menu {
   position: relative;
   display: inline-flex;
@@ -5584,6 +5845,81 @@ input[type='checkbox'] {
   top: calc((var(--research-run-control-height) - 24px) / 2);
 }
 
+.research-robustness-editor {
+  display: grid;
+  gap: 8px;
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid var(--portfolio-line);
+}
+
+.research-robustness-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 30px;
+  color: var(--portfolio-ink);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.research-icon-button {
+  display: inline-flex;
+  width: 30px;
+  min-width: 30px;
+  height: 30px;
+  min-height: 30px;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 1px solid var(--portfolio-line-strong);
+  border-radius: 0;
+  background: #ffffff;
+  color: var(--portfolio-ink);
+  font-size: 18px;
+  line-height: 1;
+}
+
+.research-icon-button:hover,
+.research-icon-button:focus-visible {
+  border-color: var(--portfolio-accent);
+  color: var(--portfolio-accent);
+  outline: none;
+}
+
+.research-robustness-table {
+  min-width: 900px;
+}
+
+.portfolio-workspace-page .research-robustness-table input {
+  width: 100%;
+  min-width: 72px;
+  height: 30px;
+  min-height: 30px;
+  padding: 0 8px;
+  border: 1px solid var(--portfolio-line);
+  border-radius: 0;
+  background: #ffffff;
+  color: var(--portfolio-ink);
+  font-size: 12px;
+}
+
+.research-robustness-table th:first-child,
+.research-robustness-table td:first-child {
+  min-width: 130px;
+}
+
+.research-robustness-table th:nth-child(2),
+.research-robustness-table td:nth-child(2) {
+  min-width: 150px;
+}
+
+.research-robustness-table th:last-child,
+.research-robustness-table td:last-child {
+  width: 42px;
+  text-align: center;
+}
+
 .research-solved-table .research-result-group-row td {
   border-top: 2px solid var(--portfolio-line-strong);
   background: var(--portfolio-band);
@@ -5606,6 +5942,45 @@ input[type='checkbox'] {
 
 .research-sleeve-grid {
   grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.research-validation-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.research-validation-summary-table th {
+  width: 42%;
+  color: var(--portfolio-muted);
+  font-weight: 500;
+  text-align: left;
+}
+
+.research-execution-table,
+.research-robustness-results-table,
+.research-walk-forward-table {
+  min-width: 680px;
+}
+
+.research-robustness-results-table {
+  min-width: 940px;
+}
+
+.research-oos-summary {
+  display: flex;
+  min-height: 46px;
+  align-items: center;
+  gap: 20px;
+  padding: 8px 14px;
+  border-bottom: 1px solid var(--portfolio-line);
+  color: var(--portfolio-muted);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.research-oos-summary strong {
+  margin-left: 4px;
+  color: var(--portfolio-ink);
+  font-weight: 600;
 }
 
 .research-chart-panel,
@@ -5883,6 +6258,7 @@ input[type='checkbox'] {
 .taxonomy-page-table .taxonomy-add-instrument-form input,
 .taxonomy-page-table .taxonomy-add-instrument-form select,
 .taxonomy-page-table .taxonomy-topbar-field select,
+.taxonomy-page-table .taxonomy-topbar-field input,
 .taxonomy-page-table .taxonomy-levels-table input,
 .taxonomy-page-table .taxonomy-levels-table select {
   min-height: 0;
@@ -5899,6 +6275,7 @@ input[type='checkbox'] {
 .taxonomy-page-table .taxonomy-add-instrument-form input:focus,
 .taxonomy-page-table .taxonomy-add-instrument-form select:focus,
 .taxonomy-page-table .taxonomy-topbar-field select:focus,
+.taxonomy-page-table .taxonomy-topbar-field input:focus,
 .taxonomy-page-table .taxonomy-levels-table input:focus,
 .taxonomy-page-table .taxonomy-levels-table select:focus {
   outline: none;
@@ -6006,6 +6383,55 @@ input[type='checkbox'] {
   flex: 0 0 auto;
   color: var(--portfolio-muted);
   font-size: 12px;
+}
+
+.taxonomy-analytics-policy-bar {
+  display: grid;
+  grid-template-columns: minmax(150px, 1.2fr) auto auto minmax(145px, 1fr) minmax(120px, 0.8fr) minmax(180px, 1.5fr) 132px auto;
+  align-items: end;
+  gap: 10px 14px;
+  padding: 10px 0 12px;
+  border-bottom: 1px solid var(--portfolio-line-strong);
+}
+
+.taxonomy-analytics-policy-bar label {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  color: var(--portfolio-muted);
+  font-size: 11px;
+}
+
+.taxonomy-analytics-policy-bar input:not([type='checkbox']),
+.taxonomy-analytics-policy-bar select {
+  width: 100%;
+  min-width: 0;
+  min-height: 28px;
+  padding: 4px 0;
+  border: none;
+  border-bottom: 1px solid var(--portfolio-line-strong);
+  border-radius: 0;
+  background: transparent;
+}
+
+.taxonomy-analytics-policy-bar .taxonomy-policy-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 28px;
+  white-space: nowrap;
+}
+
+.taxonomy-policy-check input {
+  width: 14px;
+  height: 14px;
+  margin: 0;
+}
+
+@media (max-width: 1280px) {
+  .taxonomy-analytics-policy-bar {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
 }
 
 .taxonomy-picker {
@@ -7831,7 +8257,8 @@ td b {
   }
 
   .research-backtest-grid,
-  .research-sleeve-grid {
+  .research-sleeve-grid,
+  .research-validation-grid {
     grid-template-columns: 1fr;
   }
 

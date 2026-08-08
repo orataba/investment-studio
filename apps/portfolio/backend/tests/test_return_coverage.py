@@ -48,6 +48,7 @@ def _transaction(
     transaction_type: str,
     trade_date: date,
     *,
+    transaction_sequence: int,
     gross_amount: float,
     account_id: str = "cash-usd-main",
     instrument_id: str | None = None,
@@ -65,6 +66,7 @@ def _transaction(
         }
     return {
         "transaction_id": transaction_id,
+        "transaction_sequence": transaction_sequence,
         "portfolio_id": portfolio_id,
         "transaction_type": transaction_type,
         "trade_date": trade_date.isoformat(),
@@ -160,13 +162,28 @@ def test_fair_value_nav_and_twr_do_not_depend_on_book_pnl_coverage(monkeypatch) 
         "_sum_period_realized_capital_gains",
         lambda *args, **kwargs: {
             "realized_capital_gains": 0.0,
+            "derivative_lifecycle_realized_pnl": 0.0,
             "coverage_complete": False,
             "stale_fx_flag": False,
         },
     )
     transactions = [
-        _transaction(portfolio_id, "txn-open", "opening_balance", date(2026, 1, 1), gross_amount=100.0),
-        _transaction(portfolio_id, "txn-interest", "interest", date(2026, 1, 2), gross_amount=10.0),
+        _transaction(
+            portfolio_id,
+            "txn-open",
+            "opening_balance",
+            date(2026, 1, 1),
+            transaction_sequence=1,
+            gross_amount=100.0,
+        ),
+        _transaction(
+            portfolio_id,
+            "txn-interest",
+            "interest",
+            date(2026, 1, 2),
+            transaction_sequence=2,
+            gross_amount=10.0,
+        ),
     ]
 
     snapshots = performance.build_daily_portfolio_snapshots(
@@ -231,13 +248,28 @@ def test_external_flow_inside_unreliable_valuation_gap_reanchors_return_chain(mo
         lambda: {"supported_currencies": ["USD"], "maintained_pairs": [], "rates": []},
     )
     transactions = [
-        _transaction(portfolio_id, "txn-open", "opening_balance", date(2026, 1, 1), gross_amount=100.0),
-        _transaction(portfolio_id, "txn-deposit", "deposit", date(2026, 1, 2), gross_amount=100.0),
+        _transaction(
+            portfolio_id,
+            "txn-open",
+            "opening_balance",
+            date(2026, 1, 1),
+            transaction_sequence=1,
+            gross_amount=100.0,
+        ),
+        _transaction(
+            portfolio_id,
+            "txn-deposit",
+            "deposit",
+            date(2026, 1, 2),
+            transaction_sequence=2,
+            gross_amount=100.0,
+        ),
         _transaction(
             portfolio_id,
             "txn-buy",
             "buy",
             date(2026, 1, 2),
+            transaction_sequence=3,
             gross_amount=100.0,
             account_id="broker-us-main",
             instrument_id=instrument_id,
@@ -324,6 +356,7 @@ def test_performance_request_before_inception_uses_complete_inception_return_cha
             "txn-open",
             "opening_balance",
             date(2026, 1, 5),
+            transaction_sequence=1,
             gross_amount=100.0,
         )
     ]

@@ -10,7 +10,7 @@ from typing import Any
 from uuid import uuid4
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import Integer, and_, cast, delete, func, or_, select, update
+from sqlalchemy import Integer, and_, cast, delete, func, inspect, or_, select, update
 from sqlalchemy.dialects.postgresql import insert as postgresql_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from portfolio_ops_instrument_core.db_models import InstrumentMarketData
@@ -18,7 +18,10 @@ from portfolio_ops_instrument_core.db_models import InstrumentMarketData
 from portfolio_app.core.settings import get_settings
 from portfolio_app.db.models import (
     AccountRecordModel,
+    AnalyticsScopePolicyRecordModel,
+    AnalyticsTaxonomySelectionRecordModel,
     PortfolioCalculationStateModel,
+    PortfolioAnalyticsPolicyStateModel,
     PortfolioDailyContributionSliceModel,
     PortfolioDailyHoldingSnapshotModel,
     PortfolioDailySnapshotModel,
@@ -28,6 +31,7 @@ from portfolio_app.db.models import (
     TargetSetRecordModel,
     ResearchSettingsRecordModel,
     TaxonomyAssignmentRecordModel,
+    TaxonomyConfigurationRevisionModel,
     TaxonomyNodeRecordModel,
     TaxonomyRecordModel,
     TransactionChangeLogModel,
@@ -41,10 +45,18 @@ from portfolio_app.services.ledger import (
     build_position_lots,
     validate_transaction_position_history,
 )
+from portfolio_app.services.analytics_scope import (
+    _ensure_default_scope_policies_in_session,
+    _record_taxonomy_configuration_revision_in_session,
+    set_analytics_taxonomy_selection_in_session,
+    taxonomy_configuration_as_of_in_session,
+)
 from portfolio_app.services.snapshot_selection import default_portfolio_snapshot
 from portfolio_app.services.transaction_dates import (
+    transaction_affected_dates,
     transaction_performance_effective_date,
 )
+from portfolio_app.services.option_actions import resolve_option_action
 from portfolio_app.services.research_eligibility import (
     derive_research_lifecycle,
     enrich_instrument_research_state,
@@ -336,6 +348,32 @@ def _normalize_store(store: dict[str, object]) -> dict[str, object]:
                 f"Transaction '{transaction.get('transaction_id')}' row_version must be a positive integer."
             )
         transaction["row_version"] = row_version
+    transaction_sequences: set[int] = set()
+    for transaction in normalized["transactions"]:
+        if not isinstance(transaction, dict):
+            continue
+        transaction_id = str(transaction.get("transaction_id") or "").strip()
+        raw_sequence = transaction.get("transaction_sequence")
+        if isinstance(raw_sequence, bool) or raw_sequence is None:
+            raise ValueError(
+                f"Transaction '{transaction_id}' requires a positive transaction_sequence."
+            )
+        try:
+            transaction_sequence = int(raw_sequence)
+        except (TypeError, ValueError) as error:
+            raise ValueError(
+                f"Transaction '{transaction_id}' requires a positive transaction_sequence."
+            ) from error
+        if transaction_sequence < 1:
+            raise ValueError(
+                f"Transaction '{transaction_id}' requires a positive transaction_sequence."
+            )
+        if transaction_sequence in transaction_sequences:
+            raise ValueError(
+                f"Transaction sequence '{transaction_sequence}' is duplicated."
+            )
+        transaction["transaction_sequence"] = transaction_sequence
+        transaction_sequences.add(transaction_sequence)
     for universe_record in normalized["instrument_universe"]:
         if not isinstance(universe_record, dict):
             continue
@@ -384,7 +422,7 @@ def _load_store_from_db(session) -> dict[str, object]:
             TransactionRecordModel.trade_date,
             TransactionRecordModel.trade_at,
             TransactionRecordModel.created_at,
-            TransactionRecordModel.transaction_id,
+            TransactionRecordModel.transaction_sequence,
             TransactionRecordModel.settlement_date,
         )
     ).all()
@@ -471,6 +509,7 @@ def _load_store_from_db(session) -> dict[str, object]:
         "transactions": [
             {
                 "transaction_id": item.transaction_id,
+                "transaction_sequence": item.transaction_sequence,
                 "portfolio_id": item.portfolio_id,
                 "transaction_type": item.transaction_type,
                 "trade_date": item.trade_date.isoformat(),
@@ -591,11 +630,20 @@ def _load_store_from_db(session) -> dict[str, object]:
 
 def _save_store_to_db(session, data: dict[str, object]) -> None:
     normalized = _normalize_store(data)
+    existing_tables = set(inspect(session.get_bind()).get_table_names())
     session.execute(delete(PortfolioDailyContributionSliceModel))
     session.execute(delete(PortfolioDailyHoldingSnapshotModel))
     session.execute(delete(PortfolioDailySnapshotModel))
     session.execute(delete(PortfolioCalculationStateModel))
     session.execute(delete(PortfolioInstrumentUniverseRecordModel))
+    if TaxonomyConfigurationRevisionModel.__tablename__ in existing_tables:
+        session.execute(delete(TaxonomyConfigurationRevisionModel))
+    if AnalyticsTaxonomySelectionRecordModel.__tablename__ in existing_tables:
+        session.execute(delete(AnalyticsTaxonomySelectionRecordModel))
+    if AnalyticsScopePolicyRecordModel.__tablename__ in existing_tables:
+        session.execute(delete(AnalyticsScopePolicyRecordModel))
+    if PortfolioAnalyticsPolicyStateModel.__tablename__ in existing_tables:
+        session.execute(delete(PortfolioAnalyticsPolicyStateModel))
     session.execute(delete(TargetSetLineRecordModel))
     session.execute(delete(TargetSetRecordModel))
     session.execute(delete(TaxonomyAssignmentRecordModel))
@@ -856,6 +904,7 @@ def _save_store_to_db(session, data: dict[str, object]) -> None:
     for raw_transaction in list(normalized.get("transactions", [])):
         if not isinstance(raw_transaction, dict):
             continue
+        transaction_sequence = int(raw_transaction["transaction_sequence"])
         entitlement_date = raw_transaction.get("entitlement_date")
         acquisition_date = raw_transaction.get("acquisition_date")
         position_effective_date = raw_transaction.get("position_effective_date")
@@ -904,8 +953,14 @@ def _save_store_to_db(session, data: dict[str, object]) -> None:
         session.add(
             TransactionRecordModel(
                 transaction_id=str(raw_transaction.get("transaction_id") or "").strip(),
+                transaction_sequence=transaction_sequence,
                 portfolio_id=str(raw_transaction.get("portfolio_id") or "").strip(),
                 transaction_type=str(raw_transaction.get("transaction_type") or "").strip(),
+                lifecycle_event_type=(
+                    str(raw_transaction.get("lifecycle_event_type")).strip()
+                    if raw_transaction.get("lifecycle_event_type")
+                    else None
+                ),
                 trade_date=date.fromisoformat(str(raw_transaction.get("trade_date") or date.today().isoformat())),
                 trade_time=str(raw_transaction.get("trade_time") or "12:00").strip() or "12:00",
                 trade_at=str(raw_transaction.get("trade_at") or "").strip(),
@@ -967,6 +1022,26 @@ def _save_store_to_db(session, data: dict[str, object]) -> None:
                 counterparty_account_id=(
                     str(raw_transaction.get("counterparty_account_id")).strip()
                     if raw_transaction.get("counterparty_account_id")
+                    else None
+                ),
+                source_system=(
+                    str(raw_transaction.get("source_system")).strip()
+                    if raw_transaction.get("source_system")
+                    else None
+                ),
+                external_reference=(
+                    str(raw_transaction.get("external_reference")).strip()
+                    if raw_transaction.get("external_reference")
+                    else None
+                ),
+                event_group_id=(
+                    str(raw_transaction.get("event_group_id")).strip()
+                    if raw_transaction.get("event_group_id")
+                    else None
+                ),
+                related_instrument_id=(
+                    str(raw_transaction.get("related_instrument_id")).strip()
+                    if raw_transaction.get("related_instrument_id")
                     else None
                 ),
                 note=str(raw_transaction.get("note")).strip() if raw_transaction.get("note") else None,
@@ -1213,7 +1288,7 @@ def _serialize_portfolio_row_with_live_summary(
             TransactionRecordModel.trade_date,
             TransactionRecordModel.trade_at,
             TransactionRecordModel.created_at,
-            TransactionRecordModel.transaction_id,
+            TransactionRecordModel.transaction_sequence,
             TransactionRecordModel.settlement_date,
         )
     ).all()
@@ -1267,8 +1342,14 @@ def _serialize_account_row(item: AccountRecordModel) -> dict[str, object]:
 def _serialize_transaction_row(item: TransactionRecordModel) -> dict[str, object]:
     return {
         "transaction_id": item.transaction_id,
+        "transaction_sequence": item.transaction_sequence,
         "portfolio_id": item.portfolio_id,
         "transaction_type": item.transaction_type,
+        "option_action": resolve_option_action(
+            item.transaction_type,
+            instrument_ref=item.instrument_ref_json,
+        ),
+        "lifecycle_event_type": item.lifecycle_event_type,
         "trade_date": item.trade_date.isoformat(),
         "trade_time": item.trade_time,
         "trade_at": item.trade_at,
@@ -1306,6 +1387,10 @@ def _serialize_transaction_row(item: TransactionRecordModel) -> dict[str, object
         "transfer_object_type": item.transfer_object_type,
         "transfer_group_id": item.transfer_group_id,
         "counterparty_account_id": item.counterparty_account_id,
+        "source_system": item.source_system,
+        "external_reference": item.external_reference,
+        "event_group_id": item.event_group_id,
+        "related_instrument_id": item.related_instrument_id,
         "note": item.note,
         "created_at": item.created_at,
         "row_version": item.row_version,
@@ -1506,7 +1591,7 @@ def _refresh_portfolio_instrument_universe_records(
             TransactionRecordModel.trade_date,
             TransactionRecordModel.trade_at,
             TransactionRecordModel.created_at,
-            TransactionRecordModel.transaction_id,
+            TransactionRecordModel.transaction_sequence,
         )
     ).all()
     transactions_by_key: dict[tuple[str, str], list[TransactionRecordModel]] = {}
@@ -1687,18 +1772,10 @@ TRANSACTION_ID_ALLOCATOR_KEY = "transaction"
 
 
 def _next_transaction_number_from_history(session) -> int:
-    next_number = 1
-    for transaction_id in session.scalars(
-        select(TransactionRecordModel.transaction_id).where(
-            TransactionRecordModel.transaction_id.like("txn-%")
-        )
-    ):
-        normalized = str(transaction_id or "")
-        try:
-            next_number = max(next_number, int(normalized.split("-", 1)[1]) + 1)
-        except (IndexError, ValueError):
-            continue
-    return next_number
+    maximum_sequence = session.scalar(
+        select(func.max(TransactionRecordModel.transaction_sequence))
+    )
+    return int(maximum_sequence or 0) + 1
 
 
 def _ensure_transaction_id_allocator(session, *, minimum_next_value: int = 1) -> None:
@@ -1733,7 +1810,7 @@ def _ensure_transaction_id_allocator(session, *, minimum_next_value: int = 1) ->
     )
 
 
-def _allocate_transaction_ids(session, count: int) -> list[str]:
+def _allocate_transaction_identities(session, count: int) -> list[tuple[str, int]]:
     if count <= 0:
         return []
     _ensure_transaction_id_allocator(
@@ -1749,7 +1826,10 @@ def _allocate_transaction_ids(session, count: int) -> list[str]:
     if next_value is None:  # pragma: no cover - allocator corruption guard
         raise RuntimeError("Transaction id allocator is unavailable.")
     first_value = int(next_value) - count
-    return [f"txn-{number:04d}" for number in range(first_value, int(next_value))]
+    return [
+        (f"txn-{number:04d}", number)
+        for number in range(first_value, int(next_value))
+    ]
 
 
 def _lock_portfolio_for_transaction_mutation(session, portfolio_id: str) -> bool:
@@ -1798,7 +1878,7 @@ def load_locked_portfolio_ledger_state(
                 TransactionRecordModel.trade_date,
                 TransactionRecordModel.trade_at,
                 TransactionRecordModel.created_at,
-                TransactionRecordModel.transaction_id,
+                TransactionRecordModel.transaction_sequence,
                 TransactionRecordModel.settlement_date,
             )
         ).all()
@@ -2364,6 +2444,7 @@ def get_taxonomy(portfolio_id: str, taxonomy_id: str) -> dict[str, object] | Non
 def create_taxonomy(
     portfolio_id: str,
     *,
+    effective_from: date,
     name: str,
     taxonomy_type: str,
     purpose: str | None,
@@ -2390,6 +2471,24 @@ def create_taxonomy(
             source_template_ref=(source_template_ref or "").strip() or None,
         )
         session.add(record)
+        session.flush()
+        _ensure_default_scope_policies_in_session(
+            session,
+            portfolio_id=portfolio_id,
+            taxonomy_id=record.taxonomy_id,
+            effective_from=effective_from,
+        )
+        _record_taxonomy_configuration_revision_in_session(
+            session,
+            portfolio_id=portfolio_id,
+            taxonomy_id=record.taxonomy_id,
+            effective_from=effective_from,
+        )
+        _mark_daily_snapshots_stale(
+            portfolio_id,
+            dirty_from=effective_from,
+            session=session,
+        )
         session.commit()
         return _serialize_taxonomy_row(record)
 
@@ -2398,6 +2497,7 @@ def update_taxonomy(
     portfolio_id: str,
     taxonomy_id: str,
     *,
+    effective_from: date,
     name: str | None = UNSET,
     taxonomy_type: str | None = UNSET,
     purpose: str | None = UNSET,
@@ -2442,14 +2542,31 @@ def update_taxonomy(
         if status is not UNSET and status is not None:
             record.status = status.strip() or "active"
 
-        if not record.planning_enabled:
+        if not record.planning_enabled or record.status != "active":
             if portfolio.default_planning_taxonomy_id == taxonomy_id:
-                portfolio.default_planning_taxonomy_id = None
+                set_analytics_taxonomy_selection_in_session(
+                    session,
+                    portfolio_id=portfolio_id,
+                    taxonomy_id=None,
+                    effective_from=effective_from,
+                )
             research_settings = session.get(ResearchSettingsRecordModel, portfolio_id)
             if research_settings is not None and research_settings.planning_taxonomy_id == taxonomy_id:
                 research_settings.planning_taxonomy_id = None
                 research_settings.comparator_taxonomy_node_id = None
 
+        session.flush()
+        _record_taxonomy_configuration_revision_in_session(
+            session,
+            portfolio_id=portfolio_id,
+            taxonomy_id=taxonomy_id,
+            effective_from=effective_from,
+        )
+        _mark_daily_snapshots_stale(
+            portfolio_id,
+            dirty_from=effective_from,
+            session=session,
+        )
         session.commit()
         return _serialize_taxonomy_row(record)
 
@@ -2482,6 +2599,7 @@ def list_taxonomy_nodes(
 def create_taxonomy_node(
     portfolio_id: str,
     *,
+    effective_from: date,
     taxonomy_id: str,
     parent_taxonomy_node_id: str | None,
     node_name: str,
@@ -2525,6 +2643,18 @@ def create_taxonomy_node(
             status=(status or "active").strip() or "active",
         )
         session.add(record)
+        session.flush()
+        _record_taxonomy_configuration_revision_in_session(
+            session,
+            portfolio_id=portfolio_id,
+            taxonomy_id=taxonomy_id,
+            effective_from=effective_from,
+        )
+        _mark_daily_snapshots_stale(
+            portfolio_id,
+            dirty_from=effective_from,
+            session=session,
+        )
         session.commit()
         return _serialize_taxonomy_node_row(record)
 
@@ -2534,6 +2664,7 @@ def update_taxonomy_node(
     taxonomy_id: str,
     taxonomy_node_id: str,
     *,
+    effective_from: date,
     node_name: str | None = UNSET,
     node_code: str | None = UNSET,
     parent_taxonomy_node_id: str | None = UNSET,
@@ -2621,6 +2752,18 @@ def update_taxonomy_node(
             _refresh_parent_terminal_state(session, old_parent_id)
             _refresh_parent_terminal_state(session, resolved_parent_id)
 
+        session.flush()
+        _record_taxonomy_configuration_revision_in_session(
+            session,
+            portfolio_id=portfolio_id,
+            taxonomy_id=taxonomy_id,
+            effective_from=effective_from,
+        )
+        _mark_daily_snapshots_stale(
+            portfolio_id,
+            dirty_from=effective_from,
+            session=session,
+        )
         session.commit()
         return _serialize_taxonomy_node_row(record)
 
@@ -2998,6 +3141,7 @@ def list_target_set_integrity_issues(
 def create_taxonomy_assignment(
     portfolio_id: str,
     *,
+    effective_from: date,
     taxonomy_id: str,
     target_scope: str,
     target_entity_id: str,
@@ -3054,6 +3198,17 @@ def create_taxonomy_assignment(
                 portfolio_id,
                 {target_entity_id.strip()},
             )
+        _record_taxonomy_configuration_revision_in_session(
+            session,
+            portfolio_id=portfolio_id,
+            taxonomy_id=taxonomy_id,
+            effective_from=effective_from,
+        )
+        _mark_daily_snapshots_stale(
+            portfolio_id,
+            dirty_from=effective_from,
+            session=session,
+        )
         session.commit()
         return _serialize_taxonomy_assignment_row(record)
 
@@ -3063,6 +3218,7 @@ def update_taxonomy_assignment(
     taxonomy_id: str,
     assignment_id: str,
     *,
+    effective_from: date,
     taxonomy_node_id: str | None = UNSET,
     status: str | None = UNSET,
 ) -> dict[str, object]:
@@ -3122,6 +3278,17 @@ def update_taxonomy_assignment(
                 portfolio_id,
                 {record.target_entity_id},
             )
+        _record_taxonomy_configuration_revision_in_session(
+            session,
+            portfolio_id=portfolio_id,
+            taxonomy_id=taxonomy_id,
+            effective_from=effective_from,
+        )
+        _mark_daily_snapshots_stale(
+            portfolio_id,
+            dirty_from=effective_from,
+            session=session,
+        )
         session.commit()
         return _serialize_taxonomy_assignment_row(record)
 
@@ -3129,6 +3296,7 @@ def update_taxonomy_assignment(
 def create_target_set(
     portfolio_id: str,
     *,
+    effective_from: date,
     taxonomy_id: str,
     comparator_taxonomy_node_id: str | None,
     target_set_type: str,
@@ -3198,6 +3366,18 @@ def create_target_set(
                 )
             )
 
+        session.flush()
+        _record_taxonomy_configuration_revision_in_session(
+            session,
+            portfolio_id=portfolio_id,
+            taxonomy_id=taxonomy_id,
+            effective_from=effective_from,
+        )
+        _mark_daily_snapshots_stale(
+            portfolio_id,
+            dirty_from=effective_from,
+            session=session,
+        )
         session.commit()
         return _serialize_target_set_row(record)
 
@@ -3207,6 +3387,7 @@ def update_target_set(
     taxonomy_id: str,
     target_set_id: str,
     *,
+    effective_from: date,
     name: str | None = UNSET,
     weight_enabled: bool | None = UNSET,
     risk_budget_enabled: bool | None = UNSET,
@@ -3306,11 +3487,29 @@ def update_target_set(
                     )
                 )
 
+        session.flush()
+        _record_taxonomy_configuration_revision_in_session(
+            session,
+            portfolio_id=portfolio_id,
+            taxonomy_id=taxonomy_id,
+            effective_from=effective_from,
+        )
+        _mark_daily_snapshots_stale(
+            portfolio_id,
+            dirty_from=effective_from,
+            session=session,
+        )
         session.commit()
         return _serialize_target_set_row(record)
 
 
-def delete_target_set(portfolio_id: str, taxonomy_id: str, target_set_id: str) -> bool:
+def delete_target_set(
+    portfolio_id: str,
+    taxonomy_id: str,
+    target_set_id: str,
+    *,
+    effective_from: date,
+) -> bool:
     session_factory = get_session_factory()
     with session_factory() as session:
         taxonomy = session.scalar(
@@ -3331,11 +3530,28 @@ def delete_target_set(portfolio_id: str, taxonomy_id: str, target_set_id: str) -
         if record is None:
             return False
         session.delete(record)
+        session.flush()
+        _record_taxonomy_configuration_revision_in_session(
+            session,
+            portfolio_id=portfolio_id,
+            taxonomy_id=taxonomy_id,
+            effective_from=effective_from,
+        )
+        _mark_daily_snapshots_stale(
+            portfolio_id,
+            dirty_from=effective_from,
+            session=session,
+        )
         session.commit()
         return True
 
 
-def delete_taxonomy(portfolio_id: str, taxonomy_id: str) -> bool:
+def delete_taxonomy(
+    portfolio_id: str,
+    taxonomy_id: str,
+    *,
+    effective_from: date,
+) -> bool:
     session_factory = get_session_factory()
     with session_factory() as session:
         portfolio = session.get(PortfolioRecordModel, portfolio_id)
@@ -3350,7 +3566,12 @@ def delete_taxonomy(portfolio_id: str, taxonomy_id: str) -> bool:
         if record is None:
             return False
         if portfolio.default_planning_taxonomy_id == taxonomy_id:
-            portfolio.default_planning_taxonomy_id = None
+            set_analytics_taxonomy_selection_in_session(
+                session,
+                portfolio_id=portfolio_id,
+                taxonomy_id=None,
+                effective_from=effective_from,
+            )
         research_settings = session.get(ResearchSettingsRecordModel, portfolio_id)
         if research_settings is not None and research_settings.planning_taxonomy_id == taxonomy_id:
             research_settings.planning_taxonomy_id = None
@@ -3365,14 +3586,33 @@ def delete_taxonomy(portfolio_id: str, taxonomy_id: str) -> bool:
             ).all()
             if str(item.target_entity_id or "").strip()
         }
+        record.status = "deleted"
+        session.flush()
+        _record_taxonomy_configuration_revision_in_session(
+            session,
+            portfolio_id=portfolio_id,
+            taxonomy_id=taxonomy_id,
+            effective_from=effective_from,
+        )
         session.delete(record)
         session.flush()
         _refresh_portfolio_instrument_universe_records(session, portfolio_id, affected_instrument_ids)
+        _mark_daily_snapshots_stale(
+            portfolio_id,
+            dirty_from=effective_from,
+            session=session,
+        )
         session.commit()
         return True
 
 
-def delete_taxonomy_node(portfolio_id: str, taxonomy_id: str, taxonomy_node_id: str) -> bool:
+def delete_taxonomy_node(
+    portfolio_id: str,
+    taxonomy_id: str,
+    taxonomy_node_id: str,
+    *,
+    effective_from: date,
+) -> bool:
     session_factory = get_session_factory()
     with session_factory() as session:
         taxonomy = session.scalar(
@@ -3453,11 +3693,29 @@ def delete_taxonomy_node(portfolio_id: str, taxonomy_id: str, taxonomy_node_id: 
                 parent_record = session.get(TaxonomyNodeRecordModel, parent_taxonomy_node_id)
                 if parent_record is not None:
                     parent_record.is_terminal = True
+        session.flush()
+        _record_taxonomy_configuration_revision_in_session(
+            session,
+            portfolio_id=portfolio_id,
+            taxonomy_id=taxonomy_id,
+            effective_from=effective_from,
+        )
+        _mark_daily_snapshots_stale(
+            portfolio_id,
+            dirty_from=effective_from,
+            session=session,
+        )
         session.commit()
         return True
 
 
-def delete_taxonomy_assignment(portfolio_id: str, taxonomy_id: str, assignment_id: str) -> bool:
+def delete_taxonomy_assignment(
+    portfolio_id: str,
+    taxonomy_id: str,
+    assignment_id: str,
+    *,
+    effective_from: date,
+) -> bool:
     session_factory = get_session_factory()
     with session_factory() as session:
         taxonomy = session.scalar(
@@ -3487,6 +3745,17 @@ def delete_taxonomy_assignment(portfolio_id: str, taxonomy_id: str, assignment_i
                 portfolio_id,
                 {target_entity_id},
             )
+        _record_taxonomy_configuration_revision_in_session(
+            session,
+            portfolio_id=portfolio_id,
+            taxonomy_id=taxonomy_id,
+            effective_from=effective_from,
+        )
+        _mark_daily_snapshots_stale(
+            portfolio_id,
+            dirty_from=effective_from,
+            session=session,
+        )
         session.commit()
         return True
 
@@ -3494,6 +3763,8 @@ def delete_taxonomy_assignment(portfolio_id: str, taxonomy_id: str, assignment_i
 def set_default_planning_taxonomy(
     portfolio_id: str,
     taxonomy_id: str | None,
+    *,
+    effective_from: date,
 ) -> dict[str, object] | None:
     session_factory = get_session_factory()
     with session_factory() as session:
@@ -3501,26 +3772,36 @@ def set_default_planning_taxonomy(
         if portfolio is None:
             return None
 
-        resolved_taxonomy_id = str(taxonomy_id or "").strip() or None
-        if resolved_taxonomy_id is None:
-            portfolio.default_planning_taxonomy_id = None
-            session.commit()
-            return _serialize_portfolio_row(portfolio)
-
-        taxonomy = session.scalar(
-            select(TaxonomyRecordModel).where(
-                TaxonomyRecordModel.portfolio_id == portfolio_id,
-                TaxonomyRecordModel.taxonomy_id == resolved_taxonomy_id,
-            )
+        selection = set_analytics_taxonomy_selection_in_session(
+            session,
+            portfolio_id=portfolio_id,
+            taxonomy_id=taxonomy_id,
+            effective_from=effective_from,
         )
-        if taxonomy is None:
-            raise ValueError("Planning taxonomy not found.")
-        if not taxonomy.planning_enabled:
-            raise ValueError("Default planning taxonomy must be planning-enabled.")
-        if taxonomy.primary_assignment_scope != "instrument":
-            raise ValueError("Default planning taxonomy must use instrument assignment scope.")
-
-        portfolio.default_planning_taxonomy_id = resolved_taxonomy_id
+        if selection.taxonomy_id is not None:
+            _ensure_default_scope_policies_in_session(
+                session,
+                portfolio_id=portfolio_id,
+                taxonomy_id=selection.taxonomy_id,
+                effective_from=effective_from,
+            )
+            if taxonomy_configuration_as_of_in_session(
+                session,
+                portfolio_id,
+                selection.taxonomy_id,
+                effective_from,
+            ) is None:
+                _record_taxonomy_configuration_revision_in_session(
+                    session,
+                    portfolio_id=portfolio_id,
+                    taxonomy_id=selection.taxonomy_id,
+                    effective_from=effective_from,
+                )
+        _mark_daily_snapshots_stale(
+            portfolio_id,
+            dirty_from=effective_from,
+            session=session,
+        )
         session.commit()
         return _serialize_portfolio_row(portfolio)
 
@@ -3570,6 +3851,41 @@ def copy_portfolio(portfolio_id: str) -> dict[str, object] | None:
         source = next((item for item in portfolios if item.portfolio_id == portfolio_id), None)
         if source is None:
             return None
+
+        analytics_history_count = int(
+            session.scalar(
+                select(func.count())
+                .select_from(AnalyticsScopePolicyRecordModel)
+                .where(AnalyticsScopePolicyRecordModel.portfolio_id == portfolio_id)
+            )
+            or 0
+        ) + int(
+            session.scalar(
+                select(func.count())
+                .select_from(AnalyticsTaxonomySelectionRecordModel)
+                .where(
+                    AnalyticsTaxonomySelectionRecordModel.portfolio_id
+                    == portfolio_id
+                )
+            )
+            or 0
+        ) + int(
+            session.scalar(
+                select(func.count())
+                .select_from(TaxonomyConfigurationRevisionModel)
+                .where(
+                    TaxonomyConfigurationRevisionModel.portfolio_id
+                    == portfolio_id
+                )
+            )
+            or 0
+        )
+        if analytics_history_count:
+            raise ValueError(
+                "Portfolio copy is unavailable when effective-dated analytics "
+                "history exists; taxonomy and policy identities require an "
+                "explicit remapping workflow."
+            )
 
         copied_name = f"{source.portfolio_name} Copy"
         base_id = _slugify(copied_name)
@@ -3756,18 +4072,22 @@ def copy_portfolio(portfolio_id: str) -> dict[str, object] | None:
                     TransactionRecordModel.trade_date,
                     TransactionRecordModel.trade_at,
                     TransactionRecordModel.created_at,
-                    TransactionRecordModel.transaction_id,
+                    TransactionRecordModel.transaction_sequence,
                 )
             ).all()
         ]
-        copied_transaction_ids = _allocate_transaction_ids(session, len(source_transactions))
-        for transaction, copied_transaction_id in zip(
+        copied_transaction_identities = _allocate_transaction_identities(
+            session,
+            len(source_transactions),
+        )
+        for transaction, (copied_transaction_id, copied_transaction_sequence) in zip(
             source_transactions,
-            copied_transaction_ids,
+            copied_transaction_identities,
             strict=True,
         ):
             copied_transaction = deepcopy(transaction)
             copied_transaction["transaction_id"] = copied_transaction_id
+            copied_transaction["transaction_sequence"] = copied_transaction_sequence
             copied_transaction["portfolio_id"] = candidate
             if isinstance(copied_transaction.get("account_id"), str):
                 copied_transaction["account_id"] = account_id_map.get(
@@ -3829,8 +4149,14 @@ def copy_portfolio(portfolio_id: str) -> dict[str, object] | None:
             session.add(
                 TransactionRecordModel(
                     transaction_id=str(copied_transaction["transaction_id"]),
+                    transaction_sequence=int(copied_transaction["transaction_sequence"]),
                     portfolio_id=str(copied_transaction["portfolio_id"]),
                     transaction_type=str(copied_transaction["transaction_type"]),
+                    lifecycle_event_type=(
+                        str(copied_transaction["lifecycle_event_type"])
+                        if copied_transaction.get("lifecycle_event_type")
+                        else None
+                    ),
                     trade_date=date.fromisoformat(str(copied_transaction["trade_date"])),
                     trade_time=str(copied_transaction["trade_time"]),
                     trade_at=str(copied_transaction["trade_at"]),
@@ -3900,6 +4226,26 @@ def copy_portfolio(portfolio_id: str) -> dict[str, object] | None:
                     counterparty_account_id=(
                         str(copied_transaction["counterparty_account_id"])
                         if copied_transaction.get("counterparty_account_id")
+                        else None
+                    ),
+                    source_system=(
+                        str(copied_transaction["source_system"])
+                        if copied_transaction.get("source_system")
+                        else None
+                    ),
+                    external_reference=(
+                        str(copied_transaction["external_reference"])
+                        if copied_transaction.get("external_reference")
+                        else None
+                    ),
+                    event_group_id=(
+                        str(copied_transaction["event_group_id"])
+                        if copied_transaction.get("event_group_id")
+                        else None
+                    ),
+                    related_instrument_id=(
+                        str(copied_transaction["related_instrument_id"])
+                        if copied_transaction.get("related_instrument_id")
                         else None
                     ),
                     note=str(copied_transaction["note"]) if copied_transaction.get("note") else None,
@@ -4243,7 +4589,7 @@ def list_transactions(
                 TransactionRecordModel.trade_date.desc(),
                 TransactionRecordModel.trade_at.desc(),
                 TransactionRecordModel.created_at.desc(),
-                TransactionRecordModel.transaction_id.desc(),
+                TransactionRecordModel.transaction_sequence.desc(),
                 TransactionRecordModel.settlement_date.desc(),
             )
         ).all()
@@ -4269,6 +4615,7 @@ def create_transaction(
     portfolio_id: str,
     *,
     transaction_type: str,
+    lifecycle_event_type: str | None = None,
     trade_date: date,
     trade_time: str | None,
     settlement_date: date,
@@ -4290,6 +4637,10 @@ def create_transaction(
     transfer_object_type: str | None,
     transfer_group_id: str | None,
     counterparty_account_id: str | None,
+    source_system: str | None = None,
+    external_reference: str | None = None,
+    event_group_id: str | None = None,
+    related_instrument_id: str | None = None,
     note: str | None,
     fee_category: str = "unknown",
     created_at: str | None = None,
@@ -4303,6 +4654,7 @@ def create_transaction(
         records=[
             {
                 "transaction_type": transaction_type,
+                "lifecycle_event_type": lifecycle_event_type,
                 "trade_date": trade_date,
                 "trade_time": trade_time,
                 "settlement_date": settlement_date,
@@ -4326,6 +4678,10 @@ def create_transaction(
                 "transfer_object_type": transfer_object_type,
                 "transfer_group_id": transfer_group_id,
                 "counterparty_account_id": counterparty_account_id,
+                "source_system": source_system,
+                "external_reference": external_reference,
+                "event_group_id": event_group_id,
+                "related_instrument_id": related_instrument_id,
                 "note": note,
                 "created_at": created_at,
             }
@@ -4413,17 +4769,27 @@ def create_transactions(
                 raise ValueError(
                     f"Transfer group '{existing_transfer_group_id}' already exists."
                 )
-        transaction_ids = _allocate_transaction_ids(session, len(records))
+        transaction_identities = _allocate_transaction_identities(session, len(records))
         created: list[TransactionRecordModel] = []
-        for values, transaction_id in zip(records, transaction_ids, strict=True):
+        for values, (transaction_id, transaction_sequence) in zip(
+            records,
+            transaction_identities,
+            strict=True,
+        ):
             record = TransactionRecordModel(
                 transaction_id=transaction_id,
+                transaction_sequence=transaction_sequence,
                 portfolio_id=portfolio_id,
                 row_version=1,
             )
             _apply_transaction_record(
                 record,
                 transaction_type=str(values["transaction_type"]),
+                lifecycle_event_type=(
+                    str(values["lifecycle_event_type"])
+                    if values.get("lifecycle_event_type")
+                    else None
+                ),
                 trade_date=values["trade_date"],
                 trade_time=values.get("trade_time"),
                 settlement_date=values["settlement_date"],
@@ -4461,6 +4827,26 @@ def create_transactions(
                     if values.get("counterparty_account_id")
                     else None
                 ),
+                source_system=(
+                    str(values["source_system"])
+                    if values.get("source_system")
+                    else None
+                ),
+                external_reference=(
+                    str(values["external_reference"])
+                    if values.get("external_reference")
+                    else None
+                ),
+                event_group_id=(
+                    str(values["event_group_id"])
+                    if values.get("event_group_id")
+                    else None
+                ),
+                related_instrument_id=(
+                    str(values["related_instrument_id"])
+                    if values.get("related_instrument_id")
+                    else None
+                ),
                 note=str(values["note"]) if values.get("note") is not None else None,
                 created_at=str(values.get("created_at") or _current_utc_timestamp()),
             )
@@ -4491,7 +4877,14 @@ def create_transactions(
                     created_at=_transaction_change_timestamp(),
                 )
             )
-        dirty_from = min((record.trade_date for record in created), default=None)
+        dirty_from = min(
+            (
+                affected_date
+                for record in serialized_created
+                for affected_date in transaction_affected_dates(record)
+            ),
+            default=None,
+        )
         affected_instrument_ids = {
             str(record.instrument_id or "").strip()
             for record in created
@@ -4512,6 +4905,7 @@ def update_transaction(
     transaction_id: str,
     *,
     transaction_type: str,
+    lifecycle_event_type: str | None = None,
     trade_date: date,
     trade_time: str | None,
     settlement_date: date,
@@ -4533,6 +4927,10 @@ def update_transaction(
     transfer_object_type: str | None,
     transfer_group_id: str | None,
     counterparty_account_id: str | None,
+    source_system: str | None = None,
+    external_reference: str | None = None,
+    event_group_id: str | None = None,
+    related_instrument_id: str | None = None,
     note: str | None,
     fee_category: str = "unknown",
     created_at: str | None = None,
@@ -4561,11 +4959,11 @@ def update_transaction(
                 f"(expected {expected_row_version}, current {current_row_version})."
             )
         before = _serialize_transaction_row(record)
-        previous_trade_date = record.trade_date
         previous_instrument_id = str(record.instrument_id or "").strip()
         _apply_transaction_record(
             record,
             transaction_type=transaction_type,
+            lifecycle_event_type=lifecycle_event_type,
             trade_date=trade_date,
             trade_time=trade_time,
             settlement_date=settlement_date,
@@ -4589,14 +4987,14 @@ def update_transaction(
             transfer_object_type=transfer_object_type,
             transfer_group_id=transfer_group_id,
             counterparty_account_id=counterparty_account_id,
+            source_system=source_system,
+            external_reference=external_reference,
+            event_group_id=event_group_id,
+            related_instrument_id=related_instrument_id,
             note=note,
             created_at=created_at or record.created_at or _current_utc_timestamp(),
         )
         record.row_version = current_row_version + 1
-        dirty_from = min(
-            (candidate for candidate in (previous_trade_date, record.trade_date) if candidate is not None),
-            default=None,
-        )
         affected_instrument_ids = {
             instrument_id
             for instrument_id in {previous_instrument_id, str(record.instrument_id or "").strip()}
@@ -4605,6 +5003,14 @@ def update_transaction(
         session.flush()
         _validate_portfolio_transaction_history(session, portfolio_id)
         after = _serialize_transaction_row(record)
+        dirty_from = min(
+            (
+                affected_date
+                for payload in (before, after)
+                for affected_date in transaction_affected_dates(payload)
+            ),
+            default=None,
+        )
         _append_transaction_change_log(
             session,
             portfolio_id=portfolio_id,
@@ -4684,12 +5090,14 @@ def delete_transactions(
                 after=None,
             )
         _refresh_portfolio_instrument_universe_records(session, portfolio_id, affected_instrument_ids)
-        deleted_dates = [
-            parsed_date
-            for parsed_date in (_safe_date(record.get("trade_date")) for record in serialized)
-            if parsed_date is not None
-        ]
-        dirty_from = min(deleted_dates, default=None)
+        dirty_from = min(
+            (
+                affected_date
+                for record in serialized
+                for affected_date in transaction_affected_dates(record)
+            ),
+            default=None,
+        )
         _mark_daily_snapshots_stale(
             portfolio_id,
             dirty_from=dirty_from,
@@ -4703,6 +5111,7 @@ def _apply_transaction_record(
     record: TransactionRecordModel,
     *,
     transaction_type: str,
+    lifecycle_event_type: str | None,
     trade_date: date,
     trade_time: str | None,
     settlement_date: date,
@@ -4726,6 +5135,10 @@ def _apply_transaction_record(
     transfer_object_type: str | None,
     transfer_group_id: str | None,
     counterparty_account_id: str | None,
+    source_system: str | None,
+    external_reference: str | None,
+    event_group_id: str | None,
+    related_instrument_id: str | None,
     note: str | None,
     created_at: str,
 ) -> None:
@@ -4778,6 +5191,7 @@ def _apply_transaction_record(
 
     resolved_timing = resolve_trade_timing(trade_date=trade_date, trade_time=trade_time)
     record.transaction_type = transaction_type
+    record.lifecycle_event_type = lifecycle_event_type
     record.trade_date = trade_date
     record.trade_time = str(resolved_timing["trade_time"])
     record.trade_at = str(resolved_timing["trade_at"])
@@ -4811,5 +5225,9 @@ def _apply_transaction_record(
     record.transfer_object_type = transfer_object_type
     record.transfer_group_id = transfer_group_id
     record.counterparty_account_id = counterparty_account_id
+    record.source_system = (source_system or "").strip() or None
+    record.external_reference = (external_reference or "").strip() or None
+    record.event_group_id = (event_group_id or "").strip() or None
+    record.related_instrument_id = (related_instrument_id or "").strip() or None
     record.note = (note or "").strip() or None
     record.created_at = created_at

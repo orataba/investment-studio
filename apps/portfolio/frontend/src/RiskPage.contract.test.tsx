@@ -3,7 +3,12 @@ import userEvent from '@testing-library/user-event'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import RiskPage, { riskFrequencyProfileFromHoldingsWorkspace } from './pages/RiskPage'
-import { holdingFixture, holdingsWorkspaceFixture, instrumentFixture } from './test/portfolioFixtures'
+import {
+  fcnInstrumentFixture,
+  holdingFixture,
+  holdingsWorkspaceFixture,
+  instrumentFixture,
+} from './test/portfolioFixtures'
 import { renderPortfolioPage } from './test/renderPortfolioPage'
 
 const apiMocks = vi.hoisted(() => ({
@@ -191,6 +196,26 @@ const taxonomyCatalog = {
       status: 'active',
     },
   ],
+  analytics_scope_policy_version: 1,
+  analytics_scope_policies: [
+    {
+      analytics_scope_policy_id: 'scope-policy-root',
+      portfolio_id: '3',
+      taxonomy_id: 'taxonomy-1',
+      taxonomy_node_id: '__root__',
+      risk_eligible: true,
+      risk_budget_eligible: true,
+      performance_scope: 'ordinary',
+      valuation_basis: 'market',
+      exclusion_reason: null,
+      effective_from: '2020-01-01',
+      effective_to: null,
+      policy_version: 1,
+      superseded_by_policy_id: null,
+      created_at: '2020-01-01T00:00:00Z',
+    },
+  ],
+  analytics_taxonomy_selections: [],
   instrument_universe: [
     {
       portfolio_id: '3',
@@ -337,6 +362,44 @@ describe('Risk rendered page contract', () => {
     expect(result.value.statusLabel).toBe('Risk basis unavailable')
   })
 
+  it('does not let a provider gap on a policy-excluded holding block the eligible risk sleeve', () => {
+    const workspace = holdingsWorkspaceFixture({
+      rows: [
+        riskHolding,
+        holdingFixture({
+          line_id: 'holding:fcn-1',
+          instrument_core: fcnInstrumentFixture({
+            instrument_id: 'fcn-1',
+            instrument_name: 'Excluded FCN',
+          }),
+          allocation: 0.6,
+          market_value: 600,
+          market_value_base: 600,
+          risk_eligible: false,
+          risk_budget_eligible: false,
+          forward_risk_status: 'policy_excluded',
+          forward_risk_share: null,
+          forward_contribution_to_variance: null,
+        }),
+      ],
+      risk_basis: {
+        requested_frequency: 'daily',
+        resolved_frequency: 'daily',
+        default_frequency: 'daily',
+        source_frequency_counts: { daily: 1 },
+        status_label: 'Risk basis partial - 1 instrument has an observation gap',
+        coverage_state: 'partial',
+        gap_count: 1,
+        gap_instrument_ids: ['fcn-1'],
+      },
+    })
+
+    const result = riskFrequencyProfileFromHoldingsWorkspace(workspace)
+
+    expect(result.errors).toEqual([])
+    expect(result.value.statusLabel).toBe('Daily risk basis')
+  })
+
   it('excludes cash-account pending settlement rows from the risk member count', () => {
     const workspace = twoHoldingWorkspace()
     workspace.rows.push(
@@ -377,19 +440,19 @@ describe('Risk rendered page contract', () => {
     expect(within(riskGap).queryByText('Cash')).not.toBeInTheDocument()
     expect(within(riskGap).getByText('Risk Assets')).toBeInTheDocument()
     expect(within(riskGap).getAllByText('100.00%')).toHaveLength(3)
-    expect(within(riskHealth).getByText('Forward Volatility')).toBeInTheDocument()
+    expect(within(riskHealth).getByText('Modeled Market Sleeve Volatility')).toBeInTheDocument()
     expect(within(riskHealth).getByText('10.00%')).toBeInTheDocument()
     expect(within(riskHealth).getByText(/61\/61 complete/)).toBeInTheDocument()
     expect(within(riskHealth).getByText('SAA 0.00% · TAA 0.00%')).toBeInTheDocument()
-    expect(within(riskHealth).getByText('Cash + Pending Settlement')).toBeInTheDocument()
-    expect(within(riskHealth).getByText('20.00%')).toBeInTheDocument()
+    expect(within(riskHealth).getByText('Cash / Unallocated')).toBeInTheDocument()
+    expect(within(riskHealth).getByText('$200.00')).toBeInTheDocument()
 
     expect(apiMocks.getHoldingsWorkspace).toHaveBeenCalledWith('3', {
       include_details: true,
     })
   })
 
-  it('does not treat missing base-currency liquidity as zero in Risk Health', async () => {
+  it('uses the scoped backend cash disclosure instead of deriving it from account liquidity', async () => {
     apiMocks.getPortfolioAccountsWorkspace.mockResolvedValue({
       ...accountsWorkspace,
       accounts: accountsWorkspace.accounts.map((account) => ({
@@ -401,12 +464,10 @@ describe('Risk rendered page contract', () => {
     renderRiskPage()
 
     const riskHealth = await screen.findByRole('region', { name: 'Risk health' })
-    const liquidityCard = within(riskHealth)
-      .getByText('Cash + Pending Settlement')
-      .closest('article')
+    const liquidityCard = within(riskHealth).getByText('Cash / Unallocated').closest('article')
     expect(liquidityCard).not.toBeNull()
-    expect(within(liquidityCard as HTMLElement).getByText('—')).toBeInTheDocument()
-    expect(within(liquidityCard as HTMLElement).getByText('Account liquidity unavailable')).toBeInTheDocument()
+    expect(within(liquidityCard as HTMLElement).getByText('$200.00')).toBeInTheDocument()
+    expect(within(liquidityCard as HTMLElement).getByText('Disclosed outside covariance risk')).toBeInTheDocument()
   })
 
   it('defaults the correlation matrix to active non-cash Current Holdings', async () => {

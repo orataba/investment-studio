@@ -54,7 +54,7 @@ def transaction_position_effective_date(
 
 def transaction_sort_key(
     transaction: dict[str, object],
-) -> tuple[str, str, str, str, str]:
+) -> tuple[str, str, str, int, str]:
     """Return the canonical deterministic economic-recognition ordering key."""
 
     effective_date = transaction_performance_effective_date(transaction)
@@ -63,14 +63,14 @@ def transaction_sort_key(
         effective_date.isoformat() if effective_date is not None else "",
         str(transaction.get("trade_at") or ""),
         str(transaction.get("created_at") or ""),
-        str(transaction.get("transaction_id") or ""),
+        _transaction_sequence(transaction),
         str(transaction.get("settlement_date") or ""),
     )
 
 
 def transaction_execution_sort_key(
     transaction: dict[str, object],
-) -> tuple[str, str, str, str, str]:
+) -> tuple[str, str, str, int, str]:
     """Return deterministic order-entry/execution ordering.
 
     This is intentionally separate from the economic-recognition sort. A
@@ -82,9 +82,16 @@ def transaction_execution_sort_key(
         str(transaction.get("trade_date") or ""),
         str(transaction.get("trade_at") or ""),
         str(transaction.get("created_at") or ""),
-        str(transaction.get("transaction_id") or ""),
+        _transaction_sequence(transaction),
         str(transaction.get("settlement_date") or ""),
     )
+
+
+def _transaction_sequence(transaction: dict[str, object]) -> int:
+    value = transaction.get("transaction_sequence")
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        raise ValueError("Canonical transactions require a positive transaction_sequence.")
+    return value
 
 
 def _parse_date(value: object) -> date | None:
@@ -232,3 +239,31 @@ def transaction_position_cash_transfer_date(
         if candidate is not None
     ]
     return min(candidate_dates) if candidate_dates else None
+
+
+def transaction_cash_activity_date(
+    transaction: dict[str, object],
+) -> date | None:
+    """Return when the transaction's cash leg reaches its cash account."""
+
+    if str(transaction.get("settlement_cash_account_id") or "").strip():
+        settlement_date = _parse_date(transaction.get("settlement_date"))
+        if settlement_date is not None:
+            return settlement_date
+    return transaction_external_flow_date(
+        transaction
+    ) or transaction_ledger_activity_date(transaction)
+
+
+def transaction_affected_dates(transaction: dict[str, object]) -> frozenset[date]:
+    """Return every canonical date that can change a materialized result."""
+
+    candidates = (
+        transaction_economic_date(transaction),
+        transaction_external_flow_date(transaction),
+        transaction_ledger_activity_date(transaction),
+        transaction_position_cash_transfer_date(transaction),
+        transaction_position_effective_date(transaction),
+        transaction_cash_activity_date(transaction),
+    )
+    return frozenset(candidate for candidate in candidates if candidate is not None)

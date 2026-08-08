@@ -33,6 +33,10 @@ import {
   valuationQuoteLabel,
 } from '../lib/instrumentMetricLabels'
 import { aggregatePositionLotAccountSlices } from '../lib/positionLotAggregation'
+import {
+  holdingUsesEventValuation,
+  isOptionObligationHolding,
+} from '../lib/holdingPresentation'
 import { transactionActivityLabel } from '../lib/transactionPresentation'
 import {
   buildPortfolioSectionPath,
@@ -142,8 +146,9 @@ export default function PortfolioSecurityDetailPage() {
   const chartRangeKey = parseChartRange(searchParams.get('chart_range'))
   const workspace =
     workspaceResponse?.portfolio_id === portfolioId &&
-    (!workspaceResponse.row ||
-      workspaceResponse.row.instrument_core.instrument_id === instrumentId) &&
+    workspaceResponse.rows.every(
+      (row) => row.instrument_core.instrument_id === instrumentId,
+    ) &&
     (!requestedAsOfDate || workspaceResponse.as_of_date === requestedAsOfDate)
       ? workspaceResponse
       : null
@@ -157,7 +162,13 @@ export default function PortfolioSecurityDetailPage() {
     transactionsResponse.transactions.every((transaction) => transaction.instrument_id === instrumentId)
       ? transactionsResponse
       : null
-  const selectedRow = workspace?.row ?? null
+  const selectedRows = workspace?.rows ?? []
+  const selectedRow =
+    selectedRows.find((row) => row.holding_kind === 'position') ??
+    selectedRows[0] ??
+    null
+  const writtenOptionObligation =
+    selectedRows.find((row) => isOptionObligationHolding(row)) ?? null
   const selectedPositionLots = positionLotsWorkspace?.position_lots ?? []
   const selectedTransactions = transactionsWorkspace?.transactions ?? []
   const selectedPositionLot =
@@ -174,16 +185,29 @@ export default function PortfolioSecurityDetailPage() {
       : null
   const baseCurrency = workspace?.base_currency ?? selectedRow?.instrument_core.currency ?? instrumentChartWorkspace?.currency ?? 'USD'
   const selectedRowIdentifier = selectedRow ? primaryIdentifier(selectedRow) : instrumentId
+  const selectedRowUsesEventValuation = selectedRow
+    ? holdingUsesEventValuation(selectedRow)
+    : false
   const selectedRowUnrealizedBase =
+    !selectedRowUsesEventValuation &&
     selectedRow?.market_value_base != null && selectedRow.cost_basis_base != null
       ? selectedRow.market_value_base - selectedRow.cost_basis_base
       : null
   const selectedRowUnrealizedLocal =
+    !selectedRowUsesEventValuation &&
     selectedRow?.market_value != null && selectedRow.cost_basis != null
       ? selectedRow.market_value - selectedRow.cost_basis
       : null
-  const heroMarketValue = selectedRow?.market_value_base ?? selectedRow?.market_value
-  const heroMarketCurrency = selectedRow?.market_value_base != null ? baseCurrency : selectedRow?.instrument_core.currency ?? baseCurrency
+  const heroMarketValue = selectedRowUsesEventValuation
+    ? selectedRow?.carrying_value_base ?? selectedRow?.carrying_value
+    : selectedRow?.market_value_base ?? selectedRow?.market_value
+  const heroMarketCurrency = selectedRowUsesEventValuation
+    ? selectedRow?.carrying_value_base != null
+      ? baseCurrency
+      : selectedRow?.instrument_core.currency ?? baseCurrency
+    : selectedRow?.market_value_base != null
+      ? baseCurrency
+      : selectedRow?.instrument_core.currency ?? baseCurrency
   const heroUnrealizedValue = selectedRowUnrealizedBase ?? selectedRowUnrealizedLocal
   const heroUnrealizedCurrency = selectedRowUnrealizedBase != null ? baseCurrency : selectedRow?.instrument_core.currency ?? baseCurrency
   const valuationMetricName = valuationQuoteLabel(
@@ -204,8 +228,13 @@ export default function PortfolioSecurityDetailPage() {
     detailTab === 'overview' &&
     (
       workspaceLoading ||
-      instrumentChartLoading ||
-      Boolean(resolvedAsOfDate && !instrumentChartWorkspace && !instrumentChartError)
+      (
+        !selectedRowUsesEventValuation &&
+        (
+          instrumentChartLoading ||
+          Boolean(selectedRow && resolvedAsOfDate && !instrumentChartWorkspace && !instrumentChartError)
+        )
+      )
     )
   const totalRealizationCount = selectedPositionLots.reduce(
     (total, positionLot) => total + positionLot.realization_count,
@@ -254,6 +283,14 @@ export default function PortfolioSecurityDetailPage() {
     selectedRow?.cost_basis_base != null
       ? baseCurrency
       : selectedRow?.instrument_core.currency ?? baseCurrency
+  const obligationLiability =
+    writtenOptionObligation?.liability_value_base ??
+    writtenOptionObligation?.liability_value ??
+    null
+  const obligationLiabilityCurrency =
+    writtenOptionObligation?.liability_value_base != null
+      ? baseCurrency
+      : writtenOptionObligation?.instrument_core.currency ?? baseCurrency
 
   const detailTabs = [
     { key: 'overview', label: 'Overview', meta: 'Position' },
@@ -457,7 +494,14 @@ export default function PortfolioSecurityDetailPage() {
   }, [instrumentId, portfolioId, resolvedAsOfDate])
 
   useEffect(() => {
-    if (detailTab !== 'overview' || !portfolioId || !instrumentId || !resolvedAsOfDate) {
+    if (
+      detailTab !== 'overview' ||
+      !portfolioId ||
+      !instrumentId ||
+      !resolvedAsOfDate ||
+      !selectedRow ||
+      selectedRowUsesEventValuation
+    ) {
       setInstrumentChartWorkspace(null)
       setInstrumentChartError(null)
       setInstrumentChartLoading(false)
@@ -494,7 +538,15 @@ export default function PortfolioSecurityDetailPage() {
     return () => {
       cancelled = true
     }
-  }, [chartRangeKey, detailTab, instrumentId, portfolioId, resolvedAsOfDate])
+  }, [
+    chartRangeKey,
+    detailTab,
+    instrumentId,
+    portfolioId,
+    resolvedAsOfDate,
+    selectedRow,
+    selectedRowUsesEventValuation,
+  ])
 
   return (
     <PortfolioWorkspaceLayout
@@ -538,13 +590,15 @@ export default function PortfolioSecurityDetailPage() {
                 <strong>{formatQuantity(selectedRow?.quantity)}</strong>
               </div>
               <div>
-                <span>Market value</span>
+                <span>{selectedRowUsesEventValuation ? 'Carrying value' : 'Market value'}</span>
                 <strong>{formatCurrency(heroMarketValue, heroMarketCurrency)}</strong>
               </div>
               <div>
                 <span>Unrealized P/L</span>
-                <strong className={signedValueClass(heroUnrealizedValue)}>
-                  {formatSignedCurrency(heroUnrealizedValue, heroUnrealizedCurrency)}
+                <strong className={selectedRowUsesEventValuation ? undefined : signedValueClass(heroUnrealizedValue)}>
+                  {selectedRowUsesEventValuation
+                    ? 'N/A'
+                    : formatSignedCurrency(heroUnrealizedValue, heroUnrealizedCurrency)}
                 </strong>
               </div>
             </div>
@@ -553,8 +607,17 @@ export default function PortfolioSecurityDetailPage() {
           <div className="portfolio-security-context-strip">
             <div>
               <span>Valuation</span>
-              <strong>{formatUnitPrice(selectedRow?.last_price, selectedRow?.instrument_core.currency)}</strong>
-              <em>{valuationMetricName} · {(selectedRow?.quote_as_of_date ?? resolvedAsOfDate) || '—'}</em>
+              <strong>
+                {selectedRowUsesEventValuation
+                  ? 'N/A'
+                  : formatUnitPrice(selectedRow?.last_price, selectedRow?.instrument_core.currency)}
+              </strong>
+              <em>
+                {valuationMetricName} ·{' '}
+                {selectedRowUsesEventValuation
+                  ? 'N/A'
+                  : (selectedRow?.quote_as_of_date ?? resolvedAsOfDate) || '—'}
+              </em>
             </div>
             <div>
               <span>Open cost basis</span>
@@ -575,11 +638,52 @@ export default function PortfolioSecurityDetailPage() {
               <em>{formatLabel(selectedRow?.coverage_status ?? 'unavailable')} coverage</em>
             </div>
           </div>
+          {writtenOptionObligation ? (
+            <div
+              className="portfolio-security-context-strip"
+              aria-label="Written option obligation"
+            >
+              <div>
+                <span>Obligation status</span>
+                <strong>
+                  {writtenOptionObligation.obligation_status
+                    ? formatLabel(writtenOptionObligation.obligation_status)
+                    : 'N/A'}
+                </strong>
+                <em>
+                  {writtenOptionObligation.coverage_type
+                    ? formatLabel(writtenOptionObligation.coverage_type)
+                    : 'N/A'}
+                </em>
+              </div>
+              <div>
+                <span>Open contracts</span>
+                <strong>{formatQuantity(writtenOptionObligation.open_contract_quantity)}</strong>
+                <em>Exchange contracts</em>
+              </div>
+              <div>
+                <span>Covered underlying</span>
+                <strong>{formatQuantity(writtenOptionObligation.covered_underlying_quantity)}</strong>
+                <em>Reserved deliverable units</em>
+              </div>
+              <div>
+                <span>Remaining premium / carrying liability</span>
+                <strong>
+                  {formatCurrency(
+                    writtenOptionObligation.premium_basis_remaining,
+                    writtenOptionObligation.instrument_core.currency,
+                  )}{' '}
+                  / {formatCurrency(obligationLiability, obligationLiabilityCurrency)}
+                </strong>
+                <em>Premium basis / liability</em>
+              </div>
+            </div>
+          ) : null}
         </header>
 
         {workspaceLoading ? <CalculationStatus /> : null}
         {workspaceError ? <div className="error-state">{workspaceError}</div> : null}
-        {!workspaceLoading && !workspaceError && workspace && !selectedRow ? (
+        {!workspaceLoading && !workspaceError && workspace && !selectedRows.length ? (
           <div className="inline-notice inline-notice-warning">Not held as of selected date.</div>
         ) : null}
 
@@ -666,8 +770,9 @@ export default function PortfolioSecurityDetailPage() {
                   </div>
                 </dl>
                 <p className="portfolio-security-basis-note">
-                  Market value uses {valuationMetricName}. Return analysis uses {performanceMetricName};
-                  the performance series never replaces the valuation quote.
+                  {selectedRowUsesEventValuation
+                    ? 'This position uses event carrying basis; fair value and market-return analytics are unavailable.'
+                    : `Market value uses ${valuationMetricName}. Return analysis uses ${performanceMetricName}; the performance series never replaces the valuation quote.`}
                 </p>
               </aside>
             </div>
@@ -687,7 +792,9 @@ export default function PortfolioSecurityDetailPage() {
                   <div className="empty-state table-status-cell-error">{positionLotsError}</div>
                 ) : accountSlices.length ? accountSlices.map((slice) => {
                   const sliceUnrealized =
-                    slice.marketValue == null ? null : slice.marketValue - slice.remainingCost
+                    selectedRowUsesEventValuation || slice.marketValue == null
+                      ? null
+                      : slice.marketValue - slice.remainingCost
                   return (
                     <article key={slice.accountId}>
                       <div className="portfolio-security-account-head">
@@ -704,11 +811,13 @@ export default function PortfolioSecurityDetailPage() {
                         <div><dt>Remaining cost</dt><dd>{formatCurrency(slice.remainingCost, selectedRow?.instrument_core.currency ?? baseCurrency)}</dd></div>
                         <div>
                           <dt>Unrealized P/L</dt>
-                          <dd className={signedValueClass(sliceUnrealized)}>
-                            {formatSignedCurrency(
-                              sliceUnrealized,
-                              selectedRow?.instrument_core.currency ?? baseCurrency,
-                            )}
+                          <dd className={selectedRowUsesEventValuation ? undefined : signedValueClass(sliceUnrealized)}>
+                            {selectedRowUsesEventValuation
+                              ? 'N/A'
+                              : formatSignedCurrency(
+                                  sliceUnrealized,
+                                  selectedRow?.instrument_core.currency ?? baseCurrency,
+                                )}
                           </dd>
                         </div>
                       </dl>
@@ -770,6 +879,7 @@ export default function PortfolioSecurityDetailPage() {
                       const activityLabel = transactionActivityLabel(
                         transaction.transaction_type,
                         transaction.instrument_ref?.instrument_type,
+                        transaction.option_action,
                       )
                       return (
                         <tr key={transaction.transaction_id}>
@@ -959,8 +1069,10 @@ export default function PortfolioSecurityDetailPage() {
                           </td>
                           <td>
                             <div className="holding-name-stack">
-                              <span className={signedValueClass(positionLot.unrealized_pnl)}>
-                                {formatSignedCurrency(positionLot.unrealized_pnl, positionLot.currency)}
+                              <span className={selectedRowUsesEventValuation ? undefined : signedValueClass(positionLot.unrealized_pnl)}>
+                                {selectedRowUsesEventValuation
+                                  ? 'N/A'
+                                  : formatSignedCurrency(positionLot.unrealized_pnl, positionLot.currency)}
                               </span>
                               <span className={`${signedValueClass(positionLot.realized_pnl)} holding-secondary`}>
                                 Realized {formatSignedCurrency(positionLot.realized_pnl, positionLot.currency)}

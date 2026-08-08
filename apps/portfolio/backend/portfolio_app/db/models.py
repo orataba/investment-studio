@@ -87,6 +87,23 @@ class PortfolioRecordModel(Base):
         back_populates="portfolio",
         cascade="all, delete-orphan",
     )
+    analytics_policy_state: Mapped["PortfolioAnalyticsPolicyStateModel | None"] = relationship(
+        back_populates="portfolio",
+        cascade="all, delete-orphan",
+        uselist=False,
+    )
+    analytics_scope_policies: Mapped[list["AnalyticsScopePolicyRecordModel"]] = relationship(
+        back_populates="portfolio",
+        cascade="all, delete-orphan",
+    )
+    analytics_taxonomy_selections: Mapped[list["AnalyticsTaxonomySelectionRecordModel"]] = relationship(
+        back_populates="portfolio",
+        cascade="all, delete-orphan",
+    )
+    taxonomy_configuration_revisions: Mapped[list["TaxonomyConfigurationRevisionModel"]] = relationship(
+        back_populates="portfolio",
+        cascade="all, delete-orphan",
+    )
 
 
 class PortfolioDailySnapshotModel(Base):
@@ -132,12 +149,17 @@ class PortfolioDailyHoldingSnapshotModel(Base):
     )
 
     portfolio_id: Mapped[str] = mapped_column(
-        ForeignKey("portfolio_record.portfolio_id", ondelete="CASCADE"),
+        ForeignKey(
+            "portfolio_record.portfolio_id",
+            name="fk_portfolio_holding_snapshot_portfolio",
+            ondelete="CASCADE",
+        ),
         primary_key=True,
     )
     as_of_date: Mapped[date] = mapped_column(Date, primary_key=True)
     account_id: Mapped[str] = mapped_column(String, primary_key=True)
     instrument_id: Mapped[str] = mapped_column(String, primary_key=True)
+    holding_kind: Mapped[str] = mapped_column(String, primary_key=True)
     currency: Mapped[str] = mapped_column(String, nullable=False)
     quantity: Mapped[float] = mapped_column(nullable=False, default=0.0)
     cost_basis: Mapped[float | None]
@@ -291,7 +313,7 @@ class TransactionRecordModel(Base):
             "trade_date",
             "trade_at",
             "created_at",
-            "transaction_id",
+            "transaction_sequence",
         ),
         Index("ix_transaction_record_portfolio_account_trade", "portfolio_id", "account_id", "trade_date", "trade_at"),
         Index(
@@ -303,19 +325,54 @@ class TransactionRecordModel(Base):
         ),
         Index("ix_transaction_record_portfolio_type_trade", "portfolio_id", "transaction_type", "trade_date", "trade_at"),
         Index("ix_transaction_record_portfolio_instrument_trade", "portfolio_id", "instrument_id", "trade_date", "trade_at"),
+        UniqueConstraint(
+            "portfolio_id",
+            "source_system",
+            "external_reference",
+            name="uq_transaction_record_portfolio_source_external",
+        ),
+        CheckConstraint(
+            "external_reference IS NULL OR source_system IS NOT NULL",
+            name="source_identity",
+        ),
+        CheckConstraint(
+            "lifecycle_event_type IS NULL OR lifecycle_event_type IN ("
+            "'fcn_knock_in', 'fcn_knock_out', 'fcn_maturity', "
+            "'fcn_physical_settlement', 'option_long_expiry', "
+            "'option_long_exercise', 'option_writer_expiry', "
+            "'option_assignment')",
+            name="lifecycle_event_type",
+        ),
+        Index(
+            "ix_transaction_record_portfolio_event_group",
+            "portfolio_id",
+            "event_group_id",
+        ),
+        Index(
+            "ix_transaction_record_portfolio_related_instrument",
+            "portfolio_id",
+            "related_instrument_id",
+        ),
         Index(
             "ix_transaction_record_portfolio_position_effective",
             "portfolio_id",
             "position_effective_date",
         ),
+        Index(
+            "uq_transaction_record_transaction_sequence",
+            "transaction_sequence",
+            unique=True,
+        ),
     )
 
     transaction_id: Mapped[str] = mapped_column(String, primary_key=True)
+    transaction_sequence: Mapped[int] = mapped_column(Integer, nullable=False)
     portfolio_id: Mapped[str] = mapped_column(
         ForeignKey("portfolio_record.portfolio_id", ondelete="CASCADE"),
         nullable=False,
     )
     transaction_type: Mapped[str] = mapped_column(String, nullable=False)
+    lifecycle_event_type: Mapped[str | None] = mapped_column(String)
     trade_date: Mapped[date] = mapped_column(Date, nullable=False)
     trade_time: Mapped[str] = mapped_column(String, nullable=False)
     trade_at: Mapped[str] = mapped_column(String, nullable=False)
@@ -354,6 +411,10 @@ class TransactionRecordModel(Base):
     transfer_object_type: Mapped[str | None] = mapped_column(String)
     transfer_group_id: Mapped[str | None] = mapped_column(String)
     counterparty_account_id: Mapped[str | None] = mapped_column(String)
+    source_system: Mapped[str | None] = mapped_column(String(100))
+    external_reference: Mapped[str | None] = mapped_column(String(200))
+    event_group_id: Mapped[str | None] = mapped_column(String(200))
+    related_instrument_id: Mapped[str | None] = mapped_column(String(200))
     note: Mapped[str | None] = mapped_column(String)
     created_at: Mapped[str | None] = mapped_column(String)
     row_version: Mapped[int] = mapped_column(
@@ -659,6 +720,178 @@ class TaxonomyAssignmentRecordModel(Base):
     taxonomy: Mapped[TaxonomyRecordModel] = relationship(back_populates="assignments")
 
 
+class PortfolioAnalyticsPolicyStateModel(Base):
+    __tablename__ = "portfolio_analytics_policy_state"
+    __table_args__ = (
+        CheckConstraint(
+            "current_version >= 0",
+            name="ck_analytics_policy_state_version",
+        ),
+    )
+
+    portfolio_id: Mapped[str] = mapped_column(
+        ForeignKey("portfolio_record.portfolio_id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    current_version: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        default=0,
+        server_default="0",
+    )
+    updated_at: Mapped[str] = mapped_column(String, nullable=False)
+
+    portfolio: Mapped[PortfolioRecordModel] = relationship(
+        back_populates="analytics_policy_state"
+    )
+
+
+class AnalyticsScopePolicyRecordModel(Base):
+    __tablename__ = "analytics_scope_policy_record"
+    __table_args__ = (
+        CheckConstraint(
+            "effective_to IS NULL OR effective_to >= effective_from",
+            name="ck_analytics_scope_policy_effective_range",
+        ),
+        CheckConstraint(
+            "performance_scope IN ('ordinary', 'derivative_lifecycle', "
+            "'operational_only', 'unallocated')",
+            name="ck_analytics_scope_policy_performance_scope",
+        ),
+        CheckConstraint(
+            "valuation_basis IN ('market', 'fair_value', 'carrying', 'event', "
+            "'obligation', 'cash', 'unknown')",
+            name="ck_analytics_scope_policy_valuation_basis",
+        ),
+        UniqueConstraint(
+            "portfolio_id",
+            "policy_version",
+            name="uq_analytics_scope_policy_portfolio_version",
+        ),
+        Index(
+            "ix_analytics_scope_policy_resolve",
+            "portfolio_id",
+            "taxonomy_id",
+            "taxonomy_node_id",
+            "effective_from",
+            "effective_to",
+            "superseded_by_policy_id",
+        ),
+    )
+
+    analytics_scope_policy_id: Mapped[str] = mapped_column(String, primary_key=True)
+    portfolio_id: Mapped[str] = mapped_column(
+        ForeignKey("portfolio_record.portfolio_id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    taxonomy_id: Mapped[str] = mapped_column(
+        String,
+        nullable=False,
+    )
+    taxonomy_node_id: Mapped[str] = mapped_column(String, nullable=False)
+    risk_eligible: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    risk_budget_eligible: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    performance_scope: Mapped[str] = mapped_column(String, nullable=False)
+    valuation_basis: Mapped[str] = mapped_column(String, nullable=False)
+    exclusion_reason: Mapped[str | None] = mapped_column(String)
+    effective_from: Mapped[date] = mapped_column(Date, nullable=False)
+    effective_to: Mapped[date | None] = mapped_column(Date)
+    policy_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    superseded_by_policy_id: Mapped[str | None] = mapped_column(String)
+    created_at: Mapped[str] = mapped_column(String, nullable=False)
+
+    portfolio: Mapped[PortfolioRecordModel] = relationship(
+        back_populates="analytics_scope_policies"
+    )
+
+
+class AnalyticsTaxonomySelectionRecordModel(Base):
+    __tablename__ = "analytics_taxonomy_selection_record"
+    __table_args__ = (
+        CheckConstraint(
+            "effective_to IS NULL OR effective_to >= effective_from",
+            name="ck_analytics_taxonomy_selection_effective_range",
+        ),
+        UniqueConstraint(
+            "portfolio_id",
+            "selection_version",
+            name="uq_analytics_taxonomy_selection_portfolio_version",
+        ),
+        Index(
+            "ix_analytics_taxonomy_selection_resolve",
+            "portfolio_id",
+            "effective_from",
+            "effective_to",
+            "superseded_by_selection_id",
+        ),
+    )
+
+    analytics_taxonomy_selection_id: Mapped[str] = mapped_column(
+        String,
+        primary_key=True,
+    )
+    portfolio_id: Mapped[str] = mapped_column(
+        ForeignKey("portfolio_record.portfolio_id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    taxonomy_id: Mapped[str | None] = mapped_column(String)
+    effective_from: Mapped[date] = mapped_column(Date, nullable=False)
+    effective_to: Mapped[date | None] = mapped_column(Date)
+    selection_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    superseded_by_selection_id: Mapped[str | None] = mapped_column(String)
+    created_at: Mapped[str] = mapped_column(String, nullable=False)
+
+    portfolio: Mapped[PortfolioRecordModel] = relationship(
+        back_populates="analytics_taxonomy_selections"
+    )
+
+
+class TaxonomyConfigurationRevisionModel(Base):
+    __tablename__ = "taxonomy_configuration_revision"
+    __table_args__ = (
+        CheckConstraint(
+            "effective_to IS NULL OR effective_to >= effective_from",
+            name="ck_taxonomy_configuration_revision_effective_range",
+        ),
+        UniqueConstraint(
+            "portfolio_id",
+            "configuration_version",
+            name="uq_taxonomy_configuration_revision_portfolio_version",
+        ),
+        Index(
+            "ix_taxonomy_configuration_revision_resolve",
+            "portfolio_id",
+            "taxonomy_id",
+            "effective_from",
+            "effective_to",
+            "superseded_by_revision_id",
+        ),
+    )
+
+    taxonomy_configuration_revision_id: Mapped[str] = mapped_column(
+        String,
+        primary_key=True,
+    )
+    portfolio_id: Mapped[str] = mapped_column(
+        ForeignKey("portfolio_record.portfolio_id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    taxonomy_id: Mapped[str] = mapped_column(
+        String,
+        nullable=False,
+    )
+    effective_from: Mapped[date] = mapped_column(Date, nullable=False)
+    effective_to: Mapped[date | None] = mapped_column(Date)
+    configuration_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    configuration_json: Mapped[dict[str, object]] = mapped_column(JSON, nullable=False)
+    superseded_by_revision_id: Mapped[str | None] = mapped_column(String)
+    created_at: Mapped[str] = mapped_column(String, nullable=False)
+
+    portfolio: Mapped[PortfolioRecordModel] = relationship(
+        back_populates="taxonomy_configuration_revisions"
+    )
+
+
 class TargetSetRecordModel(Base):
     __tablename__ = "target_set_record"
     __table_args__ = (
@@ -739,6 +972,17 @@ class ResearchSettingsRecordModel(Base):
             "lookback_days IN (30, 90, 180, 366, 730)",
             name="ck_research_settings_supported_lookback",
         ),
+        CheckConstraint(
+            "backtest_cash_yield_annual >= -1 AND "
+            "backtest_commission_bps >= 0 AND backtest_tax_bps >= 0 AND "
+            "backtest_slippage_bps >= 0 AND backtest_implementation_delay_days >= 0",
+            name="research_backtest_execution_costs",
+        ),
+        CheckConstraint(
+            "backtest_walk_forward_training_months > 0 AND "
+            "backtest_walk_forward_test_months > 0",
+            name="research_backtest_walk_forward_windows",
+        ),
     )
 
     portfolio_id: Mapped[str] = mapped_column(
@@ -761,6 +1005,42 @@ class ResearchSettingsRecordModel(Base):
     top_sleeve_weight_bounds_json: Mapped[list[dict[str, object]] | None] = mapped_column(JSON)
     backtest_rebalance_frequency: Mapped[str] = mapped_column(String, nullable=False, default="1m")
     backtest_benchmark_instrument_id: Mapped[str | None] = mapped_column(String)
+    backtest_cash_yield_annual: Mapped[float] = mapped_column(
+        nullable=False,
+        default=0.02,
+        server_default="0.02",
+    )
+    backtest_commission_bps: Mapped[float] = mapped_column(
+        nullable=False,
+        default=2.0,
+        server_default="2",
+    )
+    backtest_tax_bps: Mapped[float] = mapped_column(
+        nullable=False,
+        default=10.0,
+        server_default="10",
+    )
+    backtest_slippage_bps: Mapped[float] = mapped_column(
+        nullable=False,
+        default=5.0,
+        server_default="5",
+    )
+    backtest_implementation_delay_days: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        server_default="1",
+    )
+    backtest_robustness_scenarios_json: Mapped[list[dict[str, object]] | None] = mapped_column(JSON)
+    backtest_walk_forward_training_months: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        server_default="24",
+    )
+    backtest_walk_forward_test_months: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        server_default="6",
+    )
     notes: Mapped[str | None] = mapped_column(String)
     updated_at: Mapped[str | None] = mapped_column(String)
 

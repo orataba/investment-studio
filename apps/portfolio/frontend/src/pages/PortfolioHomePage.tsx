@@ -43,6 +43,12 @@ import {
   type PortfolioTaxonomyNodeRecord,
 } from '../lib/api'
 import { baseAmountForRow, normalizedCurrency } from '../lib/holdingAmounts'
+import {
+  holdingDayChangeExportValue,
+  holdingDayChangeUnavailable,
+  holdingUsesEventValuation,
+  isOptionObligationHolding,
+} from '../lib/holdingPresentation'
 import { buildPortfolioHoldingDetailPath } from '../lib/navigation'
 
 type HoldingsColumnKey =
@@ -95,6 +101,7 @@ type HoldingsColumnKey =
 
 type HoldingsGroupByKey = 'none' | 'taxonomy_top' | 'taxonomy_leaf' | 'instrument_type' | 'currency' | 'coverage'
 type HoldingsSortDirection = 'asc' | 'desc'
+type HoldingsLayoutMode = 'regions' | 'advanced'
 type SortableValue = number | string | null | undefined
 
 const HOLDINGS_COLUMNS_REQUIRING_DETAILS = new Set<HoldingsColumnKey>([
@@ -557,6 +564,37 @@ function instrumentTrendCoverageLabel(row: PortfolioHoldingRow) {
   return `Trend: ${basis} · ${state} · ${observationCount} observation${observationCount === 1 ? '' : 's'}`
 }
 
+function holdingValuationSummary(row: PortfolioHoldingRow) {
+  if (isOptionObligationHolding(row)) {
+    const status = row.obligation_status ? formatLabel(row.obligation_status) : 'N/A'
+    const coverageType = row.coverage_type ? formatLabel(row.coverage_type) : 'N/A'
+    return `Written option obligation · ${status} · ${coverageType}`
+  }
+  if (holdingUsesEventValuation(row)) {
+    return row.valuation_basis
+      ? `Event-valued · ${formatLabel(row.valuation_basis)}`
+      : 'Event-valued'
+  }
+  return instrumentTrendCoverageLabel(row)
+}
+
+function holdingValuationDetail(row: PortfolioHoldingRow) {
+  if (isOptionObligationHolding(row)) {
+    return `${formatQuantity(row.open_contract_quantity)} open contracts · ${formatQuantity(row.required_underlying_quantity)} required · ${formatQuantity(row.covered_underlying_quantity)} covered · ${formatQuantity(row.uncovered_underlying_quantity)} uncovered`
+  }
+  if (holdingUsesEventValuation(row)) {
+    return 'Fair value and daily market return are unavailable.'
+  }
+  return instrumentTrendReasonLabel(row)
+}
+
+function optionObligationAmountSummary(row: PortfolioHoldingRow) {
+  if (!isOptionObligationHolding(row)) {
+    return null
+  }
+  return `Remaining premium basis ${formatCurrency(row.premium_basis_remaining, row.instrument_core.currency)} · Carrying liability ${formatCurrency(row.liability_value, row.instrument_core.currency)}`
+}
+
 function instrumentTrendReasonLabel(row: PortfolioHoldingRow) {
   const basis = row.instrument_trend_basis ? formatLabel(row.instrument_trend_basis) : 'trend basis'
   switch (row.instrument_trend_reason) {
@@ -594,6 +632,141 @@ function instrumentTrendReasonLabel(row: PortfolioHoldingRow) {
 
 function finiteNumber(value: number | null | undefined) {
   return typeof value === 'number' && Number.isFinite(value) ? value : null
+}
+
+const HOLDING_REGION_LABELS: Record<PortfolioHoldingRow['holding_region'], string> = {
+  market_valued_positions: 'Market-valued Positions',
+  structured_and_long_derivatives: 'Structured / Long Derivatives',
+  written_option_obligations: 'Written Option Obligations',
+  cash_and_settlement: 'Cash & Settlement',
+}
+
+const HOLDING_REGION_ORDER: Record<PortfolioHoldingRow['holding_region'], number> = {
+  market_valued_positions: 0,
+  structured_and_long_derivatives: 1,
+  written_option_obligations: 2,
+  cash_and_settlement: 3,
+}
+
+const CANONICAL_HOLDINGS_EXPORT_HEADER = [
+  'Region',
+  'Instrument',
+  'Identifier',
+  'Currency',
+  'Lifecycle/Pending Status',
+  'Quantity',
+  'Market Value Base',
+  'Carrying Value Base',
+  'Cost Basis Base',
+  'Maturity/Expiry',
+  'Open Contracts',
+  'Required Underlying',
+  'Covered Underlying',
+  'Uncovered Underlying',
+  'Covered Ratio',
+  'Strike',
+  'Settlement Type',
+  'Premium Basis',
+  'Carrying Liability Base',
+  'Settlement Date',
+  'Settlement Amount',
+  'Settlement Amount Base',
+  'Analytics Scope',
+  'Coverage Status',
+] as const
+
+function exportNumber(value: number | null | undefined): number | 'N/A' {
+  return finiteNumber(value) ?? 'N/A'
+}
+
+function holdingMaturityOrExpiry(row: PortfolioHoldingRow): string | null {
+  if (row.instrument_core.instrument_type === 'fcn') {
+    return row.instrument_core.fcn_contract.maturity_date
+  }
+  if (row.instrument_core.instrument_type === 'option') {
+    return row.expiry_date ?? row.instrument_core.option_contract.expiry_date
+  }
+  return null
+}
+
+function holdingStrike(row: PortfolioHoldingRow): number | null {
+  const explicitStrike = finiteNumber(row.strike)
+  if (explicitStrike != null) {
+    return explicitStrike
+  }
+  if (row.instrument_core.instrument_type !== 'option') {
+    return null
+  }
+  const contractStrike = Number(row.instrument_core.option_contract.strike)
+  return Number.isFinite(contractStrike) ? contractStrike : null
+}
+
+function holdingSettlementType(row: PortfolioHoldingRow): string | null {
+  if (row.settlement_type) {
+    return row.settlement_type
+  }
+  return row.instrument_core.instrument_type === 'option'
+    ? row.instrument_core.option_contract.settlement_type
+    : null
+}
+
+function holdingSettlementTypeLabel(row: PortfolioHoldingRow) {
+  const settlementType = holdingSettlementType(row)
+  return settlementType ? formatLabel(settlementType) : 'N/A'
+}
+
+function canonicalLifecycleStatus(row: PortfolioHoldingRow) {
+  if (row.holding_region === 'written_option_obligations') {
+    const coverage = formatLabel(row.obligation_coverage_status ?? 'covered')
+    return `${coverage} / ${formatLabel(row.obligation_status ?? 'open')}`
+  }
+  if (row.holding_region === 'structured_and_long_derivatives') {
+    return 'Open'
+  }
+  if (row.holding_region === 'cash_and_settlement') {
+    return formatLabel(row.pending_status ?? 'settled')
+  }
+  return 'Held'
+}
+
+function canonicalHoldingsExportRow(row: PortfolioHoldingRow): TableCell[] {
+  const marketValueBaseApplicable =
+    row.holding_region === 'market_valued_positions' ||
+    (row.holding_region === 'cash_and_settlement' && row.settlement_amount == null)
+  const carryingValueApplicable =
+    row.holding_region === 'structured_and_long_derivatives'
+  const costBasisApplicable =
+    row.holding_region === 'market_valued_positions' || carryingValueApplicable
+  const obligation = row.holding_region === 'written_option_obligations'
+  const pendingSettlement =
+    row.holding_region === 'cash_and_settlement' && row.settlement_amount != null
+
+  return [
+    HOLDING_REGION_LABELS[row.holding_region],
+    row.instrument_core.instrument_name,
+    primaryIdentifier(row),
+    row.instrument_core.currency,
+    canonicalLifecycleStatus(row),
+    exportNumber(row.quantity),
+    marketValueBaseApplicable ? exportNumber(row.market_value_base) : 'N/A',
+    carryingValueApplicable ? exportNumber(row.carrying_value_base) : 'N/A',
+    costBasisApplicable ? exportNumber(row.cost_basis_base) : 'N/A',
+    holdingMaturityOrExpiry(row) ?? 'N/A',
+    obligation ? exportNumber(row.open_contract_quantity) : 'N/A',
+    obligation ? exportNumber(row.required_underlying_quantity) : 'N/A',
+    obligation ? exportNumber(row.covered_underlying_quantity) : 'N/A',
+    obligation ? exportNumber(row.uncovered_underlying_quantity) : 'N/A',
+    obligation ? exportNumber(row.covered_ratio) : 'N/A',
+    holdingStrike(row) ?? 'N/A',
+    holdingSettlementTypeLabel(row),
+    obligation ? exportNumber(row.premium_basis_remaining) : 'N/A',
+    obligation ? exportNumber(row.liability_value_base) : 'N/A',
+    pendingSettlement ? row.settlement_date ?? 'N/A' : 'N/A',
+    pendingSettlement ? exportNumber(row.settlement_amount) : 'N/A',
+    pendingSettlement ? exportNumber(row.settlement_amount_base) : 'N/A',
+    formatLabel(row.analytics_scope),
+    formatLabel(row.obligation_coverage_status ?? row.coverage_status),
+  ]
 }
 
 type NormalizedCostMethod = 'fifo' | 'moving_average' | 'mixed'
@@ -647,6 +820,27 @@ function signedCurrency(value: number | null | undefined, currency: string) {
     return `-${formatted}`
   }
   return formatted
+}
+
+function holdingMarketMetric(
+  row: PortfolioHoldingRow,
+  value: number | null | undefined,
+) {
+  return holdingUsesEventValuation(row) ? null : finiteNumber(value)
+}
+
+function signedHoldingMarketMetric(
+  row: PortfolioHoldingRow,
+  value: number | null | undefined,
+) {
+  return holdingUsesEventValuation(row) ? 'N/A' : signedPercent(value)
+}
+
+function unsignedHoldingMarketMetric(
+  row: PortfolioHoldingRow,
+  value: number | null | undefined,
+) {
+  return holdingUsesEventValuation(row) ? 'N/A' : formatPercent(value)
 }
 
 function sumNumbers(rows: PortfolioHoldingRow[], accessor: (row: PortfolioHoldingRow) => number | null | undefined) {
@@ -747,6 +941,9 @@ function quoteDate(row: PortfolioHoldingRow) {
 }
 
 function chartPointsForColumn(row: PortfolioHoldingRow, column: HoldingsColumnKey) {
+  if (holdingUsesEventValuation(row)) {
+    return []
+  }
   switch (column) {
     case 'price_chart_1m':
       return row.price_chart_1m
@@ -789,6 +986,9 @@ function chartReturnForColumn(row: PortfolioHoldingRow, column: HoldingsColumnKe
 }
 
 function unrealizedValue(row: PortfolioHoldingRow) {
+  if (holdingUsesEventValuation(row)) {
+    return null
+  }
   const marketValue = finiteNumber(row.market_value)
   const costBasis = finiteNumber(row.cost_basis)
   return marketValue == null || costBasis == null ? null : marketValue - costBasis
@@ -804,12 +1004,42 @@ function unrealizedPct(row: PortfolioHoldingRow) {
 }
 
 function unrealizedBaseValueForWorkspace(row: PortfolioHoldingRow, workspace: HoldingsWorkspaceResponse) {
+  if (holdingUsesEventValuation(row)) {
+    return null
+  }
   const marketValue = baseAmountForRow(row, workspace.base_currency, row.market_value_base, row.market_value)
   const costBasis = baseAmountForRow(row, workspace.base_currency, row.cost_basis_base, row.cost_basis)
   return marketValue == null || costBasis == null ? null : marketValue - costBasis
 }
 
+function holdingHasMaterialEventValuation(row: PortfolioHoldingRow) {
+  if (!holdingUsesEventValuation(row)) {
+    return false
+  }
+  return [
+    row.market_value,
+    row.market_value_base,
+    row.cost_basis,
+    row.cost_basis_base,
+    row.carrying_value,
+    row.carrying_value_base,
+    row.liability_value,
+    row.liability_value_base,
+    row.premium_basis_remaining,
+  ].some((value) => {
+    const amount = finiteNumber(value)
+    return amount != null && Math.abs(amount) > 1e-12
+  })
+}
+
+function totalsContainMaterialEventValuation(rows: PortfolioHoldingRow[]) {
+  return nonCashHoldingRows(rows).some(holdingHasMaterialEventValuation)
+}
+
 function totalUnrealizedBase(rows: PortfolioHoldingRow[], workspace: HoldingsWorkspaceResponse) {
+  if (totalsContainMaterialEventValuation(rows)) {
+    return null
+  }
   const nonCashRows = nonCashHoldingRows(rows)
   const marketValue = sumCompleteNumbers(nonCashRows, (row) =>
     baseAmountForRow(row, workspace.base_currency, row.market_value_base, row.market_value),
@@ -852,6 +1082,9 @@ function totalAllocation(rows: PortfolioHoldingRow[], workspace: HoldingsWorkspa
 }
 
 function totalDayChangeBase(rows: PortfolioHoldingRow[], workspace: HoldingsWorkspaceResponse) {
+  if (totalsContainMaterialEventValuation(rows)) {
+    return null
+  }
   const rowTotal = sumCompleteNumbers(rows, (row) => dayChangeBaseForRow(row, workspace))
   return rowsCoverWorkspace(rows, workspace) ? workspace.totals.day_change_value ?? rowTotal : rowTotal
 }
@@ -904,6 +1137,9 @@ function weightedHoldingMetric(
   workspace: HoldingsWorkspaceResponse,
   accessor: (row: PortfolioHoldingRow) => number | null | undefined,
 ) {
+  if (totalsContainMaterialEventValuation(rows)) {
+    return null
+  }
   const metricRows = rows.filter(
     (row) => !isPendingMonetaryHoldingRow(row),
   )
@@ -1024,6 +1260,9 @@ export function groupedReturnSeries(
   workspace: HoldingsWorkspaceResponse,
   seriesAccessor: (row: PortfolioHoldingRow) => HoldingReturnSeries | null | undefined,
 ): GroupVolatilitySeries | null {
+  if (totalsContainMaterialEventValuation(rows)) {
+    return null
+  }
   const returnEligibleRows = rows.filter(
     (row) => !isPendingMonetaryHoldingRow(row),
   )
@@ -1739,48 +1978,55 @@ function holdingColumnExportValue(
     case 'open_lots':
       return row.open_position_lot_count ?? 0
     case 'day_change_value':
-      return isCashHoldingRow(row) ? dayChangeBaseForRow(row, context.workspace) : row.day_change_value
+      return holdingDayChangeExportValue(
+        row,
+        isCashHoldingRow(row)
+          ? dayChangeBaseForRow(row, context.workspace)
+          : row.day_change_value,
+      )
     case 'day_change_pct':
-      return row.day_change_pct
+      return holdingDayChangeExportValue(row, row.day_change_pct)
     case 'unrealized_value':
-      return unrealizedValue(row)
+      return holdingUsesEventValuation(row) ? 'N/A' : unrealizedValue(row)
     case 'unrealized_pct':
-      return unrealizedPct(row)
+      return holdingUsesEventValuation(row) ? 'N/A' : unrealizedPct(row)
     case 'instrument_return_1w':
-      return row.instrument_return_1w ?? null
+      return holdingUsesEventValuation(row) ? 'N/A' : row.instrument_return_1w ?? null
     case 'instrument_return_1m':
-      return row.instrument_return_1m ?? null
+      return holdingUsesEventValuation(row) ? 'N/A' : row.instrument_return_1m ?? null
     case 'instrument_return_3m':
-      return row.instrument_return_3m ?? null
+      return holdingUsesEventValuation(row) ? 'N/A' : row.instrument_return_3m ?? null
     case 'instrument_return_6m':
-      return row.instrument_return_6m ?? null
+      return holdingUsesEventValuation(row) ? 'N/A' : row.instrument_return_6m ?? null
     case 'instrument_return_mtd':
-      return row.instrument_return_mtd ?? null
+      return holdingUsesEventValuation(row) ? 'N/A' : row.instrument_return_mtd ?? null
     case 'instrument_return_ytd':
-      return row.instrument_return_ytd ?? null
+      return holdingUsesEventValuation(row) ? 'N/A' : row.instrument_return_ytd ?? null
     case 'instrument_return_1y':
-      return row.instrument_return_1y ?? null
+      return holdingUsesEventValuation(row) ? 'N/A' : row.instrument_return_1y ?? null
     case 'instrument_current_drawdown':
-      return row.instrument_current_drawdown ?? null
+      return holdingUsesEventValuation(row) ? 'N/A' : row.instrument_current_drawdown ?? null
     case 'instrument_max_drawdown':
-      return row.instrument_max_drawdown ?? null
+      return holdingUsesEventValuation(row) ? 'N/A' : row.instrument_max_drawdown ?? null
     case 'instrument_holding_max_drawdown':
-      return row.instrument_holding_max_drawdown ?? null
+      return holdingUsesEventValuation(row) ? 'N/A' : row.instrument_holding_max_drawdown ?? null
     case 'instrument_volatility_1m':
-      return row.instrument_volatility_1m ?? null
+      return holdingUsesEventValuation(row) ? 'N/A' : row.instrument_volatility_1m ?? null
     case 'instrument_volatility_3m':
-      return row.instrument_volatility_3m ?? null
+      return holdingUsesEventValuation(row) ? 'N/A' : row.instrument_volatility_3m ?? null
     case 'instrument_volatility_6m':
-      return row.instrument_volatility_6m ?? null
+      return holdingUsesEventValuation(row) ? 'N/A' : row.instrument_volatility_6m ?? null
     case 'instrument_volatility_1y':
-      return row.instrument_volatility_1y ?? null
+      return holdingUsesEventValuation(row) ? 'N/A' : row.instrument_volatility_1y ?? null
     case 'forward_risk_share':
-      return row.forward_risk_share ?? null
+      return holdingUsesEventValuation(row) ? 'N/A' : row.forward_risk_share ?? null
     case 'price_chart_1m':
     case 'price_chart_3m':
     case 'price_chart_6m':
     case 'price_chart_1y':
-      return chartPointsForColumn(row, column).map((point) => `${point.date}:${point.value}`).join(' | ')
+      return holdingUsesEventValuation(row)
+        ? 'N/A'
+        : chartPointsForColumn(row, column).map((point) => `${point.date}:${point.value}`).join(' | ')
     case 'coverage':
       return formatLabel(row.coverage_status)
     default:
@@ -1811,13 +2057,21 @@ function holdingColumnTotalExportValue(
     case 'open_lots':
       return sumNumbers(rows, (row) => row.open_position_lot_count)
     case 'day_change_value':
-      return totalDayChangeBase(rows, context.workspace)
+      return totalsContainMaterialEventValuation(rows)
+        ? 'N/A'
+        : totalDayChangeBase(rows, context.workspace)
     case 'day_change_pct':
-      return totalDayChangePct(rows, context.workspace)
+      return totalsContainMaterialEventValuation(rows)
+        ? 'N/A'
+        : totalDayChangePct(rows, context.workspace)
     case 'unrealized_value':
-      return totalUnrealizedBase(rows, context.workspace)
+      return totalsContainMaterialEventValuation(rows)
+        ? 'N/A'
+        : totalUnrealizedBase(rows, context.workspace)
     case 'unrealized_pct':
-      return totalUnrealizedPct(rows, context.workspace)
+      return totalsContainMaterialEventValuation(rows)
+        ? 'N/A'
+        : totalUnrealizedPct(rows, context.workspace)
     case 'instrument_return_1w':
       return weightedHoldingMetric(rows, context.workspace, (row) => row.instrument_return_1w)
     case 'instrument_return_1m':
@@ -1843,7 +2097,9 @@ function holdingColumnTotalExportValue(
     case 'instrument_volatility_1y':
       return groupedAnnualizedVolatility(rows, context.workspace, '1y')
     case 'forward_risk_share':
-      return context.workspace.forward_risk?.status === 'ok'
+      return totalsContainMaterialEventValuation(rows)
+        ? 'N/A'
+        : context.workspace.forward_risk?.status === 'ok'
         ? sumCompleteNumbers(rows, (row) => row.forward_risk_share)
         : null
     case 'instrument_max_drawdown':
@@ -1880,13 +2136,18 @@ const HOLDINGS_COLUMN_DEFINITIONS: Record<HoldingsColumnKey, HoldingsColumnDefin
     render: (row) => (
       <div className="holding-name-stack">
         <span>{row.instrument_core.instrument_name}</span>
-        <span className="holding-secondary holding-trend-summary">{instrumentTrendCoverageLabel(row)}</span>
+        <span className="holding-secondary holding-trend-summary">{holdingValuationSummary(row)}</span>
         <span
           className="holding-secondary holding-trend-reason"
-          title={instrumentTrendReasonLabel(row)}
+          title={holdingValuationDetail(row)}
         >
-          {instrumentTrendReasonLabel(row)}
+          {holdingValuationDetail(row)}
         </span>
+        {optionObligationAmountSummary(row) ? (
+          <span className="holding-secondary holding-trend-reason">
+            {optionObligationAmountSummary(row)}
+          </span>
+        ) : null}
       </div>
     ),
     sortValue: (row) => row.instrument_core.instrument_name,
@@ -2058,51 +2319,91 @@ const HOLDINGS_COLUMN_DEFINITIONS: Record<HoldingsColumnKey, HoldingsColumnDefin
     label: 'Day Change',
     align: 'right',
     render: (row, context) => {
+      if (holdingDayChangeUnavailable(row)) {
+        return 'N/A'
+      }
       const displayValue = dayChangeDisplayValue(row, context.workspace)
       return signedCurrency(displayValue.value, displayValue.currency)
     },
-    sortValue: (row, context) => dayChangeBaseForRow(row, context.workspace),
-    className: (row, context) => signedValueClass(dayChangeDisplayValue(row, context.workspace).value),
-    total: (rows, context) => signedCurrency(totalDayChangeBase(rows, context.workspace), context.workspace.base_currency),
-    totalClassName: (rows, context) => signedValueClass(totalDayChangeBase(rows, context.workspace)),
+    sortValue: (row, context) =>
+      holdingDayChangeUnavailable(row) ? null : dayChangeBaseForRow(row, context.workspace),
+    className: (row, context) =>
+      holdingDayChangeUnavailable(row)
+        ? ''
+        : signedValueClass(dayChangeDisplayValue(row, context.workspace).value),
+    total: (rows, context) =>
+      totalsContainMaterialEventValuation(rows)
+        ? 'N/A'
+        : signedCurrency(totalDayChangeBase(rows, context.workspace), context.workspace.base_currency),
+    totalClassName: (rows, context) =>
+      totalsContainMaterialEventValuation(rows)
+        ? ''
+        : signedValueClass(totalDayChangeBase(rows, context.workspace)),
   },
   day_change_pct: {
     key: 'day_change_pct',
     label: 'Day Return',
     align: 'right',
-    render: (row) => signedPercent(row.day_change_pct),
-    sortValue: (row) => row.day_change_pct,
-    className: (row) => signedValueClass(row.day_change_pct),
-    total: (rows, context) => signedPercent(totalDayChangePct(rows, context.workspace)),
-    totalClassName: (rows, context) => signedValueClass(totalDayChangePct(rows, context.workspace)),
+    render: (row) =>
+      holdingDayChangeUnavailable(row) ? 'N/A' : signedPercent(row.day_change_pct),
+    sortValue: (row) =>
+      holdingDayChangeUnavailable(row) ? null : row.day_change_pct,
+    className: (row) =>
+      holdingDayChangeUnavailable(row) ? '' : signedValueClass(row.day_change_pct),
+    total: (rows, context) =>
+      totalsContainMaterialEventValuation(rows)
+        ? 'N/A'
+        : signedPercent(totalDayChangePct(rows, context.workspace)),
+    totalClassName: (rows, context) =>
+      totalsContainMaterialEventValuation(rows)
+        ? ''
+        : signedValueClass(totalDayChangePct(rows, context.workspace)),
   },
   unrealized_value: {
     key: 'unrealized_value',
     label: 'Unrealized P&L',
     align: 'right',
-    render: (row) => signedCurrency(unrealizedValue(row), row.instrument_core.currency),
+    render: (row) =>
+      holdingUsesEventValuation(row)
+        ? 'N/A'
+        : signedCurrency(unrealizedValue(row), row.instrument_core.currency),
     sortValue: (row, context) => unrealizedBaseValueForWorkspace(row, context.workspace),
-    className: (row) => signedValueClass(unrealizedValue(row)),
-    total: (rows, context) => signedCurrency(totalUnrealizedBase(rows, context.workspace), context.workspace.base_currency),
-    totalClassName: (rows, context) => signedValueClass(totalUnrealizedBase(rows, context.workspace)),
+    className: (row) =>
+      holdingUsesEventValuation(row) ? '' : signedValueClass(unrealizedValue(row)),
+    total: (rows, context) =>
+      totalsContainMaterialEventValuation(rows)
+        ? 'N/A'
+        : signedCurrency(totalUnrealizedBase(rows, context.workspace), context.workspace.base_currency),
+    totalClassName: (rows, context) =>
+      totalsContainMaterialEventValuation(rows)
+        ? ''
+        : signedValueClass(totalUnrealizedBase(rows, context.workspace)),
   },
   unrealized_pct: {
     key: 'unrealized_pct',
     label: 'Unrealized Return',
     align: 'right',
-    render: (row) => signedPercent(unrealizedPct(row)),
+    render: (row) =>
+      holdingUsesEventValuation(row) ? 'N/A' : signedPercent(unrealizedPct(row)),
     sortValue: (row) => unrealizedPct(row),
-    className: (row) => signedValueClass(unrealizedPct(row)),
-    total: (rows, context) => signedPercent(totalUnrealizedPct(rows, context.workspace)),
-    totalClassName: (rows, context) => signedValueClass(totalUnrealizedPct(rows, context.workspace)),
+    className: (row) =>
+      holdingUsesEventValuation(row) ? '' : signedValueClass(unrealizedPct(row)),
+    total: (rows, context) =>
+      totalsContainMaterialEventValuation(rows)
+        ? 'N/A'
+        : signedPercent(totalUnrealizedPct(rows, context.workspace)),
+    totalClassName: (rows, context) =>
+      totalsContainMaterialEventValuation(rows)
+        ? ''
+        : signedValueClass(totalUnrealizedPct(rows, context.workspace)),
   },
   instrument_return_1w: {
     key: 'instrument_return_1w',
     label: '1W Return',
     align: 'right',
-    render: (row) => signedPercent(row.instrument_return_1w),
-    sortValue: (row) => row.instrument_return_1w,
-    className: (row) => signedValueClass(row.instrument_return_1w),
+    render: (row) => signedHoldingMarketMetric(row, row.instrument_return_1w),
+    sortValue: (row) => holdingMarketMetric(row, row.instrument_return_1w),
+    className: (row) => signedValueClass(holdingMarketMetric(row, row.instrument_return_1w)),
     total: (rows, context) => signedPercent(weightedHoldingMetric(rows, context.workspace, (row) => row.instrument_return_1w)),
     totalClassName: (rows, context) => signedValueClass(weightedHoldingMetric(rows, context.workspace, (row) => row.instrument_return_1w)),
   },
@@ -2110,9 +2411,9 @@ const HOLDINGS_COLUMN_DEFINITIONS: Record<HoldingsColumnKey, HoldingsColumnDefin
     key: 'instrument_return_1m',
     label: '1M Return',
     align: 'right',
-    render: (row) => signedPercent(row.instrument_return_1m),
-    sortValue: (row) => row.instrument_return_1m,
-    className: (row) => signedValueClass(row.instrument_return_1m),
+    render: (row) => signedHoldingMarketMetric(row, row.instrument_return_1m),
+    sortValue: (row) => holdingMarketMetric(row, row.instrument_return_1m),
+    className: (row) => signedValueClass(holdingMarketMetric(row, row.instrument_return_1m)),
     total: (rows, context) => signedPercent(weightedHoldingMetric(rows, context.workspace, (row) => row.instrument_return_1m)),
     totalClassName: (rows, context) => signedValueClass(weightedHoldingMetric(rows, context.workspace, (row) => row.instrument_return_1m)),
   },
@@ -2120,9 +2421,9 @@ const HOLDINGS_COLUMN_DEFINITIONS: Record<HoldingsColumnKey, HoldingsColumnDefin
     key: 'instrument_return_3m',
     label: '3M Return',
     align: 'right',
-    render: (row) => signedPercent(row.instrument_return_3m),
-    sortValue: (row) => row.instrument_return_3m,
-    className: (row) => signedValueClass(row.instrument_return_3m),
+    render: (row) => signedHoldingMarketMetric(row, row.instrument_return_3m),
+    sortValue: (row) => holdingMarketMetric(row, row.instrument_return_3m),
+    className: (row) => signedValueClass(holdingMarketMetric(row, row.instrument_return_3m)),
     total: (rows, context) => signedPercent(weightedHoldingMetric(rows, context.workspace, (row) => row.instrument_return_3m)),
     totalClassName: (rows, context) => signedValueClass(weightedHoldingMetric(rows, context.workspace, (row) => row.instrument_return_3m)),
   },
@@ -2130,9 +2431,9 @@ const HOLDINGS_COLUMN_DEFINITIONS: Record<HoldingsColumnKey, HoldingsColumnDefin
     key: 'instrument_return_6m',
     label: '6M Return',
     align: 'right',
-    render: (row) => signedPercent(row.instrument_return_6m),
-    sortValue: (row) => row.instrument_return_6m,
-    className: (row) => signedValueClass(row.instrument_return_6m),
+    render: (row) => signedHoldingMarketMetric(row, row.instrument_return_6m),
+    sortValue: (row) => holdingMarketMetric(row, row.instrument_return_6m),
+    className: (row) => signedValueClass(holdingMarketMetric(row, row.instrument_return_6m)),
     total: (rows, context) => signedPercent(weightedHoldingMetric(rows, context.workspace, (row) => row.instrument_return_6m)),
     totalClassName: (rows, context) => signedValueClass(weightedHoldingMetric(rows, context.workspace, (row) => row.instrument_return_6m)),
   },
@@ -2140,9 +2441,9 @@ const HOLDINGS_COLUMN_DEFINITIONS: Record<HoldingsColumnKey, HoldingsColumnDefin
     key: 'instrument_return_mtd',
     label: 'MTD',
     align: 'right',
-    render: (row) => signedPercent(row.instrument_return_mtd),
-    sortValue: (row) => row.instrument_return_mtd,
-    className: (row) => signedValueClass(row.instrument_return_mtd),
+    render: (row) => signedHoldingMarketMetric(row, row.instrument_return_mtd),
+    sortValue: (row) => holdingMarketMetric(row, row.instrument_return_mtd),
+    className: (row) => signedValueClass(holdingMarketMetric(row, row.instrument_return_mtd)),
     total: (rows, context) => signedPercent(weightedHoldingMetric(rows, context.workspace, (row) => row.instrument_return_mtd)),
     totalClassName: (rows, context) => signedValueClass(weightedHoldingMetric(rows, context.workspace, (row) => row.instrument_return_mtd)),
   },
@@ -2150,9 +2451,9 @@ const HOLDINGS_COLUMN_DEFINITIONS: Record<HoldingsColumnKey, HoldingsColumnDefin
     key: 'instrument_return_ytd',
     label: 'YTD',
     align: 'right',
-    render: (row) => signedPercent(row.instrument_return_ytd),
-    sortValue: (row) => row.instrument_return_ytd,
-    className: (row) => signedValueClass(row.instrument_return_ytd),
+    render: (row) => signedHoldingMarketMetric(row, row.instrument_return_ytd),
+    sortValue: (row) => holdingMarketMetric(row, row.instrument_return_ytd),
+    className: (row) => signedValueClass(holdingMarketMetric(row, row.instrument_return_ytd)),
     total: (rows, context) => signedPercent(weightedHoldingMetric(rows, context.workspace, (row) => row.instrument_return_ytd)),
     totalClassName: (rows, context) => signedValueClass(weightedHoldingMetric(rows, context.workspace, (row) => row.instrument_return_ytd)),
   },
@@ -2160,9 +2461,9 @@ const HOLDINGS_COLUMN_DEFINITIONS: Record<HoldingsColumnKey, HoldingsColumnDefin
     key: 'instrument_return_1y',
     label: '1Y',
     align: 'right',
-    render: (row) => signedPercent(row.instrument_return_1y),
-    sortValue: (row) => row.instrument_return_1y,
-    className: (row) => signedValueClass(row.instrument_return_1y),
+    render: (row) => signedHoldingMarketMetric(row, row.instrument_return_1y),
+    sortValue: (row) => holdingMarketMetric(row, row.instrument_return_1y),
+    className: (row) => signedValueClass(holdingMarketMetric(row, row.instrument_return_1y)),
     total: (rows, context) => signedPercent(weightedHoldingMetric(rows, context.workspace, (row) => row.instrument_return_1y)),
     totalClassName: (rows, context) => signedValueClass(weightedHoldingMetric(rows, context.workspace, (row) => row.instrument_return_1y)),
   },
@@ -2170,9 +2471,9 @@ const HOLDINGS_COLUMN_DEFINITIONS: Record<HoldingsColumnKey, HoldingsColumnDefin
     key: 'instrument_current_drawdown',
     label: 'Current DD',
     align: 'right',
-    render: (row) => signedPercent(row.instrument_current_drawdown),
-    sortValue: (row) => row.instrument_current_drawdown,
-    className: (row) => signedValueClass(row.instrument_current_drawdown),
+    render: (row) => signedHoldingMarketMetric(row, row.instrument_current_drawdown),
+    sortValue: (row) => holdingMarketMetric(row, row.instrument_current_drawdown),
+    className: (row) => signedValueClass(holdingMarketMetric(row, row.instrument_current_drawdown)),
     total: (rows, context) => signedPercent(groupedCurrentDrawdown(rows, context.workspace)),
     totalClassName: (rows, context) => signedValueClass(groupedCurrentDrawdown(rows, context.workspace)),
   },
@@ -2180,47 +2481,54 @@ const HOLDINGS_COLUMN_DEFINITIONS: Record<HoldingsColumnKey, HoldingsColumnDefin
     key: 'instrument_volatility_1m',
     label: '1M Vol',
     align: 'right',
-    render: (row) => formatPercent(row.instrument_volatility_1m),
-    sortValue: (row) => row.instrument_volatility_1m,
+    render: (row) => unsignedHoldingMarketMetric(row, row.instrument_volatility_1m),
+    sortValue: (row) => holdingMarketMetric(row, row.instrument_volatility_1m),
     total: (rows, context) => formatPercent(groupedAnnualizedVolatility(rows, context.workspace, '1m')),
   },
   instrument_volatility_3m: {
     key: 'instrument_volatility_3m',
     label: '3M Vol',
     align: 'right',
-    render: (row) => formatPercent(row.instrument_volatility_3m),
-    sortValue: (row) => row.instrument_volatility_3m,
+    render: (row) => unsignedHoldingMarketMetric(row, row.instrument_volatility_3m),
+    sortValue: (row) => holdingMarketMetric(row, row.instrument_volatility_3m),
     total: (rows, context) => formatPercent(groupedAnnualizedVolatility(rows, context.workspace, '3m')),
   },
   instrument_volatility_6m: {
     key: 'instrument_volatility_6m',
     label: '6M Vol',
     align: 'right',
-    render: (row) => formatPercent(row.instrument_volatility_6m),
-    sortValue: (row) => row.instrument_volatility_6m,
+    render: (row) => unsignedHoldingMarketMetric(row, row.instrument_volatility_6m),
+    sortValue: (row) => holdingMarketMetric(row, row.instrument_volatility_6m),
     total: (rows, context) => formatPercent(groupedAnnualizedVolatility(rows, context.workspace, '6m')),
   },
   instrument_volatility_1y: {
     key: 'instrument_volatility_1y',
     label: '1Y Vol',
     align: 'right',
-    render: (row) => formatPercent(row.instrument_volatility_1y),
-    sortValue: (row) => row.instrument_volatility_1y,
+    render: (row) => unsignedHoldingMarketMetric(row, row.instrument_volatility_1y),
+    sortValue: (row) => holdingMarketMetric(row, row.instrument_volatility_1y),
     total: (rows, context) => formatPercent(groupedAnnualizedVolatility(rows, context.workspace, '1y')),
   },
   forward_risk_share: {
     key: 'forward_risk_share',
     label: 'Forward RC',
     align: 'right',
-    render: (row) => (row.forward_risk_status === 'ok' || row.forward_risk_status === 'cash' ? signedPercent(row.forward_risk_share) : '—'),
-    sortValue: (row) => row.forward_risk_share,
-    className: (row) => signedValueClass(row.forward_risk_share),
+    render: (row) =>
+      holdingUsesEventValuation(row)
+        ? 'N/A'
+        : row.forward_risk_status === 'ok' || row.forward_risk_status === 'cash'
+          ? signedPercent(row.forward_risk_share)
+          : '—',
+    sortValue: (row) => holdingMarketMetric(row, row.forward_risk_share),
+    className: (row) => signedValueClass(holdingMarketMetric(row, row.forward_risk_share)),
     total: (rows, context) =>
-      context.workspace.forward_risk?.status === 'ok'
+      totalsContainMaterialEventValuation(rows)
+        ? 'N/A'
+        : context.workspace.forward_risk?.status === 'ok'
         ? signedPercent(sumCompleteNumbers(rows, (row) => row.forward_risk_share))
         : '—',
     totalClassName: (rows, context) =>
-      context.workspace.forward_risk?.status === 'ok'
+      !totalsContainMaterialEventValuation(rows) && context.workspace.forward_risk?.status === 'ok'
         ? signedValueClass(sumCompleteNumbers(rows, (row) => row.forward_risk_share))
         : '',
   },
@@ -2228,9 +2536,9 @@ const HOLDINGS_COLUMN_DEFINITIONS: Record<HoldingsColumnKey, HoldingsColumnDefin
     key: 'instrument_max_drawdown',
     label: 'Max DD',
     align: 'right',
-    render: (row) => signedPercent(row.instrument_max_drawdown),
-    sortValue: (row) => row.instrument_max_drawdown,
-    className: (row) => signedValueClass(row.instrument_max_drawdown),
+    render: (row) => signedHoldingMarketMetric(row, row.instrument_max_drawdown),
+    sortValue: (row) => holdingMarketMetric(row, row.instrument_max_drawdown),
+    className: (row) => signedValueClass(holdingMarketMetric(row, row.instrument_max_drawdown)),
     total: (rows, context) => signedPercent(groupedMaxDrawdown(rows, context.workspace)),
     totalClassName: (rows, context) => signedValueClass(groupedMaxDrawdown(rows, context.workspace)),
   },
@@ -2238,34 +2546,34 @@ const HOLDINGS_COLUMN_DEFINITIONS: Record<HoldingsColumnKey, HoldingsColumnDefin
     key: 'instrument_holding_max_drawdown',
     label: 'Held Max DD',
     align: 'right',
-    render: (row) => signedPercent(row.instrument_holding_max_drawdown),
-    sortValue: (row) => row.instrument_holding_max_drawdown,
-    className: (row) => signedValueClass(row.instrument_holding_max_drawdown),
+    render: (row) => signedHoldingMarketMetric(row, row.instrument_holding_max_drawdown),
+    sortValue: (row) => holdingMarketMetric(row, row.instrument_holding_max_drawdown),
+    className: (row) => signedValueClass(holdingMarketMetric(row, row.instrument_holding_max_drawdown)),
     total: () => '',
     totalClassName: () => '',
   },
   price_chart_1m: {
     key: 'price_chart_1m',
     label: 'Chart 1M',
-    render: (row) => <Sparkline values={row.price_chart_1m} />,
+    render: (row) => holdingUsesEventValuation(row) ? 'N/A' : <Sparkline values={row.price_chart_1m} />,
     sortValue: (row) => chartReturnForColumn(row, 'price_chart_1m'),
   },
   price_chart_3m: {
     key: 'price_chart_3m',
     label: 'Chart 3M',
-    render: (row) => <Sparkline values={row.price_chart_3m} />,
+    render: (row) => holdingUsesEventValuation(row) ? 'N/A' : <Sparkline values={row.price_chart_3m} />,
     sortValue: (row) => chartReturnForColumn(row, 'price_chart_3m'),
   },
   price_chart_6m: {
     key: 'price_chart_6m',
     label: 'Chart 6M',
-    render: (row) => <Sparkline values={row.price_chart_6m} />,
+    render: (row) => holdingUsesEventValuation(row) ? 'N/A' : <Sparkline values={row.price_chart_6m} />,
     sortValue: (row) => chartReturnForColumn(row, 'price_chart_6m'),
   },
   price_chart_1y: {
     key: 'price_chart_1y',
     label: 'Chart 1Y',
-    render: (row) => <Sparkline values={row.price_chart_1y} />,
+    render: (row) => holdingUsesEventValuation(row) ? 'N/A' : <Sparkline values={row.price_chart_1y} />,
     sortValue: (row) => chartReturnForColumn(row, 'price_chart_1y'),
   },
   coverage: {
@@ -2376,6 +2684,7 @@ export default function PortfolioHomePage() {
   const [error, setError] = useState<string | null>(null)
   const [taxonomyError, setTaxonomyError] = useState<string | null>(null)
   const [riskPolicyRevision, setRiskPolicyRevision] = useState(0)
+  const [holdingsLayoutMode, setHoldingsLayoutMode] = useState<HoldingsLayoutMode>('regions')
   const initialHoldingsViewStore = useMemo(() => normalizeHoldingsViewStore(null), [])
   const initialHoldingsViewState = useMemo(
     () => resolveHoldingsViewState(initialHoldingsViewStore, initialHoldingsViewStore.activeViewId),
@@ -2821,6 +3130,26 @@ export default function PortfolioHomePage() {
       return
     }
 
+    if (holdingsLayoutMode === 'regions') {
+      const canonicalRows: TableCell[][] = [
+        [...CANONICAL_HOLDINGS_EXPORT_HEADER],
+        ...[...sortedHoldingRows]
+          .sort(
+            (left, right) =>
+              HOLDING_REGION_ORDER[left.holding_region] -
+              HOLDING_REGION_ORDER[right.holding_region],
+          )
+          .map(canonicalHoldingsExportRow),
+      ]
+      downloadTable(
+        `holdings-${workspace.portfolio_id}-${workspace.as_of_date}`,
+        canonicalRows,
+        format,
+        'Holdings',
+      )
+      return
+    }
+
     const header = [
       ...(holdingsGroupBy !== 'none' ? ['Group'] : []),
       ...visibleColumns.map((column) => column.label),
@@ -3008,6 +3337,308 @@ export default function PortfolioHomePage() {
           )
         })}
       </tr>
+    )
+  }
+
+  function regionBaseAmount(row: PortfolioHoldingRow) {
+    return (
+      finiteNumber(row.market_value_base) ??
+      finiteNumber(row.carrying_value_base) ??
+      finiteNumber(row.liability_value_base)
+    )
+  }
+
+  function regionInstrumentCell(row: PortfolioHoldingRow) {
+    const instrumentId = row.economic_instrument_id || row.instrument_core.instrument_id
+    return (
+      <button
+        type="button"
+        className="holdings-region-instrument"
+        onClick={() => handleSelectInstrument(instrumentId)}
+      >
+        <span>{row.instrument_core.instrument_name}</span>
+        <span>{primaryIdentifier(row)}</span>
+      </button>
+    )
+  }
+
+  function structuredLifecycleLabel(row: PortfolioHoldingRow) {
+    if (row.instrument_core.instrument_type === 'fcn') {
+      return `Open · matures ${row.instrument_core.fcn_contract.maturity_date}`
+    }
+    if (row.instrument_core.instrument_type === 'option') {
+      return `Open · expires ${row.expiry_date ?? row.instrument_core.option_contract.expiry_date}`
+    }
+    return row.instrument_holding_start_date
+      ? `Open · held since ${row.instrument_holding_start_date}`
+      : 'Open'
+  }
+
+  function renderOperationalStatus() {
+    if (!workspace) {
+      return null
+    }
+    const summary = workspace.operational_summary
+    const dueOrNearExpiryCount = summary.expiry_buckets
+      .filter((bucket) => bucket.bucket === 'expired_or_due' || bucket.bucket === 'next_7_days')
+      .reduce((total, bucket) => total + bucket.obligation_count, 0)
+    const hasUncovered = summary.uncovered_underlying_quantity > 1e-9
+
+    return (
+      <section className="holdings-operational-status" aria-label="Holdings operational status">
+        <div className="holdings-operational-heading">
+          <h2>Operational Status</h2>
+          <span>{workspace.as_of_date}</span>
+        </div>
+        <dl className="holdings-operational-metrics">
+          <div className={hasUncovered ? 'holdings-operational-metric-critical' : undefined}>
+            <dt>Uncovered underlying</dt>
+            <dd>{formatQuantity(summary.uncovered_underlying_quantity)}</dd>
+          </div>
+          <div>
+            <dt>Expiry actions ≤ 7 days</dt>
+            <dd>{formatNumber(dueOrNearExpiryCount, 0)}</dd>
+          </div>
+          <div>
+            <dt>Assignment strike exposure</dt>
+            <dd>{formatCurrency(summary.assignment_exposure.strike_notional_base, workspace.base_currency)}</dd>
+          </div>
+          <div>
+            <dt>Pending settlement net</dt>
+            <dd>{formatCurrency(summary.settlement_exposure.net_base, workspace.base_currency)}</dd>
+          </div>
+          <div className={summary.settlement_exposure.overdue_line_count > 0 ? 'holdings-operational-metric-critical' : undefined}>
+            <dt>Overdue settlements</dt>
+            <dd>{formatNumber(summary.settlement_exposure.overdue_line_count, 0)}</dd>
+          </div>
+        </dl>
+        <div className="holdings-operational-alerts">
+          {workspace.operational_alerts.length ? workspace.operational_alerts.map((alert) => (
+            <div
+              key={alert.code}
+              className={`holdings-operational-alert holdings-operational-alert-${alert.severity}`}
+              role={alert.severity === 'critical' ? 'alert' : 'status'}
+            >
+              <strong>{alert.title}</strong>
+              <span>{alert.message}</span>
+            </div>
+          )) : (
+            <div className="holdings-operational-clear" role="status">
+              No operational exceptions.
+            </div>
+          )}
+        </div>
+      </section>
+    )
+  }
+
+  function renderHoldingRegion(region: PortfolioHoldingRow['holding_region']) {
+    if (!workspace) {
+      return null
+    }
+    const rows = sortedHoldingRows.filter((row) => row.holding_region === region)
+    const regionMeta = {
+      market_valued_positions: {
+        title: 'Market-valued Positions',
+        note: 'Quoted positions eligible for market return and scoped risk when policy permits.',
+      },
+      structured_and_long_derivatives: {
+        title: 'Structured / Long Derivatives',
+        note: 'Event-valued assets shown on carrying basis; daily market return and covariance risk are N/A.',
+      },
+      written_option_obligations: {
+        title: 'Written Option Obligations',
+        note: 'Open writer obligations and premium-basis liabilities.',
+      },
+      cash_and_settlement: {
+        title: 'Cash & Settlement',
+        note: 'Cash, receivables, payables and pending settlement disclosed outside covariance risk.',
+      },
+    }[region]
+
+    return (
+      <section className="holdings-region" key={region} aria-label={regionMeta.title}>
+        <div className="holdings-region-header">
+          <div>
+            <h2>{regionMeta.title}</h2>
+            <p>{regionMeta.note}</p>
+          </div>
+          <span className="holdings-region-count">{formatNumber(rows.length, 0)}</span>
+        </div>
+        <div className="table-shell holdings-region-table-shell">
+          <table className={`transactions-table holdings-region-table holdings-region-table-${region}`}>
+            {region === 'market_valued_positions' ? (
+              <>
+                <thead>
+                  <tr>
+                    <th>Instrument</th>
+                    <th className="performance-cell-number">Quantity</th>
+                    <th className="performance-cell-number">Last Price</th>
+                    <th className="performance-cell-number">Market Value</th>
+                    <th className="performance-cell-number">Allocation</th>
+                    <th className="performance-cell-number">Day Return</th>
+                    <th className="performance-cell-number">Scoped RC</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {rows.length ? rows.map((row) => (
+                    <tr key={row.line_id}>
+                      <td>{regionInstrumentCell(row)}</td>
+                      <td className="performance-cell-number">{formatQuantity(row.quantity)}</td>
+                      <td className="performance-cell-number">
+                        {formatUnitPrice(row.last_price, row.instrument_core.currency)}
+                      </td>
+                      <td className="performance-cell-number">
+                        {formatCurrency(regionBaseAmount(row), workspace.base_currency)}
+                      </td>
+                      <td className="performance-cell-number">{formatPercent(row.allocation)}</td>
+                      <td className={`performance-cell-number ${signedValueClass(row.day_change_pct)}`}>
+                        {holdingDayChangeUnavailable(row) ? 'N/A' : signedPercent(row.day_change_pct)}
+                      </td>
+                      <td className={`performance-cell-number ${signedValueClass(row.forward_risk_share)}`}>
+                        {row.forward_risk_status === 'ok' ? signedPercent(row.forward_risk_share) : 'N/A'}
+                      </td>
+                    </tr>
+                  )) : <TableStatusRow colSpan={7} label="No holdings in this region." />}
+                </tbody>
+              </>
+            ) : null}
+            {region === 'structured_and_long_derivatives' ? (
+              <>
+                <thead>
+                  <tr>
+                    <th>Instrument</th>
+                    <th>Lifecycle</th>
+                    <th className="performance-cell-number">Carrying Value</th>
+                    <th className="performance-cell-number">Cost Basis</th>
+                    <th>Valuation Basis</th>
+                    <th>Performance Scope</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {rows.length ? rows.map((row) => (
+                    <tr key={row.line_id}>
+                      <td>{regionInstrumentCell(row)}</td>
+                      <td>{structuredLifecycleLabel(row)}</td>
+                      <td className="performance-cell-number">
+                        {formatCurrency(regionBaseAmount(row), workspace.base_currency)}
+                      </td>
+                      <td className="performance-cell-number">
+                        {formatCurrency(row.cost_basis_base, workspace.base_currency)}
+                      </td>
+                      <td>{formatLabel(row.valuation_basis ?? row.valuation_basis_policy)}</td>
+                      <td title={row.exclusion_reason ?? undefined}>{formatLabel(row.performance_scope)}</td>
+                    </tr>
+                  )) : <TableStatusRow colSpan={6} label="No holdings in this region." />}
+                </tbody>
+              </>
+            ) : null}
+            {region === 'written_option_obligations' ? (
+              <>
+                <thead>
+                  <tr>
+                    <th>Obligation</th>
+                    <th>Expiry</th>
+                    <th className="performance-cell-number">Strike</th>
+                    <th>Settlement</th>
+                    <th className="performance-cell-number">Open Contracts</th>
+                    <th className="performance-cell-number">Required</th>
+                    <th className="performance-cell-number">Covered</th>
+                    <th className="performance-cell-number">Uncovered</th>
+                    <th className="performance-cell-number">Covered Ratio</th>
+                    <th className="performance-cell-number">Premium Basis</th>
+                    <th className="performance-cell-number">Carrying Liability</th>
+                    <th>Status</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {rows.length ? rows.map((row) => (
+                    <tr key={row.line_id}>
+                      <td>{regionInstrumentCell(row)}</td>
+                      <td>{holdingMaturityOrExpiry(row) ?? 'N/A'}</td>
+                      <td className="performance-cell-number">
+                        {formatUnitPrice(holdingStrike(row), row.instrument_core.currency)}
+                      </td>
+                      <td>{holdingSettlementTypeLabel(row)}</td>
+                      <td className="performance-cell-number">{formatQuantity(row.open_contract_quantity)}</td>
+                      <td className="performance-cell-number">{formatQuantity(row.required_underlying_quantity)}</td>
+                      <td className="performance-cell-number">{formatQuantity(row.covered_underlying_quantity)}</td>
+                      <td
+                        className={`performance-cell-number ${
+                          (finiteNumber(row.uncovered_underlying_quantity) ?? 0) > 1e-9
+                            ? 'holdings-obligation-uncovered'
+                            : ''
+                        }`}
+                      >
+                        {formatQuantity(row.uncovered_underlying_quantity)}
+                      </td>
+                      <td className="performance-cell-number">{formatPercent(row.covered_ratio)}</td>
+                      <td className="performance-cell-number">
+                        {formatCurrency(row.premium_basis_remaining, row.instrument_core.currency)}
+                      </td>
+                      <td className="performance-cell-number">
+                        {formatCurrency(
+                          row.liability_value_base == null ? null : Math.abs(row.liability_value_base),
+                          workspace.base_currency,
+                        )}
+                      </td>
+                      <td
+                        className={
+                          row.obligation_coverage_status === 'uncovered'
+                            ? 'holdings-obligation-uncovered'
+                            : undefined
+                        }
+                      >
+                        {formatLabel(row.obligation_coverage_status ?? 'covered')}
+                      </td>
+                    </tr>
+                  )) : <TableStatusRow colSpan={12} label="No holdings in this region." />}
+                </tbody>
+              </>
+            ) : null}
+            {region === 'cash_and_settlement' ? (
+              <>
+                <thead>
+                  <tr>
+                    <th>Cash / Settlement Line</th>
+                    <th>Currency</th>
+                    <th>Kind</th>
+                    <th>Settlement Date</th>
+                    <th className="performance-cell-number">Amount</th>
+                    <th className="performance-cell-number">Amount Base</th>
+                    <th>Analytics Scope</th>
+                    <th>Pending Status</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {rows.length ? rows.map((row) => (
+                    <tr key={row.line_id}>
+                      <td>{regionInstrumentCell(row)}</td>
+                      <td>{row.instrument_core.currency}</td>
+                      <td>{formatLabel(row.holding_kind ?? 'cash')}</td>
+                      <td>{row.settlement_date ?? 'N/A'}</td>
+                      <td className="performance-cell-number">
+                        {formatCurrency(
+                          row.settlement_amount ?? row.quantity,
+                          row.instrument_core.currency,
+                        )}
+                      </td>
+                      <td className="performance-cell-number">
+                        {formatCurrency(
+                          row.settlement_amount_base ?? regionBaseAmount(row),
+                          workspace.base_currency,
+                        )}
+                      </td>
+                      <td title={row.exclusion_reason ?? undefined}>{formatLabel(row.performance_scope)}</td>
+                      <td>{formatLabel(row.pending_status ?? 'settled')}</td>
+                    </tr>
+                  )) : <TableStatusRow colSpan={8} label="No holdings in this region." />}
+                </tbody>
+              </>
+            ) : null}
+          </table>
+        </div>
+      </section>
     )
   }
 
@@ -3234,7 +3865,25 @@ export default function PortfolioHomePage() {
             </label>
           </div>
           <div className="transaction-filter-actions holdings-filter-actions">
-            {holdingsViewStoreReadyPortfolioId === portfolioId ? (
+            <div className="holdings-layout-segmented" role="group" aria-label="Holdings layout">
+              <button
+                type="button"
+                className={holdingsLayoutMode === 'regions' ? 'active' : undefined}
+                aria-pressed={holdingsLayoutMode === 'regions'}
+                onClick={() => setHoldingsLayoutMode('regions')}
+              >
+                Regions
+              </button>
+              <button
+                type="button"
+                className={holdingsLayoutMode === 'advanced' ? 'active' : undefined}
+                aria-pressed={holdingsLayoutMode === 'advanced'}
+                onClick={() => setHoldingsLayoutMode('advanced')}
+              >
+                Advanced Table
+              </button>
+            </div>
+            {holdingsLayoutMode === 'advanced' && holdingsViewStoreReadyPortfolioId === portfolioId ? (
               <PortfolioTableViewControls
                 views={holdingsViews}
                 activeViewId={activeHoldingsViewId}
@@ -3246,29 +3895,33 @@ export default function PortfolioHomePage() {
                 onSaveAs={handleSaveHoldingsViewAs}
                 onDelete={handleDeleteHoldingsView}
               />
-            ) : (
+            ) : holdingsLayoutMode === 'advanced' ? (
               <span className="portfolio-detail-meta">
                 {holdingsViewStoreError ? 'Table views unavailable' : 'Loading table views'}
               </span>
-            )}
-            <button
-              type="button"
-              className={`holdings-toolbar-button ${columnsEdited ? 'holdings-toolbar-button-active' : ''}`}
-              onClick={() => {
-                setHoldingsColumnDraft(holdingsColumns)
-                setHoldingsColumnsOpen(true)
-              }}
-            >
-              Data &amp; Columns
-            </button>
-            <button
-              type="button"
-              className="holdings-toolbar-button"
-              onClick={() => setHoldingsGroupByOpen(true)}
-            >
-              Group By{'\u00A0: '}
-              {selectedGroupByOption.label}
-            </button>
+            ) : null}
+            {holdingsLayoutMode === 'advanced' ? (
+              <>
+                <button
+                  type="button"
+                  className={`holdings-toolbar-button ${columnsEdited ? 'holdings-toolbar-button-active' : ''}`}
+                  onClick={() => {
+                    setHoldingsColumnDraft(holdingsColumns)
+                    setHoldingsColumnsOpen(true)
+                  }}
+                >
+                  Data &amp; Columns
+                </button>
+                <button
+                  type="button"
+                  className="holdings-toolbar-button"
+                  onClick={() => setHoldingsGroupByOpen(true)}
+                >
+                  Group By{'\u00A0: '}
+                  {selectedGroupByOption.label}
+                </button>
+              </>
+            ) : null}
             <DownloadFormatMenu
               wrapperClassName="portfolio-download-menu"
               buttonClassName="holdings-toolbar-button"
@@ -3281,16 +3934,24 @@ export default function PortfolioHomePage() {
         </div>
         {loading ? <CalculationStatus /> : null}
         {error ? <div className="error-state">{error}</div> : null}
-        {holdingsViewStoreError ? (
+        {holdingsLayoutMode === 'advanced' && holdingsViewStoreError ? (
           <div className="inline-notice inline-notice-error" role="alert">
             {holdingsViewStoreError}
           </div>
         ) : null}
         <QualityWarningsNotice warnings={workspace?.quality_warnings} />
-        {taxonomyError && holdingsGroupBy.startsWith('taxonomy') ? (
+        {!loading && !error && workspace ? renderOperationalStatus() : null}
+        {holdingsLayoutMode === 'advanced' && taxonomyError && holdingsGroupBy.startsWith('taxonomy') ? (
           <div className="inline-notice inline-notice-warning">{taxonomyError}</div>
         ) : null}
-        {!loading && !error && workspace && columnContext ? (
+        {!loading && !error && workspace && columnContext ? holdingsLayoutMode === 'regions' ? (
+          <div className="holdings-region-stack">
+            {renderHoldingRegion('market_valued_positions')}
+            {renderHoldingRegion('structured_and_long_derivatives')}
+            {renderHoldingRegion('written_option_obligations')}
+            {renderHoldingRegion('cash_and_settlement')}
+          </div>
+        ) : (
           <div className="table-shell holdings-table-shell" ref={holdingsTableShellRef}>
             <table className="holdings-table holdings-main-table" style={{ minWidth: `${displayHoldingsTableMinWidth}px` }}>
               <colgroup>

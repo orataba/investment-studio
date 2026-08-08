@@ -51,6 +51,10 @@ import {
   assessBenchmarkComparisonGuard,
   type BenchmarkComparisonGuard,
 } from '../lib/benchmarkComparisonGuard'
+import {
+  holdingDayChangeUnavailable,
+  holdingUsesEventValuation,
+} from '../lib/holdingPresentation'
 import { buildMonthlyBuckets, buildMonthlyReturnMatrixRows, MONTH_LABELS } from '../lib/monthlyReturns'
 import {
   buildPortfolioValueChartPoints,
@@ -1431,7 +1435,11 @@ export default function OverviewPage() {
       key: 'sparkline',
       label: TOP_HOLDING_COLUMN_LABELS.sparkline,
       align: 'center',
-      render: (row) => <Sparkline values={row.price_chart_6m} maxPoints={120} />,
+      render: (row) => (
+        holdingUsesEventValuation(row)
+          ? 'N/A'
+          : <Sparkline values={row.price_chart_6m} maxPoints={120} />
+      ),
     },
     {
       key: 'quantity',
@@ -1441,7 +1449,10 @@ export default function OverviewPage() {
     {
       key: 'last_price',
       label: TOP_HOLDING_COLUMN_LABELS.last_price,
-      render: (row) => formatUnitPrice(row.last_price, row.instrument_core.currency),
+      render: (row) =>
+        holdingUsesEventValuation(row)
+          ? 'N/A'
+          : formatUnitPrice(row.last_price, row.instrument_core.currency),
     },
     {
       key: 'market_value',
@@ -1473,6 +1484,9 @@ export default function OverviewPage() {
       key: 'unrealized_pnl',
       label: TOP_HOLDING_COLUMN_LABELS.unrealized_pnl,
       render: (row) => {
+        if (holdingUsesEventValuation(row)) {
+          return 'N/A'
+        }
         const unrealized =
           row.market_value_base != null && row.cost_basis_base != null
             ? row.market_value_base - row.cost_basis_base
@@ -1488,6 +1502,9 @@ export default function OverviewPage() {
       key: 'day_change',
       label: TOP_HOLDING_COLUMN_LABELS.day_change,
       render: (row) => {
+        if (holdingDayChangeUnavailable(row)) {
+          return 'N/A'
+        }
         const amount = holdingAmountForDisplay(
           row,
           resolvedBaseCurrency,
@@ -1519,6 +1536,9 @@ export default function OverviewPage() {
       key: 'return_1w',
       label: TOP_HOLDING_COLUMN_LABELS.return_1w,
       render: (row) => {
+        if (holdingUsesEventValuation(row)) {
+          return 'N/A'
+        }
         const value = row.instrument_return_1w ?? null
         return <span className={signedValueClass(value)}>{signedPercent(value)}</span>
       },
@@ -1527,6 +1547,9 @@ export default function OverviewPage() {
       key: 'return_mtd',
       label: TOP_HOLDING_COLUMN_LABELS.return_mtd,
       render: (row) => {
+        if (holdingUsesEventValuation(row)) {
+          return 'N/A'
+        }
         const value = row.instrument_return_mtd ?? null
         return <span className={signedValueClass(value)}>{signedPercent(value)}</span>
       },
@@ -1535,6 +1558,9 @@ export default function OverviewPage() {
       key: 'return_ytd',
       label: TOP_HOLDING_COLUMN_LABELS.return_ytd,
       render: (row) => {
+        if (holdingUsesEventValuation(row)) {
+          return 'N/A'
+        }
         const value = row.instrument_return_ytd ?? null
         return <span className={signedValueClass(value)}>{signedPercent(value)}</span>
       },

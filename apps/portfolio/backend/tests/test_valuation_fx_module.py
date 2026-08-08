@@ -121,6 +121,7 @@ def test_direct_instrument_map_golden():
 def test_fx_posting_rejects_a_missing_target_account_currency() -> None:
     transaction = {
         "transaction_id": "fx-missing-target-currency",
+        "transaction_sequence": 1,
         "portfolio_id": "portfolio-currency-contract",
         "transaction_type": "fx_conversion",
         "trade_date": "2026-01-02",
@@ -271,23 +272,21 @@ def test_latest_partial_fx_keeps_historical_topology_across_ledger_and_research(
     )
     monkeypatch.setattr(
         research_solver,
-        "list_taxonomies",
-        lambda _portfolio_id: [
-            {
+        "taxonomy_configuration_as_of",
+        lambda _portfolio_id, _taxonomy_id, _as_of_date: {
+            "taxonomy": {
                 "taxonomy_id": "taxonomy-fx-topology",
                 "name": "Planning",
                 "root_default_target_dimension": "weight",
                 "primary_assignment_scope": "instrument",
-            }
-        ],
-    )
-    monkeypatch.setattr(research_solver, "list_taxonomy_nodes", lambda _portfolio_id: [])
-    monkeypatch.setattr(research_solver, "list_taxonomy_assignments", lambda _portfolio_id: [])
-    monkeypatch.setattr(research_solver, "list_target_sets", lambda _portfolio_id, **_kwargs: [])
-    monkeypatch.setattr(
-        research_solver,
-        "list_target_set_lines",
-        lambda _portfolio_id, **_kwargs: [],
+                "planning_enabled": True,
+                "status": "active",
+            },
+            "taxonomy_nodes": [],
+            "taxonomy_assignments": [],
+            "target_sets": [],
+            "target_set_lines": [],
+        },
     )
     monkeypatch.setattr(research_solver, "list_accounts", lambda _portfolio_id: [])
     monkeypatch.setattr(research_solver, "get_platform_fx_rates", lambda: payload)

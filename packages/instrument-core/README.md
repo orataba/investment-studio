@@ -10,7 +10,7 @@
 - `instrument_name`
 - identifiers
 - `instrument_type`
-  - 当前类型集合：`fund | etf | index | bond | equity | cash | fx | other`
+  - 当前类型集合：`fund | etf | index | bond | equity | fcn | option | cash | fx | other`
 - `currency`
 - typed `market_data`
   - `metric_family`: `price | nav | fx`

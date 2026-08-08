@@ -18,6 +18,10 @@ const apiMocks = vi.hoisted(() => ({
   getPortfolioTransactionExecutionQuote: vi.fn(),
   getPortfolioTransactionPositionPreview: vi.fn(),
   getPortfolioTransactionsWorkspace: vi.fn(),
+  importPortfolioTransactionCsv: vi.fn(),
+  portfolioTransactionCsvDownloadUrl: vi.fn(() => '/transactions.csv'),
+  portfolioTransactionCsvTemplateUrl: vi.fn(() => '/transactions/csv-template'),
+  previewPortfolioTransactionCsv: vi.fn(),
   reviewPortfolioInstrumentEventTask: vi.fn(),
   updatePortfolioTransaction: vi.fn(),
 }))
@@ -146,6 +150,7 @@ const fundInstrument = {
 
 const selectedTransaction = {
   transaction_id: 'txn-1',
+  transaction_sequence: 1,
   portfolio_id: '3',
   transaction_type: 'buy',
   flow_scope: 'internal',
@@ -339,6 +344,34 @@ describe('Transactions rendered page contract', () => {
     const review = within(dialog).getByRole('complementary', { name: 'Transaction review' })
     expect(within(review).getByText('Net Cash Effect')).toBeInTheDocument()
     expect(within(review).getByText('-$250.00')).toBeInTheDocument()
+  })
+
+  it('limits lifecycle events to securities accounts before submission', async () => {
+    const user = userEvent.setup()
+    renderPortfolioPage(
+      <TransactionsPage />,
+      '/portfolios/3/transactions',
+      '/portfolios/:portfolioId/transactions',
+    )
+
+    await user.click(await screen.findByRole('button', { name: 'Record Transaction' }))
+    const dialog = screen.getByRole('dialog', { name: 'Record transaction' })
+    const transactionType = within(dialog).getByRole('combobox', {
+      name: 'Transaction Type',
+    })
+    expect(
+      within(transactionType).getByRole('option', {
+        name: 'Buy / Option Buy to Open',
+      }),
+    ).toBeInTheDocument()
+    await user.selectOptions(transactionType, 'lifecycle_event')
+
+    const account = within(dialog).getByRole('combobox', { name: 'Account' })
+    await waitFor(() => expect(account).toHaveValue(securitiesAccount.account_id))
+    expect(within(account).getByRole('option', { name: 'ETF Brokerage · USD' })).toBeInTheDocument()
+    expect(
+      within(account).queryByRole('option', { name: 'Settlement Cash · USD' }),
+    ).not.toBeInTheDocument()
   })
 
   it('carries the selected fact row version into a destructive delete', async () => {

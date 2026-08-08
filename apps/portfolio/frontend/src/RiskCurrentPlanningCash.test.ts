@@ -76,6 +76,9 @@ const catalog: PortfolioTaxonomyCatalogResponse = {
   target_sets: [],
   target_set_lines: [],
   target_set_integrity_issues: [],
+  analytics_scope_policy_version: 0,
+  analytics_scope_policies: [],
+  analytics_taxonomy_selections: [],
 }
 
 function account(
@@ -101,7 +104,12 @@ function account(
     derived_cash_balance_base: cash,
     pending_settlement: pendingSettlement,
     pending_settlement_base: pendingSettlement,
+    derivative_liability: 0,
+    derivative_liability_base: 0,
+    open_option_obligation_count: 0,
     account_value_base: accountValue,
+    valuation_coverage_state: 'complete',
+    valuation_missing_components: [],
     position_line_count: positionMarketValue ? 1 : 0,
     position_market_value: positionMarketValue,
     position_market_value_currency: 'USD',
@@ -128,6 +136,7 @@ describe('Current planning cash and pending settlement', () => {
             instrument_type: 'other',
             currency: 'USD',
             identifiers: [],
+            broker_identifiers: [],
           },
           allocation: 0.08,
           market_value: 80,
@@ -146,6 +155,11 @@ describe('Current planning cash and pending settlement', () => {
         securities_account_count: 1,
         ledger_posting_count: 0,
         position_line_count: 1,
+        valuation_coverage_state: 'complete',
+        valued_account_count: 2,
+        unvalued_account_count: 0,
+        open_option_obligation_count: 0,
+        derivative_liability_base: 0,
       },
       derivation_boundary: {
         ledger_postings: 'fixture',
@@ -159,6 +173,7 @@ describe('Current planning cash and pending settlement', () => {
       ],
       ledger_postings: [],
       positions: [],
+      option_obligations: [],
       linked_transactions: [],
     }
 

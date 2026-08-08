@@ -11,6 +11,7 @@ type ConfirmDialogProps = {
   confirmationText?: string
   error?: ReactNode
   busy?: boolean
+  busyLabel?: string
   onCancel: () => void
   onConfirm: () => void | Promise<void>
 }
@@ -23,6 +24,7 @@ export default function ConfirmDialog({
   confirmationText,
   error,
   busy = false,
+  busyLabel = 'Deleting…',
   onCancel,
   onConfirm,
 }: ConfirmDialogProps) {
@@ -104,7 +106,7 @@ export default function ConfirmDialog({
               void Promise.resolve(onConfirm()).catch(() => undefined)
             }}
           >
-            {busy ? 'Deleting…' : confirmLabel}
+            {busy ? busyLabel : confirmLabel}
           </button>
         </div>
       </div>

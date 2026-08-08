@@ -92,5 +92,5 @@ export function formatLabel(value: string) {
   const formatted = value
     .replace(/[_-]+/g, ' ')
     .replace(/\b\w/g, (letter) => letter.toUpperCase())
-  return formatted.replace(/\b(Etf|Fx|Nav|Twr|Irr)\b/g, (token) => token.toUpperCase())
+  return formatted.replace(/\b(Etf|Fcn|Fx|Nav|Twr|Irr)\b/g, (token) => token.toUpperCase())
 }

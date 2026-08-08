@@ -18,6 +18,7 @@ pytestmark = pytest.mark.postgresql_integration
 
 RECONCILIATION_REVISION = "20260715_0032r"
 RECONCILIATION_PARENT = "20260711_0032"
+CURRENT_HEAD_REVISION = "20260807_0044"
 LEGACY_FOREIGN_KEY = "fk_transaction_record_asset_id_instrument"
 CURRENT_FOREIGN_KEY = "fk_transaction_record_instrument_id_instrument"
 
@@ -414,3 +415,211 @@ def test_postgres_schema_reconciliation_is_lossless_and_fail_closed(
                         )
         command.upgrade(config, "head")
         engine.dispose()
+
+
+def test_postgres_holding_kind_identity_rebuilds_read_model_and_reconciles_head(
+    postgres_reconciliation_database: str,
+) -> None:
+    database_url = postgres_reconciliation_database
+    config = _portfolio_config(database_url)
+    engine = sa.create_engine(database_url)
+    command.upgrade(config, "20260804_0042")
+
+    with engine.begin() as connection:
+        _set_search_path(connection)
+        connection.execute(
+            sa.text(
+                """
+                INSERT INTO portfolio_record (
+                    portfolio_id, portfolio_name, base_currency,
+                    valuation_timezone, valuation_cutoff_policy, as_of_date,
+                    nav, day_change_value, day_change_pct,
+                    securities_count, sort_order
+                ) VALUES (
+                    'portfolio-holding-kind', 'Holding Kind Migration', 'USD',
+                    'UTC', 'latest_complete_eod', '2026-08-06',
+                    100, 0, 0, 1, 0
+                )
+                """
+            )
+        )
+        connection.execute(
+            sa.text(
+                "INSERT INTO portfolio_calculation_state "
+                "(portfolio_id, daily_snapshot_status) "
+                "VALUES ('portfolio-holding-kind', 'current')"
+            )
+        )
+        connection.execute(
+            sa.text(
+                """
+                INSERT INTO portfolio_daily_holding_snapshot (
+                    portfolio_id, as_of_date, account_id, instrument_id,
+                    currency, quantity, cost_basis, cost_basis_base,
+                    last_price, market_value, market_value_base,
+                    portfolio_weight, holding_json, calculated_at
+                ) VALUES (
+                    'portfolio-holding-kind', '2026-08-06', 'broker',
+                    'option-contract', 'USD', 1, 100, 100,
+                    NULL, 100, 100, 1, '{}', '2026-08-06T16:00:00Z'
+                )
+                """
+            )
+        )
+        old_table_oid = connection.scalar(
+            sa.text("SELECT 'portfolio.portfolio_daily_holding_snapshot'::regclass::oid")
+        )
+
+    command.upgrade(config, "20260806_0043")
+    inspector = sa.inspect(engine)
+    upgraded_columns = {
+        str(column["name"])
+        for column in inspector.get_columns(
+            "portfolio_daily_holding_snapshot",
+            schema="portfolio",
+        )
+    }
+    upgraded_primary_key = inspector.get_pk_constraint(
+        "portfolio_daily_holding_snapshot",
+        schema="portfolio",
+    )
+    upgraded_indexes = {
+        str(index["name"]): tuple(index["column_names"])
+        for index in inspector.get_indexes(
+            "portfolio_daily_holding_snapshot",
+            schema="portfolio",
+        )
+    }
+    upgraded_foreign_keys = {
+        str(item["name"]): item
+        for item in inspector.get_foreign_keys(
+            "portfolio_daily_holding_snapshot",
+            schema="portfolio",
+        )
+    }
+    assert "holding_kind" in upgraded_columns
+    assert upgraded_primary_key["name"] == "pk_portfolio_daily_holding_snapshot"
+    assert tuple(upgraded_primary_key["constrained_columns"]) == (
+        "portfolio_id",
+        "as_of_date",
+        "account_id",
+        "instrument_id",
+        "holding_kind",
+    )
+    assert upgraded_indexes == {
+        "ix_portfolio_daily_holding_account_date": (
+            "portfolio_id",
+            "account_id",
+            "as_of_date",
+        ),
+        "ix_portfolio_daily_holding_instrument_date": (
+            "portfolio_id",
+            "instrument_id",
+            "as_of_date",
+        ),
+        "ix_portfolio_daily_holding_portfolio_date": (
+            "portfolio_id",
+            "as_of_date",
+        ),
+    }
+    holding_foreign_key = upgraded_foreign_keys[
+        "fk_portfolio_holding_snapshot_portfolio"
+    ]
+    assert holding_foreign_key["referred_schema"] == "portfolio"
+    assert holding_foreign_key["referred_table"] == "portfolio_record"
+    assert tuple(holding_foreign_key["referred_columns"]) == ("portfolio_id",)
+
+    insert_holding = sa.text(
+        """
+        INSERT INTO portfolio.portfolio_daily_holding_snapshot (
+            portfolio_id, as_of_date, account_id, instrument_id,
+            holding_kind, currency, quantity, cost_basis, cost_basis_base,
+            last_price, market_value, market_value_base,
+            portfolio_weight, holding_json, calculated_at
+        ) VALUES (
+            'portfolio-holding-kind', '2026-08-06', 'broker',
+            'option-contract', :holding_kind, 'USD', :quantity,
+            NULL, NULL, NULL, :market_value, :market_value,
+            NULL, '{}', '2026-08-06T16:00:00Z'
+        )
+        """
+    )
+    with engine.begin() as connection:
+        _set_search_path(connection)
+        upgraded_table_oid = connection.scalar(
+            sa.text("SELECT 'portfolio.portfolio_daily_holding_snapshot'::regclass::oid")
+        )
+        assert upgraded_table_oid != old_table_oid
+        assert connection.scalar(
+            sa.text(
+                "SELECT count(*) FROM portfolio.portfolio_daily_holding_snapshot"
+            )
+        ) == 0
+        assert connection.scalar(
+            sa.text(
+                "SELECT daily_snapshot_status "
+                "FROM portfolio.portfolio_calculation_state "
+                "WHERE portfolio_id = 'portfolio-holding-kind'"
+            )
+        ) == "stale"
+        connection.execute(
+            insert_holding,
+            {
+                "holding_kind": "position",
+                "quantity": 1,
+                "market_value": 500,
+            },
+        )
+        connection.execute(
+            insert_holding,
+            {
+                "holding_kind": "option_obligation",
+                "quantity": 100,
+                "market_value": -300,
+            },
+        )
+        assert connection.scalar(
+            sa.text(
+                "SELECT count(*) FROM portfolio.portfolio_daily_holding_snapshot "
+                "WHERE instrument_id = 'option-contract'"
+            )
+        ) == 2
+
+    command.downgrade(config, "20260804_0042")
+    downgraded_inspector = sa.inspect(engine)
+    downgraded_columns = {
+        str(column["name"])
+        for column in downgraded_inspector.get_columns(
+            "portfolio_daily_holding_snapshot",
+            schema="portfolio",
+        )
+    }
+    downgraded_primary_key = downgraded_inspector.get_pk_constraint(
+        "portfolio_daily_holding_snapshot",
+        schema="portfolio",
+    )
+    assert "holding_kind" not in downgraded_columns
+    assert tuple(downgraded_primary_key["constrained_columns"]) == (
+        "portfolio_id",
+        "as_of_date",
+        "account_id",
+        "instrument_id",
+    )
+    with engine.connect() as connection:
+        _set_search_path(connection)
+        downgraded_table_oid = connection.scalar(
+            sa.text("SELECT 'portfolio.portfolio_daily_holding_snapshot'::regclass::oid")
+        )
+        assert downgraded_table_oid != upgraded_table_oid
+        assert connection.scalar(
+            sa.text(
+                "SELECT count(*) FROM portfolio.portfolio_daily_holding_snapshot"
+            )
+        ) == 0
+
+    command.upgrade(config, "head")
+    with engine.connect() as connection:
+        assert connection.scalar(
+            sa.text("SELECT version_num FROM portfolio.alembic_version")
+        ) == CURRENT_HEAD_REVISION
+    engine.dispose()

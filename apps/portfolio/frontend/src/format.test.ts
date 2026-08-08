@@ -5,6 +5,7 @@ import { formatLabel, formatPercentInput } from './lib/format'
 describe('formatLabel', () => {
   it('preserves common portfolio acronyms', () => {
     expect(formatLabel('etf')).toBe('ETF')
+    expect(formatLabel('fcn')).toBe('FCN')
     expect(formatLabel('fx_conversion')).toBe('FX Conversion')
     expect(formatLabel('official_nav')).toBe('Unit NAV')
     expect(formatLabel('total_return_nav')).toBe('Dividend-Reinvested Total Return NAV')

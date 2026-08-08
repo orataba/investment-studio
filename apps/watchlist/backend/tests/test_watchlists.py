@@ -69,6 +69,118 @@ def test_risk_metrics_annualize_from_actual_observation_spacing() -> None:
     assert _compute_sharpe(nav_points) == pytest.approx(expected_sharpe, abs=1e-12)
 
 
+def test_path_dependent_risk_metrics_accept_decimal_nav_values() -> None:
+    from decimal import Decimal
+
+    from watchlist_app.services.canonical_recalc import (
+        _compute_downside_deviation,
+        _compute_sharpe,
+        _compute_sortino,
+        _compute_volatility,
+    )
+
+    points = [
+        {"as_of_date": date(2025, 1, 1), "value": Decimal("100")},
+        {"as_of_date": date(2025, 2, 1), "value": Decimal("101")},
+        {"as_of_date": date(2025, 3, 1), "value": Decimal("99")},
+        {"as_of_date": date(2025, 4, 1), "value": Decimal("102")},
+    ]
+
+    assert _compute_volatility(points) is not None
+    assert _compute_downside_deviation(points) is not None
+    assert _compute_sharpe(points) is not None
+    assert _compute_sortino(points) is not None
+
+
+def test_monthly_return_series_uses_adjacent_month_end_observations_only() -> None:
+    from watchlist_app.services.canonical_recalc import _monthly_return_series
+
+    points = [
+        {"as_of_date": date(2025, 12, 31), "value": 100.0},
+        # The first January observation must not be used as January's close;
+        # the last January observation is the month-end proxy.
+        {"as_of_date": date(2026, 1, 2), "value": 101.0},
+        {"as_of_date": date(2026, 1, 30), "value": 110.0},
+        # February is intentionally absent.  March must not be labelled as a
+        # one-month return from January.
+        {"as_of_date": date(2026, 3, 31), "value": 150.0},
+    ]
+
+    assert _monthly_return_series(points) == [
+        {
+            "as_of_date": date(2026, 1, 30),
+            "value": pytest.approx(10.0),
+        }
+    ]
+
+
+def test_calendar_year_returns_do_not_bridge_missing_prior_year() -> None:
+    from watchlist_app.services.canonical_recalc import _compute_calendar_year_returns
+
+    points = [
+        {"as_of_date": date(2024, 1, 2), "value": 100.0},
+        {"as_of_date": date(2025, 1, 2), "value": 120.0},
+        {"as_of_date": date(2026, 1, 2), "value": 150.0},
+    ]
+
+    rows = _compute_calendar_year_returns(points)
+
+    # 2025 has a prior 2024 observation and is valid.  2024 has no prior-year
+    # anchor, and must not be synthesized from an older inception point.
+    assert [row["year"] for row in rows] == [2026, 2025]
+    assert rows[0]["investment_nav"] == pytest.approx(25.0)
+    assert rows[1]["investment_nav"] == pytest.approx(20.0)
+
+    last_close_rows = _compute_calendar_year_returns(
+        [
+            {"as_of_date": date(2024, 1, 2), "value": 100.0},
+            {"as_of_date": date(2024, 12, 30), "value": 110.0},
+            {"as_of_date": date(2025, 1, 2), "value": 120.0},
+            {"as_of_date": date(2025, 12, 31), "value": 132.0},
+        ]
+    )
+    assert last_close_rows[0]["year"] == 2025
+    assert last_close_rows[0]["investment_nav"] == pytest.approx(20.0)
+    assert last_close_rows[0]["anchor_date"] == "2024-12-30"
+    assert last_close_rows[0]["end_date"] == "2025-12-31"
+
+    missing_prior_year_rows = _compute_calendar_year_returns(
+        [
+            {"as_of_date": date(2023, 12, 29), "value": 100.0},
+            {"as_of_date": date(2025, 12, 31), "value": 120.0},
+        ]
+    )
+    assert missing_prior_year_rows == []
+
+
+def test_monthly_risk_helpers_reset_at_calendar_gaps() -> None:
+    from watchlist_app.services.canonical_recalc import (
+        _rolling_annualized_volatility,
+        _trailing_negative_month_count,
+    )
+
+    # The rows on either side of the missing February are both negative, but
+    # they are not two trailing *months* and must not be counted as such.
+    returns = [
+        {"as_of_date": date(2026, 3, 31), "value": -2.0},
+        {"as_of_date": date(2026, 1, 31), "value": -1.0},
+    ]
+    assert _trailing_negative_month_count(returns) == 1
+
+    # Twelve rows are not enough for a valid 12-month rolling window when one
+    # calendar transition is missing.
+    contiguous_prefix = [
+        {"as_of_date": date(2025, month, 28), "value": 1.0}
+        for month in range(1, 13)
+    ]
+    assert _rolling_annualized_volatility(contiguous_prefix, window=12)
+    with_gap = [
+        *[row for row in contiguous_prefix if row["as_of_date"].month != 6],
+        {"as_of_date": date(2026, 1, 28), "value": 1.0},
+    ]
+    assert _rolling_annualized_volatility(with_gap, window=12) == []
+
+
 def test_calculation_frequency_context_resamples_declared_weekly_points() -> None:
     from watchlist_app.services.calculation_frequency import build_calculation_frequency_context
 
@@ -148,6 +260,26 @@ def test_market_calendar_gap_detection_ignores_holidays_but_detects_missing_sess
     assert aligned["profile"]["gap_detection_basis"] == "market_calendar:XSHG"
     assert missing["profile"]["gap_count"] == 1
     assert missing["profile"]["missing_observation_date_sample"] == ["2026-02-24"]
+
+
+def test_monthly_frequency_gap_detection_uses_calendar_months() -> None:
+    from watchlist_app.services.calculation_frequency import (
+        build_calculation_frequency_context,
+    )
+
+    context = build_calculation_frequency_context(
+        [
+            {"as_of_date": date(2026, 1, 31), "value": 100.0},
+            # February is absent even though the elapsed-day gap is short
+            # enough to evade a 45-day threshold.
+            {"as_of_date": date(2026, 3, 1), "value": 101.0},
+        ],
+        expected_frequency="monthly",
+    )
+
+    assert context["profile"]["resolved_frequency"] == "monthly"
+    assert context["profile"]["gap_count"] == 1
+    assert context["profile"]["gap_detection_basis"] == "calendar_month_period"
 
 
 def test_xshg_calendar_treats_lunar_new_year_closure_as_non_sessions() -> None:
@@ -1530,6 +1662,66 @@ def test_calendar_period_returns_use_prior_close_as_base(
     assert row["return_ytd"] == pytest.approx(56.0, abs=1e-6)
 
 
+def test_aligned_decimal_nav_series_materializes_path_risk_metrics(
+    client: TestClient,
+) -> None:
+    seed_shared_instrument(
+        {
+            "instrument_id": "aligned-decimal-risk-fund",
+            "instrument_name": "Aligned Decimal Risk Fund",
+            "instrument_type": "fund",
+            "currency": "USD",
+            "source_settings": {"expected_frequency": "weekly"},
+            "quote_selection_policy": canonical_quote_policy("fund"),
+            "identifiers": [
+                {"identifier_type": "ticker", "identifier_value": "ADRF", "is_primary": True},
+            ],
+            "market_data": [
+                {
+                    "metric_family": "nav",
+                    "quote_basis": "total_return_nav",
+                    "nav_lineage": {
+                        "kind": "provider_explicit",
+                        "evidence": {"source_field": "test_total_return_nav"},
+                    },
+                    "as_of_date": as_of_date,
+                    "value": value,
+                    "currency": "USD",
+                    "price_unit": "per_unit",
+                    "price_scale": "1",
+                    "status": "complete",
+                }
+                for as_of_date, value in (
+                    ("2026-01-02", "100.000000"),
+                    ("2026-01-09", "101.000000"),
+                    ("2026-01-16", "99.000000"),
+                    ("2026-01-23", "102.000000"),
+                )
+            ],
+            "lifecycle_state": {"status": "active"},
+        }
+    )
+
+    created_watchlist = client.post(
+        "/api/watchlists",
+        json={"name": "Aligned Decimal Risk", "description": None},
+    )
+    watchlist_id = created_watchlist.json()["watchlist_id"]
+    add_response = client.post(
+        f"/api/watchlists/{watchlist_id}/items",
+        json={"instrument_ids": ["aligned-decimal-risk-fund"]},
+    )
+    assert add_response.status_code == 200
+
+    risk_response = client.get("/api/instruments/aligned-decimal-risk-fund/risk")
+    assert risk_response.status_code == 200
+    risk_payload = risk_response.json()
+    metrics = {row["metric"]: row["investment"] for row in risk_payload["risk_metrics"]}
+    assert risk_payload["data_quality"]["status"] == "ready"
+    assert metrics["volatility"] is not None
+    assert metrics["sharpe_ratio"] is not None
+
+
 def test_index_close_series_calculates_watchlist_performance_metrics(
     client: TestClient,
 ) -> None:
@@ -1763,6 +1955,13 @@ def test_instrument_performance_and_risk_payloads_include_materialized_metrics(
     assert trailing_by_window["MTD"]["end_date"] == "2026-04-14"
     assert trailing_by_window["YTD"]["investment_nav"] == pytest.approx(3.832283, abs=1e-6)
     assert trailing_by_window["YTD"]["anchor_date"] == "2025-12-31"
+    annual_by_year = {
+        row["year"]: row
+        for row in performance_payload["annual_returns"]
+    }
+    assert annual_by_year[2026]["investment_nav"] == pytest.approx(3.832283, abs=1e-6)
+    assert annual_by_year[2026]["anchor_date"] == "2025-12-31"
+    assert annual_by_year[2026]["end_date"] == "2026-04-14"
     assert trailing_by_window["Ann."]["investment_nav"] is None
     assert performance_payload["return_window_policy"] == "return-window/v2"
 
@@ -1859,7 +2058,7 @@ def test_instrument_detail_payload_exposes_weekly_calculation_frequency(
     risk_response = client.get("/api/instruments/weekly-risk-fund/risk")
     assert risk_response.status_code == 200
     risk_payload = risk_response.json()
-    assert risk_payload["snapshot_metadata"]["methodology_version"] == "canonical-risk/v5"
+    assert risk_payload["snapshot_metadata"]["methodology_version"] == "canonical-risk/v6"
     assert risk_payload["calculation_frequency_profile"]["resolved_frequency"] == "weekly"
     assert risk_payload["calculation_frequency_profile"]["annualization_periods_per_year"] == pytest.approx(
         52.178571,

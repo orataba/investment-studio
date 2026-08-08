@@ -19,6 +19,7 @@ RUNTIME_PACKAGE_NAMES = ("app", "portfolio_app")
 RECONCILIATION_REVISION = "20260715_0032r"
 RECONCILIATION_PARENT = "20260711_0032"
 CANONICAL_CASH_REVISION = "20260715_0039"
+HOLDING_KIND_IDENTITY_REVISION = "20260806_0043"
 
 
 RECONCILIATION_INDEXES = (
@@ -732,18 +733,22 @@ def test_canonical_cash_migration_rejects_nested_reserved_cash_node() -> None:
 
 
 def test_canonical_cash_migration_rejects_top_sleeve_bounds_reference() -> None:
-    from portfolio_app.db.models import ResearchSettingsRecordModel
     from portfolio_app.db.session import get_engine
 
     engine = get_engine()
     with engine.begin() as connection:
+        research_settings = sa.Table(
+            "research_settings_record",
+            sa.MetaData(),
+            autoload_with=connection,
+        )
         _insert_reserved_cash_taxonomy(
             connection,
             taxonomy_id="taxonomy-cash-bounds",
             node_ids=("node-cash-bounds",),
         )
         connection.execute(
-            sa.insert(ResearchSettingsRecordModel.__table__).values(
+            sa.insert(research_settings).values(
                 portfolio_id="portfolio-ops",
                 as_of_mode="dynamic",
                 lookback_days=90,
@@ -1344,5 +1349,143 @@ def test_fee_category_migration_backfills_unknown_and_is_reversible() -> None:
                 for column in sa.inspect(connection).get_columns("transaction_record")
             }
         assert "fee_category" not in downgraded_columns
+    finally:
+        command.upgrade(config, "head")
+
+
+def test_holding_snapshot_migration_uses_holding_kind_as_identity() -> None:
+    from portfolio_app.db.session import get_engine
+
+    config = _alembic_config()
+    engine = get_engine()
+    command.upgrade(config, "20260804_0042")
+    with engine.begin() as connection:
+        state_count = connection.scalar(
+            sa.text(
+                "SELECT count(*) FROM portfolio_calculation_state "
+                "WHERE portfolio_id = 'portfolio-ops'"
+            )
+        )
+        if int(state_count or 0) == 0:
+            connection.execute(
+                sa.text(
+                    "INSERT INTO portfolio_calculation_state "
+                    "(portfolio_id, daily_snapshot_status) "
+                    "VALUES ('portfolio-ops', 'current')"
+                )
+            )
+        else:
+            connection.execute(
+                sa.text(
+                    "UPDATE portfolio_calculation_state "
+                    "SET daily_snapshot_status = 'current' "
+                    "WHERE portfolio_id = 'portfolio-ops'"
+                )
+            )
+
+    try:
+        with engine.connect() as connection:
+            before_inspector = sa.inspect(connection)
+            before_columns = {
+                str(column["name"])
+                for column in before_inspector.get_columns(
+                    "portfolio_daily_holding_snapshot"
+                )
+            }
+            before_pk = tuple(
+                before_inspector.get_pk_constraint(
+                    "portfolio_daily_holding_snapshot"
+                )["constrained_columns"]
+            )
+        assert "holding_kind" not in before_columns
+        assert before_pk == (
+            "portfolio_id",
+            "as_of_date",
+            "account_id",
+            "instrument_id",
+        )
+
+        command.upgrade(config, HOLDING_KIND_IDENTITY_REVISION)
+        with engine.begin() as connection:
+            after_inspector = sa.inspect(connection)
+            after_columns = {
+                str(column["name"])
+                for column in after_inspector.get_columns(
+                    "portfolio_daily_holding_snapshot"
+                )
+            }
+            after_pk = tuple(
+                after_inspector.get_pk_constraint(
+                    "portfolio_daily_holding_snapshot"
+                )["constrained_columns"]
+            )
+            after_foreign_keys = {
+                str(item["name"]): item
+                for item in after_inspector.get_foreign_keys(
+                    "portfolio_daily_holding_snapshot"
+                )
+            }
+            insert_sql = sa.text(
+                """
+                INSERT INTO portfolio_daily_holding_snapshot (
+                    portfolio_id, as_of_date, account_id, instrument_id,
+                    holding_kind, currency, quantity, cost_basis,
+                    cost_basis_base, last_price, market_value,
+                    market_value_base, portfolio_weight, holding_json,
+                    calculated_at
+                ) VALUES (
+                    'portfolio-ops', '2099-02-01', 'broker-us-core',
+                    'option-contract-1', :holding_kind, 'USD', 1,
+                    NULL, NULL, NULL, NULL, NULL, NULL, '{}',
+                    '2099-02-01T00:00:00Z'
+                )
+                """
+            )
+            connection.execute(insert_sql, {"holding_kind": "position"})
+            connection.execute(
+                insert_sql,
+                {"holding_kind": "option_obligation"},
+            )
+            row_count = connection.scalar(
+                sa.text(
+                    "SELECT count(*) FROM portfolio_daily_holding_snapshot "
+                    "WHERE instrument_id = 'option-contract-1'"
+                )
+            )
+            calculation_status = connection.scalar(
+                sa.text(
+                    "SELECT daily_snapshot_status FROM portfolio_calculation_state "
+                    "WHERE portfolio_id = 'portfolio-ops'"
+                )
+            )
+
+        assert "holding_kind" in after_columns
+        assert after_pk == (
+            "portfolio_id",
+            "as_of_date",
+            "account_id",
+            "instrument_id",
+            "holding_kind",
+        )
+        assert "fk_portfolio_holding_snapshot_portfolio" in after_foreign_keys
+        assert row_count == 2
+        assert calculation_status == "stale"
+
+        command.downgrade(config, "20260804_0042")
+        with engine.connect() as connection:
+            downgraded_inspector = sa.inspect(connection)
+            downgraded_columns = {
+                str(column["name"])
+                for column in downgraded_inspector.get_columns(
+                    "portfolio_daily_holding_snapshot"
+                )
+            }
+            downgraded_pk = tuple(
+                downgraded_inspector.get_pk_constraint(
+                    "portfolio_daily_holding_snapshot"
+                )["constrained_columns"]
+            )
+        assert "holding_kind" not in downgraded_columns
+        assert downgraded_pk == before_pk
     finally:
         command.upgrade(config, "head")
