@@ -354,7 +354,6 @@ def test_account_workspace_exposes_and_filters_written_option_obligations(monkey
             "account_id": "broker-a",
             "settlement_cash_account_id": None,
             "instrument_id": "option-a",
-            "related_instrument_id": "equity-a",
             "instrument_ref": {
                 "instrument_id": "option-a",
                 "instrument_name": "option-a",
@@ -371,7 +370,7 @@ def test_account_workspace_exposes_and_filters_written_option_obligations(monkey
                     "contract_currency": "USD",
                 },
             },
-            "quantity": 100.0,
+            "quantity": 1.0,
             "gross_amount": 150.0,
             "fees": 0.0,
             "taxes": 0.0,
@@ -416,11 +415,14 @@ def test_accounts_workspace_http_contract_preserves_option_obligations(
     obligation = {
         "obligation_id": "obligation-http-contract",
         "account_id": account["account_id"],
-        "instrument_id": "option-covered-call",
-        "underlying_instrument_id": "equity-us-abbv",
-        "remaining_quantity": 100.0,
-        "remaining_premium_basis": 150.0,
-        "liability_value_base": -150.0,
+        "instrument_id": "option-short-call",
+        "related_underlying_id": "equity-us-abbv",
+        "open_contract_quantity": 1.0,
+        "required_underlying_quantity": 100.0,
+        "remaining_quantity": 1.0,
+        "premium_received_gross": 150.0,
+        "premium_basis_remaining": 150.0,
+        "carrying_liability": 150.0,
         "status": "open",
     }
     fake_workspace = {

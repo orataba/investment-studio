@@ -2746,8 +2746,7 @@ input[type='checkbox'] {
 }
 
 .holdings-operational-metrics .holdings-operational-metric-critical dt,
-.holdings-operational-metrics .holdings-operational-metric-critical dd,
-.holdings-obligation-uncovered {
+.holdings-operational-metrics .holdings-operational-metric-critical dd {
   color: #b42318;
   font-weight: 700;
 }

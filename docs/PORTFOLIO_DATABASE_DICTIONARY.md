@@ -1,6 +1,6 @@
 # Portfolio database dictionary
 
-As of 2026-08-09. Verified against SQLAlchemy metadata and migration heads `instrument_registry@20260807_0019` and `portfolio@20260807_0044`.
+As of 2026-08-09. Verified against SQLAlchemy metadata and migration heads `instrument_registry@20260807_0019` and `portfolio@20260809_0045`.
 
 This file is for architecture and integration review. External systems should use the APIs documented in [`TRANSACTION_INTEGRATION.md`](TRANSACTION_INTEGRATION.md), not write these tables directly.
 
@@ -44,15 +44,15 @@ Canonical transaction fact. Long positions, cash movements, FCN lifecycle events
 |---|---|
 | Identity | **PK** `transaction_id VARCHAR`; unique `transaction_sequence INTEGER`; **FK** `portfolio_id → portfolio_record.portfolio_id`; `transaction_type VARCHAR`; `lifecycle_event_type VARCHAR?`; `row_version INTEGER` |
 | Event time | `trade_date DATE`; `trade_time VARCHAR`; `trade_at VARCHAR`; `trade_timezone VARCHAR`; `trade_time_is_estimated BOOLEAN`; `settlement_date DATE`; `position_effective_date DATE?`; `entitlement_date DATE?`; `acquisition_date DATE?`; `created_at VARCHAR?` |
-| Accounts/instruments | `account_id VARCHAR`; `settlement_cash_account_id VARCHAR?`; `counterparty_account_id VARCHAR?`; `instrument_id VARCHAR?`; `instrument_ref_json JSON?`; `related_instrument_id VARCHAR?` |
+| Accounts/instruments | `account_id VARCHAR`; `settlement_cash_account_id VARCHAR?`; `counterparty_account_id VARCHAR?`; `instrument_id VARCHAR?`; `instrument_ref_json JSON?` |
 | Quantities/amounts | `quantity FLOAT?`; `source_quantity NUMERIC(28,12)?`; `price FLOAT?`; `source_price NUMERIC(28,12)?`; `gross_amount FLOAT`; `source_gross_amount NUMERIC(28,8)?`; `counter_amount FLOAT?`; `source_counter_amount NUMERIC(28,8)?`; `fx_rate FLOAT?`; `source_fx_rate NUMERIC(28,12)?`; `fees FLOAT`; `source_fees NUMERIC(28,8)?`; `fee_category VARCHAR`; `taxes FLOAT`; `source_taxes NUMERIC(28,8)?`; `currency VARCHAR` |
-| Linking/source | `transfer_scope VARCHAR?`; `transfer_object_type VARCHAR?`; `transfer_group_id VARCHAR?`; `event_group_id VARCHAR(200)?`; `source_system VARCHAR(100)?`; `external_reference VARCHAR(200)?`; `note VARCHAR?` |
+| Linking/source | `transfer_scope VARCHAR?`; `transfer_object_type VARCHAR?`; `transfer_group_id VARCHAR?`; `source_system VARCHAR(100)?`; `external_reference VARCHAR(200)?`; `note VARCHAR?` |
 
 Important constraints:
 
 - Unique `(portfolio_id, source_system, external_reference)` when a complete source identity is present.
 - `external_reference` requires `source_system`.
-- `related_instrument_id` and `event_group_id` are retained for historical rows only. New derivative writes record each instrument independently and may describe relationships in `note`; `transfer_group_id` remains reserved for paired internal transfers.
+- Derivative facts do not carry relation or event-group fields. Each instrument is recorded independently; `transfer_group_id` is reserved for paired internal transfers.
 - The API preserves exact source decimals alongside float calculation projections.
 - Trade date, position-effective date, entitlement date, and settlement date are independent accounting facts.
 - `transaction_sequence` is a database-coordinated, immutable replay tie-breaker. It is not a business-facing source identifier and integrations must not allocate it.

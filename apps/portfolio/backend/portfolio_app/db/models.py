@@ -338,20 +338,9 @@ class TransactionRecordModel(Base):
         CheckConstraint(
             "lifecycle_event_type IS NULL OR lifecycle_event_type IN ("
             "'fcn_knock_in', 'fcn_knock_out', 'fcn_maturity', "
-            "'fcn_physical_settlement', 'option_long_expiry', "
-            "'option_long_exercise', 'option_writer_expiry', "
+            "'option_long_expiry', 'option_long_exercise', 'option_writer_expiry', "
             "'option_assignment')",
             name="lifecycle_event_type",
-        ),
-        Index(
-            "ix_transaction_record_portfolio_event_group",
-            "portfolio_id",
-            "event_group_id",
-        ),
-        Index(
-            "ix_transaction_record_portfolio_related_instrument",
-            "portfolio_id",
-            "related_instrument_id",
         ),
         Index(
             "ix_transaction_record_portfolio_position_effective",
@@ -413,8 +402,6 @@ class TransactionRecordModel(Base):
     counterparty_account_id: Mapped[str | None] = mapped_column(String)
     source_system: Mapped[str | None] = mapped_column(String(100))
     external_reference: Mapped[str | None] = mapped_column(String(200))
-    event_group_id: Mapped[str | None] = mapped_column(String(200))
-    related_instrument_id: Mapped[str | None] = mapped_column(String(200))
     note: Mapped[str | None] = mapped_column(String)
     created_at: Mapped[str | None] = mapped_column(String)
     row_version: Mapped[int] = mapped_column(

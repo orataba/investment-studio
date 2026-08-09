@@ -68,7 +68,6 @@ LifecycleEventType = Literal[
     "fcn_knock_in",
     "fcn_knock_out",
     "fcn_maturity",
-    "fcn_physical_settlement",
     "option_long_expiry",
     "option_long_exercise",
     "option_writer_expiry",
@@ -473,8 +472,6 @@ class TransactionRecord(BaseModel):
     counterparty_account_id: str | None = None
     source_system: str | None = None
     external_reference: str | None = None
-    event_group_id: str | None = None
-    related_instrument_id: str | None = None
     net_cash_effect: float | None = None
     note: str | None = None
     created_at: str | None = None
@@ -3305,16 +3302,10 @@ class TransactionCreateRequest(BaseModel):
 
         if self.external_reference is not None and self.source_system is None:
             raise ValueError("external_reference requires source_system.")
-        if self.lifecycle_event_type == "fcn_physical_settlement":
-            raise ValueError(
-                "Use an FCN close result and record any received asset as a separate buy."
-            )
-
         lifecycle_transaction_types: dict[str, set[str]] = {
             "fcn_knock_in": {"maturity_redemption"},
             "fcn_knock_out": {"maturity_redemption"},
             "fcn_maturity": {"maturity_redemption"},
-            "fcn_physical_settlement": {"maturity_redemption"},
             "option_long_expiry": {"maturity_redemption"},
             "option_long_exercise": {"maturity_redemption"},
             "option_writer_expiry": {"lifecycle_event"},
@@ -3653,4 +3644,3 @@ class TransactionDeleteResponse(BaseModel):
     deleted_count: int
     deleted_transaction_ids: list[str]
     transfer_group_id: str | None = None
-    event_group_id: str | None = None

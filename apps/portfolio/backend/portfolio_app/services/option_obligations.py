@@ -143,7 +143,6 @@ def _new_obligation(transaction: dict[str, object], quantity: float) -> dict[str
         "related_underlying_id": underlying_id,
         "open_contract_quantity": quantity,
         "required_underlying_quantity": required_underlying_quantity,
-        "covered_underlying_quantity": 0.0,
         "remaining_quantity": quantity,
         "premium_received_gross": gross,
         "premium_basis_remaining": gross,
@@ -151,7 +150,6 @@ def _new_obligation(transaction: dict[str, object], quantity: float) -> dict[str
         "opened_at": opened_at.isoformat() if opened_at else transaction.get("trade_date"),
         "expiry_date": expiry_date.isoformat() if expiry_date else None,
         "status": "open",
-        "coverage_type": "short_option",
         "option_type": contract.get("option_type"),
         "strike": contract.get("strike"),
         "contract_multiplier": contract.get("contract_multiplier"),
@@ -205,7 +203,6 @@ def _consume(
         obligation["remaining_quantity"] = 0.0
         obligation["open_contract_quantity"] = 0.0
         obligation["required_underlying_quantity"] = 0.0
-        obligation["covered_underlying_quantity"] = 0.0
         obligation["premium_basis_remaining"] = 0.0
         obligation["carrying_liability"] = 0.0
         obligation["status"] = reason
@@ -400,11 +397,6 @@ def summarize_option_obligations(rows: Iterable[dict[str, object]]) -> dict[str,
         "open_obligation_count": sum(1 for row in items if row.get("status") == "open"),
         "open_contract_quantity": sum(
             _float(row.get("open_contract_quantity"))
-            for row in items
-            if row.get("status") == "open"
-        ),
-        "covered_underlying_quantity": sum(
-            _float(row.get("covered_underlying_quantity"))
             for row in items
             if row.get("status") == "open"
         ),

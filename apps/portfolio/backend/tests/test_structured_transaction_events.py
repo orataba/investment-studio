@@ -113,8 +113,6 @@ def _transaction(
     price: float | None = None,
     gross_amount: float = 0.0,
     lifecycle_event_type: str | None = None,
-    related_instrument_id: str | None = None,
-    event_group_id: str | None = None,
     fees: float = 0.0,
     taxes: float = 0.0,
     currency: str = "USD",
@@ -151,7 +149,7 @@ def _transaction(
                 instrument_type,
                 currency=currency,
                 option_underlying_id=(
-                    option_underlying_id or related_instrument_id
+                    option_underlying_id
                     if instrument_type == "option"
                     else None
                 ),
@@ -164,8 +162,6 @@ def _transaction(
             if instrument_id and instrument_type
             else None
         ),
-        "related_instrument_id": related_instrument_id,
-        "event_group_id": event_group_id,
         "quantity": quantity,
         "price": price,
         "gross_amount": gross_amount,
@@ -347,8 +343,6 @@ def test_simulated_stock_fund_option_and_fcn_chain_uses_independent_facts() -> N
         ),
     ]
 
-    assert all(not row.get("event_group_id") for row in transactions)
-    assert all(not row.get("related_instrument_id") for row in transactions)
     validate_transaction_position_history(
         "portfolio",
         transactions,
@@ -520,7 +514,7 @@ def test_event_valued_fcn_daily_holding_uses_cost_without_market_lookup(
     assert final_snapshot["priced_position_count"] == 0
 
 
-def test_fcn_physical_settlement_realizes_terminal_value_and_opens_stock_lot() -> None:
+def test_fcn_knock_in_close_and_stock_buy_are_independent_facts() -> None:
     accounts = [
         {
             "account_id": "broker",
@@ -548,10 +542,8 @@ def test_fcn_physical_settlement_realizes_terminal_value_and_opens_stock_lot() -
             instrument_id="fcn-1",
             instrument_type="fcn",
             quantity=1.0,
-            gross_amount=0.0,
-            lifecycle_event_type="fcn_physical_settlement",
-            related_instrument_id="equity-1",
-            event_group_id="delivery-1",
+            gross_amount=110_000.0,
+            lifecycle_event_type="fcn_knock_in",
             fees=2.0,
             taxes=3.0,
         ),
@@ -564,7 +556,6 @@ def test_fcn_physical_settlement_realizes_terminal_value_and_opens_stock_lot() -
             quantity=1_000.0,
             price=110.0,
             gross_amount=110_000.0,
-            event_group_id="delivery-1",
             fees=4.0,
             taxes=1.0,
         ),
@@ -590,7 +581,7 @@ def test_fcn_physical_settlement_realizes_terminal_value_and_opens_stock_lot() -
     assert fcn_lot["status"] == "closed"
     assert stock_lot["status"] == "open"
     assert stock_lot["remaining_quantity"] == pytest.approx(1_000.0)
-    assert stock_lot["remaining_cost_basis"] == pytest.approx(110_000.0)
+    assert stock_lot["remaining_cost_basis"] == pytest.approx(110_005.0)
     assert fcn_lot["realized_pnl"] == pytest.approx(9_995.0)
 
     postings = derive_ledger_postings(
@@ -617,9 +608,9 @@ def test_fcn_physical_settlement_realizes_terminal_value_and_opens_stock_lot() -
         if posting["transaction_id"] == "txn-2"
         and posting["posting_role"] == "security_position"
     )
-    assert delivered_position["cost_basis_delta"] == pytest.approx(110_000.0)
-    assert delivery_cash["cash_amount_delta"] == pytest.approx(-5.0)
-    assert fcn_close["realized_pnl_delta"] == pytest.approx(9_995.0)
+    assert delivered_position["cost_basis_delta"] == pytest.approx(110_005.0)
+    assert delivery_cash["cash_amount_delta"] == pytest.approx(-110_005.0)
+    assert fcn_close["cost_basis_delta"] == pytest.approx(-100_000.0)
 
     serialized = serialize_transactions(
         "portfolio",
@@ -643,23 +634,11 @@ def test_fcn_physical_settlement_realizes_terminal_value_and_opens_stock_lot() -
         },
     )
     serialized_by_id = {item.transaction_id: item for item in serialized}
-    assert serialized_by_id["txn-2"].net_cash_effect == pytest.approx(-5.0)
-    assert serialized_by_id["txn-3"].net_cash_effect == pytest.approx(-5.0)
-
-    missing_terminal_value = deepcopy(transactions)
-    missing_terminal_value[-1]["gross_amount"] = 0.0
-    with pytest.raises(
-        ValueError,
-        match="positive delivered-position gross_amount as terminal value",
-    ):
-        validate_transaction_position_history(
-            "portfolio",
-            missing_terminal_value,
-            account_cost_methods={"broker": "fifo"},
-        )
+    assert serialized_by_id["txn-2"].net_cash_effect == pytest.approx(109_995.0)
+    assert serialized_by_id["txn-3"].net_cash_effect == pytest.approx(-110_005.0)
 
 
-def test_fcn_delivery_without_stock_eod_quote_fails_valuation_closed(
+def test_independent_stock_buy_after_fcn_knock_in_requires_stock_quote(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     equity_detail = _equity_detail("equity-1", [])
@@ -732,10 +711,8 @@ def test_fcn_delivery_without_stock_eod_quote_fails_valuation_closed(
             instrument_id="fcn-1",
             instrument_type="fcn",
             quantity=1.0,
-            gross_amount=0.0,
-            lifecycle_event_type="fcn_physical_settlement",
-            related_instrument_id="equity-1",
-            event_group_id="delivery-1",
+            gross_amount=110_000.0,
+            lifecycle_event_type="fcn_knock_in",
         ),
         _transaction(
             "txn-3",
@@ -746,7 +723,6 @@ def test_fcn_delivery_without_stock_eod_quote_fails_valuation_closed(
             quantity=1_000.0,
             price=110.0,
             gross_amount=110_000.0,
-            event_group_id="delivery-1",
         ),
     ]
 
@@ -782,7 +758,7 @@ def test_fcn_delivery_without_stock_eod_quote_fails_valuation_closed(
     assert delivered_stock["coverage_status"] == "unpriced"
 
 
-def test_fcn_delivery_charges_and_stock_revaluation_reconcile_to_nav(
+def test_independent_fcn_close_and_stock_buy_reconcile_to_nav(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     equity_detail = _equity_detail(
@@ -860,10 +836,8 @@ def test_fcn_delivery_charges_and_stock_revaluation_reconcile_to_nav(
             instrument_id="fcn-1",
             instrument_type="fcn",
             quantity=1.0,
-            gross_amount=0.0,
-            lifecycle_event_type="fcn_physical_settlement",
-            related_instrument_id="equity-1",
-            event_group_id="delivery-1",
+            gross_amount=110_000.0,
+            lifecycle_event_type="fcn_knock_in",
             fees=2.0,
             taxes=3.0,
         ),
@@ -876,7 +850,6 @@ def test_fcn_delivery_charges_and_stock_revaluation_reconcile_to_nav(
             quantity=1_000.0,
             price=110.0,
             gross_amount=110_000.0,
-            event_group_id="delivery-1",
             fees=4.0,
             taxes=1.0,
         ),
@@ -901,8 +874,8 @@ def test_fcn_delivery_charges_and_stock_revaluation_reconcile_to_nav(
         {
             "txn-0": 100_025.0,
             "txn-1": -100_015.0,
-            "txn-2": -5.0,
-            "txn-3": -5.0,
+            "txn-2": 109_995.0,
+            "txn-3": -110_005.0,
         }
     )
     assert sum(cash_by_transaction.values()) == pytest.approx(0.0)
@@ -926,25 +899,25 @@ def test_fcn_delivery_charges_and_stock_revaluation_reconcile_to_nav(
     assert before_delivery["ending_nav"] == pytest.approx(100_010.0)
     assert delivery_day["valuation_coverage_state"] == "complete"
     assert delivery_day["cash_balance"] == pytest.approx(0.0)
-    assert delivery_day["open_cost_basis"] == pytest.approx(110_000.0)
+    assert delivery_day["open_cost_basis"] == pytest.approx(110_005.0)
     assert delivery_day["position_market_value"] == pytest.approx(105_000.0)
     assert delivery_day["realized_pnl"] == pytest.approx(9_995.0)
     assert delivery_day["derivative_lifecycle_realized_pnl"] == pytest.approx(
         9_995.0
     )
-    assert delivery_day["unrealized_pnl"] == pytest.approx(-5_000.0)
+    assert delivery_day["unrealized_pnl"] == pytest.approx(-5_005.0)
     assert delivery_day["expense_cash_amount"] == pytest.approx(25.0)
     assert delivery_day["ending_nav"] == pytest.approx(105_000.0)
     assert delivery_day["absolute_change"] == pytest.approx(4_990.0)
     assert delivery_day["total_pnl"] == pytest.approx(4_975.0)
     assert delivery_day["daily_twr"] == pytest.approx(105_000.0 / 100_010.0 - 1.0)
-    assert delivered_stock["cost_basis"] == pytest.approx(110_000.0)
+    assert delivered_stock["cost_basis"] == pytest.approx(110_005.0)
     assert delivered_stock["market_value"] == pytest.approx(105_000.0)
     assert delivered_stock["fair_value"] == pytest.approx(105_000.0)
     assert delivered_stock["carrying_value"] is None
 
 
-def test_long_option_exercise_transfers_premium_basis_into_underlying() -> None:
+def test_long_option_exercise_close_and_stock_buy_are_independent_facts() -> None:
     accounts = [
         {
             "account_id": "broker",
@@ -976,8 +949,6 @@ def test_long_option_exercise_transfers_premium_basis_into_underlying() -> None:
             quantity=1.0,
             gross_amount=0.0,
             lifecycle_event_type="option_long_exercise",
-            related_instrument_id="equity-1",
-            event_group_id="exercise-1",
             fees=2.0,
             taxes=1.0,
             option_underlying_id="equity-1",
@@ -992,7 +963,6 @@ def test_long_option_exercise_transfers_premium_basis_into_underlying() -> None:
             quantity=100.0,
             price=100.0,
             gross_amount=10_000.0,
-            event_group_id="exercise-1",
             fees=4.0,
             taxes=1.0,
         ),
@@ -1015,9 +985,9 @@ def test_long_option_exercise_transfers_premium_basis_into_underlying() -> None:
     option_lot = next(lot for lot in lots if lot["instrument_id"] == "option-long-1")
     stock_lot = next(lot for lot in lots if lot["instrument_id"] == "equity-1")
     assert option_lot["status"] == "closed"
-    assert option_lot["realized_pnl"] == pytest.approx(0.0)
+    assert option_lot["realized_pnl"] == pytest.approx(-500.0)
     assert stock_lot["remaining_quantity"] == pytest.approx(100.0)
-    assert stock_lot["remaining_cost_basis"] == pytest.approx(10_500.0)
+    assert stock_lot["remaining_cost_basis"] == pytest.approx(10_005.0)
 
     postings = derive_ledger_postings(
         "portfolio",
@@ -1038,7 +1008,7 @@ def test_long_option_exercise_transfers_premium_basis_into_underlying() -> None:
         and posting["posting_role"] == "security_position"
     )
     assert option_release["cost_basis_delta"] == pytest.approx(-500.0)
-    assert stock_open["cost_basis_delta"] == pytest.approx(10_500.0)
+    assert stock_open["cost_basis_delta"] == pytest.approx(10_005.0)
 
 
 def test_written_option_partial_close_and_expiry_release_premium_basis() -> None:
@@ -1059,9 +1029,9 @@ def test_written_option_partial_close_and_expiry_release_premium_basis() -> None
             "2026-01-02",
             instrument_id="option-1",
             instrument_type="option",
-            quantity=200.0,
+            quantity=2.0,
             gross_amount=600.0,
-            related_instrument_id="equity-1",
+            option_underlying_id="equity-1",
             fees=10.0,
             taxes=5.0,
         ),
@@ -1071,9 +1041,9 @@ def test_written_option_partial_close_and_expiry_release_premium_basis() -> None
             "2026-06-01",
             instrument_id="option-1",
             instrument_type="option",
-            quantity=100.0,
+            quantity=1.0,
             gross_amount=100.0,
-            related_instrument_id="equity-1",
+            option_underlying_id="equity-1",
             fees=2.0,
             taxes=1.0,
         ),
@@ -1084,10 +1054,10 @@ def test_written_option_partial_close_and_expiry_release_premium_basis() -> None
             settlement_cash_account_id=None,
             instrument_id="option-1",
             instrument_type="option",
-            quantity=100.0,
+            quantity=1.0,
             gross_amount=0.0,
             lifecycle_event_type="option_writer_expiry",
-            related_instrument_id="equity-1",
+            option_underlying_id="equity-1",
         ),
     ]
 
@@ -1152,9 +1122,9 @@ def test_written_option_full_buy_to_close_clears_obligation() -> None:
             "2026-01-02",
             instrument_id="option-1",
             instrument_type="option",
-            quantity=100.0,
+            quantity=1.0,
             gross_amount=300.0,
-            related_instrument_id="equity-1",
+            option_underlying_id="equity-1",
             fees=10.0,
             taxes=5.0,
         ),
@@ -1164,9 +1134,9 @@ def test_written_option_full_buy_to_close_clears_obligation() -> None:
             "2026-06-01",
             instrument_id="option-1",
             instrument_type="option",
-            quantity=100.0,
+            quantity=1.0,
             gross_amount=100.0,
-            related_instrument_id="equity-1",
+            option_underlying_id="equity-1",
             fees=2.0,
             taxes=1.0,
         ),
@@ -1180,7 +1150,7 @@ def test_written_option_full_buy_to_close_clears_obligation() -> None:
     events = derive_option_obligation_events(transactions)
     close_event = next(event for event in events if event["transaction_id"] == "txn-3")
     obligation = build_option_obligations(transactions)[0]
-    assert close_event["released_quantity"] == pytest.approx(100.0)
+    assert close_event["released_quantity"] == pytest.approx(1.0)
     assert close_event["released_premium_basis"] == pytest.approx(300.0)
     assert close_event["liability_delta"] == pytest.approx(-300.0)
     assert close_event["realized_pnl_delta"] == pytest.approx(197.0)
@@ -1281,9 +1251,9 @@ def test_written_option_write_date_nav_changes_only_by_charges(
             "2026-01-02",
             instrument_id="option-1",
             instrument_type="option",
-            quantity=200.0,
+            quantity=2.0,
             gross_amount=600.0,
-            related_instrument_id="equity-1",
+            option_underlying_id="equity-1",
             fees=10.0,
             taxes=5.0,
         ),
@@ -1410,9 +1380,9 @@ def test_written_option_lifecycle_reconciles_portfolio_calculation_and_attributi
             "2026-01-02",
             instrument_id="option-1",
             instrument_type="option",
-            quantity=100.0,
+            quantity=1.0,
             gross_amount=300.0,
-            related_instrument_id="equity-1",
+            option_underlying_id="equity-1",
             fees=10.0,
             taxes=5.0,
         ),
@@ -1422,9 +1392,9 @@ def test_written_option_lifecycle_reconciles_portfolio_calculation_and_attributi
             "2026-01-03",
             instrument_id="option-1",
             instrument_type="option",
-            quantity=100.0,
+            quantity=1.0,
             gross_amount=100.0,
-            related_instrument_id="equity-1",
+            option_underlying_id="equity-1",
             fees=2.0,
             taxes=1.0,
         ),
@@ -1850,7 +1820,6 @@ def test_csv_api_imports_short_option_and_independent_assignment_facts(
     assert first_import.status_code == 200
     created = first_import.json()["transactions"][0]
     assert created["transaction_type"] == "option_write"
-    assert created["related_instrument_id"] is None
     assert created["source_system"] == "colleague_project"
     assert created["net_cash_effect"] == pytest.approx(500.0)
 
@@ -1871,8 +1840,6 @@ def test_csv_api_imports_short_option_and_independent_assignment_facts(
 
     download = client.get("/api/portfolios/portfolio-ops/transactions.csv")
     assert download.status_code == 200
-    assert "related_instrument_id" not in download.text
-    assert "event_group_id" not in download.text
     assert "CALL-001-WRITE" in download.text
 
     assignment_csv = "\n".join(
@@ -1934,7 +1901,6 @@ def test_csv_api_imports_short_option_and_independent_assignment_facts(
     )
     assert delete_response.status_code == 200
     assert delete_response.json()["deleted_count"] == 1
-    assert delete_response.json()["event_group_id"] is None
 
 
 def test_direct_transaction_source_identity_conflict_returns_409(client) -> None:
@@ -2045,8 +2011,6 @@ def test_documented_multi_asset_independent_transactions_csv_imports_cleanly(
     assert import_response.status_code == 200
     created = import_response.json()["transactions"]
     assert len(created) == 12
-    assert all(row["event_group_id"] is None for row in created)
-    assert all(row["related_instrument_id"] is None for row in created)
 
     download_response = client.get(
         "/api/portfolios/portfolio-ops/transactions.csv"
@@ -2054,8 +2018,6 @@ def test_documented_multi_asset_independent_transactions_csv_imports_cleanly(
     assert download_response.status_code == 200
     exported_csv = download_response.text
     assert "FCN-STOCK-001" in exported_csv
-    assert "related_instrument_id" not in exported_csv.splitlines()[0]
-    assert "event_group_id" not in exported_csv.splitlines()[0]
 
 
 def test_transaction_contract_distinguishes_long_and_writer_option_events() -> None:
@@ -2086,3 +2048,26 @@ def test_transaction_contract_distinguishes_long_and_writer_option_events() -> N
 
     assert long_expiry.gross_amount == 0
     assert writer_assignment.quantity == 1
+
+
+def test_transaction_contract_rejects_removed_derivative_grouping_fields() -> None:
+    payload = {
+        "transaction_type": "maturity_redemption",
+        "lifecycle_event_type": "fcn_knock_in",
+        "trade_date": "2026-09-01",
+        "account_id": "broker",
+        "instrument_id": "fcn-1",
+        "quantity": 1,
+        "gross_amount": 100_000,
+        "currency": "USD",
+    }
+
+    for field_name in ("event_group_id", "related_instrument_id"):
+        with pytest.raises(ValueError, match=field_name):
+            TransactionCreateRequest.model_validate(
+                {**payload, field_name: "removed-derivative-relation"}
+            )
+    with pytest.raises(ValueError, match="fcn_physical_settlement"):
+        TransactionCreateRequest.model_validate(
+            {**payload, "lifecycle_event_type": "fcn_physical_settlement"}
+        )

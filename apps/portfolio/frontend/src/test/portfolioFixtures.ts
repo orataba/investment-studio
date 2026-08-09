@@ -272,14 +272,11 @@ export function holdingsWorkspaceFixture(
       ordinary_sleeve_twr_reason: 'Sleeve boundary cash flows are not maintained.',
     },
     operational_summary: {
-      uncovered_obligation_count: 0,
-      uncovered_underlying_quantity: 0,
       expiry_buckets: [],
       assignment_exposure: {
         obligation_count: 0,
         open_contract_quantity: 0,
         deliverable_underlying_quantity: 0,
-        uncovered_underlying_quantity: 0,
         strike_notional_base: 0,
       },
       settlement_exposure: {

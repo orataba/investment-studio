@@ -736,13 +736,7 @@ export type PortfolioHoldingRow = {
   exclusion_reason: string | null
   open_contract_quantity?: number | null
   required_underlying_quantity?: number | null
-  underlying_position_quantity?: number | null
-  covered_underlying_quantity?: number | null
-  uncovered_underlying_quantity?: number | null
-  covered_ratio?: number | null
   obligation_status?: string | null
-  obligation_coverage_status?: string | null
-  coverage_type?: string | null
   related_underlying_id?: string | null
   expiry_date?: string | null
   days_to_expiry?: number | null
@@ -769,8 +763,6 @@ export type PortfolioHoldingRow = {
 }
 
 export type HoldingsOperationalSummary = {
-  uncovered_obligation_count: number
-  uncovered_underlying_quantity: number
   expiry_buckets: Array<{
     bucket:
       | 'expired_or_due'
@@ -782,14 +774,12 @@ export type HoldingsOperationalSummary = {
     obligation_count: number
     open_contract_quantity: number
     required_underlying_quantity: number
-    uncovered_underlying_quantity: number
     carrying_liability_base: number | null
   }>
   assignment_exposure: {
     obligation_count: number
     open_contract_quantity: number
     deliverable_underlying_quantity: number
-    uncovered_underlying_quantity: number
     strike_notional_base: number | null
   }
   settlement_exposure: {
@@ -1895,7 +1885,6 @@ export type PortfolioOptionObligationRecord = {
   related_underlying_id: string
   open_contract_quantity: number
   required_underlying_quantity: number
-  covered_underlying_quantity?: number | null
   remaining_quantity: number
   premium_received_gross: number
   premium_basis_remaining: number
@@ -1903,7 +1892,6 @@ export type PortfolioOptionObligationRecord = {
   opened_at?: string | null
   expiry_date?: string | null
   status: string
-  coverage_type?: string | null
   option_type?: 'call' | 'put' | string | null
   strike?: number | null
   contract_multiplier?: number | null
@@ -2021,8 +2009,6 @@ export type PortfolioTransactionRecord = {
   counterparty_account_id: string | null
   source_system?: string | null
   external_reference?: string | null
-  event_group_id?: string | null
-  related_instrument_id?: string | null
   net_cash_effect: number | null
   note: string | null
   created_at: string | null
@@ -2377,7 +2363,6 @@ export type PortfolioTransactionDeleteResponse = {
   deleted_count: number
   deleted_transaction_ids: string[]
   transfer_group_id?: string | null
-  event_group_id?: string | null
 }
 
 export type PortfolioTableViewScope = 'holdings' | 'performance_calculation'

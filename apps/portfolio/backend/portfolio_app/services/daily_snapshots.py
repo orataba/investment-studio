@@ -1471,19 +1471,6 @@ def _aggregate_holding_rows(
         required_underlying_quantity = _sum_complete(
             [row.get("required_underlying_quantity") for row in instrument_rows]
         )
-        covered_underlying_quantity = _sum_complete(
-            [row.get("covered_underlying_quantity") for row in instrument_rows]
-        )
-        uncovered_underlying_quantity = _sum_complete(
-            [row.get("uncovered_underlying_quantity") for row in instrument_rows]
-        )
-        covered_ratio = (
-            covered_underlying_quantity / required_underlying_quantity
-            if covered_underlying_quantity is not None
-            and required_underlying_quantity is not None
-            and required_underlying_quantity > 1e-9
-            else None
-        )
         aggregated_rows.append(
             {
                 "line_id": (
@@ -1574,25 +1561,8 @@ def _aggregate_holding_rows(
                     [row.get("open_contract_quantity") for row in instrument_rows]
                 ),
                 "required_underlying_quantity": required_underlying_quantity,
-                "underlying_position_quantity": _sum_complete(
-                    [row.get("underlying_position_quantity") for row in instrument_rows]
-                ),
-                "covered_underlying_quantity": covered_underlying_quantity,
-                "uncovered_underlying_quantity": uncovered_underlying_quantity,
-                "covered_ratio": covered_ratio,
                 "obligation_status": _first_present(
                     instrument_rows, "obligation_status"
-                ),
-                "obligation_coverage_status": (
-                    "uncovered"
-                    if uncovered_underlying_quantity is not None
-                    and uncovered_underlying_quantity > 1e-9
-                    else _first_present(
-                        instrument_rows, "obligation_coverage_status"
-                    )
-                ),
-                "coverage_type": _first_present(
-                    instrument_rows, "coverage_type"
                 ),
                 "related_underlying_id": _first_present(
                     instrument_rows, "related_underlying_id"
@@ -1817,13 +1787,7 @@ _INSTRUMENT_HOLDING_PROJECTION_FIELDS = (
     "risk_eligible",
     "open_contract_quantity",
     "required_underlying_quantity",
-    "underlying_position_quantity",
-    "covered_underlying_quantity",
-    "uncovered_underlying_quantity",
-    "covered_ratio",
     "obligation_status",
-    "obligation_coverage_status",
-    "coverage_type",
     "related_underlying_id",
     "expiry_date",
     "days_to_expiry",

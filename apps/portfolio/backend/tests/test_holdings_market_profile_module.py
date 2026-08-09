@@ -305,7 +305,6 @@ def test_short_option_rows_do_not_allocate_or_require_underlying_holdings() -> N
                 "premium_received_gross": 300.0,
                 "premium_basis_remaining": 300.0,
                 "carrying_liability": 300.0,
-                "coverage_type": "short_option",
                 "expiry_date": expiry_date,
                 "strike": strike,
                 "option_type": "call",
@@ -338,9 +337,6 @@ def test_short_option_rows_do_not_allocate_or_require_underlying_holdings() -> N
     assert [row["instrument_id"] for row in rows] == ["option-near", "option-far"]
     assert rows[0]["quantity"] == pytest.approx(-1.0)
     assert rows[0]["required_underlying_quantity"] == pytest.approx(100.0)
-    assert rows[0]["covered_underlying_quantity"] is None
-    assert rows[0]["uncovered_underlying_quantity"] is None
-    assert rows[0]["covered_ratio"] is None
     assert rows[0]["assignment_notional"] == pytest.approx(1_000.0)
     assert rows[0]["assignment_notional_base"] == pytest.approx(2_000.0)
     assert rows[1]["quantity"] == pytest.approx(-1.0)
@@ -348,7 +344,6 @@ def test_short_option_rows_do_not_allocate_or_require_underlying_holdings() -> N
     assert rows[1]["assignment_notional"] == pytest.approx(2_000.0)
     assert rows[1]["assignment_notional_base"] == pytest.approx(4_000.0)
     assert rows[1]["coverage_status"] == "event-liability"
-    assert rows[1]["obligation_coverage_status"] == "not_applicable"
 
 
 def test_operational_summary_expiry_boundaries_settlement_net_and_alerts() -> None:
@@ -398,8 +393,6 @@ def test_operational_summary_expiry_boundaries_settlement_net_and_alerts() -> No
         ("next_90_days", 2),
         ("later", 1),
     ]
-    assert summary["uncovered_obligation_count"] == 0
-    assert summary["uncovered_underlying_quantity"] == pytest.approx(0.0)
     assert summary["assignment_exposure"]["strike_notional_base"] == pytest.approx(
         8_000.0
     )

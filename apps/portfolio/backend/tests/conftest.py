@@ -358,8 +358,6 @@ def isolated_portfolio_store(request, tmp_path, monkeypatch):
                 "lifecycle_event_type": "VARCHAR",
                 "source_system": "VARCHAR(100)",
                 "external_reference": "VARCHAR(200)",
-                "event_group_id": "VARCHAR(200)",
-                "related_instrument_id": "VARCHAR(200)",
             }
             for column_name, column_type in additive_transaction_columns.items():
                 if column_name in transaction_columns:

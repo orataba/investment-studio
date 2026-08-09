@@ -26,41 +26,10 @@ def resolve_transaction_flow_scope(transaction_type: str) -> str:
     return "internal_portfolio"
 
 
-PHYSICAL_DERIVATIVE_LIFECYCLE_TYPES = frozenset(
-    {"fcn_physical_settlement", "option_long_exercise", "option_assignment"}
-)
-
-
-def physical_lifecycle_types_by_group(
-    records: list[dict[str, object]],
-) -> dict[str, str]:
-    resolved: dict[str, str] = {}
-    for record in records:
-        event_group_id = str(record.get("event_group_id") or "").strip()
-        lifecycle_event_type = str(
-            record.get("lifecycle_event_type") or ""
-        ).strip()
-        if (
-            not event_group_id
-            or lifecycle_event_type not in PHYSICAL_DERIVATIVE_LIFECYCLE_TYPES
-        ):
-            continue
-        previous = resolved.get(event_group_id)
-        if previous is not None and previous != lifecycle_event_type:
-            raise ValueError(
-                f"Physical event group '{event_group_id}' has conflicting lifecycle facts."
-            )
-        resolved[event_group_id] = lifecycle_event_type
-    return resolved
-
-
 def resolve_transaction_net_cash_effect(
     record: dict[str, object],
-    *,
-    physical_lifecycle_type: str | None = None,
 ) -> float | None:
     transaction_type = str(record.get("transaction_type") or "")
-    lifecycle_event_type = str(record.get("lifecycle_event_type") or "")
     option_action = resolve_option_action(record)
     gross_amount = float(record.get("gross_amount") or 0.0)
     fees = float(record.get("fees") or 0.0)
@@ -69,20 +38,11 @@ def resolve_transaction_net_cash_effect(
         return -(gross_amount + fees + taxes)
     if option_action in {"sell_to_close", "sell_to_open"}:
         return gross_amount - fees - taxes
-    if (
-        transaction_type == "buy"
-        and physical_lifecycle_type == "fcn_physical_settlement"
-    ):
-        return -(fees + taxes)
     if transaction_type == "buy":
         return -(gross_amount + fees + taxes)
     if transaction_type == "sell":
         return gross_amount - fees - taxes
     if transaction_type == "maturity_redemption":
-        if lifecycle_event_type == "fcn_physical_settlement":
-            return -fees - taxes
-        if lifecycle_event_type == "option_long_exercise":
-            return -fees - taxes
         return gross_amount - fees - taxes
     if transaction_type in {"dividend", "coupon", "return_of_capital"}:
         return gross_amount - fees - taxes
@@ -111,8 +71,6 @@ def serialize_transaction(
     portfolio_id: str,
     record: dict[str, object],
     account_lookup: dict[str, dict[str, object]],
-    *,
-    physical_lifecycle_type: str | None = None,
 ) -> TransactionRecord:
     account_id = str(record.get("account_id") or "")
     account = account_lookup.get(account_id)
@@ -207,20 +165,7 @@ def serialize_transaction(
             if record.get("external_reference")
             else None
         ),
-        event_group_id=(
-            str(record.get("event_group_id"))
-            if record.get("event_group_id")
-            else None
-        ),
-        related_instrument_id=(
-            str(record.get("related_instrument_id"))
-            if record.get("related_instrument_id")
-            else None
-        ),
-        net_cash_effect=resolve_transaction_net_cash_effect(
-            record,
-            physical_lifecycle_type=physical_lifecycle_type,
-        ),
+        net_cash_effect=resolve_transaction_net_cash_effect(record),
         note=str(record.get("note")) if record.get("note") else None,
         created_at=str(record.get("created_at")) if record.get("created_at") else None,
         row_version=int(record.get("row_version") or 1),
@@ -231,21 +176,9 @@ def serialize_transactions(
     portfolio_id: str,
     records: list[dict[str, object]],
     account_lookup: dict[str, dict[str, object]],
-    *,
-    context_records: list[dict[str, object]] | None = None,
 ) -> list[TransactionRecord]:
-    lifecycle_types = physical_lifecycle_types_by_group(
-        context_records if context_records is not None else records
-    )
     return [
-        serialize_transaction(
-            portfolio_id,
-            record,
-            account_lookup,
-            physical_lifecycle_type=lifecycle_types.get(
-                str(record.get("event_group_id") or "").strip()
-            ),
-        )
+        serialize_transaction(portfolio_id, record, account_lookup)
         for record in records
     ]
 

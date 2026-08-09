@@ -36,7 +36,7 @@ Example: sell three Put contracts to open, with a multiplier of 100:
 
 ## One row, one fact
 
-Portfolio does not create or bind multi-leg derivative transactions. `related_instrument_id` and `event_group_id` are not accepted by new writes and are not included in the CSV contract. If two rows are economically related, record both independently and explain the relationship in `note` when useful.
+Portfolio does not create or bind multi-leg derivative transactions, and the transaction schema has no derivative relation or event-group field. If two rows are economically related, record both independently and explain the relationship in `note` when useful.
 
 Examples:
 

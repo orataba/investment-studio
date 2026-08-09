@@ -64,7 +64,6 @@ def _transaction(
     quantity: float | None = None,
     price: float | None = None,
     gross_amount: float,
-    related_instrument_id: str | None = None,
     fees: float = 0.0,
 ) -> dict[str, object]:
     return {
@@ -90,8 +89,6 @@ def _transaction(
             else None
         ),
         "instrument_ref": deepcopy(instrument_ref),
-        "related_instrument_id": related_instrument_id,
-        "event_group_id": None,
         "quantity": quantity,
         "price": price,
         "gross_amount": gross_amount,
@@ -238,9 +235,8 @@ def test_dynamic_and_materialized_option_asset_and_obligation_are_identical(
             account_id="broker-us-core",
             settlement_cash_account_id="cash-usd-main",
             instrument_ref=option_ref,
-            quantity=100.0,
+            quantity=1.0,
             gross_amount=300.0,
-            related_instrument_id=underlying_id,
             fees=15.0,
         ),
     ]
@@ -319,13 +315,7 @@ def test_dynamic_and_materialized_option_asset_and_obligation_are_identical(
             for field_name in (
                 "open_contract_quantity",
                 "required_underlying_quantity",
-                "underlying_position_quantity",
-                "covered_underlying_quantity",
-                "uncovered_underlying_quantity",
-                "covered_ratio",
                 "obligation_status",
-                "obligation_coverage_status",
-                "coverage_type",
                 "related_underlying_id",
                 "expiry_date",
                 "days_to_expiry",
@@ -364,13 +354,7 @@ def test_dynamic_and_materialized_option_asset_and_obligation_are_identical(
     for field_name in (
         "open_contract_quantity",
         "required_underlying_quantity",
-        "underlying_position_quantity",
-        "covered_underlying_quantity",
-        "uncovered_underlying_quantity",
-        "covered_ratio",
         "obligation_status",
-        "obligation_coverage_status",
-        "coverage_type",
         "related_underlying_id",
         "expiry_date",
         "days_to_expiry",

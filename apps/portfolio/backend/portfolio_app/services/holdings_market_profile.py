@@ -908,14 +908,7 @@ def build_option_obligation_holding_rows(
                 "quantity": -float(group["open_contract_quantity"]),
                 "open_contract_quantity": float(group["open_contract_quantity"]),
                 "required_underlying_quantity": required_underlying_quantity,
-                "underlying_position_quantity": None,
-                "covered_underlying_quantity": None,
-                "uncovered_underlying_quantity": None,
-                "covered_ratio": None,
                 "obligation_status": "open",
-                "obligation_coverage_status": "not_applicable",
-                "coverage_type": first.get("coverage_type"),
-                "related_underlying_id": related_underlying_id,
                 "expiry_date": expiry_date.isoformat() if expiry_date else None,
                 "days_to_expiry": days_to_expiry,
                 "strike": strike,
@@ -993,7 +986,7 @@ def summarize_holdings_operational_status(
     as_of_date: date,
     safe_float: SafeFloat = _safe_float,
 ) -> dict[str, object]:
-    """Summarize coverage, expiry, assignment, and settlement operations."""
+    """Summarize expiry, assignment, and settlement operations."""
 
     obligation_rows = [
         row
@@ -1014,7 +1007,6 @@ def summarize_holdings_operational_status(
                 "obligation_count": 0,
                 "open_contract_quantity": 0.0,
                 "required_underlying_quantity": 0.0,
-                "uncovered_underlying_quantity": 0.0,
                 "carrying_liability_base": 0.0,
                 "carrying_liability_base_complete": True,
             },
@@ -1023,7 +1015,6 @@ def summarize_holdings_operational_status(
         for field_name in (
             "open_contract_quantity",
             "required_underlying_quantity",
-            "uncovered_underlying_quantity",
         ):
             bucket[field_name] = float(bucket[field_name]) + (
                 safe_float(row.get(field_name)) or 0.0
@@ -1168,8 +1159,6 @@ def summarize_holdings_operational_status(
 
     return {
         "operational_summary": {
-            "uncovered_obligation_count": 0,
-            "uncovered_underlying_quantity": 0.0,
             "expiry_buckets": expiry_buckets,
             "assignment_exposure": {
                 "obligation_count": len(assignment_rows),
@@ -1179,10 +1168,6 @@ def summarize_holdings_operational_status(
                 ),
                 "deliverable_underlying_quantity": sum(
                     safe_float(row.get("required_underlying_quantity")) or 0.0
-                    for row in assignment_rows
-                ),
-                "uncovered_underlying_quantity": sum(
-                    safe_float(row.get("uncovered_underlying_quantity")) or 0.0
                     for row in assignment_rows
                 ),
                 "strike_notional_base": (

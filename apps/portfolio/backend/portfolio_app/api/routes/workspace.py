@@ -6,10 +6,7 @@ from fastapi import APIRouter, BackgroundTasks, HTTPException
 from sqlalchemy import select
 
 from portfolio_app.services.calculation_frequency import CalculationFrequency
-from portfolio_app.api.assemblers import (
-    physical_lifecycle_types_by_group,
-    resolve_transaction_net_cash_effect,
-)
+from portfolio_app.api.assemblers import resolve_transaction_net_cash_effect
 from portfolio_app.db.models import PortfolioCalculationStateModel, PortfolioDailySnapshotModel
 from portfolio_app.db.session import get_session_factory
 from portfolio_app.services.daily_snapshots import (
@@ -165,11 +162,7 @@ def _holding_scope_instrument_id(row: dict[str, object]) -> str:
 
 def _transaction_is_derivative_tracking(
     transaction: dict[str, object],
-    *,
-    physical_lifecycle_type: str | None,
 ) -> bool:
-    if physical_lifecycle_type is not None:
-        return True
     instrument_ref = (
         transaction.get("instrument_ref")
         if isinstance(transaction.get("instrument_ref"), dict)
@@ -362,28 +355,18 @@ def _enrich_holdings_analytics_scope(
     # currency.  Never add those amounts across currencies; this disclosure
     # is intentionally local-currency activity, not a base-currency ledger.
     cash_scope_breakdown: dict[tuple[str, str], dict[str, float]] = {}
-    physical_lifecycle_types = physical_lifecycle_types_by_group(transactions)
     for transaction in transactions:
         transaction_date = transaction_cash_activity_date(transaction)
         if transaction_date is not None and transaction_date > as_of_date:
             continue
-        physical_lifecycle_type = physical_lifecycle_types.get(
-            str(transaction.get("event_group_id") or "").strip()
-        )
-        cash_effect = resolve_transaction_net_cash_effect(
-            transaction,
-            physical_lifecycle_type=physical_lifecycle_type,
-        )
+        cash_effect = resolve_transaction_net_cash_effect(transaction)
         if cash_effect is None or abs(cash_effect) <= 1e-12:
             continue
         transaction_instrument_id = str(transaction.get("instrument_id") or "").strip()
         transaction_scope = scopes.get(transaction_instrument_id, {})
         performance_scope = (
             "derivative_lifecycle"
-            if _transaction_is_derivative_tracking(
-                transaction,
-                physical_lifecycle_type=physical_lifecycle_type,
-            )
+            if _transaction_is_derivative_tracking(transaction)
             else str(transaction_scope.get("performance_scope") or "unallocated")
         )
         transaction_currency = str(
@@ -1096,24 +1079,10 @@ def holdings_workspace(
             "performance_eligible": bool(position.get("performance_eligible", True)),
             "risk_eligible": bool(position.get("risk_eligible", True)),
             "open_contract_quantity": position.get("open_contract_quantity"),
-            "covered_underlying_quantity": position.get(
-                "covered_underlying_quantity"
-            ),
             "required_underlying_quantity": position.get(
                 "required_underlying_quantity"
             ),
-            "underlying_position_quantity": position.get(
-                "underlying_position_quantity"
-            ),
-            "uncovered_underlying_quantity": position.get(
-                "uncovered_underlying_quantity"
-            ),
-            "covered_ratio": position.get("covered_ratio"),
             "obligation_status": position.get("obligation_status"),
-            "obligation_coverage_status": position.get(
-                "obligation_coverage_status"
-            ),
-            "coverage_type": position.get("coverage_type"),
             "related_underlying_id": position.get("related_underlying_id"),
             "expiry_date": position.get("expiry_date"),
             "days_to_expiry": position.get("days_to_expiry"),

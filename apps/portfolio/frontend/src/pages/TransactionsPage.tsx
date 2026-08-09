@@ -727,7 +727,6 @@ function canEditTransaction(transaction: PortfolioTransactionRecord | null) {
   }
   return (
     !transaction.transfer_group_id &&
-    !transaction.event_group_id &&
     !isTransferTransaction(transaction.transaction_type)
   )
 }
@@ -2428,7 +2427,6 @@ export default function TransactionsPage() {
       return
     }
     const deletingTransferPair = Boolean(transaction.transfer_group_id)
-    const deletingEventGroup = Boolean(transaction.event_group_id)
     const expectedRowVersions = transactionsWorkspace?.delete_scope_row_versions
     if (!expectedRowVersions || expectedRowVersions[transaction.transaction_id] !== transaction.row_version) {
       setDeleteError('Transaction delete scope is stale. Reload the ledger and retry.')
@@ -2458,8 +2456,6 @@ export default function TransactionsPage() {
       setNotice(
         deletingTransferPair
           ? `Deleted transfer pair ${deleted.transfer_group_id}.`
-          : deletingEventGroup
-            ? `Deleted settlement event ${deleted.event_group_id}.`
           : `Deleted transaction ${transaction.transaction_id}.`,
       )
     } catch (error) {
@@ -3039,9 +3035,7 @@ export default function TransactionsPage() {
                       >
                         {selectedTransaction.transfer_group_id
                           ? 'Delete Pair'
-                          : selectedTransaction.event_group_id
-                            ? 'Delete Event'
-                            : 'Delete'}
+                          : 'Delete'}
                       </button>
                     </div>
                   </div>
@@ -3126,18 +3120,6 @@ export default function TransactionsPage() {
                           <div>
                             <dt>Lifecycle event</dt>
                             <dd>{formatLabel(selectedTransaction.lifecycle_event_type)}</dd>
-                          </div>
-                        ) : null}
-                        {selectedTransaction.related_instrument_id ? (
-                          <div>
-                            <dt>Related stock / ETF</dt>
-                            <dd>{selectedTransaction.related_instrument_id}</dd>
-                          </div>
-                        ) : null}
-                        {selectedTransaction.event_group_id ? (
-                          <div>
-                            <dt>Settlement event</dt>
-                            <dd>{selectedTransaction.event_group_id}</dd>
                           </div>
                         ) : null}
                         {selectedTransaction.source_system || selectedTransaction.external_reference ? (
@@ -4094,27 +4076,20 @@ export default function TransactionsPage() {
         title={
           pendingDeleteTransaction?.transfer_group_id
             ? 'Delete Transfer Pair'
-            : pendingDeleteTransaction?.event_group_id
-              ? 'Delete Settlement Event'
-              : 'Delete Transaction'
+            : 'Delete Transaction'
         }
         description={
           pendingDeleteTransaction?.transfer_group_id
             ? `This permanently deletes both legs of transfer pair ${pendingDeleteTransaction.transfer_group_id}. This action cannot be undone.`
-            : pendingDeleteTransaction?.event_group_id
-              ? `This permanently deletes every fact in settlement event ${pendingDeleteTransaction.event_group_id}. This action cannot be undone.`
             : `This permanently deletes transaction ${pendingDeleteTransaction?.transaction_id ?? ''}. This action cannot be undone.`
         }
         confirmLabel={
           pendingDeleteTransaction?.transfer_group_id
             ? 'Delete Pair'
-            : pendingDeleteTransaction?.event_group_id
-              ? 'Delete Event'
-              : 'Delete Transaction'
+            : 'Delete Transaction'
         }
         confirmationText={
           pendingDeleteTransaction?.transfer_group_id ??
-          pendingDeleteTransaction?.event_group_id ??
           pendingDeleteTransaction?.transaction_id
         }
         error={deleteError}

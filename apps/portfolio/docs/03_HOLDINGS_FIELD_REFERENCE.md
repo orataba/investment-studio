@@ -88,7 +88,7 @@ pending:{kind}:{cash_account}:{economic_instrument}:{currency}:{settlement_date}
 
 它防止相同账户/资产/币种但不同结算边界的余额发生主键冲突。`pending_status` 目前包括 `awaiting_settlement`、`settled_awaiting_position` 和 `overdue`；本币 signed amount 与 base amount 必须同时保留，base FX 不可用时本币金额仍可展示但 base aggregation 为 unavailable。
 
-Workspace `operational_summary` 展示 open short-option contract count、expiry buckets、physical assignment exposure 和 settlement receivable/payable/net；`operational_alerts` 返回 severity、code、message 和真实 `related_line_ids`。到期已到和逾期结算是 critical，七日内到期与 settlement FX unavailable 是 warning。API 为兼容旧快照保留的 covered / uncovered 字段固定为空或零，不参与判断。动态 workspace、materialized snapshot 和 instrument detail projection 对当前字段必须保持 parity。
+Workspace `operational_summary` 展示 open short-option contract count、expiry buckets、physical assignment exposure 和 settlement receivable/payable/net；`operational_alerts` 返回 severity、code、message 和真实 `related_line_ids`。到期已到和逾期结算是 critical，七日内到期与 settlement FX unavailable 是 warning。API 不发布股票覆盖分类；动态 workspace、materialized snapshot 和 instrument detail projection 对当前字段必须保持 parity。
 
 Regions CSV 是固定 21 列 canonical export，顺序如下；任一区域不适用的单元格写字面量 `N/A`：
 

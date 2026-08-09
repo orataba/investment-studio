@@ -693,7 +693,7 @@ def test_workspace_cash_scope_breakdown_never_sums_across_currencies(
     assert breakdown[("ordinary", "HKD")]["absolute_cash_activity"] == 782.0
 
 
-def test_workspace_forces_derivative_lifecycle_cash_outside_ordinary_scope(
+def test_workspace_scopes_independent_fcn_and_stock_cash_facts(
     monkeypatch,
 ) -> None:
     ordinary_scope = {
@@ -731,14 +731,13 @@ def test_workspace_forces_derivative_lifecycle_cash_outside_ordinary_scope(
             {
                 "transaction_id": "fcn-close",
                 "transaction_type": "maturity_redemption",
-                "lifecycle_event_type": "fcn_physical_settlement",
-                "event_group_id": "delivery-1",
+                "lifecycle_event_type": "fcn_knock_in",
                 "instrument_id": "fcn-1",
                 "instrument_type": "fcn",
                 "trade_date": "2026-04-14",
                 "settlement_date": "2026-04-15",
                 "settlement_cash_account_id": "cash-usd",
-                "gross_amount": 0.0,
+                "gross_amount": 110.0,
                 "fees": 2.0,
                 "taxes": 3.0,
                 "currency": "USD",
@@ -746,7 +745,6 @@ def test_workspace_forces_derivative_lifecycle_cash_outside_ordinary_scope(
             {
                 "transaction_id": "stock-delivery",
                 "transaction_type": "buy",
-                "event_group_id": "delivery-1",
                 "instrument_id": "equity-1",
                 "instrument_type": "equity",
                 "trade_date": "2026-04-14",
@@ -764,7 +762,13 @@ def test_workspace_forces_derivative_lifecycle_cash_outside_ordinary_scope(
         {
             "performance_scope": "derivative_lifecycle",
             "currency": "USD",
-            "net_cash_effect": -111.0,
-            "absolute_cash_activity": 111.0,
-        }
+            "net_cash_effect": 4.0,
+            "absolute_cash_activity": 206.0,
+        },
+        {
+            "performance_scope": "ordinary",
+            "currency": "USD",
+            "net_cash_effect": -115.0,
+            "absolute_cash_activity": 115.0,
+        },
     ]

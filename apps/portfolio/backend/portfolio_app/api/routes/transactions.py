@@ -106,7 +106,6 @@ LIFECYCLE_EVENT_INSTRUMENT_TYPES: dict[str, set[str]] = {
     "fcn_knock_in": {"fcn"},
     "fcn_knock_out": {"fcn"},
     "fcn_maturity": {"fcn"},
-    "fcn_physical_settlement": {"fcn"},
     "option_long_expiry": {"option"},
     "option_long_exercise": {"option"},
     "option_writer_expiry": {"option"},
@@ -424,14 +423,6 @@ def _transfer_group_transaction_ids(portfolio_id: str, transfer_group_id: str) -
         str(record.get("transaction_id") or "")
         for record in list_transactions(portfolio_id)
         if str(record.get("transfer_group_id") or "") == transfer_group_id
-    ]
-
-
-def _event_group_transaction_ids(portfolio_id: str, event_group_id: str) -> list[str]:
-    return [
-        str(record.get("transaction_id") or "")
-        for record in list_transactions(portfolio_id)
-        if str(record.get("event_group_id") or "") == event_group_id
     ]
 
 
@@ -894,8 +885,6 @@ def _prepare_csv_transaction_values(
         ),
         "source_system": payload.source_system,
         "external_reference": payload.external_reference,
-        "event_group_id": None,
-        "related_instrument_id": None,
         "note": payload.note,
         "created_at": created_at,
     }
@@ -1094,22 +1083,11 @@ def list_transaction_records(
         start_date=start_date,
         end_date=end_date,
     )
-    context_records = (
-        records
-        if not any((account_id, transaction_type, instrument_id, start_date, end_date))
-        else list_transactions(portfolio_id)
-    )
-
     return TransactionListResponse(
         portfolio_id=portfolio_id,
         summary=summarize_transactions(records),
         derivation_boundary=DerivationBoundaryStatus(),
-        transactions=serialize_transactions(
-            portfolio_id,
-            records,
-            account_lookup,
-            context_records=context_records,
-        ),
+        transactions=serialize_transactions(portfolio_id, records, account_lookup),
     )
 
 
@@ -1303,7 +1281,6 @@ def get_transaction_workspace(
         portfolio_id,
         filtered_records,
         account_lookup,
-        context_records=all_transactions,
     )
     selected_transaction = next(
         (item for item in serialized_transactions if item.transaction_id == transaction_id),
@@ -1322,9 +1299,6 @@ def get_transaction_workspace(
     selected_transfer_group_id = str(
         (selected_transaction_record or {}).get("transfer_group_id") or ""
     ).strip()
-    selected_event_group_id = str(
-        (selected_transaction_record or {}).get("event_group_id") or ""
-    ).strip()
     delete_scope_records = (
         [
             record
@@ -1333,16 +1307,7 @@ def get_transaction_workspace(
             == selected_transfer_group_id
         ]
         if selected_transfer_group_id
-        else (
-            [
-                record
-                for record in all_transactions
-                if str(record.get("event_group_id") or "").strip()
-                == selected_event_group_id
-            ]
-            if selected_event_group_id
-            else ([selected_transaction_record] if selected_transaction_record else [])
-        )
+        else ([selected_transaction_record] if selected_transaction_record else [])
     )
     delete_scope_row_versions = {
         str(record["transaction_id"]): int(record["row_version"])
@@ -1834,8 +1799,6 @@ def _persist_transaction_record(
         ),
         "source_system": payload.source_system,
         "external_reference": payload.external_reference,
-        "event_group_id": None,
-        "related_instrument_id": None,
         "note": payload.note,
         "created_at": pending_created_at,
     }
@@ -1878,12 +1841,7 @@ def _persist_transaction_record(
     if persisted_record is None:
         raise HTTPException(status_code=404, detail="Transaction not found")
     account_lookup = {item["account_id"]: item for item in list_accounts(portfolio_id)}
-    return serialize_transactions(
-        portfolio_id,
-        [persisted_record],
-        account_lookup,
-        context_records=list_transactions(portfolio_id),
-    )[0]
+    return serialize_transactions(portfolio_id, [persisted_record], account_lookup)[0]
 
 
 @router.post("/{portfolio_id}/transactions", response_model=TransactionRecord)
@@ -1903,12 +1861,7 @@ def create_transaction_record(
         account_lookup = {
             item["account_id"]: item for item in list_accounts(portfolio_id)
         }
-        return serialize_transactions(
-            portfolio_id,
-            [replayed[0]],
-            account_lookup,
-            context_records=list_transactions(portfolio_id),
-        )[0]
+        return serialize_transactions(portfolio_id, [replayed[0]], account_lookup)[0]
     return _persist_transaction_record(
         portfolio_id=portfolio_id,
         payload=payload,
@@ -1964,15 +1917,10 @@ def delete_transaction_record(
         raise HTTPException(status_code=404, detail="Transaction not found")
 
     transfer_group_id = str(existing_transaction.get("transfer_group_id") or "").strip() or None
-    event_group_id = str(existing_transaction.get("event_group_id") or "").strip() or None
     transaction_ids = (
         _transfer_group_transaction_ids(portfolio_id, transfer_group_id)
         if transfer_group_id
-        else (
-            _event_group_transaction_ids(portfolio_id, event_group_id)
-            if event_group_id
-            else [transaction_id]
-        )
+        else [transaction_id]
     )
     try:
         deleted_records = delete_transactions(
@@ -1995,7 +1943,6 @@ def delete_transaction_record(
             for record in deleted_records
         ],
         transfer_group_id=transfer_group_id,
-        event_group_id=event_group_id,
     )
 
 

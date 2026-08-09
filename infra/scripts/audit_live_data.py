@@ -29,7 +29,7 @@ from portfolio_ops_instrument_core import (  # noqa: E402
 )
 
 
-FINAL_FLAT_TABLE_HEAD_PAIR = ("20260807_0019", "20260807_0044")
+FINAL_FLAT_TABLE_HEAD_PAIR = ("20260807_0019", "20260809_0045")
 FUND_NAV_PROJECTION_METHOD_VERSION = "fund_nav_reinvestment_projection/v7"
 
 AUDIT_CHECK_NAMES = (

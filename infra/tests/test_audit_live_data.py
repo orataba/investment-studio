@@ -42,7 +42,7 @@ def test_flat_table_profile_accepts_only_final_heads(
     audit_module: ModuleType,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    head_pair = ("20260807_0019", "20260807_0044")
+    head_pair = ("20260807_0019", "20260809_0045")
     versions = dict(zip(("instrument_registry", "portfolio"), head_pair, strict=True))
     monkeypatch.setattr(
         audit_module,

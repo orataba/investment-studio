@@ -1034,16 +1034,6 @@ def _save_store_to_db(session, data: dict[str, object]) -> None:
                     if raw_transaction.get("external_reference")
                     else None
                 ),
-                event_group_id=(
-                    str(raw_transaction.get("event_group_id")).strip()
-                    if raw_transaction.get("event_group_id")
-                    else None
-                ),
-                related_instrument_id=(
-                    str(raw_transaction.get("related_instrument_id")).strip()
-                    if raw_transaction.get("related_instrument_id")
-                    else None
-                ),
                 note=str(raw_transaction.get("note")).strip() if raw_transaction.get("note") else None,
                 created_at=(
                     str(raw_transaction.get("created_at")).strip()
@@ -1389,8 +1379,6 @@ def _serialize_transaction_row(item: TransactionRecordModel) -> dict[str, object
         "counterparty_account_id": item.counterparty_account_id,
         "source_system": item.source_system,
         "external_reference": item.external_reference,
-        "event_group_id": item.event_group_id,
-        "related_instrument_id": item.related_instrument_id,
         "note": item.note,
         "created_at": item.created_at,
         "row_version": item.row_version,
@@ -4238,16 +4226,6 @@ def copy_portfolio(portfolio_id: str) -> dict[str, object] | None:
                         if copied_transaction.get("external_reference")
                         else None
                     ),
-                    event_group_id=(
-                        str(copied_transaction["event_group_id"])
-                        if copied_transaction.get("event_group_id")
-                        else None
-                    ),
-                    related_instrument_id=(
-                        str(copied_transaction["related_instrument_id"])
-                        if copied_transaction.get("related_instrument_id")
-                        else None
-                    ),
                     note=str(copied_transaction["note"]) if copied_transaction.get("note") else None,
                     created_at=(
                         str(copied_transaction["created_at"])
@@ -4639,8 +4617,6 @@ def create_transaction(
     counterparty_account_id: str | None,
     source_system: str | None = None,
     external_reference: str | None = None,
-    event_group_id: str | None = None,
-    related_instrument_id: str | None = None,
     note: str | None,
     fee_category: str = "unknown",
     created_at: str | None = None,
@@ -4680,8 +4656,6 @@ def create_transaction(
                 "counterparty_account_id": counterparty_account_id,
                 "source_system": source_system,
                 "external_reference": external_reference,
-                "event_group_id": event_group_id,
-                "related_instrument_id": related_instrument_id,
                 "note": note,
                 "created_at": created_at,
             }
@@ -4837,16 +4811,6 @@ def create_transactions(
                     if values.get("external_reference")
                     else None
                 ),
-                event_group_id=(
-                    str(values["event_group_id"])
-                    if values.get("event_group_id")
-                    else None
-                ),
-                related_instrument_id=(
-                    str(values["related_instrument_id"])
-                    if values.get("related_instrument_id")
-                    else None
-                ),
                 note=str(values["note"]) if values.get("note") is not None else None,
                 created_at=str(values.get("created_at") or _current_utc_timestamp()),
             )
@@ -4929,8 +4893,6 @@ def update_transaction(
     counterparty_account_id: str | None,
     source_system: str | None = None,
     external_reference: str | None = None,
-    event_group_id: str | None = None,
-    related_instrument_id: str | None = None,
     note: str | None,
     fee_category: str = "unknown",
     created_at: str | None = None,
@@ -4989,8 +4951,6 @@ def update_transaction(
             counterparty_account_id=counterparty_account_id,
             source_system=source_system,
             external_reference=external_reference,
-            event_group_id=event_group_id,
-            related_instrument_id=related_instrument_id,
             note=note,
             created_at=created_at or record.created_at or _current_utc_timestamp(),
         )
@@ -5137,8 +5097,6 @@ def _apply_transaction_record(
     counterparty_account_id: str | None,
     source_system: str | None,
     external_reference: str | None,
-    event_group_id: str | None,
-    related_instrument_id: str | None,
     note: str | None,
     created_at: str,
 ) -> None:
@@ -5227,7 +5185,5 @@ def _apply_transaction_record(
     record.counterparty_account_id = counterparty_account_id
     record.source_system = (source_system or "").strip() or None
     record.external_reference = (external_reference or "").strip() or None
-    record.event_group_id = (event_group_id or "").strip() or None
-    record.related_instrument_id = (related_instrument_id or "").strip() or None
     record.note = (note or "").strip() or None
     record.created_at = created_at

@@ -363,10 +363,10 @@ def test_materialized_option_position_and_obligation_remain_distinct_in_api_and_
     portfolio_id = "portfolio-ops"
     as_of_date = date(2026, 4, 15)
     account_id = "account-us-brokerage"
-    instrument_id = "option-us-covered-call"
+    instrument_id = "option-us-short-call"
     instrument_ref = {
         "instrument_id": instrument_id,
-        "instrument_name": "Covered Call Contract",
+        "instrument_name": "Short Call Contract",
         "instrument_type": "option",
         "currency": "USD",
         "identifiers": [],
@@ -374,7 +374,7 @@ def test_materialized_option_position_and_obligation_remain_distinct_in_api_and_
             {
                 "broker": "Test Broker",
                 "identifier_type": "contract_id",
-                "identifier_value": "TEST-COVERED-CALL",
+                "identifier_value": "TEST-SHORT-CALL",
                 "is_primary": True,
             }
         ],
@@ -427,11 +427,11 @@ def test_materialized_option_position_and_obligation_remain_distinct_in_api_and_
         "instrument_id": instrument_id,
         "holding_kind": "option_obligation",
         "instrument_ref": deepcopy(instrument_ref),
-        "quantity": 100.0,
+        "quantity": -1.0,
         "open_contract_quantity": 1.0,
-        "covered_underlying_quantity": 100.0,
+        "required_underlying_quantity": 100.0,
         "obligation_status": "open",
-        "coverage_type": "covered_call",
+        "related_underlying_id": "equity-us-abbv",
         "premium_received_gross": 300.0,
         "premium_basis_remaining": 300.0,
         "market_value": -300.0,
@@ -508,7 +508,7 @@ def test_materialized_option_position_and_obligation_remain_distinct_in_api_and_
                     instrument_id=instrument_id,
                     holding_kind="option_obligation",
                     currency="USD",
-                    quantity=100.0,
+                    quantity=-1.0,
                     cost_basis=None,
                     cost_basis_base=None,
                     last_price=None,
@@ -626,9 +626,9 @@ def test_materialized_option_position_and_obligation_remain_distinct_in_api_and_
         row for row in api_option_rows if row["holding_kind"] == "option_obligation"
     )
     assert api_obligation["open_contract_quantity"] == 1.0
-    assert api_obligation["covered_underlying_quantity"] == 100.0
+    assert api_obligation["required_underlying_quantity"] == 100.0
     assert api_obligation["obligation_status"] == "open"
-    assert api_obligation["coverage_type"] == "covered_call"
+    assert api_obligation["related_underlying_id"] == "equity-us-abbv"
     assert api_obligation["premium_basis_remaining"] == 300.0
     assert api_obligation["liability_value"] == 300.0
     assert api_obligation["market_value"] == -300.0
@@ -655,9 +655,9 @@ def test_materialized_option_position_and_obligation_remain_distinct_in_api_and_
     assert all("price_chart_1m" not in row for row in detail_rows)
     for field_name in (
         "open_contract_quantity",
-        "covered_underlying_quantity",
+        "required_underlying_quantity",
         "obligation_status",
-        "coverage_type",
+        "related_underlying_id",
         "premium_basis_remaining",
         "liability_value",
     ):
