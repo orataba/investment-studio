@@ -627,12 +627,12 @@ def test_database_enforces_revision_snapshot_factor_and_formula_contracts(
             )
 
 
-def test_migration_is_intentionally_irreversible(
+def test_fund_nav_contract_migration_is_intentionally_irreversible(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     database_url = f"sqlite+pysqlite:///{tmp_path / 'irreversible.db'}"
     config = _config(database_url, monkeypatch=monkeypatch)
-    command.upgrade(config, "head")
+    command.upgrade(config, "20260807_0019")
     with pytest.raises(RuntimeError, match="intentionally irreversible"):
         command.downgrade(config, "20260715_0011")

@@ -59,7 +59,7 @@ shared instruments / manual ingest / facts ingest
 
 - `move` / `copy` 现在会严格校验 source membership
 - custom view id 会做 path-safe slug 化
-- 复制 watchlist 时也会清洗 legacy custom view id
+- 复制 watchlist 时会按相同规则规范化源 custom view id
 
 ### 4.2 Instrument Product Framework
 
@@ -128,7 +128,7 @@ facts 路由已经统一到 instrument 主语：
 当前已经落地的 read model 主要包括：
 
 - `watchlist_row_read_model`
-- summary / chart / performance / risk / exposure / ratings read models
+- summary / chart / performance / risk / exposure read models；人工 rating 保存在 research profile，不是计算 read model
 - instrument summary payload
 
 Performance snapshot 的 `return_1w / return_1m / return_3m / return_6m / return_mtd / return_ytd / return_1y` 必须完整投影到 `watchlist_row_read_model`、field registry、筛选/排序和导出。新增窗口时不能只改计算 snapshot 而遗漏 migration、repository 或 serializer。窗口边界及 return semantics 见 [RETURN_SERIES_CONTRACT.md](./RETURN_SERIES_CONTRACT.md)。
@@ -215,7 +215,6 @@ Monitoring 页面不再硬编码一张“所有 fund 必填 tags”清单。
 - `GET /api/instruments/{instrument_id}/risk`
 - `GET /api/instruments/{instrument_id}/exposure/summary`
 - `GET /api/instruments/{instrument_id}/exposure/holdings`
-- `GET /api/instruments/{instrument_id}/ratings`
 - `GET /api/instruments/{instrument_id}/people`
 - `PUT /api/instruments/{instrument_id}/people`
 - `GET /api/instruments/{instrument_id}/strategy`
@@ -294,7 +293,6 @@ Monitoring 页面不再硬编码一张“所有 fund 必填 tags”清单。
 
 - `POST /api/recalc/instruments/{instrument_id}/performance`
 - `POST /api/recalc/instruments/{instrument_id}/exposure`
-- `POST /api/recalc/instruments/{instrument_id}/ratings`
 - `POST /api/recalc/instruments/{instrument_id}/all`
 - `POST /api/recalc/instruments/{instrument_id}/execute`
 - `GET /api/recalc/jobs`

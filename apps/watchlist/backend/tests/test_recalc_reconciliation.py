@@ -166,6 +166,9 @@ def test_single_instrument_legacy_source_date_does_not_requeue_forever(
     monkeypatch,
 ) -> None:
     from watchlist_app.services import read_model_freshness
+    from watchlist_app.services.materialization_policy import (
+        WATCHLIST_MATERIALIZATION_VERSION,
+    )
 
     shared = {
         "instrument_id": "legacy-fund",
@@ -197,7 +200,7 @@ def test_single_instrument_legacy_source_date_does_not_requeue_forever(
         instrument_id="legacy-fund",
         local_latest_date=None,
         local_source_cutoff_at=datetime(2026, 7, 20, 8, 0, tzinfo=UTC),
-        local_materialization_version="watchlist-materialization/v5",
+        local_materialization_version=WATCHLIST_MATERIALIZATION_VERSION,
         trigger_ref_type="detail_read",
     ) is False
 
@@ -315,7 +318,7 @@ def test_stale_generation_creates_one_durable_per_instrument_job(
         "2026-07-15T09:30:00.000001Z"
     )
     assert jobs[0].payload_json["target_materialization_version"] == (
-        "watchlist-materialization/v5"
+        read_model_freshness.WATCHLIST_MATERIALIZATION_VERSION
     )
 
 

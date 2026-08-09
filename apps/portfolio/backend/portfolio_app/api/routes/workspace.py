@@ -11,7 +11,7 @@ from portfolio_app.db.models import PortfolioCalculationStateModel, PortfolioDai
 from portfolio_app.db.session import get_session_factory
 from portfolio_app.services.daily_snapshots import (
     DAILY_SNAPSHOT_CALCULATION_VERSION,
-    build_materialized_instrument_holding_projection,
+    build_materialized_position_holding_projection,
     ensure_portfolio_daily_snapshots,
 )
 from portfolio_app.services.analytics_scope import (
@@ -45,7 +45,7 @@ from portfolio_app.services.performance import (
     corporate_action_quality_warnings,
 )
 from portfolio_app.services.holdings_market_profile import (
-    is_derivative_tracking_instrument_type,
+    is_derivative_contract,
     is_cash_holding_instrument_id,
     is_market_priced_holding,
     is_pending_monetary_holding,
@@ -121,15 +121,8 @@ def _market_analytics_valuation_exclusion_reason(row: dict[str, object]) -> str 
     accidentally re-enabling carried-cost FCN rows or premium liabilities.
     """
 
-    instrument_core = (
-        row.get("instrument_core")
-        if isinstance(row.get("instrument_core"), dict)
-        else {}
-    )
-    if is_derivative_tracking_instrument_type(
-        instrument_core.get("instrument_type")
-    ):
-        return "derivative tracking instruments are outside ordinary analytics"
+    if is_derivative_contract(row.get("derivative_contract")):
+        return "derivative contracts are outside ordinary analytics"
 
     holding_kind = str(row.get("holding_kind") or "position").strip().lower()
     if holding_kind != "position":
@@ -149,6 +142,11 @@ def _market_analytics_valuation_exclusion_reason(row: dict[str, object]) -> str 
 
 
 def _holding_scope_instrument_id(row: dict[str, object]) -> str:
+    derivative_contract_id = str(
+        row.get("derivative_contract_id") or ""
+    ).strip()
+    if derivative_contract_id:
+        return derivative_contract_id
     instrument_core = (
         row.get("instrument_core")
         if isinstance(row.get("instrument_core"), dict)
@@ -160,17 +158,11 @@ def _holding_scope_instrument_id(row: dict[str, object]) -> str:
     return str(instrument_core.get("instrument_id") or "").strip()
 
 
-def _transaction_is_derivative_tracking(
+def _transaction_has_derivative_contract(
     transaction: dict[str, object],
 ) -> bool:
-    instrument_ref = (
-        transaction.get("instrument_ref")
-        if isinstance(transaction.get("instrument_ref"), dict)
-        else {}
-    )
-    return is_derivative_tracking_instrument_type(
-        transaction.get("instrument_type")
-        or instrument_ref.get("instrument_type")
+    return is_derivative_contract(
+        transaction.get("derivative_contract")
     )
 
 
@@ -366,7 +358,7 @@ def _enrich_holdings_analytics_scope(
         transaction_scope = scopes.get(transaction_instrument_id, {})
         performance_scope = (
             "derivative_lifecycle"
-            if _transaction_is_derivative_tracking(transaction)
+            if _transaction_has_derivative_contract(transaction)
             else str(transaction_scope.get("performance_scope") or "unallocated")
         )
         transaction_currency = str(
@@ -1197,21 +1189,24 @@ def holdings_workspace(
     )
 
 
-@router.get("/holdings/instrument")
-def instrument_holding_projection(
+@router.get("/holdings/position")
+def position_holding_projection(
     portfolio_id: str | None = None,
-    instrument_id: str | None = None,
+    position_reference_id: str | None = None,
     as_of_date: date | None = None,
 ) -> dict[str, object]:
-    if not instrument_id or not instrument_id.strip():
-        raise HTTPException(status_code=400, detail="instrument_id is required")
+    if not position_reference_id or not position_reference_id.strip():
+        raise HTTPException(
+            status_code=400,
+            detail="position_reference_id is required",
+        )
     resolved_portfolio = _require_portfolio(portfolio_id)
     resolved_portfolio_id = str(resolved_portfolio["portfolio_id"])
-    normalized_instrument_id = instrument_id.strip()
+    normalized_position_reference_id = position_reference_id.strip()
     try:
-        response = build_materialized_instrument_holding_projection(
+        response = build_materialized_position_holding_projection(
             resolved_portfolio_id,
-            normalized_instrument_id,
+            normalized_position_reference_id,
             as_of_date=as_of_date,
         )
     except InstrumentRegistryError as error:
@@ -1230,22 +1225,31 @@ def instrument_holding_projection(
         if isinstance(row, dict)
         and isinstance((instrument_core := row.get("instrument_core")), dict)
     }
-    instrument_ids = {normalized_instrument_id} if row_items else set()
-    reconcile_instrument_event_tasks(
-        portfolio_ids=[resolved_portfolio_id],
-        instrument_ids=instrument_ids,
-    )
-    response["quality_warnings"] = (
-        corporate_action_quality_warnings(
-            instrument_types,
-            instrument_ids,
-            transactions=list_transactions(resolved_portfolio_id),
-            as_of_date=(
-                as_of_date
-                or _parse_iso_date(response.get("as_of_date"))
-                or date.today()
-            ),
+    instrument_ids = {
+        str(instrument_core.get("instrument_id") or "").strip()
+        for row in row_items
+        if isinstance(row, dict)
+        and isinstance((instrument_core := row.get("instrument_core")), dict)
+        and str(instrument_core.get("instrument_id") or "").strip()
+    }
+    if instrument_ids:
+        reconcile_instrument_event_tasks(
+            portfolio_ids=[resolved_portfolio_id],
+            instrument_ids=instrument_ids,
         )
-        + instrument_event_task_quality_warnings(resolved_portfolio_id)
-    )
+        response["quality_warnings"] = (
+            corporate_action_quality_warnings(
+                instrument_types,
+                instrument_ids,
+                transactions=list_transactions(resolved_portfolio_id),
+                as_of_date=(
+                    as_of_date
+                    or _parse_iso_date(response.get("as_of_date"))
+                    or date.today()
+                ),
+            )
+            + instrument_event_task_quality_warnings(resolved_portfolio_id)
+        )
+    else:
+        response["quality_warnings"] = []
     return response

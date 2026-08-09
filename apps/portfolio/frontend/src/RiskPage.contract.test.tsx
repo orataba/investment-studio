@@ -4,7 +4,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import RiskPage, { riskFrequencyProfileFromHoldingsWorkspace } from './pages/RiskPage'
 import {
-  fcnInstrumentFixture,
+  fcnContractFixture,
   holdingFixture,
   holdingsWorkspaceFixture,
   instrumentFixture,
@@ -368,9 +368,12 @@ describe('Risk rendered page contract', () => {
         riskHolding,
         holdingFixture({
           line_id: 'holding:fcn-1',
-          instrument_core: fcnInstrumentFixture({
-            instrument_id: 'fcn-1',
-            instrument_name: 'Excluded FCN',
+          position_reference_id: 'fcn-1',
+          derivative_contract_id: 'fcn-1',
+          instrument_core: null,
+          derivative_contract: fcnContractFixture({
+            derivative_contract_id: 'fcn-1',
+            contract_name: 'Excluded FCN',
           }),
           allocation: 0.6,
           market_value: 600,

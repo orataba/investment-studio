@@ -57,7 +57,7 @@ def list_portfolio_positions(
 def list_portfolio_position_lots(
     portfolio_id: str,
     account_id: str | None = None,
-    instrument_id: str | None = None,
+    position_reference_id: str | None = None,
     status: str | None = None,
     as_of_date: date | None = None,
 ) -> PositionLotListResponse:
@@ -72,7 +72,7 @@ def list_portfolio_position_lots(
             accounts,
             transactions,
             account_id=account_id,
-            instrument_id=instrument_id,
+            position_reference_id=position_reference_id,
             status=status,
             as_of_date=as_of_date,
         )

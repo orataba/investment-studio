@@ -20,6 +20,27 @@ if config.config_file_name is not None:
 target_metadata = Base.metadata
 
 
+def _is_schema_comparison() -> bool:
+    options = getattr(config, "cmd_opts", None)
+    command = getattr(options, "cmd", None)
+    command_name = (
+        getattr(command[0], "__name__", "")
+        if isinstance(command, tuple) and command
+        else ""
+    )
+    return command_name == "check" or bool(getattr(options, "autogenerate", False))
+
+
+def _include_object(object_, name: str | None, type_: str, reflected: bool, compare_to) -> bool:
+    if reflected and type_ == "table" and name == "platform_alembic_version":
+        return False
+    if reflected and type_ == "foreign_key_constraint" and compare_to is None:
+        elements = list(getattr(object_, "elements", []))
+        if elements and elements[0].column.table.name == "instrument":
+            return False
+    return True
+
+
 def _search_path_fragments(*schemas: str | None) -> list[str]:
     fragments: list[str] = []
     for candidate in (*schemas, "public"):
@@ -75,15 +96,19 @@ def run_migrations_online() -> None:
                 text(f'CREATE SCHEMA IF NOT EXISTS "{operations_schema}"')
             )
             connection.commit()
+            comparison_schemas = (
+                (operations_schema,)
+                if _is_schema_comparison()
+                else (operations_schema, settings.database_schema)
+            )
             connection.execute(
                 text(
                     "SET search_path TO "
                     + ", ".join(
                         f'"{fragment}"' if fragment != "public" else "public"
-                        for fragment in _search_path_fragments(
-                            operations_schema,
-                            settings.database_schema,
-                        )
+                    for fragment in _search_path_fragments(
+                        *comparison_schemas,
+                    )
                     )
                 )
             )
@@ -95,6 +120,7 @@ def run_migrations_online() -> None:
             compare_type=True,
             version_table="platform_alembic_version",
             version_table_schema=version_table_schema,
+            include_object=_include_object,
         )
 
         with context.begin_transaction():

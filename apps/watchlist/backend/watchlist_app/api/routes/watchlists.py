@@ -480,8 +480,6 @@ def _materialize_watchlist_rows(
                     )
                 ),
                 management_firm_name=None,
-                overall_rating=summary_payload.get("overall_rating"),
-                analyst_stance=summary_payload.get("analyst_stance"),
                 attributes=row_attributes,
                 freshness_status=str(
                     (

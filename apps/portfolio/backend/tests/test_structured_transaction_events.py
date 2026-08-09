@@ -39,6 +39,8 @@ def _instrument_ref(
     option_contract_multiplier: str = "100",
     option_settlement_type: str = "physical",
 ) -> dict[str, object]:
+    if instrument_type in {"fcn", "option"}:
+        raise ValueError("Derivative test fixtures must use a Portfolio contract.")
     ref: dict[str, object] = {
         "instrument_id": instrument_id,
         "instrument_name": instrument_id,
@@ -47,41 +49,39 @@ def _instrument_ref(
         "identifiers": [],
         "broker_identifiers": [],
     }
-    if instrument_type in {"fcn", "option"}:
-        ref["broker_identifiers"] = [
-            {
-                "broker": "Test Broker",
-                "identifier_type": "contract_id",
-                "identifier_value": f"TEST-{instrument_id}",
-                "is_primary": True,
-            }
-        ]
-    if instrument_type == "option":
+    return ref
+
+
+def _derivative_contract(
+    derivative_contract_id: str,
+    contract_type: str,
+    *,
+    account_id: str = "broker",
+    currency: str = "USD",
+    option_underlying_id: str | None = None,
+    option_strike: str = "110",
+    option_type: str = "call",
+    option_expiry_date: str = "2026-12-18",
+    option_contract_multiplier: str = "100",
+    option_settlement_type: str = "physical",
+    persisted: bool = True,
+) -> dict[str, object]:
+    if contract_type == "option":
         if option_underlying_id is None:
             raise ValueError("Option test fixtures require an underlying instrument id.")
-        ref["option_contract"] = {
+        terms: dict[str, object] = {
             "underlying_instrument_id": option_underlying_id,
             "option_type": option_type,
             "expiry_date": option_expiry_date,
             "strike": option_strike,
             "contract_multiplier": option_contract_multiplier,
             "settlement_type": option_settlement_type,
-            "contract_currency": currency,
         }
-        ref["corporate_action_adjustment_policy"] = {
-            "policy_type": "contract_terms",
-            "authority_reference": "Test option terms",
-            "quantity_rounding": "exact",
-            "adjust_strike": True,
-            "adjust_multiplier": True,
-            "adjust_deliverable": True,
-        }
-    elif instrument_type == "fcn":
-        ref["fcn_contract"] = {
+    elif contract_type == "fcn":
+        terms = {
             "notional": "100000",
             "issue_date": "2026-01-01",
             "maturity_date": "2026-12-31",
-            "contract_currency": currency,
             "issuer": "Test Issuer",
             "counterparty": "Test Broker",
             "underlying_instrument_ids": ["equity-1"],
@@ -89,15 +89,25 @@ def _instrument_ref(
             "barrier_type": "none",
             "barrier_level": None,
         }
-        ref["corporate_action_adjustment_policy"] = {
-            "policy_type": "contract_terms",
-            "authority_reference": "Test FCN terms",
-            "quantity_rounding": "exact",
-            "adjust_strike": False,
-            "adjust_multiplier": False,
-            "adjust_deliverable": True,
-        }
-    return ref
+    else:
+        raise ValueError("Derivative test fixtures support only FCN and option contracts.")
+    contract: dict[str, object] = {
+        "derivative_contract_id": derivative_contract_id,
+        "contract_name": derivative_contract_id,
+        "contract_type": contract_type,
+        "external_reference": f"TEST-{derivative_contract_id}",
+        "terms": terms,
+    }
+    if persisted:
+        contract.update(
+            {
+                "portfolio_id": "portfolio",
+                "account_id": account_id,
+                "currency": currency,
+                "created_at": "2026-01-01T00:00:00Z",
+            }
+        )
+    return contract
 
 
 def _transaction(
@@ -123,6 +133,23 @@ def _transaction(
     option_contract_multiplier: str = "100",
     option_settlement_type: str = "physical",
 ) -> dict[str, object]:
+    is_derivative = instrument_type in {"fcn", "option"}
+    derivative_contract = (
+        _derivative_contract(
+            instrument_id,
+            instrument_type,
+            account_id=account_id,
+            currency=currency,
+            option_underlying_id=option_underlying_id,
+            option_strike=option_strike,
+            option_type=option_type,
+            option_expiry_date=option_expiry_date,
+            option_contract_multiplier=option_contract_multiplier,
+            option_settlement_type=option_settlement_type,
+        )
+        if instrument_id and is_derivative and instrument_type
+        else None
+    )
     return {
         "transaction_id": transaction_id,
         "transaction_sequence": int(transaction_id.removeprefix("txn-")) + 1,
@@ -142,7 +169,7 @@ def _transaction(
         ),
         "account_id": account_id,
         "settlement_cash_account_id": settlement_cash_account_id,
-        "instrument_id": instrument_id,
+        "instrument_id": None if is_derivative else instrument_id,
         "instrument_ref": (
             _instrument_ref(
                 instrument_id,
@@ -159,9 +186,11 @@ def _transaction(
                 option_contract_multiplier=option_contract_multiplier,
                 option_settlement_type=option_settlement_type,
             )
-            if instrument_id and instrument_type
+            if instrument_id and instrument_type and not is_derivative
             else None
         ),
+        "derivative_contract_id": instrument_id if is_derivative else None,
+        "derivative_contract": derivative_contract,
         "quantity": quantity,
         "price": price,
         "gross_amount": gross_amount,
@@ -361,9 +390,9 @@ def test_simulated_stock_fund_option_and_fcn_chain_uses_independent_facts() -> N
     for lot in lots:
         if lot["status"] != "open":
             continue
-        instrument_id = str(lot["instrument_id"])
-        open_quantities[instrument_id] = open_quantities.get(
-            instrument_id, 0.0
+        position_reference_id = str(lot["position_reference_id"])
+        open_quantities[position_reference_id] = open_quantities.get(
+            position_reference_id, 0.0
         ) + float(lot["remaining_quantity"])
     assert open_quantities["equity-1"] == pytest.approx(1_300)
     assert open_quantities["fund-1"] == pytest.approx(200)
@@ -498,7 +527,7 @@ def test_event_valued_fcn_daily_holding_uses_cost_without_market_lookup(
     position = next(
         row
         for row in final_snapshot["_holding_rows"]
-        if row["holding_kind"] == "position"
+        if row["derivative_contract_id"] == "fcn-1"
     )
     assert final_snapshot["ending_nav"] == pytest.approx(100_000.0)
     assert final_snapshot["valuation_coverage_state"] == "complete"
@@ -576,7 +605,9 @@ def test_fcn_knock_in_close_and_stock_buy_are_independent_facts() -> None:
         resolve_pricing=False,
     )
 
-    fcn_lot = next(lot for lot in lots if lot["instrument_id"] == "fcn-1")
+    fcn_lot = next(
+        lot for lot in lots if lot["derivative_contract_id"] == "fcn-1"
+    )
     stock_lot = next(lot for lot in lots if lot["instrument_id"] == "equity-1")
     assert fcn_lot["status"] == "closed"
     assert stock_lot["status"] == "open"
@@ -982,7 +1013,11 @@ def test_long_option_exercise_close_and_stock_buy_are_independent_facts() -> Non
         resolve_pricing=False,
     )
 
-    option_lot = next(lot for lot in lots if lot["instrument_id"] == "option-long-1")
+    option_lot = next(
+        lot
+        for lot in lots
+        if lot["derivative_contract_id"] == "option-long-1"
+    )
     stock_lot = next(lot for lot in lots if lot["instrument_id"] == "equity-1")
     assert option_lot["status"] == "closed"
     assert option_lot["realized_pnl"] == pytest.approx(-500.0)
@@ -1622,10 +1657,10 @@ def test_short_call_assignment_and_stock_sale_are_independent_facts() -> None:
     )
 
     identity_less = [dict(item) for item in transactions[:2]]
-    identity_less[-1]["instrument_ref"] = {
+    identity_less[-1]["derivative_contract"] = {
         key: value
-        for key, value in dict(identity_less[-1]["instrument_ref"]).items()
-        if key != "option_contract"
+        for key, value in dict(identity_less[-1]["derivative_contract"]).items()
+        if key != "terms"
     }
     with pytest.raises(
         ValueError,
@@ -1759,41 +1794,29 @@ def test_transaction_csv_preserves_source_precision_and_formula_safety() -> None
     assert rows[0].transaction.note == "=unsafe formula"
 
 
-def test_csv_api_imports_short_option_and_independent_assignment_facts(
-    client,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_csv_api_imports_short_option_and_independent_assignment_facts(client) -> None:
     account_response = client.patch(
         "/api/portfolios/portfolio-ops/accounts/broker-us-core",
         json={"allowed_instrument_types": ["equity", "fund", "etf", "option"]},
     )
     assert account_response.status_code == 200
 
-    option_ref = _instrument_ref(
-        "option-short-call-1",
-        "option",
-        option_underlying_id="equity-us-abbv",
-        option_strike="220",
-    )
-    original_loader = transaction_routes._load_instrument_ref
-
-    def load_instrument(instrument_id: str) -> dict[str, object]:
-        if instrument_id == "option-short-call-1":
-            return option_ref
-        return original_loader(instrument_id)
-
-    monkeypatch.setattr(transaction_routes, "_load_instrument_ref", load_instrument)
     csv_text = "\n".join(
         [
             (
                 "transaction_type,trade_date,settlement_date,account_id,"
-                "settlement_cash_account_id,instrument_id,quantity,price,"
+                "settlement_cash_account_id,derivative_contract_id,"
+                "derivative_contract_name,derivative_contract_type,"
+                "option_underlying_instrument_id,option_type,option_expiry_date,"
+                "option_strike,option_contract_multiplier,option_settlement_type,"
+                "quantity,price,"
                 "gross_amount,fees,taxes,currency,source_system,"
                 "external_reference"
             ),
             (
                 "option_write,2026-05-01,2026-05-01,broker-us-core,"
-                "cash-usd-main,option-short-call-1,1,5,"
+                "cash-usd-main,option-short-call-1,ABBV Dec 220 Call,option,"
+                "equity-us-abbv,call,2026-12-18,220,100,physical,1,5,"
                 "500,0,0,USD,colleague_project,CALL-001-WRITE"
             ),
         ]
@@ -1846,17 +1869,18 @@ def test_csv_api_imports_short_option_and_independent_assignment_facts(
         [
             (
                 "transaction_type,lifecycle_event_type,trade_date,settlement_date,"
-                "account_id,settlement_cash_account_id,instrument_id,quantity,price,gross_amount,fees,"
+                "account_id,settlement_cash_account_id,instrument_id,"
+                "derivative_contract_id,quantity,price,gross_amount,fees,"
                 "taxes,currency,source_system,external_reference"
             ),
             (
                 "lifecycle_event,option_assignment,2026-05-10,2026-05-10,"
-                "broker-us-core,,option-short-call-1,1,,0,0,0,USD,colleague_project,"
+                "broker-us-core,,,option-short-call-1,1,,0,0,0,USD,colleague_project,"
                 "CALL-001-ASSIGNMENT"
             ),
             (
                 "sell,,2026-05-10,2026-05-10,broker-us-core,cash-usd-main,"
-                "equity-us-abbv,100,220,22000,0,0,USD,"
+                "equity-us-abbv,,100,220,22000,0,0,USD,"
                 "colleague_project,CALL-001-DELIVERY"
             ),
         ]
@@ -1931,6 +1955,147 @@ def test_direct_transaction_source_identity_conflict_returns_409(client) -> None
     ]
 
 
+def test_inline_derivative_contract_rejects_unknown_registry_underlying(client) -> None:
+    response = client.post(
+        "/api/portfolios/portfolio-ops/transactions",
+        json={
+            "transaction_type": "buy",
+            "trade_date": "2026-05-01",
+            "account_id": "broker-us-core",
+            "settlement_cash_account_id": "cash-usd-main",
+            "derivative_contract_id": "option-missing-underlying",
+            "derivative_contract": {
+                "derivative_contract_id": "option-missing-underlying",
+                "contract_name": "Missing underlying option",
+                "contract_type": "option",
+                "external_reference": "MISSING-UNDERLYING-1",
+                "terms": {
+                    "underlying_instrument_id": "not-in-registry",
+                    "option_type": "call",
+                    "expiry_date": "2026-12-18",
+                    "strike": 100,
+                    "contract_multiplier": 100,
+                    "settlement_type": "physical",
+                },
+            },
+            "quantity": 1,
+            "price": 1,
+            "gross_amount": 100,
+            "currency": "USD",
+        },
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "Instrument not found in shared registry."
+
+
+def test_derivative_contract_external_reference_is_unique_within_portfolio(
+    client,
+) -> None:
+    account_response = client.patch(
+        "/api/portfolios/portfolio-ops/accounts/broker-us-core",
+        json={"allowed_instrument_types": ["equity", "etf", "fund", "option"]},
+    )
+    assert account_response.status_code == 200, account_response.json()
+
+    def payload(contract_id: str) -> dict[str, object]:
+        return {
+            "transaction_type": "buy",
+            "trade_date": "2026-05-01",
+            "account_id": "broker-us-core",
+            "settlement_cash_account_id": "cash-usd-main",
+            "derivative_contract_id": contract_id,
+            "derivative_contract": {
+                "derivative_contract_id": contract_id,
+                "contract_name": contract_id,
+                "contract_type": "option",
+                "external_reference": "BROKER-OPTION-001",
+                "terms": {
+                    "underlying_instrument_id": "equity-us-abbv",
+                    "option_type": "call",
+                    "expiry_date": "2026-12-18",
+                    "strike": 200,
+                    "contract_multiplier": 100,
+                    "settlement_type": "physical",
+                },
+            },
+            "quantity": 1,
+            "price": 1,
+            "gross_amount": 100,
+            "currency": "USD",
+        }
+
+    first_response = client.post(
+        "/api/portfolios/portfolio-ops/transactions",
+        json=payload("option-reference-a"),
+    )
+    assert first_response.status_code == 200, first_response.json()
+
+    duplicate_response = client.post(
+        "/api/portfolios/portfolio-ops/transactions",
+        json=payload("option-reference-b"),
+    )
+    assert duplicate_response.status_code == 409
+    assert "external_reference already belongs" in duplicate_response.json()["detail"]
+
+
+def test_derivative_contract_identity_is_scoped_to_its_portfolio(client) -> None:
+    contract_id = "option-local-identity"
+    account_response = client.patch(
+        "/api/portfolios/portfolio-ops/accounts/broker-us-core",
+        json={"allowed_instrument_types": ["equity", "etf", "fund", "option"]},
+    )
+    assert account_response.status_code == 200, account_response.json()
+    create_response = client.post(
+        "/api/portfolios/portfolio-ops/transactions",
+        json={
+            "transaction_type": "buy",
+            "trade_date": "2026-05-01",
+            "account_id": "broker-us-core",
+            "settlement_cash_account_id": "cash-usd-main",
+            "derivative_contract_id": contract_id,
+            "derivative_contract": {
+                "derivative_contract_id": contract_id,
+                "contract_name": "Portfolio-local call",
+                "contract_type": "option",
+                "external_reference": "LOCAL-CALL-1",
+                "terms": {
+                    "underlying_instrument_id": "equity-us-abbv",
+                    "option_type": "call",
+                    "expiry_date": "2026-12-18",
+                    "strike": 200,
+                    "contract_multiplier": 100,
+                    "settlement_type": "physical",
+                },
+            },
+            "quantity": 1,
+            "price": 1,
+            "gross_amount": 100,
+            "currency": "USD",
+        },
+    )
+    assert create_response.status_code == 200, create_response.json()
+
+    copy_response = client.post("/api/portfolios/portfolio-ops/copy")
+    assert copy_response.status_code == 200, copy_response.json()
+    copied_portfolio_id = copy_response.json()["portfolio_id"]
+
+    original_contracts = client.get(
+        "/api/portfolios/portfolio-ops/derivative-contracts"
+    ).json()["derivative_contracts"]
+    copied_contracts = client.get(
+        f"/api/portfolios/{copied_portfolio_id}/derivative-contracts"
+    ).json()["derivative_contracts"]
+    original = next(
+        item for item in original_contracts if item["derivative_contract_id"] == contract_id
+    )
+    copied = next(
+        item for item in copied_contracts if item["derivative_contract_id"] == contract_id
+    )
+    assert copied["external_reference"] == original["external_reference"]
+    assert copied["portfolio_id"] == copied_portfolio_id
+
+
 def test_documented_multi_asset_independent_transactions_csv_imports_cleanly(
     client,
     monkeypatch: pytest.MonkeyPatch,
@@ -1950,23 +2115,11 @@ def test_documented_multi_asset_independent_transactions_csv_imports_cleanly(
     assert account_response.status_code == 200
 
     instrument_refs = {
-        "fcn-demo-001": _instrument_ref("fcn-demo-001", "fcn"),
         "equity-demo-001": _instrument_ref(
             "equity-demo-001",
             "equity",
         ),
         "fund-demo-001": _instrument_ref("fund-demo-001", "fund"),
-        "option-demo-call-001": _instrument_ref(
-            "option-demo-call-001",
-            "option",
-            option_underlying_id="equity-demo-001",
-        ),
-        "option-demo-put-001": _instrument_ref(
-            "option-demo-put-001",
-            "option",
-            option_underlying_id="equity-demo-001",
-            option_type="put",
-        ),
     }
     original_loader = transaction_routes._load_instrument_ref
 
@@ -2027,7 +2180,7 @@ def test_transaction_contract_distinguishes_long_and_writer_option_events() -> N
             "lifecycle_event_type": "option_long_expiry",
             "trade_date": "2026-06-01",
             "account_id": "broker",
-            "instrument_id": "option-long-1",
+            "derivative_contract_id": "option-long-1",
             "quantity": 1,
             "gross_amount": 0,
             "currency": "USD",
@@ -2039,7 +2192,7 @@ def test_transaction_contract_distinguishes_long_and_writer_option_events() -> N
             "lifecycle_event_type": "option_assignment",
             "trade_date": "2026-06-01",
             "account_id": "broker",
-            "instrument_id": "option-short-1",
+            "derivative_contract_id": "option-short-1",
             "quantity": 1,
             "gross_amount": 0,
             "currency": "USD",
@@ -2056,7 +2209,7 @@ def test_transaction_contract_rejects_removed_derivative_grouping_fields() -> No
         "lifecycle_event_type": "fcn_knock_in",
         "trade_date": "2026-09-01",
         "account_id": "broker",
-        "instrument_id": "fcn-1",
+        "derivative_contract_id": "fcn-1",
         "quantity": 1,
         "gross_amount": 100_000,
         "currency": "USD",

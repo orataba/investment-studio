@@ -1,6 +1,6 @@
 # Portfolio database dictionary
 
-As of 2026-08-09. Verified against SQLAlchemy metadata and migration heads `instrument_registry@20260807_0019` and `portfolio@20260809_0045`.
+As of 2026-08-09. Verified against SQLAlchemy metadata and migration heads `instrument_registry@20260809_0022` and `portfolio@20260809_0046`.
 
 This file is for architecture and integration review. External systems should use the APIs documented in [`TRANSACTION_INTEGRATION.md`](TRANSACTION_INTEGRATION.md), not write these tables directly.
 
@@ -10,13 +10,13 @@ Notation: **PK** = primary key, **FK** = foreign key, `?` = nullable, JSON field
 
 | Layer | Tables | Write owner |
 |---|---|---|
-| Canonical portfolio facts | `portfolio_record`, `account_record`, `transaction_record` | Portfolio command API |
+| Canonical portfolio facts | `portfolio_record`, `account_record`, `derivative_contract_record`, `transaction_record` | Portfolio command API |
 | Audit/idempotency controls | `transaction_change_log`, `transaction_idempotency_record`, `transaction_id_allocator` | Portfolio transaction store |
 | Derived accounting/read models | daily snapshots, holding snapshots, contribution slices, calculation state, instrument universe | Portfolio calculation services; never edited by integrations |
 | Planning/research | taxonomy, targets, effective-dated analytics scope/configuration, research settings/runs | Portfolio planning and research APIs |
 | Registry identity/market facts | `instrument_registry.*` | Registry API and ingestion jobs |
 
-The `instrument_id` values stored in Portfolio are logical references to the shared Registry. Portfolio deliberately snapshots `instrument_ref_json` on transaction facts for audit continuity; downstream code must not replace that snapshot with an invented name or type.
+The `instrument_id` values stored in Portfolio are logical references to reusable market assets in the shared Registry. Portfolio deliberately snapshots `instrument_ref_json` on those transaction facts for audit continuity; downstream code must not replace that snapshot with an invented name or type. FCNs and options instead use Portfolio-local `derivative_contract_id` records; their underlyings and deliverables may reference Registry market assets.
 
 ## Portfolio schema
 
@@ -44,7 +44,7 @@ Canonical transaction fact. Long positions, cash movements, FCN lifecycle events
 |---|---|
 | Identity | **PK** `transaction_id VARCHAR`; unique `transaction_sequence INTEGER`; **FK** `portfolio_id → portfolio_record.portfolio_id`; `transaction_type VARCHAR`; `lifecycle_event_type VARCHAR?`; `row_version INTEGER` |
 | Event time | `trade_date DATE`; `trade_time VARCHAR`; `trade_at VARCHAR`; `trade_timezone VARCHAR`; `trade_time_is_estimated BOOLEAN`; `settlement_date DATE`; `position_effective_date DATE?`; `entitlement_date DATE?`; `acquisition_date DATE?`; `created_at VARCHAR?` |
-| Accounts/instruments | `account_id VARCHAR`; `settlement_cash_account_id VARCHAR?`; `counterparty_account_id VARCHAR?`; `instrument_id VARCHAR?`; `instrument_ref_json JSON?` |
+| Accounts/references | `account_id VARCHAR`; `settlement_cash_account_id VARCHAR?`; `counterparty_account_id VARCHAR?`; `instrument_id VARCHAR?`; `instrument_ref_json JSON?`; `derivative_contract_id VARCHAR?`; composite **FK** `(portfolio_id, derivative_contract_id) → derivative_contract_record` |
 | Quantities/amounts | `quantity FLOAT?`; `source_quantity NUMERIC(28,12)?`; `price FLOAT?`; `source_price NUMERIC(28,12)?`; `gross_amount FLOAT`; `source_gross_amount NUMERIC(28,8)?`; `counter_amount FLOAT?`; `source_counter_amount NUMERIC(28,8)?`; `fx_rate FLOAT?`; `source_fx_rate NUMERIC(28,12)?`; `fees FLOAT`; `source_fees NUMERIC(28,8)?`; `fee_category VARCHAR`; `taxes FLOAT`; `source_taxes NUMERIC(28,8)?`; `currency VARCHAR` |
 | Linking/source | `transfer_scope VARCHAR?`; `transfer_object_type VARCHAR?`; `transfer_group_id VARCHAR?`; `source_system VARCHAR(100)?`; `external_reference VARCHAR(200)?`; `note VARCHAR?` |
 
@@ -52,10 +52,21 @@ Important constraints:
 
 - Unique `(portfolio_id, source_system, external_reference)` when a complete source identity is present.
 - `external_reference` requires `source_system`.
-- Derivative facts do not carry relation or event-group fields. Each instrument is recorded independently; `transfer_group_id` is reserved for paired internal transfers.
+- A transaction may reference a Registry instrument or a Portfolio-local derivative contract, never both. Cash-only facts may reference neither.
+- Derivative facts do not carry relation or event-group fields. Each contract event is recorded independently; `transfer_group_id` is reserved for paired internal transfers.
 - The API preserves exact source decimals alongside float calculation projections.
 - Trade date, position-effective date, entitlement date, and settlement date are independent accounting facts.
 - `transaction_sequence` is a database-coordinated, immutable replay tie-breaker. It is not a business-facing source identifier and integrations must not allocate it.
+
+### `portfolio.derivative_contract_record`
+
+Immutable Portfolio-local FCN and option terms. A contract is created atomically with its first transaction and is reused by later event rows inside the same Portfolio; it is not a Registry instrument.
+
+| Columns |
+|---|
+| **PK** `(portfolio_id, derivative_contract_id)`; composite **FK** `(portfolio_id, account_id) → account_record`; `contract_name VARCHAR`; `contract_type VARCHAR` (`fcn` or `option`); `currency VARCHAR`; unique `(portfolio_id, external_reference)`; `terms_json JSON`; `created_at VARCHAR` |
+
+Option terms contain one Registry `underlying_instrument_id`, Call/Put type, expiry, strike, multiplier, and physical/cash settlement. FCN terms contain notional, issue/maturity dates, issuer, counterparty, Registry underlying/deliverable IDs, and barrier description. The terms support event accounting; they do not create daily derivative pricing, covariance, or research-series eligibility.
 
 ### `portfolio.transaction_change_log`
 
@@ -95,9 +106,9 @@ Derived per-account/per-instrument holding lines.
 
 | Columns |
 |---|
-| **PK** `(portfolio_id, as_of_date, account_id, instrument_id, holding_kind)`; **FK** `portfolio_id → portfolio_record.portfolio_id`; `holding_kind VARCHAR`; `currency VARCHAR`; `quantity FLOAT`; `cost_basis FLOAT?`; `cost_basis_base FLOAT?`; `last_price FLOAT?`; `market_value FLOAT?`; `market_value_base FLOAT?`; `portfolio_weight FLOAT?`; `holding_json JSON`; `calculated_at VARCHAR` |
+| **PK** `(portfolio_id, as_of_date, account_id, position_reference_id, holding_kind)`; **FK** `portfolio_id → portfolio_record.portfolio_id`; `instrument_id VARCHAR?`; `derivative_contract_id VARCHAR?`; `holding_kind VARCHAR`; `currency VARCHAR`; `quantity FLOAT`; `cost_basis FLOAT?`; `cost_basis_base FLOAT?`; `last_price FLOAT?`; `market_value FLOAT?`; `market_value_base FLOAT?`; `portfolio_weight FLOAT?`; `holding_json JSON`; `calculated_at VARCHAR` |
 
-`holding_kind` keeps a long `position`, a short `option_obligation`, settled cash, and pending monetary lines distinct even when they reference the same canonical instrument. For FCN/option long positions, `holding_json.quote_basis=carried_cost` identifies event-valued cost carrying; it is not a Registry quote. Short-option rows use `premium_liability`, a null `last_price`, and a negative NAV amount.
+Exactly one of `instrument_id` and `derivative_contract_id` is present. `position_reference_id` is the corresponding stable identity used by the composite primary key. `holding_kind` keeps a long `position`, a short `option_obligation`, settled cash, and pending monetary lines distinct. For FCN/option long positions, `holding_json.quote_basis=carried_cost` identifies event-valued cost carrying; it is not a Registry quote. Short-option rows use `premium_liability`, a null `last_price`, and a negative NAV amount.
 
 ### `portfolio.portfolio_daily_contribution_slice`
 
@@ -235,13 +246,13 @@ Point-in-time snapshot of the selected taxonomy, nodes, assignments, target sets
 
 ### `instrument_registry.instrument`
 
-Canonical instrument identity. `instrument_type` supports `fund`, `etf`, `index`, `bond`, `equity`, `fcn`, `option`, `cash`, `fx`, and `other`.
+Canonical reusable market-asset identity. `instrument_type` supports `fund`, `etf`, `index`, `bond`, `equity`, `cash`, `fx`, and `other`. FCN and option contracts are deliberately outside Registry.
 
 | Columns |
 |---|
-| **PK** `instrument_id VARCHAR`; `instrument_name VARCHAR`; `instrument_type VARCHAR`; `currency VARCHAR`; **self-FK** `option_underlying_instrument_id → instrument.instrument_id` `?`; `option_type VARCHAR?`; `option_expiry_date DATE?`; `option_strike NUMERIC(28,12)?`; `option_contract_multiplier NUMERIC(28,12)?`; `option_settlement_type VARCHAR?`; `option_contract_currency VARCHAR?`; `fcn_contract_json JSON?`; `derivative_adjustment_policy_json JSON?`; `quote_selection_policy_json JSON`; `source_settings_json JSON`; `refresh_status_json JSON`; `lifecycle_state_json JSON`; `market_data_updated_at VARCHAR?` |
+| **PK** `instrument_id VARCHAR`; `instrument_name VARCHAR`; `instrument_type VARCHAR`; `currency VARCHAR`; `quote_selection_policy_json JSON`; `source_settings_json JSON`; `refresh_status_json JSON`; `lifecycle_state_json JSON`; `market_data_updated_at VARCHAR?`; `calculation_inputs_updated_at VARCHAR?` |
 
-Option identity columns are all-or-none and required only for `instrument_type=option`; the underlying must be a different canonical instrument and contract currency must equal the instrument currency. `fcn_contract_json` is required only for FCNs. Both FCNs and options require an explicit corporate-action adjustment policy. Existing derivative rows are never guessed or silently backfilled by migration.
+Registry owns identity, quote selection, market data, and corporate actions for assets reusable across portfolios. Portfolio owns the contract-specific FCN/option terms and event history. The migration does not guess or silently backfill legacy derivative records; it requires them to be resolved before this boundary is applied.
 
 ### `instrument_registry.instrument_identifier`
 
@@ -259,7 +270,7 @@ Broker-facing reconciliation identity. Each represented broker has exactly one p
 
 ### `instrument_registry.instrument_market_data`
 
-Canonical point observations used for valuation/return roles. FCN/option holdings do not require rows here under the event-valued policy.
+Canonical point observations used for valuation/return roles of Registry market assets. Portfolio-local FCN/options have no rows here under the event-accounting policy.
 
 | Columns |
 |---|

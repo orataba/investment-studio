@@ -25,7 +25,6 @@ from watchlist_app.db.models.read_models import (
     InstrumentExposureHoldingsReadModel,
     InstrumentExposureReadModel,
     InstrumentPerformanceReadModel,
-    InstrumentRatingReadModel,
     InstrumentRiskReadModel,
     InstrumentSummaryReadModel,
 )
@@ -69,6 +68,7 @@ from watchlist_app.services.return_windows import (
     return_window_metadata,
 )
 from watchlist_app.services.shared_instrument_registry import (
+    SharedInstrumentRegistryError,
     get_shared_instrument,
     list_shared_instruments,
 )
@@ -351,6 +351,24 @@ def _parse_source_watermark(value: object) -> datetime | None:
         return None
 
 
+def _shared_calculation_watermark(
+    shared_instrument: dict[str, object] | None,
+) -> datetime | None:
+    if not isinstance(shared_instrument, dict):
+        return None
+    candidates = [
+        parsed
+        for parsed in (
+            _parse_source_watermark(shared_instrument.get("market_data_updated_at")),
+            _parse_source_watermark(
+                shared_instrument.get("calculation_inputs_updated_at")
+            ),
+        )
+        if parsed is not None
+    ]
+    return max(candidates) if candidates else None
+
+
 def _safe_decimal(value: object) -> Decimal | None:
     if value is None:
         return None
@@ -373,6 +391,29 @@ def _safe_float(value: object) -> float | None:
         return None
     result = float(numeric)
     return result if math.isfinite(result) else None
+
+
+def _weighted_holding_metric(
+    positions: list[object],
+    metric_name: str,
+) -> tuple[Decimal | None, Decimal, Decimal]:
+    total_reported_weight = Decimal("0")
+    covered_weight = Decimal("0")
+    weighted_total = Decimal("0")
+    for position in positions:
+        weight = _safe_decimal(getattr(position, "portfolio_weight", None))
+        if weight is None or weight <= 0:
+            continue
+        total_reported_weight += weight
+        metric = _safe_decimal(getattr(position, metric_name, None))
+        if metric is None:
+            continue
+        covered_weight += weight
+        weighted_total += weight * metric
+    weighted_value = (
+        weighted_total / covered_weight if covered_weight > 0 else None
+    )
+    return weighted_value, covered_weight, total_reported_weight
 
 
 def _string_list(value: object) -> list[str]:
@@ -497,6 +538,84 @@ def _primary_peer_ranking(peer_comparison: dict[str, object] | None) -> dict[str
             or None,
         }
     return None
+
+
+def _performance_payload_with_peer_comparison(
+    payload: dict[str, object],
+    peer_comparison: dict[str, object],
+) -> dict[str, object]:
+    peer_metrics = {
+        str(row.get("metric_key") or ""): row
+        for row in peer_comparison.get("metrics") or []
+        if isinstance(row, dict)
+    }
+    window_metric = {
+        "1W": "return_1w",
+        "1M": "return_1m",
+        "MTD": "return_mtd",
+        "YTD": "return_ytd",
+        "3M": "return_3m",
+        "6M": "return_6m",
+        "1Y": "return_1y",
+        "3Y": "return_3y_annualized",
+        "5Y": "return_5y_annualized",
+        "Ann.": "annualized_return",
+    }
+    trailing_returns = []
+    for raw_row in payload.get("trailing_returns") or []:
+        if not isinstance(raw_row, dict):
+            continue
+        row = dict(raw_row)
+        metric = peer_metrics.get(window_metric.get(str(row.get("window")), ""), {})
+        row["category_nav"] = _safe_float(metric.get("peer_median"))
+        trailing_returns.append(row)
+    return {
+        **payload,
+        "trailing_returns": trailing_returns,
+        "ranking": _primary_peer_ranking(peer_comparison),
+        "peer_comparison": peer_comparison,
+    }
+
+
+def _risk_payload_with_peer_comparison(
+    payload: dict[str, object],
+    peer_comparison: dict[str, object],
+) -> dict[str, object]:
+    peer_metrics = {
+        str(row.get("metric_key") or ""): row
+        for row in peer_comparison.get("metrics") or []
+        if isinstance(row, dict)
+    }
+    risk_metrics = []
+    for raw_row in payload.get("risk_metrics") or []:
+        if not isinstance(raw_row, dict):
+            continue
+        row = dict(raw_row)
+        metric = peer_metrics.get(str(row.get("metric") or ""), {})
+        row["category"] = _safe_float(metric.get("peer_median"))
+        risk_metrics.append(row)
+    peer_summary = peer_comparison.get("summary")
+    risk_overview = payload.get("risk_overview")
+    if isinstance(risk_overview, dict):
+        risk_overview = {
+            **risk_overview,
+            "risk_vs_category": (
+                _safe_float(peer_summary.get("risk_percentile"))
+                if isinstance(peer_summary, dict)
+                else None
+            ),
+            "return_vs_category": (
+                _safe_float(peer_summary.get("return_percentile"))
+                if isinstance(peer_summary, dict)
+                else None
+            ),
+        }
+    return {
+        **payload,
+        "risk_overview": risk_overview,
+        "risk_metrics": risk_metrics,
+        "peer_comparison": peer_comparison,
+    }
 
 
 PEER_WATCHLIST_PERCENTILE_ATTRIBUTE_KEYS = {
@@ -1196,6 +1315,7 @@ def _snapshot_metadata(snapshot) -> dict[str, object] | None:
         "as_of_date": snapshot.as_of_date.isoformat(),
         "methodology_version": snapshot.methodology_version,
         "source_cutoff_at": _coerce_utc(snapshot.source_cutoff_at).isoformat().replace("+00:00", "Z"),
+        "calculated_at": _coerce_utc(snapshot.calculated_at).isoformat().replace("+00:00", "Z"),
     }
 
 
@@ -1830,28 +1950,45 @@ class CanonicalRecalcService:
         positions: list[dict[str, Any]],
         auto_recalculate: bool,
     ) -> dict[str, object]:
+        session.scalar(
+            select(InstrumentDetail.instrument_id)
+            .where(InstrumentDetail.instrument_id == instrument_id)
+            .with_for_update()
+        )
+        canonical_positions = sorted(
+            positions,
+            key=lambda item: json.dumps(
+                serialize_payload(item),
+                sort_keys=True,
+                separators=(",", ":"),
+            ),
+        )
+        source_cutoff_at = _coerce_utc(source_cutoff_at)
         payload_hash = _hash_payload(
             {
                 "instrument_id": instrument_id,
                 "as_of_date": as_of_date.isoformat(),
                 "source_cutoff_at": source_cutoff_at.isoformat(),
-                "positions": positions,
+                "methodology_version": methodology_version,
+                "source_record_id": source_record_id,
+                "positions": canonical_positions,
             }
         )
-        record = self.facts_repository.replace_current_holding_snapshot(
+        write_result = self.facts_repository.append_holding_snapshot(
             session,
-            holding_snapshot_id=f"holding:{instrument_id}:{as_of_date.isoformat()}",
+            holding_snapshot_id=f"holding:{instrument_id}:{as_of_date.isoformat()}:{payload_hash}",
             instrument_id=instrument_id,
             as_of_date=as_of_date,
             source_cutoff_at=source_cutoff_at,
             methodology_version=methodology_version,
             input_hash=payload_hash,
             source_record_id=source_record_id,
-            positions=positions,
+            positions=canonical_positions,
         )
+        record = write_result.record
 
         execution = None
-        if auto_recalculate:
+        if auto_recalculate and write_result.became_current:
             execution = self.execute_recalc(
                 session,
                 instrument_id=instrument_id,
@@ -1865,6 +2002,8 @@ class CanonicalRecalcService:
             "holding_snapshot_id": record.holding_snapshot_id,
             "position_count": len(record.positions),
             "as_of_date": record.as_of_date.isoformat(),
+            "created": write_result.created,
+            "is_current": record.is_current,
             "auto_recalculated": execution is not None,
             "execution": execution,
         }
@@ -2083,9 +2222,7 @@ class CanonicalRecalcService:
             raise ValueError(f"Instrument not found: {instrument_id}")
 
         shared_instrument = get_shared_instrument(instrument_id)
-        source_watermark_at_start = _parse_source_watermark(
-            (shared_instrument or {}).get("market_data_updated_at")
-        )
+        source_watermark_at_start = _shared_calculation_watermark(shared_instrument)
         shared_instrument_type = (
             str(shared_instrument.get("instrument_type") or "").strip().lower()
             if isinstance(shared_instrument, dict)
@@ -2183,7 +2320,6 @@ class CanonicalRecalcService:
         performance_snapshot = self.snapshot_repository.get_current_performance(session, instrument_id)
         risk_snapshot = self.snapshot_repository.get_current_risk(session, instrument_id)
         exposure_snapshot = self.snapshot_repository.get_current_exposure(session, instrument_id)
-        score_snapshot = self.snapshot_repository.get_current_score(session, instrument_id)
 
         if job_type in {"performance", "all"}:
             if calculation_nav_points:
@@ -2223,24 +2359,12 @@ class CanonicalRecalcService:
             or market_data_source_cutoff
         )
 
-        if job_type in {"ratings", "performance", "exposure", "all"}:
-            score_snapshot = self._replace_score_snapshot(
-                session,
-                instrument_id=instrument_id,
-                performance_snapshot=performance_snapshot,
-                risk_snapshot=risk_snapshot,
-                exposure_snapshot=exposure_snapshot,
-                source_cutoff_at=materialized_market_source_cutoff,
-                now=now,
-            )
-
         summary_payload = self._summary_payload(
             instrument=instrument,
             nav_selection=nav_selection,
             performance_snapshot=performance_snapshot,
             risk_snapshot=risk_snapshot,
             exposure_snapshot=exposure_snapshot,
-            score_snapshot=score_snapshot,
             attributes=raw_attributes,
             taxonomy_context=taxonomy_context,
             calculation_frequency_profile=calculation_frequency_profile,
@@ -2280,8 +2404,6 @@ class CanonicalRecalcService:
         )
         exposure_payload = self._exposure_payload(exposure_snapshot)
         holdings_payload = self._holdings_payload(holding_snapshot)
-        rating_payload = self._rating_payload(score_snapshot)
-
         for model_class, payload in (
             (InstrumentSummaryReadModel, summary_payload),
             (InstrumentChartReadModel, chart_payload),
@@ -2289,7 +2411,6 @@ class CanonicalRecalcService:
             (InstrumentRiskReadModel, risk_payload),
             (InstrumentExposureReadModel, exposure_payload),
             (InstrumentExposureHoldingsReadModel, holdings_payload),
-            (InstrumentRatingReadModel, rating_payload),
         ):
             self.read_model_repository.upsert_payload_read_model(
                 session,
@@ -2307,19 +2428,17 @@ class CanonicalRecalcService:
             instrument=instrument,
             summary_payload=summary_payload,
             attributes=watchlist_attributes,
-            peer_comparison=peer_comparison,
             performance_snapshot=performance_snapshot,
             risk_snapshot=risk_snapshot,
             exposure_snapshot=exposure_snapshot,
-            score_snapshot=score_snapshot,
             now=now,
         )
 
         shared_instrument_at_end = (
             get_shared_instrument(instrument_id) if uses_shared_market_data else shared_instrument
         )
-        source_watermark_at_end = _parse_source_watermark(
-            (shared_instrument_at_end or {}).get("market_data_updated_at")
+        source_watermark_at_end = _shared_calculation_watermark(
+            shared_instrument_at_end
         )
         source_changed_during_recalc = bool(
             uses_shared_market_data and source_watermark_at_end != source_watermark_at_start
@@ -2331,7 +2450,6 @@ class CanonicalRecalcService:
             "performance_snapshot_id": getattr(performance_snapshot, "snapshot_id", None),
             "risk_snapshot_id": getattr(risk_snapshot, "snapshot_id", None),
             "exposure_snapshot_id": getattr(exposure_snapshot, "snapshot_id", None),
-            "score_snapshot_id": getattr(score_snapshot, "snapshot_id", None),
             "source_watermark_at_start": (
                 source_watermark_at_start.isoformat().replace("+00:00", "Z")
                 if source_watermark_at_start is not None
@@ -2516,16 +2634,24 @@ class CanonicalRecalcService:
             (float(item.portfolio_weight or 0) for item in holding_snapshot.positions),
             reverse=True,
         )[:10]
-        avg_duration_candidates = [
-            float(item.effective_duration)
-            for item in holding_snapshot.positions
-            if item.effective_duration is not None
-        ]
-        avg_ytw_candidates = [
-            float(item.yield_to_worst)
-            for item in holding_snapshot.positions
-            if item.yield_to_worst is not None
-        ]
+        weighted_duration, duration_weight, total_reported_weight = _weighted_holding_metric(
+            holding_snapshot.positions,
+            "effective_duration",
+        )
+        weighted_ytw, ytw_weight, _ = _weighted_holding_metric(
+            holding_snapshot.positions,
+            "yield_to_worst",
+        )
+        duration_weight_coverage = (
+            duration_weight / total_reported_weight * Decimal("100")
+            if total_reported_weight > 0
+            else None
+        )
+        ytw_weight_coverage = (
+            ytw_weight / total_reported_weight * Decimal("100")
+            if total_reported_weight > 0
+            else None
+        )
         return self.snapshot_repository.replace_exposure(
             session,
             snapshot_id=f"exposure:{instrument_id}:{holding_snapshot.as_of_date.isoformat()}:{make_recalc_job_id()}",
@@ -2533,8 +2659,14 @@ class CanonicalRecalcService:
             data={
                 "as_of_date": holding_snapshot.as_of_date,
                 "source_cutoff_at": holding_snapshot.source_cutoff_at,
-                "methodology_version": "canonical-exposure/v2",
-                "input_hash": _hash_payload({"positions": len(holding_snapshot.positions)}),
+                "methodology_version": "canonical-exposure/v3",
+                "input_hash": _hash_payload(
+                    {
+                        "holding_snapshot_id": holding_snapshot.holding_snapshot_id,
+                        "holding_input_hash": holding_snapshot.input_hash,
+                        "methodology_version": "canonical-exposure/v3",
+                    }
+                ),
                 "calculated_at": now,
                 "superseded_at": None,
                 "is_current": True,
@@ -2553,71 +2685,15 @@ class CanonicalRecalcService:
                 "other_count": None,
                 "cash_ratio": None,
                 "leverage_ratio": None,
-                "weighted_duration": _safe_decimal(statistics.mean(avg_duration_candidates)) if avg_duration_candidates else None,
+                "reported_weight_total": total_reported_weight,
+                "duration_weight_coverage": duration_weight_coverage,
+                "ytw_weight_coverage": ytw_weight_coverage,
+                "weighted_duration": weighted_duration,
                 "weighted_maturity": None,
-                "weighted_yield_to_worst": _safe_decimal(statistics.mean(avg_ytw_candidates)) if avg_ytw_candidates else None,
+                "weighted_yield_to_worst": weighted_ytw,
                 "avg_credit_rating": None,
                 "reported_turnover": None,
                 "style_box_code": None,
-            },
-        )
-
-    def _replace_score_snapshot(
-        self,
-        session: Session,
-        *,
-        instrument_id: str,
-        performance_snapshot,
-        risk_snapshot,
-        exposure_snapshot,
-        source_cutoff_at: datetime,
-        now: datetime,
-    ):
-        scores = [
-            _safe_float(getattr(performance_snapshot, "return_1y", None)),
-            _safe_float(getattr(risk_snapshot, "sharpe_ratio", None)),
-            _safe_float(getattr(exposure_snapshot, "weighted_yield_to_worst", None)),
-        ]
-        valid_scores = [value for value in scores if value is not None]
-        overall_score = statistics.mean(valid_scores) if valid_scores else None
-        if overall_score is None:
-            overall_rating = None
-            analyst_stance = "Unrated"
-        elif overall_score >= 10:
-            overall_rating = 5
-            analyst_stance = "High Conviction"
-        elif overall_score >= 6:
-            overall_rating = 4
-            analyst_stance = "Positive"
-        elif overall_score >= 2:
-            overall_rating = 3
-            analyst_stance = "Watch"
-        else:
-            overall_rating = 2
-            analyst_stance = "Cautious"
-        return self.snapshot_repository.replace_score(
-            session,
-            snapshot_id=f"score:{instrument_id}:{now.date().isoformat()}:{make_recalc_job_id()}",
-            instrument_id=instrument_id,
-            data={
-                "as_of_date": now.date(),
-                "source_cutoff_at": source_cutoff_at,
-                "methodology_version": "canonical-score/v2",
-                "input_hash": _hash_payload({"score": overall_score}),
-                "calculated_at": now,
-                "superseded_at": None,
-                "is_current": True,
-                "overall_score": _safe_decimal(overall_score),
-                "overall_rating": overall_rating,
-                "analyst_stance": analyst_stance,
-                "people_score": None,
-                "process_score": None,
-                "exposure_score": _safe_decimal(_safe_float(getattr(exposure_snapshot, "weighted_yield_to_worst", None))),
-                "risk_score": _safe_decimal(_safe_float(getattr(risk_snapshot, "sharpe_ratio", None))),
-                "price_score": _safe_decimal(_safe_float(getattr(performance_snapshot, "return_1y", None))),
-                "operations_score": None,
-                "fit_score": None,
-                "confidence_score": None,
             },
         )
 
@@ -2629,7 +2705,6 @@ class CanonicalRecalcService:
         performance_snapshot,
         risk_snapshot,
         exposure_snapshot,
-        score_snapshot,
         attributes: dict[str, object],
         taxonomy_context: dict[str, object],
         source_cutoff_at: datetime,
@@ -2699,10 +2774,7 @@ class CanonicalRecalcService:
             "instrument_id": instrument.instrument_id,
             "fund_name": instrument.instrument_name,
             "ticker_or_isin": instrument.primary_identifier_value or instrument.instrument_id.upper(),
-            "rating_as_of": now.date().isoformat(),
             "management_firm_name": str(instrument.metadata_json.get("management_firm_name") or "") or None,
-            "overall_rating": getattr(score_snapshot, "overall_rating", None),
-            "analyst_stance": getattr(score_snapshot, "analyst_stance", "Unrated"),
             "instrument_attributes": attributes,
             "taxonomy": taxonomy_context,
             "selected_series": selected_series,
@@ -2779,6 +2851,45 @@ class CanonicalRecalcService:
             "tabs": DEFAULT_TABS,
         }
 
+    def _peer_comparison_context(self, session: Session) -> dict[str, object]:
+        nodes = self.taxonomy_repository.list_nodes(
+            session,
+            taxonomy_code=FUND_TAXONOMY_CODE,
+        )
+        node_by_id = {str(node.node_id): node for node in nodes}
+        assignments = self.taxonomy_repository.list_assignments(
+            session,
+            taxonomy_code=FUND_TAXONOMY_CODE,
+        )
+        active_peer_instrument_ids = _active_fund_instrument_ids(session)
+        assigned_node_by_asset = {
+            str(assignment.instrument_id): node_by_id.get(str(assignment.node_id))
+            for assignment in assignments
+            if assignment.node_id
+            and str(assignment.instrument_id) in active_peer_instrument_ids
+        }
+        performance_by_asset: dict[str, object] = {}
+        for snapshot in self.snapshot_repository.list_current_performance(
+            session,
+            instrument_ids=sorted(active_peer_instrument_ids),
+        ):
+            if snapshot.methodology_version == PERFORMANCE_METHODOLOGY_VERSION:
+                performance_by_asset.setdefault(str(snapshot.instrument_id), snapshot)
+        risk_by_asset: dict[str, object] = {}
+        for snapshot in self.snapshot_repository.list_current_risk(
+            session,
+            instrument_ids=sorted(active_peer_instrument_ids),
+        ):
+            if snapshot.methodology_version == RISK_METHODOLOGY_VERSION:
+                risk_by_asset.setdefault(str(snapshot.instrument_id), snapshot)
+        return {
+            "node_by_id": node_by_id,
+            "assigned_node_by_asset": assigned_node_by_asset,
+            "active_peer_instrument_ids": active_peer_instrument_ids,
+            "performance_by_asset": performance_by_asset,
+            "risk_by_asset": risk_by_asset,
+        }
+
     def _peer_comparison_payload(
         self,
         session: Session,
@@ -2787,6 +2898,7 @@ class CanonicalRecalcService:
         taxonomy_node,
         performance_snapshot,
         risk_snapshot,
+        context: dict[str, object] | None = None,
     ) -> dict[str, object]:
         assigned_path_node_ids = _node_path_node_ids(taxonomy_node)
         if taxonomy_node is None or not assigned_path_node_ids:
@@ -2811,36 +2923,14 @@ class CanonicalRecalcService:
                 "summary": {},
             }
 
-        nodes = self.taxonomy_repository.list_nodes(session, taxonomy_code=FUND_TAXONOMY_CODE)
-        node_by_id = {str(node.node_id): node for node in nodes}
-        assignments = self.taxonomy_repository.list_assignments(
-            session,
-            taxonomy_code=FUND_TAXONOMY_CODE,
-        )
-        active_peer_instrument_ids = _active_fund_instrument_ids(session)
-        assigned_node_by_asset = {
-            str(assignment.instrument_id): node_by_id.get(str(assignment.node_id))
-            for assignment in assignments
-            if assignment.node_id and str(assignment.instrument_id) in active_peer_instrument_ids
-        }
-        performance_by_asset = {}
-        for snapshot in self.snapshot_repository.list_current_performance(
-            session,
-            instrument_ids=sorted(active_peer_instrument_ids),
-        ):
-            if snapshot.methodology_version != PERFORMANCE_METHODOLOGY_VERSION:
-                continue
-            performance_by_asset.setdefault(str(snapshot.instrument_id), snapshot)
+        context = context or self._peer_comparison_context(session)
+        node_by_id = dict(context["node_by_id"])
+        assigned_node_by_asset = dict(context["assigned_node_by_asset"])
+        active_peer_instrument_ids = set(context["active_peer_instrument_ids"])
+        performance_by_asset = dict(context["performance_by_asset"])
         if performance_snapshot is not None and instrument_id in active_peer_instrument_ids:
             performance_by_asset[str(instrument_id)] = performance_snapshot
-        risk_by_asset = {}
-        for snapshot in self.snapshot_repository.list_current_risk(
-            session,
-            instrument_ids=sorted(active_peer_instrument_ids),
-        ):
-            if snapshot.methodology_version != RISK_METHODOLOGY_VERSION:
-                continue
-            risk_by_asset.setdefault(str(snapshot.instrument_id), snapshot)
+        risk_by_asset = dict(context["risk_by_asset"])
         if risk_snapshot is not None and instrument_id in active_peer_instrument_ids:
             risk_by_asset[str(instrument_id)] = risk_snapshot
 
@@ -3002,6 +3092,79 @@ class CanonicalRecalcService:
                 ),
             },
         }
+
+    def current_peer_comparison(
+        self,
+        session: Session,
+        *,
+        instrument_id: str,
+        context: dict[str, object] | None = None,
+    ) -> dict[str, object]:
+        context = context or self._peer_comparison_context(session)
+        assigned_node_by_asset = dict(context["assigned_node_by_asset"])
+        performance_by_asset = dict(context["performance_by_asset"])
+        risk_by_asset = dict(context["risk_by_asset"])
+        return self._peer_comparison_payload(
+            session,
+            instrument_id=instrument_id,
+            taxonomy_node=assigned_node_by_asset.get(instrument_id),
+            performance_snapshot=performance_by_asset.get(instrument_id),
+            risk_snapshot=risk_by_asset.get(instrument_id),
+            context=context,
+        )
+
+    def peer_watchlist_attribute_overrides(
+        self,
+        session: Session,
+        *,
+        instrument_ids: list[str],
+    ) -> dict[str, dict[str, object]]:
+        if not instrument_ids:
+            return {}
+        context = self._peer_comparison_context(session)
+        return {
+            instrument_id: _peer_watchlist_attributes(
+                self.current_peer_comparison(
+                    session,
+                    instrument_id=instrument_id,
+                    context=context,
+                )
+            )
+            for instrument_id in instrument_ids
+        }
+
+    def apply_current_peer_comparison(
+        self,
+        session: Session,
+        *,
+        instrument_id: str,
+        performance_payload: dict[str, object] | None = None,
+        risk_payload: dict[str, object] | None = None,
+    ) -> tuple[dict[str, object] | None, dict[str, object] | None]:
+        try:
+            peer_comparison = self.current_peer_comparison(
+                session,
+                instrument_id=instrument_id,
+            )
+        except SharedInstrumentRegistryError as error:
+            peer_comparison = {
+                "status": "unavailable",
+                "reason": str(error),
+                "comparison_policy_version": PEER_COMPARISON_POLICY_VERSION,
+                "metrics": [],
+                "summary": {},
+            }
+        return (
+            _performance_payload_with_peer_comparison(
+                performance_payload,
+                peer_comparison,
+            )
+            if performance_payload is not None
+            else None,
+            _risk_payload_with_peer_comparison(risk_payload, peer_comparison)
+            if risk_payload is not None
+            else None,
+        )
 
     def _performance_payload(
         self,
@@ -3174,6 +3337,9 @@ class CanonicalRecalcService:
             "style_box": {
                 "weighted_duration": _safe_float(getattr(exposure_snapshot, "weighted_duration", None)),
                 "yield_to_worst": _safe_float(getattr(exposure_snapshot, "weighted_yield_to_worst", None)),
+                "reported_weight_total": _safe_float(getattr(exposure_snapshot, "reported_weight_total", None)),
+                "duration_weight_coverage": _safe_float(getattr(exposure_snapshot, "duration_weight_coverage", None)),
+                "yield_to_worst_weight_coverage": _safe_float(getattr(exposure_snapshot, "ytw_weight_coverage", None)),
             } if exposure_snapshot is not None else None,
             "liquidity_leverage": None,
             "valuation_statistics": None,
@@ -3181,7 +3347,7 @@ class CanonicalRecalcService:
                 "total_holdings": getattr(exposure_snapshot, "holding_count", None),
                 "top10_concentration": _safe_float(getattr(exposure_snapshot, "top10_concentration", None)),
             } if exposure_snapshot is not None else None,
-            "snapshot_metadata": None,
+            "snapshot_metadata": _snapshot_metadata(exposure_snapshot),
         }
 
     def _holdings_payload(self, holding_snapshot) -> dict[str, object]:
@@ -3202,16 +3368,12 @@ class CanonicalRecalcService:
                 }
                 for item in holding_snapshot.positions
             ]
-        return {"rows": rows, "page": 1, "page_size": len(rows), "total_rows": len(rows)}
-
-    def _rating_payload(self, score_snapshot) -> dict[str, object]:
         return {
-            "overall_rating": getattr(score_snapshot, "overall_rating", None),
-            "overall_score": _safe_float(getattr(score_snapshot, "overall_score", None)),
-            "analyst_stance": getattr(score_snapshot, "analyst_stance", "Unrated"),
-            "methodology_version": "house-rating/v2",
-            "dimension_scores": [],
-            "override_info": None,
+            "rows": rows,
+            "page": 1,
+            "page_size": len(rows),
+            "total_rows": len(rows),
+            "snapshot_metadata": _snapshot_metadata(holding_snapshot),
         }
 
     def _refresh_watchlist_rows(
@@ -3221,18 +3383,16 @@ class CanonicalRecalcService:
         instrument,
         summary_payload: dict[str, object],
         attributes: dict[str, object],
-        peer_comparison: dict[str, object] | None,
         performance_snapshot,
         risk_snapshot,
         exposure_snapshot,
-        score_snapshot,
         now: datetime,
     ) -> None:
         existing_rows = self.read_model_repository.list_watchlist_rows_for_instrument(session, instrument.instrument_id)
         if not existing_rows:
             return
         freshness = summary_payload.get("freshness", {})
-        row_attributes = {**attributes, **_peer_watchlist_attributes(peer_comparison)}
+        row_attributes = dict(attributes)
         for row in existing_rows:
             self.read_model_repository.upsert_watchlist_row(
                 session,
@@ -3247,8 +3407,6 @@ class CanonicalRecalcService:
                     share_class=None,
                     ticker_or_isin=instrument.primary_identifier_value,
                     management_firm_name=str(instrument.metadata_json.get("management_firm_name") or "") or None,
-                    overall_rating=getattr(score_snapshot, "overall_rating", None),
-                    analyst_stance=getattr(score_snapshot, "analyst_stance", None),
                     attributes=row_attributes,
                     freshness_status=str(freshness.get("data_freshness_status") or "fresh"),
                     last_fact_update_at=_coerce_utc(
@@ -3277,7 +3435,7 @@ class CanonicalRecalcService:
                     "yield_to_worst": getattr(exposure_snapshot, "weighted_yield_to_worst", None),
                     "aum": None,
                     "avg_credit_rating": getattr(exposure_snapshot, "avg_credit_rating", None),
-                    "exposure_updated_at": getattr(exposure_snapshot, "calculated_at", None),
+                    "exposure_updated_at": getattr(exposure_snapshot, "source_cutoff_at", None),
                     "last_nav_date": getattr(
                         performance_snapshot, "as_of_date", None
                     ),

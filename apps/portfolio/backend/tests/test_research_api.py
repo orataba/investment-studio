@@ -463,10 +463,27 @@ def test_current_scope_actuals_excludes_derivative_tracking_holdings(monkeypatch
                     "market_value_base": 100.0,
                 },
                 {
-                    "instrument_id": "fcn-tracking",
-                    "instrument_ref": {
-                        "instrument_id": "fcn-tracking",
-                        "instrument_type": "fcn",
+                    "instrument_id": None,
+                    "derivative_contract_id": "fcn-tracking",
+                    "derivative_contract": {
+                        "derivative_contract_id": "fcn-tracking",
+                        "portfolio_id": "portfolio-derivative-boundary",
+                        "account_id": "broker",
+                        "contract_name": "FCN tracking",
+                        "contract_type": "fcn",
+                        "currency": "USD",
+                        "terms": {
+                            "notional": "50",
+                            "issue_date": "2026-01-01",
+                            "maturity_date": "2026-12-31",
+                            "issuer": "Test Issuer",
+                            "counterparty": "Test Broker",
+                            "underlying_instrument_ids": ["ordinary-fund"],
+                            "deliverable_instrument_ids": ["ordinary-fund"],
+                            "barrier_type": "none",
+                            "barrier_level": None,
+                        },
+                        "created_at": "2026-01-01T00:00:00Z",
                     },
                     "market_value_base": 50.0,
                 },
@@ -493,15 +510,11 @@ def test_current_scope_actuals_excludes_derivative_tracking_holdings(monkeypatch
     ]
 
 
-def test_taxonomy_state_removes_derivatives_from_research_members(monkeypatch) -> None:
+def test_taxonomy_state_uses_registry_instruments_only(monkeypatch) -> None:
     seeded_details = {
         "ordinary-fund": {
             "instrument_id": "ordinary-fund",
             "instrument_type": "fund",
-        },
-        "fcn-tracking": {
-            "instrument_id": "fcn-tracking",
-            "instrument_type": "fcn",
         },
     }
     monkeypatch.setattr(
@@ -528,24 +541,12 @@ def test_taxonomy_state_removes_derivatives_from_research_members(monkeypatch) -
                     "parent_taxonomy_node_id": None,
                     "status": "active",
                 },
-                {
-                    "taxonomy_node_id": "derivative-node",
-                    "node_name": "Derivatives",
-                    "parent_taxonomy_node_id": None,
-                    "status": "active",
-                },
             ],
             "taxonomy_assignments": [
                 {
                     "taxonomy_node_id": "ordinary-node",
                     "target_scope": "instrument",
                     "target_entity_id": "ordinary-fund",
-                    "status": "active",
-                },
-                {
-                    "taxonomy_node_id": "derivative-node",
-                    "target_scope": "instrument",
-                    "target_entity_id": "fcn-tracking",
                     "status": "active",
                 },
             ],
@@ -570,7 +571,6 @@ def test_taxonomy_state_removes_derivatives_from_research_members(monkeypatch) -
     )
 
     assert state.direct_assignments_by_node["ordinary-node"]
-    assert state.direct_assignments_by_node.get("derivative-node") is None
     assert [member.member_id for member in members] == [
         "ordinary-node",
         SYSTEM_CASH_TARGET_MEMBER_ID,
@@ -1157,11 +1157,6 @@ def test_backtest_universe_comes_from_point_in_time_assignment_revisions() -> No
                         "target_scope": "instrument",
                         "target_entity_id": "inactive-member",
                     },
-                    {
-                        "status": "active",
-                        "target_scope": "instrument",
-                        "target_entity_id": "fcn-tracking",
-                    },
                 ]
             },
             {
@@ -1177,7 +1172,6 @@ def test_backtest_universe_comes_from_point_in_time_assignment_revisions() -> No
         instrument_detail_cache={
             "former-member": {"instrument_type": "fund"},
             "current-member": {"instrument_type": "equity"},
-            "fcn-tracking": {"instrument_type": "fcn"},
         },
     ) == ["current-member", "former-member"]
 

@@ -59,8 +59,8 @@ class Settings(BaseSettings):
             normalized = value.strip()
             if not normalized:
                 return None
-            if not normalized.replace("_", "").isalnum() or normalized[0].isdigit():
-                raise ValueError("database_schema must be a valid SQL identifier.")
+            if normalized != "watchlist":
+                raise ValueError("database_schema must be the canonical 'watchlist' schema.")
             return normalized
         return value
 

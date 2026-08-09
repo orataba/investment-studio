@@ -20,6 +20,7 @@ import {
   getPortfolioInstruments,
   getPortfolioTaxonomyCatalog,
   type HoldingsWorkspaceResponse,
+  type InstrumentCore,
   type PortfolioAccountsWorkspaceResponse,
   type PortfolioInstrumentPriceChartResponse,
   type PortfolioTaxonomyCatalogResponse,
@@ -562,12 +563,15 @@ function buildRollingMetricPoints(
   return rollingPoints
 }
 
-function holdingRiskLabel(row: HoldingsWorkspaceResponse['rows'][number]) {
-  return row.instrument_core.instrument_name || row.instrument_core.instrument_id || row.line_id
+type HoldingsRow = HoldingsWorkspaceResponse['rows'][number]
+type MarketInstrumentHoldingRow = HoldingsRow & { instrument_core: InstrumentCore }
+
+function holdingRiskLabel(row: HoldingsRow) {
+  return row.instrument_core?.instrument_name || row.derivative_contract?.contract_name || row.position_reference_id || row.line_id
 }
 
-function isCashHoldingRow(row: HoldingsWorkspaceResponse['rows'][number]) {
-  return row.instrument_core.instrument_type.trim().toLowerCase() === 'cash'
+function isCashHoldingRow(row: HoldingsRow) {
+  return row.instrument_core?.instrument_type.trim().toLowerCase() === 'cash'
 }
 
 function isPendingMonetaryHoldingRow(row: HoldingsWorkspaceResponse['rows'][number]) {
@@ -580,16 +584,22 @@ function isPendingMonetaryHoldingRow(row: HoldingsWorkspaceResponse['rows'][numb
   )
 }
 
-function isRiskBearingHoldingRow(row: HoldingsWorkspaceResponse['rows'][number]) {
+function isRiskBearingHoldingRow(row: HoldingsRow): row is MarketInstrumentHoldingRow {
   return (
+    row.instrument_core !== null &&
     row.risk_eligible === true &&
     !isCashHoldingRow(row) &&
     !isPendingMonetaryHoldingRow(row)
   )
 }
 
-function isNonCashPositionHoldingRow(row: HoldingsWorkspaceResponse['rows'][number]) {
-  return !isCashHoldingRow(row) && !isPendingMonetaryHoldingRow(row)
+function isNonCashPositionHoldingRow(row: HoldingsRow): row is MarketInstrumentHoldingRow {
+  return (
+    row.instrument_core !== null &&
+    (row.holding_kind ?? 'position') === 'position' &&
+    !isCashHoldingRow(row) &&
+    !isPendingMonetaryHoldingRow(row)
+  )
 }
 
 function isCashUniverseInstrument(record: PortfolioTaxonomyCatalogResponse['instrument_universe'][number]) {
@@ -881,19 +891,18 @@ function buildCurrentHoldingsMatrixScope(
   }
   const baseCurrency = holdingsWorkspace.base_currency.trim().toUpperCase()
   const issues: CorrelationMatrixCoverageIssue[] = []
-  const rows = holdingsWorkspace.rows.filter((row) => {
-    if (!isRiskBearingHoldingRow(row)) {
-      return false
-    }
-    const quantity = finiteNumber(row.quantity)
-    const currentWeight = finiteNumber(row.allocation)
-    const currentValueBase = finiteNumber(row.market_value_base)
-    return (
-      Math.abs(quantity ?? 0) > 1e-9 ||
-      Math.abs(currentWeight ?? 0) > 1e-9 ||
-      Math.abs(currentValueBase ?? 0) > 1e-9
-    )
-  })
+  const rows = holdingsWorkspace.rows
+    .filter(isRiskBearingHoldingRow)
+    .filter((row) => {
+      const quantity = finiteNumber(row.quantity)
+      const currentWeight = finiteNumber(row.allocation)
+      const currentValueBase = finiteNumber(row.market_value_base)
+      return (
+        Math.abs(quantity ?? 0) > 1e-9 ||
+        Math.abs(currentWeight ?? 0) > 1e-9 ||
+        Math.abs(currentValueBase ?? 0) > 1e-9
+      )
+    })
   const seenMembers = new Set<string>()
   const series = rows.flatMap((row): GroupReturnSeries[] => {
     const memberKey = row.instrument_core.instrument_id
@@ -1290,11 +1299,9 @@ export function buildCanonicalTaxonomyRiskContributionRows({
   const grouped = new Map<string, RiskContributionRow>()
   const errors: string[] = []
   holdingsWorkspace.rows
+    .filter(isRiskBearingHoldingRow)
     .filter((row) => {
-      if (
-        !isRiskBearingHoldingRow(row) ||
-        (eligibility === 'risk_budget' && row.risk_budget_eligible !== true)
-      ) {
+      if (eligibility === 'risk_budget' && row.risk_budget_eligible !== true) {
         return false
       }
       return (

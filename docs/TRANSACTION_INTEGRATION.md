@@ -21,7 +21,21 @@ Example: sell three Put contracts to open, with a multiplier of 100:
   "settlement_date": "2026-02-15",
   "account_id": "broker-us-core",
   "settlement_cash_account_id": "cash-usd-main",
-  "instrument_id": "option-demo-put-001",
+  "derivative_contract_id": "option-demo-put-001",
+  "derivative_contract": {
+    "derivative_contract_id": "option-demo-put-001",
+    "contract_name": "Demo Dec 45 Put",
+    "contract_type": "option",
+    "external_reference": "BROKER-PUT-001",
+    "terms": {
+      "underlying_instrument_id": "equity-demo-001",
+      "option_type": "put",
+      "expiry_date": "2026-12-18",
+      "strike": 45,
+      "contract_multiplier": 100,
+      "settlement_type": "physical"
+    }
+  },
   "quantity": 3,
   "price": 2,
   "gross_amount": 600,
@@ -36,7 +50,7 @@ Example: sell three Put contracts to open, with a multiplier of 100:
 
 ## One row, one fact
 
-Portfolio does not create or bind multi-leg derivative transactions, and the transaction schema has no derivative relation or event-group field. If two rows are economically related, record both independently and explain the relationship in `note` when useful.
+Portfolio does not create or bind multi-leg derivative transactions, and the transaction schema has no derivative relation or event-group field. If two rows are economically related, record both independently and explain the relationship in `note` when useful. Market securities use Registry `instrument_id`; an FCN or option uses a Portfolio-local `derivative_contract_id`.
 
 Examples:
 
@@ -48,7 +62,7 @@ The system does not require matching quantities, timestamps, references, or note
 
 ## Option facts
 
-Every option instrument in Registry contains its Call/Put type, underlying, expiry, strike, multiplier, settlement type, and currency. The instrument identity determines whether the row is a Call or Put; the transaction type determines the action.
+An option contract is created inside its Portfolio, atomically with its first transaction. The inline contract records Call/Put type, Registry underlying, expiry, strike, multiplier and settlement type. Later transactions reference only the same `derivative_contract_id`; the contract terms are not copied into Registry or repeated on every row.
 
 | Stored `transaction_type` | Option action | Quantity |
 |---|---|---|
@@ -63,7 +77,7 @@ Every option instrument in Registry contains its Call/Put type, underlying, expi
 
 Both Call and Put contracts, long and short, physical and cash settlement are supported. For premium trades, `price` is premium per underlying unit and:
 
-`gross_amount = contract quantity × premium price × Registry contract multiplier`
+`gross_amount = contract quantity × premium price × Portfolio contract multiplier`
 
 Long options remain at transaction cost between recorded events. Short options appear as negative contract positions with a remaining premium-basis liability. No daily option market price or covered-position test is required.
 
@@ -79,11 +93,15 @@ Long options remain at transaction cost between recorded events. Short options a
 
 FCNs remain at transaction cost between recorded events. Portfolio does not verify barrier levels and does not infer or bind any delivered asset.
 
+The first FCN transaction creates a Portfolio-local contract with notional, issue/maturity dates, issuer, counterparty, Registry underlying IDs, optional deliverable Registry IDs, and barrier description. Those fields are recorded terms, not a live valuation model or automatic barrier monitor.
+
 ## CSV fields
 
 Required columns are `transaction_type`, `trade_date`, `account_id`, `gross_amount`, and `currency`. The template also contains:
 
-`lifecycle_event_type`, `trade_time`, `settlement_date`, `position_effective_date`, `entitlement_date`, `acquisition_date`, `settlement_cash_account_id`, `instrument_id`, `quantity`, `price`, `counter_amount`, `fx_rate`, `fees`, `fee_category`, `taxes`, `counterparty_account_id`, `source_system`, `external_reference`, `note`.
+`lifecycle_event_type`, `trade_time`, `settlement_date`, `position_effective_date`, `entitlement_date`, `acquisition_date`, `settlement_cash_account_id`, `instrument_id`, `derivative_contract_id`, derivative definition/term columns, `quantity`, `price`, `counter_amount`, `fx_rate`, `fees`, `fee_category`, `taxes`, `counterparty_account_id`, `source_system`, `external_reference`, `note`.
+
+For a new derivative contract, place its definition on the first CSV row. Later rows leave the definition columns blank and keep only `derivative_contract_id`. A row may use `instrument_id` or `derivative_contract_id`, never both.
 
 Downloads add read-only `transaction_id`, `row_version`, `created_at`, and derived `option_action`. CSV preview validates the complete candidate history; import is all-or-nothing and requires the unchanged `preview_digest` returned by preview.
 

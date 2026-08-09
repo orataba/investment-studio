@@ -29,10 +29,221 @@ from portfolio_ops_instrument_core import (  # noqa: E402
 )
 
 
-FINAL_FLAT_TABLE_HEAD_PAIR = ("20260807_0019", "20260809_0045")
+FINAL_FLAT_TABLE_HEADS = {
+    "instrument_registry": "20260809_0022",
+    "platform": "20260716_0002",
+    "portfolio": "20260809_0046",
+    "watchlist": "20260809_0036",
+}
+VERSION_TABLES = {
+    "instrument_registry": "alembic_version",
+    "platform": "platform_alembic_version",
+    "portfolio": "alembic_version",
+    "watchlist": "alembic_version",
+}
 FUND_NAV_PROJECTION_METHOD_VERSION = "fund_nav_reinvestment_projection/v7"
 
+SCHEMA_IDENTIFIER_RENAMES = (
+    (
+        "constraint",
+        "instrument_registry",
+        "fk_instrument_identifier_asset_id_instrument",
+        "fk_instrument_identifier_instrument_id_instrument",
+    ),
+    (
+        "constraint",
+        "instrument_registry",
+        "fk_instrument_market_data_asset_id_instrument",
+        "fk_instrument_market_data_instrument_id_instrument",
+    ),
+    (
+        "constraint",
+        "instrument_registry",
+        "uq_instrument_market_data_asset_metric_basis_date_currency",
+        "uq_instrument_market_data_instrument_metric_basis_date_currency",
+    ),
+    (
+        "constraint",
+        "watchlist",
+        "fk_exposure_analytics_snapshot_asset_id_asset_detail",
+        "fk_exposure_analytics_snapshot_instrument_id_instrument_detail",
+    ),
+    (
+        "constraint",
+        "watchlist",
+        "fk_holding_snapshot_asset_id_asset_detail",
+        "fk_holding_snapshot_instrument_id_instrument_detail",
+    ),
+    (
+        "constraint",
+        "watchlist",
+        "fk_instrument_attribute_value_asset_id_asset_detail",
+        "fk_instrument_attribute_value_instrument_id_instrument_detail",
+    ),
+    (
+        "constraint",
+        "watchlist",
+        "pk_asset_chart_read_model",
+        "pk_instrument_chart_read_model",
+    ),
+    (
+        "constraint",
+        "watchlist",
+        "fk_asset_chart_read_model_asset_id_asset_detail",
+        "fk_instrument_chart_read_model_instrument_id_instrument_detail",
+    ),
+    ("constraint", "watchlist", "pk_asset_detail", "pk_instrument_detail"),
+    (
+        "constraint",
+        "watchlist",
+        "fk_asset_detail_asset_id_instrument",
+        "fk_instrument_detail_instrument_id_instrument",
+    ),
+    (
+        "constraint",
+        "watchlist",
+        "pk_asset_exposure_holdings_read_model",
+        "pk_instrument_exposure_holdings_read_model",
+    ),
+    (
+        "constraint",
+        "watchlist",
+        "fk_asset_exposure_holdings_read_model_asset_id_asset_detail",
+        "fk_instrument_exposure_holdings_read_model_instrument_i_4381",
+    ),
+    (
+        "constraint",
+        "watchlist",
+        "pk_asset_exposure_read_model",
+        "pk_instrument_exposure_read_model",
+    ),
+    (
+        "constraint",
+        "watchlist",
+        "fk_asset_exposure_read_model_asset_id_asset_detail",
+        "fk_instrument_exposure_read_model_instrument_id_instrum_0346",
+    ),
+    (
+        "constraint",
+        "watchlist",
+        "pk_asset_manual_profile",
+        "pk_instrument_manual_profile",
+    ),
+    (
+        "constraint",
+        "watchlist",
+        "fk_asset_manual_profile_asset_id_asset_detail",
+        "fk_instrument_manual_profile_instrument_id_instrument_detail",
+    ),
+    (
+        "constraint",
+        "watchlist",
+        "pk_asset_performance_read_model",
+        "pk_instrument_performance_read_model",
+    ),
+    (
+        "constraint",
+        "watchlist",
+        "fk_asset_performance_read_model_asset_id_asset_detail",
+        "fk_instrument_performance_read_model_instrument_id_inst_9937",
+    ),
+    (
+        "constraint",
+        "watchlist",
+        "pk_asset_risk_read_model",
+        "pk_instrument_risk_read_model",
+    ),
+    (
+        "constraint",
+        "watchlist",
+        "fk_asset_risk_read_model_asset_id_asset_detail",
+        "fk_instrument_risk_read_model_instrument_id_instrument_detail",
+    ),
+    (
+        "constraint",
+        "watchlist",
+        "pk_asset_summary_read_model",
+        "pk_instrument_summary_read_model",
+    ),
+    (
+        "constraint",
+        "watchlist",
+        "fk_asset_summary_read_model_asset_id_asset_detail",
+        "fk_instrument_summary_read_model_instrument_id_instrume_1b8e",
+    ),
+    (
+        "constraint",
+        "watchlist",
+        "fk_instrument_taxonomy_assignment_asset_id_asset_detail",
+        "fk_instrument_taxonomy_assignment_instrument_id_instrum_983f",
+    ),
+    (
+        "constraint",
+        "watchlist",
+        "fk_nav_fact_asset_id_asset_detail",
+        "fk_nav_fact_instrument_id_instrument_detail",
+    ),
+    (
+        "constraint",
+        "watchlist",
+        "uq_nav_fact_asset_date_type_currency",
+        "uq_nav_fact_instrument_date_type_currency",
+    ),
+    (
+        "constraint",
+        "watchlist",
+        "fk_performance_snapshot_asset_id_asset_detail",
+        "fk_performance_snapshot_instrument_id_instrument_detail",
+    ),
+    (
+        "constraint",
+        "watchlist",
+        "fk_recalc_job_asset_id_asset_detail",
+        "fk_recalc_job_instrument_id_instrument_detail",
+    ),
+    (
+        "constraint",
+        "watchlist",
+        "fk_risk_snapshot_asset_id_asset_detail",
+        "fk_risk_snapshot_instrument_id_instrument_detail",
+    ),
+    (
+        "constraint",
+        "watchlist",
+        "fk_watchlist_item_asset_id_instrument",
+        "fk_watchlist_item_instrument_id_instrument",
+    ),
+    (
+        "constraint",
+        "watchlist",
+        "uq_watchlist_item_watchlist_asset",
+        "uq_watchlist_item_watchlist_instrument",
+    ),
+    (
+        "index",
+        "watchlist",
+        "idx_instrument_attribute_value_asset_attribute",
+        "idx_instrument_attribute_value_instrument_attribute",
+    ),
+    (
+        "index",
+        "watchlist",
+        "idx_nav_fact_asset_date",
+        "idx_nav_fact_instrument_date",
+    ),
+    (
+        "index",
+        "watchlist",
+        "uq_watchlist_item_watchlist_asset",
+        "uq_watchlist_item_watchlist_instrument",
+    ),
+)
+
 AUDIT_CHECK_NAMES = (
+    "schema_identifier_contract",
+    "watchlist_field_identity_contract",
+    "derivative_registry_boundary",
+    "portfolio_derivative_contract_integrity",
     "market_data_invalid_values",
     "market_data_currency_mismatch",
     "instrument_quote_policy_contract",
@@ -157,14 +368,16 @@ def _column_exists(
 def _version_state(
     cursor: psycopg.Cursor[Any], component: str
 ) -> dict[str, Any]:
-    version_relation = f"{component}.alembic_version"
+    version_table = VERSION_TABLES[component]
+    version_relation = f"{component}.{version_table}"
     cursor.execute("SELECT to_regclass(%s)", (version_relation,))
     row = cursor.fetchone()
     if row is None or row[0] is None:
         return {"row_count": 0, "version": None, "table_present": False}
     cursor.execute(
-        sql.SQL("SELECT count(*)::integer, min(version_num)::text FROM {}.alembic_version").format(
-            sql.Identifier(component)
+        sql.SQL("SELECT count(*)::integer, min(version_num)::text FROM {}.{}").format(
+            sql.Identifier(component),
+            sql.Identifier(version_table),
         )
     )
     count, version = cursor.fetchone() or (0, None)
@@ -178,13 +391,14 @@ def _version_state(
 def _detect_schema_profile(cursor: psycopg.Cursor[Any]) -> SchemaProfile:
     versions = {
         component: _version_state(cursor, component)
-        for component in ("instrument_registry", "portfolio")
+        for component in FINAL_FLAT_TABLE_HEADS
     }
     relation_specs = {
         "market_data": ("instrument_registry", "instrument_market_data"),
         "transaction": ("portfolio", "transaction_record"),
         "snapshot": ("portfolio", "portfolio_daily_snapshot"),
         "holding": ("portfolio", "portfolio_daily_holding_snapshot"),
+        "derivative_contract": ("portfolio", "derivative_contract_record"),
         "unsupported_quote_series": ("instrument_registry", "quote_series"),
         "unsupported_quote_observation": ("instrument_registry", "quote_observation"),
         "unsupported_quote_revision": (
@@ -236,6 +450,7 @@ def _detect_schema_profile(cursor: psycopg.Cursor[Any]) -> SchemaProfile:
         "transaction",
         "snapshot",
         "holding",
+        "derivative_contract",
         "instrument",
         "corporate_action",
         "watchlist_chart",
@@ -251,14 +466,10 @@ def _detect_schema_profile(cursor: psycopg.Cursor[Any]) -> SchemaProfile:
     flat_table_shape = all(
         capabilities[name] == "r" for name in required_flat_tables
     ) and not any(capabilities[name] for name in unsupported_overhaul_markers)
-    head_pair = (
-        versions["instrument_registry"]["version"],
-        versions["portfolio"]["version"],
-    )
-    flat_table_heads = (
-        versions["instrument_registry"]["row_count"] == 1
-        and versions["portfolio"]["row_count"] == 1
-        and head_pair == FINAL_FLAT_TABLE_HEAD_PAIR
+    flat_table_heads = all(
+        versions[component]["row_count"] == 1
+        and versions[component]["version"] == expected_head
+        for component, expected_head in FINAL_FLAT_TABLE_HEADS.items()
     )
     if flat_table_shape and flat_table_heads:
         return SchemaProfile(
@@ -362,6 +573,48 @@ def _count_check(
     )
 
 
+def _schema_identifier_contract_query() -> str:
+    expected_rows = ",\n".join(
+        "(" + ", ".join(_sql_text_literal(value) for value in row) + ")"
+        for row in SCHEMA_IDENTIFIER_RENAMES
+    )
+    return f"""
+        WITH expected(object_kind, schema_name, legacy_name, canonical_name) AS (
+            VALUES {expected_rows}
+        ),
+        actual AS (
+            SELECT 'constraint'::text AS object_kind,
+                   namespace.nspname::text AS schema_name,
+                   constraint_record.conname::text AS object_name
+            FROM pg_catalog.pg_constraint constraint_record
+            JOIN pg_catalog.pg_namespace namespace
+              ON namespace.oid = constraint_record.connamespace
+            UNION ALL
+            SELECT 'index'::text AS object_kind,
+                   namespace.nspname::text AS schema_name,
+                   class.relname::text AS object_name
+            FROM pg_catalog.pg_class class
+            JOIN pg_catalog.pg_namespace namespace
+              ON namespace.oid = class.relnamespace
+            WHERE class.relkind = 'i'
+        )
+        SELECT count(*)
+        FROM expected
+        WHERE NOT EXISTS (
+                  SELECT 1 FROM actual
+                  WHERE actual.object_kind = expected.object_kind
+                    AND actual.schema_name = expected.schema_name
+                    AND actual.object_name = expected.canonical_name
+              )
+           OR EXISTS (
+                  SELECT 1 FROM actual
+                  WHERE actual.object_kind = expected.object_kind
+                    AND actual.schema_name = expected.schema_name
+                    AND actual.object_name = expected.legacy_name
+              )
+    """
+
+
 def _run_flat_table_audit(database_url: str) -> list[AuditCheck]:
     checks: list[AuditCheck] = []
     database_url = _normalize_database_url(database_url)
@@ -371,6 +624,374 @@ def _run_flat_table_audit(database_url: str) -> list[AuditCheck]:
             profile = _detect_schema_profile(cursor)
             if profile.family != "flat-table":
                 return _unsupported_checks(profile)
+            checks.append(
+                _count_check(
+                    cursor,
+                    name="schema_identifier_contract",
+                    query=_schema_identifier_contract_query(),
+                    detail=(
+                        "Registry and Watchlist constraints and indexes must use the "
+                        "canonical instrument-era identifiers, with no rewritten-revision "
+                        "legacy names remaining."
+                    ),
+                )
+            )
+            checks.append(
+                _count_check(
+                    cursor,
+                    name="watchlist_field_identity_contract",
+                    query="""
+                        SELECT
+                            CASE
+                                WHEN (
+                                    SELECT count(*)
+                                    FROM watchlist.field_registry
+                                    WHERE field_key = 'instrument_name'
+                                      AND source_metric_code =
+                                          'watchlist_row_read_model.instrument_name'
+                                ) = 1
+                                THEN 0
+                                ELSE 1
+                            END
+                            + (
+                                SELECT count(*)
+                                FROM watchlist.field_registry
+                                WHERE field_key = 'asset_name'
+                                   OR source_metric_code =
+                                      'watchlist_row_read_model.asset_name'
+                            )
+                            + (
+                                SELECT count(*)
+                                FROM watchlist.watchlist_view_column
+                                WHERE field_key = 'asset_name'
+                            )
+                            + (
+                                SELECT count(*)
+                                FROM watchlist.watchlist_view
+                                WHERE default_sort_json::text LIKE '%asset_name%'
+                                   OR default_filters_json::text LIKE '%asset_name%'
+                                   OR default_advanced_filter_json::text
+                                      LIKE '%asset_name%'
+                                   OR default_group_by = 'asset_name'
+                            )
+                    """,
+                    detail=(
+                        "Watchlist field metadata and saved views must use only the "
+                        "canonical instrument_name identity."
+                    ),
+                )
+            )
+            checks.append(
+                _count_check(
+                    cursor,
+                    name="derivative_registry_boundary",
+                    query="""
+                        SELECT
+                            (
+                                SELECT count(*)
+                                FROM instrument_registry.instrument
+                                WHERE instrument_type IN ('fcn', 'option')
+                            )
+                            +
+                            (
+                                SELECT count(*)
+                                FROM instrument_registry.instrument_broker_identifier
+                                WHERE identifier_type = 'contract_id'
+                            )
+                    """,
+                    detail=(
+                        "Shared Registry must contain reusable market instruments only; "
+                        "FCNs, options, and contract identities belong to Portfolio."
+                    ),
+                )
+            )
+            checks.append(
+                _count_check(
+                    cursor,
+                    name="portfolio_derivative_contract_integrity",
+                    query="""
+                        WITH malformed_contract AS (
+                            SELECT contract.portfolio_id, contract.derivative_contract_id
+                            FROM portfolio.derivative_contract_record contract
+                            WHERE json_typeof(contract.terms_json) <> 'object'
+                               OR (
+                                    contract.contract_type = 'option'
+                                    AND (
+                                        trim(coalesce(
+                                            contract.terms_json ->> 'underlying_instrument_id',
+                                            ''
+                                        )) = ''
+                                        OR contract.terms_json ->> 'option_type'
+                                           NOT IN ('call', 'put')
+                                        OR NOT pg_input_is_valid(
+                                            coalesce(contract.terms_json ->> 'expiry_date', ''),
+                                            'date'
+                                        )
+                                        OR NOT pg_input_is_valid(
+                                            coalesce(contract.terms_json ->> 'strike', ''),
+                                            'numeric'
+                                        )
+                                        OR CASE
+                                            WHEN pg_input_is_valid(
+                                                coalesce(
+                                                    contract.terms_json ->> 'strike',
+                                                    ''
+                                                ),
+                                                'numeric'
+                                            )
+                                            THEN (contract.terms_json ->> 'strike')::numeric <= 0
+                                            ELSE false
+                                        END
+                                        OR NOT pg_input_is_valid(
+                                            coalesce(
+                                                contract.terms_json
+                                                    ->> 'contract_multiplier',
+                                                ''
+                                            ),
+                                            'numeric'
+                                        )
+                                        OR CASE
+                                            WHEN pg_input_is_valid(
+                                                coalesce(
+                                                    contract.terms_json
+                                                        ->> 'contract_multiplier',
+                                                    ''
+                                                ),
+                                                'numeric'
+                                            )
+                                            THEN (
+                                                contract.terms_json
+                                                    ->> 'contract_multiplier'
+                                            )::numeric <= 0
+                                            ELSE false
+                                        END
+                                        OR contract.terms_json ->> 'settlement_type'
+                                           NOT IN ('physical', 'cash')
+                                    )
+                               )
+                               OR (
+                                    contract.contract_type = 'fcn'
+                                    AND (
+                                        NOT pg_input_is_valid(
+                                            coalesce(contract.terms_json ->> 'notional', ''),
+                                            'numeric'
+                                        )
+                                        OR CASE
+                                            WHEN pg_input_is_valid(
+                                                coalesce(
+                                                    contract.terms_json ->> 'notional',
+                                                    ''
+                                                ),
+                                                'numeric'
+                                            )
+                                            THEN (
+                                                contract.terms_json ->> 'notional'
+                                            )::numeric <= 0
+                                            ELSE false
+                                        END
+                                        OR NOT pg_input_is_valid(
+                                            coalesce(
+                                                contract.terms_json ->> 'issue_date',
+                                                ''
+                                            ),
+                                            'date'
+                                        )
+                                        OR NOT pg_input_is_valid(
+                                            coalesce(
+                                                contract.terms_json ->> 'maturity_date',
+                                                ''
+                                            ),
+                                            'date'
+                                        )
+                                        OR CASE
+                                            WHEN pg_input_is_valid(
+                                                coalesce(
+                                                    contract.terms_json ->> 'issue_date',
+                                                    ''
+                                                ),
+                                                'date'
+                                            )
+                                             AND pg_input_is_valid(
+                                                coalesce(
+                                                    contract.terms_json ->> 'maturity_date',
+                                                    ''
+                                                ),
+                                                'date'
+                                            )
+                                            THEN (
+                                                contract.terms_json ->> 'maturity_date'
+                                            )::date < (
+                                                contract.terms_json ->> 'issue_date'
+                                            )::date
+                                            ELSE false
+                                        END
+                                        OR trim(coalesce(
+                                            contract.terms_json ->> 'issuer',
+                                            ''
+                                        )) = ''
+                                        OR trim(coalesce(
+                                            contract.terms_json ->> 'counterparty',
+                                            ''
+                                        )) = ''
+                                        OR json_typeof(
+                                            contract.terms_json
+                                                -> 'underlying_instrument_ids'
+                                        ) <> 'array'
+                                        OR json_array_length(
+                                            CASE
+                                                WHEN json_typeof(
+                                                    contract.terms_json
+                                                        -> 'underlying_instrument_ids'
+                                                ) = 'array'
+                                                THEN contract.terms_json
+                                                    -> 'underlying_instrument_ids'
+                                                ELSE '[]'::json
+                                            END
+                                        ) = 0
+                                        OR json_typeof(
+                                            contract.terms_json
+                                                -> 'deliverable_instrument_ids'
+                                        ) <> 'array'
+                                        OR contract.terms_json ->> 'barrier_type'
+                                           NOT IN ('none', 'knock_in', 'knock_out', 'dual')
+                                        OR (
+                                            contract.terms_json ->> 'barrier_type' = 'none'
+                                            AND contract.terms_json -> 'barrier_level'
+                                                IS NOT NULL
+                                            AND json_typeof(
+                                                contract.terms_json -> 'barrier_level'
+                                            ) <> 'null'
+                                        )
+                                        OR (
+                                            contract.terms_json ->> 'barrier_type'
+                                                <> 'none'
+                                            AND (
+                                                NOT pg_input_is_valid(
+                                                    coalesce(
+                                                        contract.terms_json
+                                                            ->> 'barrier_level',
+                                                        ''
+                                                    ),
+                                                    'numeric'
+                                                )
+                                                OR CASE
+                                                    WHEN pg_input_is_valid(
+                                                        coalesce(
+                                                            contract.terms_json
+                                                                ->> 'barrier_level',
+                                                            ''
+                                                        ),
+                                                        'numeric'
+                                                    )
+                                                    THEN (
+                                                        contract.terms_json
+                                                            ->> 'barrier_level'
+                                                    )::numeric <= 0
+                                                    ELSE false
+                                                END
+                                            )
+                                        )
+                                    )
+                               )
+                        ), contract_instrument_reference AS (
+                            SELECT
+                                contract.portfolio_id,
+                                contract.derivative_contract_id,
+                                contract.terms_json ->> 'underlying_instrument_id'
+                                    AS instrument_id
+                            FROM portfolio.derivative_contract_record contract
+                            WHERE contract.contract_type = 'option'
+                            UNION ALL
+                            SELECT
+                                contract.portfolio_id,
+                                contract.derivative_contract_id,
+                                reference.instrument_id
+                            FROM portfolio.derivative_contract_record contract
+                            CROSS JOIN LATERAL json_array_elements_text(
+                                CASE
+                                    WHEN json_typeof(
+                                        contract.terms_json
+                                            -> 'underlying_instrument_ids'
+                                    ) = 'array'
+                                    THEN contract.terms_json
+                                        -> 'underlying_instrument_ids'
+                                    ELSE '[]'::json
+                                END
+                            ) reference(instrument_id)
+                            WHERE contract.contract_type = 'fcn'
+                            UNION ALL
+                            SELECT
+                                contract.portfolio_id,
+                                contract.derivative_contract_id,
+                                reference.instrument_id
+                            FROM portfolio.derivative_contract_record contract
+                            CROSS JOIN LATERAL json_array_elements_text(
+                                CASE
+                                    WHEN json_typeof(
+                                        contract.terms_json
+                                            -> 'deliverable_instrument_ids'
+                                    ) = 'array'
+                                    THEN contract.terms_json
+                                        -> 'deliverable_instrument_ids'
+                                    ELSE '[]'::json
+                                END
+                            ) reference(instrument_id)
+                            WHERE contract.contract_type = 'fcn'
+                        ), invalid_instrument_reference AS (
+                            SELECT reference.portfolio_id,
+                                   reference.derivative_contract_id
+                            FROM contract_instrument_reference reference
+                            LEFT JOIN instrument_registry.instrument instrument
+                              ON instrument.instrument_id = reference.instrument_id
+                            WHERE trim(coalesce(reference.instrument_id, '')) = ''
+                               OR instrument.instrument_id IS NULL
+                        ), invalid_transaction_reference AS (
+                            SELECT transaction.portfolio_id,
+                                   transaction.derivative_contract_id
+                            FROM portfolio.transaction_record transaction
+                            JOIN portfolio.derivative_contract_record contract
+                              ON contract.portfolio_id = transaction.portfolio_id
+                             AND contract.derivative_contract_id =
+                                 transaction.derivative_contract_id
+                            WHERE transaction.derivative_contract_id IS NOT NULL
+                              AND (
+                                  transaction.account_id <> contract.account_id
+                                  OR transaction.currency <> contract.currency
+                              )
+                        ), invalid_holding_reference AS (
+                            SELECT holding.portfolio_id,
+                                   holding.derivative_contract_id
+                            FROM portfolio.portfolio_daily_holding_snapshot holding
+                            JOIN portfolio.derivative_contract_record contract
+                              ON contract.portfolio_id = holding.portfolio_id
+                             AND contract.derivative_contract_id =
+                                 holding.derivative_contract_id
+                            WHERE holding.derivative_contract_id IS NOT NULL
+                              AND (
+                                  holding.position_reference_id <>
+                                      holding.derivative_contract_id
+                                  OR holding.account_id <> contract.account_id
+                                  OR holding.currency <> contract.currency
+                              )
+                        )
+                        SELECT count(*)
+                        FROM (
+                            SELECT * FROM malformed_contract
+                            UNION ALL
+                            SELECT * FROM invalid_instrument_reference
+                            UNION ALL
+                            SELECT * FROM invalid_transaction_reference
+                            UNION ALL
+                            SELECT * FROM invalid_holding_reference
+                        ) issue
+                    """,
+                    detail=(
+                        "Portfolio-local derivative terms must be complete, reference "
+                        "existing Registry underlyings, and remain account/currency "
+                        "consistent across contracts, transactions, and holdings."
+                    ),
+                )
+            )
             checks.append(
                 _count_check(
                     cursor,

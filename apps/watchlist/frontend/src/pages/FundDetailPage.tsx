@@ -8,7 +8,7 @@ import {
   useState,
   type MouseEvent as ReactMouseEvent,
 } from 'react'
-import { Link, useParams } from 'react-router'
+import { Link, useParams, useSearchParams } from 'react-router'
 
 import LoadingOverlay from '../components/LoadingOverlay'
 import {
@@ -21,13 +21,13 @@ import {
   type FundPeopleResponse,
   type FundPerformanceResponse,
   type FundPriceResponse,
-  type FundRatingsResponse,
   type FundResearchResponse,
   type FundRiskResponse,
   type FundStrategyResponse,
   type FundSummaryResponse,
   type FundTaxonomyTreeNode,
   type FundTaxonomyTreeResponse,
+  type SharedInstrumentRecord,
   type FundExposureHoldingsResponse as FundPortfolioHoldingsResponse,
   type FundExposureResponse as FundPortfolioResponse,
   type InstrumentAttributeValuesResponse,
@@ -42,11 +42,12 @@ import {
   getInstrumentPeople,
   getInstrumentPerformance,
   getInstrumentPrice,
-  getInstrumentRatings,
   getInstrumentResearch,
   getInstrumentRisk,
   getInstrumentSummary,
   getInstrumentStrategy,
+  getSharedInstruments,
+  resolveInstrumentDetail,
   uploadInstrumentDocument,
   updateFundTaxonomy,
   updateInstrumentAttributes,
@@ -55,6 +56,7 @@ import {
   updateInstrumentPrice,
   updateInstrumentResearch,
   updateInstrumentStrategy,
+  updateInstrumentNavSettings,
 } from '../lib/api'
 import {
   formatBoolean,
@@ -106,7 +108,6 @@ type FundDetailBundle = {
   risk: FundRiskResponse
   portfolio: FundPortfolioResponse
   holdings: FundPortfolioHoldingsResponse
-  ratings: FundRatingsResponse
   people: FundPeopleResponse
   strategy: FundStrategyResponse
   price: FundPriceResponse
@@ -260,6 +261,19 @@ type DetailTab =
   | 'documents'
   | 'research'
   | 'monitoring'
+
+const DETAIL_TAB_CODES: DetailTab[] = [
+  'overview',
+  'performance',
+  'risk',
+  'price',
+  'exposure',
+  'people',
+  'strategy',
+  'documents',
+  'research',
+  'monitoring',
+]
 
 type DetailKind = 'fund' | 'index'
 type QuoteBasis = NavQuoteBasis
@@ -519,14 +533,12 @@ const QUOTE_BASIS_LABELS: Record<QuoteBasis, LocalizedText> = {
 }
 
 const SYSTEM_LABELS: Record<string, LocalizedText> = {
-  analystStance: { en: 'Analyst Stance', zh: '投研观点' },
   basis: { en: 'Basis', zh: '口径' },
   cancel: { en: 'Cancel', zh: '取消' },
   classificationPath: { en: 'Classification Path', zh: '分类路径' },
   currentPath: { en: 'Current Path', zh: '当前路径' },
   documentTitle: { en: 'Documents', zh: '文档' },
   documentUploaded: { en: 'Document uploaded.', zh: '文档已上传。' },
-  downloadPdf: { en: 'Download PDF', zh: '下载 PDF' },
   fileName: { en: 'File Name', zh: '文件名' },
   fundDetail: { en: 'Fund Detail', zh: '基金详情' },
   indexDetail: { en: 'Index Detail', zh: '指数详情' },
@@ -1076,6 +1088,19 @@ function makeRowId(prefix: string) {
 
 function benchmarkLibraryLabel(item: FundLibraryItem) {
   return item.ticker_or_isin ? `${item.ticker_or_isin} · ${item.fund_name}` : item.fund_name
+}
+
+function registryBenchmarkOption(item: SharedInstrumentRecord): FundLibraryItem {
+  const primaryIdentifier =
+    item.identifiers.find((identifier) => identifier.is_primary)?.identifier_value ||
+    item.identifiers[0]?.identifier_value ||
+    null
+  return {
+    fund_id: item.instrument_id,
+    fund_name: item.instrument_name,
+    ticker_or_isin: primaryIdentifier,
+    product_type: item.instrument_type,
+  }
 }
 
 function benchmarkTypeRank(type: string) {
@@ -1653,18 +1678,7 @@ function defaultFundPortfolioResponse(): FundPortfolioResponse {
 }
 
 function defaultFundPortfolioHoldingsResponse(): FundPortfolioHoldingsResponse {
-  return { rows: [], page: 1, page_size: 0, total_rows: 0 }
-}
-
-function defaultFundRatingsResponse(summary: FundSummaryResponse): FundRatingsResponse {
-  return {
-    overall_rating: summary.overall_rating ?? null,
-    overall_score: null,
-    analyst_stance: summary.analyst_stance || 'Unrated',
-    methodology_version: 'instrument-rating/v1',
-    dimension_scores: [],
-    override_info: null,
-  }
+  return { rows: [], page: 1, page_size: 0, total_rows: 0, snapshot_metadata: null }
 }
 
 function defaultFundPeopleResponse(): FundPeopleResponse {
@@ -1720,6 +1734,7 @@ function defaultFundPerformanceResponse(): FundPerformanceResponse {
 function defaultFundRiskResponse(): FundRiskResponse {
   return {
     risk_overview: null,
+    current_drawdown: null,
     scatter_points: [],
     risk_metrics: [],
     drawdown_summary: null,
@@ -3627,17 +3642,41 @@ export default function FundDetailPage({
 }: FundDetailPageProps = {}) {
   const { language } = useLanguage()
   const { fundId: routeFundId = 'fax' } = useParams()
+  const [detailSearchParams, setDetailSearchParams] = useSearchParams()
   const fundId = propFundId || routeFundId
   const databaseDashboardUrl = `${PLATFORM_HOME_URL}/database-dashboard`
   const [bundle, setBundle] = useState<FundDetailBundle | null>(null)
-  const [activeTab, setActiveTab] = useState<DetailTab>('overview')
-  const [quoteBasis, setQuoteBasis] = useState<QuoteBasis>('nav_with_dividend')
-  const [chartFrequency, setChartFrequency] = useState<ChartFrequency>('daily')
-  const [selectedCurrency, setSelectedCurrency] = useState('USD')
-  const [benchmarkFundId, setBenchmarkFundId] = useState('')
+  const [activeTab, setActiveTab] = useState<DetailTab>(() => {
+    const requested = detailSearchParams.get('tab')
+    return DETAIL_TAB_CODES.includes(requested as DetailTab)
+      ? (requested as DetailTab)
+      : 'overview'
+  })
+  const [quoteBasis, setQuoteBasis] = useState<QuoteBasis>(() => {
+    const requested = detailSearchParams.get('basis')
+    return requested === 'nav' || requested === 'nav_with_dividend'
+      ? requested
+      : 'nav_with_dividend'
+  })
+  const [chartFrequency, setChartFrequency] = useState<ChartFrequency>(() => {
+    const requested = detailSearchParams.get('frequency')
+    return requested === 'weekly' || requested === 'monthly' ? requested : 'daily'
+  })
+  const [selectedCurrency, setSelectedCurrency] = useState(
+    () => detailSearchParams.get('currency') || 'USD',
+  )
+  const [benchmarkFundId, setBenchmarkFundId] = useState(
+    () => detailSearchParams.get('benchmark') || '',
+  )
   const [benchmarkSearch, setBenchmarkSearch] = useState('')
   const [benchmarkSearchFocused, setBenchmarkSearchFocused] = useState(false)
   const [benchmarkNavSeries, setBenchmarkNavSeries] = useState<FundNavSeriesResponse | null>(null)
+  const [registryBenchmarkOptions, setRegistryBenchmarkOptions] = useState<FundLibraryItem[]>([])
+  const [benchmarkSearchError, setBenchmarkSearchError] = useState<string | null>(null)
+  const [benchmarkLoadError, setBenchmarkLoadError] = useState<string | null>(null)
+  const [benchmarkLoading, setBenchmarkLoading] = useState(false)
+  const [benchmarkLoadRetryToken, setBenchmarkLoadRetryToken] = useState(0)
+  const [savingDefaultBenchmark, setSavingDefaultBenchmark] = useState(false)
   const [performanceMatrixMode, setPerformanceMatrixMode] =
     useState<PerformanceMatrixMode>('values')
   const [rollingRiskSettings, setRollingRiskSettings] = useState<WatchlistRollingRiskSettings>(
@@ -3647,8 +3686,12 @@ export default function FundDetailPage({
   const rollingRiskChartDisplayStyle = rollingRiskSettings.chartDisplayStyle
   const [riskSettingsOpen, setRiskSettingsOpen] = useState(false)
   const [quoteActionNotice, setQuoteActionNotice] = useState<string | null>(null)
-  const [chartStartDate, setChartStartDate] = useState('')
-  const [chartEndDate, setChartEndDate] = useState('')
+  const [chartStartDate, setChartStartDate] = useState(
+    () => detailSearchParams.get('start') || '',
+  )
+  const [chartEndDate, setChartEndDate] = useState(
+    () => detailSearchParams.get('end') || '',
+  )
   const [chartHoverIndex, setChartHoverIndex] = useState<number | null>(null)
   const [chartHoverPanel, setChartHoverPanel] = useState<ChartHoverPanel | null>(null)
   const [chartHoverCursor, setChartHoverCursor] = useState<ChartHoverCursor | null>(null)
@@ -3700,6 +3743,7 @@ export default function FundDetailPage({
   const timelineNoteContextMenuRef = useRef<HTMLDivElement | null>(null)
   const detailBundleKeyRef = useRef('')
   const detailRequestCoordinatorRef = useRef(createDetailRequestCoordinator(''))
+  const appliedDefaultBenchmarkKeyRef = useRef('')
 
   function closeSettingsDialog() {
     if (savingSection !== 'fund_settings') {
@@ -3723,6 +3767,63 @@ export default function FundDetailPage({
   const [openProductFrameworkPickerKey, setOpenProductFrameworkPickerKey] =
     useState<string | null>(null)
   const deferredBenchmarkSearch = useDeferredValue(benchmarkSearch)
+  const detailSearchKey = detailSearchParams.toString()
+
+  useEffect(() => {
+    const requestedTab = detailSearchParams.get('tab')
+    if (requestedTab && DETAIL_TAB_CODES.includes(requestedTab as DetailTab)) {
+      setActiveTab(requestedTab as DetailTab)
+    }
+    const requestedBasis = detailSearchParams.get('basis')
+    if (requestedBasis === 'nav' || requestedBasis === 'nav_with_dividend') {
+      setQuoteBasis(requestedBasis)
+    }
+    const requestedFrequency = detailSearchParams.get('frequency')
+    if (
+      requestedFrequency === 'daily' ||
+      requestedFrequency === 'weekly' ||
+      requestedFrequency === 'monthly'
+    ) {
+      setChartFrequency(requestedFrequency)
+    }
+    setSelectedCurrency(detailSearchParams.get('currency') || 'USD')
+    setBenchmarkFundId(detailSearchParams.get('benchmark') || '')
+    setChartStartDate(detailSearchParams.get('start') || '')
+    setChartEndDate(detailSearchParams.get('end') || '')
+  }, [detailSearchKey])
+
+  useEffect(() => {
+    setDetailSearchParams(
+      (current) => {
+        const next = new URLSearchParams(current)
+        const setOrDelete = (key: string, value: string, defaultValue = '') => {
+          if (value && value !== defaultValue) {
+            next.set(key, value)
+          } else {
+            next.delete(key)
+          }
+        }
+        setOrDelete('tab', activeTab, 'overview')
+        setOrDelete('basis', quoteBasis, 'nav_with_dividend')
+        setOrDelete('frequency', chartFrequency, 'daily')
+        setOrDelete('currency', selectedCurrency, 'USD')
+        setOrDelete('benchmark', benchmarkFundId)
+        setOrDelete('start', chartStartDate)
+        setOrDelete('end', chartEndDate)
+        return next.toString() === current.toString() ? current : next
+      },
+      { replace: true },
+    )
+  }, [
+    activeTab,
+    benchmarkFundId,
+    chartEndDate,
+    chartFrequency,
+    chartStartDate,
+    quoteBasis,
+    selectedCurrency,
+    setDetailSearchParams,
+  ])
 
   useEffect(() => {
     if (!sectionNotice) {
@@ -3758,7 +3859,7 @@ export default function FundDetailPage({
 
   useEffect(() => {
     let cancelled = false
-    const previousBundle = bundle?.summary.fund_id === fundId ? bundle : null
+    const previousBundle = bundle?.summary.instrument_id === fundId ? bundle : null
     const bundleKey = `${detailKind}:${fundId}:${refreshToken}`
     const requestCoordinator = createDetailRequestCoordinator(bundleKey)
     detailBundleKeyRef.current = ''
@@ -3820,7 +3921,6 @@ export default function FundDetailPage({
           risk: previousBundle?.risk ?? defaultFundRiskResponse(),
           portfolio: previousBundle?.portfolio ?? defaultFundPortfolioResponse(),
           holdings: previousBundle?.holdings ?? defaultFundPortfolioHoldingsResponse(),
-          ratings: previousBundle?.ratings ?? defaultFundRatingsResponse(summary),
           people: previousBundle?.people ?? defaultFundPeopleResponse(),
           strategy: previousBundle?.strategy ?? defaultFundStrategyResponse(),
           price: previousBundle?.price ?? defaultFundPriceResponse(),
@@ -3910,7 +4010,6 @@ export default function FundDetailPage({
         { key: 'performance', label: 'performance', load: () => getInstrumentPerformance(fundId) },
         { key: 'risk', label: 'risk', load: () => getInstrumentRisk(fundId) },
         { key: 'portfolio', label: 'exposure summary', load: () => getInstrumentPortfolioSummary(fundId) },
-        { key: 'ratings', label: 'ratings', load: () => getInstrumentRatings(fundId) },
       ]
     }
     if (!requests.length) {
@@ -4081,12 +4180,15 @@ export default function FundDetailPage({
   }, [fundId])
 
   useEffect(() => {
+    if (detailSearchParams.get('basis')) {
+      return
+    }
     if (!bundle) {
       return
     }
     const preferredBasis = resolvePreferredQuoteBasis(bundle.navSeries.nav_basis_type)
     setQuoteBasis(preferredBasis ?? 'nav_with_dividend')
-  }, [bundle?.navSeries.nav_basis_type, fundId])
+  }, [bundle?.navSeries.nav_basis_type, detailSearchKey, fundId])
 
   useEffect(() => {
     setChartHoverIndex(null)
@@ -4124,17 +4226,50 @@ export default function FundDetailPage({
     async function loadBenchmark() {
       if (!benchmarkFundId || benchmarkFundId === fundId) {
         setBenchmarkNavSeries(null)
+        setBenchmarkLoadError(null)
+        setBenchmarkLoading(false)
         return
       }
 
+      setBenchmarkLoadError(null)
+      setBenchmarkLoading(true)
       try {
-        const response = await getInstrumentNavSeries(benchmarkFundId)
+        const resolved = await resolveInstrumentDetail(benchmarkFundId)
+        if (!resolved.detail_supported || !resolved.canonical_instrument_id) {
+          throw new Error(resolved.support_reason || 'The selected benchmark is not supported.')
+        }
+        const option: FundLibraryItem = {
+          fund_id: resolved.canonical_instrument_id,
+          fund_name: resolved.instrument_name,
+          ticker_or_isin: resolved.primary_identifier,
+          product_type: resolved.instrument_type,
+        }
+        if (!cancelled) {
+          setRegistryBenchmarkOptions((current) => [
+            option,
+            ...current.filter((item) => item.fund_id !== option.fund_id),
+          ])
+        }
+        if (resolved.canonical_instrument_id !== benchmarkFundId) {
+          if (!cancelled) {
+            setBenchmarkFundId(resolved.canonical_instrument_id)
+          }
+          return
+        }
+        const response = await getInstrumentNavSeries(resolved.canonical_instrument_id)
         if (!cancelled) {
           setBenchmarkNavSeries(response)
         }
-      } catch {
+      } catch (loadError) {
         if (!cancelled) {
           setBenchmarkNavSeries(null)
+          setBenchmarkLoadError(
+            loadError instanceof Error ? loadError.message : 'Failed to load benchmark data.',
+          )
+        }
+      } finally {
+        if (!cancelled) {
+          setBenchmarkLoading(false)
         }
       }
     }
@@ -4144,18 +4279,69 @@ export default function FundDetailPage({
     return () => {
       cancelled = true
     }
-  }, [benchmarkFundId, fundId])
+  }, [benchmarkFundId, benchmarkLoadRetryToken, fundId])
 
   useEffect(() => {
-    setBenchmarkFundId('')
+    if (!benchmarkSearchFocused) {
+      return
+    }
+    let cancelled = false
+    setBenchmarkSearchError(null)
+    getSharedInstruments({ search: deferredBenchmarkSearch, limit: 20 })
+      .then((records) => {
+        if (cancelled) {
+          return
+        }
+        setRegistryBenchmarkOptions(
+          records
+            .filter((record) => ['fund', 'etf', 'equity', 'index'].includes(record.instrument_type))
+            .map(registryBenchmarkOption),
+        )
+      })
+      .catch((searchError) => {
+        if (!cancelled) {
+          setBenchmarkSearchError(
+            searchError instanceof Error
+              ? searchError.message
+              : 'Failed to search the Instrument Registry.',
+          )
+        }
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [benchmarkSearchFocused, deferredBenchmarkSearch])
+
+  useEffect(() => {
+    const savedBenchmarkId =
+      bundle?.navSeries.compare_settings?.default_benchmark_instrument_id || ''
+    const defaultKey = savedBenchmarkId ? `${fundId}:${savedBenchmarkId}` : ''
+    if (
+      !detailSearchParams.get('benchmark') &&
+      defaultKey &&
+      appliedDefaultBenchmarkKeyRef.current !== defaultKey &&
+      savedBenchmarkId !== fundId
+    ) {
+      appliedDefaultBenchmarkKeyRef.current = defaultKey
+      setBenchmarkFundId(savedBenchmarkId)
+      setBenchmarkSearch('')
+    }
+  }, [bundle?.navSeries.compare_settings?.default_benchmark_instrument_id, detailSearchKey, fundId])
+
+  useEffect(() => {
+    setBenchmarkFundId(detailSearchParams.get('benchmark') || '')
     setBenchmarkSearch('')
     setBenchmarkSearchFocused(false)
     setBenchmarkNavSeries(null)
+    setRegistryBenchmarkOptions([])
+    setBenchmarkSearchError(null)
+    setBenchmarkLoadError(null)
+    setBenchmarkLoading(false)
     setQuoteActionNotice(null)
     setOpenQuoteChartMenu(null)
     setRiskSettingsOpen(false)
-    setChartStartDate('')
-    setChartEndDate('')
+    setChartStartDate(detailSearchParams.get('start') || '')
+    setChartEndDate(detailSearchParams.get('end') || '')
   }, [fundId])
 
   async function handleSavePeople() {
@@ -4625,11 +4811,67 @@ export default function FundDetailPage({
     }
   }
 
+  async function handleSetDefaultBenchmark() {
+    if (!benchmarkFundId || savingDefaultBenchmark) {
+      return
+    }
+    setSavingDefaultBenchmark(true)
+    setQuoteActionNotice(null)
+    try {
+      await updateInstrumentNavSettings(fundId, {
+        default_benchmark_instrument_id: benchmarkFundId,
+        updated_by: 'terminal_ui',
+      })
+      appliedDefaultBenchmarkKeyRef.current = `${fundId}:${benchmarkFundId}`
+      setBundle((current) =>
+        current
+          ? {
+              ...current,
+              navSeries: {
+                ...current.navSeries,
+                compare_settings: {
+                  default_benchmark_instrument_id: benchmarkFundId,
+                  peer_instrument_ids:
+                    current.navSeries.compare_settings?.peer_instrument_ids || [],
+                },
+              },
+            }
+          : current,
+      )
+      setQuoteActionNotice('Default benchmark saved and dependent analytics recalculated.')
+    } catch (saveError) {
+      setQuoteActionNotice(
+        saveError instanceof Error ? saveError.message : 'Failed to save the default benchmark.',
+      )
+    } finally {
+      setSavingDefaultBenchmark(false)
+    }
+  }
+
   const benchmarkOptions = useMemo(
-    () => (bundle?.library ?? []).filter((item) => item.fund_id !== fundId),
-    [bundle?.library, fundId],
+    () => {
+      const merged = new Map<string, FundLibraryItem>()
+      for (const item of [...(bundle?.library ?? []), ...registryBenchmarkOptions]) {
+        if (item.fund_id !== fundId) {
+          merged.set(item.fund_id, item)
+        }
+      }
+      return [...merged.values()]
+    },
+    [bundle?.library, fundId, registryBenchmarkOptions],
   )
-  const selectedBenchmark = benchmarkOptions.find((item) => item.fund_id === benchmarkFundId) || null
+  const selectedBenchmark =
+    benchmarkOptions.find((item) => item.fund_id === benchmarkFundId) ||
+    (benchmarkFundId
+      ? {
+          fund_id: benchmarkFundId,
+          fund_name: benchmarkFundId,
+          ticker_or_isin: null,
+          product_type: 'instrument',
+        }
+      : null)
+  const savedDefaultBenchmarkId =
+    bundle?.navSeries.compare_settings?.default_benchmark_instrument_id || ''
   const selectedBenchmarkLabel = selectedBenchmark ? benchmarkLibraryLabel(selectedBenchmark) : ''
   const benchmarkInputValue = selectedBenchmark && !benchmarkSearch ? selectedBenchmarkLabel : benchmarkSearch
   const filteredBenchmarkOptions = useMemo(
@@ -4656,7 +4898,7 @@ export default function FundDetailPage({
     )
   }
 
-  const { summary, performance, risk, portfolio, holdings, ratings, people, strategy, price, documents, research, navSeries } = bundle
+  const { summary, performance, risk, portfolio, holdings, people, strategy, price, documents, research, navSeries } = bundle
   const timelineNotes = normalizeResearchTimelineNotes(research.timeline_notes)
   const availableCurrencies = getAvailableQuoteCurrencies(navSeries.rows)
   const effectiveCurrency = availableCurrencies.includes(selectedCurrency)
@@ -4731,13 +4973,25 @@ export default function FundDetailPage({
         selectedCalculationBasis,
       )
     : []
-  const hasBenchmarkSelection = Boolean(selectedBenchmark)
+  const hasBenchmarkSelection = Boolean(benchmarkFundId)
   const benchmarkCurrencyUnavailable =
-    hasBenchmarkSelection && (!effectiveCurrency || benchmarkSourceRows.length === 0)
+    hasBenchmarkSelection &&
+    !benchmarkLoading &&
+    !benchmarkLoadError &&
+    benchmarkNavSeries !== null &&
+    (!effectiveCurrency || benchmarkSourceRows.length === 0)
   const benchmarkBasisUnavailable =
-    hasBenchmarkSelection && !benchmarkCurrencyUnavailable && activeBenchmarkBasis == null
+    hasBenchmarkSelection &&
+    !benchmarkLoading &&
+    !benchmarkLoadError &&
+    benchmarkNavSeries !== null &&
+    !benchmarkCurrencyUnavailable &&
+    activeBenchmarkBasis == null
   const benchmarkCalculationUnavailable =
     hasBenchmarkSelection &&
+    !benchmarkLoading &&
+    !benchmarkLoadError &&
+    benchmarkNavSeries !== null &&
     !benchmarkCurrencyUnavailable &&
     (!calculationReturnKindsComparable ||
       benchmarkSelectedCalculationBasis !== selectedCalculationBasis ||
@@ -5666,14 +5920,6 @@ export default function FundDetailPage({
       status: portfolio.snapshot_metadata?.as_of_date ? 'Current' : 'Pending',
       tone: portfolio.snapshot_metadata?.as_of_date ? 'status-fresh' : 'status-pending',
     },
-    {
-      domain: 'Ratings',
-      asOf: formatDate(summary.rating_as_of),
-      cutoff: '—',
-      methodology: getString(ratings.methodology_version),
-      status: summary.rating_as_of ? 'Current' : 'Pending',
-      tone: summary.rating_as_of ? 'status-fresh' : 'status-pending',
-    },
   ]
   const productFrameworkSections = buildAttributeFrameworkSections(productFrameworkAttributes)
 
@@ -6446,17 +6692,15 @@ export default function FundDetailPage({
   const lifetimePerformanceSnapshot =
     performancePeriodSnapshots.find(({ key }) => key === 'SI')?.fund ||
     buildPerformanceMetricSnapshot(calculationBasisSeries, fundPathRiskAvailable)
-  const overviewRatingValue =
-    ratings.overall_rating == null ? '—' : formatStarRating(ratings.overall_rating)
-  const overviewRatingNote =
-    ratings.overall_rating == null
-      ? 'Pending research'
-      : summary.rating_as_of
-        ? `As of ${formatDate(summary.rating_as_of)}`
-        : 'Research rating'
   const researchManualRating = parseManualRating(research.manual_rating)
   const displayedManualRating = manualRatingDirty ? manualRatingDraft : researchManualRating
   const manualRatingHasChanges = manualRatingDirty && displayedManualRating !== researchManualRating
+  const overviewRatingValue = formatStarRating(displayedManualRating)
+  const overviewRatingNote = manualRatingDirty
+    ? 'Unsaved manual research rating'
+    : displayedManualRating == null
+      ? 'No manual research rating'
+      : 'Manual research rating'
   const overviewRankingValue =
     performance.ranking
       ? [
@@ -7007,13 +7251,27 @@ export default function FundDetailPage({
                       </span>
                     </button>
                   ))
+                ) : benchmarkSearchError ? (
+                  <div className="instrument-chart-compare-empty">Registry search failed: {benchmarkSearchError}</div>
                 ) : (
-                  <div className="instrument-chart-compare-empty">No database match</div>
+                  <div className="instrument-chart-compare-empty">No Instrument Registry match</div>
                 )}
               </div>
             ) : null}
           </div>
         </label>
+        {selectedBenchmark && savedDefaultBenchmarkId !== benchmarkFundId ? (
+          <button
+            type="button"
+            className="button-primary"
+            disabled={savingDefaultBenchmark || Boolean(benchmarkLoadError)}
+            onClick={() => void handleSetDefaultBenchmark()}
+          >
+            {savingDefaultBenchmark ? 'Saving…' : 'Set default'}
+          </button>
+        ) : selectedBenchmark && savedDefaultBenchmarkId === benchmarkFundId ? (
+          <span className="instrument-chart-compare-empty">Default benchmark</span>
+        ) : null}
       </div>
     )
   }
@@ -7351,7 +7609,6 @@ export default function FundDetailPage({
             <button type="button" onClick={() => setSettingsModalOpen(true)}>
               {localize(language, SYSTEM_LABELS.settings)}
             </button>
-            <button type="button">{localize(language, SYSTEM_LABELS.downloadPdf)}</button>
           </div>
         </div>
         <div className="instrument-detail-hero">
@@ -7371,10 +7628,6 @@ export default function FundDetailPage({
               </span>
               <span className="context-chip" data-portfolio-ops-i18n-ignore="true">
                 Risk basis: {calculationFrequencyStatus}
-              </span>
-              <span className="context-chip" data-portfolio-ops-i18n-ignore="true">
-                {localize(language, SYSTEM_LABELS.analystStance)}:{' '}
-                {localizeSystemValue(summary.analyst_stance, language)}
               </span>
             </div>
           </div>
@@ -7578,7 +7831,7 @@ export default function FundDetailPage({
                       </div>
                     </div>
                     <div className="instrument-quote-rating-block">
-                      <span>Rating</span>
+                      <span>Research rating</span>
                       <strong>{overviewRatingValue}</strong>
                       <em>{overviewRatingNote}</em>
                     </div>
@@ -7610,6 +7863,22 @@ export default function FundDetailPage({
                 </div>
 
                 {quoteActionNotice ? <div className="instrument-quote-action-notice">{quoteActionNotice}</div> : null}
+                {benchmarkLoadError ? (
+                  <div className="instrument-quote-action-notice" role="alert">
+                    Benchmark request failed: {benchmarkLoadError}{' '}
+                    <button
+                      type="button"
+                      onClick={() => setBenchmarkLoadRetryToken((value) => value + 1)}
+                    >
+                      Retry
+                    </button>
+                  </div>
+                ) : null}
+                {benchmarkLoading ? (
+                  <div className="instrument-quote-action-notice" role="status">
+                    Loading benchmark series…
+                  </div>
+                ) : null}
                 {benchmarkCurrencyUnavailable ? (
                   <div className="instrument-quote-action-notice" role="status">
                     Benchmark unavailable because its NAV series does not provide {effectiveCurrency || 'a usable currency'}.

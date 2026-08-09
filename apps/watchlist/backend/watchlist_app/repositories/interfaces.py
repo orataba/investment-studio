@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
+from datetime import date
 from typing import Protocol
 
 from sqlalchemy.orm import Session
@@ -134,6 +135,7 @@ class InstrumentAttributeRepository(Protocol):
         instrument_id: str,
         attribute_key: str,
         value_json: object,
+        effective_from: date | None,
         source_record_id: str | None,
     ) -> InstrumentAttributeValue: ...
 

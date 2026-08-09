@@ -7,7 +7,7 @@ import type {
   PortfolioAccountsWorkspaceResponse,
   PortfolioTransactionRecord,
 } from './lib/api'
-import { fcnInstrumentFixture, instrumentFixture } from './test/portfolioFixtures'
+import { fcnContractFixture, instrumentFixture } from './test/portfolioFixtures'
 import { renderPortfolioPage } from './test/renderPortfolioPage'
 
 const apiMocks = vi.hoisted(() => ({
@@ -75,6 +75,8 @@ const fundSubscription = {
   settlement_cash_account: cashAccount,
   instrument_id: 'fund-1',
   instrument_ref: fundInstrument,
+  derivative_contract_id: null,
+  derivative_contract: null,
   quantity: 199_872.08,
   source_quantity: '199872.08',
   price: 1.2508,
@@ -163,8 +165,11 @@ function accountsWorkspaceFixture(): PortfolioAccountsWorkspaceResponse {
       {
         position_id: 'position-1',
         account_id: 'broker-1',
+        position_reference_id: 'fund-1',
         instrument_id: 'fund-1',
         instrument_ref: fundInstrument,
+        derivative_contract_id: null,
+        derivative_contract: null,
         quantity: 199_872.08,
         cost_basis: 250_000,
         last_price: 1.50096,
@@ -266,10 +271,13 @@ describe('Accounts rendered page contract', () => {
       {
         ...workspace.positions[0],
         position_id: 'position-fcn-1',
-        instrument_id: 'fcn-1',
-        instrument_ref: fcnInstrumentFixture({
-          instrument_id: 'fcn-1',
-          instrument_name: 'Carried FCN',
+        position_reference_id: 'fcn-1',
+        instrument_id: null,
+        instrument_ref: null,
+        derivative_contract_id: 'fcn-1',
+        derivative_contract: fcnContractFixture({
+          derivative_contract_id: 'fcn-1',
+          contract_name: 'Carried FCN',
           currency: 'CNY',
         }),
         cost_basis: 250_000,

@@ -25,8 +25,6 @@ class WatchlistRowReadModel(Base):
     share_class: Mapped[str | None]
     ticker_or_isin: Mapped[str | None]
     management_firm_name: Mapped[str | None]
-    overall_rating: Mapped[int | None]
-    analyst_stance: Mapped[str | None]
     aum: Mapped[Decimal | None] = mapped_column(Numeric(20, 2))
     return_ytd: Mapped[Decimal | None] = mapped_column(Numeric(12, 6))
     return_1w: Mapped[Decimal | None] = mapped_column(Numeric(12, 6))
@@ -68,7 +66,6 @@ class InstrumentSummaryReadModel(PayloadReadModelMixin, Base):
         ForeignKey("instrument_detail.instrument_id", ondelete="CASCADE"),
         primary_key=True,
     )
-
 
 class InstrumentChartReadModel(PayloadReadModelMixin, Base):
     __tablename__ = "instrument_chart_read_model"
@@ -113,15 +110,6 @@ class InstrumentExposureReadModel(PayloadReadModelMixin, Base):
 
 class InstrumentExposureHoldingsReadModel(PayloadReadModelMixin, Base):
     __tablename__ = "instrument_exposure_holdings_read_model"
-
-    instrument_id: Mapped[str] = mapped_column(
-        ForeignKey("instrument_detail.instrument_id", ondelete="CASCADE"),
-        primary_key=True,
-    )
-
-
-class InstrumentRatingReadModel(PayloadReadModelMixin, Base):
-    __tablename__ = "instrument_rating_read_model"
 
     instrument_id: Mapped[str] = mapped_column(
         ForeignKey("instrument_detail.instrument_id", ondelete="CASCADE"),

@@ -45,6 +45,10 @@ def _target_from_url(variable: str, raw_url: str) -> DatabaseTarget:
 
     if not parsed.scheme.startswith("postgresql"):
         raise ValueError(f"{variable} must use a PostgreSQL URL.")
+    if parsed.password is not None:
+        raise ValueError(
+            f"{variable} must not contain a password; use a 0600 .pgpass file."
+        )
 
     query_host = query.get("host", [""])[0]
     host = unquote(hostname or query_host) or "local-socket"

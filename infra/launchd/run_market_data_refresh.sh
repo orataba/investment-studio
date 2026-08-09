@@ -43,6 +43,8 @@ case "$DATABASE_URL" in
     exit 64
     ;;
 esac
+portfolio_ops_require_password_free_database_url "$DATABASE_URL"
+DATABASE_URL="$(portfolio_ops_sqlalchemy_database_url "$DATABASE_URL")"
 
 if [[ ! -x "$PYTHON_BIN" ]]; then
   echo "Python executable is missing: $PYTHON_BIN" >&2

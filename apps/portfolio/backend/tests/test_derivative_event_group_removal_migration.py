@@ -30,6 +30,67 @@ def _alembic_config() -> Config:
     return config
 
 
+def _seed_legacy_delivery_group(
+    *,
+    duplicate_lifecycle: bool = False,
+    currency_mismatch: bool = False,
+) -> tuple[object, object]:
+    engine = get_engine()
+    with engine.begin() as connection:
+        rows = connection.execute(
+            sa.text(
+                "SELECT transaction_id, portfolio_id, account_id, currency "
+                "FROM transaction_record ORDER BY transaction_id LIMIT 3"
+            )
+        ).mappings().all()
+        required = 3 if duplicate_lifecycle else 2
+        assert len(rows) >= required
+        lifecycle_rows = rows[:2] if duplicate_lifecycle else rows[:1]
+        delivery_row = rows[2] if duplicate_lifecycle else rows[1]
+        reference = lifecycle_rows[0]
+        for lifecycle_row in lifecycle_rows:
+            connection.execute(
+                sa.text(
+                    "UPDATE transaction_record SET "
+                    "portfolio_id = :portfolio_id, account_id = :account_id, "
+                    "currency = :currency, transaction_type = 'maturity_redemption', "
+                    "lifecycle_event_type = 'fcn_physical_settlement', "
+                    "event_group_id = 'invalid-delivery-group', "
+                    "related_instrument_id = 'migration-asset-1', "
+                    "gross_amount = 0, source_gross_amount = 0 "
+                    "WHERE transaction_id = :transaction_id"
+                ),
+                {
+                    "portfolio_id": reference["portfolio_id"],
+                    "account_id": reference["account_id"],
+                    "currency": reference["currency"],
+                    "transaction_id": lifecycle_row["transaction_id"],
+                },
+            )
+        delivery_currency = reference["currency"]
+        if currency_mismatch:
+            delivery_currency = "HKD" if str(delivery_currency).upper() != "HKD" else "USD"
+        connection.execute(
+            sa.text(
+                "UPDATE transaction_record SET "
+                "portfolio_id = :portfolio_id, account_id = :account_id, "
+                "currency = :currency, transaction_type = 'buy', "
+                "lifecycle_event_type = NULL, "
+                "event_group_id = 'invalid-delivery-group', "
+                "related_instrument_id = NULL, "
+                "gross_amount = 125000, source_gross_amount = 125000 "
+                "WHERE transaction_id = :transaction_id"
+            ),
+            {
+                "portfolio_id": reference["portfolio_id"],
+                "account_id": reference["account_id"],
+                "currency": delivery_currency,
+                "transaction_id": delivery_row["transaction_id"],
+            },
+        )
+    return reference["transaction_id"], reference["portfolio_id"]
+
+
 def test_derivative_event_group_removal_converts_fcn_pair_and_drops_schema() -> None:
     engine = get_engine()
     config = _alembic_config()
@@ -37,7 +98,7 @@ def test_derivative_event_group_removal_converts_fcn_pair_and_drops_schema() -> 
     with engine.begin() as connection:
         rows = connection.execute(
             sa.text(
-                "SELECT transaction_id, portfolio_id, account_id, trade_date "
+                "SELECT transaction_id, portfolio_id, account_id, currency, trade_date "
                 "FROM transaction_record ORDER BY transaction_id LIMIT 2"
             )
         ).mappings().all()
@@ -58,7 +119,7 @@ def test_derivative_event_group_removal_converts_fcn_pair_and_drops_schema() -> 
         connection.execute(
             sa.text(
                 "UPDATE transaction_record SET "
-                "portfolio_id = :portfolio_id, account_id = :account_id, "
+                "portfolio_id = :portfolio_id, account_id = :account_id, currency = :currency, "
                 "transaction_type = 'buy', lifecycle_event_type = NULL, "
                 "event_group_id = 'migration-delivery-1', "
                 "related_instrument_id = NULL, "
@@ -68,6 +129,7 @@ def test_derivative_event_group_removal_converts_fcn_pair_and_drops_schema() -> 
             {
                 "portfolio_id": fcn_row["portfolio_id"],
                 "account_id": fcn_row["account_id"],
+                "currency": fcn_row["currency"],
                 "transaction_id": asset_row["transaction_id"],
             },
         )
@@ -142,18 +204,53 @@ def test_derivative_event_group_removal_converts_fcn_pair_and_drops_schema() -> 
         assert lifecycle_checks
         assert "fcn_physical_settlement" not in lifecycle_checks[0]
 
-        command.downgrade(config, MIGRATION_PARENT)
-        with engine.connect() as connection:
-            downgraded_inspector = sa.inspect(connection)
-            downgraded_columns = {
-                str(column["name"])
-                for column in downgraded_inspector.get_columns("transaction_record")
-            }
-            downgraded_indexes = {
-                str(index["name"])
-                for index in downgraded_inspector.get_indexes("transaction_record")
-            }
-        assert REMOVED_COLUMNS.issubset(downgraded_columns)
-        assert REMOVED_INDEXES.issubset(downgraded_indexes)
+        with pytest.raises(RuntimeError, match="pre-migration backup"):
+            command.downgrade(config, MIGRATION_PARENT)
     finally:
         command.upgrade(config, "head")
+
+
+def test_derivative_event_group_removal_rejects_duplicate_lifecycle_facts() -> None:
+    engine = get_engine()
+    config = _alembic_config()
+    lifecycle_id, _ = _seed_legacy_delivery_group(duplicate_lifecycle=True)
+
+    with pytest.raises(RuntimeError, match="exactly one physical-settlement fact"):
+        command.upgrade(config, MIGRATION_REVISION)
+
+    with engine.connect() as connection:
+        unchanged = connection.execute(
+            sa.text(
+                "SELECT lifecycle_event_type, gross_amount, event_group_id "
+                "FROM transaction_record WHERE transaction_id = :transaction_id"
+            ),
+            {"transaction_id": lifecycle_id},
+        ).mappings().one()
+        revision = connection.execute(sa.text("SELECT version_num FROM alembic_version")).scalar_one()
+    assert unchanged["lifecycle_event_type"] == "fcn_physical_settlement"
+    assert float(unchanged["gross_amount"]) == pytest.approx(0.0)
+    assert unchanged["event_group_id"] == "invalid-delivery-group"
+    assert revision == MIGRATION_PARENT
+
+
+def test_derivative_event_group_removal_rejects_cross_currency_amount_copy() -> None:
+    engine = get_engine()
+    config = _alembic_config()
+    lifecycle_id, _ = _seed_legacy_delivery_group(currency_mismatch=True)
+
+    with pytest.raises(RuntimeError, match="across currencies or accounts"):
+        command.upgrade(config, MIGRATION_REVISION)
+
+    with engine.connect() as connection:
+        unchanged = connection.execute(
+            sa.text(
+                "SELECT lifecycle_event_type, gross_amount, event_group_id "
+                "FROM transaction_record WHERE transaction_id = :transaction_id"
+            ),
+            {"transaction_id": lifecycle_id},
+        ).mappings().one()
+        revision = connection.execute(sa.text("SELECT version_num FROM alembic_version")).scalar_one()
+    assert unchanged["lifecycle_event_type"] == "fcn_physical_settlement"
+    assert float(unchanged["gross_amount"]) == pytest.approx(0.0)
+    assert unchanged["event_group_id"] == "invalid-delivery-group"
+    assert revision == MIGRATION_PARENT

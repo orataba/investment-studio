@@ -338,6 +338,7 @@ def isolated_portfolio_store(request, tmp_path, monkeypatch):
     # runtime columns only for the duration of seeding, then restore the exact
     # historical schema before the test runs.
     temporary_seed_columns: list[tuple[str, str]] = []
+    temporary_seed_tables: list[str] = []
     if migration_base is not None:
         engine = session_module.get_engine()
         with engine.begin() as connection:
@@ -358,6 +359,7 @@ def isolated_portfolio_store(request, tmp_path, monkeypatch):
                 "lifecycle_event_type": "VARCHAR",
                 "source_system": "VARCHAR(100)",
                 "external_reference": "VARCHAR(200)",
+                "derivative_contract_id": "VARCHAR",
             }
             for column_name, column_type in additive_transaction_columns.items():
                 if column_name in transaction_columns:
@@ -394,6 +396,19 @@ def isolated_portfolio_store(request, tmp_path, monkeypatch):
                 temporary_seed_columns.append(
                     ("research_settings_record", column_name)
                 )
+            if "derivative_contract_record" not in sa.inspect(
+                connection
+            ).get_table_names():
+                connection.exec_driver_sql(
+                    "CREATE TABLE derivative_contract_record ("
+                    "derivative_contract_id VARCHAR NOT NULL, "
+                    "portfolio_id VARCHAR NOT NULL, account_id VARCHAR NOT NULL, "
+                    "contract_name VARCHAR NOT NULL, contract_type VARCHAR NOT NULL, "
+                    "currency VARCHAR NOT NULL, external_reference VARCHAR, "
+                    "terms_json JSON NOT NULL, created_at VARCHAR NOT NULL, "
+                    "PRIMARY KEY (portfolio_id, derivative_contract_id))"
+                )
+                temporary_seed_tables.append("derivative_contract_record")
 
     portfolio_store.reset_store(deepcopy(TEST_PORTFOLIO_STORE))
     shared_store.reset_store(
@@ -403,13 +418,15 @@ def isolated_portfolio_store(request, tmp_path, monkeypatch):
             "instruments": deepcopy(REGISTRY_INSTRUMENT_DETAILS),
         },
     )
-    if temporary_seed_columns:
+    if temporary_seed_columns or temporary_seed_tables:
         engine = session_module.get_engine()
         with engine.begin() as connection:
             for table_name, column_name in reversed(temporary_seed_columns):
                 connection.exec_driver_sql(
                     f"ALTER TABLE {table_name} DROP COLUMN {column_name}"
                 )
+            for table_name in reversed(temporary_seed_tables):
+                connection.exec_driver_sql(f"DROP TABLE {table_name}")
 
     monkeypatch.setattr(transaction_routes, "get_registry_instrument", _get_registry_instrument)
     monkeypatch.setattr(transaction_routes, "list_registry_instruments", lambda: deepcopy(REGISTRY_INSTRUMENTS))

@@ -12,6 +12,7 @@ const apiMocks = vi.hoisted(() => ({
   createPortfolioTransaction: vi.fn(),
   deletePortfolioTransaction: vi.fn(),
   getPortfolioAccounts: vi.fn(),
+  getPortfolioDerivativeContracts: vi.fn(),
   getPortfolioFxRates: vi.fn(),
   getPortfolioInstrumentEventTasks: vi.fn(),
   getPortfolioInstruments: vi.fn(),
@@ -174,6 +175,8 @@ const selectedTransaction = {
     instrument_type: 'etf',
     identifiers: [{ identifier_type: 'ticker', identifier_value: 'GETF', is_primary: true }],
   }),
+  derivative_contract_id: null,
+  derivative_contract: null,
   quantity: 10,
   source_quantity: '10',
   price: 25,
@@ -217,6 +220,10 @@ describe('Transactions rendered page contract', () => {
       portfolio_id: '3',
       instruments: [etfInstrument, bondInstrument],
     })
+    apiMocks.getPortfolioDerivativeContracts.mockResolvedValue({
+      portfolio_id: '3',
+      derivative_contracts: [],
+    })
     apiMocks.getPortfolioFxRates.mockResolvedValue({ portfolio_id: '3', rates: [] })
     apiMocks.getPortfolioInstrumentEventTasks.mockResolvedValue({
       portfolio_id: '3',
@@ -229,7 +236,8 @@ describe('Transactions rendered page contract', () => {
         Promise.resolve({
           portfolio_id: '3',
           account_id: request.account_id,
-          instrument_id: request.instrument_id,
+          position_kind: request.position_kind,
+          position_reference_id: request.position_reference_id,
           as_of_date: request.as_of_date,
           trade_at: `${request.as_of_date}T12:00:00+08:00`,
           quantity: 1_000,

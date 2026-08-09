@@ -1,7 +1,13 @@
 import { describe, expect, it } from 'vitest'
 
 import type { InstrumentPriceBar } from './api'
-import { adjustPriceBars, priceReturnStats, priceRiskStats, slicePriceBars } from './priceBars'
+import {
+  adjustPriceBars,
+  hasCompleteAdjustmentFactors,
+  priceReturnStats,
+  priceRiskStats,
+  slicePriceBars,
+} from './priceBars'
 
 function bar(
   date: string,
@@ -75,5 +81,15 @@ describe('price bars', () => {
 
     expect(priceReturnStats(currentYearOnly).ytd).toBeNull()
     expect(priceReturnStats(withYearEndAnchor).ytd).toBeCloseTo(10)
+  })
+
+  it('withholds QFQ when any bar lacks a valid adjustment factor', () => {
+    const incomplete = [
+      bar('2026-01-02', '10', '1'),
+      bar('2026-01-03', '11', null),
+    ]
+
+    expect(hasCompleteAdjustmentFactors(incomplete)).toBe(false)
+    expect(adjustPriceBars(incomplete, 'qfq')).toEqual([])
   })
 })

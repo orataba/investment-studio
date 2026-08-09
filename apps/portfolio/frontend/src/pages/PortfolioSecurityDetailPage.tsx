@@ -15,13 +15,13 @@ import {
   signedValueClass,
 } from '../lib/format'
 import {
-  getPortfolioInstrumentHoldingProjection,
+  getPortfolioPositionHoldingProjection,
   getPortfolioInstrumentPriceChart,
   getPortfolioPositionLots,
   getPortfolioTransactions,
   type PortfolioInstrumentChartRangeKey,
-  type PortfolioInstrumentHoldingRow,
-  type PortfolioInstrumentHoldingProjectionResponse,
+  type PortfolioPositionHoldingRow,
+  type PortfolioPositionHoldingProjectionResponse,
   type PortfolioInstrumentPriceChartResponse,
   type PortfolioPositionLotListResponse,
   type PortfolioPositionLotRecord,
@@ -45,12 +45,31 @@ import {
 
 type SecurityDetailTab = 'overview' | 'transactions' | 'lots'
 
-function primaryIdentifier(row: PortfolioInstrumentHoldingRow) {
+function primaryIdentifier(row: PortfolioPositionHoldingRow) {
+  if (!row.instrument_core) {
+    return row.derivative_contract_id ?? row.position_reference_id ?? row.line_id
+  }
   return (
     row.instrument_core.identifiers.find((item) => item.is_primary)?.identifier_value ??
     row.instrument_core.identifiers[0]?.identifier_value ??
     row.instrument_core.instrument_id
   )
+}
+
+function holdingReferenceId(row: PortfolioPositionHoldingRow) {
+  return row.position_reference_id ?? row.derivative_contract_id ?? row.instrument_core?.instrument_id ?? row.line_id
+}
+
+function holdingName(row: PortfolioPositionHoldingRow) {
+  return row.derivative_contract?.contract_name ?? row.instrument_core?.instrument_name ?? row.line_id
+}
+
+function holdingCurrency(row: PortfolioPositionHoldingRow) {
+  return row.derivative_contract?.currency ?? row.instrument_core?.currency ?? ''
+}
+
+function holdingAssetType(row: PortfolioPositionHoldingRow) {
+  return row.derivative_contract?.contract_type ?? row.instrument_core?.instrument_type ?? 'other'
 }
 
 function parseChartRange(value: string | null): PortfolioInstrumentChartRangeKey {
@@ -127,7 +146,7 @@ function TableStatusRow({
 export default function PortfolioSecurityDetailPage() {
   const { portfolioId = '', instrumentId = '' } = useParams()
   const [searchParams, setSearchParams] = useSearchParams()
-  const [workspaceResponse, setWorkspace] = useState<PortfolioInstrumentHoldingProjectionResponse | null>(null)
+  const [workspaceResponse, setWorkspace] = useState<PortfolioPositionHoldingProjectionResponse | null>(null)
   const [workspaceLoading, setWorkspaceLoading] = useState(true)
   const [workspaceError, setWorkspaceError] = useState<string | null>(null)
   const [positionLotsResponse, setPositionLotsWorkspace] = useState<PortfolioPositionLotListResponse | null>(null)
@@ -147,19 +166,22 @@ export default function PortfolioSecurityDetailPage() {
   const workspace =
     workspaceResponse?.portfolio_id === portfolioId &&
     workspaceResponse.rows.every(
-      (row) => row.instrument_core.instrument_id === instrumentId,
+      (row) => holdingReferenceId(row) === instrumentId,
     ) &&
     (!requestedAsOfDate || workspaceResponse.as_of_date === requestedAsOfDate)
       ? workspaceResponse
       : null
   const positionLotsWorkspace =
     positionLotsResponse?.portfolio_id === portfolioId &&
-    positionLotsResponse.position_lots.every((positionLot) => positionLot.instrument_id === instrumentId)
+    positionLotsResponse.position_lots.every((positionLot) => positionLot.position_reference_id === instrumentId)
       ? positionLotsResponse
       : null
   const transactionsWorkspace =
     transactionsResponse?.portfolio_id === portfolioId &&
-    transactionsResponse.transactions.every((transaction) => transaction.instrument_id === instrumentId)
+    transactionsResponse.transactions.every(
+      (transaction) =>
+        (transaction.derivative_contract_id ?? transaction.instrument_id) === instrumentId,
+    )
       ? transactionsResponse
       : null
   const selectedRows = workspace?.rows ?? []
@@ -183,7 +205,7 @@ export default function PortfolioSecurityDetailPage() {
     (!resolvedAsOfDate || instrumentChartResponse.as_of_date === resolvedAsOfDate)
       ? instrumentChartResponse
       : null
-  const baseCurrency = workspace?.base_currency ?? selectedRow?.instrument_core.currency ?? instrumentChartWorkspace?.currency ?? 'USD'
+  const baseCurrency = workspace?.base_currency ?? (selectedRow ? holdingCurrency(selectedRow) : null) ?? instrumentChartWorkspace?.currency ?? 'USD'
   const selectedRowIdentifier = selectedRow ? primaryIdentifier(selectedRow) : instrumentId
   const selectedRowUsesEventValuation = selectedRow
     ? holdingUsesEventValuation(selectedRow)
@@ -204,12 +226,12 @@ export default function PortfolioSecurityDetailPage() {
   const heroMarketCurrency = selectedRowUsesEventValuation
     ? selectedRow?.carrying_value_base != null
       ? baseCurrency
-      : selectedRow?.instrument_core.currency ?? baseCurrency
+      : selectedRow ? holdingCurrency(selectedRow) || baseCurrency : baseCurrency
     : selectedRow?.market_value_base != null
       ? baseCurrency
-      : selectedRow?.instrument_core.currency ?? baseCurrency
+      : selectedRow ? holdingCurrency(selectedRow) || baseCurrency : baseCurrency
   const heroUnrealizedValue = selectedRowUnrealizedBase ?? selectedRowUnrealizedLocal
-  const heroUnrealizedCurrency = selectedRowUnrealizedBase != null ? baseCurrency : selectedRow?.instrument_core.currency ?? baseCurrency
+  const heroUnrealizedCurrency = selectedRowUnrealizedBase != null ? baseCurrency : selectedRow ? holdingCurrency(selectedRow) || baseCurrency : baseCurrency
   const valuationMetricName = valuationQuoteLabel(
     selectedRow?.quote_basis ?? selectedRow?.quote_metric_family,
   )
@@ -282,7 +304,7 @@ export default function PortfolioSecurityDetailPage() {
   const heroCostCurrency =
     selectedRow?.cost_basis_base != null
       ? baseCurrency
-      : selectedRow?.instrument_core.currency ?? baseCurrency
+      : selectedRow ? holdingCurrency(selectedRow) || baseCurrency : baseCurrency
   const obligationLiability =
     writtenOptionObligation?.liability_value_base ??
     writtenOptionObligation?.liability_value ??
@@ -290,7 +312,7 @@ export default function PortfolioSecurityDetailPage() {
   const obligationLiabilityCurrency =
     writtenOptionObligation?.liability_value_base != null
       ? baseCurrency
-      : writtenOptionObligation?.instrument_core.currency ?? baseCurrency
+      : writtenOptionObligation ? holdingCurrency(writtenOptionObligation) || baseCurrency : baseCurrency
 
   const detailTabs = [
     { key: 'overview', label: 'Overview', meta: 'Position' },
@@ -320,7 +342,7 @@ export default function PortfolioSecurityDetailPage() {
     next.delete('chart_range')
     next.delete('position_lot_id')
     if (instrumentId) {
-      next.set('instrument_id', instrumentId)
+      next.set('position_reference_id', instrumentId)
     }
     const query = next.toString()
     return `${buildPortfolioSectionPath(portfolioId, '/holdings')}${query ? `?${query}` : ''}`
@@ -334,7 +356,7 @@ export default function PortfolioSecurityDetailPage() {
   })
   const filteredTransactionsPath = useMemo(() => {
     const next = new URLSearchParams()
-    next.set('instrument_id', instrumentId)
+    next.set('position_reference_id', instrumentId)
     if (resolvedAsOfDate) {
       next.set('end_date', resolvedAsOfDate)
     }
@@ -387,7 +409,7 @@ export default function PortfolioSecurityDetailPage() {
     setWorkspaceError(null)
     setWorkspaceLoading(true)
 
-    getPortfolioInstrumentHoldingProjection(portfolioId, instrumentId, {
+    getPortfolioPositionHoldingProjection(portfolioId, instrumentId, {
       as_of_date: requestedAsOfDate || undefined,
     })
       .then((response) => {
@@ -427,7 +449,7 @@ export default function PortfolioSecurityDetailPage() {
     setPositionLotsLoading(true)
 
     getPortfolioPositionLots(portfolioId, {
-      instrument_id: instrumentId,
+      position_reference_id: instrumentId,
       as_of_date: resolvedAsOfDate,
     })
       .then((response) => {
@@ -467,7 +489,7 @@ export default function PortfolioSecurityDetailPage() {
     setTransactionsLoading(true)
 
     getPortfolioTransactions(portfolioId, {
-      instrument_id: instrumentId,
+      position_reference_id: instrumentId,
       end_date: resolvedAsOfDate,
     })
       .then((response) => {
@@ -500,6 +522,7 @@ export default function PortfolioSecurityDetailPage() {
       !instrumentId ||
       !resolvedAsOfDate ||
       !selectedRow ||
+      !selectedRow.instrument_core ||
       selectedRowUsesEventValuation
     ) {
       setInstrumentChartWorkspace(null)
@@ -564,19 +587,21 @@ export default function PortfolioSecurityDetailPage() {
               <span aria-hidden="true">←</span>
               Holdings
             </Link>
-            <a className="portfolio-security-secondary-link" href={watchlistDetailUrl}>
-              View instrument research
-            </a>
+            {selectedRow?.instrument_core ? (
+              <a className="portfolio-security-secondary-link" href={watchlistDetailUrl}>
+                View instrument research
+              </a>
+            ) : null}
           </div>
 
           <div className="portfolio-security-hero">
             <div className="portfolio-security-title-stack">
               <span className="portfolio-security-eyebrow">Holding detail</span>
-              <h1>{selectedRow?.instrument_core.instrument_name ?? instrumentChartWorkspace?.instrument_core.instrument_name ?? instrumentId}</h1>
+              <h1>{selectedRow ? holdingName(selectedRow) : instrumentChartWorkspace?.instrument_core.instrument_name ?? instrumentId}</h1>
               <div className="portfolio-security-meta-row">
                 <span className="ticker-pill">{selectedRowIdentifier}</span>
-                <span>{selectedRow ? formatLabel(selectedRow.instrument_core.instrument_type) : 'Instrument'}</span>
-                <span>{selectedRow?.instrument_core.currency ?? instrumentChartWorkspace?.currency ?? '—'}</span>
+                <span>{selectedRow ? formatLabel(holdingAssetType(selectedRow)) : 'Instrument'}</span>
+                <span>{selectedRow ? holdingCurrency(selectedRow) : instrumentChartWorkspace?.currency ?? '—'}</span>
                 <span>As of {resolvedAsOfDate || '—'}</span>
               </div>
             </div>
@@ -610,7 +635,7 @@ export default function PortfolioSecurityDetailPage() {
               <strong>
                 {selectedRowUsesEventValuation
                   ? 'N/A'
-                  : formatUnitPrice(selectedRow?.last_price, selectedRow?.instrument_core.currency)}
+                  : formatUnitPrice(selectedRow?.last_price, selectedRow ? holdingCurrency(selectedRow) : '')}
               </strong>
               <em>
                 {valuationMetricName} ·{' '}
@@ -669,7 +694,7 @@ export default function PortfolioSecurityDetailPage() {
                 <strong>
                   {formatCurrency(
                     writtenOptionObligation.premium_basis_remaining,
-                    writtenOptionObligation.instrument_core.currency,
+                    holdingCurrency(writtenOptionObligation),
                   )}{' '}
                   / {formatCurrency(obligationLiability, obligationLiabilityCurrency)}
                 </strong>
@@ -801,12 +826,12 @@ export default function PortfolioSecurityDetailPage() {
                           <span>{countLabel(slice.openPositionLotCount, 'open lot')}</span>
                         </div>
                         <strong>
-                          {formatCurrency(slice.marketValue, selectedRow?.instrument_core.currency ?? baseCurrency)}
+                          {formatCurrency(slice.marketValue, selectedRow ? holdingCurrency(selectedRow) || baseCurrency : baseCurrency)}
                         </strong>
                       </div>
                       <dl>
                         <div><dt>Quantity</dt><dd>{formatQuantity(slice.quantity)}</dd></div>
-                        <div><dt>Remaining cost</dt><dd>{formatCurrency(slice.remainingCost, selectedRow?.instrument_core.currency ?? baseCurrency)}</dd></div>
+                        <div><dt>Remaining cost</dt><dd>{formatCurrency(slice.remainingCost, selectedRow ? holdingCurrency(selectedRow) || baseCurrency : baseCurrency)}</dd></div>
                         <div>
                           <dt>Unrealized P/L</dt>
                           <dd className={selectedRowUsesEventValuation ? undefined : signedValueClass(sliceUnrealized)}>
@@ -814,7 +839,7 @@ export default function PortfolioSecurityDetailPage() {
                               ? 'N/A'
                               : formatSignedCurrency(
                                   sliceUnrealized,
-                                  selectedRow?.instrument_core.currency ?? baseCurrency,
+                                  selectedRow ? holdingCurrency(selectedRow) || baseCurrency : baseCurrency,
                                 )}
                           </dd>
                         </div>
@@ -970,7 +995,7 @@ export default function PortfolioSecurityDetailPage() {
               <div>
                 <span>Market value</span>
                 <strong>
-                  {formatCurrency(lotMarketValue, selectedRow?.instrument_core.currency ?? baseCurrency)}
+                  {formatCurrency(lotMarketValue, selectedRow ? holdingCurrency(selectedRow) || baseCurrency : baseCurrency)}
                 </strong>
                 <em>
                   {countLabel(selectedPositionLots.length, 'lot')} ·{' '}
@@ -984,13 +1009,13 @@ export default function PortfolioSecurityDetailPage() {
               </div>
               <div>
                 <span>Remaining cost</span>
-                <strong>{formatCurrency(remainingLotCost, selectedRow?.instrument_core.currency ?? baseCurrency)}</strong>
+                <strong>{formatCurrency(remainingLotCost, selectedRow ? holdingCurrency(selectedRow) || baseCurrency : baseCurrency)}</strong>
                 <em>Current cost basis</em>
               </div>
               <div>
                 <span>Realized P/L</span>
                 <strong className={signedValueClass(realizedLotPnl)}>
-                  {formatSignedCurrency(realizedLotPnl, selectedRow?.instrument_core.currency ?? baseCurrency)}
+                  {formatSignedCurrency(realizedLotPnl, selectedRow ? holdingCurrency(selectedRow) || baseCurrency : baseCurrency)}
                 </strong>
                 <em>Through {resolvedAsOfDate || '—'}</em>
               </div>

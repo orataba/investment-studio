@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   clearPortfolioApiCache,
   getHoldingsWorkspace,
-  getPortfolioInstrumentHoldingProjection,
+  getPortfolioPositionHoldingProjection,
 } from './lib/api'
 
 afterEach(() => {
@@ -60,12 +60,12 @@ describe('holdings workspace request contract', () => {
     )
     vi.stubGlobal('fetch', fetchMock)
 
-    await getPortfolioInstrumentHoldingProjection('portfolio-fast', '159516-sz', {
+    await getPortfolioPositionHoldingProjection('portfolio-fast', '159516-sz', {
       as_of_date: '2026-07-10',
     })
 
     expect(fetchMock).toHaveBeenCalledWith(
-      '/api/workspace/holdings/instrument?portfolio_id=portfolio-fast&instrument_id=159516-sz&as_of_date=2026-07-10',
+      '/api/workspace/holdings/position?portfolio_id=portfolio-fast&position_reference_id=159516-sz&as_of_date=2026-07-10',
       expect.any(Object),
     )
   })

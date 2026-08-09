@@ -84,8 +84,10 @@ def get_shared_instrument(instrument_id: str) -> dict[str, object] | None:
                 break
             canonical_id = str(lifecycle.get("canonical_instrument_id") or "").strip()
             status = str(lifecycle.get("status") or "active").strip().lower()
-            if status != "archived" or not canonical_id or canonical_id in visited:
+            if status != "archived":
                 break
+            if not canonical_id or canonical_id in visited:
+                return None
             visited.add(canonical_id)
             canonical = shared_store.get_instrument(get_session_factory(), canonical_id)
             if not isinstance(canonical, dict):
@@ -124,10 +126,14 @@ def resolve_shared_instrument(
     if not normalized_value:
         return None
     try:
-        return shared_store.find_instrument_by_identifier(
+        record = shared_store.find_instrument_by_identifier(
             get_session_factory(),
             identifier_value=normalized_value,
             identifier_type=identifier_type,
         )
+        if not isinstance(record, dict):
+            return None
+        instrument_id = str(record.get("instrument_id") or "").strip()
+        return get_shared_instrument(instrument_id) if instrument_id else None
     except Exception as error:  # pragma: no cover - defensive wrapper
         raise _registry_error("Failed to query shared instrument registry.") from error

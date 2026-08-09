@@ -8,7 +8,12 @@ from typing import Iterable
 
 from pydantic import ValidationError
 
-from portfolio_app.api.contracts import TransactionCreateRequest
+from portfolio_app.api.contracts import (
+    DerivativeContractCreate,
+    FCNContractTerms,
+    OptionContractTerms,
+    TransactionCreateRequest,
+)
 
 
 MAX_CSV_BYTES = 5 * 1024 * 1024
@@ -26,6 +31,25 @@ IMPORT_COLUMNS = (
     "account_id",
     "settlement_cash_account_id",
     "instrument_id",
+    "derivative_contract_id",
+    "derivative_contract_name",
+    "derivative_contract_type",
+    "derivative_contract_external_reference",
+    "option_underlying_instrument_id",
+    "option_type",
+    "option_expiry_date",
+    "option_strike",
+    "option_contract_multiplier",
+    "option_settlement_type",
+    "fcn_notional",
+    "fcn_issue_date",
+    "fcn_maturity_date",
+    "fcn_issuer",
+    "fcn_counterparty",
+    "fcn_underlying_instrument_ids",
+    "fcn_deliverable_instrument_ids",
+    "fcn_barrier_type",
+    "fcn_barrier_level",
     "quantity",
     "price",
     "gross_amount",
@@ -62,6 +86,51 @@ NUMERIC_SOURCE_FIELDS = {
     "taxes": "source_taxes",
 }
 SPREADSHEET_FORMULA_PREFIXES = ("=", "+", "-", "@")
+DERIVATIVE_DEFINITION_COLUMNS = frozenset(
+    {
+        "derivative_contract_name",
+        "derivative_contract_type",
+        "derivative_contract_external_reference",
+        "option_underlying_instrument_id",
+        "option_type",
+        "option_expiry_date",
+        "option_strike",
+        "option_contract_multiplier",
+        "option_settlement_type",
+        "fcn_notional",
+        "fcn_issue_date",
+        "fcn_maturity_date",
+        "fcn_issuer",
+        "fcn_counterparty",
+        "fcn_underlying_instrument_ids",
+        "fcn_deliverable_instrument_ids",
+        "fcn_barrier_type",
+        "fcn_barrier_level",
+    }
+)
+OPTION_TERM_COLUMNS = frozenset(
+    {
+        "option_underlying_instrument_id",
+        "option_type",
+        "option_expiry_date",
+        "option_strike",
+        "option_contract_multiplier",
+        "option_settlement_type",
+    }
+)
+FCN_TERM_COLUMNS = frozenset(
+    {
+        "fcn_notional",
+        "fcn_issue_date",
+        "fcn_maturity_date",
+        "fcn_issuer",
+        "fcn_counterparty",
+        "fcn_underlying_instrument_ids",
+        "fcn_deliverable_instrument_ids",
+        "fcn_barrier_type",
+        "fcn_barrier_level",
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -101,6 +170,90 @@ def _validation_errors(error: ValidationError) -> tuple[str, ...]:
         message = str(item.get("msg") or "Invalid value")
         rendered.append(f"{location}: {message}" if location else message)
     return tuple(rendered)
+
+
+def _split_instrument_ids(value: object) -> list[str]:
+    if value is None:
+        return []
+    return [item.strip() for item in str(value).split(";") if item.strip()]
+
+
+def _build_derivative_contract(
+    values: dict[str, object],
+) -> DerivativeContractCreate | None:
+    supplied_definition_columns = {
+        column for column in DERIVATIVE_DEFINITION_COLUMNS if values.get(column) is not None
+    }
+    if not supplied_definition_columns:
+        return None
+    derivative_contract_id = values.get("derivative_contract_id")
+    if derivative_contract_id is None:
+        raise ValueError(
+            "derivative_contract_id is required when defining a derivative contract."
+        )
+    contract_type = str(values.get("derivative_contract_type") or "").strip().lower()
+    if contract_type == "option":
+        unexpected = sorted(
+            column for column in FCN_TERM_COLUMNS if values.get(column) is not None
+        )
+        if unexpected:
+            raise ValueError(
+                "Option contract rows must not carry FCN columns: "
+                + ", ".join(unexpected)
+                + "."
+            )
+        terms = OptionContractTerms.model_validate(
+            {
+                "underlying_instrument_id": values.get(
+                    "option_underlying_instrument_id"
+                ),
+                "option_type": values.get("option_type"),
+                "expiry_date": values.get("option_expiry_date"),
+                "strike": values.get("option_strike"),
+                "contract_multiplier": values.get("option_contract_multiplier"),
+                "settlement_type": values.get("option_settlement_type"),
+            }
+        )
+    elif contract_type == "fcn":
+        unexpected = sorted(
+            column for column in OPTION_TERM_COLUMNS if values.get(column) is not None
+        )
+        if unexpected:
+            raise ValueError(
+                "FCN contract rows must not carry option columns: "
+                + ", ".join(unexpected)
+                + "."
+            )
+        terms = FCNContractTerms.model_validate(
+            {
+                "notional": values.get("fcn_notional"),
+                "issue_date": values.get("fcn_issue_date"),
+                "maturity_date": values.get("fcn_maturity_date"),
+                "issuer": values.get("fcn_issuer"),
+                "counterparty": values.get("fcn_counterparty"),
+                "underlying_instrument_ids": _split_instrument_ids(
+                    values.get("fcn_underlying_instrument_ids")
+                ),
+                "deliverable_instrument_ids": _split_instrument_ids(
+                    values.get("fcn_deliverable_instrument_ids")
+                ),
+                "barrier_type": values.get("fcn_barrier_type") or "none",
+                "barrier_level": values.get("fcn_barrier_level"),
+            }
+        )
+    else:
+        raise ValueError("derivative_contract_type must be fcn or option.")
+    return DerivativeContractCreate.model_validate(
+        {
+            "derivative_contract_id": derivative_contract_id,
+            "contract_name": values.get("derivative_contract_name"),
+            "contract_type": contract_type,
+            "external_reference": values.get(
+                "derivative_contract_external_reference"
+            ),
+            "terms": terms,
+        }
+    )
 
 
 def parse_transaction_csv(
@@ -160,13 +313,25 @@ def parse_transaction_csv(
         if values.get("fee_category") is None:
             values["fee_category"] = "unknown"
         try:
-            transaction = TransactionCreateRequest.model_validate(values)
-        except ValidationError as error:
+            derivative_contract = _build_derivative_contract(values)
+            transaction_values = {
+                key: value
+                for key, value in values.items()
+                if key not in DERIVATIVE_DEFINITION_COLUMNS
+            }
+            transaction_values["derivative_contract"] = derivative_contract
+            transaction = TransactionCreateRequest.model_validate(transaction_values)
+        except (ValidationError, ValueError) as error:
+            errors = (
+                _validation_errors(error)
+                if isinstance(error, ValidationError)
+                else (str(error),)
+            )
             parsed_rows.append(
                 ParsedTransactionCsvRow(
                     row_number=row_number,
                     transaction=None,
-                    errors=_validation_errors(error),
+                    errors=errors,
                 )
             )
             continue
@@ -188,9 +353,79 @@ def render_transaction_csv(records: Iterable[dict[str, object]]) -> str:
     writer = csv.DictWriter(output, fieldnames=list(EXPORT_COLUMNS), lineterminator="\r\n")
     writer.writeheader()
     for record in records:
+        derivative_contract = (
+            record.get("derivative_contract")
+            if isinstance(record.get("derivative_contract"), dict)
+            else None
+        )
+        derivative_terms = (
+            derivative_contract.get("terms")
+            if derivative_contract is not None
+            and isinstance(derivative_contract.get("terms"), dict)
+            else {}
+        )
+        contract_type = (
+            str(derivative_contract.get("contract_type") or "")
+            if derivative_contract is not None
+            else ""
+        )
+        flattened_derivative: dict[str, object] = {
+            "derivative_contract_name": (
+                derivative_contract.get("contract_name")
+                if derivative_contract is not None
+                else None
+            ),
+            "derivative_contract_type": contract_type or None,
+            "derivative_contract_external_reference": (
+                derivative_contract.get("external_reference")
+                if derivative_contract is not None
+                else None
+            ),
+        }
+        if contract_type == "option":
+            flattened_derivative.update(
+                {
+                    "option_underlying_instrument_id": derivative_terms.get(
+                        "underlying_instrument_id"
+                    ),
+                    "option_type": derivative_terms.get("option_type"),
+                    "option_expiry_date": derivative_terms.get("expiry_date"),
+                    "option_strike": derivative_terms.get("strike"),
+                    "option_contract_multiplier": derivative_terms.get(
+                        "contract_multiplier"
+                    ),
+                    "option_settlement_type": derivative_terms.get(
+                        "settlement_type"
+                    ),
+                }
+            )
+        elif contract_type == "fcn":
+            flattened_derivative.update(
+                {
+                    "fcn_notional": derivative_terms.get("notional"),
+                    "fcn_issue_date": derivative_terms.get("issue_date"),
+                    "fcn_maturity_date": derivative_terms.get("maturity_date"),
+                    "fcn_issuer": derivative_terms.get("issuer"),
+                    "fcn_counterparty": derivative_terms.get("counterparty"),
+                    "fcn_underlying_instrument_ids": ";".join(
+                        str(item)
+                        for item in derivative_terms.get(
+                            "underlying_instrument_ids", []
+                        )
+                    ),
+                    "fcn_deliverable_instrument_ids": ";".join(
+                        str(item)
+                        for item in derivative_terms.get(
+                            "deliverable_instrument_ids", []
+                        )
+                    ),
+                    "fcn_barrier_type": derivative_terms.get("barrier_type"),
+                    "fcn_barrier_level": derivative_terms.get("barrier_level"),
+                }
+            )
         row: dict[str, object] = {}
         for column in EXPORT_COLUMNS:
-            value = record.get(column)
+            value = flattened_derivative.get(column, record.get(column))
             source_field = NUMERIC_SOURCE_FIELDS.get(column)
             if source_field and record.get(source_field) is not None:
                 value = record.get(source_field)

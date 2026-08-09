@@ -20,6 +20,7 @@ FLAT_TABLE_RELATIONS = {
     ("portfolio", "transaction_record"),
     ("portfolio", "portfolio_daily_snapshot"),
     ("portfolio", "portfolio_daily_holding_snapshot"),
+    ("portfolio", "derivative_contract_record"),
     ("portfolio", "target_set_record"),
     ("portfolio", "target_set_line_record"),
     ("portfolio", "taxonomy_record"),
@@ -42,14 +43,18 @@ def test_flat_table_profile_accepts_only_final_heads(
     audit_module: ModuleType,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    head_pair = ("20260807_0019", "20260809_0045")
-    versions = dict(zip(("instrument_registry", "portfolio"), head_pair, strict=True))
+    expected_heads = {
+        "instrument_registry": "20260809_0022",
+        "platform": "20260716_0002",
+        "portfolio": "20260809_0046",
+        "watchlist": "20260809_0036",
+    }
     monkeypatch.setattr(
         audit_module,
         "_version_state",
         lambda _cursor, component: {
             "row_count": 1,
-            "version": versions[component],
+            "version": expected_heads[component],
             "table_present": True,
         },
     )
@@ -66,7 +71,7 @@ def test_flat_table_profile_accepts_only_final_heads(
     assert profile.family == "flat-table"
     assert profile.status == "supported"
     assert "final" in profile.reason
-    assert audit_module.FINAL_FLAT_TABLE_HEAD_PAIR == head_pair
+    assert audit_module.FINAL_FLAT_TABLE_HEADS == expected_heads
     assert not hasattr(audit_module, "TEMPORARY_MIGRATION_SOURCE_HEAD_PAIR")
     assert not hasattr(audit_module, "SUPPORTED_FLAT_TABLE_HEAD_PAIRS")
     assert not hasattr(audit_module, "OVERHAUL_HEADS")
@@ -76,7 +81,14 @@ def test_flat_table_profile_accepts_only_final_heads(
 def test_audit_contract_names_cover_registry_0019(
     audit_module: ModuleType,
 ) -> None:
-    assert len(audit_module.AUDIT_CHECK_NAMES) == 27
+    assert len(audit_module.AUDIT_CHECK_NAMES) == 31
+    assert "schema_identifier_contract" in audit_module.AUDIT_CHECK_NAMES
+    assert "watchlist_field_identity_contract" in audit_module.AUDIT_CHECK_NAMES
+    assert "derivative_registry_boundary" in audit_module.AUDIT_CHECK_NAMES
+    assert (
+        "portfolio_derivative_contract_integrity"
+        in audit_module.AUDIT_CHECK_NAMES
+    )
     assert "instrument_quote_policy_contract" in audit_module.AUDIT_CHECK_NAMES
     assert "market_data_price_contract" in audit_module.AUDIT_CHECK_NAMES
     assert "market_data_fx_identity_contract" in audit_module.AUDIT_CHECK_NAMES
@@ -108,6 +120,18 @@ def test_audit_contract_names_cover_registry_0019(
         audit_module.FUND_NAV_PROJECTION_METHOD_VERSION
         == "fund_nav_reinvestment_projection/v7"
     )
+    assert (
+        "constraint",
+        "watchlist",
+        "uq_watchlist_item_watchlist_asset",
+        "uq_watchlist_item_watchlist_instrument",
+    ) in audit_module.SCHEMA_IDENTIFIER_RENAMES
+    assert (
+        "index",
+        "watchlist",
+        "uq_watchlist_item_watchlist_asset",
+        "uq_watchlist_item_watchlist_instrument",
+    ) in audit_module.SCHEMA_IDENTIFIER_RENAMES
     assert audit_module.FUND_NAV_PROJECTION_METHOD_VERSION_SQL == (
         "'fund_nav_reinvestment_projection/v7'"
     )
@@ -119,7 +143,9 @@ def test_migration_source_heads_are_unsupported_after_cutover(
 ) -> None:
     versions = {
         "instrument_registry": "20260712_0007",
+        "platform": "20260716_0002",
         "portfolio": "20260711_0032",
+        "watchlist": "20260728_0030",
     }
     monkeypatch.setattr(
         audit_module,
@@ -150,7 +176,9 @@ def test_failed_overhaul_head_and_shape_are_unsupported(
 ) -> None:
     failed_heads = {
         "instrument_registry": "20260714_0014",
+        "platform": "20260716_0002",
         "portfolio": "20260714_0045",
+        "watchlist": "20260728_0030",
     }
     monkeypatch.setattr(
         audit_module,

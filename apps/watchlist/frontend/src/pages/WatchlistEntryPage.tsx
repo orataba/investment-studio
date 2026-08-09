@@ -29,6 +29,7 @@ export default function WatchlistEntryPage() {
   const [menuOpenId, setMenuOpenId] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
   const [draggingId, setDraggingId] = useState<string | null>(null)
+  const [reordering, setReordering] = useState(false)
   const [createModalOpen, setCreateModalOpen] = useState(false)
   const [createWatchlistName, setCreateWatchlistName] = useState('')
   const [createWatchlistDescription, setCreateWatchlistDescription] = useState('')
@@ -93,36 +94,38 @@ export default function WatchlistEntryPage() {
   const totalProducts =
     allCoverageWatchlist?.item_count ?? watchlists.reduce((sum, item) => sum + item.item_count, 0)
 
-  function moveWatchlist(sourceId: string, targetId: string) {
-    if (sourceId === targetId) {
+  async function moveWatchlist(sourceId: string, targetId: string) {
+    if (sourceId === targetId || reordering) {
       return
     }
-
-    let nextOrder: WatchlistRecord[] = []
-    setWatchlists((current) => {
-      const sourceIndex = current.findIndex((item) => item.watchlist_id === sourceId)
-      const targetIndex = current.findIndex((item) => item.watchlist_id === targetId)
-
-      if (sourceIndex === -1 || targetIndex === -1) {
-        return current
+    const sourceIndex = watchlists.findIndex((item) => item.watchlist_id === sourceId)
+    const targetIndex = watchlists.findIndex((item) => item.watchlist_id === targetId)
+    if (sourceIndex === -1 || targetIndex === -1) {
+      return
+    }
+    const nextOrder = [...watchlists]
+    const [moved] = nextOrder.splice(sourceIndex, 1)
+    nextOrder.splice(targetIndex, 0, moved)
+    setWatchlists(nextOrder)
+    setReordering(true)
+    try {
+      const savedOrder = await reorderWatchlists(
+        nextOrder.map((item) => item.watchlist_id),
+      )
+      setWatchlists(savedOrder)
+    } catch (requestError) {
+      setNotice(
+        requestError instanceof Error
+          ? requestError.message
+          : 'Failed to reorder watchlists.',
+      )
+      try {
+        setWatchlists(await getWatchlists())
+      } catch {
+        setError('Failed to reload watchlist order after a save error.')
       }
-
-      const next = [...current]
-      const [moved] = next.splice(sourceIndex, 1)
-      next.splice(targetIndex, 0, moved)
-      nextOrder = next
-      return next
-    })
-
-    if (nextOrder.length) {
-      void reorderWatchlists(nextOrder.map((item) => item.watchlist_id)).catch((requestError) => {
-        setNotice(
-          requestError instanceof Error
-            ? requestError.message
-            : 'Failed to reorder watchlists.',
-        )
-        void getWatchlists().then(setWatchlists).catch(() => undefined)
-      })
+    } finally {
+      setReordering(false)
     }
   }
 
@@ -214,9 +217,9 @@ export default function WatchlistEntryPage() {
               className={`watchlist-entry-card ${systemCoverage ? 'watchlist-entry-card-system' : ''} ${
                 draggingId === watchlist.watchlist_id ? 'entry-card-dragging' : ''
               }`}
-              draggable={!systemCoverage}
+              draggable={!systemCoverage && !reordering}
               onDragStart={() => {
-                if (!systemCoverage) {
+                if (!systemCoverage && !reordering) {
                   setDraggingId(watchlist.watchlist_id)
                 }
               }}
@@ -228,7 +231,7 @@ export default function WatchlistEntryPage() {
               }}
               onDrop={() => {
                 if (draggingId && !systemCoverage) {
-                  moveWatchlist(draggingId, watchlist.watchlist_id)
+                  void moveWatchlist(draggingId, watchlist.watchlist_id)
                 }
                 setDraggingId(null)
               }}

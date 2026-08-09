@@ -43,13 +43,36 @@ def _safe_float(value: object) -> float | None:
         return None
 
 
+def _derivative_contract(
+    transaction: dict[str, object],
+) -> dict[str, object] | None:
+    contract = transaction.get("derivative_contract")
+    return contract if isinstance(contract, dict) else None
+
+
+def _position_reference_id(transaction: dict[str, object]) -> str:
+    derivative_contract_id = str(
+        transaction.get("derivative_contract_id") or ""
+    ).strip()
+    instrument_id = str(transaction.get("instrument_id") or "").strip()
+    if derivative_contract_id and instrument_id:
+        raise ValueError(
+            "A transaction cannot reference both an instrument and a derivative contract."
+        )
+    return derivative_contract_id or instrument_id
+
+
+def _position_reference_fields(transaction: dict[str, object]) -> dict[str, object]:
+    return {
+        "instrument_id": transaction.get("instrument_id"),
+        "instrument_ref": deepcopy(transaction.get("instrument_ref")),
+        "derivative_contract_id": transaction.get("derivative_contract_id"),
+        "derivative_contract": deepcopy(transaction.get("derivative_contract")),
+    }
+
+
 def _transaction_is_event_valued(transaction: dict[str, object]) -> bool:
-    instrument_ref = transaction.get("instrument_ref")
-    return (
-        isinstance(instrument_ref, dict)
-        and str(instrument_ref.get("instrument_type") or "").strip().lower()
-        in {"fcn", "option"}
-    )
+    return _derivative_contract(transaction) is not None
 
 
 def _resolve_pricing_quote_map(
@@ -216,11 +239,17 @@ def _display_price_from_gross(
     gross_amount: float,
     quantity: float,
     instrument_ref: dict[str, object] | None,
+    derivative_contract: dict[str, object] | None = None,
 ) -> float | None:
-    if quantity <= 1e-9 or instrument_ref is None:
+    if quantity <= 1e-9 or (
+        instrument_ref is None and derivative_contract is None
+    ):
         return None
     try:
-        price_scale = transaction_price_scale(instrument_ref)
+        price_scale = transaction_price_scale(
+            instrument_ref=instrument_ref,
+            derivative_contract=derivative_contract,
+        )
     except ValueError:
         return None
     return gross_amount / quantity / price_scale
@@ -513,10 +542,10 @@ def _resolve_account_currency(
 def _ensure_position_bucket(
     position_state: dict[tuple[str, str], dict[str, object]],
     account_id: str,
-    instrument_id: str,
+    position_reference_id: str,
 ) -> dict[str, object]:
     return position_state.setdefault(
-        (account_id, instrument_id),
+        (account_id, position_reference_id),
         {
             "quantity": 0.0,
             "cost_basis": 0.0,
@@ -576,11 +605,11 @@ def _normalize_position_bucket(bucket: dict[str, object], cost_basis_method: str
 def _preview_position_cost_release(
     position_state: dict[tuple[str, str], dict[str, object]],
     account_id: str,
-    instrument_id: str,
+    position_reference_id: str,
     quantity: float,
     cost_basis_method: str,
 ) -> float:
-    bucket = position_state.get((account_id, instrument_id))
+    bucket = position_state.get((account_id, position_reference_id))
     if bucket is None or quantity <= 0:
         return 0.0
 
@@ -618,7 +647,7 @@ def _preview_position_cost_release(
 def _add_position_state(
     position_state: dict[tuple[str, str], dict[str, object]],
     account_id: str,
-    instrument_id: str,
+    position_reference_id: str,
     *,
     quantity: float,
     cost_basis: float,
@@ -627,7 +656,11 @@ def _add_position_state(
 ) -> None:
     if quantity <= 0 and cost_basis <= 0:
         return
-    bucket = _ensure_position_bucket(position_state, account_id, instrument_id)
+    bucket = _ensure_position_bucket(
+        position_state,
+        account_id,
+        position_reference_id,
+    )
     bucket["quantity"] = (_safe_float(bucket.get("quantity")) or 0.0) + quantity
     bucket["cost_basis"] = (_safe_float(bucket.get("cost_basis")) or 0.0) + cost_basis
     lots = incoming_lots or [{"quantity": quantity, "cost_basis": cost_basis}]
@@ -646,13 +679,17 @@ def _add_position_state(
 def _consume_position_state(
     position_state: dict[tuple[str, str], dict[str, object]],
     account_id: str,
-    instrument_id: str,
+    position_reference_id: str,
     *,
     quantity: float,
     cost_basis_method: str,
     error_message: str | None = None,
 ) -> tuple[float, list[dict[str, float]]]:
-    bucket = _ensure_position_bucket(position_state, account_id, instrument_id)
+    bucket = _ensure_position_bucket(
+        position_state,
+        account_id,
+        position_reference_id,
+    )
     if quantity <= 0:
         return 0.0, []
 
@@ -723,12 +760,16 @@ def _consume_position_state(
 def _apply_return_of_capital(
     position_state: dict[tuple[str, str], dict[str, object]],
     account_id: str,
-    instrument_id: str,
+    position_reference_id: str,
     *,
     amount: float,
     cost_basis_method: str,
 ) -> float:
-    bucket = _ensure_position_bucket(position_state, account_id, instrument_id)
+    bucket = _ensure_position_bucket(
+        position_state,
+        account_id,
+        position_reference_id,
+    )
     current_cost_basis = _safe_float(bucket.get("cost_basis")) or 0.0
     reduction = min(amount, current_cost_basis)
     if reduction <= 0:
@@ -804,17 +845,17 @@ def _build_position_state(
         taxes = _safe_float(transaction.get("taxes")) or 0.0
         quantity = _safe_float(transaction.get("quantity"))
         account_id = str(transaction.get("account_id") or "")
-        instrument_id = str(transaction.get("instrument_id") or "")
+        position_reference_id = _position_reference_id(transaction)
         cost_basis_method = _resolve_cost_basis_method(account_cost_methods, account_id)
 
-        if not instrument_id:
+        if not position_reference_id:
             continue
 
         if transaction_type == "opening_balance":
             _add_position_state(
                 position_state,
                 account_id,
-                instrument_id,
+                position_reference_id,
                 quantity=quantity or 0.0,
                 cost_basis=gross_amount,
                 cost_basis_method=cost_basis_method,
@@ -830,7 +871,7 @@ def _build_position_state(
             _add_position_state(
                 position_state,
                 account_id,
-                instrument_id,
+                position_reference_id,
                 quantity=quantity or 0.0,
                 cost_basis=bought_cost_basis,
                 cost_basis_method=cost_basis_method,
@@ -841,7 +882,7 @@ def _build_position_state(
             _consume_position_state(
                 position_state,
                 account_id,
-                instrument_id,
+                position_reference_id,
                 quantity=quantity or 0.0,
                 cost_basis_method=cost_basis_method,
                 error_message="Transaction quantity exceeds account position as of position_effective_date.",
@@ -852,7 +893,7 @@ def _build_position_state(
             _apply_return_of_capital(
                 position_state,
                 account_id,
-                instrument_id,
+                position_reference_id,
                 amount=gross_amount,
                 cost_basis_method=cost_basis_method,
             )
@@ -862,7 +903,7 @@ def _build_position_state(
             _add_position_state(
                 position_state,
                 account_id,
-                instrument_id,
+                position_reference_id,
                 quantity=quantity or 0.0,
                 cost_basis=gross_amount,
                 cost_basis_method=cost_basis_method,
@@ -873,7 +914,7 @@ def _build_position_state(
             transferred_cost_basis, transferred_lots = _consume_position_state(
                 position_state,
                 account_id,
-                instrument_id,
+                position_reference_id,
                 quantity=quantity or 0.0,
                 cost_basis_method=cost_basis_method,
                 error_message="Position transfer requires source lots as of trade_date.",
@@ -896,7 +937,7 @@ def _build_position_state(
             _add_position_state(
                 position_state,
                 account_id,
-                instrument_id,
+                position_reference_id,
                 quantity=quantity or 0.0,
                 cost_basis=received_cost_basis,
                 cost_basis_method=cost_basis_method,
@@ -974,8 +1015,7 @@ def derive_ledger_postings(
                 "settlement_cash_account_id": transaction.get(
                     "settlement_cash_account_id"
                 ),
-                "instrument_id": transaction.get("instrument_id"),
-                "instrument_ref": deepcopy(transaction.get("instrument_ref")),
+                **_position_reference_fields(transaction),
                 "cash_amount_delta": cash_amount_delta,
                 "pending_amount_delta": pending_amount_delta,
                 "quantity_delta": quantity_delta,
@@ -1082,6 +1122,8 @@ def derive_ledger_postings(
                         "effective_date": effective_date,
                         "instrument_id": instrument_id,
                         "instrument_ref": None,
+                        "derivative_contract_id": None,
+                        "derivative_contract": None,
                         "cash_amount_delta": None,
                         "quantity_delta": quantity_delta,
                         "cost_basis_delta": 0.0,
@@ -1106,11 +1148,11 @@ def derive_ledger_postings(
         currency = valuation_fx.required_currency(
             transaction.get("currency"), field_name="transaction currency"
         )
-        instrument_id = str(transaction.get("instrument_id") or "")
+        position_reference_id = _position_reference_id(transaction)
         cost_basis_method = _resolve_cost_basis_method(account_cost_methods, account_id)
 
         if transaction_type == "opening_balance":
-            if transaction.get("instrument_id"):
+            if position_reference_id:
                 opening_quantity = quantity or 0.0
                 append_posting(
                     transaction,
@@ -1123,7 +1165,7 @@ def derive_ledger_postings(
                 _add_position_state(
                     position_state,
                     account_id,
-                    instrument_id,
+                    position_reference_id,
                     quantity=opening_quantity,
                     cost_basis=gross_amount,
                     cost_basis_method=cost_basis_method,
@@ -1196,7 +1238,7 @@ def derive_ledger_postings(
             _add_position_state(
                 position_state,
                 account_id,
-                instrument_id,
+                position_reference_id,
                 quantity=bought_quantity,
                 cost_basis=bought_cost_basis,
                 cost_basis_method=cost_basis_method,
@@ -1216,7 +1258,7 @@ def derive_ledger_postings(
             sold_cost_basis, _ = _consume_position_state(
                 position_state,
                 account_id,
-                instrument_id,
+                position_reference_id,
                 quantity=sold_quantity,
                 cost_basis_method=cost_basis_method,
                 error_message="Transaction quantity exceeds account position as of position_effective_date.",
@@ -1311,7 +1353,7 @@ def derive_ledger_postings(
             returned_cost_basis = _apply_return_of_capital(
                 position_state,
                 account_id,
-                instrument_id,
+                position_reference_id,
                 amount=gross_amount,
                 cost_basis_method=cost_basis_method,
             )
@@ -1346,7 +1388,7 @@ def derive_ledger_postings(
             _add_position_state(
                 position_state,
                 account_id,
-                instrument_id,
+                position_reference_id,
                 quantity=reinvested_quantity,
                 cost_basis=gross_amount,
                 cost_basis_method=cost_basis_method,
@@ -1358,7 +1400,7 @@ def derive_ledger_postings(
             redeemed_cost_basis, _ = _consume_position_state(
                 position_state,
                 account_id,
-                instrument_id,
+                position_reference_id,
                 quantity=redeemed_quantity,
                 cost_basis_method=cost_basis_method,
                 error_message="Transaction quantity exceeds account position as of position_effective_date.",
@@ -1425,7 +1467,7 @@ def derive_ledger_postings(
                 transferred_cost_basis, transferred_lots = _consume_position_state(
                     position_state,
                     account_id,
-                    instrument_id,
+                    position_reference_id,
                     quantity=transferred_quantity,
                     cost_basis_method=cost_basis_method,
                     error_message="Position transfer requires source lots as of trade_date.",
@@ -1474,7 +1516,7 @@ def derive_ledger_postings(
                 _add_position_state(
                     position_state,
                     account_id,
-                    instrument_id,
+                    position_reference_id,
                     quantity=received_quantity,
                     cost_basis=received_cost_basis,
                     cost_basis_method=cost_basis_method,
@@ -1500,7 +1542,7 @@ def estimate_position_cost_basis(
     transactions: list[dict[str, object]],
     *,
     account_id: str,
-    instrument_id: str,
+    position_reference_id: str,
     quantity: float,
     account_cost_methods: dict[str, str] | None = None,
     consumption_method: str | None = None,
@@ -1516,7 +1558,7 @@ def estimate_position_cost_basis(
         corporate_actions=corporate_actions,
         as_of_date=as_of_date,
     )
-    bucket = position_state.get((account_id, instrument_id))
+    bucket = position_state.get((account_id, position_reference_id))
     if bucket is None:
         return 0.0
 
@@ -1529,7 +1571,7 @@ def estimate_position_cost_basis(
     return _preview_position_cost_release(
         position_state,
         account_id,
-        instrument_id,
+        position_reference_id,
         quantity=min(quantity, current_quantity),
         cost_basis_method=cost_basis_method,
     )
@@ -1540,7 +1582,7 @@ def estimate_position_remaining_cost_basis(
     transactions: list[dict[str, object]],
     *,
     account_id: str,
-    instrument_id: str,
+    position_reference_id: str,
     account_cost_methods: dict[str, str] | None = None,
     corporate_actions: list[dict[str, object]] | None = None,
     as_of_date: date | None = None,
@@ -1551,7 +1593,7 @@ def estimate_position_remaining_cost_basis(
         corporate_actions=corporate_actions,
         as_of_date=as_of_date,
     )
-    bucket = position_state.get((account_id, instrument_id))
+    bucket = position_state.get((account_id, position_reference_id))
     if bucket is None:
         return 0.0
     return _safe_float(bucket.get("cost_basis")) or 0.0
@@ -1562,7 +1604,7 @@ def estimate_position_quantity(
     transactions: list[dict[str, object]],
     *,
     account_id: str,
-    instrument_id: str,
+    position_reference_id: str,
     account_cost_methods: dict[str, str] | None = None,
     corporate_actions: list[dict[str, object]] | None = None,
     as_of_date: date | None = None,
@@ -1573,7 +1615,7 @@ def estimate_position_quantity(
         corporate_actions=corporate_actions,
         as_of_date=as_of_date,
     )
-    bucket = position_state.get((account_id, instrument_id))
+    bucket = position_state.get((account_id, position_reference_id))
     if bucket is None:
         return 0.0
     return _safe_float(bucket.get("quantity")) or 0.0
@@ -1607,9 +1649,9 @@ def validate_transaction_position_history(
 
     for transaction in ordered_transactions:
         transaction_type = str(transaction.get("transaction_type") or "")
-        instrument_id = str(transaction.get("instrument_id") or "")
+        position_reference_id = _position_reference_id(transaction)
         if (
-            instrument_id
+            position_reference_id
             and transaction_type == "transfer_out"
             and transaction.get("transfer_object_type") == "position"
         ):
@@ -1625,7 +1667,7 @@ def validate_transaction_position_history(
                 portfolio_id,
                 prior_transactions,
                 account_id=str(transaction.get("account_id") or ""),
-                instrument_id=instrument_id,
+                position_reference_id=position_reference_id,
                 quantity=_safe_float(transaction.get("quantity")) or 0.0,
                 account_cost_methods=account_cost_methods,
                 corporate_actions=corporate_actions,
@@ -1637,7 +1679,7 @@ def validate_transaction_position_history(
                     "Position transfer gross_amount must match source cost basis as of trade_date."
                 )
 
-        if not instrument_id or not (
+        if not position_reference_id or not (
             transaction_type in {"dividend", "dividend_reinvestment", "coupon"}
             or transaction_type in {"fee", "tax"}
         ):
@@ -1657,7 +1699,7 @@ def validate_transaction_position_history(
             portfolio_id,
             prior_transactions,
             account_id=str(transaction.get("account_id") or ""),
-            instrument_id=instrument_id,
+            position_reference_id=position_reference_id,
             account_cost_methods=account_cost_methods,
             corporate_actions=corporate_actions,
             as_of_date=entitlement_date,
@@ -1709,8 +1751,11 @@ def _new_position_lot(
     position_lot_id: str,
     portfolio_id: str,
     account_id: str,
-    instrument_id: str,
-    instrument_ref: dict[str, object],
+    position_reference_id: str,
+    instrument_id: str | None,
+    instrument_ref: dict[str, object] | None,
+    derivative_contract_id: str | None,
+    derivative_contract: dict[str, object] | None,
     currency: str,
     cost_basis_method: str,
     opened_by_transaction_id: str,
@@ -1731,8 +1776,11 @@ def _new_position_lot(
         "position_lot_id": position_lot_id,
         "portfolio_id": portfolio_id,
         "account_id": account_id,
+        "position_reference_id": position_reference_id,
         "instrument_id": instrument_id,
         "instrument_ref": deepcopy(instrument_ref),
+        "derivative_contract_id": derivative_contract_id,
+        "derivative_contract": deepcopy(derivative_contract),
         "currency": currency,
         "cost_basis_method": cost_basis_method,
         "opened_by_transaction_id": opened_by_transaction_id,
@@ -1816,11 +1864,14 @@ def _position_lot_status(position_lot: dict[str, object]) -> str:
 def _active_position_lots(
     position_lots_by_key: dict[tuple[str, str], list[dict[str, object]]],
     account_id: str,
-    instrument_id: str,
+    position_reference_id: str,
 ) -> list[dict[str, object]]:
     return [
         position_lot
-        for position_lot in position_lots_by_key.get((account_id, instrument_id), [])
+        for position_lot in position_lots_by_key.get(
+            (account_id, position_reference_id),
+            [],
+        )
         if (_safe_float(position_lot.get("remaining_quantity")) or 0.0) > 1e-9
     ]
 
@@ -1829,10 +1880,14 @@ def _require_active_position_lots(
     position_lots_by_key: dict[tuple[str, str], list[dict[str, object]]],
     *,
     account_id: str,
-    instrument_id: str,
+    position_reference_id: str,
     error_message: str,
 ) -> list[dict[str, object]]:
-    active_lots = _active_position_lots(position_lots_by_key, account_id, instrument_id)
+    active_lots = _active_position_lots(
+        position_lots_by_key,
+        account_id,
+        position_reference_id,
+    )
     if not active_lots:
         raise ValueError(error_message)
     return active_lots
@@ -1842,12 +1897,16 @@ def _consume_position_lots(
     position_lots_by_key: dict[tuple[str, str], list[dict[str, object]]],
     *,
     account_id: str,
-    instrument_id: str,
+    position_reference_id: str,
     quantity: float,
     cost_basis_method: str,
     error_message: str | None = None,
 ) -> list[dict[str, object]]:
-    active_lots = _active_position_lots(position_lots_by_key, account_id, instrument_id)
+    active_lots = _active_position_lots(
+        position_lots_by_key,
+        account_id,
+        position_reference_id,
+    )
     if quantity <= 0:
         return []
 
@@ -1947,7 +2006,7 @@ def _allocate_lot_cash_flow_by_quantity(
     position_lots_by_key: dict[tuple[str, str], list[dict[str, object]]],
     *,
     account_id: str,
-    instrument_id: str,
+    position_reference_id: str,
     amount: float,
     field_name: str,
     transaction_id: str,
@@ -1958,7 +2017,7 @@ def _allocate_lot_cash_flow_by_quantity(
     active_lots = _require_active_position_lots(
         position_lots_by_key,
         account_id=account_id,
-        instrument_id=instrument_id,
+        position_reference_id=position_reference_id,
         error_message=error_message,
     )
 
@@ -1976,7 +2035,7 @@ def _apply_position_lot_return_of_capital(
     position_lots_by_key: dict[tuple[str, str], list[dict[str, object]]],
     *,
     account_id: str,
-    instrument_id: str,
+    position_reference_id: str,
     amount: float,
     transaction_id: str,
     error_message: str,
@@ -1986,7 +2045,7 @@ def _apply_position_lot_return_of_capital(
     active_lots = _require_active_position_lots(
         position_lots_by_key,
         account_id=account_id,
-        instrument_id=instrument_id,
+        position_reference_id=position_reference_id,
         error_message=error_message,
     )
 
@@ -2011,7 +2070,7 @@ def build_position_lots(
     transactions: list[dict[str, object]],
     *,
     account_id: str | None = None,
-    instrument_id: str | None = None,
+    position_reference_id: str | None = None,
     status: str | None = None,
     as_of_date: date | None = None,
     corporate_actions: list[dict[str, object]] | None = None,
@@ -2052,8 +2111,11 @@ def build_position_lots(
     def append_position_lot(
         *,
         target_account_id: str,
-        target_instrument_id: str,
-        instrument_ref: dict[str, object],
+        target_position_reference_id: str,
+        instrument_id: str | None,
+        instrument_ref: dict[str, object] | None,
+        derivative_contract_id: str | None,
+        derivative_contract: dict[str, object] | None,
         currency: str,
         opened_by_transaction_id: str,
         opening_transaction_type: str,
@@ -2069,7 +2131,11 @@ def build_position_lots(
     ) -> dict[str, object]:
         resolved_cost_basis_method = _resolve_cost_basis_method(account_cost_methods, target_account_id)
         if resolved_cost_basis_method == "moving_average":
-            active_lots = _active_position_lots(position_lots_by_key, target_account_id, target_instrument_id)
+            active_lots = _active_position_lots(
+                position_lots_by_key,
+                target_account_id,
+                target_position_reference_id,
+            )
             if active_lots:
                 position_lot = active_lots[0]
                 position_lot["entry_quantity"] = (_safe_float(position_lot.get("entry_quantity")) or 0.0) + entry_quantity
@@ -2093,6 +2159,13 @@ def build_position_lots(
                 )
                 if not isinstance(position_lot.get("instrument_ref"), dict) or not position_lot.get("instrument_ref"):
                     position_lot["instrument_ref"] = deepcopy(instrument_ref)
+                if (
+                    not isinstance(position_lot.get("derivative_contract"), dict)
+                    or not position_lot.get("derivative_contract")
+                ):
+                    position_lot["derivative_contract"] = deepcopy(
+                        derivative_contract
+                    )
                 if source_position_lot_id != position_lot.get("source_position_lot_id"):
                     position_lot["source_position_lot_id"] = None
                 existing_acquisition_date = str(position_lot.get("acquisition_date") or acquisition_date)
@@ -2108,8 +2181,11 @@ def build_position_lots(
             position_lot_id=next_position_lot_id(),
             portfolio_id=portfolio_id,
             account_id=target_account_id,
-            instrument_id=target_instrument_id,
+            position_reference_id=target_position_reference_id,
+            instrument_id=instrument_id,
             instrument_ref=instrument_ref,
+            derivative_contract_id=derivative_contract_id,
+            derivative_contract=derivative_contract,
             currency=currency,
             cost_basis_method=resolved_cost_basis_method,
             opened_by_transaction_id=opened_by_transaction_id,
@@ -2124,7 +2200,9 @@ def build_position_lots(
             source_position_lot_id=source_position_lot_id,
             linked_transaction_ids=linked_transaction_ids,
         )
-        position_lots_by_key[(target_account_id, target_instrument_id)].append(position_lot)
+        position_lots_by_key[
+            (target_account_id, target_position_reference_id)
+        ].append(position_lot)
         all_position_lots.append(position_lot)
         position_lot_by_id[str(position_lot.get("position_lot_id") or "")] = position_lot
         return position_lot
@@ -2133,14 +2211,14 @@ def build_position_lots(
         *,
         transaction_index: int,
         target_account_id: str,
-        target_instrument_id: str,
+        target_position_reference_id: str,
         entitlement_date: date,
         error_message: str,
     ) -> list[dict[str, object]]:
         cache_key = (
             transaction_index,
             target_account_id,
-            target_instrument_id,
+            target_position_reference_id,
             entitlement_date.isoformat(),
         )
         entitled_lots = entitlement_snapshot_cache.get(cache_key)
@@ -2157,7 +2235,7 @@ def build_position_lots(
                     accounts,
                     snapshot_transactions,
                     account_id=target_account_id,
-                    instrument_id=target_instrument_id,
+                    position_reference_id=target_position_reference_id,
                     as_of_date=entitlement_date,
                     corporate_actions=resolved_actions,
                 )
@@ -2172,7 +2250,7 @@ def build_position_lots(
         *,
         transaction_index: int,
         target_account_id: str,
-        target_instrument_id: str,
+        target_position_reference_id: str,
         entitlement_date: date,
         amount: float,
         field_name: str,
@@ -2185,7 +2263,7 @@ def build_position_lots(
         entitled_lots = entitled_position_lot_snapshots(
             transaction_index=transaction_index,
             target_account_id=target_account_id,
-            target_instrument_id=target_instrument_id,
+            target_position_reference_id=target_position_reference_id,
             entitlement_date=entitlement_date,
             error_message=error_message,
         )
@@ -2266,8 +2344,11 @@ def build_position_lots(
                 linked_transaction_ids.add(event_id)
                 successor = append_position_lot(
                     target_account_id=target_account_id,
-                    target_instrument_id=target_instrument_id,
+                    target_position_reference_id=target_instrument_id,
+                    instrument_id=target_instrument_id,
                     instrument_ref=dict(spec["instrument_ref"]),
+                    derivative_contract_id=None,
+                    derivative_contract=None,
                     currency=str(spec["currency"]),
                     opened_by_transaction_id=event_id,
                     opening_transaction_type="corporate_action",
@@ -2335,14 +2416,27 @@ def build_position_lots(
             if isinstance(transaction.get("instrument_ref"), dict)
             else None
         )
+        derivative_contract = (
+            deepcopy(transaction.get("derivative_contract"))
+            if isinstance(transaction.get("derivative_contract"), dict)
+            else None
+        )
         gross_amount = _safe_float(transaction.get("gross_amount")) or 0.0
         fees = _safe_float(transaction.get("fees")) or 0.0
         taxes = _safe_float(transaction.get("taxes")) or 0.0
         quantity = _safe_float(transaction.get("quantity")) or 0.0
-        resolved_instrument_id = str(transaction.get("instrument_id") or "")
+        resolved_instrument_id = str(transaction.get("instrument_id") or "") or None
+        resolved_derivative_contract_id = (
+            str(transaction.get("derivative_contract_id") or "") or None
+        )
+        resolved_position_reference_id = _position_reference_id(transaction)
         cost_basis_method = _resolve_cost_basis_method(account_cost_methods, account_key)
 
-        if transaction_type in {"opening_balance", "buy"} and resolved_instrument_id and quantity > 0:
+        if (
+            transaction_type in {"opening_balance", "buy"}
+            and resolved_position_reference_id
+            and quantity > 0
+        ):
             entry_cost_basis = gross_amount
             if transaction_type == "buy":
                 entry_cost_basis = (
@@ -2357,8 +2451,11 @@ def build_position_lots(
             ) or position_effective_date_iso
             append_position_lot(
                 target_account_id=account_key,
-                target_instrument_id=resolved_instrument_id,
-                instrument_ref=instrument_ref or {},
+                target_position_reference_id=resolved_position_reference_id,
+                instrument_id=resolved_instrument_id,
+                instrument_ref=instrument_ref,
+                derivative_contract_id=resolved_derivative_contract_id,
+                derivative_contract=derivative_contract,
                 currency=currency,
                 opened_by_transaction_id=transaction_id,
                 opening_transaction_type=transaction_type,
@@ -2372,13 +2469,17 @@ def build_position_lots(
             )
             continue
 
-        if transaction_type == "dividend_reinvestment" and resolved_instrument_id and quantity > 0:
+        if (
+            transaction_type == "dividend_reinvestment"
+            and resolved_position_reference_id
+            and quantity > 0
+        ):
             if entitlement_date is None:
                 raise ValueError("Dividend reinvestment requires entitlement_date.")
             allocate_snapshot_cash_flow(
                 transaction_index=transaction_index,
                 target_account_id=account_key,
-                target_instrument_id=resolved_instrument_id,
+                target_position_reference_id=resolved_position_reference_id,
                 entitlement_date=entitlement_date,
                 amount=gross_amount,
                 field_name="income_cash_amount",
@@ -2390,8 +2491,11 @@ def build_position_lots(
             )
             append_position_lot(
                 target_account_id=account_key,
-                target_instrument_id=resolved_instrument_id,
-                instrument_ref=instrument_ref or {},
+                target_position_reference_id=resolved_position_reference_id,
+                instrument_id=resolved_instrument_id,
+                instrument_ref=instrument_ref,
+                derivative_contract_id=resolved_derivative_contract_id,
+                derivative_contract=derivative_contract,
                 currency=currency,
                 opened_by_transaction_id=transaction_id,
                 opening_transaction_type=transaction_type,
@@ -2405,11 +2509,15 @@ def build_position_lots(
             )
             continue
 
-        if transaction_type in {"sell", "maturity_redemption"} and resolved_instrument_id and quantity > 0:
+        if (
+            transaction_type in {"sell", "maturity_redemption"}
+            and resolved_position_reference_id
+            and quantity > 0
+        ):
             disposal_slices = _consume_position_lots(
                 position_lots_by_key,
                 account_id=account_key,
-                instrument_id=resolved_instrument_id,
+                position_reference_id=resolved_position_reference_id,
                 quantity=quantity,
                 cost_basis_method=cost_basis_method,
                 error_message="Transaction quantity exceeds account position as of position_effective_date.",
@@ -2473,13 +2581,16 @@ def build_position_lots(
                 )
             continue
 
-        if transaction_type in {"dividend", "coupon"} and resolved_instrument_id:
+        if (
+            transaction_type in {"dividend", "coupon"}
+            and resolved_position_reference_id
+        ):
             if entitlement_date is None:
                 raise ValueError("Instrument income requires entitlement_date.")
             allocate_snapshot_cash_flow(
                 transaction_index=transaction_index,
                 target_account_id=account_key,
-                target_instrument_id=resolved_instrument_id,
+                target_position_reference_id=resolved_position_reference_id,
                 entitlement_date=entitlement_date,
                 amount=gross_amount,
                 field_name="income_cash_amount",
@@ -2491,7 +2602,7 @@ def build_position_lots(
                 allocate_snapshot_cash_flow(
                     transaction_index=transaction_index,
                     target_account_id=account_key,
-                    target_instrument_id=resolved_instrument_id,
+                    target_position_reference_id=resolved_position_reference_id,
                     entitlement_date=entitlement_date,
                     amount=fees + taxes,
                     field_name="expense_cash_amount",
@@ -2501,11 +2612,11 @@ def build_position_lots(
                 )
             continue
 
-        if transaction_type == "return_of_capital" and resolved_instrument_id:
+        if transaction_type == "return_of_capital" and resolved_position_reference_id:
             _apply_position_lot_return_of_capital(
                 position_lots_by_key,
                 account_id=account_key,
-                instrument_id=resolved_instrument_id,
+                position_reference_id=resolved_position_reference_id,
                 amount=gross_amount,
                 transaction_id=transaction_id,
                 error_message="Return of capital requires open position lots as of trade_date.",
@@ -2514,7 +2625,7 @@ def build_position_lots(
                 _allocate_lot_cash_flow_by_quantity(
                     position_lots_by_key,
                     account_id=account_key,
-                    instrument_id=resolved_instrument_id,
+                    position_reference_id=resolved_position_reference_id,
                     amount=fees + taxes,
                     field_name="expense_cash_amount",
                     transaction_id=transaction_id,
@@ -2522,13 +2633,13 @@ def build_position_lots(
                 )
             continue
 
-        if transaction_type in {"fee", "tax"} and resolved_instrument_id:
+        if transaction_type in {"fee", "tax"} and resolved_position_reference_id:
             if entitlement_date is None:
                 raise ValueError("Instrument-linked expense requires entitlement_date.")
             allocate_snapshot_cash_flow(
                 transaction_index=transaction_index,
                 target_account_id=account_key,
-                target_instrument_id=resolved_instrument_id,
+                target_position_reference_id=resolved_position_reference_id,
                 entitlement_date=entitlement_date,
                 amount=gross_amount,
                 field_name="expense_cash_amount",
@@ -2541,13 +2652,13 @@ def build_position_lots(
         if (
             transaction_type == "transfer_out"
             and transaction.get("transfer_object_type") == "position"
-            and resolved_instrument_id
+            and resolved_position_reference_id
             and quantity > 0
         ):
             disposal_slices = _consume_position_lots(
                 position_lots_by_key,
                 account_id=account_key,
-                instrument_id=resolved_instrument_id,
+                position_reference_id=resolved_position_reference_id,
                 quantity=quantity,
                 cost_basis_method=cost_basis_method,
                 error_message="Position transfer requires source position lots as of trade_date.",
@@ -2577,8 +2688,13 @@ def build_position_lots(
                 transferred_slices.append(
                     {
                         "account_id": str(transaction.get("counterparty_account_id") or ""),
+                        "position_reference_id": resolved_position_reference_id,
                         "instrument_id": resolved_instrument_id,
                         "instrument_ref": deepcopy(position_lot.get("instrument_ref")),
+                        "derivative_contract_id": resolved_derivative_contract_id,
+                        "derivative_contract": deepcopy(
+                            position_lot.get("derivative_contract")
+                        ),
                         "currency": str(position_lot.get("currency") or currency),
                         "opened_by_transaction_id": str(position_lot.get("opened_by_transaction_id") or transaction_id),
                         "opening_transaction_type": str(position_lot.get("opening_transaction_type") or "transfer_in"),
@@ -2602,7 +2718,7 @@ def build_position_lots(
         if (
             transaction_type == "transfer_in"
             and transaction.get("transfer_object_type") == "position"
-            and resolved_instrument_id
+            and resolved_position_reference_id
             and quantity > 0
         ):
             transfer_group_id = str(transaction.get("transfer_group_id") or "")
@@ -2623,11 +2739,21 @@ def build_position_lots(
                 }
                 append_position_lot(
                     target_account_id=account_key,
-                    target_instrument_id=resolved_instrument_id,
+                    target_position_reference_id=resolved_position_reference_id,
+                    instrument_id=resolved_instrument_id,
                     instrument_ref=(
                         incoming_slice.get("instrument_ref")
                         if isinstance(incoming_slice.get("instrument_ref"), dict)
-                        else (instrument_ref or {})
+                        else instrument_ref
+                    ),
+                    derivative_contract_id=resolved_derivative_contract_id,
+                    derivative_contract=(
+                        incoming_slice.get("derivative_contract")
+                        if isinstance(
+                            incoming_slice.get("derivative_contract"),
+                            dict,
+                        )
+                        else derivative_contract
                     ),
                     currency=str(incoming_slice.get("currency") or currency),
                     opened_by_transaction_id=str(incoming_slice.get("opened_by_transaction_id") or transaction_id),
@@ -2654,7 +2780,11 @@ def build_position_lots(
         position_lot
         for position_lot in all_position_lots
         if (not account_id or position_lot.get("account_id") == account_id)
-        and (not instrument_id or position_lot.get("instrument_id") == instrument_id)
+        and (
+            not position_reference_id
+            or position_lot.get("position_reference_id")
+            == position_reference_id
+        )
         and (not status or position_lot.get("status") == status)
     ]
     returned_instrument_ids = {
@@ -2694,7 +2824,12 @@ def build_position_lots(
         instrument_ref = (
             raw_position_lot.get("instrument_ref")
             if isinstance(raw_position_lot.get("instrument_ref"), dict)
-            else {}
+            else None
+        )
+        derivative_contract = (
+            raw_position_lot.get("derivative_contract")
+            if isinstance(raw_position_lot.get("derivative_contract"), dict)
+            else None
         )
         acquisition_date_value = _parse_iso_date(raw_position_lot.get("acquisition_date")) or _parse_iso_date(
             raw_position_lot.get("opened_at")
@@ -2707,6 +2842,7 @@ def build_position_lots(
             quantity=remaining_quantity,
             cost_basis=remaining_cost_basis,
             instrument_ref=instrument_ref,
+            derivative_contract=derivative_contract,
             quoted_price=instrument_price,
             quoted_price_scale=_pricing_scale(instrument_quote),
         )
@@ -2716,8 +2852,15 @@ def build_position_lots(
                 "position_lot_id": raw_position_lot["position_lot_id"],
                 "portfolio_id": portfolio_id,
                 "account_id": raw_position_lot["account_id"],
+                "position_reference_id": raw_position_lot[
+                    "position_reference_id"
+                ],
                 "instrument_id": raw_position_lot["instrument_id"],
                 "instrument_ref": deepcopy(instrument_ref),
+                "derivative_contract_id": raw_position_lot.get(
+                    "derivative_contract_id"
+                ),
+                "derivative_contract": deepcopy(derivative_contract),
                 "currency": raw_position_lot["currency"],
                 "cost_basis_method": raw_position_lot["cost_basis_method"],
                 "opened_by_transaction_id": raw_position_lot["opened_by_transaction_id"],
@@ -2763,11 +2906,13 @@ def build_position_lots(
                     gross_amount=entry_gross_amount,
                     quantity=entry_quantity,
                     instrument_ref=instrument_ref,
+                    derivative_contract=derivative_contract,
                 ),
                 "average_exit_price": _display_price_from_gross(
                     gross_amount=realized_gross_proceeds,
                     quantity=realized_quantity,
                     instrument_ref=instrument_ref,
+                    derivative_contract=derivative_contract,
                 ),
                 "current_market_value": current_market_value,
                 "unrealized_pnl": (
@@ -2817,17 +2962,26 @@ def build_portfolio_positions(
         as_of_date=as_of_date,
         pricing_map=pricing_map,
     )
-    positions_by_instrument: dict[str, dict[str, object]] = {}
+    positions_by_reference: dict[str, dict[str, object]] = {}
 
     for position_lot in position_lots:
-        instrument_key = str(position_lot.get("instrument_id") or "")
-        bucket = positions_by_instrument.setdefault(
-            instrument_key,
+        position_reference_id = str(
+            position_lot.get("position_reference_id") or ""
+        )
+        bucket = positions_by_reference.setdefault(
+            position_reference_id,
             {
-                "position_id": instrument_key,
+                "position_id": position_reference_id,
                 "portfolio_id": portfolio_id,
-                "instrument_id": instrument_key,
+                "position_reference_id": position_reference_id,
+                "instrument_id": position_lot.get("instrument_id"),
                 "instrument_ref": deepcopy(position_lot.get("instrument_ref")),
+                "derivative_contract_id": position_lot.get(
+                    "derivative_contract_id"
+                ),
+                "derivative_contract": deepcopy(
+                    position_lot.get("derivative_contract")
+                ),
                 "quantity": 0.0,
                 "cost_basis": 0.0,
                 "currency": str(position_lot.get("currency") or ""),
@@ -2841,7 +2995,7 @@ def build_portfolio_positions(
         bucket["account_ids"].add(str(position_lot.get("account_id") or ""))
 
     rendered_positions: list[dict[str, object]] = []
-    for bucket in positions_by_instrument.values():
+    for bucket in positions_by_reference.values():
         quantity = _safe_float(bucket.get("quantity")) or 0.0
         if abs(quantity) <= 1e-9:
             continue
@@ -2855,6 +3009,11 @@ def build_portfolio_positions(
                 if isinstance(bucket.get("instrument_ref"), dict)
                 else None
             ),
+            derivative_contract=(
+                bucket.get("derivative_contract")
+                if isinstance(bucket.get("derivative_contract"), dict)
+                else None
+            ),
             quoted_price=quoted_price,
             quoted_price_scale=_pricing_scale(pricing_quote),
         )
@@ -2863,8 +3022,15 @@ def build_portfolio_positions(
             {
                 "position_id": bucket["position_id"],
                 "portfolio_id": portfolio_id,
+                "position_reference_id": bucket["position_reference_id"],
                 "instrument_id": bucket["instrument_id"],
-                "instrument_ref": deepcopy(bucket.get("instrument_ref") or {}),
+                "instrument_ref": deepcopy(bucket.get("instrument_ref")),
+                "derivative_contract_id": bucket.get(
+                    "derivative_contract_id"
+                ),
+                "derivative_contract": deepcopy(
+                    bucket.get("derivative_contract")
+                ),
                 "quantity": quantity,
                 "cost_basis": _safe_float(bucket.get("cost_basis")),
                 "last_price": last_price,
@@ -2879,7 +3045,7 @@ def build_portfolio_positions(
     rendered_positions.sort(
         key=lambda item: (
             -((_safe_float(item.get("market_value")) or 0.0)),
-            str(item.get("instrument_id") or ""),
+            str(item.get("position_reference_id") or ""),
         )
     )
     return rendered_positions
@@ -3041,18 +3207,27 @@ def build_account_workspace(
         pricing_map=pricing_map,
         instrument_detail_cache=resolved_instrument_detail_cache,
     )
-    positions_by_account_instrument: dict[tuple[str, str], dict[str, object]] = {}
+    positions_by_account_reference: dict[tuple[str, str], dict[str, object]] = {}
     for position_lot in position_lots:
         account_id = str(position_lot.get("account_id") or "")
-        instrument_id = str(position_lot.get("instrument_id") or "")
-        key = (account_id, instrument_id)
-        bucket = positions_by_account_instrument.setdefault(
+        position_reference_id = str(
+            position_lot.get("position_reference_id") or ""
+        )
+        key = (account_id, position_reference_id)
+        bucket = positions_by_account_reference.setdefault(
             key,
             {
-                "position_id": f"{account_id}:{instrument_id}",
+                "position_id": f"{account_id}:{position_reference_id}",
                 "account_id": account_id,
-                "instrument_id": instrument_id,
+                "position_reference_id": position_reference_id,
+                "instrument_id": position_lot.get("instrument_id"),
                 "instrument_ref": deepcopy(position_lot.get("instrument_ref")),
+                "derivative_contract_id": position_lot.get(
+                    "derivative_contract_id"
+                ),
+                "derivative_contract": deepcopy(
+                    position_lot.get("derivative_contract")
+                ),
                 "quantity": 0.0,
                 "cost_basis": 0.0,
                 "currency": str(position_lot.get("currency") or ""),
@@ -3069,11 +3244,11 @@ def build_account_workspace(
     market_value_by_account: dict[str, float] = defaultdict(float)
     valuation_complete_by_account: dict[str, bool] = defaultdict(lambda: True)
     valuation_missing_components_by_account: dict[str, set[str]] = defaultdict(set)
-    for bucket in positions_by_account_instrument.values():
+    for bucket in positions_by_account_reference.values():
         quantity = float(bucket["quantity"])
         if abs(quantity) < 1e-9:
             continue
-        instrument_id = str(bucket["instrument_id"])
+        instrument_id = str(bucket.get("instrument_id") or "")
         pricing_quote = pricing_map.get(instrument_id)
         quoted_price = _pricing_value(pricing_quote)
         last_price, market_value, event_valued = resolve_position_valuation(
@@ -3082,6 +3257,11 @@ def build_account_workspace(
             instrument_ref=(
                 bucket["instrument_ref"]
                 if isinstance(bucket.get("instrument_ref"), dict)
+                else None
+            ),
+            derivative_contract=(
+                bucket["derivative_contract"]
+                if isinstance(bucket.get("derivative_contract"), dict)
                 else None
             ),
             quoted_price=quoted_price,
@@ -3109,8 +3289,13 @@ def build_account_workspace(
             {
                 "position_id": bucket["position_id"],
                 "account_id": account_id,
-                "instrument_id": instrument_id,
+                "position_reference_id": bucket["position_reference_id"],
+                "instrument_id": bucket.get("instrument_id"),
                 "instrument_ref": bucket["instrument_ref"],
+                "derivative_contract_id": bucket.get(
+                    "derivative_contract_id"
+                ),
+                "derivative_contract": bucket.get("derivative_contract"),
                 "quantity": quantity,
                 "cost_basis": float(bucket["cost_basis"]),
                 "last_price": None if event_valued else last_price,
@@ -3141,7 +3326,7 @@ def build_account_workspace(
     positions.sort(
         key=lambda item: (
             str(item.get("account_id") or ""),
-            str(item.get("instrument_id") or ""),
+            str(item.get("position_reference_id") or ""),
         )
     )
 

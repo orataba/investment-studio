@@ -159,6 +159,9 @@ class ExposureAnalyticsSnapshot(Base):
     other_count: Mapped[int | None]
     cash_ratio: Mapped[Decimal | None] = mapped_column(Numeric(12, 6))
     leverage_ratio: Mapped[Decimal | None] = mapped_column(Numeric(12, 6))
+    reported_weight_total: Mapped[Decimal | None] = mapped_column(Numeric(12, 6))
+    duration_weight_coverage: Mapped[Decimal | None] = mapped_column(Numeric(12, 6))
+    ytw_weight_coverage: Mapped[Decimal | None] = mapped_column(Numeric(12, 6))
     weighted_duration: Mapped[Decimal | None] = mapped_column(Numeric(12, 6))
     weighted_maturity: Mapped[Decimal | None] = mapped_column(Numeric(12, 6))
     weighted_yield_to_worst: Mapped[Decimal | None] = mapped_column(Numeric(12, 6))

@@ -12,15 +12,7 @@ from portfolio_ops_instrument_core.fx_contract import (
 )
 from portfolio_ops_instrument_core.models import InstrumentIdentifier as PlatformInstrumentIdentifier
 from portfolio_ops_instrument_core.models import BrokerIdentifier as PlatformBrokerIdentifier
-from portfolio_ops_instrument_core.models import (
-    CorporateActionAdjustmentPolicy as PlatformCorporateActionAdjustmentPolicy,
-)
-from portfolio_ops_instrument_core.models import (
-    DerivativeContractReconciliation as PlatformDerivativeContractReconciliation,
-)
-from portfolio_ops_instrument_core.models import FCNContractMetadata as PlatformFCNContractMetadata
 from portfolio_ops_instrument_core.models import InstrumentCore as SharedInstrumentCore
-from portfolio_ops_instrument_core.models import OptionContractIdentity as PlatformOptionContractIdentity
 from portfolio_ops_instrument_core.models import CorporateActionEvent as PlatformCorporateActionEvent
 from portfolio_ops_instrument_core.models import (
     FundNavAdjustmentFactor as PlatformFundNavAdjustmentFactor,
@@ -213,13 +205,7 @@ class PlatformInstrumentRecord(BaseModel):
     instrument_type: InstrumentType
     currency: str
     identifiers: list[PlatformInstrumentIdentifier]
-    option_contract: PlatformOptionContractIdentity | None = None
-    fcn_contract: PlatformFCNContractMetadata | None = None
     broker_identifiers: list[PlatformBrokerIdentifier] = Field(default_factory=list)
-    corporate_action_adjustment_policy: (
-        PlatformCorporateActionAdjustmentPolicy | None
-    ) = None
-    contract_reconciliation: PlatformDerivativeContractReconciliation
     latest_market_data: list[PlatformMarketDataPoint]
     quote_selection_policy: PlatformQuoteSelectionPolicy
     coverage_state: DataStatus
@@ -238,12 +224,7 @@ class PlatformInstrumentRecord(BaseModel):
                 "instrument_type": self.instrument_type,
                 "currency": self.currency,
                 "identifiers": self.identifiers,
-                "option_contract": self.option_contract,
-                "fcn_contract": self.fcn_contract,
                 "broker_identifiers": self.broker_identifiers,
-                "corporate_action_adjustment_policy": (
-                    self.corporate_action_adjustment_policy
-                ),
             }
         )
         expected_currency = self.currency.strip().upper()
@@ -529,12 +510,7 @@ class PlatformInstrumentCreateRequest(BaseModel):
     currency: str = Field(min_length=1, max_length=8)
     identifiers: list[PlatformInstrumentIdentifier] = Field(min_length=1)
     quote_selection_policy: PlatformQuoteSelectionPolicy | None = None
-    option_contract: PlatformOptionContractIdentity | None = None
-    fcn_contract: PlatformFCNContractMetadata | None = None
     broker_identifiers: list[PlatformBrokerIdentifier] = Field(default_factory=list)
-    corporate_action_adjustment_policy: (
-        PlatformCorporateActionAdjustmentPolicy | None
-    ) = None
 
     @field_validator("instrument_name", mode="before")
     @classmethod
@@ -560,32 +536,7 @@ class PlatformInstrumentCreateRequest(BaseModel):
     def validate_primary_identifier(self) -> "PlatformInstrumentCreateRequest":
         if sum(1 for item in self.identifiers if item.is_primary) != 1:
             raise ValueError("Exactly one identifier must be primary.")
-        if self.instrument_type == "option" and self.option_contract is None:
-            raise ValueError("New option instruments require complete option_contract identity.")
-        if self.instrument_type != "option" and self.option_contract is not None:
-            raise ValueError("option_contract is only valid for option instruments.")
-        if self.instrument_type == "fcn" and self.fcn_contract is None:
-            raise ValueError("New FCN instruments require complete fcn_contract metadata.")
-        if self.instrument_type != "fcn" and self.fcn_contract is not None:
-            raise ValueError("fcn_contract is only valid for FCN instruments.")
-        if self.instrument_type in {"fcn", "option"}:
-            if self.corporate_action_adjustment_policy is None:
-                raise ValueError(
-                    "New derivative instruments require corporate_action_adjustment_policy."
-                )
-        elif self.corporate_action_adjustment_policy is not None:
-            raise ValueError(
-                "corporate_action_adjustment_policy is only valid for derivative instruments."
-            )
         return self
-
-
-class PlatformDerivativeContractMetadataUpdateRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    fcn_contract: PlatformFCNContractMetadata | None = None
-    broker_identifiers: list[PlatformBrokerIdentifier] = Field(default_factory=list)
-    corporate_action_adjustment_policy: PlatformCorporateActionAdjustmentPolicy
 
 
 class PlatformQuoteSelectionPolicyUpdateRequest(BaseModel):

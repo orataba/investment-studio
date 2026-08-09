@@ -6,12 +6,12 @@ import PortfolioSecurityDetailPage from './pages/PortfolioSecurityDetailPage'
 import {
   holdingFixture,
   instrumentFixture,
-  optionInstrumentFixture,
+  optionContractFixture,
 } from './test/portfolioFixtures'
 import { renderPortfolioPage } from './test/renderPortfolioPage'
 
 const apiMocks = vi.hoisted(() => ({
-  getPortfolioInstrumentHoldingProjection: vi.fn(),
+  getPortfolioPositionHoldingProjection: vi.fn(),
   getPortfolioInstrumentPriceChart: vi.fn(),
   getPortfolioPositionLots: vi.fn(),
   getPortfolioTransactions: vi.fn(),
@@ -62,7 +62,7 @@ function compactHoldingProjection() {
 describe('Security Detail lazy-load contract', () => {
   beforeEach(() => {
     vi.clearAllMocks()
-    apiMocks.getPortfolioInstrumentHoldingProjection.mockResolvedValue({
+    apiMocks.getPortfolioPositionHoldingProjection.mockResolvedValue({
       portfolio_id: '3',
       portfolio_name: 'Contract Portfolio',
       base_currency: 'USD',
@@ -129,7 +129,7 @@ describe('Security Detail lazy-load contract', () => {
     expect(await screen.findByRole('heading', { name: 'Alpha Fund' })).toBeInTheDocument()
     expect(await screen.findByText('2 detail chart points')).toBeInTheDocument()
 
-    expect(apiMocks.getPortfolioInstrumentHoldingProjection).toHaveBeenCalledWith(
+    expect(apiMocks.getPortfolioPositionHoldingProjection).toHaveBeenCalledWith(
       '3',
       'asset-1',
       { as_of_date: undefined },
@@ -141,27 +141,29 @@ describe('Security Detail lazy-load contract', () => {
         { as_of_date: '2026-07-15', range: '1y' },
       )
       expect(apiMocks.getPortfolioPositionLots).toHaveBeenCalledWith('3', {
-        instrument_id: 'asset-1',
+        position_reference_id: 'asset-1',
         as_of_date: '2026-07-15',
       })
       expect(apiMocks.getPortfolioTransactions).toHaveBeenCalledWith('3', {
-        instrument_id: 'asset-1',
+        position_reference_id: 'asset-1',
         end_date: '2026-07-15',
       })
     })
   })
 
   it('keeps a written obligation beside the long option position in instrument detail', async () => {
-    const optionCore = optionInstrumentFixture({
-      instrument_id: 'option-1',
-      instrument_name: 'Alpha 110 Call',
-      identifiers: [],
+    const optionContract = optionContractFixture({
+      derivative_contract_id: 'option-1',
+      contract_name: 'Alpha 110 Call',
     })
     const position = {
       ...compactHoldingProjection(),
       line_id: 'option-1',
-      holding_kind: 'position',
-      instrument_core: optionCore,
+      holding_kind: 'derivative_contract',
+      position_reference_id: 'option-1',
+      derivative_contract_id: 'option-1',
+      derivative_contract: optionContract,
+      instrument_core: null,
       market_value: 500,
       market_value_base: 500,
       cost_basis: 500,
@@ -177,7 +179,10 @@ describe('Security Detail lazy-load contract', () => {
       ...compactHoldingProjection(),
       line_id: 'option-1:obligation',
       holding_kind: 'option_obligation',
-      instrument_core: optionCore,
+      position_reference_id: 'option-1',
+      derivative_contract_id: 'option-1',
+      derivative_contract: optionContract,
+      instrument_core: null,
       quantity: -2,
       open_contract_quantity: 2,
       required_underlying_quantity: 200,
@@ -194,7 +199,7 @@ describe('Security Detail lazy-load contract', () => {
       coverage_status: 'event-liability',
       is_liability: true,
     }
-    apiMocks.getPortfolioInstrumentHoldingProjection.mockResolvedValue({
+    apiMocks.getPortfolioPositionHoldingProjection.mockResolvedValue({
       portfolio_id: '3',
       portfolio_name: 'Contract Portfolio',
       base_currency: 'USD',
@@ -203,24 +208,6 @@ describe('Security Detail lazy-load contract', () => {
       quality_warnings: [],
       rows: [position, obligation],
     })
-    apiMocks.getPortfolioInstrumentPriceChart.mockResolvedValue({
-      portfolio_id: '3',
-      instrument_core: optionCore,
-      as_of_date: '2026-07-15',
-      range_key: '1y',
-      chart_basis: null,
-      metric_family: null,
-      currency: 'USD',
-      points: [],
-      summary: {
-        point_count: 0,
-        change_value: null,
-        change_pct: null,
-        high: null,
-        low: null,
-      },
-    })
-
     renderPortfolioPage(
       <PortfolioSecurityDetailPage />,
       '/portfolios/3/holdings/option-1',
@@ -409,8 +396,11 @@ describe('Security Detail lazy-load contract', () => {
           position_lot_id: 'lot-1',
           portfolio_id: '3',
           account_id: 'account-1',
+          position_reference_id: 'asset-1',
           instrument_id: 'asset-1',
           instrument_ref: instrumentFixture(),
+          derivative_contract_id: null,
+          derivative_contract: null,
           currency: 'USD',
           cost_basis_method: 'fifo',
           opened_by_transaction_id: 'txn-buy',
@@ -475,7 +465,7 @@ describe('Security Detail lazy-load contract', () => {
     expect(apiMocks.getPortfolioInstrumentPriceChart).not.toHaveBeenCalled()
     expect(screen.queryByRole('tab', { name: 'Realizations 1' })).not.toBeInTheDocument()
 
-    await user.click(screen.getByRole('tab', { name: 'Position Lots 1' }))
+    await user.click(await screen.findByRole('tab', { name: 'Position Lots 1' }))
 
     expect(await screen.findByText('25 days held')).toBeInTheDocument()
     expect(screen.getByText('Matched exits')).toBeInTheDocument()

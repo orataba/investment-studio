@@ -2,9 +2,6 @@ import { describe, expect, it } from 'vitest'
 
 import {
   canonicalBrokerIdentifiers,
-  canonicalCorporateActionAdjustmentPolicy,
-  canonicalFCNContractMetadata,
-  canonicalOptionContractIdentity,
 } from '../../../../packages/instrument-core/ts/src'
 
 import {
@@ -42,12 +39,6 @@ function instrument(status: 'active' | 'archived'): PlatformInstrumentRecord {
       },
     ],
     broker_identifiers: [],
-    contract_reconciliation: {
-      status: 'not_applicable',
-      canonical_contract_id: null,
-      broker_keys: [],
-      issues: [],
-    },
     latest_market_data: [marketPoint],
     quote_selection_policy: {
       trading: ['close'],
@@ -117,99 +108,21 @@ describe('instrument registry view model', () => {
     expect(parseFxPairLabel('EUR/CNY', ['USD', 'CNY'])).toBeNull()
   })
 
-  it('canonicalizes complete option identity and rejects invalid decimals or dates', () => {
-    expect(
-      canonicalOptionContractIdentity({
-        underlying_instrument_id: ' equity-us-abbv ',
-        option_type: 'call',
-        expiry_date: '2026-12-18',
-        strike: '220.00',
-        contract_multiplier: 100,
-        settlement_type: 'physical',
-        contract_currency: ' usd ',
-      }),
-    ).toEqual({
-      underlying_instrument_id: 'equity-us-abbv',
-      option_type: 'call',
-      expiry_date: '2026-12-18',
-      strike: '220.00',
-      contract_multiplier: '100',
-      settlement_type: 'physical',
-      contract_currency: 'USD',
-    })
-    expect(() =>
-      canonicalOptionContractIdentity({
-        underlying_instrument_id: 'equity-us-abbv',
-        option_type: 'call',
-        expiry_date: '2026-02-30',
-        strike: '220',
-        contract_multiplier: '100',
-        settlement_type: 'physical',
-        contract_currency: 'USD',
-      }),
-    ).toThrow('expiry_date must be a valid ISO date')
-    expect(() =>
-      canonicalOptionContractIdentity({
-        underlying_instrument_id: 'equity-us-abbv',
-        option_type: 'call',
-        expiry_date: '2026-12-18',
-        strike: '0',
-        contract_multiplier: '100',
-        settlement_type: 'physical',
-        contract_currency: 'USD',
-      }),
-    ).toThrow('strike must be a finite positive decimal')
-  })
-
-  it('canonicalizes FCN terms, broker identities, and adjustment authority', () => {
-    expect(
-      canonicalFCNContractMetadata({
-        notional: '100000',
-        issue_date: '2026-08-01',
-        maturity_date: '2027-08-01',
-        contract_currency: ' usd ',
-        issuer: ' Issuer Bank ',
-        counterparty: ' Private Bank ',
-        underlying_instrument_ids: [' equity-a '],
-        deliverable_instrument_ids: [' equity-a '],
-        barrier_type: 'knock_in',
-        barrier_level: '65',
-      }),
-    ).toMatchObject({
-      contract_currency: 'USD',
-      issuer: 'Issuer Bank',
-      counterparty: 'Private Bank',
-      underlying_instrument_ids: ['equity-a'],
-      barrier_level: '65',
-    })
-    expect(() =>
-      canonicalFCNContractMetadata({
-        notional: '100000',
-        issue_date: '2027-08-01',
-        maturity_date: '2026-08-01',
-        contract_currency: 'USD',
-        issuer: 'Issuer Bank',
-        counterparty: 'Private Bank',
-        underlying_instrument_ids: ['equity-a'],
-        deliverable_instrument_ids: ['equity-a'],
-        barrier_type: 'none',
-      }),
-    ).toThrow('maturity_date must not precede issue_date')
-
+  it('canonicalizes reusable broker identifiers', () => {
     expect(
       canonicalBrokerIdentifiers([
         {
           broker: ' IBKR ',
-          identifier_type: 'contract_id',
-          identifier_value: ' 987654321 ',
+          identifier_type: 'symbol',
+          identifier_value: ' AAPL ',
           is_primary: true,
         },
       ]),
     ).toEqual([
       {
         broker: 'IBKR',
-        identifier_type: 'contract_id',
-        identifier_value: '987654321',
+        identifier_type: 'symbol',
+        identifier_value: 'AAPL',
         is_primary: true,
       },
     ])
@@ -217,22 +130,11 @@ describe('instrument registry view model', () => {
       canonicalBrokerIdentifiers([
         {
           broker: 'IBKR',
-          identifier_type: 'symbol',
-          identifier_value: 'OPT',
+          identifier_type: 'product_code',
+          identifier_value: 'STK',
           is_primary: false,
         },
       ]),
     ).toThrow('exactly one primary')
-
-    expect(
-      canonicalCorporateActionAdjustmentPolicy({
-        policy_type: 'contract_terms',
-        authority_reference: ' Master confirmation ',
-        quantity_rounding: 'exact',
-        adjust_strike: true,
-        adjust_multiplier: true,
-        adjust_deliverable: true,
-      }).authority_reference,
-    ).toBe('Master confirmation')
   })
 })

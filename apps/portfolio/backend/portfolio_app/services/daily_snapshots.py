@@ -855,8 +855,20 @@ def _recalculate_portfolio_daily_snapshots_once(
                 )
                 for holding in holding_rows:
                     account_id = str(holding.get("account_id") or "")
-                    instrument_id = str(holding.get("instrument_id") or "")
-                    if not account_id or not instrument_id:
+                    instrument_id = (
+                        str(holding.get("instrument_id") or "") or None
+                    )
+                    derivative_contract_id = (
+                        str(holding.get("derivative_contract_id") or "")
+                        or None
+                    )
+                    position_reference_id = str(
+                        holding.get("position_reference_id")
+                        or derivative_contract_id
+                        or instrument_id
+                        or ""
+                    )
+                    if not account_id or not position_reference_id:
                         continue
                     holding_kind = (
                         str(holding.get("holding_kind") or "position").strip()
@@ -867,7 +879,9 @@ def _recalculate_portfolio_daily_snapshots_once(
                             portfolio_id=portfolio_id,
                             as_of_date=snapshot_date,
                             account_id=account_id,
+                            position_reference_id=position_reference_id,
                             instrument_id=instrument_id,
+                            derivative_contract_id=derivative_contract_id,
                             holding_kind=holding_kind,
                             currency=str(holding.get("currency") or portfolio.get("base_currency") or "USD"),
                             quantity=_safe_float(holding.get("quantity")) or 0.0,
@@ -1380,20 +1394,30 @@ def _aggregate_holding_rows(
     *,
     total_nav_base: float | None,
 ) -> list[dict[str, object]]:
-    rows_by_instrument: dict[tuple[str, str], list[dict[str, object]]] = {}
+    rows_by_reference: dict[tuple[str, str], list[dict[str, object]]] = {}
     for row in rows:
         payload = dict(row.holding_json) if isinstance(row.holding_json, dict) else {}
         payload["_snapshot_as_of_date"] = row.as_of_date
+        position_reference_id = row.position_reference_id
         instrument_id = row.instrument_id
+        derivative_contract_id = row.derivative_contract_id
         holding_kind = row.holding_kind
+        payload["position_reference_id"] = position_reference_id
         payload["instrument_id"] = instrument_id
+        payload["derivative_contract_id"] = derivative_contract_id
         payload["holding_kind"] = holding_kind
-        rows_by_instrument.setdefault((instrument_id, holding_kind), []).append(
+        rows_by_reference.setdefault(
+            (position_reference_id, holding_kind),
+            [],
+        ).append(
             payload
         )
 
     aggregated_rows: list[dict[str, object]] = []
-    for (instrument_id, holding_kind), instrument_rows in rows_by_instrument.items():
+    for (
+        position_reference_id,
+        holding_kind,
+    ), instrument_rows in rows_by_reference.items():
         account_ids = sorted(
             {
                 str(account_id)
@@ -1474,9 +1498,17 @@ def _aggregate_holding_rows(
         aggregated_rows.append(
             {
                 "line_id": (
-                    f"{instrument_id}:obligation"
+                    f"{position_reference_id}:obligation"
                     if holding_kind == "option_obligation"
-                    else instrument_id
+                    else position_reference_id
+                ),
+                "position_reference_id": position_reference_id,
+                "instrument_id": first_row.get("instrument_id"),
+                "derivative_contract_id": first_row.get(
+                    "derivative_contract_id"
+                ),
+                "derivative_contract": deepcopy(
+                    first_row.get("derivative_contract")
                 ),
                 "holding_kind": holding_kind
                 or ("settled_cash" if is_cash_row else "position"),
@@ -1502,9 +1534,15 @@ def _aggregate_holding_rows(
                         if str(transaction_id or "")
                     }
                 ),
-                "instrument_core": holdings_market_profile.normalize_instrument_core(
-                    instrument_id,
-                    first_row.get("instrument_ref") if isinstance(first_row.get("instrument_ref"), dict) else None,
+                "instrument_core": (
+                    holdings_market_profile.normalize_instrument_core(
+                        str(first_row.get("instrument_id") or ""),
+                        first_row.get("instrument_ref")
+                        if isinstance(first_row.get("instrument_ref"), dict)
+                        else None,
+                    )
+                    if first_row.get("instrument_id")
+                    else None
                 ),
                 "quantity": _sum_complete([row.get("quantity") for row in instrument_rows]),
                 "last_price": _first_present(instrument_rows, "last_price"),
@@ -1671,7 +1709,7 @@ def build_materialized_holdings_workspace(
                     PortfolioDailyHoldingSnapshotModel.as_of_date == snapshot.as_of_date,
                 )
                 .order_by(
-                    PortfolioDailyHoldingSnapshotModel.instrument_id,
+                    PortfolioDailyHoldingSnapshotModel.position_reference_id,
                     PortfolioDailyHoldingSnapshotModel.account_id,
                 )
             ).all()
@@ -1757,6 +1795,10 @@ def build_materialized_holdings_workspace(
 
 _INSTRUMENT_HOLDING_PROJECTION_FIELDS = (
     "line_id",
+    "position_reference_id",
+    "instrument_id",
+    "derivative_contract_id",
+    "derivative_contract",
     "holding_kind",
     "available_for_trading",
     "economic_instrument_id",
@@ -1822,13 +1864,13 @@ def project_instrument_holding_row(source_row: dict[str, object]) -> dict[str, o
     }
 
 
-def build_materialized_instrument_holding_projection(
+def build_materialized_position_holding_projection(
     portfolio_id: str,
-    instrument_id: str,
+    position_reference_id: str,
     *,
     as_of_date: date | None = None,
 ) -> dict[str, object] | None:
-    """Read one instrument's distinct holding kinds without portfolio-wide analytics."""
+    """Read one position reference's holding kinds without portfolio-wide analytics."""
 
     ensure_portfolio_daily_snapshots(portfolio_id)
     session_factory = get_session_factory()
@@ -1860,7 +1902,8 @@ def build_materialized_instrument_holding_projection(
                 .where(
                     PortfolioDailyHoldingSnapshotModel.portfolio_id == portfolio_id,
                     PortfolioDailyHoldingSnapshotModel.as_of_date == snapshot.as_of_date,
-                    PortfolioDailyHoldingSnapshotModel.instrument_id == instrument_id,
+                    PortfolioDailyHoldingSnapshotModel.position_reference_id
+                    == position_reference_id,
                 )
                 .order_by(
                     PortfolioDailyHoldingSnapshotModel.account_id,

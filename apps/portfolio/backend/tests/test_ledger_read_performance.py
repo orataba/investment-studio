@@ -61,6 +61,32 @@ def _buy(
     gross_amount: float = 1000.0,
     instrument_type: str = "equity",
 ) -> dict[str, object]:
+    is_derivative = instrument_type in {"fcn", "option"}
+    derivative_contract = (
+        {
+            "derivative_contract_id": instrument_id,
+            "portfolio_id": "portfolio",
+            "account_id": account_id,
+            "contract_name": instrument_id,
+            "contract_type": instrument_type,
+            "currency": "USD",
+            "external_reference": f"TEST-{instrument_id}",
+            "terms": {
+                "notional": "1000",
+                "issue_date": "2026-01-01",
+                "maturity_date": "2026-12-31",
+                "issuer": "Test Issuer",
+                "counterparty": "Test Broker",
+                "underlying_instrument_ids": ["equity-a"],
+                "deliverable_instrument_ids": ["equity-a"],
+                "barrier_type": "none",
+                "barrier_level": None,
+            },
+            "created_at": "2026-04-01T10:00:00Z",
+        }
+        if is_derivative
+        else None
+    )
     return {
         "transaction_id": transaction_id,
         "transaction_sequence": transaction_sequence,
@@ -71,14 +97,20 @@ def _buy(
         "settlement_date": "2026-04-01",
         "account_id": account_id,
         "settlement_cash_account_id": None,
-        "instrument_id": instrument_id,
-        "instrument_ref": {
-            "instrument_id": instrument_id,
-            "instrument_name": instrument_id,
-            "instrument_type": instrument_type,
-            "currency": "USD",
-            "identifiers": [],
-        },
+        "instrument_id": None if is_derivative else instrument_id,
+        "instrument_ref": (
+            None
+            if is_derivative
+            else {
+                "instrument_id": instrument_id,
+                "instrument_name": instrument_id,
+                "instrument_type": instrument_type,
+                "currency": "USD",
+                "identifiers": [],
+            }
+        ),
+        "derivative_contract_id": instrument_id if is_derivative else None,
+        "derivative_contract": derivative_contract,
         "quantity": quantity,
         "gross_amount": gross_amount,
         "fees": 0.0,
@@ -135,7 +167,7 @@ def test_position_lot_filters_run_before_pricing(monkeypatch) -> None:
             _buy("txn-b", "equity-b", transaction_sequence=2, account_id="broker-b"),
         ],
         account_id="broker-a",
-        instrument_id="equity-a",
+        position_reference_id="equity-a",
         status="open",
         as_of_date=date(2026, 4, 15),
     )
@@ -226,7 +258,7 @@ def test_account_workspace_labels_event_position_as_carried_not_market_priced(
         ledger,
         "get_registry_instrument_details",
         lambda instrument_ids: {
-            instrument_id: _detail(instrument_id, 25.0, instrument_type="fcn")
+            instrument_id: _detail(instrument_id, 25.0)
             for instrument_id in instrument_ids
         },
     )
@@ -353,22 +385,26 @@ def test_account_workspace_exposes_and_filters_written_option_obligations(monkey
             "settlement_date": "2026-04-02",
             "account_id": "broker-a",
             "settlement_cash_account_id": None,
-            "instrument_id": "option-a",
-            "instrument_ref": {
-                "instrument_id": "option-a",
-                "instrument_name": "option-a",
-                "instrument_type": "option",
+            "instrument_id": None,
+            "instrument_ref": None,
+            "derivative_contract_id": "option-a",
+            "derivative_contract": {
+                "derivative_contract_id": "option-a",
+                "portfolio_id": "portfolio",
+                "account_id": "broker-a",
+                "contract_name": "option-a",
+                "contract_type": "option",
                 "currency": "USD",
-                "identifiers": [],
-                "option_contract": {
+                "external_reference": "TEST-option-a",
+                "terms": {
                     "underlying_instrument_id": "equity-a",
                     "option_type": "call",
                     "expiry_date": "2026-12-18",
                     "strike": "30",
                     "contract_multiplier": "100",
                     "settlement_type": "physical",
-                    "contract_currency": "USD",
                 },
+                "created_at": "2026-04-02T10:00:00Z",
             },
             "quantity": 1.0,
             "gross_amount": 150.0,

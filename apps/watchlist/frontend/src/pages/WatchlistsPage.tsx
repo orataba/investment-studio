@@ -1,5 +1,5 @@
 import React, { startTransition, useEffect, useMemo, useRef, useState } from 'react'
-import { Link, useNavigate, useParams } from 'react-router'
+import { Link, useNavigate, useParams, useSearchParams } from 'react-router'
 
 import {
   copyWatchlistItems,
@@ -25,7 +25,7 @@ import {
   getWatchlistDetail,
   getWatchlists,
   moveWatchlistItems,
-  resolveSharedInstrument,
+  resolveSharedInstrumentsBulk,
   updateFundTaxonomy,
   updateInstrumentAttributes,
   updateWatchlistView,
@@ -99,8 +99,19 @@ type ActiveFilterEntry = {
   valueLabel: string
   isTaxonomy: boolean
 }
-const SCREENER_BULK_PAGE_SIZE = 500
+type PendingDeleteItems = {
+  watchlistId: string
+  watchlistName: string
+  instrumentIds: string[]
+}
+type PendingGroupAssignment = {
+  instrumentId: string
+  instrumentName: string
+  target: GroupDropTarget
+  attributeKey: string
+}
 const WATCHLIST_INITIAL_RENDER_ROWS = 80
+const WATCHLIST_SUPPORTED_INSTRUMENT_TYPES = ['fund', 'etf', 'equity', 'index'] as const
 const ALL_COVERAGE_WATCHLIST_ID = 'all-coverage'
 const TAXONOMY_FILTER_FIELD_KEY = 'taxonomy'
 const TAXONOMY_GROUP_BY_CODE = 'taxonomy'
@@ -339,43 +350,17 @@ function buildFilterOptions(
 
 async function loadAllScreenerRows(
   payload: Record<string, unknown>,
-  pageSize: number = SCREENER_BULK_PAGE_SIZE,
 ) {
-  return (await loadCompleteScreenerResult(payload, pageSize)).rows
+  return (await loadCompleteScreenerResult(payload)).rows
 }
 
 async function loadCompleteScreenerResult(
   payload: Record<string, unknown>,
-  pageSize: number = SCREENER_BULK_PAGE_SIZE,
 ): Promise<ScreenerResponse> {
-  const firstPage = await runScreenerQuery({
+  return runScreenerQuery({
     ...payload,
-    pagination: { page: 1, page_size: pageSize },
+    fetch_all: true,
   })
-  if (firstPage.total_rows <= firstPage.rows.length) {
-    return firstPage
-  }
-
-  const rows = [...firstPage.rows]
-  const sparklines = { ...(firstPage.sparklines || {}) }
-  const totalPages = Math.max(1, Math.ceil(firstPage.total_rows / pageSize))
-  for (let page = 2; page <= totalPages; page += 1) {
-    const nextPage = await runScreenerQuery({
-      ...payload,
-      pagination: { page, page_size: pageSize },
-    })
-    if (!nextPage.rows.length) {
-      break
-    }
-    rows.push(...nextPage.rows)
-    Object.assign(sparklines, nextPage.sparklines || {})
-  }
-  const completeRows = rows.slice(0, firstPage.total_rows)
-  return {
-    ...firstPage,
-    rows: completeRows,
-    sparklines,
-  }
 }
 
 function statusClass(value: unknown) {
@@ -511,9 +496,6 @@ function formatGroupAverageCell(fieldKey: string, field: FieldRegistryRecord | u
   if (fieldKey.includes('_percentile')) {
     return `${formatNumber(value, 0)} pct`
   }
-  if (fieldKey === 'overall_rating') {
-    return formatNumber(value, 1)
-  }
   if (field?.formatter_code === 'percent' || isReturnMetricField(fieldKey)) {
     return formatPercent(value)
   }
@@ -542,10 +524,6 @@ function renderCell(
 
   if (fieldKey === 'ticker_or_isin') {
     return <span className="ticker-pill">{String(value || '—')}</span>
-  }
-
-  if (fieldKey === 'overall_rating') {
-    return value == null ? '—' : <span className="rating-pill">{String(value)}</span>
   }
 
   if (fieldKey === 'attr.coverage_status') {
@@ -758,32 +736,53 @@ function rowMatchesWatchlistSearch(row: Record<string, unknown>, query: string):
   return Object.values(row).some((value) => rowValueMatchesSearch(value, query))
 }
 
+function parseJsonSearchParam<T>(value: string | null, fallback: T): T {
+  if (!value) {
+    return fallback
+  }
+  try {
+    return JSON.parse(value) as T
+  } catch {
+    return fallback
+  }
+}
+
 export default function WatchlistsPage() {
   const primaryDisplayColumn = 'instrument_name'
-  const primaryDisplayColumnAliases = ['asset_name', 'fund_name', 'name']
-  const isPrimaryDisplayColumn = (fieldKey: string) =>
-    fieldKey === primaryDisplayColumn || primaryDisplayColumnAliases.includes(fieldKey)
   const requiredColumns = [primaryDisplayColumn]
   const navigate = useNavigate()
   const { watchlistId = '' } = useParams()
+  const [watchlistSearchParams, setWatchlistSearchParams] = useSearchParams()
   const [watchlists, setWatchlists] = useState<WatchlistRecord[]>([])
   const [fieldCategories, setFieldCategories] = useState<FieldCategory[]>([])
   const [fieldRegistry, setFieldRegistry] = useState<FieldRegistryRecord[]>([])
   const [fundTaxonomy, setFundTaxonomy] = useState<FundTaxonomyTreeResponse | null>(null)
-  const [activeViewId, setActiveViewId] = useState('')
+  const [activeViewId, setActiveViewId] = useState(
+    () => watchlistSearchParams.get('view') || '',
+  )
   const [watchlistDetail, setWatchlistDetail] = useState<WatchlistDetail | null>(null)
+  const [watchlistDetailOwnerId, setWatchlistDetailOwnerId] = useState('')
   const [screenerResult, setScreenerResult] = useState<ScreenerResponse | null>(null)
+  const [screenerResultOwnerId, setScreenerResultOwnerId] = useState('')
   const [screenerLoading, setScreenerLoading] = useState(false)
   const [renderRowLimit, setRenderRowLimit] = useState(WATCHLIST_INITIAL_RENDER_ROWS)
   const [workingColumns, setWorkingColumns] = useState<string[]>([])
   const [columnDraft, setColumnDraft] = useState<string[]>([])
   const [columnWidths, setColumnWidths] = useState<Record<string, number>>({})
   const [columnDropTarget, setColumnDropTarget] = useState('')
-  const [workingGroupBy, setWorkingGroupBy] = useState('none')
-  const [workingFilters, setWorkingFilters] = useState<FilterState>({})
+  const [workingGroupBy, setWorkingGroupBy] = useState(
+    () => watchlistSearchParams.get('group') || 'none',
+  )
+  const [workingFilters, setWorkingFilters] = useState<FilterState>(() =>
+    normalizeFilterState(
+      parseJsonSearchParam<Record<string, unknown>>(watchlistSearchParams.get('filters'), {}),
+    ),
+  )
   const [selectedFieldCategory, setSelectedFieldCategory] = useState('')
   const [fieldSearch, setFieldSearch] = useState('')
-  const [watchlistSearch, setWatchlistSearch] = useState('')
+  const [watchlistSearch, setWatchlistSearch] = useState(
+    () => watchlistSearchParams.get('q') || '',
+  )
   const [selectedRows, setSelectedRows] = useState<string[]>([])
   const [modalKind, setModalKind] = useState<ModalKind>(null)
   const [filterMenuOpen, setFilterMenuOpen] = useState(false)
@@ -808,13 +807,26 @@ export default function WatchlistsPage() {
   const [isSearchingInstruments, setIsSearchingInstruments] = useState(false)
   const [isAdding, setIsAdding] = useState(false)
   const [isBatchAdding, setIsBatchAdding] = useState(false)
-  const [sortRules, setSortRules] = useState<Array<{ field: string; direction: string }>>([])
+  const [sortRules, setSortRules] = useState<Array<{ field: string; direction: string }>>(() => {
+    const parsed = parseJsonSearchParam<unknown>(watchlistSearchParams.get('sort'), [])
+    return Array.isArray(parsed)
+      ? parsed.filter(
+          (item): item is { field: string; direction: string } =>
+            Boolean(item) &&
+            typeof item === 'object' &&
+            typeof (item as { field?: unknown }).field === 'string' &&
+            ['asc', 'desc'].includes(String((item as { direction?: unknown }).direction)),
+        )
+      : []
+  })
   const [notice, setNotice] = useState<string | null>(null)
   const [viewToast, setViewToast] = useState<NoticeToastMessage | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [pendingDeleteWatchlist, setPendingDeleteWatchlist] = useState<WatchlistRecord | null>(null)
   const [deletingWatchlist, setDeletingWatchlist] = useState(false)
+  const [pendingDeleteItems, setPendingDeleteItems] = useState<PendingDeleteItems | null>(null)
+  const [deletingItems, setDeletingItems] = useState(false)
   const [sparklineMap, setSparklineMap] = useState<
     Record<string, Record<string, ReturnSparklineSeries>>
   >({})
@@ -822,6 +834,7 @@ export default function WatchlistsPage() {
   const [draggingInstrumentId, setDraggingInstrumentId] = useState<string | null>(null)
   const [groupDropTargetKey, setGroupDropTargetKey] = useState<string | null>(null)
   const [updatingGroupInstrumentId, setUpdatingGroupInstrumentId] = useState<string | null>(null)
+  const [pendingGroupAssignment, setPendingGroupAssignment] = useState<PendingGroupAssignment | null>(null)
   const [reloadToken, setReloadToken] = useState(0)
   const filterMenuRef = useRef<HTMLDivElement | null>(null)
   const groupMenuRef = useRef<HTMLDivElement | null>(null)
@@ -836,6 +849,9 @@ export default function WatchlistsPage() {
   const resizeFrame = useRef<number | null>(null)
   const pendingResize = useRef<{ column: string; width: number } | null>(null)
   const batchFileInputRef = useRef<HTMLInputElement | null>(null)
+  const activeWatchlistIdRef = useRef(watchlistId)
+  activeWatchlistIdRef.current = watchlistId
+  const watchlistSearchKey = watchlistSearchParams.toString()
 
   const modalBusy = isSavingView || isCreatingWatchlist || isCopyingItems || isMovingItems || isAdding || isBatchAdding
   function closeActiveModal() {
@@ -855,7 +871,7 @@ export default function WatchlistsPage() {
   }, [notice])
 
   const baseScreenerPayload = useMemo(() => {
-    if (!watchlistId) {
+    if (!watchlistId || watchlistDetailOwnerId !== watchlistId) {
       return null
     }
 
@@ -878,7 +894,7 @@ export default function WatchlistsPage() {
       sort: sortRules,
       group_by: workingGroupBy,
     }
-  }, [activeViewId, primaryDisplayColumn, sortRules, watchlistId, workingColumns, workingFilters, workingGroupBy])
+  }, [activeViewId, primaryDisplayColumn, sortRules, watchlistDetailOwnerId, watchlistId, workingColumns, workingFilters, workingGroupBy])
   const screenerCriteriaKey = useMemo(
     () => JSON.stringify(baseScreenerPayload || {}),
     [baseScreenerPayload],
@@ -961,10 +977,22 @@ export default function WatchlistsPage() {
   useEffect(() => {
     if (!watchlistId) {
       setWatchlistDetail(null)
+      setWatchlistDetailOwnerId('')
+      setScreenerResult(null)
+      setScreenerResultOwnerId('')
+      setSelectedRows([])
       return
     }
 
     let cancelled = false
+    setWatchlistDetail(null)
+    setWatchlistDetailOwnerId('')
+    setScreenerResult(null)
+    setScreenerResultOwnerId('')
+    setSelectedRows([])
+    setModalKind(null)
+    setPendingDeleteItems(null)
+    setPendingGroupAssignment(null)
 
     async function loadWatchlistDetail() {
       setError(null)
@@ -976,12 +1004,50 @@ export default function WatchlistsPage() {
         }
 
         setWatchlistDetail(detail)
+        setWatchlistDetailOwnerId(watchlistId)
         startTransition(() => {
-          const nextViewId = detail.default_view_id || detail.views[0]?.view_id || ''
+          const requestedViewId = watchlistSearchParams.get('view') || ''
+          const nextViewId =
+            detail.views.some((view) => view.view_id === requestedViewId)
+              ? requestedViewId
+              : detail.default_view_id || detail.views[0]?.view_id || ''
           setActiveViewId(nextViewId)
           const nextView =
             detail.views.find((item) => item.view_id === nextViewId) || detail.views[0] || null
           applyWatchlistView(nextView)
+          if (watchlistSearchParams.has('group')) {
+            setWorkingGroupBy(watchlistSearchParams.get('group') || 'none')
+          }
+          if (watchlistSearchParams.has('filters')) {
+            setWorkingFilters(
+              normalizeFilterState(
+                parseJsonSearchParam<Record<string, unknown>>(
+                  watchlistSearchParams.get('filters'),
+                  {},
+                ),
+              ),
+            )
+          }
+          if (watchlistSearchParams.has('sort')) {
+            const requestedSort = parseJsonSearchParam<unknown>(
+              watchlistSearchParams.get('sort'),
+              [],
+            )
+            if (Array.isArray(requestedSort)) {
+              setSortRules(
+                requestedSort.filter(
+                  (item): item is { field: string; direction: string } =>
+                    Boolean(item) &&
+                    typeof item === 'object' &&
+                    typeof (item as { field?: unknown }).field === 'string' &&
+                    ['asc', 'desc'].includes(
+                      String((item as { direction?: unknown }).direction),
+                    ),
+                ),
+              )
+            }
+          }
+          setWatchlistSearch(watchlistSearchParams.get('q') || '')
           setSelectedRows([])
           setNotice(null)
         })
@@ -1038,17 +1104,22 @@ export default function WatchlistsPage() {
       }),
       getSharedInstruments({
         search: instrumentSearch,
+        instrument_type: 'equity',
+        limit: 12,
+      }),
+      getSharedInstruments({
+        search: instrumentSearch,
         instrument_type: 'index',
         limit: 12,
       }),
     ])
-      .then(([fundResults, etfResults, indexResults]) => {
+      .then(([fundResults, etfResults, equityResults, indexResults]) => {
         if (cancelled) {
           return
         }
 
         const seenInstrumentIds = new Set<string>()
-        const results = [...fundResults, ...etfResults, ...indexResults].filter((item) => {
+        const results = [...fundResults, ...etfResults, ...equityResults, ...indexResults].filter((item) => {
           if (seenInstrumentIds.has(item.instrument_id)) {
             return false
           }
@@ -1082,8 +1153,13 @@ export default function WatchlistsPage() {
   }, [instrumentSearch, modalKind])
 
   useEffect(() => {
-    if (!watchlistDetail || !baseScreenerPayload) {
+    if (
+      !watchlistDetail ||
+      watchlistDetailOwnerId !== watchlistId ||
+      !baseScreenerPayload
+    ) {
       setScreenerResult(null)
+      setScreenerResultOwnerId('')
       return
     }
 
@@ -1097,6 +1173,7 @@ export default function WatchlistsPage() {
 
         if (!cancelled) {
           setScreenerResult(result)
+          setScreenerResultOwnerId(watchlistId)
           setSparklineMap(result.sparklines || {})
           setSelectedRows((current) =>
             current.filter((instrumentId) => result.rows.some((row) => String(row.instrument_id) === instrumentId)),
@@ -1118,14 +1195,69 @@ export default function WatchlistsPage() {
     return () => {
       cancelled = true
     }
-  }, [baseScreenerPayload, reloadToken, watchlistDetail])
+  }, [baseScreenerPayload, reloadToken, watchlistDetail, watchlistDetailOwnerId, watchlistId])
 
-  const activeView =
-    watchlistDetail?.views.find((item) => item.view_id === activeViewId) || watchlistDetail?.views[0] || null
+  const detailIsCurrent = watchlistDetailOwnerId === watchlistId
+  const rowsAreCurrent = detailIsCurrent && screenerResultOwnerId === watchlistId
+  const activeView = detailIsCurrent
+    ? watchlistDetail?.views.find((item) => item.view_id === activeViewId) ||
+      watchlistDetail?.views[0] ||
+      null
+    : null
+
+  useEffect(() => {
+    if (!detailIsCurrent || !watchlistDetail) {
+      return
+    }
+    const requestedViewId = watchlistSearchParams.get('view') || ''
+    const requestedView =
+      watchlistDetail.views.find((view) => view.view_id === requestedViewId) ||
+      watchlistDetail.views.find((view) => view.view_id === activeViewId) ||
+      watchlistDetail.views[0] ||
+      null
+    if (requestedView && requestedView.view_id !== activeViewId) {
+      setActiveViewId(requestedView.view_id)
+    }
+    applyWatchlistView(requestedView)
+    if (watchlistSearchParams.has('group')) {
+      setWorkingGroupBy(watchlistSearchParams.get('group') || 'none')
+    }
+    if (watchlistSearchParams.has('filters')) {
+      setWorkingFilters(
+        normalizeFilterState(
+          parseJsonSearchParam<Record<string, unknown>>(
+            watchlistSearchParams.get('filters'),
+            {},
+          ),
+        ),
+      )
+    }
+    if (watchlistSearchParams.has('sort')) {
+      const requestedSort = parseJsonSearchParam<unknown>(
+        watchlistSearchParams.get('sort'),
+        [],
+      )
+      setSortRules(
+        Array.isArray(requestedSort)
+          ? requestedSort.filter(
+              (item): item is { field: string; direction: string } =>
+                Boolean(item) &&
+                typeof item === 'object' &&
+                typeof (item as { field?: unknown }).field === 'string' &&
+                ['asc', 'desc'].includes(
+                  String((item as { direction?: unknown }).direction),
+                ),
+            )
+          : [],
+      )
+    }
+    setWatchlistSearch(watchlistSearchParams.get('q') || '')
+  }, [detailIsCurrent, watchlistDetail, watchlistSearchKey])
 
   async function handleBatchAddFileChange(event: React.ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0]
-    if (!file || !watchlistId) {
+    const sourceWatchlistId = watchlistDetailOwnerId === watchlistId ? watchlistId : ''
+    if (!file || !sourceWatchlistId) {
       return
     }
 
@@ -1140,33 +1272,51 @@ export default function WatchlistsPage() {
         throw new Error('No valid rows found. Expected an Identifier / Ticker / ISIN column.')
       }
 
-      const missingIdentifiers: string[] = []
+      const identifiers = [...new Set(rows.map((row) => row.identifier))]
+      const resolution = await resolveSharedInstrumentsBulk(identifiers)
+      const missingIdentifiers = resolution.results
+        .filter((result) => result.status === 'not_found' || !result.instrument)
+        .map((result) => result.identifier)
+      const unsupportedIdentifiers = resolution.results
+        .filter(
+          (result) =>
+            result.instrument &&
+            !WATCHLIST_SUPPORTED_INSTRUMENT_TYPES.includes(
+              result.instrument.instrument_type as typeof WATCHLIST_SUPPORTED_INSTRUMENT_TYPES[number],
+            ),
+        )
+        .map(
+          (result) =>
+            `${result.identifier} (${result.instrument?.instrument_type || 'unknown'})`,
+        )
       const resolvedInstrumentIds = new Set<string>()
-      await Promise.all(
-        rows.map(async (row) => {
-          try {
-            const resolved = await resolveSharedInstrument(row.identifier)
-            if (!['fund', 'etf', 'index'].includes(resolved.instrument_type)) {
-              throw new Error(`${row.identifier} resolves to ${resolved.instrument_type}, but watchlist currently supports funds, ETFs, and indexes only.`)
-            }
-            resolvedInstrumentIds.add(resolved.instrument_id)
-          } catch (resolveError) {
-            missingIdentifiers.push(row.identifier)
-          }
-        }),
-      )
+      resolution.results.forEach((result) => {
+        if (
+          result.instrument &&
+          WATCHLIST_SUPPORTED_INSTRUMENT_TYPES.includes(
+            result.instrument.instrument_type as typeof WATCHLIST_SUPPORTED_INSTRUMENT_TYPES[number],
+          )
+        ) {
+          resolvedInstrumentIds.add(result.instrument.instrument_id)
+        }
+      })
 
       if (missingIdentifiers.length) {
         throw new Error(
-          `Watchlist accepts shared-registry funds, ETFs, and indexes only. Check these identifiers in Data Operations: ${missingIdentifiers.join(', ')}.`,
+          `These identifiers were not found in the shared registry: ${missingIdentifiers.join(', ')}.`,
+        )
+      }
+      if (unsupportedIdentifiers.length) {
+        throw new Error(
+          `These identifiers resolve outside Watchlist coverage: ${unsupportedIdentifiers.join(', ')}.`,
         )
       }
 
-      const addResult = await addWatchlistItems(watchlistId, [...resolvedInstrumentIds])
-      await refreshWatchlistDetail()
+      const addResult = await addWatchlistItems(sourceWatchlistId, [...resolvedInstrumentIds])
+      await refreshWatchlistDetail(undefined, sourceWatchlistId)
       setReloadToken(Date.now())
       setModalKind(null)
-      const skippedCount = Math.max(rows.length - addResult.accepted_count, 0)
+      const skippedCount = Math.max(identifiers.length - addResult.accepted_count, 0)
       setNotice(
         skippedCount > 0
           ? `Processed ${rows.length} rows. Added ${addResult.accepted_count}; ${skippedCount} were duplicate rows or already existed in this watchlist.`
@@ -1181,7 +1331,9 @@ export default function WatchlistsPage() {
   }
 
   const activeWatchlist = watchlists.find((item) => item.watchlist_id === watchlistId) || null
-  const activeWatchlistIsAllCoverage = isAllCoverageWatchlist(activeWatchlist || watchlistDetail)
+  const activeWatchlistIsAllCoverage = isAllCoverageWatchlist(
+    activeWatchlist || (detailIsCurrent ? watchlistDetail : null),
+  )
 
   async function handleDeleteWatchlist() {
     if (!pendingDeleteWatchlist || deletingWatchlist) {
@@ -1199,6 +1351,33 @@ export default function WatchlistsPage() {
       setError(requestError instanceof Error ? requestError.message : 'Failed to delete watchlist.')
     } finally {
       setDeletingWatchlist(false)
+    }
+  }
+
+  async function handleDeleteSelectedItems() {
+    const pending = pendingDeleteItems
+    if (!pending || deletingItems) {
+      return
+    }
+    setDeletingItems(true)
+    setError(null)
+    try {
+      await deleteWatchlistItems(pending.watchlistId, pending.instrumentIds)
+      if (activeWatchlistIdRef.current === pending.watchlistId) {
+        setSelectedRows([])
+        await refreshWatchlistDetail(undefined, pending.watchlistId)
+        setReloadToken(Date.now())
+      }
+      setPendingDeleteItems(null)
+      setNotice(
+        `Deleted ${pending.instrumentIds.length} instruments from "${pending.watchlistName}".`,
+      )
+    } catch (deleteError) {
+      setError(
+        deleteError instanceof Error ? deleteError.message : 'Failed to delete instruments.',
+      )
+    } finally {
+      setDeletingItems(false)
     }
   }
   const moveTargetOptions = useMemo(
@@ -1278,12 +1457,11 @@ export default function WatchlistsPage() {
     const seen = new Set<string>()
     const normalized: string[] = []
     ;[...requiredColumns, ...columns].forEach((field) => {
-      const normalizedField = isPrimaryDisplayColumn(field) ? primaryDisplayColumn : field
-      if (!normalizedField || seen.has(normalizedField)) {
+      if (!field || seen.has(field)) {
         return
       }
-      seen.add(normalizedField)
-      normalized.push(normalizedField)
+      seen.add(field)
+      normalized.push(field)
     })
     return normalized
   }
@@ -1291,7 +1469,7 @@ export default function WatchlistsPage() {
     const nextWidths: Record<string, number> = {}
     view?.column_meta?.forEach((item) => {
       if (typeof item.width === 'number') {
-        nextWidths[isPrimaryDisplayColumn(item.field_key) ? primaryDisplayColumn : item.field_key] = item.width
+        nextWidths[item.field_key] = item.width
       }
     })
     return nextWidths
@@ -1359,6 +1537,51 @@ export default function WatchlistsPage() {
     serializeFilterState(workingFilters) !== serializeFilterState(baseFilters) ||
     JSON.stringify(sortRules) !== JSON.stringify(baseSort) ||
     viewColumnWidthsEdited
+
+  useEffect(() => {
+    if (!detailIsCurrent || !activeView) {
+      return
+    }
+    setWatchlistSearchParams(
+      (current) => {
+        const next = new URLSearchParams(current)
+        next.set('view', activeView.view_id)
+        if (watchlistSearch) {
+          next.set('q', watchlistSearch)
+        } else {
+          next.delete('q')
+        }
+        if (workingGroupBy !== baseGroupBy) {
+          next.set('group', workingGroupBy)
+        } else {
+          next.delete('group')
+        }
+        if (serializeFilterState(workingFilters) !== serializeFilterState(baseFilters)) {
+          next.set('filters', JSON.stringify(workingFilters))
+        } else {
+          next.delete('filters')
+        }
+        if (JSON.stringify(sortRules) !== JSON.stringify(baseSort)) {
+          next.set('sort', JSON.stringify(sortRules))
+        } else {
+          next.delete('sort')
+        }
+        return next.toString() === current.toString() ? current : next
+      },
+      { replace: true },
+    )
+  }, [
+    activeView,
+    baseFilters,
+    baseGroupBy,
+    baseSort,
+    detailIsCurrent,
+    setWatchlistSearchParams,
+    sortRules,
+    watchlistSearch,
+    workingFilters,
+    workingGroupBy,
+  ])
   const compactWatchlistColumns = useMemo(
     () =>
       compactTableColumnWidths(
@@ -1516,7 +1739,7 @@ export default function WatchlistsPage() {
       event.preventDefault()
       return
     }
-    if (!activeGroupSupportsDrop || updatingGroupInstrumentId) {
+    if (!rowsAreCurrent || !activeGroupSupportsDrop || updatingGroupInstrumentId) {
       event.preventDefault()
       return
     }
@@ -1543,7 +1766,7 @@ export default function WatchlistsPage() {
     setGroupDropTargetKey(target.groupKey)
   }
 
-  async function handleGroupDrop(
+  function handleGroupDrop(
     event: React.DragEvent<HTMLTableRowElement>,
     target: GroupDropTarget | null,
   ) {
@@ -1554,7 +1777,7 @@ export default function WatchlistsPage() {
       event.dataTransfer.getData('text/plain') ||
       draggingInstrumentId ||
       ''
-    if (!target || !instrumentId || updatingGroupInstrumentId) {
+    if (!rowsAreCurrent || !target || !instrumentId || updatingGroupInstrumentId) {
       return
     }
 
@@ -1567,6 +1790,28 @@ export default function WatchlistsPage() {
       return
     }
 
+    setPendingGroupAssignment({
+      instrumentId,
+      instrumentName: String(currentRow.instrument_name || instrumentId),
+      target,
+      attributeKey: activeAttributeGroupDefinition,
+    })
+    setDraggingInstrumentId(null)
+  }
+
+  async function confirmGroupAssignment() {
+    const pending = pendingGroupAssignment
+    if (!pending || updatingGroupInstrumentId) {
+      return
+    }
+    const { instrumentId, instrumentName, target, attributeKey } = pending
+    const currentRow = screenerResult?.rows.find(
+      (row) => String(row.instrument_id) === instrumentId,
+    )
+    if (!currentRow) {
+      setPendingGroupAssignment(null)
+      return
+    }
     const previousPatch = Object.fromEntries(
       Object.keys(target.rowPatch).map((fieldKey) => [fieldKey, currentRow[fieldKey]]),
     )
@@ -1585,7 +1830,7 @@ export default function WatchlistsPage() {
         await updateInstrumentAttributes(instrumentId, {
           values: [
             {
-              attribute_key: activeAttributeGroupDefinition,
+              attribute_key: attributeKey,
               value: target.value,
             },
           ],
@@ -1594,7 +1839,7 @@ export default function WatchlistsPage() {
       setReloadToken(Date.now())
       setViewToast({
         id: Date.now(),
-        message: `Moved ${String(currentRow.instrument_name || instrumentId)} to ${target.value || 'Unspecified'}.`,
+        message: `Moved ${instrumentName} to ${target.value || 'Unspecified'}.`,
         tone: 'success',
       })
     } catch (dropError) {
@@ -1603,6 +1848,7 @@ export default function WatchlistsPage() {
     } finally {
       setUpdatingGroupInstrumentId(null)
       setDraggingInstrumentId(null)
+      setPendingGroupAssignment(null)
     }
   }
 
@@ -1646,7 +1892,7 @@ export default function WatchlistsPage() {
   }, [availableCategoryList, selectedFieldCategory])
 
   const filteredFieldRegistry = scopedFieldRegistry.filter((field) => {
-    if (isPrimaryDisplayColumn(field.field_key)) {
+    if (field.field_key === primaryDisplayColumn) {
       return false
     }
     const matchesCategory = !selectedFieldCategory || field.category_code === selectedFieldCategory
@@ -2040,17 +2286,25 @@ export default function WatchlistsPage() {
       })),
     }
   }
-  const allVisibleInstrumentIds = searchedRows.map((row) => String(row.instrument_id))
+  const allVisibleInstrumentIds = rowsAreCurrent
+    ? renderedGroupedRows.flatMap((group) =>
+        group.rows.map((row) => String(row.instrument_id)),
+      )
+    : []
   const allRowsSelected =
     allVisibleInstrumentIds.length > 0 && allVisibleInstrumentIds.every((instrumentId) => selectedRows.includes(instrumentId))
 
-  async function refreshWatchlistDetail(nextViewId?: string) {
-    if (!watchlistId) {
+  async function refreshWatchlistDetail(nextViewId?: string, targetWatchlistId: string = watchlistId) {
+    if (!targetWatchlistId) {
       return
     }
     try {
-      const detail = await getWatchlistDetail(watchlistId)
+      const detail = await getWatchlistDetail(targetWatchlistId)
+      if (activeWatchlistIdRef.current !== targetWatchlistId) {
+        return
+      }
       setWatchlistDetail(detail)
+      setWatchlistDetailOwnerId(targetWatchlistId)
       const nextId =
         nextViewId || detail.default_view_id || detail.views[0]?.view_id || activeViewId || ''
       setActiveViewId(nextId)
@@ -2070,18 +2324,19 @@ export default function WatchlistsPage() {
   }
 
   async function handleSaveActiveWatchlistView() {
-    if (!watchlistId || !activeView) {
+    const sourceWatchlistId = detailIsCurrent ? watchlistDetailOwnerId : ''
+    if (!sourceWatchlistId || !activeView) {
       return
     }
     setIsSavingView(true)
     setError(null)
     try {
       const updated = await updateWatchlistView(
-        watchlistId,
+        sourceWatchlistId,
         activeView.view_id,
         buildViewPayload(activeView.name, activeView.description),
       )
-      await refreshWatchlistDetail(updated.view_id)
+      await refreshWatchlistDetail(updated.view_id, sourceWatchlistId)
       setViewToast({ id: Date.now(), message: 'View updated.', tone: 'success' })
     } catch (saveError) {
       setError(saveError instanceof Error ? saveError.message : 'Failed to update view.')
@@ -2101,7 +2356,15 @@ export default function WatchlistsPage() {
     setNotice(null)
     try {
       const exportRows = await loadAllScreenerRows(baseScreenerPayload)
-      downloadWatchlistRows(['instrument_id', ...visibleColumns], exportRows, format)
+      const includesEndpointSensitiveMetrics = visibleColumns.some(isMetricAsOfSensitiveField)
+      const semanticColumns = includesEndpointSensitiveMetrics
+        ? ['metric_as_of_date', 'metric_return_kind', 'metric_quote_basis', 'metric_series_type']
+        : []
+      downloadWatchlistRows(
+        [...new Set(['instrument_id', ...visibleColumns, ...semanticColumns])],
+        exportRows,
+        format,
+      )
       setNotice(`Exported ${exportRows.length} rows from the current watchlist view.`)
     } catch (exportError) {
       setError(exportError instanceof Error ? exportError.message : 'Failed to export watchlist view.')
@@ -2400,6 +2663,7 @@ export default function WatchlistsPage() {
               <button
                 type="button"
                 className="watchlists-toolbar-button"
+                disabled={!detailIsCurrent}
                 onClick={() => {
                   setInstrumentSearch('')
                   setSharedInstrumentResults([])
@@ -2693,7 +2957,7 @@ export default function WatchlistsPage() {
               }}
               onSelect={(format) => void handleDownloadCurrentView(format)}
             />
-            {selectedRows.length ? (
+            {selectedRows.length && rowsAreCurrent ? (
               <button
                 type="button"
                 className="watchlists-toolbar-button"
@@ -2709,7 +2973,7 @@ export default function WatchlistsPage() {
                 Copy
               </button>
             ) : null}
-            {selectedRows.length && !activeWatchlistIsAllCoverage ? (
+            {selectedRows.length && rowsAreCurrent && !activeWatchlistIsAllCoverage ? (
               <button
                 type="button"
                 className="watchlists-toolbar-button"
@@ -2725,23 +2989,20 @@ export default function WatchlistsPage() {
                 Move
               </button>
             ) : null}
-            {selectedRows.length && !activeWatchlistIsAllCoverage ? (
+            {selectedRows.length && rowsAreCurrent && !activeWatchlistIsAllCoverage ? (
               <button
                 type="button"
                 className="watchlists-toolbar-button watchlists-danger"
-                onClick={async () => {
-                  if (!watchlistId || !selectedRows.length) {
+                disabled={deletingItems}
+                onClick={() => {
+                  if (!rowsAreCurrent || !watchlistId || !selectedRows.length) {
                     return
                   }
-                  try {
-                    await deleteWatchlistItems(watchlistId, selectedRows)
-                    setSelectedRows([])
-                    await refreshWatchlistDetail()
-                    setReloadToken(Date.now())
-                    setNotice(`Deleted ${selectedRows.length} instruments.`)
-                  } catch (deleteError) {
-                    setError(deleteError instanceof Error ? deleteError.message : 'Failed to delete instruments.')
-                  }
+                  setPendingDeleteItems({
+                    watchlistId,
+                    watchlistName: activeWatchlist?.name || watchlistDetail?.name || watchlistId,
+                    instrumentIds: [...selectedRows],
+                  })
                 }}
               >
                 Delete
@@ -2796,6 +3057,7 @@ export default function WatchlistsPage() {
                     type="checkbox"
                     aria-label="Select all visible instruments"
                     checked={allRowsSelected}
+                    disabled={!rowsAreCurrent}
                     onChange={(event) =>
                       setSelectedRows(event.target.checked ? allVisibleInstrumentIds : [])
                     }
@@ -3306,9 +3568,10 @@ export default function WatchlistsPage() {
               <button
                 type="button"
                 className="button-primary"
-                disabled={isCopyingItems || !watchlistId || !selectedRows.length || !copyTargetWatchlist}
+                disabled={isCopyingItems || !rowsAreCurrent || !watchlistId || !selectedRows.length || !copyTargetWatchlist}
                 onClick={async () => {
-                  if (!watchlistId || !selectedRows.length || !copyTargetWatchlist) {
+                  const sourceWatchlistId = rowsAreCurrent ? screenerResultOwnerId : ''
+                  if (!sourceWatchlistId || !selectedRows.length || !copyTargetWatchlist) {
                     return
                   }
                   setIsCopyingItems(true)
@@ -3316,7 +3579,7 @@ export default function WatchlistsPage() {
                   setNotice(null)
                   try {
                     const result = await copyWatchlistItems(
-                      watchlistId,
+                      sourceWatchlistId,
                       selectedRows,
                       copyTargetWatchlist.watchlist_id,
                     )
@@ -3410,9 +3673,10 @@ export default function WatchlistsPage() {
               <button
                 type="button"
                 className="button-primary"
-                disabled={isMovingItems || !watchlistId || !selectedRows.length || !moveTargetWatchlist}
+                disabled={isMovingItems || !rowsAreCurrent || !watchlistId || !selectedRows.length || !moveTargetWatchlist}
                 onClick={async () => {
-                  if (!watchlistId || !selectedRows.length || !moveTargetWatchlist) {
+                  const sourceWatchlistId = rowsAreCurrent ? screenerResultOwnerId : ''
+                  if (!sourceWatchlistId || !selectedRows.length || !moveTargetWatchlist) {
                     return
                   }
                   setIsMovingItems(true)
@@ -3420,14 +3684,14 @@ export default function WatchlistsPage() {
                   setNotice(null)
                   try {
                     const result = await moveWatchlistItems(
-                      watchlistId,
+                      sourceWatchlistId,
                       selectedRows,
                       moveTargetWatchlist.watchlist_id,
                     )
                     const nextWatchlists = await getWatchlists()
                     setWatchlists(nextWatchlists)
                     setSelectedRows([])
-                    await refreshWatchlistDetail()
+                    await refreshWatchlistDetail(undefined, sourceWatchlistId)
                     setReloadToken(Date.now())
                     resetMoveItemsForm()
                     setModalKind(null)
@@ -3600,9 +3864,10 @@ export default function WatchlistsPage() {
               <button
                 type="button"
                 className="button-primary"
-                disabled={isSavingView || !saveViewName.trim()}
+                disabled={isSavingView || !detailIsCurrent || !saveViewName.trim()}
                 onClick={async () => {
-                  if (!watchlistId || !saveViewName.trim()) {
+                  const sourceWatchlistId = detailIsCurrent ? watchlistDetailOwnerId : ''
+                  if (!sourceWatchlistId || !saveViewName.trim()) {
                     return
                   }
                   setIsSavingView(true)
@@ -3612,8 +3877,8 @@ export default function WatchlistsPage() {
                       saveViewName.trim(),
                       saveViewDescription.trim() || null,
                     )
-                    const created = await createWatchlistView(watchlistId, payload)
-                    await refreshWatchlistDetail(created.view_id)
+                    const created = await createWatchlistView(sourceWatchlistId, payload)
+                    await refreshWatchlistDetail(created.view_id, sourceWatchlistId)
                     setModalKind(null)
                     setViewToast({ id: Date.now(), message: `View saved as "${created.name}".`, tone: 'success' })
                   } catch (saveError) {
@@ -3664,7 +3929,7 @@ export default function WatchlistsPage() {
               <p className="watchlists-registry-note">
                 Watchlist only references existing instruments from{' '}
                 <a href={`${PLATFORM_HOME_URL}/database-dashboard`}>Database Dashboard</a>. This release accepts
-                `fund` and `index` instruments. If the instrument is not listed here, it does not exist in the shared
+                funds, ETFs, equities, and indexes. If the instrument is not listed here, it does not exist in the shared
                 registry yet.
               </p>
               {selectedSharedInstrument ? (
@@ -3705,7 +3970,7 @@ export default function WatchlistsPage() {
                   <div className="empty-state">
                     {instrumentSearch.trim()
                       ? `Instrument "${instrumentSearch.trim()}" does not exist in the shared registry.`
-                      : 'No fund, ETF, or index instruments are available in the shared registry.'}
+                      : 'No fund, ETF, equity, or index instruments are available in the shared registry.'}
                   </div>
                 ) : null}
               </div>
@@ -3729,15 +3994,16 @@ export default function WatchlistsPage() {
               <button
                 type="button"
                 className="button-primary"
-                disabled={isAdding || !selectedInstrumentId}
+                disabled={isAdding || !detailIsCurrent || !selectedInstrumentId}
                 onClick={async () => {
-                  if (!watchlistId || !selectedSharedInstrument) {
+                  const sourceWatchlistId = detailIsCurrent ? watchlistDetailOwnerId : ''
+                  if (!sourceWatchlistId || !selectedSharedInstrument) {
                     return
                   }
                   setIsAdding(true)
                   try {
-                    const addResult = await addWatchlistItems(watchlistId, [selectedSharedInstrument.instrument_id])
-                    await refreshWatchlistDetail()
+                    const addResult = await addWatchlistItems(sourceWatchlistId, [selectedSharedInstrument.instrument_id])
+                    await refreshWatchlistDetail(undefined, sourceWatchlistId)
                     setInstrumentSearch('')
                     setSharedInstrumentResults([])
                     setSelectedInstrumentId('')
@@ -3763,6 +4029,34 @@ export default function WatchlistsPage() {
       ) : null}
 
       </div>
+      <ConfirmDialog
+        open={Boolean(pendingGroupAssignment)}
+        title="Change Canonical Classification"
+        description={
+          pendingGroupAssignment
+            ? `Move "${pendingGroupAssignment.instrumentName}" to "${String(pendingGroupAssignment.target.value || 'Unspecified')}"? This changes the instrument's canonical ${pendingGroupAssignment.target.fieldKey === TAXONOMY_GROUP_BY_CODE ? 'taxonomy' : 'research attribute'} everywhere it appears, not only in this watchlist.`
+            : ''
+        }
+        confirmLabel="Apply Classification"
+        busy={Boolean(updatingGroupInstrumentId)}
+        busyLabel="Applying…"
+        onCancel={() => setPendingGroupAssignment(null)}
+        onConfirm={confirmGroupAssignment}
+      />
+      <ConfirmDialog
+        open={Boolean(pendingDeleteItems)}
+        title="Delete Instruments"
+        description={
+          pendingDeleteItems
+            ? `Delete ${pendingDeleteItems.instrumentIds.length} selected instruments from "${pendingDeleteItems.watchlistName}"? Only this watchlist membership is removed; shared instruments and other watchlists are unchanged.`
+            : ''
+        }
+        confirmLabel="Delete Instruments"
+        busy={deletingItems}
+        busyLabel="Deleting…"
+        onCancel={() => setPendingDeleteItems(null)}
+        onConfirm={handleDeleteSelectedItems}
+      />
       <ConfirmDialog
         open={Boolean(pendingDeleteWatchlist)}
         title="Delete Watchlist"

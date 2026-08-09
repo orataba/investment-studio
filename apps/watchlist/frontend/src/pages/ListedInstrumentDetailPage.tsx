@@ -17,6 +17,7 @@ import {
 import { formatDate, formatLabel, formatNumber, formatPercent, signedValueClass } from '../lib/format'
 import {
   adjustPriceBars,
+  hasCompleteAdjustmentFactors,
   priceReturnStats,
   priceRiskStats,
   slicePriceBars,
@@ -371,8 +372,7 @@ export default function ListedInstrumentDetailPage({ instrument, watchlistContex
         setBarsResponse(barsResult.value)
         const qfqReady =
           instrument.instrument_type !== 'index' &&
-          barsResult.value.count > 0 &&
-          barsResult.value.factor_coverage >= 0.995
+          hasCompleteAdjustmentFactors(barsResult.value.bars)
         setMode(qfqReady ? 'qfq' : 'raw')
       }
       setSummary(summaryResult.status === 'fulfilled' ? summaryResult.value : null)
@@ -387,8 +387,7 @@ export default function ListedInstrumentDetailPage({ instrument, watchlistContex
 
   const qfqAvailable =
     instrument.instrument_type !== 'index' &&
-    Boolean(barsResponse?.count) &&
-    (barsResponse?.factor_coverage ?? 0) >= 0.995
+    hasCompleteAdjustmentFactors(barsResponse?.bars ?? [])
   const allBars = useMemo(
     () => adjustPriceBars(barsResponse?.bars ?? [], mode),
     [barsResponse, mode],
@@ -465,7 +464,10 @@ export default function ListedInstrumentDetailPage({ instrument, watchlistContex
     maximumDrawdown: standardizedRisk.maximumDrawdown.present
       ? standardizedRisk.maximumDrawdown.value
       : riskStats.maximumDrawdown,
-    currentDrawdown: riskPathMetricsWithheld ? null : riskStats.currentDrawdown,
+    currentDrawdown:
+      riskPathMetricsWithheld || !risk || typeof risk.current_drawdown !== 'number'
+        ? null
+        : risk.current_drawdown,
   }), [riskPathMetricsWithheld, riskStats, standardizedRisk])
   const latest = analysisBars[analysisBars.length - 1]
   const latestPriceBar = allBars[allBars.length - 1]
@@ -509,7 +511,11 @@ export default function ListedInstrumentDetailPage({ instrument, watchlistContex
       </div>
       {error ? <div className="error-state">{error}</div> : <CandlestickChart bars={visibleBars} />}
       <div className="listed-source-note">
-        Raw OHLCV is retained in the database. QFQ is calculated for display from provider adjustment factors; volume remains raw.
+        {barsResponse?.count
+          ? qfqAvailable
+            ? 'Raw OHLCV is retained in the database. QFQ is calculated for display from complete provider adjustment factors; volume remains raw.'
+            : 'Raw OHLCV is retained in the database. QFQ is unavailable because one or more bars lack a valid adjustment factor.'
+          : 'No canonical OHLCV bars are stored yet.'}
       </div>
       {sourceRefreshFailed ? (
         <div className="listed-source-alert">
@@ -542,7 +548,7 @@ export default function ListedInstrumentDetailPage({ instrument, watchlistContex
           <div className="instrument-detail-badges">
             {instrument.primary_identifier ? <span className="context-chip">{instrument.primary_identifier}</span> : null}
             <span className="context-chip">{barsResponse?.currency || latest?.currency || '—'}</span>
-            <span className="context-chip">Raw OHLCV retained</span>
+            {barsResponse?.count ? <span className="context-chip">Raw OHLCV retained</span> : null}
             <span className="context-chip">
               {qfqAvailable ? 'OHLCV QFQ available' : barsResponse?.count ? 'Raw OHLCV only' : 'OHLCV pending'}
             </span>
@@ -616,7 +622,7 @@ export default function ListedInstrumentDetailPage({ instrument, watchlistContex
           <section className="listed-metric-grid">
             <MetricCard label="Annualized Volatility" value={percentValue(displayRiskStats.annualizedVolatility)} note={riskAsOfNote} />
             <MetricCard label="Maximum Drawdown" value={percentValue(displayRiskStats.maximumDrawdown)} tone={signedValueClass(displayRiskStats.maximumDrawdown)} note={riskAsOfNote} />
-            <MetricCard label="Current Drawdown" value={percentValue(displayRiskStats.currentDrawdown)} tone={signedValueClass(displayRiskStats.currentDrawdown)} note={analysisBasisLabel} />
+            <MetricCard label="Current Drawdown" value={percentValue(displayRiskStats.currentDrawdown)} tone={signedValueClass(displayRiskStats.currentDrawdown)} note={riskAsOfNote} />
             <MetricCard label="Observations" value={String(displayRiskStats.observationCount)} />
           </section>
           <RiskOverview overview={risk?.risk_overview} />

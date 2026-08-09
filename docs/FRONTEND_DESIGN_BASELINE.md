@@ -7,7 +7,7 @@
 - `Platform`
   是平台入口和 `Database Dashboard`，信息密度低于业务 app，但仍然使用数据终端式布局。
 - `Watchlist`
-  是 fund/index 工作区，详情页属于嵌套资产 detail，header 轻于 Portfolio。
+  是 fund / ETF / equity / index 工作区，详情页属于嵌套资产 detail，header 轻于 Portfolio。
 - `Portfolio`
   是独立业务 app，header 和 workspace 层级可以更重；tabs 以下的内容节奏需要和 fund detail 保持一致。
 

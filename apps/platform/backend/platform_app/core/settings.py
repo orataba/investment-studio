@@ -138,11 +138,7 @@ class Settings(BaseSettings):
             )
         return seconds
 
-    @field_validator(
-        "database_schema",
-        "operations_database_schema",
-        mode="before",
-    )
+    @field_validator("database_schema", mode="before")
     @classmethod
     def _coerce_database_schema(cls, value: object) -> object:
         if value is None:
@@ -151,8 +147,26 @@ class Settings(BaseSettings):
             normalized = value.strip()
             if not normalized:
                 return None
-            if not normalized.replace("_", "").isalnum() or normalized[0].isdigit():
-                raise ValueError("database_schema must be a valid SQL identifier.")
+            if normalized != "instrument_registry":
+                raise ValueError(
+                    "database_schema must be the canonical 'instrument_registry' schema."
+                )
+            return normalized
+        return value
+
+    @field_validator("operations_database_schema", mode="before")
+    @classmethod
+    def _coerce_operations_database_schema(cls, value: object) -> object:
+        if value is None:
+            return None
+        if isinstance(value, str):
+            normalized = value.strip()
+            if not normalized:
+                return None
+            if normalized != "platform":
+                raise ValueError(
+                    "operations_database_schema must be the canonical 'platform' schema."
+                )
             return normalized
         return value
 

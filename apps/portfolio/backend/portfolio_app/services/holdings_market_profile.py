@@ -14,13 +14,10 @@ _SUPPORTED_INSTRUMENT_TYPES = {
     "etf",
     "bond",
     "equity",
-    "fcn",
-    "option",
     "cash",
     "fx",
     "other",
 }
-DERIVATIVE_TRACKING_INSTRUMENT_TYPES = frozenset({"fcn", "option"})
 _FORBIDDEN_INSTRUMENT_REF_KEYS = {"asset_id", "asset_name", "asset_type"}
 
 SafeFloat = Callable[[object], float | None]
@@ -130,11 +127,6 @@ def normalize_instrument_core(
         "broker_identifiers": deepcopy(
             instrument_ref.get("broker_identifiers") or []
         ),
-        "option_contract": deepcopy(instrument_ref.get("option_contract")),
-        "fcn_contract": deepcopy(instrument_ref.get("fcn_contract")),
-        "corporate_action_adjustment_policy": deepcopy(
-            instrument_ref.get("corporate_action_adjustment_policy")
-        ),
     }
     try:
         return SharedInstrumentCore.model_validate(payload).model_dump(
@@ -147,24 +139,12 @@ def normalize_instrument_core(
         ) from error
 
 
-def is_derivative_tracking_instrument_type(value: object) -> bool:
-    return str(value or "").strip().lower() in DERIVATIVE_TRACKING_INSTRUMENT_TYPES
-
-
-def is_derivative_tracking_instrument_ref(
-    instrument_ref: dict[str, object] | None,
-) -> bool:
-    if not isinstance(instrument_ref, dict):
-        return False
-    return is_derivative_tracking_instrument_type(
-        instrument_ref.get("instrument_type")
+def is_derivative_contract(value: object) -> bool:
+    return (
+        isinstance(value, dict)
+        and str(value.get("contract_type") or "").strip().lower()
+        in {"fcn", "option"}
     )
-
-
-def is_event_valued_instrument_ref(
-    instrument_ref: dict[str, object] | None,
-) -> bool:
-    return is_derivative_tracking_instrument_ref(instrument_ref)
 
 
 def resolve_position_valuation(
@@ -172,18 +152,19 @@ def resolve_position_valuation(
     quantity: float,
     cost_basis: float | None,
     instrument_ref: dict[str, object] | None,
+    derivative_contract: dict[str, object] | None = None,
     quoted_price: float | None,
     quoted_price_scale: float | None = None,
     position_market_value: PositionMarketValue = valuation_fx.position_market_value,
 ) -> tuple[float | None, float | None, bool]:
     """Return display price, local market value, and event-valued status.
 
-    FCNs and options are intentionally carried at remaining transaction cost
-    between lifecycle events.  The derived per-unit value is a display aid,
-    not an observed market quote.
+    Portfolio-local FCNs and options are carried at remaining transaction cost
+    between lifecycle events. The derived per-unit value is a display aid, not
+    an observed market quote.
     """
 
-    if is_event_valued_instrument_ref(instrument_ref):
+    if derivative_contract is not None:
         if cost_basis is None:
             return None, None, True
         carrying_value = float(cost_basis)
@@ -626,16 +607,25 @@ def position_buckets_from_lots(
     safe_float: SafeFloat = _safe_float,
     copy_value: Callable[[object], object] = deepcopy,
 ) -> list[dict[str, object]]:
-    positions_by_instrument: dict[str, dict[str, object]] = {}
+    positions_by_reference: dict[str, dict[str, object]] = {}
     for position_lot in position_lots:
-        instrument_id = str(position_lot.get("instrument_id") or "")
-        if not instrument_id:
+        position_reference_id = str(
+            position_lot.get("position_reference_id") or ""
+        )
+        if not position_reference_id:
             continue
-        bucket = positions_by_instrument.setdefault(
-            instrument_id,
+        bucket = positions_by_reference.setdefault(
+            position_reference_id,
             {
-                "instrument_id": instrument_id,
+                "position_reference_id": position_reference_id,
+                "instrument_id": position_lot.get("instrument_id"),
                 "instrument_ref": copy_value(position_lot.get("instrument_ref")),
+                "derivative_contract_id": position_lot.get(
+                    "derivative_contract_id"
+                ),
+                "derivative_contract": copy_value(
+                    position_lot.get("derivative_contract")
+                ),
                 "currency": _required_currency(
                     position_lot.get("currency"),
                     normalize_currency=normalize_currency,
@@ -656,7 +646,7 @@ def position_buckets_from_lots(
             str(position_lot.get("cost_basis_method") or "fifo")
         )
     rendered_buckets: list[dict[str, object]] = []
-    for bucket in positions_by_instrument.values():
+    for bucket in positions_by_reference.values():
         if abs(safe_float(bucket.get("quantity")) or 0.0) <= 1e-9:
             continue
         raw_account_ids = bucket.get("account_ids")
@@ -688,7 +678,7 @@ def position_buckets_from_lots(
     return rendered_buckets
 
 
-def position_buckets_by_account_instrument_from_lots(
+def position_buckets_by_account_reference_from_lots(
     position_lots: list[dict[str, object]],
     *,
     normalize_currency: NormalizeCurrency = valuation_fx.normalized_currency,
@@ -696,18 +686,27 @@ def position_buckets_by_account_instrument_from_lots(
     parse_iso_date: ParseIsoDate = _parse_iso_date,
     copy_value: Callable[[object], object] = deepcopy,
 ) -> list[dict[str, object]]:
-    positions_by_account_instrument: dict[tuple[str, str], dict[str, object]] = {}
+    positions_by_account_reference: dict[tuple[str, str], dict[str, object]] = {}
     for position_lot in position_lots:
         account_id = str(position_lot.get("account_id") or "")
-        instrument_id = str(position_lot.get("instrument_id") or "")
-        if not account_id or not instrument_id:
+        position_reference_id = str(
+            position_lot.get("position_reference_id") or ""
+        )
+        if not account_id or not position_reference_id:
             continue
-        bucket = positions_by_account_instrument.setdefault(
-            (account_id, instrument_id),
+        bucket = positions_by_account_reference.setdefault(
+            (account_id, position_reference_id),
             {
                 "account_id": account_id,
-                "instrument_id": instrument_id,
+                "position_reference_id": position_reference_id,
+                "instrument_id": position_lot.get("instrument_id"),
                 "instrument_ref": copy_value(position_lot.get("instrument_ref")),
+                "derivative_contract_id": position_lot.get(
+                    "derivative_contract_id"
+                ),
+                "derivative_contract": copy_value(
+                    position_lot.get("derivative_contract")
+                ),
                 "currency": _required_currency(
                     position_lot.get("currency"),
                     normalize_currency=normalize_currency,
@@ -737,7 +736,7 @@ def position_buckets_by_account_instrument_from_lots(
         )
 
     rendered_buckets: list[dict[str, object]] = []
-    for bucket in positions_by_account_instrument.values():
+    for bucket in positions_by_account_reference.values():
         if abs(safe_float(bucket.get("quantity")) or 0.0) <= 1e-9:
             continue
         raw_methods = bucket.get("cost_basis_methods")
@@ -773,7 +772,6 @@ def build_option_obligation_holding_rows(
     convert_amount_on: Callable[..., tuple[float | None, bool]],
     direct_fx_instruments: dict[tuple[str, str], str] | None = None,
     instrument_detail_cache: dict[str, dict[str, object] | None] | None = None,
-    normalize_instrument: Callable[..., dict[str, object]] = normalize_instrument_core,
 ) -> list[dict[str, object]]:
     """Render written obligations as explicit negative holding rows."""
 
@@ -786,11 +784,20 @@ def build_option_obligation_holding_rows(
         if remaining <= 1e-9 or liability <= 1e-9:
             continue
         account_id = str(obligation.get("account_id") or "")
-        instrument_id = str(
-            obligation.get("option_instrument_id")
-            or obligation.get("instrument_id")
-            or ""
+        derivative_contract_id = str(
+            obligation.get("derivative_contract_id") or ""
         )
+        derivative_contract = (
+            obligation.get("derivative_contract")
+            if isinstance(obligation.get("derivative_contract"), dict)
+            else None
+        )
+        if not derivative_contract_id or not is_derivative_contract(
+            derivative_contract
+        ):
+            raise ValueError(
+                "Option obligation requires a complete local derivative contract."
+            )
         related_underlying_id = str(
             obligation.get("related_underlying_id") or ""
         ).strip()
@@ -800,10 +807,16 @@ def build_option_obligation_holding_rows(
             field_name="option obligation currency",
         )
         group = groups.setdefault(
-            (account_id, instrument_id, related_underlying_id, currency),
+            (
+                account_id,
+                derivative_contract_id,
+                related_underlying_id,
+                currency,
+            ),
             {
                 "account_id": account_id,
-                "instrument_id": instrument_id,
+                "derivative_contract_id": derivative_contract_id,
+                "derivative_contract": deepcopy(derivative_contract),
                 "currency": currency,
                 "related_underlying_id": related_underlying_id,
                 "remaining_quantity": 0.0,
@@ -841,12 +854,12 @@ def build_option_obligation_holding_rows(
                 or "9999-12-31"
             ),
             str(group.get("account_id") or ""),
-            str(group.get("instrument_id") or ""),
+            str(group.get("derivative_contract_id") or ""),
         ),
     )
     for group in ordered_groups:
         account_id = str(group["account_id"])
-        instrument_id = str(group["instrument_id"])
+        derivative_contract_id = str(group["derivative_contract_id"])
         currency = str(group["currency"])
         related_underlying_id = str(group["related_underlying_id"])
         required_underlying_quantity = float(group["required_underlying_quantity"])
@@ -862,14 +875,11 @@ def build_option_obligation_holding_rows(
         first = group["first_obligation"]
         if not isinstance(first, dict):
             first = {}
-        if not isinstance(first.get("instrument_ref"), dict):
-            raise ValueError(
-                f"Option obligation '{instrument_id}' requires a complete instrument reference."
-            )
-        instrument_ref = deepcopy(first["instrument_ref"])
-        instrument_ref["instrument_id"] = instrument_id
-        instrument_ref["instrument_type"] = "option"
-        instrument_ref["currency"] = currency
+        derivative_contract = (
+            deepcopy(first.get("derivative_contract"))
+            if isinstance(first.get("derivative_contract"), dict)
+            else None
+        )
         strike = safe_float(first.get("strike"))
         assignment_notional = (
             strike * required_underlying_quantity if strike is not None else None
@@ -892,9 +902,14 @@ def build_option_obligation_holding_rows(
         )
         rows.append(
             {
-                "line_id": f"{account_id}:{instrument_id}:obligation",
+                "line_id": (
+                    f"{account_id}:{derivative_contract_id}:obligation"
+                ),
                 "account_id": account_id,
-                "instrument_id": instrument_id,
+                "position_reference_id": derivative_contract_id,
+                "instrument_id": None,
+                "derivative_contract_id": derivative_contract_id,
+                "derivative_contract": derivative_contract,
                 "holding_kind": "option_obligation",
                 "available_for_trading": False,
                 "is_liability": True,
@@ -904,7 +919,7 @@ def build_option_obligation_holding_rows(
                 "economic_instrument_ref": None,
                 "related_underlying_id": related_underlying_id,
                 "transaction_ids": sorted(group["transaction_ids"]),
-                "instrument_ref": normalize_instrument(instrument_id, instrument_ref),
+                "instrument_ref": None,
                 "quantity": -float(group["open_contract_quantity"]),
                 "open_contract_quantity": float(group["open_contract_quantity"]),
                 "required_underlying_quantity": required_underlying_quantity,
@@ -1224,8 +1239,22 @@ def build_materialized_holding_rows(
     rows: list[dict[str, object]] = []
     for bucket in account_instrument_buckets:
         account_id = str(bucket.get("account_id") or "")
-        instrument_id = str(bucket.get("instrument_id") or "")
-        if not account_id or not instrument_id:
+        position_reference_id = str(
+            bucket.get("position_reference_id")
+            or bucket.get("derivative_contract_id")
+            or bucket.get("instrument_id")
+            or ""
+        )
+        instrument_id = str(bucket.get("instrument_id") or "") or None
+        derivative_contract = (
+            bucket.get("derivative_contract")
+            if isinstance(bucket.get("derivative_contract"), dict)
+            else None
+        )
+        derivative_contract_id = (
+            str(bucket.get("derivative_contract_id") or "") or None
+        )
+        if not account_id or not position_reference_id:
             continue
 
         currency = _required_currency(
@@ -1248,10 +1277,10 @@ def build_materialized_holding_rows(
             if isinstance(bucket.get("instrument_ref"), dict)
             else None
         )
-        event_valued = is_event_valued_instrument_ref(instrument_ref)
+        event_valued = is_derivative_contract(derivative_contract)
         detail = (
             None
-            if event_valued
+            if event_valued or instrument_id is None
             else instrument_detail_cache_get(instrument_id, instrument_detail_cache)
         )
         price_point = (
@@ -1294,6 +1323,7 @@ def build_materialized_holding_rows(
             quantity=quantity,
             cost_basis=cost_basis,
             instrument_ref=instrument_ref,
+            derivative_contract=derivative_contract,
             quoted_price=quoted_price,
             quoted_price_scale=safe_float((price_point or {}).get("price_scale")),
             position_market_value=position_market_value,
@@ -1335,16 +1365,22 @@ def build_materialized_holding_rows(
             direct_fx_instruments=direct_fx_instruments,
             instrument_detail_cache=instrument_detail_cache,
         )
-        instrument_core = normalize_instrument(
-            instrument_id,
-            instrument_ref,
+        instrument_core = (
+            normalize_instrument(instrument_id, instrument_ref)
+            if instrument_id is not None
+            else None
         )
         rows.append(
             {
-                "line_id": f"{account_id}:{instrument_id}",
+                "line_id": f"{account_id}:{position_reference_id}",
                 "account_id": account_id,
+                "position_reference_id": position_reference_id,
                 "instrument_id": instrument_id,
-                "holding_kind": "position",
+                "derivative_contract_id": derivative_contract_id,
+                "derivative_contract": deepcopy(derivative_contract),
+                "holding_kind": (
+                    "derivative_contract" if event_valued else "position"
+                ),
                 "available_for_trading": True,
                 "instrument_ref": instrument_core,
                 "quantity": quantity,
@@ -1433,7 +1469,6 @@ def build_materialized_holding_rows(
             convert_amount_on=convert_amount_on,
             direct_fx_instruments=direct_fx_instruments,
             instrument_detail_cache=instrument_detail_cache,
-            normalize_instrument=normalize_instrument,
         )
     )
 

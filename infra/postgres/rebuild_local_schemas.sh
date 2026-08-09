@@ -13,6 +13,7 @@ DATABASE_URL="${PORTFOLIO_OPS_LOCAL_DATABASE_URL:-}"
 MIGRATION_RUNNER="$PROJECT_ROOT/infra/scripts/migrate_all.sh"
 SERVICE_CONTROL="$PROJECT_ROOT/infra/launchd/control_local_services.sh"
 BACKUP_HELPER="$PROJECT_ROOT/infra/postgres/project_schema_backup.sh"
+RUNTIME_ENV_HELPER="$(cd "$(dirname "${BASH_SOURCE[0]}")/../launchd" && pwd)/load_runtime_env.sh"
 LABEL_PREFIX="${LABEL_PREFIX:-com.orataba.portfolio-ops}"
 LAUNCH_AGENTS_DIR="${LAUNCH_AGENTS_DIR:-$HOME/Library/LaunchAgents}"
 PYTHON_BIN="${PYTHON_BIN:-$PROJECT_ROOT/.venv/bin/python}"
@@ -44,6 +45,12 @@ if [[ ! -f "$BACKUP_HELPER" ]]; then
   echo "Missing PostgreSQL connection helper: $BACKUP_HELPER" >&2
   exit 1
 fi
+if [[ ! -f "$RUNTIME_ENV_HELPER" ]]; then
+  echo "Missing database URL validation helper: $RUNTIME_ENV_HELPER" >&2
+  exit 1
+fi
+source "$RUNTIME_ENV_HELPER"
+portfolio_ops_require_password_free_database_url "$DATABASE_URL"
 source "$BACKUP_HELPER"
 
 PSQL_BIN="${PSQL_BIN:-$(command -v psql || true)}"

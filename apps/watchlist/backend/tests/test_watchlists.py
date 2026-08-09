@@ -504,7 +504,6 @@ def test_completed_recalc_marks_missing_canonical_series_unavailable() -> None:
         performance_snapshot=None,
         risk_snapshot=None,
         exposure_snapshot=None,
-        score_snapshot=None,
         attributes={},
         taxonomy_context={},
         source_cutoff_at=now,
@@ -550,7 +549,6 @@ def test_partial_total_return_with_source_gaps_remains_fresh_without_event_break
         performance_snapshot=None,
         risk_snapshot=None,
         exposure_snapshot=None,
-        score_snapshot=None,
         attributes={},
         taxonomy_context={},
         source_cutoff_at=now,
@@ -593,7 +591,6 @@ def test_partial_total_return_with_segment_break_stays_actionable() -> None:
         performance_snapshot=None,
         risk_snapshot=None,
         exposure_snapshot=None,
-        score_snapshot=None,
         attributes={},
         taxonomy_context={},
         source_cutoff_at=now,
@@ -967,7 +964,7 @@ def test_adding_shared_registry_instrument_to_created_watchlist_materializes_row
         json={
             "watchlist_id": watchlist_id,
             "view_id": "overview",
-            "selected_fields": ["ticker_or_isin", "instrument_name", "overall_rating"],
+            "selected_fields": ["ticker_or_isin", "instrument_name", "last_nav_date"],
             "sort": [],
             "group_by": "none",
             "pagination": {"page": 1, "page_size": 20},
@@ -978,6 +975,62 @@ def test_adding_shared_registry_instrument_to_created_watchlist_materializes_row
     assert payload["total_rows"] == 1
     assert payload["rows"][0]["instrument_name"] == "iShares Core U.S. Aggregate Bond ETF"
     assert payload["rows"][0]["ticker_or_isin"] == "AGG"
+
+
+def test_screener_fetch_all_returns_one_filtered_snapshot_without_page_truncation(
+    client: TestClient,
+) -> None:
+    created_watchlist = client.post(
+        "/api/watchlists",
+        json={"name": "Full Export", "description": None},
+    )
+    watchlist_id = created_watchlist.json()["watchlist_id"]
+    add_response = client.post(
+        f"/api/watchlists/{watchlist_id}/items",
+        json={"instrument_ids": list(TEST_SHARED_INSTRUMENTS)},
+    )
+    assert add_response.status_code == 200
+
+    response = client.post(
+        "/api/screener/query",
+        json={
+            "watchlist_id": watchlist_id,
+            "view_id": "overview",
+            "selected_fields": ["instrument_name", "return_1m"],
+            "sort": [{"field": "instrument_name", "direction": "asc"}],
+            "group_by": "none",
+            "pagination": {"page": 2, "page_size": 1},
+            "fetch_all": True,
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["total_rows"] == 3
+    assert len(payload["rows"]) == 3
+    assert all("metric_as_of_date" in row for row in payload["rows"])
+
+
+def test_screener_rejects_unknown_financial_fields_instead_of_silently_ignoring_them(
+    client: TestClient,
+) -> None:
+    created_watchlist = client.post(
+        "/api/watchlists",
+        json={"name": "Strict Query Contract", "description": None},
+    )
+    watchlist_id = created_watchlist.json()["watchlist_id"]
+    response = client.post(
+        "/api/screener/query",
+        json={
+            "watchlist_id": watchlist_id,
+            "selected_fields": ["overall_rating"],
+            "filters": {"analyst_stance": ["buy"]},
+            "pagination": {"page": 1, "page_size": 20},
+        },
+    )
+
+    assert response.status_code == 422
+    assert "Unknown selected field 'overall_rating'" in response.json()["detail"]
 
 
 def test_adding_index_shared_registry_instrument_is_supported(
@@ -1020,7 +1073,7 @@ def test_adding_index_shared_registry_instrument_is_supported(
     )
     assert add_response.status_code == 200
 
-    resolve_response = client.get("/api/instruments/index-csi-300/resolve")
+    resolve_response = client.post("/api/instruments/index-csi-300/resolve")
     assert resolve_response.status_code == 200
     payload = resolve_response.json()
     assert payload["detail_supported"] is True
@@ -1155,7 +1208,7 @@ def test_archived_shared_alias_resolves_to_canonical_without_recreating_duplicat
         }
     )
 
-    response = client.get("/api/instruments/nav-8c76dae71a/resolve")
+    response = client.post("/api/instruments/nav-8c76dae71a/resolve")
 
     assert response.status_code == 200
     payload = response.json()
@@ -1210,7 +1263,7 @@ def test_adding_equity_shared_registry_instrument_uses_listed_detail(
     )
 
     assert add_response.status_code == 200
-    resolve_response = client.get("/api/instruments/equity-demo/resolve")
+    resolve_response = client.post("/api/instruments/equity-demo/resolve")
     assert resolve_response.status_code == 200
     assert resolve_response.json()["detail_view_type"] == "listed"
     assert resolve_response.json()["detail_subject_id"] == "equity-demo"
@@ -2286,6 +2339,18 @@ def test_instrument_performance_payload_includes_taxonomy_peer_ranking(
     assert sxv_row["attr.peer_return_1m_percentile"] == pytest.approx(50.0)
     assert sxv_row["attr.peer_annualized_return_percentile"] is None
 
+    # Moving a peer must change the target's comparison immediately, without
+    # requiring a target recalc that could leave the cross-section stale.
+    peer_move_response = client.put(
+        "/api/taxonomies/fund-taxonomy/instruments/peer-strong",
+        json={"node_id": "fund-private-equity-quant-long-1000", "updated_by": "test"},
+    )
+    assert peer_move_response.status_code == 200
+    refreshed_target = client.get("/api/instruments/sxv264/performance")
+    assert refreshed_target.status_code == 200
+    assert refreshed_target.json()["peer_comparison"]["sample_count"] == 2
+    assert refreshed_target.json()["ranking"]["sample_count"] == 2
+
 
 def test_instrument_nav_settings_round_trip_and_surface_compare_settings(
     client: TestClient,
@@ -2771,7 +2836,7 @@ def test_bulk_recalc_provisions_supported_shared_instrument_before_enqueue(
         "existing_instrument_ids": [],
         "missing_instrument_ids": [],
     }
-    detail = client.get("/api/instruments/sxv264/resolve")
+    detail = client.post("/api/instruments/sxv264/resolve")
     assert detail.status_code == 200
     assert detail.json()["detail_supported"] is True
 
@@ -3459,7 +3524,7 @@ def test_watchlist_add_returns_502_when_shared_registry_is_unreachable(
     assert "Failed to reach shared instrument registry" in add_response.json()["detail"]
 
 
-def test_detail_resolution_uses_local_overlay_when_shared_registry_returns_500(
+def test_detail_resolution_fails_closed_when_shared_registry_returns_500(
     client: TestClient,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -3486,18 +3551,12 @@ def test_detail_resolution_uses_local_overlay_when_shared_registry_returns_500(
 
     monkeypatch.setattr(instrument_resolution, "get_shared_instrument", _raise_registry_error)
 
-    response = client.get("/api/instruments/sxv264/resolve")
-    assert response.status_code == 200
-    payload = response.json()
-    assert payload["requested_instrument_id"] == "sxv264"
-    assert payload["canonical_instrument_id"] == "sxv264"
-    assert payload["detail_subject_id"] == "sxv264"
-    assert payload["detail_supported"] is True
-    assert payload["detail_view_type"] == "fund"
-    assert payload["support_reason"] == "detail_ready_local_cache"
+    response = client.post("/api/instruments/sxv264/resolve")
+    assert response.status_code == 502
+    assert response.json()["detail"] == "Shared instrument registry returned HTTP 500."
 
 
-def test_detail_resolution_uses_cached_watchlist_row_when_shared_registry_returns_500(
+def test_detail_resolution_does_not_use_cached_row_when_registry_returns_500(
     client: TestClient,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -3551,17 +3610,9 @@ def test_detail_resolution_uses_cached_watchlist_row_when_shared_registry_return
 
     monkeypatch.setattr(instrument_resolution, "get_shared_instrument", _raise_registry_error)
 
-    response = client.get("/api/instruments/fund-msft-strategy/resolve")
-    assert response.status_code == 200
-    payload = response.json()
-    assert payload["requested_instrument_id"] == "fund-msft-strategy"
-    assert payload["canonical_instrument_id"] == "fund-msft-strategy"
-    assert payload["instrument_name"] == "Microsoft Strategy Fund"
-    assert payload["instrument_type"] == "fund"
-    assert payload["primary_identifier"] == "MSFTX"
-    assert payload["detail_subject_id"] == "fund-msft-strategy"
-    assert payload["detail_supported"] is True
-    assert payload["support_reason"] == "detail_ready_local_cache"
+    response = client.post("/api/instruments/fund-msft-strategy/resolve")
+    assert response.status_code == 502
+    assert response.json()["detail"] == "Shared instrument registry returned HTTP 500."
 
 
 def test_shared_registry_service_returns_none_for_missing_instrument(client: TestClient) -> None:
@@ -4994,12 +5045,10 @@ def test_fund_taxonomy_assignment_updates_summary_attribute_context_and_watchlis
     detail_response = client.get(f"/api/watchlists/{watchlist_id}")
     assert detail_response.status_code == 200
     group_by_codes = [item["code"] for item in detail_response.json()["available_group_bys"]]
-    assert group_by_codes[:6] == [
+    assert group_by_codes[:4] == [
         "none",
         "taxonomy",
         "management_firm_name",
-        "overall_rating",
-        "analyst_stance",
         "data_freshness_status",
     ]
     assert "attr.coverage_status" in group_by_codes
@@ -5142,3 +5191,167 @@ def test_monitoring_dashboard_surfaces_missing_labels_quotes_and_open_recalc_job
     assert payload["open_recalc_jobs"][0]["job_type"] == "performance"
     assert payload["open_recalc_jobs"][0]["job_status"] == "queued"
     assert payload["open_recalc_jobs"][0]["primary_watchlist_id"] == watchlist_id
+
+
+def test_holding_snapshots_are_append_only_idempotent_and_monotonic(
+    client: TestClient,
+) -> None:
+    from watchlist_app.db import session as session_module
+    from watchlist_app.db.models.facts import HoldingSnapshot
+
+    assert client.post("/api/instruments/sxv264/resolve").status_code == 200
+
+    initial_payload = {
+        "as_of_date": "2026-08-01",
+        "source_cutoff_at": "2026-08-02T09:00:00Z",
+        "methodology_version": "custodian-statement/v1",
+        "source_record_id": "statement-2026-08-v1",
+        "auto_recalculate": False,
+        "positions": [
+            {
+                "holding_name": "Initial Bond",
+                "holding_type": "bond",
+                "portfolio_weight": "100",
+                "effective_duration": "2",
+                "yield_to_worst": "3",
+            }
+        ],
+    }
+    initial = client.post(
+        "/api/facts/instruments/sxv264/holdings",
+        json=initial_payload,
+    )
+    assert initial.status_code == 200
+    assert initial.json()["created"] is True
+    assert initial.json()["is_current"] is True
+
+    identical = client.post(
+        "/api/facts/instruments/sxv264/holdings",
+        json=initial_payload,
+    )
+    assert identical.status_code == 200
+    assert identical.json()["created"] is False
+    assert identical.json()["holding_snapshot_id"] == initial.json()["holding_snapshot_id"]
+
+    revised_payload = deepcopy(initial_payload)
+    revised_payload["source_cutoff_at"] = "2026-08-03T09:00:00Z"
+    revised_payload["source_record_id"] = "statement-2026-08-v2"
+    revised_payload["positions"][0]["holding_name"] = "Revised Bond"
+    revised = client.post(
+        "/api/facts/instruments/sxv264/holdings",
+        json=revised_payload,
+    )
+    assert revised.status_code == 200
+    assert revised.json()["created"] is True
+    assert revised.json()["is_current"] is True
+    assert revised.json()["holding_snapshot_id"] != initial.json()["holding_snapshot_id"]
+
+    backfill_payload = deepcopy(initial_payload)
+    backfill_payload["as_of_date"] = "2026-07-01"
+    backfill_payload["source_cutoff_at"] = "2026-07-02T09:00:00Z"
+    backfill_payload["source_record_id"] = "statement-2026-07-v1"
+    backfill_payload["positions"][0]["holding_name"] = "Historical Bond"
+    backfill = client.post(
+        "/api/facts/instruments/sxv264/holdings",
+        json=backfill_payload,
+    )
+    assert backfill.status_code == 200
+    assert backfill.json()["created"] is True
+    assert backfill.json()["is_current"] is False
+
+    current = client.get("/api/facts/instruments/sxv264/holdings/current")
+    assert current.status_code == 200
+    assert current.json()["holding_snapshot_id"] == revised.json()["holding_snapshot_id"]
+    assert current.json()["positions"][0]["holding_name"] == "Revised Bond"
+
+    with session_module.get_session_factory()() as session:
+        snapshots = list(
+            session.scalars(
+                select(HoldingSnapshot).where(
+                    HoldingSnapshot.instrument_id == "sxv264"
+                )
+            ).all()
+        )
+    assert len(snapshots) == 3
+    assert sum(1 for snapshot in snapshots if snapshot.is_current) == 1
+
+
+def test_holding_exposure_uses_position_weights_and_statement_as_of(
+    client: TestClient,
+) -> None:
+    assert client.post("/api/instruments/sxv264/resolve").status_code == 200
+    response = client.post(
+        "/api/facts/instruments/sxv264/holdings",
+        json={
+            "as_of_date": "2026-08-01",
+            "source_cutoff_at": "2026-08-02T09:00:00Z",
+            "methodology_version": "custodian-statement/v1",
+            "source_record_id": "weighted-example",
+            "auto_recalculate": True,
+            "positions": [
+                {
+                    "holding_name": "Large Short Bond",
+                    "holding_type": "bond",
+                    "portfolio_weight": "90",
+                    "effective_duration": "1",
+                    "yield_to_worst": "2",
+                },
+                {
+                    "holding_name": "Small Long Bond",
+                    "holding_type": "bond",
+                    "portfolio_weight": "10",
+                    "effective_duration": "9",
+                    "yield_to_worst": "10",
+                },
+            ],
+        },
+    )
+    assert response.status_code == 200
+    assert response.json()["auto_recalculated"] is True
+
+    exposure = client.get("/api/instruments/sxv264/exposure/summary")
+    assert exposure.status_code == 200
+    payload = exposure.json()
+    assert payload["style_box"]["weighted_duration"] == pytest.approx(1.8)
+    assert payload["style_box"]["yield_to_worst"] == pytest.approx(2.8)
+    assert payload["style_box"]["reported_weight_total"] == pytest.approx(100.0)
+    assert payload["style_box"]["duration_weight_coverage"] == pytest.approx(100.0)
+    assert payload["style_box"]["yield_to_worst_weight_coverage"] == pytest.approx(100.0)
+    assert payload["snapshot_metadata"]["as_of_date"] == "2026-08-01"
+    assert payload["snapshot_metadata"]["source_cutoff_at"] == "2026-08-02T09:00:00Z"
+
+
+def test_holding_ingest_rejects_ambiguous_cutoff_and_overallocated_weights(
+    client: TestClient,
+) -> None:
+    assert client.post("/api/instruments/sxv264/resolve").status_code == 200
+    naive_cutoff = client.post(
+        "/api/facts/instruments/sxv264/holdings",
+        json={
+            "as_of_date": "2026-08-01",
+            "source_cutoff_at": "2026-08-02T09:00:00",
+            "positions": [],
+        },
+    )
+    assert naive_cutoff.status_code == 422
+
+    overallocated = client.post(
+        "/api/facts/instruments/sxv264/holdings",
+        json={
+            "as_of_date": "2026-08-01",
+            "source_cutoff_at": "2026-08-02T09:00:00Z",
+            "positions": [
+                {
+                    "holding_name": "A",
+                    "holding_type": "bond",
+                    "portfolio_weight": "60",
+                },
+                {
+                    "holding_name": "B",
+                    "holding_type": "bond",
+                    "portfolio_weight": "50",
+                },
+            ],
+        },
+    )
+    assert overallocated.status_code == 422

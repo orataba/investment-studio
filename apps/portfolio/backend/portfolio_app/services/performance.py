@@ -90,13 +90,10 @@ def _has_derivative_lifecycle_activity(
     ).strip()
     if lifecycle_event_type.startswith(("fcn_", "option_")):
         return True
-    instrument_ref = (
-        transaction.get("instrument_ref")
-        if isinstance(transaction.get("instrument_ref"), dict)
-        else None
-    )
     return bool(
-        holdings_market_profile.is_event_valued_instrument_ref(instrument_ref)
+        holdings_market_profile.is_derivative_contract(
+            transaction.get("derivative_contract")
+        )
         and str(transaction.get("transaction_type") or "")
         in {"buy", "sell", "opening_balance", "maturity_redemption"}
     )
@@ -236,7 +233,7 @@ def corporate_action_quality_warnings(
             portfolio_id,
             [],
             entitlement_transactions,
-            instrument_id=str(event.get("instrument_id") or ""),
+            position_reference_id=str(event.get("instrument_id") or ""),
             status="open",
             as_of_date=entitlement_date,
             corporate_actions=corporate_actions,
@@ -912,15 +909,9 @@ def _sum_period_realized_capital_gains(
                 coverage_complete = False
                 continue
             realized_capital_gains += converted_amount
-            instrument_ref = (
-                position_lot.get("instrument_ref")
-                if isinstance(position_lot.get("instrument_ref"), dict)
-                else {}
-            )
-            if str(instrument_ref.get("instrument_type") or "").lower() in {
-                "fcn",
-                "option",
-            }:
+            if holdings_market_profile.is_derivative_contract(
+                position_lot.get("derivative_contract")
+            ):
                 derivative_lifecycle_realized_pnl += converted_amount
             stale_fx_flag = stale_fx_flag or is_stale
 
@@ -1006,12 +997,12 @@ def _consume_period_lots(
     lots_by_key: dict[tuple[str, str], list[dict[str, object]]],
     *,
     account_id: str,
-    instrument_id: str,
+    position_reference_id: str,
     quantity: float,
 ) -> list[dict[str, object]]:
     remaining_quantity = quantity
     consumed_slices: list[dict[str, object]] = []
-    for lot in lots_by_key.get((account_id, instrument_id), []):
+    for lot in lots_by_key.get((account_id, position_reference_id), []):
         if remaining_quantity <= 1e-9:
             break
         lot_quantity = _safe_float(lot.get("quantity")) or 0.0
@@ -1036,19 +1027,25 @@ def _append_period_lot(
     lots_by_key: dict[tuple[str, str], list[dict[str, object]]],
     *,
     account_id: str,
-    instrument_id: str,
-    instrument_ref: dict[str, object],
+    position_reference_id: str,
+    instrument_id: str | None,
+    instrument_ref: dict[str, object] | None,
+    derivative_contract_id: str | None,
+    derivative_contract: dict[str, object] | None,
     currency: str,
     quantity: float,
     cost_local: float,
 ) -> None:
     if quantity <= 1e-9:
         return
-    lots_by_key[(account_id, instrument_id)].append(
+    lots_by_key[(account_id, position_reference_id)].append(
         {
             "account_id": account_id,
+            "position_reference_id": position_reference_id,
             "instrument_id": instrument_id,
             "instrument_ref": deepcopy(instrument_ref),
+            "derivative_contract_id": derivative_contract_id,
+            "derivative_contract": deepcopy(derivative_contract),
             "currency": currency,
             "quantity": quantity,
             "cost_local": max(cost_local, 0.0),
@@ -1060,14 +1057,14 @@ def _reduce_period_lot_cost(
     lots_by_key: dict[tuple[str, str], list[dict[str, object]]],
     *,
     account_id: str,
-    instrument_id: str,
+    position_reference_id: str,
     amount_local: float,
 ) -> None:
     if amount_local <= 1e-9:
         return
     active_lots = [
         lot
-        for lot in lots_by_key.get((account_id, instrument_id), [])
+        for lot in lots_by_key.get((account_id, position_reference_id), [])
         if (_safe_float(lot.get("quantity")) or 0.0) > 1e-9
     ]
     total_quantity = sum((_safe_float(lot.get("quantity")) or 0.0) for lot in active_lots)
@@ -1096,6 +1093,11 @@ def _period_lot_market_value_local(
             quantity=_safe_float(lot.get("quantity")) or 0.0,
             cost_basis=_safe_float(lot.get("cost_local")),
             instrument_ref=instrument_ref,
+            derivative_contract=(
+                lot.get("derivative_contract")
+                if isinstance(lot.get("derivative_contract"), dict)
+                else None
+            ),
             quoted_price=None,
         )
     )
@@ -1113,8 +1115,13 @@ def _period_lot_market_value_local(
         return None
     _last_price, market_value, _ = holdings_market_profile.resolve_position_valuation(
         quantity=_safe_float(lot.get("quantity")) or 0.0,
-        cost_basis=_safe_float(lot.get("cost_local")),
-        instrument_ref=instrument_ref,
+            cost_basis=_safe_float(lot.get("cost_local")),
+            instrument_ref=instrument_ref,
+            derivative_contract=(
+                lot.get("derivative_contract")
+                if isinstance(lot.get("derivative_contract"), dict)
+                else None
+            ),
         quoted_price=_safe_float(price_point.get("value")),
         quoted_price_scale=_safe_float(price_point.get("price_scale")),
     )
@@ -1242,11 +1249,27 @@ def _period_unrealized_capital_gains_by_group(
                 continue
             lot = {
                 "account_id": str(position_lot.get("account_id") or ""),
-                "instrument_id": str(position_lot.get("instrument_id") or ""),
+                "position_reference_id": str(
+                    position_lot.get("position_reference_id") or ""
+                ),
+                "instrument_id": (
+                    str(position_lot.get("instrument_id") or "") or None
+                ),
                 "instrument_ref": (
                     deepcopy(position_lot.get("instrument_ref"))
                     if isinstance(position_lot.get("instrument_ref"), dict)
-                    else {}
+                    else None
+                ),
+                "derivative_contract_id": (
+                    str(position_lot.get("derivative_contract_id") or "")
+                    or None
+                ),
+                "derivative_contract": (
+                    deepcopy(position_lot.get("derivative_contract"))
+                    if isinstance(
+                        position_lot.get("derivative_contract"), dict
+                    )
+                    else None
                 ),
                 "currency": valuation_fx.required_currency(
                     position_lot.get("currency"),
@@ -1265,7 +1288,10 @@ def _period_unrealized_capital_gains_by_group(
                 continue
             lot["cost_local"] = market_value_local
             lots_by_key[
-                (str(lot["account_id"]), str(lot["instrument_id"]))
+                (
+                    str(lot["account_id"]),
+                    str(lot["position_reference_id"]),
+                )
             ].append(lot)
 
     seed_boundary_lots(
@@ -1386,11 +1412,20 @@ def _period_unrealized_capital_gains_by_group(
         instrument_ref = (
             deepcopy(transaction.get("instrument_ref"))
             if isinstance(transaction.get("instrument_ref"), dict)
-            else {}
+            else None
         )
-        instrument_id = str(transaction.get("instrument_id") or instrument_ref.get("instrument_id") or "")
+        derivative_contract = (
+            deepcopy(transaction.get("derivative_contract"))
+            if isinstance(transaction.get("derivative_contract"), dict)
+            else None
+        )
+        instrument_id = str(transaction.get("instrument_id") or "") or None
+        derivative_contract_id = (
+            str(transaction.get("derivative_contract_id") or "") or None
+        )
+        position_reference_id = derivative_contract_id or instrument_id or ""
         quantity = _safe_float(transaction.get("quantity")) or 0.0
-        if not account_id or not instrument_id or quantity <= 1e-9:
+        if not account_id or not position_reference_id or quantity <= 1e-9:
             continue
         currency = valuation_fx.required_currency(
             transaction.get("currency"), field_name="transaction currency"
@@ -1401,8 +1436,11 @@ def _period_unrealized_capital_gains_by_group(
             _append_period_lot(
                 lots_by_key,
                 account_id=account_id,
+                position_reference_id=position_reference_id,
                 instrument_id=instrument_id,
                 instrument_ref=instrument_ref,
+                derivative_contract_id=derivative_contract_id,
+                derivative_contract=derivative_contract,
                 currency=currency,
                 quantity=quantity,
                 cost_local=gross_amount,
@@ -1414,7 +1452,7 @@ def _period_unrealized_capital_gains_by_group(
                 _consume_period_lots(
                     lots_by_key,
                     account_id=account_id,
-                    instrument_id=instrument_id,
+                    position_reference_id=position_reference_id,
                     quantity=quantity,
                 )
             )
@@ -1424,7 +1462,7 @@ def _period_unrealized_capital_gains_by_group(
             _reduce_period_lot_cost(
                 lots_by_key,
                 account_id=account_id,
-                instrument_id=instrument_id,
+                position_reference_id=position_reference_id,
                 amount_local=gross_amount,
             )
             continue
@@ -1433,7 +1471,7 @@ def _period_unrealized_capital_gains_by_group(
             consumed_slices = _consume_period_lots(
                 lots_by_key,
                 account_id=account_id,
-                instrument_id=instrument_id,
+                position_reference_id=position_reference_id,
                 quantity=quantity,
             )
             transfer_group_id = str(transaction.get("transfer_group_id") or "")
@@ -1449,11 +1487,21 @@ def _period_unrealized_capital_gains_by_group(
                     _append_period_lot(
                         lots_by_key,
                         account_id=account_id,
+                        position_reference_id=position_reference_id,
                         instrument_id=instrument_id,
                         instrument_ref=(
                             incoming_slice.get("instrument_ref")
                             if isinstance(incoming_slice.get("instrument_ref"), dict)
                             else instrument_ref
+                        ),
+                        derivative_contract_id=derivative_contract_id,
+                        derivative_contract=(
+                            incoming_slice.get("derivative_contract")
+                            if isinstance(
+                                incoming_slice.get("derivative_contract"),
+                                dict,
+                            )
+                            else derivative_contract
                         ),
                         currency=valuation_fx.required_currency(
                             incoming_slice.get("currency"), field_name="attribution-slice currency"
@@ -1465,8 +1513,11 @@ def _period_unrealized_capital_gains_by_group(
             _append_period_lot(
                 lots_by_key,
                 account_id=account_id,
+                position_reference_id=position_reference_id,
                 instrument_id=instrument_id,
                 instrument_ref=instrument_ref,
+                derivative_contract_id=derivative_contract_id,
+                derivative_contract=derivative_contract,
                 currency=currency,
                 quantity=quantity,
                 cost_local=gross_amount,
@@ -1498,7 +1549,7 @@ def _period_unrealized_capital_gains_by_group(
                     base_currency=base_currency,
                 )
             )
-            item_key = str(lot.get("instrument_id") or "")
+            item_key = str(lot.get("position_reference_id") or "")
             return (
                 attribution.encode_calculation_detail_group_key(
                     parent_group_key=parent_group_key,
@@ -1510,7 +1561,7 @@ def _period_unrealized_capital_gains_by_group(
             )
         if detail_parent_axis == "taxonomy" and taxonomy_resolver is not None:
             parent_group_key = taxonomy_resolver(lot)
-            item_key = str(lot.get("instrument_id") or "")
+            item_key = str(lot.get("position_reference_id") or "")
             return (
                 attribution.encode_calculation_detail_group_key(
                     parent_group_key=parent_group_key,
@@ -1523,9 +1574,11 @@ def _period_unrealized_capital_gains_by_group(
         if axis == "account":
             return str(lot.get("account_id") or "")
         if axis == "instrument_type":
-            instrument_ref = attribution.instrument_ref_from_mapping(lot)
+            _position_key, _position_label, position_type = (
+                attribution.position_reference_from_mapping(lot)
+            )
             group_key, _group_label = attribution.instrument_type_key_label(
-                instrument_ref.get("instrument_type")
+                position_type
             )
             return group_key
         if axis == "currency":
@@ -1534,7 +1587,7 @@ def _period_unrealized_capital_gains_by_group(
             )
         if axis == "taxonomy" and taxonomy_resolver is not None:
             return taxonomy_resolver(lot)
-        return str(lot.get("instrument_id") or "")
+        return str(lot.get("position_reference_id") or "")
 
     values: dict[str, float] = defaultdict(float)
     open_group_keys: set[str] = set()
@@ -1606,9 +1659,15 @@ def _period_unrealized_capital_gains_by_group(
     ) -> dict[str, object]:
         return {
             "account_id": obligation.get("account_id"),
-            "instrument_id": obligation.get("option_instrument_id")
-            or obligation.get("instrument_id"),
-            "instrument_ref": obligation.get("instrument_ref"),
+            "position_reference_id": obligation.get(
+                "derivative_contract_id"
+            ),
+            "instrument_id": None,
+            "instrument_ref": None,
+            "derivative_contract_id": obligation.get(
+                "derivative_contract_id"
+            ),
+            "derivative_contract": obligation.get("derivative_contract"),
             "currency": obligation.get("contract_currency") or base_currency,
         }
 
@@ -1880,7 +1939,7 @@ def build_daily_portfolio_snapshots(
             and (_safe_float(row.get("remaining_quantity")) or 0.0) > 1e-9
         ]
         account_instrument_buckets = (
-            holdings_market_profile.position_buckets_by_account_instrument_from_lots(open_position_lots)
+            holdings_market_profile.position_buckets_by_account_reference_from_lots(open_position_lots)
             if include_materialized_rows
             else []
         )
@@ -2108,6 +2167,11 @@ def build_daily_portfolio_snapshots(
                     quantity=quantity,
                     cost_basis=cost_basis,
                     instrument_ref=instrument_ref,
+                    derivative_contract=(
+                        bucket.get("derivative_contract")
+                        if isinstance(bucket.get("derivative_contract"), dict)
+                        else None
+                    ),
                     quoted_price=None,
                 )
             )
@@ -2135,6 +2199,13 @@ def build_daily_portfolio_snapshots(
                         quantity=quantity,
                         cost_basis=cost_basis,
                         instrument_ref=instrument_ref,
+                        derivative_contract=(
+                            bucket.get("derivative_contract")
+                            if isinstance(
+                                bucket.get("derivative_contract"), dict
+                            )
+                            else None
+                        ),
                         quoted_price=_safe_float(price_point.get("value")),
                         quoted_price_scale=_safe_float(price_point.get("price_scale")),
                     )
@@ -3893,7 +3964,7 @@ def _build_boundary_holding_records(
     )
     position_buckets = holdings_market_profile.position_buckets_from_lots(position_lots)
     account_instrument_buckets = (
-        holdings_market_profile.position_buckets_by_account_instrument_from_lots(
+        holdings_market_profile.position_buckets_by_account_reference_from_lots(
             position_lots
         )
     )
@@ -3921,8 +3992,13 @@ def _build_boundary_holding_records(
             if isinstance(bucket.get("instrument_ref"), dict)
             else None
         )
-        event_valued = holdings_market_profile.is_event_valued_instrument_ref(
-            instrument_ref
+        derivative_contract = (
+            bucket.get("derivative_contract")
+            if isinstance(bucket.get("derivative_contract"), dict)
+            else None
+        )
+        event_valued = holdings_market_profile.is_derivative_contract(
+            derivative_contract
         )
         detail = (
             None
@@ -3974,6 +4050,7 @@ def _build_boundary_holding_records(
                 quantity=quantity,
                 cost_basis=cost_basis,
                 instrument_ref=instrument_ref,
+                derivative_contract=derivative_contract,
                 quoted_price=quoted_price,
                 quoted_price_scale=_safe_float(
                     (price_point or {}).get("price_scale")
@@ -4025,15 +4102,29 @@ def _build_boundary_holding_records(
         else:
             total_market_value_base += converted_market_value
 
+        position_reference_id = str(bucket.get("position_reference_id") or "")
+        instrument_id = str(bucket.get("instrument_id") or "") or None
+        derivative_contract_id = (
+            str(bucket.get("derivative_contract_id") or "") or None
+        )
         rendered_positions.append(
             {
-                "position_id": str(bucket.get("instrument_id") or ""),
-                "instrument_id": str(bucket.get("instrument_id") or ""),
-                "holding_kind": "position",
+                "position_id": position_reference_id,
+                "position_reference_id": position_reference_id,
+                "instrument_id": instrument_id,
+                "derivative_contract_id": derivative_contract_id,
+                "derivative_contract": derivative_contract,
+                "holding_kind": (
+                    "derivative_contract" if event_valued else "position"
+                ),
                 "available_for_trading": True,
-                "instrument_ref": holdings_market_profile.normalize_instrument_core(
-                    str(bucket.get("instrument_id") or ""),
-                    instrument_ref,
+                "instrument_ref": (
+                    holdings_market_profile.normalize_instrument_core(
+                        instrument_id,
+                        instrument_ref,
+                    )
+                    if instrument_id is not None
+                    else None
                 ),
                 "quantity": quantity,
                 "cost_basis_method": str(bucket.get("cost_basis_method") or "fifo"),
@@ -4115,7 +4206,6 @@ def _build_boundary_holding_records(
         ),
         direct_fx_instruments=direct_fx_instruments,
         instrument_detail_cache=instrument_detail_cache,
-        normalize_instrument=holdings_market_profile.normalize_instrument_core,
     )
     # Keep the returned position market value as the positive asset component;
     # callers subtract the separately disclosed liability when constructing NAV.
@@ -5466,9 +5556,15 @@ def _build_contribution_group_end_states(
     for obligation in open_option_obligations:
         pseudo_lot = {
             "account_id": obligation.get("account_id"),
-            "instrument_id": obligation.get("option_instrument_id")
-            or obligation.get("instrument_id"),
-            "instrument_ref": obligation.get("instrument_ref"),
+            "position_reference_id": obligation.get(
+                "derivative_contract_id"
+            ),
+            "instrument_id": None,
+            "instrument_ref": None,
+            "derivative_contract_id": obligation.get(
+                "derivative_contract_id"
+            ),
+            "derivative_contract": obligation.get("derivative_contract"),
             "currency": obligation.get("contract_currency") or base_currency,
         }
         group_key, group_label = attribution.position_group_for_axis(
@@ -5547,8 +5643,13 @@ def _build_contribution_group_end_states(
             if isinstance(position_lot.get("instrument_ref"), dict)
             else None
         )
-        event_valued = holdings_market_profile.is_event_valued_instrument_ref(
-            instrument_ref
+        derivative_contract = (
+            position_lot.get("derivative_contract")
+            if isinstance(position_lot.get("derivative_contract"), dict)
+            else None
+        )
+        event_valued = holdings_market_profile.is_derivative_contract(
+            derivative_contract
         )
         if event_valued:
             state["_has_event_valued_exposure"] = True
@@ -5580,6 +5681,7 @@ def _build_contribution_group_end_states(
                 quantity=_safe_float(position_lot.get("remaining_quantity")) or 0.0,
                 cost_basis=remaining_cost_basis,
                 instrument_ref=instrument_ref,
+                derivative_contract=derivative_contract,
                 quoted_price=_safe_float((price_point or {}).get("value")),
                 quoted_price_scale=_safe_float(
                     (price_point or {}).get("price_scale")
@@ -6200,9 +6302,10 @@ def _build_contribution_daily_events(
             continue
         pseudo_transaction = {
             "account_id": obligation.get("account_id"),
-            "instrument_id": obligation.get("option_instrument_id")
-            or obligation.get("instrument_id"),
-            "instrument_ref": obligation.get("instrument_ref"),
+            "derivative_contract_id": obligation.get(
+                "derivative_contract_id"
+            ),
+            "derivative_contract": obligation.get("derivative_contract"),
             "currency": obligation_event.get("currency")
             or obligation.get("contract_currency")
             or base_currency,

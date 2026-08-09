@@ -26,7 +26,7 @@ export function normalizedCurrency(value: string | null | undefined) {
 }
 
 export function holdingCurrencyMatchesBase(row: PortfolioHoldingRow, baseCurrency: string) {
-  return normalizedCurrency(row.instrument_core.currency) === normalizedCurrency(baseCurrency)
+  return normalizedCurrency(row.derivative_contract?.currency ?? row.instrument_core?.currency) === normalizedCurrency(baseCurrency)
 }
 
 export function baseAmountForRow(
@@ -57,6 +57,6 @@ export function holdingAmountForDisplay(
   }
   return {
     value: finiteAmount(localValue),
-    currency: normalizedCurrency(row.instrument_core.currency),
+    currency: normalizedCurrency(row.derivative_contract?.currency ?? row.instrument_core?.currency),
   }
 }

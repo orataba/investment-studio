@@ -62,11 +62,11 @@ chmod +x \
   "$PROJECT_ROOT/infra/scripts/migrate_all.sh"
 
 DATABASE_URL='postgresql://portfolio_ops@127.0.0.1:5432/portfolio_ops'
-DATABASE_URL="${DATABASE_URL/portfolio_ops@/portfolio_ops:sensitive-password@}"
+PASSWORD_DATABASE_URL="${DATABASE_URL/portfolio_ops@/portfolio_ops:sensitive-password@}"
 export EVENT_LOG MIGRATION_ENV
 
 set +e
-PORTFOLIO_OPS_LOCAL_DATABASE_URL="$DATABASE_URL" \
+PORTFOLIO_OPS_LOCAL_DATABASE_URL="$PASSWORD_DATABASE_URL" \
   "$REBUILD_SCRIPT" > "$TEST_ROOT/unconfirmed.out" 2>&1
 unconfirmed_status=$?
 set -e
@@ -74,6 +74,24 @@ set -e
 [[ ! -e "$EVENT_LOG" ]]
 if grep -q 'sensitive-password' "$TEST_ROOT/unconfirmed.out"; then
   echo "Rebuild confirmation error exposed database credentials." >&2
+  exit 1
+fi
+
+set +e
+PROJECT_ROOT="$PROJECT_ROOT" \
+PSQL_BIN="$MOCK_BIN/psql" \
+PYTHON_BIN="$REAL_PYTHON" \
+TMPDIR="$TEST_ROOT/tmp" \
+PORTFOLIO_OPS_LOCAL_DATABASE_URL="$PASSWORD_DATABASE_URL" \
+  "$REBUILD_SCRIPT" --confirm-destroy-project-schemas \
+  > "$TEST_ROOT/password-url.out" 2>&1
+password_url_status=$?
+set -e
+[[ $password_url_status -eq 64 ]]
+grep -q 'must not contain passwords' "$TEST_ROOT/password-url.out"
+[[ ! -e "$EVENT_LOG" ]]
+if grep -q 'sensitive-password' "$TEST_ROOT/password-url.out"; then
+  echo "Rebuild password rejection exposed database credentials." >&2
   exit 1
 fi
 
@@ -85,10 +103,6 @@ PORTFOLIO_OPS_LOCAL_DATABASE_URL="$DATABASE_URL" \
   "$REBUILD_SCRIPT" --confirm-destroy-project-schemas \
   > "$TEST_ROOT/success.out" 2>&1
 
-if grep -q 'sensitive-password' "$TEST_ROOT/success.out"; then
-  echo "Successful rebuild output exposed database credentials." >&2
-  exit 1
-fi
 grep -q '^services:stop$' "$EVENT_LOG"
 grep -q '^services:start$' "$EVENT_LOG"
 grep -q -- '--set|ON_ERROR_STOP=1' "$EVENT_LOG"
@@ -97,10 +111,6 @@ grep -q 'DROP SCHEMA IF EXISTS platform CASCADE' "$EVENT_LOG"
 grep -q 'CREATE SCHEMA platform' "$EVENT_LOG"
 expected_migration_env="$DATABASE_URL|$DATABASE_URL|$DATABASE_URL|$DATABASE_URL|instrument_registry|platform|$DATABASE_URL|$DATABASE_URL|$DATABASE_URL|$DATABASE_URL"
 [[ "$(cat "$MIGRATION_ENV")" == "$expected_migration_env" ]]
-if grep -q 'sensitive-password' "$EVENT_LOG"; then
-  echo "Successful rebuild exposed database credentials in a PostgreSQL command argument." >&2
-  exit 1
-fi
 
 : > "$EVENT_LOG"
 set +e
@@ -121,9 +131,4 @@ if grep -q '^services:start$' "$EVENT_LOG"; then
   exit 1
 fi
 grep -q 'managed services remain stopped' "$TEST_ROOT/failure.out"
-if grep -q 'sensitive-password' "$TEST_ROOT/failure.out"; then
-  echo "Failed rebuild output exposed database credentials." >&2
-  exit 1
-fi
-
 echo "explicit, single-target schema rebuild safety test passed."

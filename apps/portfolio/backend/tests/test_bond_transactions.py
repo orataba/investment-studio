@@ -140,7 +140,7 @@ def test_bond_trade_amount_contract_and_lot_display_use_percent_of_par(
 
     lots_response = client.get(
         "/api/portfolios/portfolio-ops/position-lots",
-        params={"account_id": account_id, "instrument_id": BOND_ID},
+        params={"account_id": account_id, "position_reference_id": BOND_ID},
     )
     assert lots_response.status_code == 200
     lot = lots_response.json()["position_lots"][0]
@@ -173,7 +173,7 @@ def test_bond_opening_balance_uses_percent_of_par_amount_contract(client, monkey
     assert response.status_code == 200
     lots_response = client.get(
         "/api/portfolios/portfolio-ops/position-lots",
-        params={"account_id": account_id, "instrument_id": BOND_ID},
+        params={"account_id": account_id, "position_reference_id": BOND_ID},
     )
     assert lots_response.status_code == 200
     lot = lots_response.json()["position_lots"][0]

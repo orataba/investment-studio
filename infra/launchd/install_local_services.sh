@@ -26,6 +26,7 @@ PYTHON_BIN="${PYTHON_BIN:-$PROJECT_ROOT/.venv/bin/python}"
 NODE_BIN="${NODE_BIN:-$(command -v node || true)}"
 NPM_BIN="${NPM_BIN:-$(command -v npm || true)}"
 MIGRATION_RUNNER="$PROJECT_ROOT/infra/scripts/migrate_all.sh"
+AUDIT_RUNNER="$PROJECT_ROOT/infra/scripts/audit_live_data.py"
 SERVICE_CONTROL="$SCRIPT_DIR/control_local_services.sh"
 LOG_COMPACTOR="$SCRIPT_DIR/compact_local_logs.sh"
 BACKUP_HELPER="$PROJECT_ROOT/infra/postgres/project_schema_backup.sh"
@@ -58,6 +59,7 @@ for required_executable in "$MIGRATION_RUNNER" "$SERVICE_CONTROL" "$LOG_COMPACTO
   fi
 done
 for required_file in \
+  "$AUDIT_RUNNER" \
   "$SCRIPT_DIR/generate_local_service_plists.py" \
   "$SCRIPT_DIR/load_runtime_env.sh" \
   "$BACKUP_HELPER"; do
@@ -113,6 +115,8 @@ fi
 
 source "$SCRIPT_DIR/load_runtime_env.sh"
 source "$BACKUP_HELPER"
+portfolio_ops_require_password_free_database_url "$DATABASE_URL"
+DATABASE_URL="$(portfolio_ops_sqlalchemy_database_url "$DATABASE_URL")"
 portfolio_ops_reject_repository_env_files "$PROJECT_ROOT"
 for env_spec in \
   platform:PORTFOLIO_OPS_PLATFORM_ \
@@ -270,6 +274,8 @@ export PORTFOLIO_OPS_PORTFOLIO_DATABASE_SCHEMA=portfolio
 database_mutated="true"
 PROJECT_ROOT="$PROJECT_ROOT" PYTHON_BIN="$PYTHON_BIN" ENV_ROOT="" \
   "$MIGRATION_RUNNER"
+PORTFOLIO_OPS_LOCAL_DATABASE_URL="$DATABASE_URL" \
+  "$PYTHON_BIN" "$AUDIT_RUNNER" --fail-on-warning
 
 if [[ "$BUILD_FRONTENDS" == "true" ]]; then
   for app in platform watchlist portfolio; do

@@ -1,16 +1,11 @@
 import type {
   BrokerIdentifier,
-  CorporateActionAdjustmentPolicy,
   DataStatus,
-  DerivativeContractReconciliation,
   ExpectedFrequency,
-  FCNContractMetadata,
   InstrumentCore,
   InstrumentIdentifier,
   InstrumentType,
   MetricFamily,
-  NonDerivativeInstrumentType,
-  OptionContractIdentity,
   PriceUnit,
   QuoteBasis,
   QuoteSelectionPolicy,
@@ -56,7 +51,6 @@ type PlatformInstrumentRecordBase = {
     last_successful_requested_at: string | null
   }
   lifecycle_state: PlatformLifecycleState
-  contract_reconciliation: DerivativeContractReconciliation
 }
 
 export type PlatformInstrumentRecord = InstrumentCore & PlatformInstrumentRecordBase
@@ -136,33 +130,8 @@ type CreateInstrumentPayloadBase = {
   broker_identifiers: BrokerIdentifier[]
 }
 
-export type CreateInstrumentPayload = CreateInstrumentPayloadBase &
-  (
-    | {
-        instrument_type: 'option'
-        option_contract: OptionContractIdentity
-        fcn_contract?: never
-        corporate_action_adjustment_policy: CorporateActionAdjustmentPolicy
-      }
-    | {
-        instrument_type: 'fcn'
-        option_contract?: never
-        fcn_contract: FCNContractMetadata
-        corporate_action_adjustment_policy: CorporateActionAdjustmentPolicy
-      }
-    | {
-        instrument_type: NonDerivativeInstrumentType
-        option_contract?: never
-        fcn_contract?: never
-        corporate_action_adjustment_policy?: never
-      }
-  )
-
-export type UpdateDerivativeContractMetadataPayload = {
-  instrument_id: string
-  fcn_contract: FCNContractMetadata | null
-  broker_identifiers: BrokerIdentifier[]
-  corporate_action_adjustment_policy: CorporateActionAdjustmentPolicy
+export type CreateInstrumentPayload = CreateInstrumentPayloadBase & {
+  instrument_type: InstrumentType
 }
 
 export type UpsertFxRatePayload = {

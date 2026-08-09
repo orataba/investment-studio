@@ -428,7 +428,7 @@ def test_account_cost_method_change_restates_instrument_history(client):
 
     fifo_lots_response = client.get(
         "/api/portfolios/portfolio-ops/position-lots",
-        params={"account_id": account["account_id"], "instrument_id": "equity-us-abbv"},
+        params={"account_id": account["account_id"], "position_reference_id": "equity-us-abbv"},
     )
     assert fifo_lots_response.status_code == 200
     fifo_lots = fifo_lots_response.json()["position_lots"]
@@ -453,7 +453,7 @@ def test_account_cost_method_change_restates_instrument_history(client):
 
     restated_lots_response = client.get(
         "/api/portfolios/portfolio-ops/position-lots",
-        params={"account_id": account["account_id"], "instrument_id": "equity-us-abbv"},
+        params={"account_id": account["account_id"], "position_reference_id": "equity-us-abbv"},
     )
     assert restated_lots_response.status_code == 200
     restated_lots = restated_lots_response.json()["position_lots"]
@@ -651,7 +651,7 @@ def test_rejects_cross_currency_security_facts(client):
         },
     )
     assert buy_response.status_code == 400
-    assert "Securities account currency must match instrument currency" in buy_response.json()["detail"]
+    assert "Securities account currency must match asset currency" in buy_response.json()["detail"]
 
     transfer_response = client.post(
         "/api/portfolios/portfolio-ops/transactions/internal-transfer",
@@ -904,7 +904,8 @@ def test_transaction_position_preview_returns_quantity_as_of_trade_moment(client
         "/api/portfolios/portfolio-ops/transactions/position-preview",
         params={
             "account_id": "broker-us-core",
-            "instrument_id": "equity-us-abbv",
+            "position_kind": "instrument",
+            "position_reference_id": "equity-us-abbv",
             "as_of_date": "2026-04-15",
         },
     )
@@ -913,7 +914,8 @@ def test_transaction_position_preview_returns_quantity_as_of_trade_moment(client
 
     assert payload["portfolio_id"] == "portfolio-ops"
     assert payload["account_id"] == "broker-us-core"
-    assert payload["instrument_id"] == "equity-us-abbv"
+    assert payload["position_kind"] == "instrument"
+    assert payload["position_reference_id"] == "equity-us-abbv"
     assert payload["as_of_date"] == "2026-04-15"
     assert payload["quantity"] == pytest.approx(880.0)
 
@@ -921,7 +923,7 @@ def test_transaction_position_preview_returns_quantity_as_of_trade_moment(client
 def test_position_lots_support_historical_as_of_date(client):
     response = client.get(
         "/api/portfolios/portfolio-ops/position-lots",
-        params={"instrument_id": "equity-us-abbv", "status": "open", "as_of_date": "2026-04-02"},
+        params={"position_reference_id": "equity-us-abbv", "status": "open", "as_of_date": "2026-04-02"},
     )
     assert response.status_code == 200
     payload = response.json()
@@ -997,7 +999,7 @@ def test_position_transfer_uses_average_cost_bucket_for_moving_average_accounts(
 
     destination_lots_response = client.get(
         "/api/portfolios/portfolio-ops/position-lots",
-        params={"account_id": destination_account["account_id"], "instrument_id": "equity-us-abbv"},
+        params={"account_id": destination_account["account_id"], "position_reference_id": "equity-us-abbv"},
     )
     assert destination_lots_response.status_code == 200
     destination_lots = destination_lots_response.json()["position_lots"]
@@ -1007,7 +1009,7 @@ def test_position_transfer_uses_average_cost_bucket_for_moving_average_accounts(
 
     source_lots_response = client.get(
         "/api/portfolios/portfolio-ops/position-lots",
-        params={"account_id": source_account["account_id"], "instrument_id": "equity-us-abbv", "status": "open"},
+        params={"account_id": source_account["account_id"], "position_reference_id": "equity-us-abbv", "status": "open"},
     )
     assert source_lots_response.status_code == 200
     source_lots = source_lots_response.json()["position_lots"]
@@ -1078,11 +1080,11 @@ def test_position_transfer_allows_zero_cost_basis_lots(client):
 
     source_lots_response = client.get(
         "/api/portfolios/portfolio-ops/position-lots",
-        params={"account_id": source_account["account_id"], "instrument_id": "equity-us-abbv"},
+        params={"account_id": source_account["account_id"], "position_reference_id": "equity-us-abbv"},
     )
     destination_lots_response = client.get(
         "/api/portfolios/portfolio-ops/position-lots",
-        params={"account_id": destination_account["account_id"], "instrument_id": "equity-us-abbv"},
+        params={"account_id": destination_account["account_id"], "position_reference_id": "equity-us-abbv"},
     )
     assert source_lots_response.status_code == 200
     assert destination_lots_response.status_code == 200
@@ -1365,7 +1367,7 @@ def test_rejects_opening_balance_settlement_account_and_deposit_account_instrume
         },
     )
     assert deposit_account_security_opening_balance.status_code == 400
-    assert "cash opening balance must not reference instrument" in deposit_account_security_opening_balance.json()["detail"].lower()
+    assert "cash opening balance must not reference an asset" in deposit_account_security_opening_balance.json()["detail"].lower()
 
 
 def test_rejects_deposit_account_fee_with_instrument_reference(client):
@@ -1381,7 +1383,7 @@ def test_rejects_deposit_account_fee_with_instrument_reference(client):
         },
     )
     assert fee_response.status_code == 400
-    assert "deposit-account fee and tax must not reference instrument" in fee_response.json()["detail"].lower()
+    assert "deposit-account fee and tax must not reference an asset" in fee_response.json()["detail"].lower()
 
     fee_with_settlement_response = client.post(
         "/api/portfolios/portfolio-ops/transactions",
@@ -1545,7 +1547,7 @@ def test_dividend_and_return_of_capital_keep_gross_income_and_separate_expense_a
         "/api/portfolios/portfolio-ops/position-lots",
         params={
             "account_id": account["account_id"],
-            "instrument_id": "equity-us-abbv",
+            "position_reference_id": "equity-us-abbv",
         },
     )
     assert lots_after_dividend_response.status_code == 200
@@ -1573,7 +1575,7 @@ def test_dividend_and_return_of_capital_keep_gross_income_and_separate_expense_a
 
     lots_response = client.get(
         "/api/portfolios/portfolio-ops/position-lots",
-        params={"account_id": account["account_id"], "instrument_id": "equity-us-abbv"},
+        params={"account_id": account["account_id"], "position_reference_id": "equity-us-abbv"},
     )
     assert lots_response.status_code == 200
     lot = lots_response.json()["position_lots"][0]
@@ -1753,7 +1755,7 @@ def test_rejects_instrument_income_and_expense_without_open_position(client):
         },
     )
     assert dividend_response.status_code == 400
-    assert "requires account position as of entitlement_date" in dividend_response.json()["detail"]
+    assert "requires an account position as of entitlement_date" in dividend_response.json()["detail"]
 
     fee_response = client.post(
         "/api/portfolios/portfolio-ops/transactions",
@@ -1768,7 +1770,7 @@ def test_rejects_instrument_income_and_expense_without_open_position(client):
         },
     )
     assert fee_response.status_code == 400
-    assert "requires account position as of entitlement_date" in fee_response.json()["detail"]
+    assert "requires an account position as of entitlement_date" in fee_response.json()["detail"]
 
 
 def test_rejects_nested_fee_and_tax_fields_on_fee_tax_transactions(client):
@@ -1832,7 +1834,7 @@ def test_rejects_dividend_reinvestment_without_entitled_position(client):
         },
     )
     assert response.status_code == 400
-    assert "requires account position as of entitlement_date" in response.json()["detail"]
+    assert "requires an account position as of entitlement_date" in response.json()["detail"]
 
 
 def test_accepts_entitlement_date_on_dividend_reinvestment(client):
@@ -1921,7 +1923,7 @@ def test_accepts_late_paid_dividend_when_entitlement_date_precedes_sale(client):
 
     lots_response = client.get(
         "/api/portfolios/portfolio-ops/position-lots",
-        params={"account_id": account["account_id"], "instrument_id": "equity-us-abbv"},
+        params={"account_id": account["account_id"], "position_reference_id": "equity-us-abbv"},
     )
     assert lots_response.status_code == 200
     lots = lots_response.json()["position_lots"]
@@ -2345,7 +2347,7 @@ def test_dividend_reinvestment_allocates_income_to_existing_position_lots(client
 
     lots_response = client.get(
         "/api/portfolios/portfolio-ops/position-lots",
-        params={"account_id": account["account_id"], "instrument_id": "equity-us-abbv"},
+        params={"account_id": account["account_id"], "position_reference_id": "equity-us-abbv"},
     )
     assert lots_response.status_code == 200
     lots = lots_response.json()["position_lots"]
@@ -3031,7 +3033,7 @@ def test_same_day_buy_then_sell_uses_trade_order_not_settlement_order(client):
 
     lots_response = client.get(
         "/api/portfolios/portfolio-ops/position-lots",
-        params={"account_id": account["account_id"], "instrument_id": "equity-us-abbv"},
+        params={"account_id": account["account_id"], "position_reference_id": "equity-us-abbv"},
     )
     assert lots_response.status_code == 200
     lots = lots_response.json()["position_lots"]
@@ -3088,7 +3090,7 @@ def test_position_lot_entry_price_excludes_capitalized_fees_and_taxes(client):
 
     lots_response = client.get(
         "/api/portfolios/portfolio-ops/position-lots",
-        params={"account_id": account["account_id"], "instrument_id": "equity-us-abbv", "status": "open"},
+        params={"account_id": account["account_id"], "position_reference_id": "equity-us-abbv", "status": "open"},
     )
     assert lots_response.status_code == 200
     lots = lots_response.json()["position_lots"]
@@ -3169,7 +3171,7 @@ def test_moving_average_position_lots_match_account_cost_basis_method(client):
 
     lots_response = client.get(
         "/api/portfolios/portfolio-ops/position-lots",
-        params={"account_id": account["account_id"], "instrument_id": "equity-us-abbv"},
+        params={"account_id": account["account_id"], "position_reference_id": "equity-us-abbv"},
     )
     assert lots_response.status_code == 200
     lots = lots_response.json()["position_lots"]
@@ -3516,7 +3518,7 @@ def test_confirmed_later_trade_enters_holdings_on_position_effective_date(client
         "/api/portfolios/portfolio-ops/position-lots",
         params={
             "account_id": account["account_id"],
-            "instrument_id": "equity-us-abbv",
+            "position_reference_id": "equity-us-abbv",
             "as_of_date": "2026-04-12",
         },
     )
@@ -3664,7 +3666,7 @@ def test_security_opening_balance_preserves_acquisition_date_in_position_lots(cl
         "/api/portfolios/portfolio-ops/position-lots",
         params={
             "account_id": account["account_id"],
-            "instrument_id": "equity-us-abbv",
+            "position_reference_id": "equity-us-abbv",
             "status": "open",
             "as_of_date": "2026-04-15",
         },

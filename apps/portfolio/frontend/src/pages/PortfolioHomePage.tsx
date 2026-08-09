@@ -549,11 +549,36 @@ const HOLDINGS_GROUP_BY_OPTIONS: Array<{
 ]
 
 function primaryIdentifier(row: PortfolioHoldingRow) {
+  if (!row.instrument_core) {
+    return row.derivative_contract_id ?? row.position_reference_id ?? row.line_id
+  }
   return (
     row.instrument_core.identifiers.find((item) => item.is_primary)?.identifier_value ??
     row.instrument_core.identifiers[0]?.identifier_value ??
     row.instrument_core.instrument_id
   )
+}
+
+function holdingName(row: PortfolioHoldingRow) {
+  return row.derivative_contract?.contract_name ?? row.instrument_core?.instrument_name ?? row.line_id
+}
+
+function holdingReferenceId(row: PortfolioHoldingRow) {
+  return (
+    row.derivative_contract_id ??
+    row.position_reference_id ??
+    row.economic_instrument_id ??
+    row.instrument_core?.instrument_id ??
+    row.line_id
+  )
+}
+
+function holdingCurrency(row: PortfolioHoldingRow) {
+  return row.derivative_contract?.currency ?? row.instrument_core?.currency ?? ''
+}
+
+function holdingAssetType(row: PortfolioHoldingRow) {
+  return row.derivative_contract?.contract_type ?? row.instrument_core?.instrument_type ?? 'other'
 }
 
 function instrumentTrendCoverageLabel(row: PortfolioHoldingRow) {
@@ -591,7 +616,7 @@ function optionObligationAmountSummary(row: PortfolioHoldingRow) {
   if (!isOptionObligationHolding(row)) {
     return null
   }
-  return `Remaining premium basis ${formatCurrency(row.premium_basis_remaining, row.instrument_core.currency)} · Carrying liability ${formatCurrency(row.liability_value, row.instrument_core.currency)}`
+  return `Remaining premium basis ${formatCurrency(row.premium_basis_remaining, holdingCurrency(row))} · Carrying liability ${formatCurrency(row.liability_value, holdingCurrency(row))}`
 }
 
 function instrumentTrendReasonLabel(row: PortfolioHoldingRow) {
@@ -676,11 +701,11 @@ function exportNumber(value: number | null | undefined): number | 'N/A' {
 }
 
 function holdingMaturityOrExpiry(row: PortfolioHoldingRow): string | null {
-  if (row.instrument_core.instrument_type === 'fcn') {
-    return row.instrument_core.fcn_contract.maturity_date
+  if (row.derivative_contract?.contract_type === 'fcn') {
+    return row.derivative_contract.terms.maturity_date
   }
-  if (row.instrument_core.instrument_type === 'option') {
-    return row.expiry_date ?? row.instrument_core.option_contract.expiry_date
+  if (row.derivative_contract?.contract_type === 'option') {
+    return row.expiry_date ?? row.derivative_contract.terms.expiry_date
   }
   return null
 }
@@ -690,10 +715,10 @@ function holdingStrike(row: PortfolioHoldingRow): number | null {
   if (explicitStrike != null) {
     return explicitStrike
   }
-  if (row.instrument_core.instrument_type !== 'option') {
+  if (row.derivative_contract?.contract_type !== 'option') {
     return null
   }
-  const contractStrike = Number(row.instrument_core.option_contract.strike)
+  const contractStrike = Number(row.derivative_contract.terms.strike)
   return Number.isFinite(contractStrike) ? contractStrike : null
 }
 
@@ -701,8 +726,8 @@ function holdingSettlementType(row: PortfolioHoldingRow): string | null {
   if (row.settlement_type) {
     return row.settlement_type
   }
-  return row.instrument_core.instrument_type === 'option'
-    ? row.instrument_core.option_contract.settlement_type
+  return row.derivative_contract?.contract_type === 'option'
+    ? row.derivative_contract.terms.settlement_type
     : null
 }
 
@@ -738,9 +763,9 @@ function canonicalHoldingsExportRow(row: PortfolioHoldingRow): TableCell[] {
 
   return [
     HOLDING_REGION_LABELS[row.holding_region],
-    row.instrument_core.instrument_name,
+    holdingName(row),
     primaryIdentifier(row),
-    row.instrument_core.currency,
+    holdingCurrency(row),
     canonicalLifecycleStatus(row),
     exportNumber(row.quantity),
     marketValueBaseApplicable ? exportNumber(row.market_value_base) : 'N/A',
@@ -865,8 +890,8 @@ function sumCompleteNumbers(rows: PortfolioHoldingRow[], accessor: (row: Portfol
 
 function isCashHoldingRow(row: PortfolioHoldingRow) {
   return (
-    row.instrument_core.instrument_type === 'cash' ||
-    row.instrument_core.instrument_id.toLowerCase().startsWith('cash:') ||
+    row.instrument_core?.instrument_type === 'cash' ||
+    row.instrument_core?.instrument_id.toLowerCase().startsWith('cash:') === true ||
     row.line_id.toLowerCase().startsWith('cash:')
   )
 }
@@ -877,7 +902,7 @@ function isPendingMonetaryHoldingRow(row: PortfolioHoldingRow) {
     row.holding_kind === 'settlement_receivable' ||
     row.holding_kind === 'settlement_payable' ||
     row.holding_kind === 'position_recognition_adjustment' ||
-    row.instrument_core.instrument_id.toLowerCase().startsWith('pending:') ||
+    row.instrument_core?.instrument_id.toLowerCase().startsWith('pending:') === true ||
     row.line_id.toLowerCase().startsWith('pending:')
   )
 }
@@ -887,7 +912,7 @@ function isMonetaryHoldingRow(row: PortfolioHoldingRow) {
 }
 
 function isBaseCashHoldingRow(row: PortfolioHoldingRow, workspace: HoldingsWorkspaceResponse) {
-  return isCashHoldingRow(row) && normalizedCurrency(row.instrument_core.currency) === normalizedCurrency(workspace.base_currency)
+  return isCashHoldingRow(row) && normalizedCurrency(holdingCurrency(row)) === normalizedCurrency(workspace.base_currency)
 }
 
 function nonCashHoldingRows(rows: PortfolioHoldingRow[]) {
@@ -896,11 +921,11 @@ function nonCashHoldingRows(rows: PortfolioHoldingRow[]) {
 
 function compareCashHoldingRows(left: PortfolioHoldingRow, right: PortfolioHoldingRow) {
   return (
-    normalizedCurrency(left.instrument_core.currency).localeCompare(
-      normalizedCurrency(right.instrument_core.currency),
+    normalizedCurrency(holdingCurrency(left)).localeCompare(
+      normalizedCurrency(holdingCurrency(right)),
       'zh-Hans-CN',
     ) ||
-    left.instrument_core.instrument_name.localeCompare(right.instrument_core.instrument_name, 'zh-Hans-CN') ||
+    holdingName(left).localeCompare(holdingName(right), 'zh-Hans-CN') ||
     left.line_id.localeCompare(right.line_id, 'zh-Hans-CN')
   )
 }
@@ -916,7 +941,7 @@ function dayChangeDisplayValue(row: PortfolioHoldingRow, workspace: HoldingsWork
       currency: workspace.base_currency,
     }
   }
-  return { value: row.day_change_value, currency: row.instrument_core.currency }
+  return { value: row.day_change_value, currency: holdingCurrency(row) }
 }
 
 function bookAvgCost(row: PortfolioHoldingRow) {
@@ -1105,7 +1130,7 @@ function returnCurrencyForRow(
   if (isMonetaryHoldingRow(row)) {
     return workspace.base_currency.trim().toUpperCase()
   }
-  return row.instrument_core.currency.trim().toUpperCase()
+  return holdingCurrency(row).trim().toUpperCase()
 }
 
 function rowsHaveCompatibleReturnCurrency(
@@ -1631,7 +1656,9 @@ function taxonomyLabelsForHoldingRow(
   taxonomyByInstrumentId: Map<string, HoldingTaxonomyLabels>,
 ) {
   if (!isMonetaryHoldingRow(row)) {
-    return taxonomyByInstrumentId.get(row.instrument_core.instrument_id) ?? null
+    return row.instrument_core
+      ? taxonomyByInstrumentId.get(row.instrument_core.instrument_id) ?? null
+      : null
   }
 
   const accountLabels = (row.account_ids ?? [])
@@ -1926,17 +1953,17 @@ function holdingColumnExportValue(
 ): string | number | null {
   switch (column) {
     case 'instrument':
-      return row.instrument_core.instrument_name
+      return holdingName(row)
     case 'ticker':
       return primaryIdentifier(row)
     case 'instrument_type':
-      return formatLabel(row.instrument_core.instrument_type)
+      return formatLabel(holdingAssetType(row))
     case 'taxonomy_top':
       return taxonomyLabelsForHoldingRow(row, context.taxonomyByInstrumentId)?.topLevelLabel ?? 'Unassigned'
     case 'taxonomy_leaf':
       return taxonomyLabelsForHoldingRow(row, context.taxonomyByInstrumentId)?.leafLabel ?? 'Unassigned'
     case 'currency':
-      return row.instrument_core.currency
+      return holdingCurrency(row)
     case 'holding_date':
       return row.instrument_holding_start_date ?? null
     case 'quantity':
@@ -2127,7 +2154,7 @@ const HOLDINGS_COLUMN_DEFINITIONS: Record<HoldingsColumnKey, HoldingsColumnDefin
     label: 'Instrument',
     render: (row) => (
       <div className="holding-name-stack">
-        <span>{row.instrument_core.instrument_name}</span>
+        <span>{holdingName(row)}</span>
         <span className="holding-secondary holding-trend-summary">{holdingValuationSummary(row)}</span>
         <span
           className="holding-secondary holding-trend-reason"
@@ -2142,7 +2169,7 @@ const HOLDINGS_COLUMN_DEFINITIONS: Record<HoldingsColumnKey, HoldingsColumnDefin
         ) : null}
       </div>
     ),
-    sortValue: (row) => row.instrument_core.instrument_name,
+    sortValue: (row) => holdingName(row),
   },
   ticker: {
     key: 'ticker',
@@ -2164,8 +2191,8 @@ const HOLDINGS_COLUMN_DEFINITIONS: Record<HoldingsColumnKey, HoldingsColumnDefin
             ? 'Settlement Payable'
             : row.holding_kind === 'position_recognition_adjustment'
               ? 'Recognition Adjustment'
-              : formatLabel(row.instrument_core.instrument_type),
-    sortValue: (row) => row.holding_kind ?? row.instrument_core.instrument_type,
+              : formatLabel(holdingAssetType(row)),
+    sortValue: (row) => row.holding_kind ?? holdingAssetType(row),
   },
   taxonomy_top: {
     key: 'taxonomy_top',
@@ -2183,8 +2210,8 @@ const HOLDINGS_COLUMN_DEFINITIONS: Record<HoldingsColumnKey, HoldingsColumnDefin
     key: 'currency',
     label: 'Currency',
     align: 'center',
-    render: (row) => row.instrument_core.currency,
-    sortValue: (row) => row.instrument_core.currency,
+    render: (row) => holdingCurrency(row),
+    sortValue: (row) => holdingCurrency(row),
   },
   holding_date: {
     key: 'holding_date',
@@ -2211,14 +2238,14 @@ const HOLDINGS_COLUMN_DEFINITIONS: Record<HoldingsColumnKey, HoldingsColumnDefin
     key: 'avg_cost_book',
     label: 'Avg Cost',
     align: 'right',
-    render: (row) => formatUnitPrice(bookAvgCost(row), row.instrument_core.currency),
+    render: (row) => formatUnitPrice(bookAvgCost(row), holdingCurrency(row)),
     sortValue: (row) => bookAvgCost(row),
   },
   last_price: {
     key: 'last_price',
     label: 'Quote',
     align: 'right',
-    render: (row) => formatUnitPrice(row.last_price, row.instrument_core.currency),
+    render: (row) => formatUnitPrice(row.last_price, holdingCurrency(row)),
     sortValue: (row) => row.last_price,
   },
   quote_date: {
@@ -2253,7 +2280,7 @@ const HOLDINGS_COLUMN_DEFINITIONS: Record<HoldingsColumnKey, HoldingsColumnDefin
     key: 'market_value',
     label: 'Market Value',
     align: 'right',
-    render: (row) => formatCurrency(row.market_value, row.instrument_core.currency),
+    render: (row) => formatCurrency(row.market_value, holdingCurrency(row)),
     sortValue: (row, context) => baseAmountForRow(row, context.workspace.base_currency, row.market_value_base, row.market_value),
     total: (rows, context) => formatCurrency(totalMarketValueBase(rows, context.workspace), context.workspace.base_currency),
   },
@@ -2270,7 +2297,7 @@ const HOLDINGS_COLUMN_DEFINITIONS: Record<HoldingsColumnKey, HoldingsColumnDefin
     key: 'cost_basis',
     label: 'Cost Basis',
     align: 'right',
-    render: (row) => formatCurrency(row.cost_basis, row.instrument_core.currency),
+    render: (row) => formatCurrency(row.cost_basis, holdingCurrency(row)),
     sortValue: (row, context) => baseAmountForRow(row, context.workspace.base_currency, row.cost_basis_base, row.cost_basis),
     total: (rows, context) => formatCurrency(totalCostBasisBase(rows, context.workspace), context.workspace.base_currency),
   },
@@ -2358,7 +2385,7 @@ const HOLDINGS_COLUMN_DEFINITIONS: Record<HoldingsColumnKey, HoldingsColumnDefin
     render: (row) =>
       holdingUsesEventValuation(row)
         ? 'N/A'
-        : signedCurrency(unrealizedValue(row), row.instrument_core.currency),
+        : signedCurrency(unrealizedValue(row), holdingCurrency(row)),
     sortValue: (row, context) => unrealizedBaseValueForWorkspace(row, context.workspace),
     className: (row) =>
       holdingUsesEventValuation(row) ? '' : signedValueClass(unrealizedValue(row)),
@@ -2620,10 +2647,10 @@ function resolveGroupForRow(
                 : 'Pending Settlement',
       }
     }
-    return { key: row.instrument_core.instrument_type, label: formatLabel(row.instrument_core.instrument_type) }
+    return { key: holdingAssetType(row), label: formatLabel(holdingAssetType(row)) }
   }
   if (groupBy === 'currency') {
-    return { key: row.instrument_core.currency, label: row.instrument_core.currency }
+    return { key: holdingCurrency(row), label: holdingCurrency(row) }
   }
   if (groupBy === 'coverage') {
     return { key: row.coverage_status, label: formatLabel(row.coverage_status) }
@@ -3227,7 +3254,7 @@ export default function PortfolioHomePage() {
       return null
     }
     const selectionInstrumentId =
-      row.economic_instrument_id || row.instrument_core.instrument_id
+      holdingReferenceId(row)
     const isActive = selectedInstrumentId === selectionInstrumentId
     return (
       <tr
@@ -3341,25 +3368,25 @@ export default function PortfolioHomePage() {
   }
 
   function regionInstrumentCell(row: PortfolioHoldingRow) {
-    const instrumentId = row.economic_instrument_id || row.instrument_core.instrument_id
+    const instrumentId = holdingReferenceId(row)
     return (
       <button
         type="button"
         className="holdings-region-instrument"
         onClick={() => handleSelectInstrument(instrumentId)}
       >
-        <span>{row.instrument_core.instrument_name}</span>
+        <span>{holdingName(row)}</span>
         <span>{primaryIdentifier(row)}</span>
       </button>
     )
   }
 
   function structuredLifecycleLabel(row: PortfolioHoldingRow) {
-    if (row.instrument_core.instrument_type === 'fcn') {
-      return `Open · matures ${row.instrument_core.fcn_contract.maturity_date}`
+    if (row.derivative_contract?.contract_type === 'fcn') {
+      return `Open · matures ${row.derivative_contract.terms.maturity_date}`
     }
-    if (row.instrument_core.instrument_type === 'option') {
-      return `Open · expires ${row.expiry_date ?? row.instrument_core.option_contract.expiry_date}`
+    if (row.derivative_contract?.contract_type === 'option') {
+      return `Open · expires ${row.expiry_date ?? row.derivative_contract.terms.expiry_date}`
     }
     return row.instrument_holding_start_date
       ? `Open · held since ${row.instrument_holding_start_date}`
@@ -3481,7 +3508,7 @@ export default function PortfolioHomePage() {
                       <td>{regionInstrumentCell(row)}</td>
                       <td className="performance-cell-number">{formatQuantity(row.quantity)}</td>
                       <td className="performance-cell-number">
-                        {formatUnitPrice(row.last_price, row.instrument_core.currency)}
+                        {formatUnitPrice(row.last_price, holdingCurrency(row))}
                       </td>
                       <td className="performance-cell-number">
                         {formatCurrency(regionBaseAmount(row), workspace.base_currency)}
@@ -3549,13 +3576,13 @@ export default function PortfolioHomePage() {
                       <td>{regionInstrumentCell(row)}</td>
                       <td>{holdingMaturityOrExpiry(row) ?? 'N/A'}</td>
                       <td className="performance-cell-number">
-                        {formatUnitPrice(holdingStrike(row), row.instrument_core.currency)}
+                        {formatUnitPrice(holdingStrike(row), holdingCurrency(row))}
                       </td>
                       <td>{holdingSettlementTypeLabel(row)}</td>
                       <td className="performance-cell-number">{formatQuantity(row.open_contract_quantity)}</td>
                       <td className="performance-cell-number">{formatQuantity(row.required_underlying_quantity)}</td>
                       <td className="performance-cell-number">
-                        {formatCurrency(row.premium_basis_remaining, row.instrument_core.currency)}
+                        {formatCurrency(row.premium_basis_remaining, holdingCurrency(row))}
                       </td>
                       <td className="performance-cell-number">
                         {formatCurrency(
@@ -3587,13 +3614,13 @@ export default function PortfolioHomePage() {
                   {rows.length ? rows.map((row) => (
                     <tr key={row.line_id}>
                       <td>{regionInstrumentCell(row)}</td>
-                      <td>{row.instrument_core.currency}</td>
+                      <td>{holdingCurrency(row)}</td>
                       <td>{formatLabel(row.holding_kind ?? 'cash')}</td>
                       <td>{row.settlement_date ?? 'N/A'}</td>
                       <td className="performance-cell-number">
                         {formatCurrency(
                           row.settlement_amount ?? row.quantity,
-                          row.instrument_core.currency,
+                          holdingCurrency(row),
                         )}
                       </td>
                       <td className="performance-cell-number">
@@ -3799,7 +3826,7 @@ export default function PortfolioHomePage() {
     if (
       workspace.rows.some(
         (row) =>
-          row.instrument_core.instrument_id === selectedInstrumentId ||
+          holdingReferenceId(row) === selectedInstrumentId ||
           row.economic_instrument_id === selectedInstrumentId,
       )
     ) {

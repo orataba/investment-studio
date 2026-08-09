@@ -5,6 +5,7 @@ import os
 import plistlib
 import tempfile
 from pathlib import Path
+from urllib.parse import urlsplit
 
 
 APP_SERVICES = (
@@ -56,6 +57,10 @@ def main() -> int:
     if not database_url.startswith(("postgresql://", "postgresql+psycopg://")):
         raise SystemExit(
             "PORTFOLIO_OPS_LOCAL_DATABASE_URL must be an explicit PostgreSQL URL"
+        )
+    if urlsplit(database_url).password is not None:
+        raise SystemExit(
+            "PORTFOLIO_OPS_LOCAL_DATABASE_URL must not contain a password; use a 0600 .pgpass file"
         )
     if not 0 <= args.refresh_hour <= 23:
         raise SystemExit("--refresh-hour must be between 0 and 23")

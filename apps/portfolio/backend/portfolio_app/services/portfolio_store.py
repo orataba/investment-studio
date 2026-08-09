@@ -20,6 +20,7 @@ from portfolio_app.db.models import (
     AccountRecordModel,
     AnalyticsScopePolicyRecordModel,
     AnalyticsTaxonomySelectionRecordModel,
+    DerivativeContractRecordModel,
     PortfolioCalculationStateModel,
     PortfolioAnalyticsPolicyStateModel,
     PortfolioDailyContributionSliceModel,
@@ -65,6 +66,7 @@ from portfolio_app.services.research_eligibility import (
 EMPTY_STORE: dict[str, list[dict[str, Any]]] = {
     "portfolios": [],
     "accounts": [],
+    "derivative_contracts": [],
     "transactions": [],
     "taxonomies": [],
     "taxonomy_nodes": [],
@@ -268,6 +270,7 @@ def _normalize_store(store: dict[str, object]) -> dict[str, object]:
     for key in (
         "portfolios",
         "accounts",
+        "derivative_contracts",
         "transactions",
         "taxonomies",
         "taxonomy_nodes",
@@ -426,6 +429,13 @@ def _load_store_from_db(session) -> dict[str, object]:
             TransactionRecordModel.settlement_date,
         )
     ).all()
+    derivative_contracts = session.scalars(
+        select(DerivativeContractRecordModel).order_by(
+            DerivativeContractRecordModel.portfolio_id,
+            DerivativeContractRecordModel.contract_type,
+            DerivativeContractRecordModel.derivative_contract_id,
+        )
+    ).all()
     taxonomies = session.scalars(
         select(TaxonomyRecordModel).order_by(
             TaxonomyRecordModel.portfolio_id,
@@ -506,6 +516,10 @@ def _load_store_from_db(session) -> dict[str, object]:
             }
             for item in accounts
         ],
+        "derivative_contracts": [
+            _serialize_derivative_contract_row(item)
+            for item in derivative_contracts
+        ],
         "transactions": [
             {
                 "transaction_id": item.transaction_id,
@@ -528,6 +542,12 @@ def _load_store_from_db(session) -> dict[str, object]:
                 "settlement_cash_account_id": item.settlement_cash_account_id,
                 "instrument_id": item.instrument_id,
                 "instrument_ref": deepcopy(item.instrument_ref_json),
+                "derivative_contract_id": item.derivative_contract_id,
+                "derivative_contract": (
+                    _serialize_derivative_contract_row(item.derivative_contract)
+                    if item.derivative_contract is not None
+                    else None
+                ),
                 "quantity": item.quantity,
                 "source_quantity": _decimal_text(item.source_quantity),
                 "price": item.price,
@@ -652,6 +672,7 @@ def _save_store_to_db(session, data: dict[str, object]) -> None:
     session.execute(delete(TransactionChangeLogModel))
     session.execute(delete(TransactionIdempotencyRecordModel))
     session.execute(delete(TransactionRecordModel))
+    session.execute(delete(DerivativeContractRecordModel))
     session.execute(delete(AccountRecordModel))
     session.execute(delete(PortfolioRecordModel))
 
@@ -730,6 +751,32 @@ def _save_store_to_db(session, data: dict[str, object]) -> None:
                 opened_at=date.fromisoformat(str(opened_at)) if opened_at else None,
                 closed_at=date.fromisoformat(str(closed_at)) if closed_at else None,
                 status=str(raw_account.get("status") or "active").strip() or "active",
+            )
+        )
+
+    for raw_contract in list(normalized.get("derivative_contracts", [])):
+        if not isinstance(raw_contract, dict):
+            continue
+        terms = raw_contract.get("terms")
+        if not isinstance(terms, dict):
+            raise ValueError("Derivative contract terms must be an object.")
+        session.add(
+            DerivativeContractRecordModel(
+                derivative_contract_id=str(
+                    raw_contract.get("derivative_contract_id") or ""
+                ).strip(),
+                portfolio_id=str(raw_contract.get("portfolio_id") or "").strip(),
+                account_id=str(raw_contract.get("account_id") or "").strip(),
+                contract_name=str(raw_contract.get("contract_name") or "").strip(),
+                contract_type=str(raw_contract.get("contract_type") or "").strip(),
+                currency=str(raw_contract.get("currency") or "").strip().upper(),
+                external_reference=(
+                    str(raw_contract.get("external_reference") or "").strip() or None
+                ),
+                terms_json=deepcopy(terms),
+                created_at=str(
+                    raw_contract.get("created_at") or _current_utc_timestamp()
+                ).strip(),
             )
         )
 
@@ -987,6 +1034,10 @@ def _save_store_to_db(session, data: dict[str, object]) -> None:
                     deepcopy(raw_transaction.get("instrument_ref"))
                     if isinstance(raw_transaction.get("instrument_ref"), dict)
                     else None
+                ),
+                derivative_contract_id=(
+                    str(raw_transaction.get("derivative_contract_id") or "").strip()
+                    or None
                 ),
                 quantity=float(source_quantity) if source_quantity is not None else None,
                 source_quantity=source_quantity,
@@ -1329,6 +1380,22 @@ def _serialize_account_row(item: AccountRecordModel) -> dict[str, object]:
     }
 
 
+def _serialize_derivative_contract_row(
+    item: DerivativeContractRecordModel,
+) -> dict[str, object]:
+    return {
+        "derivative_contract_id": item.derivative_contract_id,
+        "portfolio_id": item.portfolio_id,
+        "account_id": item.account_id,
+        "contract_name": item.contract_name,
+        "contract_type": item.contract_type,
+        "currency": item.currency,
+        "external_reference": item.external_reference,
+        "terms": deepcopy(item.terms_json),
+        "created_at": item.created_at,
+    }
+
+
 def _serialize_transaction_row(item: TransactionRecordModel) -> dict[str, object]:
     return {
         "transaction_id": item.transaction_id,
@@ -1337,7 +1404,11 @@ def _serialize_transaction_row(item: TransactionRecordModel) -> dict[str, object
         "transaction_type": item.transaction_type,
         "option_action": resolve_option_action(
             item.transaction_type,
-            instrument_ref=item.instrument_ref_json,
+            derivative_contract=(
+                _serialize_derivative_contract_row(item.derivative_contract)
+                if item.derivative_contract is not None
+                else None
+            ),
         ),
         "lifecycle_event_type": item.lifecycle_event_type,
         "trade_date": item.trade_date.isoformat(),
@@ -1357,6 +1428,12 @@ def _serialize_transaction_row(item: TransactionRecordModel) -> dict[str, object
         "settlement_cash_account_id": item.settlement_cash_account_id,
         "instrument_id": item.instrument_id,
         "instrument_ref": deepcopy(item.instrument_ref_json),
+        "derivative_contract_id": item.derivative_contract_id,
+        "derivative_contract": (
+            _serialize_derivative_contract_row(item.derivative_contract)
+            if item.derivative_contract is not None
+            else None
+        ),
         "quantity": item.quantity,
         "source_quantity": _decimal_text(item.source_quantity),
         "price": item.price,
@@ -3931,6 +4008,29 @@ def copy_portfolio(portfolio_id: str) -> dict[str, object] | None:
                 )
             )
 
+        source_derivative_contracts = session.scalars(
+            select(DerivativeContractRecordModel).where(
+                DerivativeContractRecordModel.portfolio_id == portfolio_id
+            )
+        ).all()
+        derivative_contract_id_map: dict[str, str] = {}
+        for contract in source_derivative_contracts:
+            copied_contract_id = contract.derivative_contract_id
+            derivative_contract_id_map[contract.derivative_contract_id] = copied_contract_id
+            session.add(
+                DerivativeContractRecordModel(
+                    derivative_contract_id=copied_contract_id,
+                    portfolio_id=candidate,
+                    account_id=account_id_map[contract.account_id],
+                    contract_name=contract.contract_name,
+                    contract_type=contract.contract_type,
+                    currency=contract.currency,
+                    external_reference=contract.external_reference,
+                    terms_json=deepcopy(contract.terms_json),
+                    created_at=contract.created_at,
+                )
+            )
+
         source_taxonomies = session.scalars(
             select(TaxonomyRecordModel).where(TaxonomyRecordModel.portfolio_id == portfolio_id)
         ).all()
@@ -4180,6 +4280,13 @@ def copy_portfolio(portfolio_id: str) -> dict[str, object] | None:
                         else None
                     ),
                     instrument_ref_json=deepcopy(copied_transaction.get("instrument_ref")),
+                    derivative_contract_id=(
+                        derivative_contract_id_map.get(
+                            str(copied_transaction["derivative_contract_id"])
+                        )
+                        if copied_transaction.get("derivative_contract_id")
+                        else None
+                    ),
                     quantity=float(source_quantity) if source_quantity is not None else None,
                     source_quantity=source_quantity,
                     price=float(source_price) if source_price is not None else None,
@@ -4279,6 +4386,11 @@ def delete_portfolio(portfolio_id: str) -> bool:
         session.execute(delete(PortfolioInstrumentUniverseRecordModel).where(PortfolioInstrumentUniverseRecordModel.portfolio_id == portfolio_id))
         session.execute(delete(TaxonomyRecordModel).where(TaxonomyRecordModel.portfolio_id == portfolio_id))
         session.execute(delete(TransactionRecordModel).where(TransactionRecordModel.portfolio_id == portfolio_id))
+        session.execute(
+            delete(DerivativeContractRecordModel).where(
+                DerivativeContractRecordModel.portfolio_id == portfolio_id
+            )
+        )
         session.execute(delete(AccountRecordModel).where(AccountRecordModel.portfolio_id == portfolio_id))
         session.execute(delete(PortfolioRecordModel).where(PortfolioRecordModel.portfolio_id == portfolio_id))
 
@@ -4336,6 +4448,36 @@ def list_accounts(portfolio_id: str) -> list[dict[str, object]]:
             )
         ).all()
         return [_serialize_account_row(item) for item in accounts]
+
+
+def list_derivative_contracts(portfolio_id: str) -> list[dict[str, object]]:
+    session_factory = get_session_factory()
+    with session_factory() as session:
+        records = session.scalars(
+            select(DerivativeContractRecordModel)
+            .where(DerivativeContractRecordModel.portfolio_id == portfolio_id)
+            .order_by(
+                DerivativeContractRecordModel.contract_type,
+                DerivativeContractRecordModel.contract_name,
+                DerivativeContractRecordModel.derivative_contract_id,
+            )
+        ).all()
+        return [_serialize_derivative_contract_row(record) for record in records]
+
+
+def get_derivative_contract(
+    portfolio_id: str,
+    derivative_contract_id: str,
+) -> dict[str, object] | None:
+    session_factory = get_session_factory()
+    with session_factory() as session:
+        record = session.get(
+            DerivativeContractRecordModel,
+            (portfolio_id, derivative_contract_id),
+        )
+        if record is None:
+            return None
+        return _serialize_derivative_contract_row(record)
 
 
 def get_account(portfolio_id: str, account_id: str) -> dict[str, object] | None:
@@ -4534,7 +4676,7 @@ def list_transactions(
     *,
     account_id: str | None = None,
     transaction_type: str | None = None,
-    instrument_id: str | None = None,
+    position_reference_id: str | None = None,
     start_date: date | None = None,
     end_date: date | None = None,
 ) -> list[dict[str, object]]:
@@ -4555,8 +4697,14 @@ def list_transactions(
             )
         if transaction_type:
             statement = statement.where(TransactionRecordModel.transaction_type == transaction_type)
-        if instrument_id:
-            statement = statement.where(TransactionRecordModel.instrument_id == instrument_id)
+        if position_reference_id:
+            statement = statement.where(
+                or_(
+                    TransactionRecordModel.instrument_id == position_reference_id,
+                    TransactionRecordModel.derivative_contract_id
+                    == position_reference_id,
+                )
+            )
         if start_date is not None:
             statement = statement.where(TransactionRecordModel.trade_date >= start_date)
         if end_date is not None:
@@ -4589,6 +4737,109 @@ def _mark_daily_snapshots_stale(
     )
 
 
+def _resolve_derivative_contract_for_transaction(
+    session,
+    *,
+    portfolio_id: str,
+    account_id: str,
+    currency: str,
+    derivative_contract_id: str | None = None,
+    derivative_contract: dict[str, object] | None = None,
+) -> DerivativeContractRecordModel | None:
+    normalized_id = str(derivative_contract_id or "").strip()
+    if not normalized_id:
+        if derivative_contract is not None:
+            raise ValueError(
+                "Inline derivative contract creation requires derivative_contract_id."
+            )
+        return None
+
+    existing = session.get(
+        DerivativeContractRecordModel,
+        (portfolio_id, normalized_id),
+    )
+    if existing is not None:
+        if existing.account_id != account_id:
+            raise ValueError("Derivative contract belongs to another account.")
+        if existing.currency != currency.upper():
+            raise ValueError("Derivative contract currency must match the transaction.")
+        if derivative_contract is not None:
+            expected = {
+                "derivative_contract_id": normalized_id,
+                "contract_name": existing.contract_name,
+                "contract_type": existing.contract_type,
+                "external_reference": existing.external_reference,
+                "terms": existing.terms_json,
+            }
+            supplied = {
+                "derivative_contract_id": str(
+                    derivative_contract.get("derivative_contract_id") or ""
+                ).strip(),
+                "contract_name": str(
+                    derivative_contract.get("contract_name") or ""
+                ).strip(),
+                "contract_type": str(
+                    derivative_contract.get("contract_type") or ""
+                ).strip(),
+                "external_reference": (
+                    str(derivative_contract.get("external_reference") or "").strip()
+                    or None
+                ),
+                "terms": derivative_contract.get("terms"),
+            }
+            if supplied != expected:
+                raise ValueError(
+                    "Derivative contract terms are immutable; reference the existing "
+                    "contract without supplying changed terms."
+                )
+        return existing
+
+    if derivative_contract is None:
+        raise ValueError("Derivative contract does not exist in this portfolio.")
+    if str(derivative_contract.get("derivative_contract_id") or "").strip() != normalized_id:
+        raise ValueError("derivative_contract_id does not match the inline contract.")
+    account = session.get(AccountRecordModel, account_id)
+    if account is None or account.portfolio_id != portfolio_id:
+        raise ValueError("Derivative contract account does not belong to the portfolio.")
+    contract_name = str(derivative_contract.get("contract_name") or "").strip()
+    contract_type = str(derivative_contract.get("contract_type") or "").strip().lower()
+    terms = derivative_contract.get("terms")
+    if not contract_name or contract_type not in {"fcn", "option"} or not isinstance(terms, dict):
+        raise ValueError("Inline derivative contract is incomplete.")
+    external_reference = (
+        str(derivative_contract.get("external_reference") or "").strip() or None
+    )
+    if external_reference is not None:
+        existing_reference_id = session.scalar(
+            select(DerivativeContractRecordModel.derivative_contract_id)
+            .where(
+                DerivativeContractRecordModel.portfolio_id == portfolio_id,
+                DerivativeContractRecordModel.external_reference
+                == external_reference,
+            )
+            .limit(1)
+        )
+        if existing_reference_id is not None:
+            raise ValueError(
+                "Derivative contract external_reference already belongs to "
+                f"'{existing_reference_id}' in this portfolio."
+            )
+    record = DerivativeContractRecordModel(
+        derivative_contract_id=normalized_id,
+        portfolio_id=portfolio_id,
+        account_id=account_id,
+        contract_name=contract_name,
+        contract_type=contract_type,
+        currency=currency.upper(),
+        external_reference=external_reference,
+        terms_json=deepcopy(terms),
+        created_at=_current_utc_timestamp(),
+    )
+    session.add(record)
+    session.flush()
+    return record
+
+
 def create_transaction(
     portfolio_id: str,
     *,
@@ -4603,6 +4854,8 @@ def create_transaction(
     settlement_cash_account_id: str | None,
     instrument_id: str | None,
     instrument_ref: dict[str, object] | None,
+    derivative_contract_id: str | None = None,
+    derivative_contract: dict[str, object] | None = None,
     quantity: Decimal | float | None,
     price: Decimal | float | None,
     gross_amount: Decimal | float,
@@ -4641,6 +4894,8 @@ def create_transaction(
                 "settlement_cash_account_id": settlement_cash_account_id,
                 "instrument_id": instrument_id,
                 "instrument_ref": instrument_ref,
+                "derivative_contract_id": derivative_contract_id,
+                "derivative_contract": derivative_contract,
                 "quantity": quantity,
                 "price": price,
                 "gross_amount": gross_amount,
@@ -4756,6 +5011,22 @@ def create_transactions(
                 portfolio_id=portfolio_id,
                 row_version=1,
             )
+            derivative_contract_record = _resolve_derivative_contract_for_transaction(
+                session,
+                portfolio_id=portfolio_id,
+                account_id=str(values["account_id"]),
+                currency=str(values["currency"]),
+                derivative_contract_id=(
+                    str(values["derivative_contract_id"])
+                    if values.get("derivative_contract_id")
+                    else None
+                ),
+                derivative_contract=(
+                    values["derivative_contract"]
+                    if isinstance(values.get("derivative_contract"), dict)
+                    else None
+                ),
+            )
             _apply_transaction_record(
                 record,
                 transaction_type=str(values["transaction_type"]),
@@ -4780,6 +5051,11 @@ def create_transactions(
                 instrument_ref=(
                     values["instrument_ref"]
                     if isinstance(values.get("instrument_ref"), dict)
+                    else None
+                ),
+                derivative_contract_id=(
+                    derivative_contract_record.derivative_contract_id
+                    if derivative_contract_record is not None
                     else None
                 ),
                 quantity=values.get("quantity"),
@@ -4879,6 +5155,8 @@ def update_transaction(
     settlement_cash_account_id: str | None,
     instrument_id: str | None,
     instrument_ref: dict[str, object] | None,
+    derivative_contract_id: str | None = None,
+    derivative_contract: dict[str, object] | None = None,
     quantity: Decimal | float | None,
     price: Decimal | float | None,
     gross_amount: Decimal | float,
@@ -4922,6 +5200,14 @@ def update_transaction(
             )
         before = _serialize_transaction_row(record)
         previous_instrument_id = str(record.instrument_id or "").strip()
+        derivative_contract_record = _resolve_derivative_contract_for_transaction(
+            session,
+            portfolio_id=portfolio_id,
+            account_id=account_id,
+            currency=currency,
+            derivative_contract_id=derivative_contract_id,
+            derivative_contract=derivative_contract,
+        )
         _apply_transaction_record(
             record,
             transaction_type=transaction_type,
@@ -4936,6 +5222,11 @@ def update_transaction(
             settlement_cash_account_id=settlement_cash_account_id,
             instrument_id=instrument_id,
             instrument_ref=instrument_ref,
+            derivative_contract_id=(
+                derivative_contract_record.derivative_contract_id
+                if derivative_contract_record is not None
+                else None
+            ),
             quantity=quantity,
             price=price,
             gross_amount=gross_amount,
@@ -5082,6 +5373,7 @@ def _apply_transaction_record(
     settlement_cash_account_id: str | None,
     instrument_id: str | None,
     instrument_ref: dict[str, object] | None,
+    derivative_contract_id: str | None,
     quantity: Decimal | float | None,
     price: Decimal | float | None,
     gross_amount: Decimal | float,
@@ -5100,6 +5392,11 @@ def _apply_transaction_record(
     note: str | None,
     created_at: str,
 ) -> None:
+    if instrument_id and derivative_contract_id:
+        raise ValueError(
+            f"Transaction '{record.transaction_id}' may not reference both an "
+            "instrument and a derivative contract."
+        )
     if isinstance(instrument_ref, dict):
         _validate_instrument_ref_contract(
             instrument_ref,
@@ -5163,6 +5460,7 @@ def _apply_transaction_record(
     record.settlement_cash_account_id = settlement_cash_account_id
     record.instrument_id = instrument_id
     record.instrument_ref_json = deepcopy(instrument_ref) if isinstance(instrument_ref, dict) else None
+    record.derivative_contract_id = derivative_contract_id
     record.source_quantity = source_quantity
     record.quantity = float(source_quantity) if source_quantity is not None else None
     record.source_price = source_price

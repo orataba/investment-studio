@@ -36,15 +36,12 @@ from portfolio_ops_instrument_core.fx_contract import (
 from portfolio_ops_instrument_core.models import (
     BrokerIdentifier,
     CorporateActionEvent as CorporateActionEventModel,
-    CorporateActionAdjustmentPolicy,
-    FCNContractMetadata,
     FundNavAdjustmentFactor as FundNavAdjustmentFactorModel,
     FundNavEvent as FundNavEventModel,
     FundNavProjectionRun as FundNavProjectionRunModel,
     FundNavReinvestmentEvidence as FundNavReinvestmentEvidenceModel,
     NavLineage,
     InstrumentCore,
-    OptionContractIdentity,
     SourceSettings,
     canonical_price_contract,
     normalize_instrument_type,
@@ -55,7 +52,6 @@ from portfolio_ops_instrument_core.models import (
     validate_quote_selection_policy_for_instrument_type,
     _quantized_fund_nav_factor,
     deterministic_fund_nav_adjustment_factor_id,
-    derivative_contract_reconciliation,
 )
 
 
@@ -74,8 +70,6 @@ SOURCE_SCHEDULE_DEFAULTS: dict[str, tuple[str, int]] = {
     "index": ("daily", 0),
     "bond": ("daily", 0),
     "equity": ("daily", 0),
-    "fcn": ("event_driven", 0),
-    "option": ("event_driven", 0),
     "fx": ("daily", 0),
     "cash": ("event_driven", 0),
     "other": ("event_driven", 0),
@@ -223,6 +217,14 @@ def _next_market_data_watermark(session: Session) -> str:
     return watermark
 
 
+def _next_calculation_input_watermark(current_value: str | None) -> str:
+    candidate = _parse_utc_iso(_utcnow_iso()) or datetime.now(UTC)
+    previous = _parse_utc_iso(current_value)
+    if previous is not None and candidate <= previous:
+        candidate = previous + timedelta(microseconds=1)
+    return candidate.isoformat(timespec="microseconds").replace("+00:00", "Z")
+
+
 def _inferred_market_calendar(
     identifiers: Iterable[dict[str, object]] | None,
 ) -> str | None:
@@ -358,20 +360,6 @@ QUOTE_SELECTION_POLICY_DEFAULTS: dict[str, dict[str, list[str]]] = {
         "total_return": ["dirty_price", "clean_price"],
         "chart": ["dirty_price", "clean_price"],
         "reference": ["clean_price", "dirty_price"],
-    },
-    "fcn": {
-        "trading": ["close", "last"],
-        "valuation": ["close", "last"],
-        "total_return": ["close", "last"],
-        "chart": ["close", "last"],
-        "reference": ["close", "last"],
-    },
-    "option": {
-        "trading": ["close", "last"],
-        "valuation": ["close", "last"],
-        "total_return": ["close", "last"],
-        "chart": ["close", "last"],
-        "reference": ["close", "last"],
     },
     "cash": {
         "trading": ["par"],
@@ -858,102 +846,6 @@ def _serialize_identifier_rows(item: Instrument) -> list[dict[str, object]]:
     ]
 
 
-def _serialize_option_contract(
-    contract: OptionContractIdentity,
-) -> dict[str, object]:
-    payload = contract.model_dump(mode="json")
-    payload["strike"] = _decimal_text(contract.strike)
-    payload["contract_multiplier"] = _decimal_text(contract.contract_multiplier)
-    return payload
-
-
-def _option_contract_to_dict(item: Instrument) -> dict[str, object] | None:
-    """Serialize nullable registry columns as the shared contract object."""
-
-    values = {
-        "underlying_instrument_id": item.option_underlying_instrument_id,
-        "option_type": item.option_type,
-        "expiry_date": item.option_expiry_date,
-        "strike": item.option_strike,
-        "contract_multiplier": item.option_contract_multiplier,
-        "settlement_type": item.option_settlement_type,
-        "contract_currency": item.option_contract_currency,
-    }
-    if all(value is None for value in values.values()):
-        return None
-    return _serialize_option_contract(OptionContractIdentity.model_validate(values))
-
-
-def _normalized_option_contract(
-    item: dict[str, object],
-    *,
-    instrument_id: str,
-    instrument_type: str,
-    instrument_currency: str,
-) -> dict[str, object] | None:
-    raw = item.get("option_contract")
-    normalized_type = normalize_instrument_type(instrument_type)
-    if raw is None:
-        if normalized_type == "option":
-            raise ValueError("Option instruments require complete option_contract identity.")
-        return None
-    if normalized_type != "option":
-        raise ValueError("option_contract is only valid for option instruments.")
-    contract = OptionContractIdentity.model_validate(raw)
-    if contract.underlying_instrument_id == instrument_id:
-        raise ValueError("Option underlying instrument must differ from option instrument.")
-    if contract.contract_currency != instrument_currency:
-        raise ValueError("Option contract currency must match instrument currency.")
-    return _serialize_option_contract(contract)
-
-
-def _serialize_fcn_contract(contract: FCNContractMetadata) -> dict[str, object]:
-    payload = contract.model_dump(mode="json")
-    payload["notional"] = _decimal_text(contract.notional)
-    payload["barrier_level"] = (
-        _decimal_text(contract.barrier_level)
-        if contract.barrier_level is not None
-        else None
-    )
-    return payload
-
-
-def _normalized_fcn_contract(
-    item: dict[str, object],
-    *,
-    instrument_type: str,
-) -> dict[str, object] | None:
-    raw = item.get("fcn_contract")
-    normalized_type = normalize_instrument_type(instrument_type)
-    if raw is None:
-        if normalized_type == "fcn":
-            raise ValueError("FCN instruments require complete fcn_contract metadata.")
-        return None
-    if normalized_type != "fcn":
-        raise ValueError("fcn_contract is only valid for FCN instruments.")
-    return _serialize_fcn_contract(FCNContractMetadata.model_validate(raw))
-
-
-def _normalized_adjustment_policy(
-    item: dict[str, object],
-    *,
-    instrument_type: str,
-) -> dict[str, object] | None:
-    raw = item.get("corporate_action_adjustment_policy")
-    normalized_type = normalize_instrument_type(instrument_type)
-    if raw is None:
-        if normalized_type in {"fcn", "option"}:
-            raise ValueError(
-                "Derivative instruments require corporate_action_adjustment_policy."
-            )
-        return None
-    if normalized_type not in {"fcn", "option"}:
-        raise ValueError(
-            "corporate_action_adjustment_policy is only valid for derivative instruments."
-        )
-    return CorporateActionAdjustmentPolicy.model_validate(raw).model_dump(mode="json")
-
-
 def _normalized_broker_identifiers(
     item: dict[str, object],
 ) -> list[dict[str, object]]:
@@ -987,7 +879,15 @@ def _normalized_broker_identifiers(
         for broker_key in represented_brokers
     ):
         raise ValueError("Each represented broker requires exactly one primary identifier.")
-    return [identifier.model_dump(mode="json") for identifier in identifiers]
+    return [
+        {
+            **identifier.model_dump(mode="json"),
+            "broker": identifier.broker.strip().casefold(),
+            "identifier_type": identifier.identifier_type.strip().lower(),
+            "identifier_value": identifier.identifier_value.strip().casefold(),
+        }
+        for identifier in identifiers
+    ]
 
 
 def _validated_instrument_core(
@@ -997,10 +897,7 @@ def _validated_instrument_core(
     instrument_type: str,
     currency: str,
     identifiers: list[dict[str, object]],
-    option_contract: dict[str, object] | None,
-    fcn_contract: dict[str, object] | None,
     broker_identifiers: list[dict[str, object]],
-    corporate_action_adjustment_policy: dict[str, object] | None,
 ) -> InstrumentCore:
     return InstrumentCore.model_validate(
         {
@@ -1009,12 +906,7 @@ def _validated_instrument_core(
             "instrument_type": instrument_type,
             "currency": currency,
             "identifiers": identifiers,
-            "option_contract": option_contract,
-            "fcn_contract": fcn_contract,
             "broker_identifiers": broker_identifiers,
-            "corporate_action_adjustment_policy": (
-                corporate_action_adjustment_policy
-            ),
         }
     )
 
@@ -1051,20 +943,6 @@ def _instrument_to_store_dict(
 ) -> dict[str, object]:
     identifiers = _serialize_identifier_rows(item)
     broker_identifiers = _serialize_broker_identifier_rows(item)
-    fcn_contract = (
-        _serialize_fcn_contract(
-            FCNContractMetadata.model_validate(item.fcn_contract_json)
-        )
-        if item.fcn_contract_json is not None
-        else None
-    )
-    adjustment_policy = (
-        CorporateActionAdjustmentPolicy.model_validate(
-            item.derivative_adjustment_policy_json
-        ).model_dump(mode="json")
-        if item.derivative_adjustment_policy_json is not None
-        else None
-    )
     resolved_market_data = market_data
     if resolved_market_data is None:
         resolved_market_data = [
@@ -1146,37 +1024,20 @@ def _instrument_to_store_dict(
             if factor["fund_nav_projection_run_id"]
             == current_fund_nav_projection_run_id
         ]
-    core = _validated_instrument_core(
+    _validated_instrument_core(
         instrument_id=item.instrument_id,
         instrument_name=item.instrument_name,
         instrument_type=item.instrument_type,
         currency=item.currency,
         identifiers=identifiers,
-        option_contract=_option_contract_to_dict(item),
-        fcn_contract=fcn_contract,
         broker_identifiers=broker_identifiers,
-        corporate_action_adjustment_policy=adjustment_policy,
     )
     return {
         "instrument_id": item.instrument_id,
         "instrument_name": item.instrument_name,
         "instrument_type": item.instrument_type,
         "currency": item.currency,
-        "option_contract": (
-            core.option_contract.model_dump(mode="json")
-            if core.option_contract is not None
-            else None
-        ),
-        "fcn_contract": (
-            _serialize_fcn_contract(core.fcn_contract)
-            if core.fcn_contract is not None
-            else None
-        ),
         "broker_identifiers": broker_identifiers,
-        "corporate_action_adjustment_policy": adjustment_policy,
-        "contract_reconciliation": derivative_contract_reconciliation(core).model_dump(
-            mode="json"
-        ),
         "identifiers": identifiers,
         "market_data": _sort_market_data(resolved_market_data),
         "corporate_actions": _sort_corporate_actions(corporate_actions),
@@ -1191,6 +1052,7 @@ def _instrument_to_store_dict(
         "fund_nav_adjustment_factors": fund_nav_adjustment_factors,
         "fund_nav_adjustment_factor_history": fund_nav_adjustment_factor_history,
         "market_data_updated_at": item.market_data_updated_at,
+        "calculation_inputs_updated_at": item.calculation_inputs_updated_at,
         "quote_selection_policy": deepcopy(item.quote_selection_policy_json or {}),
         "source_settings": deepcopy(item.source_settings_json or {}),
         "refresh_status": deepcopy(item.refresh_status_json or {}),
@@ -1266,21 +1128,7 @@ def _save_store_to_db(session: Session, data: dict[str, object]) -> None:
             raise ValueError("Every instrument requires a non-blank id and name.")
         instrument_type = normalize_instrument_type(item.get("instrument_type"))
         instrument_currency = normalize_market_data_currency(item.get("currency"))
-        option_contract = _normalized_option_contract(
-            item,
-            instrument_id=instrument_id,
-            instrument_type=instrument_type,
-            instrument_currency=instrument_currency,
-        )
-        fcn_contract = _normalized_fcn_contract(
-            item,
-            instrument_type=instrument_type,
-        )
         broker_identifiers = _normalized_broker_identifiers(item)
-        adjustment_policy = _normalized_adjustment_policy(
-            item,
-            instrument_type=instrument_type,
-        )
         _validated_instrument_core(
             instrument_id=instrument_id,
             instrument_name=instrument_name,
@@ -1291,10 +1139,7 @@ def _save_store_to_db(session: Session, data: dict[str, object]) -> None:
                 for raw_identifier in list(item.get("identifiers", []))
                 if isinstance(raw_identifier, dict)
             ],
-            option_contract=option_contract,
-            fcn_contract=fcn_contract,
             broker_identifiers=broker_identifiers,
-            corporate_action_adjustment_policy=adjustment_policy,
         )
         raw_market_data = item.get("market_data", [])
         if isinstance(raw_market_data, list) and any(
@@ -1315,35 +1160,6 @@ def _save_store_to_db(session: Session, data: dict[str, object]) -> None:
             instrument_name=instrument_name,
             instrument_type=instrument_type,
             currency=instrument_currency,
-            option_underlying_instrument_id=(
-                option_contract["underlying_instrument_id"]
-                if option_contract is not None
-                else None
-            ),
-            option_type=option_contract.get("option_type") if option_contract else None,
-            option_expiry_date=(
-                date.fromisoformat(str(option_contract["expiry_date"]))
-                if option_contract is not None
-                else None
-            ),
-            option_strike=(
-                Decimal(str(option_contract["strike"]))
-                if option_contract is not None
-                else None
-            ),
-            option_contract_multiplier=(
-                Decimal(str(option_contract["contract_multiplier"]))
-                if option_contract is not None
-                else None
-            ),
-            option_settlement_type=(
-                option_contract["settlement_type"] if option_contract is not None else None
-            ),
-            option_contract_currency=(
-                option_contract["contract_currency"] if option_contract is not None else None
-            ),
-            fcn_contract_json=deepcopy(fcn_contract),
-            derivative_adjustment_policy_json=deepcopy(adjustment_policy),
             quote_selection_policy_json=_normalized_quote_selection_policy(item),
             source_settings_json=_normalized_source_settings(item),
             refresh_status_json=_normalized_refresh_status(item),
@@ -1352,6 +1168,11 @@ def _save_store_to_db(session: Session, data: dict[str, object]) -> None:
                 str(item.get("market_data_updated_at")).strip()
                 if item.get("market_data_updated_at")
                 else (reset_watermark if normalized_market_data else None)
+            ),
+            calculation_inputs_updated_at=(
+                str(item.get("calculation_inputs_updated_at")).strip()
+                if item.get("calculation_inputs_updated_at")
+                else None
             ),
         )
         session.add(instrument)
@@ -1573,18 +1394,13 @@ def _serialize_record(item: dict[str, object]) -> dict[str, object]:
         "instrument_name": item["instrument_name"],
         "instrument_type": item["instrument_type"],
         "currency": item["currency"],
-        "option_contract": deepcopy(item.get("option_contract")),
-        "fcn_contract": deepcopy(item.get("fcn_contract")),
         "broker_identifiers": deepcopy(item.get("broker_identifiers", [])),
-        "corporate_action_adjustment_policy": deepcopy(
-            item.get("corporate_action_adjustment_policy")
-        ),
-        "contract_reconciliation": deepcopy(item.get("contract_reconciliation")),
         "identifiers": deepcopy(item.get("identifiers", [])),
         "latest_market_data": _latest_market_data(market_data),
         "quote_selection_policy": _normalized_quote_selection_policy(item),
         "coverage_state": _coverage_state(market_data),
         "market_data_updated_at": item.get("market_data_updated_at"),
+        "calculation_inputs_updated_at": item.get("calculation_inputs_updated_at"),
         "source_settings": _normalized_source_settings(item),
         "refresh_status": _normalized_refresh_status(item),
         "lifecycle_state": _normalized_lifecycle_state(item),
@@ -3220,7 +3036,7 @@ def find_instrument_by_broker_identifier(
     if not normalized_broker or not normalized_type or not normalized_value:
         return None
     with session_factory() as session:
-        candidate = session.scalar(
+        candidates = session.scalars(
             _instrument_query()
             .join(InstrumentBrokerIdentifier)
             .where(
@@ -3230,10 +3046,15 @@ def find_instrument_by_broker_identifier(
                 func.lower(InstrumentBrokerIdentifier.identifier_value)
                 == normalized_value,
             )
-            .limit(1)
-        )
-        if candidate is None:
+            .order_by(Instrument.instrument_id)
+        ).all()
+        if not candidates:
             return None
+        if len(candidates) > 1:
+            raise ValueError(
+                "Ambiguous normalized broker identifier; repair registry identity data."
+            )
+        candidate = candidates[0]
         item = _instrument_to_store_dict(candidate)
         if not include_inactive and not _is_active(item):
             return None
@@ -3248,34 +3069,13 @@ def create_instrument(
     currency: str,
     identifiers: list[dict[str, object]],
     quote_selection_policy: dict[str, object] | None = None,
-    option_contract: dict[str, object] | None = None,
-    fcn_contract: dict[str, object] | None = None,
     broker_identifiers: list[dict[str, object]] | None = None,
-    corporate_action_adjustment_policy: dict[str, object] | None = None,
 ) -> dict[str, object]:
     normalized_name = instrument_name.strip()
     normalized_instrument_type = normalize_instrument_type(instrument_type)
     normalized_currency = normalize_market_data_currency(currency)
-    normalized_option_contract = _normalized_option_contract(
-        {"option_contract": option_contract},
-        instrument_id="__pending__",
-        instrument_type=normalized_instrument_type,
-        instrument_currency=normalized_currency,
-    )
-    normalized_fcn_contract = _normalized_fcn_contract(
-        {"fcn_contract": fcn_contract},
-        instrument_type=normalized_instrument_type,
-    )
     normalized_broker_identifiers = _normalized_broker_identifiers(
         {"broker_identifiers": broker_identifiers or []}
-    )
-    normalized_adjustment_policy = _normalized_adjustment_policy(
-        {
-            "corporate_action_adjustment_policy": (
-                corporate_action_adjustment_policy
-            )
-        },
-        instrument_type=normalized_instrument_type,
     )
     normalized_identifiers = [
         {
@@ -3336,36 +3136,14 @@ def create_instrument(
             candidate = f"{base_id}-{suffix}"
             suffix += 1
 
-        normalized_option_contract = _normalized_option_contract(
-            {"option_contract": normalized_option_contract},
-            instrument_id=candidate,
-            instrument_type=normalized_instrument_type,
-            instrument_currency=normalized_currency,
-        )
-        core = _validated_instrument_core(
+        _validated_instrument_core(
             instrument_id=candidate,
             instrument_name=normalized_name,
             instrument_type=normalized_instrument_type,
             currency=normalized_currency,
             identifiers=identifiers,
-            option_contract=normalized_option_contract,
-            fcn_contract=normalized_fcn_contract,
             broker_identifiers=normalized_broker_identifiers,
-            corporate_action_adjustment_policy=normalized_adjustment_policy,
         )
-        referenced_instrument_ids: set[str] = set()
-        if core.option_contract is not None:
-            referenced_instrument_ids.add(core.option_contract.underlying_instrument_id)
-        if core.fcn_contract is not None:
-            referenced_instrument_ids.update(core.fcn_contract.underlying_instrument_ids)
-            referenced_instrument_ids.update(core.fcn_contract.deliverable_instrument_ids)
-        missing_references = sorted(referenced_instrument_ids - existing_ids)
-        if missing_references:
-            raise ValueError(
-                "Derivative contract references unknown instruments: "
-                + ", ".join(missing_references)
-                + "."
-            )
 
         fx_identity = fx_instrument_identity(candidate)
         if normalized_instrument_type == "fx":
@@ -3393,13 +3171,7 @@ def create_instrument(
             "instrument_name": normalized_name,
             "instrument_type": normalized_instrument_type,
             "currency": normalized_currency,
-            "option_contract": normalized_option_contract,
-            "fcn_contract": normalized_fcn_contract,
             "broker_identifiers": normalized_broker_identifiers,
-            "corporate_action_adjustment_policy": normalized_adjustment_policy,
-            "contract_reconciliation": derivative_contract_reconciliation(core).model_dump(
-                mode="json"
-            ),
             "identifiers": identifiers,
             "market_data": [],
             "quote_selection_policy": _normalized_quote_selection_policy(
@@ -3431,49 +3203,11 @@ def create_instrument(
                 instrument_name=record["instrument_name"],
                 instrument_type=record["instrument_type"],
                 currency=record["currency"],
-                option_underlying_instrument_id=(
-                    normalized_option_contract["underlying_instrument_id"]
-                    if normalized_option_contract is not None
-                    else None
-                ),
-                option_type=(
-                    normalized_option_contract.get("option_type")
-                    if normalized_option_contract is not None
-                    else None
-                ),
-                option_expiry_date=(
-                    date.fromisoformat(str(normalized_option_contract["expiry_date"]))
-                    if normalized_option_contract is not None
-                    else None
-                ),
-                option_strike=(
-                    Decimal(str(normalized_option_contract["strike"]))
-                    if normalized_option_contract is not None
-                    else None
-                ),
-                option_contract_multiplier=(
-                    Decimal(str(normalized_option_contract["contract_multiplier"]))
-                    if normalized_option_contract is not None
-                    else None
-                ),
-                option_settlement_type=(
-                    normalized_option_contract.get("settlement_type")
-                    if normalized_option_contract is not None
-                    else None
-                ),
-                option_contract_currency=(
-                    normalized_option_contract.get("contract_currency")
-                    if normalized_option_contract is not None
-                    else None
-                ),
-                fcn_contract_json=deepcopy(normalized_fcn_contract),
-                derivative_adjustment_policy_json=deepcopy(
-                    normalized_adjustment_policy
-                ),
                 quote_selection_policy_json=record["quote_selection_policy"],
                 source_settings_json=record["source_settings"],
                 refresh_status_json=record["refresh_status"],
                 lifecycle_state_json=record["lifecycle_state"],
+                calculation_inputs_updated_at=_utcnow_iso(),
             )
         )
         for raw_identifier in identifiers:
@@ -3508,112 +3242,6 @@ def create_instrument(
                 "with an existing registry record."
             ) from error
         return _serialize_record(record)
-
-
-def upsert_derivative_contract_metadata(
-    session_factory: SessionFactory,
-    *,
-    instrument_id: str,
-    fcn_contract: dict[str, object] | None,
-    broker_identifiers: list[dict[str, object]],
-    corporate_action_adjustment_policy: dict[str, object],
-) -> dict[str, object] | None:
-    with session_factory() as session:
-        target = session.scalar(
-            _instrument_query()
-            .where(Instrument.instrument_id == instrument_id)
-            .with_for_update()
-        )
-        if target is None:
-            return None
-        if target.instrument_type not in {"fcn", "option"}:
-            raise ValueError(
-                "Derivative contract metadata is only valid for FCN or option instruments."
-            )
-
-        normalized_fcn_contract = _normalized_fcn_contract(
-            {"fcn_contract": fcn_contract},
-            instrument_type=target.instrument_type,
-        )
-        normalized_broker_identifiers = _normalized_broker_identifiers(
-            {"broker_identifiers": broker_identifiers}
-        )
-        normalized_adjustment_policy = _normalized_adjustment_policy(
-            {
-                "corporate_action_adjustment_policy": (
-                    corporate_action_adjustment_policy
-                )
-            },
-            instrument_type=target.instrument_type,
-        )
-        option_contract = _option_contract_to_dict(target)
-        identifiers = _serialize_identifier_rows(target)
-        core = _validated_instrument_core(
-            instrument_id=target.instrument_id,
-            instrument_name=target.instrument_name,
-            instrument_type=target.instrument_type,
-            currency=target.currency,
-            identifiers=identifiers,
-            option_contract=option_contract,
-            fcn_contract=normalized_fcn_contract,
-            broker_identifiers=normalized_broker_identifiers,
-            corporate_action_adjustment_policy=normalized_adjustment_policy,
-        )
-        referenced_instrument_ids: set[str] = set()
-        if core.option_contract is not None:
-            referenced_instrument_ids.add(core.option_contract.underlying_instrument_id)
-        if core.fcn_contract is not None:
-            referenced_instrument_ids.update(core.fcn_contract.underlying_instrument_ids)
-            referenced_instrument_ids.update(core.fcn_contract.deliverable_instrument_ids)
-        existing_references = set(
-            session.scalars(
-                select(Instrument.instrument_id).where(
-                    Instrument.instrument_id.in_(referenced_instrument_ids)
-                )
-            ).all()
-        )
-        missing_references = sorted(referenced_instrument_ids - existing_references)
-        if missing_references:
-            raise ValueError(
-                "Derivative contract references unknown instruments: "
-                + ", ".join(missing_references)
-                + "."
-            )
-
-        target.fcn_contract_json = deepcopy(normalized_fcn_contract)
-        target.derivative_adjustment_policy_json = deepcopy(
-            normalized_adjustment_policy
-        )
-        session.execute(
-            delete(InstrumentBrokerIdentifier).where(
-                InstrumentBrokerIdentifier.instrument_id == target.instrument_id
-            )
-        )
-        for broker_identifier in normalized_broker_identifiers:
-            session.add(
-                InstrumentBrokerIdentifier(
-                    instrument_id=target.instrument_id,
-                    broker=str(broker_identifier["broker"]),
-                    identifier_type=str(broker_identifier["identifier_type"]),
-                    identifier_value=str(broker_identifier["identifier_value"]),
-                    is_primary=bool(broker_identifier["is_primary"]),
-                )
-            )
-        try:
-            session.commit()
-        except IntegrityError as error:
-            session.rollback()
-            raise ValueError(
-                "Broker identifier conflicts with an existing registry record."
-            ) from error
-
-        session.expire_all()
-        refreshed = session.scalar(
-            _instrument_query().where(Instrument.instrument_id == instrument_id)
-        )
-        if refreshed is None:  # pragma: no cover - locked row cannot disappear
-            return None
-        return _serialize_detail_record(_instrument_to_store_dict(refreshed))
 
 
 def upsert_market_data(
@@ -4304,6 +3932,16 @@ def upsert_source_settings(
 
         store_item = _instrument_to_store_dict(target)
         source_settings = _normalized_source_settings(store_item)
+        calculation_settings_before = {
+            key: source_settings.get(key)
+            for key in (
+                "source_mode",
+                "expected_frequency",
+                "market_calendar",
+                "release_lag_days",
+                "return_semantics",
+            )
+        }
         source_settings["source_mode"] = source_mode
         if source_email is not None:
             source_settings["source_email"] = source_email.strip()
@@ -4337,6 +3975,14 @@ def upsert_source_settings(
         refresh_status["mode"] = source_mode
         target.source_settings_json = source_settings
         target.refresh_status_json = refresh_status
+        calculation_settings_after = {
+            key: source_settings.get(key)
+            for key in calculation_settings_before
+        }
+        if calculation_settings_after != calculation_settings_before:
+            target.calculation_inputs_updated_at = _next_calculation_input_watermark(
+                target.calculation_inputs_updated_at
+            )
         session.commit()
     refreshed = get_instrument(session_factory, instrument_id)
     return _serialize_record(refreshed) if refreshed is not None else None
@@ -4359,8 +4005,14 @@ def upsert_quote_selection_policy(
         )
 
         store_item = _instrument_to_store_dict(target)
+        previous_policy = _normalized_quote_selection_policy(store_item)
         store_item["quote_selection_policy"] = quote_selection_policy
-        target.quote_selection_policy_json = _normalized_quote_selection_policy(store_item)
+        next_policy = _normalized_quote_selection_policy(store_item)
+        target.quote_selection_policy_json = next_policy
+        if next_policy != previous_policy:
+            target.calculation_inputs_updated_at = _next_calculation_input_watermark(
+                target.calculation_inputs_updated_at
+            )
         session.commit()
     refreshed = get_instrument(session_factory, instrument_id)
     return _serialize_record(refreshed) if refreshed is not None else None

@@ -12,13 +12,11 @@ from watchlist_app.db.models.read_models import (
     InstrumentPerformanceReadModel,
     InstrumentExposureReadModel,
     InstrumentExposureHoldingsReadModel,
-    InstrumentRatingReadModel,
     InstrumentRiskReadModel,
     InstrumentSummaryReadModel,
     WatchlistRowReadModel,
 )
 from watchlist_app.db.models.recalc import RecalcJob
-from watchlist_app.db.models.scoring import InstrumentScoreSnapshot
 from watchlist_app.db.models.watchlists import (
     FieldCategory,
     FieldRegistry,
@@ -39,9 +37,7 @@ __all__ = [
     "InstrumentExposureReadModel",
     "InstrumentManualProfile",
     "InstrumentPerformanceReadModel",
-    "InstrumentRatingReadModel",
     "InstrumentRiskReadModel",
-    "InstrumentScoreSnapshot",
     "InstrumentSummaryReadModel",
     "FieldCategory",
     "FieldRegistry",

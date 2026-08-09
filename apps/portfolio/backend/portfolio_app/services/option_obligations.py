@@ -42,17 +42,19 @@ def _date(value: object) -> date | None:
 
 
 def _contract(transaction: dict[str, object]) -> dict[str, object] | None:
-    ref = transaction.get("instrument_ref")
-    if not isinstance(ref, dict):
+    contract = transaction.get("derivative_contract")
+    if not isinstance(contract, dict):
         return None
-    raw = ref.get("option_contract")
+    if str(contract.get("contract_type") or "").strip().lower() != "option":
+        return None
+    raw = contract.get("terms")
     return raw if isinstance(raw, dict) else None
 
 
 def option_contract_identity(
     transaction: dict[str, object],
 ) -> dict[str, object]:
-    """Return the complete normalized option identity embedded in a transaction."""
+    """Return normalized terms from the transaction's local option contract."""
 
     contract = _contract(transaction)
     if contract is None:
@@ -64,14 +66,13 @@ def option_contract_identity(
         "strike",
         "contract_multiplier",
         "settlement_type",
-        "contract_currency",
     )
     if any(contract.get(field) in (None, "") for field in required_fields):
-        raise ValueError("Option contract identity is incomplete for option transactions.")
+        raise ValueError("Option contract terms are incomplete for option transactions.")
     underlying = str(contract.get("underlying_instrument_id") or "").strip()
-    option_id = str(transaction.get("instrument_id") or "").strip()
-    if not underlying or underlying == option_id:
-        raise ValueError("Option contract underlying instrument must differ from option instrument.")
+    option_id = str(transaction.get("derivative_contract_id") or "").strip()
+    if not underlying or not option_id:
+        raise ValueError("Option transaction requires a local contract identity.")
     option_type = str(contract.get("option_type") or "").strip().lower()
     if option_type not in {"call", "put"}:
         raise ValueError("Option contract option_type must be call or put.")
@@ -86,7 +87,9 @@ def option_contract_identity(
     if expiry is None:
         raise ValueError("Option contract expiry_date is required.")
     currency = str(
-        contract.get("contract_currency") or transaction.get("currency") or ""
+        (transaction.get("derivative_contract") or {}).get("currency")
+        if isinstance(transaction.get("derivative_contract"), dict)
+        else transaction.get("currency")
     ).strip().upper()
     transaction_currency = str(transaction.get("currency") or "").strip().upper()
     if not currency or (transaction_currency and currency != transaction_currency):
@@ -115,7 +118,7 @@ def _key(transaction: dict[str, object]) -> tuple[str, str, str]:
     contract = option_contract_identity(transaction)
     return (
         str(transaction.get("account_id") or "").strip(),
-        str(transaction.get("instrument_id") or "").strip(),
+        str(transaction.get("derivative_contract_id") or "").strip(),
         str(contract.get("underlying_instrument_id") or "").strip(),
     )
 
@@ -130,15 +133,14 @@ def _new_obligation(transaction: dict[str, object], quantity: float) -> dict[str
     )
     expiry_date = _date(contract.get("expiry_date"))
     transaction_id = str(transaction.get("transaction_id") or "")
-    account_id, option_id, underlying_id = _key(transaction)
+    account_id, option_contract_id, underlying_id = _key(transaction)
     return {
         "obligation_id": f"obl-{transaction_id}",
         "portfolio_id": transaction.get("portfolio_id"),
         "account_id": account_id,
-        "option_instrument_id": option_id,
-        "instrument_id": option_id,  # convenient holding/read-model alias
-        "instrument_ref": deepcopy(transaction.get("instrument_ref"))
-        if isinstance(transaction.get("instrument_ref"), dict)
+        "derivative_contract_id": option_contract_id,
+        "derivative_contract": deepcopy(transaction.get("derivative_contract"))
+        if isinstance(transaction.get("derivative_contract"), dict)
         else None,
         "related_underlying_id": underlying_id,
         "open_contract_quantity": quantity,

@@ -5,11 +5,11 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import PortfolioHomePage from './pages/PortfolioHomePage'
 import {
-  fcnInstrumentFixture,
+  fcnContractFixture,
   holdingFixture,
   holdingsWorkspaceFixture,
   instrumentFixture,
-  optionInstrumentFixture,
+  optionContractFixture,
 } from './test/portfolioFixtures'
 import { renderPortfolioPage } from './test/renderPortfolioPage'
 
@@ -138,8 +138,11 @@ describe('Holdings rendered page contract', () => {
           holdingFixture(),
           holdingFixture({
             line_id: 'holding:fcn-1',
+            position_reference_id: 'fcn-1',
+            derivative_contract_id: 'fcn-1',
             holding_region: 'structured_and_long_derivatives',
-            instrument_core: fcnInstrumentFixture(),
+            instrument_core: null,
+            derivative_contract: fcnContractFixture(),
             quantity: 1,
             market_value: 500,
             market_value_base: 500,
@@ -154,9 +157,12 @@ describe('Holdings rendered page contract', () => {
           }),
           holdingFixture({
             line_id: 'broker:option-1:obligation',
+            position_reference_id: 'option-1',
+            derivative_contract_id: 'option-1',
             holding_kind: 'option_obligation',
             holding_region: 'written_option_obligations',
-            instrument_core: optionInstrumentFixture(),
+            instrument_core: null,
+            derivative_contract: optionContractFixture(),
             quantity: 100,
             market_value: -300,
             market_value_base: -300,
@@ -364,7 +370,7 @@ describe('Holdings rendered page contract', () => {
           rows: [
             holdingFixture({
               instrument_core: {
-                ...holdingFixture().instrument_core,
+                ...instrumentFixture(),
                 instrument_id: 'asset-4',
                 instrument_name: 'Beta Fund',
               },
@@ -466,18 +472,14 @@ describe('Holdings rendered page contract', () => {
         rows: [
           holdingFixture({
             line_id: 'broker:option-1:obligation',
+            position_reference_id: 'option-1',
+            derivative_contract_id: 'option-1',
             holding_kind: 'option_obligation',
             holding_region: 'written_option_obligations',
-            instrument_core: optionInstrumentFixture({
-              instrument_id: 'option-1',
-              instrument_name: 'Alpha 110 Call',
-              identifiers: [
-                {
-                  identifier_type: 'internal',
-                  identifier_value: 'OPT-ALPHA-110C',
-                  is_primary: true,
-                },
-              ],
+            instrument_core: null,
+            derivative_contract: optionContractFixture({
+              derivative_contract_id: 'option-1',
+              contract_name: 'Alpha 110 Call',
             }),
             quantity: -2,
             open_contract_quantity: 2,
@@ -612,11 +614,13 @@ describe('Holdings rendered page contract', () => {
         rows: [
           holdingFixture({
             line_id: 'holding:event-option',
+            position_reference_id: 'event-option',
+            derivative_contract_id: 'event-option',
             holding_region: 'structured_and_long_derivatives',
-            instrument_core: optionInstrumentFixture({
-              instrument_id: 'event-option',
-              instrument_name: 'Carried Option',
-              identifiers: [],
+            instrument_core: null,
+            derivative_contract: optionContractFixture({
+              derivative_contract_id: 'event-option',
+              contract_name: 'Carried Option',
             }),
             quantity: 1,
             market_value: 500,

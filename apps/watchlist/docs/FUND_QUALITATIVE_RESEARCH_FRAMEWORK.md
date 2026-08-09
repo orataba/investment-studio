@@ -27,7 +27,7 @@ Research 页分为四块：
 3. `Research Notes`
    统一笔记时间线，与 Overview chart 上的 notes 使用同一份 `timeline_notes` 数据。
 4. `Rating`
-   人工星级，表达研究员当前 conviction / 优先级，不等同于量化评分 `overall_rating`。
+   人工星级，表达研究员当前 conviction / 优先级。系统不根据收益率、Sharpe 或收益率等异质量纲自动生成投资评级。
 
 辅助字段：
 

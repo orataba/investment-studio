@@ -166,7 +166,7 @@ security-master 事实；基金 NAV 分红再投只用于构造 TWR 指数，不
 共享 store 以 canonical instrument type、`metric_family` 与 `quote_basis` 作为唯一权威确定性派生：
 bond price 为 `percent_of_par / 0.01`，FX 为 `rate / 1`，其余为 `per_unit / 1`。
 批量写入若携带这两个派生字段会拒绝整批，避免调用方与共享 contract 形成第二套规则。
-Python runtime 只支持 Instrument Registry head `20260716_0013`，不会探测或兼容缺少数据库级行情合同、NAV lineage、区间归一化收益锚点与并发互斥的旧物理 schema。0012 在 Platform raw snapshot 完整覆盖旧 NAV 后删除歧义 alias 与无法证明来源的旧 total-return observation；0013 增加可审计的窗口归一化锚点。直接 SQL 也必须满足 canonical NAV lineage 与基金行为状态机。
+Python runtime 只支持 Instrument Registry head `20260809_0022`，不会探测或兼容更早物理 schema。当前 Registry 类型集合是 `fund | etf | index | bond | equity | cash | fx | other`；FCN 与期权合约条款、生命周期和交易事实属于 Portfolio 私域，不进入共享资产表。直接 SQL 也必须满足 canonical 行情、NAV lineage、基金行为状态机、计算输入与 broker identity 约束。
 
 每条 market-data observation（不只 FX）都必须使用 instrument master currency，`value`
 必须是有限正数，`status` 只能是 `complete | partial | unavailable`。共享 store 的单点、批量、

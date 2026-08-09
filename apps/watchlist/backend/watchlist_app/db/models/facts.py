@@ -41,6 +41,11 @@ class NavFact(Base):
 class HoldingSnapshot(Base):
     __tablename__ = "holding_snapshot"
     __table_args__ = (
+        UniqueConstraint(
+            "instrument_id",
+            "input_hash",
+            name="uq_holding_snapshot_instrument_input_hash",
+        ),
         Index("idx_holding_snapshot_current", "instrument_id", "is_current"),
         Index(
             "uq_holding_snapshot_current_instrument",

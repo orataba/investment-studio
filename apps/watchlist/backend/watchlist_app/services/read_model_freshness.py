@@ -307,12 +307,22 @@ def _latest_shared_market_data_date(shared_instrument: dict[str, object] | None)
     return max(candidates) if candidates else None
 
 
-def _shared_market_data_updated_at(
+def _shared_calculation_inputs_updated_at(
     shared_instrument: dict[str, object] | None,
 ) -> datetime | None:
     if not isinstance(shared_instrument, dict):
         return None
-    return _parse_iso_datetime(shared_instrument.get("market_data_updated_at"))
+    candidates = [
+        parsed
+        for parsed in (
+            _parse_iso_datetime(shared_instrument.get("market_data_updated_at")),
+            _parse_iso_datetime(
+                shared_instrument.get("calculation_inputs_updated_at")
+            ),
+        )
+        if parsed is not None
+    ]
+    return max(candidates) if candidates else None
 
 
 def _source_generation_ref(
@@ -341,10 +351,10 @@ def _source_data_is_materialized(
         return True
     if local_latest_date is not None and shared_latest_date <= local_latest_date:
         return True
-    # Some legacy Registry rows predate the source-generation watermark. When
-    # the selected display series is unavailable, its local latest date remains
-    # null forever. A complete materialization after the source observation date
-    # proves that generation was considered; a later source date still requeues.
+    # Registry instruments without market or calculation-input updates have no
+    # source watermark. For an unavailable selected series, a completed local
+    # materialization after the latest source observation proves that generation
+    # was considered; a later source date still requeues.
     return (
         local_source_cutoff_at is not None
         and shared_latest_date <= local_source_cutoff_at.date()
@@ -479,7 +489,7 @@ def schedule_instrument_refreshes_if_stale(
                 if shared_instrument is None or local_instrument is None:
                     continue
                 shared_latest_date = _latest_shared_market_data_date(shared_instrument)
-                shared_updated_at = _shared_market_data_updated_at(shared_instrument)
+                shared_updated_at = _shared_calculation_inputs_updated_at(shared_instrument)
                 local_latest_date = _parse_iso_date(target.get("local_latest_date"))
                 local_cutoff_at = _parse_iso_datetime(
                     target.get("local_source_cutoff_at")
@@ -573,7 +583,7 @@ def schedule_instrument_refresh_if_stale(
     except SharedInstrumentRegistryError:
         return False
     shared_latest_date = _latest_shared_market_data_date(shared_instrument)
-    shared_updated_at = _shared_market_data_updated_at(shared_instrument)
+    shared_updated_at = _shared_calculation_inputs_updated_at(shared_instrument)
     local_cutoff_at = _parse_iso_datetime(local_source_cutoff_at)
     metadata_drift = _local_instrument_metadata_drift(
         instrument_id=normalized_instrument_id,

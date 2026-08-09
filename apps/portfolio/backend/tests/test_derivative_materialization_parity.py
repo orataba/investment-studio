@@ -13,7 +13,6 @@ from portfolio_app.db.models import (
 )
 from portfolio_app.db.session import get_session_factory
 from portfolio_app.services import daily_snapshots, performance, portfolio_store
-from portfolio_ops_instrument_core import instrument_store as shared_instrument_store
 from tests.store_fixture import TEST_PORTFOLIO_STORE
 
 
@@ -31,26 +30,32 @@ def _instrument_ref(
         "identifiers": [],
         "broker_identifiers": [],
     }
-    if instrument_type == "option":
-        assert option_underlying_id is not None
-        ref["option_contract"] = {
-            "underlying_instrument_id": option_underlying_id,
+    return ref
+
+
+def _option_contract(
+    derivative_contract_id: str,
+    *,
+    underlying_instrument_id: str,
+) -> dict[str, object]:
+    return {
+        "derivative_contract_id": derivative_contract_id,
+        "portfolio_id": "portfolio-ops",
+        "account_id": "broker-us-core",
+        "contract_name": "ABBV Dec 2026 Covered Call",
+        "contract_type": "option",
+        "currency": "USD",
+        "external_reference": "ABBV-20261218-C-220",
+        "terms": {
+            "underlying_instrument_id": underlying_instrument_id,
             "option_type": "call",
             "expiry_date": "2026-12-18",
             "strike": "220",
             "contract_multiplier": "100",
             "settlement_type": "physical",
-            "contract_currency": "USD",
-        }
-        ref["corporate_action_adjustment_policy"] = {
-            "policy_type": "contract_terms",
-            "authority_reference": "Test option terms",
-            "quantity_rounding": "exact",
-            "adjust_strike": True,
-            "adjust_multiplier": True,
-            "adjust_deliverable": True,
-        }
-    return ref
+        },
+        "created_at": "2026-02-11T02:00:00Z",
+    }
 
 
 def _transaction(
@@ -61,6 +66,7 @@ def _transaction(
     account_id: str,
     settlement_cash_account_id: str | None,
     instrument_ref: dict[str, object] | None = None,
+    derivative_contract: dict[str, object] | None = None,
     quantity: float | None = None,
     price: float | None = None,
     gross_amount: float,
@@ -89,6 +95,12 @@ def _transaction(
             else None
         ),
         "instrument_ref": deepcopy(instrument_ref),
+        "derivative_contract_id": (
+            str(derivative_contract.get("derivative_contract_id"))
+            if derivative_contract is not None
+            else None
+        ),
+        "derivative_contract": deepcopy(derivative_contract),
         "quantity": quantity,
         "price": price,
         "gross_amount": gross_amount,
@@ -115,41 +127,10 @@ def test_dynamic_and_materialized_option_asset_and_obligation_are_identical(
     portfolio_id = "portfolio-ops"
     underlying_id = "equity-us-abbv"
     session_factory = get_session_factory()
-    option = shared_instrument_store.create_instrument(
-        session_factory,
-        instrument_name="ABBV Dec 2026 Covered Call",
-        instrument_type="option",
-        currency="USD",
-        identifiers=[
-            {
-                "identifier_type": "internal",
-                "identifier_value": "ABBV-20261218-C-220",
-                "is_primary": True,
-            }
-        ],
-        option_contract={
-            "underlying_instrument_id": underlying_id,
-            "option_type": "call",
-            "expiry_date": "2026-12-18",
-            "strike": "220",
-            "contract_multiplier": "100",
-            "settlement_type": "physical",
-            "contract_currency": "USD",
-        },
-        corporate_action_adjustment_policy={
-            "policy_type": "contract_terms",
-            "authority_reference": "Test option terms",
-            "quantity_rounding": "exact",
-            "adjust_strike": True,
-            "adjust_multiplier": True,
-            "adjust_deliverable": True,
-        },
-    )
-    option_id = str(option["instrument_id"])
-    option_ref = _instrument_ref(
+    option_id = "option-abbv-20261218-c-220"
+    option_contract = _option_contract(
         option_id,
-        "option",
-        option_underlying_id=underlying_id,
+        underlying_instrument_id=underlying_id,
     )
     equity_ref = _instrument_ref(underlying_id, "equity")
     equity_detail = {
@@ -223,7 +204,7 @@ def test_dynamic_and_materialized_option_asset_and_obligation_are_identical(
             "2026-02-11",
             account_id="broker-us-core",
             settlement_cash_account_id="cash-usd-main",
-            instrument_ref=option_ref,
+            derivative_contract=option_contract,
             quantity=1.0,
             price=500.0,
             gross_amount=500.0,
@@ -234,12 +215,13 @@ def test_dynamic_and_materialized_option_asset_and_obligation_are_identical(
             "2026-02-11",
             account_id="broker-us-core",
             settlement_cash_account_id="cash-usd-main",
-            instrument_ref=option_ref,
+            derivative_contract=option_contract,
             quantity=1.0,
             gross_amount=300.0,
             fees=15.0,
         ),
     ]
+    store["derivative_contracts"] = [deepcopy(option_contract)]
     portfolio_store.reset_store(store)
 
     portfolio = portfolio_store.list_portfolios()[0]
@@ -277,7 +259,7 @@ def test_dynamic_and_materialized_option_asset_and_obligation_are_identical(
         [
             row
             for row in dynamic["positions"]
-            if row["instrument_id"] == option_id
+            if row.get("derivative_contract_id") == option_id
         ],
         key=lambda row: str(row["holding_kind"]),
     )
@@ -285,17 +267,17 @@ def test_dynamic_and_materialized_option_asset_and_obligation_are_identical(
         [
             row
             for row in materialized["rows"]
-            if row["instrument_core"]["instrument_id"] == option_id
+            if row.get("derivative_contract_id") == option_id
         ],
         key=lambda row: str(row["holding_kind"]),
     )
     assert [row["holding_kind"] for row in dynamic_option_rows] == [
+        "derivative_contract",
         "option_obligation",
-        "position",
     ]
     assert [row["holding_kind"] for row in materialized_option_rows] == [
+        "derivative_contract",
         "option_obligation",
-        "position",
     ]
     for dynamic_row, materialized_row in zip(
         dynamic_option_rows,
@@ -331,14 +313,14 @@ def test_dynamic_and_materialized_option_asset_and_obligation_are_identical(
             ):
                 assert materialized_row[field_name] == dynamic_row[field_name]
 
-    detail_projection = daily_snapshots.build_materialized_instrument_holding_projection(
+    detail_projection = daily_snapshots.build_materialized_position_holding_projection(
         portfolio_id,
         option_id,
         as_of_date=date(2026, 2, 11),
     )
     assert detail_projection is not None
     assert [row["holding_kind"] for row in detail_projection["rows"]] == [
-        "position",
+        "derivative_contract",
         "option_obligation",
     ]
     detail_obligation = next(
@@ -381,7 +363,8 @@ def test_dynamic_and_materialized_option_asset_and_obligation_are_identical(
                     PortfolioDailyHoldingSnapshotModel.portfolio_id == portfolio_id,
                     PortfolioDailyHoldingSnapshotModel.as_of_date
                     == date(2026, 2, 11),
-                    PortfolioDailyHoldingSnapshotModel.instrument_id == option_id,
+                    PortfolioDailyHoldingSnapshotModel.derivative_contract_id
+                    == option_id,
                 )
             ).all()
         )
@@ -398,7 +381,10 @@ def test_dynamic_and_materialized_option_asset_and_obligation_are_identical(
             )
         )
 
-    assert sorted(persisted_holding_kinds) == ["option_obligation", "position"]
+    assert sorted(persisted_holding_kinds) == [
+        "derivative_contract",
+        "option_obligation",
+    ]
     assert persisted_snapshot is not None
     assert persisted_snapshot.nav == pytest.approx(dynamic_final["ending_nav"])
     dynamic_option_contribution = next(

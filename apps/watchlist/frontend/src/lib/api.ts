@@ -275,7 +275,7 @@ export type ScreenerGroup = {
 }
 
 export type ScreenerSnapshotMetadata = {
-  /** Latest row metric endpoint retained for backward compatibility; not a shared Watchlist as-of. */
+  /** Latest row metric endpoint; descriptive only, never a shared Watchlist as-of. */
   as_of_date: string | null
   as_of_date_min: string | null
   as_of_date_max: string | null
@@ -373,14 +373,10 @@ export type RecalcExecuteResponse = {
 }
 
 export type FundSummaryResponse = {
-  instrument_id?: string
-  fund_id: string
+  instrument_id: string
   fund_name: string
   ticker_or_isin: string
-  rating_as_of: string | null
   management_firm_name: string | null
-  overall_rating: number | null
-  analyst_stance: string
   instrument_attributes: Record<string, unknown>
   taxonomy: FundTaxonomyContext
   key_stats: Array<{ label: string; value: string | number | null }>
@@ -554,6 +550,7 @@ export type FundPerformanceResponse = {
     as_of_date: string | null
     methodology_version: string
     source_cutoff_at: string | null
+    calculated_at?: string | null
   } | null
 }
 
@@ -562,6 +559,7 @@ export type FundRiskResponse = {
   scatter_points: Array<Record<string, unknown>>
   risk_metrics: Array<Record<string, unknown>>
   drawdown_summary: Record<string, unknown> | null
+  current_drawdown: number | null
   risk_structure?: {
     rows: Array<Record<string, unknown>>
   } | null
@@ -605,22 +603,11 @@ export type FundExposureHoldingsResponse = {
   page: number
   page_size: number
   total_rows: number
-}
-
-export type FundRatingsResponse = {
-  overall_rating: number | null
-  overall_score: number | null
-  analyst_stance: string
-  methodology_version: string
-  dimension_scores: Array<{
-    dimension_code: string
-    score: number | null
-    confidence_score: number | null
-  }>
-  override_info: {
-    has_override: boolean
-    approved_by: string | null
-    approved_at: string | null
+  snapshot_metadata: {
+    as_of_date: string | null
+    methodology_version: string
+    source_cutoff_at: string | null
+    calculated_at?: string | null
   } | null
 }
 
@@ -780,6 +767,36 @@ const referenceGetCache = new Map<
   { expiresAt: number; promise: Promise<unknown> }
 >()
 
+async function responseErrorMessage(response: Response): Promise<string> {
+  const fallback = `Request failed: ${response.status}`
+  const body = await response.text()
+  if (!body) {
+    return fallback
+  }
+  try {
+    const parsed = JSON.parse(body) as { detail?: unknown; message?: unknown }
+    if (typeof parsed.detail === 'string' && parsed.detail.trim()) {
+      return parsed.detail
+    }
+    if (typeof parsed.message === 'string' && parsed.message.trim()) {
+      return parsed.message
+    }
+    if (Array.isArray(parsed.detail)) {
+      const messages = parsed.detail.flatMap((item) => {
+        if (!item || typeof item !== 'object') return []
+        const message = (item as { msg?: unknown }).msg
+        return typeof message === 'string' && message.trim() ? [message] : []
+      })
+      if (messages.length) {
+        return messages.join('; ')
+      }
+    }
+  } catch {
+    // Non-JSON error bodies are already suitable for display.
+  }
+  return body
+}
+
 async function fetchJson<T>(
   path: string,
   init?: RequestInit,
@@ -793,8 +810,7 @@ async function fetchJson<T>(
   })
 
   if (!response.ok) {
-    const body = await response.text()
-    throw new Error(body || `Request failed: ${response.status}`)
+    throw new Error(await responseErrorMessage(response))
   }
 
   return (await response.json()) as T
@@ -823,8 +839,7 @@ async function fetchForm<T>(
   const response = await fetch(`${API_BASE_URL}${path}`, init)
 
   if (!response.ok) {
-    const body = await response.text()
-    throw new Error(body || `Request failed: ${response.status}`)
+    throw new Error(await responseErrorMessage(response))
   }
 
   return (await response.json()) as T
@@ -912,7 +927,7 @@ export function getMonitoringDashboard() {
 export function executeInstrumentRecalc(
   instrumentId: string,
   payload?: {
-    job_type?: 'performance' | 'exposure' | 'ratings' | 'all'
+    job_type?: 'performance' | 'exposure' | 'all'
     trigger_type?: string
     trigger_ref_type?: string | null
     trigger_ref_id?: string | null
@@ -962,6 +977,7 @@ export function getWatchlistDetail(watchlistId: string) {
 export function resolveInstrumentDetail(instrumentId: string) {
   return fetchJson<InstrumentResolveResponse>(
     `/api/instruments/${encodeURIComponent(instrumentId)}/resolve`,
+    { method: 'POST' },
   )
 }
 
@@ -1013,6 +1029,19 @@ export function resolveSharedInstrument(
     params.set('identifier_type', options.identifier_type.trim())
   }
   return fetchJson<SharedInstrumentRecord>(`/api/instruments/resolve?${params.toString()}`)
+}
+
+export function resolveSharedInstrumentsBulk(identifiers: string[]) {
+  return fetchJson<{
+    results: Array<{
+      identifier: string
+      status: 'resolved' | 'not_found'
+      instrument: SharedInstrumentRecord | null
+    }>
+  }>('/api/instruments/resolve-bulk', {
+    method: 'POST',
+    body: JSON.stringify({ identifiers }),
+  })
 }
 
 export function createWatchlistView(
@@ -1208,10 +1237,6 @@ export function getInstrumentExposureHoldings(instrumentId: string) {
   return fetchJson<FundExposureHoldingsResponse>(
     buildInstrumentDetailApiPath(instrumentId, 'exposure/holdings'),
   )
-}
-
-export function getInstrumentRatings(instrumentId: string) {
-  return fetchJson<FundRatingsResponse>(buildInstrumentDetailApiPath(instrumentId, 'ratings'))
 }
 
 export function getInstrumentPeople(instrumentId: string) {

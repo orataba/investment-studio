@@ -64,8 +64,6 @@ def watchlist_row_to_dict(record: WatchlistRowReadModel) -> dict[str, object]:
         "share_class": record.share_class,
         "ticker_or_isin": record.ticker_or_isin,
         "management_firm_name": record.management_firm_name,
-        "overall_rating": _serialize_scalar(record.overall_rating),
-        "analyst_stance": record.analyst_stance,
         "aum": _serialize_scalar(record.aum),
         "return_ytd": _serialize_scalar(record.return_ytd),
         "return_1w": _serialize_scalar(record.return_1w),
@@ -130,6 +128,23 @@ def build_latest_quote_overrides(
         latest_quote = _extract_latest_quote(chart.payload_json)
         if latest_quote is not None:
             overrides[chart.instrument_id] = latest_quote
+    return overrides
+
+
+def build_metric_semantics_overrides(
+    charts: Sequence[InstrumentChartReadModel] | None,
+) -> dict[str, dict[str, object]]:
+    overrides: dict[str, dict[str, object]] = {}
+    for chart in charts or []:
+        payload = chart.payload_json
+        selected_series = payload.get("selected_series") if isinstance(payload, dict) else None
+        if not isinstance(selected_series, dict):
+            continue
+        overrides[chart.instrument_id] = {
+            "metric_return_kind": _chart_return_kind(payload),
+            "metric_quote_basis": selected_series.get("quote_basis"),
+            "metric_series_type": selected_series.get("series_type"),
+        }
     return overrides
 
 
@@ -284,8 +299,6 @@ def build_watchlist_row_materialization(
     share_class: str | None,
     ticker_or_isin: str | None,
     management_firm_name: str | None,
-    overall_rating: int | None,
-    analyst_stance: str | None,
     attributes: dict[str, object],
     freshness_status: str,
     last_fact_update_at: datetime | None,
@@ -299,8 +312,6 @@ def build_watchlist_row_materialization(
             "share_class": share_class,
             "ticker_or_isin": ticker_or_isin,
             "management_firm_name": management_firm_name,
-            "overall_rating": overall_rating,
-            "analyst_stance": analyst_stance or "Unrated",
             "aum": None,
             "return_ytd": None,
             "return_1w": None,
@@ -327,8 +338,6 @@ def build_watchlist_row_materialization(
             "share_class": source_row.share_class,
             "ticker_or_isin": source_row.ticker_or_isin,
             "management_firm_name": source_row.management_firm_name,
-            "overall_rating": source_row.overall_rating,
-            "analyst_stance": source_row.analyst_stance,
             "aum": source_row.aum,
             "return_ytd": source_row.return_ytd,
             "return_1w": source_row.return_1w,
@@ -357,9 +366,6 @@ def build_watchlist_row_materialization(
     payload["share_class"] = share_class or payload.get("share_class")
     payload["ticker_or_isin"] = ticker_or_isin or payload.get("ticker_or_isin")
     payload["management_firm_name"] = management_firm_name or payload.get("management_firm_name")
-    if payload.get("overall_rating") is None:
-        payload["overall_rating"] = overall_rating
-    payload["analyst_stance"] = payload.get("analyst_stance") or analyst_stance or "Unrated"
     payload["attributes"] = attributes
     payload["data_freshness_status"] = freshness_status
     payload["last_fact_update_at"] = last_fact_update_at
@@ -590,16 +596,36 @@ def execute_watchlist_query(
     *,
     rows: Sequence[WatchlistRowReadModel],
     charts: Sequence[InstrumentChartReadModel] | None = None,
+    attribute_overrides: dict[str, dict[str, object]] | None = None,
     payload: dict[str, object],
     view: WatchlistView | None,
 ) -> dict[str, object]:
     serialized_rows = [watchlist_row_to_dict(item) for item in rows]
+    serialized_rows = [
+        {
+            **row,
+            "attributes": {
+                **{
+                    key: value
+                    for key, value in dict(row.get("attributes") or {}).items()
+                    if not str(key).startswith("peer_")
+                },
+                **(attribute_overrides or {}).get(
+                    str(row.get("instrument_id")),
+                    {},
+                ),
+            },
+        }
+        for row in serialized_rows
+    ]
     latest_quote_overrides = build_latest_quote_overrides(charts)
-    if latest_quote_overrides:
+    metric_semantics_overrides = build_metric_semantics_overrides(charts)
+    if latest_quote_overrides or metric_semantics_overrides:
         serialized_rows = [
             {
                 **row,
                 **latest_quote_overrides.get(str(row.get("instrument_id")), {}),
+                **metric_semantics_overrides.get(str(row.get("instrument_id")), {}),
             }
             for row in serialized_rows
         ]
@@ -641,7 +667,7 @@ def execute_watchlist_query(
             if column.is_visible
         ]
     if not selected_fields:
-        selected_fields = ["instrument_name", "overall_rating", "attr.fund_taxonomy_path"]
+        selected_fields = ["instrument_name", "last_nav_date", "attr.fund_taxonomy_path"]
     if group_by == TAXONOMY_GROUP_BY_CODE:
         for field in TAXONOMY_GROUP_FIELDS:
             if field not in selected_fields:
@@ -655,6 +681,9 @@ def execute_watchlist_query(
             # Always expose the endpoint used by row-level performance/risk
             # metrics, even when the user did not select the date as a column.
             "metric_as_of_date": row.get("last_nav_date"),
+            "metric_return_kind": row.get("metric_return_kind"),
+            "metric_quote_basis": row.get("metric_quote_basis"),
+            "metric_series_type": row.get("metric_series_type"),
         }
         for row in filtered_rows
     ]
@@ -675,8 +704,12 @@ def execute_watchlist_query(
     pagination = payload.get("pagination", {}) or {}
     page = max(int(pagination.get("page", 1)), 1)
     page_size = max(int(pagination.get("page_size", 50)), 1)
-    start = (page - 1) * page_size
-    end = start + page_size
+    if bool(payload.get("fetch_all")):
+        start = 0
+        end = len(projected_rows)
+    else:
+        start = (page - 1) * page_size
+        end = start + page_size
 
     stale_statuses = {"stale", "pending_recalc", "partial"}
     stale_row_count = sum(
@@ -701,8 +734,8 @@ def execute_watchlist_query(
             selected_fields=selected_fields,
         ),
         "snapshot_metadata": {
-            # Compatibility field: the latest row endpoint, not a shared
-            # Watchlist calculation date.
+            # Aggregate bounds are descriptive only; each row carries its own
+            # metric_as_of_date and must be interpreted at that endpoint.
             "as_of_date": _serialize_scalar(latest_metric_as_of),
             "as_of_date_min": _serialize_scalar(earliest_metric_as_of),
             "as_of_date_max": _serialize_scalar(latest_metric_as_of),
@@ -724,10 +757,7 @@ def default_fund_summary_payload(
         "instrument_id": instrument_id,
         "fund_name": "Sample Fund",
         "ticker_or_isin": instrument_id.upper(),
-        "rating_as_of": "2026-04-10",
         "management_firm_name": None,
-        "overall_rating": None,
-        "analyst_stance": "Unrated",
         "instrument_attributes": instrument_attributes or {},
         "taxonomy": {
             "taxonomy_code": "fund_taxonomy",
@@ -789,6 +819,7 @@ def default_fund_risk_payload() -> dict[str, object]:
         "scatter_points": [],
         "risk_metrics": [],
         "drawdown_summary": None,
+        "current_drawdown": None,
         "risk_structure": {"rows": []},
         "current_watch": {"overall_level": None, "rows": [], "note": None},
         "change_monitor": {"rows": [], "note": None},
@@ -809,17 +840,12 @@ def default_fund_exposure_summary_payload() -> dict[str, object]:
 
 
 def default_fund_exposure_holdings_payload() -> dict[str, object]:
-    return {"rows": [], "page": 1, "page_size": 0, "total_rows": 0}
-
-
-def default_fund_rating_payload() -> dict[str, object]:
     return {
-        "overall_rating": None,
-        "overall_score": None,
-        "analyst_stance": "Unrated",
-        "methodology_version": "house-rating/v1",
-        "dimension_scores": [],
-        "override_info": None,
+        "rows": [],
+        "page": 1,
+        "page_size": 0,
+        "total_rows": 0,
+        "snapshot_metadata": None,
     }
 
 

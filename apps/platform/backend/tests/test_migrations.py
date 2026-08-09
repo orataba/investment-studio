@@ -70,12 +70,23 @@ def test_instrument_registry_migrations_upgrade_an_empty_database(tmp_path, monk
     command.upgrade(config, "head")
 
 
-def test_option_underlying_index_is_declared_in_registry_metadata() -> None:
+def test_registry_metadata_has_no_derivative_identity() -> None:
     from portfolio_ops_instrument_core.db_models import Instrument
 
-    assert "ix_instrument_option_underlying" in {
+    assert "ix_instrument_option_underlying" not in {
         index.name for index in Instrument.__table__.indexes
     }
+    assert not {
+        "option_underlying_instrument_id",
+        "option_type",
+        "option_expiry_date",
+        "option_strike",
+        "option_contract_multiplier",
+        "option_settlement_type",
+        "option_contract_currency",
+        "fcn_contract_json",
+        "derivative_adjustment_policy_json",
+    }.intersection(Instrument.__table__.columns.keys())
 
 
 def test_event_valued_instrument_type_migration_is_guarded_and_reversible(

@@ -32,7 +32,6 @@ from platform_app.services.instrument_store import (
     publish_fund_nav_history,
     update_refresh_status,
     upsert_corporate_action_event,
-    upsert_derivative_contract_metadata,
     upsert_market_data,
     upsert_market_data_points,
     upsert_source_settings,
@@ -111,31 +110,6 @@ TEST_SHARED_STORE = {
         },
     ],
 }
-
-
-DERIVATIVE_ADJUSTMENT_POLICY = {
-    "policy_type": "manual_review",
-    "authority_reference": "Contract terms and issuer notice",
-    "quantity_rounding": "cash_in_lieu",
-    "adjust_strike": True,
-    "adjust_multiplier": True,
-    "adjust_deliverable": True,
-}
-
-
-def _fcn_contract(reference_instrument_id: str) -> dict[str, object]:
-    return {
-        "notional": "100000",
-        "issue_date": "2026-01-02",
-        "maturity_date": "2026-12-18",
-        "contract_currency": "USD",
-        "issuer": "Example Issuer",
-        "counterparty": "Example Private Bank",
-        "underlying_instrument_ids": [reference_instrument_id],
-        "deliverable_instrument_ids": [reference_instrument_id],
-        "barrier_type": "knock_in",
-        "barrier_level": "70",
-    }
 
 
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
@@ -2070,44 +2044,6 @@ def test_source_schedule_semantics_default_and_roundtrip_by_instrument_type(
     assert equity["source_settings"]["release_lag_days"] == 0
     assert equity["source_settings"]["return_semantics"] == "unknown"
 
-    for instrument_type in ("fcn", "option"):
-        option_contract = (
-            {
-                "underlying_instrument_id": equity["instrument_id"],
-                "option_type": "call",
-                "expiry_date": "2026-12-18",
-                "strike": "100",
-                "contract_multiplier": "100",
-                "settlement_type": "physical",
-                "contract_currency": "USD",
-            }
-            if instrument_type == "option"
-            else None
-        )
-        fcn_contract = (
-            _fcn_contract(str(equity["instrument_id"]))
-            if instrument_type == "fcn"
-            else None
-        )
-        event_valued = create_instrument(
-            instrument_name=f"Event-valued {instrument_type}",
-            instrument_type=instrument_type,
-            currency="USD",
-            identifiers=[
-                {
-                    "identifier_type": "internal",
-                    "identifier_value": f"EVENT-{instrument_type.upper()}-001",
-                    "is_primary": True,
-                }
-            ],
-            option_contract=option_contract,
-            fcn_contract=fcn_contract,
-            corporate_action_adjustment_policy=DERIVATIVE_ADJUSTMENT_POLICY,
-        )
-        assert event_valued["source_settings"]["expected_frequency"] == "event_driven"
-        assert event_valued["source_settings"]["market_calendar"] is None
-        assert event_valued["source_settings"]["release_lag_days"] == 0
-
     index = create_instrument(
         instrument_name="Shanghai Total Return Index",
         instrument_type="index",
@@ -2190,168 +2126,45 @@ def test_source_schedule_semantics_default_and_roundtrip_by_instrument_type(
     assert after_rejection["source_settings"]["release_lag_days"] == 2
 
 
-def test_option_contract_identity_roundtrips_and_rejects_generated_self_underlying(
+def test_registry_rejects_portfolio_local_derivative_types_and_contract_identifiers(
     isolated_store: Path,
 ) -> None:
-    with pytest.raises(
-        ValueError,
-        match="Option instruments require complete option_contract identity",
-    ):
+    for instrument_type in ("fcn", "option"):
+        with pytest.raises(ValueError, match="Unsupported instrument_type"):
+            create_instrument(
+                instrument_name=f"Portfolio-local {instrument_type}",
+                instrument_type=instrument_type,
+                currency="USD",
+                identifiers=[
+                    {
+                        "identifier_type": "internal",
+                        "identifier_value": f"PORTFOLIO-{instrument_type.upper()}-001",
+                        "is_primary": True,
+                    }
+                ],
+            )
+
+    with pytest.raises(ValueError, match="identifier_type"):
         create_instrument(
-            instrument_name="Identity-less Option",
-            instrument_type="option",
+            instrument_name="Ordinary Equity With Contract ID",
+            instrument_type="equity",
             currency="USD",
             identifiers=[
                 {
                     "identifier_type": "internal",
-                    "identifier_value": "IDENTITY-LESS-OPTION-001",
+                    "identifier_value": "EQUITY-CONTRACT-ID-TEST",
                     "is_primary": True,
                 }
             ],
-        )
-
-    underlying = create_instrument(
-        instrument_name="Option Underlying",
-        instrument_type="equity",
-        currency="USD",
-        identifiers=[
-            {
-                "identifier_type": "internal",
-                "identifier_value": "OPTION-UNDERLYING-001",
-                "is_primary": True,
-            }
-        ],
-    )
-    option_contract = {
-        "underlying_instrument_id": underlying["instrument_id"],
-        "option_type": "call",
-        "expiry_date": "2026-12-18",
-        "strike": "100",
-        "contract_multiplier": "100",
-        "settlement_type": "physical",
-        "contract_currency": "USD",
-    }
-    option = create_instrument(
-        instrument_name="Covered Call Contract",
-        instrument_type="option",
-        currency="USD",
-        identifiers=[
-            {
-                "identifier_type": "internal",
-                "identifier_value": "COVERED-CALL-001",
-                "is_primary": True,
-            }
-        ],
-        option_contract=option_contract,
-        broker_identifiers=[
-            {
-                "broker": "IBKR",
-                "identifier_type": "contract_id",
-                "identifier_value": "987654321",
-                "is_primary": True,
-            }
-        ],
-        corporate_action_adjustment_policy=DERIVATIVE_ADJUSTMENT_POLICY,
-    )
-
-    assert option["option_contract"] == {
-        **option_contract,
-        "strike": "100",
-        "contract_multiplier": "100",
-    }
-    fetched = get_instrument(str(option["instrument_id"]))
-    assert fetched is not None
-    assert fetched["option_contract"] == option["option_contract"]
-    assert fetched["corporate_action_adjustment_policy"] == DERIVATIVE_ADJUSTMENT_POLICY
-    assert fetched["contract_reconciliation"]["status"] == "ready"
-    assert fetched["contract_reconciliation"]["canonical_contract_id"].startswith(
-        "option-contract-"
-    )
-    assert find_instrument_by_broker_identifier(
-        broker="ibkr",
-        identifier_type="contract_id",
-        identifier_value="987654321",
-    )["instrument_id"] == option["instrument_id"]
-
-    with pytest.raises(
-        ValueError,
-        match="underlying instrument must differ from option instrument",
-    ):
-        create_instrument(
-            instrument_name="Self Referencing Option",
-            instrument_type="option",
-            currency="USD",
-            identifiers=[
+            broker_identifiers=[
                 {
-                    "identifier_type": "internal",
-                    "identifier_value": "SELF-OPTION-001",
+                    "broker": "example",
+                    "identifier_type": "contract_id",
+                    "identifier_value": "123456",
                     "is_primary": True,
                 }
             ],
-            option_contract={
-                **option_contract,
-                "underlying_instrument_id": "self-option-001",
-            },
-            corporate_action_adjustment_policy=DERIVATIVE_ADJUSTMENT_POLICY,
         )
-
-
-def test_fcn_contract_metadata_and_broker_reconciliation_can_be_replaced(
-    isolated_store: Path,
-) -> None:
-    underlying = create_instrument(
-        instrument_name="FCN Underlying",
-        instrument_type="equity",
-        currency="USD",
-        identifiers=[
-            {
-                "identifier_type": "internal",
-                "identifier_value": "FCN-UNDERLYING-001",
-                "is_primary": True,
-            }
-        ],
-    )
-    fcn_contract = _fcn_contract(str(underlying["instrument_id"]))
-    fcn = create_instrument(
-        instrument_name="Autocallable FCN",
-        instrument_type="fcn",
-        currency="USD",
-        identifiers=[
-            {
-                "identifier_type": "internal",
-                "identifier_value": "FCN-CONTRACT-001",
-                "is_primary": True,
-            }
-        ],
-        fcn_contract=fcn_contract,
-        corporate_action_adjustment_policy=DERIVATIVE_ADJUSTMENT_POLICY,
-    )
-    assert fcn["fcn_contract"] == fcn_contract
-    assert fcn["contract_reconciliation"]["status"] == "unmatched"
-
-    updated = upsert_derivative_contract_metadata(
-        instrument_id=str(fcn["instrument_id"]),
-        fcn_contract={**fcn_contract, "barrier_level": "65"},
-        broker_identifiers=[
-            {
-                "broker": "HSBC PB",
-                "identifier_type": "product_code",
-                "identifier_value": "FCN-HSBC-2026-001",
-                "is_primary": True,
-            }
-        ],
-        corporate_action_adjustment_policy=DERIVATIVE_ADJUSTMENT_POLICY,
-    )
-    assert updated is not None
-    assert updated["fcn_contract"]["barrier_level"] == "65"
-    assert updated["contract_reconciliation"]["status"] == "ready"
-    resolved = find_instrument_by_broker_identifier(
-        broker="HSBC PB",
-        identifier_type="product_code",
-        identifier_value="FCN-HSBC-2026-001",
-    )
-    assert resolved is not None
-    assert resolved["instrument_id"] == fcn["instrument_id"]
 
 
 def test_email_failure_does_not_infer_a_missing_persistent_cursor(

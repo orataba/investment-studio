@@ -40,6 +40,11 @@ if config.config_file_name is not None:
 target_metadata = InstrumentRegistryBase.metadata
 
 
+def _include_object(object_, name: str | None, type_: str, reflected: bool, compare_to) -> bool:
+    del object_, compare_to
+    return not (reflected and type_ == "table" and name == "alembic_version")
+
+
 def run_migrations_offline() -> None:
     url = config.get_main_option("sqlalchemy.url")
     context.configure(
@@ -74,6 +79,7 @@ def run_migrations_online() -> None:
             target_metadata=target_metadata,
             compare_type=True,
             version_table_schema=version_table_schema,
+            include_object=_include_object,
         )
 
         with context.begin_transaction():

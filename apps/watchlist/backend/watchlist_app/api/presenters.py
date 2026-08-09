@@ -17,8 +17,6 @@ from watchlist_app.db.models.watchlists import (
 TAXONOMY_GROUP_BY_CODE = "taxonomy"
 GROUP_BY_FIELD_ORDER = (
     "management_firm_name",
-    "overall_rating",
-    "analyst_stance",
     "data_freshness_status",
 )
 GROUP_BY_FIELD_ORDER_INDEX = {

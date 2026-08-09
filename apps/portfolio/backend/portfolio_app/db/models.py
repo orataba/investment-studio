@@ -4,10 +4,12 @@ from datetime import date
 from decimal import Decimal
 
 from sqlalchemy import (
+    and_,
     Boolean,
     CheckConstraint,
     Date,
     ForeignKey,
+    ForeignKeyConstraint,
     Index,
     Integer,
     JSON,
@@ -42,6 +44,10 @@ class PortfolioRecordModel(Base):
         cascade="all, delete-orphan",
     )
     transactions: Mapped[list["TransactionRecordModel"]] = relationship(
+        back_populates="portfolio",
+        cascade="all, delete-orphan",
+    )
+    derivative_contracts: Mapped[list["DerivativeContractRecordModel"]] = relationship(
         back_populates="portfolio",
         cascade="all, delete-orphan",
     )
@@ -145,7 +151,26 @@ class PortfolioDailyHoldingSnapshotModel(Base):
     __table_args__ = (
         Index("ix_portfolio_daily_holding_portfolio_date", "portfolio_id", "as_of_date"),
         Index("ix_portfolio_daily_holding_instrument_date", "portfolio_id", "instrument_id", "as_of_date"),
+        Index(
+            "ix_portfolio_daily_holding_derivative_date",
+            "portfolio_id",
+            "derivative_contract_id",
+            "as_of_date",
+        ),
         Index("ix_portfolio_daily_holding_account_date", "portfolio_id", "account_id", "as_of_date"),
+        CheckConstraint(
+            "(instrument_id IS NOT NULL) <> (derivative_contract_id IS NOT NULL)",
+            name="single_asset_reference",
+        ),
+        ForeignKeyConstraint(
+            ["portfolio_id", "derivative_contract_id"],
+            [
+                "derivative_contract_record.portfolio_id",
+                "derivative_contract_record.derivative_contract_id",
+            ],
+            name="fk_daily_holding_derivative_contract_portfolio",
+            ondelete="CASCADE",
+        ),
     )
 
     portfolio_id: Mapped[str] = mapped_column(
@@ -158,8 +183,10 @@ class PortfolioDailyHoldingSnapshotModel(Base):
     )
     as_of_date: Mapped[date] = mapped_column(Date, primary_key=True)
     account_id: Mapped[str] = mapped_column(String, primary_key=True)
-    instrument_id: Mapped[str] = mapped_column(String, primary_key=True)
+    position_reference_id: Mapped[str] = mapped_column(String, primary_key=True)
     holding_kind: Mapped[str] = mapped_column(String, primary_key=True)
+    instrument_id: Mapped[str | None] = mapped_column(String)
+    derivative_contract_id: Mapped[str | None] = mapped_column(String)
     currency: Mapped[str] = mapped_column(String, nullable=False)
     quantity: Mapped[float] = mapped_column(nullable=False, default=0.0)
     cost_basis: Mapped[float | None]
@@ -273,6 +300,11 @@ class PortfolioInstrumentUniverseRecordModel(Base):
 class AccountRecordModel(Base):
     __tablename__ = "account_record"
     __table_args__ = (
+        UniqueConstraint(
+            "portfolio_id",
+            "account_id",
+            name="uq_account_record_portfolio_account_id",
+        ),
         Index("ix_account_record_portfolio_type_currency", "portfolio_id", "account_type", "currency"),
         Index("ix_account_record_portfolio_name", "portfolio_id", "account_name"),
     )
@@ -294,6 +326,59 @@ class AccountRecordModel(Base):
     status: Mapped[str] = mapped_column(String, nullable=False, default="active")
 
     portfolio: Mapped[PortfolioRecordModel] = relationship(back_populates="accounts")
+
+
+class DerivativeContractRecordModel(Base):
+    __tablename__ = "derivative_contract_record"
+    __table_args__ = (
+        CheckConstraint(
+            "contract_type IN ('fcn', 'option')",
+            name="contract_type",
+        ),
+        CheckConstraint(
+            "currency = upper(trim(currency)) AND length(currency) BETWEEN 1 AND 8",
+            name="currency",
+        ),
+        UniqueConstraint(
+            "portfolio_id",
+            "external_reference",
+            name="uq_derivative_contract_external_reference",
+        ),
+        Index(
+            "ix_derivative_contract_portfolio_account_type",
+            "portfolio_id",
+            "account_id",
+            "contract_type",
+        ),
+        ForeignKeyConstraint(
+            ["portfolio_id", "account_id"],
+            ["account_record.portfolio_id", "account_record.account_id"],
+            name="fk_derivative_contract_portfolio_account",
+            ondelete="RESTRICT",
+        ),
+    )
+
+    portfolio_id: Mapped[str] = mapped_column(
+        ForeignKey("portfolio_record.portfolio_id", ondelete="CASCADE"),
+        primary_key=True,
+        nullable=False,
+    )
+    derivative_contract_id: Mapped[str] = mapped_column(
+        String,
+        primary_key=True,
+        nullable=False,
+    )
+    account_id: Mapped[str] = mapped_column(String, nullable=False)
+    contract_name: Mapped[str] = mapped_column(String, nullable=False)
+    contract_type: Mapped[str] = mapped_column(String, nullable=False)
+    currency: Mapped[str] = mapped_column(String, nullable=False)
+    external_reference: Mapped[str | None] = mapped_column(String(200))
+    terms_json: Mapped[dict[str, object]] = mapped_column(JSON, nullable=False)
+    created_at: Mapped[str] = mapped_column(String, nullable=False)
+
+    portfolio: Mapped[PortfolioRecordModel] = relationship(
+        back_populates="derivative_contracts"
+    )
 
 
 class TransactionRecordModel(Base):
@@ -325,6 +410,26 @@ class TransactionRecordModel(Base):
         ),
         Index("ix_transaction_record_portfolio_type_trade", "portfolio_id", "transaction_type", "trade_date", "trade_at"),
         Index("ix_transaction_record_portfolio_instrument_trade", "portfolio_id", "instrument_id", "trade_date", "trade_at"),
+        Index(
+            "ix_transaction_record_portfolio_derivative_contract_trade",
+            "portfolio_id",
+            "derivative_contract_id",
+            "trade_date",
+            "trade_at",
+        ),
+        CheckConstraint(
+            "NOT (instrument_id IS NOT NULL AND derivative_contract_id IS NOT NULL)",
+            name="single_asset_reference",
+        ),
+        ForeignKeyConstraint(
+            ["portfolio_id", "derivative_contract_id"],
+            [
+                "derivative_contract_record.portfolio_id",
+                "derivative_contract_record.derivative_contract_id",
+            ],
+            name="fk_transaction_derivative_contract_portfolio",
+            ondelete="RESTRICT",
+        ),
         UniqueConstraint(
             "portfolio_id",
             "source_system",
@@ -375,6 +480,7 @@ class TransactionRecordModel(Base):
     settlement_cash_account_id: Mapped[str | None] = mapped_column(String)
     instrument_id: Mapped[str | None] = mapped_column(String)
     instrument_ref_json: Mapped[dict[str, object] | None] = mapped_column(JSON)
+    derivative_contract_id: Mapped[str | None] = mapped_column(String)
     quantity: Mapped[float | None]
     source_quantity: Mapped[Decimal | None] = mapped_column(Numeric(28, 12))
     price: Mapped[float | None]
@@ -412,6 +518,19 @@ class TransactionRecordModel(Base):
     )
 
     portfolio: Mapped[PortfolioRecordModel] = relationship(back_populates="transactions")
+    derivative_contract: Mapped[DerivativeContractRecordModel | None] = relationship(
+        primaryjoin=lambda: and_(
+            TransactionRecordModel.portfolio_id
+            == DerivativeContractRecordModel.portfolio_id,
+            TransactionRecordModel.derivative_contract_id
+            == DerivativeContractRecordModel.derivative_contract_id,
+        ),
+        foreign_keys=lambda: [
+            TransactionRecordModel.portfolio_id,
+            TransactionRecordModel.derivative_contract_id,
+        ],
+        viewonly=True,
+    )
 
 
 class TransactionChangeLogModel(Base):

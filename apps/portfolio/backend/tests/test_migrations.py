@@ -605,7 +605,7 @@ def test_cash_migrations_canonicalize_weights_and_remove_reserved_nodes(
         target_line = _insert_legacy_cash_risk_rows(connection)
 
     try:
-        command.upgrade(config, "head")
+        command.upgrade(config, "20260716_0040")
 
         with engine.connect() as connection:
             rows = {

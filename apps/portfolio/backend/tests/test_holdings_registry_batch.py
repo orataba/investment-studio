@@ -6,6 +6,7 @@ from types import SimpleNamespace
 
 from portfolio_app.api.routes import workspace as workspace_routes
 from portfolio_app.db.models import (
+    DerivativeContractRecordModel,
     PortfolioCalculationStateModel,
     PortfolioDailyHoldingSnapshotModel,
     PortfolioDailySnapshotModel,
@@ -224,7 +225,9 @@ def test_snapshot_holding_aggregation_preserves_accounts_and_earliest_holding_pr
         }
         return SimpleNamespace(
             as_of_date=date(2026, 7, 24),
+            position_reference_id="fund-1",
             instrument_id="fund-1",
+            derivative_contract_id=None,
             holding_kind="position",
             holding_json={
                 "account_id": account_id,
@@ -324,7 +327,7 @@ def test_materialized_holdings_uses_one_bulk_detail_map(client, monkeypatch) -> 
     assert all(row.get("price_chart_6m") is not None for row in payload["rows"])
 
 
-def test_instrument_holding_projection_skips_portfolio_wide_analytics(client, monkeypatch) -> None:
+def test_position_holding_projection_skips_portfolio_wide_analytics(client, monkeypatch) -> None:
     snapshot_response = client.get("/api/portfolios/portfolio-ops/snapshots/daily")
     assert snapshot_response.status_code == 200
 
@@ -336,10 +339,10 @@ def test_instrument_holding_projection_skips_portfolio_wide_analytics(client, mo
     monkeypatch.setattr(workspace_routes, "enrich_holdings_forward_risk", fail_portfolio_wide_load)
 
     response = client.get(
-        "/api/workspace/holdings/instrument",
+        "/api/workspace/holdings/position",
         params={
             "portfolio_id": "portfolio-ops",
-            "instrument_id": "equity-us-abbv",
+            "position_reference_id": "equity-us-abbv",
             "as_of_date": "2026-04-15",
         },
     )
@@ -363,47 +366,36 @@ def test_materialized_option_position_and_obligation_remain_distinct_in_api_and_
     portfolio_id = "portfolio-ops"
     as_of_date = date(2026, 4, 15)
     account_id = "account-us-brokerage"
-    instrument_id = "option-us-short-call"
-    instrument_ref = {
-        "instrument_id": instrument_id,
-        "instrument_name": "Short Call Contract",
-        "instrument_type": "option",
+    derivative_contract_id = "option-us-short-call"
+    derivative_contract = {
+        "derivative_contract_id": derivative_contract_id,
+        "portfolio_id": portfolio_id,
+        "account_id": account_id,
+        "contract_name": "Short Call Contract",
+        "contract_type": "option",
         "currency": "USD",
-        "identifiers": [],
-        "broker_identifiers": [
-            {
-                "broker": "Test Broker",
-                "identifier_type": "contract_id",
-                "identifier_value": "TEST-SHORT-CALL",
-                "is_primary": True,
-            }
-        ],
-        "option_contract": {
+        "external_reference": "TEST-SHORT-CALL",
+        "terms": {
             "underlying_instrument_id": "equity-us-abbv",
             "option_type": "call",
             "expiry_date": "2026-12-18",
             "strike": "220",
             "contract_multiplier": "100",
             "settlement_type": "physical",
-            "contract_currency": "USD",
         },
-        "corporate_action_adjustment_policy": {
-            "policy_type": "exchange_rules",
-            "authority_reference": "Test exchange option rules",
-            "quantity_rounding": "exact",
-            "adjust_strike": True,
-            "adjust_multiplier": True,
-            "adjust_deliverable": True,
-        },
+        "created_at": "2026-04-15T16:00:00Z",
     }
     calculated_at = "2026-04-15T16:00:00Z"
     position_payload = {
-        "line_id": instrument_id,
+        "line_id": derivative_contract_id,
         "account_id": account_id,
         "account_ids": [account_id],
-        "instrument_id": instrument_id,
+        "position_reference_id": derivative_contract_id,
+        "instrument_id": None,
+        "derivative_contract_id": derivative_contract_id,
+        "derivative_contract": deepcopy(derivative_contract),
         "holding_kind": "position",
-        "instrument_ref": deepcopy(instrument_ref),
+        "instrument_ref": None,
         "quantity": 1.0,
         "cost_basis_method": "fifo",
         "cost_basis": 500.0,
@@ -421,12 +413,15 @@ def test_materialized_option_position_and_obligation_remain_distinct_in_api_and_
         "open_position_lot_count": 1,
     }
     obligation_payload = {
-        "line_id": f"{instrument_id}:obligation",
+        "line_id": f"{derivative_contract_id}:obligation",
         "account_id": account_id,
         "account_ids": [account_id],
-        "instrument_id": instrument_id,
+        "position_reference_id": derivative_contract_id,
+        "instrument_id": None,
+        "derivative_contract_id": derivative_contract_id,
+        "derivative_contract": deepcopy(derivative_contract),
         "holding_kind": "option_obligation",
-        "instrument_ref": deepcopy(instrument_ref),
+        "instrument_ref": None,
         "quantity": -1.0,
         "open_contract_quantity": 1.0,
         "required_underlying_quantity": 100.0,
@@ -459,6 +454,19 @@ def test_materialized_option_position_and_obligation_remain_distinct_in_api_and_
             session.add(state)
         state.daily_snapshot_status = "current"
         session.add(
+            DerivativeContractRecordModel(
+                derivative_contract_id=derivative_contract_id,
+                portfolio_id=portfolio_id,
+                account_id=account_id,
+                contract_name="Short Call Contract",
+                contract_type="option",
+                currency="USD",
+                external_reference="TEST-SHORT-CALL",
+                terms_json=deepcopy(derivative_contract["terms"]),
+                created_at=calculated_at,
+            )
+        )
+        session.add(
             PortfolioDailySnapshotModel(
                 portfolio_id=portfolio_id,
                 as_of_date=as_of_date,
@@ -488,7 +496,9 @@ def test_materialized_option_position_and_obligation_remain_distinct_in_api_and_
                     portfolio_id=portfolio_id,
                     as_of_date=as_of_date,
                     account_id=account_id,
-                    instrument_id=instrument_id,
+                    position_reference_id=derivative_contract_id,
+                    instrument_id=None,
+                    derivative_contract_id=derivative_contract_id,
                     holding_kind="position",
                     currency="USD",
                     quantity=1.0,
@@ -505,7 +515,9 @@ def test_materialized_option_position_and_obligation_remain_distinct_in_api_and_
                     portfolio_id=portfolio_id,
                     as_of_date=as_of_date,
                     account_id=account_id,
-                    instrument_id=instrument_id,
+                    position_reference_id=derivative_contract_id,
+                    instrument_id=None,
+                    derivative_contract_id=derivative_contract_id,
                     holding_kind="option_obligation",
                     currency="USD",
                     quantity=-1.0,
@@ -535,16 +547,14 @@ def test_materialized_option_position_and_obligation_remain_distinct_in_api_and_
     option_rows = [
         row
         for row in materialized["rows"]
-        if row["instrument_core"]["instrument_id"] == instrument_id
+        if row["derivative_contract_id"] == derivative_contract_id
     ]
     assert len(option_rows) == 2
     assert {row["holding_kind"] for row in option_rows} == {
         "position",
         "option_obligation",
     }
-    assert {row["instrument_core"]["instrument_id"] for row in option_rows} == {
-        instrument_id
-    }
+    assert all(row["instrument_core"] is None for row in option_rows)
     for row in option_rows:
         row.update(_populated_market_profile())
 
@@ -556,10 +566,7 @@ def test_materialized_option_position_and_obligation_remain_distinct_in_api_and_
     monkeypatch.setattr(
         workspace_routes,
         "get_registry_instrument_details",
-        lambda instrument_ids: {
-            item: deepcopy(instrument_ref) if item == instrument_id else None
-            for item in instrument_ids
-        },
+        lambda instrument_ids: {item: None for item in instrument_ids},
     )
     monkeypatch.setattr(
         workspace_routes,
@@ -607,7 +614,7 @@ def test_materialized_option_position_and_obligation_remain_distinct_in_api_and_
     api_option_rows = [
         row
         for row in holdings_response.json()["rows"]
-        if row["instrument_core"]["instrument_id"] == instrument_id
+        if row["derivative_contract_id"] == derivative_contract_id
     ]
     assert len(api_option_rows) == 2
     assert {row["holding_kind"] for row in api_option_rows} == {
@@ -635,10 +642,10 @@ def test_materialized_option_position_and_obligation_remain_distinct_in_api_and_
     assert api_obligation["valuation_basis"] == "premium_liability"
 
     detail_response = client.get(
-        "/api/workspace/holdings/instrument",
+        "/api/workspace/holdings/position",
         params={
             "portfolio_id": portfolio_id,
-            "instrument_id": instrument_id,
+            "position_reference_id": derivative_contract_id,
             "as_of_date": as_of_date.isoformat(),
         },
     )
@@ -664,10 +671,10 @@ def test_materialized_option_position_and_obligation_remain_distinct_in_api_and_
         assert detail_obligation[field_name] == api_obligation[field_name]
 
 
-def test_instrument_holding_projection_fails_closed_when_snapshot_is_unavailable(client, monkeypatch) -> None:
+def test_position_holding_projection_fails_closed_when_snapshot_is_unavailable(client, monkeypatch) -> None:
     monkeypatch.setattr(
         workspace_routes,
-        "build_materialized_instrument_holding_projection",
+        "build_materialized_position_holding_projection",
         lambda *_args, **_kwargs: None,
     )
     monkeypatch.setattr(
@@ -679,10 +686,10 @@ def test_instrument_holding_projection_fails_closed_when_snapshot_is_unavailable
     )
 
     response = client.get(
-        "/api/workspace/holdings/instrument",
+        "/api/workspace/holdings/position",
         params={
             "portfolio_id": "portfolio-ops",
-            "instrument_id": "equity-us-abbv",
+            "position_reference_id": "equity-us-abbv",
             "as_of_date": "2026-04-12",
         },
     )

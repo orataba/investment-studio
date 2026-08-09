@@ -161,7 +161,6 @@ class StubCopilotProvider:
         stale_rows = _pick_stale_rows(rows)
         best_return_row = _pick_best_row(rows, "return_1y", reverse=True)
         worst_drawdown_row = _pick_best_row(rows, "max_drawdown", reverse=False)
-        highest_rating_row = _pick_best_row(rows, "overall_rating", reverse=True)
         avg_one_year = _mean_field(rows, "return_1y")
         groups = list(query_result.get("groups") or [])
         largest_group = (
@@ -176,14 +175,14 @@ class StubCopilotProvider:
         elif any(keyword in question for keyword in ("风险", "回撤", "波动", "drawdown")):
             focus = "风险"
         elif any(keyword in question for keyword in ("评级", "观点", "rating")):
-            focus = "评级"
+            focus = "人工投研记录"
 
         answer_lines = [
             f"基于当前 Watchlist「{watchlist_name}」的 {total_rows} 条可见记录，我先按{focus}给出摘要。",
             f"当前视图是「{view_name or '当前视图'}」；{f'按 {group_by} 分组，最大组是 {largest_group.get('group_value')}（{largest_group.get('row_count')} 条）。' if group_by and group_by != 'none' and largest_group else '当前未分组。'}",
             f"数据新鲜度方面，需优先关注 {len(stale_rows)} 条记录；最近需要核查的对象包括 {_list_join([str(row.get('ticker_or_isin') or row.get('instrument_name') or '') for row in stale_rows[:3]])}。",
             f"表现上，1Y 平均回报约 {_format_percent(avg_one_year)}；最好的是 {best_return_row.get('ticker_or_isin') if best_return_row else '—'}（{_format_percent(best_return_row.get('return_1y')) if best_return_row else '—'}）。",
-            f"风险上，最大回撤最深的是 {worst_drawdown_row.get('ticker_or_isin') if worst_drawdown_row else '—'}（{_format_percent(worst_drawdown_row.get('max_drawdown')) if worst_drawdown_row else '—'}）；当前最高内部评分的是 {highest_rating_row.get('ticker_or_isin') if highest_rating_row else '—'}（{_format_number(highest_rating_row.get('overall_rating'), 0) if highest_rating_row else '—'}）。",
+            f"风险上，最大回撤最深的是 {worst_drawdown_row.get('ticker_or_isin') if worst_drawdown_row else '—'}（{_format_percent(worst_drawdown_row.get('max_drawdown')) if worst_drawdown_row else '—'}）。系统不会把不同量纲的市场指标合成为投资评级；观点与评级仅来自人工研究记录。",
         ]
 
         return {
@@ -193,7 +192,7 @@ class StubCopilotProvider:
             "answer": "\n".join(answer_lines),
             "suggestions": [
                 "找出需要优先更新净值的产品",
-                "按评级和回撤总结当前名单",
+                "按回撤和数据新鲜度总结当前名单",
                 "解释当前名单里最强和最弱的 1Y 表现",
             ],
             "citations": [
@@ -414,8 +413,6 @@ class CopilotService:
             "instrument_name",
             "ticker_or_isin",
             "attr.fund_taxonomy_path",
-            "overall_rating",
-            "analyst_stance",
             "return_1y",
             "max_drawdown",
             "data_freshness_status",

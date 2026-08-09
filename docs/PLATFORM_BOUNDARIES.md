@@ -7,7 +7,7 @@
 - `apps/platform`
   平台入口和 Database Dashboard。
 - `apps/watchlist`
-  fund/index Watchlist / local detail / monitoring / recalc；Copilot 当前只保留后端扩展接口，不作为已发布 UI。
+  fund / ETF / equity / index Watchlist、local detail、monitoring 与 recalc；Copilot 当前只保留后端扩展接口，不作为已发布 UI。
 - `apps/portfolio`
   Portfolio / account / transaction / performance / risk / research / taxonomy。
 
@@ -37,7 +37,7 @@
 
 - 直接读写 `watchlist`
 - 直接读取 `instrument_registry`
-- 当前已发布范围收口为 `fund` 与 `index` 资产类型；其他共享资产可以存在于 registry，但不进入 Watchlist 主工作面
+- 当前已发布范围是 `fund / etf / equity / index`；其他共享资产可以存在于 registry，但不进入 Watchlist 主工作面
 - 在本地维护自己的 read models、recalc jobs、manual profile 和产品框架；Copilot 仅保留 backend extension boundary
 
 ### Portfolio
@@ -45,6 +45,7 @@
 - 直接读写 `portfolio`
 - 直接读取 `instrument_registry`
 - 在本地维护自己的 ledger、lots、performance、risk、taxonomy、target set、research
+- 在本地维护 FCN/期权不可变合约及事件交易；只有合约的 underlying / deliverable 引用 Registry 市场资产
 
 ## Same-Name Page Boundary
 
@@ -84,12 +85,14 @@ Watchlist 与 Portfolio 会使用相同的投资术语，但这些页面不是�
 
 ### `instrument_registry` schema
 
-承载共享资产主档和共享市场事实：
+承载可跨 watchlist、portfolio 和数据源复用的市场资产主档与共享市场事实：
 
 - instrument
 - instrument_identifier
 - instrument_market_data
 - registry metadata
+
+FCN 与期权合约依赖具体组合、账户、对手方和交易条款，不是共享市场资产；它们不进入 Registry，也不产生 Registry 行情。Registry 只保存其 underlying / deliverable 等可复用证券。
 
 `instrument_registry` 的 Alembic 入口独立放在 [infra/instrument_registry](../infra/instrument_registry/README.md)，不再挂在 `platform` app 下。
 
@@ -111,7 +114,8 @@ Watchlist 与 Portfolio 会使用相同的投资术语，但这些页面不是�
 
 共享资产身份由数据库直接约束，而不是靠 app 约定：
 
-- `portfolio.transaction_record.instrument_id -> instrument_registry.instrument.instrument_id`
+- `portfolio.transaction_record.instrument_id -> instrument_registry.instrument.instrument_id`（普通市场资产交易）
+- `(portfolio.transaction_record.portfolio_id, derivative_contract_id) -> portfolio.derivative_contract_record`（FCN/期权交易）
 - `watchlist.watchlist_item.instrument_id -> instrument_registry.instrument.instrument_id`
 - `watchlist.instrument_detail.instrument_id -> instrument_registry.instrument.instrument_id`
 
@@ -120,6 +124,7 @@ Watchlist 与 Portfolio 会使用相同的投资术语，但这些页面不是�
 - app 私有 schema 可以引用共享资产
 - 共享资产重命名/修正要通过 canonical registry 完成
 - 本地脏数据会在 FK 迁移或写入时暴露，而不是长期静默漂移
+- 普通交易最多引用一个 Registry instrument，FCN/期权交易改为引用同 Portfolio 的本地合约；现金事实可以两者都不引用
 
 ## Data Flow
 
@@ -157,8 +162,9 @@ unavailable，不读取 Watchlist 旧 `nav_fact` 作为行情 fallback。
 ### Portfolio Facts
 
 1. 用户显式创建 portfolio / account / transaction，或用导入脚本导入
-2. `portfolio` 只在自己的 schema 持久化业务事实
-3. valuation / holdings / charts / performance 使用 `instrument_registry` 的 canonical instrument 和 market data
+2. 普通市场资产交易引用 Registry instrument；首笔 FCN/期权交易在 `portfolio` 内原子创建不可变 derivative contract，后续事件只引用同一 contract id
+3. `portfolio` 只在自己的 schema 持久化账户、交易、合约、ledger 与组合计算事实
+4. 普通市场资产的 valuation / holdings / charts / performance 使用 Registry canonical market data；FCN/期权按事件记账，在事件之间使用成本/权利金负债口径，不进入实时定价、协方差、Risk Budget 或 Research 序列
 
 ## Non-goals
 

@@ -26,13 +26,70 @@ CURRENT_LIFECYCLE_CHECK = (
     "'option_long_expiry', 'option_long_exercise', 'option_writer_expiry', "
     "'option_assignment')"
 )
-PREVIOUS_LIFECYCLE_CHECK = (
-    "lifecycle_event_type IS NULL OR lifecycle_event_type IN ("
-    "'fcn_knock_in', 'fcn_knock_out', 'fcn_maturity', "
-    "'fcn_physical_settlement', 'option_long_expiry', "
-    "'option_long_exercise', 'option_writer_expiry', "
-    "'option_assignment')"
-)
+
+
+def _preflight_fcn_delivery_groups() -> None:
+    connection = op.get_bind()
+    rows = connection.execute(
+        sa.text(
+            "SELECT transaction_id, portfolio_id, account_id, currency, "
+            "event_group_id, transaction_type, lifecycle_event_type, gross_amount "
+            "FROM transaction_record WHERE event_group_id IS NOT NULL"
+        )
+    ).mappings().all()
+    lifecycle_rows = [
+        row for row in rows if row["lifecycle_event_type"] == "fcn_physical_settlement"
+    ]
+    groups: dict[tuple[object, str], list[object]] = {}
+    for row in lifecycle_rows:
+        event_group_id = str(row["event_group_id"] or "").strip()
+        if not event_group_id:
+            raise RuntimeError(
+                "Cannot migrate an FCN physical settlement without its delivery group."
+            )
+        groups.setdefault((row["portfolio_id"], event_group_id), []).append(row)
+
+    for (portfolio_id, event_group_id), lifecycle_group in groups.items():
+        if len(lifecycle_group) != 1:
+            raise RuntimeError(
+                "Cannot migrate an FCN delivery group unless it has exactly one "
+                f"physical-settlement fact: {portfolio_id}/{event_group_id}."
+            )
+        delivery_rows = [
+            row
+            for row in rows
+            if row["portfolio_id"] == portfolio_id
+            and str(row["event_group_id"] or "").strip() == event_group_id
+            and row["transaction_type"] == "buy"
+        ]
+        if len(delivery_rows) != 1 or float(delivery_rows[0]["gross_amount"] or 0) <= 0:
+            raise RuntimeError(
+                "Cannot migrate an FCN physical settlement without exactly one "
+                f"positive delivered-asset buy: {portfolio_id}/{event_group_id}."
+            )
+        lifecycle_row = lifecycle_group[0]
+        delivery_row = delivery_rows[0]
+        if (
+            str(lifecycle_row["currency"] or "").strip().upper()
+            != str(delivery_row["currency"] or "").strip().upper()
+            or lifecycle_row["account_id"] != delivery_row["account_id"]
+        ):
+            raise RuntimeError(
+                "Cannot copy delivered-asset cash amounts across currencies or accounts: "
+                f"{portfolio_id}/{event_group_id}."
+            )
+        has_calculation_state = connection.execute(
+            sa.text(
+                "SELECT 1 FROM portfolio_calculation_state "
+                "WHERE portfolio_id = :portfolio_id"
+            ),
+            {"portfolio_id": portfolio_id},
+        ).first()
+        if has_calculation_state is None:
+            raise RuntimeError(
+                "Cannot invalidate calculated projections because portfolio calculation "
+                f"state is missing: {portfolio_id}."
+            )
 
 
 def _convert_fcn_delivery_groups() -> None:
@@ -129,6 +186,10 @@ def _invalidate_affected_snapshots() -> None:
 
 
 def upgrade() -> None:
+    connection = op.get_bind()
+    if connection.dialect.name == "postgresql":
+        connection.execute(sa.text("SET LOCAL lock_timeout = '30s'"))
+    _preflight_fcn_delivery_groups()
     _convert_fcn_delivery_groups()
     _invalidate_affected_snapshots()
     with op.batch_alter_table("transaction_record") as batch_op:
@@ -144,23 +205,8 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    with op.batch_alter_table("transaction_record") as batch_op:
-        batch_op.drop_constraint(LIFECYCLE_CHECK_NAME, type_="check")
-        batch_op.add_column(
-            sa.Column("event_group_id", sa.String(length=200), nullable=True)
-        )
-        batch_op.add_column(
-            sa.Column("related_instrument_id", sa.String(length=200), nullable=True)
-        )
-        batch_op.create_check_constraint(
-            LIFECYCLE_CHECK_NAME,
-            PREVIOUS_LIFECYCLE_CHECK,
-        )
-        batch_op.create_index(
-            EVENT_GROUP_INDEX,
-            ["portfolio_id", "event_group_id"],
-        )
-        batch_op.create_index(
-            RELATED_INSTRUMENT_INDEX,
-            ["portfolio_id", "related_instrument_id"],
-        )
+    raise RuntimeError(
+        "Revision 20260809_0045 rewrites financial facts and drops their grouping lineage. "
+        "Restore the four-schema pre-migration backup; Alembic downgrade cannot recover "
+        "the original lifecycle events, cash amounts, or relationships."
+    )

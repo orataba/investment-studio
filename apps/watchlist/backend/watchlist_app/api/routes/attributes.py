@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import date, datetime
+from numbers import Real
 
 from fastapi import APIRouter, Depends
 from fastapi import HTTPException
@@ -18,20 +19,17 @@ from watchlist_app.repositories.sqlalchemy.field_registry import SQLAlchemyField
 from watchlist_app.repositories.sqlalchemy.instrument_attributes import (
     SQLAlchemyInstrumentAttributeRepository,
 )
-from watchlist_app.repositories.sqlalchemy.read_models import SQLAlchemyReadModelRepository
 from watchlist_app.repositories.sqlalchemy.taxonomy import SQLAlchemyTaxonomyRepository
-from watchlist_app.services.fund_taxonomy import (
-    build_taxonomy_context,
-    merge_taxonomy_attributes,
-)
+from watchlist_app.services.canonical_recalc import CanonicalRecalcService
+from watchlist_app.services.fund_taxonomy import build_taxonomy_context
 
 
 router = APIRouter()
 attribute_repository = SQLAlchemyInstrumentAttributeRepository()
 field_registry_repository = SQLAlchemyFieldRegistryRepository()
 instrument_repository = SQLAlchemyInstrumentRepository()
-read_model_repository = SQLAlchemyReadModelRepository()
 taxonomy_repository = SQLAlchemyTaxonomyRepository()
+canonical_recalc_service = CanonicalRecalcService()
 
 
 def _require_asset(session: Session, instrument_id: str):
@@ -53,6 +51,51 @@ def _taxonomy_context_for_asset(
         else None
     )
     return build_taxonomy_context(node)
+
+
+def _validated_attribute_value(definition, value: object) -> object:
+    if value is None:
+        return None
+    data_type = str(definition.data_type).strip().lower()
+    options = [str(item) for item in definition.options_json or []]
+    if data_type == "single_select":
+        if not isinstance(value, str) or value not in options:
+            raise ValueError(f"must be one of: {', '.join(options)}")
+        return value
+    if data_type == "multi_select":
+        if not isinstance(value, list) or any(not isinstance(item, str) for item in value):
+            raise ValueError("must be a list of strings")
+        if len(set(value)) != len(value):
+            raise ValueError("must not contain duplicate values")
+        invalid = [item for item in value if item not in options]
+        if invalid:
+            raise ValueError(f"contains invalid values: {', '.join(invalid)}")
+        return value
+    if data_type == "number":
+        if isinstance(value, bool) or not isinstance(value, Real):
+            raise ValueError("must be a number")
+        return value
+    if data_type == "boolean":
+        if not isinstance(value, bool):
+            raise ValueError("must be true or false")
+        return value
+    if data_type in {"text", "string"}:
+        if not isinstance(value, str):
+            raise ValueError("must be text")
+        return value
+    if data_type == "date":
+        if not isinstance(value, str):
+            raise ValueError("must be an ISO date")
+        date.fromisoformat(value)
+        return value
+    if data_type == "datetime":
+        if not isinstance(value, str):
+            raise ValueError("must be an ISO datetime")
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            raise ValueError("must include a timezone")
+        return value
+    raise ValueError(f"uses unsupported data type {data_type!r}")
 
 
 @router.get("/definitions")
@@ -120,7 +163,7 @@ def get_instrument_attribute_values(
     instrument_id: str,
     session: Session = Depends(get_db_session),
 ) -> dict[str, object]:
-    _require_asset(session, instrument_id)
+    instrument = _require_asset(session, instrument_id)
     payload = present_attribute_values(
         instrument_id,
         attribute_repository.list_definitions(session),
@@ -139,24 +182,44 @@ def upsert_instrument_attribute_values(
     payload: FundAttributesUpsertRequest,
     session: Session = Depends(get_db_session),
 ) -> dict[str, object]:
-    _require_asset(session, instrument_id)
+    instrument = _require_asset(session, instrument_id)
     definitions = {
         item.attribute_key: item for item in attribute_repository.list_definitions(session)
     }
+    keys = [item.attribute_key for item in payload.values]
+    if len(set(keys)) != len(keys):
+        raise HTTPException(status_code=422, detail="Each attribute may be updated only once per request.")
     values = {item.attribute_key: item.value for item in payload.values}
     unknown_keys = [key for key in values if key not in definitions]
     if unknown_keys:
         raise HTTPException(
-            status_code=400,
+            status_code=422,
             detail=f"Unknown instrument attribute keys: {', '.join(sorted(unknown_keys))}.",
         )
     for key, value in values.items():
+        definition = definitions[key]
+        instrument_scope = {
+            str(item).strip().lower() for item in definition.instrument_scope_json or []
+        }
+        if instrument_scope and str(instrument.instrument_type).strip().lower() not in instrument_scope:
+            raise HTTPException(
+                status_code=422,
+                detail=f"Attribute {key!r} does not apply to {instrument.instrument_type} instruments.",
+            )
+        try:
+            validated_value = _validated_attribute_value(definition, value)
+        except (TypeError, ValueError) as error:
+            raise HTTPException(
+                status_code=422,
+                detail=f"Invalid value for attribute {key!r}: {error}.",
+            ) from error
         attribute_repository.add_value(
             session,
             instrument_id=instrument_id,
             attribute_key=key,
-            value_json=value,
-            source_record_id="api",
+            value_json=validated_value,
+            effective_from=payload.effective_from,
+            source_record_id=str(payload.source_record_id or "api").strip() or "api",
         )
     current_values = present_attribute_values(
         instrument_id,
@@ -167,14 +230,18 @@ def upsert_instrument_attribute_values(
         session,
         instrument_id=instrument_id,
     )
-    read_model_repository.set_attributes_for_asset(
+    execution = canonical_recalc_service.execute_recalc(
         session,
         instrument_id=instrument_id,
-        attributes=merge_taxonomy_attributes(
-            taxonomy_context=taxonomy_context,
-            instrument_attributes=current_values["values"],
-        ),
-        touched_at=datetime.now(UTC).replace(microsecond=0),
+        job_type="performance",
+        trigger_type="instrument_attribute_update",
+        trigger_ref_type="instrument_attribute_value",
+        trigger_ref_id=payload.source_record_id,
     )
     session.commit()
-    return current_values | {"updated": True, "taxonomy": taxonomy_context}
+    return current_values | {
+        "updated": True,
+        "taxonomy": taxonomy_context,
+        "recalculated": True,
+        "execution": execution,
+    }

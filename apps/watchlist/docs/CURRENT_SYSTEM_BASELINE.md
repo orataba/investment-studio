@@ -47,21 +47,21 @@ watchlist 和 fund detail 已经不再使用“平铺 fund tags”模型，而�
 - Fund Detail UI 分区
 - Monitoring 缺失项检查
 
-当前产品可用范围是 `fund` 与 `index`：fund 使用完整三层产品框架和详情工作面，index 使用聚焦 Overview / Performance / Risk 的轻量详情。shared registry 可继续覆盖更广资产，但其他资产类型不进入 watchlist detail 主链路。
+当前产品可用范围是 `fund / etf / equity / index`：fund 使用完整三层产品框架和详情工作面，ETF、股票和指数使用聚焦 Overview / Performance / Risk / Price 的轻量详情。shared registry 可继续覆盖更广资产，但其他资产类型不进入 watchlist detail 主链路。
 
 ## 4. 当前最该相信的行为边界
 
 下面这些已经在代码里成立：
 
-- watchlist 主表按页加载，默认每页 `50` 行；页面支持翻页
+- watchlist 主表一次取得当前筛选/排序下的完整服务端快照，前端初始渲染 `80` 行并支持继续显示或显示全部；全选只作用于当前已渲染行
 - watchlist 顶部操作控件与 Portfolio toolbar 视觉一致，但仍使用 watchlist 本 app 的局部样式和页面实现，不建立跨 app 组件依赖
 - watchlist `Download` 会导出当前筛选/排序结果的全量行，而不是只导当前页
 - watchlist filter 选项按当前名单的全量结果计算，而不是固定采样前几页
-- 当前页 add / delete / move 后，filter 选项会重新拉取
+- add / delete / move 后，filter 选项会重新拉取
 - watchlist 的 `Peer Category` 仍然代表外部 peer group；内部基金分类已经改成独立 taxonomy tree，并派生出 `fund_regime + 一级/二级/三级分类...`
 - fund taxonomy 默认允许 `Unassigned`；系统不再基于旧分类字段或 migration 自动猜测分类，必须由人在详情页明确选择
 - watchlist `move` / `copy` 必须先命中 source watchlist membership，不能绕过 source 直接向 target 加资产
-- 自定义 view 的 `view_id` 会做 path-safe slug 化；创建冲突会重试；复制 watchlist 时也会清洗 legacy custom view id
+- 自定义 view 的 `view_id` 会做 path-safe slug 化；创建冲突会重试；复制 watchlist 时会按相同规则规范化源 view id
 - canonical quote/NAV history 在 watchlist detail 是只读视图；导入、刷新、编辑共享行情/净值要回到 `Database Dashboard`。watchlist 派生层必须保留真实 `metric_family / quote_basis / role`，例如 `price/close/chart` 和 `nav/total_return_nav/total_return` 不能再只压成 NAV 文案。
 - 主图和 Sparkline 统一展示区间累计收益并返回真实锚点；Overview 主图只使用双端拖动范围条。标量 performance 字段已覆盖 `1W / 1M / 3M / 6M / MTD / YTD / 1Y` 并投影到 watchlist row read model；MTD/YTD 按期初前一有效收盘，滚动窗口按请求 `as_of_date` 回看，不随 stale 实际终点平移。指数的 `close/last` 只表示字段身份，收益口径必须来自 Registry 的显式 `return_semantics`；未确认时保持 Unknown 并停止相对指标。完整规则见 [RETURN_SERIES_CONTRACT.md](./RETURN_SERIES_CONTRACT.md)。
 - Watchlist 每个 instrument 使用自己的最新 calculation-series observation 作为 as-of；名单级 metadata 只报告行终点范围，不代表共同计算日。不同终点不能直接做收益/风险分组平均或 peer 排名；benchmark 比较只使用双方完全相同的共同观测收盘点构造共同起止和中间 period。
@@ -98,7 +98,7 @@ watchlist 和 fund detail 已经不再使用“平铺 fund tags”模型，而�
 - fund taxonomy tree / taxonomy assignment / derived taxonomy levels
 - NAV facts ingest
 - holdings ingest
-- performance / risk / exposure / ratings materialization
+- performance / risk / exposure materialization；研究星级只来自人工 research profile
 - instrument manual profiles（当前 fund overlay 最完整）
 - instrument product framework definition / assignment
 - recalc job persistence
@@ -117,14 +117,14 @@ watchlist 和 fund detail 已经不再使用“平铺 fund tags”模型，而�
 
 下面这些现在不应被文档假装成“已经落地”：
 
-- fund/index 之外的 instrument detail overlay
+- bond / cash / FX / other 的 instrument detail overlay
 - Documents workspace 的完整工作面
 - Database Dashboard 侧 Email sync / OCR / extraction pipeline 的完整闭环
 - 真实 OpenAI provider 已启用且对用户开放的 Copilot
 
 ## 8. 继续推进时建议按什么顺序做
 
-1. 如果要继续扩展产品范围，再补 fund/index 之外的 instrument detail overlay；否则继续把当前 fund/index 路径打磨完整
+1. 先保持当前 fund / ETF / equity / index 边界；只有出现明确使用需求时，再为 bond / cash / FX / other 增加适合其语义的详情工作面
 2. 继续补强 monitoring 和 recalc worker 的观测/告警
 3. 扩展 fund taxonomy 与 taxonomy-aware research packs
 4. 把导入链路从“手工写入 facts”补到更完整的 source / document 流

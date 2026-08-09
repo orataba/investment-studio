@@ -3,6 +3,7 @@ from datetime import date
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
+from watchlist_app.api.contracts import InstrumentBulkResolveRequest
 from watchlist_app.db.session import get_db_session
 from watchlist_app.services.instrument_resolution import resolve_watchlist_instrument
 from watchlist_app.services.shared_instrument_registry import (
@@ -45,6 +46,31 @@ def resolve_shared_instrument_record(
     if record is None:
         raise HTTPException(status_code=404, detail="Instrument not found in shared registry")
     return record
+
+
+@router.post("/resolve-bulk")
+def resolve_shared_instrument_records(
+    payload: InstrumentBulkResolveRequest,
+) -> dict[str, object]:
+    identifiers = list(
+        dict.fromkeys(value.strip() for value in payload.identifiers if value.strip())
+    )
+    if not identifiers:
+        raise HTTPException(status_code=422, detail="At least one non-empty identifier is required")
+    results: list[dict[str, object]] = []
+    try:
+        for identifier in identifiers:
+            record = resolve_shared_instrument(identifier_value=identifier)
+            results.append(
+                {
+                    "identifier": identifier,
+                    "status": "resolved" if record is not None else "not_found",
+                    "instrument": record,
+                }
+            )
+    except SharedInstrumentRegistryError as error:
+        raise HTTPException(status_code=502, detail=str(error)) from error
+    return {"results": results}
 
 
 @router.get("/{instrument_id}/price-bars")
@@ -100,7 +126,7 @@ def get_instrument_price_bars(
     }
 
 
-@router.get("/{instrument_id}/resolve")
+@router.post("/{instrument_id}/resolve")
 def resolve_instrument_detail(
     instrument_id: str,
     session: Session = Depends(get_db_session),
@@ -111,4 +137,5 @@ def resolve_instrument_detail(
         raise HTTPException(status_code=502, detail=str(error)) from error
     if record is None:
         raise HTTPException(status_code=404, detail="Instrument not found")
+    session.commit()
     return record

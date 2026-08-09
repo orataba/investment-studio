@@ -426,6 +426,102 @@ class AccountUpdateRequest(BaseModel):
         return self
 
 
+class OptionContractTerms(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    underlying_instrument_id: str = Field(min_length=1)
+    option_type: Literal["call", "put"]
+    expiry_date: date
+    strike: Decimal = Field(gt=0, lt=Decimal("1e16"))
+    contract_multiplier: Decimal = Field(gt=0, lt=Decimal("1e16"))
+    settlement_type: Literal["physical", "cash"]
+
+    @field_validator("underlying_instrument_id", mode="before")
+    @classmethod
+    def normalize_underlying(cls, value: object) -> object:
+        return _normalize_required_text(value)
+
+
+class FCNContractTerms(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    notional: Decimal = Field(gt=0, lt=Decimal("1e20"))
+    issue_date: date
+    maturity_date: date
+    issuer: str = Field(min_length=1)
+    counterparty: str = Field(min_length=1)
+    underlying_instrument_ids: list[str] = Field(min_length=1)
+    deliverable_instrument_ids: list[str] = Field(default_factory=list)
+    barrier_type: Literal["none", "knock_in", "knock_out", "dual"] = "none"
+    barrier_level: Decimal | None = Field(default=None, gt=0, lt=Decimal("1e16"))
+
+    @field_validator("issuer", "counterparty", mode="before")
+    @classmethod
+    def normalize_required_text(cls, value: object) -> object:
+        return _normalize_required_text(value)
+
+    @field_validator(
+        "underlying_instrument_ids",
+        "deliverable_instrument_ids",
+        mode="before",
+    )
+    @classmethod
+    def normalize_instrument_ids(cls, value: object) -> object:
+        return _normalize_optional_text_list(value)
+
+    @model_validator(mode="after")
+    def validate_terms(self) -> "FCNContractTerms":
+        if self.maturity_date < self.issue_date:
+            raise ValueError("maturity_date must not precede issue_date.")
+        if self.barrier_type == "none" and self.barrier_level is not None:
+            raise ValueError("barrier_level must be omitted when barrier_type is none.")
+        if self.barrier_type != "none" and self.barrier_level is None:
+            raise ValueError("barrier_level is required for an active barrier.")
+        return self
+
+
+class DerivativeContractCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    derivative_contract_id: str = Field(min_length=1, max_length=200)
+    contract_name: str = Field(min_length=1)
+    contract_type: Literal["fcn", "option"]
+    external_reference: str | None = Field(default=None, max_length=200)
+    terms: OptionContractTerms | FCNContractTerms
+
+    @field_validator("derivative_contract_id", "contract_name", mode="before")
+    @classmethod
+    def normalize_required_fields(cls, value: object) -> object:
+        return _normalize_required_text(value)
+
+    @field_validator("external_reference", mode="before")
+    @classmethod
+    def normalize_external_reference(cls, value: object) -> object:
+        return _normalize_optional_text(value)
+
+    @model_validator(mode="after")
+    def validate_terms_match_type(self) -> "DerivativeContractCreate":
+        if self.contract_type == "option" and not isinstance(
+            self.terms, OptionContractTerms
+        ):
+            raise ValueError("Option contracts require option terms.")
+        if self.contract_type == "fcn" and not isinstance(self.terms, FCNContractTerms):
+            raise ValueError("FCN contracts require FCN terms.")
+        return self
+
+
+class DerivativeContractRecord(DerivativeContractCreate):
+    portfolio_id: str
+    account_id: str
+    currency: SupportedCurrency
+    created_at: str
+
+
+class DerivativeContractListResponse(BaseModel):
+    portfolio_id: str
+    derivative_contracts: list[DerivativeContractRecord]
+
+
 class TransactionRecord(BaseModel):
     transaction_id: str
     transaction_sequence: int = Field(ge=1)
@@ -450,6 +546,8 @@ class TransactionRecord(BaseModel):
     settlement_cash_account: AccountRecord | None = None
     instrument_id: str | None = None
     instrument_ref: InstrumentCoreContract | None = None
+    derivative_contract_id: str | None = None
+    derivative_contract: DerivativeContractRecord | None = None
     quantity: float | None = None
     source_quantity: str | None = None
     price: float | None = None
@@ -515,6 +613,8 @@ class LedgerPostingRecord(BaseModel):
     recognition_start_date: date | None = None
     instrument_id: str | None = None
     instrument_ref: InstrumentCoreContract | None = None
+    derivative_contract_id: str | None = None
+    derivative_contract: DerivativeContractRecord | None = None
     cash_amount_delta: float | None = None
     pending_amount_delta: float | None = None
     quantity_delta: float | None = None
@@ -532,8 +632,11 @@ class LedgerPostingRecord(BaseModel):
 class AccountPositionRecord(BaseModel):
     position_id: str | None = None
     account_id: str
-    instrument_id: str
-    instrument_ref: InstrumentCoreContract
+    position_reference_id: str
+    instrument_id: str | None = None
+    instrument_ref: InstrumentCoreContract | None = None
+    derivative_contract_id: str | None = None
+    derivative_contract: DerivativeContractRecord | None = None
     quantity: float
     cost_basis: float | None = None
     last_price: float | None = None
@@ -551,8 +654,11 @@ class AccountPositionRecord(BaseModel):
 class PositionRecord(BaseModel):
     position_id: str
     portfolio_id: str
-    instrument_id: str
-    instrument_ref: InstrumentCoreContract
+    position_reference_id: str
+    instrument_id: str | None = None
+    instrument_ref: InstrumentCoreContract | None = None
+    derivative_contract_id: str | None = None
+    derivative_contract: DerivativeContractRecord | None = None
     quantity: float
     cost_basis: float | None = None
     last_price: float | None = None
@@ -700,8 +806,11 @@ class PositionLotRecord(BaseModel):
     position_lot_id: str
     portfolio_id: str
     account_id: str
-    instrument_id: str
-    instrument_ref: InstrumentCoreContract
+    position_reference_id: str
+    instrument_id: str | None = None
+    instrument_ref: InstrumentCoreContract | None = None
+    derivative_contract_id: str | None = None
+    derivative_contract: DerivativeContractRecord | None = None
     currency: str
     cost_basis_method: CostBasisMethod
     opened_by_transaction_id: str
@@ -902,7 +1011,8 @@ class InstrumentEventTaskReviewRequest(BaseModel):
 class TransactionPositionPreviewResponse(BaseModel):
     portfolio_id: str
     account_id: str
-    instrument_id: str
+    position_kind: Literal["instrument", "derivative_contract"]
+    position_reference_id: str
     as_of_date: date
     trade_at: str
     quantity: float
@@ -1181,8 +1291,11 @@ class PeriodCalculationResponse(BaseModel):
 
 class PeriodBoundaryHoldingRecord(BaseModel):
     position_id: str
-    instrument_id: str
-    instrument_ref: InstrumentCoreContract
+    position_reference_id: str
+    instrument_id: str | None = None
+    instrument_ref: InstrumentCoreContract | None = None
+    derivative_contract_id: str | None = None
+    derivative_contract: DerivativeContractRecord | None = None
     quantity: float
     cost_basis: float | None = None
     cost_basis_base: float | None = None
@@ -3207,6 +3320,8 @@ class TransactionCreateRequest(BaseModel):
     account_id: str
     settlement_cash_account_id: str | None = None
     instrument_id: str | None = None
+    derivative_contract_id: str | None = None
+    derivative_contract: DerivativeContractCreate | None = None
     quantity: Decimal | None = Field(default=None, ge=0, lt=Decimal("1e16"))
     price: Decimal | None = Field(default=None, ge=0, lt=Decimal("1e16"))
     gross_amount: Decimal = Field(ge=0, lt=Decimal("1e20"))
@@ -3282,6 +3397,28 @@ class TransactionCreateRequest(BaseModel):
 
     @model_validator(mode="after")
     def validate_amount_contract(self) -> "TransactionCreateRequest":
+        if self.instrument_id and self.derivative_contract_id:
+            raise ValueError(
+                "A transaction may reference an instrument or a derivative contract, not both."
+            )
+        if self.derivative_contract is not None:
+            if not self.derivative_contract_id:
+                raise ValueError(
+                    "Inline derivative contract creation requires derivative_contract_id."
+                )
+            if (
+                self.derivative_contract.derivative_contract_id
+                != self.derivative_contract_id
+            ):
+                raise ValueError(
+                    "derivative_contract_id must match the inline derivative contract."
+                )
+        has_asset_reference = bool(self.instrument_id or self.derivative_contract_id)
+        inline_contract_type = (
+            self.derivative_contract.contract_type
+            if self.derivative_contract is not None
+            else None
+        )
         settlement_date = self.settlement_date or self.trade_date
         if settlement_date < self.trade_date:
             raise ValueError("settlement_date must not be earlier than trade_date.")
@@ -3325,8 +3462,10 @@ class TransactionCreateRequest(BaseModel):
             raise ValueError("lifecycle_event requires lifecycle_event_type.")
 
         if self.transaction_type == "lifecycle_event":
-            if not self.instrument_id:
-                raise ValueError("Lifecycle events require instrument_id.")
+            if not self.derivative_contract_id:
+                raise ValueError("Lifecycle events require derivative_contract_id.")
+            if inline_contract_type is not None and inline_contract_type != "option":
+                raise ValueError("Non-economic lifecycle events require an option contract.")
             writer_close_event = self.lifecycle_event_type in {
                 "option_writer_expiry",
                 "option_assignment",
@@ -3348,16 +3487,22 @@ class TransactionCreateRequest(BaseModel):
                 )
 
         if self.transaction_type in {"buy", "sell"}:
-            if not self.instrument_id:
-                raise ValueError("Security transactions require instrument_id.")
+            if not has_asset_reference:
+                raise ValueError(
+                    "Security transactions require an instrument or derivative contract."
+                )
             if self.quantity is None or self.quantity <= 0:
                 raise ValueError("Security transactions require positive quantity.")
             if self.price is None or self.price <= 0:
                 raise ValueError("Security transactions require positive price.")
 
         if self.transaction_type in {"option_write", "option_buy_to_close"}:
-            if not self.instrument_id:
-                raise ValueError("Short option transactions require instrument_id.")
+            if not self.derivative_contract_id:
+                raise ValueError(
+                    "Short option transactions require derivative_contract_id."
+                )
+            if inline_contract_type is not None and inline_contract_type != "option":
+                raise ValueError("Short option transactions require an option contract.")
             if self.quantity is None or self.quantity <= 0:
                 raise ValueError(
                     "Short option transactions require positive contract quantity."
@@ -3368,14 +3513,22 @@ class TransactionCreateRequest(BaseModel):
                 raise ValueError("Short option transactions require positive premium price.")
 
         if self.transaction_type in {"dividend", "coupon"}:
-            if not self.instrument_id:
-                raise ValueError("Income transactions require instrument_id.")
+            if self.transaction_type == "dividend" and not self.instrument_id:
+                raise ValueError("Dividend requires instrument_id.")
+            if self.transaction_type == "coupon" and not has_asset_reference:
+                raise ValueError("Coupon requires an instrument or FCN contract.")
+            if (
+                self.transaction_type == "coupon"
+                and inline_contract_type is not None
+                and inline_contract_type != "fcn"
+            ):
+                raise ValueError("Derivative coupon transactions require an FCN contract.")
             if self.quantity is not None or self.price is not None:
                 raise ValueError("Dividend and coupon must not carry quantity or price.")
 
         if self.transaction_type == "interest":
-            if self.instrument_id is not None:
-                raise ValueError("Interest must not carry instrument_id.")
+            if has_asset_reference:
+                raise ValueError("Interest must not carry an asset reference.")
             if self.quantity is not None or self.price is not None:
                 raise ValueError("Interest must not carry quantity or price.")
             if self.settlement_cash_account_id is not None:
@@ -3407,8 +3560,10 @@ class TransactionCreateRequest(BaseModel):
                 raise ValueError("Dividend reinvestment must not carry fees or taxes.")
 
         if self.transaction_type == "maturity_redemption":
-            if not self.instrument_id:
-                raise ValueError("Maturity redemption requires instrument_id.")
+            if not has_asset_reference:
+                raise ValueError(
+                    "Maturity redemption requires an instrument or derivative contract."
+                )
             if self.quantity is None or self.quantity <= 0:
                 raise ValueError("Maturity redemption requires positive quantity.")
             if self.price is not None:
@@ -3422,8 +3577,8 @@ class TransactionCreateRequest(BaseModel):
                 )
 
         if self.transaction_type in {"deposit", "withdrawal"}:
-            if self.instrument_id is not None:
-                raise ValueError("Cash-flow transactions must not carry instrument_id.")
+            if has_asset_reference:
+                raise ValueError("Cash-flow transactions must not carry an asset reference.")
             if self.quantity is not None or self.price is not None:
                 raise ValueError("Cash-flow transactions must not carry quantity or price.")
             if self.settlement_cash_account_id is not None:
@@ -3432,8 +3587,8 @@ class TransactionCreateRequest(BaseModel):
                 raise ValueError("Cash-flow transactions must not carry fees or taxes.")
 
         if self.transaction_type == "fx_conversion":
-            if self.instrument_id is not None:
-                raise ValueError("FX conversion must not carry instrument_id.")
+            if has_asset_reference:
+                raise ValueError("FX conversion must not carry an asset reference.")
             if self.quantity is not None or self.price is not None:
                 raise ValueError("FX conversion must not carry quantity or price.")
             if self.gross_amount <= 0:
@@ -3464,8 +3619,10 @@ class TransactionCreateRequest(BaseModel):
                 raise ValueError("Fee and tax transactions must not carry price.")
             if self.fees != 0 or self.taxes != 0:
                 raise ValueError("Fee and tax transactions must not carry nested fees or taxes.")
-            if self.entitlement_date is not None and not self.instrument_id:
-                raise ValueError("entitlement_date on fee and tax requires instrument_id.")
+            if self.entitlement_date is not None and not has_asset_reference:
+                raise ValueError(
+                    "entitlement_date on fee and tax requires an asset reference."
+                )
 
         if (
             self.fee_category != "unknown"
@@ -3486,7 +3643,7 @@ class TransactionCreateRequest(BaseModel):
             )
 
         if self.transaction_type == "opening_balance":
-            if self.instrument_id:
+            if has_asset_reference:
                 if self.acquisition_date is None:
                     self.acquisition_date = self.trade_date
             elif self.acquisition_date is not None:
@@ -3495,7 +3652,7 @@ class TransactionCreateRequest(BaseModel):
                 raise ValueError("Opening balance must not carry settlement_cash_account_id.")
             if self.fees != 0 or self.taxes != 0:
                 raise ValueError("Opening balance must not carry fees or taxes.")
-            if self.instrument_id:
+            if has_asset_reference:
                 if self.quantity is None or self.quantity <= 0:
                     raise ValueError("Security opening balance requires positive quantity.")
                 if self.price is not None:

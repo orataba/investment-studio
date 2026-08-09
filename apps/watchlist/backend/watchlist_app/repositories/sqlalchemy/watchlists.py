@@ -417,9 +417,15 @@ class SQLAlchemyWatchlistRepository:
                 note=None,
                 rank_hint=None,
             )
-            session.add(row)
+            try:
+                with session.begin_nested():
+                    session.add(row)
+                    session.flush()
+            except IntegrityError:
+                existing.add(instrument_id)
+                continue
+            existing.add(instrument_id)
             created.append(row)
-        session.flush()
         return created
 
     def delete_items(

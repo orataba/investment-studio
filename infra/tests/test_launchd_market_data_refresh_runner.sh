@@ -64,7 +64,7 @@ printf '%s\n' \
 
 export CAPTURE_PATH
 export AUDIT_CAPTURE_PATH
-PORTFOLIO_OPS_LOCAL_DATABASE_URL="postgresql+psycopg://explicit/local" \
+PORTFOLIO_OPS_LOCAL_DATABASE_URL="postgresql://explicit/local" \
   PORTFOLIO_OPS_LOCAL_REFRESH_RUN_KIND=primary \
   PORTFOLIO_OPS_LOCAL_REFRESH_NOW=2026-07-22T21:00:00+08:00 \
   "$REPOSITORY_ROOT/infra/launchd/run_market_data_refresh.sh" \

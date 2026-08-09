@@ -50,6 +50,11 @@ fi
 [[ "$(sed -n '6p' "$CAPTURE_PATH")" == "platform" ]]
 [[ "$(sed -n '7p' "$CAPTURE_PATH")" == "-m uvicorn platform_app.main:app --host 127.0.0.1 --port 8002" ]]
 
+PORTFOLIO_OPS_LOCAL_DATABASE_URL="postgresql://explicit/local" \
+  "$REPOSITORY_ROOT/infra/launchd/run_local_service.sh" \
+  platform-api "$REPOSITORY_ROOT" "$MOCK_BIN/python" "$MOCK_BIN/node" "$ENV_ROOT"
+[[ "$(sed -n '4p' "$CAPTURE_PATH")" == "postgresql+psycopg://explicit/local" ]]
+
 set +e
 "$REPOSITORY_ROOT/infra/launchd/run_local_service.sh" \
   platform-api "$REPOSITORY_ROOT" "$MOCK_BIN/python" "$MOCK_BIN/node" "$ENV_ROOT" \

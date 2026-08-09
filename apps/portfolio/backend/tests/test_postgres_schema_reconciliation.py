@@ -18,7 +18,7 @@ pytestmark = pytest.mark.postgresql_integration
 
 RECONCILIATION_REVISION = "20260715_0032r"
 RECONCILIATION_PARENT = "20260711_0032"
-CURRENT_HEAD_REVISION = "20260809_0045"
+CURRENT_HEAD_REVISION = "20260809_0046"
 LEGACY_FOREIGN_KEY = "fk_transaction_record_asset_id_instrument"
 CURRENT_FOREIGN_KEY = "fk_transaction_record_instrument_id_instrument"
 

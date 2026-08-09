@@ -12,7 +12,6 @@ from watchlist_app.db.models.analytics import (
     ExposureAnalyticsSnapshot,
     RiskSnapshot,
 )
-from watchlist_app.db.models.scoring import InstrumentScoreSnapshot
 
 
 class SQLAlchemySnapshotRepository:
@@ -80,18 +79,6 @@ class SQLAlchemySnapshotRepository:
         )
         return session.scalars(stmt).first()
 
-    def get_current_score(
-        self,
-        session: Session,
-        instrument_id: str,
-    ) -> InstrumentScoreSnapshot | None:
-        stmt = (
-            select(InstrumentScoreSnapshot)
-            .where(InstrumentScoreSnapshot.instrument_id == instrument_id, InstrumentScoreSnapshot.is_current.is_(True))
-            .order_by(InstrumentScoreSnapshot.as_of_date.desc())
-        )
-        return session.scalars(stmt).first()
-
     def _replace_current(self, session: Session, model_class, instrument_id: str) -> None:
         now = datetime.now(UTC).replace(microsecond=0)
         for current in session.scalars(
@@ -147,20 +134,6 @@ class SQLAlchemySnapshotRepository:
     ) -> ExposureAnalyticsSnapshot:
         self._replace_current(session, ExposureAnalyticsSnapshot, instrument_id)
         record = ExposureAnalyticsSnapshot(snapshot_id=snapshot_id, instrument_id=instrument_id, **data)
-        session.add(record)
-        session.flush()
-        return record
-
-    def replace_score(
-        self,
-        session: Session,
-        *,
-        snapshot_id: str,
-        instrument_id: str,
-        data: dict[str, Any],
-    ) -> InstrumentScoreSnapshot:
-        self._replace_current(session, InstrumentScoreSnapshot, instrument_id)
-        record = InstrumentScoreSnapshot(snapshot_id=snapshot_id, instrument_id=instrument_id, **data)
         session.add(record)
         session.flush()
         return record

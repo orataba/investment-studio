@@ -1,25 +1,25 @@
 import type {
   HoldingsWorkspaceResponse,
   PortfolioDailyPerformancePoint,
+  PortfolioDerivativeContractRecord,
   PortfolioHoldingRow,
   PortfolioPerformanceResponse,
   PortfolioWorkspaceSummary,
 } from '../lib/api'
-import type {
-  InstrumentCore,
-  NonDerivativeInstrumentType,
-} from '../../../../../packages/instrument-core/ts/src'
+import type { InstrumentCore } from '../../../../../packages/instrument-core/ts/src'
 
-type NonDerivativeInstrumentCore = Extract<
-  InstrumentCore,
-  { instrument_type: NonDerivativeInstrumentType }
+type FcnDerivativeContractRecord = Extract<
+  PortfolioDerivativeContractRecord,
+  { contract_type: 'fcn' }
 >
-type FCNInstrumentCore = Extract<InstrumentCore, { instrument_type: 'fcn' }>
-type OptionInstrumentCore = Extract<InstrumentCore, { instrument_type: 'option' }>
+type OptionDerivativeContractRecord = Extract<
+  PortfolioDerivativeContractRecord,
+  { contract_type: 'option' }
+>
 
 export function instrumentFixture(
-  overrides: Partial<NonDerivativeInstrumentCore> = {},
-): NonDerivativeInstrumentCore {
+  overrides: Partial<InstrumentCore> = {},
+): InstrumentCore {
   return {
     instrument_id: 'asset-1',
     instrument_name: 'Alpha Fund',
@@ -31,69 +31,55 @@ export function instrumentFixture(
   }
 }
 
-export function fcnInstrumentFixture(
-  overrides: Partial<FCNInstrumentCore> = {},
-): FCNInstrumentCore {
+export function fcnContractFixture(
+  overrides: Partial<FcnDerivativeContractRecord> = {},
+): FcnDerivativeContractRecord {
   const currency = overrides.currency ?? 'USD'
   return {
-    instrument_id: 'fcn-1',
-    instrument_name: 'Alpha FCN',
-    instrument_type: 'fcn',
+    derivative_contract_id: 'fcn-1',
+    portfolio_id: 'portfolio-1',
+    account_id: 'broker-1',
+    contract_name: 'Alpha FCN',
+    contract_type: 'fcn',
     currency,
-    identifiers: [{ identifier_type: 'internal', identifier_value: 'FCN-ALPHA-1', is_primary: true }],
-    broker_identifiers: [],
-    fcn_contract: {
-      notional: '250000',
+    external_reference: 'FCN-ALPHA-1',
+    terms: {
+      notional: 250000,
       issue_date: '2026-01-02',
       maturity_date: '2026-12-31',
-      contract_currency: currency,
       issuer: 'Fixture Issuer',
       counterparty: 'Fixture Counterparty',
       underlying_instrument_ids: ['asset-1'],
       deliverable_instrument_ids: ['asset-1'],
       barrier_type: 'knock_in',
-      barrier_level: '0.7',
+      barrier_level: 0.7,
     },
-    corporate_action_adjustment_policy: {
-      policy_type: 'contract_terms',
-      authority_reference: 'Fixture FCN terms',
-      quantity_rounding: 'exact',
-      adjust_strike: true,
-      adjust_multiplier: true,
-      adjust_deliverable: true,
-    },
+    created_at: '2026-01-02T00:00:00Z',
     ...overrides,
   }
 }
 
-export function optionInstrumentFixture(
-  overrides: Partial<OptionInstrumentCore> = {},
-): OptionInstrumentCore {
+export function optionContractFixture(
+  overrides: Partial<OptionDerivativeContractRecord> = {},
+): OptionDerivativeContractRecord {
   const currency = overrides.currency ?? 'USD'
   return {
-    instrument_id: 'option-1',
-    instrument_name: 'Alpha 110 Call',
-    instrument_type: 'option',
+    derivative_contract_id: 'option-1',
+    portfolio_id: 'portfolio-1',
+    account_id: 'broker-1',
+    contract_name: 'Alpha 110 Call',
+    contract_type: 'option',
     currency,
-    identifiers: [{ identifier_type: 'internal', identifier_value: 'OPT-ALPHA-110C', is_primary: true }],
-    broker_identifiers: [],
-    option_contract: {
+    external_reference: 'OPT-ALPHA-110C',
+    terms: {
       underlying_instrument_id: 'equity-1',
       option_type: 'call',
       expiry_date: '2026-12-18',
-      strike: '110',
-      contract_multiplier: '100',
+      strike: 110,
+      contract_multiplier: 100,
       settlement_type: 'physical',
-      contract_currency: currency,
     },
-    corporate_action_adjustment_policy: {
-      policy_type: 'contract_terms',
-      authority_reference: 'Fixture option terms',
-      quantity_rounding: 'exact',
-      adjust_strike: true,
-      adjust_multiplier: true,
-      adjust_deliverable: true,
-    },
+    created_at: '2026-01-02T00:00:00Z',
     ...overrides,
   }
 }

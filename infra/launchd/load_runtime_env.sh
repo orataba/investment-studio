@@ -3,6 +3,44 @@
 # Shared runtime-environment validation for managed service installers and
 # runners. Dotenv assignments are parsed as data, never sourced as shell code.
 
+portfolio_ops_require_password_free_database_url() {
+  if [[ $# -ne 1 ]]; then
+    echo "Usage: portfolio_ops_require_password_free_database_url <database-url>" >&2
+    return 64
+  fi
+  local database_url="$1"
+  local authority userinfo
+  authority="${database_url#*://}"
+  authority="${authority%%/*}"
+  if [[ "$authority" == *"@"* ]]; then
+    userinfo="${authority%@*}"
+    if [[ "$userinfo" == *":"* ]]; then
+      echo "Database URLs for managed services must not contain passwords; use a 0600 .pgpass file." >&2
+      return 64
+    fi
+  fi
+}
+
+portfolio_ops_sqlalchemy_database_url() {
+  if [[ $# -ne 1 ]]; then
+    echo "Usage: portfolio_ops_sqlalchemy_database_url <database-url>" >&2
+    return 64
+  fi
+  local database_url="$1"
+  case "$database_url" in
+    postgresql://*)
+      printf 'postgresql+psycopg://%s\n' "${database_url#postgresql://}"
+      ;;
+    postgresql+psycopg://*)
+      printf '%s\n' "$database_url"
+      ;;
+    *)
+      echo "Database URL must use postgresql:// or postgresql+psycopg://." >&2
+      return 64
+      ;;
+  esac
+}
+
 portfolio_ops_reject_repository_env_files() {
   if [[ $# -ne 1 ]]; then
     echo "Usage: portfolio_ops_reject_repository_env_files <project-root>" >&2

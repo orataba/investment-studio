@@ -246,43 +246,29 @@ def test_pending_settlement_identity_includes_both_operational_dates() -> None:
     assert len({str(row["instrument_id"]) for row in rows}) == 2
 
 
-def _option_ref(
-    instrument_id: str,
+def _option_contract(
+    derivative_contract_id: str,
     *,
     expiry_date: str,
     strike: str,
 ) -> dict[str, object]:
     return {
-        "instrument_id": instrument_id,
-        "instrument_name": instrument_id,
-        "instrument_type": "option",
+        "derivative_contract_id": derivative_contract_id,
+        "portfolio_id": "portfolio",
+        "account_id": "broker",
+        "contract_name": derivative_contract_id,
+        "contract_type": "option",
         "currency": "USD",
-        "identifiers": [],
-        "broker_identifiers": [
-            {
-                "broker": "Test Broker",
-                "identifier_type": "contract_id",
-                "identifier_value": f"TEST-{instrument_id}",
-                "is_primary": True,
-            }
-        ],
-        "option_contract": {
+        "external_reference": f"TEST-{derivative_contract_id}",
+        "terms": {
             "underlying_instrument_id": "equity-a",
             "option_type": "call",
             "expiry_date": expiry_date,
             "strike": strike,
             "contract_multiplier": "100",
             "settlement_type": "physical",
-            "contract_currency": "USD",
         },
-        "corporate_action_adjustment_policy": {
-            "policy_type": "exchange_rules",
-            "authority_reference": "Test exchange rules",
-            "quantity_rounding": "exact",
-            "adjust_strike": True,
-            "adjust_multiplier": True,
-            "adjust_deliverable": True,
-        },
+        "created_at": "2026-01-01T00:00:00Z",
     }
 
 
@@ -296,7 +282,7 @@ def test_short_option_rows_do_not_allocate_or_require_underlying_holdings() -> N
             {
                 "status": "open",
                 "account_id": "broker",
-                "option_instrument_id": instrument_id,
+                "derivative_contract_id": instrument_id,
                 "related_underlying_id": "equity-a",
                 "contract_currency": "USD",
                 "remaining_quantity": 1.0,
@@ -311,7 +297,7 @@ def test_short_option_rows_do_not_allocate_or_require_underlying_holdings() -> N
                 "contract_multiplier": 100.0,
                 "settlement_type": "physical",
                 "opened_at": "2026-01-01T10:00:00+08:00",
-                "instrument_ref": _option_ref(
+                "derivative_contract": _option_contract(
                     instrument_id,
                     expiry_date=expiry_date,
                     strike=strike,
@@ -334,7 +320,11 @@ def test_short_option_rows_do_not_allocate_or_require_underlying_holdings() -> N
         convert_amount_on=lambda amount, **_kwargs: (float(amount) * 2.0, False),
     )
 
-    assert [row["instrument_id"] for row in rows] == ["option-near", "option-far"]
+    assert [row["derivative_contract_id"] for row in rows] == [
+        "option-near",
+        "option-far",
+    ]
+    assert all(row["instrument_id"] is None for row in rows)
     assert rows[0]["quantity"] == pytest.approx(-1.0)
     assert rows[0]["required_underlying_quantity"] == pytest.approx(100.0)
     assert rows[0]["assignment_notional"] == pytest.approx(1_000.0)
@@ -451,6 +441,7 @@ def test_position_lot_aggregations_golden_contract() -> None:
     lots = [
         {
             "account_id": "account-b",
+            "position_reference_id": "equity-a",
             "instrument_id": "equity-a",
             "instrument_ref": _instrument_ref(),
             "currency": "usd",
@@ -461,6 +452,7 @@ def test_position_lot_aggregations_golden_contract() -> None:
         },
         {
             "account_id": "account-a",
+            "position_reference_id": "equity-a",
             "instrument_id": "equity-a",
             "instrument_ref": _instrument_ref(),
             "currency": "USD",
@@ -471,6 +463,7 @@ def test_position_lot_aggregations_golden_contract() -> None:
         },
         {
             "account_id": "account-z",
+            "position_reference_id": "equity-zero",
             "instrument_id": "equity-zero",
             "instrument_ref": _instrument_ref("equity-zero"),
             "currency": "USD",
@@ -481,6 +474,7 @@ def test_position_lot_aggregations_golden_contract() -> None:
         },
         {
             "account_id": "account-z",
+            "position_reference_id": "equity-zero",
             "instrument_id": "equity-zero",
             "instrument_ref": _instrument_ref("equity-zero"),
             "currency": "USD",
@@ -493,7 +487,7 @@ def test_position_lot_aggregations_golden_contract() -> None:
 
     new_instrument = holdings_market_profile.position_buckets_from_lots(deepcopy(lots))
     new_account = (
-        holdings_market_profile.position_buckets_by_account_instrument_from_lots(
+        holdings_market_profile.position_buckets_by_account_reference_from_lots(
             deepcopy(lots)
         )
     )
@@ -572,6 +566,7 @@ def test_materialized_holding_market_profile_uses_injected_dependencies() -> Non
         "account_instrument_buckets": [
             {
                 "account_id": "account-z",
+                "position_reference_id": "equity-a",
                 "instrument_id": "equity-a",
                 "instrument_ref": _instrument_ref(),
                 "currency": "usd",

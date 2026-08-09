@@ -705,8 +705,7 @@ def test_workspace_scopes_independent_fcn_and_stock_cash_facts(
         workspace_route,
         "resolve_instrument_analytics_scopes",
         lambda *_args, **_kwargs: {
-            instrument_id: dict(ordinary_scope)
-            for instrument_id in ("fcn-1", "equity-1")
+            "equity-1": dict(ordinary_scope)
         },
     )
 
@@ -718,8 +717,28 @@ def test_workspace_scopes_independent_fcn_and_stock_cash_facts(
             {
                 "transaction_id": "fcn-open",
                 "transaction_type": "buy",
-                "instrument_id": "fcn-1",
-                "instrument_type": "fcn",
+                "instrument_id": None,
+                "derivative_contract_id": "fcn-1",
+                "derivative_contract": {
+                    "derivative_contract_id": "fcn-1",
+                    "portfolio_id": PORTFOLIO_ID,
+                    "account_id": "broker-usd",
+                    "contract_name": "FCN 1",
+                    "contract_type": "fcn",
+                    "currency": "USD",
+                    "terms": {
+                        "notional": "100",
+                        "issue_date": "2026-04-01",
+                        "maturity_date": "2026-04-15",
+                        "issuer": "Test Issuer",
+                        "counterparty": "Test Broker",
+                        "underlying_instrument_ids": ["equity-1"],
+                        "deliverable_instrument_ids": ["equity-1"],
+                        "barrier_type": "none",
+                        "barrier_level": None,
+                    },
+                    "created_at": "2026-04-01T00:00:00Z",
+                },
                 "trade_date": "2026-04-01",
                 "settlement_date": "2026-04-02",
                 "settlement_cash_account_id": "cash-usd",
@@ -732,8 +751,28 @@ def test_workspace_scopes_independent_fcn_and_stock_cash_facts(
                 "transaction_id": "fcn-close",
                 "transaction_type": "maturity_redemption",
                 "lifecycle_event_type": "fcn_knock_in",
-                "instrument_id": "fcn-1",
-                "instrument_type": "fcn",
+                "instrument_id": None,
+                "derivative_contract_id": "fcn-1",
+                "derivative_contract": {
+                    "derivative_contract_id": "fcn-1",
+                    "portfolio_id": PORTFOLIO_ID,
+                    "account_id": "broker-usd",
+                    "contract_name": "FCN 1",
+                    "contract_type": "fcn",
+                    "currency": "USD",
+                    "terms": {
+                        "notional": "100",
+                        "issue_date": "2026-04-01",
+                        "maturity_date": "2026-04-15",
+                        "issuer": "Test Issuer",
+                        "counterparty": "Test Broker",
+                        "underlying_instrument_ids": ["equity-1"],
+                        "deliverable_instrument_ids": ["equity-1"],
+                        "barrier_type": "none",
+                        "barrier_level": None,
+                    },
+                    "created_at": "2026-04-01T00:00:00Z",
+                },
                 "trade_date": "2026-04-14",
                 "settlement_date": "2026-04-15",
                 "settlement_cash_account_id": "cash-usd",

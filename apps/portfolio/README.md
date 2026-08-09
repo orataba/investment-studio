@@ -6,6 +6,7 @@
 
 - `backend/` 与 `frontend/` 都已可运行
 - 组合内核当前以 `portfolio / account / transaction` 为数据库主事实
+- FCN 与期权合约是 Portfolio 本地不可变事实，不注册为共享 Registry instrument；首笔交易原子创建合约，后续事件只引用同一 `derivative_contract_id`
 - 持仓、lots、ledger、performance 由内核服务按需推导
 - `Holdings / Accounts / Transactions / Performance` 已有真实 API 与页面支撑。
   `Transactions` 支持带幂等保护的 create、强制 row-version 的 update / delete、成对内部转仓、
@@ -34,7 +35,7 @@
 
 ## 开发原则
 
-- 只依赖共享 `instrument-core` contract 与 `instrument_registry` schema，不通过 `platform` API 取数
+- 普通市场资产只依赖共享 `instrument-core` contract 与 `instrument_registry` schema，不通过 `platform` API 取数；FCN/期权合约及事件由 Portfolio 自己拥有
 - 不复用 `Watchlist` 的业务模型
 - 维持 `portfolio / account / transaction / performance / risk / research` 的独立边界
 - `Taxonomy / TargetSet` 是组合 planning truth；`Research` 消费这套结构求解当前 target weights，不反向创造另一套目标体系
@@ -59,14 +60,14 @@ cd apps/portfolio/backend
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -e .
-PYTHONPATH=. alembic upgrade head
 uvicorn portfolio_app.main:app --reload --host 127.0.0.1 --port 8001
 ```
 
 说明：
 
 - `PORTFOLIO_OPS_PORTFOLIO_DATABASE_URL` 必须由仓库外的 `portfolio.env` 显式提供，并与 Platform、Watchlist 指向同一个 canonical PostgreSQL；backend 目录只保留 `.env.example` 键名模板，不创建 `.env` 文件或软链接
-- `portfolio` 使用 `portfolio` schema
+- schema 固定为 canonical `portfolio`；非空的 schema 环境变量只能取该值
+- 现有本机真实数据库使用仓库根目录的 `infra/launchd/install_local_services.sh` 完成停写、四 schema 备份、统一迁移和失败恢复；不要单独运行 Portfolio Alembic
 - 测试使用临时 SQLite，不会污染默认运行库
 - research 运行产物默认落在 `backend/research_outputs/`，用于本地查看和回放，已按运行时目录管理；当前产物以 request、context、target rows、member/leaf targets、solved result groups、solve event、scope solve events、target weight gaps 和 backtest payload 为主
 - backend 顶层包名现在是 `portfolio_app`

@@ -1105,13 +1105,13 @@ export default function TaxonomiesPage() {
           (monetaryBalance != null && Math.abs(monetaryBalance) > 1e-9)
         )
       })
-      const holdingRowsForEntities = includeCashBuckets
-        ? holdingsRows.filter(
-            (row) =>
-              !isCashHoldingRow(row) &&
-              !isPendingMonetaryHoldingRow(row),
-          )
-        : holdingsRows
+      const holdingRowsForEntities = holdingsRows.filter(
+        (row): row is typeof row & { instrument_core: InstrumentCore } =>
+          row.instrument_core !== null &&
+          (row.holding_kind ?? 'position') === 'position' &&
+          (!includeCashBuckets ||
+            (!isCashHoldingRow(row) && !isPendingMonetaryHoldingRow(row))),
+      )
       const totalEntityValueBase = completeAmountSum([
         ...holdingRowsForEntities.map((row) => row.market_value_base),
         ...(includeCashBuckets

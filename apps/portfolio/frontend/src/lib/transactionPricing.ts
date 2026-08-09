@@ -3,6 +3,7 @@ import {
   type InstrumentCore,
   type PriceUnit,
 } from '../../../../../packages/instrument-core/ts/src'
+import type { PortfolioDerivativeContractCreate } from './api'
 
 export type TransactionPriceContractInput = {
   price_unit: PriceUnit
@@ -58,15 +59,21 @@ export function transactionPriceContractForInstrument(
   if (!instrument) {
     return null
   }
-  if (instrument.instrument_type === 'option') {
-    return normalizePriceContract({
-      price_unit: 'per_unit',
-      price_scale: instrument.option_contract.contract_multiplier,
-    })
-  }
   return normalizePriceContract(
     canonicalPriceContract(instrument.instrument_type, 'price'),
   )
+}
+
+export function transactionPriceContractForDerivative(
+  derivativeContract: PortfolioDerivativeContractCreate | null | undefined,
+): TransactionPriceContract | null {
+  return normalizePriceContract({
+    price_unit: 'per_unit',
+    price_scale:
+      derivativeContract?.contract_type === 'option'
+        ? derivativeContract.terms.contract_multiplier
+        : 1,
+  })
 }
 
 export function calculateTransactionGrossAmount(

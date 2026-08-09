@@ -27,7 +27,9 @@ Runtime secrets come only from `~/.config/orataba/secrets/portfolio-operations-w
 
 ## Apply Migrations
 
-Use the fail-fast shared entry point for a release or a clean installation:
+Use the fail-fast shared entry point only for a clean database or an environment
+whose writers have already been stopped and whose backup/recovery is managed by
+the caller:
 
 ```bash
 PROJECT_ROOT="$PWD" PYTHON_BIN="$PWD/.venv/bin/python" \
@@ -55,6 +57,17 @@ to its destructive canonical-NAV revision, and finally migrates Portfolio and
 Watchlist. Do not replace this with four independent `alembic upgrade head` calls:
 the Registry NAV cleanup must not run before Platform can preserve the original
 manual/API/email observations.
+
+For the managed local database, use `infra/launchd/install_local_services.sh`
+instead. It stops all managed writers, creates and retains a verified backup of
+all four schemas, runs the ordered migration, restores the backup automatically
+if migration, the 31-check read-only integrity audit, or deployment fails, and
+only resumes service after health checks.
+Migration `portfolio@20260809_0045` rewrites derivative lifecycle facts and is
+data-irreversible; it now refuses Alembic downgrade because schema shape alone
+would falsely imply that the original facts were restored. The following clean-cut
+derivative migrations also refuse downgrade. Recovery must use the retained
+pre-migration four-schema backup.
 
 The destructive dump restore wrapper performs a checksum/archive/target
 preflight, stops managed local services, retains a pre-restore schema backup,
@@ -95,9 +108,8 @@ PORTFOLIO_OPS_LOCAL_DATABASE_URL='postgresql://portfolio_ops@127.0.0.1:5432/port
 - 这是破坏性命令，会删除 `instrument_registry / platform / portfolio / watchlist` 四个 schema 的全部数据，包括 Platform 的邮箱游标、原始证据与重试状态。
 - 必须同时显式提供 `postgresql://` 或 `postgresql+psycopg://` URL 和
   `--confirm-destroy-project-schemas`；脚本没有隐式目标或兼容性 fallback。
-- 同一个显式目标会交给 `psql` 和四条 Alembic migration chain；带密码 URL 会先在
-  私有临时目录拆成无密码连接参数与 `0600` passfile，不进入子进程 argv，脚本输出也
-  只显示数据库名与角色。
+- 同一个无密码显式目标会交给 `psql` 和四条 Alembic migration chain；密码只通过
+  当前用户权限为 `0600` 的 `.pgpass` 提供。带密码 URL 会在任何数据库变更前被拒绝。
 - 脚本会先停止当前已加载的托管 LaunchAgent。schema 删除或 migration 开始后若失败，
   服务保持停止，避免在半重建数据库上恢复写入；修复后按错误信息中的 state file 恢复
   原服务集合。
@@ -105,7 +117,7 @@ PORTFOLIO_OPS_LOCAL_DATABASE_URL='postgresql://portfolio_ops@127.0.0.1:5432/port
 - `portfolio` schema 重建后默认是空组合状态；需要组合时，显式通过 UI/API 创建，或运行 `apps/portfolio/backend/scripts/import_real_portfolio_from_csv.py --csv-path ... --portfolio-id ...` 导入。
 - `watchlist` schema 重建后不会自动注入示例 watchlist、示例标签值或 demo 产品框架赋值。
 
-## Runtime Defaults
+## Canonical Runtime Schemas
 
 - Platform backend uses `platform, instrument_registry, public` search-path order: operational state is private, canonical facts remain shared
 - Portfolio backend connects to `portfolio`
@@ -115,7 +127,8 @@ Platform pins `database_schema=instrument_registry` and
 `operations_database_schema=platform`; its migrations keep their Alembic version
 table in `platform`. Portfolio and Watchlist keep their own schema first. One
 database instance can therefore host all four project schemas without treating
-Platform operational rows as shared market facts.
+Platform operational rows as shared market facts. These schema names are fixed
+contracts rather than deployment customization points.
 
 当前 backend 顶层包名已经拆开：
 

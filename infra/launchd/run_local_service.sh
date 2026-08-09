@@ -36,6 +36,8 @@ esac
 source "$PROJECT_ROOT/infra/launchd/load_runtime_env.sh"
 case "$SERVICE" in
   platform-api|watchlist-api|portfolio-api)
+    portfolio_ops_require_password_free_database_url "$DATABASE_URL"
+    DATABASE_URL="$(portfolio_ops_sqlalchemy_database_url "$DATABASE_URL")"
     portfolio_ops_reject_repository_env_files "$PROJECT_ROOT"
     ;;
 esac

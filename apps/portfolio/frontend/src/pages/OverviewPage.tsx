@@ -146,6 +146,9 @@ const TOP_HOLDINGS_LIMIT = 10
 const DONUT_COLORS = ['#0b72d7', '#0f766e', '#64748b', '#7c3aed', '#db2777', '#14b8a6', '#475569']
 
 function primaryIdentifier(row: PortfolioHoldingRow) {
+  if (!row.instrument_core) {
+    return row.derivative_contract_id ?? row.position_reference_id ?? row.line_id
+  }
   return (
     row.instrument_core.identifiers.find((item) => item.is_primary)?.identifier_value ??
     row.instrument_core.identifiers[0]?.identifier_value ??
@@ -153,10 +156,26 @@ function primaryIdentifier(row: PortfolioHoldingRow) {
   )
 }
 
+function holdingReferenceId(row: PortfolioHoldingRow) {
+  return row.derivative_contract_id ?? row.position_reference_id ?? row.instrument_core?.instrument_id ?? row.line_id
+}
+
+function holdingName(row: PortfolioHoldingRow) {
+  return row.derivative_contract?.contract_name ?? row.instrument_core?.instrument_name ?? row.line_id
+}
+
+function holdingAssetType(row: PortfolioHoldingRow) {
+  return row.derivative_contract?.contract_type ?? row.instrument_core?.instrument_type ?? 'other'
+}
+
+function holdingCurrency(row: PortfolioHoldingRow) {
+  return row.derivative_contract?.currency ?? row.instrument_core?.currency ?? ''
+}
+
 function isCashHoldingRow(row: PortfolioHoldingRow) {
   return (
-    row.instrument_core.instrument_type === 'cash' ||
-    row.instrument_core.instrument_id.toLowerCase().startsWith('cash:') ||
+    row.instrument_core?.instrument_type === 'cash' ||
+    row.instrument_core?.instrument_id.toLowerCase().startsWith('cash:') === true ||
     row.line_id.toLowerCase().startsWith('cash:')
   )
 }
@@ -1106,7 +1125,8 @@ export default function OverviewPage() {
       )
       const weight =
         row.allocation != null && Number.isFinite(row.allocation) ? row.allocation : null
-      const assignment = assignmentByInstrumentId.get(row.instrument_core.instrument_id)
+      const rowReferenceId = holdingReferenceId(row)
+      const assignment = assignmentByInstrumentId.get(rowReferenceId)
       const leafNode = assignment ? nodesById.get(assignment.taxonomy_node_id) ?? null : null
       const path = leafNode ? resolveNodePath(leafNode.taxonomy_node_id, nodesById) : []
       const topLevelNode = path[0] ?? leafNode
@@ -1123,7 +1143,7 @@ export default function OverviewPage() {
         weight,
       })
 
-      assignedLabelByInstrumentId.set(row.instrument_core.instrument_id, {
+      assignedLabelByInstrumentId.set(rowReferenceId, {
         topLevelLabel,
         leafLabel,
       })
@@ -1193,8 +1213,8 @@ export default function OverviewPage() {
           )
           return {
             id: row.line_id,
-            label: row.instrument_core.instrument_name,
-            subtitle: composition.assignedLabelByInstrumentId.get(row.instrument_core.instrument_id)?.leafLabel ?? formatLabel(row.instrument_core.instrument_type),
+            label: holdingName(row),
+            subtitle: composition.assignedLabelByInstrumentId.get(holdingReferenceId(row))?.leafLabel ?? formatLabel(holdingAssetType(row)),
             value: row.allocation,
             valueLabel: formatPercent(row.allocation),
             detail: formatCurrency(marketValue.value, marketValue.currency),
@@ -1419,7 +1439,7 @@ export default function OverviewPage() {
     {
       key: 'instrument',
       label: TOP_HOLDING_COLUMN_LABELS.instrument,
-      render: (row) => row.instrument_core.instrument_name,
+      render: (row) => holdingName(row),
     },
     {
       key: 'identifier',
@@ -1429,7 +1449,7 @@ export default function OverviewPage() {
     {
       key: 'sleeve',
       label: TOP_HOLDING_COLUMN_LABELS.sleeve,
-      render: (row) => composition.assignedLabelByInstrumentId.get(row.instrument_core.instrument_id)?.leafLabel ?? 'Unassigned',
+      render: (row) => composition.assignedLabelByInstrumentId.get(holdingReferenceId(row))?.leafLabel ?? 'Unassigned',
     },
     {
       key: 'sparkline',
@@ -1452,7 +1472,7 @@ export default function OverviewPage() {
       render: (row) =>
         holdingUsesEventValuation(row)
           ? 'N/A'
-          : formatUnitPrice(row.last_price, row.instrument_core.currency),
+          : formatUnitPrice(row.last_price, holdingCurrency(row)),
     },
     {
       key: 'market_value',

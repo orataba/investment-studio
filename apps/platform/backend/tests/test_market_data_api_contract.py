@@ -27,16 +27,7 @@ def _instrument_record() -> dict[str, object]:
                 "is_primary": True,
             }
         ],
-        "option_contract": None,
-        "fcn_contract": None,
         "broker_identifiers": [],
-        "corporate_action_adjustment_policy": None,
-        "contract_reconciliation": {
-            "status": "not_applicable",
-            "canonical_contract_id": None,
-            "broker_keys": [],
-            "issues": [],
-        },
         "latest_market_data": [],
         "quote_selection_policy": {
             "trading": ["dirty_price"],

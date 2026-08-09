@@ -5,18 +5,31 @@ from collections.abc import Mapping
 from portfolio_ops_instrument_core import canonical_price_contract
 
 
-def transaction_price_scale(instrument_ref: Mapping[str, object]) -> float:
-    instrument_type = str(instrument_ref.get("instrument_type") or "").strip().lower()
-    if not instrument_type:
-        raise ValueError("Transaction pricing requires a canonical instrument type.")
-    if instrument_type == "option":
-        option_contract = instrument_ref.get("option_contract")
-        if not isinstance(option_contract, Mapping):
-            raise ValueError("Option transaction pricing requires contract metadata.")
-        multiplier = float(option_contract.get("contract_multiplier") or 0)
+def transaction_price_scale(
+    *,
+    instrument_ref: Mapping[str, object] | None,
+    derivative_contract: Mapping[str, object] | None,
+) -> float:
+    if derivative_contract is not None:
+        contract_type = str(
+            derivative_contract.get("contract_type") or ""
+        ).strip().lower()
+        if contract_type == "fcn":
+            return 1.0
+        if contract_type != "option":
+            raise ValueError("Unsupported derivative contract type.")
+        option_terms = derivative_contract.get("terms")
+        if not isinstance(option_terms, Mapping):
+            raise ValueError("Option transaction pricing requires contract terms.")
+        multiplier = float(option_terms.get("contract_multiplier") or 0)
         if multiplier <= 0:
             raise ValueError("Option contract multiplier must be positive.")
         return multiplier
+    if instrument_ref is None:
+        raise ValueError("Transaction pricing requires an asset reference.")
+    instrument_type = str(instrument_ref.get("instrument_type") or "").strip().lower()
+    if not instrument_type:
+        raise ValueError("Transaction pricing requires a canonical instrument type.")
     quote_basis = "dirty_price" if instrument_type == "bond" else "close"
     _, price_scale = canonical_price_contract(
         instrument_type=instrument_type,

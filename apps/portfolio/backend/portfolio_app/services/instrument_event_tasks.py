@@ -401,7 +401,7 @@ def _sync_portfolio_tasks(
                                 portfolio_id,
                                 entitlement_transactions,
                                 account_id=account_id,
-                                instrument_id=instrument_id,
+                                position_reference_id=instrument_id,
                                 account_cost_methods=account_cost_methods,
                                 corporate_actions=position_actions,
                                 as_of_date=entitlement_date,

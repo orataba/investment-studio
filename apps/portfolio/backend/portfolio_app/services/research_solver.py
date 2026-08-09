@@ -3254,8 +3254,8 @@ def _current_scope_actuals(
     if isinstance(cached_valuation, dict):
         position_value_by_instrument = dict(cached_valuation.get("position_value_by_instrument") or {})
         cash_value_by_account = dict(cached_valuation.get("cash_value_by_account") or {})
-        excluded_derivative_instrument_ids = list(
-            cached_valuation.get("excluded_derivative_instrument_ids") or []
+        excluded_derivative_contract_ids = list(
+            cached_valuation.get("excluded_derivative_contract_ids") or []
         )
     else:
         portfolio = get_portfolio(state.portfolio_id)
@@ -3280,8 +3280,19 @@ def _current_scope_actuals(
         )
 
         position_value_by_instrument: dict[str, float] = {}
-        excluded_derivative_instrument_ids: list[str] = []
+        excluded_derivative_contract_ids: list[str] = []
         for position in list(statement.get("positions") or []):
+            derivative_contract_id = str(
+                position.get("derivative_contract_id") or ""
+            )
+            if holdings_market_profile.is_derivative_contract(
+                position.get("derivative_contract")
+            ):
+                if derivative_contract_id:
+                    excluded_derivative_contract_ids.append(
+                        derivative_contract_id
+                    )
+                continue
             instrument_id = str(position.get("instrument_id") or "")
             if not instrument_id:
                 continue
@@ -3290,11 +3301,6 @@ def _current_scope_actuals(
                 if isinstance(position.get("instrument_ref"), dict)
                 else _instrument_detail(state, instrument_id)
             )
-            if holdings_market_profile.is_derivative_tracking_instrument_ref(
-                instrument_ref
-            ):
-                excluded_derivative_instrument_ids.append(instrument_id)
-                continue
             market_value_base = _safe_float(position.get("market_value_base"))
             if market_value_base is None:
                 raise ValueError(
@@ -3319,8 +3325,8 @@ def _current_scope_actuals(
         state.current_valuation_cache[cache_key] = {
             "position_value_by_instrument": dict(position_value_by_instrument),
             "cash_value_by_account": dict(cash_value_by_account),
-            "excluded_derivative_instrument_ids": sorted(
-                set(excluded_derivative_instrument_ids)
+            "excluded_derivative_contract_ids": sorted(
+                set(excluded_derivative_contract_ids)
             ),
         }
 
@@ -3366,10 +3372,10 @@ def _current_scope_actuals(
 
     rendered_rows: list[dict[str, object]] = []
     warnings: list[str] = []
-    if excluded_derivative_instrument_ids:
+    if excluded_derivative_contract_ids:
         warnings.append(
             "Derivative tracking holdings are excluded from Research and Risk Budget: "
-            + ", ".join(sorted(set(excluded_derivative_instrument_ids)))
+            + ", ".join(sorted(set(excluded_derivative_contract_ids)))
             + "."
         )
     for member in scope_members:
@@ -3587,15 +3593,6 @@ def _build_taxonomy_state(
         node_id = str(assignment.get("taxonomy_node_id") or "")
         if node_id not in node_by_id:
             continue
-        if str(assignment.get("target_scope") or "") == TARGET_MEMBER_INSTRUMENT:
-            instrument_id = str(assignment.get("target_entity_id") or "").strip()
-            if instrument_id and holdings_market_profile.is_derivative_tracking_instrument_ref(
-                _instrument_detail_from_cache(
-                    resolved_instrument_detail_cache,
-                    instrument_id,
-                )
-            ):
-                continue
         direct_assignments_by_node[node_id].append(assignment)
 
     target_sets = [
@@ -4501,15 +4498,6 @@ def _historical_backtest_instrument_ids(
                 continue
             instrument_id = str(assignment.get("target_entity_id") or "").strip()
             if not instrument_id:
-                continue
-            if instrument_detail_cache is not None and (
-                holdings_market_profile.is_derivative_tracking_instrument_ref(
-                    _instrument_detail_from_cache(
-                        instrument_detail_cache,
-                        instrument_id,
-                    )
-                )
-            ):
                 continue
             instrument_ids.add(instrument_id)
     return sorted(instrument_ids)

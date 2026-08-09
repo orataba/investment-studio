@@ -2,7 +2,7 @@
 
 这是当前 `Portfolio Operations Workbench / Watchlist` app 的工作区。
 
-当前后端主语已经统一到 `instrument`，当前已发布主路径支持 `fund` 与 `index` 两类本地 watchlist/detail 工作面。
+当前后端主语已经统一到 `instrument`，当前已发布主路径支持 `fund / etf / equity / index` 四类本地 watchlist/detail 工作面。
 
 当前 app 已经包含：
 
@@ -19,15 +19,15 @@
 
 1. `Watchlists`
 2. `Instrument Detail`
-3. `Overview / Quote / Performance / Risk / Exposure / Ratings / People / Strategy / Documents / Research / Monitoring`
+3. `Overview / Quote / Performance / Risk / Price / Exposure / People / Strategy / Documents / Research / Monitoring`
 4. `Facts ingest / manual profile / recalc / read model`
 
 其中：
 
 - `Watchlists` 与单资产详情页是当前主界面
 - Watchlist 里的资产新增只允许从 `Database Dashboard` 共享库搜索并引用，不再在 Watchlist 内创建资产主档
-- 当前 watchlist 可用范围是 `fund` 与 `index`；shared registry 可以管理更广的资产类型，但其他类型不会进入 watchlist detail 主链路
-- `index` 使用轻量详情工作面，当前聚焦 `Overview / Performance / Risk`，不强行复用 fund-specific 的 exposure、people、strategy、documents 或 research 录入面；指数可以使用 close 序列计算收益、回撤、波动率和 Sharpe 等 watchlist 字段
+- 当前 watchlist 可用范围是 `fund / etf / equity / index`；shared registry 可以管理更广的资产类型，但其他类型不会进入 watchlist detail 主链路
+- `etf / equity / index` 使用轻量详情工作面，聚焦 `Overview / Performance / Risk / Price`，不强行复用 fund-specific 的 exposure、people、strategy、documents 或 research 录入面；它们可以使用 policy 选中的价格序列计算收益、回撤、波动率和 Sharpe 等 watchlist 字段
 - `Monitoring` 已经是可用工作面；`Research / Documents` 一级路由仍以轻量页为主
 - Copilot 后端接口仍保留为后续扩展入口，但当前 UI 默认隐藏，不作为已发布能力
 
@@ -67,16 +67,15 @@ cd apps/watchlist/backend
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -e .
-PYTHONPATH=. alembic upgrade head
 uvicorn watchlist_app.main:app --reload --host 127.0.0.1 --port 8000
 ```
 
 说明：
 
 - 运行时必须由仓库外的 `watchlist.env` 显式设置 `PORTFOLIO_OPS_WATCHLIST_DATABASE_URL`，并与 Platform、Portfolio 指向同一个 canonical PostgreSQL；如迁移需要单独变量，`PORTFOLIO_OPS_WATCHLIST_ALEMBIC_DATABASE_URL` 必须保持同一目标
-- schema 以 `PORTFOLIO_OPS_WATCHLIST_DATABASE_SCHEMA` 为准
+- schema 固定为 canonical `watchlist`；非空的 schema 环境变量只能取该值
 - backend 目录只保留 `.env.example` 键名模板，不创建 `.env` 文件或软链接；真实 secrets 只位于仓库外
-- 数据库结构只通过 `alembic upgrade head` 管理；如果要清空旧数据，使用仓库根目录的 `./infra/postgres/rebuild_local_schemas.sh`
+- 数据库结构只通过仓库根目录的统一迁移链管理。现有本机真实数据库使用 `infra/launchd/install_local_services.sh`，由其停写、备份、迁移和恢复；不要单独运行 Watchlist Alembic。若明确要清空旧数据，使用仓库根目录的 `./infra/postgres/rebuild_local_schemas.sh`
 - FastAPI 根路径会重定向到前端 `watchlists`
 - backend 顶层包名现在是 `watchlist_app`
 
@@ -103,25 +102,25 @@ npm --prefix apps/watchlist/frontend run build
 
 ## 当前行为边界
 
-- Watchlist 主表当前按页加载，默认每页 `50` 行；页面上的 `Download` 会导出当前筛选/排序结果的全量行，而不是只导出当前页
+- Watchlist 主表从后端取得同一筛选/排序下的完整快照，前端初始渲染 `80` 行并按需继续显示；全选只作用于当前已渲染行。`Download` 导出当前筛选/排序结果的全量行，并保留逐行 `metric_as_of_date`
 - Watchlist 顶部 view / Data & Columns / Group By / Filter / Download / row action controls 保持本 app 自己的实现和 class，但视觉 contract 与 Portfolio toolbar controls 一致，不引入跨 app 组件依赖
 - Data & Columns 中 `Name` 是默认锁定列，不作为可选字段重复展示；应用 view columns 时必须去重并保留 `instrument_name` 为第一列
 - Group By 后只允许对明确可写分组拖动 instrument：fund taxonomy 和离散 custom attribute。拖放需要调用对应后端写接口同步，不对 read-model / score / bucket 等只读分组做错误兼容
-- Watchlist filter 菜单会基于当前 watchlist 的全量行构建选项，不再只采样前几页；当前页执行 add / delete / move 后，filter 选项也会随之刷新
+- Watchlist filter 菜单会基于当前 watchlist 的全量行构建选项；执行 add / delete / move 后，filter 选项也会随之刷新
 - Watchlist 的 `move` / `copy` 只允许操作 source watchlist 里已经存在的资产，不再把这两个接口当成隐式 `add`
 - Watchlist 的收益和风险不使用一个名单级日期统一截断：每行以该 instrument 自己的最新 calculation-series observation 为 as-of。Screener 始终返回行级 `metric_as_of_date`，页脚展示最早至最晚终点；不同终点的收益/风险分组平均会失败关闭。
-- 自定义 view 会把展示名称映射成 path-safe 的 slug id；复制 watchlist 时也会清洗 legacy custom view id，避免把不可路由的旧 id 继续扩散
+- 自定义 view 会把展示名称映射成 path-safe 的 slug id；复制 watchlist 时会按相同规则规范化源 view id 并解决命名冲突
 - Watchlist 和 Instrument Detail 已改成三层产品框架：`Fund Taxonomy / Research Tags / Monitoring Assessment`；详情页入口调整为 `Overview`，把基础信息和产品 taxonomy 放到第一屏
 - `Peer Category` 仍然保留为外部同类比较口径；内部基金分类已经独立成 fund taxonomy tree，二者不再混用
 - fund 分类不再依赖固定 `fund_category_l1/l2/l3`；当前已经落成 `fund taxonomy tree + derived taxonomy levels`，支持可变深度路径和按层级 group by
-- fund/index taxonomy 不做自动推断或 migration 自动回填；默认未分类，由人在详情页 `Overview -> Fund Taxonomy` 明确选择
+- fund taxonomy 不做自动推断或 migration 自动回填；基金默认未分类，由人在详情页 `Overview -> Fund Taxonomy` 明确选择
 - Monitoring 的缺失项检查已经改成 taxonomy-aware；不同分类叶子只检查适用的 label，不再全 fund 共用一套静态 tag 清单
 - 示例基金标签值不再在 migration 或 add-to-watchlist 运行时自动注入；产品框架赋值只来自显式录入和后续真实数据链路
 - 后端主语已经统一到 `instrument`，当前只暴露 `/api/instruments/...` 明确接口；旧 `/api/funds/...` 兼容路由已移除
 - Instrument Detail 里的 canonical quote/NAV history 现在是只读视图；导入、编辑、刷新共享行情/净值要去 `Database Dashboard`，这里只保留本地 basis / benchmark 设置。派生层必须保留真实 `metric_family / quote_basis / role`，不能把 `close`、`official_nav`、`total_return_nav` 混成一个无来源的 NAV 字段。
 - canonical recalc 只消费 Registry 中 `status=complete`、currency 与 instrument master currency 一致的 quote/NAV，并严格使用 Registry `quote_selection_policy` 的顺序。Registry 无有效序列或缺 policy 时明确产出 unavailable；旧 Watchlist `nav_fact` 仅可审计读取，不再参与行情、收益、风险或图表计算。
 - Instrument Detail 的 benchmark 选择在 Quote / Performance / Risk 三个工作面共用同一状态；Performance matrix 和 Risk rolling charts 使用同一 benchmark calculation series，不再维护第二套 metric benchmark。Quote / Performance 图表和相对指标只使用双方日期完全相同的共同观测收盘点，起点、终点及每个中间 return period 都保持同一 identity；不再用“各自不晚于目标日的不同收盘”相减。横轴按真实日期比例投影，不按样本序号拉伸。比较矩阵共用最晚共同观测终点，SI 共用最早共同观测起点。Rolling risk chart 支持 1M / 3M / 6M / 12M / 24M / 36M 窗口；benchmark 曲线只在存在完整共同 calculation period 时展示，不补齐缺失序列。
-- `return_ytd / return_mtd / return_1w / return_1m / return_3m / return_6m / return_1y / annualized_return / return_3y / return_5y / max_drawdown / current_drawdown / volatility / sharpe_ratio` 当前对适用的 fund / ETF / index 可见，并完整投影到 performance snapshot 与 watchlist row read model。普通 fund 只使用 `total_return_nav`；场内 ETF/指数按 `quote_selection_policy` 选择 calculation series，read model 同时记录实际 quote basis 与 `total_return / price_return / unknown` 语义，不能把普通 `close` 自动写成 total return。
+- `return_ytd / return_mtd / return_1w / return_1m / return_3m / return_6m / return_1y / annualized_return / return_3y / return_5y / max_drawdown / current_drawdown / volatility / sharpe_ratio` 当前对适用的 fund / ETF / equity / index 可见，并完整投影到 performance snapshot 与 watchlist row read model。普通 fund 只使用 `total_return_nav`；ETF、股票和指数按 `quote_selection_policy` 选择 calculation series，read model 同时记录实际 quote basis 与 `total_return / price_return / unknown` 语义，不能把普通 `close` 自动写成 total return。
 - 年化收益在首个日历周年前为空；daily 风险路径按 Registry expected frequency 和 market calendar 检查真实 session。休市不算缺点，实际缺少预期观测时只保留可验证的端点收益，路径风险指标不做插值或前端回退。
 
 ## 当前文档

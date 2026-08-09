@@ -10,7 +10,7 @@
 - `instrument_name`
 - identifiers
 - `instrument_type`
-  - 当前类型集合：`fund | etf | index | bond | equity | fcn | option | cash | fx | other`
+  - 当前类型集合：`fund | etf | index | bond | equity | cash | fx | other`
 - `currency`
 - typed `market_data`
   - `metric_family`: `price | nav | fx`
@@ -44,6 +44,7 @@
 - transaction
 - ledger posting
 - risk snapshots
+- FCN / option contract terms and lifecycle events（由 Portfolio 本地持有）
 
 ## 目录
 
@@ -56,7 +57,7 @@
 
 ## 原则
 
-- Python runtime 要求 Instrument Registry 已迁移到 `20260716_0013`；不兼容缺少数据库级 observation/FX、NAV lineage、区间归一化收益锚点、基金行为账本约束与 per-instrument 并发互斥的旧物理 schema。
+- Python runtime 要求 Instrument Registry 已迁移到 `20260809_0022`；该 head 完整包含 observation/FX、NAV lineage、区间归一化收益锚点、基金行为账本、计算输入与 broker identity，并已从 Registry 删除 FCN/期权合约类型。运行时不探测或兼容更早物理 schema。
 - market-data 写入命令只提交 instrument identity、metric/basis 与观测值；共享 store 唯一负责派生并持久化必填的 `price_unit / price_scale`，读取响应不得省略它们。
 - 每条 market-data observation 必须显式提交 canonical `currency / status` 与有限正数 value；API、批量写入和 restore 都不推断缺失 status 或 currency。
 - `quote_selection_policy` 的五个 role 都必须完整、非空持久化；0011 一次性物化历史缺口，此后运行时不再补 role。类型默认只在创建新 instrument 时显式写入。

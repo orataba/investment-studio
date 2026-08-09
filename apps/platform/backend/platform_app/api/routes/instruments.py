@@ -14,7 +14,6 @@ from platform_app.api.contracts import (
     PlatformFundNavMutationResponse,
     PlatformFundNavReinvestmentEvidenceCreateRequest,
     PlatformFundNavReinvestmentEvidenceRevisionRequest,
-    PlatformDerivativeContractMetadataUpdateRequest,
     PlatformInstrumentCreateRequest,
     PlatformInstrumentDetail,
     PlatformLifecycleTransitionRequest,
@@ -62,7 +61,6 @@ from platform_app.services.instrument_store import (
     list_instruments,
     restore_instrument,
     upsert_market_data,
-    upsert_derivative_contract_metadata,
     upsert_quote_selection_policy,
     upsert_source_settings,
 )
@@ -163,59 +161,14 @@ def create_instrument_record(
                 if payload.quote_selection_policy is not None
                 else None
             ),
-            option_contract=(
-                payload.option_contract.model_dump(mode="json")
-                if payload.option_contract is not None
-                else None
-            ),
-            fcn_contract=(
-                payload.fcn_contract.model_dump(mode="json")
-                if payload.fcn_contract is not None
-                else None
-            ),
             broker_identifiers=[
                 item.model_dump(mode="json") for item in payload.broker_identifiers
             ],
-            corporate_action_adjustment_policy=(
-                payload.corporate_action_adjustment_policy.model_dump(mode="json")
-                if payload.corporate_action_adjustment_policy is not None
-                else None
-            ),
         )
     except ValueError as error:
         raise HTTPException(status_code=409, detail=str(error)) from error
 
     return PlatformInstrumentRecord.model_validate(record)
-
-
-@router.put(
-    "/{instrument_id}/derivative-contract-metadata",
-    response_model=PlatformInstrumentDetail,
-)
-def update_derivative_contract_metadata(
-    instrument_id: str,
-    payload: PlatformDerivativeContractMetadataUpdateRequest,
-) -> PlatformInstrumentDetail:
-    try:
-        record = upsert_derivative_contract_metadata(
-            instrument_id=instrument_id,
-            fcn_contract=(
-                payload.fcn_contract.model_dump(mode="json")
-                if payload.fcn_contract is not None
-                else None
-            ),
-            broker_identifiers=[
-                item.model_dump(mode="json") for item in payload.broker_identifiers
-            ],
-            corporate_action_adjustment_policy=(
-                payload.corporate_action_adjustment_policy.model_dump(mode="json")
-            ),
-        )
-    except ValueError as error:
-        raise HTTPException(status_code=409, detail=str(error)) from error
-    if record is None:
-        raise HTTPException(status_code=404, detail="Instrument not found")
-    return PlatformInstrumentDetail.model_validate(record)
 
 
 @router.put(

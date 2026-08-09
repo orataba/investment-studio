@@ -1,5 +1,5 @@
 from collections.abc import Sequence
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -86,13 +86,14 @@ class SQLAlchemyInstrumentAttributeRepository:
         instrument_id: str,
         attribute_key: str,
         value_json: object,
+        effective_from: date | None,
         source_record_id: str | None,
     ) -> InstrumentAttributeValue:
         record = InstrumentAttributeValue(
             instrument_id=instrument_id,
             attribute_key=attribute_key,
             value_json=value_json,
-            effective_from=None,
+            effective_from=effective_from,
             adopted_at=datetime.now(UTC).replace(microsecond=0),
             source_record_id=source_record_id,
         )

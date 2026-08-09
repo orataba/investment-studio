@@ -35,7 +35,6 @@ from watchlist_app.services.read_models import (
     default_fund_performance_payload,
     default_fund_exposure_holdings_payload,
     default_fund_exposure_summary_payload,
-    default_fund_rating_payload,
     default_fund_risk_payload,
     default_fund_summary_payload,
     merge_summary_attributes,
@@ -354,7 +353,12 @@ def get_fund_performance_data(
     record = read_model_repository.get_performance(session, instrument_id)
     if record is None:
         return default_fund_performance_payload()
-    return serialize_payload(record.payload_json)
+    payload, _ = canonical_recalc_service.apply_current_peer_comparison(
+        session,
+        instrument_id=instrument_id,
+        performance_payload=dict(record.payload_json),
+    )
+    return serialize_payload(payload or default_fund_performance_payload())
 
 
 @router.get("/{instrument_id}/risk")
@@ -367,7 +371,12 @@ def get_fund_risk_data(
     record = read_model_repository.get_risk(session, instrument_id)
     if record is None:
         return default_fund_risk_payload()
-    return serialize_payload(record.payload_json)
+    _, payload = canonical_recalc_service.apply_current_peer_comparison(
+        session,
+        instrument_id=instrument_id,
+        risk_payload=dict(record.payload_json),
+    )
+    return serialize_payload(payload or default_fund_risk_payload())
 
 
 @router.get("/{instrument_id}/exposure/summary")
@@ -393,19 +402,6 @@ def get_fund_exposure_holdings_data(
     record = read_model_repository.get_exposure_holdings(session, instrument_id)
     if record is None:
         return default_fund_exposure_holdings_payload()
-    return serialize_payload(record.payload_json)
-
-
-@router.get("/{instrument_id}/ratings")
-def get_fund_rating_data(
-    instrument_id: str,
-    session: Session = Depends(get_db_session),
-) -> dict[str, object]:
-    _ensure_instrument_exists(session, instrument_id)
-    _schedule_instrument_refresh(session, instrument_id=instrument_id, trigger_ref_type="instrument_ratings_read")
-    record = read_model_repository.get_rating(session, instrument_id)
-    if record is None:
-        return default_fund_rating_payload()
     return serialize_payload(record.payload_json)
 
 
@@ -725,6 +721,15 @@ def upsert_fund_nav_settings(
         nav_settings_json=_normalize_nav_settings_payload(next_payload),
         updated_by=payload.updated_by,
     )
+    if _normalize_nav_settings_payload(next_payload) != current_payload:
+        canonical_recalc_service.execute_recalc(
+            session,
+            instrument_id=instrument_id,
+            job_type="all",
+            trigger_type="calculation_settings_changed",
+            trigger_ref_type="nav_settings",
+            trigger_ref_id=instrument_id,
+        )
     session.commit()
     return serialize_payload(_normalize_nav_settings_payload(updated_record.nav_settings_json))
 

@@ -45,7 +45,11 @@ class Watchlist(TimestampMixin, Base):
 class WatchlistItem(Base):
     __tablename__ = "watchlist_item"
     __table_args__ = (
-        UniqueConstraint("watchlist_id", "instrument_id", name="uq_watchlist_item_watchlist_asset"),
+        UniqueConstraint(
+            "watchlist_id",
+            "instrument_id",
+            name="uq_watchlist_item_watchlist_instrument",
+        ),
         Index("idx_watchlist_item_watchlist_id", "watchlist_id"),
     )
 

@@ -72,11 +72,15 @@ function localTodayIso() {
 function primaryIdentifier(position: {
   instrument_id?: string | null
   instrument_ref?: { identifiers: Array<{ identifier_value: string; is_primary: boolean }> } | null
+  derivative_contract_id?: string | null
+  derivative_contract?: { external_reference?: string | null } | null
 }) {
   return (
     position.instrument_ref?.identifiers.find((item) => item.is_primary)?.identifier_value ??
     position.instrument_ref?.identifiers[0]?.identifier_value ??
     position.instrument_id ??
+    position.derivative_contract?.external_reference ??
+    position.derivative_contract_id ??
     '—'
   )
 }
@@ -1331,15 +1335,17 @@ function AccountTransactionRow({
         </span>
       </td>
       <td className="holding-name-cell" data-label="Instrument">
-        {transaction.instrument_ref ? (
+        {transaction.instrument_ref || transaction.derivative_contract ? (
           <div className="holding-name-stack">
             <span>
               {primaryIdentifier({
                 instrument_id: transaction.instrument_id,
                 instrument_ref: transaction.instrument_ref,
+                derivative_contract_id: transaction.derivative_contract_id,
+                derivative_contract: transaction.derivative_contract,
               })}
             </span>
-            <span className="holding-secondary">{transaction.instrument_ref.instrument_name}</span>
+            <span className="holding-secondary">{transaction.derivative_contract?.contract_name ?? transaction.instrument_ref?.instrument_name}</span>
           </div>
         ) : (
           <span className="holding-secondary">Cash ledger</span>
@@ -1385,11 +1391,11 @@ function PositionRow({
         <div className="holding-name-stack">
           <Link
             className="table-inline-link"
-            to={`/portfolios/${portfolioId}/holdings/${encodeURIComponent(position.instrument_id)}?detail_tab=lots`}
+            to={`/portfolios/${portfolioId}/holdings/${encodeURIComponent(position.position_reference_id)}?detail_tab=lots`}
           >
             {primaryIdentifier(position)}
           </Link>
-          <span className="holding-secondary">{position.instrument_ref.instrument_name}</span>
+          <span className="holding-secondary">{position.derivative_contract?.contract_name ?? position.instrument_ref?.instrument_name}</span>
         </div>
       </td>
       <td data-label="Quantity / Price">
@@ -1450,15 +1456,17 @@ function LedgerPostingRow({
         </div>
       </td>
       <td className="holding-name-cell" data-label="Instrument">
-        {posting.instrument_ref ? (
+        {posting.instrument_ref || posting.derivative_contract ? (
           <div className="holding-name-stack">
             <span>
               {primaryIdentifier({
                 instrument_id: posting.instrument_id,
                 instrument_ref: posting.instrument_ref,
+                derivative_contract_id: posting.derivative_contract_id,
+                derivative_contract: posting.derivative_contract,
               })}
             </span>
-            <span className="holding-secondary">{posting.instrument_ref.instrument_name}</span>
+            <span className="holding-secondary">{posting.derivative_contract?.contract_name ?? posting.instrument_ref?.instrument_name}</span>
           </div>
         ) : (
           <span className="holding-secondary">Cash ledger</span>

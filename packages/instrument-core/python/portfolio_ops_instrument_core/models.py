@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import hashlib
-import json
 from datetime import date
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP, localcontext
 from typing import Literal, cast
@@ -15,8 +14,6 @@ InstrumentType = Literal[
     "index",
     "bond",
     "equity",
-    "fcn",
-    "option",
     "cash",
     "fx",
     "other",
@@ -28,8 +25,6 @@ INSTRUMENT_TYPES = frozenset(
         "index",
         "bond",
         "equity",
-        "fcn",
-        "option",
         "cash",
         "fx",
         "other",
@@ -76,18 +71,7 @@ DataStatus = Literal["complete", "partial", "unavailable"]
 CorporateActionType = Literal["share_split"]
 CorporateActionStatus = Literal["detected", "confirmed", "cancelled"]
 QuantityRounding = Literal["exact", "truncate", "round_half_up", "cash_in_lieu"]
-BrokerIdentifierType = Literal["contract_id", "symbol", "product_code"]
-FCNBarrierType = Literal["none", "knock_in", "knock_out", "dual"]
-DerivativeAdjustmentPolicyType = Literal[
-    "exchange_rules",
-    "contract_terms",
-    "manual_review",
-]
-DerivativeContractReconciliationStatus = Literal[
-    "not_applicable",
-    "unmatched",
-    "ready",
-]
+BrokerIdentifierType = Literal["symbol", "product_code"]
 FundNavEventType = Literal["cash_distribution", "unit_split"]
 FundNavEventRevisionKind = Literal["original", "correction", "cancellation"]
 FundNavEventEvidenceKind = Literal[
@@ -273,35 +257,6 @@ class InstrumentIdentifier(BaseModel):
         return value
 
 
-class OptionContractIdentity(BaseModel):
-    """Minimum immutable identity needed to validate option lifecycle events."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    underlying_instrument_id: str = Field(min_length=1)
-    option_type: Literal["call", "put"]
-    expiry_date: date
-    strike: Decimal = Field(gt=0)
-    contract_multiplier: Decimal = Field(gt=0)
-    settlement_type: Literal["physical", "cash"]
-    contract_currency: str = Field(min_length=1, max_length=8)
-
-    @field_validator("underlying_instrument_id", mode="before")
-    @classmethod
-    def normalize_underlying_id(cls, value: object) -> object:
-        if isinstance(value, str):
-            normalized = value.strip()
-            if not normalized:
-                raise ValueError("underlying_instrument_id must not be blank")
-            return normalized
-        return value
-
-    @field_validator("contract_currency", mode="before")
-    @classmethod
-    def normalize_contract_currency(cls, value: object) -> object:
-        return normalize_market_data_currency(value)
-
-
 class BrokerIdentifier(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -321,102 +276,13 @@ class BrokerIdentifier(BaseModel):
         return value
 
 
-class CorporateActionAdjustmentPolicy(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    policy_type: DerivativeAdjustmentPolicyType
-    authority_reference: str = Field(min_length=1)
-    quantity_rounding: QuantityRounding
-    adjust_strike: bool
-    adjust_multiplier: bool
-    adjust_deliverable: bool
-
-    @field_validator("authority_reference", mode="before")
-    @classmethod
-    def normalize_authority_reference(cls, value: object) -> object:
-        if isinstance(value, str):
-            normalized = value.strip()
-            if not normalized:
-                raise ValueError("authority_reference must not be blank")
-            return normalized
-        return value
-
-
-class FCNContractMetadata(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    notional: Decimal = Field(gt=0)
-    issue_date: date
-    maturity_date: date
-    contract_currency: str = Field(min_length=1, max_length=8)
-    issuer: str = Field(min_length=1)
-    counterparty: str = Field(min_length=1)
-    underlying_instrument_ids: list[str] = Field(min_length=1)
-    deliverable_instrument_ids: list[str] = Field(min_length=1)
-    barrier_type: FCNBarrierType
-    barrier_level: Decimal | None = Field(default=None, gt=0)
-
-    @field_validator("contract_currency", mode="before")
-    @classmethod
-    def normalize_contract_currency(cls, value: object) -> object:
-        return normalize_market_data_currency(value)
-
-    @field_validator("issuer", "counterparty", mode="before")
-    @classmethod
-    def normalize_party(cls, value: object) -> object:
-        if isinstance(value, str):
-            normalized = value.strip()
-            if not normalized:
-                raise ValueError("FCN issuer and counterparty must not be blank")
-            return normalized
-        return value
-
-    @field_validator(
-        "underlying_instrument_ids",
-        "deliverable_instrument_ids",
-        mode="before",
-    )
-    @classmethod
-    def normalize_instrument_ids(cls, value: object) -> object:
-        if not isinstance(value, list):
-            return value
-        normalized = [str(item).strip() for item in value]
-        if any(not item for item in normalized):
-            raise ValueError("FCN instrument references must not be blank")
-        if len(normalized) != len(set(normalized)):
-            raise ValueError("FCN instrument references must be unique within each role")
-        return normalized
-
-    @model_validator(mode="after")
-    def validate_contract(self) -> "FCNContractMetadata":
-        if self.maturity_date < self.issue_date:
-            raise ValueError("FCN maturity_date must not precede issue_date")
-        if self.barrier_type == "none" and self.barrier_level is not None:
-            raise ValueError("FCN barrier_level must be null when barrier_type is none")
-        if self.barrier_type != "none" and self.barrier_level is None:
-            raise ValueError("FCN barrier_level is required for an active barrier")
-        return self
-
-
-class DerivativeContractReconciliation(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    status: DerivativeContractReconciliationStatus
-    canonical_contract_id: str | None = None
-    broker_keys: list[str] = Field(default_factory=list)
-    issues: list[str] = Field(default_factory=list)
-
-
 class InstrumentCore(BaseModel):
     instrument_id: str = Field(min_length=1)
     instrument_name: str = Field(min_length=1)
     instrument_type: InstrumentType
     currency: str = Field(min_length=1, max_length=8)
     identifiers: list[InstrumentIdentifier] = Field(default_factory=list)
-    option_contract: OptionContractIdentity | None = None
-    fcn_contract: FCNContractMetadata | None = None
     broker_identifiers: list[BrokerIdentifier] = Field(default_factory=list)
-    corporate_action_adjustment_policy: CorporateActionAdjustmentPolicy | None = None
 
     @field_validator("currency", mode="before")
     @classmethod
@@ -424,39 +290,7 @@ class InstrumentCore(BaseModel):
         return normalize_market_data_currency(value)
 
     @model_validator(mode="after")
-    def validate_derivative_contract(self) -> "InstrumentCore":
-        if self.instrument_type == "option" and self.option_contract is None:
-            raise ValueError("Option instruments require complete option_contract identity")
-        if self.instrument_type != "option" and self.option_contract is not None:
-            raise ValueError("option_contract is only valid for option instruments")
-        if self.instrument_type == "fcn" and self.fcn_contract is None:
-            raise ValueError("FCN instruments require complete fcn_contract metadata")
-        if self.instrument_type != "fcn" and self.fcn_contract is not None:
-            raise ValueError("fcn_contract is only valid for FCN instruments")
-        if self.instrument_type in {"fcn", "option"}:
-            if self.corporate_action_adjustment_policy is None:
-                raise ValueError(
-                    "Derivative instruments require corporate_action_adjustment_policy"
-                )
-        elif self.corporate_action_adjustment_policy is not None:
-            raise ValueError(
-                "corporate_action_adjustment_policy is only valid for derivative instruments"
-            )
-        if self.option_contract is not None:
-            if self.option_contract.underlying_instrument_id == self.instrument_id:
-                raise ValueError("Option underlying instrument must differ from option instrument")
-            if self.option_contract.contract_currency != self.currency:
-                raise ValueError("Option contract currency must match instrument currency")
-        if self.fcn_contract is not None:
-            if self.fcn_contract.contract_currency != self.currency:
-                raise ValueError("FCN contract currency must match instrument currency")
-            referenced_ids = {
-                *self.fcn_contract.underlying_instrument_ids,
-                *self.fcn_contract.deliverable_instrument_ids,
-            }
-            if self.instrument_id in referenced_ids:
-                raise ValueError("FCN contract references must not reference the FCN itself")
-
+    def validate_broker_identifiers(self) -> "InstrumentCore":
         broker_keys: set[tuple[str, str, str]] = set()
         primary_count_by_broker: dict[str, int] = {}
         for identifier in self.broker_identifiers:
@@ -474,53 +308,6 @@ class InstrumentCore(BaseModel):
         if any(primary_count_by_broker.get(broker, 0) != 1 for broker in represented_brokers):
             raise ValueError("Each represented broker requires exactly one primary identifier")
         return self
-
-
-def derivative_contract_reconciliation(
-    instrument: InstrumentCore,
-) -> DerivativeContractReconciliation:
-    if instrument.instrument_type not in {"fcn", "option"}:
-        return DerivativeContractReconciliation(status="not_applicable")
-    contract = (
-        instrument.option_contract.model_dump(mode="json")
-        if instrument.option_contract is not None
-        else instrument.fcn_contract.model_dump(mode="json")
-        if instrument.fcn_contract is not None
-        else None
-    )
-    if contract is None:  # pragma: no cover - InstrumentCore validator guards this
-        raise ValueError("Derivative contract metadata is incomplete")
-    identity_payload = {
-        "instrument_type": instrument.instrument_type,
-        "contract": contract,
-        "corporate_action_adjustment_policy": (
-            instrument.corporate_action_adjustment_policy.model_dump(mode="json")
-            if instrument.corporate_action_adjustment_policy is not None
-            else None
-        ),
-    }
-    digest = hashlib.sha256(
-        json.dumps(
-            identity_payload,
-            sort_keys=True,
-            separators=(",", ":"),
-        ).encode("utf-8")
-    ).hexdigest()
-    broker_keys = sorted(
-        f"{identifier.broker}:{identifier.identifier_type}:{identifier.identifier_value}"
-        for identifier in instrument.broker_identifiers
-    )
-    if not broker_keys:
-        return DerivativeContractReconciliation(
-            status="unmatched",
-            canonical_contract_id=f"{instrument.instrument_type}-contract-{digest}",
-            issues=["No broker-specific contract identity is registered."],
-        )
-    return DerivativeContractReconciliation(
-        status="ready",
-        canonical_contract_id=f"{instrument.instrument_type}-contract-{digest}",
-        broker_keys=broker_keys,
-    )
 
 
 class SourceSettings(BaseModel):

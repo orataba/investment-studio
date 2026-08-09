@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { Link } from 'react-router'
+import { Link, useSearchParams } from 'react-router'
 
 import LoadingOverlay from '../components/LoadingOverlay'
 import {
@@ -21,8 +21,19 @@ function formatDateTime(value: string | null | undefined) {
   if (!value) {
     return '—'
   }
-  const normalized = value.replace('T', ' ').replace('Z', '')
-  return normalized.slice(0, 16)
+  const parsed = new Date(value)
+  if (Number.isNaN(parsed.getTime())) {
+    return value
+  }
+  return new Intl.DateTimeFormat(undefined, {
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+    timeZoneName: 'short',
+  }).format(parsed)
 }
 
 function formatDate(value: string | null | undefined) {
@@ -155,11 +166,33 @@ function OpenDetailAction({
 }
 
 export default function MonitoringPage() {
+  const [monitoringSearchParams, setMonitoringSearchParams] = useSearchParams()
   const [dashboard, setDashboard] = useState<MonitoringDashboardResponse | null>(null)
   const [loading, setLoading] = useState(true)
   const [refreshing, setRefreshing] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const [selectedWatchlistId, setSelectedWatchlistId] = useState('all')
+  const [selectedWatchlistId, setSelectedWatchlistId] = useState(
+    () => monitoringSearchParams.get('watchlist') || 'all',
+  )
+
+  useEffect(() => {
+    setSelectedWatchlistId(monitoringSearchParams.get('watchlist') || 'all')
+  }, [monitoringSearchParams])
+
+  useEffect(() => {
+    setMonitoringSearchParams(
+      (current) => {
+        const next = new URLSearchParams(current)
+        if (selectedWatchlistId === 'all') {
+          next.delete('watchlist')
+        } else {
+          next.set('watchlist', selectedWatchlistId)
+        }
+        return next.toString() === current.toString() ? current : next
+      },
+      { replace: true },
+    )
+  }, [selectedWatchlistId, setMonitoringSearchParams])
   const [recalculatingInstrumentIds, setRecalculatingInstrumentIds] = useState<string[]>([])
   const [notice, setNotice] = useState<{ tone: 'success' | 'error'; message: string } | null>(
     null,

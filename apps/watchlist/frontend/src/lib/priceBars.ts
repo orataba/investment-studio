@@ -94,31 +94,36 @@ export function adjustPriceBars(
     return parsed
   }
 
-  const latestFactor = [...parsed]
-    .reverse()
-    .find((bar) => bar.adjustmentFactor !== null && bar.adjustmentFactor > 0)
-    ?.adjustmentFactor
-  if (!latestFactor) {
-    return parsed
+  if (
+    !parsed.length ||
+    parsed.some((bar) => bar.adjustmentFactor === null || bar.adjustmentFactor <= 0)
+  ) {
+    return []
   }
+  const latestFactor = parsed[parsed.length - 1].adjustmentFactor as number
 
-  return parsed.flatMap((bar) => {
-    if (bar.adjustmentFactor === null || bar.adjustmentFactor <= 0) {
-      return []
+  return parsed.map((bar) => {
+    const scale = (bar.adjustmentFactor as number) / latestFactor
+    return {
+      ...bar,
+      open: bar.open * scale,
+      high: bar.high * scale,
+      low: bar.low * scale,
+      close: bar.close * scale,
+      previousClose:
+        bar.previousClose === null ? null : bar.previousClose * scale,
     }
-    const scale = bar.adjustmentFactor / latestFactor
-    return [
-      {
-        ...bar,
-        open: bar.open * scale,
-        high: bar.high * scale,
-        low: bar.low * scale,
-        close: bar.close * scale,
-        previousClose:
-          bar.previousClose === null ? null : bar.previousClose * scale,
-      },
-    ]
   })
+}
+
+export function hasCompleteAdjustmentFactors(sourceBars: InstrumentPriceBar[]): boolean {
+  return (
+    sourceBars.length > 0 &&
+    sourceBars.every((bar) => {
+      const factor = finiteNumber(bar.adjustment_factor)
+      return factor !== null && factor > 0
+    })
+  )
 }
 
 export function slicePriceBars(

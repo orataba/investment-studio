@@ -8,7 +8,7 @@ import OverviewPage, {
 } from './pages/OverviewPage'
 import {
   dailyPerformancePoint,
-  fcnInstrumentFixture,
+  fcnContractFixture,
   holdingFixture,
   holdingsWorkspaceFixture,
   instrumentFixture,
@@ -160,9 +160,12 @@ describe('Overview rendered page contract', () => {
         rows: [
           holdingFixture({
             line_id: 'holding:fcn-1',
-            instrument_core: fcnInstrumentFixture({
-              instrument_id: 'fcn-1',
-              instrument_name: 'Carried FCN',
+            position_reference_id: 'fcn-1',
+            derivative_contract_id: 'fcn-1',
+            instrument_core: null,
+            derivative_contract: fcnContractFixture({
+              derivative_contract_id: 'fcn-1',
+              contract_name: 'Carried FCN',
             }),
             market_value: 500,
             market_value_base: 500,

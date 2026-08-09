@@ -93,6 +93,8 @@ describe('transaction presentation', () => {
         identifiers: [],
         broker_identifiers: [],
       },
+      derivative_contract_id: null,
+      derivative_contract: null,
       quantity: 100,
       source_quantity: '100',
       price: 1.25,

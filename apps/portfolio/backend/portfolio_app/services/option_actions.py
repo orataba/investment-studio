@@ -19,10 +19,10 @@ def _value(value: object, key: str) -> object | None:
     return getattr(value, key, None)
 
 
-def _instrument_type_from_ref(instrument_ref: object | None) -> str | None:
-    """Return a normalised instrument type from dict or Pydantic objects."""
+def _contract_type_from_ref(derivative_contract: object | None) -> str | None:
+    """Return a normalized local contract type from dict or Pydantic objects."""
 
-    raw = _value(instrument_ref, "instrument_type")
+    raw = _value(derivative_contract, "contract_type")
     if raw is None:
         return None
     normalized = str(raw).strip().lower()
@@ -31,24 +31,24 @@ def _instrument_type_from_ref(instrument_ref: object | None) -> str | None:
 
 def resolve_option_action(
     transaction_type: object | Mapping[str, object],
-    instrument_ref: object | None = None,
+    derivative_contract: object | None = None,
     *,
-    instrument_type: object | None = None,
+    contract_type: object | None = None,
 ) -> OptionAction | None:
     """Resolve a transaction fact to its canonical option action.
 
     ``transaction_type`` may be a string or a transaction mapping/model.  A
-    generic ``buy``/``sell`` is considered an option fact only when the
-    instrument is explicitly typed ``option``. The two writer transaction
+    generic ``buy``/``sell`` is considered an option fact only when the local
+    contract is explicitly typed ``option``. The two writer transaction
     types are intrinsically option-specific.
     """
 
     if isinstance(transaction_type, Mapping):
         raw_type = transaction_type.get("transaction_type")
-        if instrument_ref is None:
-            instrument_ref = transaction_type.get("instrument_ref")
-        if instrument_type is None:
-            instrument_type = transaction_type.get("instrument_type")
+        if derivative_contract is None:
+            derivative_contract = transaction_type.get("derivative_contract")
+        if contract_type is None:
+            contract_type = transaction_type.get("contract_type")
     else:
         # Accept Pydantic/dataclass transaction objects in addition to the
         # persisted mapping shape; callers must not grow a second resolver for
@@ -56,25 +56,25 @@ def resolve_option_action(
         raw_type = _value(transaction_type, "transaction_type")
         if raw_type is None:
             raw_type = transaction_type
-        if instrument_ref is None:
-            instrument_ref = _value(transaction_type, "instrument_ref")
-        if instrument_type is None:
-            instrument_type = _value(transaction_type, "instrument_type")
+        if derivative_contract is None:
+            derivative_contract = _value(transaction_type, "derivative_contract")
+        if contract_type is None:
+            contract_type = _value(transaction_type, "contract_type")
 
     normalized_type = str(raw_type or "").strip().lower()
-    normalized_instrument_type = (
-        str(instrument_type).strip().lower()
-        if instrument_type is not None and str(instrument_type).strip()
-        else _instrument_type_from_ref(instrument_ref)
+    normalized_contract_type = (
+        str(contract_type).strip().lower()
+        if contract_type is not None and str(contract_type).strip()
+        else _contract_type_from_ref(derivative_contract)
     )
 
     if normalized_type == "option_write":
         return "sell_to_open"
     if normalized_type == "option_buy_to_close":
         return "buy_to_close"
-    if normalized_type == "buy" and normalized_instrument_type == "option":
+    if normalized_type == "buy" and normalized_contract_type == "option":
         return "buy_to_open"
-    if normalized_type == "sell" and normalized_instrument_type == "option":
+    if normalized_type == "sell" and normalized_contract_type == "option":
         return "sell_to_close"
     return None
 

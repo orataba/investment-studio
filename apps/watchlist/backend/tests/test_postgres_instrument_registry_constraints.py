@@ -256,6 +256,39 @@ def test_watchlist_instrument_registry_foreign_keys_are_enforced(
                 ),
                 {"schema": postgres_watchlist_env["database_schema"]},
             ).mappings().all()
+            membership_constraints = set(
+                connection.scalars(
+                    text(
+                        """
+                        SELECT con.conname
+                        FROM pg_constraint con
+                        JOIN pg_class cls ON cls.oid = con.conrelid
+                        JOIN pg_namespace cls_ns ON cls_ns.oid = cls.relnamespace
+                        WHERE cls_ns.nspname = :schema
+                          AND cls.relname = 'watchlist_item'
+                        """
+                    ),
+                    {"schema": postgres_watchlist_env["database_schema"]},
+                )
+            )
+            field_identity = connection.execute(
+                text(
+                    """
+                    SELECT
+                        count(*) FILTER (
+                            WHERE field_key = 'instrument_name'
+                              AND source_metric_code =
+                                  'watchlist_row_read_model.instrument_name'
+                        ) AS canonical_count,
+                        count(*) FILTER (
+                            WHERE field_key = 'asset_name'
+                               OR source_metric_code =
+                                  'watchlist_row_read_model.asset_name'
+                        ) AS legacy_count
+                    FROM watchlist.field_registry
+                    """
+                )
+            ).mappings().one()
     finally:
         engine.dispose()
 
@@ -266,6 +299,10 @@ def test_watchlist_instrument_registry_foreign_keys_are_enforced(
     assert by_name["fk_instrument_detail_instrument_id_instrument"]["table_name"] == "instrument_detail"
     assert by_name["fk_instrument_detail_instrument_id_instrument"]["referred_schema"] == "instrument_registry"
     assert by_name["fk_instrument_detail_instrument_id_instrument"]["referred_table"] == "instrument"
+    assert "uq_watchlist_item_watchlist_instrument" in membership_constraints
+    assert "uq_watchlist_item_watchlist_asset" not in membership_constraints
+    assert field_identity["canonical_count"] == 1
+    assert field_identity["legacy_count"] == 0
 
     session_factory = session_module.get_session_factory()
     watchlist_id = f"watchlist-fk-{uuid4().hex[:8]}"
@@ -332,6 +369,140 @@ def test_watchlist_instrument_registry_foreign_keys_are_enforced(
         with pytest.raises(IntegrityError):
             session.commit()
         session.rollback()
+
+
+def test_postgres_primary_display_field_reconciles_upgraded_database(
+    postgres_watchlist_env: dict[str, str],
+) -> None:
+    engine = create_engine(postgres_watchlist_env["database_url"])
+    try:
+        with engine.begin() as connection:
+            connection.execute(
+                text(
+                    """
+                    INSERT INTO watchlist.watchlist (
+                        watchlist_id, name, description, owner_type, owner_id,
+                        is_default, is_shared, sort_order
+                    ) VALUES (
+                        'migration-watchlist', 'Migration Watchlist', NULL,
+                        'user', 'migration-test', true, false, 0
+                    )
+                    """
+                )
+            )
+            connection.execute(
+                text(
+                    """
+                    INSERT INTO watchlist.watchlist_view (
+                        watchlist_view_id, watchlist_id, name, description,
+                        kind, default_sort_json, default_filters_json,
+                        default_advanced_filter_json, default_group_by,
+                        density, is_default, created_at
+                    ) VALUES (
+                        'migration-view', 'migration-watchlist',
+                        'Migration View', NULL, 'table',
+                        CAST('[{"field":"instrument_name","direction":"asc"}]' AS json),
+                        CAST('{"instrument_name":"Audit"}' AS json),
+                        CAST('{}' AS json), 'instrument_name', NULL, true, now()
+                    )
+                    """
+                )
+            )
+            connection.execute(
+                text(
+                    """
+                    INSERT INTO watchlist.watchlist_view_column (
+                        watchlist_view_id, field_key, display_order, width,
+                        is_visible, pin_side
+                    ) VALUES (
+                        'migration-view', 'instrument_name', 0, 320, true, NULL
+                    )
+                    """
+                )
+            )
+            connection.execute(
+                text(
+                    """
+                    UPDATE watchlist.field_registry
+                    SET field_key = 'asset_name',
+                        source_metric_code = 'watchlist_row_read_model.asset_name'
+                    WHERE field_key = 'instrument_name'
+                    """
+                )
+            )
+            connection.execute(
+                text(
+                    """
+                    UPDATE watchlist.watchlist_view_column
+                    SET field_key = 'asset_name'
+                    WHERE field_key = 'instrument_name'
+                    """
+                )
+            )
+            connection.execute(
+                text(
+                    """
+                    UPDATE watchlist.watchlist_view
+                    SET default_sort_json =
+                            CAST('[{"field":"asset_name","direction":"asc"}]' AS json),
+                        default_filters_json = CAST('{"asset_name":"Audit"}' AS json),
+                        default_group_by = 'asset_name'
+                    WHERE watchlist_view_id = 'migration-view'
+                    """
+                )
+            )
+            connection.execute(
+                text(
+                    "UPDATE watchlist.alembic_version "
+                    "SET version_num = '20260809_0035'"
+                )
+            )
+
+        _run_watchlist_upgrade(postgres_watchlist_env["database_url"])
+
+        with engine.connect() as connection:
+            canonical_count = connection.scalar(
+                text(
+                    """
+                    SELECT count(*)
+                    FROM watchlist.field_registry
+                    WHERE field_key = 'instrument_name'
+                      AND source_metric_code =
+                          'watchlist_row_read_model.instrument_name'
+                    """
+                )
+            )
+            legacy_count = connection.scalar(
+                text(
+                    """
+                    SELECT
+                        (SELECT count(*) FROM watchlist.field_registry
+                         WHERE field_key = 'asset_name')
+                        +
+                        (SELECT count(*) FROM watchlist.watchlist_view_column
+                         WHERE field_key = 'asset_name')
+                    """
+                )
+            )
+            view = connection.execute(
+                text(
+                    """
+                    SELECT default_sort_json, default_filters_json,
+                           default_group_by
+                    FROM watchlist.watchlist_view
+                    WHERE watchlist_view_id = 'migration-view'
+                    """
+                )
+            ).mappings().one()
+        assert canonical_count == 1
+        assert legacy_count == 0
+        assert view["default_sort_json"] == [
+            {"field": "instrument_name", "direction": "asc"}
+        ]
+        assert view["default_filters_json"] == {"instrument_name": "Audit"}
+        assert view["default_group_by"] == "instrument_name"
+    finally:
+        engine.dispose()
 
 
 def test_recalc_instrument_advisory_lock_serializes_transactions(

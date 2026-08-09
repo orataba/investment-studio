@@ -53,6 +53,13 @@ prepare_case() {
     'printf "platform-migration-env:%s|%s\n" "$platform_alembic_status" "${PORTFOLIO_OPS_PLATFORM_OPERATIONS_DATABASE_SCHEMA:-}" >> "$EVENT_LOG"' \
     'if [[ "${MIGRATION_FAIL:-false}" == "true" ]]; then exit 9; fi' \
     > "$project_root/infra/scripts/migrate_all.sh"
+  printf '%s\n' \
+    'from __future__ import annotations' \
+    'import os' \
+    'from pathlib import Path' \
+    'with Path(os.environ["EVENT_LOG"]).open("a", encoding="utf-8") as handle:' \
+    '    handle.write("audit\n")' \
+    > "$project_root/infra/scripts/audit_live_data.py"
 
   printf '%s\n' '#!/usr/bin/env bash' 'printf "%s\n" Darwin' > "$mock_bin/uname"
   printf '%s\n' '#!/usr/bin/env bash' 'exit 0' > "$mock_bin/node"
@@ -143,8 +150,7 @@ run_installer() {
   local case_root="$1"
   local project_root="$case_root/project"
   local mock_bin="$case_root/bin"
-  local database_url='postgresql+psycopg://portfolio_ops@127.0.0.1:5432/portfolio_ops'
-  database_url="${database_url/portfolio_ops@/portfolio_ops:sensitive-password@}"
+  local database_url="${2:-postgresql+psycopg://portfolio_ops@127.0.0.1:5432/portfolio_ops}"
 
   PATH="$mock_bin:$PATH" \
   PROJECT_ROOT="$project_root" \
@@ -173,6 +179,24 @@ assert_old_plists_restored() {
   done
 }
 
+PASSWORD_URL_CASE="$TEST_ROOT/password-url"
+prepare_case "$PASSWORD_URL_CASE"
+export EVENT_LOG="$PASSWORD_URL_CASE/events"
+set +e
+run_installer \
+  "$PASSWORD_URL_CASE" \
+  'postgresql+psycopg://portfolio_ops:sensitive-password@127.0.0.1:5432/portfolio_ops' \
+  > "$PASSWORD_URL_CASE/output" 2>&1
+password_url_status=$?
+set -e
+[[ $password_url_status -eq 64 ]]
+grep -q 'must not contain passwords' "$PASSWORD_URL_CASE/output"
+if grep -q 'sensitive-password' "$PASSWORD_URL_CASE/output"; then
+  echo "Launchd password rejection exposed database credentials." >&2
+  exit 1
+fi
+[[ ! -e "$EVENT_LOG" ]]
+
 EARLY_STOP_CASE="$TEST_ROOT/early-stop-failure"
 prepare_case "$EARLY_STOP_CASE"
 rm -f "$EARLY_STOP_CASE/LaunchAgents/test.portfolio-ops.portfolio-web.plist"
@@ -195,13 +219,19 @@ MIGRATION_CASE="$TEST_ROOT/migration-failure"
 prepare_case "$MIGRATION_CASE"
 export EVENT_LOG="$MIGRATION_CASE/events"
 set +e
-MIGRATION_FAIL=true FAIL_ROLLBACK=false run_installer "$MIGRATION_CASE" \
+MIGRATION_FAIL=true FAIL_ROLLBACK=false run_installer \
+  "$MIGRATION_CASE" \
+  'postgresql://portfolio_ops@127.0.0.1:5432/portfolio_ops' \
   > "$MIGRATION_CASE/output" 2>&1
 migration_status=$?
 set -e
 [[ $migration_status -eq 9 ]]
 grep -q '^backup$' "$EVENT_LOG"
 grep -q '^migrate$' "$EVENT_LOG"
+if grep -q '^audit$' "$EVENT_LOG"; then
+  echo "Installer ran the data audit after a failed migration." >&2
+  exit 1
+fi
 grep -q '^platform-migration-env:match|platform$' "$EVENT_LOG"
 grep -q '^pg_dump:.*--schema=platform' "$EVENT_LOG"
 grep -q '^restore$' "$EVENT_LOG"
@@ -231,6 +261,7 @@ rollback_status=$?
 set -e
 [[ $rollback_status -eq 70 ]]
 grep -q '^migrate$' "$EVENT_LOG"
+grep -q '^audit$' "$EVENT_LOG"
 grep -q '^health$' "$EVENT_LOG"
 grep -q '^restore-failed$' "$EVENT_LOG"
 if awk 'seen && /launchctl:bootstrap/ { found=1 } /^restore-failed$/ { seen=1 } END { exit found ? 0 : 1 }' "$EVENT_LOG"; then

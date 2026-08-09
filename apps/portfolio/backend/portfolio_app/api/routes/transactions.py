@@ -6,7 +6,6 @@ from uuid import NAMESPACE_URL, uuid4, uuid5
 
 from fastapi import APIRouter, Header, HTTPException, Query, Response
 from sqlalchemy.exc import IntegrityError
-from portfolio_ops_instrument_core import OptionContractIdentity
 
 from portfolio_app.api.assemblers import (
     serialize_transactions,
@@ -15,7 +14,11 @@ from portfolio_app.api.assemblers import (
 from portfolio_app.api.contracts import (
     _amount_contract_matches_display_price,
     AccountRecord,
+    DerivativeContractCreate,
+    DerivativeContractListResponse,
+    DerivativeContractRecord,
     InstrumentCoreContract,
+    OptionContractTerms,
     DerivationBoundaryStatus,
     InternalTransferCreateRequest,
     SharedInstrumentListResponse,
@@ -72,9 +75,11 @@ from portfolio_app.services.portfolio_store import (
     create_transactions,
     delete_transactions,
     get_account,
+    get_derivative_contract,
     get_portfolio,
     get_transaction,
     get_transaction_idempotency_result,
+    list_derivative_contracts,
     list_accounts,
     list_transaction_change_logs,
     list_transactions,
@@ -86,7 +91,7 @@ from portfolio_app.services.transaction_dates import transaction_execution_sort_
 
 router = APIRouter()
 
-POSITION_ASSET_TYPES = {"fund", "etf", "bond", "equity", "fcn", "option", "other"}
+POSITION_INSTRUMENT_TYPES = {"fund", "etf", "bond", "equity", "other"}
 ACCOUNT_SCOPE_ENFORCED_TRANSACTION_TYPES = {
     "buy",
     "option_write",
@@ -156,42 +161,107 @@ def _load_instrument_ref(instrument_id: str) -> dict[str, object]:
         "instrument_name": instrument["instrument_name"],
         "instrument_type": instrument["instrument_type"],
         "currency": instrument["currency"],
-        "option_contract": instrument.get("option_contract"),
-        "fcn_contract": instrument.get("fcn_contract"),
         "broker_identifiers": instrument.get("broker_identifiers", []),
-        "corporate_action_adjustment_policy": instrument.get(
-            "corporate_action_adjustment_policy"
-        ),
         "identifiers": instrument.get("identifiers", []),
     }
 
 
+def _load_derivative_contract_ref(
+    *,
+    portfolio_id: str,
+    account_id: str,
+    currency: str,
+    derivative_contract_id: str,
+    inline_contract: DerivativeContractCreate | None,
+) -> dict[str, object]:
+    normalized_id = derivative_contract_id.strip()
+    existing = get_derivative_contract(
+        portfolio_id,
+        normalized_id,
+    )
+    if existing is not None:
+        if str(existing.get("account_id") or "") != account_id:
+            raise HTTPException(
+                status_code=400,
+                detail="Derivative contract belongs to another account.",
+            )
+        if str(existing.get("currency") or "").upper() != currency.upper():
+            raise HTTPException(
+                status_code=400,
+                detail="Derivative contract currency must match the transaction.",
+            )
+        if inline_contract is not None:
+            supplied = inline_contract.model_dump(mode="json")
+            persisted = {
+                "derivative_contract_id": existing["derivative_contract_id"],
+                "contract_name": existing["contract_name"],
+                "contract_type": existing["contract_type"],
+                "external_reference": existing.get("external_reference"),
+                "terms": existing["terms"],
+            }
+            if supplied != persisted:
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        "Derivative contract terms are immutable; select the existing "
+                        "contract or create a new contract identity."
+                    ),
+                )
+        return existing
+
+    if inline_contract is None:
+        raise HTTPException(
+            status_code=400,
+            detail="Derivative contract not found in this portfolio.",
+        )
+    terms = inline_contract.terms.model_dump(mode="json")
+    if inline_contract.contract_type == "option":
+        registry_instrument_ids = [str(terms["underlying_instrument_id"])]
+    else:
+        registry_instrument_ids = [
+            *[str(value) for value in terms["underlying_instrument_ids"]],
+            *[str(value) for value in terms["deliverable_instrument_ids"]],
+        ]
+    for registry_instrument_id in dict.fromkeys(registry_instrument_ids):
+        _load_instrument_ref(registry_instrument_id)
+    return {
+        **inline_contract.model_dump(mode="json"),
+        "portfolio_id": portfolio_id,
+        "account_id": account_id,
+        "currency": currency.upper(),
+        "created_at": datetime.now(UTC)
+        .replace(microsecond=0)
+        .isoformat()
+        .replace("+00:00", "Z"),
+    }
+
+
 def _validated_option_contract_ref(
-    instrument_ref: dict[str, object] | None,
+    derivative_contract: dict[str, object] | None,
 ) -> dict[str, object]:
     raw = (
-        instrument_ref.get("option_contract")
-        if isinstance(instrument_ref, dict)
+        derivative_contract.get("terms")
+        if isinstance(derivative_contract, dict)
         else None
     )
     if not isinstance(raw, dict):
         raise HTTPException(
             status_code=400,
-            detail="Option contract identity is required for option transactions.",
+            detail="Option contract terms are required for option transactions.",
         )
     try:
-        contract = OptionContractIdentity.model_validate(raw)
+        contract = OptionContractTerms.model_validate(raw)
     except ValueError as error:
         raise HTTPException(
             status_code=400,
-            detail="Option contract identity is incomplete or invalid.",
+            detail="Option contract terms are incomplete or invalid.",
         ) from error
     return contract.model_dump(mode="json")
 
 
 def _validate_option_contract(
     *,
-    instrument_ref: dict[str, object] | None,
+    derivative_contract: dict[str, object] | None,
     option_action: str | None,
     lifecycle_event_type: str | None,
 ) -> None:
@@ -203,15 +273,18 @@ def _validate_option_contract(
     }
     if option_action is None and not option_lifecycle_event:
         return
-    _validated_option_contract_ref(instrument_ref)
+    _validated_option_contract_ref(derivative_contract)
 
 
-def _validate_instrument_amount_contract(
+def _validate_asset_amount_contract(
     *,
     payload: TransactionCreateRequest,
     instrument_ref: dict[str, object] | None,
+    derivative_contract: dict[str, object] | None,
 ) -> None:
-    if instrument_ref is None or payload.price is None:
+    if instrument_ref is None and derivative_contract is None:
+        return
+    if payload.price is None:
         return
     if payload.transaction_type not in {
         "buy",
@@ -222,7 +295,10 @@ def _validate_instrument_amount_contract(
         "opening_balance",
     }:
         return
-    price_scale = transaction_price_scale(instrument_ref)
+    price_scale = transaction_price_scale(
+        instrument_ref=instrument_ref,
+        derivative_contract=derivative_contract,
+    )
     if _amount_contract_matches_display_price(
         quantity=payload.quantity,
         price=payload.price,
@@ -255,12 +331,7 @@ def _serialize_instrument_option(record: dict[str, object]) -> dict[str, object]
             "instrument_type": record["instrument_type"],
             "currency": record["currency"],
             "identifiers": record["identifiers"],
-            "option_contract": record.get("option_contract"),
-            "fcn_contract": record.get("fcn_contract"),
             "broker_identifiers": record.get("broker_identifiers", []),
-            "corporate_action_adjustment_policy": record.get(
-                "corporate_action_adjustment_policy"
-            ),
         },
         "coverage_state": record["coverage_state"],
         "latest_market_data": record["latest_market_data"],
@@ -426,8 +497,16 @@ def _transfer_group_transaction_ids(portfolio_id: str, transfer_group_id: str) -
     ]
 
 
-def _is_position_instrument_type(instrument_type: str) -> bool:
-    return instrument_type in POSITION_ASSET_TYPES
+def _asset_type(
+    *,
+    instrument_ref: dict[str, object] | None,
+    derivative_contract: dict[str, object] | None,
+) -> str | None:
+    if derivative_contract is not None:
+        return str(derivative_contract.get("contract_type") or "").strip().lower() or None
+    if instrument_ref is not None:
+        return str(instrument_ref.get("instrument_type") or "").strip().lower() or None
+    return None
 
 
 def _normalized_allowed_instrument_types(account: dict[str, object] | None) -> list[str]:
@@ -443,14 +522,15 @@ def _normalized_allowed_instrument_types(account: dict[str, object] | None) -> l
     return normalized
 
 
-def _validate_account_instrument_scope(
+def _validate_account_asset_scope(
     *,
     account: dict[str, object],
     instrument_ref: dict[str, object] | None,
+    derivative_contract: dict[str, object] | None,
     transaction_type: str,
 ) -> None:
     if (
-        instrument_ref is None
+        (instrument_ref is None and derivative_contract is None)
         or str(account.get("account_type") or "") != "securities_account"
         or transaction_type not in ACCOUNT_SCOPE_ENFORCED_TRANSACTION_TYPES
     ):
@@ -460,90 +540,106 @@ def _validate_account_instrument_scope(
     if not allowed_instrument_types:
         return
 
-    instrument_type = str(instrument_ref.get("instrument_type") or "").strip().lower()
-    if instrument_type in allowed_instrument_types:
+    asset_type = _asset_type(
+        instrument_ref=instrument_ref,
+        derivative_contract=derivative_contract,
+    )
+    if asset_type in allowed_instrument_types:
         return
 
     account_name = str(account.get("account_name") or account.get("account_id") or "Selected account")
     raise HTTPException(
         status_code=400,
         detail=(
-            f"{account_name} only accepts {', '.join(allowed_instrument_types)} instruments. "
-            f"'{instrument_type}' is out of scope for inbound positions."
+            f"{account_name} only accepts {', '.join(allowed_instrument_types)} assets. "
+            f"'{asset_type}' is out of scope for inbound positions."
         ),
     )
 
 
-def _validate_instrument_transaction_compatibility(
+def _validate_asset_transaction_compatibility(
     *,
     transaction_type: str,
     lifecycle_event_type: str | None,
     instrument_ref: dict[str, object] | None,
+    derivative_contract: dict[str, object] | None,
 ) -> None:
-    if instrument_ref is None:
-        return
-
-    instrument_type = str(instrument_ref.get("instrument_type") or "").strip().lower()
-    if not instrument_type:
+    if instrument_ref is not None and derivative_contract is not None:
+        raise HTTPException(
+            status_code=400,
+            detail="A transaction cannot reference both an instrument and a derivative contract.",
+        )
+    asset_type = _asset_type(
+        instrument_ref=instrument_ref,
+        derivative_contract=derivative_contract,
+    )
+    if asset_type is None:
         return
 
     if lifecycle_event_type is not None:
-        allowed_event_instrument_types = LIFECYCLE_EVENT_INSTRUMENT_TYPES.get(
-            lifecycle_event_type
-        )
-        if (
-            allowed_event_instrument_types is None
-            or instrument_type not in allowed_event_instrument_types
-        ):
+        allowed_types = LIFECYCLE_EVENT_INSTRUMENT_TYPES.get(lifecycle_event_type)
+        if allowed_types is None or asset_type not in allowed_types:
             raise HTTPException(
                 status_code=400,
                 detail=(
                     f"{lifecycle_event_type.replace('_', ' ').title()} is not "
-                    f"supported for instrument type '{instrument_type}'."
+                    f"supported for asset type '{asset_type}'."
                 ),
             )
-        if lifecycle_event_type in {"option_long_exercise", "option_assignment"}:
-            _validated_option_contract_ref(instrument_ref)
-
-    if transaction_type in {"buy", "sell", "opening_balance", "lifecycle_event"}:
-        if not _is_position_instrument_type(instrument_type):
+        if derivative_contract is None:
             raise HTTPException(
                 status_code=400,
-                detail=f"{transaction_type.replace('_', ' ').title()} is not supported for instrument type '{instrument_type}'.",
+                detail="Derivative lifecycle events require a Portfolio contract.",
+            )
+        if lifecycle_event_type in {"option_long_exercise", "option_assignment"}:
+            _validated_option_contract_ref(derivative_contract)
+
+    if transaction_type in {"buy", "sell", "opening_balance", "lifecycle_event"}:
+        if derivative_contract is None and asset_type not in POSITION_INSTRUMENT_TYPES:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"{transaction_type.replace('_', ' ').title()} is not "
+                    f"supported for instrument type '{asset_type}'."
+                ),
             )
         return
 
     option_action = resolve_option_action(
         transaction_type,
-        instrument_ref=instrument_ref,
-        instrument_type=instrument_type,
+        derivative_contract=derivative_contract,
+        contract_type=asset_type if derivative_contract is not None else None,
     )
     if option_action is not None:
-        if instrument_type != "option":
+        if derivative_contract is None or asset_type != "option":
             raise HTTPException(
                 status_code=400,
                 detail=(
-                    f"{transaction_type.replace('_', ' ').title()} requires an "
-                    "option instrument."
+                    f"{transaction_type.replace('_', ' ').title()} requires a "
+                    "Portfolio option contract."
                 ),
             )
         return
 
     if transaction_type in {"fee", "tax"}:
-        if not _is_position_instrument_type(instrument_type):
+        if derivative_contract is None and asset_type not in POSITION_INSTRUMENT_TYPES:
             raise HTTPException(
                 status_code=400,
-                detail=f"{transaction_type.title()} instrument selection is not supported for instrument type '{instrument_type}'.",
+                detail=(
+                    f"{transaction_type.title()} selection is not supported for "
+                    f"instrument type '{asset_type}'."
+                ),
             )
         return
 
-    allowed_instrument_types = INCOME_ASSET_TYPES.get(transaction_type)
-    if allowed_instrument_types is None:
-        return
-    if instrument_type not in allowed_instrument_types:
+    allowed_types = INCOME_ASSET_TYPES.get(transaction_type)
+    if allowed_types is not None and asset_type not in allowed_types:
         raise HTTPException(
             status_code=400,
-            detail=f"{transaction_type.replace('_', ' ').title()} is not supported for instrument type '{instrument_type}'.",
+            detail=(
+                f"{transaction_type.replace('_', ' ').title()} is not supported "
+                f"for asset type '{asset_type}'."
+            ),
         )
 
 
@@ -554,6 +650,7 @@ def _validate_transaction_currency(
     account: dict[str, object],
     settlement_cash_account: dict[str, object] | None,
     instrument_ref: dict[str, object] | None,
+    derivative_contract: dict[str, object] | None,
 ) -> None:
     if transaction_type == "fx_conversion":
         expected_currency = _currency_of(account)
@@ -561,10 +658,11 @@ def _validate_transaction_currency(
             raise HTTPException(status_code=400, detail="FX conversion source currency must match account currency.")
         return
 
-    if instrument_ref is not None and transaction_type not in {"fee", "tax"}:
-        expected_currency = _currency_of(instrument_ref)
+    asset_ref = derivative_contract or instrument_ref
+    if asset_ref is not None and transaction_type not in {"fee", "tax"}:
+        expected_currency = _currency_of(asset_ref)
         if expected_currency and transaction_currency != expected_currency:
-            raise HTTPException(status_code=400, detail="Transaction currency must match instrument currency.")
+            raise HTTPException(status_code=400, detail="Transaction currency must match asset currency.")
 
     if settlement_cash_account is not None:
         expected_currency = _currency_of(settlement_cash_account)
@@ -582,14 +680,15 @@ def _validate_securities_account_currency_alignment(
     account: dict[str, object],
     settlement_cash_account: dict[str, object] | None,
     instrument_ref: dict[str, object] | None,
+    derivative_contract: dict[str, object] | None,
 ) -> None:
     if str(account.get("account_type") or "") != "securities_account":
         return
 
     account_currency = _currency_of(account)
-    instrument_currency = _currency_of(instrument_ref)
-    if account_currency and instrument_currency and account_currency != instrument_currency:
-        raise HTTPException(status_code=400, detail="Securities account currency must match instrument currency.")
+    asset_currency = _currency_of(derivative_contract or instrument_ref)
+    if account_currency and asset_currency and account_currency != asset_currency:
+        raise HTTPException(status_code=400, detail="Securities account currency must match asset currency.")
 
     settlement_currency = _currency_of(settlement_cash_account)
     if account_currency and settlement_currency and account_currency != settlement_currency:
@@ -644,6 +743,7 @@ def _prepare_csv_transaction_values(
     portfolio_id: str,
     payload: TransactionCreateRequest,
     created_at: str,
+    batch_derivative_contracts: dict[str, DerivativeContractCreate] | None = None,
 ) -> dict[str, object]:
     account = get_account(portfolio_id, payload.account_id)
     if account is None:
@@ -771,15 +871,37 @@ def _prepare_csv_transaction_values(
 
     instrument_id = payload.instrument_id
     instrument_ref = _load_instrument_ref(instrument_id) if instrument_id else None
+    derivative_contract_id = payload.derivative_contract_id
+    inline_derivative_contract = payload.derivative_contract
+    if (
+        inline_derivative_contract is None
+        and derivative_contract_id
+        and batch_derivative_contracts is not None
+    ):
+        inline_derivative_contract = batch_derivative_contracts.get(
+            derivative_contract_id
+        )
+    derivative_contract_ref = None
+    if derivative_contract_id:
+        derivative_contract_ref = _load_derivative_contract_ref(
+            portfolio_id=portfolio_id,
+            account_id=payload.account_id,
+            currency=payload.currency,
+            derivative_contract_id=derivative_contract_id,
+            inline_contract=inline_derivative_contract,
+        )
+    has_asset_reference = (
+        instrument_ref is not None or derivative_contract_ref is not None
+    )
     option_action = resolve_option_action(
         transaction_type,
-        instrument_ref=instrument_ref,
+        derivative_contract=derivative_contract_ref,
     )
-    instrument_required_types = securities_only_types - {"dividend_reinvestment"}
-    if transaction_type in instrument_required_types and instrument_ref is None:
+    asset_required_types = securities_only_types - {"dividend_reinvestment"}
+    if transaction_type in asset_required_types and not has_asset_reference:
         raise HTTPException(
             status_code=400,
-            detail="This transaction type requires instrument.",
+            detail="This transaction type requires an instrument or derivative contract.",
         )
     if transaction_type == "dividend_reinvestment" and instrument_ref is None:
         raise HTTPException(
@@ -787,24 +909,24 @@ def _prepare_csv_transaction_values(
             detail="Dividend reinvestment requires instrument.",
         )
     if transaction_type == "opening_balance":
-        if account_type == "deposit_account" and instrument_id is not None:
+        if account_type == "deposit_account" and has_asset_reference:
             raise HTTPException(
                 status_code=400,
-                detail="Cash opening balance must not reference instrument.",
+                detail="Cash opening balance must not reference an asset.",
             )
-        if account_type == "securities_account" and instrument_ref is None:
+        if account_type == "securities_account" and not has_asset_reference:
             raise HTTPException(
                 status_code=400,
-                detail="Instrument opening balance requires instrument.",
+                detail="Security opening balance requires an instrument or derivative contract.",
             )
     if (
         transaction_type in {"fee", "tax"}
         and account_type == "deposit_account"
-        and instrument_id is not None
+        and has_asset_reference
     ):
         raise HTTPException(
             status_code=400,
-            detail="Deposit-account fee and tax must not reference instrument.",
+            detail="Deposit-account fee and tax must not reference an asset.",
         )
     if (
         transaction_type in {"fee", "tax"}
@@ -816,20 +938,26 @@ def _prepare_csv_transaction_values(
             detail="Deposit-account fee and tax must not carry settlement cash account.",
         )
 
-    _validate_instrument_transaction_compatibility(
+    _validate_asset_transaction_compatibility(
         transaction_type=transaction_type,
         lifecycle_event_type=lifecycle_event_type,
         instrument_ref=instrument_ref,
+        derivative_contract=derivative_contract_ref,
     )
-    _validate_account_instrument_scope(
+    _validate_account_asset_scope(
         account=account,
         instrument_ref=instrument_ref,
+        derivative_contract=derivative_contract_ref,
         transaction_type=transaction_type,
     )
-    _validate_instrument_amount_contract(payload=payload, instrument_ref=instrument_ref)
+    _validate_asset_amount_contract(
+        payload=payload,
+        instrument_ref=instrument_ref,
+        derivative_contract=derivative_contract_ref,
+    )
 
     _validate_option_contract(
-        instrument_ref=instrument_ref,
+        derivative_contract=derivative_contract_ref,
         option_action=option_action,
         lifecycle_event_type=lifecycle_event_type,
     )
@@ -840,11 +968,13 @@ def _prepare_csv_transaction_values(
         account=account,
         settlement_cash_account=settlement_cash_account,
         instrument_ref=instrument_ref,
+        derivative_contract=derivative_contract_ref,
     )
     _validate_securities_account_currency_alignment(
         account=account,
         settlement_cash_account=settlement_cash_account,
         instrument_ref=instrument_ref,
+        derivative_contract=derivative_contract_ref,
     )
 
     resolved_timing = resolve_trade_timing(
@@ -865,6 +995,8 @@ def _prepare_csv_transaction_values(
         "settlement_cash_account_id": settlement_cash_account_id or None,
         "instrument_id": instrument_id,
         "instrument_ref": instrument_ref,
+        "derivative_contract_id": derivative_contract_id,
+        "derivative_contract": derivative_contract_ref,
         "option_action": option_action,
         "quantity": payload.quantity,
         "price": payload.price,
@@ -916,6 +1048,32 @@ def _build_transaction_csv_preview(
     response_rows: list[TransactionCsvPreviewRow] = []
     prepared_records: list[dict[str, object]] = []
     valid_payloads: list[TransactionCreateRequest] = []
+    batch_errors: list[str] = []
+    batch_derivative_contracts: dict[str, DerivativeContractCreate] = {}
+    batch_contract_scopes: dict[str, tuple[str, str]] = {}
+    for parsed_row in parsed_rows:
+        transaction = parsed_row.transaction
+        if transaction is None or not transaction.derivative_contract_id:
+            continue
+        contract_id = transaction.derivative_contract_id
+        scope = (transaction.account_id, transaction.currency)
+        previous_scope = batch_contract_scopes.setdefault(contract_id, scope)
+        if previous_scope != scope:
+            batch_errors.append(
+                f"Derivative contract '{contract_id}' is used across multiple "
+                "accounts or currencies in one CSV batch."
+            )
+        if transaction.derivative_contract is None:
+            continue
+        previous_contract = batch_derivative_contracts.setdefault(
+            contract_id,
+            transaction.derivative_contract,
+        )
+        if previous_contract != transaction.derivative_contract:
+            batch_errors.append(
+                f"Derivative contract '{contract_id}' has conflicting immutable terms "
+                "in the CSV batch."
+            )
     for parsed_row in parsed_rows:
         if parsed_row.transaction is None:
             response_rows.append(
@@ -930,6 +1088,7 @@ def _build_transaction_csv_preview(
                 portfolio_id=portfolio_id,
                 payload=parsed_row.transaction,
                 created_at=created_at,
+                batch_derivative_contracts=batch_derivative_contracts,
             )
         except (HTTPException, InstrumentRegistryError) as error:
             detail = (
@@ -954,7 +1113,6 @@ def _build_transaction_csv_preview(
             )
         )
 
-    batch_errors: list[str] = []
     existing_records = list_transactions(portfolio_id)
     if len(prepared_records) == len(parsed_rows):
         next_preview_sequence = max(
@@ -1062,12 +1220,30 @@ def list_portfolio_instruments(portfolio_id: str) -> SharedInstrumentListRespons
     )
 
 
+@router.get(
+    "/{portfolio_id}/derivative-contracts",
+    response_model=DerivativeContractListResponse,
+)
+def list_portfolio_derivative_contracts(
+    portfolio_id: str,
+) -> DerivativeContractListResponse:
+    if get_portfolio(portfolio_id) is None:
+        raise HTTPException(status_code=404, detail="Portfolio not found")
+    return DerivativeContractListResponse(
+        portfolio_id=portfolio_id,
+        derivative_contracts=[
+            DerivativeContractRecord.model_validate(record)
+            for record in list_derivative_contracts(portfolio_id)
+        ],
+    )
+
+
 @router.get("/{portfolio_id}/transactions", response_model=TransactionListResponse)
 def list_transaction_records(
     portfolio_id: str,
     account_id: str | None = None,
     transaction_type: str | None = None,
-    instrument_id: str | None = None,
+    position_reference_id: str | None = None,
     start_date: date | None = Query(default=None),
     end_date: date | None = Query(default=None),
 ) -> TransactionListResponse:
@@ -1079,7 +1255,7 @@ def list_transaction_records(
         portfolio_id,
         account_id=account_id,
         transaction_type=transaction_type,
-        instrument_id=instrument_id,
+        position_reference_id=position_reference_id,
         start_date=start_date,
         end_date=end_date,
     )
@@ -1258,7 +1434,7 @@ def get_transaction_workspace(
     portfolio_id: str,
     account_id: str | None = None,
     transaction_type: str | None = None,
-    instrument_id: str | None = None,
+    position_reference_id: str | None = None,
     start_date: date | None = Query(default=None),
     end_date: date | None = Query(default=None),
     transaction_id: str | None = None,
@@ -1273,7 +1449,7 @@ def get_transaction_workspace(
         portfolio_id,
         account_id=account_id,
         transaction_type=transaction_type,
-        instrument_id=instrument_id,
+        position_reference_id=position_reference_id,
         start_date=start_date,
         end_date=end_date,
     )
@@ -1341,7 +1517,10 @@ def get_transaction_workspace(
             accounts,
             all_transactions,
             account_id=selected_transaction.account.account_id,
-            instrument_id=selected_transaction.instrument_id,
+            position_reference_id=(
+                selected_transaction.derivative_contract_id
+                or selected_transaction.instrument_id
+            ),
         )
         related_position_lots_raw = [
             item
@@ -1393,7 +1572,8 @@ def get_transaction_workspace(
 def get_transaction_position_preview(
     portfolio_id: str,
     account_id: str,
-    instrument_id: str,
+    position_kind: str,
+    position_reference_id: str,
     as_of_date: date = Query(...),
     trade_time: str | None = None,
     exclude_transaction_id: str | None = None,
@@ -1404,7 +1584,28 @@ def get_transaction_position_preview(
     if get_account(portfolio_id, account_id) is None:
         raise HTTPException(status_code=400, detail="Account not found")
 
-    _load_instrument_ref(instrument_id)
+    if position_kind == "instrument":
+        _load_instrument_ref(position_reference_id)
+    elif position_kind == "derivative_contract":
+        derivative_contract = get_derivative_contract(
+            portfolio_id,
+            position_reference_id,
+        )
+        if derivative_contract is None:
+            raise HTTPException(
+                status_code=400,
+                detail="Derivative contract not found in this portfolio.",
+            )
+        if str(derivative_contract.get("account_id") or "") != account_id:
+            raise HTTPException(
+                status_code=400,
+                detail="Derivative contract belongs to another account.",
+            )
+    else:
+        raise HTTPException(
+            status_code=422,
+            detail="position_kind must be instrument or derivative_contract.",
+        )
     resolved_trade_timing = resolve_trade_timing(
         trade_date=as_of_date,
         trade_time=trade_time,
@@ -1423,14 +1624,15 @@ def get_transaction_position_preview(
         portfolio_id,
         transactions_as_of_trade_date,
         account_id=account_id,
-        instrument_id=instrument_id,
+        position_reference_id=position_reference_id,
         account_cost_methods=_account_cost_methods(portfolio_id),
         as_of_date=as_of_date,
     )
     return TransactionPositionPreviewResponse(
         portfolio_id=portfolio_id,
         account_id=account_id,
-        instrument_id=instrument_id,
+        position_kind=position_kind,
+        position_reference_id=position_reference_id,
         as_of_date=as_of_date,
         trade_at=str(resolved_trade_timing["trade_at"]),
         quantity=quantity,
@@ -1609,12 +1811,26 @@ def _persist_transaction_record(
     instrument_id = payload.instrument_id
     if instrument_id:
         instrument_ref = _load_instrument_ref(instrument_id)
+
+    derivative_contract_id = payload.derivative_contract_id
+    derivative_contract_ref = None
+    if derivative_contract_id:
+        derivative_contract_ref = _load_derivative_contract_ref(
+            portfolio_id=portfolio_id,
+            account_id=payload.account_id,
+            currency=payload.currency,
+            derivative_contract_id=derivative_contract_id,
+            inline_contract=payload.derivative_contract,
+        )
+
+    has_asset_reference = instrument_ref is not None or derivative_contract_ref is not None
+    position_reference_id = derivative_contract_id or instrument_id
     option_action = resolve_option_action(
         transaction_type,
-        instrument_ref=instrument_ref,
+        derivative_contract=derivative_contract_ref,
     )
 
-    if transaction_type in {
+    asset_required_transaction_types = {
         "buy",
         "sell",
         "dividend",
@@ -1625,52 +1841,86 @@ def _persist_transaction_record(
         "lifecycle_event",
         "option_write",
         "option_buy_to_close",
-    } and instrument_ref is None:
-        raise HTTPException(status_code=400, detail="This transaction type requires instrument.")
+    }
+    if transaction_type in asset_required_transaction_types and not has_asset_reference:
+        raise HTTPException(
+            status_code=400,
+            detail="This transaction type requires an instrument or derivative contract.",
+        )
 
-    if transaction_type in {"deposit", "withdrawal"} and instrument_id is not None:
-        raise HTTPException(status_code=400, detail="Cash-flow transactions must not reference instrument.")
+    if transaction_type in {"deposit", "withdrawal", "fx_conversion", "interest"} and has_asset_reference:
+        raise HTTPException(
+            status_code=400,
+            detail=f"{transaction_type.replace('_', ' ').title()} must not reference an asset.",
+        )
 
-    if transaction_type == "fx_conversion" and instrument_id is not None:
-        raise HTTPException(status_code=400, detail="FX conversion must not reference instrument.")
+    if (
+        transaction_type == "opening_balance"
+        and account_type == "deposit_account"
+        and has_asset_reference
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail="Cash opening balance must not reference an asset.",
+        )
 
-    if transaction_type == "interest" and instrument_id is not None:
-        raise HTTPException(status_code=400, detail="Interest transaction must not reference instrument.")
+    if (
+        transaction_type == "opening_balance"
+        and account_type == "securities_account"
+        and not has_asset_reference
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail="Security opening balance requires an instrument or derivative contract.",
+        )
 
-    if transaction_type == "opening_balance" and account_type == "deposit_account" and instrument_id is not None:
-        raise HTTPException(status_code=400, detail="Cash opening balance must not reference instrument.")
+    if (
+        transaction_type in {"fee", "tax"}
+        and account_type == "deposit_account"
+        and has_asset_reference
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail="Deposit-account fee and tax must not reference an asset.",
+        )
+    if (
+        transaction_type in {"fee", "tax"}
+        and account_type == "deposit_account"
+        and settlement_cash_account_id is not None
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail="Deposit-account fee and tax must not carry settlement cash account.",
+        )
 
-    if transaction_type == "opening_balance" and account_type == "securities_account" and instrument_ref is None:
-        raise HTTPException(status_code=400, detail="Instrument opening balance requires instrument.")
-
-    if transaction_type in {"fee", "tax"} and account_type == "deposit_account" and instrument_id is not None:
-        raise HTTPException(status_code=400, detail="Deposit-account fee and tax must not reference instrument.")
-    if transaction_type in {"fee", "tax"} and account_type == "deposit_account" and settlement_cash_account_id is not None:
-        raise HTTPException(status_code=400, detail="Deposit-account fee and tax must not carry settlement cash account.")
-
-    _validate_instrument_transaction_compatibility(
+    _validate_asset_transaction_compatibility(
         transaction_type=transaction_type,
         lifecycle_event_type=lifecycle_event_type,
         instrument_ref=instrument_ref,
+        derivative_contract=derivative_contract_ref,
     )
-    _validate_account_instrument_scope(
+    _validate_account_asset_scope(
         account=account,
         instrument_ref=instrument_ref,
+        derivative_contract=derivative_contract_ref,
         transaction_type=transaction_type,
     )
-    _validate_instrument_amount_contract(
+    _validate_asset_amount_contract(
         payload=payload,
         instrument_ref=instrument_ref,
+        derivative_contract=derivative_contract_ref,
     )
-
     _validate_option_contract(
-        instrument_ref=instrument_ref,
+        derivative_contract=derivative_contract_ref,
         option_action=option_action,
         lifecycle_event_type=lifecycle_event_type,
     )
 
     transactions_as_of_trade_date: list[dict[str, object]] | None = None
-    if transaction_type in {"sell", "maturity_redemption"} and instrument_id:
+    if (
+        transaction_type in {"sell", "maturity_redemption"}
+        and position_reference_id
+    ):
         transactions_as_of_trade_date = _list_transactions_as_of_trade_moment(
             portfolio_id,
             trade_date=payload.trade_date,
@@ -1681,26 +1931,30 @@ def _persist_transaction_record(
         )
 
     transactions_as_of_entitlement_date: list[dict[str, object]] | None = None
-    if transaction_type in {"dividend", "dividend_reinvestment", "coupon"} or (
-        transaction_type in {"fee", "tax"} and instrument_id
-    ):
-        if instrument_id:
-            transactions_as_of_entitlement_date = _list_transactions_as_of_entitlement_moment(
-                portfolio_id,
-                entitlement_date=entitlement_date,
-                trade_date=payload.trade_date,
-                trade_at=str(resolved_trade_timing["trade_at"]),
-                created_at=pending_created_at,
-                settlement_date=settlement_date,
-                exclude_transaction_ids=excluded_transaction_ids,
-            )
+    position_linked_income_or_expense = (
+        transaction_type in {"dividend", "dividend_reinvestment", "coupon"}
+        or (transaction_type in {"fee", "tax"} and has_asset_reference)
+    )
+    if position_linked_income_or_expense and position_reference_id:
+        transactions_as_of_entitlement_date = _list_transactions_as_of_entitlement_moment(
+            portfolio_id,
+            entitlement_date=entitlement_date,
+            trade_date=payload.trade_date,
+            trade_at=str(resolved_trade_timing["trade_at"]),
+            created_at=pending_created_at,
+            settlement_date=settlement_date,
+            exclude_transaction_ids=excluded_transaction_ids,
+        )
 
-    if transaction_type in {"sell", "maturity_redemption"} and instrument_id:
+    if (
+        transaction_type in {"sell", "maturity_redemption"}
+        and position_reference_id
+    ):
         available_quantity = estimate_position_quantity(
             portfolio_id,
             transactions_as_of_trade_date or [],
             account_id=payload.account_id,
-            instrument_id=instrument_id,
+            position_reference_id=position_reference_id,
             account_cost_methods=account_cost_methods,
             as_of_date=payload.trade_date,
         )
@@ -1708,28 +1962,25 @@ def _persist_transaction_record(
         if requested_quantity > available_quantity + 1e-9:
             raise HTTPException(
                 status_code=400,
-                detail=(
-                    "Transaction quantity exceeds account position as of "
-                    "trade_date."
-                ),
+                detail="Transaction quantity exceeds account position as of trade_date.",
             )
 
-    if transaction_type in {"dividend", "dividend_reinvestment", "coupon"} or (
-        transaction_type in {"fee", "tax"} and instrument_id
-    ):
-        if instrument_id:
-            available_quantity = estimate_position_quantity(
-                portfolio_id,
-                transactions_as_of_entitlement_date or [],
-                account_id=payload.account_id,
-                instrument_id=instrument_id,
-                account_cost_methods=account_cost_methods,
+    if position_linked_income_or_expense and position_reference_id:
+        available_quantity = estimate_position_quantity(
+            portfolio_id,
+            transactions_as_of_entitlement_date or [],
+            account_id=payload.account_id,
+            position_reference_id=position_reference_id,
+            account_cost_methods=account_cost_methods,
+        )
+        if available_quantity <= 1e-9:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "Asset-linked income and expense requires an account position "
+                    "as of entitlement_date."
+                ),
             )
-            if available_quantity <= 1e-9:
-                raise HTTPException(
-                    status_code=400,
-                    detail="Instrument-linked income and expense requires account position as of entitlement_date.",
-                )
 
     if transaction_type == "return_of_capital" and instrument_id:
         transactions_as_of_trade_date = _list_transactions_as_of_trade_moment(
@@ -1744,7 +1995,7 @@ def _persist_transaction_record(
             portfolio_id,
             transactions_as_of_trade_date or [],
             account_id=payload.account_id,
-            instrument_id=instrument_id,
+            position_reference_id=instrument_id,
             account_cost_methods=account_cost_methods,
             as_of_date=payload.trade_date,
         )
@@ -1760,12 +2011,15 @@ def _persist_transaction_record(
         account=account,
         settlement_cash_account=settlement_cash_account,
         instrument_ref=instrument_ref,
+        derivative_contract=derivative_contract_ref,
     )
     _validate_securities_account_currency_alignment(
         account=account,
         settlement_cash_account=settlement_cash_account,
         instrument_ref=instrument_ref,
+        derivative_contract=derivative_contract_ref,
     )
+
 
     transaction_values = {
         "transaction_type": transaction_type,
@@ -1773,13 +2027,19 @@ def _persist_transaction_record(
         "trade_date": payload.trade_date,
         "trade_time": payload.trade_time,
         "settlement_date": settlement_date,
-        "position_effective_date": payload.position_effective_date,
+        "position_effective_date": resolved_position_effective_date,
         "entitlement_date": payload.entitlement_date,
         "acquisition_date": payload.acquisition_date,
         "account_id": payload.account_id,
         "settlement_cash_account_id": settlement_cash_account_id or None,
         "instrument_id": instrument_id,
         "instrument_ref": instrument_ref,
+        "derivative_contract_id": derivative_contract_id,
+        "derivative_contract": (
+            payload.derivative_contract.model_dump(mode="json")
+            if payload.derivative_contract is not None
+            else None
+        ),
         "quantity": payload.quantity,
         "price": payload.price,
         "gross_amount": payload.gross_amount,
@@ -2017,14 +2277,16 @@ def create_internal_transfer_records(
         if not instrument_id:
             raise HTTPException(status_code=400, detail="Position transfer requires instrument.")
         instrument_ref = _load_instrument_ref(instrument_id)
-        _validate_instrument_transaction_compatibility(
+        _validate_asset_transaction_compatibility(
             transaction_type="opening_balance",
             lifecycle_event_type=None,
             instrument_ref=instrument_ref,
+            derivative_contract=None,
         )
-        _validate_account_instrument_scope(
+        _validate_account_asset_scope(
             account=to_account,
             instrument_ref=instrument_ref,
+            derivative_contract=None,
             transaction_type="opening_balance",
         )
         transfer_currency = str(instrument_ref.get("currency") or "").upper()
@@ -2049,7 +2311,7 @@ def create_internal_transfer_records(
             portfolio_id,
             transactions_as_of_trade_date,
             account_id=payload.from_account_id,
-            instrument_id=instrument_id,
+            position_reference_id=instrument_id,
             account_cost_methods=account_cost_methods,
             as_of_date=payload.trade_date,
         )
@@ -2063,7 +2325,7 @@ def create_internal_transfer_records(
             portfolio_id,
             transactions_as_of_trade_date,
             account_id=payload.from_account_id,
-            instrument_id=instrument_id or "",
+            position_reference_id=instrument_id or "",
             quantity=float(payload.quantity or 0.0),
             account_cost_methods=account_cost_methods,
             as_of_date=payload.trade_date,

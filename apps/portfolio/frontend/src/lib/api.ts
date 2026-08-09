@@ -10,6 +10,55 @@ import type {
 
 export type { InstrumentCore, InstrumentIdentifier } from '../../../../../packages/instrument-core/ts/src'
 
+export type PortfolioOptionContractTerms = {
+  underlying_instrument_id: string
+  option_type: 'call' | 'put'
+  expiry_date: string
+  strike: number
+  contract_multiplier: number
+  settlement_type: 'physical' | 'cash'
+}
+
+export type PortfolioFcnContractTerms = {
+  notional: number
+  issue_date: string
+  maturity_date: string
+  issuer: string
+  counterparty: string
+  underlying_instrument_ids: string[]
+  deliverable_instrument_ids: string[]
+  barrier_type: 'none' | 'knock_in' | 'knock_out' | 'dual'
+  barrier_level: number | null
+}
+
+export type PortfolioDerivativeContractCreate =
+  | {
+      derivative_contract_id: string
+      contract_name: string
+      contract_type: 'option'
+      external_reference?: string | null
+      terms: PortfolioOptionContractTerms
+    }
+  | {
+      derivative_contract_id: string
+      contract_name: string
+      contract_type: 'fcn'
+      external_reference?: string | null
+      terms: PortfolioFcnContractTerms
+    }
+
+export type PortfolioDerivativeContractRecord = PortfolioDerivativeContractCreate & {
+  portfolio_id: string
+  account_id: string
+  currency: string
+  created_at: string
+}
+
+export type PortfolioDerivativeContractsResponse = {
+  portfolio_id: string
+  derivative_contracts: PortfolioDerivativeContractRecord[]
+}
+
 export type WorkspaceSection = {
   label: string
   href: string
@@ -509,8 +558,11 @@ export type PortfolioPerformanceCalculationGroupsResponse = {
 
 export type PortfolioPeriodBoundaryHoldingRecord = {
   position_id: string
-  instrument_id: string
-  instrument_ref: InstrumentCore
+  position_reference_id: string
+  instrument_id: string | null
+  instrument_ref: InstrumentCore | null
+  derivative_contract_id: string | null
+  derivative_contract: PortfolioDerivativeContractRecord | null
   quantity: number
   cost_basis: number | null
   cost_basis_base: number | null
@@ -639,6 +691,7 @@ export type PortfolioHoldingRow = {
   holding_region: PortfolioHoldingRegion
   holding_kind?:
     | 'position'
+    | 'derivative_contract'
     | 'option_obligation'
     | 'settled_cash'
     | 'restricted_cash'
@@ -650,8 +703,11 @@ export type PortfolioHoldingRow = {
   available_for_trading?: boolean
   economic_instrument_id?: string | null
   economic_instrument_ref?: InstrumentCore | null
+  position_reference_id?: string | null
+  derivative_contract_id?: string | null
+  derivative_contract?: PortfolioDerivativeContractRecord | null
   transaction_ids?: string[]
-  instrument_core: InstrumentCore
+  instrument_core: InstrumentCore | null
   quantity: number
   last_price: number | null
   quote_as_of_date?: string | null
@@ -845,19 +901,19 @@ export type HoldingsWorkspaceResponse = {
   }
 }
 
-export type PortfolioInstrumentHoldingRow = Omit<
+export type PortfolioPositionHoldingRow = Omit<
   PortfolioHoldingRow,
   'price_chart_1m' | 'price_chart_3m' | 'price_chart_6m' | 'price_chart_1y'
 >
 
-export type PortfolioInstrumentHoldingProjectionResponse = {
+export type PortfolioPositionHoldingProjectionResponse = {
   portfolio_id: string
   portfolio_name: string
   base_currency: string
   as_of_date: string
   view_label: string
   quality_warnings: string[]
-  rows: PortfolioInstrumentHoldingRow[]
+  rows: PortfolioPositionHoldingRow[]
 }
 
 export type HoldingsWorkspaceFilters = {
@@ -1835,6 +1891,8 @@ export type PortfolioLedgerPostingRecord = {
   recognition_start_date?: string | null
   instrument_id?: string | null
   instrument_ref?: InstrumentCore | null
+  derivative_contract_id?: string | null
+  derivative_contract?: PortfolioDerivativeContractRecord | null
   cash_amount_delta?: number | null
   pending_amount_delta?: number | null
   quantity_delta?: number | null
@@ -1851,8 +1909,11 @@ export type PortfolioLedgerPostingRecord = {
 export type PortfolioAccountPositionRecord = {
   position_id?: string | null
   account_id: string
-  instrument_id: string
-  instrument_ref: InstrumentCore
+  position_reference_id: string
+  instrument_id: string | null
+  instrument_ref: InstrumentCore | null
+  derivative_contract_id: string | null
+  derivative_contract: PortfolioDerivativeContractRecord | null
   quantity: number
   cost_basis?: number | null
   last_price?: number | null
@@ -1879,8 +1940,8 @@ export type PortfolioOptionObligationRecord = {
   obligation_id: string
   portfolio_id?: string | null
   account_id: string
-  option_instrument_id: string
-  instrument_id: string
+  derivative_contract_id: string
+  derivative_contract: PortfolioDerivativeContractRecord
   instrument_ref?: InstrumentCore | null
   related_underlying_id: string
   open_contract_quantity: number
@@ -1987,6 +2048,8 @@ export type PortfolioTransactionRecord = {
   settlement_cash_account: PortfolioAccountRecord | null
   instrument_id: string | null
   instrument_ref: InstrumentCore | null
+  derivative_contract_id: string | null
+  derivative_contract: PortfolioDerivativeContractRecord | null
   quantity: number | null
   source_quantity: string | null
   price: number | null
@@ -2154,7 +2217,8 @@ export type PortfolioInstrumentEventTaskReviewPayload = {
 export type PortfolioTransactionPositionPreviewResponse = {
   portfolio_id: string
   account_id: string
-  instrument_id: string
+  position_kind: 'instrument' | 'derivative_contract'
+  position_reference_id: string
   as_of_date: string
   trade_at: string
   quantity: number
@@ -2163,8 +2227,11 @@ export type PortfolioTransactionPositionPreviewResponse = {
 export type PortfolioPositionRecord = {
   position_id: string
   portfolio_id: string
-  instrument_id: string
-  instrument_ref: InstrumentCore
+  position_reference_id: string
+  instrument_id: string | null
+  instrument_ref: InstrumentCore | null
+  derivative_contract_id: string | null
+  derivative_contract: PortfolioDerivativeContractRecord | null
   quantity: number
   cost_basis?: number | null
   last_price?: number | null
@@ -2206,8 +2273,11 @@ export type PortfolioPositionLotRecord = {
   position_lot_id: string
   portfolio_id: string
   account_id: string
-  instrument_id: string
-  instrument_ref: InstrumentCore
+  position_reference_id: string
+  instrument_id: string | null
+  instrument_ref: InstrumentCore | null
+  derivative_contract_id: string | null
+  derivative_contract: PortfolioDerivativeContractRecord | null
   currency: string
   cost_basis_method: 'moving_average' | 'fifo'
   opened_by_transaction_id: string
@@ -2253,7 +2323,7 @@ export type PortfolioPositionLotRecord = {
 
 export type PortfolioPositionLotFilters = {
   account_id?: string
-  instrument_id?: string
+  position_reference_id?: string
   status?: 'open' | 'closed'
   as_of_date?: string
 }
@@ -2272,7 +2342,7 @@ export type PortfolioPositionLotListResponse = {
 export type PortfolioTransactionFilters = {
   account_id?: string
   transaction_type?: string
-  instrument_id?: string
+  position_reference_id?: string
   start_date?: string
   end_date?: string
 }
@@ -2289,6 +2359,8 @@ export type PortfolioTransactionCreatePayload = {
   account_id: string
   settlement_cash_account_id?: string | null
   instrument_id?: string | null
+  derivative_contract_id?: string | null
+  derivative_contract?: PortfolioDerivativeContractCreate | null
   quantity?: number | null
   price?: number | null
   gross_amount: number
@@ -2499,19 +2571,19 @@ export function getHoldingsWorkspace(
   return fetchJson<HoldingsWorkspaceResponse>(API_BASE_URL, `/api/workspace/holdings${query}`)
 }
 
-export function getPortfolioInstrumentHoldingProjection(
+export function getPortfolioPositionHoldingProjection(
   portfolioId: string,
-  instrumentId: string,
+  positionReferenceId: string,
   filters: Pick<HoldingsWorkspaceFilters, 'as_of_date'> = {},
 ) {
   const query = buildQuery({
     portfolio_id: portfolioId,
-    instrument_id: instrumentId,
+    position_reference_id: positionReferenceId,
     as_of_date: filters.as_of_date,
   })
-  return fetchJson<PortfolioInstrumentHoldingProjectionResponse>(
+  return fetchJson<PortfolioPositionHoldingProjectionResponse>(
     API_BASE_URL,
-    `/api/workspace/holdings/instrument${query}`,
+    `/api/workspace/holdings/position${query}`,
   )
 }
 
@@ -2642,7 +2714,8 @@ export function getPortfolioTransactionPositionPreview(
   portfolioId: string,
   filters: {
     account_id: string
-    instrument_id: string
+    position_kind: 'instrument' | 'derivative_contract'
+    position_reference_id: string
     as_of_date: string
     trade_time?: string
     exclude_transaction_id?: string
@@ -3250,5 +3323,12 @@ export function getPortfolioInstruments(portfolioId: string) {
         quote_selection_policy: instrument.quote_selection_policy,
       })),
     }),
+  )
+}
+
+export function getPortfolioDerivativeContracts(portfolioId: string) {
+  return fetchJson<PortfolioDerivativeContractsResponse>(
+    API_BASE_URL,
+    `/api/portfolios/${portfolioId}/derivative-contracts`,
   )
 }

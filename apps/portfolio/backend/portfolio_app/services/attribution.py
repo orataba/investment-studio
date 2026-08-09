@@ -283,6 +283,42 @@ def instrument_ref_from_mapping(item: dict[str, object]) -> dict[str, object]:
     return instrument_ref if isinstance(instrument_ref, dict) else {}
 
 
+def derivative_contract_from_mapping(item: dict[str, object]) -> dict[str, object]:
+    derivative_contract = item.get("derivative_contract")
+    return derivative_contract if isinstance(derivative_contract, dict) else {}
+
+
+def position_reference_from_mapping(
+    item: dict[str, object],
+) -> tuple[str, str, str]:
+    instrument_ref = instrument_ref_from_mapping(item)
+    derivative_contract = derivative_contract_from_mapping(item)
+    instrument_id = str(
+        item.get("instrument_id") or instrument_ref.get("instrument_id") or ""
+    )
+    derivative_contract_id = str(
+        item.get("derivative_contract_id")
+        or derivative_contract.get("derivative_contract_id")
+        or ""
+    )
+    if instrument_id:
+        return (
+            instrument_id,
+            str(instrument_ref.get("instrument_name") or instrument_id),
+            str(instrument_ref.get("instrument_type") or ""),
+        )
+    if derivative_contract_id:
+        return (
+            derivative_contract_id,
+            str(
+                derivative_contract.get("contract_name")
+                or derivative_contract_id
+            ),
+            str(derivative_contract.get("contract_type") or ""),
+        )
+    return ("", "", "")
+
+
 def position_group_for_axis(
     *,
     axis: str,
@@ -315,16 +351,18 @@ def position_group_for_axis(
             item_label,
         )
     if axis == "instrument":
-        group_key = str(position_lot.get("instrument_id") or "")
-        instrument_ref = instrument_ref_from_mapping(position_lot)
-        return (group_key, str(instrument_ref.get("instrument_name") or group_key))
+        group_key, group_label, _position_type = position_reference_from_mapping(
+            position_lot
+        )
+        return (group_key, group_label)
     if axis == "account":
         group_key = str(position_lot.get("account_id") or "")
         return (group_key, account_name_map.get(group_key, group_key))
     if axis == "instrument_type":
-        return instrument_type_key_label(
-            instrument_ref_from_mapping(position_lot).get("instrument_type")
+        _group_key, _group_label, position_type = position_reference_from_mapping(
+            position_lot
         )
+        return instrument_type_key_label(position_type)
     if axis == "currency":
         group_key = valuation_fx.required_currency(
             position_lot.get("currency"), field_name="position-lot currency"
@@ -398,15 +436,14 @@ def transaction_group_for_axis(
         or transaction.get("account_id")
         or ""
     )
-    instrument_ref = instrument_ref_from_mapping(transaction)
-    instrument_id = str(
-        transaction.get("instrument_id") or instrument_ref.get("instrument_id") or ""
+    position_reference_id, position_label, position_type = (
+        position_reference_from_mapping(transaction)
     )
     currency = valuation_fx.required_currency(
         transaction.get("currency"), field_name="transaction currency"
     )
     if axis == _CALCULATION_CASH_DETAIL_AXIS:
-        if instrument_id:
+        if position_reference_id:
             return ("", "")
         return (
             encode_calculation_detail_group_key(
@@ -429,10 +466,10 @@ def transaction_group_for_axis(
             account_name_map=account_name_map,
             base_currency=base_currency,
         )
-        if instrument_id:
+        if position_reference_id:
             item_kind = "instrument"
-            item_key = instrument_id
-            item_label = str(instrument_ref.get("instrument_name") or instrument_id)
+            item_key = position_reference_id
+            item_label = position_label
         else:
             item_kind = "cash"
             item_key = cash_detail_item_key(account_id=account_id, currency=currency)
@@ -451,14 +488,14 @@ def transaction_group_for_axis(
             item_label,
         )
     if axis == "instrument":
-        if not instrument_id:
+        if not position_reference_id:
             return ("cash", "Cash")
-        return (instrument_id, str(instrument_ref.get("instrument_name") or instrument_id))
+        return (position_reference_id, position_label)
     if axis == "account":
         return (account_id, account_name_map.get(account_id, account_id))
     if axis == "instrument_type":
-        if instrument_id:
-            return instrument_type_key_label(instrument_ref.get("instrument_type"))
+        if position_reference_id:
+            return instrument_type_key_label(position_type)
         return ("cash", "Cash")
     if axis == "currency":
         return (currency, currency)

@@ -5,12 +5,8 @@ from datetime import date, timedelta
 from functools import lru_cache
 from typing import Any, Literal
 
-try:
-    import exchange_calendars
-    from exchange_calendars.errors import CalendarError
-except ImportError:  # pragma: no cover - dependency fallback for partial local envs.
-    exchange_calendars = None
-    CalendarError = ValueError
+import exchange_calendars
+from exchange_calendars.errors import CalendarError
 
 
 CalculationFrequency = Literal["daily", "weekly", "monthly"]
@@ -35,8 +31,6 @@ def _market_calendar_sessions(
     start_date: date,
     end_date: date,
 ) -> tuple[date, ...] | None:
-    if exchange_calendars is None:
-        return None
     try:
         calendar = exchange_calendars.get_calendar(calendar_name)
         return tuple(

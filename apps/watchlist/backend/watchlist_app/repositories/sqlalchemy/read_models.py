@@ -12,7 +12,6 @@ from watchlist_app.db.models.read_models import (
     InstrumentPerformanceReadModel,
     InstrumentExposureHoldingsReadModel,
     InstrumentExposureReadModel,
-    InstrumentRatingReadModel,
     InstrumentRiskReadModel,
     InstrumentSummaryReadModel,
     WatchlistRowReadModel,
@@ -131,8 +130,6 @@ class SQLAlchemyReadModelRepository:
                 share_class=data.get("share_class"),
                 ticker_or_isin=data.get("ticker_or_isin"),
                 management_firm_name=data.get("management_firm_name"),
-                overall_rating=data.get("overall_rating"),
-                analyst_stance=data.get("analyst_stance"),
                 aum=data.get("aum"),
                 return_ytd=data.get("return_ytd"),
                 return_1w=data.get("return_1w"),
@@ -171,8 +168,6 @@ class SQLAlchemyReadModelRepository:
         record.share_class = data.get("share_class")
         record.ticker_or_isin = data.get("ticker_or_isin")
         record.management_firm_name = data.get("management_firm_name")
-        record.overall_rating = data.get("overall_rating")
-        record.analyst_stance = data.get("analyst_stance")
         record.aum = data.get("aum")
         record.return_ytd = data.get("return_ytd")
         record.return_1w = data.get("return_1w")
@@ -272,9 +267,6 @@ class SQLAlchemyReadModelRepository:
         instrument_id: str,
     ) -> InstrumentExposureHoldingsReadModel | None:
         return session.get(InstrumentExposureHoldingsReadModel, instrument_id)
-
-    def get_rating(self, session: Session, instrument_id: str) -> InstrumentRatingReadModel | None:
-        return session.get(InstrumentRatingReadModel, instrument_id)
 
     def upsert_payload_read_model(
         self,
