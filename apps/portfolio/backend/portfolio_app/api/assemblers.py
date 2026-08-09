@@ -6,6 +6,7 @@ from fastapi import HTTPException
 
 from portfolio_app.api.contracts import (
     AccountRecord,
+    DerivativeContractRecord,
     InstrumentCoreContract,
     TransactionListSummary,
     TransactionRecord,
@@ -83,6 +84,7 @@ def serialize_transaction(
         settlement_account = account_lookup.get(settlement_id)
 
     instrument_ref = record.get("instrument_ref")
+    derivative_contract = record.get("derivative_contract")
     economic_date = transaction_economic_date(record)
     if economic_date is None:
         raise HTTPException(status_code=400, detail="Transaction economic date is invalid")
@@ -125,6 +127,16 @@ def serialize_transaction(
         ),
         instrument_id=str(record.get("instrument_id")) if record.get("instrument_id") else None,
         instrument_ref=InstrumentCoreContract.model_validate(instrument_ref) if instrument_ref else None,
+        derivative_contract_id=(
+            str(record.get("derivative_contract_id"))
+            if record.get("derivative_contract_id")
+            else None
+        ),
+        derivative_contract=(
+            DerivativeContractRecord.model_validate(derivative_contract)
+            if derivative_contract
+            else None
+        ),
         quantity=float(record["quantity"]) if record.get("quantity") is not None else None,
         source_quantity=str(record["source_quantity"]) if record.get("source_quantity") is not None else None,
         price=float(record["price"]) if record.get("price") is not None else None,

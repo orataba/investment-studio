@@ -3054,7 +3054,12 @@ def build_portfolio_positions(
 def summarize_positions(positions: list[dict[str, object]]) -> dict[str, int]:
     return {
         "position_count": len(positions),
-        "priced_position_count": sum(1 for position in positions if position.get("last_price") is not None),
+        "priced_position_count": sum(
+            1
+            for position in positions
+            if position.get("instrument_id")
+            and position.get("last_price") is not None
+        ),
         "open_position_lot_count": sum(
             int(position.get("open_position_lot_count") or 0) for position in positions
         ),

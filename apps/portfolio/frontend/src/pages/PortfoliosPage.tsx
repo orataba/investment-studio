@@ -132,8 +132,15 @@ export default function PortfoliosPage() {
       return
     }
 
+    const proposedBaseCurrency = window.prompt('Base currency (USD, HKD, or CNY)', 'CNY')
+    const baseCurrency = proposedBaseCurrency?.trim().toUpperCase()
+    if (baseCurrency !== 'USD' && baseCurrency !== 'HKD' && baseCurrency !== 'CNY') {
+      setNotice('Base currency must be USD, HKD, or CNY.')
+      return
+    }
+
     try {
-      const created = await createPortfolio({ name })
+      const created = await createPortfolio({ name, base_currency: baseCurrency })
       setPortfolios((current) => [...current, created])
       setNotice(`Created portfolio "${created.portfolio_name}".`)
       navigate(buildPortfolioSectionPath(created.portfolio_id, '/overview'))

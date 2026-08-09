@@ -3871,7 +3871,11 @@ def set_default_planning_taxonomy(
         return _serialize_portfolio_row(portfolio)
 
 
-def create_portfolio(name: str | None = None) -> dict[str, object]:
+def create_portfolio(
+    name: str | None = None,
+    *,
+    base_currency: str,
+) -> dict[str, object]:
     session_factory = get_session_factory()
     with session_factory() as session:
         portfolios = session.scalars(select(PortfolioRecordModel)).all()
@@ -3887,7 +3891,7 @@ def create_portfolio(name: str | None = None) -> dict[str, object]:
         record = PortfolioRecordModel(
             portfolio_id=candidate,
             portfolio_name=resolved_name,
-            base_currency="USD",
+            base_currency=base_currency,
             valuation_timezone="Asia/Shanghai",
             valuation_cutoff_policy="latest_complete_eod",
             as_of_date=date.today(),

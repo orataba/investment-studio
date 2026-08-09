@@ -234,6 +234,31 @@ def _equity_detail(
     }
 
 
+def test_position_summary_does_not_count_event_carried_derivative_as_priced() -> None:
+    summary = ledger.summarize_positions(
+        [
+            {
+                "instrument_id": "equity-1",
+                "derivative_contract_id": None,
+                "last_price": 100.0,
+                "open_position_lot_count": 1,
+            },
+            {
+                "instrument_id": None,
+                "derivative_contract_id": "fcn-1",
+                "last_price": 100_000.0,
+                "open_position_lot_count": 1,
+            },
+        ]
+    )
+
+    assert summary == {
+        "position_count": 2,
+        "priced_position_count": 1,
+        "open_position_lot_count": 2,
+    }
+
+
 def test_simulated_stock_fund_option_and_fcn_chain_uses_independent_facts() -> None:
     accounts = [
         {
@@ -2030,6 +2055,22 @@ def test_derivative_contract_external_reference_is_unique_within_portfolio(
         json=payload("option-reference-a"),
     )
     assert first_response.status_code == 200, first_response.json()
+    created = first_response.json()
+    assert created["derivative_contract_id"] == "option-reference-a"
+    assert created["derivative_contract"]["contract_name"] == "option-reference-a"
+
+    listed = client.get("/api/portfolios/portfolio-ops/transactions")
+    assert listed.status_code == 200, listed.json()
+    listed_transaction = next(
+        item
+        for item in listed.json()["transactions"]
+        if item["transaction_id"] == created["transaction_id"]
+    )
+    assert listed_transaction["derivative_contract_id"] == "option-reference-a"
+    assert (
+        listed_transaction["derivative_contract"]["derivative_contract_id"]
+        == "option-reference-a"
+    )
 
     duplicate_response = client.post(
         "/api/portfolios/portfolio-ops/transactions",

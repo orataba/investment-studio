@@ -25,6 +25,20 @@ def test_reset_store_without_payload_leaves_store_empty() -> None:
     assert portfolio_store.list_transactions("portfolio-ops") == []
 
 
+def test_create_portfolio_requires_and_persists_base_currency(client) -> None:
+    missing_currency = client.post("/api/portfolios", json={"name": "Missing Currency"})
+    assert missing_currency.status_code == 422
+
+    response = client.post(
+        "/api/portfolios",
+        json={"name": "CNY Portfolio", "base_currency": "CNY"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["base_currency"] == "CNY"
+    assert portfolio_store.get_portfolio("cny-portfolio")["base_currency"] == "CNY"
+
+
 def test_reset_store_rejects_missing_or_duplicate_transaction_sequence() -> None:
     transaction = {
         "transaction_id": "txn-sequence-contract",

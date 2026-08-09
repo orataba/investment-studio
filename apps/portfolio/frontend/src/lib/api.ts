@@ -96,6 +96,7 @@ export type PortfolioEntryRecord = {
 
 export type PortfolioCreatePayload = {
   name?: string | null
+  base_currency: SupportedPortfolioCurrency
 }
 
 export type HoldingsSummaryCard = {

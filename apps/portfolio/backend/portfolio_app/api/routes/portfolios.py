@@ -3,7 +3,11 @@ from __future__ import annotations
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
-from portfolio_app.api.contracts import PortfolioRiskPolicyRecord, PortfolioRiskPolicyUpdateRequest
+from portfolio_app.api.contracts import (
+    PortfolioRiskPolicyRecord,
+    PortfolioRiskPolicyUpdateRequest,
+    SupportedCurrency,
+)
 from portfolio_app.services.portfolio_store import (
     copy_portfolio,
     create_portfolio,
@@ -19,6 +23,7 @@ router = APIRouter()
 
 class PortfolioCreateRequest(BaseModel):
     name: str | None = None
+    base_currency: SupportedCurrency
 
 
 class PortfolioReorderRequest(BaseModel):
@@ -32,7 +37,7 @@ def list_portfolio_records() -> list[dict[str, object]]:
 
 @router.post("")
 def create_portfolio_record(payload: PortfolioCreateRequest) -> dict[str, object]:
-    return create_portfolio(payload.name)
+    return create_portfolio(payload.name, base_currency=payload.base_currency)
 
 
 @router.post("/reorder")
