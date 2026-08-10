@@ -32,8 +32,7 @@ Example: sell three Put contracts to open, with a multiplier of 100:
       "option_type": "put",
       "expiry_date": "2026-12-18",
       "strike": 45,
-      "contract_multiplier": 100,
-      "settlement_type": "physical"
+      "contract_multiplier": 100
     }
   },
   "quantity": 3,
@@ -54,15 +53,16 @@ Portfolio does not create or bind multi-leg derivative transactions, and the tra
 
 Examples:
 
-- Long Call exercise: close the Call with `option_long_exercise`, then enter a separate stock `buy` at the strike price.
-- Short Call assignment: close the short Call with `option_assignment`, then enter a separate stock `sell` at the strike price.
+- An option that expires worthless is closed with the appropriate zero-cash expiry event.
+- An option settled for cash is closed with the appropriate cash-settlement event and its actual settlement amount.
+- If the broker physically delivers stock, normalize the economics into an option cash settlement plus an independent ordinary stock trade at the delivery-date market/reference price. For example, a physically exercised long Call is represented by a long-option cash receipt for intrinsic value plus a stock `buy` at market price; together they reproduce the strike-price purchase economics.
 - FCN knock-in with asset delivery: close the FCN with result `fcn_knock_in`, then enter a separate asset `buy`.
 
 The system does not require matching quantities, timestamps, references, or notes between those rows.
 
 ## Option facts
 
-An option contract is created inside its Portfolio, atomically with its first transaction. The inline contract records Call/Put type, Registry underlying, expiry, strike, multiplier and settlement type. Later transactions reference only the same `derivative_contract_id`; the contract terms are not copied into Registry or repeated on every row.
+An option contract is created inside its Portfolio, atomically with its first transaction. The inline contract records Call/Put type, Registry underlying, expiry, strike and multiplier. It does not predeclare a settlement mode. Later transactions reference only the same `derivative_contract_id`; the contract terms are not copied into Registry or repeated on every row.
 
 | Stored `transaction_type` | Option action | Quantity |
 |---|---|---|
@@ -71,11 +71,15 @@ An option contract is created inside its Portfolio, atomically with its first tr
 | `option_write` | sell to open | contracts |
 | `option_buy_to_close` | buy to close | contracts |
 | `maturity_redemption` + `option_long_expiry` | close expired long option | contracts |
-| `maturity_redemption` + `option_long_exercise` | close exercised long option | contracts |
+| `maturity_redemption` + `option_long_cash_settlement` | cash-settle long option | contracts |
 | `lifecycle_event` + `option_writer_expiry` | close expired short option | contracts |
-| `lifecycle_event` + `option_assignment` | close assigned short option | contracts |
+| `lifecycle_event` + `option_writer_cash_settlement` | cash-settle short option | contracts |
 
-Both Call and Put contracts, long and short, physical and cash settlement are supported. For premium trades, `price` is premium per underlying unit and:
+Expiry events require zero gross amount, zero fees/taxes, and no settlement cash account. Cash-settlement events require a positive gross amount and a settlement cash account; long settlement is a cash inflow and writer settlement is a cash outflow. Portfolio intentionally has no physical-delivery event or technical link to the independent stock trade.
+
+Database revision `20260810_0049` deliberately refuses to upgrade while legacy `option_long_exercise`, `option_assignment`, or generic option-closing facts remain. Remove those ambiguous rows before migration; after the new lifecycle values are available, recreate the reviewed cash-settlement facts and any independent stock trades. The migration does not guess cash amounts, stock trades, or settlement intent. After the preflight succeeds it removes `settlement_type` from every option contract and installs the new lifecycle constraint. Downgrade is intentionally unsupported; rollback uses the pre-upgrade database backup.
+
+Both Call and Put contracts, long and short, are supported. For premium trades, `price` is premium per underlying unit and:
 
 `gross_amount = contract quantity × premium price × Portfolio contract multiplier`
 

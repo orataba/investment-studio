@@ -55,7 +55,8 @@ DAILY_SNAPSHOT_CALCULATION_VERSION = (
     "-position-effective-recognition-bridge-v1"
     "-pending-monetary-holdings-v1"
     "-effective-analytics-scope-policy-v1"
-    "-operational-obligation-settlement-v2"
+    "-option-cash-settlement-v1"
+    "-market-risk-zero-return-cash-derivatives-v2"
 )
 
 
@@ -329,6 +330,17 @@ def _incremental_snapshot_seed(
         for row in prefix_rows
         if (cumulative := _safe_float(row.cumulative_twr)) is not None
     ]
+    prefix_market_risk_growth_values = [
+        1.0 + cumulative
+        for row in prefix_rows
+        if isinstance(row.snapshot_json, dict)
+        and (
+            cumulative := _safe_float(
+                row.snapshot_json.get("market_risk_cumulative_return")
+            )
+        )
+        is not None
+    ]
     return {
         "seed_date": prior_row.as_of_date,
         "persist_from": dirty_from,
@@ -336,6 +348,15 @@ def _incremental_snapshot_seed(
         "peak_growth": max([1.0, *prefix_growth_values]),
         "return_chain_continuous": bool(
             prior_payload.get("return_chain_continuous", prior_row.cumulative_twr is not None)
+        ),
+        "market_risk_cumulative_return": _safe_float(
+            prior_payload.get("market_risk_cumulative_return")
+        ),
+        "market_risk_peak_growth": max(
+            [1.0, *prefix_market_risk_growth_values]
+        ),
+        "market_risk_return_chain_continuous": bool(
+            prior_payload.get("market_risk_return_chain_continuous", True)
         ),
         "cash_currency_gains": _safe_float(prior_payload.get("cash_currency_gains")),
         "pending_settlement_currency_gains": _safe_float(
@@ -359,6 +380,22 @@ def _rebase_incremental_snapshots(
     peak_growth_index = max(_safe_float(seed.get("peak_growth")) or 1.0, growth_index)
     has_return_history = cumulative_twr is not None
     return_chain_continuous = bool(seed.get("return_chain_continuous", True))
+    market_risk_cumulative_return = _safe_float(
+        seed.get("market_risk_cumulative_return")
+    )
+    market_risk_growth_index = (
+        1.0 + market_risk_cumulative_return
+        if market_risk_cumulative_return is not None
+        else 1.0
+    )
+    market_risk_peak_growth_index = max(
+        _safe_float(seed.get("market_risk_peak_growth")) or 1.0,
+        market_risk_growth_index,
+    )
+    has_market_risk_return_history = market_risk_cumulative_return is not None
+    market_risk_return_chain_continuous = bool(
+        seed.get("market_risk_return_chain_continuous", True)
+    )
     prefix_cash_fx = _safe_float(seed.get("cash_currency_gains"))
     prefix_pending_settlement_fx = _safe_float(
         seed.get("pending_settlement_currency_gains")
@@ -390,6 +427,39 @@ def _rebase_incremental_snapshots(
         snapshot["drawdown"] = (
             growth_index / peak_growth_index - 1.0
             if has_return_history and return_chain_continuous and peak_growth_index > 1e-12
+            else None
+        )
+
+        market_risk_daily_return = _safe_float(
+            snapshot.get("market_risk_daily_return")
+        )
+        if snapshot.get("market_risk_return_coverage_state") == "partial":
+            market_risk_return_chain_continuous = False
+        elif (
+            bool(snapshot.get("market_risk_return_observation_eligible"))
+            and market_risk_daily_return is not None
+            and market_risk_return_chain_continuous
+        ):
+            has_market_risk_return_history = True
+            market_risk_growth_index *= 1.0 + market_risk_daily_return
+            market_risk_peak_growth_index = max(
+                market_risk_peak_growth_index,
+                market_risk_growth_index,
+            )
+        snapshot["market_risk_return_chain_continuous"] = (
+            market_risk_return_chain_continuous
+        )
+        snapshot["market_risk_cumulative_return"] = (
+            market_risk_growth_index - 1.0
+            if has_market_risk_return_history
+            and market_risk_return_chain_continuous
+            else None
+        )
+        snapshot["market_risk_drawdown"] = (
+            market_risk_growth_index / market_risk_peak_growth_index - 1.0
+            if has_market_risk_return_history
+            and market_risk_return_chain_continuous
+            and market_risk_peak_growth_index > 1e-12
             else None
         )
 
@@ -1614,14 +1684,11 @@ def _aggregate_holding_rows(
                 "contract_multiplier": _first_present(
                     instrument_rows, "contract_multiplier"
                 ),
-                "settlement_type": _first_present(
-                    instrument_rows, "settlement_type"
+                "strike_notional": _sum_complete(
+                    [row.get("strike_notional") for row in instrument_rows]
                 ),
-                "assignment_notional": _sum_complete(
-                    [row.get("assignment_notional") for row in instrument_rows]
-                ),
-                "assignment_notional_base": _sum_complete(
-                    [row.get("assignment_notional_base") for row in instrument_rows]
+                "strike_notional_base": _sum_complete(
+                    [row.get("strike_notional_base") for row in instrument_rows]
                 ),
                 "premium_received_gross": _sum_complete(
                     [row.get("premium_received_gross") for row in instrument_rows]
@@ -1836,9 +1903,8 @@ _INSTRUMENT_HOLDING_PROJECTION_FIELDS = (
     "strike",
     "option_type",
     "contract_multiplier",
-    "settlement_type",
-    "assignment_notional",
-    "assignment_notional_base",
+    "strike_notional",
+    "strike_notional_base",
     "premium_received_gross",
     "premium_basis_remaining",
     "liability_value",

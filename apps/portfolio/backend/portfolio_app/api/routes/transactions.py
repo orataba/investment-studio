@@ -51,6 +51,7 @@ from portfolio_app.services.ledger import (
     list_ledger_postings,
     summarize_ledger_postings,
     summarize_position_lots,
+    validate_derivative_contract_event,
     validate_transaction_position_history,
 )
 from portfolio_app.services.instrument_registry import (
@@ -112,9 +113,9 @@ LIFECYCLE_EVENT_INSTRUMENT_TYPES: dict[str, set[str]] = {
     "fcn_knock_out": {"fcn"},
     "fcn_maturity": {"fcn"},
     "option_long_expiry": {"option"},
-    "option_long_exercise": {"option"},
+    "option_long_cash_settlement": {"option"},
     "option_writer_expiry": {"option"},
-    "option_assignment": {"option"},
+    "option_writer_cash_settlement": {"option"},
 }
 TRANSACTION_CREATE_IDEMPOTENCY_OPERATION = "create_transaction"
 INTERNAL_TRANSFER_IDEMPOTENCY_OPERATION = "create_internal_transfer"
@@ -259,21 +260,59 @@ def _validated_option_contract_ref(
     return contract.model_dump(mode="json")
 
 
-def _validate_option_contract(
+def _validate_derivative_contract_event_request(
     *,
+    payload: TransactionCreateRequest,
     derivative_contract: dict[str, object] | None,
-    option_action: str | None,
-    lifecycle_event_type: str | None,
+    position_effective_date: date | None,
+    settlement_cash_account_id: str | None,
 ) -> None:
-    option_lifecycle_event = lifecycle_event_type in {
-        "option_long_expiry",
-        "option_long_exercise",
-        "option_writer_expiry",
-        "option_assignment",
-    }
-    if option_action is None and not option_lifecycle_event:
+    if derivative_contract is None:
         return
-    _validated_option_contract_ref(derivative_contract)
+    transaction = payload.model_dump(mode="json", exclude_none=False)
+    transaction["derivative_contract"] = derivative_contract
+    transaction["position_effective_date"] = (
+        position_effective_date.isoformat()
+        if position_effective_date is not None
+        else None
+    )
+    transaction["settlement_cash_account_id"] = settlement_cash_account_id
+    try:
+        validate_derivative_contract_event(transaction)
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+
+
+def _requires_settlement_cash(
+    *,
+    payload: TransactionCreateRequest,
+    account_type: str,
+) -> bool:
+    transaction_type = payload.transaction_type
+    lifecycle_event_type = payload.lifecycle_event_type
+    if transaction_type == "lifecycle_event":
+        return lifecycle_event_type == "option_writer_cash_settlement"
+    no_cash_long_option_closure = (
+        transaction_type == "maturity_redemption"
+        and lifecycle_event_type == "option_long_expiry"
+    )
+    return (
+        transaction_type
+        in {
+            "buy",
+            "sell",
+            "option_write",
+            "option_buy_to_close",
+            "dividend",
+            "coupon",
+            "return_of_capital",
+            "maturity_redemption",
+        }
+        and not no_cash_long_option_closure
+    ) or (
+        transaction_type in {"fee", "tax"}
+        and account_type == "securities_account"
+    )
 
 
 def _validate_asset_amount_contract(
@@ -591,9 +630,6 @@ def _validate_asset_transaction_compatibility(
                 status_code=400,
                 detail="Derivative lifecycle events require a Portfolio contract.",
             )
-        if lifecycle_event_type in {"option_long_exercise", "option_assignment"}:
-            _validated_option_contract_ref(derivative_contract)
-
     if transaction_type in {"buy", "sell", "opening_balance", "lifecycle_event"}:
         if derivative_contract is None and asset_type not in POSITION_INSTRUMENT_TYPES:
             raise HTTPException(
@@ -807,29 +843,9 @@ def _prepare_csv_transaction_values(
             account=account,
         )
 
-    no_cash_long_option_closure = (
-        transaction_type == "maturity_redemption"
-        and lifecycle_event_type
-        in {"option_long_expiry", "option_long_exercise"}
-        and payload.gross_amount == 0
-        and payload.fees == 0
-        and payload.taxes == 0
-    )
-    requires_settlement_cash = (
-        transaction_type
-        in {
-            "buy",
-            "sell",
-            "option_write",
-            "option_buy_to_close",
-            "dividend",
-            "coupon",
-            "return_of_capital",
-            "maturity_redemption",
-        }
-        and not no_cash_long_option_closure
-    ) or (
-        transaction_type in {"fee", "tax"} and account_type == "securities_account"
+    requires_settlement_cash = _requires_settlement_cash(
+        payload=payload,
+        account_type=account_type,
     )
     if requires_settlement_cash:
         settlement_cash_account_id = settlement_cash_account_id or str(
@@ -956,10 +972,11 @@ def _prepare_csv_transaction_values(
         derivative_contract=derivative_contract_ref,
     )
 
-    _validate_option_contract(
+    _validate_derivative_contract_event_request(
+        payload=payload,
         derivative_contract=derivative_contract_ref,
-        option_action=option_action,
-        lifecycle_event_type=lifecycle_event_type,
+        position_effective_date=resolved_position_effective_date,
+        settlement_cash_account_id=settlement_cash_account_id or None,
     )
 
     _validate_transaction_currency(
@@ -1756,30 +1773,7 @@ def _persist_transaction_record(
             payload=payload,
             account=account,
         )
-    long_option_closure_without_cash = (
-        transaction_type == "maturity_redemption"
-        and lifecycle_event_type
-        in {"option_long_expiry", "option_long_exercise"}
-        and payload.gross_amount == 0
-        and payload.fees == 0
-        and payload.taxes == 0
-    )
-    if (
-        transaction_type
-        in {
-            "buy",
-            "sell",
-            "option_write",
-            "option_buy_to_close",
-            "dividend",
-            "coupon",
-            "return_of_capital",
-            "maturity_redemption",
-        }
-        and not long_option_closure_without_cash
-    ) or (
-        transaction_type in {"fee", "tax"} and account_type == "securities_account"
-    ):
+    if _requires_settlement_cash(payload=payload, account_type=account_type):
         settlement_cash_account_id = settlement_cash_account_id or str(
             account.get("default_settlement_cash_account_id") or ""
         )
@@ -1910,10 +1904,11 @@ def _persist_transaction_record(
         instrument_ref=instrument_ref,
         derivative_contract=derivative_contract_ref,
     )
-    _validate_option_contract(
+    _validate_derivative_contract_event_request(
+        payload=payload,
         derivative_contract=derivative_contract_ref,
-        option_action=option_action,
-        lifecycle_event_type=lifecycle_event_type,
+        position_effective_date=resolved_position_effective_date,
+        settlement_cash_account_id=settlement_cash_account_id or None,
     )
 
     transactions_as_of_trade_date: list[dict[str, object]] | None = None

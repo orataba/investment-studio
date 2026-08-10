@@ -831,6 +831,28 @@ function isBaseCashHoldingRow(row: PortfolioHoldingRow, workspace: HoldingsWorks
   return isCashHoldingRow(row) && normalizedCurrency(holdingCurrency(row)) === normalizedCurrency(workspace.base_currency)
 }
 
+function isBaseCurrencyMonetaryHoldingRow(
+  row: PortfolioHoldingRow,
+  workspace: HoldingsWorkspaceResponse,
+) {
+  return (
+    isMonetaryHoldingRow(row) &&
+    normalizedCurrency(holdingCurrency(row)) ===
+      normalizedCurrency(workspace.base_currency)
+  )
+}
+
+function holdingUsesZeroReturnRiskCapital(
+  row: PortfolioHoldingRow,
+  workspace: HoldingsWorkspaceResponse,
+) {
+  return (
+    row.holding_category === 'derivatives' ||
+    holdingUsesModeledZeroRisk(row) ||
+    isBaseCurrencyMonetaryHoldingRow(row, workspace)
+  )
+}
+
 function nonCashHoldingRows(rows: PortfolioHoldingRow[]) {
   return rows.filter((row) => !isMonetaryHoldingRow(row))
 }
@@ -1059,7 +1081,7 @@ function returnCurrencyForRow(
   row: PortfolioHoldingRow,
   workspace: HoldingsWorkspaceResponse,
 ) {
-  if (isMonetaryHoldingRow(row) || holdingUsesModeledZeroRisk(row)) {
+  if (holdingUsesZeroReturnRiskCapital(row, workspace)) {
     return workspace.base_currency.trim().toUpperCase()
   }
   return holdingCurrency(row).trim().toUpperCase()
@@ -1213,12 +1235,31 @@ export function groupedReturnSeries(
   if (!modeledZeroRisk && totalsContainMaterialEventValuation(rows)) {
     return null
   }
+  if (
+    modeledZeroRisk &&
+    rows.some((row) => {
+      const value = rowMarketValueBase(row, workspace)
+      return (
+        holdingIsExcludedFromRisk(row) &&
+        row.holding_category !== 'derivatives' &&
+        value != null &&
+        Math.abs(value) > 1e-12
+      )
+    })
+  ) {
+    return null
+  }
   const returnEligibleRows = modeledZeroRisk
-    ? rows.filter((row) => !holdingIsExcludedFromRisk(row))
+    ? rows
     : rows.filter((row) => !isPendingMonetaryHoldingRow(row))
+  const currencyComparableRows = modeledZeroRisk
+    ? returnEligibleRows.filter(
+        (row) => !holdingUsesZeroReturnRiskCapital(row, workspace),
+      )
+    : returnEligibleRows
   if (
     !returnEligibleRows.length ||
-    !rowsHaveCompatibleReturnCurrency(returnEligibleRows, workspace)
+    !rowsHaveCompatibleReturnCurrency(currencyComparableRows, workspace)
   ) {
     return null
   }
@@ -1241,7 +1282,7 @@ export function groupedReturnSeries(
       row,
       value: rowMarketValueBase(row, workspace),
       points:
-        modeledZeroRisk && holdingUsesModeledZeroRisk(row)
+        modeledZeroRisk && holdingUsesZeroReturnRiskCapital(row, workspace)
           ? []
           : normalizedReturnSeries(seriesAccessor(row)),
     }))
@@ -1250,8 +1291,9 @@ export function groupedReturnSeries(
   const zeroReturnRows = valuedRows.filter(
     (item) =>
       item.points.length < 2 &&
-      (isBaseCashHoldingRow(item.row, workspace) ||
-        (modeledZeroRisk && holdingUsesModeledZeroRisk(item.row))),
+      (isBaseCurrencyMonetaryHoldingRow(item.row, workspace) ||
+        (modeledZeroRisk &&
+          holdingUsesZeroReturnRiskCapital(item.row, workspace))),
   )
   const eligibleRows = [...returnRows, ...zeroReturnRows]
 
@@ -1311,8 +1353,9 @@ export function groupedReturnSeries(
     weight: (item.value ?? 0) / denominator,
     zeroReturn:
       item.points.length < 2 &&
-      (isBaseCashHoldingRow(item.row, workspace) ||
-        (modeledZeroRisk && holdingUsesModeledZeroRisk(item.row))),
+      (isBaseCurrencyMonetaryHoldingRow(item.row, workspace) ||
+        (modeledZeroRisk &&
+          holdingUsesZeroReturnRiskCapital(item.row, workspace))),
     byPeriod: new Map(item.points.map((point) => [`${point.startDate || ''}|${point.date}`, point.value])),
   }))
   const returns: number[] = []
@@ -1344,19 +1387,6 @@ export function groupedReturnSeries(
     periodKeys.find((periodKey) => periodKey.endsWith(`|${firstReturnDate}`))?.split('|', 2)[0] || null
 
   return { dates: returnDates, returns, firstReturnStartDate }
-}
-
-function allValuedRowsUseModeledZeroRisk(rows: PortfolioHoldingRow[], workspace: HoldingsWorkspaceResponse) {
-  const valuedRows = rows.filter((row) => {
-    const value = rowMarketValueBase(row, workspace)
-    return value != null && Math.abs(value) > 1e-12
-  })
-  return (
-    valuedRows.length > 0 &&
-    valuedRows.every(
-      (row) => isBaseCashHoldingRow(row, workspace) || holdingUsesModeledZeroRisk(row),
-    )
-  )
 }
 
 function groupedVolatilitySeries(
@@ -1402,9 +1432,6 @@ export function groupedAnnualizedVolatility(
     series.returns.length < GROUP_VOL_MIN_RETURN_OBSERVATIONS[calculationFrequency][rangeKey] ||
     series.firstReturnStartDate == null
   ) {
-    if (allValuedRowsUseModeledZeroRisk(rows, workspace)) {
-      return 0
-    }
     return null
   }
   const lastDate = series.dates[series.dates.length - 1]
@@ -1453,14 +1480,16 @@ function drawdownFromReturns(returns: number[]) {
 }
 
 function groupedDrawdownSeries(rows: PortfolioHoldingRow[], workspace: HoldingsWorkspaceResponse) {
-  return groupedReturnSeries(rows, workspace, (row) => row.instrument_return_series_all)
+  return groupedReturnSeries(
+    rows,
+    workspace,
+    (row) => row.instrument_return_series_all,
+    true,
+  )
 }
 
 export function groupedCurrentDrawdown(rows: PortfolioHoldingRow[], workspace: HoldingsWorkspaceResponse) {
   const series = groupedDrawdownSeries(rows, workspace)
-  if ((!series || !series.returns.length) && rows.length > 0 && rows.every((row) => isBaseCashHoldingRow(row, workspace))) {
-    return 0
-  }
   if (series && !groupedRiskSeriesIsFresh(series, rows, workspace)) {
     return null
   }
@@ -1470,13 +1499,6 @@ export function groupedCurrentDrawdown(rows: PortfolioHoldingRow[], workspace: H
 
 export function groupedMaxDrawdown(rows: PortfolioHoldingRow[], workspace: HoldingsWorkspaceResponse) {
   const series = groupedDrawdownSeries(rows, workspace)
-  if (
-    (!series || !series.returns.length) &&
-    rows.length > 0 &&
-    rows.every((row) => isBaseCashHoldingRow(row, workspace))
-  ) {
-    return 0
-  }
   if (series && !groupedRiskSeriesIsFresh(series, rows, workspace)) {
     return null
   }
@@ -3240,8 +3262,8 @@ export default function PortfolioHomePage() {
             <dd>{formatNumber(dueOrNearExpiryCount, 0)}</dd>
           </div>
           <div>
-            <dt>Assignment strike exposure</dt>
-            <dd>{formatCurrency(summary.assignment_exposure.strike_notional_base, workspace.base_currency)}</dd>
+            <dt>Option strike notional</dt>
+            <dd>{formatCurrency(summary.option_obligation_exposure.strike_notional_base, workspace.base_currency)}</dd>
           </div>
           <div>
             <dt>Pending settlement net</dt>

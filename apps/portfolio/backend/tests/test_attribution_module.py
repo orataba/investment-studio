@@ -25,6 +25,8 @@ def _complete_slice(
         "group_label": group_label,
         "coverage_state": "complete",
         "market_observation_count": 1,
+        "market_risk_observation_count": 1,
+        "market_risk_return_coverage_state": "complete",
         "beginning_value_base": beginning_value,
         "ending_value_base": ending_value,
         "beginning_weight": beginning_value / 100.0,
@@ -48,6 +50,11 @@ def _complete_slice(
         "daily_return": pnl / beginning_value,
         "daily_contribution": contribution,
         "return_observation_eligible": True,
+        "market_risk_excluded_pnl": 0.0,
+        "market_risk_total_pnl": pnl,
+        "market_risk_daily_return": pnl / beginning_value,
+        "market_risk_daily_contribution": contribution,
+        "market_risk_return_observation_eligible": True,
     }
 
 
@@ -477,8 +484,8 @@ def test_realized_risk_attribution_golden_contract(
     portfolio_daily_series = [
         {
             "as_of_date": as_of_date,
-            "daily_twr": portfolio_return,
-            "return_observation_eligible": True,
+            "market_risk_daily_return": portfolio_return,
+            "market_risk_return_observation_eligible": True,
         }
         for as_of_date, portfolio_return, _a, _b in daily_rows
     ]
@@ -489,6 +496,9 @@ def test_realized_risk_attribution_golden_contract(
             "daily_return": contribution,
             "daily_contribution": contribution,
             "return_observation_eligible": True,
+            "market_risk_daily_return": contribution,
+            "market_risk_daily_contribution": contribution,
+            "market_risk_return_observation_eligible": True,
         }
         for as_of_date, _portfolio_return, a_contribution, b_contribution in daily_rows
         for group_key, contribution in (
@@ -519,8 +529,8 @@ def test_realized_risk_attribution_does_not_report_portfolio_observations_for_ca
     portfolio_daily_series = [
         {
             "as_of_date": as_of_date,
-            "daily_twr": portfolio_return,
-            "return_observation_eligible": True,
+            "market_risk_daily_return": portfolio_return,
+            "market_risk_return_observation_eligible": True,
         }
         for as_of_date, portfolio_return in (
             (date(2026, 1, 5), 0.01),
@@ -534,7 +544,10 @@ def test_realized_risk_attribution_does_not_report_portfolio_observations_for_ca
             "group_key": "cash",
             "daily_return": 0.0,
             "daily_contribution": 0.0,
-            "return_observation_eligible": False,
+            "return_observation_eligible": True,
+            "market_risk_daily_return": 0.0,
+            "market_risk_daily_contribution": 0.0,
+            "market_risk_return_observation_eligible": False,
         }
         for point in portfolio_daily_series
     ]
@@ -546,17 +559,54 @@ def test_realized_risk_attribution_does_not_report_portfolio_observations_for_ca
         final_date=date(2026, 1, 7),
     )
 
-    assert metrics["cash"]["risk_return_observation_count"] == 0
-    assert metrics["cash"]["correlation_to_portfolio"] is None
-    assert metrics["cash"]["realized_risk_contribution"] == pytest.approx(0.0)
+    assert "cash" not in metrics
+
+
+def test_realized_risk_attribution_keeps_non_base_cash_fx_contribution() -> None:
+    daily_rows = [
+        (date(2026, 1, 5), 0.01),
+        (date(2026, 1, 6), -0.02),
+        (date(2026, 1, 7), 0.03),
+    ]
+    portfolio_daily_series = [
+        {
+            "as_of_date": as_of_date,
+            "market_risk_daily_return": daily_return,
+            "market_risk_return_observation_eligible": True,
+        }
+        for as_of_date, daily_return in daily_rows
+    ]
+    foreign_cash_slices = [
+        {
+            "as_of_date": as_of_date,
+            "group_key": "cash",
+            "daily_return": daily_return,
+            "daily_contribution": daily_return,
+            "return_observation_eligible": True,
+            "market_risk_daily_return": daily_return,
+            "market_risk_daily_contribution": daily_return,
+            "market_risk_return_observation_eligible": True,
+        }
+        for as_of_date, daily_return in daily_rows
+    ]
+
+    metrics = attribution.realized_risk_attribution_by_group(
+        foreign_cash_slices,
+        portfolio_daily_series,
+        calculation_frequency="daily",
+        final_date=date(2026, 1, 7),
+    )
+
+    assert metrics["cash"]["risk_return_observation_count"] == 3
+    assert metrics["cash"]["realized_risk_contribution"] == pytest.approx(1.0)
 
 
 def test_group_risk_annualization_uses_each_groups_actual_exposure_span() -> None:
     portfolio_daily_series = [
         {
             "as_of_date": as_of_date,
-            "daily_twr": daily_return,
-            "return_observation_eligible": True,
+            "market_risk_daily_return": daily_return,
+            "market_risk_return_observation_eligible": True,
         }
         for as_of_date, daily_return in (
             (date(2026, 1, 5), 0.01),
@@ -580,6 +630,9 @@ def test_group_risk_annualization_uses_each_groups_actual_exposure_span() -> Non
                 "daily_return": 0.01 if eligible else 0.0,
                 "daily_contribution": 0.005 if eligible else 0.0,
                 "return_observation_eligible": eligible,
+                "market_risk_daily_return": 0.01 if eligible else 0.0,
+                "market_risk_daily_contribution": 0.005 if eligible else 0.0,
+                "market_risk_return_observation_eligible": eligible,
             }
         )
     for as_of_date in [
@@ -597,6 +650,9 @@ def test_group_risk_annualization_uses_each_groups_actual_exposure_span() -> Non
                 "daily_return": 0.01 if eligible else 0.0,
                 "daily_contribution": 0.005 if eligible else 0.0,
                 "return_observation_eligible": eligible,
+                "market_risk_daily_return": 0.01 if eligible else 0.0,
+                "market_risk_daily_contribution": 0.005 if eligible else 0.0,
+                "market_risk_return_observation_eligible": eligible,
             }
         )
 

@@ -46,7 +46,7 @@ def test_flat_table_profile_accepts_only_final_heads(
     expected_heads = {
         "instrument_registry": "20260810_0023",
         "platform": "20260716_0002",
-        "portfolio": "20260810_0048",
+        "portfolio": "20260810_0049",
         "watchlist": "20260809_0036",
     }
     monkeypatch.setattr(
@@ -276,6 +276,17 @@ def test_twr_audit_cte_projects_daily_twr(
     )
     assert "holding.last_price IS NULL" in holding_basis_query
     assert "holding.last_price IS NOT NULL" in holding_basis_query
+
+    derivative_contract_query = next(
+        query
+        for query in queries
+        if "portfolio.derivative_contract_record contract" in query
+    )
+    assert "contract.terms_json::jsonb" in derivative_contract_query
+    assert "? 'settlement_type'" in derivative_contract_query
+    assert "invalid_option_lifecycle" in derivative_contract_query
+    assert "option_long_cash_settlement" in derivative_contract_query
+    assert "option_writer_cash_settlement" in derivative_contract_query
 
     analytics_selection_query = next(
         query

@@ -67,12 +67,15 @@ _CALCULATION_DETAIL_ADDITIVE_SLICE_FIELDS = (
     "cash_currency_gains",
     "pending_settlement_currency_gains",
     "instrument_currency_gains",
+    "market_risk_excluded_pnl",
+    "market_risk_total_pnl",
     GROUP_CAPITAL_FLOW_IN_FIELD,
     GROUP_CAPITAL_FLOW_OUT_FIELD,
     GROUP_CAPITAL_FLOW_IN_EOD_FIELD,
     GROUP_CAPITAL_FLOW_OUT_EOD_FIELD,
     "total_pnl",
     "daily_contribution",
+    "market_risk_daily_contribution",
 )
 
 
@@ -83,6 +86,23 @@ def _safe_float(value: object) -> float | None:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def _daily_slice_has_market_risk_scope(daily_slice: dict[str, object]) -> bool:
+    market_risk_return = _safe_float(daily_slice.get("market_risk_daily_return"))
+    has_market_position = bool(
+        daily_slice.get("_system_holding_category") != "derivatives"
+        and abs(_safe_float(daily_slice.get("position_market_value_base")) or 0.0)
+        > 1e-12
+    )
+    return bool(
+        has_market_position
+        or int(daily_slice.get("market_risk_observation_count") or 0) > 0
+        or (
+            market_risk_return is not None
+            and abs(market_risk_return) > 1e-12
+        )
+    )
 
 
 def _period_initial_slice_value(
@@ -145,6 +165,8 @@ def _snapshot_as_close_boundary(
     boundary["delta"] = 0.0 if ending_nav is not None else None
     boundary["daily_twr"] = None
     boundary["return_observation_eligible"] = False
+    boundary["market_risk_daily_return"] = None
+    boundary["market_risk_return_observation_eligible"] = False
     boundary["return_chain_continuous"] = ending_nav is not None
     return boundary
 
@@ -159,6 +181,8 @@ def _slice_as_close_boundary(
     boundary["beginning_weight"] = daily_slice.get("ending_weight")
     boundary["daily_return"] = None
     boundary["return_observation_eligible"] = False
+    boundary["market_risk_daily_return"] = None
+    boundary["market_risk_return_observation_eligible"] = False
     for field_name in (
         "realized_pnl",
         "unrealized_pnl_change",
@@ -169,6 +193,8 @@ def _slice_as_close_boundary(
         "cash_currency_gains",
         "pending_settlement_currency_gains",
         "instrument_currency_gains",
+        "market_risk_excluded_pnl",
+        "market_risk_total_pnl",
         GROUP_CAPITAL_FLOW_IN_FIELD,
         GROUP_CAPITAL_FLOW_OUT_FIELD,
         GROUP_CAPITAL_FLOW_IN_EOD_FIELD,
@@ -192,6 +218,7 @@ def _slice_as_close_boundary(
     # observation.  Keep additive bridge fields at zero, while preserving the
     # distinction between "zero contribution" and "no subperiod".
     boundary["daily_contribution"] = None
+    boundary["market_risk_daily_contribution"] = None
     return boundary
 
 
@@ -677,6 +704,12 @@ def group_contribution_slices_by_taxonomy(
     market_return_eligibility_by_group: dict[
         tuple[date, str], list[bool]
     ] = defaultdict(list)
+    market_risk_coverage_states_by_group: dict[
+        tuple[date, str], list[str]
+    ] = defaultdict(list)
+    market_risk_eligibility_by_group: dict[
+        tuple[date, str], list[bool]
+    ] = defaultdict(list)
     entities_present_at_assignment_date: set[str] = set()
     if assignment_as_of_date is not None:
         for base_slice in base_daily_slices:
@@ -722,6 +755,8 @@ def group_contribution_slices_by_taxonomy(
                 "group_label": taxonomy_group_label,
                 "coverage_state": "complete",
                 "market_observation_count": 0,
+                "market_risk_observation_count": 0,
+                "market_risk_return_coverage_state": "complete",
                 "_is_initial_valuation_anchor": False,
                 "beginning_value_base": 0.0,
                 "ending_value_base": 0.0,
@@ -740,6 +775,8 @@ def group_contribution_slices_by_taxonomy(
                 "cash_currency_gains": 0.0,
                 "pending_settlement_currency_gains": 0.0,
                 "instrument_currency_gains": 0.0,
+                "market_risk_excluded_pnl": 0.0,
+                "market_risk_total_pnl": 0.0,
                 GROUP_CAPITAL_FLOW_IN_FIELD: 0.0,
                 GROUP_CAPITAL_FLOW_OUT_FIELD: 0.0,
                 GROUP_CAPITAL_FLOW_IN_EOD_FIELD: 0.0,
@@ -748,10 +785,19 @@ def group_contribution_slices_by_taxonomy(
                 "daily_return": None,
                 "daily_contribution": 0.0,
                 "return_observation_eligible": False,
+                "market_risk_daily_return": None,
+                "market_risk_daily_contribution": 0.0,
+                "market_risk_return_observation_eligible": False,
             },
         )
         coverage_states_by_group[slice_key].append(
             str(base_slice.get("coverage_state") or "unavailable")
+        )
+        market_risk_coverage_states_by_group[slice_key].append(
+            str(
+                base_slice.get("market_risk_return_coverage_state")
+                or "unavailable"
+            )
         )
         if (
             abs(_safe_float(base_slice.get("position_market_value_base")) or 0.0)
@@ -761,9 +807,17 @@ def group_contribution_slices_by_taxonomy(
             market_return_eligibility_by_group[slice_key].append(
                 bool(base_slice.get("return_observation_eligible"))
             )
+        if _daily_slice_has_market_risk_scope(base_slice):
+            market_risk_eligibility_by_group[slice_key].append(
+                bool(base_slice.get("market_risk_return_observation_eligible"))
+            )
         grouped_slice["market_observation_count"] = (
             int(grouped_slice.get("market_observation_count") or 0)
             + int(base_slice.get("market_observation_count") or 0)
+        )
+        grouped_slice["market_risk_observation_count"] = (
+            int(grouped_slice.get("market_risk_observation_count") or 0)
+            + int(base_slice.get("market_risk_observation_count") or 0)
         )
         grouped_slice["_is_initial_valuation_anchor"] = bool(
             grouped_slice.get("_is_initial_valuation_anchor")
@@ -788,12 +842,15 @@ def group_contribution_slices_by_taxonomy(
             "cash_currency_gains",
             "pending_settlement_currency_gains",
             "instrument_currency_gains",
+            "market_risk_excluded_pnl",
+            "market_risk_total_pnl",
             GROUP_CAPITAL_FLOW_IN_FIELD,
             GROUP_CAPITAL_FLOW_OUT_FIELD,
             GROUP_CAPITAL_FLOW_IN_EOD_FIELD,
             GROUP_CAPITAL_FLOW_OUT_EOD_FIELD,
             "total_pnl",
             "daily_contribution",
+            "market_risk_daily_contribution",
         ):
             value = _safe_float(base_slice.get(field_name))
             if (
@@ -825,6 +882,11 @@ def group_contribution_slices_by_taxonomy(
         grouped_slice["coverage_state"] = merge_group_coverage_state(
             coverage_states_by_group[slice_key]
         )
+        grouped_slice["market_risk_return_coverage_state"] = (
+            merge_group_coverage_state(
+                market_risk_coverage_states_by_group[slice_key]
+            )
+        )
         total_pnl = _safe_float(grouped_slice.get("total_pnl"))
         beginning_value_base = _safe_float(grouped_slice.get("beginning_value_base"))
         ending_value_base = _safe_float(grouped_slice.get("ending_value_base"))
@@ -845,6 +907,18 @@ def group_contribution_slices_by_taxonomy(
             capital_flow_out_base=capital_flow_out_base,
             capital_flow_in_eod_base=capital_flow_in_eod_base,
         )
+        grouped_slice["market_risk_daily_return"] = (
+            daily_group_return_from_components(
+                beginning_value_base=beginning_value_base,
+                ending_value_base=ending_value_base,
+                total_pnl=_safe_float(
+                    grouped_slice.get("market_risk_total_pnl")
+                ),
+                capital_flow_in_base=capital_flow_in_base,
+                capital_flow_out_base=capital_flow_out_base,
+                capital_flow_in_eod_base=capital_flow_in_eod_base,
+            )
+        )
         grouped_slice["return_observation_eligible"] = (
             grouped_slice["daily_return"] is not None
             and grouped_slice["coverage_state"] == "complete"
@@ -855,6 +929,18 @@ def group_contribution_slices_by_taxonomy(
             and (
                 int(grouped_slice.get("market_observation_count") or 0) > 0
                 or abs(float(grouped_slice["daily_return"])) > 1e-12
+            )
+        )
+        grouped_slice["market_risk_return_observation_eligible"] = (
+            grouped_slice["market_risk_daily_return"] is not None
+            and grouped_slice["market_risk_return_coverage_state"] == "complete"
+            and (
+                not market_risk_eligibility_by_group[slice_key]
+                or all(market_risk_eligibility_by_group[slice_key])
+            )
+            and (
+                int(grouped_slice.get("market_risk_observation_count") or 0) > 0
+                or abs(float(grouped_slice["market_risk_daily_return"])) > 1e-12
             )
         )
     return grouped_slices
@@ -1406,9 +1492,11 @@ def build_contribution_report_from_daily_slices_core(
     portfolio_daily_series = [
         {
             "as_of_date": snapshot["as_of_date"],
-            "daily_twr": _safe_float(snapshot.get("daily_twr")),
-            "return_observation_eligible": bool(
-                snapshot.get("return_observation_eligible")
+            "market_risk_daily_return": _safe_float(
+                snapshot.get("market_risk_daily_return")
+            ),
+            "market_risk_return_observation_eligible": bool(
+                snapshot.get("market_risk_return_observation_eligible")
             ),
             "market_observation_count": int(
                 snapshot.get("market_observation_count") or 0
@@ -1508,6 +1596,12 @@ def merge_calculation_detail_daily_slices(
 ) -> list[dict[str, object]]:
     grouped: dict[tuple[date, str], dict[str, object]] = {}
     coverage_states_by_group: dict[tuple[date, str], list[str]] = defaultdict(list)
+    market_risk_coverage_states_by_group: dict[
+        tuple[date, str], list[str]
+    ] = defaultdict(list)
+    market_risk_eligibility_by_group: dict[
+        tuple[date, str], list[bool]
+    ] = defaultdict(list)
 
     for daily_slice in daily_slices:
         as_of_date = daily_slice.get("as_of_date")
@@ -1526,13 +1620,24 @@ def merge_calculation_detail_daily_slices(
                 "market_observation_count": int(
                     daily_slice.get("market_observation_count") or 0
                 ),
+                "market_risk_observation_count": int(
+                    daily_slice.get("market_risk_observation_count") or 0
+                ),
+                "market_risk_return_coverage_state": str(
+                    daily_slice.get("market_risk_return_coverage_state")
+                    or "unavailable"
+                ),
                 "return_observation_eligible": bool(
                     daily_slice.get("return_observation_eligible")
                 ),
                 "_is_initial_valuation_anchor": bool(
                     daily_slice.get("_is_initial_valuation_anchor")
                 ),
+                "_system_holding_category": daily_slice.get(
+                    "_system_holding_category"
+                ),
                 "daily_return": None,
+                "market_risk_daily_return": None,
                 **{
                     field_name: 0.0
                     for field_name in _CALCULATION_DETAIL_ADDITIVE_SLICE_FIELDS
@@ -1542,14 +1647,30 @@ def merge_calculation_detail_daily_slices(
         coverage_states_by_group[slice_key].append(
             str(daily_slice.get("coverage_state") or "unavailable")
         )
+        market_risk_coverage_states_by_group[slice_key].append(
+            str(
+                daily_slice.get("market_risk_return_coverage_state")
+                or "unavailable"
+            )
+        )
+        if _daily_slice_has_market_risk_scope(daily_slice):
+            market_risk_eligibility_by_group[slice_key].append(
+                bool(daily_slice.get("market_risk_return_observation_eligible"))
+            )
         grouped_slice["market_observation_count"] = max(
             int(grouped_slice.get("market_observation_count") or 0),
             int(daily_slice.get("market_observation_count") or 0),
+        )
+        grouped_slice["market_risk_observation_count"] = max(
+            int(grouped_slice.get("market_risk_observation_count") or 0),
+            int(daily_slice.get("market_risk_observation_count") or 0),
         )
         grouped_slice["_is_initial_valuation_anchor"] = bool(
             grouped_slice.get("_is_initial_valuation_anchor")
             or daily_slice.get("_is_initial_valuation_anchor")
         )
+        if daily_slice.get("_system_holding_category") == "derivatives":
+            grouped_slice["_system_holding_category"] = "derivatives"
         for field_name in _CALCULATION_DETAIL_ADDITIVE_SLICE_FIELDS:
             value = _safe_float(daily_slice.get(field_name))
             if (
@@ -1577,6 +1698,11 @@ def merge_calculation_detail_daily_slices(
         grouped_slice["coverage_state"] = merge_group_coverage_state(
             coverage_states_by_group[slice_key]
         )
+        grouped_slice["market_risk_return_coverage_state"] = (
+            merge_group_coverage_state(
+                market_risk_coverage_states_by_group[slice_key]
+            )
+        )
         grouped_slice["daily_return"] = daily_group_return_from_components(
             beginning_value_base=_safe_float(
                 grouped_slice.get("beginning_value_base")
@@ -1593,12 +1719,46 @@ def merge_calculation_detail_daily_slices(
                 grouped_slice.get(GROUP_CAPITAL_FLOW_IN_EOD_FIELD)
             ),
         )
+        grouped_slice["market_risk_daily_return"] = (
+            daily_group_return_from_components(
+                beginning_value_base=_safe_float(
+                    grouped_slice.get("beginning_value_base")
+                ),
+                ending_value_base=_safe_float(
+                    grouped_slice.get("ending_value_base")
+                ),
+                total_pnl=_safe_float(
+                    grouped_slice.get("market_risk_total_pnl")
+                ),
+                capital_flow_in_base=_safe_float(
+                    grouped_slice.get(GROUP_CAPITAL_FLOW_IN_FIELD)
+                ),
+                capital_flow_out_base=_safe_float(
+                    grouped_slice.get(GROUP_CAPITAL_FLOW_OUT_FIELD)
+                ),
+                capital_flow_in_eod_base=_safe_float(
+                    grouped_slice.get(GROUP_CAPITAL_FLOW_IN_EOD_FIELD)
+                ),
+            )
+        )
         grouped_slice["return_observation_eligible"] = (
             grouped_slice["daily_return"] is not None
             and grouped_slice["coverage_state"] == "complete"
             and (
                 int(grouped_slice.get("market_observation_count") or 0) > 0
                 or abs(float(grouped_slice["daily_return"])) > 1e-12
+            )
+        )
+        grouped_slice["market_risk_return_observation_eligible"] = (
+            grouped_slice["market_risk_daily_return"] is not None
+            and grouped_slice["market_risk_return_coverage_state"] == "complete"
+            and (
+                not market_risk_eligibility_by_group[slice_key]
+                or all(market_risk_eligibility_by_group[slice_key])
+            )
+            and (
+                int(grouped_slice.get("market_risk_observation_count") or 0) > 0
+                or abs(float(grouped_slice["market_risk_daily_return"])) > 1e-12
             )
         )
     return grouped_slices
@@ -1664,10 +1824,10 @@ def bucketed_portfolio_returns(
         portfolio_daily_series, key=lambda item: str(item.get("as_of_date") or "")
     ):
         as_of_date = _parse_iso_date(point.get("as_of_date"))
-        daily_return = _safe_float(point.get("daily_twr"))
+        daily_return = _safe_float(point.get("market_risk_daily_return"))
         if as_of_date is None or daily_return is None or not isfinite(daily_return):
             continue
-        if not bool(point.get("return_observation_eligible")):
+        if not bool(point.get("market_risk_return_observation_eligible")):
             continue
         bucket_date = period_end_date(
             as_of_date, calculation_frequency, final_date=final_date
@@ -1694,7 +1854,7 @@ def bucketed_group_risk_inputs(
         as_of_date = _parse_iso_date(daily_slice.get("as_of_date"))
         if not group_key or as_of_date is None:
             continue
-        if not bool(daily_slice.get("return_observation_eligible")):
+        if not bool(daily_slice.get("market_risk_return_observation_eligible")):
             continue
         bucket_date = period_end_date(
             as_of_date, calculation_frequency, final_date=final_date
@@ -1707,12 +1867,14 @@ def bucketed_group_risk_inputs(
                 "has_contribution": False,
             },
         )
-        daily_return = _safe_float(daily_slice.get("daily_return"))
+        daily_return = _safe_float(daily_slice.get("market_risk_daily_return"))
         if daily_return is not None and isfinite(daily_return):
             bucket_returns = bucket.get("returns")
             if isinstance(bucket_returns, list):
                 bucket_returns.append(daily_return)
-        daily_contribution = _safe_float(daily_slice.get("daily_contribution"))
+        daily_contribution = _safe_float(
+            daily_slice.get("market_risk_daily_contribution")
+        )
         if daily_contribution is not None and isfinite(daily_contribution):
             bucket["contribution"] = (
                 _safe_float(bucket.get("contribution")) or 0.0
@@ -1736,10 +1898,10 @@ def bucketed_realized_contribution_matrix(
         portfolio_daily_series, key=lambda item: str(item.get("as_of_date") or "")
     ):
         as_of_date = _parse_iso_date(point.get("as_of_date"))
-        daily_return = _safe_float(point.get("daily_twr"))
+        daily_return = _safe_float(point.get("market_risk_daily_return"))
         if as_of_date is None or daily_return is None or not isfinite(daily_return):
             continue
-        if not bool(point.get("return_observation_eligible")):
+        if not bool(point.get("market_risk_return_observation_eligible")):
             continue
         eligible_portfolio_dates.add(as_of_date)
         bucket_date = period_end_date(
@@ -1758,12 +1920,17 @@ def bucketed_realized_contribution_matrix(
             not group_key
             or as_of_date is None
             or as_of_date not in eligible_portfolio_dates
+            or not bool(
+                daily_slice.get("market_risk_return_observation_eligible")
+            )
         ):
             continue
         bucket_date = period_end_date(
             as_of_date, calculation_frequency, final_date=final_date
         )
-        daily_contribution = _safe_float(daily_slice.get("daily_contribution"))
+        daily_contribution = _safe_float(
+            daily_slice.get("market_risk_daily_contribution")
+        )
         if daily_contribution is None or not isfinite(daily_contribution):
             invalid_bucket_dates.add(bucket_date)
             continue

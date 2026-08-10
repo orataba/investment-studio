@@ -439,6 +439,9 @@ def enrich_holdings_forward_risk(
 
     active: list[tuple[str, dict[str, object], pd.Series, dict[date, date]]] = []
     errors: list[str] = []
+    total_nav = _safe_float(scope_disclosure.get("total_nav"))
+    if total_nav is None or not np.isfinite(total_nav) or total_nav <= 1e-12:
+        errors.append("Forward RC requires positive finite total NAV.")
     for index, raw_row in enumerate(rows):
         if not isinstance(raw_row, dict):
             continue
@@ -458,7 +461,16 @@ def enrich_holdings_forward_risk(
                 continue
             modeled_zero = (is_cash or is_pending) and is_base_currency_monetary
             _clear_forward_risk_fields(raw_row, modeled_zero=modeled_zero)
-            if not modeled_zero:
+            if (is_cash or is_pending) and has_exposure and not is_base_currency_monetary:
+                raw_row["forward_risk_status"] = (
+                    "pending_settlement" if is_pending else "cash_unallocated"
+                )
+                errors.append(
+                    "Forward RC requires an FX total-return series for non-base "
+                    f"monetary exposure {_row_label(raw_row)} "
+                    f"({instrument_currency or 'unknown'} versus {base_currency})."
+                )
+            elif not modeled_zero:
                 raw_row["forward_risk_status"] = (
                     "pending_settlement"
                     if is_pending
@@ -466,6 +478,11 @@ def enrich_holdings_forward_risk(
                     if is_cash
                     else "policy_excluded"
                 )
+                if has_exposure and not is_cash and not is_pending:
+                    errors.append(
+                        "Forward RC cannot model policy-excluded market exposure "
+                        f"{_row_label(raw_row)} as zero risk."
+                    )
             continue
         if is_derivative:
             _clear_forward_risk_fields(raw_row, status="excluded")
@@ -543,18 +560,8 @@ def enrich_holdings_forward_risk(
         ],
         dtype="float64",
     )
-    modeled_gross_exposure = float(np.sum(np.abs(modeled_exposures)))
-    if not np.isfinite(modeled_gross_exposure) or modeled_gross_exposure <= 1e-12:
-        for _key, row, _series, _starts in active:
-            _clear_forward_risk_fields(row)
-        workspace["forward_risk"] = {
-            "status": "unavailable",
-            "errors": ["Modeled sleeve risk requires positive eligible gross exposure."],
-            "risk_model": snapshot,
-            **scope_disclosure,
-        }
-        return workspace
-    weights = modeled_exposures / modeled_gross_exposure
+    assert total_nav is not None
+    weights = modeled_exposures / total_nav
     coverage_snapshot = _forward_risk_coverage_snapshot(
         returns,
         as_of_date=as_of_date,
@@ -636,7 +643,7 @@ def enrich_holdings_forward_risk(
         "portfolio_volatility": sqrt(variance),
         "observation_count": int(len(coverage.returns)),
         "coverage": coverage_snapshot,
-        "modeled_weight_basis": "eligible_gross_exposure",
+        "modeled_weight_basis": "total_nav_zero_return_cash_and_derivatives",
         **scope_disclosure,
     }
     return workspace

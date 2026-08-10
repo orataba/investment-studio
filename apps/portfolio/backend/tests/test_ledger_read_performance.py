@@ -395,7 +395,6 @@ def test_account_workspace_exposes_and_filters_written_option_obligations(monkey
                     "expiry_date": "2026-12-18",
                     "strike": "30",
                     "contract_multiplier": "100",
-                    "settlement_type": "physical",
                 },
                 "created_at": "2026-04-02T10:00:00Z",
             },

@@ -18,7 +18,6 @@ describe('derivative contract form mapping', () => {
       option_expiry_date: '2026-08-28',
       option_strike: '125.50',
       option_contract_multiplier: '100',
-      option_settlement_type: 'physical',
     })
 
     expect(derivativeContractFromDraft(draft)).toEqual({
@@ -32,7 +31,6 @@ describe('derivative contract form mapping', () => {
         expiry_date: '2026-08-28',
         strike: 125.5,
         contract_multiplier: 100,
-        settlement_type: 'physical',
       },
     })
   })
@@ -86,13 +84,12 @@ describe('derivative contract form mapping', () => {
         expiry_date: '2026-09-25',
         strike: 90,
         contract_multiplier: 100,
-        settlement_type: 'cash',
       },
     })
 
     expect(draft.option_underlying_instrument_id).toBe('equity-004')
     expect(draft.option_type).toBe('put')
     expect(draft.option_strike).toBe('90')
-    expect(draft.option_settlement_type).toBe('cash')
+    expect(draft.option_contract_multiplier).toBe('100')
   })
 })

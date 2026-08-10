@@ -52,6 +52,8 @@ def resolve_transaction_net_cash_effect(
     if transaction_type == "dividend_reinvestment":
         return 0.0
     if transaction_type == "lifecycle_event":
+        if record.get("lifecycle_event_type") == "option_writer_cash_settlement":
+            return -(gross_amount + fees + taxes)
         return 0.0
     if transaction_type in {"fee", "tax"}:
         return -gross_amount

@@ -381,7 +381,6 @@ def test_materialized_option_position_and_obligation_remain_distinct_in_api_and_
             "expiry_date": "2026-12-18",
             "strike": "220",
             "contract_multiplier": "100",
-            "settlement_type": "physical",
         },
         "created_at": "2026-04-15T16:00:00Z",
     }
@@ -717,7 +716,6 @@ def test_dynamic_event_holding_rejects_registry_market_profile(
             "expiry_date": "2026-12-18",
             "strike": "220",
             "contract_multiplier": "100",
-            "settlement_type": "physical",
             "contract_currency": "USD",
         },
     }

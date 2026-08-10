@@ -537,11 +537,14 @@ function buildPortfolioRiskMetrics(
   const sortedPoints = points
     .filter(
       (point) =>
-        point.return_observation_eligible &&
-        point.daily_twr != null &&
-        Number.isFinite(point.daily_twr),
+        point.market_risk_return_observation_eligible &&
+        point.market_risk_daily_return != null &&
+        Number.isFinite(point.market_risk_daily_return),
     )
-    .map((point) => ({ date: point.as_of_date, value: point.daily_twr as number }))
+    .map((point) => ({
+      date: point.as_of_date,
+      value: point.market_risk_daily_return as number,
+    }))
     .sort((left, right) => left.date.localeCompare(right.date))
   const latestPoint = sortedPoints[sortedPoints.length - 1]
   const requestedEndDate =
@@ -978,6 +981,8 @@ export default function OverviewPage() {
   )
   const resolvedBaseCurrency =
     summary?.base_currency ?? holdingsWorkspace?.base_currency ?? performanceWorkspace?.base_currency ?? 'USD'
+  const performanceIsOperational =
+    performanceWorkspace?.summary.performance_basis === 'operational_carrying_basis'
   const sortedHoldings = useMemo(
     () =>
       [...nonCashHoldingsRows].sort(
@@ -1244,8 +1249,8 @@ export default function OverviewPage() {
             benchmarkEndDate != null &&
             point.as_of_date >= portfolioInceptionDate &&
             point.as_of_date <= benchmarkEndDate &&
-            Number.isFinite(point.daily_twr) &&
-            point.return_observation_eligible,
+            Number.isFinite(point.market_risk_daily_return) &&
+            point.market_risk_return_observation_eligible,
         )
         .map((point) => point.as_of_date)
         .sort(),
@@ -1307,29 +1312,33 @@ export default function OverviewPage() {
 
   const overviewMetricGroups: Array<{ label: string; rows: OverviewMetricRow[] }> = [
     {
-      label: 'Performance',
+      label: performanceIsOperational ? 'Operational Performance' : 'Performance',
       rows: [
         {
           label: '1W Return',
           value: signedPercent(portfolioReturnMetrics.oneWeek),
-          benchmark: benchmarkNote(
-            selectedBenchmarkInstrument,
-            benchmarkLoading,
-            benchmarkMetrics?.oneWeek,
-            benchmarkGuard,
-          ),
+          benchmark: performanceIsOperational
+            ? null
+            : benchmarkNote(
+                selectedBenchmarkInstrument,
+                benchmarkLoading,
+                benchmarkMetrics?.oneWeek,
+                benchmarkGuard,
+              ),
           emphasis: true,
           toneClassName: signedValueClass(portfolioReturnMetrics.oneWeek),
         },
         {
           label: 'MTD',
           value: signedPercent(portfolioReturnMetrics.mtd),
-          benchmark: benchmarkNote(
-            selectedBenchmarkInstrument,
-            benchmarkLoading,
-            benchmarkMetrics?.mtd,
-            benchmarkGuard,
-          ),
+          benchmark: performanceIsOperational
+            ? null
+            : benchmarkNote(
+                selectedBenchmarkInstrument,
+                benchmarkLoading,
+                benchmarkMetrics?.mtd,
+                benchmarkGuard,
+              ),
           emphasis: true,
           toneClassName: signedValueClass(portfolioReturnMetrics.mtd),
           title: portfolioReturnMetrics.mtd == null ? 'Reliable month-start boundary and continuous coverage required.' : undefined,
@@ -1337,12 +1346,14 @@ export default function OverviewPage() {
         {
           label: 'YTD',
           value: signedPercent(portfolioReturnMetrics.ytd),
-          benchmark: benchmarkNote(
-            selectedBenchmarkInstrument,
-            benchmarkLoading,
-            benchmarkMetrics?.ytd,
-            benchmarkGuard,
-          ),
+          benchmark: performanceIsOperational
+            ? null
+            : benchmarkNote(
+                selectedBenchmarkInstrument,
+                benchmarkLoading,
+                benchmarkMetrics?.ytd,
+                benchmarkGuard,
+              ),
           emphasis: true,
           toneClassName: signedValueClass(portfolioReturnMetrics.ytd),
           title: portfolioReturnMetrics.ytd == null ? 'No year-start anchor.' : undefined,
@@ -1350,19 +1361,21 @@ export default function OverviewPage() {
         {
           label: 'Since Inception',
           value: signedPercent(performanceWorkspace?.summary.cumulative_twr),
-          benchmark: benchmarkNote(
-            selectedBenchmarkInstrument,
-            benchmarkLoading,
-            benchmarkMetrics?.sinceInception,
-            benchmarkGuard,
-          ),
+          benchmark: performanceIsOperational
+            ? null
+            : benchmarkNote(
+                selectedBenchmarkInstrument,
+                benchmarkLoading,
+                benchmarkMetrics?.sinceInception,
+                benchmarkGuard,
+              ),
           emphasis: true,
           toneClassName: signedValueClass(performanceWorkspace?.summary.cumulative_twr),
         },
       ],
     },
     {
-      label: 'Risk Watch',
+      label: 'Market Risk Watch',
       rows: [
         {
           label: 'Current DD',
@@ -1608,6 +1621,13 @@ export default function OverviewPage() {
             {performanceWorkspace.summary.as_of_clamp_reason}
           </div>
         ) : null}
+        {performanceIsOperational ? (
+          <div className="inline-notice inline-notice-warning" role="status">
+            Operational return is shown for NAV reconciliation. Market Risk Watch uses the separate return chain that
+            models derivatives and base-currency cash at zero return; benchmark return overlays are hidden from the
+            operational TWR chart.
+          </div>
+        ) : null}
         <QualityWarningsNotice
           warnings={[
             ...(holdingsWorkspace?.quality_warnings ?? []),
@@ -1689,10 +1709,12 @@ export default function OverviewPage() {
                         points={navChartPoints}
                         twrPoints={twrIndexChartPoints}
                         benchmarkPoints={
-                          benchmarkGuard && benchmarkGuard.mode !== 'unavailable' ? benchmarkChartPoints : []
+                          !performanceIsOperational && benchmarkGuard && benchmarkGuard.mode !== 'unavailable'
+                            ? benchmarkChartPoints
+                            : []
                         }
                         benchmarkLabel={
-                          selectedBenchmarkInstrument
+                          !performanceIsOperational && selectedBenchmarkInstrument
                             ? `${instrumentPrimaryIdentifier(selectedBenchmarkInstrument)}${
                                 benchmarkGuard?.reason === 'benchmark_price_return_comparable'
                                   ? ' (price return)'

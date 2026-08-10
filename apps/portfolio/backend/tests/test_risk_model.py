@@ -65,6 +65,20 @@ def _risk_policy(**overrides: object) -> dict[str, object]:
     }
 
 
+def _workspace(
+    rows: list[dict[str, object]],
+    *,
+    total_nav: float = 1_000_000.0,
+    **overrides: object,
+) -> dict[str, object]:
+    return {
+        "base_currency": "CNY",
+        "rows": rows,
+        "analytics_scope_summary": {"total_nav": total_nav},
+        **overrides,
+    }
+
+
 def test_absolute_risk_contribution_keeps_zero_contribution_exactly_zero() -> None:
     covariance = np.asarray([[0.04, 0.0], [0.0, 0.01]], dtype="float64")
     weights = np.asarray([1.0, 0.0], dtype="float64")
@@ -75,13 +89,12 @@ def test_absolute_risk_contribution_keeps_zero_contribution_exactly_zero() -> No
 
 
 def test_forward_risk_uses_one_canonical_leaf_model_and_reports_coverage() -> None:
-    workspace = {
-        "base_currency": "CNY",
-        "rows": [
+    workspace = _workspace(
+        [
             _holding("alpha", 0.6, points=_return_points(1.0)),
             _holding("beta", 0.4, points=_return_points(-0.7)),
-        ],
-    }
+        ]
+    )
 
     result = enrich_holdings_forward_risk(
         workspace,
@@ -114,7 +127,7 @@ def test_forward_risk_uses_one_canonical_leaf_model_and_reports_coverage() -> No
     )
 
 
-def test_forward_risk_normalizes_inside_eligible_sleeve_and_discloses_exclusion() -> None:
+def test_forward_risk_uses_total_nav_weights_and_discloses_derivative_exclusion() -> None:
     eligible = _holding("equity", 0.4)
     ineligible = {
         **_holding("fcn", 0.6),
@@ -132,6 +145,7 @@ def test_forward_risk_normalizes_inside_eligible_sleeve_and_discloses_exclusion(
         "rows": [eligible, ineligible],
         "analytics_scope_summary": {
             "scope_name": "Modeled Market Sleeve",
+            "total_nav": 1_000_000.0,
             "modeled_net_exposure": 400_000.0,
             "modeled_gross_exposure": 400_000.0,
             "excluded_carrying_value": 600_000.0,
@@ -157,12 +171,15 @@ def test_forward_risk_normalizes_inside_eligible_sleeve_and_discloses_exclusion(
     )
 
     assert result["forward_risk"]["status"] == "ok"
-    assert result["forward_risk"]["modeled_weight_basis"] == "eligible_gross_exposure"
+    assert result["forward_risk"]["modeled_weight_basis"] == "total_nav_zero_return_cash_and_derivatives"
     assert result["forward_risk"]["coverage_ratio"] == pytest.approx(0.4)
     assert result["forward_risk"]["excluded_carrying_value"] == pytest.approx(600_000.0)
     assert result["forward_risk"]["excluded_rows"][0]["instrument_id"] is None
     assert result["rows"][0]["forward_risk_status"] == "ok"
     assert result["rows"][0]["forward_risk_share"] == pytest.approx(1.0)
+    assert result["forward_risk"]["portfolio_volatility"] == pytest.approx(
+        result["rows"][0]["forward_annualized_volatility"] * 0.4
+    )
     assert result["rows"][1]["forward_risk_status"] == "excluded"
     assert result["rows"][1]["forward_risk_share"] is None
     assert result["rows"][1]["forward_contribution_to_variance"] is None
@@ -182,7 +199,7 @@ def test_forward_risk_is_unavailable_when_every_exposure_is_policy_excluded() ->
     }
 
     result = enrich_holdings_forward_risk(
-        {"base_currency": "CNY", "rows": [excluded]},
+        _workspace([excluded]),
         as_of_date=AS_OF_DATE,
         calculation_frequency="daily",
         risk_policy=_risk_policy(),
@@ -196,7 +213,7 @@ def test_forward_risk_is_unavailable_when_every_exposure_is_policy_excluded() ->
     assert result["rows"][0]["forward_risk_share"] is None
 
 
-def test_forward_risk_models_only_base_currency_monetary_rows_as_zero() -> None:
+def test_forward_risk_models_base_currency_monetary_rows_as_zero_return_capital() -> None:
     def monetary_row(
         line_id: str,
         *,
@@ -218,9 +235,8 @@ def test_forward_risk_models_only_base_currency_monetary_rows_as_zero() -> None:
         }
 
     result = enrich_holdings_forward_risk(
-        {
-            "base_currency": "CNY",
-            "rows": [
+        _workspace(
+            [
                 _holding("equity", 1.0),
                 monetary_row("cash:CNY", currency="CNY", holding_kind="settled_cash"),
                 monetary_row(
@@ -228,13 +244,9 @@ def test_forward_risk_models_only_base_currency_monetary_rows_as_zero() -> None:
                     currency="CNY",
                     holding_kind="settlement_receivable",
                 ),
-                monetary_row(
-                    "pending:USD",
-                    currency="USD",
-                    holding_kind="settlement_receivable",
-                ),
             ],
-        },
+            total_nav=1_200_000.0,
+        ),
         as_of_date=AS_OF_DATE,
         calculation_frequency="daily",
         risk_policy=_risk_policy(),
@@ -246,8 +258,37 @@ def test_forward_risk_models_only_base_currency_monetary_rows_as_zero() -> None:
         assert rows[line_id]["forward_risk_status"] == "modeled_zero"
         assert rows[line_id]["forward_risk_share"] == pytest.approx(0.0)
         assert rows[line_id]["forward_annualized_volatility"] == pytest.approx(0.0)
-    assert rows["pending:USD"]["forward_risk_status"] == "pending_settlement"
-    assert rows["pending:USD"]["forward_risk_share"] is None
+    assert result["forward_risk"]["portfolio_volatility"] == pytest.approx(
+        rows["holding:equity"]["forward_annualized_volatility"] * (1_000_000 / 1_200_000)
+    )
+
+
+def test_forward_risk_is_unavailable_for_non_base_monetary_exposure_without_fx_returns() -> None:
+    non_base_cash = {
+        "line_id": "cash:USD",
+        "holding_kind": "settled_cash",
+        "instrument_core": {
+            "instrument_id": "cash:USD",
+            "instrument_name": "USD cash",
+            "instrument_type": "cash",
+            "currency": "USD",
+        },
+        "market_value_base": 100_000.0,
+        "risk_eligible": False,
+        "risk_budget_eligible": False,
+    }
+    result = enrich_holdings_forward_risk(
+        _workspace([_holding("equity", 0.9), non_base_cash]),
+        as_of_date=AS_OF_DATE,
+        calculation_frequency="daily",
+        risk_policy=_risk_policy(),
+    )
+
+    assert result["forward_risk"]["status"] == "unavailable"
+    assert result["forward_risk"]["errors"] == [
+        "Forward RC requires an FX total-return series for non-base monetary exposure USD cash (USD versus CNY)."
+    ]
+    assert result["rows"][1]["forward_risk_status"] == "cash_unallocated"
 
 
 def test_forward_risk_fails_closed_when_one_member_has_an_internal_period_gap() -> None:
@@ -256,13 +297,12 @@ def test_forward_risk_fails_closed_when_one_member_has_an_internal_period_gap() 
         **beta_points[10],
         "start_date": (date.fromisoformat(str(beta_points[10]["start_date"])) - timedelta(days=1)).isoformat(),
     }
-    workspace = {
-        "base_currency": "CNY",
-        "rows": [
+    workspace = _workspace(
+        [
             _holding("alpha", 0.6, points=_return_points(1.0)),
             _holding("beta", 0.4, points=beta_points),
-        ],
-    }
+        ]
+    )
 
     result = enrich_holdings_forward_risk(
         workspace,
@@ -286,13 +326,12 @@ def test_forward_risk_fails_closed_for_a_shared_internal_period_gap() -> None:
                 date.fromisoformat(str(points[10]["start_date"])) - timedelta(days=1)
             ).isoformat(),
         }
-    workspace = {
-        "base_currency": "CNY",
-        "rows": [
+    workspace = _workspace(
+        [
             _holding("alpha", 0.6, points=alpha_points),
             _holding("beta", 0.4, points=beta_points),
-        ],
-    }
+        ]
+    )
 
     result = enrich_holdings_forward_risk(
         workspace,
@@ -307,10 +346,7 @@ def test_forward_risk_fails_closed_for_a_shared_internal_period_gap() -> None:
 
 
 def test_forward_risk_fails_closed_for_non_base_currency_without_fx_total_returns() -> None:
-    workspace = {
-        "base_currency": "CNY",
-        "rows": [_holding("foreign", 1.0, currency="USD")],
-    }
+    workspace = _workspace([_holding("foreign", 1.0, currency="USD")])
 
     result = enrich_holdings_forward_risk(
         workspace,
@@ -327,13 +363,13 @@ def test_forward_risk_fails_closed_for_non_base_currency_without_fx_total_return
 
 
 def test_forward_risk_reports_one_portfolio_level_error_when_base_currency_is_missing() -> None:
-    workspace = {
-        "base_currency": "",
-        "rows": [
+    workspace = _workspace(
+        [
             _holding("alpha", 0.6),
             _holding("beta", 0.4),
         ],
-    }
+        base_currency="",
+    )
 
     result = enrich_holdings_forward_risk(
         workspace,
@@ -348,17 +384,16 @@ def test_forward_risk_reports_one_portfolio_level_error_when_base_currency_is_mi
 
 
 def test_forward_risk_uses_scoped_series_instead_of_global_risk_basis_coverage() -> None:
-    workspace = {
-        "base_currency": "CNY",
-        "risk_basis": {
-            "coverage_state": "partial",
-            "status_label": "Risk basis partial - 2 instrument(s) have observation gaps",
-        },
-        "rows": [
+    workspace = _workspace(
+        [
             _holding("alpha", 0.6),
             _holding("beta", 0.4),
         ],
-    }
+        risk_basis={
+            "coverage_state": "partial",
+            "status_label": "Risk basis partial - 2 instrument(s) have observation gaps",
+        },
+    )
 
     result = enrich_holdings_forward_risk(
         workspace,

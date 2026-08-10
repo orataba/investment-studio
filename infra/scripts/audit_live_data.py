@@ -32,7 +32,7 @@ from portfolio_ops_instrument_core import (  # noqa: E402
 FINAL_FLAT_TABLE_HEADS = {
     "instrument_registry": "20260810_0023",
     "platform": "20260716_0002",
-    "portfolio": "20260810_0048",
+    "portfolio": "20260810_0049",
     "watchlist": "20260809_0036",
 }
 VERSION_TABLES = {
@@ -766,8 +766,10 @@ def _run_flat_table_audit(database_url: str) -> list[AuditCheck]:
                                             )::numeric <= 0
                                             ELSE false
                                         END
-                                        OR contract.terms_json ->> 'settlement_type'
-                                           NOT IN ('physical', 'cash')
+                                        OR (
+                                            contract.terms_json::jsonb
+                                            ? 'settlement_type'
+                                        )
                                     )
                                )
                                OR (
@@ -959,6 +961,105 @@ def _run_flat_table_audit(database_url: str) -> list[AuditCheck]:
                                   transaction.account_id <> contract.account_id
                                   OR transaction.currency <> contract.currency
                               )
+                        ), invalid_option_lifecycle AS (
+                            SELECT txn.portfolio_id,
+                                   txn.derivative_contract_id
+                            FROM portfolio.transaction_record txn
+                            JOIN portfolio.derivative_contract_record contract
+                              ON contract.portfolio_id = txn.portfolio_id
+                             AND contract.derivative_contract_id =
+                                 txn.derivative_contract_id
+                            WHERE contract.contract_type = 'option'
+                              AND (
+                                  (
+                                      txn.transaction_type = 'maturity_redemption'
+                                      AND coalesce(txn.lifecycle_event_type, '')
+                                          NOT IN (
+                                              'option_long_expiry',
+                                              'option_long_cash_settlement'
+                                          )
+                                  )
+                                  OR (
+                                      txn.transaction_type = 'lifecycle_event'
+                                      AND coalesce(txn.lifecycle_event_type, '')
+                                          NOT IN (
+                                              'option_writer_expiry',
+                                              'option_writer_cash_settlement'
+                                          )
+                                  )
+                                  OR (
+                                      txn.lifecycle_event_type IN (
+                                          'option_long_expiry',
+                                          'option_long_cash_settlement'
+                                      )
+                                      AND txn.transaction_type <>
+                                          'maturity_redemption'
+                                  )
+                                  OR (
+                                      txn.lifecycle_event_type IN (
+                                          'option_writer_expiry',
+                                          'option_writer_cash_settlement'
+                                      )
+                                      AND txn.transaction_type <> 'lifecycle_event'
+                                  )
+                                  OR (
+                                      txn.lifecycle_event_type IN (
+                                          'option_long_expiry',
+                                          'option_writer_expiry'
+                                      )
+                                      AND (
+                                          coalesce(txn.quantity, 0) <= 0
+                                          OR coalesce(txn.gross_amount, 0) <> 0
+                                          OR coalesce(txn.fees, 0) <> 0
+                                          OR coalesce(txn.taxes, 0) <> 0
+                                          OR txn.settlement_cash_account_id IS NOT NULL
+                                      )
+                                  )
+                                  OR (
+                                      txn.lifecycle_event_type IN (
+                                          'option_long_cash_settlement',
+                                          'option_writer_cash_settlement'
+                                      )
+                                      AND (
+                                          coalesce(txn.quantity, 0) <= 0
+                                          OR coalesce(txn.gross_amount, 0) <= 0
+                                          OR txn.settlement_cash_account_id IS NULL
+                                      )
+                                  )
+                                  OR CASE
+                                      WHEN pg_input_is_valid(
+                                          coalesce(
+                                              contract.terms_json ->> 'expiry_date',
+                                              ''
+                                          ),
+                                          'date'
+                                      )
+                                      THEN (
+                                          txn.lifecycle_event_type IN (
+                                              'option_long_expiry',
+                                              'option_writer_expiry'
+                                          )
+                                          AND coalesce(
+                                              txn.position_effective_date,
+                                              txn.trade_date
+                                          ) < (
+                                              contract.terms_json ->> 'expiry_date'
+                                          )::date
+                                      ) OR (
+                                          txn.lifecycle_event_type IN (
+                                              'option_long_cash_settlement',
+                                              'option_writer_cash_settlement'
+                                          )
+                                          AND coalesce(
+                                              txn.position_effective_date,
+                                              txn.trade_date
+                                          ) > (
+                                              contract.terms_json ->> 'expiry_date'
+                                          )::date
+                                      )
+                                      ELSE false
+                                  END
+                              )
                         ), invalid_holding_reference AS (
                             SELECT holding.portfolio_id,
                                    holding.derivative_contract_id
@@ -983,13 +1084,16 @@ def _run_flat_table_audit(database_url: str) -> list[AuditCheck]:
                             UNION ALL
                             SELECT * FROM invalid_transaction_reference
                             UNION ALL
+                            SELECT * FROM invalid_option_lifecycle
+                            UNION ALL
                             SELECT * FROM invalid_holding_reference
                         ) issue
                     """,
                     detail=(
                         "Portfolio-local derivative terms must be complete, reference "
-                        "existing Registry underlyings, and remain account/currency "
-                        "consistent across contracts, transactions, and holdings."
+                        "existing Registry underlyings, keep explicit and cash-consistent "
+                        "option outcomes, and remain account/currency consistent across "
+                        "contracts, transactions, and holdings."
                     ),
                 )
             )

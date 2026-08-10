@@ -537,7 +537,7 @@ describe('Overview rendered page contract', () => {
       name: 'Portfolio overview key metrics',
     })
     expect(within(metricPanel).getByRole('row', { name: /1W Return/ })).toHaveTextContent(
-      'Exploratory BM —',
+      'BM unavailable',
     )
   })
 })

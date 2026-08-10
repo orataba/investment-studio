@@ -151,11 +151,12 @@ def drawdown_stats(
     snapshots: list[dict[str, object]],
     *,
     start_anchor_date: date | None = None,
+    return_field: str = "daily_twr",
 ) -> dict[str, int | float | None]:
     growth_points: list[tuple[date, float]] = []
     growth_index = 1.0
     for snapshot in snapshots:
-        daily_twr = _safe_float(snapshot.get("daily_twr"))
+        daily_twr = _safe_float(snapshot.get(return_field))
         snapshot_date = snapshot.get("as_of_date")
         if daily_twr is None or not isfinite(daily_twr) or not isinstance(snapshot_date, date):
             continue

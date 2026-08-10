@@ -13,7 +13,6 @@ export type DerivativeContractDraft = {
   option_expiry_date: string
   option_strike: string
   option_contract_multiplier: string
-  option_settlement_type: 'physical' | 'cash'
   fcn_notional: string
   fcn_issue_date: string
   fcn_maturity_date: string
@@ -45,7 +44,6 @@ export function buildInitialDerivativeContractDraft(
     option_expiry_date: today,
     option_strike: '',
     option_contract_multiplier: '100',
-    option_settlement_type: 'physical',
     fcn_notional: '',
     fcn_issue_date: today,
     fcn_maturity_date: today,
@@ -74,7 +72,6 @@ export function derivativeContractDraftFromRecord(
     draft.option_expiry_date = contract.terms.expiry_date
     draft.option_strike = String(contract.terms.strike)
     draft.option_contract_multiplier = String(contract.terms.contract_multiplier)
-    draft.option_settlement_type = contract.terms.settlement_type
   } else {
     draft.fcn_notional = String(contract.terms.notional)
     draft.fcn_issue_date = contract.terms.issue_date
@@ -130,7 +127,6 @@ export function derivativeContractFromDraft(
         expiry_date: draft.option_expiry_date,
         strike,
         contract_multiplier: contractMultiplier,
-        settlement_type: draft.option_settlement_type,
       },
     }
   }

@@ -65,7 +65,6 @@ def option_contract_identity(
         "expiry_date",
         "strike",
         "contract_multiplier",
-        "settlement_type",
     )
     if any(contract.get(field) in (None, "") for field in required_fields):
         raise ValueError("Option contract terms are incomplete for option transactions.")
@@ -76,9 +75,6 @@ def option_contract_identity(
     option_type = str(contract.get("option_type") or "").strip().lower()
     if option_type not in {"call", "put"}:
         raise ValueError("Option contract option_type must be call or put.")
-    settlement_type = str(contract.get("settlement_type") or "").strip().lower()
-    if settlement_type not in {"physical", "cash"}:
-        raise ValueError("Option contract settlement_type must be physical or cash.")
     multiplier = _float(contract.get("contract_multiplier"))
     strike = _float(contract.get("strike"))
     if multiplier <= EPSILON or strike <= EPSILON:
@@ -101,7 +97,6 @@ def option_contract_identity(
         "expiry_date": expiry.isoformat(),
         "strike": strike,
         "contract_multiplier": multiplier,
-        "settlement_type": settlement_type,
         "contract_currency": currency,
     }
 
@@ -155,7 +150,6 @@ def _new_obligation(transaction: dict[str, object], quantity: float) -> dict[str
         "option_type": contract.get("option_type"),
         "strike": contract.get("strike"),
         "contract_multiplier": contract.get("contract_multiplier"),
-        "settlement_type": contract.get("settlement_type"),
         "contract_currency": contract.get("contract_currency") or transaction.get("currency"),
         # Premium is deferred in the liability subledger.  Attached charges
         # are recognized separately by the transaction buckets; opening an
@@ -190,7 +184,7 @@ def _consume(
         if quantity >= remaining_quantity - EPSILON
         else basis_remaining * quantity / remaining_quantity
     )
-    # A buy-to-close has an explicit close cost.  Expiry/assignment do not.
+    # Buy-to-close and cash settlement have explicit close costs. Expiry does not.
     realized_pnl = released_basis - close_cost - fees - taxes
     obligation["remaining_quantity"] = max(remaining_quantity - quantity, 0.0)
     obligation["open_contract_quantity"] = obligation["remaining_quantity"]
@@ -304,8 +298,8 @@ def derive_option_obligation_events(
             close_reason = "closed"
         elif lifecycle == "option_writer_expiry":
             close_reason = "expired"
-        elif lifecycle == "option_assignment":
-            close_reason = "assigned"
+        elif lifecycle == "option_writer_cash_settlement":
+            close_reason = "cash_settled"
         if close_reason is None:
             continue
 
@@ -316,6 +310,7 @@ def derive_option_obligation_events(
         if requested > available + EPSILON:
             raise ValueError("Short option close quantity exceeds the open position.")
         identity = _validate_short_option_contract(transaction)
+        cash_settlement = lifecycle == "option_writer_cash_settlement"
         if lifecycle == "option_writer_expiry":
             expiry_date = _date(identity.get("expiry_date"))
             if (
@@ -341,13 +336,13 @@ def derive_option_obligation_events(
                 transaction=transaction,
                 reason=close_reason,
                 close_cost=_float(transaction.get("gross_amount")) * ratio
-                if action == "buy_to_close"
+                if action == "buy_to_close" or cash_settlement
                 else 0.0,
                 fees=_float(transaction.get("fees")) * ratio
-                if action == "buy_to_close"
+                if action == "buy_to_close" or cash_settlement
                 else 0.0,
                 taxes=_float(transaction.get("taxes")) * ratio
-                if action == "buy_to_close"
+                if action == "buy_to_close" or cash_settlement
                 else 0.0,
             )
             events.append(event)

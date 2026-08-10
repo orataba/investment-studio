@@ -405,7 +405,7 @@ describe('Performance rendered page contract', () => {
     expect(within(irrRow).getByText('N/A')).toBeInTheDocument()
     expect(within(irrRow).getByText('Multiple or non-unique XIRR roots')).toBeInTheDocument()
 
-    const volatilityRow = screen.getByRole('row', { name: /^Volatility/ })
+    const volatilityRow = screen.getByRole('row', { name: /^Market Risk Volatility/ })
     expect(within(volatilityRow).getByText('Requires ≥ 2 daily return samples (1 available)')).toBeInTheDocument()
   })
 

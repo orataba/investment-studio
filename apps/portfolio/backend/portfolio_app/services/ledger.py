@@ -31,6 +31,7 @@ from portfolio_app.services.option_actions import resolve_option_action
 from portfolio_app.services.option_obligations import (
     build_option_obligations,
     derive_option_obligation_events,
+    option_contract_identity,
 )
 
 
@@ -73,6 +74,124 @@ def _position_reference_fields(transaction: dict[str, object]) -> dict[str, obje
 
 def _transaction_is_event_valued(transaction: dict[str, object]) -> bool:
     return _derivative_contract(transaction) is not None
+
+
+def validate_derivative_contract_event(transaction: dict[str, object]) -> None:
+    """Validate a derivative fact against its immutable contract terms."""
+
+    derivative_contract = _derivative_contract(transaction)
+    if derivative_contract is None:
+        return
+    contract_type = str(derivative_contract.get("contract_type") or "").strip().lower()
+    transaction_type = str(transaction.get("transaction_type") or "").strip()
+    lifecycle_event_type = str(
+        transaction.get("lifecycle_event_type") or ""
+    ).strip()
+    event_date = transaction_performance_effective_date(transaction)
+
+    if contract_type == "option":
+        option_action = resolve_option_action(transaction)
+        if transaction_type == "maturity_redemption" and lifecycle_event_type not in {
+            "option_long_expiry",
+            "option_long_cash_settlement",
+        }:
+            raise ValueError(
+                "Option maturity redemption requires option_long_expiry or "
+                "option_long_cash_settlement."
+            )
+        if transaction_type == "lifecycle_event" and lifecycle_event_type not in {
+            "option_writer_expiry",
+            "option_writer_cash_settlement",
+        }:
+            raise ValueError(
+                "Option lifecycle event requires option_writer_expiry or "
+                "option_writer_cash_settlement."
+            )
+        if lifecycle_event_type in {
+            "option_long_expiry",
+            "option_long_cash_settlement",
+        } and transaction_type != "maturity_redemption":
+            raise ValueError(
+                "Long option outcome requires maturity_redemption transaction type."
+            )
+        if lifecycle_event_type in {
+            "option_writer_expiry",
+            "option_writer_cash_settlement",
+        } and transaction_type != "lifecycle_event":
+            raise ValueError(
+                "Writer option outcome requires lifecycle_event transaction type."
+            )
+        option_lifecycle_event = lifecycle_event_type in {
+            "option_long_expiry",
+            "option_long_cash_settlement",
+            "option_writer_expiry",
+            "option_writer_cash_settlement",
+        }
+        if option_action is None and not option_lifecycle_event:
+            return
+
+        identity = option_contract_identity(transaction)
+        expiry_date = _parse_iso_date(identity.get("expiry_date"))
+        if expiry_date is None or event_date is None:
+            raise ValueError("Option event and contract expiry dates are required.")
+        if option_action is not None and event_date > expiry_date:
+            raise ValueError("Option transaction date must not follow contract expiry.")
+        if (
+            lifecycle_event_type
+            in {"option_long_expiry", "option_writer_expiry"}
+            and event_date < expiry_date
+        ):
+            raise ValueError("Option expiry event must not precede contract expiry.")
+        if lifecycle_event_type in {
+            "option_long_cash_settlement",
+            "option_writer_cash_settlement",
+        } and event_date > expiry_date:
+            raise ValueError("Option cash settlement must not follow contract expiry.")
+
+        gross_amount = _safe_float(transaction.get("gross_amount")) or 0.0
+        fees = _safe_float(transaction.get("fees")) or 0.0
+        taxes = _safe_float(transaction.get("taxes")) or 0.0
+        settlement_cash_account_id = str(
+            transaction.get("settlement_cash_account_id") or ""
+        ).strip()
+        charges = fees + taxes
+
+        if lifecycle_event_type in {
+            "option_long_cash_settlement",
+            "option_writer_cash_settlement",
+        }:
+            if gross_amount <= 1e-9:
+                raise ValueError("Option cash settlement requires positive gross_amount.")
+            if not settlement_cash_account_id:
+                raise ValueError("Option cash settlement requires settlement cash account.")
+        elif lifecycle_event_type == "option_writer_expiry":
+            if (
+                gross_amount > 1e-9
+                or charges > 1e-9
+                or settlement_cash_account_id
+            ):
+                raise ValueError("Option writer expiry must not carry cash amounts.")
+        elif lifecycle_event_type == "option_long_expiry":
+            if (
+                gross_amount > 1e-9
+                or charges > 1e-9
+                or settlement_cash_account_id
+            ):
+                raise ValueError("Long option expiry must not carry cash amounts.")
+        return
+
+    if contract_type != "fcn" or transaction_type != "maturity_redemption":
+        return
+    if lifecycle_event_type not in {"", "fcn_maturity"}:
+        return
+    terms = derivative_contract.get("terms")
+    maturity_date = _parse_iso_date(
+        terms.get("maturity_date") if isinstance(terms, dict) else None
+    )
+    if maturity_date is None or event_date is None:
+        raise ValueError("FCN event and contract maturity dates are required.")
+    if event_date < maturity_date:
+        raise ValueError("FCN maturity event must not precede contract maturity.")
 
 
 def _resolve_pricing_quote_map(
@@ -1425,7 +1544,20 @@ def derive_ledger_postings(
 
         if transaction_type == "lifecycle_event" and str(
             transaction.get("lifecycle_event_type") or ""
-        ) in {"option_writer_expiry", "option_assignment"}:
+        ) in {"option_writer_expiry", "option_writer_cash_settlement"}:
+            if (
+                str(transaction.get("lifecycle_event_type") or "")
+                == "option_writer_cash_settlement"
+                and isinstance(settlement_cash_account_id, str)
+                and settlement_cash_account_id
+            ):
+                append_posting(
+                    transaction,
+                    posting_role="security_settlement_cash",
+                    account_id=settlement_cash_account_id,
+                    cash_amount_delta=-(gross_amount + fees + taxes),
+                    currency=currency,
+                )
             for event in option_events_by_transaction.get(
                 str(transaction.get("transaction_id") or ""), []
             ):
@@ -1637,13 +1769,15 @@ def validate_transaction_position_history(
     """
 
     ordered_transactions = sorted(transactions, key=transaction_sort_key)
+    for transaction in ordered_transactions:
+        validate_derivative_contract_event(transaction)
     _build_position_state(
         ordered_transactions,
         account_cost_methods=account_cost_methods,
         corporate_actions=corporate_actions,
     )
     # Rebuild the durable writer-obligation subledger as part of the same
-    # history validation.  This catches partial-close/expiry/assignment
+    # history validation. This catches partial-close/expiry/cash-settlement
     # quantity errors before a transaction can be persisted.
     derive_option_obligation_events(ordered_transactions)
 

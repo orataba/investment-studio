@@ -37,7 +37,6 @@ def _instrument_ref(
     option_type: str = "call",
     option_expiry_date: str = "2026-12-18",
     option_contract_multiplier: str = "100",
-    option_settlement_type: str = "physical",
 ) -> dict[str, object]:
     if instrument_type in {"fcn", "option"}:
         raise ValueError("Derivative test fixtures must use a Portfolio contract.")
@@ -63,7 +62,6 @@ def _derivative_contract(
     option_type: str = "call",
     option_expiry_date: str = "2026-12-18",
     option_contract_multiplier: str = "100",
-    option_settlement_type: str = "physical",
     persisted: bool = True,
 ) -> dict[str, object]:
     if contract_type == "option":
@@ -75,7 +73,6 @@ def _derivative_contract(
             "expiry_date": option_expiry_date,
             "strike": option_strike,
             "contract_multiplier": option_contract_multiplier,
-            "settlement_type": option_settlement_type,
         }
     elif contract_type == "fcn":
         terms = {
@@ -131,7 +128,6 @@ def _transaction(
     option_type: str = "call",
     option_expiry_date: str = "2026-12-18",
     option_contract_multiplier: str = "100",
-    option_settlement_type: str = "physical",
 ) -> dict[str, object]:
     is_derivative = instrument_type in {"fcn", "option"}
     derivative_contract = (
@@ -145,7 +141,6 @@ def _transaction(
             option_type=option_type,
             option_expiry_date=option_expiry_date,
             option_contract_multiplier=option_contract_multiplier,
-            option_settlement_type=option_settlement_type,
         )
         if instrument_id and is_derivative and instrument_type
         else None
@@ -184,7 +179,6 @@ def _transaction(
                 option_type=option_type,
                 option_expiry_date=option_expiry_date,
                 option_contract_multiplier=option_contract_multiplier,
-                option_settlement_type=option_settlement_type,
             )
             if instrument_id and instrument_type and not is_derivative
             else None
@@ -338,14 +332,13 @@ def test_simulated_stock_fund_option_and_fcn_chain_uses_independent_facts() -> N
             "txn-7",
             "lifecycle_event",
             "2026-04-17",
-            settlement_cash_account_id=None,
             instrument_id="put-1",
             instrument_type="option",
             option_underlying_id="equity-1",
             option_type="put",
             quantity=2,
-            gross_amount=0,
-            lifecycle_event_type="option_assignment",
+            gross_amount=13_000,
+            lifecycle_event_type="option_writer_cash_settlement",
         ),
         _transaction(
             "txn-8",
@@ -425,8 +418,8 @@ def test_simulated_stock_fund_option_and_fcn_chain_uses_independent_facts() -> N
     assert "fcn-1" not in open_quantities
 
     obligations = build_option_obligations(transactions)
-    assert obligations[0]["status"] == "assigned"
-    assert obligations[0]["realized_pnl"] == pytest.approx(500)
+    assert obligations[0]["status"] == "cash_settled"
+    assert obligations[0]["realized_pnl"] == pytest.approx(-12_500)
     assert open_option_obligations(transactions) == []
 
     postings = derive_ledger_postings(
@@ -973,7 +966,7 @@ def test_independent_fcn_close_and_stock_buy_reconcile_to_nav(
     assert delivered_stock["carrying_value"] is None
 
 
-def test_long_option_exercise_close_and_stock_buy_are_independent_facts() -> None:
+def test_physical_long_option_delivery_is_recorded_as_cash_settlement_and_independent_stock_buy() -> None:
     accounts = [
         {
             "account_id": "broker",
@@ -1003,8 +996,8 @@ def test_long_option_exercise_close_and_stock_buy_are_independent_facts() -> Non
             instrument_id="option-long-1",
             instrument_type="option",
             quantity=1.0,
-            gross_amount=0.0,
-            lifecycle_event_type="option_long_exercise",
+            gross_amount=1_000.0,
+            lifecycle_event_type="option_long_cash_settlement",
             fees=2.0,
             taxes=1.0,
             option_underlying_id="equity-1",
@@ -1017,8 +1010,8 @@ def test_long_option_exercise_close_and_stock_buy_are_independent_facts() -> Non
             instrument_id="equity-1",
             instrument_type="equity",
             quantity=100.0,
-            price=100.0,
-            gross_amount=10_000.0,
+            price=110.0,
+            gross_amount=11_000.0,
             fees=4.0,
             taxes=1.0,
         ),
@@ -1045,9 +1038,9 @@ def test_long_option_exercise_close_and_stock_buy_are_independent_facts() -> Non
     )
     stock_lot = next(lot for lot in lots if lot["instrument_id"] == "equity-1")
     assert option_lot["status"] == "closed"
-    assert option_lot["realized_pnl"] == pytest.approx(-500.0)
+    assert option_lot["realized_pnl"] == pytest.approx(497.0)
     assert stock_lot["remaining_quantity"] == pytest.approx(100.0)
-    assert stock_lot["remaining_cost_basis"] == pytest.approx(10_005.0)
+    assert stock_lot["remaining_cost_basis"] == pytest.approx(11_005.0)
 
     postings = derive_ledger_postings(
         "portfolio",
@@ -1068,7 +1061,7 @@ def test_long_option_exercise_close_and_stock_buy_are_independent_facts() -> Non
         and posting["posting_role"] == "security_position"
     )
     assert option_release["cost_basis_delta"] == pytest.approx(-500.0)
-    assert stock_open["cost_basis_delta"] == pytest.approx(10_005.0)
+    assert stock_open["cost_basis_delta"] == pytest.approx(11_005.0)
 
 
 def test_written_option_partial_close_and_expiry_release_premium_basis() -> None:
@@ -1341,10 +1334,12 @@ def test_written_option_write_date_nav_changes_only_by_charges(
     assert write_day["ending_nav"] == pytest.approx(20_000.0)
     assert write_day["absolute_change"] == pytest.approx(-15.0)
     assert write_day["daily_twr"] == pytest.approx(20_000 / 20_015 - 1.0)
-    assert write_day["return_observation_eligible"] is False
-    assert write_day["return_observation_exclusion_reason"] == (
-        "event_valued_or_derivative_liability"
-    )
+    assert write_day["return_observation_eligible"] is True
+    assert write_day["return_observation_exclusion_reason"] is None
+    assert write_day["risk_scope_excluded_pnl"] == pytest.approx(-15.0)
+    assert write_day["market_risk_pnl"] == pytest.approx(0.0)
+    assert write_day["market_risk_daily_return"] == pytest.approx(0.0)
+    assert write_day["market_risk_return_observation_eligible"] is True
     assert write_day["total_position_count"] == 1
     assert write_day["priced_position_count"] == 1
     assert obligation_row["market_value_base"] == pytest.approx(-600.0)
@@ -1476,6 +1471,12 @@ def test_written_option_lifecycle_reconciles_portfolio_calculation_and_attributi
     assert close_day["realized_pnl"] == pytest.approx(197.0)
     assert close_day["expense_cash_amount"] == pytest.approx(18.0)
     assert close_day["ending_nav"] == pytest.approx(10_197.0)
+    assert write_day["risk_scope_excluded_pnl"] == pytest.approx(-15.0)
+    assert close_day["risk_scope_excluded_pnl"] == pytest.approx(182.0)
+    assert write_day["market_risk_pnl"] == pytest.approx(0.0)
+    assert close_day["market_risk_pnl"] == pytest.approx(0.0)
+    assert write_day["market_risk_daily_return"] == pytest.approx(0.0)
+    assert close_day["market_risk_daily_return"] == pytest.approx(0.0)
 
     for snapshot in (write_day, close_day):
         for axis in ("instrument", "account", "instrument_type", "currency"):
@@ -1549,11 +1550,15 @@ def test_written_option_lifecycle_reconciles_portfolio_calculation_and_attributi
     )
     assert performance_summary["annualized_twr"] is None
     assert performance_summary["irr"] is None
-    assert performance_summary["mean_daily_return"] is None
-    assert performance_summary["annualized_volatility"] is None
+    assert performance_summary["risk_metric_basis"] == "market_risk_return"
+    assert performance_summary["risk_scope_excluded_pnl"] == pytest.approx(182.0)
+    assert performance_summary["market_risk_pnl"] == pytest.approx(0.0)
+    assert performance_summary["market_risk_cumulative_return"] == pytest.approx(0.0)
+    assert performance_summary["mean_daily_return"] == pytest.approx(0.0)
+    assert performance_summary["annualized_volatility"] == pytest.approx(0.0)
     assert performance_summary["sharpe_ratio"] is None
-    assert performance_summary["current_drawdown"] is None
-    assert performance_summary["max_drawdown"] is None
+    assert performance_summary["current_drawdown"] == pytest.approx(0.0)
+    assert performance_summary["max_drawdown"] == pytest.approx(0.0)
 
     for axis in ("instrument", "account", "instrument_type", "currency"):
         report = performance.build_contribution_report(
@@ -1583,7 +1588,534 @@ def test_written_option_lifecycle_reconciles_portfolio_calculation_and_attributi
     assert option_line["expense_cash_amount"] == pytest.approx(15.0)
 
 
-def test_short_call_assignment_and_stock_sale_are_independent_facts() -> None:
+def test_market_risk_exclusion_counts_writer_close_charges_once() -> None:
+    contract = _derivative_contract(
+        "option-1",
+        "option",
+        option_underlying_id="equity-1",
+    )
+    entry = performance._sum_cumulative_market_risk_excluded_pnl(
+        [
+            {
+                "transaction_type": "buy",
+                "trade_date": "2026-01-01",
+                "position_effective_date": "2026-01-01",
+                "currency": "USD",
+                "gross_amount": 100.0,
+                "fees": 2.0,
+                "taxes": 1.0,
+                "derivative_contract": contract,
+            }
+        ],
+        as_of_date=date(2026, 1, 1),
+        derivative_lifecycle_realized_pnl=0.0,
+        derivative_lifecycle_coverage_complete=True,
+        derivative_lifecycle_stale_fx_flag=False,
+        base_currency="USD",
+        direct_fx_instruments={},
+        instrument_detail_cache={},
+    )
+    close = performance._sum_cumulative_market_risk_excluded_pnl(
+        [
+            {
+                "transaction_type": "option_buy_to_close",
+                "trade_date": "2026-01-02",
+                "position_effective_date": "2026-01-02",
+                "currency": "USD",
+                "gross_amount": 100.0,
+                "fees": 2.0,
+                "taxes": 1.0,
+                "derivative_contract": contract,
+            }
+        ],
+        as_of_date=date(2026, 1, 2),
+        derivative_lifecycle_realized_pnl=197.0,
+        derivative_lifecycle_coverage_complete=True,
+        derivative_lifecycle_stale_fx_flag=False,
+        base_currency="USD",
+        direct_fx_instruments={},
+        instrument_detail_cache={},
+    )
+
+    assert entry["excluded_pnl"] == pytest.approx(-3.0)
+    assert close["excluded_pnl"] == pytest.approx(197.0)
+
+
+def test_market_risk_return_excludes_long_option_cash_settlement_pnl(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    equity_detail = _equity_detail(
+        "equity-1",
+        [("2026-01-01", "100"), ("2026-01-02", "110")],
+    )
+    monkeypatch.setattr(
+        performance,
+        "get_registry_instrument_detail",
+        lambda instrument_id: deepcopy(equity_detail)
+        if instrument_id == "equity-1"
+        else None,
+    )
+    monkeypatch.setattr(
+        performance,
+        "get_platform_fx_rates",
+        lambda: {"supported_currencies": ["USD"], "rates": []},
+    )
+    portfolio = {
+        "portfolio_id": "portfolio",
+        "base_currency": "USD",
+        "valuation_timezone": "Asia/Shanghai",
+        "valuation_cutoff_policy": "latest_complete_eod",
+        "as_of_date": "2026-01-02",
+    }
+    accounts = [
+        {
+            "account_id": "cash",
+            "account_name": "Cash",
+            "account_type": "deposit_account",
+            "currency": "USD",
+        },
+        {
+            "account_id": "broker",
+            "account_name": "Broker",
+            "account_type": "securities_account",
+            "currency": "USD",
+            "cost_basis_method": "fifo",
+        },
+    ]
+    transactions = [
+        _transaction(
+            "txn-0",
+            "deposit",
+            "2026-01-01",
+            account_id="cash",
+            settlement_cash_account_id=None,
+            gross_amount=10_000.0,
+        ),
+        _transaction(
+            "txn-1",
+            "buy",
+            "2026-01-01",
+            instrument_id="equity-1",
+            instrument_type="equity",
+            quantity=50.0,
+            price=100.0,
+            gross_amount=5_000.0,
+        ),
+        _transaction(
+            "txn-2",
+            "buy",
+            "2026-01-01",
+            instrument_id="option-long-1",
+            instrument_type="option",
+            option_underlying_id="equity-1",
+            quantity=1.0,
+            price=5.0,
+            gross_amount=500.0,
+        ),
+        _transaction(
+            "txn-3",
+            "maturity_redemption",
+            "2026-01-02",
+            instrument_id="option-long-1",
+            instrument_type="option",
+            option_underlying_id="equity-1",
+            quantity=1.0,
+            gross_amount=1_000.0,
+            lifecycle_event_type="option_long_cash_settlement",
+        ),
+    ]
+
+    settlement_day = performance.build_daily_portfolio_snapshots(
+        portfolio,
+        accounts,
+        transactions,
+        start_date=date(2026, 1, 1),
+        end_date=date(2026, 1, 2),
+    )[1]
+
+    assert settlement_day["ending_nav"] == pytest.approx(11_000.0)
+    assert settlement_day["delta"] == pytest.approx(1_000.0)
+    assert settlement_day["daily_twr"] == pytest.approx(0.10)
+    assert settlement_day["derivative_lifecycle_realized_pnl"] == pytest.approx(500.0)
+    assert settlement_day["risk_scope_excluded_pnl"] == pytest.approx(500.0)
+    assert settlement_day["market_risk_pnl"] == pytest.approx(500.0)
+    assert settlement_day["market_risk_daily_return"] == pytest.approx(0.05)
+    assert settlement_day["market_risk_return_observation_eligible"] is True
+
+    contribution = performance.build_contribution_report(
+        portfolio,
+        accounts,
+        transactions,
+        start_date=date(2026, 1, 1),
+        end_date=date(2026, 1, 2),
+        axis="instrument",
+    )
+    settlement_slices = {
+        str(item["group_key"]): item
+        for item in contribution["daily_slices"]
+        if item["as_of_date"] == date(2026, 1, 2)
+    }
+    assert settlement_slices["option-long-1"]["market_risk_total_pnl"] == (
+        pytest.approx(0.0)
+    )
+    assert settlement_slices["option-long-1"][
+        "market_risk_return_observation_eligible"
+    ] is False
+    assert settlement_slices["equity-1"]["market_risk_total_pnl"] == (
+        pytest.approx(500.0)
+    )
+    assert settlement_slices["equity-1"]["market_risk_daily_contribution"] == (
+        pytest.approx(0.05)
+    )
+
+
+@pytest.mark.parametrize(
+    ("open_type", "outcome_type", "lifecycle_event_type", "gross_amount", "expected_nav"),
+    [
+        (
+            "buy",
+            "maturity_redemption",
+            "option_long_cash_settlement",
+            1_000.0,
+            10_500.0,
+        ),
+        (
+            "option_write",
+            "lifecycle_event",
+            "option_writer_cash_settlement",
+            1_000.0,
+            9_300.0,
+        ),
+    ],
+)
+def test_delayed_option_cash_settlement_does_not_create_market_risk_return(
+    monkeypatch: pytest.MonkeyPatch,
+    open_type: str,
+    outcome_type: str,
+    lifecycle_event_type: str,
+    gross_amount: float,
+    expected_nav: float,
+) -> None:
+    monkeypatch.setattr(
+        performance,
+        "get_platform_fx_rates",
+        lambda: {"supported_currencies": ["USD"], "rates": []},
+    )
+    portfolio = {
+        "portfolio_id": "portfolio",
+        "base_currency": "USD",
+        "valuation_timezone": "Asia/Shanghai",
+        "valuation_cutoff_policy": "latest_complete_eod",
+        "as_of_date": "2026-01-04",
+    }
+    accounts = [
+        {
+            "account_id": "cash",
+            "account_name": "Cash",
+            "account_type": "deposit_account",
+            "currency": "USD",
+        },
+        {
+            "account_id": "broker",
+            "account_name": "Broker",
+            "account_type": "securities_account",
+            "currency": "USD",
+            "cost_basis_method": "fifo",
+        },
+    ]
+    open_amount = 500.0 if open_type == "buy" else 300.0
+    outcome = _transaction(
+        "txn-2",
+        outcome_type,
+        "2026-01-02",
+        instrument_id="option-1",
+        instrument_type="option",
+        option_underlying_id="equity-1",
+        quantity=1.0,
+        gross_amount=gross_amount,
+        lifecycle_event_type=lifecycle_event_type,
+    )
+    outcome["settlement_date"] = "2026-01-04"
+    transactions = [
+        _transaction(
+            "txn-0",
+            "deposit",
+            "2026-01-01",
+            account_id="cash",
+            settlement_cash_account_id=None,
+            gross_amount=10_000.0,
+        ),
+        _transaction(
+            "txn-1",
+            open_type,
+            "2026-01-01",
+            instrument_id="option-1",
+            instrument_type="option",
+            option_underlying_id="equity-1",
+            quantity=1.0,
+            gross_amount=open_amount,
+        ),
+        outcome,
+    ]
+
+    snapshots = performance.build_daily_portfolio_snapshots(
+        portfolio,
+        accounts,
+        transactions,
+        start_date=date(2026, 1, 1),
+        end_date=date(2026, 1, 4),
+    )
+    outcome_day = snapshots[1]
+    settlement_day = snapshots[3]
+    expected_pending = 1_000.0 if open_type == "buy" else -1_000.0
+
+    assert outcome_day["ending_nav"] == pytest.approx(expected_nav)
+    assert outcome_day["pending_settlement"] == pytest.approx(expected_pending)
+    assert outcome_day["market_risk_pnl"] == pytest.approx(0.0)
+    assert outcome_day["market_risk_return_coverage_state"] == "unavailable"
+    assert outcome_day["market_risk_return_observation_eligible"] is False
+    assert settlement_day["ending_nav"] == pytest.approx(expected_nav)
+    assert settlement_day["delta"] == pytest.approx(0.0)
+    assert settlement_day["pending_settlement"] == pytest.approx(0.0)
+    assert settlement_day["market_risk_pnl"] == pytest.approx(0.0)
+
+
+def test_market_risk_return_keeps_security_income_and_excludes_fcn_coupon_and_cash_interest(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    equity_detail = _equity_detail(
+        "equity-1",
+        [("2026-01-01", "100"), ("2026-01-02", "100")],
+    )
+    monkeypatch.setattr(
+        performance,
+        "get_registry_instrument_detail",
+        lambda instrument_id: deepcopy(equity_detail)
+        if instrument_id == "equity-1"
+        else None,
+    )
+    monkeypatch.setattr(
+        performance,
+        "get_platform_fx_rates",
+        lambda: {"supported_currencies": ["USD"], "rates": []},
+    )
+    portfolio = {
+        "portfolio_id": "portfolio",
+        "base_currency": "USD",
+        "valuation_timezone": "Asia/Shanghai",
+        "valuation_cutoff_policy": "latest_complete_eod",
+        "as_of_date": "2026-01-02",
+    }
+    accounts = [
+        {
+            "account_id": "cash",
+            "account_name": "Cash",
+            "account_type": "deposit_account",
+            "currency": "USD",
+        },
+        {
+            "account_id": "broker",
+            "account_name": "Broker",
+            "account_type": "securities_account",
+            "currency": "USD",
+            "cost_basis_method": "fifo",
+        },
+    ]
+    transactions = [
+        _transaction(
+            "txn-0",
+            "deposit",
+            "2026-01-01",
+            account_id="cash",
+            settlement_cash_account_id=None,
+            gross_amount=30_000.0,
+        ),
+        _transaction(
+            "txn-1",
+            "buy",
+            "2026-01-01",
+            instrument_id="equity-1",
+            instrument_type="equity",
+            quantity=100.0,
+            price=100.0,
+            gross_amount=10_000.0,
+        ),
+        _transaction(
+            "txn-2",
+            "buy",
+            "2026-01-01",
+            instrument_id="fcn-1",
+            instrument_type="fcn",
+            quantity=1.0,
+            price=10_000.0,
+            gross_amount=10_000.0,
+        ),
+        _transaction(
+            "txn-3",
+            "dividend",
+            "2026-01-02",
+            instrument_id="equity-1",
+            instrument_type="equity",
+            gross_amount=100.0,
+        ),
+        _transaction(
+            "txn-4",
+            "coupon",
+            "2026-01-02",
+            instrument_id="fcn-1",
+            instrument_type="fcn",
+            gross_amount=100.0,
+        ),
+        _transaction(
+            "txn-5",
+            "interest",
+            "2026-01-02",
+            account_id="cash",
+            settlement_cash_account_id=None,
+            gross_amount=100.0,
+        ),
+    ]
+
+    income_day = performance.build_daily_portfolio_snapshots(
+        portfolio,
+        accounts,
+        transactions,
+        start_date=date(2026, 1, 1),
+        end_date=date(2026, 1, 2),
+    )[1]
+
+    assert income_day["ending_nav"] == pytest.approx(30_300.0)
+    assert income_day["delta"] == pytest.approx(300.0)
+    assert income_day["income_cash_amount"] == pytest.approx(300.0)
+    assert income_day["daily_twr"] == pytest.approx(0.01)
+    assert income_day["risk_scope_excluded_pnl"] == pytest.approx(200.0)
+    assert income_day["market_risk_pnl"] == pytest.approx(100.0)
+    assert income_day["market_risk_daily_return"] == pytest.approx(100.0 / 30_000.0)
+
+    contribution = performance.build_contribution_report(
+        portfolio,
+        accounts,
+        transactions,
+        start_date=date(2026, 1, 1),
+        end_date=date(2026, 1, 2),
+        axis="instrument",
+    )
+    income_slices = {
+        str(item["group_key"]): item
+        for item in contribution["daily_slices"]
+        if item["as_of_date"] == date(2026, 1, 2)
+    }
+    assert income_slices["equity-1"]["market_risk_total_pnl"] == pytest.approx(
+        100.0
+    )
+    assert income_slices["equity-1"]["market_risk_daily_contribution"] == (
+        pytest.approx(100.0 / 30_000.0)
+    )
+    assert income_slices["fcn-1"]["market_risk_total_pnl"] == pytest.approx(0.0)
+    assert income_slices["fcn-1"][
+        "market_risk_return_observation_eligible"
+    ] is False
+    assert income_slices["cash"]["market_risk_total_pnl"] == pytest.approx(0.0)
+    assert income_slices["cash"][
+        "market_risk_return_observation_eligible"
+    ] is False
+
+
+def test_market_risk_is_unavailable_without_any_modeled_market_asset(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        performance,
+        "get_platform_fx_rates",
+        lambda: {"supported_currencies": ["USD"], "rates": []},
+    )
+    portfolio = {
+        "portfolio_id": "portfolio",
+        "base_currency": "USD",
+        "valuation_timezone": "Asia/Shanghai",
+        "valuation_cutoff_policy": "latest_complete_eod",
+        "as_of_date": "2026-01-02",
+    }
+    accounts = [
+        {
+            "account_id": "cash",
+            "account_name": "Cash",
+            "account_type": "deposit_account",
+            "currency": "USD",
+        },
+        {
+            "account_id": "broker",
+            "account_name": "Broker",
+            "account_type": "securities_account",
+            "currency": "USD",
+            "cost_basis_method": "fifo",
+        },
+    ]
+    transactions = [
+        _transaction(
+            "txn-0",
+            "deposit",
+            "2026-01-01",
+            account_id="cash",
+            settlement_cash_account_id=None,
+            gross_amount=10_000.0,
+        ),
+        _transaction(
+            "txn-1",
+            "buy",
+            "2026-01-01",
+            instrument_id="fcn-1",
+            instrument_type="fcn",
+            quantity=1.0,
+            price=10_000.0,
+            gross_amount=10_000.0,
+        ),
+        _transaction(
+            "txn-2",
+            "coupon",
+            "2026-01-02",
+            instrument_id="fcn-1",
+            instrument_type="fcn",
+            gross_amount=100.0,
+        ),
+    ]
+
+    coupon_day = performance.build_daily_portfolio_snapshots(
+        portfolio,
+        accounts,
+        transactions,
+        start_date=date(2026, 1, 1),
+        end_date=date(2026, 1, 2),
+    )[1]
+
+    assert coupon_day["daily_twr"] == pytest.approx(0.01)
+    assert coupon_day["market_risk_pnl"] == pytest.approx(0.0)
+    assert coupon_day["market_risk_return_coverage_state"] == "unavailable"
+    assert coupon_day["market_risk_return_observation_eligible"] is False
+    assert coupon_day["market_risk_return_observation_exclusion_reason"] == (
+        "no_modeled_market_assets"
+    )
+
+    contribution = performance.build_contribution_report(
+        portfolio,
+        accounts,
+        transactions,
+        start_date=date(2026, 1, 1),
+        end_date=date(2026, 1, 2),
+        axis="instrument",
+    )
+    coupon_slices = {
+        str(item["group_key"]): item
+        for item in contribution["daily_slices"]
+        if item["as_of_date"] == date(2026, 1, 2)
+    }
+    assert coupon_slices["fcn-1"]["market_risk_total_pnl"] == pytest.approx(0.0)
+    assert coupon_slices["fcn-1"][
+        "market_risk_return_observation_eligible"
+    ] is False
+
+
+def test_physical_short_call_delivery_is_recorded_as_cash_settlement_and_independent_stock_sale() -> None:
     transactions = [
         _transaction(
             "txn-1",
@@ -1609,12 +2141,11 @@ def test_short_call_assignment_and_stock_sale_are_independent_facts() -> None:
             "txn-3",
             "lifecycle_event",
             "2026-02-01",
-            settlement_cash_account_id=None,
             instrument_id="option-1",
             instrument_type="option",
             quantity=1.0,
-            gross_amount=0.0,
-            lifecycle_event_type="option_assignment",
+            gross_amount=1_000.0,
+            lifecycle_event_type="option_writer_cash_settlement",
             option_underlying_id="equity-1",
         ),
         _transaction(
@@ -1624,8 +2155,8 @@ def test_short_call_assignment_and_stock_sale_are_independent_facts() -> None:
             instrument_id="equity-1",
             instrument_type="equity",
             quantity=100.0,
-            price=110.0,
-            gross_amount=11_000.0,
+            price=120.0,
+            gross_amount=12_000.0,
         ),
     ]
 
@@ -1653,7 +2184,7 @@ def test_short_call_assignment_and_stock_sale_are_independent_facts() -> None:
         if posting["transaction_id"] == "txn-2"
         and posting["posting_role"] == "option_premium_liability"
     )
-    assignment_release_posting = next(
+    settlement_release_posting = next(
         posting
         for posting in postings
         if posting["transaction_id"] == "txn-3"
@@ -1662,8 +2193,8 @@ def test_short_call_assignment_and_stock_sale_are_independent_facts() -> None:
     assert writer_cash_posting["cash_amount_delta"] == pytest.approx(300.0)
     assert writer_liability_posting["liability_amount_delta"] == pytest.approx(300.0)
     assert writer_liability_posting["realized_pnl_delta"] == pytest.approx(0.0)
-    assert assignment_release_posting["liability_amount_delta"] == pytest.approx(-300.0)
-    assert assignment_release_posting["realized_pnl_delta"] == pytest.approx(300.0)
+    assert settlement_release_posting["liability_amount_delta"] == pytest.approx(-300.0)
+    assert settlement_release_posting["realized_pnl_delta"] == pytest.approx(-700.0)
 
     independently_entered_stock_sale = [dict(item) for item in transactions]
     independently_entered_stock_sale[-1]["quantity"] = 99.0
@@ -1698,7 +2229,7 @@ def test_short_call_assignment_and_stock_sale_are_independent_facts() -> None:
         )
 
 
-def test_partial_assignment_preserves_remaining_short_option_position() -> None:
+def test_partial_cash_settlement_preserves_remaining_short_option_position() -> None:
     transactions = [
         _transaction(
             "txn-1",
@@ -1724,12 +2255,11 @@ def test_partial_assignment_preserves_remaining_short_option_position() -> None:
             "txn-3",
             "lifecycle_event",
             "2026-02-01",
-            settlement_cash_account_id=None,
             instrument_id="option-1",
             instrument_type="option",
             quantity=1.0,
-            gross_amount=0.0,
-            lifecycle_event_type="option_assignment",
+            gross_amount=1_000.0,
+            lifecycle_event_type="option_writer_cash_settlement",
             option_underlying_id="equity-1",
         ),
         _transaction(
@@ -1739,8 +2269,8 @@ def test_partial_assignment_preserves_remaining_short_option_position() -> None:
             instrument_id="equity-1",
             instrument_type="equity",
             quantity=100.0,
-            price=110.0,
-            gross_amount=11_000.0,
+            price=120.0,
+            gross_amount=12_000.0,
         ),
     ]
 
@@ -1749,22 +2279,22 @@ def test_partial_assignment_preserves_remaining_short_option_position() -> None:
         transactions,
         account_cost_methods={"broker": "fifo"},
     )
-    assignment_event = next(
+    settlement_event = next(
         event
         for event in derive_option_obligation_events(transactions)
         if event["transaction_id"] == "txn-3"
     )
     obligation = build_option_obligations(transactions)[0]
-    assert assignment_event["released_quantity"] == pytest.approx(1.0)
-    assert assignment_event["released_premium_basis"] == pytest.approx(300.0)
-    assert assignment_event["realized_pnl_delta"] == pytest.approx(300.0)
+    assert settlement_event["released_quantity"] == pytest.approx(1.0)
+    assert settlement_event["released_premium_basis"] == pytest.approx(300.0)
+    assert settlement_event["realized_pnl_delta"] == pytest.approx(-700.0)
     assert obligation["status"] == "open"
     assert obligation["remaining_quantity"] == pytest.approx(1.0)
     assert obligation["open_contract_quantity"] == pytest.approx(1.0)
     assert obligation["required_underlying_quantity"] == pytest.approx(100.0)
     assert obligation["premium_basis_remaining"] == pytest.approx(300.0)
     assert obligation["carrying_liability"] == pytest.approx(300.0)
-    assert obligation["realized_pnl"] == pytest.approx(300.0)
+    assert obligation["realized_pnl"] == pytest.approx(-700.0)
 
     independent_sale = [
         *transactions,
@@ -1819,7 +2349,7 @@ def test_transaction_csv_preserves_source_precision_and_formula_safety() -> None
     assert rows[0].transaction.note == "=unsafe formula"
 
 
-def test_csv_api_imports_short_option_and_independent_assignment_facts(client) -> None:
+def test_csv_api_imports_short_option_cash_settlement_and_independent_stock_trade(client) -> None:
     account_response = client.patch(
         "/api/portfolios/portfolio-ops/accounts/broker-us-core",
         json={"allowed_instrument_types": ["equity", "fund", "etf", "option"]},
@@ -1833,7 +2363,7 @@ def test_csv_api_imports_short_option_and_independent_assignment_facts(client) -
                 "settlement_cash_account_id,derivative_contract_id,"
                 "derivative_contract_name,derivative_contract_type,"
                 "option_underlying_instrument_id,option_type,option_expiry_date,"
-                "option_strike,option_contract_multiplier,option_settlement_type,"
+                "option_strike,option_contract_multiplier,"
                 "quantity,price,"
                 "gross_amount,fees,taxes,currency,source_system,"
                 "external_reference"
@@ -1841,7 +2371,7 @@ def test_csv_api_imports_short_option_and_independent_assignment_facts(client) -
             (
                 "option_write,2026-05-01,2026-05-01,broker-us-core,"
                 "cash-usd-main,option-short-call-1,ABBV Dec 220 Call,option,"
-                "equity-us-abbv,call,2026-12-18,220,100,physical,1,5,"
+                "equity-us-abbv,call,2026-12-18,220,100,1,5,"
                 "500,0,0,USD,colleague_project,CALL-001-WRITE"
             ),
         ]
@@ -1890,7 +2420,7 @@ def test_csv_api_imports_short_option_and_independent_assignment_facts(client) -
     assert download.status_code == 200
     assert "CALL-001-WRITE" in download.text
 
-    assignment_csv = "\n".join(
+    settlement_csv = "\n".join(
         [
             (
                 "transaction_type,lifecycle_event_type,trade_date,settlement_date,"
@@ -1899,53 +2429,54 @@ def test_csv_api_imports_short_option_and_independent_assignment_facts(client) -
                 "taxes,currency,source_system,external_reference"
             ),
             (
-                "lifecycle_event,option_assignment,2026-05-10,2026-05-10,"
-                "broker-us-core,,,option-short-call-1,1,,0,0,0,USD,colleague_project,"
-                "CALL-001-ASSIGNMENT"
+                "lifecycle_event,option_writer_cash_settlement,2026-05-10,2026-05-10,"
+                "broker-us-core,cash-usd-main,,option-short-call-1,1,,1000,0,0,USD,colleague_project,"
+                "CALL-001-CASH-SETTLEMENT"
             ),
             (
                 "sell,,2026-05-10,2026-05-10,broker-us-core,cash-usd-main,"
-                "equity-us-abbv,,100,220,22000,0,0,USD,"
+                "equity-us-abbv,,100,230,23000,0,0,USD,"
                 "colleague_project,CALL-001-DELIVERY"
             ),
         ]
     )
-    assignment_preview_response = client.post(
+    settlement_preview_response = client.post(
         "/api/portfolios/portfolio-ops/transactions/csv/preview",
-        json={"csv_text": assignment_csv},
+        json={"csv_text": settlement_csv},
     )
-    assert assignment_preview_response.status_code == 200
-    assignment_preview = assignment_preview_response.json()
-    assert assignment_preview["error_count"] == 0, (
-        assignment_preview["rows"],
-        assignment_preview["batch_errors"],
+    assert settlement_preview_response.status_code == 200
+    settlement_preview = settlement_preview_response.json()
+    assert settlement_preview["error_count"] == 0, (
+        settlement_preview["rows"],
+        settlement_preview["batch_errors"],
     )
-    assignment_import = client.post(
+    settlement_import = client.post(
         "/api/portfolios/portfolio-ops/transactions/csv/import",
-        headers={"Idempotency-Key": "csv-option-assignment-1"},
+        headers={"Idempotency-Key": "csv-option-cash-settlement-1"},
         json={
-            "csv_text": assignment_csv,
-            "preview_digest": assignment_preview["preview_digest"],
+            "csv_text": settlement_csv,
+            "preview_digest": settlement_preview["preview_digest"],
         },
     )
-    assert assignment_import.status_code == 200
-    assignment_transactions = assignment_import.json()["transactions"]
-    assert assignment_transactions[1]["position_effective_date"] == "2026-05-10"
-    assignment_id = assignment_transactions[0]["transaction_id"]
+    assert settlement_import.status_code == 200
+    settlement_transactions = settlement_import.json()["transactions"]
+    assert settlement_transactions[0]["net_cash_effect"] == pytest.approx(-1_000.0)
+    assert settlement_transactions[1]["position_effective_date"] == "2026-05-10"
+    settlement_id = settlement_transactions[0]["transaction_id"]
     expected_row_versions = {
-        assignment_transactions[0]["transaction_id"]: assignment_transactions[0]["row_version"]
+        settlement_transactions[0]["transaction_id"]: settlement_transactions[0]["row_version"]
     }
 
     workspace_response = client.get(
         "/api/portfolios/portfolio-ops/transactions/workspace",
-        params={"transaction_id": assignment_id},
+        params={"transaction_id": settlement_id},
     )
     assert workspace_response.status_code == 200
     assert workspace_response.json()["delete_scope_row_versions"] == expected_row_versions
 
     delete_response = client.request(
         "DELETE",
-        f"/api/portfolios/portfolio-ops/transactions/{assignment_id}",
+        f"/api/portfolios/portfolio-ops/transactions/{settlement_id}",
         json={"expected_row_versions": expected_row_versions},
     )
     assert delete_response.status_code == 200
@@ -2000,7 +2531,6 @@ def test_inline_derivative_contract_rejects_unknown_registry_underlying(client) 
                     "expiry_date": "2026-12-18",
                     "strike": 100,
                     "contract_multiplier": 100,
-                    "settlement_type": "physical",
                 },
             },
             "quantity": 1,
@@ -2041,7 +2571,6 @@ def test_derivative_contract_external_reference_is_unique_within_portfolio(
                     "expiry_date": "2026-12-18",
                     "strike": 200,
                     "contract_multiplier": 100,
-                    "settlement_type": "physical",
                 },
             },
             "quantity": 1,
@@ -2106,7 +2635,6 @@ def test_derivative_contract_identity_is_scoped_to_its_portfolio(client) -> None
                     "expiry_date": "2026-12-18",
                     "strike": 200,
                     "contract_multiplier": 100,
-                    "settlement_type": "physical",
                 },
             },
             "quantity": 1,
@@ -2227,21 +2755,52 @@ def test_transaction_contract_distinguishes_long_and_writer_option_events() -> N
             "currency": "USD",
         }
     )
-    writer_assignment = TransactionCreateRequest.model_validate(
+    writer_cash_settlement = TransactionCreateRequest.model_validate(
         {
             "transaction_type": "lifecycle_event",
-            "lifecycle_event_type": "option_assignment",
+            "lifecycle_event_type": "option_writer_cash_settlement",
             "trade_date": "2026-06-01",
             "account_id": "broker",
             "derivative_contract_id": "option-short-1",
             "quantity": 1,
-            "gross_amount": 0,
+            "settlement_cash_account_id": "cash",
+            "gross_amount": 100,
             "currency": "USD",
         }
     )
 
     assert long_expiry.gross_amount == 0
-    assert writer_assignment.quantity == 1
+    assert writer_cash_settlement.quantity == 1
+
+
+@pytest.mark.parametrize(
+    ("transaction_type", "lifecycle_event_type", "error_pattern"),
+    [
+        ("maturity_redemption", None, "requires option_long_expiry"),
+        ("lifecycle_event", None, "requires option_writer_expiry"),
+        ("sell", "option_long_expiry", "requires maturity_redemption"),
+        ("sell", "option_writer_expiry", "requires lifecycle_event"),
+    ],
+)
+def test_option_outcome_requires_explicit_matching_transaction_type(
+    transaction_type: str,
+    lifecycle_event_type: str | None,
+    error_pattern: str,
+) -> None:
+    transaction = _transaction(
+        "txn-0",
+        transaction_type,
+        "2026-12-18",
+        instrument_id="option-1",
+        instrument_type="option",
+        option_underlying_id="equity-1",
+        quantity=1.0,
+        gross_amount=0.0,
+        lifecycle_event_type=lifecycle_event_type,
+    )
+
+    with pytest.raises(ValueError, match=error_pattern):
+        ledger.validate_derivative_contract_event(transaction)
 
 
 def test_transaction_contract_rejects_removed_derivative_grouping_fields() -> None:

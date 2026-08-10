@@ -238,7 +238,7 @@ Transactions 是组合事实入口。新增交易前确认账户、资产、币�
 - `coupon`：FCN 利息收入。需要 FCN 本地合约，可填写 entitlement date。
 - `interest`：现金账户利息。不关联 instrument。
 - `return_of_capital`：资本返还。需要基金或股票 instrument，不能超过对应持仓成本基础。
-- `maturity_redemption`：FCN 正常到期、敲入或敲出关闭，也可用于 long option expiry；需要相应本地合约。
+- `maturity_redemption`：FCN 正常到期、敲入或敲出关闭；long option 仅可与明确的 `option_long_expiry` 或 `option_long_cash_settlement` 配对使用。所有情形都需要相应本地合约。
 - `fee`：费用。可作为现金账户费用，也可关联证券账户和 instrument。
 - `tax`：税费。规则与 fee 类似。
 - `deposit`：外部入金，只用于现金账户。
@@ -250,9 +250,9 @@ Transactions 是组合事实入口。新增交易前确认账户、资产、币�
 FCN 与期权使用 Portfolio 本地合约，不从 Platform instrument 列表中选择一个“衍生品资产”：
 
 - 首笔 FCN/期权交易同时创建不可变合约，记录合约名称、币种、账户和条款；后续交易及生命周期事件只选择同一 `derivative_contract_id`。
-- 期权支持 long buy/sell、short write/buy-to-close，以及 expiry、exercise、writer expiry、assignment 等关闭事件；数量单位是合约张数，premium gross amount 按张数、每单位权利金和 multiplier 计算。
+- 期权支持 long buy/sell、short write/buy-to-close，以及 long/writer expiry、long/writer cash settlement；数量单位是合约张数，premium gross amount 按张数、每单位权利金和 multiplier 计算。合约不预设现金或实物结算方式。
 - FCN 支持买入、coupon，以及 normal maturity、knock-in、knock-out 关闭结果。系统记录事件，不自动验证障碍是否触发，也不把交付资产与关闭事件绑定成一笔复合交易。
-- 一行只记录一个经济事实。期权行权后的股票买卖、FCN 敲入后的资产接收要分别录入普通证券交易；需要关联说明时写 note，不建立隐含配对。
+- 一行只记录一个经济事实。若实际发生期权实物交割，按“期权现金结算 + 交割日市场/参考价的独立股票买卖”录入；两者共同还原交割经济结果，但系统不建立关联。FCN 敲入后的资产接收也另录普通证券交易。
 - 合约条款创建后不可修改；录错时应撤销错误交易并创建新的合约身份，不能改写历史条款。
 
 买入、卖出和证券期初持仓以 quantity 与 gross amount 作为份额和成交金额事实，隐含成交价按 `gross amount / quantity / price scale` 计算；输入 price 可以是该隐含价格保留四位小数的展示值。系统接受精确乘积或与隐含价格四位小数一致的价格，但不会用舍入后的 `quantity × price` 反写 gross amount。普通 Registry 证券的 price scale 为 `1`；期权由本地合约 multiplier 决定。卖出、合约关闭和仓位转移会校验可用数量。分红、FCN 利息、费用、税费等若带 entitlement date，日期不能晚于 trade date。settlement date 不能早于 trade date。
@@ -274,11 +274,11 @@ Holdings 的指标分成两种主要口径：
 
 普通 dividend / coupon 是 entitlement-date 已实现 `Income`，不进入 Unrealized P&L；分红再投资同时确认 Income 并以再投资金额建立新 lot；只有 `return_of_capital` 冲减剩余成本。
 
-FCN 和 long option 在已记录事件之间按 transaction cost carrying；short option 以剩余 premium liability 进入 NAV。它们不接收实时行情，不计算日常未实现盈亏、协方差、Risk Budget 或 Research 序列；相关现金、费用、coupon 和已实现盈亏仍完整进入组合 NAV 与绩效。
+FCN 和 long option 在已记录事件之间按 transaction cost carrying；short option 以剩余 premium liability 进入 NAV。它们不接收实时行情，不计算日常未实现盈亏、协方差、Risk Budget 或 Research 序列；相关现金、费用、coupon 和已实现盈亏仍完整进入组合 NAV 与经营绩效。市场风险收益链会把衍生品现金结果、FCN coupon 和衍生品费用从风险收益分子中剔除，并把衍生品资本与本币现金一样保留在总 NAV 分母中，作为 0-return capital。
 
 主表始终分为 `Securities`、`Derivatives`、`Cash & Settlement` 三个固定区段。`Group By` 由底层限定为只对 Securities 做 taxonomy、instrument type、currency 等二级分组；衍生品与现金不分类，Taxonomy 列显示 `N/A`。导出始终包含 `Category`，启用证券分组时才增加 `Group`。
 
-Group、Non-cash subtotal 和 `Portfolio Total` 仍然是**当前持仓篮子**：金额加总、比例用组级分子分母重算；Return 用当前 base-market-value 权重合成；Vol / Drawdown 用内部连续、起止完全一致且尾部仍新鲜的共同历史区间先生成当前权重篮子路径再算；Forward RC 只加总相对于同一全组合风险分母的贡献。当前成员收益或市值覆盖不足、return currency 无法统一、共同路径中间缺段或整条路径已经陈旧时显示 `—`，不剔除缺失成员后重新归一。Holding Since、Quantity、Avg Cost、Quote、Accounts、Chart、Coverage 和 Held Max DD 等没有稳定分组含义的字段只在 instrument row 展示。
+Group、Non-cash subtotal 和 `Portfolio Total` 仍然是**当前持仓篮子**：金额加总、比例用组级分子分母重算；Return 用当前 base-market-value 权重合成；Vol / Drawdown 用内部连续、起止完全一致且尾部仍新鲜的共同历史区间先生成当前权重篮子路径再算。Group 与 subtotal 使用各自篮子净市值分母，`Portfolio Total` 使用 total NAV；衍生品与本币现金在所在 scope 内按 0 return 保留。Forward RC 统一使用 total-NAV 权重，并加总相对于同一组合方差的贡献。非本币现金仍需要兑本币 FX 收益。当前成员收益或市值覆盖不足、return currency 无法统一、共同路径中间缺段或整条路径已经陈旧时显示 `—`，不剔除缺失成员后重新归一。Holding Since、Quantity、Avg Cost、Quote、Accounts、Chart、Coverage 和 Held Max DD 等没有稳定分组含义的字段只在 instrument row 展示。
 
 `Portfolio Total` 的上述 Return 不是组合实际 TWR；组合真实历史表现仍到 Performance 查看。相同 instrument、相同 as-of 和 total-return basis 下，Holdings 行级窗口收益应与 Watchlist 相同，但两个 app 各自计算、互不调用。完整字段标准见 [Holdings 字段计算与分组标准](../apps/portfolio/docs/03_HOLDINGS_FIELD_REFERENCE.md)。
 
@@ -301,7 +301,7 @@ Overview 的质量提示只在检测到实际问题时出现，并给出受影�
 
 ### 6.6 Performance
 
-Performance 用于真实组合区间复盘。核心口径是日频 TWR、期间 P&L、资金流、贡献拆分和分组归因。
+Performance 用于真实组合区间复盘。核心口径是日频经营 TWR、期间 P&L、资金流、贡献拆分和分组归因；波动率、Sharpe、Sortino、Calmar 和风险回撤则统一读取独立的 `Market Risk Return` 链。
 
 组合已经存在时，Performance 选择 `1 日` 到 `7 日` 表示 1 日收盘到 7 日收盘，收益从 2 日开始链接；1 日发生的交易和现金流已经体现在期初状态，不会在期间内重复计算。相同起止日是 0 长度区间。例外是请求起点正好等于 funded-segment start：组合首次入金日，或 NAV 真正归零后的再次入金日，会计入该日 BOD-to-EOD 收益。保留的现金即使无收益也仍属于组合 NAV，不算归零；后来某日新买一项资产也不算组合重新成立。要包含普通买入日至收盘的收益，需要把起始日选为前一日。若跨越连续零 NAV 的无资本空档，系统不会伪造零收益并强行链接，而会把整段 TWR 标记为不完整，归零前后分别计算。MTD、QTD、YTD 分别从上月末、上季末、上年 12 月 31 日的收盘状态开始；目标日休市时，组合使用该日完整 EOD 状态，标的和 benchmark 使用不晚于目标日的最近有效收盘。
 
@@ -324,11 +324,13 @@ Performance 用于真实组合区间复盘。核心口径是日频 TWR、期间 
 
 Performance 反映真实历史组合，不是当前权重假设。若与 Risk 或 Research 结果不同，先确认三者口径：Performance 是历史事实，Risk 是当前持仓风险，Research 是规划求解和假设回测。
 
+当组合含事件记账型衍生品时，`Total Portfolio Operational Return` 继续完整反映 NAV、衍生品现金结算、coupon、费用和已实现盈亏，用于对账与经营复盘；它不冒充公允价值衍生品收益。`Market Risk Return` 以同一总 NAV 为分母，把衍生品和本币现金视为 0-return capital：衍生品买入/费用/现金结算、FCN coupon 与现金利息从风险 P&L 中剔除，普通证券的价格变化、普通证券 dividend/coupon 和非本币现金 FX 仍保留。只有本币现金或衍生品、没有任何可建模市场资产或非本币货币风险的组合，风险指标显示 unavailable，而不是实际波动率 0。Calculation 的分组波动率、相关性、Beta 与 Realized RC 使用同一条分组市场风险链，不读取经营收益后再按资产类别过滤。
+
 ### 6.7 Risk
 
-Risk 是当前权重口径的风险工作台，使用当前非现金持仓权重和资产历史收益窗口。它适合回答“现在这组持仓的风险结构如何”，不适合替代历史绩效归因。
+Risk 是当前权重口径的风险工作台，使用市场资产历史收益与当前总 NAV 权重。它适合回答“现在这组持仓的风险结构如何”，不适合替代历史绩效归因。
 
-现金和衍生品都会进入组合 NAV、Weight Target 与 Current Drift 的资本权重，但都不设置 Risk Target。现金包含所有账户的现金余额与待交收，衍生品使用 Holdings 的 carrying/liability amount；两者都作为固定系统桶汇总，不读取 taxonomy assignment，也不会重复计数。`Risk Target Gap` 只比较承担市场风险的 Securities sleeve；Cash 与 Derivatives 不显示 risk-target row，不进入风险预算 100% 分母。
+现金和衍生品都会进入组合 NAV、Weight Target 与 Current Drift 的资本权重，但都不设置 Risk Target。现金包含所有账户的现金余额与待交收，衍生品使用 Holdings 的 carrying/liability amount；两者都作为固定系统桶汇总，不读取 taxonomy assignment，也不会重复计数。前瞻组合波动率使用 `market exposure / total NAV`，因此本币现金与衍生品按 0-return capital 稀释组合风险；非本币现金缺少 FX total-return series 时风险不可用。`Risk Target Gap` 只比较承担市场风险的 Securities sleeve；Cash 与 Derivatives 不显示 risk-target row，不进入风险预算 100% 分母。
 
 常用内容：
 

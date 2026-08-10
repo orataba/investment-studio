@@ -183,7 +183,7 @@ describe('holdings current-basket period identity', () => {
     expect(groupedMaxDrawdown([derivative], workspace)).toBeNull()
   })
 
-  it('models base-currency pending balances as zero risk but not foreign pending balances', () => {
+  it('withholds aggregate risk when there is no market-risk-bearing asset', () => {
     const basePending = holdingFixture({
       line_id: 'pending:USD',
       holding_category: 'cash_and_settlement',
@@ -220,7 +220,7 @@ describe('holdings current-basket period identity', () => {
         holdingsWorkspaceFixture({ rows: [basePending] }),
         '1m',
       ),
-    ).toBe(0)
+    ).toBeNull()
     expect(
       groupedAnnualizedVolatility(
         [foreignPending],
@@ -228,5 +228,45 @@ describe('holdings current-basket period identity', () => {
         '1m',
       ),
     ).toBeNull()
+  })
+
+  it('uses derivative carrying value as zero-return capital without changing return-currency compatibility', () => {
+    const security = holdingFixture({
+      market_value: 600,
+      market_value_base: 600,
+      instrument_core: instrumentFixture({ currency: 'HKD' }),
+      instrument_return_series_1m: returnSeries([
+        ['2026-07-01', '2026-07-02', 0.1],
+        ['2026-07-02', '2026-07-03', -0.05],
+      ]),
+    })
+    const derivative = holdingFixture({
+      line_id: 'holding:option-zero-return-capital',
+      holding_category: 'derivatives',
+      instrument_core: null,
+      derivative_contract_id: 'option-zero-return-capital',
+      derivative_contract: optionContractFixture(),
+      market_value: 400,
+      market_value_base: 400,
+      valuation_basis: 'carried_cost',
+      coverage_status: 'event-cost',
+      risk_eligible: false,
+      forward_risk_status: 'excluded',
+      forward_risk_share: null,
+    })
+    const workspace = holdingsWorkspaceFixture({ rows: [security, derivative] })
+
+    const result = groupedReturnSeries(
+      [security, derivative],
+      workspace,
+      (row) => row.instrument_return_series_1m,
+      true,
+    )
+
+    expect(result).toEqual({
+      dates: ['2026-07-02', '2026-07-03'],
+      returns: [0.06, -0.03],
+      firstReturnStartDate: '2026-07-01',
+    })
   })
 })

@@ -73,9 +73,9 @@ LifecycleEventType = Literal[
     "fcn_knock_out",
     "fcn_maturity",
     "option_long_expiry",
-    "option_long_exercise",
+    "option_long_cash_settlement",
     "option_writer_expiry",
-    "option_assignment",
+    "option_writer_cash_settlement",
 ]
 POSITION_EFFECTIVE_COMMAND_TYPES = frozenset(
     {
@@ -438,7 +438,6 @@ class OptionContractTerms(BaseModel):
     expiry_date: date
     strike: Decimal = Field(gt=0, lt=Decimal("1e16"))
     contract_multiplier: Decimal = Field(gt=0, lt=Decimal("1e16"))
-    settlement_type: Literal["physical", "cash"]
 
     @field_validator("underlying_instrument_id", mode="before")
     @classmethod
@@ -1040,6 +1039,18 @@ class DailySnapshotRecord(BaseModel):
     market_observation_count: int = 0
     return_observation_eligible: bool = False
     return_observation_exclusion_reason: str | None = None
+    modeled_market_exposure_present: bool = False
+    market_risk_observation_count: int = 0
+    market_risk_return_coverage_state: CoverageState = "unavailable"
+    market_risk_return_chain_continuous: bool = True
+    market_risk_return_observation_eligible: bool = False
+    market_risk_return_observation_exclusion_reason: str | None = None
+    market_risk_basis: Literal["zero_return_cash_and_derivatives"] = (
+        "zero_return_cash_and_derivatives"
+    )
+    market_risk_label: str = (
+        "Market Risk Return — derivatives and base-currency cash modeled at zero return"
+    )
     cash_balance: float | None = None
     pending_settlement: float | None = None
     position_market_value: float | None = None
@@ -1058,6 +1069,8 @@ class DailySnapshotRecord(BaseModel):
     instrument_currency_gains: float | None = None
     return_of_capital_amount: float | None = None
     total_pnl: float | None = None
+    risk_scope_excluded_pnl: float | None = None
+    market_risk_pnl: float | None = None
     external_cash_in: float = 0.0
     external_cash_out: float = 0.0
     net_external_inflow: float = 0.0
@@ -1068,6 +1081,9 @@ class DailySnapshotRecord(BaseModel):
     daily_twr: float | None = None
     cumulative_twr: float | None = None
     drawdown: float | None = None
+    market_risk_daily_return: float | None = None
+    market_risk_cumulative_return: float | None = None
+    market_risk_drawdown: float | None = None
 
 
 class DailySnapshotListSummary(BaseModel):
@@ -1143,6 +1159,18 @@ class DailyPerformancePoint(BaseModel):
     market_observation_count: int = 0
     return_observation_eligible: bool = False
     return_observation_exclusion_reason: str | None = None
+    modeled_market_exposure_present: bool = False
+    market_risk_observation_count: int = 0
+    market_risk_return_coverage_state: CoverageState = "unavailable"
+    market_risk_return_chain_continuous: bool = True
+    market_risk_return_observation_eligible: bool = False
+    market_risk_return_observation_exclusion_reason: str | None = None
+    market_risk_basis: Literal["zero_return_cash_and_derivatives"] = (
+        "zero_return_cash_and_derivatives"
+    )
+    market_risk_label: str = (
+        "Market Risk Return — derivatives and base-currency cash modeled at zero return"
+    )
     performance_basis: Literal["market_value", "operational_carrying_basis"] = "market_value"
     performance_label: str = "Total Portfolio Return"
     beginning_nav: float | None = None
@@ -1158,6 +1186,8 @@ class DailyPerformancePoint(BaseModel):
     instrument_currency_gains: float | None = None
     return_of_capital_amount: float | None = None
     total_pnl: float | None = None
+    risk_scope_excluded_pnl: float | None = None
+    market_risk_pnl: float | None = None
     external_cash_in: float = 0.0
     external_cash_out: float = 0.0
     net_external_inflow: float = 0.0
@@ -1166,6 +1196,9 @@ class DailyPerformancePoint(BaseModel):
     daily_twr: float | None = None
     cumulative_twr: float | None = None
     drawdown: float | None = None
+    market_risk_daily_return: float | None = None
+    market_risk_cumulative_return: float | None = None
+    market_risk_drawdown: float | None = None
 
 
 class PerformanceSummary(BaseModel):
@@ -1186,6 +1219,11 @@ class PerformanceSummary(BaseModel):
     snapshot_count: int
     return_observation_count: int
     risk_return_observation_count: int = 0
+    market_risk_return_coverage_state: CoverageState = "unavailable"
+    risk_metric_basis: Literal["market_risk_return"] = "market_risk_return"
+    risk_metric_label: str = (
+        "Market Risk Return — derivatives and base-currency cash modeled at zero return"
+    )
     risk_annualization_periods_per_year: float | None = None
     risk_calculation_frequency: PortfolioCalculationFrequency = "daily"
     risk_minimum_sample_count: int = 2
@@ -1223,6 +1261,9 @@ class PerformanceSummary(BaseModel):
     instrument_currency_gains: float | None = None
     return_of_capital_amount: float | None = None
     total_pnl: float | None = None
+    risk_scope_excluded_pnl: float | None = None
+    market_risk_pnl: float | None = None
+    market_risk_cumulative_return: float | None = None
     mean_daily_return: float | None = None
     annualized_return_from_daily_mean: float | None = None
     annualized_volatility: float | None = None
@@ -2596,6 +2637,9 @@ class DailyContributionSliceRecord(BaseModel):
     coverage_state: CoverageState
     market_observation_count: int = 0
     return_observation_eligible: bool = False
+    market_risk_observation_count: int = 0
+    market_risk_return_coverage_state: CoverageState = "unavailable"
+    market_risk_return_observation_eligible: bool = False
     beginning_value_base: float | None = None
     ending_value_base: float | None = None
     beginning_weight: float | None = None
@@ -2616,6 +2660,10 @@ class DailyContributionSliceRecord(BaseModel):
     total_pnl: float | None = None
     daily_return: float | None = None
     daily_contribution: float | None = None
+    market_risk_excluded_pnl: float | None = None
+    market_risk_total_pnl: float | None = None
+    market_risk_daily_return: float | None = None
+    market_risk_daily_contribution: float | None = None
 
 
 class ContributionLineRecord(BaseModel):
@@ -3448,9 +3496,9 @@ class TransactionCreateRequest(BaseModel):
             "fcn_knock_out": {"maturity_redemption"},
             "fcn_maturity": {"maturity_redemption"},
             "option_long_expiry": {"maturity_redemption"},
-            "option_long_exercise": {"maturity_redemption"},
+            "option_long_cash_settlement": {"maturity_redemption"},
             "option_writer_expiry": {"lifecycle_event"},
-            "option_assignment": {"lifecycle_event"},
+            "option_writer_cash_settlement": {"lifecycle_event"},
         }
         if self.lifecycle_event_type is not None:
             allowed_transaction_types = lifecycle_transaction_types[
@@ -3469,26 +3517,36 @@ class TransactionCreateRequest(BaseModel):
             if not self.derivative_contract_id:
                 raise ValueError("Lifecycle events require derivative_contract_id.")
             if inline_contract_type is not None and inline_contract_type != "option":
-                raise ValueError("Non-economic lifecycle events require an option contract.")
+                raise ValueError("Option lifecycle events require an option contract.")
             writer_close_event = self.lifecycle_event_type in {
                 "option_writer_expiry",
-                "option_assignment",
+                "option_writer_cash_settlement",
             }
             if writer_close_event:
                 if self.quantity is None or self.quantity <= 0:
                     raise ValueError(
-                        "Short option expiry and assignment require positive contract quantity."
+                        "Short option expiry and cash settlement require positive contract quantity."
                     )
             elif self.quantity is not None:
                 raise ValueError("This lifecycle event must not carry quantity.")
             if self.price is not None:
                 raise ValueError("Lifecycle events must not carry price.")
-            if self.gross_amount != 0 or self.fees != 0 or self.taxes != 0:
-                raise ValueError("Lifecycle events must not carry cash amounts.")
-            if self.settlement_cash_account_id is not None:
-                raise ValueError(
-                    "Non-economic lifecycle events must not carry settlement_cash_account_id."
-                )
+            if self.lifecycle_event_type == "option_writer_expiry":
+                if self.gross_amount != 0 or self.fees != 0 or self.taxes != 0:
+                    raise ValueError("Option writer expiry must not carry cash amounts.")
+                if self.settlement_cash_account_id is not None:
+                    raise ValueError(
+                        "Option writer expiry must not carry settlement_cash_account_id."
+                    )
+            elif self.lifecycle_event_type == "option_writer_cash_settlement":
+                if self.gross_amount <= 0:
+                    raise ValueError(
+                        "Option writer cash settlement requires positive gross_amount."
+                    )
+                if self.settlement_cash_account_id is None:
+                    raise ValueError(
+                        "Option writer cash settlement requires settlement_cash_account_id."
+                    )
 
         if self.transaction_type in {"buy", "sell"}:
             if not has_asset_reference:
@@ -3572,13 +3630,22 @@ class TransactionCreateRequest(BaseModel):
                 raise ValueError("Maturity redemption requires positive quantity.")
             if self.price is not None:
                 raise ValueError("Maturity redemption must not carry price.")
-            if self.lifecycle_event_type in {
-                "option_long_expiry",
-                "option_long_exercise",
-            } and self.gross_amount != 0:
-                raise ValueError(
-                    "Long option closure must have zero gross_amount."
-                )
+            if self.lifecycle_event_type == "option_long_expiry":
+                if self.gross_amount != 0 or self.fees != 0 or self.taxes != 0:
+                    raise ValueError("Long option expiry must not carry cash amounts.")
+                if self.settlement_cash_account_id is not None:
+                    raise ValueError(
+                        "Long option expiry must not carry settlement_cash_account_id."
+                    )
+            elif self.lifecycle_event_type == "option_long_cash_settlement":
+                if self.gross_amount <= 0:
+                    raise ValueError(
+                        "Long option cash settlement requires positive gross_amount."
+                    )
+                if self.settlement_cash_account_id is None:
+                    raise ValueError(
+                        "Long option cash settlement requires settlement_cash_account_id."
+                    )
 
         if self.transaction_type in {"deposit", "withdrawal"}:
             if has_asset_reference:

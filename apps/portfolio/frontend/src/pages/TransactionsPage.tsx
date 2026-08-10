@@ -128,9 +128,9 @@ const LIFECYCLE_EVENT_OPTIONS = [
   'fcn_knock_out',
   'fcn_maturity',
   'option_long_expiry',
-  'option_long_exercise',
+  'option_long_cash_settlement',
   'option_writer_expiry',
-  'option_assignment',
+  'option_writer_cash_settlement',
 ] as const
 
 type TransactionInspectorTab = 'fact' | 'postings' | 'lots' | 'history'
@@ -234,12 +234,11 @@ function requiresSettlement(
     return false
   }
   if (transactionType === 'lifecycle_event') {
-    return false
+    return lifecycleEventType === 'option_writer_cash_settlement'
   }
   if (
     transactionType === 'maturity_redemption' &&
-    (lifecycleEventType === 'option_long_expiry' ||
-      lifecycleEventType === 'option_long_exercise')
+    lifecycleEventType === 'option_long_expiry'
   ) {
     return false
   }
@@ -478,7 +477,7 @@ function usesPrice(transactionType: string) {
   )
 }
 
-function grossAmountLabel(transactionType: string) {
+function grossAmountLabel(transactionType: string, lifecycleEventType?: string | null) {
   if (isFxConversionTransaction(transactionType)) {
     return 'Source Amount'
   }
@@ -503,8 +502,24 @@ function grossAmountLabel(transactionType: string) {
     return 'Close Cost'
   }
 
-  if (transactionType === 'lifecycle_event') {
+  if (
+    transactionType === 'maturity_redemption' &&
+    lifecycleEventType === 'option_long_cash_settlement'
+  ) {
+    return 'Cash Settlement Received'
+  }
+
+  if (
+    transactionType === 'maturity_redemption' &&
+    lifecycleEventType === 'option_long_expiry'
+  ) {
     return 'Cash Amount (zero)'
+  }
+
+  if (transactionType === 'lifecycle_event') {
+    return lifecycleEventType === 'option_writer_cash_settlement'
+      ? 'Cash Settlement Paid'
+      : 'Cash Amount (zero)'
   }
 
   if (transactionType === 'dividend_reinvestment') {
@@ -530,7 +545,7 @@ function grossAmountLabel(transactionType: string) {
   return 'Amount'
 }
 
-function showsFeeField(transactionType: string) {
+function showsFeeField(transactionType: string, lifecycleEventType?: string | null) {
   return (
     transactionType === 'buy' ||
     transactionType === 'sell' ||
@@ -539,11 +554,14 @@ function showsFeeField(transactionType: string) {
     transactionType === 'dividend' ||
     transactionType === 'coupon' ||
     transactionType === 'return_of_capital' ||
-    transactionType === 'maturity_redemption'
+    (transactionType === 'maturity_redemption' &&
+      lifecycleEventType !== 'option_long_expiry') ||
+    (transactionType === 'lifecycle_event' &&
+      lifecycleEventType === 'option_writer_cash_settlement')
   )
 }
 
-function showsTaxField(transactionType: string) {
+function showsTaxField(transactionType: string, lifecycleEventType?: string | null) {
   return (
     transactionType === 'buy' ||
     transactionType === 'sell' ||
@@ -552,7 +570,10 @@ function showsTaxField(transactionType: string) {
     transactionType === 'dividend' ||
     transactionType === 'coupon' ||
     transactionType === 'return_of_capital' ||
-    transactionType === 'maturity_redemption'
+    (transactionType === 'maturity_redemption' &&
+      lifecycleEventType !== 'option_long_expiry') ||
+    (transactionType === 'lifecycle_event' &&
+      lifecycleEventType === 'option_writer_cash_settlement')
   )
 }
 
@@ -567,6 +588,7 @@ function previewNetCashEffect(
   fees: number,
   taxes: number,
   transferObjectType?: string | null,
+  lifecycleEventType?: string | null,
 ) {
   if (grossAmount == null || !Number.isFinite(grossAmount)) {
     return null
@@ -597,7 +619,9 @@ function previewNetCashEffect(
     return 0
   }
   if (transactionType === 'lifecycle_event') {
-    return 0
+    return lifecycleEventType === 'option_writer_cash_settlement'
+      ? -(grossAmount + fees + taxes)
+      : 0
   }
   if (transactionType === 'fee' || transactionType === 'tax' || transactionType === 'withdrawal') {
     return -grossAmount
@@ -1089,7 +1113,7 @@ export default function TransactionsPage() {
     ) ||
     (form.transaction_type === 'lifecycle_event' &&
       (form.lifecycle_event_type === 'option_writer_expiry' ||
-        form.lifecycle_event_type === 'option_assignment'))
+        form.lifecycle_event_type === 'option_writer_cash_settlement'))
   const shouldPreviewPosition =
     shouldUseQuantity &&
     form.transaction_type !== 'option_write' &&
@@ -1100,8 +1124,8 @@ export default function TransactionsPage() {
     return <Navigate replace to="/portfolios" />
   }
   const shouldUsePrice = usesPrice(form.transaction_type)
-  const shouldShowFees = showsFeeField(form.transaction_type)
-  const shouldShowTaxes = showsTaxField(form.transaction_type)
+  const shouldShowFees = showsFeeField(form.transaction_type, form.lifecycle_event_type)
+  const shouldShowTaxes = showsTaxField(form.transaction_type, form.lifecycle_event_type)
   const shouldShowFeeCategory =
     form.transaction_type === 'fee' ||
     (shouldShowFees && Number.isFinite(Number(form.fees)) && Number(form.fees) > 0)
@@ -2562,10 +2586,10 @@ export default function TransactionsPage() {
     }
 
     const zeroCashLifecycle =
-      form.transaction_type === 'lifecycle_event' ||
+      (form.transaction_type === 'lifecycle_event' &&
+        form.lifecycle_event_type === 'option_writer_expiry') ||
       (form.transaction_type === 'maturity_redemption' &&
-        (form.lifecycle_event_type === 'option_long_expiry' ||
-          form.lifecycle_event_type === 'option_long_exercise'))
+        form.lifecycle_event_type === 'option_long_expiry')
     const grossAmount = zeroCashLifecycle ? 0 : Number(computedGrossAmount)
     if (!Number.isFinite(grossAmount) || (!zeroCashLifecycle && grossAmount <= 0)) {
       setFormError('Enter a positive gross amount.')
@@ -2795,6 +2819,7 @@ export default function TransactionsPage() {
     ticketFeeAmount,
     ticketTaxAmount,
     form.transfer_object_type,
+    form.lifecycle_event_type,
   )
   const ticketQuantity = parsePositiveFormNumber(form.quantity)
   const ticketQuantityDelta = quantityDeltaForPreview(
@@ -2862,13 +2887,19 @@ export default function TransactionsPage() {
   const amountField = (
     <label className="transaction-ticket-field">
       <span>
-        {isFundTrade ? 'Confirmed Amount' : grossAmountLabel(form.transaction_type)}
+        {isFundTrade
+          ? 'Confirmed Amount'
+          : grossAmountLabel(form.transaction_type, form.lifecycle_event_type)}
       </span>
       <input
         type="number"
         min="0"
         step="0.01"
-        aria-label={isFundTrade ? 'Confirmed Amount' : grossAmountLabel(form.transaction_type)}
+        aria-label={
+          isFundTrade
+            ? 'Confirmed Amount'
+            : grossAmountLabel(form.transaction_type, form.lifecycle_event_type)
+        }
         value={form.gross_amount}
         placeholder={
           isTransferTransaction(form.transaction_type) && form.transfer_object_type === 'position'
@@ -3634,25 +3665,28 @@ export default function TransactionsPage() {
                           lifecycle_event_type: event.target.value,
                           gross_amount:
                             event.target.value === 'option_long_expiry' ||
-                            event.target.value === 'option_long_exercise' ||
-                            current.transaction_type === 'lifecycle_event'
+                            event.target.value === 'option_writer_expiry'
                               ? '0'
                               : current.gross_amount,
                         }))
                       }
                     >
-                      <option value="">Generic / not specified</option>
+                      <option value="" disabled={resolvedAssetType === 'option'}>
+                        {resolvedAssetType === 'option'
+                          ? 'Select option outcome'
+                          : 'Generic / not specified'}
+                      </option>
                       {LIFECYCLE_EVENT_OPTIONS.filter((eventType) =>
                         form.transaction_type === 'lifecycle_event'
                           ? eventType === 'option_writer_expiry' ||
-                            eventType === 'option_assignment'
+                            eventType === 'option_writer_cash_settlement'
                           : resolvedAssetType === 'fcn'
                             ? eventType === 'fcn_knock_in' ||
                               eventType === 'fcn_knock_out' ||
                               eventType === 'fcn_maturity'
                             : resolvedAssetType === 'option'
                               ? eventType === 'option_long_expiry' ||
-                                eventType === 'option_long_exercise'
+                                eventType === 'option_long_cash_settlement'
                               : false,
                       ).map((eventType) => (
                         <option key={eventType} value={eventType}>
@@ -3662,8 +3696,10 @@ export default function TransactionsPage() {
                     </select>
                   </label>
                   <div className="portfolio-detail-meta">
-                    This closes only the selected derivative contract. Record any stock
-                    purchase or sale as a separate transaction; use the note when helpful.
+                    This closes only the selected option contract. If the real-world event
+                    delivered stock, record the equivalent option cash settlement and an
+                    independent stock trade at the delivery-date market or reference price.
+                    The two facts are intentionally not linked.
                   </div>
                 </div>
               ) : null}
@@ -3917,21 +3953,6 @@ export default function TransactionsPage() {
                           }
                         />
                       </label>
-                      <label className="transaction-ticket-field">
-                        <span>Settlement</span>
-                        <select
-                          value={derivativeDraft.option_settlement_type}
-                          onChange={(event) =>
-                            setDerivativeDraft((current) => ({
-                              ...current,
-                              option_settlement_type: event.target.value as 'physical' | 'cash',
-                            }))
-                          }
-                        >
-                          <option value="physical">Physical</option>
-                          <option value="cash">Cash</option>
-                        </select>
-                      </label>
                     </>
                   ) : (
                     <>
@@ -4048,8 +4069,7 @@ export default function TransactionsPage() {
                   {activeDerivativeContract.terms.underlying_instrument_id} · strike{' '}
                   {activeDerivativeContract.terms.strike} · expires{' '}
                   {activeDerivativeContract.terms.expiry_date} · multiplier{' '}
-                  {activeDerivativeContract.terms.contract_multiplier} ·{' '}
-                  {formatLabel(activeDerivativeContract.terms.settlement_type)} settlement
+                  {activeDerivativeContract.terms.contract_multiplier}
                 </div>
               ) : activeDerivativeContract?.contract_type === 'fcn' ? (
                 <div className="portfolio-detail-meta">

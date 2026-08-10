@@ -866,6 +866,8 @@ def _sum_period_realized_capital_gains(
 ) -> dict[str, object]:
     realized_capital_gains = 0.0
     derivative_lifecycle_realized_pnl = 0.0
+    derivative_lifecycle_coverage_complete = True
+    derivative_lifecycle_stale_fx_flag = False
     coverage_complete = True
     stale_fx_flag = False
     start_iso = start_date.isoformat() if start_date is not None else None
@@ -895,6 +897,10 @@ def _sum_period_realized_capital_gains(
                 continue
             if realized_pnl is None:
                 coverage_complete = False
+                if holdings_market_profile.is_derivative_contract(
+                    position_lot.get("derivative_contract")
+                ):
+                    derivative_lifecycle_coverage_complete = False
                 continue
             converted_amount, is_stale = valuation_fx.convert_amount_on(
                 realized_pnl,
@@ -907,15 +913,22 @@ def _sum_period_realized_capital_gains(
             )
             if converted_amount is None:
                 coverage_complete = False
+                if holdings_market_profile.is_derivative_contract(
+                    position_lot.get("derivative_contract")
+                ):
+                    derivative_lifecycle_coverage_complete = False
                 continue
             realized_capital_gains += converted_amount
             if holdings_market_profile.is_derivative_contract(
                 position_lot.get("derivative_contract")
             ):
                 derivative_lifecycle_realized_pnl += converted_amount
+                derivative_lifecycle_stale_fx_flag = (
+                    derivative_lifecycle_stale_fx_flag or is_stale
+                )
             stale_fx_flag = stale_fx_flag or is_stale
 
-    # Written-option close/expiry/assignment results live in the obligation
+    # Written-option close/expiry/cash-settlement results live in the obligation
     # subledger rather than in long position lots.  Include them in the same
     # realized-P&L bucket so Calculation, snapshots and attribution reconcile.
     if transactions:
@@ -959,14 +972,119 @@ def _sum_period_realized_capital_gains(
             )
             if converted_amount is None:
                 coverage_complete = False
+                derivative_lifecycle_coverage_complete = False
                 continue
             realized_capital_gains += converted_amount
             derivative_lifecycle_realized_pnl += converted_amount
+            derivative_lifecycle_stale_fx_flag = (
+                derivative_lifecycle_stale_fx_flag or is_stale
+            )
             stale_fx_flag = stale_fx_flag or is_stale
 
     return {
         "realized_capital_gains": realized_capital_gains,
         "derivative_lifecycle_realized_pnl": derivative_lifecycle_realized_pnl,
+        "derivative_lifecycle_coverage_complete": (
+            derivative_lifecycle_coverage_complete
+        ),
+        "derivative_lifecycle_stale_fx_flag": derivative_lifecycle_stale_fx_flag,
+        "coverage_complete": coverage_complete,
+        "stale_fx_flag": stale_fx_flag,
+    }
+
+
+def _transaction_market_risk_excluded_pnl(
+    transaction: dict[str, object],
+) -> float:
+    """Return the transaction-local P&L removed from market-risk returns.
+
+    Lifecycle realized P&L is replayed from the position/obligation subledgers
+    and is therefore intentionally outside this helper.
+    """
+
+    transaction_type = str(transaction.get("transaction_type") or "")
+    derivative_contract = transaction.get("derivative_contract")
+    is_derivative = holdings_market_profile.is_derivative_contract(
+        derivative_contract
+    )
+    gross_amount = _safe_float(transaction.get("gross_amount")) or 0.0
+    fees = _safe_float(transaction.get("fees")) or 0.0
+    taxes = _safe_float(transaction.get("taxes")) or 0.0
+    option_action = resolve_option_action(transaction)
+
+    if is_derivative and transaction_type == "coupon":
+        return gross_amount - fees - taxes
+    if is_derivative and (
+        transaction_type == "option_write"
+        or (transaction_type == "buy" and option_action != "buy_to_close")
+    ):
+        # Event-valued derivative entry is carried at gross cost/premium;
+        # only the attached charges hit operational P&L on entry.
+        return -(fees + taxes)
+    if is_derivative and transaction_type in {"fee", "tax"}:
+        return -gross_amount
+    if transaction_type == "interest":
+        return gross_amount
+    if (
+        transaction_type in {"fee", "tax"}
+        and not str(transaction.get("instrument_id") or "").strip()
+        and not str(transaction.get("derivative_contract_id") or "").strip()
+    ):
+        return -gross_amount
+    return 0.0
+
+
+def _sum_cumulative_market_risk_excluded_pnl(
+    transactions: list[dict[str, object]],
+    *,
+    as_of_date: date,
+    derivative_lifecycle_realized_pnl: float,
+    derivative_lifecycle_coverage_complete: bool,
+    derivative_lifecycle_stale_fx_flag: bool,
+    base_currency: str,
+    direct_fx_instruments: dict[tuple[str, str], str],
+    instrument_detail_cache: dict[str, dict[str, object] | None],
+) -> dict[str, object]:
+    """Return cumulative P&L excluded from the market-risk return chain.
+
+    Derivatives and base-currency cash are modeled as zero-return capital for
+    realized volatility. Their economic cash effects remain in NAV and in the
+    operational return; this helper removes only those effects from the
+    separate market-risk numerator.
+    """
+
+    excluded_pnl = derivative_lifecycle_realized_pnl
+    coverage_complete = derivative_lifecycle_coverage_complete
+    stale_fx_flag = derivative_lifecycle_stale_fx_flag
+
+    for transaction in transactions:
+        effective_date = transaction_performance_effective_date(transaction)
+        if effective_date is None or effective_date > as_of_date:
+            continue
+        additional_exclusion = _transaction_market_risk_excluded_pnl(transaction)
+
+        if abs(additional_exclusion) <= 1e-15:
+            continue
+        currency = valuation_fx.required_currency(
+            transaction.get("currency"), field_name="transaction currency"
+        )
+        converted_amount, is_stale = valuation_fx.convert_amount_on(
+            additional_exclusion,
+            as_of_date=effective_date,
+            from_currency=currency,
+            to_currency=base_currency,
+            direct_fx_instruments=direct_fx_instruments,
+            instrument_detail_cache=instrument_detail_cache,
+            instrument_detail_loader=get_registry_instrument_detail,
+        )
+        if converted_amount is None:
+            coverage_complete = False
+            continue
+        excluded_pnl += converted_amount
+        stale_fx_flag = stale_fx_flag or is_stale
+
+    return {
+        "excluded_pnl": excluded_pnl,
         "coverage_complete": coverage_complete,
         "stale_fx_flag": stale_fx_flag,
     }
@@ -1649,7 +1767,7 @@ def _period_unrealized_capital_gains_by_group(
 
     # Written options live in the obligation subledger rather than PositionLot.
     # Teach the realized/unrealized splitter about their lifecycle so a close,
-    # expiry, or assignment is not mislabeled as an unrealized residual.
+    # expiry, or cash settlement is not mislabeled as an unrealized residual.
     def obligation_as_period_lot(
         obligation: dict[str, object],
     ) -> dict[str, object]:
@@ -1893,6 +2011,12 @@ def build_daily_portfolio_snapshots(
     cumulative_performance_pnl = 0.0
     performance_pnl_history_complete = True
     previous_derivative_exposure_present = False
+    previous_modeled_market_exposure_present = False
+    previous_risk_scope_excluded_pnl: float | None = 0.0
+    market_risk_growth_index = 1.0
+    market_risk_peak_growth_index = 1.0
+    has_market_risk_return_history = False
+    market_risk_return_chain_broken = False
 
     for as_of_date in _iter_dates(resolved_start_date, resolved_end_date):
         as_of_iso = as_of_date.isoformat()
@@ -1924,8 +2048,8 @@ def build_daily_portfolio_snapshots(
         position_buckets = holdings_market_profile.position_buckets_from_lots(open_position_lots)
         option_obligation_rows = build_option_obligations(
             transactions_as_of,
-            # Explicit lifecycle facts are canonical.  As-of replay keeps an
-            # obligation open until expiry/assignment/close is imported.
+            # Explicit lifecycle facts are canonical. As-of replay keeps an
+            # obligation open until expiry/cash settlement/close is imported.
             as_of_date=as_of_date,
         )
         open_option_obligation_rows = [
@@ -1950,6 +2074,22 @@ def build_daily_portfolio_snapshots(
             transactions=transactions_as_of,
             start_date=None,
             end_date=as_of_date,
+            base_currency=base_currency,
+            direct_fx_instruments=direct_fx_instruments,
+            instrument_detail_cache=instrument_detail_cache,
+        )
+        market_risk_exclusion_summary = _sum_cumulative_market_risk_excluded_pnl(
+            transactions_as_of,
+            as_of_date=as_of_date,
+            derivative_lifecycle_realized_pnl=float(
+                realized_pnl_summary["derivative_lifecycle_realized_pnl"]
+            ),
+            derivative_lifecycle_coverage_complete=bool(
+                realized_pnl_summary["derivative_lifecycle_coverage_complete"]
+            ),
+            derivative_lifecycle_stale_fx_flag=bool(
+                realized_pnl_summary["derivative_lifecycle_stale_fx_flag"]
+            ),
             base_currency=base_currency,
             direct_fx_instruments=direct_fx_instruments,
             instrument_detail_cache=instrument_detail_cache,
@@ -2132,6 +2272,7 @@ def build_daily_portfolio_snapshots(
         fresh_price_count = 0
         current_position_market_values_local_by_instrument: dict[str, dict[str, object]] = {}
         event_valued_position_present = False
+        market_valued_position_present = False
         for bucket in position_buckets:
             currency = valuation_fx.required_currency(
                 bucket.get("currency"), field_name="position-bucket currency"
@@ -2229,6 +2370,10 @@ def build_daily_portfolio_snapshots(
             }
             if not event_valued:
                 priced_position_count += 1
+                market_valued_position_present = (
+                    market_valued_position_present
+                    or abs(converted_market_value) > 1e-9
+                )
             position_market_value_base += converted_market_value
             stale_price_flag = stale_price_flag or bool((price_point or {}).get("stale"))
             stale_fx_flag = stale_fx_flag or valuation_fx_stale
@@ -2307,6 +2452,42 @@ def build_daily_portfolio_snapshots(
                 derivative_liability_base += converted_liability
                 stale_fx_flag = stale_fx_flag or liability_fx_stale
 
+        current_non_base_monetary_exposure_present = any(
+            currency != base_currency and abs(amount) > 1e-9
+            for balances in (
+                cash_balances_by_currency,
+                pending_settlement_balances_by_currency,
+            )
+            for currency, amount in balances.items()
+        )
+        fx_exposure_currencies = {
+            currency
+            for balances in (
+                previous_cash_balances_by_currency,
+                previous_pending_settlement_balances_by_currency,
+                cash_balances_by_currency,
+                pending_settlement_balances_by_currency,
+            )
+            for currency, amount in balances.items()
+            if currency != base_currency and abs(amount) > 1e-9
+        }
+        fresh_fx_observation_count = 0
+        for currency in fx_exposure_currencies:
+            resolved_fx = valuation_fx.resolve_fx_rate_on(
+                as_of_date=as_of_date,
+                base_currency=currency,
+                quote_currency=base_currency,
+                direct_instruments=direct_fx_instruments,
+                instrument_detail_cache=instrument_detail_cache,
+                instrument_detail_loader=get_registry_instrument_detail,
+            )
+            if (
+                resolved_fx is not None
+                and _parse_iso_date(resolved_fx.get("as_of_date")) == as_of_date
+                and not bool(resolved_fx.get("stale"))
+            ):
+                fresh_fx_observation_count += 1
+
         has_derivative_exposure = (
             bool(open_option_obligation_rows) or event_valued_position_present
         )
@@ -2315,7 +2496,7 @@ def build_daily_portfolio_snapshots(
             and _has_derivative_lifecycle_activity(transaction)
             for transaction in sorted_transactions
         )
-        derivative_return_observation_excluded = (
+        uses_operational_carrying_basis = (
             previous_derivative_exposure_present
             or has_derivative_exposure
             or has_derivative_lifecycle_activity
@@ -2351,6 +2532,7 @@ def build_daily_portfolio_snapshots(
             stale_fx_flag
             or bool(transaction_buckets["stale_fx_flag"])
             or bool(realized_pnl_summary["stale_fx_flag"])
+            or bool(market_risk_exclusion_summary["stale_fx_flag"])
         )
 
         resolved_cash_balance = cash_balance_base if cash_complete else None
@@ -2395,6 +2577,7 @@ def build_daily_portfolio_snapshots(
         absolute_change = None
         delta = None
         daily_twr = None
+        return_denominator: float | None = None
         reanchor_after_flow_gap = bool(
             nav is not None
             and external_flow_inside_unreliable_gap
@@ -2408,6 +2591,7 @@ def build_daily_portfolio_snapshots(
             absolute_change = nav - last_complete_nav
             delta = absolute_change - flow_breakdown["net_external_inflow"]
             denominator = last_complete_nav + flow_breakdown["external_cash_in"]
+            return_denominator = denominator
             numerator = nav + flow_breakdown["external_cash_out"]
             if denominator > 1e-9 and numerator >= 0:
                 daily_twr = (numerator / denominator) - 1.0
@@ -2424,6 +2608,7 @@ def build_daily_portfolio_snapshots(
             absolute_change = nav
             delta = nav - flow_breakdown["net_external_inflow"]
             denominator = float(flow_breakdown["external_cash_in"])
+            return_denominator = denominator
             numerator = nav + float(flow_breakdown["external_cash_out"])
             if numerator >= 0:
                 daily_twr = (numerator / denominator) - 1.0
@@ -2492,6 +2677,127 @@ def build_daily_portfolio_snapshots(
             ]
         )
 
+        risk_scope_excluded_pnl = (
+            _safe_float(market_risk_exclusion_summary["excluded_pnl"])
+            if bool(market_risk_exclusion_summary["coverage_complete"])
+            else None
+        )
+        daily_risk_scope_excluded_pnl = None
+        if (
+            risk_scope_excluded_pnl is not None
+            and previous_risk_scope_excluded_pnl is not None
+        ):
+            daily_risk_scope_excluded_pnl = (
+                risk_scope_excluded_pnl - previous_risk_scope_excluded_pnl
+            )
+
+        modeled_market_exposure_present = (
+            market_valued_position_present
+            or current_non_base_monetary_exposure_present
+        )
+        is_imported_valuation_anchor = bool(
+            nav is not None
+            and last_complete_nav is None
+            and _starts_on_imported_valuation_anchor(
+                sorted_transactions,
+                resolved_start_date=as_of_date,
+            )
+        )
+        modeled_market_exposure_for_return = (
+            previous_modeled_market_exposure_present
+            or modeled_market_exposure_present
+        )
+        market_risk_pnl = None
+        market_risk_daily_return = None
+        if delta is not None and daily_risk_scope_excluded_pnl is not None:
+            market_risk_pnl = delta - daily_risk_scope_excluded_pnl
+            if return_denominator is not None and return_denominator > 1e-9:
+                market_risk_numerator = return_denominator + market_risk_pnl
+                if market_risk_numerator >= 0:
+                    market_risk_daily_return = market_risk_pnl / return_denominator
+
+        has_market_risk_activity = bool(
+            market_risk_pnl is not None and abs(market_risk_pnl) > 1e-12
+        )
+        modeled_market_scope_for_return = (
+            modeled_market_exposure_for_return or has_market_risk_activity
+        )
+        if not modeled_market_scope_for_return:
+            market_risk_return_coverage_state = "unavailable"
+        elif is_imported_valuation_anchor:
+            market_risk_return_coverage_state = "complete"
+        elif (
+            market_risk_daily_return is not None
+            and isfinite(market_risk_daily_return)
+            and return_coverage_state == "complete"
+            and bool(market_risk_exclusion_summary["coverage_complete"])
+        ):
+            market_risk_return_coverage_state = "complete"
+        else:
+            market_risk_return_coverage_state = "partial"
+
+        has_fresh_market_risk_observation = (
+            fresh_price_count > 0
+            or fresh_fx_observation_count > 0
+            or has_market_risk_activity
+        )
+        market_risk_return_observation_eligible = bool(
+            market_risk_return_coverage_state == "complete"
+            and market_risk_daily_return is not None
+            and isfinite(market_risk_daily_return)
+            and has_fresh_market_risk_observation
+            and not stale_price_flag
+            and not stale_fx_flag
+        )
+        market_risk_return_observation_exclusion_reason = None
+        if not modeled_market_scope_for_return:
+            market_risk_return_observation_exclusion_reason = (
+                "no_modeled_market_assets"
+            )
+        elif is_imported_valuation_anchor:
+            market_risk_return_observation_exclusion_reason = (
+                "initial_valuation_anchor"
+            )
+        elif stale_price_flag or stale_fx_flag:
+            market_risk_return_observation_exclusion_reason = (
+                "stale_market_or_fx_input"
+            )
+        elif market_risk_return_coverage_state != "complete":
+            market_risk_return_observation_exclusion_reason = (
+                "market_risk_return_coverage_incomplete"
+            )
+        elif not has_fresh_market_risk_observation:
+            market_risk_return_observation_exclusion_reason = (
+                "no_fresh_market_observation"
+            )
+
+        if (
+            has_market_risk_return_history
+            and modeled_market_scope_for_return
+            and market_risk_return_coverage_state == "partial"
+        ):
+            market_risk_return_chain_broken = True
+        if market_risk_return_observation_eligible:
+            has_market_risk_return_history = True
+            market_risk_growth_index *= 1.0 + float(market_risk_daily_return)
+            market_risk_peak_growth_index = max(
+                market_risk_peak_growth_index,
+                market_risk_growth_index,
+            )
+        market_risk_cumulative_return = (
+            market_risk_growth_index - 1.0
+            if has_market_risk_return_history
+            and not market_risk_return_chain_broken
+            else None
+        )
+        market_risk_drawdown = (
+            (market_risk_growth_index / market_risk_peak_growth_index) - 1.0
+            if has_market_risk_return_history
+            and not market_risk_return_chain_broken
+            and market_risk_peak_growth_index > 0
+            else None
+        )
+
         if daily_twr is not None and isfinite(daily_twr):
             has_return_history = True
             growth_index *= 1.0 + daily_twr
@@ -2536,14 +2842,42 @@ def build_daily_portfolio_snapshots(
                 and (fresh_price_count > 0 or abs(daily_twr) > 1e-12)
                 and not stale_price_flag
                 and not stale_fx_flag
-                and not derivative_return_observation_excluded
             ),
             "return_observation_exclusion_reason": (
-                "event_valued_or_derivative_liability"
-                if derivative_return_observation_excluded
-                else "stale_market_or_fx_input"
+                "stale_market_or_fx_input"
                 if stale_price_flag or stale_fx_flag
+                else "return_coverage_incomplete"
+                if return_coverage_state != "complete" or daily_twr is None
+                else "no_fresh_market_observation"
+                if fresh_price_count <= 0 and abs(daily_twr) <= 1e-12
                 else None
+            ),
+            "modeled_market_exposure_present": modeled_market_exposure_present,
+            "_is_initial_valuation_anchor": is_imported_valuation_anchor,
+            "market_risk_observation_count": (
+                fresh_price_count + fresh_fx_observation_count
+            ),
+            "market_risk_return_coverage_state": (
+                market_risk_return_coverage_state
+            ),
+            "market_risk_return_chain_continuous": (
+                not market_risk_return_chain_broken
+            ),
+            "market_risk_return_observation_eligible": (
+                market_risk_return_observation_eligible
+            ),
+            "market_risk_return_observation_exclusion_reason": (
+                market_risk_return_observation_exclusion_reason
+            ),
+            "risk_scope_excluded_pnl": risk_scope_excluded_pnl,
+            "market_risk_pnl": market_risk_pnl,
+            "market_risk_daily_return": market_risk_daily_return,
+            "market_risk_cumulative_return": market_risk_cumulative_return,
+            "market_risk_drawdown": market_risk_drawdown,
+            "market_risk_basis": "zero_return_cash_and_derivatives",
+            "market_risk_label": (
+                "Market Risk Return — derivatives and base-currency cash "
+                "modeled at zero return"
             ),
             "cash_balance": resolved_cash_balance,
             "pending_settlement": pending_settlement_base if pending_settlement_complete else None,
@@ -2584,12 +2918,12 @@ def build_daily_portfolio_snapshots(
             "drawdown": drawdown,
             "performance_basis": (
                 "operational_carrying_basis"
-                if derivative_return_observation_excluded
+                if uses_operational_carrying_basis
                 else "market_value"
             ),
             "performance_label": (
                 "Total Portfolio Operational Return"
-                if derivative_return_observation_excluded
+                if uses_operational_carrying_basis
                 else "Total Portfolio Return"
             ),
         }
@@ -2749,6 +3083,8 @@ def build_daily_portfolio_snapshots(
         previous_position_market_values_local_by_instrument = deepcopy(current_position_market_values_local_by_instrument)
         previous_position_market_value_date = as_of_date
         previous_derivative_exposure_present = has_derivative_exposure
+        previous_modeled_market_exposure_present = modeled_market_exposure_present
+        previous_risk_scope_excluded_pnl = risk_scope_excluded_pnl
 
     return snapshots
 
@@ -2806,6 +3142,12 @@ def _snapshot_as_close_boundary(
     boundary["cumulative_twr"] = None
     boundary["drawdown"] = None
     boundary["return_observation_eligible"] = False
+    boundary["market_risk_pnl"] = None
+    boundary["market_risk_daily_return"] = None
+    boundary["market_risk_cumulative_return"] = None
+    boundary["market_risk_drawdown"] = None
+    boundary["market_risk_return_observation_eligible"] = False
+    boundary["market_risk_return_chain_continuous"] = True
     # An explicit complete EOD valuation is allowed to start a new chain even
     # when an earlier, out-of-window chain was broken.
     boundary["return_chain_continuous"] = return_chain.has_complete_valuation(
@@ -2825,6 +3167,10 @@ def _rebased_twr_series(snapshots: list[dict[str, object]]) -> list[dict[str, ob
     growth_index = 1.0
     peak_growth_index = 1.0
     has_return_history = False
+    market_risk_growth_index = 1.0
+    market_risk_peak_growth_index = 1.0
+    has_market_risk_return_history = False
+    market_risk_return_chain_continuous = True
 
     for snapshot, rendered_snapshot in zip(snapshots, rendered_snapshots, strict=True):
         daily_twr = _safe_float(snapshot.get("daily_twr"))
@@ -2850,6 +3196,53 @@ def _rebased_twr_series(snapshots: list[dict[str, object]]) -> list[dict[str, ob
                 and peak_growth_index > 0
                 else None
             )
+
+        market_risk_daily_return = _safe_float(
+            snapshot.get("market_risk_daily_return")
+        )
+        market_risk_point_eligible = bool(
+            snapshot.get("market_risk_return_observation_eligible")
+            and market_risk_daily_return is not None
+            and isfinite(market_risk_daily_return)
+        )
+        is_market_risk_initial_anchor = bool(
+            snapshot.get("_is_initial_valuation_anchor")
+            and snapshot.get("modeled_market_exposure_present")
+        )
+        if (
+            snapshot.get("market_risk_return_coverage_state") == "partial"
+            and not is_market_risk_initial_anchor
+        ):
+            market_risk_return_chain_continuous = False
+        elif market_risk_point_eligible and market_risk_return_chain_continuous:
+            has_market_risk_return_history = True
+            market_risk_growth_index *= 1.0 + market_risk_daily_return
+            market_risk_peak_growth_index = max(
+                market_risk_peak_growth_index,
+                market_risk_growth_index,
+            )
+        rendered_snapshot["market_risk_return_chain_continuous"] = (
+            market_risk_return_chain_continuous
+        )
+        rendered_snapshot["market_risk_cumulative_return"] = (
+            market_risk_growth_index - 1.0
+            if has_market_risk_return_history
+            and market_risk_return_chain_continuous
+            else 0.0
+            if is_market_risk_initial_anchor
+            and market_risk_return_chain_continuous
+            else None
+        )
+        rendered_snapshot["market_risk_drawdown"] = (
+            (market_risk_growth_index / market_risk_peak_growth_index) - 1.0
+            if has_market_risk_return_history
+            and market_risk_return_chain_continuous
+            and market_risk_peak_growth_index > 0
+            else 0.0
+            if is_market_risk_initial_anchor
+            and market_risk_return_chain_continuous
+            else None
+        )
 
     return rendered_snapshots
 
@@ -3005,13 +3398,27 @@ def build_portfolio_performance_report_from_snapshots(
     return_observation_count = sum(
         1 for snapshot in visible_snapshots if _safe_float(snapshot.get("daily_twr")) is not None
     )
+    market_risk_scope_snapshots = [
+        snapshot
+        for snapshot in visible_daily_series_snapshots
+        if bool(snapshot.get("modeled_market_exposure_present"))
+        or abs(_safe_float(snapshot.get("market_risk_pnl")) or 0.0) > 1e-12
+    ]
+    if not market_risk_scope_snapshots:
+        market_risk_return_coverage_state = "unavailable"
+    elif any(
+        snapshot.get("market_risk_return_coverage_state") == "partial"
+        for snapshot in market_risk_scope_snapshots
+        if not snapshot.get("_is_initial_valuation_anchor")
+    ):
+        market_risk_return_coverage_state = "partial"
+    else:
+        market_risk_return_coverage_state = "complete"
     risk_return_snapshots = [
         snapshot
-        for snapshot in visible_snapshots
-        if not performance_is_operational
-        and return_coverage_state == "complete"
-        and snapshot.get("daily_twr") is not None
-        and bool(snapshot.get("return_observation_eligible"))
+        for snapshot in visible_daily_series_snapshots
+        if snapshot.get("market_risk_daily_return") is not None
+        and bool(snapshot.get("market_risk_return_observation_eligible"))
     ]
     risk_return_observation_count = len(risk_return_snapshots)
     start_snapshot = complete_snapshots[0] if complete_snapshots else None
@@ -3156,6 +3563,12 @@ def build_portfolio_performance_report_from_snapshots(
     # unrealized fields remain separately disclosed and may depend on the
     # account cost method, but they do not redefine economic period P&L.
     total_pnl = delta
+    risk_scope_excluded_pnl = snapshot_period_delta("risk_scope_excluded_pnl")
+    market_risk_pnl = (
+        total_pnl - risk_scope_excluded_pnl
+        if total_pnl is not None and risk_scope_excluded_pnl is not None
+        else None
+    )
 
     irr = None
     irr_solver_status: period_metrics.XirrSolveStatus | None = None
@@ -3201,11 +3614,17 @@ def build_portfolio_performance_report_from_snapshots(
             irr_unavailable_reason = irr_result.status
 
     daily_returns = [
-        _safe_float(snapshot.get("daily_twr"))
+        _safe_float(snapshot.get("market_risk_daily_return"))
         for snapshot in risk_return_snapshots
-        if snapshot.get("daily_twr") is not None
+        if snapshot.get("market_risk_daily_return") is not None
     ]
     daily_returns = [value for value in daily_returns if value is not None]
+    market_risk_cumulative_return = None
+    if daily_returns and market_risk_return_coverage_state == "complete":
+        market_risk_growth = 1.0
+        for daily_return in daily_returns:
+            market_risk_growth *= 1.0 + daily_return
+        market_risk_cumulative_return = market_risk_growth - 1.0
     mean_daily_return = (sum(daily_returns) / len(daily_returns)) if daily_returns else None
     volatility = period_metrics.sample_stddev(daily_returns)
     periods_per_year = period_metrics.periods_per_year_from_observations(
@@ -3250,19 +3669,25 @@ def build_portfolio_performance_report_from_snapshots(
         else None
     )
     risk_result_contract = period_metrics.portfolio_risk_result_contract(
-        return_coverage_state=return_coverage_state,
+        return_coverage_state=market_risk_return_coverage_state,
         sample_count=len(daily_returns),
         periods_per_year=periods_per_year,
         annualized_volatility=annualized_volatility,
     )
+    if not market_risk_scope_snapshots:
+        risk_result_contract["risk_result_status"] = "unavailable"
+        risk_result_contract["risk_unavailable_reason"] = (
+            "no_modeled_market_assets"
+        )
 
     drawdown_stats = period_metrics.drawdown_stats(
         (
-            visible_snapshots
-            if return_coverage_state == "complete" and not performance_is_operational
+            risk_return_snapshots
+            if market_risk_return_coverage_state == "complete"
             else []
         ),
         start_anchor_date=performance_start_boundary_date,
+        return_field="market_risk_daily_return",
     )
     current_drawdown = drawdown_stats["current_drawdown"]
     max_drawdown = drawdown_stats["max_drawdown"]
@@ -3289,6 +3714,9 @@ def build_portfolio_performance_report_from_snapshots(
     start_total_pnl = _safe_float(
         (total_pnl_baseline_snapshot or {}).get("total_pnl")
     )
+    start_risk_scope_excluded_pnl = _safe_float(
+        (total_pnl_baseline_snapshot or {}).get("risk_scope_excluded_pnl")
+    )
 
     def period_total_pnl_to_date(snapshot: dict[str, object]) -> float | None:
         snapshot_total_pnl = _safe_float(snapshot.get("total_pnl"))
@@ -3299,6 +3727,18 @@ def build_portfolio_performance_report_from_snapshots(
         if start_total_pnl is None:
             return None
         return snapshot_total_pnl - start_total_pnl
+
+    def period_risk_scope_excluded_pnl_to_date(
+        snapshot: dict[str, object],
+    ) -> float | None:
+        snapshot_value = _safe_float(snapshot.get("risk_scope_excluded_pnl"))
+        if snapshot_value is None:
+            return None
+        if portfolio_inception_window:
+            return snapshot_value
+        if start_risk_scope_excluded_pnl is None:
+            return None
+        return snapshot_value - start_risk_scope_excluded_pnl
 
     return {
         "portfolio_id": str(portfolio.get("portfolio_id") or ""),
@@ -3325,6 +3765,14 @@ def build_portfolio_performance_report_from_snapshots(
             "snapshot_count": len(visible_snapshots),
             "return_observation_count": return_observation_count,
             "risk_return_observation_count": risk_return_observation_count,
+            "market_risk_return_coverage_state": (
+                market_risk_return_coverage_state
+            ),
+            "risk_metric_basis": "market_risk_return",
+            "risk_metric_label": (
+                "Market Risk Return — derivatives and base-currency cash "
+                "modeled at zero return"
+            ),
             "risk_annualization_periods_per_year": periods_per_year,
             **risk_result_contract,
             "latest_complete_as_of_date": snapshot_summary["latest_complete_as_of_date"],
@@ -3356,6 +3804,9 @@ def build_portfolio_performance_report_from_snapshots(
             "instrument_currency_gains": instrument_currency_gains,
             "return_of_capital_amount": return_of_capital_amount,
             "total_pnl": total_pnl,
+            "risk_scope_excluded_pnl": risk_scope_excluded_pnl,
+            "market_risk_pnl": market_risk_pnl,
+            "market_risk_cumulative_return": market_risk_cumulative_return,
             "performance_basis": (
                 "operational_carrying_basis"
                 if performance_is_operational
@@ -3416,6 +3867,32 @@ def build_portfolio_performance_report_from_snapshots(
                 "return_observation_exclusion_reason": snapshot.get(
                     "return_observation_exclusion_reason"
                 ),
+                "modeled_market_exposure_present": bool(
+                    snapshot.get("modeled_market_exposure_present")
+                ),
+                "market_risk_observation_count": snapshot.get(
+                    "market_risk_observation_count", 0
+                ),
+                "market_risk_return_coverage_state": snapshot.get(
+                    "market_risk_return_coverage_state"
+                )
+                or "unavailable",
+                "market_risk_return_chain_continuous": bool(
+                    snapshot.get("market_risk_return_chain_continuous")
+                ),
+                "market_risk_return_observation_eligible": bool(
+                    snapshot.get("market_risk_return_observation_eligible")
+                ),
+                "market_risk_return_observation_exclusion_reason": snapshot.get(
+                    "market_risk_return_observation_exclusion_reason"
+                ),
+                "market_risk_basis": snapshot.get("market_risk_basis")
+                or "zero_return_cash_and_derivatives",
+                "market_risk_label": snapshot.get("market_risk_label")
+                or (
+                    "Market Risk Return — derivatives and base-currency cash "
+                    "modeled at zero return"
+                ),
                 "performance_basis": snapshot.get("performance_basis")
                 or "market_value",
                 "performance_label": snapshot.get("performance_label")
@@ -3437,6 +3914,10 @@ def build_portfolio_performance_report_from_snapshots(
                 "instrument_currency_gains": snapshot.get("instrument_currency_gains"),
                 "return_of_capital_amount": snapshot.get("return_of_capital_amount"),
                 "total_pnl": period_total_pnl_to_date(snapshot),
+                "risk_scope_excluded_pnl": (
+                    period_risk_scope_excluded_pnl_to_date(snapshot)
+                ),
+                "market_risk_pnl": snapshot.get("market_risk_pnl"),
                 "external_cash_in": snapshot["external_cash_in"],
                 "external_cash_out": snapshot["external_cash_out"],
                 "net_external_inflow": snapshot["net_external_inflow"],
@@ -3445,6 +3926,13 @@ def build_portfolio_performance_report_from_snapshots(
                 "daily_twr": snapshot["daily_twr"],
                 "cumulative_twr": snapshot["cumulative_twr"],
                 "drawdown": snapshot["drawdown"],
+                "market_risk_daily_return": snapshot.get(
+                    "market_risk_daily_return"
+                ),
+                "market_risk_cumulative_return": snapshot.get(
+                    "market_risk_cumulative_return"
+                ),
+                "market_risk_drawdown": snapshot.get("market_risk_drawdown"),
             }
             for snapshot in visible_daily_series_snapshots
         ],
@@ -5882,6 +6370,7 @@ def _build_contribution_daily_events(
                 "cash_currency_gains": 0.0,
                 "pending_settlement_currency_gains": 0.0,
                 "instrument_currency_gains": 0.0,
+                "market_risk_excluded_pnl": 0.0,
                 attribution.GROUP_CAPITAL_FLOW_IN_FIELD: 0.0,
                 attribution.GROUP_CAPITAL_FLOW_OUT_FIELD: 0.0,
                 attribution.GROUP_CAPITAL_FLOW_IN_EOD_FIELD: 0.0,
@@ -5899,6 +6388,8 @@ def _build_contribution_daily_events(
         trade_date: date,
         currency: str,
     ) -> None:
+        if not group_key:
+            return
         converted_amount, _ = valuation_fx.convert_amount_on(
             amount,
             as_of_date=trade_date,
@@ -6028,6 +6519,20 @@ def _build_contribution_daily_events(
                     position_lot.get("currency"), field_name="position-lot currency"
                 ),
             )
+            if holdings_market_profile.is_derivative_contract(
+                position_lot.get("derivative_contract")
+            ):
+                add_amount(
+                    group_key=group_key,
+                    group_label=group_label,
+                    field_name="market_risk_excluded_pnl",
+                    amount=realized_pnl,
+                    trade_date=as_of_date,
+                    currency=valuation_fx.required_currency(
+                        position_lot.get("currency"),
+                        field_name="position-lot currency",
+                    ),
+                )
 
     for transaction in transactions_on_date:
         transaction_type = str(transaction.get("transaction_type") or "")
@@ -6061,13 +6566,35 @@ def _build_contribution_daily_events(
             account_name_map=account_name_map,
             base_currency=base_currency,
         )
-        if not group_key:
-            continue
+        position_reference_id, _position_label, _position_type = (
+            attribution.position_reference_from_mapping(transaction)
+        )
 
         gross_amount = _safe_float(transaction.get("gross_amount")) or 0.0
         fee_amount = _safe_float(transaction.get("fees")) or 0.0
         tax_amount = _safe_float(transaction.get("taxes")) or 0.0
         settlement_cash_account_id = transaction.get("settlement_cash_account_id")
+        writer_cash_settlement = (
+            transaction_type == "lifecycle_event"
+            and str(transaction.get("lifecycle_event_type") or "")
+            == "option_writer_cash_settlement"
+        )
+
+        transaction_risk_exclusion = _transaction_market_risk_excluded_pnl(
+            transaction
+        )
+        if (
+            is_performance_effective_date
+            and abs(transaction_risk_exclusion) > 1e-15
+        ):
+            add_amount(
+                group_key=group_key,
+                group_label=group_label,
+                field_name="market_risk_excluded_pnl",
+                amount=transaction_risk_exclusion,
+                trade_date=as_of_date,
+                currency=currency,
+            )
 
         if option_action == "sell_to_open" and is_performance_effective_date:
             target_group_key, target_group_label = cash_group(
@@ -6083,7 +6610,9 @@ def _build_contribution_daily_events(
                 trade_date=as_of_date,
                 currency=currency,
             )
-        elif option_action == "buy_to_close" and is_performance_effective_date:
+        elif (
+            option_action == "buy_to_close" or writer_cash_settlement
+        ) and is_performance_effective_date:
             source_group_key, source_group_label = cash_group(
                 settlement_cash_account_id,
                 currency,
@@ -6179,11 +6708,29 @@ def _build_contribution_daily_events(
                 )
 
         if (
-            transaction_type in {"dividend", "coupon", "dividend_reinvestment"}
+            transaction_type in {"fee", "tax"}
+            and position_reference_id
             and is_performance_effective_date
         ):
-            if axis == "instrument" and not instrument_id:
-                continue
+            source_group_key, source_group_label = cash_group(
+                settlement_cash_account_id or account_id,
+                currency,
+            )
+            add_transfer_flow(
+                source_group_key=source_group_key,
+                source_group_label=source_group_label,
+                target_group_key=group_key,
+                target_group_label=group_label,
+                amount=gross_amount,
+                trade_date=as_of_date,
+                currency=currency,
+            )
+
+        if (
+            transaction_type in {"dividend", "coupon", "dividend_reinvestment"}
+            and is_performance_effective_date
+            and position_reference_id
+        ):
             add_amount(
                 group_key=group_key,
                 group_label=group_label,
@@ -6276,7 +6823,7 @@ def _build_contribution_daily_events(
 
     # Writer lifecycle P&L belongs to the option instrument/account group,
     # never to the settlement cash residual.  Replay the full as-of history so
-    # partial close/expiry/assignment events can release the correct FIFO
+    # partial close/expiry/cash-settlement events can release the correct FIFO
     # premium basis even when the opening fact is not on today's date.
     obligation_history = transactions_as_of or transactions_on_date
     for obligation_event in derive_option_obligation_events(
@@ -6322,7 +6869,63 @@ def _build_contribution_daily_events(
                 trade_date=as_of_date,
                 currency=str(pseudo_transaction["currency"]),
             )
+            add_amount(
+                group_key=group_key,
+                group_label=group_label,
+                field_name="market_risk_excluded_pnl",
+                amount=realized,
+                trade_date=as_of_date,
+                currency=str(pseudo_transaction["currency"]),
+            )
     return events
+
+
+def _fresh_non_base_monetary_fx_observation_count(
+    *,
+    previous_state: dict[str, object] | None,
+    current_state: dict[str, object] | None,
+    as_of_date: date,
+    base_currency: str,
+    direct_fx_instruments: dict[tuple[str, str], str],
+    instrument_detail_cache: dict[str, dict[str, object] | None],
+) -> int:
+    currencies: set[str] = set()
+    for state in (previous_state, current_state):
+        for field_name in (
+            "_cash_balance_local_by_currency",
+            "_pending_settlement_local_by_currency",
+        ):
+            balances = (state or {}).get(field_name)
+            if not isinstance(balances, dict):
+                continue
+            for raw_currency, raw_amount in balances.items():
+                currency = str(raw_currency or "").strip().upper()
+                amount = _safe_float(raw_amount)
+                if (
+                    currency
+                    and currency != base_currency
+                    and amount is not None
+                    and abs(amount) > 1e-9
+                ):
+                    currencies.add(currency)
+
+    fresh_count = 0
+    for currency in currencies:
+        resolved_fx = valuation_fx.resolve_fx_rate_on(
+            as_of_date=as_of_date,
+            base_currency=currency,
+            quote_currency=base_currency,
+            direct_instruments=direct_fx_instruments,
+            instrument_detail_cache=instrument_detail_cache,
+            instrument_detail_loader=get_registry_instrument_detail,
+        )
+        if (
+            resolved_fx is not None
+            and _parse_iso_date(resolved_fx.get("as_of_date")) == as_of_date
+            and not bool(resolved_fx.get("stale"))
+        ):
+            fresh_count += 1
+    return fresh_count
 
 
 def _build_contribution_slices_for_date(
@@ -6387,6 +6990,11 @@ def _build_contribution_slices_for_date(
         expense_cash_amount = _safe_float((current_event or {}).get("expense_cash_amount"))
         fee_amount = _safe_float((current_event or {}).get("fee_amount"))
         tax_amount = _safe_float((current_event or {}).get("tax_amount"))
+        market_risk_excluded_pnl = _safe_float(
+            (current_event or {}).get("market_risk_excluded_pnl")
+        )
+        if current_event is None:
+            market_risk_excluded_pnl = 0.0
         capital_flow_in_base = _safe_float((current_event or {}).get(attribution.GROUP_CAPITAL_FLOW_IN_FIELD))
         capital_flow_out_base = _safe_float((current_event or {}).get(attribution.GROUP_CAPITAL_FLOW_OUT_FIELD))
         capital_flow_in_eod_base = _safe_float(
@@ -6480,6 +7088,11 @@ def _build_contribution_slices_for_date(
                 - capital_flow_in_base
                 + capital_flow_out_base
             )
+        market_risk_total_pnl = (
+            total_pnl - market_risk_excluded_pnl
+            if total_pnl is not None and market_risk_excluded_pnl is not None
+            else None
+        )
 
         slice_coverage_state = return_chain.snapshot_coverage_state(snapshot or {}, "attribution")
         if (
@@ -6511,6 +7124,14 @@ def _build_contribution_slices_for_date(
             capital_flow_out_base=capital_flow_out_base,
             capital_flow_in_eod_base=capital_flow_in_eod_base,
         )
+        market_risk_daily_return = attribution.daily_group_return_from_components(
+            beginning_value_base=beginning_value_base,
+            ending_value_base=ending_value_base,
+            total_pnl=market_risk_total_pnl,
+            capital_flow_in_base=capital_flow_in_base,
+            capital_flow_out_base=capital_flow_out_base,
+            capital_flow_in_eod_base=capital_flow_in_eod_base,
+        )
         # Contribution is an arithmetic decomposition of the portfolio's
         # daily TWR.  Use the same BOD external-flow denominator as the
         # portfolio return so inception funding and later deposits reconcile
@@ -6529,7 +7150,27 @@ def _build_contribution_slices_for_date(
             )
             else None
         )
+        market_risk_daily_contribution = (
+            market_risk_total_pnl / portfolio_return_denominator
+            if (
+                market_risk_total_pnl is not None
+                and portfolio_return_denominator is not None
+                and portfolio_return_denominator > 1e-9
+            )
+            else None
+        )
         market_observation_count = int((current_state or {}).get("market_observation_count") or 0)
+        market_risk_observation_count = (
+            market_observation_count
+            + _fresh_non_base_monetary_fx_observation_count(
+                previous_state=previous_state,
+                current_state=current_state,
+                as_of_date=as_of_date,
+                base_currency=base_currency,
+                direct_fx_instruments=direct_fx_instruments,
+                instrument_detail_cache=instrument_detail_cache,
+            )
+        )
         has_derivative_exposure = any(
             bool((state or {}).get(field_name))
             for state in (previous_state, current_state)
@@ -6554,6 +7195,25 @@ def _build_contribution_slices_for_date(
             and not has_derivative_lifecycle_activity
             and not has_stale_market_input
         )
+        market_risk_return_coverage_state = (
+            slice_coverage_state
+            if market_risk_excluded_pnl is not None
+            else "partial"
+        )
+        # Group-own volatility uses the group's valid observations. Portfolio
+        # correlation and realized contribution apply the common-date
+        # portfolio eligibility filter later when the covariance matrix is
+        # assembled.
+        market_risk_return_observation_eligible = bool(
+            market_risk_daily_return is not None
+            and isfinite(market_risk_daily_return)
+            and market_risk_return_coverage_state == "complete"
+            and (
+                market_risk_observation_count > 0
+                or abs(market_risk_daily_return) > 1e-12
+            )
+            and not has_stale_market_input
+        )
 
         daily_slices.append(
             {
@@ -6569,6 +7229,13 @@ def _build_contribution_slices_for_date(
                 "_is_initial_valuation_anchor": is_initial_valuation_anchor,
                 "market_observation_count": market_observation_count,
                 "return_observation_eligible": return_observation_eligible,
+                "market_risk_observation_count": market_risk_observation_count,
+                "market_risk_return_coverage_state": (
+                    market_risk_return_coverage_state
+                ),
+                "market_risk_return_observation_eligible": (
+                    market_risk_return_observation_eligible
+                ),
                 "_system_holding_category": (
                     "derivatives"
                     if has_derivative_exposure or has_derivative_lifecycle_activity
@@ -6610,6 +7277,12 @@ def _build_contribution_slices_for_date(
                 "total_pnl": total_pnl,
                 "daily_return": daily_return,
                 "daily_contribution": daily_contribution,
+                "market_risk_excluded_pnl": market_risk_excluded_pnl,
+                "market_risk_total_pnl": market_risk_total_pnl,
+                "market_risk_daily_return": market_risk_daily_return,
+                "market_risk_daily_contribution": (
+                    market_risk_daily_contribution
+                ),
             }
         )
 
@@ -7583,33 +8256,6 @@ def build_contribution_bucket_calendar_report(
     }
 
 
-_CALCULATION_DETAIL_ADDITIVE_SLICE_FIELDS = (
-    "beginning_value_base",
-    "ending_value_base",
-    "beginning_weight",
-    "ending_weight",
-    "cash_balance_base",
-    "position_market_value_base",
-    "open_cost_basis_base",
-    "realized_pnl",
-    "unrealized_pnl",
-    "unrealized_pnl_change",
-    "income_cash_amount",
-    "expense_cash_amount",
-    "fee_amount",
-    "tax_amount",
-    "cash_currency_gains",
-    "pending_settlement_currency_gains",
-    "instrument_currency_gains",
-    attribution.GROUP_CAPITAL_FLOW_IN_FIELD,
-    attribution.GROUP_CAPITAL_FLOW_OUT_FIELD,
-    attribution.GROUP_CAPITAL_FLOW_IN_EOD_FIELD,
-    attribution.GROUP_CAPITAL_FLOW_OUT_EOD_FIELD,
-    "total_pnl",
-    "daily_contribution",
-)
-
-
 def _build_taxonomy_calculation_detail_report(
     portfolio: dict[str, object],
     accounts: list[dict[str, object]],
@@ -8382,6 +9028,18 @@ def build_period_calculation_groups_report(
         end_date=risk_basis_end_date,
         detail_loader=risk_instrument_detail,
     )
+    has_non_security_market_risk_observation = bool(
+        not risk_instrument_ids
+        and any(
+            bool(point.get("market_risk_return_observation_eligible"))
+            for point in portfolio_daily_series
+        )
+    )
+    if has_non_security_market_risk_observation:
+        risk_frequency_profile["coverage_state"] = "complete"
+        risk_frequency_profile["status_label"] = (
+            "Daily risk basis - non-base-currency cash FX observations"
+        )
     risk_calculation_frequency = cast(
         CalculationFrequency,
         str(risk_frequency_profile.get("resolved_frequency") or "daily"),

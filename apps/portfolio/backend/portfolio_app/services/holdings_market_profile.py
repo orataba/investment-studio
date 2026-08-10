@@ -878,19 +878,19 @@ def build_option_obligation_holding_rows(
             else None
         )
         strike = safe_float(first.get("strike"))
-        assignment_notional = (
+        strike_notional = (
             strike * required_underlying_quantity if strike is not None else None
         )
-        assignment_notional_base, _ = (
+        strike_notional_base, _ = (
             convert_amount_on(
-                assignment_notional,
+                strike_notional,
                 as_of_date=as_of_date,
                 from_currency=currency,
                 to_currency=base_currency,
                 direct_fx_instruments=direct_fx_instruments or {},
                 instrument_detail_cache=instrument_detail_cache or {},
             )
-            if assignment_notional is not None
+            if strike_notional is not None
             else (None, False)
         )
         expiry_date = _parse_iso_date(first.get("expiry_date"))
@@ -926,9 +926,8 @@ def build_option_obligation_holding_rows(
                 "strike": strike,
                 "option_type": first.get("option_type"),
                 "contract_multiplier": first.get("contract_multiplier"),
-                "settlement_type": first.get("settlement_type"),
-                "assignment_notional": assignment_notional,
-                "assignment_notional_base": assignment_notional_base,
+                "strike_notional": strike_notional,
+                "strike_notional_base": strike_notional_base,
                 "cost_basis_method": None,
                 "cost_basis": None,
                 "cost_basis_base": None,
@@ -998,7 +997,7 @@ def summarize_holdings_operational_status(
     as_of_date: date,
     safe_float: SafeFloat = _safe_float,
 ) -> dict[str, object]:
-    """Summarize expiry, assignment, and settlement operations."""
+    """Summarize option obligations and pending settlements."""
 
     obligation_rows = [
         row
@@ -1057,16 +1056,11 @@ def summarize_holdings_operational_status(
             bucket["carrying_liability_base"] = None
         expiry_buckets.append(bucket)
 
-    assignment_rows = [
-        row
-        for row in obligation_rows
-        if str(row.get("settlement_type") or "") == "physical"
+    obligation_notional_values = [
+        safe_float(row.get("strike_notional_base")) for row in obligation_rows
     ]
-    assignment_notional_values = [
-        safe_float(row.get("assignment_notional_base")) for row in assignment_rows
-    ]
-    assignment_notional_complete = all(
-        value is not None for value in assignment_notional_values
+    obligation_notional_complete = all(
+        value is not None for value in obligation_notional_values
     )
 
     settlement_rows = [
@@ -1172,19 +1166,19 @@ def summarize_holdings_operational_status(
     return {
         "operational_summary": {
             "expiry_buckets": expiry_buckets,
-            "assignment_exposure": {
-                "obligation_count": len(assignment_rows),
+            "option_obligation_exposure": {
+                "obligation_count": len(obligation_rows),
                 "open_contract_quantity": sum(
                     safe_float(row.get("open_contract_quantity")) or 0.0
-                    for row in assignment_rows
+                    for row in obligation_rows
                 ),
-                "deliverable_underlying_quantity": sum(
+                "underlying_equivalent_quantity": sum(
                     safe_float(row.get("required_underlying_quantity")) or 0.0
-                    for row in assignment_rows
+                    for row in obligation_rows
                 ),
                 "strike_notional_base": (
-                    sum(value for value in assignment_notional_values if value is not None)
-                    if assignment_notional_complete
+                    sum(value for value in obligation_notional_values if value is not None)
+                    if obligation_notional_complete
                     else None
                 ),
             },

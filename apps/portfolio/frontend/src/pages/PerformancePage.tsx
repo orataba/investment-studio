@@ -299,9 +299,9 @@ const CALCULATION_COLUMN_LABELS: Record<CalculationColumnKey, string> = {
 
 const CALCULATION_COLUMN_DESCRIPTIONS: Partial<Record<CalculationColumnKey, string>> = {
   own_corr:
-    'Correlation between the group return and portfolio TWR on aligned risk periods; the portfolio includes the group.',
+    'Correlation between the group return and portfolio Market Risk Return on aligned risk periods; the portfolio includes the group.',
   risk_contribution:
-    'Covariance share of the linked group return contribution and portfolio TWR. Top-level rows sum to 100%; a diversifier can be negative.',
+    'Covariance share of the linked group return contribution and portfolio Market Risk Return. Top-level rows sum to 100%; a diversifier can be negative.',
   observations: 'Aligned group-return observations used for Vol, Sharpe, Corr and Beta.',
 }
 
@@ -910,12 +910,12 @@ export function eligiblePortfolioReturnDates(
 ) {
   return portfolioDailySeries
     .filter((point) => {
-      const portfolioReturn = finiteNumber(point.daily_twr)
+      const portfolioReturn = finiteNumber(point.market_risk_daily_return)
       return (
         point.as_of_date >= startDate &&
         point.as_of_date <= endDate &&
         portfolioReturn != null &&
-        point.return_observation_eligible
+        point.market_risk_return_observation_eligible
       )
     })
     .map((point) => point.as_of_date)
@@ -1058,9 +1058,9 @@ function buildRelativePerformanceMetrics(
   const benchmarkByDate = new Map(benchmarkMetrics.dailyReturns.map((point) => [point.date, point.value]))
   const pairs = portfolioDailySeries
     .map((point) => {
-      const portfolioReturn = finiteNumber(point.daily_twr)
+      const portfolioReturn = finiteNumber(point.market_risk_daily_return)
       const benchmarkReturn = benchmarkByDate.get(point.as_of_date)
-      return portfolioReturn != null && benchmarkReturn != null && point.return_observation_eligible
+      return portfolioReturn != null && benchmarkReturn != null && point.market_risk_return_observation_eligible
         ? { date: point.as_of_date, portfolioReturn, benchmarkReturn }
         : null
     })
@@ -1176,38 +1176,11 @@ function buildPerformanceMetricRows(
   const annualizedReturnEligible = historyReliability.annualizedReturnEligible
   const comparableBenchmarkMetrics = relativeComparisonEligible ? benchmarkMetrics : null
   const relativeMetrics = buildRelativePerformanceMetrics(dailySeries, comparableBenchmarkMetrics)
-  const showComparison = relativeComparisonEligible && (selectedBenchmarkInstrument != null || benchmarkLoading)
+  const showRiskComparison =
+    relativeComparisonEligible &&
+    (selectedBenchmarkInstrument != null || benchmarkLoading)
   const operationalReturn = summary.performance_basis === 'operational_carrying_basis'
-  if (operationalReturn) {
-    const expenseAmount = finiteNumber(summary.expense_cash_amount)
-    return [
-      {
-        metric: summary.performance_label,
-        value: signedPercent(summary.cumulative_twr),
-        valueClassName: signedValueClass(summary.cumulative_twr),
-      },
-      {
-        metric: 'Total P&L',
-        value: formatSignedCurrency(summary.total_pnl, baseCurrency),
-        valueClassName: signedValueClass(summary.total_pnl),
-      },
-      {
-        metric: 'Derivative Lifecycle Realized P&L',
-        value: formatSignedCurrency(summary.derivative_lifecycle_realized_pnl, baseCurrency),
-        valueClassName: signedValueClass(summary.derivative_lifecycle_realized_pnl),
-      },
-      {
-        metric: 'Income',
-        value: formatSignedCurrency(summary.income_cash_amount, baseCurrency),
-        valueClassName: signedValueClass(summary.income_cash_amount),
-      },
-      {
-        metric: 'Expenses',
-        value: formatSignedCurrency(expenseAmount == null ? null : -expenseAmount, baseCurrency),
-        valueClassName: signedValueClass(expenseAmount == null ? null : -expenseAmount),
-      },
-    ] satisfies PerformanceMetricRow[]
-  }
+  const showReturnComparison = showRiskComparison && !operationalReturn
   const irr = finiteNumber(summary.irr) ?? finiteNumber(summary.mwror)
   const irrReliabilityNote = !annualizedReturnEligible
     ? 'Requires ≥ 1 year'
@@ -1220,9 +1193,13 @@ function buildPerformanceMetricRows(
       : summary.risk_unavailable_reason === 'insufficient_return_samples'
         ? `Requires ≥ ${summary.risk_minimum_sample_count} ${summary.risk_calculation_frequency} return samples (${summary.risk_sample_count} available)`
         : performanceUnavailableReason(summary.risk_unavailable_reason) ?? 'Risk metrics unavailable'
-  const calmarRatio = annualizedReturnEligible
-    ? ratioToDrawdown(summary.annualized_twr, summary.max_drawdown)
-    : null
+  const calmarRatio =
+    summary.risk_result_status === 'available'
+      ? ratioToDrawdown(
+          summary.annualized_return_from_daily_mean,
+          summary.max_drawdown,
+        )
+      : null
   const returnDifference =
     summary.cumulative_twr != null && comparableBenchmarkMetrics?.periodReturn != null
       ? summary.cumulative_twr - comparableBenchmarkMetrics.periodReturn
@@ -1247,10 +1224,6 @@ function buildPerformanceMetricRows(
     summary.sortino_ratio != null && comparableBenchmarkMetrics?.sortino != null
       ? summary.sortino_ratio - comparableBenchmarkMetrics.sortino
       : null
-  const calmarDifference =
-    calmarRatio != null && comparableBenchmarkMetrics?.calmar != null
-      ? calmarRatio - comparableBenchmarkMetrics.calmar
-      : null
   const currentDrawdownDifference =
     summary.current_drawdown != null && comparableBenchmarkMetrics?.currentDrawdown != null
       ? summary.current_drawdown - comparableBenchmarkMetrics.currentDrawdown
@@ -1273,7 +1246,7 @@ function buildPerformanceMetricRows(
       ),
       difference: benchmarkMetricText(selectedBenchmarkInstrument, benchmarkLoading, returnDifference),
       differenceClassName: benchmarkMetricClassName(selectedBenchmarkInstrument, benchmarkLoading, returnDifference),
-      showComparison,
+      showComparison: showReturnComparison,
     },
     {
       metric: 'Annualized TWR',
@@ -1296,7 +1269,7 @@ function buildPerformanceMetricRows(
       differenceClassName: annualizedReturnEligible
         ? benchmarkMetricClassName(selectedBenchmarkInstrument, benchmarkLoading, annualizedReturnDifference)
         : 'performance-cell-muted',
-      showComparison,
+      showComparison: showReturnComparison,
     },
     {
       metric: 'IRR / MWRR',
@@ -1311,37 +1284,37 @@ function buildPerformanceMetricRows(
       valueClassName: signedValueClass(summary.total_pnl),
     },
     {
+      metric: 'Market Risk P&L',
+      value: formatSignedCurrency(summary.market_risk_pnl, baseCurrency),
+      valueClassName: signedValueClass(summary.market_risk_pnl),
+    },
+    {
+      metric: 'P&L Excluded from Market Risk',
+      value: formatSignedCurrency(summary.risk_scope_excluded_pnl, baseCurrency),
+      valueClassName: signedValueClass(summary.risk_scope_excluded_pnl),
+    },
+    {
       metric: 'Derivative Lifecycle Realized P&L',
       value: formatSignedCurrency(summary.derivative_lifecycle_realized_pnl, baseCurrency),
       valueClassName: signedValueClass(summary.derivative_lifecycle_realized_pnl),
     },
     {
-      metric: 'Mean Daily Return',
+      metric: 'Market Risk Return',
+      value: signedPercent(summary.market_risk_cumulative_return),
+      valueClassName: signedValueClass(summary.market_risk_cumulative_return),
+    },
+    {
+      metric: 'Market Risk Mean Daily Return',
       value: signedPercent(summary.mean_daily_return, 3),
       valueClassName: signedValueClass(summary.mean_daily_return),
     },
     {
-      metric: 'Calmar Ratio',
-      value: annualizedReturnEligible ? formatRatio(calmarRatio) : 'N/A',
-      valueClassName: annualizedReturnEligible ? undefined : 'performance-cell-muted',
-      reliabilityNote: annualizedReturnEligible ? undefined : 'Annualized-return dependent',
-      benchmark: annualizedReturnEligible
-        ? benchmarkMetricText(selectedBenchmarkInstrument, benchmarkLoading, comparableBenchmarkMetrics?.calmar, formatRatio)
-        : selectedBenchmarkInstrument
-          ? 'N/A'
-          : '—',
-      difference: annualizedReturnEligible
-        ? benchmarkMetricText(selectedBenchmarkInstrument, benchmarkLoading, calmarDifference, signedRatio)
-        : selectedBenchmarkInstrument
-          ? 'N/A'
-          : '—',
-      differenceClassName: annualizedReturnEligible
-        ? benchmarkMetricClassName(selectedBenchmarkInstrument, benchmarkLoading, calmarDifference)
-        : 'performance-cell-muted',
-      showComparison,
+      metric: 'Market Risk Calmar Ratio',
+      value: formatRatio(calmarRatio),
+      reliabilityNote: riskReliabilityNote,
     },
     {
-      metric: 'Volatility',
+      metric: 'Market Risk Volatility',
       value: formatPercent(summary.annualized_volatility),
       reliabilityNote: riskReliabilityNote,
       benchmark: benchmarkMetricText(
@@ -1353,10 +1326,10 @@ function buildPerformanceMetricRows(
       benchmarkClassName: undefined,
       difference: benchmarkMetricText(selectedBenchmarkInstrument, benchmarkLoading, volatilityDifference),
       differenceClassName: benchmarkMetricClassName(selectedBenchmarkInstrument, benchmarkLoading, volatilityDifference),
-      showComparison,
+      showComparison: showRiskComparison,
     },
     {
-      metric: 'Downside Volatility',
+      metric: 'Market Risk Downside Volatility',
       value: formatPercent(summary.annualized_downside_volatility),
       reliabilityNote: riskReliabilityNote,
       benchmark: benchmarkMetricText(
@@ -1371,28 +1344,28 @@ function buildPerformanceMetricRows(
         benchmarkLoading,
         downsideVolatilityDifference,
       ),
-      showComparison,
+      showComparison: showRiskComparison,
     },
     {
-      metric: 'Sharpe Ratio',
+      metric: 'Market Risk Sharpe Ratio',
       value: formatRatio(summary.sharpe_ratio),
       reliabilityNote: riskReliabilityNote,
       benchmark: benchmarkMetricText(selectedBenchmarkInstrument, benchmarkLoading, comparableBenchmarkMetrics?.sharpe, formatRatio),
       difference: benchmarkMetricText(selectedBenchmarkInstrument, benchmarkLoading, sharpeDifference, signedRatio),
       differenceClassName: benchmarkMetricClassName(selectedBenchmarkInstrument, benchmarkLoading, sharpeDifference),
-      showComparison,
+      showComparison: showRiskComparison,
     },
     {
-      metric: 'Sortino Ratio',
+      metric: 'Market Risk Sortino Ratio',
       value: formatRatio(summary.sortino_ratio),
       reliabilityNote: riskReliabilityNote,
       benchmark: benchmarkMetricText(selectedBenchmarkInstrument, benchmarkLoading, comparableBenchmarkMetrics?.sortino, formatRatio),
       difference: benchmarkMetricText(selectedBenchmarkInstrument, benchmarkLoading, sortinoDifference, signedRatio),
       differenceClassName: benchmarkMetricClassName(selectedBenchmarkInstrument, benchmarkLoading, sortinoDifference),
-      showComparison,
+      showComparison: showRiskComparison,
     },
     {
-      metric: 'Current DD',
+      metric: 'Market Risk Current DD',
       value: signedPercent(summary.current_drawdown),
       valueClassName: signedValueClass(summary.current_drawdown),
       benchmark: benchmarkMetricText(selectedBenchmarkInstrument, benchmarkLoading, comparableBenchmarkMetrics?.currentDrawdown),
@@ -1403,17 +1376,17 @@ function buildPerformanceMetricRows(
       ),
       difference: benchmarkMetricText(selectedBenchmarkInstrument, benchmarkLoading, currentDrawdownDifference),
       differenceClassName: benchmarkMetricClassName(selectedBenchmarkInstrument, benchmarkLoading, currentDrawdownDifference),
-      showComparison,
+      showComparison: showRiskComparison,
     },
     {
-      metric: 'Max DD',
+      metric: 'Market Risk Max DD',
       value: signedPercent(summary.max_drawdown),
       valueClassName: signedValueClass(summary.max_drawdown),
       benchmark: benchmarkMetricText(selectedBenchmarkInstrument, benchmarkLoading, comparableBenchmarkMetrics?.maxDrawdown),
       benchmarkClassName: benchmarkMetricClassName(selectedBenchmarkInstrument, benchmarkLoading, comparableBenchmarkMetrics?.maxDrawdown),
       difference: benchmarkMetricText(selectedBenchmarkInstrument, benchmarkLoading, maxDrawdownDifference),
       differenceClassName: benchmarkMetricClassName(selectedBenchmarkInstrument, benchmarkLoading, maxDrawdownDifference),
-      showComparison,
+      showComparison: showRiskComparison,
     },
     {
       metric: 'Tracking Error',
@@ -1452,8 +1425,8 @@ function TableStatusRow({ colSpan, label, tone = 'muted' }: { colSpan: number; l
   )
 }
 
-function MetricGrid({ rows, operational = false }: { rows: PerformanceMetricRow[]; operational?: boolean }) {
-  const columnLabels = operational ? ['Operational'] : ['Return', 'Risk', 'Relative']
+function MetricGrid({ rows }: { rows: PerformanceMetricRow[] }) {
+  const columnLabels = ['Return', 'Risk', 'Relative']
   const columnCount = columnLabels.length
   const showComparisonColumns = rows.some((row) => row.showComparison)
   const rowsPerColumn = Math.ceil(rows.length / columnCount)
@@ -2168,7 +2141,7 @@ function PerformancePage() {
             selectedBenchmarkInstrument,
             benchmarkLoading,
             benchmarkMetrics,
-            !performanceIsOperational && (benchmarkGuard?.relativeComparisonEligible ?? false),
+            benchmarkGuard?.relativeComparisonEligible ?? false,
           )
         : [],
     [
@@ -2687,7 +2660,7 @@ function PerformancePage() {
             {normalizeBenchmarkCurrency(baseCurrency)}.
           </div>
         ) : null}
-        {benchmarkGuard && benchmarkBasisAssessment && !performanceIsOperational ? (
+        {benchmarkGuard && benchmarkBasisAssessment ? (
           <div
             className={`performance-benchmark-basis-status ${
               benchmarkGuard.mode === 'canonical'
@@ -2708,7 +2681,7 @@ function PerformancePage() {
             <span>{benchmarkBasisAssessment.label}</span>
           </div>
         ) : null}
-        {!benchmarkError && !benchmarkCurrencyMismatch && benchmarkGuard?.warning && !performanceIsOperational ? (
+        {!benchmarkError && !benchmarkCurrencyMismatch && benchmarkGuard?.warning ? (
           <div className="inline-notice inline-notice-warning performance-benchmark-basis-warning" role="status">
             {benchmarkGuard.warning}
           </div>
@@ -2717,7 +2690,8 @@ function PerformancePage() {
           <div className="inline-notice inline-notice-warning" role="status">
             <strong>{summary?.performance_label ?? 'Total Portfolio Operational Return'}.</strong>{' '}
             Event-valued assets and obligations use carrying-basis measurements. This is an operational ledger return,
-            not a complete fair-value or GIPS-informed TWR, and it is not used as a portfolio risk input or benchmark-relative result.
+            not a complete fair-value or GIPS-informed TWR. Market-risk metrics below use the separate return chain that
+            models derivatives and base-currency cash at zero return.
           </div>
         ) : null}
         {summary?.ordinary_sleeve_twr_status === 'unavailable' ? (
@@ -2750,7 +2724,7 @@ function PerformancePage() {
                   <span>{performanceHistoryReliability.annualizationMessage}</span>
                 </div>
               ) : null}
-              <MetricGrid rows={metricRows} operational={performanceIsOperational} />
+              <MetricGrid rows={metricRows} />
             </section>
 
             <section className="performance-section-block">

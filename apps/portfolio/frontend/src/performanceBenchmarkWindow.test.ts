@@ -26,6 +26,14 @@ function dailyPoint(
     market_observation_count: dailyTwr == null ? 0 : 1,
     return_observation_eligible: dailyTwr != null,
     return_observation_exclusion_reason: dailyTwr == null ? 'missing_return' : null,
+    modeled_market_exposure_present: true,
+    market_risk_observation_count: dailyTwr == null ? 0 : 1,
+    market_risk_return_coverage_state: dailyTwr == null ? 'unavailable' : 'complete',
+    market_risk_return_chain_continuous: dailyTwr != null,
+    market_risk_return_observation_eligible: dailyTwr != null,
+    market_risk_return_observation_exclusion_reason: dailyTwr == null ? 'missing_return' : null,
+    market_risk_basis: 'zero_return_cash_and_derivatives',
+    market_risk_label: 'Market Risk Return',
     performance_basis: 'market_value',
     performance_label: 'Total Portfolio Return',
     beginning_nav: 100,
@@ -41,6 +49,8 @@ function dailyPoint(
     instrument_currency_gains: 0,
     return_of_capital_amount: 0,
     total_pnl: 0,
+    risk_scope_excluded_pnl: 0,
+    market_risk_pnl: 0,
     external_cash_in: 0,
     external_cash_out: 0,
     net_external_inflow: 0,
@@ -49,6 +59,9 @@ function dailyPoint(
     daily_twr: dailyTwr,
     cumulative_twr: dailyTwr,
     drawdown: 0,
+    market_risk_daily_return: dailyTwr,
+    market_risk_cumulative_return: dailyTwr,
+    market_risk_drawdown: dailyTwr == null ? null : 0,
   }
 }
 

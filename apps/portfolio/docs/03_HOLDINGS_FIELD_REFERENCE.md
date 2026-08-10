@@ -24,7 +24,7 @@ Portfolio 和 Watchlist 各自实现自己的读路径，不导入对方服务�
 - 未显式指定日期时，Holdings 使用 latest fresh complete snapshot；不能把部分资产已经更新的更晚日期当作组合 `as_of_date`。
 - 行级 `Position Value`、`Cost Basis`、`Day Change` 和 `Unrealized P&L` 使用标的本币展示；对应 `* Base` 字段及所有 group / subtotal / total 金额使用组合 base currency。对 event-valued asset 和 option obligation，`market_value(_base)` 只是 signed operational NAV amount，不代表 fair value。
 - 普通非现金市值为 `quantity × selected valuation quote × price_scale`；再用 `as_of_date` FX 转为 base currency。FCN/长期权在没有可靠 fair value 时使用 `valuation_basis=carried_cost`，written option 使用 `valuation_basis=premium_liability` 和负的 NAV amount；两者的 `fair_value` 及 quote identity 均为空。现金市值为 settled cash amount。
-- 行级 `Weight = market_value_base / portfolio NAV`，其中 NAV 包含 pending settlement，option obligation 因而使用负权重。Return / Risk 只允许 `risk_eligible=true` 的 market-valued positions 参与；pending settlement、event-valued asset 和 written liability 都不能被伪造成有收益序列的持仓。
+- 行级 `Weight = market_value_base / portfolio NAV`，其中 NAV 包含 pending settlement，option obligation 因而使用负权重。行级 Return / Risk 只允许 `risk_eligible=true` 的 market-valued positions 参与；pending settlement、event-valued asset 和 written liability 都不能被伪造成有自身收益序列的持仓。组合聚合风险另以 total NAV 为分母，将 base-currency monetary rows 与衍生品资本按 0 return 处理。
 - 缺少唯一且合法的 valuation quote、价格单位/scale 或 FX 时，依赖它的字段为不可用，不用旧价格、图表点或 0 补齐。
 
 ### 2.2 成本、盈亏与收益分类
@@ -59,7 +59,7 @@ Portfolio 和 Watchlist 各自实现自己的读路径，不导入对方服务�
 | `current_basket_path` | 在共同 period 上先生成当前权重篮子 return path，再计算 volatility / drawdown。 |
 | `portfolio_risk_contribution` | 成员都相对于同一个完整全组合 forward-risk variance；分组只加总这些贡献。 |
 
-当前权重 return 与 drawdown 要求有当前市值的 market-valued 成员 100% 覆盖；它们不会把衍生品补成 0 return。Volatility 先把衍生品从风险 scope 排除，只把 base-currency cash 和 base-currency pending monetary row 作为 0-return monetary 成员；non-base monetary exposure 仍需要兑 base currency 的 FX return。成员 return currency 不一致且没有统一的 base-currency return series 时，结果留空，不能直接拼接各自本币收益。
+当前权重 instrument return 要求有当前市值的 market-valued 成员 100% 覆盖，不能把衍生品未知收益伪造成普通持仓收益。Volatility 与 risk drawdown 使用 total-NAV 权重：普通证券提供共同 period return series，衍生品、base-currency cash 和 base-currency pending monetary row 作为 0-return capital；non-base monetary exposure 仍需要兑 base currency 的 FX return。没有任何 modeled market asset 时结果 unavailable。成员 return currency 不一致且没有统一的 base-currency return series 时，结果留空，不能直接拼接各自本币收益。
 
 ### 2.5 跨页面事件估值一致性
 
@@ -79,7 +79,7 @@ Holdings 只有一张可排序、可选列的表。系统视图 `Default` 与 `R
 
 `holding_category` 是系统 read-model 字段，不是用户可选的 Group By 维度，也不写入交易事实。`Group By` 由底层限定为只在 Securities 区段内部按 taxonomy、instrument type、currency 等字段建立二级分组；Derivatives 与 Cash & Settlement 不参与该分组。Taxonomy / Taxonomy Leaf 只解析普通证券，衍生品和现金固定显示 `N/A`。covered call 等策略继续由独立股票行和 short Call 行表达；行内 notes/交易 notes 承担人工关联说明。
 
-Short-option row 不读取或分配股票持仓。`required_underlying_quantity = open_contract_quantity × contract_multiplier`，只表示合约对应的标的数量；`assignment_notional = strike × required underlying`，base amount 只有在 as-of FX 可用时才发布。covered call 等策略由用户通过独立股票和期权交易表达，不属于交易或持仓类型。
+Short-option row 不读取或分配股票持仓。`required_underlying_quantity = open_contract_quantity × contract_multiplier`，只表示合约对应的标的数量；`strike_notional = strike × required underlying`，base amount 只有在 as-of FX 可用时才发布。covered call 等策略由用户通过独立股票和期权交易表达，不属于交易或持仓类型。
 
 Pending row 的 identity 固定为：
 
@@ -89,7 +89,7 @@ pending:{kind}:{cash_account}:{economic_instrument}:{currency}:{settlement_date}
 
 它防止相同账户/资产/币种但不同结算边界的余额发生主键冲突。`pending_status` 目前包括 `awaiting_settlement`、`settled_awaiting_position` 和 `overdue`；本币 signed amount 与 base amount 必须同时保留，base FX 不可用时本币金额仍可展示但 base aggregation 为 unavailable。
 
-Workspace `operational_summary` 展示 open short-option contract count、expiry buckets、physical assignment exposure 和 settlement receivable/payable/net；`operational_alerts` 返回 severity、code、message 和真实 `related_line_ids`。到期已到和逾期结算是 critical，七日内到期与 settlement FX unavailable 是 warning。API 不发布股票覆盖分类；动态 workspace、materialized snapshot 和 instrument detail projection 对当前字段必须保持 parity。
+Workspace `operational_summary` 展示 open short-option contract count、expiry buckets、option obligation strike notional 和 settlement receivable/payable/net；`operational_alerts` 返回 severity、code、message 和真实 `related_line_ids`。到期已到和逾期结算是 critical，七日内到期与 settlement FX unavailable 是 warning。API 不发布股票覆盖分类或结算方式；动态 workspace、materialized snapshot 和 instrument detail projection 对当前字段必须保持 parity。
 
 CSV/XLSX 只导出当前视图的可见列，并始终以 `Category` 作为第一列。启用 `Group By` 时再增加 `Group` 列；该列只对 Securities 的二级分组有值，Derivatives 与 Cash & Settlement 写 `N/A`。三个固定区段都附带 subtotal，最后附带 `Portfolio Total`。价格路径、收益、未实现盈亏和回撤的不适用值导出为 `N/A`；衍生品的 Vol / Forward RC 同样导出 `N/A`，只有明确 modeled-zero 的 monetary rows 导出风险数值 `0`。
 
@@ -140,7 +140,7 @@ CSV/XLSX 只导出当前视图的可见列，并始终以 `Category` 作为第�
 | `instrument_volatility_3m` | 3M Vol | 同上，3M 窗口 | 从风险 scope 排除衍生品后，用 3M 共同 period 当前篮子 path 重算；modeled-zero monetary rows 作为 0-return 成员 | `current_basket_path` |
 | `instrument_volatility_6m` | 6M Vol | 同上，6M 窗口 | 从风险 scope 排除衍生品后，用 6M 共同 period 当前篮子 path 重算；modeled-zero monetary rows 作为 0-return 成员 | `current_basket_path` |
 | `instrument_volatility_1y` | 1Y Vol | 同上，1Y 窗口 | 从风险 scope 排除衍生品后，用 1Y 共同 period 当前篮子 path 重算；modeled-zero monetary rows 作为 0-return 成员 | `current_basket_path` |
-| `forward_risk_share` | Forward RC | eligible 普通证券相对于同一 modeled-sleeve variance 的 contribution share；衍生品为 N/A，modeled-zero monetary row 为 0；其他 policy-excluded rows 为 N/A | eligible 风险模型完整时加总，衍生品不进入合计；纯 modeled-zero monetary group 为 0；excluded exposure 仍保留在 scope disclosure | `portfolio_risk_contribution` |
+| `forward_risk_share` | Forward RC | eligible 普通证券相对于同一 total-portfolio variance 的 contribution share；衍生品为 N/A，modeled-zero monetary row 为 0；其他 policy-excluded rows 为 N/A | eligible 风险模型完整时加总，衍生品不进入合计；纯 modeled-zero monetary group 的行级贡献为 0；excluded exposure 仍保留在 scope disclosure | `portfolio_risk_contribution` |
 | `price_chart_1m` | Chart 1M | 1M 有界采样展示路径，保留真实 basis / semantics | 留空 | `none` |
 | `price_chart_3m` | Chart 3M | 3M 有界采样展示路径，保留真实 basis / semantics | 留空 | `none` |
 | `price_chart_6m` | Chart 6M | 6M 有界采样展示路径，保留真实 basis / semantics | 留空 | `none` |
@@ -160,19 +160,19 @@ CSV/XLSX 只导出当前视图的可见列，并始终以 `Category` 作为第�
 
 覆盖不足时整个 group 留空，不能剔除缺失成员后重新归一。`Portfolio Total` 遵守同一规则。该结果表示“如果当前篮子在该历史窗口一直保持当前权重”，不是实际组合 TWR。
 
-当前 group scope 中只要存在非零 event-valued asset 或 option obligation，Day Change、Day Return、Unrealized P&L、Unrealized Return、instrument return 和 drawdown 均失败关闭为 `N/A`。Operational amount 仍参与 Position Value、Weight 和 NAV 对账。Vol 与 Forward RC 从风险 scope 排除衍生品；衍生品自身字段为 `N/A`。
+当前 group scope 中只要存在非零 event-valued asset 或 option obligation，Day Change、Day Return、Unrealized P&L、Unrealized Return 和 instrument return 均失败关闭为 `N/A`。Operational amount 仍参与 Position Value、Weight 和 NAV 对账。Vol 与 risk drawdown 把衍生品和本币现金作为 0-return capital；Forward RC 不把它们放入 covariance，但使用 total-NAV 权重。衍生品自身字段仍为 `N/A`。
 
 ### 4.2 当前篮子风险
 
-普通证券先在共同 period identity 和共同 observation dates 上构造成员收益，再用当前权重得到 group return series，不能加权平均成员风险值。Volatility 计算排除衍生品，只把 modeled-zero monetary row 作为 0-return 成员；Current DD / Max DD 仍要求真实价格路径，因此含衍生品时为 `N/A`。混合数据频率使用 workspace 已解析的共同 daily / weekly / monthly basis，不跨 period forward-fill。
+普通证券先在共同 period identity 和共同 observation dates 上构造成员收益，再用当前权重得到 group return series，不能加权平均成员风险值。衍生品与本币现金保留市值、收益固定为 0；非本币 monetary exposure 必须提供可比较的 FX return。group 与 subtotal 使用各自篮子的净市值分母，`Portfolio Total` 使用 total NAV。只有至少一个可建模市场成员并且共同路径完整时才发布 Volatility、Current DD 与 Max DD；纯本币现金/衍生品 scope 显示 unavailable，不冒充实际 0。混合数据频率使用 workspace 已解析的共同 daily / weekly / monthly basis，不跨 period forward-fill。
 
 成员可以在共同起点之前拥有不同长度的早期历史；共同起点取各成员首个合法 period start 中最晚者。从该点开始，每个成员必须具有完全相同、内部连续且顺序一致的 `(period_start, period_end)` identity：后一段的 start 必须等于前一段的 end。任何成员在共同区间中间或尾部缺一段，或所有成员共同缺失同一段，整个 group 指标都应显示不可用，不能静默取交集后把缺口隐藏。
 
 ### 4.3 Forward RC
 
-所有 eligible 非现金成员必须来自同一个完整 Production Risk Model、同一 leaf covariance matrix 和同一 modeled-sleeve variance。`risk_eligible` 来自 as-of effective analytics taxonomy selection、configuration revision 与 scope policy：exact node 优先，其次最近祖先，再到 taxonomy root；`__unassigned__` 只使用自身 policy。窗口从 holdings as-of date 按自然月回看；eligible member return 的 start/end period identity 必须完全一致，strict 与 complete-case policy 都校验尾部新鲜度。group / subtotal / total 只能加总成员相对于同一 modeled-sleeve 分母的 risk share；不能先合成 group return 再运行 shrinkage，也不能在每个 group 内另建局部分母。`abs` mode 使用精确绝对贡献，零贡献保持为零。
+所有 eligible 市场成员必须来自同一个完整 Production Risk Model 和同一 leaf covariance matrix，权重为 signed base exposure / total NAV。`risk_eligible` 来自 as-of effective analytics taxonomy selection、configuration revision 与 scope policy：exact node 优先，其次最近祖先，再到 taxonomy root；`__unassigned__` 只使用自身 policy。窗口从 holdings as-of date 按自然月回看；eligible member return 的 start/end period identity 必须完全一致，strict 与 complete-case policy 都校验尾部新鲜度。group / subtotal / total 只能加总成员相对于同一 total-portfolio variance 的 risk share；不能先合成 group return 再运行 shrinkage，也不能在每个 group 内另建局部分母。`abs` mode 使用精确绝对贡献，零贡献保持为零。
 
-Event-valued asset 和 derivative liability 不进入 covariance matrix，行级 `forward_risk_share`、contribution 与 modeled volatility 留空，状态为 `excluded`。Forward-risk summary 仍必须返回 policy/configuration versions、`modeled_net_exposure`、`modeled_gross_exposure`、`excluded_carrying_value`、`excluded_liability`、`cash_unallocated_exposure`、coverage ratio 和 `excluded_rows`。只有没有任何 eligible risky holding，或任一 eligible member 的 return/FX/period identity/weight/variance 不完整时，整个 modeled-sleeve forward risk 才失败关闭；纯 modeled-zero monetary group 单独显示 0。
+Event-valued asset 和 derivative liability 不进入 covariance matrix，行级 `forward_risk_share`、contribution 与 modeled volatility 留空，状态为 `excluded`。Forward-risk summary 仍必须返回 policy/configuration versions、total NAV、`modeled_net_exposure`、`modeled_gross_exposure`、`excluded_carrying_value`、`excluded_liability`、`cash_unallocated_exposure`、coverage ratio 和 `excluded_rows`。没有 eligible risky holding、total NAV 无效、存在无法建模的非本币 monetary 或 policy-excluded 市场敞口，或者 eligible member 的 return/FX/period identity/weight/variance 不完整时，整个 forward risk 失败关闭。modeled-zero monetary row 的行级贡献可以明确为 0，但它本身不能使纯现金组合得到可观测组合风险。
 
 ## 5. 不可用与排查顺序
 
@@ -183,4 +183,4 @@ Event-valued asset 和 derivative liability 不进入 covariance matrix，行级
 3. 市值或权重：检查 valuation quote、quote basis、price scale、FX 和 snapshot freshness；
 4. Return / Vol / Drawdown：检查 Registry total-return semantics、窗口锚点、历史覆盖和 risk frequency；
 5. group 指标：检查每个当前成员是否 100% 覆盖、return currency 是否一致；
-6. Forward RC：先检查 effective analytics taxonomy/policy 与 excluded-row disclosure，再检查 eligible members、Production Risk Model、完整对齐收益矩阵、base-currency return、modeled-sleeve variance 和 workspace status。
+6. Forward RC：先检查 effective analytics taxonomy/policy、total NAV 与 excluded-row disclosure，再检查 eligible members、Production Risk Model、完整对齐收益矩阵、base-currency return、total-portfolio variance 和 workspace status。

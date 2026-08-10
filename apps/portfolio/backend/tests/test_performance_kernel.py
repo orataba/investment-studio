@@ -148,9 +148,9 @@ def _test_instrument_detail(
 
 def test_realized_risk_contribution_uses_common_matrix_for_sparse_instruments():
     portfolio_daily_series = [
-        {"as_of_date": date(2026, 1, 1), "daily_twr": 0.01, "return_observation_eligible": True},
-        {"as_of_date": date(2026, 1, 2), "daily_twr": 0.02, "return_observation_eligible": True},
-        {"as_of_date": date(2026, 1, 3), "daily_twr": -0.01, "return_observation_eligible": True},
+        {"as_of_date": date(2026, 1, 1), "market_risk_daily_return": 0.01, "market_risk_return_observation_eligible": True},
+        {"as_of_date": date(2026, 1, 2), "market_risk_daily_return": 0.02, "market_risk_return_observation_eligible": True},
+        {"as_of_date": date(2026, 1, 3), "market_risk_daily_return": -0.01, "market_risk_return_observation_eligible": True},
     ]
     daily_slices = []
     for as_of_date, a_contribution, has_b_slice, b_contribution in [
@@ -165,6 +165,9 @@ def test_realized_risk_contribution_uses_common_matrix_for_sparse_instruments():
                 "daily_return": a_contribution,
                 "daily_contribution": a_contribution,
                 "return_observation_eligible": True,
+                "market_risk_daily_return": a_contribution,
+                "market_risk_daily_contribution": a_contribution,
+                "market_risk_return_observation_eligible": True,
             }
         )
         if has_b_slice:
@@ -175,6 +178,9 @@ def test_realized_risk_contribution_uses_common_matrix_for_sparse_instruments():
                     "daily_return": b_contribution,
                     "daily_contribution": b_contribution,
                     "return_observation_eligible": True,
+                    "market_risk_daily_return": b_contribution,
+                    "market_risk_daily_contribution": b_contribution,
+                    "market_risk_return_observation_eligible": True,
                 }
             )
 
@@ -207,7 +213,7 @@ def test_realized_risk_contribution_links_daily_contributions_for_weekly_frequen
         (date(2026, 1, 20), 0.04, 0.02, 0.02),
     ]
     portfolio_daily_series = [
-        {"as_of_date": as_of_date, "daily_twr": portfolio_return, "return_observation_eligible": True}
+        {"as_of_date": as_of_date, "market_risk_daily_return": portfolio_return, "market_risk_return_observation_eligible": True}
         for as_of_date, portfolio_return, _a_contribution, _b_contribution in daily_rows
     ]
     daily_slices = []
@@ -220,6 +226,9 @@ def test_realized_risk_contribution_links_daily_contributions_for_weekly_frequen
                     "daily_return": a_contribution,
                     "daily_contribution": a_contribution,
                     "return_observation_eligible": True,
+                    "market_risk_daily_return": a_contribution,
+                    "market_risk_daily_contribution": a_contribution,
+                    "market_risk_return_observation_eligible": True,
                 },
                 {
                     "as_of_date": as_of_date,
@@ -227,6 +236,9 @@ def test_realized_risk_contribution_links_daily_contributions_for_weekly_frequen
                     "daily_return": b_contribution,
                     "daily_contribution": b_contribution,
                     "return_observation_eligible": True,
+                    "market_risk_daily_return": b_contribution,
+                    "market_risk_daily_contribution": b_contribution,
+                    "market_risk_return_observation_eligible": True,
                 },
             ]
         )
@@ -10009,6 +10021,14 @@ def test_cash_currency_gains_flow_through_performance_and_calculation(client, mo
     assert isclose(performance_summary["cash_currency_gains"], 4.0, rel_tol=0.0, abs_tol=1e-12)
     assert isclose(performance_summary["total_pnl"], 4.0, rel_tol=0.0, abs_tol=1e-12)
     assert isclose(performance_summary["cumulative_twr"], 0.04, rel_tol=0.0, abs_tol=1e-12)
+    assert isclose(performance_summary["market_risk_pnl"], 4.0, rel_tol=0.0, abs_tol=1e-12)
+    assert isclose(
+        performance_summary["market_risk_cumulative_return"],
+        0.04,
+        rel_tol=0.0,
+        abs_tol=1e-12,
+    )
+    assert performance_summary["risk_return_observation_count"] == 1
 
     holdings_response = client.get("/api/workspace/holdings", params={"portfolio_id": "cash-fx-test"})
     assert holdings_response.status_code == 200
@@ -10055,6 +10075,7 @@ def test_cash_currency_gains_flow_through_performance_and_calculation(client, mo
     assert isclose(cash_group["final_value"], 104.0, rel_tol=0.0, abs_tol=1e-12)
     assert isclose(cash_group["cash_currency_gains"], 4.0, rel_tol=0.0, abs_tol=1e-12)
     assert isclose(cash_group["total_pnl"], 4.0, rel_tol=0.0, abs_tol=1e-12)
+    assert cash_group["risk_return_observation_count"] == 1
     instrument_cash_child = next(item for item in cash_group["children"] if item["item_kind"] == "cash")
     assert instrument_cash_child["item_key"] == "cash:cash-hkd-main:HKD"
     assert instrument_cash_child["item_label"] == "Main HKD Cash (HKD)"

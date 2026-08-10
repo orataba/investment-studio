@@ -42,7 +42,9 @@ describe('performance short-history reliability policy', () => {
 
   it('wires period return, N/A annualization, and the observed-sample banner into Performance', () => {
     expect(performancePageSource).toContain('metric: summary.performance_label')
-    expect(performancePageSource).toContain('if (operationalReturn)')
+    expect(performancePageSource).toContain('const showReturnComparison = showRiskComparison && !operationalReturn')
+    expect(performancePageSource).toContain("metric: 'Market Risk Volatility'")
+    expect(performancePageSource).toContain('summary.market_risk_cumulative_return')
     expect(performancePageSource).not.toContain('Annualized Operational Return')
     expect(performancePageSource).not.toContain('Mean Daily Operational Return')
     expect(performancePageSource).toContain("metric: 'Derivative Lifecycle Realized P&L'")

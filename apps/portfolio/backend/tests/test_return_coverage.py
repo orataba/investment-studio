@@ -100,6 +100,7 @@ def _snapshot(
         else "partial"
     )
     beginning_nav = None if nav is None or daily_twr is None else nav / (1.0 + daily_twr)
+    modeled_market_exposure_present = nav is not None and abs(nav) > 1e-12
     return {
         "as_of_date": as_of_date,
         "base_currency": "USD",
@@ -115,6 +116,20 @@ def _snapshot(
         "stale_fx_flag": False,
         "market_observation_count": 1,
         "return_observation_eligible": daily_twr is not None,
+        "modeled_market_exposure_present": modeled_market_exposure_present,
+        "market_risk_return_coverage_state": (
+            return_coverage_state
+            if modeled_market_exposure_present
+            else "unavailable"
+        ),
+        "market_risk_return_chain_continuous": return_coverage_state == "complete",
+        "market_risk_return_observation_eligible": (
+            modeled_market_exposure_present and daily_twr is not None
+        ),
+        "market_risk_daily_return": (
+            daily_twr if modeled_market_exposure_present else None
+        ),
+        "risk_scope_excluded_pnl": 0.0,
         "nav": nav,
         "beginning_nav": beginning_nav,
         "ending_nav": nav,
@@ -163,6 +178,8 @@ def test_fair_value_nav_and_twr_do_not_depend_on_book_pnl_coverage(monkeypatch) 
         lambda *args, **kwargs: {
             "realized_capital_gains": 0.0,
             "derivative_lifecycle_realized_pnl": 0.0,
+            "derivative_lifecycle_coverage_complete": True,
+            "derivative_lifecycle_stale_fx_flag": False,
             "coverage_complete": False,
             "stale_fx_flag": False,
         },

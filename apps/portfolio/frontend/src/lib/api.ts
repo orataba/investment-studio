@@ -16,7 +16,6 @@ export type PortfolioOptionContractTerms = {
   expiry_date: string
   strike: number
   contract_multiplier: number
-  settlement_type: 'physical' | 'cash'
 }
 
 export type PortfolioFcnContractTerms = {
@@ -209,6 +208,14 @@ export type PortfolioDailyPerformancePoint = {
   market_observation_count: number
   return_observation_eligible: boolean
   return_observation_exclusion_reason: string | null
+  modeled_market_exposure_present: boolean
+  market_risk_observation_count: number
+  market_risk_return_coverage_state: PortfolioPerformanceCoverageState
+  market_risk_return_chain_continuous: boolean
+  market_risk_return_observation_eligible: boolean
+  market_risk_return_observation_exclusion_reason: string | null
+  market_risk_basis: 'zero_return_cash_and_derivatives'
+  market_risk_label: string
   performance_basis: PortfolioPerformanceBasis
   performance_label: string
   beginning_nav: number | null
@@ -224,6 +231,8 @@ export type PortfolioDailyPerformancePoint = {
   instrument_currency_gains: number | null
   return_of_capital_amount: number | null
   total_pnl: number | null
+  risk_scope_excluded_pnl: number | null
+  market_risk_pnl: number | null
   external_cash_in: number
   external_cash_out: number
   net_external_inflow: number
@@ -232,6 +241,9 @@ export type PortfolioDailyPerformancePoint = {
   daily_twr: number | null
   cumulative_twr: number | null
   drawdown: number | null
+  market_risk_daily_return: number | null
+  market_risk_cumulative_return: number | null
+  market_risk_drawdown: number | null
 }
 
 export type PortfolioPerformanceSummary = {
@@ -252,6 +264,9 @@ export type PortfolioPerformanceSummary = {
   snapshot_count: number
   return_observation_count: number
   risk_return_observation_count: number
+  market_risk_return_coverage_state: PortfolioPerformanceCoverageState
+  risk_metric_basis: 'market_risk_return'
+  risk_metric_label: string
   risk_annualization_periods_per_year: number | null
   risk_calculation_frequency: PortfolioCalculationFrequency
   risk_minimum_sample_count: number
@@ -294,6 +309,9 @@ export type PortfolioPerformanceSummary = {
   instrument_currency_gains: number | null
   return_of_capital_amount: number | null
   total_pnl: number | null
+  risk_scope_excluded_pnl: number | null
+  market_risk_pnl: number | null
+  market_risk_cumulative_return: number | null
   mean_daily_return: number | null
   annualized_return_from_daily_mean: number | null
   annualized_volatility: number | null
@@ -401,7 +419,7 @@ export type PortfolioForwardRiskSummary = {
   coverage_ratio: number | null
   excluded_rows: PortfolioAnalyticsScopeExcludedRow[]
   calculation_frequency: PortfolioCalculationFrequency
-  modeled_weight_basis?: 'eligible_gross_exposure' | string
+  modeled_weight_basis?: 'total_nav_zero_return_cash_and_derivatives'
   risk_model?: PortfolioRiskPolicyRecord | null
   portfolio_variance?: number | null
   portfolio_volatility?: number | null
@@ -668,6 +686,9 @@ export type PortfolioContributionReportResponse = {
     coverage_state: PortfolioPerformanceCoverageState
     market_observation_count: number
     return_observation_eligible: boolean
+    market_risk_observation_count: number
+    market_risk_return_coverage_state: PortfolioPerformanceCoverageState
+    market_risk_return_observation_eligible: boolean
     beginning_value_base: number | null
     ending_value_base: number | null
     beginning_weight: number | null
@@ -688,6 +709,10 @@ export type PortfolioContributionReportResponse = {
     total_pnl: number | null
     daily_return: number | null
     daily_contribution: number | null
+    market_risk_excluded_pnl: number | null
+    market_risk_total_pnl: number | null
+    market_risk_daily_return: number | null
+    market_risk_daily_contribution: number | null
   }>
 }
 
@@ -804,9 +829,8 @@ export type PortfolioHoldingRow = {
   strike?: number | null
   option_type?: 'call' | 'put' | string | null
   contract_multiplier?: number | null
-  settlement_type?: 'physical' | 'cash' | string | null
-  assignment_notional?: number | null
-  assignment_notional_base?: number | null
+  strike_notional?: number | null
+  strike_notional_base?: number | null
   premium_received_gross?: number | null
   premium_basis_remaining?: number | null
   liability_value?: number | null
@@ -837,10 +861,10 @@ export type HoldingsOperationalSummary = {
     required_underlying_quantity: number
     carrying_liability_base: number | null
   }>
-  assignment_exposure: {
+  option_obligation_exposure: {
     obligation_count: number
     open_contract_quantity: number
-    deliverable_underlying_quantity: number
+    underlying_equivalent_quantity: number
     strike_notional_base: number | null
   }
   settlement_exposure: {
@@ -1961,7 +1985,6 @@ export type PortfolioOptionObligationRecord = {
   option_type?: 'call' | 'put' | string | null
   strike?: number | null
   contract_multiplier?: number | null
-  settlement_type?: 'physical' | 'cash' | string | null
   contract_currency?: string | null
   realized_pnl?: number
   opening_fee_expense?: number

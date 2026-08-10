@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 from alembic import command
 from alembic.config import Config
 import pytest
@@ -8,15 +10,16 @@ from sqlalchemy.exc import IntegrityError
 
 
 pytestmark = pytest.mark.migration_base_revision("20260810_0047")
+BACKEND_ROOT = Path(__file__).resolve().parents[1]
 
 
 def _config() -> Config:
     from portfolio_app.core.settings import get_settings
 
-    config = Config("apps/portfolio/backend/alembic.ini")
+    config = Config(str(BACKEND_ROOT / "alembic.ini"))
     config.set_main_option(
         "script_location",
-        "apps/portfolio/backend/alembic",
+        str(BACKEND_ROOT / "alembic"),
     )
     config.set_main_option("sqlalchemy.url", get_settings().database_url)
     return config
@@ -216,5 +219,5 @@ def test_security_only_taxonomy_migration_rejects_legacy_scope_and_enforces_head
             )
         )
 
-    with pytest.raises(RuntimeError, match="classify Registry securities only"):
+    with pytest.raises(RuntimeError, match="Restore the pre-migration database backup"):
         command.downgrade(config, "20260810_0047")

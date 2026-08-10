@@ -665,6 +665,36 @@ export function buildCurrentInstrumentReturnSeries(holdingsWorkspace: HoldingsWo
   if (!baseCurrency) {
     return riskFail('Current risk requires the portfolio base currency.', [] satisfies GroupReturnSeries[])
   }
+  holdingsWorkspace.rows.forEach((row) => {
+    const currentWeight = finiteNumber(row.allocation)
+    const currentValueBase = finiteNumber(row.market_value_base)
+    const quantity = finiteNumber(row.quantity)
+    const hasExposure =
+      Math.abs(currentWeight ?? 0) > 1e-9 ||
+      Math.abs(currentValueBase ?? 0) > 1e-9 ||
+      Math.abs(quantity ?? 0) > 1e-9
+    if (!hasExposure) {
+      return
+    }
+    const rowCurrency = (row.derivative_contract?.currency || row.instrument_core?.currency || '')
+      .trim()
+      .toUpperCase()
+    if (
+      (isCashHoldingRow(row) || isPendingMonetaryHoldingRow(row)) &&
+      rowCurrency !== baseCurrency
+    ) {
+      errors.push(
+        `Current risk requires an FX total-return series for non-base monetary exposure ${holdingRiskLabel(row)} (${rowCurrency || 'unknown'} versus ${baseCurrency}).`,
+      )
+    } else if (
+      row.holding_category === 'securities' &&
+      row.risk_eligible !== true
+    ) {
+      errors.push(
+        `Current risk cannot model policy-excluded market exposure ${holdingRiskLabel(row)} as zero risk.`,
+      )
+    }
+  })
   const series = holdingsWorkspace.rows
     .filter((row) => isRiskBearingHoldingRow(row))
     .map((row): GroupReturnSeries | null => {
@@ -723,6 +753,9 @@ export function buildCurrentInstrumentReturnSeries(holdingsWorkspace: HoldingsWo
     })
 
   const activeSeries = series.filter((item) => Math.abs(item.latestWeight ?? 0) > 1e-9)
+  if (!activeSeries.length) {
+    errors.push('Current risk requires at least one modeled market asset.')
+  }
   const historyStarts = activeSeries
     .map((item) => [...item.returnsByDate.keys()].sort()[0] ?? '')
     .filter(Boolean)

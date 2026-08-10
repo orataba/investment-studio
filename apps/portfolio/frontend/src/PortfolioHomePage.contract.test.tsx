@@ -148,7 +148,6 @@ describe('Holdings rendered page contract', () => {
             related_underlying_id: 'equity-1',
             expiry_date: '2026-12-18',
             strike: 110,
-            settlement_type: 'physical',
             premium_basis_remaining: 300,
             liability_value: 300,
             liability_value_base: 300,
@@ -570,9 +569,8 @@ describe('Holdings rendered page contract', () => {
             strike: 110,
             option_type: 'call',
             contract_multiplier: 100,
-            settlement_type: 'physical',
-            assignment_notional: 22_000,
-            assignment_notional_base: 22_000,
+            strike_notional: 22_000,
+            strike_notional_base: 22_000,
             premium_basis_remaining: 300,
             liability_value: 300,
             liability_value_base: 300,
@@ -625,10 +623,10 @@ describe('Holdings rendered page contract', () => {
               carrying_liability_base: 300,
             },
           ],
-          assignment_exposure: {
+          option_obligation_exposure: {
             obligation_count: 1,
             open_contract_quantity: 2,
-            deliverable_underlying_quantity: 200,
+            underlying_equivalent_quantity: 200,
             strike_notional_base: 22_000,
           },
           settlement_exposure: {

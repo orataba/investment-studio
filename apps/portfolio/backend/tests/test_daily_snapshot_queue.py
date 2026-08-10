@@ -6,6 +6,8 @@ from datetime import UTC, date, datetime, timedelta
 from threading import Barrier, Event, Lock
 from time import monotonic, sleep
 
+import pytest
+
 from portfolio_ops_instrument_core.db_models import Instrument
 
 from portfolio_app.db.models import (
@@ -17,6 +19,55 @@ from portfolio_app.services import daily_snapshot_worker, daily_snapshots
 
 
 PORTFOLIO_ID = "portfolio-ops"
+
+
+def test_incremental_rebase_carries_market_risk_return_history() -> None:
+    snapshots = [
+        {
+            "as_of_date": date(2026, 1, 2),
+            "daily_twr": -0.1,
+            "return_coverage_state": "complete",
+            "market_risk_daily_return": -0.1,
+            "market_risk_return_coverage_state": "complete",
+            "market_risk_return_observation_eligible": True,
+        },
+        {
+            "as_of_date": date(2026, 1, 3),
+            "daily_twr": 0.0,
+            "return_coverage_state": "complete",
+            "market_risk_daily_return": None,
+            "market_risk_return_coverage_state": "unavailable",
+            "market_risk_return_observation_eligible": False,
+        },
+        {
+            "as_of_date": date(2026, 1, 4),
+            "daily_twr": 0.0,
+            "return_coverage_state": "complete",
+            "market_risk_daily_return": None,
+            "market_risk_return_coverage_state": "partial",
+            "market_risk_return_observation_eligible": False,
+        },
+    ]
+    seed = {
+        "seed_date": date(2026, 1, 1),
+        "cumulative_twr": 0.2,
+        "peak_growth": 1.3,
+        "return_chain_continuous": True,
+        "market_risk_cumulative_return": 0.2,
+        "market_risk_peak_growth": 1.3,
+        "market_risk_return_chain_continuous": True,
+    }
+
+    daily_snapshots._rebase_incremental_snapshots(snapshots, seed=seed)
+
+    expected_drawdown = 1.08 / 1.3 - 1.0
+    assert snapshots[0]["market_risk_cumulative_return"] == pytest.approx(0.08)
+    assert snapshots[0]["market_risk_drawdown"] == pytest.approx(expected_drawdown)
+    assert snapshots[1]["market_risk_cumulative_return"] == pytest.approx(0.08)
+    assert snapshots[1]["market_risk_drawdown"] == pytest.approx(expected_drawdown)
+    assert snapshots[2]["market_risk_return_chain_continuous"] is False
+    assert snapshots[2]["market_risk_cumulative_return"] is None
+    assert snapshots[2]["market_risk_drawdown"] is None
 
 
 def test_worker_error_backoff_is_bounded_and_logs_at_sparse_intervals() -> None:

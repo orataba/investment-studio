@@ -443,8 +443,8 @@ class TransactionRecordModel(Base):
         CheckConstraint(
             "lifecycle_event_type IS NULL OR lifecycle_event_type IN ("
             "'fcn_knock_in', 'fcn_knock_out', 'fcn_maturity', "
-            "'option_long_expiry', 'option_long_exercise', 'option_writer_expiry', "
-            "'option_assignment')",
+            "'option_long_expiry', 'option_long_cash_settlement', "
+            "'option_writer_expiry', 'option_writer_cash_settlement')",
             name="lifecycle_event_type",
         ),
         Index(

@@ -1,6 +1,6 @@
 # Portfolio database dictionary
 
-As of 2026-08-10. Verified against SQLAlchemy metadata and migration heads `instrument_registry@20260810_0023` and `portfolio@20260810_0048`.
+As of 2026-08-11. Verified against SQLAlchemy metadata and migration heads `instrument_registry@20260810_0023` and `portfolio@20260810_0049`.
 
 This file is for architecture and integration review. External systems should use the APIs documented in [`TRANSACTION_INTEGRATION.md`](TRANSACTION_INTEGRATION.md), not write these tables directly.
 
@@ -54,6 +54,7 @@ Important constraints:
 - `external_reference` requires `source_system`.
 - A transaction may reference a Registry instrument or a Portfolio-local derivative contract, never both. Cash-only facts may reference neither.
 - Derivative facts do not carry relation or event-group fields. Each contract event is recorded independently; `transfer_group_id` is reserved for paired internal transfers.
+- Option lifecycle facts are limited to long/writer expiry or cash settlement. Expiry has zero cash; cash settlement has a positive gross amount whose direction is derived from long versus writer. Physical delivery is normalized into an option cash-settlement fact plus an independent ordinary-security trade.
 - The API preserves exact source decimals alongside float calculation projections.
 - Trade date, position-effective date, entitlement date, and settlement date are independent accounting facts.
 - `transaction_sequence` is a database-coordinated, immutable replay tie-breaker. It is not a business-facing source identifier and integrations must not allocate it.
@@ -66,7 +67,7 @@ Immutable Portfolio-local FCN and option terms. A contract is created atomically
 |---|
 | **PK** `(portfolio_id, derivative_contract_id)`; composite **FK** `(portfolio_id, account_id) → account_record`; `contract_name VARCHAR`; `contract_type VARCHAR` (`fcn` or `option`); `currency VARCHAR`; unique `(portfolio_id, external_reference)`; `terms_json JSON`; `created_at VARCHAR` |
 
-Option terms contain one Registry `underlying_instrument_id`, Call/Put type, expiry, strike, multiplier, and physical/cash settlement. FCN terms contain notional, issue/maturity dates, issuer, counterparty, Registry underlying/deliverable IDs, and barrier description. The terms support event accounting; they do not create daily derivative pricing, covariance, or research-series eligibility.
+Option terms contain one Registry `underlying_instrument_id`, Call/Put type, expiry, strike, and multiplier. Settlement mode is deliberately not a contract term; the operator records expiry or cash settlement when the outcome is known. FCN terms contain notional, issue/maturity dates, issuer, counterparty, Registry underlying/deliverable IDs, and barrier description. The terms support event accounting; they do not create daily derivative pricing, covariance, or research-series eligibility.
 
 ### `portfolio.transaction_change_log`
 
@@ -100,6 +101,8 @@ Derived portfolio-level NAV, return, and reliability snapshot.
 |---|
 | **PK** `(portfolio_id, as_of_date)`; **FK** `portfolio_id → portfolio_record.portfolio_id`; `coverage_state VARCHAR`; `valuation_coverage_state VARCHAR`; `return_coverage_state VARCHAR`; `book_pnl_coverage_state VARCHAR`; `attribution_coverage_state VARCHAR`; `nav FLOAT?`; `beginning_nav FLOAT?`; `ending_nav FLOAT?`; `daily_twr FLOAT?`; `cumulative_twr FLOAT?`; `drawdown FLOAT?`; `snapshot_json JSON`; `calculated_at VARCHAR` |
 
+`snapshot_json` also carries the separate market-risk chain: `risk_scope_excluded_pnl`, `market_risk_pnl`, `market_risk_daily_return`, `market_risk_cumulative_return`, `market_risk_drawdown`, observation eligibility/coverage, and basis label. These fields treat derivatives and base-currency cash as zero-return capital while preserving all cash facts in NAV and operational TWR.
+
 ### `portfolio.portfolio_daily_holding_snapshot`
 
 Derived per-account/per-instrument holding lines.
@@ -117,6 +120,8 @@ Derived attribution slice by instrument/account/taxonomy axis.
 | Columns |
 |---|
 | **PK** `(portfolio_id, as_of_date, axis, group_key)`; **FK** `portfolio_id → portfolio_record.portfolio_id`; `group_label VARCHAR`; `coverage_state VARCHAR`; `total_pnl FLOAT?`; `daily_contribution FLOAT?`; `slice_json JSON`; `calculated_at VARCHAR` |
+
+`slice_json` 同时保存该分组独立的市场风险链：`market_risk_excluded_pnl`、`market_risk_total_pnl`、`market_risk_daily_return`、`market_risk_daily_contribution`、`market_risk_observation_count` 及 coverage/eligibility。衍生品与本币现金的经营现金结果从风险分子剔除；非本币现金的 FX 结果保留。Realized volatility、correlation、beta 与 risk contribution 只读取这些字段，不按 group 名称或 holding category 做补充过滤。
 
 ### `portfolio.portfolio_calculation_state`
 

@@ -40,7 +40,6 @@ IMPORT_COLUMNS = (
     "option_expiry_date",
     "option_strike",
     "option_contract_multiplier",
-    "option_settlement_type",
     "fcn_notional",
     "fcn_issue_date",
     "fcn_maturity_date",
@@ -96,7 +95,6 @@ DERIVATIVE_DEFINITION_COLUMNS = frozenset(
         "option_expiry_date",
         "option_strike",
         "option_contract_multiplier",
-        "option_settlement_type",
         "fcn_notional",
         "fcn_issue_date",
         "fcn_maturity_date",
@@ -115,7 +113,6 @@ OPTION_TERM_COLUMNS = frozenset(
         "option_expiry_date",
         "option_strike",
         "option_contract_multiplier",
-        "option_settlement_type",
     }
 )
 FCN_TERM_COLUMNS = frozenset(
@@ -211,7 +208,6 @@ def _build_derivative_contract(
                 "expiry_date": values.get("option_expiry_date"),
                 "strike": values.get("option_strike"),
                 "contract_multiplier": values.get("option_contract_multiplier"),
-                "settlement_type": values.get("option_settlement_type"),
             }
         )
     elif contract_type == "fcn":
@@ -393,9 +389,6 @@ def render_transaction_csv(records: Iterable[dict[str, object]]) -> str:
                     "option_strike": derivative_terms.get("strike"),
                     "option_contract_multiplier": derivative_terms.get(
                         "contract_multiplier"
-                    ),
-                    "option_settlement_type": derivative_terms.get(
-                        "settlement_type"
                     ),
                 }
             )

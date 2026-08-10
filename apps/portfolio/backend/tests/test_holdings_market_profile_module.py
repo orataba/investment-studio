@@ -266,7 +266,6 @@ def _option_contract(
             "expiry_date": expiry_date,
             "strike": strike,
             "contract_multiplier": "100",
-            "settlement_type": "physical",
         },
         "created_at": "2026-01-01T00:00:00Z",
     }
@@ -295,7 +294,6 @@ def test_short_option_rows_do_not_allocate_or_require_underlying_holdings() -> N
                 "strike": strike,
                 "option_type": "call",
                 "contract_multiplier": 100.0,
-                "settlement_type": "physical",
                 "opened_at": "2026-01-01T10:00:00+08:00",
                 "derivative_contract": _option_contract(
                     instrument_id,
@@ -327,12 +325,12 @@ def test_short_option_rows_do_not_allocate_or_require_underlying_holdings() -> N
     assert all(row["instrument_id"] is None for row in rows)
     assert rows[0]["quantity"] == pytest.approx(-1.0)
     assert rows[0]["required_underlying_quantity"] == pytest.approx(100.0)
-    assert rows[0]["assignment_notional"] == pytest.approx(1_000.0)
-    assert rows[0]["assignment_notional_base"] == pytest.approx(2_000.0)
+    assert rows[0]["strike_notional"] == pytest.approx(1_000.0)
+    assert rows[0]["strike_notional_base"] == pytest.approx(2_000.0)
     assert rows[1]["quantity"] == pytest.approx(-1.0)
     assert rows[1]["required_underlying_quantity"] == pytest.approx(100.0)
-    assert rows[1]["assignment_notional"] == pytest.approx(2_000.0)
-    assert rows[1]["assignment_notional_base"] == pytest.approx(4_000.0)
+    assert rows[1]["strike_notional"] == pytest.approx(2_000.0)
+    assert rows[1]["strike_notional_base"] == pytest.approx(4_000.0)
     assert rows[1]["coverage_status"] == "event-liability"
 
 
@@ -346,8 +344,7 @@ def test_operational_summary_expiry_boundaries_settlement_net_and_alerts() -> No
             "open_contract_quantity": 1.0,
             "required_underlying_quantity": 100.0,
             "liability_value_base": 25.0,
-            "settlement_type": "physical",
-            "assignment_notional_base": 1_000.0,
+            "strike_notional_base": 1_000.0,
         }
         for days in (0, 1, 7, 8, 30, 31, 90, 91)
     ]
@@ -383,7 +380,7 @@ def test_operational_summary_expiry_boundaries_settlement_net_and_alerts() -> No
         ("next_90_days", 2),
         ("later", 1),
     ]
-    assert summary["assignment_exposure"]["strike_notional_base"] == pytest.approx(
+    assert summary["option_obligation_exposure"]["strike_notional_base"] == pytest.approx(
         8_000.0
     )
     assert summary["settlement_exposure"] == {
