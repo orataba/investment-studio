@@ -46,7 +46,7 @@ def test_flat_table_profile_accepts_only_final_heads(
     expected_heads = {
         "instrument_registry": "20260809_0022",
         "platform": "20260716_0002",
-        "portfolio": "20260809_0046",
+        "portfolio": "20260810_0047",
         "watchlist": "20260809_0036",
     }
     monkeypatch.setattr(
