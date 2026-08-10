@@ -141,19 +141,19 @@ def _alembic_config(database_url: str) -> Config:
 
 def test_market_data_point_contract_requires_persisted_price_identity() -> None:
     point = MarketDataPoint(
-        instrument_id="bond-contract",
+        instrument_id="equity-contract",
         metric_family="price",
-        quote_basis="accrued_interest",
+        quote_basis="close",
         as_of_date=date(2026, 7, 15),
-        value=Decimal("1.25"),
+        value=Decimal("100"),
         currency="USD",
-        price_unit="percent_of_par",
-        price_scale=Decimal("0.01"),
+        price_unit="per_unit",
+        price_scale=Decimal("1"),
         status="complete",
     )
 
-    assert point.price_unit == "percent_of_par"
-    assert point.price_scale == Decimal("0.01")
+    assert point.price_unit == "per_unit"
+    assert point.price_scale == Decimal("1")
 
     with pytest.raises(ValueError, match="price_unit"):
         MarketDataPoint(
@@ -170,12 +170,12 @@ def test_market_data_point_contract_requires_persisted_price_identity() -> None:
         MarketDataPoint(
             instrument_id="invalid-contract",
             metric_family="nav",
-            quote_basis="accrued_interest",
+            quote_basis="close",
             as_of_date=date(2026, 7, 15),
-            value=Decimal("1.25"),
+            value=Decimal("100"),
             currency="USD",
-            price_unit="percent_of_par",
-            price_scale=Decimal("0.01"),
+            price_unit="per_unit",
+            price_scale=Decimal("1"),
             status="complete",
         )
 
@@ -267,37 +267,21 @@ def test_retired_nav_quote_bases_are_not_part_of_the_shared_contract(
         )
 
 
-def test_accrued_interest_cannot_be_selected_as_a_standalone_quote(
+def test_bond_is_not_a_shared_registry_instrument(
     isolated_store: Path,
 ) -> None:
-    with pytest.raises(ValueError, match="component-only"):
-        QuoteSelectionPolicy(
-            trading=["clean_price"],
-            valuation=["accrued_interest"],
-            total_return=["dirty_price"],
-            chart=["dirty_price"],
-            reference=["clean_price"],
-        )
-
-    with pytest.raises(ValueError, match="component-only"):
+    with pytest.raises(ValueError, match="Unsupported instrument_type"):
         create_instrument(
-            instrument_name="Invalid Accrued Policy",
+            instrument_name="Portfolio-local Bond",
             instrument_type="bond",
             currency="USD",
             identifiers=[
                 {
                     "identifier_type": "internal",
-                    "identifier_value": "INVALID-ACCRUED-POLICY",
+                    "identifier_value": "PORTFOLIO-LOCAL-BOND",
                     "is_primary": True,
                 }
             ],
-            quote_selection_policy={
-                "trading": ["clean_price"],
-                "valuation": ["accrued_interest"],
-                "total_return": ["dirty_price"],
-                "chart": ["dirty_price"],
-                "reference": ["clean_price"],
-            },
         )
 
 
@@ -1154,35 +1138,35 @@ def test_nav_history_boundary_query_uses_canonical_nav_only(
 def test_market_data_price_contract_is_derived_for_all_write_paths(
     isolated_store: Path,
 ) -> None:
-    bond = create_instrument(
-        instrument_name="Contract Bond",
-        instrument_type="bond",
+    equity = create_instrument(
+        instrument_name="Contract Equity",
+        instrument_type="equity",
         currency="USD",
         identifiers=[
             {
                 "identifier_type": "internal",
-                "identifier_value": "CONTRACT-BOND",
+                "identifier_value": "CONTRACT-EQUITY",
                 "is_primary": True,
             }
         ],
     )
     changed = upsert_market_data_points(
-        instrument_id=bond["instrument_id"],
+        instrument_id=equity["instrument_id"],
         rows=[
             {
                 "metric_family": "price",
-                "quote_basis": "dirty_price",
+                "quote_basis": "close",
                 "as_of_date": "2026-07-15",
-                "value": "98.5",
+                "value": "100",
                 "currency": "USD",
                 "provider": "pytest",
                 "status": "complete",
             },
             {
                 "metric_family": "price",
-                "quote_basis": "accrued_interest",
+                "quote_basis": "adjusted_close",
                 "as_of_date": "2026-07-15",
-                "value": "1.25",
+                "value": "101",
                 "currency": "USD",
                 "provider": "pytest",
                 "status": "complete",
@@ -1192,34 +1176,34 @@ def test_market_data_price_contract_is_derived_for_all_write_paths(
     assert changed == 2
 
     upsert_market_data(
-        instrument_id=bond["instrument_id"],
+        instrument_id=equity["instrument_id"],
         metric_family="price",
-        quote_basis="clean_price",
+        quote_basis="last",
         as_of_date=date(2026, 7, 14),
-        value="97.25",
+        value="99",
         currency="USD",
         provider="derived_contract_test",
         status="complete",
     )
-    detail = get_instrument(bond["instrument_id"])
+    detail = get_instrument(equity["instrument_id"])
     assert detail is not None
     points = {
         (point["quote_basis"], point["as_of_date"]): point
         for point in detail["market_data"]
     }
-    assert points[("dirty_price", "2026-07-15")]["price_unit"] == "percent_of_par"
-    assert points[("dirty_price", "2026-07-15")]["price_scale"] == "0.01"
-    assert points[("accrued_interest", "2026-07-15")]["price_unit"] == "percent_of_par"
-    assert points[("accrued_interest", "2026-07-15")]["price_scale"] == "0.01"
-    assert points[("clean_price", "2026-07-14")]["price_unit"] == "percent_of_par"
-    assert points[("clean_price", "2026-07-14")]["price_scale"] == "0.01"
+    assert points[("close", "2026-07-15")]["price_unit"] == "per_unit"
+    assert points[("close", "2026-07-15")]["price_scale"] == "1"
+    assert points[("adjusted_close", "2026-07-15")]["price_unit"] == "per_unit"
+    assert points[("adjusted_close", "2026-07-15")]["price_scale"] == "1"
+    assert points[("last", "2026-07-14")]["price_unit"] == "per_unit"
+    assert points[("last", "2026-07-14")]["price_scale"] == "1"
 
     listed = next(
-        item for item in list_instruments() if item["instrument_id"] == bond["instrument_id"]
+        item for item in list_instruments() if item["instrument_id"] == equity["instrument_id"]
     )
     latest = {point["quote_basis"]: point for point in listed["latest_market_data"]}
-    assert latest["accrued_interest"]["price_scale"] == "0.01"
-    assert latest["dirty_price"]["price_unit"] == "percent_of_par"
+    assert latest["adjusted_close"]["price_scale"] == "1"
+    assert latest["close"]["price_unit"] == "per_unit"
 
     fx = create_instrument(
         instrument_name="USD CNY Spot",
@@ -1376,40 +1360,40 @@ def test_fx_market_data_contract_rejects_invalid_single_and_batch_writes(
 def test_market_data_price_contract_rejects_invalid_batch_atomically(
     isolated_store: Path,
 ) -> None:
-    bond = create_instrument(
-        instrument_name="Fail Closed Bond",
-        instrument_type="bond",
+    equity = create_instrument(
+        instrument_name="Fail Closed Equity",
+        instrument_type="equity",
         currency="USD",
         identifiers=[
             {
                 "identifier_type": "internal",
-                "identifier_value": "FAIL-CLOSED-BOND",
+                "identifier_value": "FAIL-CLOSED-EQUITY",
                 "is_primary": True,
             }
         ],
     )
-    bond_state_before = _market_data_persistence_state(
+    equity_state_before = _market_data_persistence_state(
         isolated_store,
-        str(bond["instrument_id"]),
+        str(equity["instrument_id"]),
     )
 
     with pytest.raises(ValueError, match="must not supply derived field"):
         upsert_market_data_points(
-            instrument_id=bond["instrument_id"],
+            instrument_id=equity["instrument_id"],
             rows=[
                 {
                     "metric_family": "price",
-                    "quote_basis": "dirty_price",
+                    "quote_basis": "close",
                     "as_of_date": "2026-07-15",
-                    "value": "98.5",
+                    "value": "100",
                     "currency": "USD",
                     "status": "complete",
                 },
                 {
                     "metric_family": "price",
-                    "quote_basis": "clean_price",
+                    "quote_basis": "last",
                     "as_of_date": "2026-07-14",
-                    "value": "97.25",
+                    "value": "99",
                     "currency": "USD",
                     "price_unit": "per_unit",
                     "price_scale": "1",
@@ -1417,36 +1401,36 @@ def test_market_data_price_contract_rejects_invalid_batch_atomically(
             ],
         )
 
-    detail = get_instrument(bond["instrument_id"])
+    detail = get_instrument(equity["instrument_id"])
     assert detail is not None
     assert detail["market_data"] == []
     assert _market_data_persistence_state(
         isolated_store,
-        str(bond["instrument_id"]),
-    ) == bond_state_before
+        str(equity["instrument_id"]),
+    ) == equity_state_before
 
     with pytest.raises(ValueError, match="must not supply derived field"):
         upsert_market_data_points(
-            instrument_id=bond["instrument_id"],
+            instrument_id=equity["instrument_id"],
             rows=[
                 {
                     "metric_family": "price",
-                    "quote_basis": "dirty_price",
+                    "quote_basis": "close",
                     "as_of_date": "2026-07-15",
-                    "value": "98.5",
+                    "value": "100",
                     "currency": "USD",
-                    "price_unit": "percent_of_par",
+                    "price_unit": "per_unit",
                 }
             ],
         )
 
     with pytest.raises(ValueError, match="audited raw-to-canonical NAV import path"):
         upsert_market_data_points(
-            instrument_id=bond["instrument_id"],
+            instrument_id=equity["instrument_id"],
             rows=[
                 {
                     "metric_family": "nav",
-                    "quote_basis": "accrued_interest",
+                    "quote_basis": "official_nav",
                     "as_of_date": "2026-07-15",
                     "value": "1.25",
                     "currency": "USD",
@@ -1456,32 +1440,16 @@ def test_market_data_price_contract_rejects_invalid_batch_atomically(
         )
     assert _market_data_persistence_state(
         isolated_store,
-        str(bond["instrument_id"]),
-    ) == bond_state_before
-
-    equity = create_instrument(
-        instrument_name="No Accrued Equity",
-        instrument_type="equity",
-        currency="USD",
-        identifiers=[
-            {
-                "identifier_type": "internal",
-                "identifier_value": "NO-ACCRUED-EQUITY",
-                "is_primary": True,
-            }
-        ],
-    )
-    equity_state_before = _market_data_persistence_state(
-        isolated_store,
         str(equity["instrument_id"]),
-    )
-    with pytest.raises(ValueError, match="only valid for bond"):
+    ) == equity_state_before
+
+    with pytest.raises(ValueError, match="Unsupported quote_basis"):
         upsert_market_data_points(
             instrument_id=equity["instrument_id"],
             rows=[
                 {
                     "metric_family": "price",
-                    "quote_basis": "accrued_interest",
+                    "quote_basis": "clean_price",
                     "as_of_date": "2026-07-15",
                     "value": "1.25",
                     "currency": "USD",
@@ -1502,7 +1470,7 @@ def test_market_data_price_contract_rejects_invalid_batch_atomically(
         pytest.param(
             {
                 "metric_family": "price",
-                "quote_basis": "dirty_price",
+                "quote_basis": "close",
                 "as_of_date": "not-a-date",
                 "value": "97.25",
                 "currency": "USD",
@@ -1512,7 +1480,7 @@ def test_market_data_price_contract_rejects_invalid_batch_atomically(
         pytest.param(
             {
                 "metric_family": "price",
-                "quote_basis": "dirty_price",
+                "quote_basis": "close",
                 "as_of_date": "2026-07-14",
                 "value": "97.25",
             },
@@ -1524,32 +1492,32 @@ def test_market_data_batch_rejects_malformed_rows_atomically(
     isolated_store: Path,
     malformed_row: object,
 ) -> None:
-    bond = create_instrument(
-        instrument_name="Malformed Batch Bond",
-        instrument_type="bond",
+    equity = create_instrument(
+        instrument_name="Malformed Batch Equity",
+        instrument_type="equity",
         currency="USD",
         identifiers=[
             {
                 "identifier_type": "internal",
-                "identifier_value": "MALFORMED-BATCH-BOND",
+                "identifier_value": "MALFORMED-BATCH-EQUITY",
                 "is_primary": True,
             }
         ],
     )
     before = _market_data_persistence_state(
         isolated_store,
-        str(bond["instrument_id"]),
+        str(equity["instrument_id"]),
     )
 
     with pytest.raises(ValueError, match="Market-data row 2"):
         upsert_market_data_points(
-            instrument_id=str(bond["instrument_id"]),
+            instrument_id=str(equity["instrument_id"]),
             rows=[
                 {
                     "metric_family": "price",
-                    "quote_basis": "dirty_price",
+                    "quote_basis": "close",
                     "as_of_date": "2026-07-15",
-                    "value": "98.5",
+                    "value": "100",
                     "currency": "USD",
                     "status": "complete",
                 },
@@ -1559,7 +1527,7 @@ def test_market_data_batch_rejects_malformed_rows_atomically(
 
     assert _market_data_persistence_state(
         isolated_store,
-        str(bond["instrument_id"]),
+        str(equity["instrument_id"]),
     ) == before
 
 
@@ -1577,27 +1545,27 @@ def test_market_data_batch_rejects_duplicate_keys_atomically(
     isolated_store: Path,
     duplicate_overrides: dict[str, object],
 ) -> None:
-    bond = create_instrument(
-        instrument_name="Duplicate Batch Bond",
-        instrument_type="bond",
+    equity = create_instrument(
+        instrument_name="Duplicate Batch Equity",
+        instrument_type="equity",
         currency="USD",
         identifiers=[
             {
                 "identifier_type": "internal",
-                "identifier_value": "DUPLICATE-BATCH-BOND",
+                "identifier_value": "DUPLICATE-BATCH-EQUITY",
                 "is_primary": True,
             }
         ],
     )
     before = _market_data_persistence_state(
         isolated_store,
-        str(bond["instrument_id"]),
+        str(equity["instrument_id"]),
     )
     first_row: dict[str, object] = {
         "metric_family": "price",
-        "quote_basis": "dirty_price",
+        "quote_basis": "close",
         "as_of_date": "2026-07-15",
-        "value": "98.5",
+        "value": "100",
         "currency": "USD",
         "provider": "same-provider",
         "status": "complete",
@@ -1605,13 +1573,13 @@ def test_market_data_batch_rejects_duplicate_keys_atomically(
 
     with pytest.raises(ValueError, match="Duplicate market-data row key"):
         upsert_market_data_points(
-            instrument_id=str(bond["instrument_id"]),
+            instrument_id=str(equity["instrument_id"]),
             rows=[first_row, {**first_row, **duplicate_overrides}],
         )
 
     assert _market_data_persistence_state(
         isolated_store,
-        str(bond["instrument_id"]),
+        str(equity["instrument_id"]),
     ) == before
 
 

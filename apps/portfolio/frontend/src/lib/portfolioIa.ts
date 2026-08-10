@@ -276,7 +276,7 @@ export const portfolioPageDefinitions: Record<string, PortfolioPageDefinition> =
       { title: 'Planning target-set management', owner: 'TargetSet + TargetSetLine', role: 'Manage SAA / TAA target histories for planning-enabled taxonomies' },
     ],
     comparator: ['No benchmark comparator; this page owns classification and planning config'],
-    conditionalBlocks: ['Planning-enabled taxonomies must be instrument-scoped and may optionally include cash_bucket', 'Account taxonomies can support analysis but not TargetSet ownership'],
+    conditionalBlocks: ['Taxonomy assignments classify Registry securities only', 'Cash and derivatives are fixed system-managed weight buckets and do not accept risk budgets'],
     drillDowns: [{ source: 'Planning target set', target: 'Risk and Research target resolution' }],
     notThisPage: ['Not a high-frequency analysis workspace', 'Does not own independent benchmark analytics'],
   },

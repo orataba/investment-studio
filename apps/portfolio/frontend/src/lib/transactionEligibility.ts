@@ -1,4 +1,4 @@
-const POSITION_ASSET_TYPES = new Set(['fund', 'etf', 'bond', 'equity', 'fcn', 'option', 'other'])
+const POSITION_ASSET_TYPES = new Set(['fund', 'etf', 'equity', 'fcn', 'option', 'other'])
 const LIFECYCLE_EVENT_ASSET_TYPES: Record<string, 'fcn' | 'option'> = {
   fcn_knock_in: 'fcn',
   fcn_knock_out: 'fcn',
@@ -11,9 +11,9 @@ const LIFECYCLE_EVENT_ASSET_TYPES: Record<string, 'fcn' | 'option'> = {
 const INCOME_ASSET_TYPES: Record<string, Set<string>> = {
   dividend: new Set(['fund', 'etf', 'equity']),
   dividend_reinvestment: new Set(['fund', 'etf', 'equity']),
-  coupon: new Set(['bond', 'fcn']),
+  coupon: new Set(['fcn']),
   return_of_capital: new Set(['fund', 'etf', 'equity']),
-  maturity_redemption: new Set(['bond', 'fcn', 'option']),
+  maturity_redemption: new Set(['fcn', 'option']),
   option_write: new Set(['option']),
   option_buy_to_close: new Set(['option']),
 }

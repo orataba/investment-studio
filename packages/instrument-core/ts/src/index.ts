@@ -2,7 +2,6 @@ export type InstrumentType =
   | 'fund'
   | 'etf'
   | 'index'
-  | 'bond'
   | 'equity'
   | 'cash'
   | 'fx'
@@ -23,7 +22,7 @@ export type IdentifierType =
   | 'cash_currency'
   | 'other'
 export type MetricFamily = 'price' | 'nav' | 'fx'
-export type PriceUnit = 'per_unit' | 'percent_of_par' | 'rate'
+export type PriceUnit = 'per_unit' | 'rate'
 export type NavLineageKind = 'provider_explicit' | 'derived_dividend_reinvestment'
 export type FundNavProjectionKind =
   | 'provider_explicit'
@@ -37,10 +36,7 @@ export type QuoteBasis =
   | 'official_nav'
   | 'total_return_nav'
   | 'spot'
-  | 'clean_price'
-  | 'dirty_price'
   | 'par'
-  | 'accrued_interest'
 export type QuoteRole = 'trading' | 'valuation' | 'total_return' | 'chart' | 'reference'
 export type DataStatus = 'complete' | 'partial' | 'unavailable'
 export type CorporateActionStatus = 'detected' | 'confirmed' | 'cancelled'
@@ -69,10 +65,7 @@ export const QUOTE_BASIS_METRIC_FAMILY: Readonly<Record<QuoteBasis, MetricFamily
   official_nav: 'nav',
   total_return_nav: 'nav',
   spot: 'fx',
-  clean_price: 'price',
-  dirty_price: 'price',
   par: 'price',
-  accrued_interest: 'price',
 }
 
 export const NAV_HISTORY_INSTRUMENT_TYPES: ReadonlySet<InstrumentType> = new Set(['fund'])
@@ -85,9 +78,6 @@ export function canonicalPriceContract(
   instrumentType: InstrumentType,
   metricFamily: MetricFamily,
 ): PriceContract {
-  if (instrumentType === 'bond' && metricFamily === 'price') {
-    return { price_unit: 'percent_of_par', price_scale: '0.01' }
-  }
   if (instrumentType === 'fx' || metricFamily === 'fx') {
     return { price_unit: 'rate', price_scale: '1' }
   }

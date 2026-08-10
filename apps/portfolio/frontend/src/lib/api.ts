@@ -65,8 +65,12 @@ export type WorkspaceSection = {
   status: string
 }
 
-export type TaxonomyAssignmentScope = 'instrument' | 'account' | 'cash_bucket'
-export type PortfolioTargetMemberType = 'taxonomy_node' | TaxonomyAssignmentScope | 'derivative_bucket'
+export type TaxonomyAssignmentScope = 'instrument'
+export type PortfolioTargetMemberType =
+  | 'taxonomy_node'
+  | 'instrument'
+  | 'cash_bucket'
+  | 'derivative_bucket'
 
 export type PortfolioWorkspaceSummary = {
   portfolio_id: string
@@ -1738,7 +1742,7 @@ export type PortfolioTaxonomyCreatePayload = {
   name: string
   taxonomy_type?: string
   purpose?: string | null
-  primary_assignment_scope: TaxonomyAssignmentScope
+  primary_assignment_scope?: TaxonomyAssignmentScope
   planning_enabled?: boolean
   budgeting_level?: string | null
   root_default_target_dimension?: 'weight' | 'risk_budget'

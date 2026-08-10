@@ -536,7 +536,7 @@ def test_current_scope_actuals_keeps_derivatives_and_all_account_liquidity_as_ze
     assert cash_row["current_value_base"] == pytest.approx(50.0)
     assert cash_row["current_weight"] == pytest.approx(0.25)
     assert warnings == [
-        "Derivative holdings use carrying-value weights and zero volatility; they are excluded from Risk Budget: fcn-tracking."
+        "Derivative holdings retain carrying-value weights but are excluded from the risk solve and Risk Budget: fcn-tracking."
     ]
 
 
@@ -1532,7 +1532,8 @@ def test_planning_group_snapshot_does_not_count_system_cash_as_unassigned(monkey
                     "account_id": "cash-account",
                     "account_type": "deposit_account",
                 },
-                "account_value_base": 20.0,
+                "derived_cash_balance_base": 20.0,
+                "pending_settlement_base": 0.0,
             }
         ],
         portfolio_id="portfolio-unassigned-test",

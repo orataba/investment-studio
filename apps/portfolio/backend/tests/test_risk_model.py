@@ -118,14 +118,14 @@ def test_forward_risk_normalizes_inside_eligible_sleeve_and_discloses_exclusion(
     eligible = _holding("equity", 0.4)
     ineligible = {
         **_holding("fcn", 0.6),
-        "holding_kind": "position",
+        "holding_kind": "derivative_contract",
+        "holding_category": "derivatives",
+        "instrument_core": None,
+        "derivative_contract_id": "fcn",
+        "derivative_contract": {"contract_type": "fcn"},
         "risk_eligible": False,
         "risk_budget_eligible": False,
         "market_value_base": 600_000.0,
-    }
-    ineligible["instrument_core"] = {
-        **ineligible["instrument_core"],
-        "instrument_type": "fcn",
     }
     workspace = {
         "base_currency": "CNY",
@@ -141,7 +141,7 @@ def test_forward_risk_normalizes_inside_eligible_sleeve_and_discloses_exclusion(
             "excluded_rows": [
                 {
                     "line_id": "holding:fcn",
-                    "instrument_id": "fcn",
+                    "instrument_id": None,
                     "exposure_base": 600_000.0,
                     "exclusion_reason": "Event-valued position.",
                 }
@@ -160,24 +160,25 @@ def test_forward_risk_normalizes_inside_eligible_sleeve_and_discloses_exclusion(
     assert result["forward_risk"]["modeled_weight_basis"] == "eligible_gross_exposure"
     assert result["forward_risk"]["coverage_ratio"] == pytest.approx(0.4)
     assert result["forward_risk"]["excluded_carrying_value"] == pytest.approx(600_000.0)
-    assert result["forward_risk"]["excluded_rows"][0]["instrument_id"] == "fcn"
+    assert result["forward_risk"]["excluded_rows"][0]["instrument_id"] is None
     assert result["rows"][0]["forward_risk_status"] == "ok"
     assert result["rows"][0]["forward_risk_share"] == pytest.approx(1.0)
-    assert result["rows"][1]["forward_risk_status"] == "modeled_zero"
-    assert result["rows"][1]["forward_risk_share"] == pytest.approx(0.0)
-    assert result["rows"][1]["forward_contribution_to_variance"] == pytest.approx(0.0)
-    assert result["rows"][1]["forward_annualized_volatility"] == pytest.approx(0.0)
+    assert result["rows"][1]["forward_risk_status"] == "excluded"
+    assert result["rows"][1]["forward_risk_share"] is None
+    assert result["rows"][1]["forward_contribution_to_variance"] is None
+    assert result["rows"][1]["forward_annualized_volatility"] is None
 
 
 def test_forward_risk_is_unavailable_when_every_exposure_is_policy_excluded() -> None:
     excluded = {
         **_holding("fcn", 1.0),
+        "holding_kind": "derivative_contract",
+        "holding_category": "derivatives",
+        "instrument_core": None,
+        "derivative_contract_id": "fcn",
+        "derivative_contract": {"contract_type": "fcn"},
         "risk_eligible": False,
         "risk_budget_eligible": False,
-    }
-    excluded["instrument_core"] = {
-        **excluded["instrument_core"],
-        "instrument_type": "fcn",
     }
 
     result = enrich_holdings_forward_risk(
@@ -191,8 +192,8 @@ def test_forward_risk_is_unavailable_when_every_exposure_is_policy_excluded() ->
     assert result["forward_risk"]["errors"] == [
         "Modeled sleeve risk requires at least one eligible risky holding."
     ]
-    assert result["rows"][0]["forward_risk_status"] == "modeled_zero"
-    assert result["rows"][0]["forward_risk_share"] == pytest.approx(0.0)
+    assert result["rows"][0]["forward_risk_status"] == "excluded"
+    assert result["rows"][0]["forward_risk_share"] is None
 
 
 def test_forward_risk_models_only_base_currency_monetary_rows_as_zero() -> None:

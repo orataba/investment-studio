@@ -89,6 +89,60 @@ def test_registry_metadata_has_no_derivative_identity() -> None:
     }.intersection(Instrument.__table__.columns.keys())
 
 
+def test_bond_registry_removal_is_guarded_and_enforced(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    database_url = f"sqlite+pysqlite:///{tmp_path / 'bond-registry-removal.db'}"
+    monkeypatch.setenv("PORTFOLIO_OPS_INSTRUMENT_REGISTRY_DATABASE_URL", database_url)
+    monkeypatch.setenv("PORTFOLIO_OPS_INSTRUMENT_REGISTRY_SCHEMA", "")
+    config = Config(str(MIGRATIONS_ROOT / "alembic.ini"))
+    config.set_main_option("script_location", str(MIGRATIONS_ROOT / "alembic"))
+    command.upgrade(config, "20260809_0022")
+
+    engine = create_engine(database_url)
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                """
+                INSERT INTO instrument (
+                    instrument_id, instrument_name, instrument_type, currency,
+                    quote_selection_policy_json, source_settings_json,
+                    refresh_status_json, lifecycle_state_json,
+                    market_data_updated_at, calculation_inputs_updated_at
+                ) VALUES (
+                    'legacy-bond', 'Legacy Bond', 'bond', 'USD',
+                    '{}', '{}', '{}', '{}', NULL, NULL
+                )
+                """
+            )
+        )
+
+    with pytest.raises(RuntimeError, match="zero bond instruments"):
+        command.upgrade(config, "20260810_0023")
+
+    with engine.begin() as connection:
+        connection.execute(text("DELETE FROM instrument WHERE instrument_id = 'legacy-bond'"))
+    command.upgrade(config, "head")
+
+    with engine.begin() as connection, pytest.raises(sa.exc.IntegrityError):
+        connection.execute(
+            text(
+                """
+                INSERT INTO instrument (
+                    instrument_id, instrument_name, instrument_type, currency,
+                    quote_selection_policy_json, source_settings_json,
+                    refresh_status_json, lifecycle_state_json,
+                    market_data_updated_at, calculation_inputs_updated_at
+                ) VALUES (
+                    'bond-after-removal', 'Bond After Removal', 'bond', 'USD',
+                    '{}', '{}', '{}', '{}', NULL, NULL
+                )
+                """
+            )
+        )
+
+
 def test_event_valued_instrument_type_migration_is_guarded_and_reversible(
     tmp_path,
     monkeypatch,

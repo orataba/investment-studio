@@ -40,7 +40,8 @@ history 只在右侧 inspector 展示，避免主表把审计说明和经济字�
   contract 反算并按 source precision 保存。页面展示的 NAV 仅作参考，不自动写入成交价格。
 - ETF / 股票：数量与实际 execution price 为常用锚点，gross amount 由 price-scale contract
   计算；若成交回单直接给出金额，可用金额反算价格。
-- 债券：price-scale 可以是 percent of par；禁止默认按 per-unit 相乘。
+- FCN：合约进入、利息收入和关闭分别记录；关闭结果可选正常到期、敲入或敲出。
+- 期权：数量单位为合约张数，gross amount 使用本地合约 multiplier；Call / Put 买卖和关闭均为独立事实。
 - fees、taxes 与 fee category 必须分开保存，不能揉进 gross amount。
 
 ## 4. 现金和待确认资产

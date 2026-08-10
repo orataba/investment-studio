@@ -15,8 +15,6 @@ UNADJUSTED_EXECUTION_QUOTE_BASES = frozenset(
         "close",
         "official_nav",
         "spot",
-        "clean_price",
-        "dirty_price",
         "par",
     }
 )
@@ -75,11 +73,8 @@ def build_execution_quote_from_detail(
     point = resolution.point
     if point is not None:
         quote_basis = str(point.get("quote_basis") or "").strip().lower()
-        selection_basis = str(
-            point.get("source_quote_basis") or quote_basis
-        ).strip().lower()
         selection_role = next(
-            (role for role, candidate_basis in candidates if candidate_basis == selection_basis),
+            (role for role, candidate_basis in candidates if candidate_basis == quote_basis),
             None,
         )
         quote_date = _parse_iso_date(point.get("as_of_date"))

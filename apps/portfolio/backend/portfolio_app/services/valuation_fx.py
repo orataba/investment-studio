@@ -66,13 +66,9 @@ def position_market_value(
     *,
     quantity: float,
     last_price: float | None,
-    instrument_ref: InstrumentDetail | None,
     price_scale: float | None = None,
 ) -> float | None:
     if last_price is None:
-        return None
-    instrument_type = str((instrument_ref or {}).get("instrument_type") or "").strip().lower()
-    if instrument_type == "bond" and price_scale is None:
         return None
     resolved_scale = price_scale if price_scale is not None else 1.0
     if not isfinite(resolved_scale) or resolved_scale <= 0:

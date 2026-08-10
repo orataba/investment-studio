@@ -109,6 +109,19 @@ _EVENT_VALUATION_BASES = frozenset({"carried_cost", "premium_liability"})
 _CASH_SCOPE_SYSTEM_EXCLUSION_REASON = (
     "Cash and settlement exposure is disclosed outside covariance risk."
 )
+_DERIVATIVE_SCOPE_SYSTEM_EXCLUSION_REASON = (
+    "Derivative contracts are recorded operationally and excluded from market analytics."
+)
+
+
+def _holding_is_derivative(row: dict[str, object]) -> bool:
+    holding_kind = str(row.get("holding_kind") or "position").strip().lower()
+    return bool(
+        row.get("derivative_contract_id")
+        or is_derivative_contract(row.get("derivative_contract"))
+        or holding_kind in {"derivative_contract", "option_obligation"}
+        or str(row.get("holding_category") or "").strip().lower() == "derivatives"
+    )
 
 
 def _market_analytics_valuation_exclusion_reason(row: dict[str, object]) -> str | None:
@@ -121,8 +134,8 @@ def _market_analytics_valuation_exclusion_reason(row: dict[str, object]) -> str 
     accidentally re-enabling carried-cost FCN rows or premium liabilities.
     """
 
-    if is_derivative_contract(row.get("derivative_contract")):
-        return "derivative contracts are outside ordinary analytics"
+    if _holding_is_derivative(row):
+        return _DERIVATIVE_SCOPE_SYSTEM_EXCLUSION_REASON
 
     holding_kind = str(row.get("holding_kind") or "position").strip().lower()
     if holding_kind != "position":
@@ -141,21 +154,20 @@ def _market_analytics_valuation_exclusion_reason(row: dict[str, object]) -> str 
     return None
 
 
-def _holding_scope_instrument_id(row: dict[str, object]) -> str:
-    derivative_contract_id = str(
-        row.get("derivative_contract_id") or ""
-    ).strip()
-    if derivative_contract_id:
-        return derivative_contract_id
+def _holding_registry_instrument_id(row: dict[str, object]) -> str:
+    if _holding_is_derivative(row) or is_pending_monetary_holding(row):
+        return ""
     instrument_core = (
         row.get("instrument_core")
         if isinstance(row.get("instrument_core"), dict)
         else {}
     )
     instrument_type = str(instrument_core.get("instrument_type") or "").lower()
-    if instrument_type == "cash" or is_pending_monetary_holding(row):
-        return str(row.get("economic_instrument_id") or "").strip()
-    return str(instrument_core.get("instrument_id") or "").strip()
+    if instrument_type == "cash":
+        return ""
+    return str(
+        instrument_core.get("instrument_id") or row.get("instrument_id") or ""
+    ).strip()
 
 
 def _transaction_has_derivative_contract(
@@ -180,7 +192,7 @@ def _enrich_holdings_analytics_scope(
         instrument_id
         for row in rows
         if isinstance(row, dict)
-        and (instrument_id := _holding_scope_instrument_id(row))
+        and (instrument_id := _holding_registry_instrument_id(row))
     ]
     transaction_instrument_ids = [
         str(transaction.get("instrument_id") or "").strip()
@@ -212,7 +224,8 @@ def _enrich_holdings_analytics_scope(
             else {}
         )
         instrument_type = str(instrument_core.get("instrument_type") or "").lower()
-        instrument_id = _holding_scope_instrument_id(row)
+        instrument_id = _holding_registry_instrument_id(row)
+        is_derivative = _holding_is_derivative(row)
         is_cash_or_settlement = (
             instrument_type == "cash"
             or is_pending_monetary_holding(row)
@@ -221,7 +234,24 @@ def _enrich_holdings_analytics_scope(
             )
         )
         scope = scopes.get(instrument_id) if instrument_id else None
-        if scope is None:
+        if is_derivative:
+            scope = {
+                "scope_status": "system_excluded",
+                "taxonomy_id": None,
+                "taxonomy_node_id": None,
+                "resolved_policy_node_id": None,
+                "inherited_from_node_id": None,
+                "analytics_scope_policy_id": None,
+                "scope_policy_version": None,
+                "configuration_version": None,
+                "taxonomy_selection_version": None,
+                "risk_eligible": False,
+                "risk_budget_eligible": False,
+                "performance_scope": "derivative_lifecycle",
+                "valuation_basis_policy": "event_accounting",
+                "exclusion_reason": _DERIVATIVE_SCOPE_SYSTEM_EXCLUSION_REASON,
+            }
+        elif scope is None:
             scope = {
                 "scope_status": "cash_or_settlement" if is_cash_or_settlement else "missing",
                 "taxonomy_id": None,
@@ -242,7 +272,13 @@ def _enrich_holdings_analytics_scope(
                     else "No effective analytics scope assignment or policy."
                 ),
             }
-        row.update(scope)
+        row.update(
+            {
+                field_name: field_value
+                for field_name, field_value in scope.items()
+                if field_name != "instrument_id"
+            }
+        )
         policy_performance_scope = str(scope.get("performance_scope") or "unallocated")
         policy_performance_eligible = policy_performance_scope == "ordinary"
         policy_risk_eligible = bool(scope.get("risk_eligible"))
@@ -302,12 +338,7 @@ def _enrich_holdings_analytics_scope(
         holding_kind = str(row.get("holding_kind") or "position")
         if is_cash_or_settlement:
             holding_category = "cash_and_settlement"
-        elif (
-            holding_kind in {"derivative_contract", "option_obligation"}
-            or instrument_type in {"fcn", "option"}
-            or bool(row.get("derivative_contract_id"))
-            or isinstance(row.get("derivative_contract"), dict)
-        ):
+        elif is_derivative:
             holding_category = "derivatives"
         else:
             holding_category = "securities"
@@ -588,7 +619,7 @@ def _instrument_ids_from_holdings_workspace(workspace: dict[str, object]) -> lis
     for row in rows:
         if not isinstance(row, dict):
             continue
-        if is_pending_monetary_holding(row):
+        if _holding_is_derivative(row) or is_pending_monetary_holding(row):
             continue
         instrument_core = row.get("instrument_core") if isinstance(row.get("instrument_core"), dict) else {}
         if (
@@ -596,7 +627,9 @@ def _instrument_ids_from_holdings_workspace(workspace: dict[str, object]) -> lis
             or is_cash_holding_instrument_id(instrument_core.get("instrument_id") or row.get("line_id"))
         ):
             continue
-        instrument_id = str(instrument_core.get("instrument_id") or row.get("line_id") or "").strip()
+        instrument_id = str(
+            instrument_core.get("instrument_id") or row.get("instrument_id") or ""
+        ).strip()
         if instrument_id and instrument_id not in instrument_ids:
             instrument_ids.append(instrument_id)
     return instrument_ids

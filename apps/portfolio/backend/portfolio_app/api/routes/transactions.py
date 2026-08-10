@@ -91,7 +91,7 @@ from portfolio_app.services.transaction_dates import transaction_execution_sort_
 
 router = APIRouter()
 
-POSITION_INSTRUMENT_TYPES = {"fund", "etf", "bond", "equity", "other"}
+POSITION_INSTRUMENT_TYPES = {"fund", "etf", "equity", "other"}
 ACCOUNT_SCOPE_ENFORCED_TRANSACTION_TYPES = {
     "buy",
     "option_write",
@@ -101,9 +101,9 @@ ACCOUNT_SCOPE_ENFORCED_TRANSACTION_TYPES = {
 INCOME_ASSET_TYPES: dict[str, set[str]] = {
     "dividend": {"fund", "etf", "equity"},
     "dividend_reinvestment": {"fund", "etf", "equity"},
-    "coupon": {"bond", "fcn"},
+    "coupon": {"fcn"},
     "return_of_capital": {"fund", "etf", "equity"},
-    "maturity_redemption": {"bond", "fcn", "option"},
+    "maturity_redemption": {"fcn", "option"},
     "option_write": {"option"},
     "option_buy_to_close": {"option"},
 }

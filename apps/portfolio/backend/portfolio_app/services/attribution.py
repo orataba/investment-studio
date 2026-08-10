@@ -21,6 +21,8 @@ from portfolio_app.services.calculation_frequency import CalculationFrequency, p
 CONTRIBUTION_AXES = {"instrument", "account", "instrument_type", "currency", "taxonomy"}
 CONTRIBUTION_BASE_AXES = {"instrument", "account", "instrument_type", "currency"}
 CONTRIBUTION_AXIS_ERROR = "axis must be instrument, account, instrument_type, currency, or taxonomy"
+SYSTEM_CASH_GROUP_KEY = "__cash__"
+SYSTEM_DERIVATIVE_GROUP_KEY = "__derivatives__"
 MATERIALIZED_CONTRIBUTION_AXES: tuple[str, ...] = (
     "instrument",
     "account",
@@ -502,15 +504,6 @@ def transaction_group_for_axis(
     raise ValueError(CONTRIBUTION_AXIS_ERROR)
 
 
-def cash_bucket_account_ids(accounts: list[dict[str, object]]) -> set[str]:
-    return {
-        str(account.get("account_id") or "")
-        for account in accounts
-        if str(account.get("account_id") or "")
-        and str(account.get("account_type") or "") == "deposit_account"
-    }
-
-
 def daily_group_return_from_components(
     *,
     beginning_value_base: float | None,
@@ -655,10 +648,9 @@ def group_contribution_slices_by_taxonomy(
     taxonomy_assignments: list[dict[str, object]],
     base_daily_slices: list[dict[str, object]],
     assignment_as_of_date: date | None = None,
-    preserve_cash_group: bool = False,
 ) -> list[dict[str, object]]:
     taxonomy_id = str(taxonomy.get("taxonomy_id") or "")
-    target_scope = str(taxonomy.get("primary_assignment_scope") or "")
+    target_scope = "instrument"
     taxonomy_nodes_by_id = {
         str(node.get("taxonomy_node_id") or ""): node
         for node in taxonomy_nodes
@@ -700,8 +692,13 @@ def group_contribution_slices_by_taxonomy(
         if not isinstance(as_of_date, date):
             continue
         base_group_key = str(base_slice.get("group_key") or "")
-        if preserve_cash_group and target_scope == "instrument" and base_group_key == "cash":
-            taxonomy_group_key, taxonomy_group_label = ("cash", "Cash")
+        if base_group_key == "cash":
+            taxonomy_group_key, taxonomy_group_label = (SYSTEM_CASH_GROUP_KEY, "Cash")
+        elif base_slice.get("_system_holding_category") == "derivatives":
+            taxonomy_group_key, taxonomy_group_label = (
+                SYSTEM_DERIVATIVE_GROUP_KEY,
+                "Derivatives",
+            )
         else:
             taxonomy_group_key, taxonomy_group_label = (
                 resolve_period_taxonomy_group_for_slice(

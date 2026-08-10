@@ -30,10 +30,9 @@ def transaction_price_scale(
     instrument_type = str(instrument_ref.get("instrument_type") or "").strip().lower()
     if not instrument_type:
         raise ValueError("Transaction pricing requires a canonical instrument type.")
-    quote_basis = "dirty_price" if instrument_type == "bond" else "close"
     _, price_scale = canonical_price_contract(
         instrument_type=instrument_type,
         metric_family="price",
-        quote_basis=quote_basis,
+        quote_basis="close",
     )
     return float(price_scale)

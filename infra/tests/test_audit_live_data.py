@@ -44,9 +44,9 @@ def test_flat_table_profile_accepts_only_final_heads(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     expected_heads = {
-        "instrument_registry": "20260809_0022",
+        "instrument_registry": "20260810_0023",
         "platform": "20260716_0002",
-        "portfolio": "20260810_0047",
+        "portfolio": "20260810_0048",
         "watchlist": "20260809_0036",
     }
     monkeypatch.setattr(
@@ -255,6 +255,7 @@ def test_twr_audit_cte_projects_daily_twr(
         if "materialized_pending_settlement" in query
     )
     assert "coalesce(holdings.market_value, 0)" in nav_query
+    assert "snapshot.valuation_coverage_state = 'complete'" in nav_query
     assert "+ (snapshot.snapshot_json ->> 'pending_settlement')" not in nav_query
     assert (
         "coalesce(holdings.materialized_pending_settlement, 0)"
@@ -299,6 +300,7 @@ def test_twr_audit_cte_projects_daily_twr(
         linked_projection.group("projection"),
         flags=re.MULTILINE,
     )
+    assert "snapshot_json ->> 'return_chain_continuous'" in twr_query
     drawdown_query = next(
         query
         for query in queries

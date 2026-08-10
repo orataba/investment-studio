@@ -316,50 +316,7 @@ def test_previous_quote_is_locked_to_selected_series_identity():
     ) == ("price", "close", "USD")
 
 
-def test_bond_dirty_price_requires_explicit_percent_of_par_scale():
-    explicit = _detail(
-        [
-            _point(
-                quote_basis="dirty_price",
-                as_of_date="2026-01-02",
-                value="98.5",
-                price_unit="percent_of_par",
-                price_scale=0.01,
-            )
-        ],
-        instrument_type="bond",
-        valuation=["dirty_price", "clean_price"],
-    )
-    selected = resolve_quote_point(
-        explicit,
-        candidate_bases=["dirty_price", "clean_price"],
-        as_of_date=date(2026, 1, 2),
-    )
-
-    assert selected.point is not None
-    assert selected.point["value"] == pytest.approx(98.5)
-    assert selected.point["price_unit"] == "percent_of_par"
-    assert selected.point["price_scale"] == pytest.approx(0.01)
-    assert valuation_fx.position_market_value(
-        quantity=1000,
-        last_price=98.5,
-        instrument_ref={"instrument_type": "bond"},
-        price_scale=0.01,
-    ) == pytest.approx(985.0)
-
-    missing_contract = deepcopy(explicit)
-    missing_contract["market_data"][0].pop("price_unit")
-    missing_contract["market_data"][0].pop("price_scale")
-    unavailable = resolve_quote_point(
-        missing_contract,
-        candidate_bases=["dirty_price"],
-        as_of_date=date(2026, 1, 2),
-    )
-    assert unavailable.point is None
-    assert unavailable.unavailable_reason == "bond_price_contract_unavailable"
-
-
-def test_non_bond_explicit_price_contract_only_allows_per_unit_scale_one():
+def test_explicit_price_contract_only_allows_canonical_unit_and_scale():
     valid = _detail(
         [
             _point(
@@ -385,15 +342,15 @@ def test_non_bond_explicit_price_contract_only_allows_per_unit_scale_one():
         as_of_date=date(2026, 1, 2),
     )
     assert unavailable.point is None
-    assert unavailable.unavailable_reason == "non_bond_price_contract_unsupported"
+    assert unavailable.unavailable_reason == "price_contract_unsupported"
 
     invalid = _detail(
         [
             _point(
                 as_of_date="2026-01-02",
                 value="100",
-                price_unit="percent_of_par",
-                price_scale=0.01,
+                price_unit="rate",
+                price_scale=1.0,
             )
         ]
     )
@@ -403,238 +360,7 @@ def test_non_bond_explicit_price_contract_only_allows_per_unit_scale_one():
         as_of_date=date(2026, 1, 2),
     )
     assert unavailable.point is None
-    assert unavailable.unavailable_reason == "non_bond_price_contract_unsupported"
-
-
-def test_bond_clean_price_requires_matching_accrued_interest_component():
-    clean = _point(
-        quote_basis="clean_price",
-        as_of_date="2026-01-02",
-        value="98.5",
-        price_unit="percent_of_par",
-        price_scale=0.01,
-    )
-    accrued = _point(
-        quote_basis="accrued_interest",
-        as_of_date="2026-01-02",
-        value="1.25",
-        price_unit="percent_of_par",
-        price_scale=0.01,
-    )
-    detail = _detail(
-        [clean, accrued],
-        instrument_type="bond",
-        valuation=["clean_price"],
-    )
-
-    clean_only_execution = execution_quotes.build_execution_quote_from_detail(
-        _detail(
-            [clean],
-            instrument_type="bond",
-            valuation=["clean_price"],
-        ),
-        instrument_id="test-instrument",
-        as_of_date=date(2026, 1, 2),
-    )
-    assert clean_only_execution["value"] is None
-    assert (
-        clean_only_execution["unavailable_reason"]
-        == "clean_price_requires_matching_accrued_interest"
-    )
-
-    selected = resolve_quote_point(
-        detail,
-        candidate_bases=["clean_price"],
-        as_of_date=date(2026, 1, 2),
-    )
-    assert selected.point is not None
-    assert selected.point["value"] == pytest.approx(99.75)
-    assert selected.point["quote_basis"] == "dirty_price"
-    assert selected.point["source_quote_basis"] == "clean_price"
-    assert selected.point["clean_value"] == pytest.approx(98.5)
-    assert selected.point["accrued_interest"] == pytest.approx(1.25)
-    assert valuation_fx.position_market_value(
-        quantity=1000,
-        last_price=float(selected.point["value"]),
-        instrument_ref={"instrument_type": "bond"},
-        price_scale=float(selected.point["price_scale"]),
-    ) == pytest.approx(997.5)
-
-    execution = execution_quotes.build_execution_quote_from_detail(
-        detail,
-        instrument_id="test-instrument",
-        as_of_date=date(2026, 1, 2),
-    )
-    assert execution["quote_basis"] == "dirty_price"
-    assert execution["selection_role"] == "trading"
-    assert execution["value"] == pytest.approx(99.75)
-
-    for invalid_accrued, expected_reason in (
-        (None, "clean_price_requires_matching_accrued_interest"),
-        (
-            {**accrued, "as_of_date": "2026-01-01"},
-            "clean_price_requires_matching_accrued_interest",
-        ),
-        ({**accrued, "currency": "HKD"}, "accrued_interest_currency_mismatch"),
-        (
-            {**accrued, "price_scale": 1.0},
-            "accrued_interest_price_contract_mismatch",
-        ),
-    ):
-        invalid_points = [clean]
-        if invalid_accrued is not None:
-            invalid_points.append(invalid_accrued)
-        unavailable = resolve_quote_point(
-            _detail(
-                invalid_points,
-                instrument_type="bond",
-                valuation=["clean_price"],
-            ),
-            candidate_bases=["clean_price"],
-            as_of_date=date(2026, 1, 2),
-        )
-        assert unavailable.point is None
-        assert unavailable.unavailable_reason == expected_reason
-
-
-def test_bond_clean_history_fails_when_any_observation_lacks_accrued_interest():
-    clean_day_one = _point(
-        quote_basis="clean_price",
-        as_of_date="2026-01-01",
-        value="98.0",
-        price_unit="percent_of_par",
-        price_scale=0.01,
-    )
-    clean_day_two = {
-        **clean_day_one,
-        "as_of_date": "2026-01-02",
-        "value": "98.5",
-    }
-    accrued_day_two = _point(
-        quote_basis="accrued_interest",
-        as_of_date="2026-01-02",
-        value="1.25",
-        price_unit="percent_of_par",
-        price_scale=0.01,
-    )
-
-    resolution = resolve_quote_series(
-        _detail(
-            [clean_day_one, clean_day_two, accrued_day_two],
-            instrument_type="bond",
-            valuation=["clean_price"],
-        ),
-        candidate_bases=["clean_price"],
-        end_date=date(2026, 1, 2),
-    )
-
-    assert resolution.points == ()
-    assert (
-        resolution.unavailable_reason
-        == "clean_price_requires_matching_accrued_interest"
-    )
-
-
-def test_bond_clean_missing_accrued_falls_back_to_later_dirty_candidate():
-    clean = _point(
-        quote_basis="clean_price",
-        as_of_date="2026-01-02",
-        value="98.5",
-        price_unit="percent_of_par",
-        price_scale=0.01,
-    )
-    dirty = _point(
-        quote_basis="dirty_price",
-        as_of_date="2026-01-02",
-        value="99.75",
-        price_unit="percent_of_par",
-        price_scale=0.01,
-    )
-    detail = _detail(
-        [clean, dirty],
-        instrument_type="bond",
-        valuation=["clean_price", "dirty_price"],
-    )
-
-    selected = resolve_quote_point(
-        detail,
-        candidate_bases=["clean_price", "dirty_price"],
-        as_of_date=date(2026, 1, 2),
-    )
-
-    assert selected.point is not None
-    assert selected.point["quote_basis"] == "dirty_price"
-    assert selected.point.get("source_quote_basis") is None
-    assert selected.point["value"] == pytest.approx(99.75)
-
-
-def test_bond_clean_hard_identity_error_does_not_fallback_to_dirty():
-    clean_usd = _point(
-        quote_basis="clean_price",
-        as_of_date="2026-01-02",
-        value="98.5",
-        price_unit="percent_of_par",
-        price_scale=0.01,
-    )
-    clean_hkd = {**clean_usd, "currency": "HKD", "value": "780"}
-    dirty = _point(
-        quote_basis="dirty_price",
-        as_of_date="2026-01-02",
-        value="99.75",
-        price_unit="percent_of_par",
-        price_scale=0.01,
-    )
-
-    unavailable = resolve_quote_point(
-        _detail(
-            [clean_usd, clean_hkd, dirty],
-            instrument_type="bond",
-            valuation=["clean_price", "dirty_price"],
-        ),
-        candidate_bases=["clean_price", "dirty_price"],
-        as_of_date=date(2026, 1, 2),
-    )
-
-    assert unavailable.point is None
-    assert unavailable.unavailable_reason == "ambiguous_quote_series_identity"
-
-
-def test_bond_clean_accrued_currency_error_does_not_fallback_to_dirty():
-    clean = _point(
-        quote_basis="clean_price",
-        as_of_date="2026-01-02",
-        value="98.5",
-        price_unit="percent_of_par",
-        price_scale=0.01,
-    )
-    wrong_currency_accrued = _point(
-        quote_basis="accrued_interest",
-        as_of_date="2026-01-02",
-        value="1.25",
-        currency="HKD",
-        price_unit="percent_of_par",
-        price_scale=0.01,
-    )
-    dirty = _point(
-        quote_basis="dirty_price",
-        as_of_date="2026-01-02",
-        value="99.75",
-        price_unit="percent_of_par",
-        price_scale=0.01,
-    )
-
-    unavailable = resolve_quote_point(
-        _detail(
-            [clean, wrong_currency_accrued, dirty],
-            instrument_type="bond",
-            valuation=["clean_price", "dirty_price"],
-        ),
-        candidate_bases=["clean_price", "dirty_price"],
-        as_of_date=date(2026, 1, 2),
-    )
-
-    assert unavailable.point is None
-    assert unavailable.unavailable_reason == "accrued_interest_currency_mismatch"
+    assert unavailable.unavailable_reason == "price_contract_unsupported"
 
 
 def test_unknown_quote_basis_is_explicitly_unsupported():

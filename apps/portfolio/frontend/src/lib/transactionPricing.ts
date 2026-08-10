@@ -15,7 +15,7 @@ export type TransactionPriceContract = {
   price_scale: number
 }
 
-const PRICE_UNITS: ReadonlySet<PriceUnit> = new Set(['per_unit', 'percent_of_par', 'rate'])
+const PRICE_UNITS: ReadonlySet<PriceUnit> = new Set(['per_unit', 'rate'])
 
 function normalizePriceContract(
   contract: TransactionPriceContractInput | null | undefined,

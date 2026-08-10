@@ -1,6 +1,6 @@
 # Portfolio database dictionary
 
-As of 2026-08-09. Verified against SQLAlchemy metadata and migration heads `instrument_registry@20260809_0022` and `portfolio@20260809_0046`.
+As of 2026-08-10. Verified against SQLAlchemy metadata and migration heads `instrument_registry@20260810_0023` and `portfolio@20260810_0048`.
 
 This file is for architecture and integration review. External systems should use the APIs documented in [`TRANSACTION_INTEGRATION.md`](TRANSACTION_INTEGRATION.md), not write these tables directly.
 
@@ -230,6 +230,8 @@ Point-in-time snapshot of the selected taxonomy, nodes, assignments, target sets
 |---|
 | **PK** `target_line_id VARCHAR`; **FK** `target_set_id → target_set_record.target_set_id`; `taxonomy_node_id VARCHAR?`; `target_member_type VARCHAR`; `target_member_id VARCHAR`; `target_weight FLOAT?`; `target_risk_share FLOAT?`; `notes VARCHAR?` |
 
+`target_member_type` is limited to `taxonomy_node`, `instrument`, `cash_bucket`, and `derivative_bucket`. Cash and derivative buckets may carry a weight target but never a risk target.
+
 ### `portfolio.research_settings_record`
 
 | Columns |
@@ -246,13 +248,13 @@ Point-in-time snapshot of the selected taxonomy, nodes, assignments, target sets
 
 ### `instrument_registry.instrument`
 
-Canonical reusable market-asset identity. `instrument_type` supports `fund`, `etf`, `index`, `bond`, `equity`, `cash`, `fx`, and `other`. FCN and option contracts are deliberately outside Registry.
+Canonical reusable market-asset identity. `instrument_type` supports `fund`, `etf`, `index`, `equity`, `cash`, `fx`, and `other`. Direct bonds, FCNs, and options are deliberately outside Registry; direct bonds also have no current Portfolio transaction model.
 
 | Columns |
 |---|
 | **PK** `instrument_id VARCHAR`; `instrument_name VARCHAR`; `instrument_type VARCHAR`; `currency VARCHAR`; `quote_selection_policy_json JSON`; `source_settings_json JSON`; `refresh_status_json JSON`; `lifecycle_state_json JSON`; `market_data_updated_at VARCHAR?`; `calculation_inputs_updated_at VARCHAR?` |
 
-Registry owns identity, quote selection, market data, and corporate actions for assets reusable across portfolios. Portfolio owns the contract-specific FCN/option terms and event history. The migration does not guess or silently backfill legacy derivative records; it requires them to be resolved before this boundary is applied.
+Registry owns identity, quote selection, market data, and corporate actions for assets reusable across portfolios. Portfolio owns the contract-specific FCN/option terms and event history. Boundary migrations do not guess or silently backfill removed bond or derivative records; they require those rows to be resolved before migration.
 
 ### `instrument_registry.instrument_identifier`
 
@@ -276,11 +278,49 @@ Canonical point observations used for valuation/return roles of Registry market 
 |---|
 | **PK** `instrument_market_data_id INTEGER`; **FK** `instrument_id → instrument.instrument_id`; `metric_family VARCHAR`; `quote_basis VARCHAR`; `as_of_date DATE`; `value TEXT`; `currency VARCHAR`; `price_unit VARCHAR`; `price_scale NUMERIC(28,12)`; `provider VARCHAR?`; `status VARCHAR`; `nav_lineage_kind VARCHAR?`; `nav_derivation_method_version VARCHAR?`; `nav_derivation_anchor_date DATE?`; `nav_lineage_evidence_json JSON?`; **FK** `fund_nav_adjustment_factor_id → fund_nav_adjustment_factor.fund_nav_adjustment_factor_id` |
 
-### `instrument_registry.instrument_price_bar`
+### `instrument_registry.fund_nav_event`
+
+Immutable fund distribution/split revision facts consumed by Portfolio's instrument-event review flow.
 
 | Columns |
 |---|
-| **PK** `instrument_price_bar_id INTEGER`; **FK** `instrument_id → instrument.instrument_id`; `as_of_date DATE`; `open_price TEXT`; `high_price TEXT`; `low_price TEXT`; `close_price TEXT`; `previous_close TEXT?`; `volume TEXT?`; `turnover TEXT?`; `adjustment_factor TEXT?`; `currency VARCHAR`; `volume_unit VARCHAR?`; `turnover_unit VARCHAR?`; `provider VARCHAR`; `status VARCHAR` |
+| **PK** `fund_nav_event_id VARCHAR`; `fund_nav_action_id VARCHAR`; `revision_number INTEGER`; `revision_kind VARCHAR`; self-**FK** `supersedes_fund_nav_event_id`; **FK** `instrument_id → instrument.instrument_id`; `event_type VARCHAR`; `announcement_date DATE?`; `record_date DATE?`; `effective_date DATE`; `payable_date DATE?`; `sequence_order INTEGER?`; `cash_per_unit NUMERIC?`; `unit_ratio NUMERIC?`; `evidence_kind VARCHAR`; `source VARCHAR`; `external_event_id VARCHAR?`; `provenance_json JSON`; `recorded_by VARCHAR`; `revision_reason VARCHAR`; `created_at VARCHAR`; `updated_at VARCHAR` |
+
+### `instrument_registry.fund_nav_reinvestment_evidence`
+
+| Columns |
+|---|
+| **PK** `fund_nav_reinvestment_evidence_id VARCHAR`; **FK** `instrument_id → instrument.instrument_id`; **FK** `fund_nav_event_id → fund_nav_event.fund_nav_event_id`; `revision_number INTEGER`; `revision_kind VARCHAR`; self-**FK** `supersedes_fund_nav_reinvestment_evidence_id`; `reinvestment_nav NUMERIC`; `evidence_kind VARCHAR`; `source VARCHAR`; `external_evidence_id VARCHAR?`; `provenance_json JSON`; `recorded_by VARCHAR`; `revision_reason VARCHAR`; `created_at VARCHAR`; `updated_at VARCHAR` |
+
+### `instrument_registry.fund_nav_projection_run`
+
+| Columns |
+|---|
+| **PK** `fund_nav_projection_run_id VARCHAR`; **FK** `instrument_id → instrument.instrument_id`; `input_fingerprint VARCHAR(64)`; `source_observation_fingerprint VARCHAR(64)`; `projection_kind VARCHAR`; `projection_status VARCHAR`; `method_version VARCHAR`; `anchor_date DATE?`; `source_provider VARCHAR`; `evidence_json JSON`; `created_by VARCHAR`; `created_at VARCHAR` |
+
+### `instrument_registry.fund_nav_projection_run_event`
+
+| Columns |
+|---|
+| composite **PK/FK** `fund_nav_projection_run_id → fund_nav_projection_run`; composite **PK/FK** `fund_nav_event_id → fund_nav_event` |
+
+### `instrument_registry.fund_nav_projection_run_reinvestment_evidence`
+
+| Columns |
+|---|
+| composite **PK/FK** `fund_nav_projection_run_id → fund_nav_projection_run`; composite **PK/FK** `fund_nav_reinvestment_evidence_id → fund_nav_reinvestment_evidence` |
+
+### `instrument_registry.fund_nav_current_projection`
+
+| Columns |
+|---|
+| **PK/FK** `instrument_id → instrument.instrument_id`; **FK** `fund_nav_projection_run_id → fund_nav_projection_run.fund_nav_projection_run_id`; `updated_at VARCHAR`; `updated_by VARCHAR` |
+
+### `instrument_registry.fund_nav_adjustment_factor`
+
+| Columns |
+|---|
+| **PK** `fund_nav_adjustment_factor_id VARCHAR`; `factor_logical_key VARCHAR`; **FK** `instrument_id → instrument.instrument_id`; **FK** `fund_nav_projection_run_id → fund_nav_projection_run.fund_nav_projection_run_id`; `as_of_date DATE`; `factor_level NUMERIC`; `factor_kind VARCHAR`; **FK** `fund_nav_event_id → fund_nav_event.fund_nav_event_id`?; **FK** `fund_nav_reinvestment_evidence_id → fund_nav_reinvestment_evidence.fund_nav_reinvestment_evidence_id`?; self-**FK** `previous_fund_nav_adjustment_factor_id`?; `evidence_kind VARCHAR`; `method_version VARCHAR`; `anchor_date DATE`; `source_provider VARCHAR`; `evidence_json JSON`; `created_at VARCHAR`; `updated_at VARCHAR` |
 
 ### `instrument_registry.corporate_action_event`
 

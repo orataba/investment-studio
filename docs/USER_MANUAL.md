@@ -28,12 +28,12 @@ Portfolio Operations Workbench 分为三块：
 - Watchlist：基金、ETF、股票和指数观察列表。用于资产池筛选、分组、单资产详情、研究标签、监控和导出。
 - Portfolio：组合管理工作台。用于账户、交易、持仓、绩效、风险、分类体系和研究调仓。
 
-三块系统共用同一套可复用市场资产主档。基金、ETF、指数、债券、股票、现金、汇率等资产都应先在 Platform 建档，再被 Watchlist 或 Portfolio 引用。FCN 和期权是组合特定合约，直接在 Portfolio 首笔交易中创建，不在 Platform 建档；它们的 underlying 或 deliverable 证券仍引用共享 instrument。不要在不同模块里重复创建同一市场资产，也不要用临时名称绕过主档管理。
+三块系统共用同一套可复用市场资产主档。基金、ETF、指数、股票、现金、汇率等资产应先在 Platform 建档，再被 Watchlist 或 Portfolio 引用。FCN 和期权是组合特定合约，直接在 Portfolio 首笔交易中创建，不在 Platform 建档；它们的 underlying 或 deliverable 证券仍引用共享 instrument。直接债券不进入 Registry 或 Watchlist，当前也没有 Portfolio 债券交易入口。不要在不同模块里重复创建同一市场资产，也不要用临时名称绕过主档管理。
 
 核心数据分四类：
 
 - 资产主档：名称、资产类型、币种、ticker、ISIN、内部 ID、生命周期状态。
-- 市场行情：基金单位净值、分红再投资复权累计净值、指数 close、股票/债券价格、FX spot。
+- 市场行情：基金单位净值、分红再投资复权累计净值、指数 close、股票价格、FX spot。
 - 组合事实：账户、交易、现金流、持仓、成本、费用、税费、内部转账。
 - 分类体系：Watchlist fund taxonomy、研究标签、Portfolio planning taxonomy、sleeve tree、TargetSet。
 
@@ -71,10 +71,9 @@ Portfolio Operations Workbench 分为三块：
 - 基金：instrument type 选 `fund`，币种按基金净值币种填写，identifier 可填写 ticker、ISIN、Bloomberg code 或内部代码。
 - 指数：instrument type 选 `index`，币种按指数点位或报价币种填写，identifier 可填写 ticker 或指数代码。
 - 股票：instrument type 选 `equity`，币种按交易报价币种填写。
-- 债券：instrument type 选 `bond`，identifier 优先使用 ISIN 或内部债券代码。
 - 现金：instrument type 选 `cash`，用于组合现金账户或现金桶，不作为普通证券交易标的。
 
-不要在 Platform 为某一笔 FCN 或期权新建 instrument。合约条款、到期日、行权价、障碍条件、发行人和对手方属于 Portfolio 本地交易事实；只有其 underlying、deliverable 或实际交付的证券需要先在 Platform 建档。
+不要在 Platform 为直接债券、某一笔 FCN 或期权新建 instrument。FCN/期权的合约条款、到期日、行权价、障碍条件、发行人和对手方属于 Portfolio 本地交易事实；只有其 underlying、deliverable 或实际交付的证券需要先在 Platform 建档。
 
 命名应使用公司内部可识别的正式名称。名称中不要混入临时判断、评级、日期或个人备注；这些信息应放在 Watchlist 研究字段或 Portfolio notes 中。
 
@@ -202,7 +201,7 @@ Portfolio 以交易和行情为事实来源。持仓、市值、绩效、风险�
 
 ### 6.2 Accounts
 
-Accounts 管理组合内账户。账户类型通常包括证券账户和现金/存款账户。证券账户可设置默认 settlement cash account，用于买卖、分红、债券兑付等交易的现金结算。
+Accounts 管理组合内账户。账户类型通常包括证券账户和现金/存款账户。证券账户可设置默认 settlement cash account，用于证券买卖、分红和 FCN/期权现金事件的结算。
 
 页面左侧是账户目录，右侧是所选账户工作区。账户价值、现金余额、持仓市值和待交收余额始终显示在顶部；下方视图分开处理：
 
@@ -236,10 +235,10 @@ Transactions 是组合事实入口。新增交易前确认账户、资产、币�
 - `sell`：卖出证券。需要有足够持仓，系统会校验 trade date 时点的可卖数量。
 - `dividend`：基金或股票分红。需要 instrument，可填写 entitlement date，进入结算现金账户。
 - `dividend_reinvestment`：分红再投资。需要已有持仓、instrument、quantity，可选 price，不走结算现金账户。
-- `coupon`：债券票息。需要债券 instrument，可填写 entitlement date。
+- `coupon`：FCN 利息收入。需要 FCN 本地合约，可填写 entitlement date。
 - `interest`：现金账户利息。不关联 instrument。
 - `return_of_capital`：资本返还。需要基金或股票 instrument，不能超过对应持仓成本基础。
-- `maturity_redemption`：债券到期兑付。需要债券 instrument 和 quantity。
+- `maturity_redemption`：FCN 正常到期、敲入或敲出关闭，也可用于 long option expiry；需要相应本地合约。
 - `fee`：费用。可作为现金账户费用，也可关联证券账户和 instrument。
 - `tax`：税费。规则与 fee 类似。
 - `deposit`：外部入金，只用于现金账户。
@@ -256,9 +255,9 @@ FCN 与期权使用 Portfolio 本地合约，不从 Platform instrument 列表�
 - 一行只记录一个经济事实。期权行权后的股票买卖、FCN 敲入后的资产接收要分别录入普通证券交易；需要关联说明时写 note，不建立隐含配对。
 - 合约条款创建后不可修改；录错时应撤销错误交易并创建新的合约身份，不能改写历史条款。
 
-买入、卖出和证券期初持仓以 quantity 与 gross amount 作为份额和成交金额事实，隐含成交价按 `gross amount / quantity / price scale` 计算；输入 price 可以是该隐含价格保留四位小数的展示值。系统接受精确乘积或与隐含价格四位小数一致的价格，但不会用舍入后的 `quantity × price` 反写 gross amount。卖出、到期兑付和仓位转移会校验可用数量。分红、票息、费用、税费等若带 entitlement date，日期不能晚于 trade date。settlement date 不能早于 trade date。
+买入、卖出和证券期初持仓以 quantity 与 gross amount 作为份额和成交金额事实，隐含成交价按 `gross amount / quantity / price scale` 计算；输入 price 可以是该隐含价格保留四位小数的展示值。系统接受精确乘积或与隐含价格四位小数一致的价格，但不会用舍入后的 `quantity × price` 反写 gross amount。普通 Registry 证券的 price scale 为 `1`；期权由本地合约 multiplier 决定。卖出、合约关闭和仓位转移会校验可用数量。分红、FCN 利息、费用、税费等若带 entitlement date，日期不能晚于 trade date。settlement date 不能早于 trade date。
 
-债券交易的 quantity 是 face quantity，percent-of-par price 按 `0.01` scale 计算；例如 face `1000`、price `98.5` 的 gross amount 是 `985`。费用应选择可证明的 fee category；来源无法分类时保留 `Unknown`，不要猜测。重复提交会通过 idempotency key 去重；若页面提示记录版本冲突，说明事实已在别处更新，应刷新后重新核对，不能覆盖较新版本。
+费用应选择可证明的 fee category；来源无法分类时保留 `Unknown`，不要猜测。重复提交会通过 idempotency key 去重；若页面提示记录版本冲突，说明事实已在别处更新，应刷新后重新核对，不能覆盖较新版本。
 
 内部转账用于组合内账户之间移动现金或持仓。现金转账填写金额；持仓转账填写 instrument、quantity，必要时填写 transferred cost basis。内部转账会生成 transfer in/out 配对记录，不应手工分别录入两边。
 
@@ -373,7 +372,7 @@ TargetSet 的两个维度必须分开维护：
 - `weight` 表示资本配置，Securities 节点、固定 Derivatives 与固定 Cash 都可以设置；
 - `risk budget` 只给承担风险的 Securities sleeve 设置，风险份额合计 100%；
 - Derivatives 与 Cash 的 Risk 固定为 `N/A`，不能建立 `0%` 占位值；
-- Research 将两者作为 zero-volatility capital members；这只是当前模型边界，不代表真实经济风险为零。
+- Research 将两者作为 fixed-capital members：只分配资金权重，不产生收益序列，也不进入协方差或风险预算求解。
 
 若 Research 报 scope 无成员、目标缺失或 top sleeve bounds 无法满足，通常要回到 Taxonomies 检查 assignment、TargetSet 和树结构。
 

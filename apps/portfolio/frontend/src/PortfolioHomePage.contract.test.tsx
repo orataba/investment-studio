@@ -124,10 +124,10 @@ describe('Holdings rendered page contract', () => {
             valuation_basis: 'carried_cost',
             performance_eligible: false,
             risk_eligible: false,
-            forward_risk_status: 'modeled_zero',
-            forward_risk_share: 0,
-            forward_contribution_to_variance: 0,
-            forward_annualized_volatility: 0,
+            forward_risk_status: 'excluded',
+            forward_risk_share: null,
+            forward_contribution_to_variance: null,
+            forward_annualized_volatility: null,
           }),
           holdingFixture({
             line_id: 'broker:option-1:obligation',
@@ -159,10 +159,10 @@ describe('Holdings rendered page contract', () => {
             performance_eligible: false,
             risk_eligible: false,
             is_liability: true,
-            forward_risk_status: 'modeled_zero',
-            forward_risk_share: 0,
-            forward_contribution_to_variance: 0,
-            forward_annualized_volatility: 0,
+            forward_risk_status: 'excluded',
+            forward_risk_share: null,
+            forward_contribution_to_variance: null,
+            forward_annualized_volatility: null,
           }),
           holdingFixture({
             line_id: 'pending:settlement_payable',
@@ -238,14 +238,14 @@ describe('Holdings rendered page contract', () => {
     expect(marketRow?.[0]).toBe('Securities')
     expect(fcnRow?.[0]).toBe('Derivatives')
     expect(fcnRow?.[9]).toBe(500)
-    expect(fcnRow?.[11]).toBe(0)
+    expect(fcnRow?.[11]).toBe('N/A')
     expect(fcnRow?.[12]).toBe('N/A')
     expect(obligationRow?.[0]).toBe('Derivatives')
     expect(obligationRow?.[9]).toBe(-300)
-    expect(obligationRow?.[11]).toBe(0)
+    expect(obligationRow?.[11]).toBe('N/A')
     expect(settlementRow?.[0]).toBe('Cash & Settlement')
     expect(settlementRow?.[9]).toBe(-250)
-    expect(exportedRows.find((row) => row[0] === 'Derivatives' && row[1] === 'Subtotal (USD)')?.[11]).toBe(0)
+    expect(exportedRows.find((row) => row[0] === 'Derivatives' && row[1] === 'Subtotal (USD)')?.[11]).toBe('N/A')
     expect(exportedRows[exportedRows.length - 1]?.slice(0, 2)).toEqual([
       'Portfolio Total',
       'Portfolio Total (USD)',
@@ -593,10 +593,10 @@ describe('Holdings rendered page contract', () => {
             fair_value_coverage_status: 'unavailable',
             performance_eligible: false,
             risk_eligible: false,
-            forward_risk_status: 'modeled_zero',
-            forward_risk_share: 0,
-            forward_contribution_to_variance: 0,
-            forward_annualized_volatility: 0,
+            forward_risk_status: 'excluded',
+            forward_risk_share: null,
+            forward_contribution_to_variance: null,
+            forward_annualized_volatility: null,
             is_liability: true,
             day_change_value: 0,
             day_change_value_base: 0,
@@ -683,8 +683,8 @@ describe('Holdings rendered page contract', () => {
     expect(obligationRow!.children[dayReturnIndex]).toHaveTextContent('N/A')
     expect(obligationRow!.children[dayChangeIndex]).not.toHaveTextContent('$0.00')
     expect(obligationRow!.children[dayReturnIndex]).not.toHaveTextContent('0.00%')
-    expect(obligationRow!.children[volatilityIndex]).toHaveTextContent('0.00%')
-    expect(obligationRow!.children[forwardRiskIndex]).toHaveTextContent('0.00%')
+    expect(obligationRow!.children[volatilityIndex]).toHaveTextContent('N/A')
+    expect(obligationRow!.children[forwardRiskIndex]).toHaveTextContent('N/A')
   })
 
   it('keeps event-valued P&L unavailable while preserving a genuine quoted zero', async () => {
@@ -712,10 +712,10 @@ describe('Holdings rendered page contract', () => {
             coverage_status: 'event-cost',
             performance_eligible: false,
             risk_eligible: false,
-            forward_risk_status: 'modeled_zero',
-            forward_risk_share: 0,
-            forward_contribution_to_variance: 0,
-            forward_annualized_volatility: 0,
+            forward_risk_status: 'excluded',
+            forward_risk_share: null,
+            forward_contribution_to_variance: null,
+            forward_annualized_volatility: null,
             day_change_value: 0,
             day_change_value_base: 0,
             day_change_pct: 0,
@@ -788,8 +788,8 @@ describe('Holdings rendered page contract', () => {
     expect(eventRow!.children[unrealizedPctIndex]).toHaveTextContent('N/A')
     expect(eventRow!.children[chartIndex]).toHaveTextContent('N/A')
     expect(eventRow!.children[returnIndex]).toHaveTextContent('N/A')
-    expect(eventRow!.children[volatilityIndex]).toHaveTextContent('0.00%')
-    expect(eventRow!.children[forwardRiskIndex]).toHaveTextContent('0.00%')
+    expect(eventRow!.children[volatilityIndex]).toHaveTextContent('N/A')
+    expect(eventRow!.children[forwardRiskIndex]).toHaveTextContent('N/A')
     expect(eventRow!.children[drawdownIndex]).toHaveTextContent('N/A')
     expect(quotedRow!.children[unrealizedValueIndex]).toHaveTextContent('$0.00')
     expect(quotedRow!.children[unrealizedPctIndex]).toHaveTextContent('0.00%')
@@ -830,8 +830,8 @@ describe('Holdings rendered page contract', () => {
     expect(exportedEventRow?.[exportUnrealizedValueIndex]).toBe('N/A')
     expect(exportedEventRow?.[exportUnrealizedPctIndex]).toBe('N/A')
     expect(exportedEventRow?.[exportReturnIndex]).toBe('N/A')
-    expect(exportedEventRow?.[exportVolatilityIndex]).toBe(0)
-    expect(exportedEventRow?.[exportForwardRiskIndex]).toBe(0)
+    expect(exportedEventRow?.[exportVolatilityIndex]).toBe('N/A')
+    expect(exportedEventRow?.[exportForwardRiskIndex]).toBe('N/A')
     expect(exportedQuotedRow?.[exportUnrealizedValueIndex]).toBe(0)
     expect(exportedQuotedRow?.[exportUnrealizedPctIndex]).toBe(0)
     expect(exportedTotalRow?.[exportUnrealizedValueIndex]).toBe('N/A')

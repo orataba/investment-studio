@@ -10,7 +10,6 @@ export type QuoteBasisOption = { value: QuoteBasis; label: string }
 
 const PRICE_UNIT_OPTIONS: Array<{ value: PriceUnit; label: string }> = [
   { value: 'per_unit', label: 'Per unit' },
-  { value: 'percent_of_par', label: 'Percent of par' },
   { value: 'rate', label: 'Rate' },
 ]
 
@@ -19,9 +18,6 @@ export const QUOTE_BASIS_OPTIONS: Record<MetricFamily, QuoteBasisOption[]> = {
     { value: 'last', label: 'Last Trade' },
     { value: 'close', label: 'Close' },
     { value: 'adjusted_close', label: 'Adjusted Close' },
-    { value: 'clean_price', label: 'Clean Price' },
-    { value: 'dirty_price', label: 'Dirty Price' },
-    { value: 'accrued_interest', label: 'Accrued Interest' },
     { value: 'par', label: 'Par' },
   ],
   nav: [
@@ -45,8 +41,6 @@ export function defaultMarketDataSelection(instrumentType: InstrumentType): {
     quoteBasis = 'spot'
   } else if (instrumentType === 'cash') {
     quoteBasis = 'par'
-  } else if (instrumentType === 'bond') {
-    quoteBasis = 'dirty_price'
   }
   return {
     metric_family: metricFamily,
@@ -54,15 +48,8 @@ export function defaultMarketDataSelection(instrumentType: InstrumentType): {
   }
 }
 
-export function quoteBasisOptionsForInstrument(
-  instrumentType: InstrumentType,
-  metricFamily: MetricFamily,
-): QuoteBasisOption[] {
-  const options = QUOTE_BASIS_OPTIONS[metricFamily]
-  if (instrumentType === 'bond' && metricFamily === 'price') {
-    return options
-  }
-  return options.filter((option) => option.value !== 'accrued_interest')
+export function quoteBasisOptions(metricFamily: MetricFamily): QuoteBasisOption[] {
+  return QUOTE_BASIS_OPTIONS[metricFamily]
 }
 
 export function formatPriceUnit(priceUnit: PriceUnit): string {

@@ -490,13 +490,19 @@ def test_workspace_scope_requires_complete_market_valuation_even_when_policy_is_
         "valuation_basis_policy": "market",
         "exclusion_reason": None,
     }
+    resolved_instrument_ids: list[str] = []
+
+    def resolve_scopes(*_args, **kwargs):
+        resolved_instrument_ids.extend(kwargs["instrument_ids"])
+        return {
+            instrument_id: {"instrument_id": instrument_id, **policy}
+            for instrument_id in ("equity", "stale")
+        }
+
     monkeypatch.setattr(
         workspace_route,
         "resolve_instrument_analytics_scopes",
-        lambda *_args, **_kwargs: {
-            instrument_id: dict(policy)
-            for instrument_id in ("equity", "fcn", "option", "stale")
-        },
+        resolve_scopes,
     )
     response = workspace_route._enrich_holdings_analytics_scope(
         {
@@ -516,12 +522,11 @@ def test_workspace_scope_requires_complete_market_valuation_even_when_policy_is_
                 },
                 {
                     "line_id": "fcn-line",
-                    "holding_kind": "position",
-                    "instrument_core": {
-                        "instrument_id": "fcn",
-                        "instrument_name": "Carried FCN",
-                        "instrument_type": "fcn",
-                    },
+                    "holding_kind": "derivative_contract",
+                    "instrument_id": None,
+                    "instrument_core": None,
+                    "derivative_contract_id": "fcn",
+                    "derivative_contract": {"contract_type": "fcn"},
                     "last_price": None,
                     "valuation_basis": "carried_cost",
                     "fair_value_coverage_status": "unavailable",
@@ -531,11 +536,10 @@ def test_workspace_scope_requires_complete_market_valuation_even_when_policy_is_
                     "line_id": "option-obligation-line",
                     "holding_kind": "option_obligation",
                     "is_liability": True,
-                    "instrument_core": {
-                        "instrument_id": "option",
-                        "instrument_name": "Written Call",
-                        "instrument_type": "option",
-                    },
+                    "instrument_id": None,
+                    "instrument_core": None,
+                    "derivative_contract_id": "option",
+                    "derivative_contract": {"contract_type": "option"},
                     "last_price": None,
                     "valuation_basis": "premium_liability",
                     "fair_value_coverage_status": "unavailable",
@@ -563,6 +567,7 @@ def test_workspace_scope_requires_complete_market_valuation_even_when_policy_is_
     )
 
     rows = {row["line_id"]: row for row in response["rows"]}
+    assert resolved_instrument_ids == ["equity", "stale"]
     assert rows["equity-line"]["holding_category"] == "securities"
     assert rows["stale-line"]["holding_category"] == "securities"
     assert rows["fcn-line"]["holding_category"] == "derivatives"
@@ -573,14 +578,63 @@ def test_workspace_scope_requires_complete_market_valuation_even_when_policy_is_
         assert rows[line_id]["risk_eligible"] is False
         assert rows[line_id]["risk_budget_eligible"] is False
         assert rows[line_id]["performance_eligible"] is False
-        assert rows[line_id]["analytics_scope"] == "operational_only"
         assert rows[line_id]["analytics_scope_system_exclusion_reason"]
+    for line_id in ("fcn-line", "option-obligation-line"):
+        assert rows[line_id]["instrument_id"] is None
+        assert rows[line_id]["analytics_scope"] == "derivative_lifecycle"
+        assert rows[line_id]["scope_status"] == "system_excluded"
+    assert rows["stale-line"]["analytics_scope"] == "operational_only"
 
     summary = response["analytics_scope_summary"]
     assert summary["modeled_gross_exposure"] == 100.0
     assert summary["excluded_carrying_value"] == 80.0
     assert summary["excluded_liability"] == 20.0
     assert summary["coverage_ratio"] == 0.5
+
+
+def test_derivative_contract_id_never_enters_registry_or_taxonomy_scope(monkeypatch) -> None:
+    requested_ids: list[str] = []
+
+    def resolve_scopes(*_args, **kwargs):
+        requested_ids.extend(kwargs["instrument_ids"])
+        return {}
+
+    monkeypatch.setattr(
+        workspace_route,
+        "resolve_instrument_analytics_scopes",
+        resolve_scopes,
+    )
+    workspace = {
+        "rows": [
+            {
+                "line_id": "registry-security-id",
+                "position_reference_id": "registry-security-id",
+                "instrument_id": None,
+                "instrument_core": None,
+                "derivative_contract_id": "registry-security-id",
+                "derivative_contract": {"contract_type": "option"},
+                "holding_kind": "derivative_contract",
+                "valuation_basis": "carried_cost",
+                "fair_value_coverage_status": "unavailable",
+                "carrying_value_base": 100.0,
+            }
+        ],
+        "totals": {"nav": 100.0},
+    }
+
+    response = workspace_route._enrich_holdings_analytics_scope(
+        workspace,
+        portfolio_id=PORTFOLIO_ID,
+        as_of_date=date(2026, 4, 15),
+        transactions=[],
+    )
+
+    assert requested_ids == []
+    assert workspace_route._instrument_ids_from_holdings_workspace(response) == []
+    row = response["rows"][0]
+    assert row["instrument_id"] is None
+    assert row["derivative_contract_id"] == "registry-security-id"
+    assert row["holding_category"] == "derivatives"
 
 
 def test_workspace_marks_cash_outside_system_valuation_contract(monkeypatch) -> None:

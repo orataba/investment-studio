@@ -12,7 +12,7 @@ describe('transaction instrument eligibility', () => {
     expect(supportsTransactionAssetType('opening_balance', 'etf')).toBe(true)
   })
 
-  it('supports ETF distributions and reinvestment without applying bond-only events', () => {
+  it('supports ETF distributions and reinvestment without derivative-only events', () => {
     expect(supportsTransactionAssetType('dividend', 'etf')).toBe(true)
     expect(supportsTransactionAssetType('dividend_reinvestment', 'etf')).toBe(true)
     expect(supportsTransactionAssetType('return_of_capital', 'etf')).toBe(true)

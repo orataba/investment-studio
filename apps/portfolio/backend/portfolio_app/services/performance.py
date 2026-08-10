@@ -1150,7 +1150,6 @@ def _period_taxonomy_group_resolver(
     if taxonomy is None:
         return None
     taxonomy_id_value = str(taxonomy.get("taxonomy_id") or "")
-    target_scope = str(taxonomy.get("primary_assignment_scope") or "")
     taxonomy_nodes_by_id = {
         str(node.get("taxonomy_node_id") or ""): node
         for node in taxonomy_nodes or []
@@ -1160,15 +1159,12 @@ def _period_taxonomy_group_resolver(
     for assignment in taxonomy_assignments or []:
         if str(assignment.get("taxonomy_id") or "") != taxonomy_id_value:
             continue
-        if str(assignment.get("target_scope") or "") != target_scope:
+        if str(assignment.get("target_scope") or "") != "instrument":
             continue
         assignments_by_entity[str(assignment.get("target_entity_id") or "")].append(assignment)
 
     def resolve(lot: dict[str, object]) -> str:
-        if target_scope == "account":
-            target_entity_id = str(lot.get("account_id") or "")
-        else:
-            target_entity_id = str(lot.get("instrument_id") or "")
+        target_entity_id = str(lot.get("instrument_id") or "")
         group_key, _group_label = attribution.resolve_taxonomy_group_for_date(
             taxonomy=taxonomy,
             taxonomy_nodes_by_id=taxonomy_nodes_by_id,
@@ -4696,7 +4692,7 @@ def _filter_boundary_positions(
     axis: str | None,
     group_key: str | None,
     as_of_date: date | None,
-    taxonomy_context: tuple[dict[str, object], dict[str, dict[str, object]], dict[str, list[dict[str, object]]], str]
+    taxonomy_context: tuple[dict[str, object], dict[str, dict[str, object]], dict[str, list[dict[str, object]]]]
     | None = None,
     account_name_map: dict[str, str] | None = None,
 ) -> tuple[list[dict[str, object]], str | None]:
@@ -4760,9 +4756,7 @@ def _filter_boundary_positions(
     if as_of_date is None:
         return list(positions), None
 
-    taxonomy, taxonomy_nodes_by_id, assignments_by_entity, target_scope = taxonomy_context
-    if target_scope != "instrument":
-        raise ValueError("Boundary holdings taxonomy filters currently support instrument-scoped taxonomies only.")
+    taxonomy, taxonomy_nodes_by_id, assignments_by_entity = taxonomy_context
 
     filtered_positions: list[dict[str, object]] = []
     group_label = None
@@ -5088,9 +5082,6 @@ def build_period_boundary_groups_report(
     )
     if taxonomy is None:
         raise ValueError("Selected taxonomy was not found.")
-    if str(taxonomy.get("primary_assignment_scope") or "") != "instrument":
-        raise ValueError("Boundary taxonomy groups currently support instrument-scoped taxonomies only.")
-
     report = build_period_boundary_holdings_report(
         portfolio,
         accounts,
@@ -6578,6 +6569,11 @@ def _build_contribution_slices_for_date(
                 "_is_initial_valuation_anchor": is_initial_valuation_anchor,
                 "market_observation_count": market_observation_count,
                 "return_observation_eligible": return_observation_eligible,
+                "_system_holding_category": (
+                    "derivatives"
+                    if has_derivative_exposure or has_derivative_lifecycle_activity
+                    else None
+                ),
                 "beginning_value_base": beginning_value_base,
                 "ending_value_base": ending_value_base,
                 "beginning_weight": (
@@ -6635,7 +6631,6 @@ def build_taxonomy_contribution_report_from_base_report(
     base_report: dict[str, object],
     use_period_end_taxonomy_assignments: bool = False,
     apply_boundary_values: bool = True,
-    preserve_cash_group: bool = False,
 ) -> dict[str, object]:
     resolved_taxonomy_id = str(taxonomy_id or "").strip()
     taxonomy = next(
@@ -6648,18 +6643,7 @@ def build_taxonomy_contribution_report_from_base_report(
     )
     if taxonomy is None:
         raise ValueError("Selected taxonomy was not found.")
-    primary_assignment_scope = str(taxonomy.get("primary_assignment_scope") or "")
-    if primary_assignment_scope not in {"instrument", "account", "cash_bucket"}:
-        raise ValueError(
-            "taxonomy contribution currently supports instrument-, account-, or cash-bucket-scoped taxonomies only."
-        )
-
     base_daily_slices = list(base_report.get("daily_slices") or [])
-    if primary_assignment_scope == "cash_bucket":
-        cash_bucket_ids = attribution.cash_bucket_account_ids(accounts)
-        base_daily_slices = [
-            item for item in base_daily_slices if str(item.get("group_key") or "") in cash_bucket_ids
-        ]
     base_summary = base_report.get("summary") if isinstance(base_report.get("summary"), dict) else {}
     assignment_as_of_date = (
         _parse_iso_date(base_summary.get("end_date"))
@@ -6672,7 +6656,6 @@ def build_taxonomy_contribution_report_from_base_report(
         taxonomy_assignments=taxonomy_assignments or [],
         base_daily_slices=base_daily_slices,
         assignment_as_of_date=assignment_as_of_date,
-        preserve_cash_group=preserve_cash_group,
     )
     report = attribution.build_taxonomy_contribution_report(
         taxonomy=taxonomy,
@@ -6681,9 +6664,7 @@ def build_taxonomy_contribution_report_from_base_report(
     )
     if use_period_end_taxonomy_assignments:
         report["_taxonomy_assignment_mode"] = "period_end"
-    if preserve_cash_group:
-        report["_taxonomy_preserve_cash_group"] = True
-    if primary_assignment_scope == "instrument" and apply_boundary_values:
+    if apply_boundary_values:
         boundary_report = build_period_boundary_groups_report(
             portfolio,
             accounts,
@@ -6852,13 +6833,6 @@ def build_contribution_report(
         )
         if taxonomy is None:
             raise ValueError("Selected taxonomy was not found.")
-        primary_assignment_scope = str(taxonomy.get("primary_assignment_scope") or "")
-        if primary_assignment_scope not in {"instrument", "account", "cash_bucket"}:
-            raise ValueError(
-                "taxonomy contribution currently supports instrument-, account-, or cash-bucket-scoped taxonomies only."
-            )
-        base_axis = "account" if primary_assignment_scope in {"account", "cash_bucket"} else "instrument"
-
         base_report = build_contribution_report(
             portfolio,
             accounts,
@@ -6868,7 +6842,7 @@ def build_contribution_report(
             taxonomy_assignments=taxonomy_assignments,
             start_date=start_date,
             end_date=end_date,
-            axis=base_axis,
+            axis="instrument",
         )
         return build_taxonomy_contribution_report_from_base_report(
             portfolio,
@@ -7649,7 +7623,6 @@ def _build_taxonomy_calculation_detail_report(
     taxonomy_id: str | None,
     base_report: dict[str, object] | None = None,
     use_period_end_taxonomy_assignments: bool = False,
-    preserve_cash_group: bool = False,
 ) -> dict[str, object]:
     resolved_taxonomy_id = str(taxonomy_id or "").strip()
     taxonomy = next(
@@ -7670,11 +7643,7 @@ def _build_taxonomy_calculation_detail_report(
             axis=attribution.calculation_detail_axis("taxonomy"),
         )
 
-    target_scope = str(taxonomy.get("primary_assignment_scope") or "")
-    if target_scope in {"account", "cash_bucket"}:
-        base_axis = attribution.calculation_detail_axis("account")
-    else:
-        base_axis = attribution.calculation_detail_axis("instrument")
+    base_axis = attribution.calculation_detail_axis("instrument")
     resolved_base_report = base_report or build_contribution_report(
         portfolio,
         accounts,
@@ -7702,7 +7671,7 @@ def _build_taxonomy_calculation_detail_report(
     for assignment in taxonomy_assignments or []:
         if str(assignment.get("taxonomy_id") or "") != resolved_taxonomy_id:
             continue
-        if str(assignment.get("target_scope") or "") != target_scope:
+        if str(assignment.get("target_scope") or "") != "instrument":
             continue
         assignments_by_entity[str(assignment.get("target_entity_id") or "")].append(assignment)
     for entity_assignments in assignments_by_entity.values():
@@ -7712,18 +7681,7 @@ def _build_taxonomy_calculation_detail_report(
             )
         )
 
-    cash_bucket_ids = attribution.cash_bucket_account_ids(accounts) if target_scope == "cash_bucket" else set()
-
     def detail_target_for_base_group_key(base_group_key: str) -> tuple[str, str, str] | None:
-        if target_scope in {"account", "cash_bucket"}:
-            decoded = attribution.decode_calculation_detail_group_key(base_group_key)
-            if decoded is None:
-                return None
-            target_entity_id, item_kind, item_key = decoded
-            if target_scope == "cash_bucket" and target_entity_id not in cash_bucket_ids:
-                return None
-            return (target_entity_id, item_kind, item_key)
-
         decoded = attribution.decode_calculation_detail_group_key(base_group_key)
         if decoded is None:
             target_entity_id = base_group_key
@@ -7763,14 +7721,16 @@ def _build_taxonomy_calculation_detail_report(
             continue
         target_entity_id, item_kind, detail_item_key = resolved_detail_target
 
-        if preserve_cash_group and target_scope == "instrument" and item_kind == "cash":
-            parent_group_key = "cash"
+        if item_kind == "cash":
+            parent_group_key = attribution.SYSTEM_CASH_GROUP_KEY
+        elif base_slice.get("_system_holding_category") == "derivatives":
+            parent_group_key = attribution.SYSTEM_DERIVATIVE_GROUP_KEY
         else:
             parent_group_key, _parent_group_label = attribution.resolve_period_taxonomy_group_for_slice(
                 taxonomy=taxonomy,
                 taxonomy_nodes_by_id=taxonomy_nodes_by_id,
                 assignments_by_entity=assignments_by_entity,
-                target_scope=target_scope,
+                target_scope="instrument",
                 target_entity_id=target_entity_id,
                 slice_date=as_of_date,
                 assignment_as_of_date=assignment_as_of_date,
@@ -7813,7 +7773,6 @@ def build_taxonomy_calculation_detail_report_from_base_report(
     taxonomy_id: str | None,
     base_report: dict[str, object],
     use_period_end_taxonomy_assignments: bool = False,
-    preserve_cash_group: bool = False,
 ) -> dict[str, object]:
     return _build_taxonomy_calculation_detail_report(
         portfolio,
@@ -7827,7 +7786,6 @@ def build_taxonomy_calculation_detail_report_from_base_report(
         taxonomy_id=taxonomy_id,
         base_report=base_report,
         use_period_end_taxonomy_assignments=use_period_end_taxonomy_assignments,
-        preserve_cash_group=preserve_cash_group,
     )
 
 
@@ -7961,7 +7919,6 @@ def _build_period_calculation_child_records(
             end_date=end_date,
             taxonomy_id=taxonomy_id,
             use_period_end_taxonomy_assignments=True,
-            preserve_cash_group=True,
         )
     else:
         return {}
@@ -8299,8 +8256,6 @@ def build_period_calculation_groups_report(
             )
             if taxonomy is None:
                 raise ValueError("Selected taxonomy was not found.")
-            primary_assignment_scope = str(taxonomy.get("primary_assignment_scope") or "")
-            base_axis = "account" if primary_assignment_scope in {"account", "cash_bucket"} else "instrument"
             base_contribution_report = build_contribution_report(
                 portfolio,
                 accounts,
@@ -8310,7 +8265,7 @@ def build_period_calculation_groups_report(
                 taxonomy_assignments=taxonomy_assignments,
                 start_date=start_date,
                 end_date=end_date,
-                axis=base_axis,
+                axis="instrument",
             )
             contribution_report = build_taxonomy_contribution_report_from_base_report(
                 portfolio,
@@ -8325,7 +8280,6 @@ def build_period_calculation_groups_report(
                 base_report=base_contribution_report,
                 use_period_end_taxonomy_assignments=True,
                 apply_boundary_values=False,
-                preserve_cash_group=True,
             )
         else:
             contribution_report = build_contribution_report(
@@ -9147,19 +9101,13 @@ def _build_taxonomy_assignment_context(
     taxonomy_nodes: list[dict[str, object]],
     taxonomy_assignments: list[dict[str, object]],
     taxonomy_id: str,
-) -> tuple[dict[str, object], dict[str, dict[str, object]], dict[str, list[dict[str, object]]], str]:
+) -> tuple[dict[str, object], dict[str, dict[str, object]], dict[str, list[dict[str, object]]]]:
     taxonomy = next(
         (item for item in taxonomies if str(item.get("taxonomy_id") or "") == taxonomy_id),
         None,
     )
     if taxonomy is None:
         raise ValueError("Selected taxonomy was not found.")
-    target_scope = str(taxonomy.get("primary_assignment_scope") or "")
-    if target_scope not in {"instrument", "account", "cash_bucket"}:
-        raise ValueError(
-            "taxonomy calculation entries currently support instrument-, account-, or cash-bucket-scoped taxonomies only."
-        )
-
     taxonomy_nodes_by_id = {
         str(node.get("taxonomy_node_id") or ""): node
         for node in taxonomy_nodes
@@ -9169,7 +9117,7 @@ def _build_taxonomy_assignment_context(
     for assignment in taxonomy_assignments:
         if str(assignment.get("taxonomy_id") or "") != taxonomy_id:
             continue
-        if str(assignment.get("target_scope") or "") != target_scope:
+        if str(assignment.get("target_scope") or "") != "instrument":
             continue
         assignments_by_entity[str(assignment.get("target_entity_id") or "")].append(assignment)
     for entity_assignments in assignments_by_entity.values():
@@ -9178,7 +9126,7 @@ def _build_taxonomy_assignment_context(
                 str(item.get("assignment_id") or ""),
             )
         )
-    return taxonomy, taxonomy_nodes_by_id, assignments_by_entity, target_scope
+    return taxonomy, taxonomy_nodes_by_id, assignments_by_entity
 
 
 def _resolve_calculation_entry_group(
@@ -9190,13 +9138,21 @@ def _resolve_calculation_entry_group(
     instrument_id: str | None,
     instrument_name: str | None,
     instrument_type: str | None,
+    derivative_contract_id: str | None,
+    derivative_contract_name: str | None,
+    derivative_contract_type: str | None,
     currency: str | None,
-    taxonomy_context: tuple[dict[str, object], dict[str, dict[str, object]], dict[str, list[dict[str, object]]], str]
+    taxonomy_context: tuple[dict[str, object], dict[str, dict[str, object]], dict[str, list[dict[str, object]]]]
     | None,
 ) -> tuple[str, str]:
     if axis == "instrument":
         if instrument_id:
             return (instrument_id, instrument_name or instrument_id)
+        if derivative_contract_id:
+            return (
+                derivative_contract_id,
+                derivative_contract_name or derivative_contract_id,
+            )
         return ("cash", "Cash")
     if axis == "account":
         if account_id:
@@ -9205,6 +9161,8 @@ def _resolve_calculation_entry_group(
     if axis == "instrument_type":
         if instrument_id:
             return attribution.instrument_type_key_label(instrument_type)
+        if derivative_contract_id:
+            return attribution.instrument_type_key_label(derivative_contract_type)
         return ("cash", "Cash")
     if axis == "currency":
         normalized_currency = valuation_fx.normalized_currency(currency)
@@ -9216,15 +9174,13 @@ def _resolve_calculation_entry_group(
 
     if taxonomy_context is None:
         raise ValueError("taxonomy_id is required when axis=taxonomy.")
-    taxonomy, taxonomy_nodes_by_id, assignments_by_entity, target_scope = taxonomy_context
-    target_entity_id = ""
-    if target_scope == "instrument":
-        target_entity_id = instrument_id or ""
-    elif target_scope == "account":
-        target_entity_id = account_id or ""
-    elif target_scope == "cash_bucket":
-        target_entity_id = account_id or ""
-    if not target_entity_id or effective_date is None:
+    if derivative_contract_id:
+        return (attribution.SYSTEM_DERIVATIVE_GROUP_KEY, "Derivatives")
+    if not instrument_id:
+        return (attribution.SYSTEM_CASH_GROUP_KEY, "Cash")
+    taxonomy, taxonomy_nodes_by_id, assignments_by_entity = taxonomy_context
+    target_entity_id = instrument_id
+    if effective_date is None:
         return (f"unassigned:{taxonomy.get('taxonomy_id')}", "Unassigned")
     return attribution.resolve_taxonomy_group_for_date(
         taxonomy=taxonomy,
@@ -9247,7 +9203,7 @@ def _append_calculation_transaction_entry(
     direct_fx_instruments: dict[tuple[str, str], str],
     instrument_detail_cache: dict[str, dict[str, object] | None],
     account_name_map: dict[str, str],
-    taxonomy_context: tuple[dict[str, object], dict[str, dict[str, object]], dict[str, list[dict[str, object]]], str]
+    taxonomy_context: tuple[dict[str, object], dict[str, dict[str, object]], dict[str, list[dict[str, object]]]]
     | None,
 ) -> None:
     trade_date = _parse_iso_date(transaction.get("trade_date"))
@@ -9258,9 +9214,15 @@ def _append_calculation_transaction_entry(
     )
     account_id = str(transaction.get("account_id") or "") or None
     instrument_id = str(transaction.get("instrument_id") or "") or None
+    derivative_contract_id = str(transaction.get("derivative_contract_id") or "") or None
     instrument_ref = (
         transaction.get("instrument_ref")
         if isinstance(transaction.get("instrument_ref"), dict)
+        else None
+    )
+    derivative_contract = (
+        transaction.get("derivative_contract")
+        if isinstance(transaction.get("derivative_contract"), dict)
         else None
     )
     instrument_name = str((instrument_ref or {}).get("instrument_name") or instrument_id or "")
@@ -9272,6 +9234,9 @@ def _append_calculation_transaction_entry(
         instrument_id=instrument_id,
         instrument_name=instrument_name or None,
         instrument_type=str((instrument_ref or {}).get("instrument_type") or "") or None,
+        derivative_contract_id=derivative_contract_id,
+        derivative_contract_name=str((derivative_contract or {}).get("contract_name") or "") or None,
+        derivative_contract_type=str((derivative_contract or {}).get("contract_type") or "") or None,
         currency=currency,
         taxonomy_context=taxonomy_context,
     )
@@ -9305,6 +9270,8 @@ def _append_calculation_transaction_entry(
             "account_name": account_name_map.get(account_id, account_id or "") if account_id else None,
             "instrument_id": instrument_id,
             "instrument_name": instrument_name or None,
+            "derivative_contract_id": derivative_contract_id,
+            "derivative_contract_name": str((derivative_contract or {}).get("contract_name") or "") or None,
             "currency": currency,
             "local_amount": local_amount,
             "base_amount": base_amount,
@@ -9407,7 +9374,6 @@ def build_contribution_entries_report(
     direct_fx_instruments = valuation_fx.fx_direct_instrument_map(fx_payload)
     instrument_detail_cache: dict[str, dict[str, object] | None] = {}
     taxonomy_context = None
-    cash_bucket_account_ids: set[str] = set()
     if axis == "taxonomy":
         resolved_taxonomy_id = str(taxonomy_id or "").strip()
         if not resolved_taxonomy_id:
@@ -9418,9 +9384,6 @@ def build_contribution_entries_report(
             taxonomy_assignments=taxonomy_assignments or [],
             taxonomy_id=resolved_taxonomy_id,
         )
-        if taxonomy_context[3] == "cash_bucket":
-            cash_bucket_account_ids = attribution.cash_bucket_account_ids(accounts)
-
     entries: list[dict[str, object]] = []
     if bucket != "realized_pnl":
         for transaction in period_transactions:
@@ -9429,17 +9392,7 @@ def build_contribution_entries_report(
             fee_amount = _safe_float(transaction.get("fees")) or 0.0
             tax_amount = _safe_float(transaction.get("taxes")) or 0.0
             instrument_id = str(transaction.get("instrument_id") or "")
-            account_id = str(transaction.get("account_id") or "")
-            if (
-                taxonomy_context is not None
-                and taxonomy_context[3] == "cash_bucket"
-                and account_id not in cash_bucket_account_ids
-            ):
-                continue
-
-            income_account_scoped = attribution.axis_includes_cash_balance(axis) or (
-                taxonomy_context is not None and taxonomy_context[3] in {"account", "cash_bucket"}
-            )
+            income_account_scoped = attribution.axis_includes_cash_balance(axis) or taxonomy_context is not None
 
             if bucket == "income_cash_amount":
                 if transaction_type in {"dividend", "coupon", "dividend_reinvestment"}:
@@ -9574,18 +9527,18 @@ def build_contribution_entries_report(
             if not isinstance(realizations, list):
                 continue
             account_id = str(position_lot.get("account_id") or "") or None
-            if (
-                taxonomy_context is not None
-                and taxonomy_context[3] == "cash_bucket"
-                and (account_id or "") not in cash_bucket_account_ids
-            ):
-                continue
             instrument_ref = (
                 position_lot.get("instrument_ref")
                 if isinstance(position_lot.get("instrument_ref"), dict)
                 else None
             )
             instrument_id = str(position_lot.get("instrument_id") or "") or None
+            derivative_contract_id = str(position_lot.get("derivative_contract_id") or "") or None
+            derivative_contract = (
+                position_lot.get("derivative_contract")
+                if isinstance(position_lot.get("derivative_contract"), dict)
+                else None
+            )
             instrument_name = str((instrument_ref or {}).get("instrument_name") or instrument_id or "")
             currency = valuation_fx.required_currency(
                 position_lot.get("currency"), field_name="position-lot currency"
@@ -9621,6 +9574,9 @@ def build_contribution_entries_report(
                     instrument_id=instrument_id,
                     instrument_name=instrument_name or None,
                     instrument_type=str((instrument_ref or {}).get("instrument_type") or "") or None,
+                    derivative_contract_id=derivative_contract_id,
+                    derivative_contract_name=str((derivative_contract or {}).get("contract_name") or "") or None,
+                    derivative_contract_type=str((derivative_contract or {}).get("contract_type") or "") or None,
                     currency=currency,
                     taxonomy_context=taxonomy_context,
                 )
@@ -9654,6 +9610,8 @@ def build_contribution_entries_report(
                         "account_name": account_name_map.get(account_id, account_id or "") if account_id else None,
                         "instrument_id": instrument_id,
                         "instrument_name": instrument_name or None,
+                        "derivative_contract_id": derivative_contract_id,
+                        "derivative_contract_name": str((derivative_contract or {}).get("contract_name") or "") or None,
                         "currency": currency,
                         "local_amount": local_amount,
                         "base_amount": base_amount,
@@ -10065,6 +10023,12 @@ def build_period_calculation_entries_report(
                 else None
             )
             instrument_id = str(position_lot.get("instrument_id") or "") or None
+            derivative_contract_id = str(position_lot.get("derivative_contract_id") or "") or None
+            derivative_contract = (
+                position_lot.get("derivative_contract")
+                if isinstance(position_lot.get("derivative_contract"), dict)
+                else None
+            )
             instrument_name = str((instrument_ref or {}).get("instrument_name") or instrument_id or "")
             currency = valuation_fx.required_currency(
                 position_lot.get("currency"), field_name="position-lot currency"
@@ -10100,6 +10064,9 @@ def build_period_calculation_entries_report(
                     instrument_id=instrument_id,
                     instrument_name=instrument_name or None,
                     instrument_type=str((instrument_ref or {}).get("instrument_type") or "") or None,
+                    derivative_contract_id=derivative_contract_id,
+                    derivative_contract_name=str((derivative_contract or {}).get("contract_name") or "") or None,
+                    derivative_contract_type=str((derivative_contract or {}).get("contract_type") or "") or None,
                     currency=currency,
                     taxonomy_context=taxonomy_context,
                 )
@@ -10133,6 +10100,8 @@ def build_period_calculation_entries_report(
                         "account_name": account_name_map.get(account_id, account_id or "") if account_id else None,
                         "instrument_id": instrument_id,
                         "instrument_name": instrument_name or None,
+                        "derivative_contract_id": derivative_contract_id,
+                        "derivative_contract_name": str((derivative_contract or {}).get("contract_name") or "") or None,
                         "currency": currency,
                         "local_amount": local_amount,
                         "base_amount": base_amount,

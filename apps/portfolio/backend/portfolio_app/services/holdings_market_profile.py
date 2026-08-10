@@ -12,7 +12,6 @@ from portfolio_app.services import valuation_fx
 _SUPPORTED_INSTRUMENT_TYPES = {
     "fund",
     "etf",
-    "bond",
     "equity",
     "cash",
     "fx",
@@ -178,7 +177,6 @@ def resolve_position_valuation(
         position_market_value(
             quantity=quantity,
             last_price=quoted_price,
-            instrument_ref=instrument_ref,
             price_scale=quoted_price_scale,
         ),
         False,
@@ -286,7 +284,6 @@ def holding_day_change_metrics(
     current_market_value = position_market_value(
         quantity=quantity,
         last_price=current_price,
-        instrument_ref=instrument_ref,
         price_scale=price_scale,
     )
     previous_market_value = (

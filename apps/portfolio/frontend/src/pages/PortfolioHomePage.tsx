@@ -680,10 +680,11 @@ const HOLDING_CATEGORY_SEQUENCE: PortfolioHoldingRow['holding_category'][] = [
 ]
 
 function holdingUsesModeledZeroRisk(row: PortfolioHoldingRow) {
-  return (
-    row.holding_category === 'derivatives' ||
-    row.forward_risk_status === 'modeled_zero'
-  )
+  return row.forward_risk_status === 'modeled_zero'
+}
+
+function holdingIsExcludedFromRisk(row: PortfolioHoldingRow) {
+  return row.holding_category === 'derivatives' || row.forward_risk_status === 'excluded'
 }
 
 type NormalizedCostMethod = 'fifo' | 'moving_average' | 'mixed'
@@ -764,6 +765,9 @@ function unsignedHoldingModeledRiskMetric(
   row: PortfolioHoldingRow,
   value: number | null | undefined,
 ) {
+  if (holdingIsExcludedFromRisk(row)) {
+    return 'N/A'
+  }
   const modeledValue = holdingModeledRiskMetric(row, value)
   return holdingUsesModeledZeroRisk(row) ? (
     <span title="Modeled as 0 because this holding is outside market-price risk analytics.">
@@ -1012,11 +1016,15 @@ function totalAllocation(rows: PortfolioHoldingRow[], workspace: HoldingsWorkspa
 }
 
 function totalForwardRiskShare(rows: PortfolioHoldingRow[], workspace: HoldingsWorkspaceResponse) {
-  if (rows.length > 0 && rows.every(holdingUsesModeledZeroRisk)) {
+  const riskRows = rows.filter((row) => !holdingIsExcludedFromRisk(row))
+  if (!riskRows.length) {
+    return null
+  }
+  if (riskRows.every(holdingUsesModeledZeroRisk)) {
     return 0
   }
   return workspace.forward_risk?.status === 'ok'
-    ? sumCompleteNumbers(rows, (row) =>
+    ? sumCompleteNumbers(riskRows, (row) =>
         holdingModeledRiskMetric(row, row.forward_risk_share),
       )
     : null
@@ -1206,7 +1214,7 @@ export function groupedReturnSeries(
     return null
   }
   const returnEligibleRows = modeledZeroRisk
-    ? rows
+    ? rows.filter((row) => !holdingIsExcludedFromRisk(row))
     : rows.filter((row) => !isPendingMonetaryHoldingRow(row))
   if (
     !returnEligibleRows.length ||
@@ -1497,9 +1505,7 @@ function resolveNodePath(taxonomyNodeId: string, nodesById: Map<string, Portfoli
 }
 
 function resolveGroupingTaxonomy(catalog: PortfolioTaxonomyCatalogResponse | null) {
-  const taxonomies = (catalog?.taxonomies ?? []).filter(
-    (taxonomy) => taxonomy.status === 'active' && taxonomy.primary_assignment_scope === 'instrument',
-  )
+  const taxonomies = (catalog?.taxonomies ?? []).filter((taxonomy) => taxonomy.status === 'active')
   return (
     taxonomies.find((taxonomy) => taxonomy.taxonomy_id === catalog?.default_planning_taxonomy_id) ??
     taxonomies.find((taxonomy) => taxonomy.planning_enabled) ??
@@ -1881,15 +1887,15 @@ function holdingColumnExportValue(
     case 'instrument_holding_max_drawdown':
       return holdingUsesEventValuation(row) ? 'N/A' : row.instrument_holding_max_drawdown ?? null
     case 'instrument_volatility_1m':
-      return holdingModeledRiskMetric(row, row.instrument_volatility_1m)
+      return holdingIsExcludedFromRisk(row) ? 'N/A' : holdingModeledRiskMetric(row, row.instrument_volatility_1m)
     case 'instrument_volatility_3m':
-      return holdingModeledRiskMetric(row, row.instrument_volatility_3m)
+      return holdingIsExcludedFromRisk(row) ? 'N/A' : holdingModeledRiskMetric(row, row.instrument_volatility_3m)
     case 'instrument_volatility_6m':
-      return holdingModeledRiskMetric(row, row.instrument_volatility_6m)
+      return holdingIsExcludedFromRisk(row) ? 'N/A' : holdingModeledRiskMetric(row, row.instrument_volatility_6m)
     case 'instrument_volatility_1y':
-      return holdingModeledRiskMetric(row, row.instrument_volatility_1y)
+      return holdingIsExcludedFromRisk(row) ? 'N/A' : holdingModeledRiskMetric(row, row.instrument_volatility_1y)
     case 'forward_risk_share':
-      return holdingModeledRiskMetric(row, row.forward_risk_share)
+      return holdingIsExcludedFromRisk(row) ? 'N/A' : holdingModeledRiskMetric(row, row.forward_risk_share)
     case 'price_chart_1m':
     case 'price_chart_3m':
     case 'price_chart_6m':
@@ -1959,15 +1965,25 @@ function holdingColumnTotalExportValue(
     case 'instrument_current_drawdown':
       return groupedCurrentDrawdown(rows, context.workspace)
     case 'instrument_volatility_1m':
-      return groupedAnnualizedVolatility(rows, context.workspace, '1m')
+      return rows.every(holdingIsExcludedFromRisk)
+        ? 'N/A'
+        : groupedAnnualizedVolatility(rows, context.workspace, '1m')
     case 'instrument_volatility_3m':
-      return groupedAnnualizedVolatility(rows, context.workspace, '3m')
+      return rows.every(holdingIsExcludedFromRisk)
+        ? 'N/A'
+        : groupedAnnualizedVolatility(rows, context.workspace, '3m')
     case 'instrument_volatility_6m':
-      return groupedAnnualizedVolatility(rows, context.workspace, '6m')
+      return rows.every(holdingIsExcludedFromRisk)
+        ? 'N/A'
+        : groupedAnnualizedVolatility(rows, context.workspace, '6m')
     case 'instrument_volatility_1y':
-      return groupedAnnualizedVolatility(rows, context.workspace, '1y')
+      return rows.every(holdingIsExcludedFromRisk)
+        ? 'N/A'
+        : groupedAnnualizedVolatility(rows, context.workspace, '1y')
     case 'forward_risk_share':
-      return totalForwardRiskShare(rows, context.workspace)
+      return rows.every(holdingIsExcludedFromRisk)
+        ? 'N/A'
+        : totalForwardRiskShare(rows, context.workspace)
     case 'instrument_max_drawdown':
       return groupedMaxDrawdown(rows, context.workspace)
     case 'instrument_holding_max_drawdown':
@@ -2349,7 +2365,9 @@ const HOLDINGS_COLUMN_DEFINITIONS: Record<HoldingsColumnKey, HoldingsColumnDefin
     align: 'right',
     render: (row) => unsignedHoldingModeledRiskMetric(row, row.instrument_volatility_1m),
     sortValue: (row) => holdingModeledRiskMetric(row, row.instrument_volatility_1m),
-    total: (rows, context) => formatPercent(groupedAnnualizedVolatility(rows, context.workspace, '1m')),
+    total: (rows, context) => rows.every(holdingIsExcludedFromRisk)
+      ? 'N/A'
+      : formatPercent(groupedAnnualizedVolatility(rows, context.workspace, '1m')),
   },
   instrument_volatility_3m: {
     key: 'instrument_volatility_3m',
@@ -2357,7 +2375,9 @@ const HOLDINGS_COLUMN_DEFINITIONS: Record<HoldingsColumnKey, HoldingsColumnDefin
     align: 'right',
     render: (row) => unsignedHoldingModeledRiskMetric(row, row.instrument_volatility_3m),
     sortValue: (row) => holdingModeledRiskMetric(row, row.instrument_volatility_3m),
-    total: (rows, context) => formatPercent(groupedAnnualizedVolatility(rows, context.workspace, '3m')),
+    total: (rows, context) => rows.every(holdingIsExcludedFromRisk)
+      ? 'N/A'
+      : formatPercent(groupedAnnualizedVolatility(rows, context.workspace, '3m')),
   },
   instrument_volatility_6m: {
     key: 'instrument_volatility_6m',
@@ -2365,7 +2385,9 @@ const HOLDINGS_COLUMN_DEFINITIONS: Record<HoldingsColumnKey, HoldingsColumnDefin
     align: 'right',
     render: (row) => unsignedHoldingModeledRiskMetric(row, row.instrument_volatility_6m),
     sortValue: (row) => holdingModeledRiskMetric(row, row.instrument_volatility_6m),
-    total: (rows, context) => formatPercent(groupedAnnualizedVolatility(rows, context.workspace, '6m')),
+    total: (rows, context) => rows.every(holdingIsExcludedFromRisk)
+      ? 'N/A'
+      : formatPercent(groupedAnnualizedVolatility(rows, context.workspace, '6m')),
   },
   instrument_volatility_1y: {
     key: 'instrument_volatility_1y',
@@ -2373,21 +2395,25 @@ const HOLDINGS_COLUMN_DEFINITIONS: Record<HoldingsColumnKey, HoldingsColumnDefin
     align: 'right',
     render: (row) => unsignedHoldingModeledRiskMetric(row, row.instrument_volatility_1y),
     sortValue: (row) => holdingModeledRiskMetric(row, row.instrument_volatility_1y),
-    total: (rows, context) => formatPercent(groupedAnnualizedVolatility(rows, context.workspace, '1y')),
+    total: (rows, context) => rows.every(holdingIsExcludedFromRisk)
+      ? 'N/A'
+      : formatPercent(groupedAnnualizedVolatility(rows, context.workspace, '1y')),
   },
   forward_risk_share: {
     key: 'forward_risk_share',
     label: 'Forward RC',
     align: 'right',
     render: (row) =>
-      holdingUsesModeledZeroRisk(row) ? (
+      holdingIsExcludedFromRisk(row) ? 'N/A' : holdingUsesModeledZeroRisk(row) ? (
         <span title="Modeled as 0 because this holding is outside covariance risk analytics.">
           {signedPercent(0)}
         </span>
       ) : row.forward_risk_status === 'ok' ? signedPercent(row.forward_risk_share) : '—',
     sortValue: (row) => holdingModeledRiskMetric(row, row.forward_risk_share),
     className: (row) => signedValueClass(holdingModeledRiskMetric(row, row.forward_risk_share)),
-    total: (rows, context) => signedPercent(totalForwardRiskShare(rows, context.workspace)),
+    total: (rows, context) => rows.every(holdingIsExcludedFromRisk)
+      ? 'N/A'
+      : signedPercent(totalForwardRiskShare(rows, context.workspace)),
     totalClassName: (rows, context) =>
       signedValueClass(totalForwardRiskShare(rows, context.workspace)),
   },

@@ -16,25 +16,25 @@ from platform_app.services import instrument_store as store_service
 
 def _instrument_record() -> dict[str, object]:
     return {
-        "instrument_id": "contract-bond",
-        "instrument_name": "Contract Bond",
-        "instrument_type": "bond",
+        "instrument_id": "contract-equity",
+        "instrument_name": "Contract Equity",
+        "instrument_type": "equity",
         "currency": "USD",
         "identifiers": [
             {
                 "identifier_type": "internal",
-                "identifier_value": "CONTRACT-BOND",
+                "identifier_value": "CONTRACT-EQUITY",
                 "is_primary": True,
             }
         ],
         "broker_identifiers": [],
         "latest_market_data": [],
         "quote_selection_policy": {
-            "trading": ["dirty_price"],
-            "valuation": ["dirty_price"],
-            "total_return": ["dirty_price"],
-            "chart": ["dirty_price"],
-            "reference": ["dirty_price"],
+            "trading": ["close"],
+            "valuation": ["close"],
+            "total_return": ["adjusted_close"],
+            "chart": ["adjusted_close"],
+            "reference": ["close"],
         },
         "coverage_state": "complete",
         "source_settings": {},
@@ -80,9 +80,9 @@ def test_market_data_command_derives_contract_and_response_requires_it() -> None
     payload = contracts.PlatformMarketDataUpsertRequest.model_validate(
         {
             "metric_family": "price",
-            "quote_basis": "accrued_interest",
+            "quote_basis": "close",
             "as_of_date": "2026-07-15",
-            "value": "1.25",
+            "value": "100",
             "currency": "USD",
             "status": "complete",
         }
@@ -90,15 +90,15 @@ def test_market_data_command_derives_contract_and_response_requires_it() -> None
     point = contracts.PlatformMarketDataPoint.model_validate(
         {
             **payload.model_dump(),
-            "price_unit": "percent_of_par",
-            "price_scale": "0.01",
+            "price_unit": "per_unit",
+            "price_scale": "1",
         }
     )
 
     assert "price_unit" not in payload.model_dump()
     assert "price_scale" not in payload.model_dump()
-    assert point.price_unit == "percent_of_par"
-    assert point.price_scale == Decimal("0.01")
+    assert point.price_unit == "per_unit"
+    assert point.price_scale == Decimal("1")
 
     with pytest.raises(ValidationError, match="price_unit"):
         contracts.PlatformMarketDataPoint.model_validate(payload.model_dump())
@@ -122,9 +122,9 @@ def test_market_data_command_derives_contract_and_response_requires_it() -> None
         (
             {
                 "metric_family": "nav",
-                "quote_basis": "accrued_interest",
+                "quote_basis": "close",
                 "as_of_date": "2026-07-15",
-                "value": "1.25",
+                "value": "100",
                 "currency": "USD",
                 "status": "complete",
             },
@@ -208,8 +208,8 @@ def test_market_data_api_returns_store_derived_price_identity(
                 "currency": kwargs["currency"],
                 "provider": kwargs["provider"],
                 "status": kwargs["status"],
-                "price_unit": "percent_of_par",
-                "price_scale": Decimal("0.01"),
+                "price_unit": "per_unit",
+                "price_scale": Decimal("1"),
             }
         ]
         return record
@@ -222,12 +222,12 @@ def test_market_data_api_returns_store_derived_price_identity(
     )
 
     response = TestClient(app).post(
-        "/api/instruments/contract-bond/market-data",
+        "/api/instruments/contract-equity/market-data",
         json={
             "metric_family": "price",
-            "quote_basis": "accrued_interest",
+            "quote_basis": "close",
             "as_of_date": "2026-07-15",
-            "value": "1.25",
+            "value": "100",
             "currency": "USD",
             "provider": "pytest",
             "status": "complete",
@@ -237,27 +237,16 @@ def test_market_data_api_returns_store_derived_price_identity(
     assert response.status_code == 200
     assert "price_unit" not in captured
     assert "price_scale" not in captured
-    assert response.json()["latest_market_data"][0]["price_unit"] == "percent_of_par"
-    assert response.json()["latest_market_data"][0]["price_scale"] == "0.01"
+    assert response.json()["latest_market_data"][0]["price_unit"] == "per_unit"
+    assert response.json()["latest_market_data"][0]["price_scale"] == "1"
 
 
-def test_market_data_api_rejects_accrued_interest_for_non_bond(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    def reject_non_bond_accrued_interest(**_kwargs: object) -> None:
-        raise ValueError("accrued_interest is only valid for bond price data.")
-
-    monkeypatch.setattr(
-        instrument_routes,
-        "upsert_market_data",
-        reject_non_bond_accrued_interest,
-    )
-
+def test_market_data_api_rejects_removed_bond_quote_basis() -> None:
     response = TestClient(app).post(
         "/api/instruments/contract-equity/market-data",
         json={
             "metric_family": "price",
-            "quote_basis": "accrued_interest",
+            "quote_basis": "clean_price",
             "as_of_date": "2026-07-15",
             "value": "1.25",
             "currency": "USD",
@@ -265,8 +254,7 @@ def test_market_data_api_rejects_accrued_interest_for_non_bond(
         },
     )
 
-    assert response.status_code == 400
-    assert "accrued_interest is only valid for bond price data" in response.json()["detail"]
+    assert response.status_code == 422
 
 
 @pytest.mark.parametrize(
@@ -315,16 +303,16 @@ def test_non_fund_nav_apis_return_400_before_parsing(
     )
 
 
-def test_platform_quote_policy_rejects_accrued_interest() -> None:
-    with pytest.raises(ValidationError, match="accrued_interest"):
+def test_platform_quote_policy_rejects_removed_bond_quote_basis() -> None:
+    with pytest.raises(ValidationError, match="clean_price"):
         contracts.PlatformQuoteSelectionPolicyUpdateRequest.model_validate(
             {
                 "quote_selection_policy": {
-                    "trading": ["accrued_interest"],
-                    "valuation": ["dirty_price"],
-                    "total_return": ["dirty_price"],
-                    "chart": ["dirty_price"],
-                    "reference": ["dirty_price"],
+                    "trading": ["clean_price"],
+                    "valuation": ["close"],
+                    "total_return": ["adjusted_close"],
+                    "chart": ["adjusted_close"],
+                    "reference": ["close"],
                 }
             }
         )
@@ -366,9 +354,9 @@ def test_instrument_store_wrapper_delegates_contract_derivation(
     )
 
     store_service.upsert_market_data(
-        instrument_id="contract-bond",
+        instrument_id="contract-equity",
         metric_family="price",
-        quote_basis="dirty_price",
+        quote_basis="close",
         as_of_date=date(2026, 7, 15),
         value="98.5",
         currency="USD",

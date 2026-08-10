@@ -8,18 +8,18 @@ import {
 
 describe('transaction pricing scale', () => {
   const perUnitContract = { price_unit: 'per_unit' as const, price_scale: '1' }
-  const percentOfParContract = {
-    price_unit: 'percent_of_par' as const,
-    price_scale: '0.01',
+  const optionContract = {
+    price_unit: 'per_unit' as const,
+    price_scale: '100',
   }
 
-  it('prices percent of par against face quantity using the API scale', () => {
+  it('applies the option contract multiplier supplied as the price scale', () => {
     expect(
-      calculateTransactionGrossAmount(percentOfParContract, 1_000, 98.5),
-    ).toBe(985)
+      calculateTransactionGrossAmount(optionContract, 2, 1.5),
+    ).toBe(300)
     expect(
-      calculateTransactionUnitPrice(percentOfParContract, 1_000, 985),
-    ).toBe(98.5)
+      calculateTransactionUnitPrice(optionContract, 2, 300),
+    ).toBe(1.5)
   })
 
   it('keeps ordinary assets on quantity times unit price', () => {
@@ -37,7 +37,7 @@ describe('transaction pricing scale', () => {
       ),
     ).toBeNull()
     expect(
-      resolveTransactionPriceContract([perUnitContract, percentOfParContract]),
+      resolveTransactionPriceContract([perUnitContract, optionContract]),
     ).toBeNull()
     expect(
       resolveTransactionPriceContract([

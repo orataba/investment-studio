@@ -6557,7 +6557,7 @@ def test_taxonomy_group_return_uses_capital_flow_denominator_for_in_period_buys(
     assert isclose(groups["tax-sector-core"]["period_return"], 0.1, rel_tol=0.0, abs_tol=1e-12)
 
 
-def test_taxonomy_contribution_and_entries_support_cash_bucket_scope(client, monkeypatch):
+def test_taxonomy_contribution_and_entries_keep_cash_outside_security_taxonomy(client, monkeypatch):
     instrument_detail = _test_instrument_detail(
         instrument_id="equity-us-cash-bucket",
         instrument_name="Cash Bucket Equity",
@@ -6664,7 +6664,7 @@ def test_taxonomy_contribution_and_entries_support_cash_bucket_scope(client, mon
             "name": "Liquidity",
             "taxonomy_type": "custom",
             "purpose": "performance_grouping",
-            "primary_assignment_scope": "cash_bucket",
+            "primary_assignment_scope": "instrument",
             "planning_enabled": False,
             "budgeting_level": None,
             "effective_from": "2026-01-01",
@@ -6678,8 +6678,8 @@ def test_taxonomy_contribution_and_entries_support_cash_bucket_scope(client, mon
             "taxonomy_node_id": "tax-liquidity-core",
             "taxonomy_id": "tax-liquidity",
             "parent_taxonomy_node_id": None,
-            "node_name": "Core Cash",
-            "node_code": "CORE_CASH",
+            "node_name": "Equities",
+            "node_code": "EQUITIES",
             "sort_order": 0,
             "is_terminal": True,
             "status": "active",
@@ -6689,8 +6689,8 @@ def test_taxonomy_contribution_and_entries_support_cash_bucket_scope(client, mon
         {
             "assignment_id": "assign-0001",
             "taxonomy_id": "tax-liquidity",
-            "target_scope": "cash_bucket",
-            "target_entity_id": "cash-usd-main",
+            "target_scope": "instrument",
+            "target_entity_id": "equity-us-cash-bucket",
             "taxonomy_node_id": "tax-liquidity-core",
             "effective_from": "2026-01-01",
             "effective_to": None,
@@ -6710,14 +6710,14 @@ def test_taxonomy_contribution_and_entries_support_cash_bucket_scope(client, mon
     assert summary["axis"] == "taxonomy"
     assert summary["taxonomy_id"] == "tax-liquidity"
     assert isclose(summary["portfolio_arithmetic_return"], 0.075, rel_tol=0.0, abs_tol=1e-12)
-    assert isclose(summary["total_period_contribution"], 0.025, rel_tol=0.0, abs_tol=1e-12)
-    assert isclose(summary["contribution_residual"], 0.05, rel_tol=0.0, abs_tol=1e-12)
-    assert len(contribution_payload["lines"]) == 1
-    line = contribution_payload["lines"][0]
-    assert line["group_key"] == "tax-liquidity-core"
-    assert isclose(line["income_cash_amount"], 5.0, rel_tol=0.0, abs_tol=1e-12)
-    assert isclose(line["total_pnl"], 5.0, rel_tol=0.0, abs_tol=1e-12)
-    assert isclose(line["period_contribution"], 0.025, rel_tol=0.0, abs_tol=1e-12)
+    assert isclose(summary["total_period_contribution"], 0.075, rel_tol=0.0, abs_tol=1e-12)
+    assert isclose(summary["contribution_residual"], 0.0, rel_tol=0.0, abs_tol=1e-12)
+    lines = {item["group_key"]: item for item in contribution_payload["lines"]}
+    assert set(lines) == {"tax-liquidity-core", "__cash__"}
+    cash_line = lines["__cash__"]
+    assert isclose(cash_line["income_cash_amount"], 5.0, rel_tol=0.0, abs_tol=1e-12)
+    assert isclose(cash_line["total_pnl"], 5.0, rel_tol=0.0, abs_tol=1e-12)
+    assert isclose(cash_line["period_contribution"], 0.025, rel_tol=0.0, abs_tol=1e-12)
 
     entries_response = client.get(
         "/api/portfolios/taxonomy-cash-bucket-test/performance/contribution/entries"
@@ -6728,7 +6728,7 @@ def test_taxonomy_contribution_and_entries_support_cash_bucket_scope(client, mon
     assert entries_payload["summary"]["entry_count"] == 1
     assert isclose(entries_payload["summary"]["total_amount"], 5.0, rel_tol=0.0, abs_tol=1e-12)
     entry = entries_payload["entries"][0]
-    assert entry["group_key"] == "tax-liquidity-core"
+    assert entry["group_key"] == "__cash__"
     assert entry["component_kind"] == "gross_amount"
     assert entry["transaction_id"] == "txn-0003"
     assert isclose(entry["base_amount"], 5.0, rel_tol=0.0, abs_tol=1e-12)
@@ -8524,7 +8524,7 @@ def test_taxonomy_boundary_groups_report_uses_current_assignment_at_both_boundar
     assert isclose(payload["end_groups"][0]["market_value_base"], 121.0, rel_tol=0.0, abs_tol=1e-12)
 
 
-def test_taxonomy_calculation_groups_use_period_end_view_and_preserve_cash_group(client, monkeypatch):
+def test_taxonomy_calculation_groups_use_period_end_view_and_system_cash_group(client, monkeypatch):
     instrument_detail = _test_instrument_detail(
         instrument_id="equity-us-test",
         instrument_name="Test Equity",
@@ -8683,16 +8683,16 @@ def test_taxonomy_calculation_groups_use_period_end_view_and_preserve_cash_group
     groups = {item["group_key"]: item for item in payload["groups"]}
     assert "unassigned:tax-sector" not in groups
     assert "tax-sector-value" not in groups
-    assert set(groups) == {"tax-sector-growth", "cash"}
+    assert set(groups) == {"tax-sector-growth", "__cash__"}
     assert isclose(groups["tax-sector-growth"]["initial_value"], 100.0, rel_tol=0.0, abs_tol=1e-12)
     assert isclose(groups["tax-sector-growth"]["final_value"], 121.0, rel_tol=0.0, abs_tol=1e-12)
     assert isclose(groups["tax-sector-growth"]["delta"], 21.0, rel_tol=0.0, abs_tol=1e-12)
     assert isclose(groups["tax-sector-growth"]["total_pnl"], 21.0, rel_tol=0.0, abs_tol=1e-12)
     assert isclose(groups["tax-sector-growth"]["residual_delta"], 0.0, rel_tol=0.0, abs_tol=1e-12)
-    assert isclose(groups["cash"]["initial_value"], 50.0, rel_tol=0.0, abs_tol=1e-12)
-    assert isclose(groups["cash"]["final_value"], 50.0, rel_tol=0.0, abs_tol=1e-12)
-    assert isclose(groups["cash"]["delta"], 0.0, rel_tol=0.0, abs_tol=1e-12)
-    assert isclose(groups["cash"]["total_pnl"], 0.0, rel_tol=0.0, abs_tol=1e-12)
+    assert isclose(groups["__cash__"]["initial_value"], 50.0, rel_tol=0.0, abs_tol=1e-12)
+    assert isclose(groups["__cash__"]["final_value"], 50.0, rel_tol=0.0, abs_tol=1e-12)
+    assert isclose(groups["__cash__"]["delta"], 0.0, rel_tol=0.0, abs_tol=1e-12)
+    assert isclose(groups["__cash__"]["total_pnl"], 0.0, rel_tol=0.0, abs_tol=1e-12)
 
 
 def test_taxonomy_calculation_groups_keep_sold_out_instruments_in_effective_group(client, monkeypatch):
@@ -8849,7 +8849,7 @@ def test_taxonomy_calculation_groups_keep_sold_out_instruments_in_effective_grou
     payload = response.json()
     groups = {item["group_key"]: item for item in payload["groups"]}
     assert "unassigned:tax-sector" not in groups
-    assert set(groups) == {"tax-sector-core", "cash"}
+    assert set(groups) == {"tax-sector-core", "__cash__"}
     assert isclose(groups["tax-sector-core"]["final_value"], 0.0, rel_tol=0.0, abs_tol=1e-12)
     assert isclose(groups["tax-sector-core"]["capital_gains"], 10.0, rel_tol=0.0, abs_tol=1e-12)
     assert isclose(groups["tax-sector-core"]["realized_capital_gains"], 10.0, rel_tol=0.0, abs_tol=1e-12)
@@ -9113,9 +9113,9 @@ def test_period_calculation_drilldown_taxonomy_uses_period_end_view(client, monk
     assert isclose(payload["summary"]["total_amount"], 0.0, rel_tol=0.0, abs_tol=1e-12)
     groups = {item["group_key"]: item for item in payload["groups"]}
     assert "tax-sector-value" not in groups
-    assert set(groups) == {"tax-sector-growth", "cash"}
+    assert set(groups) == {"tax-sector-growth", "__cash__"}
     assert isclose(groups["tax-sector-growth"]["amount"], 0.0, rel_tol=0.0, abs_tol=1e-12)
-    assert isclose(groups["cash"]["amount"], 0.0, rel_tol=0.0, abs_tol=1e-12)
+    assert isclose(groups["__cash__"]["amount"], 0.0, rel_tol=0.0, abs_tol=1e-12)
 
 
 def test_period_calculation_entries_extract_attached_tax_bucket_by_instrument(client, monkeypatch):

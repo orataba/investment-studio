@@ -452,19 +452,6 @@ def _build_cash_nav_series(
     return pd.Series(1.0, index=pd.Index(calendar, dtype="object"), dtype="float64")
 
 
-def _node_is_cash_subtree(state: TaxonomyResearchState, node_id: str) -> bool:
-    subtree = state.node_subtree_by_id.get(node_id, {node_id})
-    has_cash_assignment = False
-    for subtree_node_id in subtree:
-        for assignment in state.direct_assignments_by_node.get(subtree_node_id, []):
-            target_scope = str(assignment.get("target_scope") or "")
-            if target_scope == TARGET_MEMBER_INSTRUMENT:
-                return False
-            if target_scope == TARGET_MEMBER_CASH:
-                has_cash_assignment = True
-    return has_cash_assignment
-
-
 def _node_has_research_members(
     state: TaxonomyResearchState,
     node_id: str,
@@ -475,12 +462,8 @@ def _node_has_research_members(
     )
 
 
-def _member_uses_zero_volatility(state: TaxonomyResearchState, member: ScopeMemberRecord) -> bool:
-    if member.member_type in {TARGET_MEMBER_CASH, TARGET_MEMBER_DERIVATIVE}:
-        return True
-    if member.member_type != TARGET_MEMBER_NODE:
-        return False
-    return _node_is_cash_subtree(state, member.member_id)
+def _member_is_fixed_capital(member: ScopeMemberRecord) -> bool:
+    return member.member_type in {TARGET_MEMBER_CASH, TARGET_MEMBER_DERIVATIVE}
 
 
 def _scope_is_frozen(state: TaxonomyResearchState, scope_node_id: str | None) -> bool:
@@ -495,7 +478,7 @@ def _member_is_frozen(
     scope_node_id: str | None,
     member: ScopeMemberRecord,
 ) -> bool:
-    if _member_uses_zero_volatility(state, member):
+    if _member_is_fixed_capital(member):
         return False
     if _scope_is_frozen(state, scope_node_id):
         return True
@@ -541,7 +524,7 @@ def _annualized_portfolio_volatility(
     return float(sqrt(max(variance, 0.0)))
 
 
-def _allocate_zero_volatility_weights(
+def _allocate_fixed_capital_weights(
     *,
     member_index: list[str],
     preferred_weights: pd.Series,
@@ -2037,11 +2020,11 @@ def _resolve_dimension_target_rows(
     )
 
     candidate_types = ["taa", "saa"]
-    zero_volatility_members = [
-        member for member in scope_members if _member_uses_zero_volatility(state, member)
+    fixed_capital_members = [
+        member for member in scope_members if _member_is_fixed_capital(member)
     ]
     dimension_members = (
-        [member for member in scope_members if not _member_uses_zero_volatility(state, member)]
+        [member for member in scope_members if not _member_is_fixed_capital(member)]
         if resolved_dimension == TARGET_DIMENSION_RISK_BUDGET
         else scope_members
     )
@@ -2071,7 +2054,7 @@ def _resolve_dimension_target_rows(
         for member in dimension_members:
             line = line_map.get((member.member_type, member.member_id))
             if line is None or line.get(value_field) is None:
-                if resolved_dimension == TARGET_DIMENSION_WEIGHT and _member_uses_zero_volatility(state, member):
+                if resolved_dimension == TARGET_DIMENSION_WEIGHT and _member_is_fixed_capital(member):
                     selected_value = 0.0
                     target_weight = 0.0
                     target_risk_share = None
@@ -2084,7 +2067,7 @@ def _resolve_dimension_target_rows(
                 target_weight = _safe_float(line.get("target_weight"))
                 target_risk_share = (
                     None
-                    if _member_uses_zero_volatility(state, member)
+                    if _member_is_fixed_capital(member)
                     else _safe_float(line.get("target_risk_share"))
                 )
             rendered_rows.append(
@@ -2113,7 +2096,7 @@ def _resolve_dimension_target_rows(
                     f"{expected_total:.6f}; got {selected_total:.6f}."
                 )
             if resolved_dimension == TARGET_DIMENSION_RISK_BUDGET:
-                for member in zero_volatility_members:
+                for member in fixed_capital_members:
                     line = line_map.get((member.member_type, member.member_id)) or {}
                     rendered_rows.append(
                         {
@@ -2166,20 +2149,20 @@ def _resolve_dimension_target_rows(
         if resolved_dimension == TARGET_DIMENSION_RISK_BUDGET:
             rendered_rows.extend(
                 {
-                    "member_type": zero_volatility_member.member_type,
-                    "member_id": zero_volatility_member.member_id,
-                    "label": zero_volatility_member.label,
-                    "taxonomy_node_id": zero_volatility_member.taxonomy_node_id,
-                    "default_target_dimension": zero_volatility_member.default_target_dimension,
+                    "member_type": fixed_capital_member.member_type,
+                    "member_id": fixed_capital_member.member_id,
+                    "label": fixed_capital_member.label,
+                    "taxonomy_node_id": fixed_capital_member.taxonomy_node_id,
+                    "default_target_dimension": fixed_capital_member.default_target_dimension,
                     "selected_dimension": resolved_dimension,
                     "selected_value": None,
                     "target_weight": None,
                     "target_risk_share": None,
                     "source_target_set_id": None,
                     "source_target_set_type": None,
-                    "source_label_override": "Zero-volatility Capital Context",
+                    "source_label_override": "Fixed Capital Context",
                 }
-                for zero_volatility_member in zero_volatility_members
+                for fixed_capital_member in fixed_capital_members
             )
         return rendered_rows, warnings
 
@@ -2259,13 +2242,10 @@ def _scope_members(
     for assignment in direct_assignments:
         target_scope = str(assignment.get("target_scope") or "")
         target_entity_id = str(assignment.get("target_entity_id") or "")
-        if target_scope == TARGET_MEMBER_INSTRUMENT:
-            detail = _instrument_detail(state, target_entity_id)
-            label = str((detail or {}).get("instrument_name") or target_entity_id)
-        elif target_scope == TARGET_MEMBER_CASH:
-            label = state.account_name_by_id.get(target_entity_id, target_entity_id)
-        else:
+        if target_scope != TARGET_MEMBER_INSTRUMENT:
             continue
+        detail = _instrument_detail(state, target_entity_id)
+        label = str((detail or {}).get("instrument_name") or target_entity_id)
         members.append(
             ScopeMemberRecord(
                 member_type=target_scope,
@@ -2626,8 +2606,7 @@ def _solve_current_scope(
         for row in resolved_rows
         if str(row.get("selected_dimension") or "") in {TARGET_DIMENSION_WEIGHT, TARGET_DIMENSION_RISK_BUDGET}
         and abs(float(_safe_float(row.get("selected_value")) or 0.0)) <= 1e-12
-        and not _member_uses_zero_volatility(
-            state,
+        and not _member_is_fixed_capital(
             member_by_key[f"{row['member_type']}::{row['member_id']}"],
         )
         and not _member_is_frozen(
@@ -2688,12 +2667,12 @@ def _solve_current_scope(
             )
             warnings.extend(child_result.warnings)
         elif member.member_type in {TARGET_MEMBER_CASH, TARGET_MEMBER_DERIVATIVE}:
-            zero_volatility_nav = _build_cash_nav_series(
+            fixed_capital_nav = _build_cash_nav_series(
                 start_date=start_day,
                 end_date=as_of_date,
             )
-            nav_series_by_member[(member.member_type, member.member_id)] = zero_volatility_nav
-            current_nav_series_by_member[(member.member_type, member.member_id)] = zero_volatility_nav
+            nav_series_by_member[(member.member_type, member.member_id)] = fixed_capital_nav
+            current_nav_series_by_member[(member.member_type, member.member_id)] = fixed_capital_nav
         else:
             try:
                 instrument_nav, instrument_warnings = _build_instrument_nav_series(
@@ -2756,10 +2735,10 @@ def _solve_current_scope(
         f"{row['member_type']}::{row['member_id']}": _safe_float(row.get("target_weight"))
         for row in resolved_rows
     }
-    zero_volatility_keys = [
-        key for key in member_keys if _member_uses_zero_volatility(state, member_by_key[key])
+    fixed_capital_keys = [
+        key for key in member_keys if _member_is_fixed_capital(member_by_key[key])
     ]
-    risk_bearing_keys = [key for key in member_keys if key not in zero_volatility_keys]
+    risk_bearing_keys = [key for key in member_keys if key not in fixed_capital_keys]
     if target_dimension_used == TARGET_DIMENSION_RISK_BUDGET and not risk_bearing_keys:
         raise ValueError(f"{scope_label} risk budget is unavailable: no risky members.")
     fixed_weight_targets = pd.Series(
@@ -2774,16 +2753,16 @@ def _solve_current_scope(
     risk_keys = [
         key
         for key in member_keys
-        if key not in zero_volatility_keys and key not in frozen_keys and key not in zero_target_keys
+        if key not in fixed_capital_keys and key not in frozen_keys and key not in zero_target_keys
     ]
-    preferred_zero_volatility_weights = pd.Series(
+    preferred_fixed_capital_weights = pd.Series(
         {
             f"{row['member_type']}::{row['member_id']}": float(_safe_float(row.get("target_weight")) or 0.0)
             for row in resolved_rows
-            if f"{row['member_type']}::{row['member_id']}" in zero_volatility_keys
+            if f"{row['member_type']}::{row['member_id']}" in fixed_capital_keys
         },
         dtype="float64",
-    ).reindex(zero_volatility_keys, fill_value=0.0)
+    ).reindex(fixed_capital_keys, fill_value=0.0)
     fixed_total = max(float(fixed_weight_targets.sum()), 0.0)
     overlay_applies_to_risk_sleeves = apply_capital_overlay and capital_mode in {
         CAPITAL_MODE_FIXED_GROSS,
@@ -2794,15 +2773,15 @@ def _solve_current_scope(
     target_risk_bearing_total = float(gross_exposure or 1.0) if fixed_gross_overlay else None
 
     if target_dimension_used == TARGET_DIMENSION_RISK_BUDGET:
-        base_zero_volatility_total = (
+        base_fixed_capital_total = (
             0.0
             if fixed_gross_overlay
-            else min(max(float(preferred_zero_volatility_weights.sum()), 0.0), 1.0)
+            else min(max(float(preferred_fixed_capital_weights.sum()), 0.0), 1.0)
         )
         available_risk_bearing_total = (
             float(target_risk_bearing_total)
             if target_risk_bearing_total is not None
-            else max(1.0 - base_zero_volatility_total, 0.0)
+            else max(1.0 - base_fixed_capital_total, 0.0)
         )
         if fixed_total > available_risk_bearing_total + 1e-12:
             raise ValueError(
@@ -2859,9 +2838,9 @@ def _solve_current_scope(
             implementation_weights = pd.Series(0.0, index=member_keys, dtype="float64")
             implementation_weights.loc[frozen_keys] = fixed_weight_targets.reindex(frozen_keys, fill_value=0.0)
             implementation_weights.loc[risk_keys] = solved_weights * active_budget
-            implementation_weights.loc[zero_volatility_keys] = _allocate_zero_volatility_weights(
-                member_index=zero_volatility_keys,
-                preferred_weights=preferred_zero_volatility_weights,
+            implementation_weights.loc[fixed_capital_keys] = _allocate_fixed_capital_weights(
+                member_index=fixed_capital_keys,
+                preferred_weights=preferred_fixed_capital_weights,
                 total_weight=1.0
                 - float(implementation_weights.loc[risk_keys].sum())
                 - float(implementation_weights.loc[frozen_keys].sum()),
@@ -2878,9 +2857,9 @@ def _solve_current_scope(
             )
             implementation_weights = pd.Series(0.0, index=member_keys, dtype="float64")
             implementation_weights.loc[frozen_keys] = fixed_weight_targets.reindex(frozen_keys, fill_value=0.0)
-            implementation_weights.loc[zero_volatility_keys] = _allocate_zero_volatility_weights(
-                member_index=zero_volatility_keys,
-                preferred_weights=preferred_zero_volatility_weights,
+            implementation_weights.loc[fixed_capital_keys] = _allocate_fixed_capital_weights(
+                member_index=fixed_capital_keys,
+                preferred_weights=preferred_fixed_capital_weights,
                 total_weight=1.0 - float(implementation_weights.loc[frozen_keys].sum()),
             )
             risk_gap = 0.0
@@ -2900,14 +2879,14 @@ def _solve_current_scope(
         active_weight_keys = [
             key
             for key in member_keys
-            if key not in zero_volatility_keys and key not in frozen_keys and key not in zero_target_keys
+            if key not in fixed_capital_keys and key not in frozen_keys and key not in zero_target_keys
         ]
         active_weight_targets = target_values.reindex(active_weight_keys, fill_value=0.0)
         active_weight_total = float(active_weight_targets.sum())
         available_risk_bearing_total = (
             float(target_risk_bearing_total)
             if target_risk_bearing_total is not None
-            else max(1.0 - float(preferred_zero_volatility_weights.sum()), 0.0)
+            else max(1.0 - float(preferred_fixed_capital_weights.sum()), 0.0)
         )
         if float(implementation_weights.loc[frozen_keys].sum()) > available_risk_bearing_total + 1e-12:
             raise ValueError(
@@ -2949,9 +2928,9 @@ def _solve_current_scope(
                 implementation_weights.loc[active_weight_keys] = active_weight_targets / active_weight_total * active_budget
             else:
                 implementation_weights.loc[active_weight_keys] = active_budget / float(len(active_weight_keys))
-        implementation_weights.loc[zero_volatility_keys] = _allocate_zero_volatility_weights(
-            member_index=zero_volatility_keys,
-            preferred_weights=preferred_zero_volatility_weights,
+        implementation_weights.loc[fixed_capital_keys] = _allocate_fixed_capital_weights(
+            member_index=fixed_capital_keys,
+            preferred_weights=preferred_fixed_capital_weights,
             total_weight=1.0
             - float(implementation_weights.loc[active_weight_keys].sum())
             - float(implementation_weights.loc[frozen_keys].sum()),
@@ -2965,10 +2944,10 @@ def _solve_current_scope(
             implementation_weights.loc[risk_bearing_keys] = (
                 implementation_weights.reindex(risk_bearing_keys, fill_value=0.0) / risk_bearing_total
             )
-            implementation_weights.loc[zero_volatility_keys] = 0.0
+            implementation_weights.loc[fixed_capital_keys] = 0.0
         else:
             implementation_weights.loc[risk_bearing_keys] = 1.0 / float(len(risk_bearing_keys))
-            implementation_weights.loc[zero_volatility_keys] = 0.0
+            implementation_weights.loc[fixed_capital_keys] = 0.0
             warnings.append(
                 f"{scope_label} had no positive risky target weight before capital overlay, so Research used equal risky-sleeve weights."
             )
@@ -3018,10 +2997,10 @@ def _solve_current_scope(
         if effective_gross_exposure is not None and not fixed_gross_overlay:
             risky_allocation_scaling_factor = float(effective_gross_exposure)
             implementation_weights.loc[risk_bearing_keys] = risky_weights * risky_allocation_scaling_factor
-            if zero_volatility_keys:
-                implementation_weights.loc[zero_volatility_keys] = _allocate_zero_volatility_weights(
-                    member_index=zero_volatility_keys,
-                    preferred_weights=preferred_zero_volatility_weights,
+            if fixed_capital_keys:
+                implementation_weights.loc[fixed_capital_keys] = _allocate_fixed_capital_weights(
+                    member_index=fixed_capital_keys,
+                    preferred_weights=preferred_fixed_capital_weights,
                     total_weight=1.0
                     - float(implementation_weights.loc[risk_bearing_keys].sum()),
                 )
@@ -3029,7 +3008,7 @@ def _solve_current_scope(
                 residual_weight = 1.0 - float(implementation_weights.loc[risk_bearing_keys].sum())
                 if abs(residual_weight) > 1e-9:
                     raise ValueError(
-                        f"{scope_label} capital overlay leaves a {residual_weight:.2%} residual but the scope has no zero-volatility member."
+                        f"{scope_label} capital overlay leaves a {residual_weight:.2%} residual but the scope has no fixed-capital member."
                     )
 
     _validate_final_top_sleeve_bounds(
@@ -3038,11 +3017,11 @@ def _solve_current_scope(
         bounds_by_key=top_sleeve_bounds_by_key,
         member_by_key=member_by_key,
     )
-    if fixed_gross_overlay and not zero_volatility_keys:
+    if fixed_gross_overlay and not fixed_capital_keys:
         residual_weight = 1.0 - float(implementation_weights.reindex(risk_bearing_keys, fill_value=0.0).sum())
         if abs(residual_weight) > 1e-9:
             raise ValueError(
-                f"{scope_label} fixed gross leaves a {residual_weight:.2%} residual but the scope has no zero-volatility member."
+                f"{scope_label} fixed gross leaves a {residual_weight:.2%} residual but the scope has no fixed-capital member."
             )
 
     for row in resolved_rows:
@@ -3427,7 +3406,7 @@ def _current_scope_actuals(
     warnings: list[str] = []
     if excluded_derivative_contract_ids:
         warnings.append(
-            "Derivative holdings use carrying-value weights and zero volatility; they are excluded from Risk Budget: "
+            "Derivative holdings retain carrying-value weights but are excluded from the risk solve and Risk Budget: "
             + ", ".join(sorted(set(excluded_derivative_contract_ids)))
             + "."
         )
@@ -3588,9 +3567,6 @@ def _build_taxonomy_state(
         raise ValueError("The effective taxonomy configuration is inactive or deleted.")
     if not bool(taxonomy.get("planning_enabled")):
         raise ValueError("The effective taxonomy configuration is not planning-enabled.")
-    if str(taxonomy.get("primary_assignment_scope") or "") != "instrument":
-        raise ValueError("Research requires an instrument planning taxonomy.")
-
     node_rows = [
         item
         for item in list(configuration.get("taxonomy_nodes") or [])

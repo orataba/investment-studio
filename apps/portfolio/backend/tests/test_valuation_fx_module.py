@@ -56,27 +56,24 @@ def test_required_currency_rejects_missing_values() -> None:
 
 
 @pytest.mark.parametrize(
-    ("quantity", "last_price", "instrument_ref", "price_scale", "expected"),
+    ("quantity", "last_price", "price_scale", "expected"),
     [
-        (10.0, 12.5, {"instrument_type": "equity"}, None, 125.0),
-        (1000.0, 98.5, {"instrument_type": "bond"}, 0.01, 985.0),
-        (1000.0, 98.5, {"instrument_type": "bond"}, None, None),
-        (10.0, None, {"instrument_type": "equity"}, None, None),
-        (10.0, 12.5, {"instrument_type": "equity"}, 0.0, None),
-        (10.0, 12.5, {"instrument_type": "equity"}, float("inf"), None),
+        (10.0, 12.5, None, 125.0),
+        (10.0, 12.5, 1.0, 125.0),
+        (10.0, None, None, None),
+        (10.0, 12.5, 0.0, None),
+        (10.0, 12.5, float("inf"), None),
     ],
 )
 def test_position_market_value_golden(
     quantity,
     last_price,
-    instrument_ref,
     price_scale,
     expected,
 ):
     kwargs = {
         "quantity": quantity,
         "last_price": last_price,
-        "instrument_ref": instrument_ref,
         "price_scale": price_scale,
     }
     assert valuation_fx.position_market_value(**kwargs) == expected

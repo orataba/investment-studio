@@ -118,7 +118,7 @@ export function resolveEffectiveAnalyticsScopePolicyForNode({
 
 type CoverageEntity = {
   entity_id: string
-  target_scope: TaxonomyAssignmentScope
+  entity_kind: TaxonomyAssignmentScope | 'cash_bucket'
   label: string
   supporting_label: string
   allocation: number | null
@@ -482,13 +482,12 @@ function targetMemberExcludesRisk(
     isSyntheticSystemTargetMember(member) ||
     member.target_member_type === 'cash_bucket' ||
     member.target_member_type === 'derivative_bucket' ||
-    member.entity?.target_scope === 'cash_bucket' ||
     isCashTaxonomyNode(member.node)
   )
 }
 
-function isSystemCashEntity(entity: CoverageEntity, taxonomy: PortfolioTaxonomyRecord | null | undefined) {
-  return taxonomy?.primary_assignment_scope === 'instrument' && entity.target_scope === 'cash_bucket'
+function isSystemCashEntity(entity: CoverageEntity) {
+  return entity.entity_kind === 'cash_bucket'
 }
 
 function isCashTaxonomyNode(node: PortfolioTaxonomyNodeRecord | null | undefined) {
@@ -736,7 +735,6 @@ export default function TaxonomiesPage() {
   const [policyEffectiveTo, setPolicyEffectiveTo] = useState('')
 
   const [taxonomyName, setTaxonomyName] = useState('')
-  const [taxonomyScope, setTaxonomyScope] = useState<TaxonomyAssignmentScope>('instrument')
   const [taxonomyPickerOpen, setTaxonomyPickerOpen] = useState(false)
   const [taxonomyRenameId, setTaxonomyRenameId] = useState<string | null>(null)
   const [taxonomyRenameName, setTaxonomyRenameName] = useState('')
@@ -878,9 +876,9 @@ export default function TaxonomiesPage() {
       taxonomyNodes.filter(
         (node) =>
           node.taxonomy_id === resolvedSelectedTaxonomyId &&
-          !(selectedTaxonomy?.primary_assignment_scope === 'instrument' && isCashTaxonomyNode(node)),
+          !isCashTaxonomyNode(node),
       ),
-    [resolvedSelectedTaxonomyId, selectedTaxonomy?.primary_assignment_scope, taxonomyNodes],
+    [resolvedSelectedTaxonomyId, taxonomyNodes],
   )
   const selectedTaxonomyAssignments = useMemo(
     () => taxonomyAssignments.filter((assignment) => assignment.taxonomy_id === resolvedSelectedTaxonomyId),
@@ -1154,7 +1152,6 @@ export default function TaxonomiesPage() {
       return []
     }
 
-    if (selectedTaxonomy.primary_assignment_scope === 'instrument') {
       const holdingEntities = securitiesHoldingRows.map((row) => {
         const assignments = activeAssignmentsByEntityKey.get(coverageEntityKey('instrument', row.instrument_core.instrument_id)) ?? []
         const assignment = assignments.length === 1 ? assignments[0] : null
@@ -1170,7 +1167,7 @@ export default function TaxonomiesPage() {
 
         return {
           entity_id: row.instrument_core.instrument_id,
-          target_scope: 'instrument' as const,
+          entity_kind: 'instrument' as const,
           label: `${primaryIdentifier(row.instrument_core)} · ${row.instrument_core.instrument_name}`,
           supporting_label: row.instrument_core.currency,
           allocation:
@@ -1237,7 +1234,7 @@ export default function TaxonomiesPage() {
           }
           entities.push({
             entity_id: instrumentId,
-            target_scope: 'instrument',
+            entity_kind: 'instrument',
             label: instrument ? `${primaryIdentifier(instrument)} · ${instrument.instrument_name}` : instrumentId,
             supporting_label: instrument?.currency ?? '',
             allocation: null,
@@ -1252,79 +1249,7 @@ export default function TaxonomiesPage() {
         }, [])
 
       return [...holdingEntities, ...nonHeldInstrumentEntities]
-    }
-
-    if (selectedTaxonomy.primary_assignment_scope === 'cash_bucket') {
-      return accountRows
-        .filter((accountRow) => {
-          const monetaryBalance = accountMonetaryBalanceBase(accountRow)
-          return (
-            accountRow.account.account_type === 'deposit_account' ||
-            (monetaryBalance != null && Math.abs(monetaryBalance) > 1e-9)
-          )
-        })
-        .map((accountRow): CoverageEntity => {
-          const assignments =
-            activeAssignmentsByEntityKey.get(coverageEntityKey('cash_bucket', accountRow.account.account_id)) ?? []
-          const assignment = assignments.length === 1 ? assignments[0] : null
-          const currentNode = assignment ? nodeById.get(assignment.taxonomy_node_id) ?? null : null
-          let coverageState: CoverageEntity['coverage_state'] = 'unassigned'
-          if (assignments.length > 1) {
-            coverageState = 'ambiguous'
-          } else if (assignment && selectedNodeScopeIds?.has(assignment.taxonomy_node_id)) {
-            coverageState = 'selected'
-          } else if (assignment) {
-            coverageState = 'other'
-          }
-
-          return {
-            entity_id: accountRow.account.account_id,
-            target_scope: 'cash_bucket',
-            label: `${accountRow.account.account_name} · Cash & Settlement`,
-            supporting_label: accountRow.account.currency,
-            allocation: null,
-            market_value_base: accountMonetaryBalanceBase(accountRow),
-            current_assignment: assignment,
-            current_node: currentNode,
-            holding_state: 'held',
-            instrument_state: null,
-            instrument_state_label: null,
-            coverage_state: coverageState,
-          }
-        })
-    }
-
-    return accountRows.map((accountRow): CoverageEntity => {
-      const assignments =
-        activeAssignmentsByEntityKey.get(coverageEntityKey('account', accountRow.account.account_id)) ?? []
-      const assignment = assignments.length === 1 ? assignments[0] : null
-      const currentNode = assignment ? nodeById.get(assignment.taxonomy_node_id) ?? null : null
-      let coverageState: CoverageEntity['coverage_state'] = 'unassigned'
-      if (assignments.length > 1) {
-        coverageState = 'ambiguous'
-      } else if (assignment && selectedNodeScopeIds?.has(assignment.taxonomy_node_id)) {
-        coverageState = 'selected'
-      } else if (assignment) {
-        coverageState = 'other'
-      }
-
-      return {
-        entity_id: accountRow.account.account_id,
-        target_scope: 'account',
-        label: accountRow.account.account_name,
-        supporting_label: `${accountRow.account.currency} · ${formatLabel(accountRow.account.account_type)}`,
-        allocation: null,
-        market_value_base: null,
-        current_assignment: assignment,
-        current_node: currentNode,
-        holding_state: 'held',
-        instrument_state: null,
-        instrument_state_label: null,
-        coverage_state: coverageState,
-      }
-    })
   }, [
-    accountRows,
     activeAssignments,
     activeAssignmentsByEntityKey,
     instrumentById,
@@ -1434,8 +1359,8 @@ export default function TaxonomiesPage() {
     return lookup
   }, [currentEntities])
 
-  const showSystemDerivativeNode = selectedTaxonomy?.primary_assignment_scope === 'instrument'
-  const showSystemCashNode = selectedTaxonomy?.primary_assignment_scope === 'instrument'
+  const showSystemDerivativeNode = selectedTaxonomy !== null
+  const showSystemCashNode = selectedTaxonomy !== null
   const derivativeAggregate = useMemo(() => {
     const currentValueBase = derivativeHoldingRows.length
       ? completeAmountSum(derivativeHoldingRows.map((row) => row.market_value_base))
@@ -1457,7 +1382,7 @@ export default function TaxonomiesPage() {
             const monetaryBalanceBase = accountMonetaryBalanceBase(accountRow)
             return {
               entity_id: accountRow.account.account_id,
-              target_scope: 'cash_bucket' as const,
+              entity_kind: 'cash_bucket' as const,
               label: accountRow.account.account_name,
               supporting_label: accountRow.account.currency,
               allocation:
@@ -1576,15 +1501,12 @@ export default function TaxonomiesPage() {
     () =>
       new Set(
         currentEntities
-          .filter((entity) => entity.target_scope === 'instrument')
+          .filter((entity) => entity.entity_kind === 'instrument')
           .map((entity) => entity.entity_id),
       ),
     [currentEntities],
   )
   const registryInstrumentOptions = useMemo(() => {
-    if (selectedTaxonomy?.primary_assignment_scope !== 'instrument') {
-      return []
-    }
     const normalizedSearch = instrumentAddSearch.trim().toLowerCase()
     const options = instrumentRows
       .filter((instrument) => {
@@ -1623,7 +1545,6 @@ export default function TaxonomiesPage() {
     instrumentAddSearch,
     instrumentById,
     instrumentRows,
-    selectedTaxonomy?.primary_assignment_scope,
   ])
   const selectedEntityCount = selectedEntityIds.size
 
@@ -1763,8 +1684,8 @@ export default function TaxonomiesPage() {
       lookup.set(
         targetScopeKey(node.taxonomy_node_id),
         directEntities.map((entity) => ({
-          member_key: targetMemberKey(entity.target_scope, entity.entity_id),
-          target_member_type: entity.target_scope,
+          member_key: targetMemberKey(entity.entity_kind, entity.entity_id),
+          target_member_type: entity.entity_kind,
           target_member_id: entity.entity_id,
           taxonomy_node_id: null,
           node: null,
@@ -2209,7 +2130,7 @@ export default function TaxonomiesPage() {
 
   function handleEntityContextMenu(event: ReactMouseEvent, entity: CoverageEntity) {
     event.preventDefault()
-    if (isSystemCashEntity(entity, selectedTaxonomy)) {
+    if (isSystemCashEntity(entity)) {
       return
     }
     if (!selectedEntityIds.has(entity.entity_id)) {
@@ -2225,7 +2146,7 @@ export default function TaxonomiesPage() {
 
   function toggleEntitySelection(entityId: string) {
     const entity = currentEntities.find((candidate) => candidate.entity_id === entityId)
-    if (entity && isSystemCashEntity(entity, selectedTaxonomy)) {
+    if (entity && isSystemCashEntity(entity)) {
       return
     }
     setSelectedEntityIds((current) => {
@@ -2242,7 +2163,7 @@ export default function TaxonomiesPage() {
   function handleEntityDragStart(event: ReactDragEvent, entity: CoverageEntity) {
     const dragEnabled = canDragTaxonomyEntity({
       targetEditMode,
-      lockedEntity: isSystemCashEntity(entity, selectedTaxonomy),
+      lockedEntity: isSystemCashEntity(entity),
       ambiguousEntity: entity.coverage_state === 'ambiguous',
       actionPending: Boolean(actionPending),
     })
@@ -2531,13 +2452,11 @@ export default function TaxonomiesPage() {
         name: taxonomyName,
         taxonomy_type: 'custom',
         purpose: null,
-        primary_assignment_scope: taxonomyScope,
         planning_enabled: false,
         budgeting_level: null,
         root_default_target_dimension: 'weight',
       })
       setTaxonomyName('')
-      setTaxonomyScope('instrument')
       setShowTaxonomyCreate(false)
       handleTaxonomySelection(created.taxonomy_id)
       setNotice(`Created taxonomy "${created.name}".`)
@@ -2581,11 +2500,6 @@ export default function TaxonomiesPage() {
     setTaxonomyPickerOpen(false)
     handleTaxonomySelection(taxonomyId)
     if (!portfolioId || !taxonomy) {
-      return
-    }
-    if (taxonomy.primary_assignment_scope !== 'instrument') {
-      setActionError('Only instrument taxonomies can be used as the default taxonomy for planning.')
-      setNotice(null)
       return
     }
     setActionPending(`default-taxonomy-${taxonomyId}`)
@@ -2722,7 +2636,7 @@ export default function TaxonomiesPage() {
         if (!entity) {
           continue
         }
-        if (isSystemCashEntity(entity, selectedTaxonomy)) {
+        if (isSystemCashEntity(entity)) {
           unchangedCount += 1
           continue
         }
@@ -2733,7 +2647,7 @@ export default function TaxonomiesPage() {
         if (!entity.current_assignment) {
           await createPortfolioTaxonomyAssignment(portfolioId, selectedTaxonomy.taxonomy_id, {
             effective_from: effectiveDate,
-            target_scope: entity.target_scope,
+            target_scope: 'instrument',
             target_entity_id: entity.entity_id,
             taxonomy_node_id: targetNode.taxonomy_node_id,
           })
@@ -2772,7 +2686,7 @@ export default function TaxonomiesPage() {
 
   async function handleAddRegistryInstrumentToUniverse(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
-    if (!portfolioId || !selectedTaxonomy || selectedTaxonomy.primary_assignment_scope !== 'instrument') {
+    if (!portfolioId || !selectedTaxonomy) {
       return
     }
     const instrument = instrumentAddInstrumentId ? instrumentById.get(instrumentAddInstrumentId) ?? null : null
@@ -2802,7 +2716,7 @@ export default function TaxonomiesPage() {
   }
 
   function handleDeleteObservedInstrument(entity: CoverageEntity) {
-    if (!portfolioId || entity.target_scope !== 'instrument' || entity.instrument_state !== 'observe') {
+    if (!portfolioId || entity.entity_kind !== 'instrument' || entity.instrument_state !== 'observe') {
       return
     }
     if (entity.current_assignment) {
@@ -2895,7 +2809,7 @@ export default function TaxonomiesPage() {
   }
 
   function renderEntityTreeRow(entity: CoverageEntity, depth: number) {
-    const lockedCashEntity = isSystemCashEntity(entity, selectedTaxonomy)
+    const lockedCashEntity = isSystemCashEntity(entity)
     const assignmentDragEnabled = canDragTaxonomyEntity({
       targetEditMode,
       lockedEntity: lockedCashEntity,
@@ -2904,8 +2818,8 @@ export default function TaxonomiesPage() {
     })
     const selected = !lockedCashEntity && selectedEntityIds.has(entity.entity_id)
     const targetMember: TargetScopeMember = {
-      member_key: targetMemberKey(entity.target_scope, entity.entity_id),
-      target_member_type: entity.target_scope,
+      member_key: targetMemberKey(entity.entity_kind, entity.entity_id),
+      target_member_type: entity.entity_kind,
       target_member_id: entity.entity_id,
       taxonomy_node_id: null,
       node: null,
@@ -3360,7 +3274,7 @@ export default function TaxonomiesPage() {
                       setTaxonomyPickerOpen(false)
                       setContextMenuState(null)
                     }}
-                    disabled={targetEditMode || selectedTaxonomy.primary_assignment_scope !== 'instrument'}
+                    disabled={targetEditMode}
                   >
                     Add Instrument
                   </button>
@@ -3480,16 +3394,14 @@ export default function TaxonomiesPage() {
                     </span>
                   ) : null}
                   <span>
-                    {selectedTaxonomy.primary_assignment_scope === 'instrument' ? 'Instruments' : 'Items'} {coverageSummary.currentEntityCount}
+                    Instruments {coverageSummary.currentEntityCount}
                   </span>
                   <span>Assigned {coverageSummary.assignedCount}</span>
-                  {selectedTaxonomy.primary_assignment_scope === 'instrument' ? (
-                    <span className="taxonomy-status-legend" aria-label="Instrument status legend">
-                      {renderInstrumentStatusLegendItem('held', 'Held', coverageSummary.heldEntityCount)}
-                      {renderInstrumentStatusLegendItem('observe', 'Observed', coverageSummary.observeEntityCount)}
-                      {renderInstrumentStatusLegendItem('former', 'Former', coverageSummary.formerEntityCount)}
-                    </span>
-                  ) : null}
+                  <span className="taxonomy-status-legend" aria-label="Instrument status legend">
+                    {renderInstrumentStatusLegendItem('held', 'Held', coverageSummary.heldEntityCount)}
+                    {renderInstrumentStatusLegendItem('observe', 'Observed', coverageSummary.observeEntityCount)}
+                    {renderInstrumentStatusLegendItem('former', 'Former', coverageSummary.formerEntityCount)}
+                  </span>
                   {coverageSummary.ambiguousEntities.length ? <span>Ambiguous {coverageSummary.ambiguousEntities.length}</span> : null}
                 </div>
                 <div className="taxonomy-header-actions">
@@ -3669,14 +3581,6 @@ export default function TaxonomiesPage() {
                   <span>Name</span>
                   <input value={taxonomyName} onChange={(event) => setTaxonomyName(event.target.value)} required />
                 </label>
-                <label>
-                  <span>Assignment Scope</span>
-                  <select value={taxonomyScope} onChange={(event) => setTaxonomyScope(event.target.value as TaxonomyAssignmentScope)}>
-                    <option value="instrument">Instrument</option>
-                    <option value="account">Account</option>
-                    <option value="cash_bucket">Cash Bucket</option>
-                  </select>
-                </label>
               </div>
               <div className="transaction-form-footer">
                 <div className="taxonomy-footer-actions">
@@ -3719,7 +3623,7 @@ export default function TaxonomiesPage() {
             </form>
           </TaxonomyModal>
           <TaxonomyModal
-            open={showInstrumentAdd && selectedTaxonomy?.primary_assignment_scope === 'instrument'}
+            open={showInstrumentAdd && selectedTaxonomy !== null}
             title="Add Instrument"
             onClose={() => setShowInstrumentAdd(false)}
             modalClassName="taxonomy-instrument-picker-modal"

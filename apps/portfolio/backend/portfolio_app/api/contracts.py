@@ -26,7 +26,6 @@ from portfolio_ops_instrument_core import (
 AccountScopedInstrumentType = Literal[
     "fund",
     "etf",
-    "bond",
     "equity",
     "fcn",
     "option",
@@ -35,11 +34,10 @@ AccountScopedInstrumentType = Literal[
 AccountType = Literal["deposit_account", "securities_account"]
 CostBasisMethod = Literal["moving_average", "fifo"]
 SupportedCurrency = Literal["USD", "HKD", "CNY"]
-TaxonomyAssignmentScope = Literal["instrument", "account", "cash_bucket"]
+TaxonomyAssignmentScope = Literal["instrument"]
 TargetMemberType = Literal[
     "taxonomy_node",
     "instrument",
-    "account",
     "cash_bucket",
     "derivative_bucket",
 ]
@@ -2356,8 +2354,6 @@ class TaxonomyCreateRequest(BaseModel):
     def validate_taxonomy_contract(self) -> "TaxonomyCreateRequest":
         if self.budgeting_level and not self.planning_enabled:
             raise ValueError("budgeting_level requires planning_enabled.")
-        if self.planning_enabled and self.primary_assignment_scope != "instrument":
-            raise ValueError("planning_enabled taxonomies must use instrument assignment scope.")
         return self
 
 
@@ -2855,6 +2851,8 @@ class ContributionEntryRecord(BaseModel):
     account_name: str | None = None
     instrument_id: str | None = None
     instrument_name: str | None = None
+    derivative_contract_id: str | None = None
+    derivative_contract_name: str | None = None
     currency: str
     local_amount: float | None = None
     base_amount: float | None = None

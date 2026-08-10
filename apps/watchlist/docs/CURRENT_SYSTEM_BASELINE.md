@@ -117,14 +117,14 @@ watchlist 和 fund detail 已经不再使用“平铺 fund tags”模型，而�
 
 下面这些现在不应被文档假装成“已经落地”：
 
-- bond / cash / FX / other 的 instrument detail overlay
+- cash / FX / other 的 instrument detail overlay
 - Documents workspace 的完整工作面
 - Database Dashboard 侧 Email sync / OCR / extraction pipeline 的完整闭环
 - 真实 OpenAI provider 已启用且对用户开放的 Copilot
 
 ## 8. 继续推进时建议按什么顺序做
 
-1. 先保持当前 fund / ETF / equity / index 边界；只有出现明确使用需求时，再为 bond / cash / FX / other 增加适合其语义的详情工作面
+1. 保持当前 fund / ETF / equity / index 边界；直接债券不进入 Registry 或 Watchlist。只有出现明确使用需求时，再为 cash / FX / other 增加适合其语义的详情工作面
 2. 继续补强 monitoring 和 recalc worker 的观测/告警
 3. 扩展 fund taxonomy 与 taxonomy-aware research packs
 4. 把导入链路从“手工写入 facts”补到更完整的 source / document 流

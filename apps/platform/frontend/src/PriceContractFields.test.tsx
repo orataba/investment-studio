@@ -4,9 +4,9 @@ import { describe, expect, it } from 'vitest'
 import type { MetricFamily } from '../../../../packages/instrument-core/ts/src'
 import { PriceContractFields } from './PriceContractFields'
 
-function renderBondContract(metricFamily: MetricFamily) {
+function renderContract(metricFamily: MetricFamily) {
   return renderToStaticMarkup(
-    <PriceContractFields instrumentType="bond" metricFamily={metricFamily} />,
+    <PriceContractFields instrumentType="equity" metricFamily={metricFamily} />,
   )
 }
 
@@ -20,13 +20,13 @@ function expectReadonlyField(markup: string, label: string, value: string) {
 }
 
 describe('PriceContractFields', () => {
-  it('renders the deterministic readonly contract as a bond changes metric family', () => {
-    const priceMarkup = renderBondContract('price')
-    expectReadonlyField(priceMarkup, 'Price unit', 'Percent of par')
-    expectReadonlyField(priceMarkup, 'Price scale', '0.01')
+  it('renders the deterministic readonly contract', () => {
+    const priceMarkup = renderContract('price')
+    expectReadonlyField(priceMarkup, 'Price unit', 'Per unit')
+    expectReadonlyField(priceMarkup, 'Price scale', '1')
     expect(priceMarkup).not.toContain('<select')
 
-    const navMarkup = renderBondContract('nav')
+    const navMarkup = renderContract('nav')
     expectReadonlyField(navMarkup, 'Price unit', 'Per unit')
     expectReadonlyField(navMarkup, 'Price scale', '1')
     expect(navMarkup).not.toContain('<select')

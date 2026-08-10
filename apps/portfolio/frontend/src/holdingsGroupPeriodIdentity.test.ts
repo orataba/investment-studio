@@ -161,7 +161,7 @@ describe('holdings current-basket period identity', () => {
     expect(groupedMaxDrawdown([holding], workspace)).toBeNull()
   })
 
-  it('models derivatives as zero volatility without fabricating a drawdown path', () => {
+  it('excludes derivatives instead of presenting zero volatility', () => {
     const derivative = holdingFixture({
       line_id: 'holding:option-1',
       holding_category: 'derivatives',
@@ -173,12 +173,12 @@ describe('holdings current-basket period identity', () => {
       market_value: 500,
       market_value_base: 500,
       risk_eligible: false,
-      forward_risk_status: 'modeled_zero',
-      forward_risk_share: 0,
+      forward_risk_status: 'excluded',
+      forward_risk_share: null,
     })
     const workspace = holdingsWorkspaceFixture({ rows: [derivative] })
 
-    expect(groupedAnnualizedVolatility([derivative], workspace, '1m')).toBe(0)
+    expect(groupedAnnualizedVolatility([derivative], workspace, '1m')).toBeNull()
     expect(groupedCurrentDrawdown([derivative], workspace)).toBeNull()
     expect(groupedMaxDrawdown([derivative], workspace)).toBeNull()
   })

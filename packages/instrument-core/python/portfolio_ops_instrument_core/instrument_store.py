@@ -68,7 +68,6 @@ SOURCE_SCHEDULE_DEFAULTS: dict[str, tuple[str, int]] = {
     "fund": ("daily", 1),
     "etf": ("daily", 0),
     "index": ("daily", 0),
-    "bond": ("daily", 0),
     "equity": ("daily", 0),
     "fx": ("daily", 0),
     "cash": ("event_driven", 0),
@@ -353,13 +352,6 @@ QUOTE_SELECTION_POLICY_DEFAULTS: dict[str, dict[str, list[str]]] = {
         "total_return": ["adjusted_close", "close", "last"],
         "chart": ["adjusted_close", "close", "last"],
         "reference": ["close", "last"],
-    },
-    "bond": {
-        "trading": ["clean_price", "dirty_price"],
-        "valuation": ["dirty_price", "clean_price"],
-        "total_return": ["dirty_price", "clean_price"],
-        "chart": ["dirty_price", "clean_price"],
-        "reference": ["clean_price", "dirty_price"],
     },
     "cash": {
         "trading": ["par"],

@@ -141,9 +141,6 @@ def _taxonomy_base_axes(
     )
     if taxonomy is None:
         return None
-    primary_assignment_scope = str(taxonomy.get("primary_assignment_scope") or "")
-    if primary_assignment_scope in {"account", "cash_bucket"}:
-        return ("account", "account_detail")
     return ("instrument", "instrument_detail")
 
 
@@ -385,7 +382,6 @@ def get_portfolio_period_calculation_groups(
                         base_report=base_contribution_report,
                         use_period_end_taxonomy_assignments=True,
                         apply_boundary_values=False,
-                        preserve_cash_group=True,
                     )
                 else:
                     base_contribution_report = build_contribution_report(
@@ -413,7 +409,6 @@ def get_portfolio_period_calculation_groups(
                         base_report=base_contribution_report,
                         use_period_end_taxonomy_assignments=True,
                         apply_boundary_values=False,
-                        preserve_cash_group=True,
                     )
                 if base_detail_report is not None:
                     detail_contribution_report = build_taxonomy_calculation_detail_report_from_base_report(
@@ -428,7 +423,6 @@ def get_portfolio_period_calculation_groups(
                         taxonomy_id=taxonomy_id,
                         base_report=base_detail_report,
                         use_period_end_taxonomy_assignments=True,
-                        preserve_cash_group=True,
                     )
                 else:
                     base_detail_report = build_contribution_report(
@@ -455,7 +449,6 @@ def get_portfolio_period_calculation_groups(
                         taxonomy_id=taxonomy_id,
                         base_report=base_detail_report,
                         use_period_end_taxonomy_assignments=True,
-                        preserve_cash_group=True,
                     )
         report = build_period_calculation_groups_report(
             portfolio,

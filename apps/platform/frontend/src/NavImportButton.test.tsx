@@ -13,7 +13,7 @@ describe('NavImportButton', () => {
     expect(markup).toContain('class="nav-action"')
   })
 
-  it.each(['equity', 'etf', 'fx', 'bond'] as const)(
+  it.each(['equity', 'etf', 'fx'] as const)(
     'hides the NAV action for %s instruments',
     (instrumentType) => {
       expect(renderToStaticMarkup(<NavImportButton instrumentType={instrumentType} />)).toBe('')

@@ -41,8 +41,8 @@ Supported `identifier_type` values:
 - `as_of_date`
 - `value`
 - `currency`
-- `price_unit`（`per_unit | percent_of_par | rate`）
-- `price_scale`（Decimal；分别为 `1 | 0.01 | 1`）
+- `price_unit`（`per_unit | rate`）
+- `price_scale`（Decimal；当前均为 `1`）
 - `provider`
 - `status`
 - `nav_lineage`（仅 NAV；`provider_explicit | derived_dividend_reinvestment`）
@@ -67,7 +67,7 @@ shared market data。`total_return_nav` 不存在时必须为 NA；不得回退�
 - `market_calendar`: 非空 calendar identifier 或 `null`；无法可靠推断 venue 时必须为 `null`
 - `release_lag_days`: 非负整数，表示 observation date 后的预期可用日延迟
 
-默认 cadence 按品种确定：fund 为 `daily / lag 1`；equity、ETF、index、bond 与 FX 为
+默认 cadence 按品种确定：fund 为 `daily / lag 1`；equity、ETF、index 与 FX 为
 `daily / lag 0`；cash 与 other 为 `event_driven / lag 0`。只有 `.SH`、`.SZ`、`.HK`
 这类能从 canonical identifier 明确推断的 venue 才默认 calendar；其他品种保持 `null` 并由数据运营配置。
 
@@ -157,16 +157,13 @@ security-master 事实；基金 NAV 分红再投只用于构造 TWR 指数，不
   - `official_nav`
   - `total_return_nav`
   - `spot`
-  - `clean_price`
-  - `dirty_price`
   - `par`
-  - `accrued_interest`（仅 `bond + price`；作为 clean price 的组成项，不能进入 selector role）
 
 `price_unit` 与 `price_scale` 是持久化事实和读取响应中的必填字段，不是写入命令参数。
 共享 store 以 canonical instrument type、`metric_family` 与 `quote_basis` 作为唯一权威确定性派生：
-bond price 为 `percent_of_par / 0.01`，FX 为 `rate / 1`，其余为 `per_unit / 1`。
+FX 为 `rate / 1`，其余为 `per_unit / 1`。
 批量写入若携带这两个派生字段会拒绝整批，避免调用方与共享 contract 形成第二套规则。
-Python runtime 只支持 Instrument Registry head `20260809_0022`，不会探测或兼容更早物理 schema。当前 Registry 类型集合是 `fund | etf | index | bond | equity | cash | fx | other`；FCN 与期权合约条款、生命周期和交易事实属于 Portfolio 私域，不进入共享资产表。直接 SQL 也必须满足 canonical 行情、NAV lineage、基金行为状态机、计算输入与 broker identity 约束。
+Python runtime 只支持 Instrument Registry head `20260810_0023`，不会探测或兼容更早物理 schema。当前 Registry 类型集合是 `fund | etf | index | equity | cash | fx | other`；直接债券、FCN 与期权不进入共享资产表。FCN 与期权合约条款、生命周期和交易事实属于 Portfolio 私域；直接债券当前不在产品交易范围内。直接 SQL 也必须满足 canonical 行情、NAV lineage、基金行为状态机、计算输入与 broker identity 约束。
 
 每条 market-data observation（不只 FX）都必须使用 instrument master currency，`value`
 必须是有限正数，`status` 只能是 `complete | partial | unavailable`。共享 store 的单点、批量、
@@ -208,9 +205,6 @@ NAV history 的批量预览、导入与替换只支持 `instrument_type=fund`。
   - `trading`: `close -> last`
   - `valuation`: `close -> last`
   - `total_return/chart`: `adjusted_close -> close -> last`
-- `bond`
-  - `trading`: `clean_price -> dirty_price`
-  - `valuation`: `dirty_price -> clean_price`
 - `cash`
   - `valuation/reference`: `par`
 - `fx`

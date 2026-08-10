@@ -689,9 +689,6 @@ def set_analytics_taxonomy_selection_in_session(
             raise ValueError("Planning taxonomy not found.")
         if not taxonomy.planning_enabled or taxonomy.status != "active":
             raise ValueError("Analytics taxonomy must be active and planning-enabled.")
-        if taxonomy.primary_assignment_scope != "instrument":
-            raise ValueError("Analytics taxonomy must use instrument assignment scope.")
-
     active_records = session.scalars(
         select(AnalyticsTaxonomySelectionRecordModel)
         .where(

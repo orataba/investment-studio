@@ -41,7 +41,7 @@ import {
 import { transactionActivityLabel } from '../lib/transactionPresentation'
 import { holdingUsesEventValuation } from '../lib/holdingPresentation'
 
-const ACCOUNT_SCOPE_OPTIONS = ['equity', 'etf', 'fund', 'bond', 'fcn', 'option', 'other'] as const
+const ACCOUNT_SCOPE_OPTIONS = ['equity', 'etf', 'fund', 'fcn', 'option', 'other'] as const
 type AccountDetailTab = 'overview' | 'positions' | 'transactions' | 'ledger'
 
 function parseAccountDetailTab(value: string | null): AccountDetailTab {

@@ -1,8 +1,4 @@
 const EXECUTION_QUOTE_REASON_MESSAGES: Record<string, string> = {
-  clean_price_requires_matching_accrued_interest:
-    'Clean bond price requires matching same-date accrued interest, so no execution quote was applied.',
-  bond_price_contract_unavailable:
-    'Bond quote is missing a valid percent-of-par unit or scale, so no execution quote was applied.',
   ambiguous_quote_series_identity:
     'Execution quote is unavailable because multiple market-data series match this instrument.',
   incomplete_quote_series_identity:
@@ -19,8 +15,6 @@ const EXECUTION_QUOTE_REASON_MESSAGES: Record<string, string> = {
     'Execution quote is unavailable because its price unit or scale is ambiguous.',
   no_eligible_execution_quote:
     'No eligible unadjusted execution quote is available on or before this trade date.',
-  bond_quote_basis_unavailable:
-    'Bond quote basis is not eligible for transaction pricing.',
   quote_policy_unavailable:
     'Execution quote policy is unavailable for this instrument.',
   instrument_currency_unavailable:

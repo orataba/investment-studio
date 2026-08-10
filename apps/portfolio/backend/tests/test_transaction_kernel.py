@@ -133,42 +133,42 @@ def test_portfolio_instruments_endpoint_reads_shared_registry_via_portfolio_back
 def test_instrument_option_rejects_missing_or_noncanonical_price_contract() -> None:
     payload = {
         "instrument_core": {
-            "instrument_id": "bond-test",
-            "instrument_name": "Bond Test",
-            "instrument_type": "bond",
+            "instrument_id": "equity-test",
+            "instrument_name": "Equity Test",
+            "instrument_type": "equity",
             "currency": "USD",
             "identifiers": [],
         },
         "coverage_state": "complete",
         "quote_selection_policy": {
-            "trading": ["clean_price", "dirty_price"],
-            "valuation": ["dirty_price", "clean_price"],
-            "total_return": ["dirty_price", "clean_price"],
-            "chart": ["dirty_price", "clean_price"],
-            "reference": ["clean_price", "dirty_price"],
+            "trading": ["close"],
+            "valuation": ["close"],
+            "total_return": ["adjusted_close", "close"],
+            "chart": ["adjusted_close", "close"],
+            "reference": ["close"],
         },
         "latest_market_data": [
             {
                 "metric_family": "price",
-                "quote_basis": "dirty_price",
+                "quote_basis": "close",
                 "as_of_date": "2026-07-15",
                 "value": "98.5",
                 "currency": "USD",
-                "price_unit": "percent_of_par",
-                "price_scale": "0.01",
+                "price_unit": "per_unit",
+                "price_scale": "1",
                 "status": "complete",
             }
         ],
     }
 
-    assert str(InstrumentOption.model_validate(payload).latest_market_data[0].price_scale) == "0.01"
+    assert str(InstrumentOption.model_validate(payload).latest_market_data[0].price_scale) == "1"
     missing = deepcopy(payload)
     missing["latest_market_data"][0].pop("price_scale")
     with pytest.raises(ValueError, match="price_scale"):
         InstrumentOption.model_validate(missing)
 
     wrong = deepcopy(payload)
-    wrong["latest_market_data"][0]["price_unit"] = "per_unit"
+    wrong["latest_market_data"][0]["price_unit"] = "rate"
     wrong["latest_market_data"][0]["price_scale"] = "1"
     with pytest.raises(ValueError, match="canonical instrument identity"):
         InstrumentOption.model_validate(wrong)

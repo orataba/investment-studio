@@ -361,7 +361,7 @@ def test_taxonomy_rejects_adding_child_under_assigned_node(client):
     assert "already has assignments" in child_response.json()["detail"]
 
 
-def test_taxonomy_create_rejects_planning_enabled_non_instrument_scope(client):
+def test_taxonomy_create_rejects_non_security_scope(client):
     response = client.post(
         "/api/portfolios/portfolio-ops/taxonomies",
         json={"effective_from": EFFECTIVE_FROM,
@@ -372,7 +372,7 @@ def test_taxonomy_create_rejects_planning_enabled_non_instrument_scope(client):
         },
     )
     assert response.status_code == 422
-    assert "instrument assignment scope" in str(response.json())
+    assert "instrument" in str(response.json())
 
 
 def test_default_planning_taxonomy_can_be_set_and_cleared(client):
@@ -581,7 +581,7 @@ def test_taxonomy_update_node_and_assignment_round_trip(client):
     assert updated_assignment["status"] == "archived"
 
 
-def test_instrument_taxonomy_rejects_cash_bucket_assignments(client):
+def test_security_taxonomy_rejects_cash_bucket_assignments(client):
     taxonomy_response = client.post(
         "/api/portfolios/portfolio-ops/taxonomies",
         json={"effective_from": EFFECTIVE_FROM,
@@ -597,7 +597,7 @@ def test_instrument_taxonomy_rejects_cash_bucket_assignments(client):
     cash_node_response = client.post(
         f"/api/portfolios/portfolio-ops/taxonomies/{taxonomy_id}/nodes",
         json={"effective_from": EFFECTIVE_FROM,
-            "node_name": "Cash Reserve",
+            "node_name": "Liquidity Reserve",
             "default_target_dimension": "risk_budget",
         },
     )
@@ -620,8 +620,8 @@ def test_instrument_taxonomy_rejects_cash_bucket_assignments(client):
             "taxonomy_node_id": cash_node_payload["taxonomy_node_id"],
         },
     )
-    assert assignment_response.status_code == 400
-    assert "target_scope is not allowed" in assignment_response.json()["detail"]
+    assert assignment_response.status_code == 422
+    assert "instrument" in str(assignment_response.json())
 
 
 def test_target_set_accepts_levered_weight_totals_with_normalized_risk_share(client):

@@ -67,7 +67,7 @@ TEST_PORTFOLIO_STORE: dict[str, list[dict[str, Any]]] = {
             "institution": "Interactive Brokers",
             "default_settlement_cash_account_id": "cash-usd-reserve",
             "cost_basis_method": "fifo",
-            "allowed_instrument_types": ["bond", "fund", "etf"],
+            "allowed_instrument_types": ["fund", "etf"],
             "opened_at": "2026-01-15",
             "status": "active",
         },

@@ -12,7 +12,6 @@ InstrumentType = Literal[
     "fund",
     "etf",
     "index",
-    "bond",
     "equity",
     "cash",
     "fx",
@@ -23,7 +22,6 @@ INSTRUMENT_TYPES = frozenset(
         "fund",
         "etf",
         "index",
-        "bond",
         "equity",
         "cash",
         "fx",
@@ -46,7 +44,7 @@ IdentifierType = Literal[
     "other",
 ]
 MetricFamily = Literal["price", "nav", "fx"]
-PriceUnit = Literal["per_unit", "percent_of_par", "rate"]
+PriceUnit = Literal["per_unit", "rate"]
 NavLineageKind = Literal["provider_explicit", "derived_dividend_reinvestment"]
 FundNavProjectionKind = Literal[
     "provider_explicit",
@@ -61,10 +59,7 @@ QuoteBasis = Literal[
     "official_nav",
     "total_return_nav",
     "spot",
-    "clean_price",
-    "dirty_price",
     "par",
-    "accrued_interest",
 ]
 QuoteRole = Literal["trading", "valuation", "total_return", "chart", "reference"]
 DataStatus = Literal["complete", "partial", "unavailable"]
@@ -99,17 +94,13 @@ QUOTE_BASIS_METRIC_FAMILY: dict[str, MetricFamily] = {
     "official_nav": "nav",
     "total_return_nav": "nav",
     "spot": "fx",
-    "clean_price": "price",
-    "dirty_price": "price",
     "par": "price",
-    "accrued_interest": "price",
 }
 PRICE_UNIT_SCALES: dict[PriceUnit, Decimal] = {
     "per_unit": Decimal("1"),
-    "percent_of_par": Decimal("0.01"),
     "rate": Decimal("1"),
 }
-QUOTE_SELECTION_PROHIBITED_BASES = frozenset({"accrued_interest"})
+QUOTE_SELECTION_PROHIBITED_BASES: frozenset[str] = frozenset()
 NAV_HISTORY_INSTRUMENT_TYPES = frozenset({"fund"})
 FUND_TOTAL_RETURN_QUOTE_BASES = ("total_return_nav",)
 FUND_NAV_FACTOR_QUANTUM = Decimal("0.000000000000000001")
@@ -193,10 +184,6 @@ def canonical_price_contract(
             "FX market data requires an fx instrument with metric_family \"fx\" "
             "and quote_basis \"spot\"."
         )
-    if quote_basis == "accrued_interest" and normalized_instrument_type != "bond":
-        raise ValueError("accrued_interest is only valid for bond price data.")
-    if normalized_instrument_type == "bond" and metric_family == "price":
-        return "percent_of_par", PRICE_UNIT_SCALES["percent_of_par"]
     if normalized_instrument_type == "fx" or metric_family == "fx":
         return "rate", PRICE_UNIT_SCALES["rate"]
     return "per_unit", PRICE_UNIT_SCALES["per_unit"]

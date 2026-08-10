@@ -1167,10 +1167,6 @@ function buildCurrentTaxonomyReturnSeries({
   if (!catalog || !taxonomy || !referenceDate) {
     return riskOk([] satisfies GroupReturnSeries[])
   }
-  if (taxonomy.primary_assignment_scope !== 'instrument') {
-    return riskOk([] satisfies GroupReturnSeries[])
-  }
-
   const nodeById = buildNodeLookup(catalog, taxonomy.taxonomy_id)
   const errors: string[] = []
   const membersByGroup = new Map<
@@ -1288,13 +1284,6 @@ export function buildCanonicalTaxonomyRiskContributionRows({
       [] satisfies RiskContributionRow[],
     )
   }
-  if (taxonomy.primary_assignment_scope !== 'instrument') {
-    return riskFail(
-      `Current taxonomy risk contribution requires an instrument-scope planning taxonomy; got ${taxonomy.primary_assignment_scope}.`,
-      [] satisfies RiskContributionRow[],
-    )
-  }
-
   const nodeById = buildNodeLookup(catalog, taxonomy.taxonomy_id)
   const grouped = new Map<string, RiskContributionRow>()
   const errors: string[] = []
@@ -1501,10 +1490,6 @@ function resolveScopedTaxonomyNode(
   return path[scopeIndex + 1] ?? path[scopeIndex] ?? null
 }
 
-function accountValueBase(accountRow: PortfolioAccountsWorkspaceResponse['accounts'][number]) {
-  return finiteNumber(accountRow.account_value_base)
-}
-
 function accountLiquidityBase(accountRow: PortfolioAccountsWorkspaceResponse['accounts'][number]) {
   const cashBalanceBase = finiteNumber(accountRow.derived_cash_balance_base)
   const pendingSettlementBase = finiteNumber(accountRow.pending_settlement_base)
@@ -1538,17 +1523,15 @@ export function buildCurrentPlanningGroups({
   const errors: string[] = []
 
   function addEntity({
-    targetScope,
     entityId,
     valueBase,
     weightInput,
   }: {
-    targetScope: TaxonomyAssignmentScope
     entityId: string
     valueBase: number | null
     weightInput: number | null
   }) {
-    const assignmentResult = resolveActiveAssignment(catalog, taxonomyId, targetScope, entityId, currentReferenceDate)
+    const assignmentResult = resolveActiveAssignment(catalog, taxonomyId, 'instrument', entityId, currentReferenceDate)
     if (assignmentResult.error) {
       errors.push(assignmentResult.error)
       return
@@ -1593,142 +1576,75 @@ export function buildCurrentPlanningGroups({
     })
   }
 
-  if (taxonomy.primary_assignment_scope === 'instrument') {
-    if (!accountsWorkspace) {
-      return riskFail(
-        'Current drift requires the accounts workspace so cash and pending settlement are included in portfolio NAV.',
-        [] satisfies CurrentPlanningGroup[],
-      )
-    }
-    const liquidityAccounts = accountsWorkspace.accounts.filter((accountRow) => {
-      const liquidityBase = accountLiquidityBase(accountRow)
-      if (liquidityBase == null) {
-        errors.push(
-          `Current drift requires base-currency cash and pending settlement for account ${accountRow.account.account_id}.`,
-        )
-        return false
-      }
-      return accountRow.account.account_type === 'deposit_account' || Math.abs(liquidityBase) > 1e-9
-    })
-    const securityHoldingRows = holdingsWorkspace.rows.filter(isSecurityHoldingRow)
-    const derivativeHoldingRows = holdingsWorkspace.rows.filter(
-      (row) => row.holding_category === 'derivatives',
+  if (!accountsWorkspace) {
+    return riskFail(
+      'Current drift requires the accounts workspace so cash and pending settlement are included in portfolio NAV.',
+      [] satisfies CurrentPlanningGroup[],
     )
-    const valuedHoldingRows = [...securityHoldingRows, ...derivativeHoldingRows]
-    const missingHoldingValueRows = valuedHoldingRows.filter((row) => finiteNumber(row.market_value_base) == null)
-    if (missingHoldingValueRows.length) {
+  }
+  const liquidityAccounts = accountsWorkspace.accounts.filter((accountRow) => {
+    const liquidityBase = accountLiquidityBase(accountRow)
+    if (liquidityBase == null) {
       errors.push(
-        `Current drift requires market_value_base for every holding; missing: ${missingHoldingValueRows
-          .map((row) => holdingRiskLabel(row))
-          .join(', ')}.`,
+        `Current drift requires base-currency cash and pending settlement for account ${accountRow.account.account_id}.`,
       )
+      return false
     }
-    const derivativeValueBase = derivativeHoldingRows.reduce(
-      (total, row) => total + (finiteNumber(row.market_value_base) ?? 0),
-      0,
+    return accountRow.account.account_type === 'deposit_account' || Math.abs(liquidityBase) > 1e-9
+  })
+  const securityHoldingRows = holdingsWorkspace.rows.filter(isSecurityHoldingRow)
+  const derivativeHoldingRows = holdingsWorkspace.rows.filter((row) => row.holding_category === 'derivatives')
+  const valuedHoldingRows = [...securityHoldingRows, ...derivativeHoldingRows]
+  const missingHoldingValueRows = valuedHoldingRows.filter((row) => finiteNumber(row.market_value_base) == null)
+  if (missingHoldingValueRows.length) {
+    errors.push(
+      `Current drift requires market_value_base for every holding; missing: ${missingHoldingValueRows
+        .map((row) => holdingRiskLabel(row))
+        .join(', ')}.`,
     )
-    const cashValueBase = liquidityAccounts.reduce(
-      (total, accountRow) => total + (accountLiquidityBase(accountRow) ?? 0),
-      0,
-    )
-    const totalValueBase =
-      securityHoldingRows.reduce((total, row) => total + (finiteNumber(row.market_value_base) ?? 0), 0) +
-      derivativeValueBase +
-      cashValueBase
-    if (totalValueBase <= 1e-9 && (valuedHoldingRows.length || liquidityAccounts.length)) {
-      errors.push('Current drift requires positive portfolio NAV from holdings plus account cash and pending settlement.')
-    }
+  }
+  const derivativeValueBase = derivativeHoldingRows.reduce(
+    (total, row) => total + (finiteNumber(row.market_value_base) ?? 0),
+    0,
+  )
+  const cashValueBase = liquidityAccounts.reduce(
+    (total, accountRow) => total + (accountLiquidityBase(accountRow) ?? 0),
+    0,
+  )
+  const totalValueBase =
+    securityHoldingRows.reduce((total, row) => total + (finiteNumber(row.market_value_base) ?? 0), 0) +
+    derivativeValueBase +
+    cashValueBase
+  if (totalValueBase <= 1e-9 && (valuedHoldingRows.length || liquidityAccounts.length)) {
+    errors.push('Current drift requires positive portfolio NAV from holdings plus account cash and pending settlement.')
+  }
 
-    securityHoldingRows.forEach((row) => {
-      const valueBase = finiteNumber(row.market_value_base)
-      if (valueBase == null || totalValueBase <= 1e-9) {
-        return
-      }
-      const weightInput = valueBase / totalValueBase
-      addEntity({
-        targetScope: 'instrument',
-        entityId: row.instrument_core.instrument_id,
-        valueBase,
-        weightInput,
-      })
+  securityHoldingRows.forEach((row) => {
+    const valueBase = finiteNumber(row.market_value_base)
+    if (valueBase == null || totalValueBase <= 1e-9) {
+      return
+    }
+    addEntity({
+      entityId: row.instrument_core.instrument_id,
+      valueBase,
+      weightInput: valueBase / totalValueBase,
     })
+  })
 
-    if (totalValueBase > 1e-9) {
-      addSystemGroup({
-        memberType: 'derivative_bucket',
-        memberId: SYSTEM_DERIVATIVE_TARGET_MEMBER_ID,
-        label: 'Derivatives',
-        valueBase: derivativeValueBase,
-        totalValueBase,
-      })
-      addSystemGroup({
-        memberType: 'cash_bucket',
-        memberId: SYSTEM_CASH_TARGET_MEMBER_ID,
-        label: 'Cash',
-        valueBase: cashValueBase,
-        totalValueBase,
-      })
-    }
-  } else if (taxonomy.primary_assignment_scope === 'cash_bucket') {
-    if (!accountsWorkspace) {
-      return riskFail('Current drift requires the accounts workspace for cash-bucket taxonomies.', [] satisfies CurrentPlanningGroup[])
-    }
-    const liquidityAccounts = accountsWorkspace.accounts
-    const missingAccountValueRows = liquidityAccounts.filter((accountRow) => accountLiquidityBase(accountRow) == null)
-    if (missingAccountValueRows.length) {
-      errors.push(
-        `Current drift requires base-currency cash and pending settlement for every account; missing: ${missingAccountValueRows
-          .map((accountRow) => accountRow.account.account_id)
-          .join(', ')}.`,
-      )
-    }
-    const totalValueBase = liquidityAccounts.reduce(
-      (total, accountRow) => total + (accountLiquidityBase(accountRow) ?? 0),
-      0,
-    )
-    if (totalValueBase <= 1e-9 && liquidityAccounts.length) {
-      errors.push('Current drift requires positive cash and pending settlement for cash-bucket taxonomies.')
-    }
-    liquidityAccounts.forEach((accountRow) => {
-      const valueBase = accountLiquidityBase(accountRow)
-      if (valueBase == null || totalValueBase <= 1e-9) {
-        return
-      }
-      addEntity({
-        targetScope: 'cash_bucket',
-        entityId: accountRow.account.account_id,
-        valueBase,
-        weightInput: valueBase / totalValueBase,
-      })
+  if (totalValueBase > 1e-9) {
+    addSystemGroup({
+      memberType: 'derivative_bucket',
+      memberId: SYSTEM_DERIVATIVE_TARGET_MEMBER_ID,
+      label: 'Derivatives',
+      valueBase: derivativeValueBase,
+      totalValueBase,
     })
-  } else {
-    if (!accountsWorkspace) {
-      return riskFail('Current drift requires the accounts workspace for account taxonomies.', [] satisfies CurrentPlanningGroup[])
-    }
-    const accountRows = accountsWorkspace.accounts
-    const missingAccountValueRows = accountRows.filter((accountRow) => accountValueBase(accountRow) == null)
-    if (missingAccountValueRows.length) {
-      errors.push(
-        `Current drift requires account_value_base for every account; missing: ${missingAccountValueRows
-          .map((accountRow) => accountRow.account.account_id)
-          .join(', ')}.`,
-      )
-    }
-    const totalValueBase = accountRows.reduce((total, accountRow) => total + (accountValueBase(accountRow) ?? 0), 0)
-    if (totalValueBase <= 1e-9 && accountRows.length) {
-      errors.push('Current drift requires positive account value for account taxonomies.')
-    }
-    accountRows.forEach((accountRow) => {
-      const valueBase = accountValueBase(accountRow)
-      if (valueBase == null || totalValueBase <= 1e-9) {
-        return
-      }
-      addEntity({
-        targetScope: 'account',
-        entityId: accountRow.account.account_id,
-        valueBase,
-        weightInput: valueBase / totalValueBase,
-      })
+    addSystemGroup({
+      memberType: 'cash_bucket',
+      memberId: SYSTEM_CASH_TARGET_MEMBER_ID,
+      label: 'Cash',
+      valueBase: cashValueBase,
+      totalValueBase,
     })
   }
 
@@ -3160,7 +3076,7 @@ export default function RiskPage() {
                     <thead>
                       <tr>
                         <th>Excluded Holding</th>
-                        <th>Region</th>
+                        <th>Category</th>
                         <th>Reason</th>
                         <th className="performance-cell-number">Exposure</th>
                       </tr>

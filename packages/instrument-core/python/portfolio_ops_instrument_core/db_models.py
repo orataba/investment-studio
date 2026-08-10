@@ -76,7 +76,7 @@ class Instrument(InstrumentRegistryBase):
     __tablename__ = "instrument"
     __table_args__ = (
         CheckConstraint(
-            "instrument_type IN ('fund', 'etf', 'index', 'bond', 'equity', "
+            "instrument_type IN ('fund', 'etf', 'index', 'equity', "
             "'cash', 'fx', 'other')",
             name="instrument_type_contract",
         ),
@@ -218,8 +218,7 @@ class InstrumentMarketData(InstrumentRegistryBase):
     __table_args__ = (
         CheckConstraint(
             "(metric_family = 'price' AND quote_basis IN "
-            "('last', 'close', 'adjusted_close', 'clean_price', 'dirty_price', "
-            "'par', 'accrued_interest')) OR "
+            "('last', 'close', 'adjusted_close', 'par')) OR "
             "(metric_family = 'nav' AND quote_basis IN "
             "('official_nav', 'total_return_nav')) OR "
             "(metric_family = 'fx' AND quote_basis = 'spot')",
@@ -227,7 +226,6 @@ class InstrumentMarketData(InstrumentRegistryBase):
         ),
         CheckConstraint(
             "(price_unit = 'per_unit' AND price_scale = 1) OR "
-            "(price_unit = 'percent_of_par' AND price_scale = 0.01) OR "
             "(price_unit = 'rate' AND price_scale = 1)",
             name="price_unit_scale_contract",
         ),

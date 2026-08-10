@@ -107,8 +107,8 @@ def test_non_equity_instruments_do_not_query_corporate_actions(monkeypatch) -> N
 
     assert (
         performance.corporate_action_quality_warnings(
-            {"bond"},
-            {"bond-1"},
+            {"fund"},
+            {"fund-1"},
             transactions=[
                 _trade(
                     transaction_id="buy-1",

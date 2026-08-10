@@ -10,11 +10,11 @@
 - `instrument_name`
 - identifiers
 - `instrument_type`
-  - 当前类型集合：`fund | etf | index | bond | equity | cash | fx | other`
+  - 当前类型集合：`fund | etf | index | equity | cash | fx | other`
 - `currency`
 - typed `market_data`
   - `metric_family`: `price | nav | fx`
-  - `quote_basis`: `last | close | adjusted_close | official_nav | total_return_nav | spot | clean_price | dirty_price | par | accrued_interest`
+  - `quote_basis`: `last | close | adjusted_close | official_nav | total_return_nav | spot | par`
   - fund NAV 对外仅 `official_nav`（单位净值）与带强 lineage 的 `total_return_nav`（分红再投资复权累计净值）
   - source cadence: `expected_frequency`, optional `market_calendar`, and non-negative `release_lag_days`
 - `quote_selection_policy`
@@ -44,6 +44,7 @@
 - transaction
 - ledger posting
 - risk snapshots
+- direct bond instruments（不进入 Registry / Watchlist，当前也没有 Portfolio 交易入口）
 - FCN / option contract terms and lifecycle events（由 Portfolio 本地持有）
 
 ## 目录
@@ -57,7 +58,7 @@
 
 ## 原则
 
-- Python runtime 要求 Instrument Registry 已迁移到 `20260809_0022`；该 head 完整包含 observation/FX、NAV lineage、区间归一化收益锚点、基金行为账本、计算输入与 broker identity，并已从 Registry 删除 FCN/期权合约类型。运行时不探测或兼容更早物理 schema。
+- Python runtime 要求 Instrument Registry 已迁移到 `20260810_0023`；该 head 完整包含 observation/FX、NAV lineage、区间归一化收益锚点、基金行为账本、计算输入与 broker identity，并已从 Registry 删除 FCN、期权和直接债券类型。运行时不探测或兼容更早物理 schema。
 - market-data 写入命令只提交 instrument identity、metric/basis 与观测值；共享 store 唯一负责派生并持久化必填的 `price_unit / price_scale`，读取响应不得省略它们。
 - 每条 market-data observation 必须显式提交 canonical `currency / status` 与有限正数 value；API、批量写入和 restore 都不推断缺失 status 或 currency。
 - `quote_selection_policy` 的五个 role 都必须完整、非空持久化；0011 一次性物化历史缺口，此后运行时不再补 role。类型默认只在创建新 instrument 时显式写入。
@@ -71,4 +72,4 @@
 - 上层 app 必须自己 materialize 自己的 read models。
 - `Watchlist` 和 `Portfolio` 都可以消费 `instrument-core`，但不能把自身业务对象塞回共享层。
 - selector role 放在共享层，是因为不同资产类别读取 `valuation / trading / total_return / chart` 时需要稳定约定。
-- corporate action 是共享 security master 事实；具体持仓调整、成本结转和现金替代仍由 Portfolio 账本负责。accrued interest 仅作为 bond price component 进入共享行情 contract；yield/spread 暂不进入共享 contract。
+- corporate action 是共享 security master 事实；具体持仓调整、成本结转和现金替代仍由 Portfolio 账本负责。

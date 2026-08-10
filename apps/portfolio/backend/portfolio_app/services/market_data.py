@@ -15,9 +15,7 @@ from portfolio_ops_instrument_core import (
 
 USABLE_MARKET_DATA_STATUS = "complete"
 
-SUPPORTED_PRIMARY_QUOTE_BASES = frozenset(
-    set(QUOTE_BASIS_METRIC_FAMILY) - {"accrued_interest"}
-)
+SUPPORTED_PRIMARY_QUOTE_BASES = frozenset(QUOTE_BASIS_METRIC_FAMILY)
 
 
 @dataclass(frozen=True)
@@ -25,7 +23,6 @@ class QuoteSeriesResolution:
     points: tuple[dict[str, object], ...] = ()
     metric_family: str | None = None
     quote_basis: str | None = None
-    source_quote_basis: str | None = None
     currency: str | None = None
     price_unit: str | None = None
     price_scale: float | None = None
@@ -149,7 +146,7 @@ def available_quote_bases(detail: dict[str, object]) -> list[str]:
         if not is_usable_market_data_point(point):
             continue
         quote_basis = _normalized_text(point.get("quote_basis"))
-        if quote_basis and quote_basis != "accrued_interest" and quote_basis not in bases:
+        if quote_basis and quote_basis not in bases:
             bases.append(quote_basis)
     return bases
 
@@ -170,46 +167,6 @@ def _price_contract(
     return next(iter(contracts), (None, None)) + (None,)
 
 
-def _matching_accrued_interest(
-    all_points: list[dict[str, object]],
-    *,
-    point_date: date,
-    currency: str,
-    price_unit: str,
-    price_scale: float,
-) -> tuple[float | None, str | None]:
-    same_date_components: list[dict[str, object]] = []
-    for point in all_points:
-        if not is_usable_market_data_point(point):
-            continue
-        if _normalized_text(point.get("quote_basis")) != "accrued_interest":
-            continue
-        if _parse_iso_date(point.get("as_of_date")) != point_date:
-            continue
-        same_date_components.append(point)
-
-    if not same_date_components:
-        return None, "clean_price_requires_matching_accrued_interest"
-    if len(same_date_components) != 1:
-        return None, "duplicate_accrued_interest_component"
-    component = same_date_components[0]
-    component_scale = _finite_float(component.get("price_scale"))
-    if _normalized_text(component.get("metric_family")) != "price":
-        return None, "accrued_interest_metric_family_mismatch"
-    if _normalized_currency(component.get("currency")) != currency:
-        return None, "accrued_interest_currency_mismatch"
-    if (
-        _normalized_text(component.get("price_unit")) != price_unit
-        or component_scale is None
-        or abs(component_scale - price_scale) > 1e-12
-    ):
-        return None, "accrued_interest_price_contract_mismatch"
-    value = _finite_float(component.get("value"), allow_zero=True)
-    if value is None:
-        return None, "invalid_accrued_interest_component"
-    return value, None
-
-
 def resolve_quote_series(
     detail: dict[str, object],
     *,
@@ -220,9 +177,8 @@ def resolve_quote_series(
 
     A policy basis is a preference, not a series identity.  Portfolio therefore
     locks the selected history to metric family, basis, and currency and rejects
-    duplicate dates instead of merging provider rows.  Explicit unit/scale and
-    same-date accrued-interest components come from the canonical shared market
-    data contract and are validated again here at the Portfolio boundary.
+    duplicate dates instead of merging provider rows. The canonical unit/scale
+    contract is validated again at the Portfolio boundary.
     """
 
     points = _market_data_points(detail)
@@ -241,7 +197,6 @@ def resolve_quote_series(
     if not expected_currency:
         return QuoteSeriesResolution(unavailable_reason="instrument_currency_unavailable")
 
-    fallback_unavailable_reason: str | None = None
     for quote_basis in normalized_bases:
         matching_raw: list[dict[str, object]] = []
         invalid_observation = False
@@ -289,9 +244,6 @@ def resolve_quote_series(
         price_unit, price_scale, contract_error = _price_contract(matching_raw)
         if contract_error is not None:
             return QuoteSeriesResolution(unavailable_reason=contract_error)
-        if instrument_type == "bond":
-            if quote_basis not in {"dirty_price", "clean_price"}:
-                return QuoteSeriesResolution(unavailable_reason="bond_quote_basis_unavailable")
         try:
             canonical_unit, canonical_scale = canonical_price_contract(
                 instrument_type=instrument_type,
@@ -305,25 +257,19 @@ def resolve_quote_series(
             or price_scale is None
             or abs(price_scale - float(canonical_scale)) > 1e-12
         ):
-            if instrument_type == "bond":
-                reason = "bond_price_contract_unavailable"
-            elif canonical_unit == "rate":
+            if canonical_unit == "rate":
                 reason = "fx_price_contract_unsupported"
             else:
-                reason = "non_bond_price_contract_unsupported"
+                reason = "price_contract_unsupported"
             return QuoteSeriesResolution(unavailable_reason=reason)
 
         normalized_points: list[dict[str, object]] = []
-        candidate_unavailable_reason: str | None = None
         for raw_point in matching_raw:
             point_date = _parse_iso_date(raw_point.get("as_of_date"))
             value = _finite_float(raw_point.get("value"))
             if point_date is None or value is None:
                 return QuoteSeriesResolution(unavailable_reason="invalid_quote_observation")
             normalized_point = dict(raw_point)
-            normalized_point.pop("source_quote_basis", None)
-            normalized_point.pop("clean_value", None)
-            normalized_point.pop("accrued_interest", None)
             normalized_point.update(
                 {
                     "as_of_date": point_date,
@@ -336,46 +282,19 @@ def resolve_quote_series(
                     "price_scale": price_scale,
                 }
             )
-            if instrument_type == "bond" and quote_basis == "clean_price":
-                assert price_unit is not None and price_scale is not None
-                accrued_interest, accrued_error = _matching_accrued_interest(
-                    points,
-                    point_date=point_date,
-                    currency=currency,
-                    price_unit=price_unit,
-                    price_scale=price_scale,
-                )
-                if accrued_interest is None:
-                    if accrued_error != "clean_price_requires_matching_accrued_interest":
-                        return QuoteSeriesResolution(unavailable_reason=accrued_error)
-                    candidate_unavailable_reason = accrued_error
-                    break
-                normalized_point["clean_value"] = value
-                normalized_point["accrued_interest"] = accrued_interest
-                normalized_point["value"] = value + accrued_interest
-                normalized_point["source_quote_basis"] = "clean_price"
-                normalized_point["quote_basis"] = "dirty_price"
             normalized_points.append(normalized_point)
 
-        if candidate_unavailable_reason is not None:
-            fallback_unavailable_reason = candidate_unavailable_reason
-            continue
-
         normalized_points.sort(key=lambda point: point["as_of_date"])
-        canonical_quote_basis = "dirty_price" if quote_basis == "clean_price" else quote_basis
         return QuoteSeriesResolution(
             points=tuple(normalized_points),
             metric_family=metric_family,
-            quote_basis=canonical_quote_basis,
-            source_quote_basis=(quote_basis if quote_basis != canonical_quote_basis else None),
+            quote_basis=quote_basis,
             currency=currency,
             price_unit=price_unit,
             price_scale=price_scale,
         )
 
-    return QuoteSeriesResolution(
-        unavailable_reason=fallback_unavailable_reason or "quote_series_unavailable"
-    )
+    return QuoteSeriesResolution(unavailable_reason="quote_series_unavailable")
 
 
 def resolve_quote_point(
@@ -405,20 +324,17 @@ def previous_quote_point(
     if not isinstance(selected_point, dict):
         return QuotePointResolution(unavailable_reason="selected_quote_unavailable")
     quote_basis = _normalized_text(selected_point.get("quote_basis"))
-    source_quote_basis = (
-        _normalized_text(selected_point.get("source_quote_basis")) or quote_basis
-    )
     selected_date = _parse_iso_date(selected_point.get("as_of_date"))
     selected_identity = (
         _normalized_text(selected_point.get("metric_family")),
         quote_basis,
         _normalized_currency(selected_point.get("currency")),
     )
-    if not source_quote_basis or selected_date is None or not all(selected_identity):
+    if not quote_basis or selected_date is None or not all(selected_identity):
         return QuotePointResolution(unavailable_reason="selected_quote_identity_incomplete")
     series = resolve_quote_series(
         detail,
-        candidate_bases=[source_quote_basis],
+        candidate_bases=[quote_basis],
         end_date=selected_date,
     )
     if not series.available:

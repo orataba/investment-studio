@@ -193,38 +193,6 @@ def test_execution_quote_endpoint_returns_not_found_for_unknown_instrument(clien
     assert response.json()["detail"] == "Instrument not found in shared registry."
 
 
-def test_execution_quote_endpoint_returns_explicit_bond_price_contract(client, monkeypatch):
-    dirty_price = _point(
-        quote_basis="dirty_price",
-        as_of_date="2026-03-27",
-        value="98.5",
-        provider="bond-execution-quote-test",
-    )
-    dirty_price["price_unit"] = "percent_of_par"
-    dirty_price["price_scale"] = 0.01
-    _install_detail(
-        monkeypatch,
-        _instrument_detail(
-            policy={"trading": ["dirty_price"], "valuation": ["dirty_price"]},
-            market_data=[dirty_price],
-            instrument_type="bond",
-        ),
-    )
-
-    response = client.get(
-        "/api/portfolios/portfolio-ops/transactions/execution-quote",
-        params={"instrument_id": "159516-sz", "as_of_date": "2026-03-27"},
-    )
-
-    assert response.status_code == 200
-    payload = response.json()
-    assert payload["value"] == pytest.approx(98.5)
-    assert payload["quote_basis"] == "dirty_price"
-    assert payload["price_unit"] == "percent_of_par"
-    assert payload["price_scale"] == pytest.approx(0.01)
-    assert payload["unavailable_reason"] is None
-
-
 def test_execution_quote_response_rejects_incomplete_available_contract() -> None:
     complete_payload = {
         "portfolio_id": "portfolio-ops",

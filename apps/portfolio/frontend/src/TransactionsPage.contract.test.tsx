@@ -68,20 +68,6 @@ const fundSecuritiesAccount = {
   allowed_instrument_types: ['fund'],
 }
 
-const bondSecuritiesAccount = {
-  ...securitiesAccount,
-  account_id: 'bond-brokerage-1',
-  account_name: 'Bond Brokerage',
-  allowed_instrument_types: ['bond'],
-}
-
-const multiAssetSecuritiesAccount = {
-  ...securitiesAccount,
-  account_id: 'multi-asset-brokerage-1',
-  account_name: 'Multi-Asset Brokerage',
-  allowed_instrument_types: ['etf', 'bond'],
-}
-
 const etfInstrument = {
   ...instrumentFixture({
     instrument_id: 'etf-1',
@@ -104,22 +90,22 @@ const etfInstrument = {
   coverage_state: 'complete' as const,
 }
 
-const bondInstrument = {
+const alternateEtfInstrument = {
   ...instrumentFixture({
-    instrument_id: 'bond-1',
-    instrument_name: 'Treasury Bond',
-    instrument_type: 'bond',
-    identifiers: [{ identifier_type: 'ticker' as const, identifier_value: 'TBOND', is_primary: true }],
+    instrument_id: 'etf-2',
+    instrument_name: 'Alternate Equity ETF',
+    instrument_type: 'etf',
+    identifiers: [{ identifier_type: 'ticker' as const, identifier_value: 'AETF', is_primary: true }],
   }),
   latest_market_data: [
     {
       metric_family: 'price' as const,
-      quote_basis: 'dirty_price' as const,
+      quote_basis: 'close' as const,
       as_of_date: '2026-07-15',
       value: '98.5',
       currency: 'USD',
-      price_unit: 'percent_of_par' as const,
-      price_scale: '0.01',
+      price_unit: 'per_unit' as const,
+      price_scale: '1',
       status: 'complete' as const,
     },
   ],
@@ -218,7 +204,7 @@ describe('Transactions rendered page contract', () => {
     })
     apiMocks.getPortfolioInstruments.mockResolvedValue({
       portfolio_id: '3',
-      instruments: [etfInstrument, bondInstrument],
+      instruments: [etfInstrument, alternateEtfInstrument, fundInstrument],
     })
     apiMocks.getPortfolioDerivativeContracts.mockResolvedValue({
       portfolio_id: '3',
@@ -338,7 +324,7 @@ describe('Transactions rendered page contract', () => {
     expect(within(dialog).getByText('Accounting impact')).toBeInTheDocument()
 
     const securitySearch = within(dialog).getByRole('searchbox', { name: 'Security' })
-    fireEvent.change(securitySearch, { target: { value: 'TBOND' } })
+    fireEvent.change(securitySearch, { target: { value: 'FUND1' } })
     expect(await within(dialog).findByText('No matching security.')).toBeInTheDocument()
 
     fireEvent.change(securitySearch, { target: { value: 'GETF' } })
@@ -408,11 +394,11 @@ describe('Transactions rendered page contract', () => {
   it('clears prior economics when the selected instrument changes', async () => {
     apiMocks.getPortfolioAccounts.mockResolvedValue({
       portfolio_id: '3',
-      accounts: [multiAssetSecuritiesAccount, cashAccount],
+      accounts: [securitiesAccount, cashAccount],
     })
     apiMocks.getPortfolioTransactionExecutionQuote.mockResolvedValue({
       portfolio_id: '3',
-      instrument_id: 'bond-1',
+      instrument_id: 'etf-2',
       requested_as_of_date: '2026-07-15',
       selection_role: null,
       value: null,
@@ -439,7 +425,7 @@ describe('Transactions rendered page contract', () => {
     const dialog = screen.getByRole('dialog', { name: 'Record transaction' })
     await waitFor(() =>
       expect(within(dialog).getByRole('combobox', { name: 'Account' })).toHaveValue(
-        'multi-asset-brokerage-1',
+        'brokerage-1',
       ),
     )
     const securitySearch = within(dialog).getByRole('searchbox', { name: 'Security' })
@@ -458,11 +444,11 @@ describe('Transactions rendered page contract', () => {
     await user.type(quoteInput, '98.5')
     expect(amountInput).toHaveValue(98_500)
 
-    fireEvent.change(securitySearch, { target: { value: 'TBOND' } })
+    fireEvent.change(securitySearch, { target: { value: 'AETF' } })
     await user.click(
       await within(dialog).findByRole(
         'button',
-        { name: /TBOND.*Treasury Bond.*USD/ },
+        { name: /AETF.*Alternate Equity ETF.*USD/ },
         { timeout: 3_000 },
       ),
     )
@@ -470,166 +456,6 @@ describe('Transactions rendered page contract', () => {
     expect(quantityInput).toHaveValue(null)
     expect(quoteInput).toHaveValue(null)
     expect(amountInput).toHaveValue(null)
-  })
-
-  it('recalculates an auto-derived bond gross amount when the execution quote date changes', async () => {
-    apiMocks.getPortfolioAccounts.mockResolvedValue({
-      portfolio_id: '3',
-      accounts: [bondSecuritiesAccount, cashAccount],
-    })
-    apiMocks.getPortfolioTransactionExecutionQuote.mockImplementation(
-      (_portfolioId, _instrumentId, asOfDate) =>
-        Promise.resolve({
-          portfolio_id: '3',
-          instrument_id: 'bond-1',
-          requested_as_of_date: asOfDate,
-          selection_role: 'trading',
-          value: asOfDate === '2026-07-16' ? 99 : 98.5,
-          quote_date: asOfDate,
-          quote_basis: 'dirty_price',
-          metric_family: 'price',
-          currency: 'USD',
-          provider: 'fixture',
-          status: 'complete',
-          stale: false,
-          price_unit: 'percent_of_par',
-          price_scale: 0.01,
-          unavailable_reason: null,
-        }),
-    )
-
-    const user = userEvent.setup()
-    renderPortfolioPage(
-      <TransactionsPage />,
-      '/portfolios/3/transactions?transaction_id=txn-1',
-      '/portfolios/:portfolioId/transactions',
-    )
-
-    await user.click(await screen.findByRole('button', { name: 'Record Transaction' }))
-    const dialog = screen.getByRole('dialog', { name: 'Record transaction' })
-    await waitFor(() =>
-      expect(within(dialog).getByRole('combobox', { name: 'Account' })).toHaveValue(
-        'bond-brokerage-1',
-      ),
-    )
-    fireEvent.change(within(dialog).getByLabelText('Trade Date'), {
-      target: { value: '2026-07-15' },
-    })
-    const securitySearch = within(dialog).getByRole('searchbox', { name: 'Security' })
-    await user.type(securitySearch, 'TBOND')
-    await user.click(
-      await within(dialog).findByRole('button', { name: /TBOND.*Treasury Bond.*USD/ }),
-    )
-
-    const quantityInput = within(dialog).getByRole('spinbutton', { name: /^Shares/ })
-    const quoteInput = within(dialog).getByRole('spinbutton', { name: /^Execution Price/ })
-    const amountInput = within(dialog).getByRole('spinbutton', { name: 'Amount' })
-    await waitFor(() => expect(quoteInput).toHaveValue(98.5))
-    await user.type(quantityInput, '1000')
-    expect(amountInput).toHaveValue(985)
-    expect(
-      within(within(dialog).getByRole('complementary', { name: 'Transaction review' })).getByText('-$985.00'),
-    ).toBeInTheDocument()
-
-    fireEvent.change(within(dialog).getByLabelText('Trade Date'), {
-      target: { value: '2026-07-16' },
-    })
-
-    await waitFor(() => {
-      expect(quoteInput).toHaveValue(99)
-      expect(amountInput).toHaveValue(990)
-    })
-  })
-
-  it('submits true sell percent-of-par economics and exposes a readable unavailable quote reason', async () => {
-    apiMocks.getPortfolioAccounts.mockResolvedValue({
-      portfolio_id: '3',
-      accounts: [bondSecuritiesAccount, cashAccount],
-    })
-    apiMocks.getPortfolioTransactionExecutionQuote.mockResolvedValue({
-      portfolio_id: '3',
-      instrument_id: 'bond-1',
-      requested_as_of_date: '2026-07-15',
-      selection_role: null,
-      value: null,
-      quote_date: null,
-      quote_basis: null,
-      metric_family: null,
-      currency: 'USD',
-      provider: null,
-      status: 'unavailable',
-      stale: false,
-      price_unit: null,
-      price_scale: null,
-      unavailable_reason: 'clean_price_requires_matching_accrued_interest',
-    })
-    apiMocks.createPortfolioTransaction.mockResolvedValue({
-      ...selectedTransaction,
-      transaction_id: 'txn-bond-sell',
-      transaction_type: 'sell',
-      account: bondSecuritiesAccount,
-      instrument_id: 'bond-1',
-      instrument_ref: bondInstrument,
-      quantity: 1_000,
-      price: 98.5,
-      gross_amount: 985,
-      net_cash_effect: 985,
-    })
-
-    const user = userEvent.setup()
-    renderPortfolioPage(
-      <TransactionsPage />,
-      '/portfolios/3/transactions?transaction_id=txn-1',
-      '/portfolios/:portfolioId/transactions',
-    )
-
-    await user.click(await screen.findByRole('button', { name: 'Record Transaction' }))
-    const dialog = screen.getByRole('dialog', { name: 'Record transaction' })
-    await waitFor(() =>
-      expect(within(dialog).getByRole('combobox', { name: 'Account' })).toHaveValue(
-        'bond-brokerage-1',
-      ),
-    )
-    await user.selectOptions(within(dialog).getByRole('combobox', { name: 'Transaction Type' }), 'sell')
-    const securitySearch = within(dialog).getByRole('searchbox', { name: 'Security' })
-    await user.type(securitySearch, 'TBOND')
-    await user.click(
-      await within(dialog).findByRole('button', { name: /TBOND.*Treasury Bond.*USD/ }),
-    )
-
-    expect(
-      await within(dialog).findByText(
-        'Clean bond price requires matching same-date accrued interest, so no execution quote was applied.',
-      ),
-    ).toBeInTheDocument()
-    const quoteInput = within(dialog).getByRole('spinbutton', { name: /^Execution Price/ })
-    const amountInput = within(dialog).getByRole('spinbutton', { name: 'Amount' })
-    expect(quoteInput).toHaveValue(null)
-    expect(amountInput).toHaveValue(null)
-
-    const quantityInput = within(dialog).getByRole('spinbutton', { name: /^Shares/ })
-    await waitFor(() => expect(quantityInput).toHaveValue(1_000))
-    await user.type(quoteInput, '98.5')
-    expect(amountInput).toHaveValue(985)
-    expect(
-      within(within(dialog).getByRole('complementary', { name: 'Transaction review' })).getByText('+$985.00'),
-    ).toBeInTheDocument()
-
-    await user.click(within(dialog).getByRole('button', { name: 'Record Transaction' }))
-    await waitFor(() =>
-      expect(apiMocks.createPortfolioTransaction).toHaveBeenCalledWith(
-        '3',
-        expect.objectContaining({
-          transaction_type: 'sell',
-          trade_time: null,
-          instrument_id: 'bond-1',
-          quantity: 1_000,
-          price: 98.5,
-          gross_amount: 985,
-        }),
-        expect.stringMatching(/^transaction-create-/),
-      ),
-    )
   })
 
   it('keeps confirmed fund amount and shares authoritative and derives the unit price', async () => {

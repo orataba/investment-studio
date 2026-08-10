@@ -32,9 +32,7 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    with op.batch_alter_table("target_set_line_record") as batch_op:
-        batch_op.drop_constraint(NEW_CHECK_NAME, type_="check")
-        batch_op.create_check_constraint(
-            OLD_CHECK_NAME,
-            "target_member_type != 'cash_bucket' OR target_risk_share IS NULL",
-        )
+    raise RuntimeError(
+        "Derivative targets may not carry risk budgets. Restore the "
+        "pre-migration database backup instead of re-enabling that model."
+    )

@@ -138,14 +138,6 @@ def test_attribution_grouping_helpers_golden_contract() -> None:
             )
             assert len(transaction_group) == 2
 
-    assert attribution.cash_bucket_account_ids(
-        [
-            {"account_id": "bank", "account_type": "deposit_account"},
-            {"account_id": "broker", "account_type": "brokerage"},
-        ]
-    ) == {"bank"}
-
-
 @pytest.mark.parametrize(
     ("values", "expected"),
     [
@@ -199,7 +191,7 @@ def test_daily_group_return_golden(
     assert extracted == pytest.approx(expected) if expected is not None else extracted is None
 
 
-def test_taxonomy_reducers_preserve_cash() -> None:
+def test_taxonomy_reducers_keep_cash_and_derivatives_as_system_groups() -> None:
     taxonomy = {
         "taxonomy_id": "strategy",
         "primary_assignment_scope": "instrument",
@@ -241,17 +233,28 @@ def test_taxonomy_reducers_preserve_cash() -> None:
             pnl=0.0,
             contribution=0.0,
         ),
+        {
+            **_complete_slice(
+                as_of_date=date(2026, 1, 2),
+                group_key="fcn-local-1",
+                group_label="FCN Local 1",
+                beginning_value=10.0,
+                ending_value=11.0,
+                pnl=1.0,
+                contribution=0.01,
+            ),
+            "_system_holding_category": "derivatives",
+        },
     ]
     kwargs = {
         "taxonomy": taxonomy,
         "taxonomy_nodes": nodes,
         "taxonomy_assignments": assignments,
         "base_daily_slices": base_slices,
-        "preserve_cash_group": True,
     }
     extracted = attribution.group_contribution_slices_by_taxonomy(**kwargs)
-    assert [item["group_key"] for item in extracted] == ["cash", "growth"]
-    assert extracted[1]["daily_return"] == pytest.approx(0.05)
+    assert [item["group_key"] for item in extracted] == ["__cash__", "__derivatives__", "growth"]
+    assert extracted[2]["daily_return"] == pytest.approx(0.05)
 
     base_report = {
         "portfolio_id": "portfolio-1",
@@ -278,7 +281,11 @@ def test_taxonomy_reducers_preserve_cash() -> None:
     }
     report = attribution.build_taxonomy_contribution_report(**report_kwargs)
     assert report["summary"]["axis"] == "taxonomy"
-    assert {line["group_key"] for line in report["lines"]} == {"cash", "growth"}
+    assert {line["group_key"] for line in report["lines"]} == {
+        "__cash__",
+        "__derivatives__",
+        "growth",
+    }
 
 
 def test_contribution_report_core_and_filter_golden_contract() -> None:

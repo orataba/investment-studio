@@ -785,6 +785,11 @@ def _save_store_to_db(session, data: dict[str, object]) -> None:
     for raw_taxonomy in list(normalized.get("taxonomies", [])):
         if not isinstance(raw_taxonomy, dict):
             continue
+        primary_assignment_scope = str(
+            raw_taxonomy.get("primary_assignment_scope") or "instrument"
+        ).strip() or "instrument"
+        if primary_assignment_scope != "instrument":
+            raise ValueError("Portfolio taxonomies support Registry instruments only.")
         session.add(
             TaxonomyRecordModel(
                 taxonomy_id=str(raw_taxonomy.get("taxonomy_id") or "").strip(),
@@ -792,9 +797,7 @@ def _save_store_to_db(session, data: dict[str, object]) -> None:
                 name=str(raw_taxonomy.get("name") or "").strip(),
                 taxonomy_type=str(raw_taxonomy.get("taxonomy_type") or "custom").strip() or "custom",
                 purpose=(str(raw_taxonomy.get("purpose")).strip() if raw_taxonomy.get("purpose") else None),
-                primary_assignment_scope=(
-                    str(raw_taxonomy.get("primary_assignment_scope") or "instrument").strip() or "instrument"
-                ),
+                primary_assignment_scope="instrument",
                 planning_enabled=bool(raw_taxonomy.get("planning_enabled")),
                 budgeting_level=(
                     str(raw_taxonomy.get("budgeting_level")).strip() if raw_taxonomy.get("budgeting_level") else None
@@ -837,9 +840,14 @@ def _save_store_to_db(session, data: dict[str, object]) -> None:
     for raw_assignment in list(normalized.get("taxonomy_assignments", [])):
         if not isinstance(raw_assignment, dict):
             continue
+        target_scope = str(
+            raw_assignment.get("target_scope") or "instrument"
+        ).strip() or "instrument"
+        if target_scope != "instrument":
+            raise ValueError("Portfolio taxonomy assignments support Registry instruments only.")
         assignment_key = (
             str(raw_assignment.get("taxonomy_id") or "").strip(),
-            str(raw_assignment.get("target_scope") or "instrument").strip() or "instrument",
+            "instrument",
             str(raw_assignment.get("target_entity_id") or "").strip(),
         )
         assignment_rows_by_key[assignment_key] = raw_assignment
@@ -851,7 +859,7 @@ def _save_store_to_db(session, data: dict[str, object]) -> None:
             TaxonomyAssignmentRecordModel(
                 assignment_id=str(raw_assignment.get("assignment_id") or "").strip(),
                 taxonomy_id=str(raw_assignment.get("taxonomy_id") or "").strip(),
-                target_scope=str(raw_assignment.get("target_scope") or "instrument").strip() or "instrument",
+                target_scope="instrument",
                 target_entity_id=str(raw_assignment.get("target_entity_id") or "").strip(),
                 taxonomy_node_id=str(raw_assignment.get("taxonomy_node_id") or "").strip(),
                 status=str(raw_assignment.get("status") or "active").strip() or "active",
@@ -2130,77 +2138,10 @@ def _budgeting_dimensions(budgeting_level: str | None) -> set[str]:
     return set()
 
 
-def _taxonomy_allows_assignment_scope(taxonomy: TaxonomyRecordModel, target_scope: str) -> bool:
-    return taxonomy.primary_assignment_scope == target_scope
-
-
-def _active_taxonomy_nodes_by_parent(
-    session,
-    *,
-    taxonomy_id: str,
-) -> dict[str | None, list[TaxonomyNodeRecordModel]]:
-    nodes = session.scalars(
-        select(TaxonomyNodeRecordModel).where(
-            TaxonomyNodeRecordModel.taxonomy_id == taxonomy_id,
-            TaxonomyNodeRecordModel.status == "active",
-        )
-    ).all()
-    grouped: dict[str | None, list[TaxonomyNodeRecordModel]] = {}
-    for node in nodes:
-        grouped.setdefault(node.parent_taxonomy_node_id, []).append(node)
-    return grouped
-
-
-def _taxonomy_node_subtree_ids(
-    nodes_by_parent: dict[str | None, list[TaxonomyNodeRecordModel]],
-    *,
-    root_node_id: str,
-) -> set[str]:
-    pending = [root_node_id]
-    seen: set[str] = set()
-    while pending:
-        node_id = pending.pop()
-        if node_id in seen:
-            continue
-        seen.add(node_id)
-        for child in nodes_by_parent.get(node_id, []):
-            pending.append(child.taxonomy_node_id)
-    return seen
-
-
 def _is_reserved_cash_label(node_name: str | None, node_code: str | None) -> bool:
     normalized_name = (node_name or "").strip().lower()
     normalized_code = (node_code or "").strip().lower()
     return normalized_code == "cash" or normalized_name in {"cash", "现金"}
-
-
-def _scope_member_excludes_risk(
-    session,
-    *,
-    taxonomy_id: str,
-    target_member_type: str,
-    target_member_id: str,
-    nodes_by_parent: dict[str | None, list[TaxonomyNodeRecordModel]] | None = None,
-) -> bool:
-    if target_member_type in {TARGET_MEMBER_CASH, TARGET_MEMBER_DERIVATIVE}:
-        return True
-    if target_member_type != TARGET_MEMBER_NODE:
-        return False
-    resolved_nodes_by_parent = nodes_by_parent or _active_taxonomy_nodes_by_parent(session, taxonomy_id=taxonomy_id)
-    subtree_node_ids = _taxonomy_node_subtree_ids(
-        resolved_nodes_by_parent,
-        root_node_id=target_member_id,
-    )
-    assignments = session.scalars(
-        select(TaxonomyAssignmentRecordModel).where(
-            TaxonomyAssignmentRecordModel.taxonomy_id == taxonomy_id,
-            TaxonomyAssignmentRecordModel.taxonomy_node_id.in_(list(subtree_node_ids)),
-            TaxonomyAssignmentRecordModel.status == "active",
-        )
-    ).all()
-    return bool(assignments) and all(
-        str(assignment.target_scope) == "cash_bucket" for assignment in assignments
-    )
 
 
 def _normalize_target_line_member(raw_line: dict[str, object]) -> tuple[str, str, str | None]:
@@ -2334,8 +2275,6 @@ def _validate_target_set_lines(
 ) -> tuple[TaxonomyNodeRecordModel | None, list[TaxonomyNodeRecordModel]]:
     if not taxonomy.planning_enabled:
         raise ValueError("Target sets require a planning-enabled taxonomy.")
-    if taxonomy.primary_assignment_scope != "instrument":
-        raise ValueError("Target sets require an instrument-scoped taxonomy.")
     if not weight_enabled and not risk_budget_enabled:
         raise ValueError("At least one target dimension must be enabled.")
 
@@ -2359,22 +2298,15 @@ def _validate_target_set_lines(
         (str(item["target_member_type"]), str(item["target_member_id"]))
         for item in scope_members
     }
-    nodes_by_parent = _active_taxonomy_nodes_by_parent(session, taxonomy_id=taxonomy.taxonomy_id)
     optional_member_keys: set[tuple[str, str]] = set()
-    if comparator_taxonomy_node_id is None and taxonomy.primary_assignment_scope == "instrument":
+    if comparator_taxonomy_node_id is None:
         optional_member_keys.add((TARGET_MEMBER_CASH, SYSTEM_CASH_TARGET_MEMBER_ID))
         optional_member_keys.add((TARGET_MEMBER_DERIVATIVE, SYSTEM_DERIVATIVE_TARGET_MEMBER_ID))
     seen_member_keys: set[tuple[str, str]] = set()
     risk_excluded_member_keys = {
         member_key
         for member_key in expected_member_keys | optional_member_keys
-        if _scope_member_excludes_risk(
-            session,
-            taxonomy_id=taxonomy.taxonomy_id,
-            target_member_type=member_key[0],
-            target_member_id=member_key[1],
-            nodes_by_parent=nodes_by_parent,
-        )
+        if member_key[0] in {TARGET_MEMBER_CASH, TARGET_MEMBER_DERIVATIVE}
     }
     risk_eligible_member_keys = expected_member_keys - risk_excluded_member_keys
     if risk_budget_enabled and not risk_eligible_member_keys:
@@ -2586,9 +2518,6 @@ def update_taxonomy(
         resolved_budgeting_level = record.budgeting_level if budgeting_level is UNSET else budgeting_level
         if resolved_budgeting_level and not resolved_planning_enabled:
             raise ValueError("budgeting_level requires planning_enabled.")
-        if resolved_planning_enabled and record.primary_assignment_scope != "instrument":
-            raise ValueError("planning_enabled taxonomies must use instrument assignment scope.")
-
         if name is not UNSET and name is not None:
             record.name = name.strip()
         if taxonomy_type is not UNSET and taxonomy_type is not None:
@@ -2681,7 +2610,7 @@ def create_taxonomy_node(
         )
         if taxonomy is None:
             raise ValueError("Taxonomy not found.")
-        if taxonomy.primary_assignment_scope == "instrument" and _is_reserved_cash_label(node_name, node_code):
+        if _is_reserved_cash_label(node_name, node_code):
             raise ValueError("Cash is system-managed for instrument taxonomies.")
 
         parent_node = None
@@ -2755,7 +2684,7 @@ def update_taxonomy_node(
             raise ValueError("Taxonomy node not found.")
         resolved_node_name = record.node_name if node_name is UNSET or node_name is None else node_name
         resolved_node_code = record.node_code if node_code is UNSET else node_code
-        if taxonomy.primary_assignment_scope == "instrument" and _is_reserved_cash_label(
+        if _is_reserved_cash_label(
             resolved_node_name,
             resolved_node_code,
         ):
@@ -3220,8 +3149,8 @@ def create_taxonomy_assignment(
         )
         if taxonomy is None:
             raise ValueError("Taxonomy not found.")
-        if not _taxonomy_allows_assignment_scope(taxonomy, target_scope):
-            raise ValueError("Assignment target_scope is not allowed for this taxonomy.")
+        if target_scope != "instrument":
+            raise ValueError("Taxonomy assignments support Registry instruments only.")
 
         node = session.scalar(
             select(TaxonomyNodeRecordModel).where(
@@ -3254,12 +3183,11 @@ def create_taxonomy_assignment(
         )
         session.add(record)
         session.flush()
-        if target_scope == "instrument":
-            _refresh_portfolio_instrument_universe_records(
-                session,
-                portfolio_id,
-                {target_entity_id.strip()},
-            )
+        _refresh_portfolio_instrument_universe_records(
+            session,
+            portfolio_id,
+            {target_entity_id.strip()},
+        )
         _record_taxonomy_configuration_revision_in_session(
             session,
             portfolio_id=portfolio_id,
@@ -3303,9 +3231,6 @@ def update_taxonomy_assignment(
         )
         if record is None:
             raise ValueError("Taxonomy assignment not found.")
-        if not _taxonomy_allows_assignment_scope(taxonomy, record.target_scope):
-            raise ValueError("Assignment target_scope is not allowed for this taxonomy.")
-
         if taxonomy_node_id is not UNSET and taxonomy_node_id is not None:
             node = session.scalar(
                 select(TaxonomyNodeRecordModel).where(
@@ -3334,12 +3259,11 @@ def update_taxonomy_assignment(
             raise ValueError("An assignment for this entity already exists.")
 
         session.flush()
-        if record.target_scope == "instrument":
-            _refresh_portfolio_instrument_universe_records(
-                session,
-                portfolio_id,
-                {record.target_entity_id},
-            )
+        _refresh_portfolio_instrument_universe_records(
+            session,
+            portfolio_id,
+            {record.target_entity_id},
+        )
         _record_taxonomy_configuration_revision_in_session(
             session,
             portfolio_id=portfolio_id,
@@ -3797,16 +3721,14 @@ def delete_taxonomy_assignment(
         )
         if record is None:
             return False
-        target_scope = record.target_scope
         target_entity_id = record.target_entity_id
         session.delete(record)
         session.flush()
-        if target_scope == "instrument":
-            _refresh_portfolio_instrument_universe_records(
-                session,
-                portfolio_id,
-                {target_entity_id},
-            )
+        _refresh_portfolio_instrument_universe_records(
+            session,
+            portfolio_id,
+            {target_entity_id},
+        )
         _record_taxonomy_configuration_revision_in_session(
             session,
             portfolio_id=portfolio_id,

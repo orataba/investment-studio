@@ -1254,7 +1254,7 @@ def test_option_contract_identity_migration_on_postgresql(
     with engine.connect() as connection:
         _set_search_path(connection, schema)
         assert connection.scalar(sa.text("SELECT version_num FROM alembic_version")) == (
-            "20260809_0022"
+            "20260810_0023"
         )
 
 

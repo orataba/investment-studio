@@ -40,6 +40,8 @@ from portfolio_app.services.research_solver import (
     RESEARCH_DEFAULT_MISSING_RETURN_POLICY,
     SYSTEM_CASH_TARGET_LABEL,
     SYSTEM_CASH_TARGET_MEMBER_ID,
+    SYSTEM_DERIVATIVE_TARGET_LABEL,
+    SYSTEM_DERIVATIVE_TARGET_MEMBER_ID,
     build_research_calculation_frequency_profile,
     build_research_scope_options,
     build_current_target_backtest,
@@ -388,8 +390,6 @@ def _validate_planning_taxonomy(
         raise ValueError("Planning taxonomy not found.")
     if not taxonomy.planning_enabled:
         raise ValueError("Research planning taxonomy must be planning-enabled.")
-    if taxonomy.primary_assignment_scope != "instrument":
-        raise ValueError("Research planning taxonomy must use instrument assignment scope.")
     return taxonomy
 
 
@@ -866,49 +866,65 @@ def _build_planning_group_snapshot(
         for item in list_taxonomy_nodes(portfolio_id)
         if str(item.get("taxonomy_id") or "") == planning_taxonomy_id
     }
-    assignment_by_entity: dict[tuple[str, str], dict[str, object]] = {}
+    assignment_by_instrument: dict[str, dict[str, object]] = {}
     for item in list_taxonomy_assignments(portfolio_id):
         if str(item.get("taxonomy_id") or "") != planning_taxonomy_id:
             continue
         if str(item.get("status") or "") != "active":
             continue
-        target_scope = str(item.get("target_scope") or "")
-        if target_scope not in {"instrument", "cash_bucket"}:
+        if str(item.get("target_scope") or "") != "instrument":
             continue
         entity_id = str(item.get("target_entity_id") or "")
         if not entity_id:
             continue
-        assignment_key = (target_scope, entity_id)
-        assignment_by_entity.setdefault(assignment_key, item)
+        assignment_by_instrument.setdefault(entity_id, item)
 
     if any(_safe_float(position.get("market_value_base")) is None for position in statement_positions):
         return []
-    if any(
-        str((account_row.get("account") or {}).get("account_type") or "") == "deposit_account"
-        and _safe_float(account_row.get("account_value_base")) is None
-        for account_row in account_rows
-    ):
+
+    security_positions = [
+        position
+        for position in statement_positions
+        if not position.get("derivative_contract_id")
+        and not isinstance(position.get("derivative_contract"), dict)
+        and str(position.get("instrument_id") or "")
+    ]
+    derivative_positions = [
+        position
+        for position in statement_positions
+        if position.get("derivative_contract_id")
+        or isinstance(position.get("derivative_contract"), dict)
+    ]
+
+    def account_liquidity_base(account_row: dict[str, object]) -> float | None:
+        cash_balance_base = _safe_float(account_row.get("derived_cash_balance_base"))
+        pending_settlement_base = _safe_float(account_row.get("pending_settlement_base"))
+        if cash_balance_base is None or pending_settlement_base is None:
+            return None
+        return cash_balance_base + pending_settlement_base
+
+    if any(account_liquidity_base(account_row) is None for account_row in account_rows):
         return []
 
     visible_cash_accounts = [
         account_row
         for account_row in account_rows
-        if str((account_row.get("account") or {}).get("account_type") or "") == "deposit_account"
-        and (
-            abs(_safe_float(account_row.get("account_value_base")) or 0.0) > 1e-9
-            or ("cash_bucket", str((account_row.get("account") or {}).get("account_id") or "")) in assignment_by_entity
+        if (
+            str((account_row.get("account") or {}).get("account_type") or "") == "deposit_account"
+            or abs(account_liquidity_base(account_row) or 0.0) > 1e-9
         )
     ]
 
-    total_entity_value_base = sum(float(position["market_value_base"]) for position in statement_positions)
+    total_entity_value_base = sum(float(position["market_value_base"]) for position in security_positions)
+    total_entity_value_base += sum(float(position["market_value_base"]) for position in derivative_positions)
     total_entity_value_base += sum(
-        _safe_float(account_row.get("account_value_base")) or 0.0 for account_row in visible_cash_accounts
+        account_liquidity_base(account_row) or 0.0 for account_row in visible_cash_accounts
     )
 
     buckets: dict[str, dict[str, object]] = {}
-    for position in statement_positions:
+    for position in security_positions:
         instrument_id = str(position.get("instrument_id") or "")
-        assignment = assignment_by_entity.get(("instrument", instrument_id))
+        assignment = assignment_by_instrument.get(instrument_id)
         if assignment is None:
             group_key = "unassigned"
             group_label = "Unassigned"
@@ -938,21 +954,12 @@ def _build_planning_group_snapshot(
         bucket["total_pnl"] = float(bucket["total_pnl"] or 0.0) + (market_value_base - cost_basis_base)
         bucket["position_count"] = int(bucket["position_count"] or 0) + 1
 
-    for account_row in visible_cash_accounts:
-        account = account_row.get("account") or {}
-        account_id = str(account.get("account_id") or "")
-        assignment = assignment_by_entity.get(("cash_bucket", account_id))
-        if assignment is None:
-            group_key = SYSTEM_CASH_TARGET_MEMBER_ID
-            group_label = SYSTEM_CASH_TARGET_LABEL
-        else:
-            group_key = str(assignment.get("taxonomy_node_id") or "unassigned")
-            group_label = node_name_by_id.get(group_key) or group_key
-        bucket = buckets.setdefault(
-            group_key,
+    if derivative_positions:
+        derivative_bucket = buckets.setdefault(
+            SYSTEM_DERIVATIVE_TARGET_MEMBER_ID,
             {
-                "group_key": group_key,
-                "group_label": group_label,
+                "group_key": SYSTEM_DERIVATIVE_TARGET_MEMBER_ID,
+                "group_label": SYSTEM_DERIVATIVE_TARGET_LABEL,
                 "start_allocation": None,
                 "end_allocation": 0.0,
                 "allocation_change": None,
@@ -965,9 +972,33 @@ def _build_planning_group_snapshot(
                 "position_count": 0,
             },
         )
-        cash_value_base = _safe_float(account_row.get("account_value_base")) or 0.0
-        bucket["end_value_base"] = float(bucket["end_value_base"] or 0.0) + cash_value_base
-        bucket["position_count"] = int(bucket["position_count"] or 0) + 1
+        derivative_bucket["end_value_base"] = sum(
+            float(position["market_value_base"]) for position in derivative_positions
+        )
+        derivative_bucket["position_count"] = len(derivative_positions)
+
+    if visible_cash_accounts:
+        cash_bucket = buckets.setdefault(
+            SYSTEM_CASH_TARGET_MEMBER_ID,
+            {
+                "group_key": SYSTEM_CASH_TARGET_MEMBER_ID,
+                "group_label": SYSTEM_CASH_TARGET_LABEL,
+                "start_allocation": None,
+                "end_allocation": 0.0,
+                "allocation_change": None,
+                "start_value_base": None,
+                "end_value_base": 0.0,
+                "period_contribution": None,
+                "total_pnl": 0.0,
+                "average_weight": None,
+                "ending_weight": 0.0,
+                "position_count": 0,
+            },
+        )
+        cash_bucket["end_value_base"] = sum(
+            account_liquidity_base(account_row) or 0.0 for account_row in visible_cash_accounts
+        )
+        cash_bucket["position_count"] = len(visible_cash_accounts)
 
     for bucket in buckets.values():
         end_value_base = _safe_float(bucket.get("end_value_base")) or 0.0
@@ -1053,7 +1084,17 @@ def _build_research_context(
     )
     lookback_start = research_window_start_date(as_of_date, lookback_days)
     statement_positions = list(statement.get("positions", []))
-    top_holdings = _build_top_holdings_snapshot(statement_positions, base_currency=str(statement.get("base_currency") or "USD"))
+    research_security_positions = [
+        position
+        for position in statement_positions
+        if not position.get("derivative_contract_id")
+        and not isinstance(position.get("derivative_contract"), dict)
+        and str(position.get("instrument_id") or "")
+    ]
+    top_holdings = _build_top_holdings_snapshot(
+        research_security_positions,
+        base_currency=str(statement.get("base_currency") or "USD"),
+    )
     planning_groups = _build_planning_group_snapshot(
         statement_positions,
         account_rows=list(account_workspace.get("accounts") or []),
@@ -1073,8 +1114,8 @@ def _build_research_context(
     )
     if unassigned_group is not None and abs(_safe_float(unassigned_group.get("end_value_base")) or 0.0) > 1e-9:
         quality_warnings.append(
-            "Research target solve is unavailable until all non-cash holdings are assigned to the selected planning taxonomy "
-            f"({int(unassigned_group.get('position_count') or 0)} unassigned holding(s))."
+            "Research target solve is unavailable until all securities are assigned to the selected planning taxonomy "
+            f"({int(unassigned_group.get('position_count') or 0)} unassigned security holding(s))."
         )
     chart_label = None
     chart_note = None
@@ -1117,7 +1158,7 @@ def _build_research_context(
         "lookback_start": lookback_start.isoformat(),
         "lookback_end": as_of_date.isoformat(),
         "nav": resolved_nav_base,
-        "holdings_count": len(statement_positions),
+        "holdings_count": len(research_security_positions),
         "planning_group_count": len(planning_groups),
         "chart_label": chart_label,
         "chart_note": chart_note,

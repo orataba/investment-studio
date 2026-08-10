@@ -35,7 +35,7 @@ import {
   defaultMarketDataSelection,
   formatPriceContract,
   formatPriceUnit,
-  quoteBasisOptionsForInstrument,
+  quoteBasisOptions,
 } from './marketDataContract'
 import { summarizeRoleQuotes } from './quoteRoleResolution'
 import {
@@ -261,11 +261,8 @@ export default function InstrumentRegistryPage({
   )
   const availableQuoteBases = useMemo(
     () =>
-      quoteBasisOptionsForInstrument(
-        selectedInstrument?.instrument_type ?? 'other',
-        metricFamily,
-      ),
-    [metricFamily, selectedInstrument?.instrument_type],
+      quoteBasisOptions(metricFamily),
+    [metricFamily],
   )
   const priceContract = canonicalPriceContract(
     selectedInstrument?.instrument_type ?? 'other',
@@ -508,10 +505,7 @@ export default function InstrumentRegistryPage({
       const nextFamily = allowedMetricFamilies[0]
       setMetricFamily(nextFamily)
       setQuoteBasis(
-        quoteBasisOptionsForInstrument(
-          selectedInstrument?.instrument_type ?? 'other',
-          nextFamily,
-        )[0].value,
+        quoteBasisOptions(nextFamily)[0].value,
       )
       return
     }
@@ -1058,7 +1052,6 @@ export default function InstrumentRegistryPage({
                 <option value="index">Index</option>
                 <option value="fund">Fund</option>
                 <option value="etf">ETF</option>
-                <option value="bond">Bond</option>
                 <option value="cash">Cash</option>
                 <option value="fx">FX</option>
                 <option value="other">Other</option>
@@ -2014,7 +2007,6 @@ export default function InstrumentRegistryPage({
                           <option value="index">Index</option>
                           <option value="fund">Fund</option>
                           <option value="etf">ETF</option>
-                          <option value="bond">Bond</option>
                           <option value="cash">Cash</option>
                           <option value="fx">FX</option>
                           <option value="other">Other</option>
@@ -2099,10 +2091,7 @@ export default function InstrumentRegistryPage({
                             const nextFamily = event.target.value as MetricFamily
                             setMetricFamily(nextFamily)
                             setQuoteBasis(
-                              quoteBasisOptionsForInstrument(
-                                selectedInstrument.instrument_type,
-                                nextFamily,
-                              )[0].value,
+                              quoteBasisOptions(nextFamily)[0].value,
                             )
                           }}
                         >

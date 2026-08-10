@@ -760,6 +760,12 @@ class PortfolioInstrumentEventTaskReviewModel(Base):
 
 class TaxonomyRecordModel(Base):
     __tablename__ = "taxonomy_record"
+    __table_args__ = (
+        CheckConstraint(
+            "primary_assignment_scope = 'instrument'",
+            name="ck_taxonomy_record_security_scope",
+        ),
+    )
 
     taxonomy_id: Mapped[str] = mapped_column(String, primary_key=True)
     portfolio_id: Mapped[str] = mapped_column(
@@ -812,6 +818,12 @@ class TaxonomyNodeRecordModel(Base):
 
 class TaxonomyAssignmentRecordModel(Base):
     __tablename__ = "taxonomy_assignment_record"
+    __table_args__ = (
+        CheckConstraint(
+            "target_scope = 'instrument'",
+            name="ck_taxonomy_assignment_security_scope",
+        ),
+    )
 
     assignment_id: Mapped[str] = mapped_column(String, primary_key=True)
     taxonomy_id: Mapped[str] = mapped_column(
@@ -1033,6 +1045,10 @@ class TargetSetRecordModel(Base):
 class TargetSetLineRecordModel(Base):
     __tablename__ = "target_set_line_record"
     __table_args__ = (
+        CheckConstraint(
+            "target_member_type IN ('taxonomy_node', 'instrument', 'cash_bucket', 'derivative_bucket')",
+            name="ck_target_set_line_member_type",
+        ),
         CheckConstraint(
             "target_member_type NOT IN ('cash_bucket', 'derivative_bucket') OR target_risk_share IS NULL",
             name="ck_target_set_line_non_risk_member_risk_null",

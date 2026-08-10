@@ -30,9 +30,9 @@ from portfolio_ops_instrument_core import (  # noqa: E402
 
 
 FINAL_FLAT_TABLE_HEADS = {
-    "instrument_registry": "20260809_0022",
+    "instrument_registry": "20260810_0023",
     "platform": "20260716_0002",
-    "portfolio": "20260810_0047",
+    "portfolio": "20260810_0048",
     "watchlist": "20260809_0036",
 }
 VERSION_TABLES = {
@@ -690,7 +690,7 @@ def _run_flat_table_audit(database_url: str) -> list[AuditCheck]:
                             (
                                 SELECT count(*)
                                 FROM instrument_registry.instrument
-                                WHERE instrument_type IN ('fcn', 'option')
+                                WHERE instrument_type IN ('bond', 'fcn', 'option')
                             )
                             +
                             (
@@ -700,8 +700,9 @@ def _run_flat_table_audit(database_url: str) -> list[AuditCheck]:
                             )
                     """,
                     detail=(
-                        "Shared Registry must contain reusable market instruments only; "
-                        "FCNs, options, and contract identities belong to Portfolio."
+                        "Shared Registry must contain reusable tracked market instruments "
+                        "only; direct bonds are excluded, while FCNs, options, and their "
+                        "contract identities belong to Portfolio."
                     ),
                 )
             )
@@ -1095,7 +1096,6 @@ def _run_flat_table_audit(database_url: str) -> list[AuditCheck]:
                                             END
                                         ) quote_basis(value)
                                         WHERE quote_basis.value NOT IN ({VALID_QUOTE_BASES_SQL})
-                                           OR quote_basis.value = 'accrued_interest'
                                            OR (
                                                 role.role_name = 'valuation'
                                                 AND quote_basis.value IN (
@@ -1148,28 +1148,20 @@ def _run_flat_table_audit(database_url: str) -> list[AuditCheck]:
                         JOIN instrument_registry.instrument i USING (instrument_id)
                         WHERE NOT (
                                   (md.metric_family = 'price' AND md.quote_basis IN (
-                                      'last', 'close', 'adjusted_close', 'clean_price',
-                                      'dirty_price', 'par', 'accrued_interest'
+                                      'last', 'close', 'adjusted_close', 'par'
                                   ))
                                   OR (md.metric_family = 'nav' AND md.quote_basis IN (
                                       'official_nav', 'total_return_nav'
                                   ))
                                   OR (md.metric_family = 'fx' AND md.quote_basis = 'spot')
                               )
-                           OR (md.quote_basis = 'accrued_interest' AND i.instrument_type <> 'bond')
                            OR ((i.instrument_type = 'fx') <>
                                (md.metric_family = 'fx' AND md.quote_basis = 'spot'))
                            OR md.price_unit <> CASE
-                                  WHEN i.instrument_type = 'bond' AND md.metric_family = 'price'
-                                      THEN 'percent_of_par'
                                   WHEN i.instrument_type = 'fx' THEN 'rate'
                                   ELSE 'per_unit'
                               END
-                           OR md.price_scale <> CASE
-                                  WHEN i.instrument_type = 'bond' AND md.metric_family = 'price'
-                                      THEN 0.01
-                                  ELSE 1
-                              END
+                           OR md.price_scale <> 1
                     """,
                     detail=(
                         "Quote identity, instrument type, price unit, and price scale must "
@@ -1482,13 +1474,18 @@ def _run_flat_table_audit(database_url: str) -> list[AuditCheck]:
                         coalesce(max(abs(
                             coalesce(holdings.market_value, 0)
                             - snapshot.nav::numeric
-                        )), 0),
+                        )) FILTER (
+                            WHERE snapshot.valuation_coverage_state = 'complete'
+                        ), 0),
                         coalesce(max(abs(
                             coalesce(holdings.materialized_pending_settlement, 0)
                             - (snapshot.snapshot_json ->> 'pending_settlement')::numeric
                         )), 0),
                         CASE WHEN count(*) FILTER (
-                            WHERE snapshot.nav IS NULL
+                            WHERE (
+                                snapshot.valuation_coverage_state = 'complete'
+                                AND snapshot.nav IS NULL
+                            )
                                OR snapshot.snapshot_json ->> 'pending_settlement' IS NULL
                         ) > 0 THEN 1 ELSE 0 END
                     )
@@ -1505,8 +1502,9 @@ def _run_flat_table_audit(database_url: str) -> list[AuditCheck]:
                     value=max_nav_error,
                     limit=1e-6,
                     detail=(
-                        "NAV must equal all materialized holding value, and pending "
-                        "holding rows must reconcile to the snapshot pending-settlement total."
+                        "Every completely valued NAV must equal all materialized holding "
+                        "value, and pending holding rows must reconcile to the snapshot "
+                        "pending-settlement total."
                     ),
                 )
             )
@@ -1529,6 +1527,10 @@ def _run_flat_table_audit(database_url: str) -> list[AuditCheck]:
                             )) - 1 AS recomputed_twr
                         FROM portfolio.portfolio_daily_snapshot
                         WHERE daily_twr IS NOT NULL
+                          AND coalesce(
+                              (snapshot_json ->> 'return_chain_continuous')::boolean,
+                              false
+                          )
                     )
                     SELECT greatest(
                         coalesce(max(abs(cumulative_twr - recomputed_twr)), 0),
@@ -1547,7 +1549,10 @@ def _run_flat_table_audit(database_url: str) -> list[AuditCheck]:
                     status="pass" if max_twr_error <= 1e-12 else "fail",
                     value=max_twr_error,
                     limit=1e-12,
-                    detail="Stored cumulative TWR must equal the geometric link of daily TWR.",
+                    detail=(
+                        "Stored cumulative TWR on continuous return chains must equal the "
+                        "geometric link of daily TWR."
+                    ),
                 )
             )
 

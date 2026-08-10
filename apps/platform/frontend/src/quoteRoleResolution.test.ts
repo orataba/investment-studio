@@ -27,10 +27,10 @@ type TestPoint = {
 
 const POLICY: QuoteSelectionPolicy = {
   trading: ['last', 'close'],
-  valuation: ['dirty_price', 'close'],
+  valuation: ['close', 'last'],
   total_return: ['adjusted_close'],
-  chart: ['close'],
-  reference: ['clean_price'],
+  chart: ['adjusted_close'],
+  reference: ['par'],
 }
 
 const CLOSE_ONLY_POLICY: QuoteSelectionPolicy = {
@@ -71,87 +71,68 @@ function record(
 
 describe('Platform quote-role resolution', () => {
   it('honors role policy order and chooses the latest complete observation for one identity', () => {
-    const latestDirtyPrice = point({
-      quote_basis: 'dirty_price',
+    const latestClose = point({
+      quote_basis: 'close',
       as_of_date: '2026-07-14',
       value: '99',
-      price_unit: 'percent_of_par',
-      price_scale: '0.01',
     })
     const selected = resolveRoleQuote(
       record(
         [
           point({
             quote_basis: 'close',
-            as_of_date: '2026-07-15',
-            value: '102',
-            price_unit: 'percent_of_par',
-            price_scale: '0.01',
-          }),
-          point({
-            quote_basis: 'dirty_price',
             as_of_date: '2026-07-13',
             value: '98',
-            price_unit: 'percent_of_par',
-            price_scale: '0.01',
           }),
-          latestDirtyPrice,
+          point({
+            quote_basis: 'last',
+            as_of_date: '2026-07-15',
+            value: '102',
+          }),
+          latestClose,
         ],
         POLICY,
-        { instrument_type: 'bond', currency: 'USD' },
       ),
       'valuation',
     )
 
-    expect(selected).toEqual(latestDirtyPrice)
+    expect(selected).toEqual(latestClose)
   })
 
   it('uses the reference policy only after the requested role has no match', () => {
-    const cleanPrice = point({
-      quote_basis: 'clean_price',
+    const parPoint = point({
+      quote_basis: 'par',
       as_of_date: '2026-07-14',
       value: '98.5',
-      price_unit: 'percent_of_par',
-      price_scale: '0.01',
     })
     const selected = resolveRoleQuote(
       record(
-        [
-          cleanPrice,
-          point({
-            quote_basis: 'par',
-            as_of_date: '2026-07-15',
-            value: '100',
-            price_unit: 'percent_of_par',
-            price_scale: '0.01',
-          }),
-        ],
+        [parPoint],
         POLICY,
-        { instrument_type: 'bond', currency: 'USD' },
       ),
       'valuation',
     )
 
-    expect(selected).toEqual(cleanPrice)
+    expect(selected).toEqual(parPoint)
   })
 
   it('ignores partial observations and falls through to the next complete policy basis', () => {
-    const completeClose = point({
-      quote_basis: 'close',
+    const completeLast = point({
+      quote_basis: 'last',
       as_of_date: '2026-07-14',
       value: '101',
     })
     const target = record([
       point({
-        quote_basis: 'dirty_price',
+        quote_basis: 'close',
         as_of_date: '2026-07-15',
         value: '102',
         status: 'partial',
       }),
-      completeClose,
+      completeLast,
     ])
 
-    expect(resolveRoleQuote(target, 'valuation')).toEqual(completeClose)
+    expect(resolveRoleQuote(target, 'valuation')).toEqual(completeLast)
     expect(
       resolveRoleQuote(
         record([
@@ -228,13 +209,14 @@ describe('Platform quote-role resolution', () => {
   })
 
   it('returns null when neither role nor reference policy selects available data', () => {
-    const accruedOnly = record([
-      point({ quote_basis: 'accrued_interest', as_of_date: '2026-07-15', value: '1.25' }),
-    ])
+    const unselectedOnly = record(
+      [point({ quote_basis: 'adjusted_close', as_of_date: '2026-07-15', value: '1.25' })],
+      CLOSE_ONLY_POLICY,
+    )
 
-    expect(resolveRoleQuote(accruedOnly, 'valuation')).toBeNull()
-    expect(resolveRoleQuote(accruedOnly, 'trading')).toBeNull()
-    expect(summarizeRoleQuotes(accruedOnly)).toEqual([])
+    expect(resolveRoleQuote(unselectedOnly, 'valuation')).toBeNull()
+    expect(resolveRoleQuote(unselectedOnly, 'trading')).toBeNull()
+    expect(summarizeRoleQuotes(unselectedOnly)).toEqual([])
   })
 
   it('deduplicates a basis shared by multiple roles and omits unresolved roles', () => {
