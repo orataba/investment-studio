@@ -277,7 +277,7 @@ Holdings 的指标分成两种主要口径：
 
 FCN 和 long option 在已记录事件之间按 transaction cost carrying；short option 以剩余 premium liability 进入 NAV。它们不接收实时行情，不计算日常未实现盈亏、协方差、Risk Budget 或 Research 序列；相关现金、费用、coupon 和已实现盈亏仍完整进入组合 NAV 与绩效。
 
-主表始终分为 `Securities`、`Derivatives`、`Cash & Settlement` 三个固定区段。`Group Securities By` 只对 Securities 做 taxonomy、instrument type、currency 等二级分组；衍生品与现金不分类，Taxonomy 列显示 `N/A`。导出始终包含 `Category`，启用证券分组时才增加 `Group`。
+主表始终分为 `Securities`、`Derivatives`、`Cash & Settlement` 三个固定区段。`Group By` 由底层限定为只对 Securities 做 taxonomy、instrument type、currency 等二级分组；衍生品与现金不分类，Taxonomy 列显示 `N/A`。导出始终包含 `Category`，启用证券分组时才增加 `Group`。
 
 Group、Non-cash subtotal 和 `Portfolio Total` 仍然是**当前持仓篮子**：金额加总、比例用组级分子分母重算；Return 用当前 base-market-value 权重合成；Vol / Drawdown 用内部连续、起止完全一致且尾部仍新鲜的共同历史区间先生成当前权重篮子路径再算；Forward RC 只加总相对于同一全组合风险分母的贡献。当前成员收益或市值覆盖不足、return currency 无法统一、共同路径中间缺段或整条路径已经陈旧时显示 `—`，不剔除缺失成员后重新归一。Holding Since、Quantity、Avg Cost、Quote、Accounts、Chart、Coverage 和 Held Max DD 等没有稳定分组含义的字段只在 instrument row 展示。
 

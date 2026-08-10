@@ -499,9 +499,9 @@ Holdings 使用一张统一表，并始终按 read-model 字段 `holding_categor
 
 Short-option row 的 `required_underlying_quantity = open_contract_quantity × contract_multiplier`，仅用于显示合约规模和 assignment strike exposure，不与股票持仓建立 covered / uncovered 关系。Operational summary 聚合 open contract count、`expired_or_due / next_7_days / next_30_days / next_90_days / later / unknown` 到期桶、physical-assignment strike exposure，以及 pending settlement 的 receivable、payable、net、最早结算日、逾期数和无法换算 base currency 的行数。Alerts 覆盖到期已到/七日内、逾期结算和 settlement FX unavailable，并返回真实 `related_line_ids`。
 
-`holding_category` 不是用户可选的 Group By 字段。`Group Securities By` 只在 Securities 内部生成二级分组；Derivatives 与 Cash & Settlement 不参与 taxonomy 或属性分组，Taxonomy 列固定为 `N/A`。
+`holding_category` 不是用户可选的 Group By 字段。`Group By` 由底层限定为只在 Securities 内部生成二级分组；Derivatives 与 Cash & Settlement 不参与 taxonomy 或属性分组，Taxonomy 列固定为 `N/A`。
 
-Holdings CSV/XLSX 严格跟随当前视图的可见列，并始终附带 `Category`。启用 `Group Securities By` 时再附带 `Group`；该列只对 Securities 有值，Derivatives 与 Cash & Settlement 写 `N/A`。三个固定区段各有 subtotal，最后为 Portfolio Total。市场收益、图表、未实现盈亏和回撤的不适用值写 `N/A`；衍生品和 modeled-zero monetary rows 的 Vol / Forward RC 按明确模型约定写数值 0。不得用 carrying/liability amount 填充 fair-value 字段。
+Holdings CSV/XLSX 严格跟随当前视图的可见列，并始终附带 `Category`。启用 `Group By` 时再附带 `Group`；该列只对 Securities 有值，Derivatives 与 Cash & Settlement 写 `N/A`。三个固定区段各有 subtotal，最后为 Portfolio Total。市场收益、图表、未实现盈亏和回撤的不适用值写 `N/A`；衍生品和 modeled-zero monetary rows 的 Vol / Forward RC 按明确模型约定写数值 0。不得用 carrying/liability amount 填充 fair-value 字段。
 
 Analytics scope 是独立于 taxonomy node 名称的 effective-dated policy。每条 policy 明确 `risk_eligible`、`risk_budget_eligible`、`performance_scope`、`valuation_basis` 和 exclusion reason；`risk_budget_eligible=true` 必须同时满足 `risk_eligible=true`。`performance_scope` 只允许 `ordinary / derivative_lifecycle / operational_only / unallocated`。Instrument row、transaction cash activity 和 materialized calculation identity 都必须携带 as-of 解析出的 policy/configuration/selection version；衍生品相关 cash leg 继承 originating instrument 的 performance scope，不得自动落入 ordinary sleeve。
 

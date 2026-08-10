@@ -90,7 +90,7 @@ describe('Holdings rendered page contract', () => {
     )
 
     expect(await screen.findByRole('button', { name: /View\s*: Default/ })).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: /Group Securities By\s*: None/ })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /Group By\s*: None/ })).toBeInTheDocument()
     expect(screen.getByText('Securities')).toBeInTheDocument()
     expect(screen.getByRole('columnheader', { name: /Instrument Type/ })).toBeInTheDocument()
     expect(screen.getByRole('columnheader', { name: /Position Value/ })).toBeInTheDocument()
@@ -358,7 +358,7 @@ describe('Holdings rendered page contract', () => {
     expect(derivativeRow!.children[taxonomyIndex]).toHaveTextContent('N/A')
     expect(cashRow!.children[taxonomyIndex]).toHaveTextContent('N/A')
 
-    await user.click(screen.getByRole('button', { name: /Group Securities By\s*: None/ }))
+    await user.click(screen.getByRole('button', { name: /Group By\s*: None/ }))
     await user.click(
       within(screen.getByRole('dialog', { name: 'Group securities' })).getByRole('button', {
         name: 'Taxonomy',
@@ -801,7 +801,7 @@ describe('Holdings rendered page contract', () => {
     expect(totalRow!.querySelector('[data-column-key="unrealized_value"]')).toHaveTextContent('N/A')
     expect(totalRow!.querySelector('[data-column-key="unrealized_pct"]')).toHaveTextContent('N/A')
 
-    await user.click(screen.getByRole('button', { name: /Group Securities By/ }))
+    await user.click(screen.getByRole('button', { name: /Group By/ }))
     await user.click(within(screen.getByRole('dialog', { name: 'Group securities' })).getByRole('button', { name: 'Currency' }))
     const securityGroupRow = document.querySelector('.holdings-subgroup-row')
     const derivativeCategoryRow = screen
@@ -968,7 +968,7 @@ describe('Holdings rendered page contract', () => {
     await screen.findByRole('cell', { name: /Fund A/ })
     await user.click(screen.getByRole('button', { name: /View\s*: Default/ }))
     await user.click(screen.getByRole('option', { name: 'Return & Risk' }))
-    await user.click(screen.getByRole('button', { name: /Group Securities By\s*: None/ }))
+    await user.click(screen.getByRole('button', { name: /Group By\s*: None/ }))
     await user.click(screen.getByRole('button', { name: 'Instrument Type' }))
 
     const groupRow = document.querySelector('.holdings-subgroup-row')
@@ -1049,7 +1049,7 @@ describe('Holdings rendered page contract', () => {
     await screen.findByRole('cell', { name: /CNY Fund/ })
     await user.click(screen.getByRole('button', { name: /View\s*: Default/ }))
     await user.click(screen.getByRole('option', { name: 'Return & Risk' }))
-    await user.click(screen.getByRole('button', { name: /Group Securities By\s*: None/ }))
+    await user.click(screen.getByRole('button', { name: /Group By\s*: None/ }))
     await user.click(screen.getByRole('button', { name: 'Instrument Type' }))
 
     const groupRow = document.querySelector('.holdings-subgroup-row')

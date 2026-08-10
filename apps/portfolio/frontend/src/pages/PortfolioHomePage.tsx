@@ -3501,7 +3501,7 @@ export default function PortfolioHomePage() {
               className="holdings-toolbar-button"
               onClick={() => setHoldingsGroupByOpen(true)}
             >
-              Group Securities By{'\u00A0: '}
+              Group By{'\u00A0: '}
               {selectedGroupByOption.label}
             </button>
             <DownloadFormatMenu
@@ -3744,7 +3744,7 @@ export default function PortfolioHomePage() {
           >
             <div className="holdings-modal-header">
               <div>
-                <div className="panel-title">Group Securities By</div>
+                <div className="panel-title">Group By</div>
                 <div className="section-heading">Securities only</div>
               </div>
               <button type="button" onClick={() => setHoldingsGroupByOpen(false)}>

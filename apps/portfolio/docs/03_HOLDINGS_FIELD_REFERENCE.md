@@ -77,7 +77,7 @@ Holdings 只有一张可排序、可选列的表。系统视图 `Default` 与 `R
 | `derivatives` | Derivatives | FCN、long/short Call、long/short Put；方向和生命周期属于行自身，不拆成策略区 |
 | `cash_and_settlement` | Cash & Settlement | settled cash、receivable、payable 与 pending monetary rows |
 
-`holding_category` 是系统 read-model 字段，不是用户可选的 Group By 维度，也不写入交易事实。`Group Securities By` 只在 Securities 区段内部按 taxonomy、instrument type、currency 等字段建立二级分组；Derivatives 与 Cash & Settlement 不参与该分组。Taxonomy / Taxonomy Leaf 只解析普通证券，衍生品和现金固定显示 `N/A`。covered call 等策略继续由独立股票行和 short Call 行表达；行内 notes/交易 notes 承担人工关联说明。
+`holding_category` 是系统 read-model 字段，不是用户可选的 Group By 维度，也不写入交易事实。`Group By` 由底层限定为只在 Securities 区段内部按 taxonomy、instrument type、currency 等字段建立二级分组；Derivatives 与 Cash & Settlement 不参与该分组。Taxonomy / Taxonomy Leaf 只解析普通证券，衍生品和现金固定显示 `N/A`。covered call 等策略继续由独立股票行和 short Call 行表达；行内 notes/交易 notes 承担人工关联说明。
 
 Short-option row 不读取或分配股票持仓。`required_underlying_quantity = open_contract_quantity × contract_multiplier`，只表示合约对应的标的数量；`assignment_notional = strike × required underlying`，base amount 只有在 as-of FX 可用时才发布。covered call 等策略由用户通过独立股票和期权交易表达，不属于交易或持仓类型。
 
@@ -91,7 +91,7 @@ pending:{kind}:{cash_account}:{economic_instrument}:{currency}:{settlement_date}
 
 Workspace `operational_summary` 展示 open short-option contract count、expiry buckets、physical assignment exposure 和 settlement receivable/payable/net；`operational_alerts` 返回 severity、code、message 和真实 `related_line_ids`。到期已到和逾期结算是 critical，七日内到期与 settlement FX unavailable 是 warning。API 不发布股票覆盖分类；动态 workspace、materialized snapshot 和 instrument detail projection 对当前字段必须保持 parity。
 
-CSV/XLSX 只导出当前视图的可见列，并始终以 `Category` 作为第一列。启用 `Group Securities By` 时再增加 `Group` 列；该列只对 Securities 的二级分组有值，Derivatives 与 Cash & Settlement 写 `N/A`。三个固定区段都附带 subtotal，最后附带 `Portfolio Total`。价格路径、收益、未实现盈亏和回撤的不适用值导出为 `N/A`；衍生品与 modeled-zero monetary rows 的 Vol / Forward RC 按明确约定导出数值 `0`。
+CSV/XLSX 只导出当前视图的可见列，并始终以 `Category` 作为第一列。启用 `Group By` 时再增加 `Group` 列；该列只对 Securities 的二级分组有值，Derivatives 与 Cash & Settlement 写 `N/A`。三个固定区段都附带 subtotal，最后附带 `Portfolio Total`。价格路径、收益、未实现盈亏和回撤的不适用值导出为 `N/A`；衍生品与 modeled-zero monetary rows 的 Vol / Forward RC 按明确约定导出数值 `0`。
 
 ## 3. 完整字段字典
 
