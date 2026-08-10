@@ -306,11 +306,11 @@ Risk 与 Research 的 covariance / correlation / risk contribution 必须先确�
 - Holdings `Forward RC` 和 Risk 页 Current Drift 是 modeled-sleeve 当前权重口径：eligible exposure 按 `signed market_value_base / eligible gross exposure` 形成权重，再与资产自身历史收益窗口估计当前 modeled sleeve 风险。Forward covariance 必须先在全部 eligible leaf instruments 上估计一次；taxonomy / sleeve 的 current risk share 只能把这些 leaf contribution 按同一个 modeled-sleeve variance 分母相加，禁止先合成 sleeve return、再对 sleeve 重新做 shrinkage covariance。总 NAV、excluded exposure 与 cash 不进入这个权重分母，而是通过 scope coverage 单独披露；因此 modeled-sleeve volatility 不能冒充 total-portfolio volatility。真实成立以来/真实持仓期间的 realized attribution 留在 Performance `Calculation`。Risk 页不再提供单独的 point-in-time Risk Contribution 表；风险预算偏离只在 Current Drift 中展示。
 - Risk 页 Rolling Risk 是窗口内 sample volatility / sample Sharpe 展示层，只受 rolling lookback、calculation frequency 和 coverage 影响；不提供 EWMA / shrinkage 等 covariance model 选择。当前权重篮子同样要求所有 active members 在共同 inception 之后具有完全一致的 dates 与 period identity；不能先取交集静默丢掉缺失日再计算。凡是用于 risk-budget drift、rebalance trigger、Research solve 或 Holdings Forward RC 的 RC 相关指标，必须使用组合级 `Production Risk Model`，不能在不同页面各自硬编码 decay、shrinkage、lookback 或 contribution mode。
 - Risk 页 Correlation Matrix 是窗口内 sample correlation 展示层，只受 lookback、calculation frequency、coverage 和 scope 影响；不提供 EWMA、vol shrinkage 或 correlation shrinkage 方法选择。EWMA / shrinkage 是 forward covariance 估计模型，应保留在 Production Risk Model 驱动的 Current Drift risk gap、Research solve 和 Holdings Forward RC 中。
-- Risk 页 instrument-scope planning taxonomy 的 Current Drift 用正式风险持仓 Holdings rows 与 Accounts workspace 的 `derived_cash_balance_base + pending_settlement_base` 合成当前 NAV；deposit 与 securities account 的现金、待交收都必须计入，证券账户的 position market value 只通过 Holdings 进入一次。Holdings 中为对账而展示的 settled-cash 与 pending-monetary rows 不得再次作为 instrument leg 参与分母或分组；它们的规划归属来自结算现金账户的 `cash_bucket`。一个 root target 可以用直接 `cash_bucket` 表示汇总 cash-and-settlement；此时 current monetary balance 先跨 taxonomy nodes 汇总成一条 comparator，不能重复展示或计数。
+- Risk 页 instrument-scope planning taxonomy 的 Current Drift 用 Securities、Derivatives 与 Accounts workspace 的 `derived_cash_balance_base + pending_settlement_base` 合成当前 NAV；deposit 与 securities account 的现金、待交收都必须计入，证券账户的 position market value 只通过 Holdings 进入一次。Securities 按 taxonomy 顶层节点汇总；Derivatives 固定汇总到 `derivative_bucket:__derivatives__`，现金与待交收固定汇总到 `cash_bucket:__cash__`，两者都不读取 taxonomy assignment。Holdings 中为对账而展示的 settled-cash 与 pending-monetary rows 不得再次计入。
 - 只有 base-currency cash 可以天然按 0 return / 0 market risk 处理。Non-base cash 需要 FX total-return series；非本币资产的本地币种 total return 也不能直接与 base-currency returns 拼接。在显式产出 base-currency total-return series 之前，Forward RC、Rolling Risk 与 Correlation 都必须 fail closed。
 - Risk benchmark 只有在 return semantics 已确认为 `total_return` 或 `price_return` 且 currency 与 portfolio base currency 一致时才参与 rolling comparison。`price_return` 可以作为探索性比较，但必须提示分红口径差异；unknown semantics、raw-currency 或 unavailable coverage 不输出相对风险曲线。
 - Risk Health 的基础监控包括 Production Forward Volatility 及 coverage、SAA/TAA risk-budget absolute gap、非现金 gross-normalized Top-3/HHI、以及 Accounts cash + pending settlement。任何组成字段缺失时对应指标显示 unavailable，不得把缺失金额或权重当成 0。
-- Taxonomy 页 instrument-scope planning taxonomy 的当前覆盖视图使用同一 monetary-account 口径：当前实体池由正式风险持仓 Holdings rows 加 Accounts cash-and-settlement bucket 组成，不把 Holdings 的 `cash:{currency}` 或 `pending:*` 行再作为 instrument 实体展示或计入分母。根行 `Actual Weight` 表示当前实体池整体，必须约等于 100%；各 node 行表示已分类实体，`Without Classification` 只表示未分类残差。
+- Taxonomy 页 instrument-scope planning taxonomy 的当前覆盖视图使用同一口径：只有 Securities 接受 taxonomy assignment；Derivatives 与 Cash 是不可移动、不可分类的固定系统桶。三类资产共同进入根行 `Actual Weight` 分母，根行必须约等于 100%；`Without Classification` 只表示尚未分类的 Securities，不包含衍生品或现金。
 - Risk 页 rolling metrics 与 correlation matrix 必须进一步校验 lookback window 覆盖率：按 resolved frequency 使用最小收益样本数、窗口起点最大偏离和至少 80% elapsed-day 覆盖。覆盖不足时结果为 insufficient-history / unavailable，不用更短窗口、pairwise dates、0 return 或前向填充替代。
 
 ### 2.7 缺失数据与覆盖率
@@ -489,26 +489,27 @@ Holdings 的 monetary 部分按结算现金账户子账拆分：
 - non-base cash 的 instrument return / day return 来自该现金币种兑 base currency 的 FX series；
 - pending monetary balance 不属于现金、没有 instrument total-return series、不得进入资产协方差矩阵；其 FX 重估仍按 `PendingSettlementCurrencyGain` 单独入账。
 
-Holdings 默认按 read-model 语义固定分为四个区域，而不是强迫所有行共享普通 long-position 字段：
+Holdings 使用一张统一表，并始终按 read-model 字段 `holding_category` 展示三个固定一级区段：
 
-| 区域 | 行类型 | 主要字段 |
+| 类别 | 行类型 | 主要字段 |
 | --- | --- | --- |
-| `Market-valued Positions` | 有可靠 market quote 的普通资产 | quantity、quote、market value、cost basis、return/risk |
-| `Structured / Long Derivatives` | FCN、长期权等 carried event asset | quantity、carrying value、cost basis、maturity、lifecycle status |
-| `Short Option Positions` | short Call / Put liability | open contracts、required underlying、expiry、strike、settlement type、premium basis、liability、assignment notional |
+| `Securities` | 股票、基金、ETF、债券等普通资产 | quantity、quote、position value、cost basis、return/risk |
+| `Derivatives` | FCN、long/short Call、long/short Put | carrying/liability value、direction、maturity/expiry、strike、premium basis、lifecycle status |
 | `Cash & Settlement` | settled cash 与 pending monetary rows | currency、settlement/pending dates、pending status、local/base settlement amount |
 
 Short-option row 的 `required_underlying_quantity = open_contract_quantity × contract_multiplier`，仅用于显示合约规模和 assignment strike exposure，不与股票持仓建立 covered / uncovered 关系。Operational summary 聚合 open contract count、`expired_or_due / next_7_days / next_30_days / next_90_days / later / unknown` 到期桶、physical-assignment strike exposure，以及 pending settlement 的 receivable、payable、net、最早结算日、逾期数和无法换算 base currency 的行数。Alerts 覆盖到期已到/七日内、逾期结算和 settlement FX unavailable，并返回真实 `related_line_ids`。
 
-Regions 模式的 CSV 使用固定 21 列 canonical schema，所有区域按同一表头导出，不适用值明确写 `N/A`；Advanced Table 导出继续严格跟随当前可见列。两种导出不得把 `N/A` 写成数值零，也不得用 carrying/liability amount 填充 fair-value 字段。
+`holding_category` 不是用户可选的 Group By 字段。`Group Securities By` 只在 Securities 内部生成二级分组；Derivatives 与 Cash & Settlement 不参与 taxonomy 或属性分组，Taxonomy 列固定为 `N/A`。
+
+Holdings CSV/XLSX 严格跟随当前视图的可见列，并始终附带 `Category`。启用 `Group Securities By` 时再附带 `Group`；该列只对 Securities 有值，Derivatives 与 Cash & Settlement 写 `N/A`。三个固定区段各有 subtotal，最后为 Portfolio Total。市场收益、图表、未实现盈亏和回撤的不适用值写 `N/A`；衍生品和 modeled-zero monetary rows 的 Vol / Forward RC 按明确模型约定写数值 0。不得用 carrying/liability amount 填充 fair-value 字段。
 
 Analytics scope 是独立于 taxonomy node 名称的 effective-dated policy。每条 policy 明确 `risk_eligible`、`risk_budget_eligible`、`performance_scope`、`valuation_basis` 和 exclusion reason；`risk_budget_eligible=true` 必须同时满足 `risk_eligible=true`。`performance_scope` 只允许 `ordinary / derivative_lifecycle / operational_only / unallocated`。Instrument row、transaction cash activity 和 materialized calculation identity 都必须携带 as-of 解析出的 policy/configuration/selection version；衍生品相关 cash leg 继承 originating instrument 的 performance scope，不得自动落入 ordinary sleeve。
 
 当前实现只发布 scope disclosure 和 `cash_scope_breakdown`，不发布 ordinary-sleeve TWR。`cash_scope_breakdown` 按 `performance_scope + transaction currency` 分桶，金额是对应交易币种的 local cash activity；不同币种不得直接相加，也不得冒充 base-currency cash flow。`ordinary_sleeve_twr_status` 固定为 `unavailable`，原因是尚未维护可逐日对账的 sleeve cash subledger；不得从 total operational return 中删除 derivative rows 后伪造 ordinary TWR。Total operational/carrying-basis return、完整 fair-value performance 和 scoped risk 是三个不同对象。
 
-`Market Value Base` 对 `valuation_basis=market_quote` 的正式资产表示 base-currency fair value，等于 `quantity * selected valuation quote` 再按 as-of date FX 转换；对 settled cash 与 pending monetary balance，它表示对应 monetary balance 的 base-currency value。对 `carried_cost` 和 `premium_liability` 行，该字段只是保持 NAV 加总合同的 signed operational amount，真实 basis 必须分别从 `carrying_value(_base)` 或 `liability_value(_base)` 读取，`fair_value` 必须为空。Holdings `Portfolio Total` 包含普通资产、event-valued carrying assets、written liabilities、settled cash 与 pending monetary balance，必须与同日 canonical NAV 对平。
+`market_value_base`（UI：`Position Value Base`）对 `valuation_basis=market_quote` 的正式资产表示 base-currency fair value，等于 `quantity * selected valuation quote` 再按 as-of date FX 转换；对 settled cash 与 pending monetary balance，它表示对应 monetary balance 的 base-currency value。对 `carried_cost` 和 `premium_liability` 行，该字段只是保持 NAV 加总合同的 signed operational amount，真实 basis 必须分别从 `carrying_value(_base)` 或 `liability_value(_base)` 读取，`fair_value` 必须为空。Holdings `Portfolio Total` 包含普通资产、event-valued carrying assets、written liabilities、settled cash 与 pending monetary balance，必须与同日 canonical NAV 对平。
 
-Holdings 行级 `Weight = market_value_base / portfolio NAV`，所以 written liability 使用负权重。在估值与 FX 完整时，正式资产、event-valued assets、written liabilities、settled cash 与 pending monetary rows 的 signed weights 合计必须为 100%。当前篮子 Return / Risk 只使用正式且 `risk_eligible=true` 的市场持仓；pending monetary balance、event-valued asset 和 option obligation 都没有可用 instrument return series，不得被伪造成现金、基金持仓或 0-return 风险成员。
+Holdings 行级 `Weight = market_value_base / portfolio NAV`，所以 written liability 使用负权重。在估值与 FX 完整时，正式资产、event-valued assets、written liabilities、settled cash 与 pending monetary rows 的 signed weights 合计必须为 100%。pending monetary balance、event-valued asset 和 option obligation 都没有可用 instrument return series：Return、Chart、Unrealized P&L 和 Drawdown 必须为 `N/A`。Holdings 的 Vol 与 Forward RC 例外地按 modeled-zero 约定显示 0；该 0 只表示未纳入市场价格风险模型，不是伪造的 instrument return series 或真实经济风险结论。
 
 `Day Change` / `Day Return` 是 as-of date 当前持仓规模上的一天经济市场变动，不是历史实际持仓区间绩效：
 
@@ -531,44 +532,44 @@ Holdings 可以展示 quote-derived instrument market trend 指标，作为扫�
 - `Current DD` 使用 confirmed total-return series，计算为 `latest_total_return_level / max_available_total_return_level_to_date - 1`；
 - `Max DD` 使用同一序列，计算历史各点相对此前峰值的最小值 `min(level_t / running_peak_t - 1)`；
 - `Held Max DD` 只在 instrument row 计算，起点是当前开放头寸中最早的 holding start date；它不纳入已经平掉的旧头寸；
-- `Vol 1M / 3M / 6M / 1Y` 使用同一 confirmed total-return series 先按组合 resolved risk frequency 取 daily / weekly / monthly period returns，再按实际 elapsed days 年化；不得使用 `Chart *` sampled points；
+- 普通证券的 `Vol 1M / 3M / 6M / 1Y` 使用同一 confirmed total-return series 先按组合 resolved risk frequency 取 daily / weekly / monthly period returns，再按实际 elapsed days 年化；不得使用 `Chart *` sampled points。衍生品和 modeled-zero monetary row 显示 0；
 - volatility 窗口必须有接近窗口起点的初始 quote、足够 elapsed-day 覆盖和最小收益样本数，否则为空。当前门槛为 daily `10 / 30 / 60 / 120`、weekly `3 / 6 / 12 / 24`、monthly `2 / 2 / 4 / 6`，分别对应 `1M / 3M / 6M / 1Y`；
 - 这些指标不读取 quantity、cash flow、cost basis、FIFO / moving average、realized gain 或 income，因此不属于组合 TWR、holding contribution 或 book P&L。
 
 Holdings `Forward RC` 是当前正式风险持仓的组合级 forward risk contribution：
 
-- 只对 active formal `risk_eligible=true` positions 参与协方差矩阵；cash 与 pending monetary rows 分别标记为 `cash_unallocated` / `pending_settlement` 并排除，行级 `forward_risk_share` 留空；它们的 capital exposure 只进入 scope disclosure；
+- 只对 active formal `risk_eligible=true` ordinary positions 建立协方差矩阵；衍生品不参与，行级 `forward_risk_share`、contribution 和 modeled volatility 写为 0，状态为 `modeled_zero`。base-currency cash/pending monetary rows 同样可标记 `modeled_zero`；non-base monetary exposure 在没有 FX total-return series 时仍为 unavailable；
 - `risk_eligible` 必须来自 as-of date 生效的 analytics taxonomy selection、taxonomy configuration revision 和独立 scope policy record。解析顺序为 assigned node exact policy、最近祖先、taxonomy root；`__unassigned__` 只解析自身，找不到 policy 时 fail closed。结果保留 policy/configuration/selection version，物化 identity 变化时必须重建；
-- event-valued asset 或 derivative liability 可以由显式 policy 排除而不阻断 eligible market sleeve 的 covariance。输出必须同时披露 `modeled_net_exposure`、`modeled_gross_exposure`、`excluded_carrying_value`、`excluded_liability`、`cash_unallocated_exposure`、coverage ratio 与逐行 `excluded_rows`；排除表示“未建模”，不表示风险为零；
+- event-valued asset 或 derivative liability 的存在不阻断 eligible market sleeve 的 covariance。输出必须同时披露 `modeled_net_exposure`、`modeled_gross_exposure`、`excluded_carrying_value`、`excluded_liability`、`cash_unallocated_exposure`、coverage ratio 与逐行 `excluded_rows`；展示的 0 表示“按当前模型不计入”，不表示其真实经济风险为零；
 - 权重使用 eligible row 的 signed base exposure 除以 eligible gross exposure，risk-share 分母是同一个 modeled market sleeve 的 variance，不是 instrument 自身风险、total NAV variance 或 group-local denominator；
 - covariance model、lookback、calculation frequency、missing-return policy 与 contribution mode 必须来自组合级 `Production Risk Model`；
 - 窗口固定锚在请求的 holdings as-of date；较早的 latest observation 只能触发 trailing-staleness 诊断，不能把整个 lookback window 一起向前移动；
 - 每个 leaf return 必须有合法且与其他成员一致的 period start/end；taxonomy group 的 Forward RC 只加总 leaf `forward_risk_share` 和 contribution，不重新估计 group covariance；
 - 若没有任何 eligible risky holding，或任一 eligible member 缺少完整收益窗口、base-currency return、权重、共同 period identity 或正的组合 variance，Forward RC 进入 `unavailable`，不得把 policy-excluded rows 重新纳入，也不得用短窗口、0 return、pairwise covariance 或现金归一化兜底；
-- Holdings 的 `Vol 1M / 3M / 6M / 1Y` 仍是标的自身 trailing sample volatility 观测列，不受 Production Risk Model 的 lookback 或 covariance model 影响，也不能替代 Forward RC。
+- Holdings 普通证券的 `Vol 1M / 3M / 6M / 1Y` 仍是标的自身 trailing sample volatility 观测列，不受 Production Risk Model 的 lookback 或 covariance model 影响，也不能替代 Forward RC；衍生品的 0 是单独的 modeled-zero 展示约定。
 
 Holdings group rows 不是后端 period-performance group：
 
 - market value、cost basis、day change、open lots 等绝对量按组内 rows 汇总；
 - 无非零 event exposure 时，unrealized P&L 按组内 market-valued positions 加总，unrealized return 使用组内当前非现金 open-position `unrealized P&L / cost basis`，不是成员百分比的加权平均；cash 不产生 unrealized P&L，也不进入分母，纯 cash group 因 cost basis 不适用而为空；
-- group、`Investment Positions` subtotal 或 `Portfolio Total` 只要包含非零 event-valued asset / option obligation，Day Change、Day Return、Unrealized P&L、Unrealized Return 和当前权重 return/risk 均为 `N/A`。不得先剔除 event row 再汇总其余资产，也不得用 carrying amount 减 book basis 制造零未实现盈亏；
-- `1W / 1M / 3M / 6M / MTD / YTD / 1Y Return` 使用 as-of date base-currency market value 权重对当前正式 position 与 settled cash 的自身 total return 加权；pending monetary rows 不参与收益分母。group、`Investment Positions` 与 `Portfolio Total` 均按这套当前持仓篮子口径展示，覆盖不足时为空。它们不是历史实际组合 TWR，后者只属于 Overview / Performance；
-- group volatility / drawdown 用组内成员 return series 在共同 period 上组成当前权重的组 return series 后计算，包含协方差效果，不等于成员 volatility 或 drawdown 的加权平均；
-- `Held Max DD` 不计算 group、`Non-cash Portfolio` 或 `Portfolio Total`：成员持有起点不同，截断长度不同的持有期序列没有可稳定解释的共同分组起点；
+- group 或 `Portfolio Total` 只要包含非零 event-valued asset / option obligation，Day Change、Day Return、Unrealized P&L、Unrealized Return、当前权重 instrument return 与 drawdown 均为 `N/A`。不得先剔除 event row 再汇总其余资产，也不得用 carrying amount 减 book basis 制造零未实现盈亏；
+- `1W / 1M / 3M / 6M / MTD / YTD / 1Y Return` 使用 as-of date base-currency market value 权重对当前正式 position 与 settled cash 的自身 total return 加权；pending monetary rows 不参与收益分母。group 与 `Portfolio Total` 均按这套当前持仓篮子口径展示，覆盖不足时为空。它们不是历史实际组合 TWR，后者只属于 Overview / Performance；
+- group volatility 用普通证券共同 period return series 与当前权重计算，并把衍生品/modeled-zero monetary rows 作为 0-return 成员；drawdown 仍要求真实共同路径，含 event-valued row 时为 N/A。两者都不等于成员数值的简单加权平均；
+- `Held Max DD` 不计算 group 或 `Portfolio Total`：成员持有起点不同，截断长度不同的持有期序列没有可稳定解释的共同分组起点；
 - base-currency cash 可作为 0-return 成员参与覆盖；non-base cash 使用其 FX return series；
-- pending monetary row 没有 instrument return series；仅含 pending 的分组收益/风险为空，不能按 base-currency 余额把它冒充 0-return cash；
+- pending monetary row 没有 instrument return series；仅含 pending 的分组 return / drawdown 为空。base-currency pending row 的 Vol / Forward RC 可以遵循 modeled-zero 约定显示 0，non-base pending 仍为 unavailable；
 - group return / volatility / drawdown 只在所有有当前市值的成员 return currency 一致时计算。非现金 instrument return 默认是标的本币 total return，cash FX return 是 base-currency return；在后端尚未提供逐期 base-currency instrument return 前，跨 return currency 的本地收益不得直接加权拼接，必须留空；
-- UI 中的 `Investment Positions` 行是当前正式 position rows 的 subtotal；cash 与 pending monetary rows 位于 monetary section。该 subtotal 只服务展示和导出，不是源事实、不参与 group、sort、detail 或 portfolio totals。
+- Securities、Derivatives、Cash & Settlement 是固定一级区段，不是可选 Group By 结果；它们的 subtotal 都由当前行实时聚合，不是源事实、不参与 sort、detail 或 Portfolio Total 的二次计算。用户分组只在 Securities 内部生成二级 subtotal。
 
 每个 Holdings 字段的 group / subtotal / total 处理必须属于以下明确类别；未列为可聚合的字段一律留空：
 
 | 类别 | 字段 | 分组规则 |
 | --- | --- | --- |
-| 点位绝对量 | `Market Value (Base)`、`Cost Basis (Base)`、`Weight`、`Open Lots`、`Day Change`、`Unrealized P&L` | 对当前 rows 加总；跨币种金额先转 base currency；含非零 event exposure 时 Day Change 与 Unrealized P&L 为 N/A |
+| 点位绝对量 | `Position Value (Base)`、`Cost Basis (Base)`、`Weight`、`Open Lots`、`Day Change`、`Unrealized P&L` | 对当前 rows 加总；跨币种金额先转 base currency；含非零 event exposure 时 Day Change 与 Unrealized P&L 为 N/A |
 | 重新计算的比例 | `Day Return`、`Unrealized Return` | 分别用组级 `Day Change / prior market value`、`Unrealized P&L / non-cash open cost` 重算，禁止平均成员百分比；含非零 event exposure 时为 N/A |
 | 当前权重历史收益 | `1W / 1M / 3M / 6M / MTD / YTD / 1Y Return` | 用 as-of base-market-value 权重合成；除 base cash 的明确 0 return 外，当前市值覆盖必须完整，且 return currency 必须一致，否则为空 |
 | 当前篮子路径风险 | `1M / 3M / 6M / 1Y Vol`、`Current DD`、`Max DD` | 用共同 period 的成员 total-return series 与当前权重先生成组 return path，再计算风险；return currency 不一致时为空 |
-| 组合风险贡献 | `Forward RC` | 仅当 workspace forward-risk status 完整时，对成员相对于同一全组合 variance 的 risk share 加总；任一成员缺失则为空 |
+| 组合风险贡献 | `Forward RC` | workspace forward-risk status 完整时，对 eligible 成员相对于同一全组合 variance 的 risk share 加总；衍生品/modeled-zero monetary rows 贡献 0，纯 modeled-zero group 为 0；其他成员缺失则为空 |
 | 仅 instrument row | Instrument / Ticker / Instrument Type / Taxonomy / Taxonomy Leaf / Currency、`Holding Since`、`Quantity`、`Cost Method`、`Avg Cost`、Quote 及其日期/口径/provider/status、`Accounts`、`Chart *`、`Coverage`、`Held Max DD` | 不生成 group、subtotal 或 portfolio total 值 |
 
 `Holding Since` 是当前开放头寸最早的 holding start date，不是 workspace as-of date；不同 instrument 的份额单位、报价单位、平均成本和起始日期不可直接相加或平均。
@@ -981,10 +982,10 @@ Future primary benchmark 上线后，以下指标必须始终基于 resolved `pr
 其中：
 
 - 被用于 drift / risk budget gap 的 selected taxonomy 必须是 `planning_enabled = true`；
-- `Risk` 必须分别计算 selected planning taxonomy 下 active `SAA` 与 active `TAA` 的 `weight` / `risk_budget` comparator；UI 合并展示为 `Weight Target Gap` 与 `Risk Target Gap` 两个面板。每个风险 sleeve 只占一条 row，右侧同图并列展示当前值、`SAA` target 与 `TAA` target。现金可以出现在 Weight Target Gap，但不得出现在 Risk Target Gap。任一来源或维度未配置时，只标记对应 comparator unavailable，不跨 `SAA` / `TAA` 或 `weight` / `risk_budget` 回退；
+- `Risk` 必须分别计算 selected planning taxonomy 下 active `SAA` 与 active `TAA` 的 `weight` / `risk_budget` comparator；UI 合并展示为 `Weight Target Gap` 与 `Risk Target Gap` 两个面板。每个证券风险 sleeve 只占一条 row，右侧同图并列展示当前值、`SAA` target 与 `TAA` target。Derivatives 与 Cash 都出现在 Weight Target Gap，但不得出现在 Risk Target Gap。任一来源或维度未配置时，只标记对应 comparator unavailable，不跨 `SAA` / `TAA` 或 `weight` / `risk_budget` 回退；
 - period timeline 仍必须显式携带各段 target source 信息；若区间内来源随时间变化，则标记为 `mixed_timeline`
 - period analytics 必须把上述结果 materialize 为正式 `ResolvedTargetTimeline` / `ResolvedTargetSegment`，而不是匿名 timeline blob；
-- `TargetSet(type = taa)` 在存储层必须已物化为对各维度 eligible members 完整的目标集，运行时不做稀疏 overlay 解析：`weight` 对全部资本成员完整，`risk_budget` 只对非现金风险成员完整；
+- `TargetSet(type = taa)` 在存储层必须已物化为对各维度 eligible members 完整的目标集，运行时不做稀疏 overlay 解析：`weight` 对证券节点、固定 Derivatives 与固定 Cash 成员完整，`risk_budget` 只对承担风险的证券节点完整；
 - period 内若 target 发生切换，系统必须按生效区间分段汇总，而不是拿单一期初或期末 target 解释整个区间；
 - 若用户切到纯分析 taxonomy，系统只能展示 `absolute only`，并标记 comparator missing。
 
@@ -1302,7 +1303,7 @@ $$
 - `RiskShare_i` 与 `TargetRiskShare_i` 必须使用同一风险分母和同一 contribution mode；首版 canonical top-level compare 的分母是 selected taxonomy 下 eligible modeled sleeve 的 forward risk share
 - 层级 sleeve 内部的 `25%` 这类 local risk budget 表示“占父 sleeve 内部风险的 25%”，不是全组合风险的 `25% × 父层预算`
 - 因而禁止通过祖先 `target_risk_share` 乘法把 local sleeve risk budget 铺平成全局 risk-budget target；若需要全局 leaf comparator，必须先由 solver / resolved implementation target 在全组合协方差下显式解出
-- risk budget gap 计算前必须先校验 resolved risk-budget target 可用，且只包含承担风险的非现金节点；这些节点的 `target_risk_share` 加总为 `100% ± epsilon`。任何 cash / cash-bucket risk-target line 都是无效配置，不能用 `0%` 占位
+- risk budget gap 计算前必须先校验 resolved risk-budget target 可用，且只包含承担风险的证券节点；这些节点的 `target_risk_share` 加总为 `100% ± epsilon`。Cash 与 Derivatives 系统成员的 `target_risk_share` 必须为 `NULL`，不能用 `0%` 占位
 - `Risk` 的 `SAA Risk` 与 `TAA Risk` comparator 独立计算，并在 `Risk Target Gap` 面板合并展示；若某个 target source 未启用 `risk_budget` 维度，只有该 comparator 记为 `unavailable` / `comparator missing`
 
 说明：
@@ -1321,12 +1322,13 @@ $$
 - total NAV、modeled/excluded exposure、cash 和 coverage ratio 必须与 modeled result 一起披露，使用户可以看到模型只覆盖多少资产负债表；
 - 现金和待交收不进入 covariance，也不得伪造成 0-return series。只有在未来作为显式风险因子并进入 policy/return contract 后，才可以改变这一边界。
 
-如果 selected planning taxonomy 需要把 cash 作为独立节点展示：
+Instrument-scope planning taxonomy 的根 scope 固定包含两个不可分类、不可移动的系统成员：
 
-- 它可以在 SAA 或 TAA `target_weight` 中存在，用于资本配置和 weight drift；
-- 它不进入 `risk_budget` target，不建立 `target_risk_share = 0` 的行，也不进入 risk-budget target completeness 校验；
-- 当前现金 risk contribution 视为 `0` 并从风险分母和 `Risk Target Gap` comparator 中排除，除非未来显式把现金建模为风险因子；
-- Research 的 capital overlay 可以把非现金求解后的残余权重写入系统 cash-like member，但这是求解输出，不是 risk-budget target 输入；
+- `derivative_bucket:__derivatives__` 汇总全部 FCN 与 option carrying/liability amount；
+- `cash_bucket:__cash__` 汇总全部现金与待交收金额；
+- 两者都可以在 SAA 或 TAA 中设置 `target_weight`，用于资本配置和 Weight Target Gap；
+- 两者都不进入 `risk_budget` target，`target_risk_share` 必须为 `NULL`，也不进入 risk-budget completeness、协方差或 Risk Target Gap；
+- 当前产品口径把两者作为 zero-volatility capital members。显示的 Risk / RC `0` 只表示未纳入市场风险模型，不代表真实经济风险为零；
 - UI 必须解释“capital share != risk share”。
 
 ### 10.7 Research target solve
@@ -1338,14 +1340,14 @@ Research current target solve 使用 planning taxonomy 的层级 scope 做递归
 - 若当前选中 scope 显式指定 `weight` 或 `risk_budget`，该 override 只作用于选中 scope；子 sleeve 仍按自己的 scope default 求解；
 - 多成员 scope 必须有 active complete `SAA` 或 `TAA` target set。`TAA` 优先于 `SAA`；两者都缺失、启用维度不完整或目标值加总不正确时，该 scope 求解失败，不生成等权或目标权重替代结果；
 - `weight` scope 使用该 scope direct members 的 `target_weight` 拟合本地权重；已启用的 `weight` 维度必须逐成员显式给出且合计为 `100%`；
-- `risk_budget` scope 只使用承担风险的非现金 direct members 的 `target_risk_share` 求本地目标权重；risk target 中不得出现现金 member，非现金风险份额加总为 `100%`；
+- `risk_budget` scope 只使用承担风险的证券 direct members 的 `target_risk_share` 求本地目标权重；Cash 与 Derivatives 的目标资金权重只用于确定 zero-volatility capital allocation，不进入风险份额向量；证券风险份额加总为 `100%`；
 - 若某个成员被标记为 frozen，优先使用该成员 as-of actual weight；若 actual weight 不存在，只能使用已配置的 `target_weight`，不能把 `target_risk_share` 当作资金权重；
 - risk-budget solve 至少需要两个完整对齐 return observations；`strict` policy 下任何 active member 缺失都会失败，`complete_case_drop` 只能在显式选择且通过缺失行比例、latest complete row 新鲜度和最小完整观测数约束后使用，不能把 target risk share 当作 target weight；
 - risk-budget solve、current risk-share estimate 与 target-volatility overlay 必须使用组合级 `Production Risk Model` 的 covariance model、lookback、frequency、missing-return policy 和 contribution mode；
 - risk-budget solve 的 achieved risk share 最大绝对误差必须在显式阈值内；当前阈值为 `1e-4` share units，即 `0.01 percentage points`。超过阈值或产生负 signed risk share 时，该 scope 求解失败，不切换到 `abs` mode，也不返回旧求解器状态；
 - Research `Solved Result` 的 `Look-through RC` 使用最终 leaf 权重在全组合 leaf covariance 上重新计算。父 scope 的风险预算求解误差仍以该父 scope 的本地 covariance 为准；当 covariance model 在每层重新做 correlation shrinkage 时，look-through RC 可以与父层本地 achieved risk share 有差异，UI 和报告必须明确区分两种口径；
-- 单成员非现金 scope 只允许输出数学上唯一确定的本地目标权重 `100%`；只有现金而没有非现金风险成员的 scope 进入 `no risky members / unavailable`，不生成现金 risk budget；
-- 根 scope 完成风险 sleeve 权重后，`target_volatility` / `volatility_cap` / `fixed_gross` capital overlay 才对非现金目标权重整体放缩，并把残差写入系统 cash-like member；root top sleeve bounds 只约束 root 的直接 sleeve，违反上下限或与 frozen/fixed gross 不可行时，该 run 必须失败。没有 cash-like member、目标波动率无法用正的估计波动率缩放或 overlay 后违反可行约束时，该 run 必须失败或显式 unavailable，不用 unit gross、等权或旧算法兜底。
+- 单成员风险证券 scope 只允许输出数学上唯一确定的本地风险权重；只有 Cash / Derivatives 而没有风险证券的 scope 进入 `no risky members / unavailable`，不生成风险预算；
+- 根 scope 完成风险 sleeve 权重后，`target_volatility` / `volatility_cap` / `fixed_gross` capital overlay 才对风险证券权重整体放缩；剩余 capital 按已配置的 Cash / Derivatives 目标权重比例分配给两个 zero-volatility system members。root top sleeve bounds 只约束 root 的风险证券 sleeve；违反上下限、目标波动率不可解或与 frozen/fixed gross 不可行时，该 run 必须失败或显式 unavailable，不用 unit gross、等权或旧算法兜底。
 
 Research 的历史模拟合同是 `Point-in-time target-policy simulation`，不是用今天 taxonomy/targets 回放历史的 current-policy replay：
 

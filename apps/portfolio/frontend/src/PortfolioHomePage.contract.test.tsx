@@ -51,8 +51,8 @@ function HoldingsRouteHarness() {
   )
 }
 
-async function openAdvancedTable(user: ReturnType<typeof userEvent.setup>) {
-  await user.click(await screen.findByRole('button', { name: 'Advanced Table' }))
+async function waitForHoldingsTable(_user: ReturnType<typeof userEvent.setup>) {
+  await screen.findByRole('button', { name: /View\s*:/ })
 }
 
 describe('Holdings rendered page contract', () => {
@@ -82,56 +82,26 @@ describe('Holdings rendered page contract', () => {
     apiMocks.savePortfolioTableViewStore.mockResolvedValue({})
   })
 
-  it('uses canonical defaults for an empty backend store and ignores legacy browser views', async () => {
-    const legacyStore = JSON.stringify({
-      activeViewId: 'return-risk',
-      views: [],
-    })
-    window.localStorage.setItem('portfolio_ops.portfolio.holdings.views.v4', legacyStore)
-
-    const user = userEvent.setup()
+  it('uses canonical defaults for an empty backend store', async () => {
     renderPortfolioPage(
       <PortfolioHomePage />,
       '/portfolios/3/holdings',
       '/portfolios/:portfolioId/holdings',
     )
 
-    expect(await screen.findByRole('button', { name: 'Regions' })).toHaveAttribute(
-      'aria-pressed',
-      'true',
-    )
-    const marketRegion = screen.getByRole('region', { name: 'Market-valued Positions' })
-    const structuredRegion = screen.getByRole('region', {
-      name: 'Structured / Long Derivatives',
-    })
-    const obligationRegion = screen.getByRole('region', {
-      name: 'Short Option Positions',
-    })
-    const cashRegion = screen.getByRole('region', { name: 'Cash & Settlement' })
-    expect(within(marketRegion).getByRole('columnheader', { name: 'Day Return' })).toBeInTheDocument()
-    expect(within(marketRegion).getByRole('columnheader', { name: 'Scoped RC' })).toBeInTheDocument()
-    expect(within(structuredRegion).queryByRole('columnheader', { name: 'Day Return' })).not.toBeInTheDocument()
-    expect(within(structuredRegion).queryByRole('columnheader', { name: 'Scoped RC' })).not.toBeInTheDocument()
-    expect(within(obligationRegion).getByRole('columnheader', { name: 'Premium Basis' })).toBeInTheDocument()
-    expect(within(obligationRegion).getByRole('columnheader', { name: 'Carrying Liability' })).toBeInTheDocument()
-    expect(within(obligationRegion).getByRole('columnheader', { name: 'Expiry' })).toBeInTheDocument()
-    expect(within(obligationRegion).queryByRole('columnheader', { name: 'Uncovered' })).not.toBeInTheDocument()
-    expect(within(cashRegion).getByRole('columnheader', { name: 'Settlement Date' })).toBeInTheDocument()
-    expect(within(cashRegion).getByRole('columnheader', { name: 'Amount Base' })).toBeInTheDocument()
-    expect(within(cashRegion).getByRole('columnheader', { name: 'Pending Status' })).toBeInTheDocument()
-    expect(within(cashRegion).queryByRole('columnheader', { name: 'Day Return' })).not.toBeInTheDocument()
-    expect(within(cashRegion).queryByRole('columnheader', { name: 'Scoped RC' })).not.toBeInTheDocument()
+    expect(await screen.findByRole('button', { name: /View\s*: Default/ })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /Group Securities By\s*: None/ })).toBeInTheDocument()
+    expect(screen.getByText('Securities')).toBeInTheDocument()
+    expect(screen.getByRole('columnheader', { name: /Instrument Type/ })).toBeInTheDocument()
+    expect(screen.getByRole('columnheader', { name: /Position Value/ })).toBeInTheDocument()
     const operationalStatus = screen.getByRole('region', { name: 'Holdings operational status' })
     expect(within(operationalStatus).getByText('Open short option contracts').nextElementSibling).toHaveTextContent('0.00')
     expect(within(operationalStatus).getByText('No operational exceptions.')).toBeInTheDocument()
 
-    await openAdvancedTable(user)
-    expect(await screen.findByRole('button', { name: /View\s*: Default/ })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Sort Quote: ascending' })).toBeInTheDocument()
-    expect(window.localStorage.getItem('portfolio_ops.portfolio.holdings.views.v4')).toBe(legacyStore)
   })
 
-  it('exports the four regions with a fixed canonical schema and explicit N/A values', async () => {
+  it('exports the unified grouped table using the active view columns', async () => {
     apiMocks.getHoldingsWorkspace.mockResolvedValueOnce(
       holdingsWorkspaceFixture({
         rows: [
@@ -140,7 +110,7 @@ describe('Holdings rendered page contract', () => {
             line_id: 'holding:fcn-1',
             position_reference_id: 'fcn-1',
             derivative_contract_id: 'fcn-1',
-            holding_region: 'structured_and_long_derivatives',
+            holding_category: 'derivatives',
             instrument_core: null,
             derivative_contract: fcnContractFixture(),
             quantity: 1,
@@ -154,13 +124,17 @@ describe('Holdings rendered page contract', () => {
             valuation_basis: 'carried_cost',
             performance_eligible: false,
             risk_eligible: false,
+            forward_risk_status: 'modeled_zero',
+            forward_risk_share: 0,
+            forward_contribution_to_variance: 0,
+            forward_annualized_volatility: 0,
           }),
           holdingFixture({
             line_id: 'broker:option-1:obligation',
             position_reference_id: 'option-1',
             derivative_contract_id: 'option-1',
             holding_kind: 'option_obligation',
-            holding_region: 'written_option_obligations',
+            holding_category: 'derivatives',
             instrument_core: null,
             derivative_contract: optionContractFixture(),
             quantity: 100,
@@ -185,11 +159,15 @@ describe('Holdings rendered page contract', () => {
             performance_eligible: false,
             risk_eligible: false,
             is_liability: true,
+            forward_risk_status: 'modeled_zero',
+            forward_risk_share: 0,
+            forward_contribution_to_variance: 0,
+            forward_annualized_volatility: 0,
           }),
           holdingFixture({
             line_id: 'pending:settlement_payable',
             holding_kind: 'settlement_payable',
-            holding_region: 'cash_and_settlement',
+            holding_category: 'cash_and_settlement',
             instrument_core: instrumentFixture({
               instrument_id: 'pending:settlement_payable',
               instrument_name: 'Settlement payable · Alpha Fund',
@@ -212,6 +190,9 @@ describe('Holdings rendered page contract', () => {
             performance_eligible: false,
             risk_eligible: false,
             risk_budget_eligible: false,
+            forward_risk_status: 'modeled_zero',
+            forward_risk_share: 0,
+            forward_contribution_to_variance: 0,
           }),
         ],
       }),
@@ -224,7 +205,7 @@ describe('Holdings rendered page contract', () => {
       '/portfolios/:portfolioId/holdings',
     )
 
-    expect(await screen.findByText('Open · matures 2026-12-31')).toBeInTheDocument()
+    expect(await screen.findByText('FCN · matures 2026-12-31')).toBeInTheDocument()
     await user.click(screen.getByRole('button', { name: 'Download' }))
     await user.click(screen.getByRole('menuitem', { name: 'CSV' }))
 
@@ -232,90 +213,182 @@ describe('Holdings rendered page contract', () => {
       Array<string | number | null>
     >
     expect(exportedRows[0]).toEqual([
-      'Region',
+      'Category',
       'Instrument',
-      'Identifier',
-      'Currency',
-      'Lifecycle/Pending Status',
+      'Instrument Type',
+      'Quote',
+      'Quote Date',
+      'Chart 6M',
       'Quantity',
-      'Market Value Base',
-      'Carrying Value Base',
-      'Cost Basis Base',
-      'Maturity/Expiry',
-      'Open Contracts',
-      'Underlying Units',
-      'Strike',
-      'Settlement Type',
-      'Premium Basis',
-      'Carrying Liability Base',
-      'Settlement Date',
-      'Settlement Amount',
-      'Settlement Amount Base',
-      'Analytics Scope',
-      'Coverage Status',
+      'Avg Cost',
+      'Cost Basis',
+      'Position Value',
+      'Weight',
+      'Forward RC',
+      'Unrealized P&L',
+      'Unrealized Return',
     ])
-    expect(exportedRows).toHaveLength(5)
+    expect(exportedRows).toHaveLength(9)
     const marketRow = exportedRows.find((row) => row[1] === 'Alpha Fund')
     const fcnRow = exportedRows.find((row) => row[1] === 'Alpha FCN')
     const obligationRow = exportedRows.find((row) => row[1] === 'Alpha 110 Call')
     const settlementRow = exportedRows.find(
       (row) => row[1] === 'Settlement payable · Alpha Fund',
     )
-    expect(marketRow?.[10]).toBe('N/A')
-    expect(fcnRow?.[6]).toBe('N/A')
-    expect(fcnRow?.[7]).toBe(500)
-    expect(fcnRow?.[9]).toBe('2026-12-31')
-    expect(obligationRow?.slice(10, 16)).toEqual([
-      1,
-      100,
-      110,
-      'Physical',
-      300,
-      300,
+    expect(marketRow?.[0]).toBe('Securities')
+    expect(fcnRow?.[0]).toBe('Derivatives')
+    expect(fcnRow?.[9]).toBe(500)
+    expect(fcnRow?.[11]).toBe(0)
+    expect(fcnRow?.[12]).toBe('N/A')
+    expect(obligationRow?.[0]).toBe('Derivatives')
+    expect(obligationRow?.[9]).toBe(-300)
+    expect(obligationRow?.[11]).toBe(0)
+    expect(settlementRow?.[0]).toBe('Cash & Settlement')
+    expect(settlementRow?.[9]).toBe(-250)
+    expect(exportedRows.find((row) => row[0] === 'Derivatives' && row[1] === 'Subtotal (USD)')?.[11]).toBe(0)
+    expect(exportedRows[exportedRows.length - 1]?.slice(0, 2)).toEqual([
+      'Portfolio Total',
+      'Portfolio Total (USD)',
     ])
-    expect(settlementRow?.slice(16, 19)).toEqual(['2026-07-17', -250, -250])
-    expect(settlementRow?.[6]).toBe('N/A')
   })
 
-  it('marks table views unavailable when the backend view store cannot be loaded', async () => {
-    apiMocks.getPortfolioTableViewStore.mockRejectedValueOnce(new Error('View store offline.'))
-
+  it('applies taxonomy only inside Securities and keeps the other fixed categories at N/A', async () => {
+    apiMocks.getHoldingsWorkspace.mockResolvedValueOnce(
+      holdingsWorkspaceFixture({
+        rows: [
+          holdingFixture(),
+          holdingFixture({
+            line_id: 'holding:fcn-taxonomy-boundary',
+            position_reference_id: 'fcn-taxonomy-boundary',
+            derivative_contract_id: 'fcn-taxonomy-boundary',
+            holding_category: 'derivatives',
+            instrument_core: null,
+            derivative_contract: fcnContractFixture({
+              derivative_contract_id: 'fcn-taxonomy-boundary',
+              contract_name: 'Taxonomy Boundary FCN',
+            }),
+            market_value: 100,
+            market_value_base: 100,
+            allocation: 0.1,
+          }),
+          holdingFixture({
+            line_id: 'cash:USD',
+            holding_kind: 'settled_cash',
+            holding_category: 'cash_and_settlement',
+            instrument_core: instrumentFixture({
+              instrument_id: 'cash:USD',
+              instrument_name: 'USD Cash',
+              instrument_type: 'cash',
+              identifiers: [],
+            }),
+            market_value: 100,
+            market_value_base: 100,
+            allocation: 0.1,
+          }),
+        ],
+      }),
+    )
+    apiMocks.getPortfolioTaxonomyCatalog.mockResolvedValueOnce({
+      portfolio_id: '3',
+      default_planning_taxonomy_id: 'taxonomy-1',
+      taxonomies: [
+        {
+          taxonomy_id: 'taxonomy-1',
+          portfolio_id: '3',
+          name: 'Policy Allocation',
+          taxonomy_type: 'allocation',
+          primary_assignment_scope: 'instrument',
+          planning_enabled: true,
+          status: 'active',
+        },
+      ],
+      taxonomy_nodes: [
+        {
+          taxonomy_node_id: 'risk-assets',
+          taxonomy_id: 'taxonomy-1',
+          parent_taxonomy_node_id: null,
+          node_name: 'Risk Assets',
+          node_code: 'RISK',
+          sort_order: 0,
+          is_terminal: true,
+          default_target_dimension: 'weight',
+          status: 'active',
+        },
+      ],
+      taxonomy_assignments: [
+        {
+          assignment_id: 'assignment-1',
+          taxonomy_id: 'taxonomy-1',
+          target_scope: 'instrument',
+          target_entity_id: 'asset-1',
+          taxonomy_node_id: 'risk-assets',
+          status: 'active',
+        },
+      ],
+      instrument_universe: [],
+      target_sets: [],
+      target_set_lines: [],
+      target_set_integrity_issues: [],
+    })
     const user = userEvent.setup()
+
     renderPortfolioPage(
       <PortfolioHomePage />,
       '/portfolios/3/holdings',
       '/portfolios/:portfolioId/holdings',
     )
 
-    await openAdvancedTable(user)
+    await screen.findByRole('cell', { name: /Taxonomy Boundary FCN/ })
+    await user.click(screen.getByRole('button', { name: 'Data & Columns' }))
+    const columnsDialog = screen.getByRole('dialog', { name: 'Choose holdings columns' })
+    await user.type(within(columnsDialog).getByPlaceholderText('Search fields'), 'Taxonomy')
+    const taxonomyField = within(columnsDialog)
+      .getByText('Taxonomy', { selector: '.holdings-field-label' })
+      .closest('label')
+    expect(taxonomyField).not.toBeNull()
+    await user.click(taxonomyField!.querySelector('input')!)
+    await user.click(within(columnsDialog).getByRole('button', { name: 'Update' }))
+
+    const taxonomyHeader = screen.getByRole('button', { name: /Sort Taxonomy/ }).closest('th')!
+    const taxonomyIndex = Array.from(taxonomyHeader.parentElement!.children).indexOf(taxonomyHeader)
+    const securityRow = screen.getByRole('cell', { name: /Alpha Fund/ }).closest('tr')
+    const derivativeRow = screen.getByRole('cell', { name: /Taxonomy Boundary FCN/ }).closest('tr')
+    const cashRow = screen.getByRole('cell', { name: /USD Cash/ }).closest('tr')
+    expect(securityRow!.children[taxonomyIndex]).toHaveTextContent('Risk Assets')
+    expect(derivativeRow!.children[taxonomyIndex]).toHaveTextContent('N/A')
+    expect(cashRow!.children[taxonomyIndex]).toHaveTextContent('N/A')
+
+    await user.click(screen.getByRole('button', { name: /Group Securities By\s*: None/ }))
+    await user.click(
+      within(screen.getByRole('dialog', { name: 'Group securities' })).getByRole('button', {
+        name: 'Taxonomy',
+      }),
+    )
+    expect(document.querySelectorAll('.holdings-subgroup-row')).toHaveLength(1)
+    expect(document.querySelector('.holdings-subgroup-row')).toHaveTextContent('Risk Assets')
+    expect(screen.getAllByText('Derivatives', { selector: '.holdings-group-title' })).toHaveLength(1)
+    expect(screen.getAllByText('Cash & Settlement', { selector: '.holdings-group-title' })).toHaveLength(1)
+  })
+
+  it('marks table views unavailable when the backend view store cannot be loaded', async () => {
+    apiMocks.getPortfolioTableViewStore.mockRejectedValueOnce(new Error('View store offline.'))
+
+    renderPortfolioPage(
+      <PortfolioHomePage />,
+      '/portfolios/3/holdings',
+      '/portfolios/:portfolioId/holdings',
+    )
+
     expect(await screen.findByRole('alert')).toHaveTextContent('View store offline.')
     expect(screen.getByText('Table views unavailable')).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /View\s*:/ })).not.toBeInTheDocument()
   })
 
-  it('upgrades the persisted Return & Risk system view with instrument 1M return', async () => {
+  it('keeps the canonical Return & Risk system view authoritative', async () => {
     apiMocks.getPortfolioTableViewStore.mockResolvedValueOnce({
       store: {
         activeViewId: 'return-risk',
-        views: [
-          {
-            id: 'return-risk',
-            name: 'Return & Risk',
-            readonly: true,
-            state: {
-              columns: [
-                'instrument',
-                'instrument_return_1w',
-                'instrument_return_mtd',
-                'unrealized_pct',
-              ],
-              columnWidths: {},
-              groupBy: 'none',
-              sortField: 'unrealized_pct',
-              sortDirection: 'desc',
-            },
-          },
-        ],
+        views: [],
       },
     })
 
@@ -326,9 +399,15 @@ describe('Holdings rendered page contract', () => {
       '/portfolios/:portfolioId/holdings',
     )
 
-    await openAdvancedTable(user)
+    await waitForHoldingsTable(user)
     expect(await screen.findByRole('button', { name: /View\s*: Return & Risk/ })).toBeInTheDocument()
+    expect(screen.getByRole('columnheader', { name: /Chart 6M/ })).toBeInTheDocument()
+    expect(screen.getByRole('columnheader', { name: /1W Return/ })).toBeInTheDocument()
     expect(screen.getByRole('columnheader', { name: /1M Return/ })).toBeInTheDocument()
+    expect(screen.getByRole('columnheader', { name: /3M Return/ })).toBeInTheDocument()
+    expect(screen.getByRole('columnheader', { name: /^MTD/ })).toBeInTheDocument()
+    expect(screen.getByRole('columnheader', { name: /^YTD/ })).toBeInTheDocument()
+    expect(screen.getByRole('columnheader', { name: /Forward RC/ })).toBeInTheDocument()
     expect(screen.getByRole('columnheader', { name: /Unrealized Return/ })).toBeInTheDocument()
   })
 
@@ -390,7 +469,7 @@ describe('Holdings rendered page contract', () => {
       '/portfolios/:portfolioId/holdings',
     )
 
-    await openAdvancedTable(user)
+    await waitForHoldingsTable(user)
     expect(await screen.findByRole('cell', { name: /Alpha Fund/ })).toBeInTheDocument()
     expect(apiMocks.getHoldingsWorkspace).toHaveBeenCalledWith('3', {
       as_of_date: undefined,
@@ -475,7 +554,7 @@ describe('Holdings rendered page contract', () => {
             position_reference_id: 'option-1',
             derivative_contract_id: 'option-1',
             holding_kind: 'option_obligation',
-            holding_region: 'written_option_obligations',
+            holding_category: 'derivatives',
             instrument_core: null,
             derivative_contract: optionContractFixture({
               derivative_contract_id: 'option-1',
@@ -514,6 +593,10 @@ describe('Holdings rendered page contract', () => {
             fair_value_coverage_status: 'unavailable',
             performance_eligible: false,
             risk_eligible: false,
+            forward_risk_status: 'modeled_zero',
+            forward_risk_share: 0,
+            forward_contribution_to_variance: 0,
+            forward_annualized_volatility: 0,
             is_liability: true,
             day_change_value: 0,
             day_change_value_base: 0,
@@ -572,40 +655,36 @@ describe('Holdings rendered page contract', () => {
     const obligationCell = await screen.findByRole('cell', {
       name: /Alpha 110 Call/,
     })
-    const regionRow = obligationCell.closest('tr')
-    expect(regionRow).not.toBeNull()
-    expect(within(regionRow!).getByText('2.00')).toBeInTheDocument()
-    expect(within(regionRow!).getByText('200.00')).toBeInTheDocument()
-    expect(within(regionRow!).getByText('2026-12-18')).toBeInTheDocument()
-    expect(within(regionRow!).getByText('$110.0000')).toBeInTheDocument()
-    expect(within(regionRow!).getByText('Physical')).toBeInTheDocument()
-    expect(within(regionRow!).getAllByText('$300.00')).toHaveLength(2)
+    expect(obligationCell).toHaveTextContent('Short Call · expires 2026-12-18 · Open')
+    expect(obligationCell).toHaveTextContent(
+      '2.00 open contracts · 200.00 underlying units · strike $110.0000',
+    )
+    expect(obligationCell).toHaveTextContent(
+      'Remaining premium basis $300.00 · Carrying liability $300.00',
+    )
     expect(screen.queryByText('Uncovered')).not.toBeInTheDocument()
 
-    await openAdvancedTable(user)
+    await waitForHoldingsTable(user)
     const advancedObligationCell = await screen.findByRole('cell', {
       name: /Alpha 110 Call/,
     })
-    expect(advancedObligationCell).toHaveTextContent(
-      'Short option position · Open',
-    )
-    expect(advancedObligationCell).toHaveTextContent(
-      '2.00 open contracts · 200.00 underlying units at expiry',
-    )
-    expect(advancedObligationCell).toHaveTextContent(
-      'Remaining premium basis $300.00 · Carrying liability $300.00',
-    )
     await user.click(screen.getByRole('button', { name: /View\s*: Default/ }))
     await user.click(screen.getByRole('option', { name: 'Return & Risk' }))
     const obligationRow = screen.getByRole('cell', { name: /Alpha 110 Call/ }).closest('tr')
     const dayChangeHeader = screen.getByRole('columnheader', { name: /Day Change/ })
     const dayReturnHeader = screen.getByRole('columnheader', { name: /Day Return/ })
+    const volatilityHeader = screen.getByRole('columnheader', { name: /1M Vol/ })
+    const forwardRiskHeader = screen.getByRole('columnheader', { name: /Forward RC/ })
     const dayChangeIndex = Array.from(dayChangeHeader.parentElement!.children).indexOf(dayChangeHeader)
     const dayReturnIndex = Array.from(dayReturnHeader.parentElement!.children).indexOf(dayReturnHeader)
+    const volatilityIndex = Array.from(volatilityHeader.parentElement!.children).indexOf(volatilityHeader)
+    const forwardRiskIndex = Array.from(forwardRiskHeader.parentElement!.children).indexOf(forwardRiskHeader)
     expect(obligationRow!.children[dayChangeIndex]).toHaveTextContent('N/A')
     expect(obligationRow!.children[dayReturnIndex]).toHaveTextContent('N/A')
     expect(obligationRow!.children[dayChangeIndex]).not.toHaveTextContent('$0.00')
     expect(obligationRow!.children[dayReturnIndex]).not.toHaveTextContent('0.00%')
+    expect(obligationRow!.children[volatilityIndex]).toHaveTextContent('0.00%')
+    expect(obligationRow!.children[forwardRiskIndex]).toHaveTextContent('0.00%')
   })
 
   it('keeps event-valued P&L unavailable while preserving a genuine quoted zero', async () => {
@@ -616,7 +695,7 @@ describe('Holdings rendered page contract', () => {
             line_id: 'holding:event-option',
             position_reference_id: 'event-option',
             derivative_contract_id: 'event-option',
-            holding_region: 'structured_and_long_derivatives',
+            holding_category: 'derivatives',
             instrument_core: null,
             derivative_contract: optionContractFixture({
               derivative_contract_id: 'event-option',
@@ -633,6 +712,10 @@ describe('Holdings rendered page contract', () => {
             coverage_status: 'event-cost',
             performance_eligible: false,
             risk_eligible: false,
+            forward_risk_status: 'modeled_zero',
+            forward_risk_share: 0,
+            forward_contribution_to_variance: 0,
+            forward_annualized_volatility: 0,
             day_change_value: 0,
             day_change_value_base: 0,
             day_change_pct: 0,
@@ -679,7 +762,7 @@ describe('Holdings rendered page contract', () => {
       '/portfolios/:portfolioId/holdings',
     )
 
-    await openAdvancedTable(user)
+    await waitForHoldingsTable(user)
     await user.click(await screen.findByRole('button', { name: /View\s*: Default/ }))
     await user.click(screen.getByRole('option', { name: 'Return & Risk' }))
 
@@ -705,8 +788,8 @@ describe('Holdings rendered page contract', () => {
     expect(eventRow!.children[unrealizedPctIndex]).toHaveTextContent('N/A')
     expect(eventRow!.children[chartIndex]).toHaveTextContent('N/A')
     expect(eventRow!.children[returnIndex]).toHaveTextContent('N/A')
-    expect(eventRow!.children[volatilityIndex]).toHaveTextContent('N/A')
-    expect(eventRow!.children[forwardRiskIndex]).toHaveTextContent('N/A')
+    expect(eventRow!.children[volatilityIndex]).toHaveTextContent('0.00%')
+    expect(eventRow!.children[forwardRiskIndex]).toHaveTextContent('0.00%')
     expect(eventRow!.children[drawdownIndex]).toHaveTextContent('N/A')
     expect(quotedRow!.children[unrealizedValueIndex]).toHaveTextContent('$0.00')
     expect(quotedRow!.children[unrealizedPctIndex]).toHaveTextContent('0.00%')
@@ -718,13 +801,18 @@ describe('Holdings rendered page contract', () => {
     expect(totalRow!.querySelector('[data-column-key="unrealized_value"]')).toHaveTextContent('N/A')
     expect(totalRow!.querySelector('[data-column-key="unrealized_pct"]')).toHaveTextContent('N/A')
 
-    await user.click(screen.getByRole('button', { name: /Group By/ }))
-    await user.click(within(screen.getByRole('dialog', { name: 'Group holdings' })).getByRole('button', { name: 'Currency' }))
-    const groupRow = document.querySelector('.holdings-group-row')
-    expect(groupRow!.querySelector('[data-column-key="day_change_value"]')).toHaveTextContent('N/A')
-    expect(groupRow!.querySelector('[data-column-key="unrealized_value"]')).toHaveTextContent('N/A')
-    expect(groupRow!.querySelector('[data-column-key="unrealized_pct"]')).toHaveTextContent('N/A')
-    expect(groupRow!.querySelector('[data-column-key="forward_risk_share"]')).toHaveTextContent('N/A')
+    await user.click(screen.getByRole('button', { name: /Group Securities By/ }))
+    await user.click(within(screen.getByRole('dialog', { name: 'Group securities' })).getByRole('button', { name: 'Currency' }))
+    const securityGroupRow = document.querySelector('.holdings-subgroup-row')
+    const derivativeCategoryRow = screen
+      .getByText('Derivatives', { selector: '.holdings-group-title' })
+      .closest('tr')
+    expect(securityGroupRow!.querySelector('[data-column-key="day_change_value"]')).toHaveTextContent('$0.00')
+    expect(securityGroupRow!.querySelector('[data-column-key="unrealized_value"]')).toHaveTextContent('$0.00')
+    expect(securityGroupRow!.querySelector('[data-column-key="unrealized_pct"]')).toHaveTextContent('0.00%')
+    expect(securityGroupRow!.querySelector('[data-column-key="forward_risk_share"]')).toHaveTextContent('100.00%')
+    expect(derivativeCategoryRow!.querySelector('[data-column-key="day_change_value"]')).toHaveTextContent('N/A')
+    expect(derivativeCategoryRow!.querySelector('[data-column-key="unrealized_value"]')).toHaveTextContent('N/A')
 
     await user.click(screen.getByRole('button', { name: 'Download' }))
     await user.click(screen.getByRole('menuitem', { name: 'CSV' }))
@@ -742,8 +830,8 @@ describe('Holdings rendered page contract', () => {
     expect(exportedEventRow?.[exportUnrealizedValueIndex]).toBe('N/A')
     expect(exportedEventRow?.[exportUnrealizedPctIndex]).toBe('N/A')
     expect(exportedEventRow?.[exportReturnIndex]).toBe('N/A')
-    expect(exportedEventRow?.[exportVolatilityIndex]).toBe('N/A')
-    expect(exportedEventRow?.[exportForwardRiskIndex]).toBe('N/A')
+    expect(exportedEventRow?.[exportVolatilityIndex]).toBe(0)
+    expect(exportedEventRow?.[exportForwardRiskIndex]).toBe(0)
     expect(exportedQuotedRow?.[exportUnrealizedValueIndex]).toBe(0)
     expect(exportedQuotedRow?.[exportUnrealizedPctIndex]).toBe(0)
     expect(exportedTotalRow?.[exportUnrealizedValueIndex]).toBe('N/A')
@@ -765,7 +853,7 @@ describe('Holdings rendered page contract', () => {
           }),
           holdingFixture({
             line_id: 'cash:USD',
-            holding_region: 'cash_and_settlement',
+            holding_category: 'cash_and_settlement',
             instrument_core: instrumentFixture({
               instrument_id: 'cash:USD',
               instrument_name: 'USD Cash',
@@ -789,6 +877,11 @@ describe('Holdings rendered page contract', () => {
             price_chart_6m: [],
             price_chart_1y: [],
             coverage_status: 'cash',
+            risk_eligible: false,
+            forward_risk_status: 'modeled_zero',
+            forward_risk_share: 0,
+            forward_contribution_to_variance: 0,
+            forward_annualized_volatility: 0,
             account_ids: ['cash-account'],
             account_count: 1,
             open_position_lot_count: 0,
@@ -811,7 +904,7 @@ describe('Holdings rendered page contract', () => {
       '/portfolios/:portfolioId/holdings',
     )
 
-    await openAdvancedTable(user)
+    await waitForHoldingsTable(user)
     const totalRow = (await screen.findByText('Portfolio Total (USD)')).closest('tr')
     expect(totalRow).not.toBeNull()
     expect(totalRow!.querySelector('[data-column-key="unrealized_pct"]')).toHaveTextContent('+20.00%')
@@ -871,14 +964,14 @@ describe('Holdings rendered page contract', () => {
       '/portfolios/:portfolioId/holdings',
     )
 
-    await openAdvancedTable(user)
+    await waitForHoldingsTable(user)
     await screen.findByRole('cell', { name: /Fund A/ })
     await user.click(screen.getByRole('button', { name: /View\s*: Default/ }))
     await user.click(screen.getByRole('option', { name: 'Return & Risk' }))
-    await user.click(screen.getByRole('button', { name: /Group By\s*: None/ }))
+    await user.click(screen.getByRole('button', { name: /Group Securities By\s*: None/ }))
     await user.click(screen.getByRole('button', { name: 'Instrument Type' }))
 
-    const groupRow = document.querySelector('.holdings-group-row')
+    const groupRow = document.querySelector('.holdings-subgroup-row')
     const totalRow = screen.getByText('Portfolio Total (USD)').closest('tr')
     expect(groupRow).not.toBeNull()
     expect(totalRow).not.toBeNull()
@@ -952,14 +1045,14 @@ describe('Holdings rendered page contract', () => {
       '/portfolios/:portfolioId/holdings',
     )
 
-    await openAdvancedTable(user)
+    await waitForHoldingsTable(user)
     await screen.findByRole('cell', { name: /CNY Fund/ })
     await user.click(screen.getByRole('button', { name: /View\s*: Default/ }))
     await user.click(screen.getByRole('option', { name: 'Return & Risk' }))
-    await user.click(screen.getByRole('button', { name: /Group By\s*: None/ }))
+    await user.click(screen.getByRole('button', { name: /Group Securities By\s*: None/ }))
     await user.click(screen.getByRole('button', { name: 'Instrument Type' }))
 
-    const groupRow = document.querySelector('.holdings-group-row')
+    const groupRow = document.querySelector('.holdings-subgroup-row')
     const totalRow = screen.getByText('Portfolio Total (USD)').closest('tr')
     expect(groupRow).not.toBeNull()
     expect(totalRow).not.toBeNull()
@@ -1014,7 +1107,7 @@ describe('Holdings rendered page contract', () => {
       '/portfolios/:portfolioId/holdings',
     )
 
-    await openAdvancedTable(user)
+    await waitForHoldingsTable(user)
     await screen.findByRole('cell', { name: /Missing Return Fund/ })
     await user.click(screen.getByRole('button', { name: /View\s*: Default/ }))
     await user.click(screen.getByRole('option', { name: 'Return & Risk' }))
@@ -1046,7 +1139,7 @@ describe('Holdings rendered page contract', () => {
       '/portfolios/:portfolioId/holdings',
     )
 
-    await openAdvancedTable(user)
+    await waitForHoldingsTable(user)
     const holdingRow = (await screen.findByRole('cell', { name: /Alpha Fund/ })).closest('tr')
     const quoteDateHeader = screen.getByRole('columnheader', { name: /Quote Date/ })
     const quoteDateColumnIndex = Array.from(quoteDateHeader.parentElement!.children).indexOf(quoteDateHeader)
@@ -1080,7 +1173,7 @@ describe('Holdings rendered page contract', () => {
       '/portfolios/:portfolioId/holdings',
     )
 
-    await openAdvancedTable(user)
+    await waitForHoldingsTable(user)
     expect(await screen.findByText('Trend: Close · Partial · 40 observations')).toBeInTheDocument()
     expect(
       screen.getByText('Using Close because it provides more complete history than the preferred basis.'),

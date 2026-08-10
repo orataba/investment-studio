@@ -87,7 +87,7 @@ export function optionContractFixture(
 export function holdingFixture(overrides: Partial<PortfolioHoldingRow> = {}): PortfolioHoldingRow {
   return {
     line_id: 'holding:asset-1',
-    holding_region: 'market_valued_positions',
+    holding_category: 'securities',
     instrument_core: instrumentFixture(),
     quantity: 10,
     last_price: 80,

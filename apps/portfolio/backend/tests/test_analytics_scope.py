@@ -563,6 +563,10 @@ def test_workspace_scope_requires_complete_market_valuation_even_when_policy_is_
     )
 
     rows = {row["line_id"]: row for row in response["rows"]}
+    assert rows["equity-line"]["holding_category"] == "securities"
+    assert rows["stale-line"]["holding_category"] == "securities"
+    assert rows["fcn-line"]["holding_category"] == "derivatives"
+    assert rows["option-obligation-line"]["holding_category"] == "derivatives"
     assert rows["equity-line"]["risk_eligible"] is True
     assert rows["equity-line"]["performance_eligible"] is True
     for line_id in ("fcn-line", "option-obligation-line", "stale-line"):
@@ -626,6 +630,7 @@ def test_workspace_marks_cash_outside_system_valuation_contract(monkeypatch) -> 
     )
 
     row = response["rows"][0]
+    assert row["holding_category"] == "cash_and_settlement"
     assert row["risk_eligible"] is False
     assert row["risk_budget_eligible"] is False
     assert row["performance_eligible"] is False

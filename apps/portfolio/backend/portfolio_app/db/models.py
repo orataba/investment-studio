@@ -1034,8 +1034,8 @@ class TargetSetLineRecordModel(Base):
     __tablename__ = "target_set_line_record"
     __table_args__ = (
         CheckConstraint(
-            "target_member_type != 'cash_bucket' OR target_risk_share IS NULL",
-            name="ck_target_set_line_cash_risk_null",
+            "target_member_type NOT IN ('cash_bucket', 'derivative_bucket') OR target_risk_share IS NULL",
+            name="ck_target_set_line_non_risk_member_risk_null",
         ),
         Index(
             "ix_target_set_line_record_target_set_node",

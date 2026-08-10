@@ -6,7 +6,12 @@ import {
   groupedMaxDrawdown,
   groupedReturnSeries,
 } from './pages/PortfolioHomePage'
-import { holdingFixture, holdingsWorkspaceFixture, instrumentFixture } from './test/portfolioFixtures'
+import {
+  holdingFixture,
+  holdingsWorkspaceFixture,
+  instrumentFixture,
+  optionContractFixture,
+} from './test/portfolioFixtures'
 
 function returnSeries(
   periods: Array<[startDate: string, endDate: string, value: number]>,
@@ -154,5 +159,74 @@ describe('holdings current-basket period identity', () => {
     expect(groupedAnnualizedVolatility([holding], workspace, '1m')).toBeNull()
     expect(groupedCurrentDrawdown([holding], workspace)).toBeNull()
     expect(groupedMaxDrawdown([holding], workspace)).toBeNull()
+  })
+
+  it('models derivatives as zero volatility without fabricating a drawdown path', () => {
+    const derivative = holdingFixture({
+      line_id: 'holding:option-1',
+      holding_category: 'derivatives',
+      instrument_core: null,
+      derivative_contract_id: 'option-1',
+      derivative_contract: optionContractFixture(),
+      valuation_basis: 'carried_cost',
+      coverage_status: 'event-cost',
+      market_value: 500,
+      market_value_base: 500,
+      risk_eligible: false,
+      forward_risk_status: 'modeled_zero',
+      forward_risk_share: 0,
+    })
+    const workspace = holdingsWorkspaceFixture({ rows: [derivative] })
+
+    expect(groupedAnnualizedVolatility([derivative], workspace, '1m')).toBe(0)
+    expect(groupedCurrentDrawdown([derivative], workspace)).toBeNull()
+    expect(groupedMaxDrawdown([derivative], workspace)).toBeNull()
+  })
+
+  it('models base-currency pending balances as zero risk but not foreign pending balances', () => {
+    const basePending = holdingFixture({
+      line_id: 'pending:USD',
+      holding_category: 'cash_and_settlement',
+      holding_kind: 'settlement_receivable',
+      instrument_core: {
+        ...instrumentFixture(),
+        instrument_id: 'pending:USD',
+        instrument_name: 'Pending USD',
+        instrument_type: 'cash',
+        currency: 'USD',
+      },
+      market_value: 100,
+      market_value_base: 100,
+      forward_risk_status: 'modeled_zero',
+      forward_risk_share: 0,
+      risk_eligible: false,
+    })
+    const foreignPending = holdingFixture({
+      ...basePending,
+      line_id: 'pending:HKD',
+      instrument_core: {
+        ...basePending.instrument_core!,
+        instrument_id: 'pending:HKD',
+        instrument_name: 'Pending HKD',
+        currency: 'HKD',
+      },
+      forward_risk_status: 'pending_settlement',
+      forward_risk_share: null,
+    })
+
+    expect(
+      groupedAnnualizedVolatility(
+        [basePending],
+        holdingsWorkspaceFixture({ rows: [basePending] }),
+        '1m',
+      ),
+    ).toBe(0)
+    expect(
+      groupedAnnualizedVolatility(
+        [foreignPending],
+        holdingsWorkspaceFixture({ rows: [foreignPending] }),
+        '1m',
+      ),
+    ).toBeNull()
   })
 })

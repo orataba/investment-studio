@@ -581,7 +581,7 @@ def test_taxonomy_update_node_and_assignment_round_trip(client):
     assert updated_assignment["status"] == "archived"
 
 
-def test_planning_taxonomy_node_default_target_and_cash_bucket_assignment_round_trip(client):
+def test_instrument_taxonomy_rejects_cash_bucket_assignments(client):
     taxonomy_response = client.post(
         "/api/portfolios/portfolio-ops/taxonomies",
         json={"effective_from": EFFECTIVE_FROM,
@@ -620,8 +620,8 @@ def test_planning_taxonomy_node_default_target_and_cash_bucket_assignment_round_
             "taxonomy_node_id": cash_node_payload["taxonomy_node_id"],
         },
     )
-    assert assignment_response.status_code == 200
-    assert assignment_response.json()["target_scope"] == "cash_bucket"
+    assert assignment_response.status_code == 400
+    assert "target_scope is not allowed" in assignment_response.json()["detail"]
 
 
 def test_target_set_accepts_levered_weight_totals_with_normalized_risk_share(client):
@@ -1194,7 +1194,7 @@ def test_target_set_create_update_and_catalog_round_trip(client):
     assert sum(item["target_weight"] for item in root_lines) == pytest.approx(1.0)
 
 
-def test_leaf_scope_target_set_accepts_instrument_and_cash_members(client):
+def test_leaf_scope_target_set_accepts_only_assigned_instruments(client):
     taxonomy_response = client.post(
         "/api/portfolios/portfolio-ops/taxonomies",
         json={"effective_from": EFFECTIVE_FROM,
@@ -1222,11 +1222,6 @@ def test_leaf_scope_target_set_accepts_instrument_and_cash_members(client):
         {
             "target_scope": "instrument",
             "target_entity_id": "fund-us-agg",
-            "taxonomy_node_id": root_node_id,
-        },
-        {
-            "target_scope": "cash_bucket",
-            "target_entity_id": "cash-usd-main",
             "taxonomy_node_id": root_node_id,
         },
     ]:
@@ -1267,7 +1262,7 @@ def test_leaf_scope_target_set_accepts_instrument_and_cash_members(client):
         },
     )
     assert invalid_cash_risk_response.status_code == 400
-    assert "leave target_risk_share empty" in invalid_cash_risk_response.json()["detail"]
+    assert "direct members of the selected scope" in invalid_cash_risk_response.json()["detail"]
 
     target_set_response = client.post(
         f"/api/portfolios/portfolio-ops/taxonomies/{taxonomy_id}/target-sets",
@@ -1281,20 +1276,14 @@ def test_leaf_scope_target_set_accepts_instrument_and_cash_members(client):
                 {
                     "target_member_type": "instrument",
                     "target_member_id": "equity-us-abbv",
-                    "target_weight": 0.45,
+                    "target_weight": 0.6,
                     "target_risk_share": 0.75,
                 },
                 {
                     "target_member_type": "instrument",
                     "target_member_id": "fund-us-agg",
-                    "target_weight": 0.35,
+                    "target_weight": 0.4,
                     "target_risk_share": 0.25,
-                },
-                {
-                    "target_member_type": "cash_bucket",
-                    "target_member_id": "cash-usd-main",
-                    "target_weight": 0.2,
-                    "target_risk_share": None,
                 },
             ],
         },
@@ -1308,68 +1297,18 @@ def test_leaf_scope_target_set_accepts_instrument_and_cash_members(client):
         for item in catalog_response.json()["target_set_lines"]
         if item["target_set_id"] == target_set_response.json()["target_set_id"]
     ]
-    assert {item["target_member_type"] for item in saved_lines} == {"instrument", "cash_bucket"}
+    assert {item["target_member_type"] for item in saved_lines} == {"instrument"}
     assert sum(item["target_weight"] for item in saved_lines) == pytest.approx(1.0)
     assert sum(
-        item["target_risk_share"] for item in saved_lines if item["target_member_type"] != "cash_bucket"
+        item["target_risk_share"] for item in saved_lines
     ) == pytest.approx(1.0)
-    cash_line = next(item for item in saved_lines if item["target_member_type"] == "cash_bucket")
-    assert cash_line["target_risk_share"] is None
 
 
-def test_cash_only_scope_cannot_define_a_risk_budget(client):
+def test_root_targets_accept_fixed_cash_and_derivative_weights_without_risk(client):
     taxonomy_response = client.post(
         "/api/portfolios/portfolio-ops/taxonomies",
         json={"effective_from": EFFECTIVE_FROM,
-            "name": "Cash-only Planning Axis",
-            "taxonomy_type": "custom",
-            "primary_assignment_scope": "instrument",
-            "planning_enabled": True,
-            "budgeting_level": "risk_budget",
-        },
-    )
-    taxonomy_id = taxonomy_response.json()["taxonomy_id"]
-    root_response = client.post(
-        f"/api/portfolios/portfolio-ops/taxonomies/{taxonomy_id}/nodes",
-        json={"effective_from": EFFECTIVE_FROM,"node_name": "Cash Sleeve", "sort_order": 0},
-    )
-    root_node_id = root_response.json()["taxonomy_node_id"]
-    assignment_response = client.post(
-        f"/api/portfolios/portfolio-ops/taxonomies/{taxonomy_id}/assignments",
-        json={"effective_from": EFFECTIVE_FROM,
-            "target_scope": "cash_bucket",
-            "target_entity_id": "cash-usd-main",
-            "taxonomy_node_id": root_node_id,
-        },
-    )
-    assert assignment_response.status_code == 200
-
-    target_set_response = client.post(
-        f"/api/portfolios/portfolio-ops/taxonomies/{taxonomy_id}/target-sets",
-        json={"effective_from": EFFECTIVE_FROM,
-            "comparator_taxonomy_node_id": root_node_id,
-            "target_set_type": "saa",
-            "name": "Invalid Cash-only Risk Budget",
-            "weight_enabled": False,
-            "risk_budget_enabled": True,
-            "lines": [
-                {
-                    "target_member_type": "cash_bucket",
-                    "target_member_id": "cash-usd-main",
-                    "target_risk_share": None,
-                }
-            ],
-        },
-    )
-    assert target_set_response.status_code == 400
-    assert "at least one eligible non-cash member" in target_set_response.json()["detail"]
-
-
-def test_all_cash_subtree_keeps_weight_line_without_risk_target(client):
-    taxonomy_response = client.post(
-        "/api/portfolios/portfolio-ops/taxonomies",
-        json={"effective_from": EFFECTIVE_FROM,
-            "name": "Cash Subtree Planning Axis",
+            "name": "System Buckets Planning Axis",
             "taxonomy_type": "custom",
             "primary_assignment_scope": "instrument",
             "planning_enabled": True,
@@ -1377,44 +1316,71 @@ def test_all_cash_subtree_keeps_weight_line_without_risk_target(client):
         },
     )
     taxonomy_id = taxonomy_response.json()["taxonomy_id"]
-    node_ids: dict[str, str] = {}
-    for node_payload in [
-        {"node_name": "Risk Assets", "node_code": "RISK", "sort_order": 0},
-        {"node_name": "Reserve", "node_code": "RESERVE", "sort_order": 1},
-    ]:
-        node_response = client.post(
-            f"/api/portfolios/portfolio-ops/taxonomies/{taxonomy_id}/nodes",
-            json={"effective_from": EFFECTIVE_FROM, **node_payload},
-        )
-        assert node_response.status_code == 200
-        node_ids[str(node_payload["node_code"])] = node_response.json()["taxonomy_node_id"]
-
-    assignment_response = client.post(
-        f"/api/portfolios/portfolio-ops/taxonomies/{taxonomy_id}/assignments",
+    node_response = client.post(
+        f"/api/portfolios/portfolio-ops/taxonomies/{taxonomy_id}/nodes",
         json={"effective_from": EFFECTIVE_FROM,
-            "target_scope": "cash_bucket",
-            "target_entity_id": "cash-usd-main",
-            "taxonomy_node_id": node_ids["RESERVE"],
+            "node_name": "Risk Assets",
+            "node_code": "RISK",
+            "sort_order": 0,
         },
     )
-    assert assignment_response.status_code == 200
+    assert node_response.status_code == 200
+    risk_node_id = node_response.json()["taxonomy_node_id"]
+
+    invalid_response = client.post(
+        f"/api/portfolios/portfolio-ops/taxonomies/{taxonomy_id}/target-sets",
+        json={"effective_from": EFFECTIVE_FROM,
+            "target_set_type": "saa",
+            "name": "Invalid System Buckets SAA",
+            "weight_enabled": True,
+            "risk_budget_enabled": True,
+            "lines": [
+                {
+                    "taxonomy_node_id": risk_node_id,
+                    "target_weight": 0.8,
+                    "target_risk_share": 1.0,
+                },
+                {
+                    "target_member_type": "derivative_bucket",
+                    "target_member_id": "__derivatives__",
+                    "target_weight": 0.1,
+                    "target_risk_share": 0.0,
+                },
+                {
+                    "target_member_type": "cash_bucket",
+                    "target_member_id": "__cash__",
+                    "target_weight": 0.1,
+                    "target_risk_share": None,
+                },
+            ],
+        },
+    )
+    assert invalid_response.status_code == 400
+    assert "leave target_risk_share empty" in invalid_response.json()["detail"]
 
     target_set_response = client.post(
         f"/api/portfolios/portfolio-ops/taxonomies/{taxonomy_id}/target-sets",
         json={"effective_from": EFFECTIVE_FROM,
             "target_set_type": "saa",
-            "name": "Cash Subtree SAA",
+            "name": "System Buckets SAA",
             "weight_enabled": True,
             "risk_budget_enabled": True,
             "lines": [
                 {
-                    "taxonomy_node_id": node_ids["RISK"],
-                    "target_weight": 0.8,
+                    "taxonomy_node_id": risk_node_id,
+                    "target_weight": 0.75,
                     "target_risk_share": 1.0,
                 },
                 {
-                    "taxonomy_node_id": node_ids["RESERVE"],
-                    "target_weight": 0.2,
+                    "target_member_type": "derivative_bucket",
+                    "target_member_id": "__derivatives__",
+                    "target_weight": 0.1,
+                    "target_risk_share": None,
+                },
+                {
+                    "target_member_type": "cash_bucket",
+                    "target_member_id": "__cash__",
+                    "target_weight": 0.15,
                     "target_risk_share": None,
                 },
             ],
@@ -1429,13 +1395,11 @@ def test_all_cash_subtree_keeps_weight_line_without_risk_target(client):
         for line in catalog["target_set_lines"]
         if line["target_set_id"] == target_set_response.json()["target_set_id"]
     ]
-    cash_line = next(
-        line
-        for line in saved_lines
-        if line["target_member_id"] == node_ids["RESERVE"]
-    )
-    assert cash_line["target_weight"] == pytest.approx(0.2)
-    assert cash_line["target_risk_share"] is None
+    saved_by_member_id = {line["target_member_id"]: line for line in saved_lines}
+    assert saved_by_member_id["__derivatives__"]["target_weight"] == pytest.approx(0.1)
+    assert saved_by_member_id["__derivatives__"]["target_risk_share"] is None
+    assert saved_by_member_id["__cash__"]["target_weight"] == pytest.approx(0.15)
+    assert saved_by_member_id["__cash__"]["target_risk_share"] is None
 
 
 def test_target_set_requires_full_scope_and_blocks_referenced_node_move(client):

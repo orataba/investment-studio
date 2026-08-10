@@ -54,8 +54,11 @@ TARGET_DIMENSION_RISK_BUDGET = "risk_budget"
 TARGET_MEMBER_NODE = "taxonomy_node"
 TARGET_MEMBER_INSTRUMENT = "instrument"
 TARGET_MEMBER_CASH = "cash_bucket"
+TARGET_MEMBER_DERIVATIVE = "derivative_bucket"
 SYSTEM_CASH_TARGET_MEMBER_ID = "__cash__"
 SYSTEM_CASH_TARGET_LABEL = "Cash"
+SYSTEM_DERIVATIVE_TARGET_MEMBER_ID = "__derivatives__"
+SYSTEM_DERIVATIVE_TARGET_LABEL = "Derivatives"
 CAPITAL_MODE_UNIT_NOTIONAL = "unit_notional"
 CAPITAL_MODE_FIXED_GROSS = "fixed_gross"
 CAPITAL_MODE_TARGET_VOLATILITY = "target_volatility"
@@ -472,8 +475,8 @@ def _node_has_research_members(
     )
 
 
-def _member_is_cash_like(state: TaxonomyResearchState, member: ScopeMemberRecord) -> bool:
-    if member.member_type == TARGET_MEMBER_CASH:
+def _member_uses_zero_volatility(state: TaxonomyResearchState, member: ScopeMemberRecord) -> bool:
+    if member.member_type in {TARGET_MEMBER_CASH, TARGET_MEMBER_DERIVATIVE}:
         return True
     if member.member_type != TARGET_MEMBER_NODE:
         return False
@@ -492,7 +495,7 @@ def _member_is_frozen(
     scope_node_id: str | None,
     member: ScopeMemberRecord,
 ) -> bool:
-    if _member_is_cash_like(state, member):
+    if _member_uses_zero_volatility(state, member):
         return False
     if _scope_is_frozen(state, scope_node_id):
         return True
@@ -538,22 +541,22 @@ def _annualized_portfolio_volatility(
     return float(sqrt(max(variance, 0.0)))
 
 
-def _allocate_cash_weights(
+def _allocate_zero_volatility_weights(
     *,
-    cash_index: list[str],
+    member_index: list[str],
     preferred_weights: pd.Series,
-    total_cash_weight: float,
+    total_weight: float,
 ) -> pd.Series:
-    if not cash_index:
+    if not member_index:
         return pd.Series(dtype="float64")
-    clipped_total = float(total_cash_weight)
-    preferred = preferred_weights.reindex(cash_index, fill_value=0.0).astype("float64")
+    clipped_total = float(total_weight)
+    preferred = preferred_weights.reindex(member_index, fill_value=0.0).astype("float64")
     preferred_total = float(preferred.sum())
     if abs(clipped_total) <= 1e-12:
-        return pd.Series(0.0, index=cash_index, dtype="float64")
+        return pd.Series(0.0, index=member_index, dtype="float64")
     if preferred_total > 1e-12:
         return preferred / preferred_total * clipped_total
-    return pd.Series(clipped_total / float(len(cash_index)), index=cash_index, dtype="float64")
+    return pd.Series(clipped_total / float(len(member_index)), index=member_index, dtype="float64")
 
 
 def _research_covariance_parameters(calculation_frequency: CalculationFrequency) -> dict[str, object]:
@@ -2034,9 +2037,11 @@ def _resolve_dimension_target_rows(
     )
 
     candidate_types = ["taa", "saa"]
-    cash_like_members = [member for member in scope_members if _member_is_cash_like(state, member)]
+    zero_volatility_members = [
+        member for member in scope_members if _member_uses_zero_volatility(state, member)
+    ]
     dimension_members = (
-        [member for member in scope_members if not _member_is_cash_like(state, member)]
+        [member for member in scope_members if not _member_uses_zero_volatility(state, member)]
         if resolved_dimension == TARGET_DIMENSION_RISK_BUDGET
         else scope_members
     )
@@ -2066,7 +2071,7 @@ def _resolve_dimension_target_rows(
         for member in dimension_members:
             line = line_map.get((member.member_type, member.member_id))
             if line is None or line.get(value_field) is None:
-                if resolved_dimension == TARGET_DIMENSION_WEIGHT and _member_is_cash_like(state, member):
+                if resolved_dimension == TARGET_DIMENSION_WEIGHT and _member_uses_zero_volatility(state, member):
                     selected_value = 0.0
                     target_weight = 0.0
                     target_risk_share = None
@@ -2079,7 +2084,7 @@ def _resolve_dimension_target_rows(
                 target_weight = _safe_float(line.get("target_weight"))
                 target_risk_share = (
                     None
-                    if _member_is_cash_like(state, member)
+                    if _member_uses_zero_volatility(state, member)
                     else _safe_float(line.get("target_risk_share"))
                 )
             rendered_rows.append(
@@ -2108,7 +2113,7 @@ def _resolve_dimension_target_rows(
                     f"{expected_total:.6f}; got {selected_total:.6f}."
                 )
             if resolved_dimension == TARGET_DIMENSION_RISK_BUDGET:
-                for member in cash_like_members:
+                for member in zero_volatility_members:
                     line = line_map.get((member.member_type, member.member_id)) or {}
                     rendered_rows.append(
                         {
@@ -2161,20 +2166,20 @@ def _resolve_dimension_target_rows(
         if resolved_dimension == TARGET_DIMENSION_RISK_BUDGET:
             rendered_rows.extend(
                 {
-                    "member_type": cash_member.member_type,
-                    "member_id": cash_member.member_id,
-                    "label": cash_member.label,
-                    "taxonomy_node_id": cash_member.taxonomy_node_id,
-                    "default_target_dimension": cash_member.default_target_dimension,
+                    "member_type": zero_volatility_member.member_type,
+                    "member_id": zero_volatility_member.member_id,
+                    "label": zero_volatility_member.label,
+                    "taxonomy_node_id": zero_volatility_member.taxonomy_node_id,
+                    "default_target_dimension": zero_volatility_member.default_target_dimension,
                     "selected_dimension": resolved_dimension,
                     "selected_value": None,
                     "target_weight": None,
                     "target_risk_share": None,
                     "source_target_set_id": None,
                     "source_target_set_type": None,
-                    "source_label_override": "Cash Capital Context",
+                    "source_label_override": "Zero-volatility Capital Context",
                 }
-                for cash_member in cash_like_members
+                for zero_volatility_member in zero_volatility_members
             )
         return rendered_rows, warnings
 
@@ -2207,6 +2212,15 @@ def _scope_members(
         if scope_node_id is None:
             members.append(
                 ScopeMemberRecord(
+                    member_type=TARGET_MEMBER_DERIVATIVE,
+                    member_id=SYSTEM_DERIVATIVE_TARGET_MEMBER_ID,
+                    label=SYSTEM_DERIVATIVE_TARGET_LABEL,
+                    taxonomy_node_id=None,
+                    default_target_dimension=TARGET_DIMENSION_WEIGHT,
+                )
+            )
+            members.append(
+                ScopeMemberRecord(
                     member_type=TARGET_MEMBER_CASH,
                     member_id=SYSTEM_CASH_TARGET_MEMBER_ID,
                     label=SYSTEM_CASH_TARGET_LABEL,
@@ -2219,6 +2233,13 @@ def _scope_members(
     if scope_node_id is None:
         return (
             [
+                ScopeMemberRecord(
+                    member_type=TARGET_MEMBER_DERIVATIVE,
+                    member_id=SYSTEM_DERIVATIVE_TARGET_MEMBER_ID,
+                    label=SYSTEM_DERIVATIVE_TARGET_LABEL,
+                    taxonomy_node_id=None,
+                    default_target_dimension=TARGET_DIMENSION_WEIGHT,
+                ),
                 ScopeMemberRecord(
                     member_type=TARGET_MEMBER_CASH,
                     member_id=SYSTEM_CASH_TARGET_MEMBER_ID,
@@ -2605,7 +2626,7 @@ def _solve_current_scope(
         for row in resolved_rows
         if str(row.get("selected_dimension") or "") in {TARGET_DIMENSION_WEIGHT, TARGET_DIMENSION_RISK_BUDGET}
         and abs(float(_safe_float(row.get("selected_value")) or 0.0)) <= 1e-12
-        and not _member_is_cash_like(
+        and not _member_uses_zero_volatility(
             state,
             member_by_key[f"{row['member_type']}::{row['member_id']}"],
         )
@@ -2666,13 +2687,13 @@ def _solve_current_scope(
                 as_of_date=as_of_date,
             )
             warnings.extend(child_result.warnings)
-        elif member.member_type == TARGET_MEMBER_CASH:
-            cash_nav = _build_cash_nav_series(
+        elif member.member_type in {TARGET_MEMBER_CASH, TARGET_MEMBER_DERIVATIVE}:
+            zero_volatility_nav = _build_cash_nav_series(
                 start_date=start_day,
                 end_date=as_of_date,
             )
-            nav_series_by_member[(member.member_type, member.member_id)] = cash_nav
-            current_nav_series_by_member[(member.member_type, member.member_id)] = cash_nav
+            nav_series_by_member[(member.member_type, member.member_id)] = zero_volatility_nav
+            current_nav_series_by_member[(member.member_type, member.member_id)] = zero_volatility_nav
         else:
             try:
                 instrument_nav, instrument_warnings = _build_instrument_nav_series(
@@ -2702,12 +2723,22 @@ def _solve_current_scope(
         current_actual_weight_by_key = {
             f"{item['member_type']}::{item['member_id']}": float(_safe_float(item.get("current_weight")) or 0.0)
             for item in current_actual_rows
-            if item.get("member_type") in {TARGET_MEMBER_NODE, TARGET_MEMBER_INSTRUMENT, TARGET_MEMBER_CASH}
+            if item.get("member_type") in {
+                TARGET_MEMBER_NODE,
+                TARGET_MEMBER_INSTRUMENT,
+                TARGET_MEMBER_CASH,
+                TARGET_MEMBER_DERIVATIVE,
+            }
         }
         current_actual_value_by_key = {
             f"{item['member_type']}::{item['member_id']}": _safe_float(item.get("current_value_base"))
             for item in current_actual_rows
-            if item.get("member_type") in {TARGET_MEMBER_NODE, TARGET_MEMBER_INSTRUMENT, TARGET_MEMBER_CASH}
+            if item.get("member_type") in {
+                TARGET_MEMBER_NODE,
+                TARGET_MEMBER_INSTRUMENT,
+                TARGET_MEMBER_CASH,
+                TARGET_MEMBER_DERIVATIVE,
+            }
         }
     else:
         current_actual_rows = []
@@ -2725,9 +2756,11 @@ def _solve_current_scope(
         f"{row['member_type']}::{row['member_id']}": _safe_float(row.get("target_weight"))
         for row in resolved_rows
     }
-    cash_like_keys = [key for key in member_keys if _member_is_cash_like(state, member_by_key[key])]
-    non_cash_keys = [key for key in member_keys if key not in cash_like_keys]
-    if target_dimension_used == TARGET_DIMENSION_RISK_BUDGET and not non_cash_keys:
+    zero_volatility_keys = [
+        key for key in member_keys if _member_uses_zero_volatility(state, member_by_key[key])
+    ]
+    risk_bearing_keys = [key for key in member_keys if key not in zero_volatility_keys]
+    if target_dimension_used == TARGET_DIMENSION_RISK_BUDGET and not risk_bearing_keys:
         raise ValueError(f"{scope_label} risk budget is unavailable: no risky members.")
     fixed_weight_targets = pd.Series(
         {
@@ -2741,16 +2774,16 @@ def _solve_current_scope(
     risk_keys = [
         key
         for key in member_keys
-        if key not in cash_like_keys and key not in frozen_keys and key not in zero_target_keys
+        if key not in zero_volatility_keys and key not in frozen_keys and key not in zero_target_keys
     ]
-    preferred_cash_weights = pd.Series(
+    preferred_zero_volatility_weights = pd.Series(
         {
             f"{row['member_type']}::{row['member_id']}": float(_safe_float(row.get("target_weight")) or 0.0)
             for row in resolved_rows
-            if f"{row['member_type']}::{row['member_id']}" in cash_like_keys
+            if f"{row['member_type']}::{row['member_id']}" in zero_volatility_keys
         },
         dtype="float64",
-    ).reindex(cash_like_keys, fill_value=0.0)
+    ).reindex(zero_volatility_keys, fill_value=0.0)
     fixed_total = max(float(fixed_weight_targets.sum()), 0.0)
     overlay_applies_to_risk_sleeves = apply_capital_overlay and capital_mode in {
         CAPITAL_MODE_FIXED_GROSS,
@@ -2758,21 +2791,25 @@ def _solve_current_scope(
         CAPITAL_MODE_VOLATILITY_CAP,
     }
     fixed_gross_overlay = overlay_applies_to_risk_sleeves and capital_mode == CAPITAL_MODE_FIXED_GROSS
-    target_non_cash_total = float(gross_exposure or 1.0) if fixed_gross_overlay else None
+    target_risk_bearing_total = float(gross_exposure or 1.0) if fixed_gross_overlay else None
 
     if target_dimension_used == TARGET_DIMENSION_RISK_BUDGET:
-        base_cash_total = 0.0 if fixed_gross_overlay else min(max(float(preferred_cash_weights.sum()), 0.0), 1.0)
-        available_non_cash_total = (
-            float(target_non_cash_total)
-            if target_non_cash_total is not None
-            else max(1.0 - base_cash_total, 0.0)
+        base_zero_volatility_total = (
+            0.0
+            if fixed_gross_overlay
+            else min(max(float(preferred_zero_volatility_weights.sum()), 0.0), 1.0)
         )
-        if fixed_total > available_non_cash_total + 1e-12:
+        available_risk_bearing_total = (
+            float(target_risk_bearing_total)
+            if target_risk_bearing_total is not None
+            else max(1.0 - base_zero_volatility_total, 0.0)
+        )
+        if fixed_total > available_risk_bearing_total + 1e-12:
             raise ValueError(
                 f"{scope_label} frozen sleeve weights require {fixed_total:.2%}, "
-                f"above the available {available_non_cash_total:.2%} non-cash budget."
+                f"above the available {available_risk_bearing_total:.2%} risk-bearing budget."
             )
-        fixed_total = min(fixed_total, available_non_cash_total)
+        fixed_total = min(fixed_total, available_risk_bearing_total)
         _validate_fixed_top_sleeve_bounds(
             scope_label=scope_label,
             fixed_weight_targets=fixed_weight_targets,
@@ -2782,7 +2819,7 @@ def _solve_current_scope(
         active_budget, lower_bounds, upper_bounds = _resolve_active_top_sleeve_bound_vectors(
             scope_label=scope_label,
             active_keys=risk_keys,
-            active_budget=max(available_non_cash_total - fixed_total, 0.0),
+            active_budget=max(available_risk_bearing_total - fixed_total, 0.0),
             bounds_by_key=top_sleeve_bounds_by_key,
             member_by_key=member_by_key,
             allow_upper_shortfall=not fixed_gross_overlay,
@@ -2822,10 +2859,10 @@ def _solve_current_scope(
             implementation_weights = pd.Series(0.0, index=member_keys, dtype="float64")
             implementation_weights.loc[frozen_keys] = fixed_weight_targets.reindex(frozen_keys, fill_value=0.0)
             implementation_weights.loc[risk_keys] = solved_weights * active_budget
-            implementation_weights.loc[cash_like_keys] = _allocate_cash_weights(
-                cash_index=cash_like_keys,
-                preferred_weights=preferred_cash_weights,
-                total_cash_weight=1.0
+            implementation_weights.loc[zero_volatility_keys] = _allocate_zero_volatility_weights(
+                member_index=zero_volatility_keys,
+                preferred_weights=preferred_zero_volatility_weights,
+                total_weight=1.0
                 - float(implementation_weights.loc[risk_keys].sum())
                 - float(implementation_weights.loc[frozen_keys].sum()),
             )
@@ -2841,10 +2878,10 @@ def _solve_current_scope(
             )
             implementation_weights = pd.Series(0.0, index=member_keys, dtype="float64")
             implementation_weights.loc[frozen_keys] = fixed_weight_targets.reindex(frozen_keys, fill_value=0.0)
-            implementation_weights.loc[cash_like_keys] = _allocate_cash_weights(
-                cash_index=cash_like_keys,
-                preferred_weights=preferred_cash_weights,
-                total_cash_weight=1.0 - float(implementation_weights.loc[frozen_keys].sum()),
+            implementation_weights.loc[zero_volatility_keys] = _allocate_zero_volatility_weights(
+                member_index=zero_volatility_keys,
+                preferred_weights=preferred_zero_volatility_weights,
+                total_weight=1.0 - float(implementation_weights.loc[frozen_keys].sum()),
             )
             risk_gap = 0.0
             solver_kind = "fixed-members" if frozen_keys else "single-member"
@@ -2863,22 +2900,22 @@ def _solve_current_scope(
         active_weight_keys = [
             key
             for key in member_keys
-            if key not in cash_like_keys and key not in frozen_keys and key not in zero_target_keys
+            if key not in zero_volatility_keys and key not in frozen_keys and key not in zero_target_keys
         ]
         active_weight_targets = target_values.reindex(active_weight_keys, fill_value=0.0)
         active_weight_total = float(active_weight_targets.sum())
-        available_non_cash_total = (
-            float(target_non_cash_total)
-            if target_non_cash_total is not None
-            else max(1.0 - float(preferred_cash_weights.sum()), 0.0)
+        available_risk_bearing_total = (
+            float(target_risk_bearing_total)
+            if target_risk_bearing_total is not None
+            else max(1.0 - float(preferred_zero_volatility_weights.sum()), 0.0)
         )
-        if float(implementation_weights.loc[frozen_keys].sum()) > available_non_cash_total + 1e-12:
+        if float(implementation_weights.loc[frozen_keys].sum()) > available_risk_bearing_total + 1e-12:
             raise ValueError(
                 f"{scope_label} frozen sleeve weights require {float(implementation_weights.loc[frozen_keys].sum()):.2%}, "
-                f"above the available {available_non_cash_total:.2%} non-cash budget."
+                f"above the available {available_risk_bearing_total:.2%} risk-bearing budget."
             )
         requested_active_budget = max(
-            available_non_cash_total - float(implementation_weights.loc[frozen_keys].sum()),
+            available_risk_bearing_total - float(implementation_weights.loc[frozen_keys].sum()),
             0.0,
         )
         _validate_fixed_top_sleeve_bounds(
@@ -2912,26 +2949,26 @@ def _solve_current_scope(
                 implementation_weights.loc[active_weight_keys] = active_weight_targets / active_weight_total * active_budget
             else:
                 implementation_weights.loc[active_weight_keys] = active_budget / float(len(active_weight_keys))
-        implementation_weights.loc[cash_like_keys] = _allocate_cash_weights(
-            cash_index=cash_like_keys,
-            preferred_weights=preferred_cash_weights,
-            total_cash_weight=1.0
+        implementation_weights.loc[zero_volatility_keys] = _allocate_zero_volatility_weights(
+            member_index=zero_volatility_keys,
+            preferred_weights=preferred_zero_volatility_weights,
+            total_weight=1.0
             - float(implementation_weights.loc[active_weight_keys].sum())
             - float(implementation_weights.loc[frozen_keys].sum()),
         )
         risk_gap = None
         solver_kind = "weight-fixed-members" if frozen_keys else "weight"
 
-    if overlay_applies_to_risk_sleeves and not fixed_gross_overlay and non_cash_keys:
-        non_cash_total = float(implementation_weights.reindex(non_cash_keys, fill_value=0.0).sum())
-        if non_cash_total > 1e-12:
-            implementation_weights.loc[non_cash_keys] = (
-                implementation_weights.reindex(non_cash_keys, fill_value=0.0) / non_cash_total
+    if overlay_applies_to_risk_sleeves and not fixed_gross_overlay and risk_bearing_keys:
+        risk_bearing_total = float(implementation_weights.reindex(risk_bearing_keys, fill_value=0.0).sum())
+        if risk_bearing_total > 1e-12:
+            implementation_weights.loc[risk_bearing_keys] = (
+                implementation_weights.reindex(risk_bearing_keys, fill_value=0.0) / risk_bearing_total
             )
-            implementation_weights.loc[cash_like_keys] = 0.0
+            implementation_weights.loc[zero_volatility_keys] = 0.0
         else:
-            implementation_weights.loc[non_cash_keys] = 1.0 / float(len(non_cash_keys))
-            implementation_weights.loc[cash_like_keys] = 0.0
+            implementation_weights.loc[risk_bearing_keys] = 1.0 / float(len(risk_bearing_keys))
+            implementation_weights.loc[zero_volatility_keys] = 0.0
             warnings.append(
                 f"{scope_label} had no positive risky target weight before capital overlay, so Research used equal risky-sleeve weights."
             )
@@ -2939,8 +2976,8 @@ def _solve_current_scope(
     estimated_risk_sleeve_volatility = None
     effective_gross_exposure = None
     risky_allocation_scaling_factor = None
-    if overlay_applies_to_risk_sleeves and non_cash_keys:
-        risky_weights = implementation_weights.reindex(non_cash_keys, fill_value=0.0)
+    if overlay_applies_to_risk_sleeves and risk_bearing_keys:
+        risky_weights = implementation_weights.reindex(risk_bearing_keys, fill_value=0.0)
         if capital_mode == CAPITAL_MODE_FIXED_GROSS:
             effective_gross_exposure = float(risky_weights.sum())
             risky_allocation_scaling_factor = 1.0
@@ -2980,19 +3017,19 @@ def _solve_current_scope(
                 ) from error
         if effective_gross_exposure is not None and not fixed_gross_overlay:
             risky_allocation_scaling_factor = float(effective_gross_exposure)
-            implementation_weights.loc[non_cash_keys] = risky_weights * risky_allocation_scaling_factor
-            if cash_like_keys:
-                implementation_weights.loc[cash_like_keys] = _allocate_cash_weights(
-                    cash_index=cash_like_keys,
-                    preferred_weights=preferred_cash_weights,
-                    total_cash_weight=1.0
-                    - float(implementation_weights.loc[non_cash_keys].sum()),
+            implementation_weights.loc[risk_bearing_keys] = risky_weights * risky_allocation_scaling_factor
+            if zero_volatility_keys:
+                implementation_weights.loc[zero_volatility_keys] = _allocate_zero_volatility_weights(
+                    member_index=zero_volatility_keys,
+                    preferred_weights=preferred_zero_volatility_weights,
+                    total_weight=1.0
+                    - float(implementation_weights.loc[risk_bearing_keys].sum()),
                 )
             else:
-                residual_cash = 1.0 - float(implementation_weights.loc[non_cash_keys].sum())
-                if abs(residual_cash) > 1e-9:
+                residual_weight = 1.0 - float(implementation_weights.loc[risk_bearing_keys].sum())
+                if abs(residual_weight) > 1e-9:
                     raise ValueError(
-                        f"{scope_label} capital overlay leaves a {residual_cash:.2%} residual but the scope has no cash-like member."
+                        f"{scope_label} capital overlay leaves a {residual_weight:.2%} residual but the scope has no zero-volatility member."
                     )
 
     _validate_final_top_sleeve_bounds(
@@ -3001,11 +3038,11 @@ def _solve_current_scope(
         bounds_by_key=top_sleeve_bounds_by_key,
         member_by_key=member_by_key,
     )
-    if fixed_gross_overlay and not cash_like_keys:
-        residual_cash = 1.0 - float(implementation_weights.reindex(non_cash_keys, fill_value=0.0).sum())
-        if abs(residual_cash) > 1e-9:
+    if fixed_gross_overlay and not zero_volatility_keys:
+        residual_weight = 1.0 - float(implementation_weights.reindex(risk_bearing_keys, fill_value=0.0).sum())
+        if abs(residual_weight) > 1e-9:
             raise ValueError(
-                f"{scope_label} fixed gross leaves a {residual_cash:.2%} residual but the scope has no cash-like member."
+                f"{scope_label} fixed gross leaves a {residual_weight:.2%} residual but the scope has no zero-volatility member."
             )
 
     for row in resolved_rows:
@@ -3022,7 +3059,7 @@ def _solve_current_scope(
         current_risk_share_by_key, current_risk_share_warnings = _estimate_scope_risk_share_map(
             members=members,
             nav_series_by_member=current_nav_series_by_member,
-            risk_keys=non_cash_keys,
+            risk_keys=risk_bearing_keys,
             weights_by_key=current_weights,
             as_of_date=as_of_date,
             lookback_days=lookback_days,
@@ -3257,6 +3294,9 @@ def _current_scope_actuals(
         excluded_derivative_contract_ids = list(
             cached_valuation.get("excluded_derivative_contract_ids") or []
         )
+        derivative_total_value = float(
+            _safe_float(cached_valuation.get("derivative_total_value")) or 0.0
+        )
     else:
         portfolio = get_portfolio(state.portfolio_id)
         if portfolio is None:
@@ -3281,6 +3321,7 @@ def _current_scope_actuals(
 
         position_value_by_instrument: dict[str, float] = {}
         excluded_derivative_contract_ids: list[str] = []
+        derivative_total_value = 0.0
         for position in list(statement.get("positions") or []):
             derivative_contract_id = str(
                 position.get("derivative_contract_id") or ""
@@ -3292,6 +3333,12 @@ def _current_scope_actuals(
                     excluded_derivative_contract_ids.append(
                         derivative_contract_id
                     )
+                derivative_value_base = _safe_float(position.get("market_value_base"))
+                if derivative_value_base is None:
+                    raise ValueError(
+                        "Current derivative carrying value is incomplete; refresh FX coverage before solving."
+                    )
+                derivative_total_value += derivative_value_base
                 continue
             instrument_id = str(position.get("instrument_id") or "")
             if not instrument_id:
@@ -3308,26 +3355,29 @@ def _current_scope_actuals(
                 )
             position_value_by_instrument[instrument_id] = market_value_base
 
-        visible_cash_accounts = [
-            account_row
-            for account_row in list(account_workspace.get("accounts") or [])
-            if str((account_row.get("account") or {}).get("account_type") or "") == "deposit_account"
-        ]
-        if any(_safe_float(account_row.get("account_value_base")) is None for account_row in visible_cash_accounts):
-            raise ValueError(
-                "Current cash valuation is incomplete; refresh FX coverage before solving."
-            )
-        cash_value_by_account = {
-            str((account_row.get("account") or {}).get("account_id") or ""): float(account_row["account_value_base"])
-            for account_row in visible_cash_accounts
-            if str((account_row.get("account") or {}).get("account_id") or "")
-        }
+        cash_value_by_account: dict[str, float] = {}
+        for account_row in list(account_workspace.get("accounts") or []):
+            account = account_row.get("account") or {}
+            account_id = str(account.get("account_id") or "")
+            cash_balance_base = _safe_float(account_row.get("derived_cash_balance_base"))
+            pending_settlement_base = _safe_float(account_row.get("pending_settlement_base"))
+            if cash_balance_base is None or pending_settlement_base is None:
+                raise ValueError(
+                    "Current cash valuation is incomplete; refresh FX coverage before solving."
+                )
+            monetary_value_base = cash_balance_base + pending_settlement_base
+            if account_id and (
+                str(account.get("account_type") or "") == "deposit_account"
+                or abs(monetary_value_base) > 1e-9
+            ):
+                cash_value_by_account[account_id] = monetary_value_base
         state.current_valuation_cache[cache_key] = {
             "position_value_by_instrument": dict(position_value_by_instrument),
             "cash_value_by_account": dict(cash_value_by_account),
             "excluded_derivative_contract_ids": sorted(
                 set(excluded_derivative_contract_ids)
             ),
+            "derivative_total_value": derivative_total_value,
         }
 
     cash_total_value = float(sum(cash_value_by_account.values()))
@@ -3356,7 +3406,10 @@ def _current_scope_actuals(
 
     scope_members, member_source = _scope_members(state, scope_node_id=scope_node_id)
     scope_total_value = (
-        sum(node_value_map.get(node_id, 0.0) for node_id in state.children_by_parent.get(None, [])) + cash_total_value + unassigned_value
+        sum(node_value_map.get(node_id, 0.0) for node_id in state.children_by_parent.get(None, []))
+        + derivative_total_value
+        + cash_total_value
+        + unassigned_value
         if scope_node_id is None
         else node_value_map.get(scope_node_id, 0.0)
     )
@@ -3374,7 +3427,7 @@ def _current_scope_actuals(
     warnings: list[str] = []
     if excluded_derivative_contract_ids:
         warnings.append(
-            "Derivative tracking holdings are excluded from Research and Risk Budget: "
+            "Derivative holdings use carrying-value weights and zero volatility; they are excluded from Risk Budget: "
             + ", ".join(sorted(set(excluded_derivative_contract_ids)))
             + "."
         )
@@ -3383,6 +3436,11 @@ def _current_scope_actuals(
             actual_value = node_value_map.get(member.member_id, 0.0)
         elif member.member_type == TARGET_MEMBER_INSTRUMENT:
             actual_value = position_value_by_instrument.get(member.member_id, 0.0)
+        elif (
+            member.member_type == TARGET_MEMBER_DERIVATIVE
+            and member.member_id == SYSTEM_DERIVATIVE_TARGET_MEMBER_ID
+        ):
+            actual_value = derivative_total_value
         elif member.member_type == TARGET_MEMBER_CASH and member.member_id == SYSTEM_CASH_TARGET_MEMBER_ID:
             actual_value = cash_total_value
         else:
@@ -3747,6 +3805,12 @@ def _top_sleeve_for_member(
     member_type: str,
     member_id: str,
 ) -> tuple[str | None, str, str]:
+    if member_type == TARGET_MEMBER_DERIVATIVE:
+        return (
+            SYSTEM_DERIVATIVE_TARGET_MEMBER_ID,
+            SYSTEM_DERIVATIVE_TARGET_LABEL,
+            SYSTEM_DERIVATIVE_TARGET_LABEL,
+        )
     if member_type == TARGET_MEMBER_CASH:
         return SYSTEM_CASH_TARGET_MEMBER_ID, SYSTEM_CASH_TARGET_LABEL, SYSTEM_CASH_TARGET_LABEL
 

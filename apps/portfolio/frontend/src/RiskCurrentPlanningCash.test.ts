@@ -5,7 +5,7 @@ import type {
   PortfolioTaxonomyCatalogResponse,
 } from './lib/api'
 import { buildCurrentPlanningGroups } from './pages/RiskPage'
-import { holdingFixture, holdingsWorkspaceFixture } from './test/portfolioFixtures'
+import { fcnContractFixture, holdingFixture, holdingsWorkspaceFixture } from './test/portfolioFixtures'
 
 const taxonomy = {
   taxonomy_id: 'planning',
@@ -34,17 +34,6 @@ const catalog: PortfolioTaxonomyCatalogResponse = {
       default_target_dimension: 'risk_budget',
       status: 'active',
     },
-    {
-      taxonomy_node_id: 'cash',
-      taxonomy_id: taxonomy.taxonomy_id,
-      parent_taxonomy_node_id: null,
-      node_name: 'Cash',
-      node_code: 'CASH',
-      sort_order: 2,
-      is_terminal: true,
-      default_target_dimension: 'weight',
-      status: 'active',
-    },
   ],
   taxonomy_assignments: [
     {
@@ -53,22 +42,6 @@ const catalog: PortfolioTaxonomyCatalogResponse = {
       target_scope: 'instrument',
       target_entity_id: 'asset-1',
       taxonomy_node_id: 'risk-assets',
-      status: 'active',
-    },
-    {
-      assignment_id: 'deposit-cash-assignment',
-      taxonomy_id: taxonomy.taxonomy_id,
-      target_scope: 'cash_bucket',
-      target_entity_id: 'deposit',
-      taxonomy_node_id: 'cash',
-      status: 'active',
-    },
-    {
-      assignment_id: 'broker-cash-assignment',
-      taxonomy_id: taxonomy.taxonomy_id,
-      target_scope: 'cash_bucket',
-      target_entity_id: 'broker',
-      taxonomy_node_id: 'cash',
       status: 'active',
     },
   ],
@@ -116,14 +89,26 @@ function account(
   }
 }
 
-describe('Current planning cash and pending settlement', () => {
-  it('includes deposit and broker liquidity while counting securities positions only through holdings', () => {
+describe('Current planning system buckets', () => {
+  it('keeps derivatives and account liquidity outside the securities taxonomy', () => {
     const holdingsWorkspace = holdingsWorkspaceFixture({
       rows: [
         holdingFixture({
-          allocation: 0.8,
-          market_value: 800,
-          market_value_base: 800,
+          allocation: 0.7,
+          market_value: 700,
+          market_value_base: 700,
+        }),
+        holdingFixture({
+          line_id: 'holding:fcn-1',
+          holding_category: 'derivatives',
+          holding_kind: 'derivative_contract',
+          position_reference_id: 'fcn-1',
+          derivative_contract_id: 'fcn-1',
+          derivative_contract: fcnContractFixture(),
+          instrument_core: null,
+          allocation: 0.1,
+          market_value: 100,
+          market_value_base: 100,
         }),
         holdingFixture({
           line_id: 'pending:pending_subscription:broker:asset-1:USD',
@@ -189,17 +174,18 @@ describe('Current planning cash and pending settlement', () => {
     expect(result.value).toEqual([
       expect.objectContaining({
         groupKey: 'risk-assets',
-        currentWeight: 0.8,
-        currentValueBase: 800,
-        marketWeight: 0.8,
-        cashWeight: null,
+        currentWeight: 0.7,
+        currentValueBase: 700,
       }),
       expect.objectContaining({
-        groupKey: 'cash',
+        groupKey: 'cash_bucket:__cash__',
         currentWeight: 0.2,
         currentValueBase: 200,
-        marketWeight: null,
-        cashWeight: 0.2,
+      }),
+      expect.objectContaining({
+        groupKey: 'derivative_bucket:__derivatives__',
+        currentWeight: 0.1,
+        currentValueBase: 100,
       }),
     ])
     expect(result.value.reduce((total, row) => total + (row.currentValueBase ?? 0), 0)).toBe(1000)

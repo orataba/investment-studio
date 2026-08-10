@@ -5,6 +5,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import TaxonomiesPage from './pages/TaxonomiesPage'
 import {
+  fcnContractFixture,
   holdingFixture,
   holdingsWorkspaceFixture,
   instrumentFixture,
@@ -124,6 +125,15 @@ const taxonomyCatalog = {
       target_risk_share: null,
     },
     {
+      target_line_id: 'saa-derivatives',
+      target_set_id: 'saa-root',
+      target_member_type: 'derivative_bucket',
+      target_member_id: '__derivatives__',
+      taxonomy_node_id: null,
+      target_weight: 0,
+      target_risk_share: null,
+    },
+    {
       target_line_id: 'taa-risk-assets',
       target_set_id: 'taa-root',
       target_member_type: 'taxonomy_node',
@@ -139,6 +149,15 @@ const taxonomyCatalog = {
       target_member_id: '__cash__',
       taxonomy_node_id: null,
       target_weight: 0.2,
+      target_risk_share: null,
+    },
+    {
+      target_line_id: 'taa-derivatives',
+      target_set_id: 'taa-root',
+      target_member_type: 'derivative_bucket',
+      target_member_id: '__derivatives__',
+      taxonomy_node_id: null,
+      target_weight: 0,
       target_risk_share: null,
     },
   ],
@@ -363,7 +382,7 @@ describe('Taxonomies rendered page contract', () => {
     })
   })
 
-  it('keeps cash weight targets, renders cash risk as N/A, and submits null cash risk', async () => {
+  it('keeps system cash and derivative weight targets while their risk targets stay N/A', async () => {
     const user = userEvent.setup()
     renderPortfolioPage(
       <TaxonomiesPage />,
@@ -373,9 +392,15 @@ describe('Taxonomies rendered page contract', () => {
 
     const cashLabel = await screen.findByText('Cash', { selector: '.taxonomy-level-label' })
     const cashRow = cashLabel.closest('tr')
+    const derivativeRow = screen
+      .getByText('Derivatives', { selector: '.taxonomy-level-label' })
+      .closest('tr')
     expect(cashRow).not.toBeNull()
+    expect(derivativeRow).not.toBeNull()
     expect(within(cashRow!).getAllByText('20.00%')).toHaveLength(3)
     expect(within(cashRow!).getAllByText('N/A')).toHaveLength(2)
+    expect(within(derivativeRow!).getAllByText('0.00%')).toHaveLength(3)
+    expect(within(derivativeRow!).getAllByText('N/A')).toHaveLength(2)
 
     await user.click(screen.getByRole('button', { name: 'Edit Targets' }))
 
@@ -384,6 +409,10 @@ describe('Taxonomies rendered page contract', () => {
     expect(screen.getByRole('spinbutton', { name: 'TAA target weight for Cash' })).toHaveValue(20)
     expect(screen.queryByRole('spinbutton', { name: 'SAA target risk budget for Cash' })).not.toBeInTheDocument()
     expect(screen.queryByRole('spinbutton', { name: 'TAA target risk budget for Cash' })).not.toBeInTheDocument()
+    expect(screen.getByRole('spinbutton', { name: 'SAA target weight for Derivatives' })).toHaveValue(0)
+    expect(screen.getByRole('spinbutton', { name: 'TAA target weight for Derivatives' })).toHaveValue(0)
+    expect(screen.queryByRole('spinbutton', { name: 'SAA target risk budget for Derivatives' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('spinbutton', { name: 'TAA target risk budget for Derivatives' })).not.toBeInTheDocument()
     expect(within(cashRow!).getAllByText('N/A')).toHaveLength(2)
 
     const saaRiskAssetsWeight = screen.getByRole('spinbutton', {
@@ -406,6 +435,12 @@ describe('Taxonomies rendered page contract', () => {
           target_risk_share: null,
         }),
         expect.objectContaining({
+          target_member_type: 'derivative_bucket',
+          target_member_id: '__derivatives__',
+          target_weight: 0,
+          target_risk_share: null,
+        }),
+        expect.objectContaining({
           target_member_type: 'taxonomy_node',
           target_member_id: 'risk-assets',
           target_weight: 0.79,
@@ -413,6 +448,44 @@ describe('Taxonomies rendered page contract', () => {
         }),
       ]),
     )
+  })
+
+  it('shows derivative contracts under the locked system bucket instead of taxonomy assignments', async () => {
+    apiMocks.getHoldingsWorkspace.mockResolvedValueOnce(
+      holdingsWorkspaceFixture({
+        rows: [
+          holdingFixture(),
+          holdingFixture({
+            line_id: 'holding:taxonomy-fcn',
+            position_reference_id: 'taxonomy-fcn',
+            derivative_contract_id: 'taxonomy-fcn',
+            holding_category: 'derivatives',
+            instrument_core: null,
+            derivative_contract: fcnContractFixture({
+              derivative_contract_id: 'taxonomy-fcn',
+              contract_name: 'Locked Taxonomy FCN',
+            }),
+            market_value: 100,
+            market_value_base: 100,
+          }),
+        ],
+      }),
+    )
+
+    renderPortfolioPage(
+      <TaxonomiesPage />,
+      '/portfolios/3/taxonomies',
+      '/portfolios/:portfolioId/taxonomies',
+    )
+
+    const derivativeContractLabel = await screen.findByText('Locked Taxonomy FCN', {
+      selector: '.taxonomy-level-label',
+    })
+    const derivativeContractRow = derivativeContractLabel.closest('tr')
+    expect(derivativeContractRow).not.toBeNull()
+    expect(derivativeContractRow).toHaveClass('taxonomy-entity-row-drag-locked')
+    expect(screen.queryByRole('checkbox', { name: /Select Locked Taxonomy FCN/ })).not.toBeInTheDocument()
+    expect(within(derivativeContractRow!).getAllByText('N/A')).toHaveLength(2)
   })
 
   it('withholds the base denominator and all actual weights when one participating value is missing', async () => {

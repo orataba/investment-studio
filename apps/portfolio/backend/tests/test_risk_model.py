@@ -163,8 +163,10 @@ def test_forward_risk_normalizes_inside_eligible_sleeve_and_discloses_exclusion(
     assert result["forward_risk"]["excluded_rows"][0]["instrument_id"] == "fcn"
     assert result["rows"][0]["forward_risk_status"] == "ok"
     assert result["rows"][0]["forward_risk_share"] == pytest.approx(1.0)
-    assert result["rows"][1]["forward_risk_status"] == "policy_excluded"
-    assert result["rows"][1]["forward_risk_share"] is None
+    assert result["rows"][1]["forward_risk_status"] == "modeled_zero"
+    assert result["rows"][1]["forward_risk_share"] == pytest.approx(0.0)
+    assert result["rows"][1]["forward_contribution_to_variance"] == pytest.approx(0.0)
+    assert result["rows"][1]["forward_annualized_volatility"] == pytest.approx(0.0)
 
 
 def test_forward_risk_is_unavailable_when_every_exposure_is_policy_excluded() -> None:
@@ -189,7 +191,62 @@ def test_forward_risk_is_unavailable_when_every_exposure_is_policy_excluded() ->
     assert result["forward_risk"]["errors"] == [
         "Modeled sleeve risk requires at least one eligible risky holding."
     ]
-    assert result["rows"][0]["forward_risk_status"] == "policy_excluded"
+    assert result["rows"][0]["forward_risk_status"] == "modeled_zero"
+    assert result["rows"][0]["forward_risk_share"] == pytest.approx(0.0)
+
+
+def test_forward_risk_models_only_base_currency_monetary_rows_as_zero() -> None:
+    def monetary_row(
+        line_id: str,
+        *,
+        currency: str,
+        holding_kind: str,
+    ) -> dict[str, object]:
+        return {
+            "line_id": line_id,
+            "holding_kind": holding_kind,
+            "instrument_core": {
+                "instrument_id": line_id,
+                "instrument_name": line_id,
+                "instrument_type": "cash",
+                "currency": currency,
+            },
+            "market_value_base": 100_000.0,
+            "risk_eligible": False,
+            "risk_budget_eligible": False,
+        }
+
+    result = enrich_holdings_forward_risk(
+        {
+            "base_currency": "CNY",
+            "rows": [
+                _holding("equity", 1.0),
+                monetary_row("cash:CNY", currency="CNY", holding_kind="settled_cash"),
+                monetary_row(
+                    "pending:CNY",
+                    currency="CNY",
+                    holding_kind="settlement_receivable",
+                ),
+                monetary_row(
+                    "pending:USD",
+                    currency="USD",
+                    holding_kind="settlement_receivable",
+                ),
+            ],
+        },
+        as_of_date=AS_OF_DATE,
+        calculation_frequency="daily",
+        risk_policy=_risk_policy(),
+    )
+
+    assert result["forward_risk"]["status"] == "ok"
+    rows = {row["line_id"]: row for row in result["rows"]}
+    for line_id in ("cash:CNY", "pending:CNY"):
+        assert rows[line_id]["forward_risk_status"] == "modeled_zero"
+        assert rows[line_id]["forward_risk_share"] == pytest.approx(0.0)
+        assert rows[line_id]["forward_annualized_volatility"] == pytest.approx(0.0)
+    assert rows["pending:USD"]["forward_risk_status"] == "pending_settlement"
+    assert rows["pending:USD"]["forward_risk_share"] is None
 
 
 def test_forward_risk_fails_closed_when_one_member_has_an_internal_period_gap() -> None:

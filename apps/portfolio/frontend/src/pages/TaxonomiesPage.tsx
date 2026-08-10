@@ -28,6 +28,7 @@ import {
   type PortfolioAccountsWorkspaceResponse,
   type PortfolioAnalyticsScopePolicyRecord,
   type PortfolioInstrumentUniverseRecord,
+  type PortfolioTargetMemberType,
   type PortfolioTargetSetLineRecord,
   type PortfolioTargetSetRecord,
   type PortfolioTaxonomyAssignmentRecord,
@@ -174,7 +175,7 @@ type TargetLineDraft = {
   notes: string
 }
 
-type TargetMemberType = 'taxonomy_node' | TaxonomyAssignmentScope
+type TargetMemberType = PortfolioTargetMemberType
 
 type TargetScopeMember = {
   member_key: string
@@ -184,7 +185,7 @@ type TargetScopeMember = {
   node: PortfolioTaxonomyNodeRecord | null
   entity: CoverageEntity | null
   label: string
-  system_role?: 'cash'
+  system_role?: 'cash' | 'derivatives'
 }
 
 type TargetSetDraft = {
@@ -238,9 +239,12 @@ type WorkspaceFetchResult = {
 }
 
 const TAXONOMY_ROOT_ROW_ID = '__taxonomy_root__'
+const TAXONOMY_DERIVATIVES_ROW_ID = '__taxonomy_derivatives__'
 const TAXONOMY_CASH_ROW_ID = '__taxonomy_cash__'
 const TAXONOMY_UNASSIGNED_ROW_ID = '__taxonomy_unassigned__'
 const ROOT_TARGET_SCOPE_KEY = '__target_scope_root__'
+const DERIVATIVES_TARGET_MEMBER_ID = '__derivatives__'
+const DERIVATIVES_TARGET_LABEL = 'Derivatives'
 const CASH_TARGET_MEMBER_ID = '__cash__'
 const CASH_TARGET_LABEL = 'Cash'
 const EMPTY_TARGET_SET_DRAFT: TargetSetDraft = {
@@ -298,6 +302,15 @@ function isPendingMonetaryHoldingRow(row: HoldingsWorkspaceResponse['rows'][numb
     row.holding_kind === 'settlement_payable' ||
     row.holding_kind === 'position_recognition_adjustment' ||
     row.line_id.trim().toLowerCase().startsWith('pending:')
+  )
+}
+
+function derivativeHoldingLabel(row: HoldingsWorkspaceResponse['rows'][number]) {
+  return (
+    row.derivative_contract?.contract_name ??
+    row.position_reference_id ??
+    row.derivative_contract_id ??
+    row.line_id
   )
 }
 
@@ -451,16 +464,24 @@ function targetMemberKey(targetMemberType: TargetMemberType, targetMemberId: str
   return `${targetMemberType}:${targetMemberId}`
 }
 
-function isSyntheticCashTargetMember(member: Pick<TargetScopeMember, 'target_member_type' | 'target_member_id' | 'system_role'>) {
-  return member.system_role === 'cash' || (member.target_member_type === 'cash_bucket' && member.target_member_id === CASH_TARGET_MEMBER_ID)
+function isSyntheticSystemTargetMember(
+  member: Pick<TargetScopeMember, 'target_member_type' | 'target_member_id' | 'system_role'>,
+) {
+  return (
+    member.system_role === 'cash' ||
+    member.system_role === 'derivatives' ||
+    (member.target_member_type === 'cash_bucket' && member.target_member_id === CASH_TARGET_MEMBER_ID) ||
+    (member.target_member_type === 'derivative_bucket' && member.target_member_id === DERIVATIVES_TARGET_MEMBER_ID)
+  )
 }
 
-function isCashLikeTargetMember(
+function targetMemberExcludesRisk(
   member: Pick<TargetScopeMember, 'target_member_type' | 'target_member_id' | 'system_role' | 'node' | 'entity'>,
 ) {
   return (
-    isSyntheticCashTargetMember(member) ||
+    isSyntheticSystemTargetMember(member) ||
     member.target_member_type === 'cash_bucket' ||
+    member.target_member_type === 'derivative_bucket' ||
     member.entity?.target_scope === 'cash_bucket' ||
     isCashTaxonomyNode(member.node)
   )
@@ -498,8 +519,8 @@ function buildTargetSetDraft(args: {
       return [
         member.member_key,
         {
-          target_weight: isSyntheticCashTargetMember(member) && targetLine?.target_weight == null ? '0' : percentInputFromDecimal(targetLine?.target_weight),
-          target_risk_share: isCashLikeTargetMember(member) ? '' : percentInputFromDecimal(targetLine?.target_risk_share),
+          target_weight: isSyntheticSystemTargetMember(member) && targetLine?.target_weight == null ? '0' : percentInputFromDecimal(targetLine?.target_weight),
+          target_risk_share: targetMemberExcludesRisk(member) ? '' : percentInputFromDecimal(targetLine?.target_risk_share),
           notes: targetLine?.notes ?? '',
         },
       ]
@@ -598,7 +619,7 @@ function validateTargetSetDraft(
       }
     }
     if (draft.risk_budget_enabled) {
-      if (isCashLikeTargetMember(member)) {
+      if (targetMemberExcludesRisk(member)) {
         return
       }
       const parsedRisk = parsePercentInput(lineDraft.target_risk_share)
@@ -617,7 +638,7 @@ function validateTargetSetDraft(
     warnings.push('Target weight total is not 100% within the selected scope.')
   }
   if (draft.risk_budget_enabled && riskSeen && Math.abs(riskSum - 1) > 0.0005) {
-    warnings.push('Non-cash target risk budget total is not 100% within the selected scope.')
+    warnings.push('Risk-eligible target risk budget total is not 100% within the selected scope.')
   }
 
   return {
@@ -1091,37 +1112,50 @@ export default function TaxonomiesPage() {
     return ids
   }, [descendantNodeIdsByNodeId, selectedNode])
 
+  const visibleCashAccounts = useMemo(
+    () =>
+      accountRows.filter((accountRow) => {
+        const monetaryBalance = accountMonetaryBalanceBase(accountRow)
+        return (
+          accountRow.account.account_type === 'deposit_account' ||
+          (monetaryBalance != null && Math.abs(monetaryBalance) > 1e-9)
+        )
+      }),
+    [accountRows],
+  )
+  const securitiesHoldingRows = useMemo(
+    () =>
+      holdingsRows.filter(
+        (row): row is typeof row & { instrument_core: InstrumentCore } =>
+          row.holding_category === 'securities' &&
+          row.instrument_core !== null &&
+          (row.holding_kind ?? 'position') === 'position' &&
+          !isCashHoldingRow(row) &&
+          !isPendingMonetaryHoldingRow(row),
+      ),
+    [holdingsRows],
+  )
+  const derivativeHoldingRows = useMemo(
+    () => holdingsRows.filter((row) => row.holding_category === 'derivatives'),
+    [holdingsRows],
+  )
+  const taxonomyTotalValueBase = useMemo(
+    () =>
+      completeAmountSum([
+        ...securitiesHoldingRows.map((row) => row.market_value_base),
+        ...derivativeHoldingRows.map((row) => row.market_value_base),
+        ...visibleCashAccounts.map((accountRow) => accountMonetaryBalanceBase(accountRow)),
+      ]),
+    [derivativeHoldingRows, securitiesHoldingRows, visibleCashAccounts],
+  )
+
   const currentEntities = useMemo<CoverageEntity[]>(() => {
     if (!selectedTaxonomy) {
       return []
     }
 
     if (selectedTaxonomy.primary_assignment_scope === 'instrument') {
-      const includeCashBuckets = true
-      const visibleCashAccounts = accountRows.filter((accountRow) => {
-        const monetaryBalance = accountMonetaryBalanceBase(accountRow)
-        return (
-          accountRow.account.account_type === 'deposit_account' ||
-          (monetaryBalance != null && Math.abs(monetaryBalance) > 1e-9)
-        )
-      })
-      const holdingRowsForEntities = holdingsRows.filter(
-        (row): row is typeof row & { instrument_core: InstrumentCore } =>
-          row.instrument_core !== null &&
-          (row.holding_kind ?? 'position') === 'position' &&
-          (!includeCashBuckets ||
-            (!isCashHoldingRow(row) && !isPendingMonetaryHoldingRow(row))),
-      )
-      const totalEntityValueBase = completeAmountSum([
-        ...holdingRowsForEntities.map((row) => row.market_value_base),
-        ...(includeCashBuckets
-          ? visibleCashAccounts.map((accountRow) =>
-              accountMonetaryBalanceBase(accountRow),
-            )
-          : []),
-      ])
-
-      const holdingEntities = holdingRowsForEntities.map((row) => {
+      const holdingEntities = securitiesHoldingRows.map((row) => {
         const assignments = activeAssignmentsByEntityKey.get(coverageEntityKey('instrument', row.instrument_core.instrument_id)) ?? []
         const assignment = assignments.length === 1 ? assignments[0] : null
         const currentNode = assignment ? nodeById.get(assignment.taxonomy_node_id) ?? null : null
@@ -1140,8 +1174,8 @@ export default function TaxonomiesPage() {
           label: `${primaryIdentifier(row.instrument_core)} · ${row.instrument_core.instrument_name}`,
           supporting_label: row.instrument_core.currency,
           allocation:
-            row.market_value_base != null && totalEntityValueBase != null && totalEntityValueBase > 1e-9
-              ? row.market_value_base / totalEntityValueBase
+            row.market_value_base != null && taxonomyTotalValueBase != null && taxonomyTotalValueBase > 1e-9
+              ? row.market_value_base / taxonomyTotalValueBase
               : null,
           market_value_base: row.market_value_base ?? null,
           current_assignment: assignment,
@@ -1152,14 +1186,14 @@ export default function TaxonomiesPage() {
         } satisfies CoverageEntity
       })
 
-      const heldInstrumentIds = new Set(holdingRowsForEntities.map((row) => row.instrument_core.instrument_id))
+      const heldInstrumentIds = new Set(securitiesHoldingRows.map((row) => row.instrument_core.instrument_id))
       const visibleNonHeldInstrumentIds = new Set<string>()
       instrumentUniverseRows.forEach((item) => {
         if (
           item.status === 'active' &&
           item.instrument_id &&
           !heldInstrumentIds.has(item.instrument_id) &&
-          !(includeCashBuckets && isCashInstrument(item.instrument_ref))
+          !isCashInstrument(item.instrument_ref)
         ) {
           visibleNonHeldInstrumentIds.add(item.instrument_id)
         }
@@ -1170,7 +1204,8 @@ export default function TaxonomiesPage() {
         if (
           assignment.target_scope === 'instrument' &&
           !heldInstrumentIds.has(assignment.target_entity_id) &&
-          !(includeCashBuckets && (assignment.target_entity_id.trim().toLowerCase().startsWith('cash:') || isCashInstrument(assignedInstrument)))
+          !assignment.target_entity_id.trim().toLowerCase().startsWith('cash:') &&
+          !isCashInstrument(assignedInstrument)
         ) {
           visibleNonHeldInstrumentIds.add(assignment.target_entity_id)
         }
@@ -1216,32 +1251,7 @@ export default function TaxonomiesPage() {
           return entities
         }, [])
 
-      if (!includeCashBuckets) {
-        return [...holdingEntities, ...nonHeldInstrumentEntities]
-      }
-
-      const cashEntities = visibleCashAccounts.map((accountRow) => {
-        const monetaryBalanceBase = accountMonetaryBalanceBase(accountRow)
-        return {
-          entity_id: accountRow.account.account_id,
-          target_scope: 'cash_bucket' as const,
-          label: accountRow.account.account_name,
-          supporting_label: accountRow.account.currency,
-          allocation:
-            monetaryBalanceBase != null && totalEntityValueBase != null && totalEntityValueBase > 1e-9
-              ? monetaryBalanceBase / totalEntityValueBase
-              : null,
-          market_value_base: monetaryBalanceBase,
-          current_assignment: null,
-          current_node: null,
-          holding_state: 'held',
-          instrument_state: null,
-          instrument_state_label: null,
-          coverage_state: 'other',
-        } satisfies CoverageEntity
-      })
-
-      return [...holdingEntities, ...nonHeldInstrumentEntities, ...cashEntities]
+      return [...holdingEntities, ...nonHeldInstrumentEntities]
     }
 
     if (selectedTaxonomy.primary_assignment_scope === 'cash_bucket') {
@@ -1317,13 +1327,13 @@ export default function TaxonomiesPage() {
     accountRows,
     activeAssignments,
     activeAssignmentsByEntityKey,
-    baseCurrency,
-    holdingsRows,
     instrumentById,
     instrumentUniverseRows,
     nodeById,
+    securitiesHoldingRows,
     selectedNodeScopeIds,
     selectedTaxonomy,
+    taxonomyTotalValueBase,
     universeInstrumentById,
     universeRecordByInstrumentId,
   ])
@@ -1424,10 +1434,49 @@ export default function TaxonomiesPage() {
     return lookup
   }, [currentEntities])
 
+  const showSystemDerivativeNode = selectedTaxonomy?.primary_assignment_scope === 'instrument'
   const showSystemCashNode = selectedTaxonomy?.primary_assignment_scope === 'instrument'
+  const derivativeAggregate = useMemo(() => {
+    const currentValueBase = derivativeHoldingRows.length
+      ? completeAmountSum(derivativeHoldingRows.map((row) => row.market_value_base))
+      : 0
+    return {
+      current_entity_count: derivativeHoldingRows.length,
+      current_weight:
+        currentValueBase != null && taxonomyTotalValueBase != null && taxonomyTotalValueBase > 1e-9
+          ? currentValueBase / taxonomyTotalValueBase
+          : null,
+      current_value_base: currentValueBase,
+      direct_assignment_count: 0,
+    } satisfies NodeAggregate
+  }, [derivativeHoldingRows, taxonomyTotalValueBase])
   const cashBucketEntities = useMemo(
-    () => currentEntities.filter((entity) => entity.target_scope === 'cash_bucket'),
-    [currentEntities],
+    () =>
+      showSystemCashNode
+        ? visibleCashAccounts.map((accountRow) => {
+            const monetaryBalanceBase = accountMonetaryBalanceBase(accountRow)
+            return {
+              entity_id: accountRow.account.account_id,
+              target_scope: 'cash_bucket' as const,
+              label: accountRow.account.account_name,
+              supporting_label: accountRow.account.currency,
+              allocation:
+                monetaryBalanceBase != null &&
+                taxonomyTotalValueBase != null &&
+                taxonomyTotalValueBase > 1e-9
+                  ? monetaryBalanceBase / taxonomyTotalValueBase
+                  : null,
+              market_value_base: monetaryBalanceBase,
+              current_assignment: null,
+              current_node: null,
+              holding_state: 'held' as const,
+              instrument_state: null,
+              instrument_state_label: null,
+              coverage_state: 'other' as const,
+            } satisfies CoverageEntity
+          })
+        : [],
+    [showSystemCashNode, taxonomyTotalValueBase, visibleCashAccounts],
   )
   const cashAggregate = useMemo(() => {
     const heldCashEntities = cashBucketEntities.filter((entity) => entity.holding_state === 'held')
@@ -1436,26 +1485,38 @@ export default function TaxonomiesPage() {
       current_entity_count: cashBucketEntities.length,
       current_weight: heldCashEntities.length
         ? completeAmountSum(heldCashEntities.map((entity) => entity.allocation))
-        : null,
+        : taxonomyTotalValueBase != null && taxonomyTotalValueBase > 1e-9
+          ? 0
+          : null,
       current_value_base: heldCashEntities.length
         ? completeAmountSum(heldCashEntities.map((entity) => entity.market_value_base))
-        : null,
-      direct_assignment_count: cashBucketEntities.length,
+        : 0,
+      direct_assignment_count: 0,
     } satisfies NodeAggregate
-  }, [cashBucketEntities])
+  }, [cashBucketEntities, taxonomyTotalValueBase])
 
   const taxonomyCurrentSummary = useMemo(() => {
     const heldEntities = currentEntities.filter((entity) => entity.holding_state === 'held')
+    const currentWeights = heldEntities.map((entity) => entity.allocation)
+    const currentValues = heldEntities.map((entity) => entity.market_value_base)
+    if (showSystemDerivativeNode) {
+      currentWeights.push(derivativeAggregate.current_weight)
+      currentValues.push(derivativeAggregate.current_value_base)
+    }
+    if (showSystemCashNode) {
+      currentWeights.push(cashAggregate.current_weight)
+      currentValues.push(cashAggregate.current_value_base)
+    }
 
     return {
-      current_weight: heldEntities.length
-        ? completeAmountSum(heldEntities.map((entity) => entity.allocation))
+      current_weight: currentWeights.length
+        ? completeAmountSum(currentWeights)
         : null,
-      current_value_base: heldEntities.length
-        ? completeAmountSum(heldEntities.map((entity) => entity.market_value_base))
+      current_value_base: currentValues.length
+        ? completeAmountSum(currentValues)
         : null,
     }
-  }, [currentEntities])
+  }, [cashAggregate, currentEntities, derivativeAggregate, showSystemCashNode, showSystemDerivativeNode])
 
   const unassignedSummary = useMemo(() => {
     const heldEntities = coverageSummary.unassignedEntities.filter(
@@ -1649,6 +1710,18 @@ export default function TaxonomiesPage() {
           label: node.node_name,
         })),
     ]
+    if (showSystemDerivativeNode) {
+      rootMembers.push({
+        member_key: targetMemberKey('derivative_bucket', DERIVATIVES_TARGET_MEMBER_ID),
+        target_member_type: 'derivative_bucket',
+        target_member_id: DERIVATIVES_TARGET_MEMBER_ID,
+        taxonomy_node_id: null,
+        node: null,
+        entity: null,
+        label: DERIVATIVES_TARGET_LABEL,
+        system_role: 'derivatives',
+      })
+    }
     if (showSystemCashNode) {
       rootMembers.push({
         member_key: targetMemberKey('cash_bucket', CASH_TARGET_MEMBER_ID),
@@ -1702,7 +1775,13 @@ export default function TaxonomiesPage() {
     })
 
     return lookup
-  }, [childrenByParent, directEntitiesByNodeId, selectedTaxonomyNodes, showSystemCashNode])
+  }, [
+    childrenByParent,
+    directEntitiesByNodeId,
+    selectedTaxonomyNodes,
+    showSystemCashNode,
+    showSystemDerivativeNode,
+  ])
   const selectedComparatorScopeNode =
     selectedNode && scopeMembersByScopeKey.has(targetScopeKey(selectedNode.taxonomy_node_id))
       ? selectedNode
@@ -1942,9 +2021,9 @@ export default function TaxonomiesPage() {
         ? targetScopeKey(targetMember.node?.parent_taxonomy_node_id ?? null)
         : targetScopeKey(targetMember.entity?.current_assignment?.taxonomy_node_id ?? null)
     const draft = targetDraftsByScope[scopeKey]?.[kind] ?? EMPTY_TARGET_SET_DRAFT
-    if (isCashLikeTargetMember(targetMember) && dimension === 'risk_budget') {
+    if (targetMemberExcludesRisk(targetMember) && dimension === 'risk_budget') {
       return (
-        <span className="taxonomy-fixed-target-value" title="Cash is excluded from risk budgets.">
+        <span className="taxonomy-fixed-target-value" title="Cash and derivatives are excluded from risk budgets.">
           N/A
         </span>
       )
@@ -2257,26 +2336,28 @@ export default function TaxonomiesPage() {
       risk_budget_enabled: draft.risk_budget_enabled,
       status: draft.status,
       notes: draft.notes || null,
-      lines: targetMembers.map((member) => {
-        const lineDraft = draft.lines_by_member_key[member.member_key] ?? {
-          target_weight: '',
-          target_risk_share: '',
-          notes: '',
-        }
-        const targetWeight = parsePercentInput(lineDraft.target_weight)
-        const targetRiskShare = parsePercentInput(lineDraft.target_risk_share)
-        return {
-          target_member_type: member.target_member_type,
-          target_member_id: member.target_member_id,
-          taxonomy_node_id: member.taxonomy_node_id,
-          target_weight: draft.weight_enabled ? (targetWeight == null ? null : targetWeight) : null,
-          target_risk_share:
-            draft.risk_budget_enabled && !isCashLikeTargetMember(member)
-              ? (targetRiskShare == null ? null : targetRiskShare)
-              : null,
-          notes: lineDraft.notes || null,
-        }
-      }),
+      lines: targetMembers
+        .filter((member) => draft.weight_enabled || !targetMemberExcludesRisk(member))
+        .map((member) => {
+          const lineDraft = draft.lines_by_member_key[member.member_key] ?? {
+            target_weight: '',
+            target_risk_share: '',
+            notes: '',
+          }
+          const targetWeight = parsePercentInput(lineDraft.target_weight)
+          const targetRiskShare = parsePercentInput(lineDraft.target_risk_share)
+          return {
+            target_member_type: member.target_member_type,
+            target_member_id: member.target_member_id,
+            taxonomy_node_id: member.taxonomy_node_id,
+            target_weight: draft.weight_enabled ? (targetWeight == null ? null : targetWeight) : null,
+            target_risk_share:
+              draft.risk_budget_enabled && !targetMemberExcludesRisk(member)
+                ? (targetRiskShare == null ? null : targetRiskShare)
+                : null,
+            notes: lineDraft.notes || null,
+          }
+        }),
     }
   }
 
@@ -2879,6 +2960,117 @@ export default function TaxonomiesPage() {
     )
   }
 
+  function renderDerivativeTreeRows(depth: number): ReactElement[] {
+    if (!showSystemDerivativeNode) {
+      return []
+    }
+    const derivativeTargetMember: TargetScopeMember = {
+      member_key: targetMemberKey('derivative_bucket', DERIVATIVES_TARGET_MEMBER_ID),
+      target_member_type: 'derivative_bucket',
+      target_member_id: DERIVATIVES_TARGET_MEMBER_ID,
+      taxonomy_node_id: null,
+      node: null,
+      entity: null,
+      label: DERIVATIVES_TARGET_LABEL,
+      system_role: 'derivatives',
+    }
+    const editable =
+      targetEditMode &&
+      Boolean(selectedTaxonomy?.planning_enabled) &&
+      Boolean(targetDraftsByScope[ROOT_TARGET_SCOPE_KEY])
+    const isTargetScopeMember = currentScopeMemberKeySet.has(derivativeTargetMember.member_key)
+    const isCollapsed = collapsedNodeIds.has(TAXONOMY_DERIVATIVES_ROW_ID)
+    const rows: ReactElement[] = [
+      <tr
+        key={TAXONOMY_DERIVATIVES_ROW_ID}
+        className={[
+          'taxonomy-node-table-row',
+          'taxonomy-system-derivatives-row',
+          'taxonomy-node-depth-1',
+          isTargetScopeMember ? 'taxonomy-scope-row' : '',
+        ]
+          .filter(Boolean)
+          .join(' ')}
+      >
+        <td className="holding-name-cell">
+          <div className="taxonomy-node-row taxonomy-hierarchy-row">
+            <span style={{ width: `${depth * 18}px`, flex: '0 0 auto' }} />
+            <button
+              type="button"
+              className="taxonomy-tree-toggle"
+              onClick={() => toggleNodeCollapse(TAXONOMY_DERIVATIVES_ROW_ID)}
+            >
+              <span
+                className={`taxonomy-tree-arrow ${
+                  isCollapsed ? 'taxonomy-tree-arrow-collapsed' : 'taxonomy-tree-arrow-expanded'
+                }`}
+              />
+            </button>
+            <span className="taxonomy-level-label">{DERIVATIVES_TARGET_LABEL}</span>
+          </div>
+        </td>
+        <td>{renderFixedWeightDefaultTargetCell()}</td>
+        <td>{renderTargetCell('saa', 'weight', derivativeTargetMember, editable)}</td>
+        <td>{renderTargetCell('saa', 'risk_budget', derivativeTargetMember, editable)}</td>
+        <td>{renderTargetCell('taa', 'weight', derivativeTargetMember, editable)}</td>
+        <td>{renderTargetCell('taa', 'risk_budget', derivativeTargetMember, editable)}</td>
+        <td>{derivativeAggregate.current_weight != null ? formatPercent(derivativeAggregate.current_weight) : '—'}</td>
+        <td>
+          {derivativeAggregate.current_value_base != null
+            ? formatCurrency(derivativeAggregate.current_value_base, baseCurrency)
+            : '—'}
+        </td>
+      </tr>,
+    ]
+
+    if (!isCollapsed) {
+      if (derivativeHoldingRows.length) {
+        derivativeHoldingRows
+          .slice()
+          .sort((left, right) => derivativeHoldingLabel(left).localeCompare(derivativeHoldingLabel(right)))
+          .forEach((row) => {
+            const currentWeight =
+              row.market_value_base != null &&
+              taxonomyTotalValueBase != null &&
+              taxonomyTotalValueBase > 1e-9
+                ? row.market_value_base / taxonomyTotalValueBase
+                : null
+            rows.push(
+              <tr key={row.line_id} className="taxonomy-entity-row taxonomy-entity-row-drag-locked">
+                <td className="holding-name-cell">
+                  <div className="taxonomy-node-row taxonomy-hierarchy-row">
+                    <span style={{ width: `${(depth + 1) * 18}px`, flex: '0 0 auto' }} />
+                    <span className="taxonomy-tree-toggle taxonomy-tree-toggle-empty" />
+                    <span className="taxonomy-tree-check-slot" />
+                    <span className="taxonomy-level-label">{derivativeHoldingLabel(row)}</span>
+                    {row.derivative_contract?.currency ? (
+                      <span className="taxonomy-entity-supporting-label">{row.derivative_contract.currency}</span>
+                    ) : null}
+                  </div>
+                </td>
+                <td />
+                <td />
+                <td>N/A</td>
+                <td />
+                <td>N/A</td>
+                <td>{currentWeight != null ? formatPercent(currentWeight) : '—'}</td>
+                <td>{row.market_value_base != null ? formatCurrency(row.market_value_base, baseCurrency) : '—'}</td>
+              </tr>,
+            )
+          })
+      } else {
+        rows.push(
+          <TableStatusRow
+            key={`${TAXONOMY_DERIVATIVES_ROW_ID}-empty`}
+            colSpan={8}
+            label="No derivative holdings."
+          />,
+        )
+      }
+    }
+    return rows
+  }
+
   function renderCashTreeRows(depth: number): ReactElement[] {
     if (!showSystemCashNode) {
       return []
@@ -3398,6 +3590,7 @@ export default function TaxonomiesPage() {
                         {selectedTaxonomyNodes.length ? (
                           <>
                             {renderNodeTreeRows(null, 1)}
+                            {renderDerivativeTreeRows(1)}
                             {renderCashTreeRows(1)}
                           </>
                         ) : (
@@ -3415,6 +3608,7 @@ export default function TaxonomiesPage() {
                                 </button>
                               </td>
                             </tr>
+                            {renderDerivativeTreeRows(1)}
                             {renderCashTreeRows(1)}
                           </>
                         )}

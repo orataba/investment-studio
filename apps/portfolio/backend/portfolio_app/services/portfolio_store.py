@@ -80,7 +80,9 @@ UNSET = object()
 TARGET_SET_EPSILON = 0.0005
 TARGET_MEMBER_NODE = "taxonomy_node"
 TARGET_MEMBER_CASH = "cash_bucket"
+TARGET_MEMBER_DERIVATIVE = "derivative_bucket"
 SYSTEM_CASH_TARGET_MEMBER_ID = "__cash__"
+SYSTEM_DERIVATIVE_TARGET_MEMBER_ID = "__derivatives__"
 SYSTEM_CASH_TARGET_LABEL = "Cash"
 LEGACY_ASSET_REFERENCE_KEYS = {"asset_id", "asset_name", "asset_type"}
 INSTRUMENT_REF_REQUIRED_KEYS = {"instrument_id", "instrument_name", "instrument_type", "currency"}
@@ -2129,13 +2131,7 @@ def _budgeting_dimensions(budgeting_level: str | None) -> set[str]:
 
 
 def _taxonomy_allows_assignment_scope(taxonomy: TaxonomyRecordModel, target_scope: str) -> bool:
-    if taxonomy.primary_assignment_scope == target_scope:
-        return True
-    return bool(
-        taxonomy.planning_enabled
-        and taxonomy.primary_assignment_scope == "instrument"
-        and target_scope == TARGET_MEMBER_CASH
-    )
+    return taxonomy.primary_assignment_scope == target_scope
 
 
 def _active_taxonomy_nodes_by_parent(
@@ -2178,7 +2174,7 @@ def _is_reserved_cash_label(node_name: str | None, node_code: str | None) -> boo
     return normalized_code == "cash" or normalized_name in {"cash", "现金"}
 
 
-def _scope_member_is_cash(
+def _scope_member_excludes_risk(
     session,
     *,
     taxonomy_id: str,
@@ -2186,7 +2182,7 @@ def _scope_member_is_cash(
     target_member_id: str,
     nodes_by_parent: dict[str | None, list[TaxonomyNodeRecordModel]] | None = None,
 ) -> bool:
-    if target_member_type == "cash_bucket":
+    if target_member_type in {TARGET_MEMBER_CASH, TARGET_MEMBER_DERIVATIVE}:
         return True
     if target_member_type != TARGET_MEMBER_NODE:
         return False
@@ -2367,11 +2363,12 @@ def _validate_target_set_lines(
     optional_member_keys: set[tuple[str, str]] = set()
     if comparator_taxonomy_node_id is None and taxonomy.primary_assignment_scope == "instrument":
         optional_member_keys.add((TARGET_MEMBER_CASH, SYSTEM_CASH_TARGET_MEMBER_ID))
+        optional_member_keys.add((TARGET_MEMBER_DERIVATIVE, SYSTEM_DERIVATIVE_TARGET_MEMBER_ID))
     seen_member_keys: set[tuple[str, str]] = set()
-    cash_member_keys = {
+    risk_excluded_member_keys = {
         member_key
         for member_key in expected_member_keys | optional_member_keys
-        if _scope_member_is_cash(
+        if _scope_member_excludes_risk(
             session,
             taxonomy_id=taxonomy.taxonomy_id,
             target_member_type=member_key[0],
@@ -2379,10 +2376,10 @@ def _validate_target_set_lines(
             nodes_by_parent=nodes_by_parent,
         )
     }
-    risky_member_keys = expected_member_keys - cash_member_keys
-    if risk_budget_enabled and not risky_member_keys:
-        raise ValueError("Risk-budget target sets require at least one eligible non-cash member.")
-    non_cash_risk_share_total = 0.0
+    risk_eligible_member_keys = expected_member_keys - risk_excluded_member_keys
+    if risk_budget_enabled and not risk_eligible_member_keys:
+        raise ValueError("Risk-budget target sets require at least one risk-eligible member.")
+    risk_share_total = 0.0
 
     for raw_line in lines:
         member_type, member_id, _ = _normalize_target_line_member(raw_line)
@@ -2392,7 +2389,7 @@ def _validate_target_set_lines(
         if member_key in seen_member_keys:
             raise ValueError("Duplicate scope member in target set lines.")
         seen_member_keys.add(member_key)
-        is_cash_member = member_key in cash_member_keys
+        excludes_risk = member_key in risk_excluded_member_keys
 
         target_weight = raw_line.get("target_weight")
         target_risk_share = raw_line.get("target_risk_share")
@@ -2405,28 +2402,28 @@ def _validate_target_set_lines(
         elif target_weight is not None:
             raise ValueError("target_weight must be empty when weight is disabled.")
 
-        if is_cash_member and target_risk_share is not None:
-            raise ValueError("Cash scope members must leave target_risk_share empty.")
+        if excludes_risk and target_risk_share is not None:
+            raise ValueError("Cash and derivative members must leave target_risk_share empty.")
 
         if risk_budget_enabled:
-            if is_cash_member:
+            if excludes_risk:
                 if not weight_enabled:
-                    raise ValueError("Cash scope members are not part of risk-budget-only target sets.")
+                    raise ValueError("Cash and derivative members are not part of risk-budget-only target sets.")
             elif target_risk_share is None:
                 raise ValueError("Every scope member needs a target_risk_share when risk_budget is enabled.")
             else:
                 resolved_risk_share = float(target_risk_share)
                 if resolved_risk_share < 0:
                     raise ValueError("target_risk_share must be zero or greater.")
-                non_cash_risk_share_total += resolved_risk_share
+                risk_share_total += resolved_risk_share
         elif target_risk_share is not None:
             raise ValueError("target_risk_share must be empty when risk_budget is disabled.")
 
-    required_member_keys = expected_member_keys if weight_enabled else risky_member_keys
+    required_member_keys = expected_member_keys if weight_enabled else risk_eligible_member_keys
     if not required_member_keys.issubset(seen_member_keys):
         raise ValueError("Target set lines must cover every direct member in the selected scope.")
-    if risk_budget_enabled and abs(non_cash_risk_share_total - 1.0) > TARGET_SET_EPSILON:
-        raise ValueError("Non-cash target_risk_share values must sum to 100%.")
+    if risk_budget_enabled and abs(risk_share_total - 1.0) > TARGET_SET_EPSILON:
+        raise ValueError("Risk-eligible target_risk_share values must sum to 100%.")
 
     if status == "active":
         overlapping_target_sets = session.scalars(

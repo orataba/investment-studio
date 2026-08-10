@@ -621,6 +621,7 @@ def test_materialized_option_position_and_obligation_remain_distinct_in_api_and_
         "position",
         "option_obligation",
     }
+    assert {row["holding_category"] for row in api_option_rows} == {"derivatives"}
     for row in api_option_rows:
         _assert_empty_market_profile(row)
     api_position = next(

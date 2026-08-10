@@ -28,6 +28,7 @@ from portfolio_app.services.research_solver import (
     RiskBudgetSolution,
     SYSTEM_CASH_TARGET_MEMBER_ID,
     SYSTEM_CASH_TARGET_LABEL,
+    SYSTEM_DERIVATIVE_TARGET_MEMBER_ID,
     TARGET_MEMBER_CASH,
     TARGET_MEMBER_INSTRUMENT,
     TARGET_MEMBER_NODE,
@@ -404,7 +405,7 @@ def test_current_target_solve_fails_closed_for_unassigned_non_cash_holding(monke
         )
 
 
-def test_current_scope_actuals_excludes_derivative_tracking_holdings(monkeypatch):
+def test_current_scope_actuals_keeps_derivatives_and_all_account_liquidity_as_zero_volatility_weight(monkeypatch):
     state = TaxonomyResearchState(
         portfolio_id="portfolio-derivative-boundary",
         planning_taxonomy_id="taxonomy-test",
@@ -493,7 +494,26 @@ def test_current_scope_actuals_excludes_derivative_tracking_holdings(monkeypatch
     monkeypatch.setattr(
         research_solver_service,
         "build_account_workspace",
-        lambda *_args, **_kwargs: {"accounts": []},
+        lambda *_args, **_kwargs: {
+            "accounts": [
+                {
+                    "account": {
+                        "account_id": "broker",
+                        "account_type": "securities_account",
+                    },
+                    "derived_cash_balance_base": 20.0,
+                    "pending_settlement_base": 10.0,
+                },
+                {
+                    "account": {
+                        "account_id": "deposit",
+                        "account_type": "deposit_account",
+                    },
+                    "derived_cash_balance_base": 20.0,
+                    "pending_settlement_base": 0.0,
+                },
+            ]
+        },
     )
 
     rows, warnings = _current_scope_actuals(
@@ -503,10 +523,20 @@ def test_current_scope_actuals_excludes_derivative_tracking_holdings(monkeypatch
     )
 
     risk_row = next(row for row in rows if row["member_id"] == "node-risk")
+    derivative_row = next(
+        row for row in rows if row["member_id"] == SYSTEM_DERIVATIVE_TARGET_MEMBER_ID
+    )
+    cash_row = next(
+        row for row in rows if row["member_id"] == SYSTEM_CASH_TARGET_MEMBER_ID
+    )
     assert risk_row["current_value_base"] == pytest.approx(100.0)
-    assert risk_row["current_weight"] == pytest.approx(1.0)
+    assert risk_row["current_weight"] == pytest.approx(0.5)
+    assert derivative_row["current_value_base"] == pytest.approx(50.0)
+    assert derivative_row["current_weight"] == pytest.approx(0.25)
+    assert cash_row["current_value_base"] == pytest.approx(50.0)
+    assert cash_row["current_weight"] == pytest.approx(0.25)
     assert warnings == [
-        "Derivative tracking holdings are excluded from Research and Risk Budget: fcn-tracking."
+        "Derivative holdings use carrying-value weights and zero volatility; they are excluded from Risk Budget: fcn-tracking."
     ]
 
 
@@ -573,6 +603,7 @@ def test_taxonomy_state_uses_registry_instruments_only(monkeypatch) -> None:
     assert state.direct_assignments_by_node["ordinary-node"]
     assert [member.member_id for member in members] == [
         "ordinary-node",
+        SYSTEM_DERIVATIVE_TARGET_MEMBER_ID,
         SYSTEM_CASH_TARGET_MEMBER_ID,
     ]
 
@@ -636,7 +667,8 @@ def test_current_scope_actuals_reuses_one_portfolio_valuation_across_scopes(monk
             "accounts": [
                 {
                     "account": {"account_id": "cash-a", "account_type": "deposit_account"},
-                    "account_value_base": 50.0,
+                    "derived_cash_balance_base": 50.0,
+                    "pending_settlement_base": 0.0,
                 }
             ]
         }

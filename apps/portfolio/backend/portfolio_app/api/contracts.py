@@ -36,7 +36,13 @@ AccountType = Literal["deposit_account", "securities_account"]
 CostBasisMethod = Literal["moving_average", "fifo"]
 SupportedCurrency = Literal["USD", "HKD", "CNY"]
 TaxonomyAssignmentScope = Literal["instrument", "account", "cash_bucket"]
-TargetMemberType = Literal["taxonomy_node", "instrument", "account", "cash_bucket"]
+TargetMemberType = Literal[
+    "taxonomy_node",
+    "instrument",
+    "account",
+    "cash_bucket",
+    "derivative_bucket",
+]
 DefaultTargetDimension = Literal["weight", "risk_budget"]
 TransactionCommandType = Literal[
     "buy",

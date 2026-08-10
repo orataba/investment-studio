@@ -277,6 +277,8 @@ Holdings 的指标分成两种主要口径：
 
 FCN 和 long option 在已记录事件之间按 transaction cost carrying；short option 以剩余 premium liability 进入 NAV。它们不接收实时行情，不计算日常未实现盈亏、协方差、Risk Budget 或 Research 序列；相关现金、费用、coupon 和已实现盈亏仍完整进入组合 NAV 与绩效。
 
+主表始终分为 `Securities`、`Derivatives`、`Cash & Settlement` 三个固定区段。`Group Securities By` 只对 Securities 做 taxonomy、instrument type、currency 等二级分组；衍生品与现金不分类，Taxonomy 列显示 `N/A`。导出始终包含 `Category`，启用证券分组时才增加 `Group`。
+
 Group、Non-cash subtotal 和 `Portfolio Total` 仍然是**当前持仓篮子**：金额加总、比例用组级分子分母重算；Return 用当前 base-market-value 权重合成；Vol / Drawdown 用内部连续、起止完全一致且尾部仍新鲜的共同历史区间先生成当前权重篮子路径再算；Forward RC 只加总相对于同一全组合风险分母的贡献。当前成员收益或市值覆盖不足、return currency 无法统一、共同路径中间缺段或整条路径已经陈旧时显示 `—`，不剔除缺失成员后重新归一。Holding Since、Quantity、Avg Cost、Quote、Accounts、Chart、Coverage 和 Held Max DD 等没有稳定分组含义的字段只在 instrument row 展示。
 
 `Portfolio Total` 的上述 Return 不是组合实际 TWR；组合真实历史表现仍到 Performance 查看。相同 instrument、相同 as-of 和 total-return basis 下，Holdings 行级窗口收益应与 Watchlist 相同，但两个 app 各自计算、互不调用。完整字段标准见 [Holdings 字段计算与分组标准](../apps/portfolio/docs/03_HOLDINGS_FIELD_REFERENCE.md)。
@@ -327,7 +329,7 @@ Performance 反映真实历史组合，不是当前权重假设。若与 Risk �
 
 Risk 是当前权重口径的风险工作台，使用当前非现金持仓权重和资产历史收益窗口。它适合回答“现在这组持仓的风险结构如何”，不适合替代历史绩效归因。
 
-现金会进入组合 NAV 和 Weight Target / Current Drift 的资本权重，但不设置 Risk Target。当前现金包含所有账户的现金余额与待交收；证券账户里的持仓市值不会被重复计算。`Risk Target Gap` 只比较承担市场风险的非现金 sleeve：现金不显示 risk-target row，不进入风险预算 100% 分母。只有组合本币现金可以直接视为 0 风险；外币现金需要 FX 收益序列。
+现金和衍生品都会进入组合 NAV、Weight Target 与 Current Drift 的资本权重，但都不设置 Risk Target。现金包含所有账户的现金余额与待交收，衍生品使用 Holdings 的 carrying/liability amount；两者都作为固定系统桶汇总，不读取 taxonomy assignment，也不会重复计数。`Risk Target Gap` 只比较承担市场风险的 Securities sleeve；Cash 与 Derivatives 不显示 risk-target row，不进入风险预算 100% 分母。
 
 常用内容：
 
@@ -352,7 +354,7 @@ Taxonomies 管理组合分类和目标体系。Research 的求解结构来自这
 
 - planning taxonomy：组合规划分类体系。
 - sleeve tree：资产或资金桶的层级结构。
-- assignment：把 instrument、account 或 cash bucket 分配到 taxonomy node。
+- assignment：把 Securities instrument 分配到 taxonomy node；Cash 与 Derivatives 是固定系统桶，不接受 assignment。
 - TargetSet：目标权重或风险预算集合。
 - default planning taxonomy：Research 默认使用的规划体系。
 
@@ -360,7 +362,7 @@ Taxonomies 管理组合分类和目标体系。Research 的求解结构来自这
 
 1. 建立或选择 planning taxonomy。
 2. 维护 sleeve tree。
-3. 给资产、账户或现金桶做 assignment。
+3. 给 Securities 做 assignment；Cash 与 Derivatives 无需分类。
 4. 建立 TargetSet。
 5. 检查目标权重或风险预算是否完整。
 6. 设置 default planning taxonomy。
@@ -368,10 +370,10 @@ Taxonomies 管理组合分类和目标体系。Research 的求解结构来自这
 
 TargetSet 的两个维度必须分开维护：
 
-- `weight` 表示资本配置，可以包含现金目标；
-- `risk budget` 只给承担风险的非现金 sleeve 设置目标，非现金目标风险份额合计 100%；
-- 不要为现金建立 `0%` risk target 占位行；
-- Research 在 risk-budget solve 完成后可以把 capital overlay 的剩余权重放入系统现金，但这是求解结果，不是现金风险目标。
+- `weight` 表示资本配置，Securities 节点、固定 Derivatives 与固定 Cash 都可以设置；
+- `risk budget` 只给承担风险的 Securities sleeve 设置，风险份额合计 100%；
+- Derivatives 与 Cash 的 Risk 固定为 `N/A`，不能建立 `0%` 占位值；
+- Research 将两者作为 zero-volatility capital members；这只是当前模型边界，不代表真实经济风险为零。
 
 若 Research 报 scope 无成员、目标缺失或 top sleeve bounds 无法满足，通常要回到 Taxonomies 检查 assignment、TargetSet 和树结构。
 

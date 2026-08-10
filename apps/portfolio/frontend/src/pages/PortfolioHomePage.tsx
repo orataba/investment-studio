@@ -99,9 +99,14 @@ type HoldingsColumnKey =
   | 'price_chart_1y'
   | 'coverage'
 
-type HoldingsGroupByKey = 'none' | 'taxonomy_top' | 'taxonomy_leaf' | 'instrument_type' | 'currency' | 'coverage'
+type HoldingsGroupByKey =
+  | 'none'
+  | 'taxonomy_top'
+  | 'taxonomy_leaf'
+  | 'instrument_type'
+  | 'currency'
+  | 'coverage'
 type HoldingsSortDirection = 'asc' | 'desc'
-type HoldingsLayoutMode = 'regions' | 'advanced'
 type SortableValue = number | string | null | undefined
 
 const HOLDINGS_COLUMNS_REQUIRING_DETAILS = new Set<HoldingsColumnKey>([
@@ -207,10 +212,6 @@ type HoldingsGroup = {
   weight: number
   openLots: number
 }
-
-type HoldingsDisplayItem =
-  | { kind: 'holding'; row: PortfolioHoldingRow }
-  | { kind: 'noncash-total' }
 
 type GroupVolatilityRangeKey = '1m' | '3m' | '6m' | '1y'
 type GroupVolatilitySeries = {
@@ -348,6 +349,7 @@ const ALL_HOLDINGS_COLUMN_KEYS = HOLDINGS_COLUMN_GROUPS.flatMap((group) => group
 
 const DEFAULT_HOLDINGS_COLUMNS: HoldingsColumnKey[] = [
   'instrument',
+  'instrument_type',
   'last_price',
   'quote_date',
   'price_chart_6m',
@@ -513,12 +515,6 @@ const SYSTEM_HOLDINGS_VIEWS: HoldingsTableView[] = [
     },
   },
 ]
-const SYSTEM_HOLDINGS_VIEW_IDS = new Set(SYSTEM_HOLDINGS_VIEWS.map((view) => view.id))
-const RETIRED_SYSTEM_HOLDINGS_VIEW_IDS = new Set(['taxonomy', 'open-lots', 'accounting', 'instrument-trend'])
-
-function isActiveStoredHoldingsView(view: HoldingsTableView | null): view is HoldingsTableView {
-  return view !== null && !RETIRED_SYSTEM_HOLDINGS_VIEW_IDS.has(view.id)
-}
 
 const TEXT_HOLDINGS_SORT_FIELDS = new Set<HoldingsColumnKey>([
   'instrument',
@@ -590,9 +586,17 @@ function instrumentTrendCoverageLabel(row: PortfolioHoldingRow) {
 }
 
 function holdingValuationSummary(row: PortfolioHoldingRow) {
-  if (isOptionObligationHolding(row)) {
-    const status = row.obligation_status ? formatLabel(row.obligation_status) : 'N/A'
-    return `Short option position · ${status}`
+  if (row.derivative_contract?.contract_type === 'fcn') {
+    return `FCN · matures ${row.derivative_contract.terms.maturity_date}`
+  }
+  if (row.derivative_contract?.contract_type === 'option') {
+    const side = isOptionObligationHolding(row) || row.quantity < 0 ? 'Short' : 'Long'
+    const optionType = formatLabel(row.option_type ?? row.derivative_contract.terms.option_type)
+    const expiry = row.expiry_date ?? row.derivative_contract.terms.expiry_date
+    const status = isOptionObligationHolding(row)
+      ? ` · ${formatLabel(row.obligation_status ?? 'open')}`
+      : ''
+    return `${side} ${optionType} · expires ${expiry}${status}`
   }
   if (holdingUsesEventValuation(row)) {
     return row.valuation_basis
@@ -603,8 +607,13 @@ function holdingValuationSummary(row: PortfolioHoldingRow) {
 }
 
 function holdingValuationDetail(row: PortfolioHoldingRow) {
-  if (isOptionObligationHolding(row)) {
-    return `${formatQuantity(row.open_contract_quantity)} open contracts · ${formatQuantity(row.required_underlying_quantity)} underlying units at expiry`
+  if (row.derivative_contract?.contract_type === 'option') {
+    const contractQuantity = finiteNumber(row.open_contract_quantity) ?? Math.abs(row.quantity)
+    const contractMultiplier = finiteNumber(row.contract_multiplier) ?? row.derivative_contract.terms.contract_multiplier
+    const underlyingQuantity =
+      finiteNumber(row.required_underlying_quantity) ?? contractQuantity * contractMultiplier
+    const strike = finiteNumber(row.strike) ?? row.derivative_contract.terms.strike
+    return `${formatQuantity(contractQuantity)} open contracts · ${formatQuantity(underlyingQuantity)} underlying units · strike ${formatUnitPrice(strike, holdingCurrency(row))}`
   }
   if (holdingUsesEventValuation(row)) {
     return 'Fair value and daily market return are unavailable.'
@@ -658,132 +667,23 @@ function finiteNumber(value: number | null | undefined) {
   return typeof value === 'number' && Number.isFinite(value) ? value : null
 }
 
-const HOLDING_REGION_LABELS: Record<PortfolioHoldingRow['holding_region'], string> = {
-  market_valued_positions: 'Market-valued Positions',
-  structured_and_long_derivatives: 'Structured / Long Derivatives',
-  written_option_obligations: 'Short Option Positions',
+const HOLDING_CATEGORY_LABELS: Record<PortfolioHoldingRow['holding_category'], string> = {
+  securities: 'Securities',
+  derivatives: 'Derivatives',
   cash_and_settlement: 'Cash & Settlement',
 }
 
-const HOLDING_REGION_ORDER: Record<PortfolioHoldingRow['holding_region'], number> = {
-  market_valued_positions: 0,
-  structured_and_long_derivatives: 1,
-  written_option_obligations: 2,
-  cash_and_settlement: 3,
-}
+const HOLDING_CATEGORY_SEQUENCE: PortfolioHoldingRow['holding_category'][] = [
+  'securities',
+  'derivatives',
+  'cash_and_settlement',
+]
 
-const CANONICAL_HOLDINGS_EXPORT_HEADER = [
-  'Region',
-  'Instrument',
-  'Identifier',
-  'Currency',
-  'Lifecycle/Pending Status',
-  'Quantity',
-  'Market Value Base',
-  'Carrying Value Base',
-  'Cost Basis Base',
-  'Maturity/Expiry',
-  'Open Contracts',
-  'Underlying Units',
-  'Strike',
-  'Settlement Type',
-  'Premium Basis',
-  'Carrying Liability Base',
-  'Settlement Date',
-  'Settlement Amount',
-  'Settlement Amount Base',
-  'Analytics Scope',
-  'Coverage Status',
-] as const
-
-function exportNumber(value: number | null | undefined): number | 'N/A' {
-  return finiteNumber(value) ?? 'N/A'
-}
-
-function holdingMaturityOrExpiry(row: PortfolioHoldingRow): string | null {
-  if (row.derivative_contract?.contract_type === 'fcn') {
-    return row.derivative_contract.terms.maturity_date
-  }
-  if (row.derivative_contract?.contract_type === 'option') {
-    return row.expiry_date ?? row.derivative_contract.terms.expiry_date
-  }
-  return null
-}
-
-function holdingStrike(row: PortfolioHoldingRow): number | null {
-  const explicitStrike = finiteNumber(row.strike)
-  if (explicitStrike != null) {
-    return explicitStrike
-  }
-  if (row.derivative_contract?.contract_type !== 'option') {
-    return null
-  }
-  const contractStrike = Number(row.derivative_contract.terms.strike)
-  return Number.isFinite(contractStrike) ? contractStrike : null
-}
-
-function holdingSettlementType(row: PortfolioHoldingRow): string | null {
-  if (row.settlement_type) {
-    return row.settlement_type
-  }
-  return row.derivative_contract?.contract_type === 'option'
-    ? row.derivative_contract.terms.settlement_type
-    : null
-}
-
-function holdingSettlementTypeLabel(row: PortfolioHoldingRow) {
-  const settlementType = holdingSettlementType(row)
-  return settlementType ? formatLabel(settlementType) : 'N/A'
-}
-
-function canonicalLifecycleStatus(row: PortfolioHoldingRow) {
-  if (row.holding_region === 'written_option_obligations') {
-    return formatLabel(row.obligation_status ?? 'open')
-  }
-  if (row.holding_region === 'structured_and_long_derivatives') {
-    return 'Open'
-  }
-  if (row.holding_region === 'cash_and_settlement') {
-    return formatLabel(row.pending_status ?? 'settled')
-  }
-  return 'Held'
-}
-
-function canonicalHoldingsExportRow(row: PortfolioHoldingRow): TableCell[] {
-  const marketValueBaseApplicable =
-    row.holding_region === 'market_valued_positions' ||
-    (row.holding_region === 'cash_and_settlement' && row.settlement_amount == null)
-  const carryingValueApplicable =
-    row.holding_region === 'structured_and_long_derivatives'
-  const costBasisApplicable =
-    row.holding_region === 'market_valued_positions' || carryingValueApplicable
-  const obligation = row.holding_region === 'written_option_obligations'
-  const pendingSettlement =
-    row.holding_region === 'cash_and_settlement' && row.settlement_amount != null
-
-  return [
-    HOLDING_REGION_LABELS[row.holding_region],
-    holdingName(row),
-    primaryIdentifier(row),
-    holdingCurrency(row),
-    canonicalLifecycleStatus(row),
-    exportNumber(row.quantity),
-    marketValueBaseApplicable ? exportNumber(row.market_value_base) : 'N/A',
-    carryingValueApplicable ? exportNumber(row.carrying_value_base) : 'N/A',
-    costBasisApplicable ? exportNumber(row.cost_basis_base) : 'N/A',
-    holdingMaturityOrExpiry(row) ?? 'N/A',
-    obligation ? exportNumber(row.open_contract_quantity) : 'N/A',
-    obligation ? exportNumber(row.required_underlying_quantity) : 'N/A',
-    holdingStrike(row) ?? 'N/A',
-    holdingSettlementTypeLabel(row),
-    obligation ? exportNumber(row.premium_basis_remaining) : 'N/A',
-    obligation ? exportNumber(row.liability_value_base) : 'N/A',
-    pendingSettlement ? row.settlement_date ?? 'N/A' : 'N/A',
-    pendingSettlement ? exportNumber(row.settlement_amount) : 'N/A',
-    pendingSettlement ? exportNumber(row.settlement_amount_base) : 'N/A',
-    formatLabel(row.analytics_scope),
-    formatLabel(row.coverage_status),
-  ]
+function holdingUsesModeledZeroRisk(row: PortfolioHoldingRow) {
+  return (
+    row.holding_category === 'derivatives' ||
+    row.forward_risk_status === 'modeled_zero'
+  )
 }
 
 type NormalizedCostMethod = 'fifo' | 'moving_average' | 'mixed'
@@ -853,11 +753,23 @@ function signedHoldingMarketMetric(
   return holdingUsesEventValuation(row) ? 'N/A' : signedPercent(value)
 }
 
-function unsignedHoldingMarketMetric(
+function holdingModeledRiskMetric(
   row: PortfolioHoldingRow,
   value: number | null | undefined,
 ) {
-  return holdingUsesEventValuation(row) ? 'N/A' : formatPercent(value)
+  return holdingUsesModeledZeroRisk(row) ? 0 : holdingMarketMetric(row, value)
+}
+
+function unsignedHoldingModeledRiskMetric(
+  row: PortfolioHoldingRow,
+  value: number | null | undefined,
+) {
+  const modeledValue = holdingModeledRiskMetric(row, value)
+  return holdingUsesModeledZeroRisk(row) ? (
+    <span title="Modeled as 0 because this holding is outside market-price risk analytics.">
+      {formatPercent(modeledValue)}
+    </span>
+  ) : formatPercent(modeledValue)
 }
 
 function sumNumbers(rows: PortfolioHoldingRow[], accessor: (row: PortfolioHoldingRow) => number | null | undefined) {
@@ -919,15 +831,16 @@ function nonCashHoldingRows(rows: PortfolioHoldingRow[]) {
   return rows.filter((row) => !isMonetaryHoldingRow(row))
 }
 
-function compareCashHoldingRows(left: PortfolioHoldingRow, right: PortfolioHoldingRow) {
-  return (
-    normalizedCurrency(holdingCurrency(left)).localeCompare(
-      normalizedCurrency(holdingCurrency(right)),
-      'zh-Hans-CN',
-    ) ||
-    holdingName(left).localeCompare(holdingName(right), 'zh-Hans-CN') ||
-    left.line_id.localeCompare(right.line_id, 'zh-Hans-CN')
+function costBasisHoldingRows(rows: PortfolioHoldingRow[]) {
+  return rows.filter(
+    (row) => !isMonetaryHoldingRow(row) && !isOptionObligationHolding(row),
   )
+}
+
+function holdingCostMethodLabel(row: PortfolioHoldingRow) {
+  return finiteNumber(row.cost_basis) == null || isMonetaryHoldingRow(row) || isOptionObligationHolding(row)
+    ? null
+    : costMethodLabel(row.cost_basis_method)
 }
 
 function dayChangeBaseForRow(row: PortfolioHoldingRow, workspace: HoldingsWorkspaceResponse) {
@@ -1087,7 +1000,7 @@ function totalMarketValueBase(rows: PortfolioHoldingRow[], workspace: HoldingsWo
 }
 
 function totalCostBasisBase(rows: PortfolioHoldingRow[], workspace: HoldingsWorkspaceResponse) {
-  const rowTotal = sumCompleteNumbers(nonCashHoldingRows(rows), (row) =>
+  const rowTotal = sumCompleteNumbers(costBasisHoldingRows(rows), (row) =>
     baseAmountForRow(row, workspace.base_currency, row.cost_basis_base, row.cost_basis),
   )
   return rowsCoverWorkspace(rows, workspace) ? workspace.totals.cost_basis ?? rowTotal : rowTotal
@@ -1096,6 +1009,17 @@ function totalCostBasisBase(rows: PortfolioHoldingRow[], workspace: HoldingsWork
 function totalAllocation(rows: PortfolioHoldingRow[], workspace: HoldingsWorkspaceResponse) {
   const rowTotal = sumCompleteNumbers(rows, (row) => row.allocation)
   return rowsCoverWorkspace(rows, workspace) ? workspace.totals.allocation ?? rowTotal : rowTotal
+}
+
+function totalForwardRiskShare(rows: PortfolioHoldingRow[], workspace: HoldingsWorkspaceResponse) {
+  if (rows.length > 0 && rows.every(holdingUsesModeledZeroRisk)) {
+    return 0
+  }
+  return workspace.forward_risk?.status === 'ok'
+    ? sumCompleteNumbers(rows, (row) =>
+        holdingModeledRiskMetric(row, row.forward_risk_share),
+      )
+    : null
 }
 
 function totalDayChangeBase(rows: PortfolioHoldingRow[], workspace: HoldingsWorkspaceResponse) {
@@ -1127,7 +1051,7 @@ function returnCurrencyForRow(
   row: PortfolioHoldingRow,
   workspace: HoldingsWorkspaceResponse,
 ) {
-  if (isMonetaryHoldingRow(row)) {
+  if (isMonetaryHoldingRow(row) || holdingUsesModeledZeroRisk(row)) {
     return workspace.base_currency.trim().toUpperCase()
   }
   return holdingCurrency(row).trim().toUpperCase()
@@ -1276,13 +1200,14 @@ export function groupedReturnSeries(
   rows: PortfolioHoldingRow[],
   workspace: HoldingsWorkspaceResponse,
   seriesAccessor: (row: PortfolioHoldingRow) => HoldingReturnSeries | null | undefined,
+  modeledZeroRisk = false,
 ): GroupVolatilitySeries | null {
-  if (totalsContainMaterialEventValuation(rows)) {
+  if (!modeledZeroRisk && totalsContainMaterialEventValuation(rows)) {
     return null
   }
-  const returnEligibleRows = rows.filter(
-    (row) => !isPendingMonetaryHoldingRow(row),
-  )
+  const returnEligibleRows = modeledZeroRisk
+    ? rows
+    : rows.filter((row) => !isPendingMonetaryHoldingRow(row))
   if (
     !returnEligibleRows.length ||
     !rowsHaveCompatibleReturnCurrency(returnEligibleRows, workspace)
@@ -1307,12 +1232,18 @@ export function groupedReturnSeries(
     .map((row) => ({
       row,
       value: rowMarketValueBase(row, workspace),
-      points: normalizedReturnSeries(seriesAccessor(row)),
+      points:
+        modeledZeroRisk && holdingUsesModeledZeroRisk(row)
+          ? []
+          : normalizedReturnSeries(seriesAccessor(row)),
     }))
     .filter((item) => item.value != null)
   const returnRows = valuedRows.filter((item) => item.points.length >= 2)
   const zeroReturnRows = valuedRows.filter(
-    (item) => item.points.length < 2 && isBaseCashHoldingRow(item.row, workspace),
+    (item) =>
+      item.points.length < 2 &&
+      (isBaseCashHoldingRow(item.row, workspace) ||
+        (modeledZeroRisk && holdingUsesModeledZeroRisk(item.row))),
   )
   const eligibleRows = [...returnRows, ...zeroReturnRows]
 
@@ -1370,7 +1301,10 @@ export function groupedReturnSeries(
 
   const pointMaps = eligibleRows.map((item) => ({
     weight: (item.value ?? 0) / denominator,
-    zeroReturn: item.points.length < 2 && isBaseCashHoldingRow(item.row, workspace),
+    zeroReturn:
+      item.points.length < 2 &&
+      (isBaseCashHoldingRow(item.row, workspace) ||
+        (modeledZeroRisk && holdingUsesModeledZeroRisk(item.row))),
     byPeriod: new Map(item.points.map((point) => [`${point.startDate || ''}|${point.date}`, point.value])),
   }))
   const returns: number[] = []
@@ -1404,12 +1338,17 @@ export function groupedReturnSeries(
   return { dates: returnDates, returns, firstReturnStartDate }
 }
 
-function allValuedRowsAreBaseCash(rows: PortfolioHoldingRow[], workspace: HoldingsWorkspaceResponse) {
+function allValuedRowsUseModeledZeroRisk(rows: PortfolioHoldingRow[], workspace: HoldingsWorkspaceResponse) {
   const valuedRows = rows.filter((row) => {
     const value = rowMarketValueBase(row, workspace)
     return value != null && Math.abs(value) > 1e-12
   })
-  return valuedRows.length > 0 && valuedRows.every((row) => isBaseCashHoldingRow(row, workspace))
+  return (
+    valuedRows.length > 0 &&
+    valuedRows.every(
+      (row) => isBaseCashHoldingRow(row, workspace) || holdingUsesModeledZeroRisk(row),
+    )
+  )
 }
 
 function groupedVolatilitySeries(
@@ -1417,7 +1356,12 @@ function groupedVolatilitySeries(
   workspace: HoldingsWorkspaceResponse,
   rangeKey: GroupVolatilityRangeKey,
 ) {
-  return groupedReturnSeries(rows, workspace, (row) => returnSeriesForVolatilityRange(row, rangeKey))
+  return groupedReturnSeries(
+    rows,
+    workspace,
+    (row) => returnSeriesForVolatilityRange(row, rangeKey),
+    true,
+  )
 }
 
 function groupedRiskSeriesIsFresh(
@@ -1450,7 +1394,7 @@ export function groupedAnnualizedVolatility(
     series.returns.length < GROUP_VOL_MIN_RETURN_OBSERVATIONS[calculationFrequency][rangeKey] ||
     series.firstReturnStartDate == null
   ) {
-    if (allValuedRowsAreBaseCash(rows, workspace)) {
+    if (allValuedRowsUseModeledZeroRisk(rows, workspace)) {
       return 0
     }
     return null
@@ -1506,7 +1450,7 @@ function groupedDrawdownSeries(rows: PortfolioHoldingRow[], workspace: HoldingsW
 
 export function groupedCurrentDrawdown(rows: PortfolioHoldingRow[], workspace: HoldingsWorkspaceResponse) {
   const series = groupedDrawdownSeries(rows, workspace)
-  if ((!series || !series.returns.length) && allValuedRowsAreBaseCash(rows, workspace)) {
+  if ((!series || !series.returns.length) && rows.length > 0 && rows.every((row) => isBaseCashHoldingRow(row, workspace))) {
     return 0
   }
   if (series && !groupedRiskSeriesIsFresh(series, rows, workspace)) {
@@ -1518,7 +1462,11 @@ export function groupedCurrentDrawdown(rows: PortfolioHoldingRow[], workspace: H
 
 export function groupedMaxDrawdown(rows: PortfolioHoldingRow[], workspace: HoldingsWorkspaceResponse) {
   const series = groupedDrawdownSeries(rows, workspace)
-  if ((!series || !series.returns.length) && allValuedRowsAreBaseCash(rows, workspace)) {
+  if (
+    (!series || !series.returns.length) &&
+    rows.length > 0 &&
+    rows.every((row) => isBaseCashHoldingRow(row, workspace))
+  ) {
     return 0
   }
   if (series && !groupedRiskSeriesIsFresh(series, rows, workspace)) {
@@ -1560,12 +1508,6 @@ function resolveGroupingTaxonomy(catalog: PortfolioTaxonomyCatalogResponse | nul
   )
 }
 
-const CASH_BUCKET_TAXONOMY_FALLBACK_KEY = '__cash_bucket__'
-
-function cashBucketTaxonomyKey(accountId: string) {
-  return `cash_bucket:${accountId}`
-}
-
 function labelsForTaxonomyAssignment(
   assignment: PortfolioTaxonomyAssignmentRecord,
   nodesById: Map<string, PortfolioTaxonomyNodeRecord>,
@@ -1598,12 +1540,11 @@ function buildTaxonomyLabelsByInstrumentId(
   )
 
   const assignmentByInstrumentId = new Map<string, HoldingTaxonomyLabels>()
-  const cashBucketLabels: HoldingTaxonomyLabels[] = []
   ;[...catalog.taxonomy_assignments]
     .filter(
       (assignment) =>
         assignment.taxonomy_id === taxonomy.taxonomy_id &&
-        (assignment.target_scope === 'instrument' || assignment.target_scope === 'cash_bucket') &&
+        assignment.target_scope === 'instrument' &&
         assignment.status === 'active',
     )
     .sort(
@@ -1611,75 +1552,38 @@ function buildTaxonomyLabelsByInstrumentId(
         right.assignment_id.localeCompare(left.assignment_id),
     )
     .forEach((assignment) => {
-      const key =
-        assignment.target_scope === 'cash_bucket'
-          ? cashBucketTaxonomyKey(assignment.target_entity_id)
-          : assignment.target_entity_id
-      if (assignmentByInstrumentId.has(key)) {
+      if (assignmentByInstrumentId.has(assignment.target_entity_id)) {
         return
       }
       const labels = labelsForTaxonomyAssignment(assignment, nodesById, taxonomy.taxonomy_id)
-      assignmentByInstrumentId.set(key, labels)
-      if (assignment.target_scope === 'cash_bucket') {
-        cashBucketLabels.push(labels)
-      }
+      assignmentByInstrumentId.set(assignment.target_entity_id, labels)
     })
-
-  const cashTopLevelLabels = new Map(cashBucketLabels.map((labels) => [labels.topLevelId, labels]))
-  const cashLeafLabels = new Map(cashBucketLabels.map((labels) => [labels.leafId, labels]))
-  if (cashLeafLabels.size === 1) {
-    assignmentByInstrumentId.set(CASH_BUCKET_TAXONOMY_FALLBACK_KEY, cashBucketLabels[0])
-  } else if (cashTopLevelLabels.size === 1) {
-    const labels = cashBucketLabels[0]
-    assignmentByInstrumentId.set(CASH_BUCKET_TAXONOMY_FALLBACK_KEY, {
-      topLevelId: labels.topLevelId,
-      topLevelLabel: labels.topLevelLabel,
-      leafId: CASH_BUCKET_TAXONOMY_FALLBACK_KEY,
-      leafLabel: labels.topLevelLabel,
-    })
-  }
 
   return assignmentByInstrumentId
-}
-
-function fallbackCashTaxonomyLabels(): HoldingTaxonomyLabels {
-  return {
-    topLevelId: '__cash__',
-    topLevelLabel: '现金',
-    leafId: '__cash__',
-    leafLabel: '现金',
-  }
 }
 
 function taxonomyLabelsForHoldingRow(
   row: PortfolioHoldingRow,
   taxonomyByInstrumentId: Map<string, HoldingTaxonomyLabels>,
 ) {
-  if (!isMonetaryHoldingRow(row)) {
-    return row.instrument_core
-      ? taxonomyByInstrumentId.get(row.instrument_core.instrument_id) ?? null
-      : null
+  if (row.holding_category !== 'securities' || !row.instrument_core) {
+    return null
   }
+  return taxonomyByInstrumentId.get(row.instrument_core.instrument_id) ?? null
+}
 
-  const accountLabels = (row.account_ids ?? [])
-    .map((accountId) => taxonomyByInstrumentId.get(cashBucketTaxonomyKey(accountId)))
-    .filter((labels): labels is HoldingTaxonomyLabels => labels != null)
-  const leafLabels = new Map(accountLabels.map((labels) => [labels.leafId, labels]))
-  if (leafLabels.size === 1) {
-    return accountLabels[0]
+function taxonomyDisplayLabel(
+  row: PortfolioHoldingRow,
+  taxonomyByInstrumentId: Map<string, HoldingTaxonomyLabels>,
+  level: 'top' | 'leaf',
+) {
+  if (row.holding_category !== 'securities') {
+    return 'N/A'
   }
-  const topLevelLabels = new Map(accountLabels.map((labels) => [labels.topLevelId, labels]))
-  if (topLevelLabels.size === 1) {
-    const labels = accountLabels[0]
-    return {
-      topLevelId: labels.topLevelId,
-      topLevelLabel: labels.topLevelLabel,
-      leafId: CASH_BUCKET_TAXONOMY_FALLBACK_KEY,
-      leafLabel: labels.topLevelLabel,
-    }
-  }
-
-  return taxonomyByInstrumentId.get(CASH_BUCKET_TAXONOMY_FALLBACK_KEY) ?? fallbackCashTaxonomyLabels()
+  const labels = taxonomyLabelsForHoldingRow(row, taxonomyByInstrumentId)
+  return level === 'top'
+    ? labels?.topLevelLabel ?? 'Unassigned'
+    : labels?.leafLabel ?? 'Unassigned'
 }
 
 function normalizeHoldingsColumns(columns: HoldingsColumnKey[]) {
@@ -1823,67 +1727,12 @@ function normalizeHoldingsViewStore(value: unknown): HoldingsViewStore {
   const record = value && typeof value === 'object' ? (value as Partial<HoldingsViewStore>) : {}
   const storedViews = Array.isArray(record.views)
     ? record.views
-        .map((view) => normalizeHoldingsTableView(view, SYSTEM_HOLDINGS_VIEW_IDS.has((view as Partial<HoldingsTableView>)?.id || '')))
-        .filter(isActiveStoredHoldingsView)
-    : null
-  const storedViewById = new Map((storedViews || []).map((view) => [view.id, view]))
-  const systemViews = SYSTEM_HOLDINGS_VIEWS.map((defaultView) => {
-    const storedView = storedViewById.get(defaultView.id)
-    if (!storedView) {
-      return defaultView
-    }
-    if (defaultView.id === 'return-risk') {
-      const columns = [...storedView.state.columns]
-      if (!columns.includes('holding_date')) {
-        const instrumentTypeIndex = columns.indexOf('instrument_type')
-        columns.splice(
-          instrumentTypeIndex >= 0 ? instrumentTypeIndex + 1 : 1,
-          0,
-          'holding_date',
-        )
-      }
-      const requiredReturnColumns: HoldingsColumnKey[] = [
-        'instrument_return_1m',
-        'instrument_return_3m',
-        'instrument_return_6m',
-      ]
-      let insertionIndex = columns.indexOf('instrument_return_1w')
-      insertionIndex = insertionIndex >= 0 ? insertionIndex + 1 : columns.length
-      requiredReturnColumns.forEach((column) => {
-        const existingIndex = columns.indexOf(column)
-        if (existingIndex >= 0) {
-          insertionIndex = existingIndex + 1
-          return
-        }
-        columns.splice(insertionIndex, 0, column)
-        insertionIndex += 1
-      })
-      if (!columns.includes('instrument_return_1y')) {
-        const yearToDateIndex = columns.indexOf('instrument_return_ytd')
-        const sixMonthIndex = columns.indexOf('instrument_return_6m')
-        columns.splice(
-          yearToDateIndex >= 0
-            ? yearToDateIndex + 1
-            : sixMonthIndex >= 0
-              ? sixMonthIndex + 1
-              : columns.length,
-          0,
-          'instrument_return_1y',
-        )
-      }
-      return {
-        ...storedView,
-        readonly: true,
-        state: {
-          ...storedView.state,
-          columns,
-        },
-      }
-    }
-    return { ...storedView, readonly: true }
-  })
-  const customViews = (storedViews || [])
-    .filter((view) => !SYSTEM_HOLDINGS_VIEW_IDS.has(view.id))
+        .map((view) => normalizeHoldingsTableView(view, false))
+        .filter((view): view is HoldingsTableView => view !== null)
+    : []
+  const systemViews = SYSTEM_HOLDINGS_VIEWS
+  const customViews = storedViews
+    .filter((view) => view.id.startsWith('custom:'))
     .map((view) => ({ ...view, readonly: false }))
   const views = [...systemViews, ...customViews]
   const knownViewIds = new Set(views.map((view) => view.id))
@@ -1924,7 +1773,9 @@ function parseHoldingsSortDirection(value: string | null, field: HoldingsColumnK
 }
 
 function parseHoldingsGroupBy(value: string | null): HoldingsGroupByKey {
-  return HOLDINGS_GROUP_BY_OPTIONS.some((option) => option.value === value) ? (value as HoldingsGroupByKey) : 'none'
+  return HOLDINGS_GROUP_BY_OPTIONS.some((option) => option.value === value)
+    ? (value as HoldingsGroupByKey)
+    : DEFAULT_HOLDINGS_VIEW_STATE.groupBy
 }
 
 function compareSortableValue(left: SortableValue, right: SortableValue, direction: HoldingsSortDirection) {
@@ -1959,9 +1810,9 @@ function holdingColumnExportValue(
     case 'instrument_type':
       return formatLabel(holdingAssetType(row))
     case 'taxonomy_top':
-      return taxonomyLabelsForHoldingRow(row, context.taxonomyByInstrumentId)?.topLevelLabel ?? 'Unassigned'
+      return taxonomyDisplayLabel(row, context.taxonomyByInstrumentId, 'top')
     case 'taxonomy_leaf':
-      return taxonomyLabelsForHoldingRow(row, context.taxonomyByInstrumentId)?.leafLabel ?? 'Unassigned'
+      return taxonomyDisplayLabel(row, context.taxonomyByInstrumentId, 'leaf')
     case 'currency':
       return holdingCurrency(row)
     case 'holding_date':
@@ -1969,7 +1820,7 @@ function holdingColumnExportValue(
     case 'quantity':
       return row.quantity
     case 'cost_method':
-      return costMethodLabel(row.cost_basis_method)
+      return holdingCostMethodLabel(row)
     case 'avg_cost_book':
       return bookAvgCost(row)
     case 'last_price':
@@ -2030,15 +1881,15 @@ function holdingColumnExportValue(
     case 'instrument_holding_max_drawdown':
       return holdingUsesEventValuation(row) ? 'N/A' : row.instrument_holding_max_drawdown ?? null
     case 'instrument_volatility_1m':
-      return holdingUsesEventValuation(row) ? 'N/A' : row.instrument_volatility_1m ?? null
+      return holdingModeledRiskMetric(row, row.instrument_volatility_1m)
     case 'instrument_volatility_3m':
-      return holdingUsesEventValuation(row) ? 'N/A' : row.instrument_volatility_3m ?? null
+      return holdingModeledRiskMetric(row, row.instrument_volatility_3m)
     case 'instrument_volatility_6m':
-      return holdingUsesEventValuation(row) ? 'N/A' : row.instrument_volatility_6m ?? null
+      return holdingModeledRiskMetric(row, row.instrument_volatility_6m)
     case 'instrument_volatility_1y':
-      return holdingUsesEventValuation(row) ? 'N/A' : row.instrument_volatility_1y ?? null
+      return holdingModeledRiskMetric(row, row.instrument_volatility_1y)
     case 'forward_risk_share':
-      return holdingUsesEventValuation(row) ? 'N/A' : row.forward_risk_share ?? null
+      return holdingModeledRiskMetric(row, row.forward_risk_share)
     case 'price_chart_1m':
     case 'price_chart_3m':
     case 'price_chart_6m':
@@ -2116,11 +1967,7 @@ function holdingColumnTotalExportValue(
     case 'instrument_volatility_1y':
       return groupedAnnualizedVolatility(rows, context.workspace, '1y')
     case 'forward_risk_share':
-      return totalsContainMaterialEventValuation(rows)
-        ? 'N/A'
-        : context.workspace.forward_risk?.status === 'ok'
-        ? sumCompleteNumbers(rows, (row) => row.forward_risk_share)
-        : null
+      return totalForwardRiskShare(rows, context.workspace)
     case 'instrument_max_drawdown':
       return groupedMaxDrawdown(rows, context.workspace)
     case 'instrument_holding_max_drawdown':
@@ -2197,14 +2044,14 @@ const HOLDINGS_COLUMN_DEFINITIONS: Record<HoldingsColumnKey, HoldingsColumnDefin
   taxonomy_top: {
     key: 'taxonomy_top',
     label: 'Taxonomy',
-    render: (row, context) => taxonomyLabelsForHoldingRow(row, context.taxonomyByInstrumentId)?.topLevelLabel ?? 'Unassigned',
-    sortValue: (row, context) => taxonomyLabelsForHoldingRow(row, context.taxonomyByInstrumentId)?.topLevelLabel ?? 'Unassigned',
+    render: (row, context) => taxonomyDisplayLabel(row, context.taxonomyByInstrumentId, 'top'),
+    sortValue: (row, context) => taxonomyDisplayLabel(row, context.taxonomyByInstrumentId, 'top'),
   },
   taxonomy_leaf: {
     key: 'taxonomy_leaf',
     label: 'Taxonomy Leaf',
-    render: (row, context) => taxonomyLabelsForHoldingRow(row, context.taxonomyByInstrumentId)?.leafLabel ?? 'Unassigned',
-    sortValue: (row, context) => taxonomyLabelsForHoldingRow(row, context.taxonomyByInstrumentId)?.leafLabel ?? 'Unassigned',
+    render: (row, context) => taxonomyDisplayLabel(row, context.taxonomyByInstrumentId, 'leaf'),
+    sortValue: (row, context) => taxonomyDisplayLabel(row, context.taxonomyByInstrumentId, 'leaf'),
   },
   currency: {
     key: 'currency',
@@ -2231,8 +2078,8 @@ const HOLDINGS_COLUMN_DEFINITIONS: Record<HoldingsColumnKey, HoldingsColumnDefin
     key: 'cost_method',
     label: 'Cost Method',
     align: 'center',
-    render: (row) => costMethodLabel(row.cost_basis_method),
-    sortValue: (row) => costMethodLabel(row.cost_basis_method),
+    render: (row) => holdingCostMethodLabel(row) ?? '—',
+    sortValue: (row) => holdingCostMethodLabel(row),
   },
   avg_cost_book: {
     key: 'avg_cost_book',
@@ -2278,7 +2125,7 @@ const HOLDINGS_COLUMN_DEFINITIONS: Record<HoldingsColumnKey, HoldingsColumnDefin
   },
   market_value: {
     key: 'market_value',
-    label: 'Market Value',
+    label: 'Position Value',
     align: 'right',
     render: (row) => formatCurrency(row.market_value, holdingCurrency(row)),
     sortValue: (row, context) => baseAmountForRow(row, context.workspace.base_currency, row.market_value_base, row.market_value),
@@ -2286,7 +2133,7 @@ const HOLDINGS_COLUMN_DEFINITIONS: Record<HoldingsColumnKey, HoldingsColumnDefin
   },
   market_value_base: {
     key: 'market_value_base',
-    label: 'Market Value Base',
+    label: 'Position Value Base',
     align: 'right',
     render: (row, context) =>
       formatCurrency(baseAmountForRow(row, context.workspace.base_currency, row.market_value_base, row.market_value), context.workspace.base_currency),
@@ -2500,32 +2347,32 @@ const HOLDINGS_COLUMN_DEFINITIONS: Record<HoldingsColumnKey, HoldingsColumnDefin
     key: 'instrument_volatility_1m',
     label: '1M Vol',
     align: 'right',
-    render: (row) => unsignedHoldingMarketMetric(row, row.instrument_volatility_1m),
-    sortValue: (row) => holdingMarketMetric(row, row.instrument_volatility_1m),
+    render: (row) => unsignedHoldingModeledRiskMetric(row, row.instrument_volatility_1m),
+    sortValue: (row) => holdingModeledRiskMetric(row, row.instrument_volatility_1m),
     total: (rows, context) => formatPercent(groupedAnnualizedVolatility(rows, context.workspace, '1m')),
   },
   instrument_volatility_3m: {
     key: 'instrument_volatility_3m',
     label: '3M Vol',
     align: 'right',
-    render: (row) => unsignedHoldingMarketMetric(row, row.instrument_volatility_3m),
-    sortValue: (row) => holdingMarketMetric(row, row.instrument_volatility_3m),
+    render: (row) => unsignedHoldingModeledRiskMetric(row, row.instrument_volatility_3m),
+    sortValue: (row) => holdingModeledRiskMetric(row, row.instrument_volatility_3m),
     total: (rows, context) => formatPercent(groupedAnnualizedVolatility(rows, context.workspace, '3m')),
   },
   instrument_volatility_6m: {
     key: 'instrument_volatility_6m',
     label: '6M Vol',
     align: 'right',
-    render: (row) => unsignedHoldingMarketMetric(row, row.instrument_volatility_6m),
-    sortValue: (row) => holdingMarketMetric(row, row.instrument_volatility_6m),
+    render: (row) => unsignedHoldingModeledRiskMetric(row, row.instrument_volatility_6m),
+    sortValue: (row) => holdingModeledRiskMetric(row, row.instrument_volatility_6m),
     total: (rows, context) => formatPercent(groupedAnnualizedVolatility(rows, context.workspace, '6m')),
   },
   instrument_volatility_1y: {
     key: 'instrument_volatility_1y',
     label: '1Y Vol',
     align: 'right',
-    render: (row) => unsignedHoldingMarketMetric(row, row.instrument_volatility_1y),
-    sortValue: (row) => holdingMarketMetric(row, row.instrument_volatility_1y),
+    render: (row) => unsignedHoldingModeledRiskMetric(row, row.instrument_volatility_1y),
+    sortValue: (row) => holdingModeledRiskMetric(row, row.instrument_volatility_1y),
     total: (rows, context) => formatPercent(groupedAnnualizedVolatility(rows, context.workspace, '1y')),
   },
   forward_risk_share: {
@@ -2533,23 +2380,16 @@ const HOLDINGS_COLUMN_DEFINITIONS: Record<HoldingsColumnKey, HoldingsColumnDefin
     label: 'Forward RC',
     align: 'right',
     render: (row) =>
-      holdingUsesEventValuation(row)
-        ? 'N/A'
-        : row.forward_risk_status === 'ok' || row.forward_risk_status === 'cash'
-          ? signedPercent(row.forward_risk_share)
-          : '—',
-    sortValue: (row) => holdingMarketMetric(row, row.forward_risk_share),
-    className: (row) => signedValueClass(holdingMarketMetric(row, row.forward_risk_share)),
-    total: (rows, context) =>
-      totalsContainMaterialEventValuation(rows)
-        ? 'N/A'
-        : context.workspace.forward_risk?.status === 'ok'
-        ? signedPercent(sumCompleteNumbers(rows, (row) => row.forward_risk_share))
-        : '—',
+      holdingUsesModeledZeroRisk(row) ? (
+        <span title="Modeled as 0 because this holding is outside covariance risk analytics.">
+          {signedPercent(0)}
+        </span>
+      ) : row.forward_risk_status === 'ok' ? signedPercent(row.forward_risk_share) : '—',
+    sortValue: (row) => holdingModeledRiskMetric(row, row.forward_risk_share),
+    className: (row) => signedValueClass(holdingModeledRiskMetric(row, row.forward_risk_share)),
+    total: (rows, context) => signedPercent(totalForwardRiskShare(rows, context.workspace)),
     totalClassName: (rows, context) =>
-      !totalsContainMaterialEventValuation(rows) && context.workspace.forward_risk?.status === 'ok'
-        ? signedValueClass(sumCompleteNumbers(rows, (row) => row.forward_risk_share))
-        : '',
+      signedValueClass(totalForwardRiskShare(rows, context.workspace)),
   },
   instrument_max_drawdown: {
     key: 'instrument_max_drawdown',
@@ -2682,12 +2522,39 @@ function buildGroupedRows(
     groups.set(groupRef.key, current)
   })
 
-  return [...groups.values()].sort(
-    (left, right) =>
+  return [...groups.values()].sort((left, right) => {
+    return (
       right.marketValueBase - left.marketValueBase ||
       right.weight - left.weight ||
-      left.label.localeCompare(right.label, 'zh-Hans-CN'),
-  )
+      left.label.localeCompare(right.label, 'zh-Hans-CN')
+    )
+  })
+}
+
+function buildHoldingCategoryGroups(
+  rows: PortfolioHoldingRow[],
+  workspace: HoldingsWorkspaceResponse | null,
+) {
+  return HOLDING_CATEGORY_SEQUENCE.map((category) => {
+    const categoryRows = rows.filter((row) => row.holding_category === category)
+    return {
+      key: category,
+      label: HOLDING_CATEGORY_LABELS[category],
+      rows: categoryRows,
+      marketValueBase: categoryRows.reduce(
+        (total, row) => total + (workspace ? (rowMarketValueBase(row, workspace) ?? 0) : 0),
+        0,
+      ),
+      weight: categoryRows.reduce(
+        (total, row) => total + (finiteNumber(row.allocation) ?? 0),
+        0,
+      ),
+      openLots: categoryRows.reduce(
+        (total, row) => total + (finiteNumber(row.open_position_lot_count) ?? 0),
+        0,
+      ),
+    } satisfies HoldingsGroup
+  })
 }
 
 export default function PortfolioHomePage() {
@@ -2703,7 +2570,6 @@ export default function PortfolioHomePage() {
   const [error, setError] = useState<string | null>(null)
   const [taxonomyError, setTaxonomyError] = useState<string | null>(null)
   const [riskPolicyRevision, setRiskPolicyRevision] = useState(0)
-  const [holdingsLayoutMode, setHoldingsLayoutMode] = useState<HoldingsLayoutMode>('regions')
   const initialHoldingsViewStore = useMemo(() => normalizeHoldingsViewStore(null), [])
   const initialHoldingsViewState = useMemo(
     () => resolveHoldingsViewState(initialHoldingsViewStore, initialHoldingsViewStore.activeViewId),
@@ -2872,42 +2738,22 @@ export default function PortfolioHomePage() {
       return primary || primaryIdentifier(left).localeCompare(primaryIdentifier(right), 'zh-Hans-CN')
     })
   }, [columnContext, holdingsSortDirection, holdingsSortField, workspace?.rows])
-  const nonCashPortfolioRows = useMemo(() => nonCashHoldingRows(sortedHoldingRows), [sortedHoldingRows])
-  const cashPortfolioRows = useMemo(
-    () => sortedHoldingRows.filter((row) => isMonetaryHoldingRow(row)).sort(compareCashHoldingRows),
-    [sortedHoldingRows],
+  const holdingCategoryGroups = useMemo(
+    () => buildHoldingCategoryGroups(sortedHoldingRows, workspace),
+    [sortedHoldingRows, workspace],
   )
-  const showNonCashPortfolioRow = nonCashPortfolioRows.length > 0 && cashPortfolioRows.length > 0
-  const separateCashTaxonomyGroups = holdingsGroupBy === 'taxonomy_top' || holdingsGroupBy === 'taxonomy_leaf'
-  const nonCashPortfolioLabel = workspace
-    ? `Investment Positions (${workspace.base_currency})`
-    : 'Investment Positions'
-  const ungroupedHoldingDisplayItems = useMemo<HoldingsDisplayItem[]>(() => {
-    const items: HoldingsDisplayItem[] = nonCashPortfolioRows.map((row) => ({ kind: 'holding', row }))
-    if (showNonCashPortfolioRow) {
-      items.push({ kind: 'noncash-total' })
+  const groupedSecurityRows = useMemo(() => {
+    if (holdingsGroupBy === 'none') {
+      return []
     }
-    cashPortfolioRows.forEach((row) => items.push({ kind: 'holding', row }))
-
-    return items
-  }, [cashPortfolioRows, nonCashPortfolioRows, showNonCashPortfolioRow])
-  const groupedHoldingRows = useMemo(
-    () =>
-      buildGroupedRows(
-        separateCashTaxonomyGroups ? nonCashPortfolioRows : sortedHoldingRows,
-        holdingsGroupBy,
-        taxonomyByInstrumentId,
-        workspace,
-      ),
-    [holdingsGroupBy, nonCashPortfolioRows, separateCashTaxonomyGroups, sortedHoldingRows, taxonomyByInstrumentId, workspace],
-  )
-  const groupedCashHoldingRows = useMemo(
-    () =>
-      separateCashTaxonomyGroups
-        ? buildGroupedRows(cashPortfolioRows, holdingsGroupBy, taxonomyByInstrumentId, workspace)
-        : [],
-    [cashPortfolioRows, holdingsGroupBy, separateCashTaxonomyGroups, taxonomyByInstrumentId, workspace],
-  )
+    const securityRows = holdingCategoryGroups.find((group) => group.key === 'securities')?.rows ?? []
+    return buildGroupedRows(
+      securityRows,
+      holdingsGroupBy,
+      taxonomyByInstrumentId,
+      workspace,
+    )
+  }, [holdingCategoryGroups, holdingsGroupBy, taxonomyByInstrumentId, workspace])
 
   function updateSearchParam(key: string, value: string | null) {
     setSearchParams((current) => {
@@ -3149,78 +2995,55 @@ export default function PortfolioHomePage() {
       return
     }
 
-    if (holdingsLayoutMode === 'regions') {
-      const canonicalRows: TableCell[][] = [
-        [...CANONICAL_HOLDINGS_EXPORT_HEADER],
-        ...[...sortedHoldingRows]
-          .sort(
-            (left, right) =>
-              HOLDING_REGION_ORDER[left.holding_region] -
-              HOLDING_REGION_ORDER[right.holding_region],
-          )
-          .map(canonicalHoldingsExportRow),
-      ]
-      downloadTable(
-        `holdings-${workspace.portfolio_id}-${workspace.as_of_date}`,
-        canonicalRows,
-        format,
-        'Holdings',
-      )
-      return
-    }
-
     const header = [
+      'Category',
       ...(holdingsGroupBy !== 'none' ? ['Group'] : []),
       ...visibleColumns.map((column) => column.label),
     ]
     const rows: TableCell[][] = [header]
 
-    const pushHoldingExportRow = (row: PortfolioHoldingRow, groupLabel: string | null) => {
+    const pushHoldingExportRow = (
+      row: PortfolioHoldingRow,
+      categoryLabel: string,
+      groupLabel: string | null,
+    ) => {
       rows.push([
-        ...(holdingsGroupBy !== 'none' ? [groupLabel] : []),
+        categoryLabel,
+        ...(holdingsGroupBy !== 'none' ? [groupLabel ?? 'N/A'] : []),
         ...visibleColumns.map((column) => holdingColumnExportValue(column.key, row, columnContext)),
       ])
     }
-    const pushNonCashPortfolioExportRow = () => {
+    const pushSubtotalExportRow = (
+      categoryLabel: string,
+      groupLabel: string | null,
+      subtotalRows: PortfolioHoldingRow[],
+    ) => {
       rows.push([
-        ...(holdingsGroupBy !== 'none' ? ['Portfolio View'] : []),
+        categoryLabel,
+        ...(holdingsGroupBy !== 'none' ? [groupLabel ?? 'Category Total'] : []),
         ...visibleColumns.map((column, index) =>
           index === 0
-            ? nonCashPortfolioLabel
-            : holdingColumnTotalExportValue(column.key, nonCashPortfolioRows, columnContext),
-          ),
+            ? `Subtotal (${workspace.base_currency})`
+            : holdingColumnTotalExportValue(column.key, subtotalRows, columnContext),
+        ),
       ])
     }
-    const pushGroupedExportRows = (groups: HoldingsGroup[]) => {
-      groups.forEach((group) => {
-        group.rows.forEach((row) => pushHoldingExportRow(row, group.label))
-        rows.push([
-          group.label,
-          ...visibleColumns.map((column, index) =>
-            index === 0 ? `Subtotal (${workspace.base_currency})` : holdingColumnTotalExportValue(column.key, group.rows, columnContext),
-          ),
-        ])
-      })
-    }
 
-    if (holdingsGroupBy === 'none') {
-      ungroupedHoldingDisplayItems.forEach((item) => {
-        if (item.kind === 'noncash-total') {
-          pushNonCashPortfolioExportRow()
-          return
-        }
-        pushHoldingExportRow(item.row, null)
-      })
-    } else {
-      pushGroupedExportRows(groupedHoldingRows)
-      if (showNonCashPortfolioRow) {
-        pushNonCashPortfolioExportRow()
+    holdingCategoryGroups.forEach((categoryGroup) => {
+      if (categoryGroup.key === 'securities' && holdingsGroupBy !== 'none') {
+        groupedSecurityRows.forEach((group) => {
+          group.rows.forEach((row) => pushHoldingExportRow(row, categoryGroup.label, group.label))
+          pushSubtotalExportRow(categoryGroup.label, group.label, group.rows)
+        })
+      } else {
+        categoryGroup.rows.forEach((row) => pushHoldingExportRow(row, categoryGroup.label, null))
       }
-      pushGroupedExportRows(groupedCashHoldingRows)
-    }
+      pushSubtotalExportRow(categoryGroup.label, null, categoryGroup.rows)
+    })
 
     rows.push([
-      ...(holdingsGroupBy !== 'none' ? ['Portfolio Total'] : []),
+      'Portfolio Total',
+      ...(holdingsGroupBy !== 'none' ? [''] : []),
       ...visibleColumns.map((column) =>
         holdingColumnTotalExportValue(column.key, sortedHoldingRows, columnContext),
       ),
@@ -3320,12 +3143,15 @@ export default function PortfolioHomePage() {
     )
   }
 
-  function renderHoldingsGroupRow(group: HoldingsGroup) {
+  function renderHoldingsGroupRow(
+    group: HoldingsGroup,
+    level: 'category' | 'subgroup',
+  ) {
     if (!columnContext) {
       return null
     }
     return (
-      <tr className="holdings-group-row">
+      <tr className={`holdings-group-row holdings-${level}-row`}>
         {visibleColumns.map((column, index) => {
           const aggregationKind = HOLDINGS_GROUP_AGGREGATION_KIND[column.key]
           const canAggregate = aggregationKind !== 'none'
@@ -3345,7 +3171,7 @@ export default function PortfolioHomePage() {
               className={classNames || undefined}
             >
               {index === 0 ? (
-                <div className="holdings-group-header">
+                <div className={`holdings-group-header holdings-${level}-header`}>
                   <span className="holdings-group-title">{group.label || 'Unassigned'}</span>
                   <span className="holdings-group-count">{formatNumber(group.rows.length, 0)}</span>
                 </div>
@@ -3357,40 +3183,6 @@ export default function PortfolioHomePage() {
         })}
       </tr>
     )
-  }
-
-  function regionBaseAmount(row: PortfolioHoldingRow) {
-    return (
-      finiteNumber(row.market_value_base) ??
-      finiteNumber(row.carrying_value_base) ??
-      finiteNumber(row.liability_value_base)
-    )
-  }
-
-  function regionInstrumentCell(row: PortfolioHoldingRow) {
-    const instrumentId = holdingReferenceId(row)
-    return (
-      <button
-        type="button"
-        className="holdings-region-instrument"
-        onClick={() => handleSelectInstrument(instrumentId)}
-      >
-        <span>{holdingName(row)}</span>
-        <span>{primaryIdentifier(row)}</span>
-      </button>
-    )
-  }
-
-  function structuredLifecycleLabel(row: PortfolioHoldingRow) {
-    if (row.derivative_contract?.contract_type === 'fcn') {
-      return `Open · matures ${row.derivative_contract.terms.maturity_date}`
-    }
-    if (row.derivative_contract?.contract_type === 'option') {
-      return `Open · expires ${row.expiry_date ?? row.derivative_contract.terms.expiry_date}`
-    }
-    return row.instrument_holding_start_date
-      ? `Open · held since ${row.instrument_holding_start_date}`
-      : 'Open'
   }
 
   function renderOperationalStatus() {
@@ -3449,194 +3241,6 @@ export default function PortfolioHomePage() {
               No operational exceptions.
             </div>
           )}
-        </div>
-      </section>
-    )
-  }
-
-  function renderHoldingRegion(region: PortfolioHoldingRow['holding_region']) {
-    if (!workspace) {
-      return null
-    }
-    const rows = sortedHoldingRows.filter((row) => row.holding_region === region)
-    const regionMeta = {
-      market_valued_positions: {
-        title: 'Market-valued Positions',
-        note: 'Quoted positions eligible for market return and scoped risk when policy permits.',
-      },
-      structured_and_long_derivatives: {
-        title: 'Structured / Long Derivatives',
-        note: 'Event-valued assets shown on carrying basis; daily market return and covariance risk are N/A.',
-      },
-      written_option_obligations: {
-        title: 'Short Option Positions',
-        note: 'Open short Call/Put contracts shown at remaining premium-basis liability.',
-      },
-      cash_and_settlement: {
-        title: 'Cash & Settlement',
-        note: 'Cash, receivables, payables and pending settlement disclosed outside covariance risk.',
-      },
-    }[region]
-
-    return (
-      <section className="holdings-region" key={region} aria-label={regionMeta.title}>
-        <div className="holdings-region-header">
-          <div>
-            <h2>{regionMeta.title}</h2>
-            <p>{regionMeta.note}</p>
-          </div>
-          <span className="holdings-region-count">{formatNumber(rows.length, 0)}</span>
-        </div>
-        <div className="table-shell holdings-region-table-shell">
-          <table className={`transactions-table holdings-region-table holdings-region-table-${region}`}>
-            {region === 'market_valued_positions' ? (
-              <>
-                <thead>
-                  <tr>
-                    <th>Instrument</th>
-                    <th className="performance-cell-number">Quantity</th>
-                    <th className="performance-cell-number">Last Price</th>
-                    <th className="performance-cell-number">Market Value</th>
-                    <th className="performance-cell-number">Allocation</th>
-                    <th className="performance-cell-number">Day Return</th>
-                    <th className="performance-cell-number">Scoped RC</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {rows.length ? rows.map((row) => (
-                    <tr key={row.line_id}>
-                      <td>{regionInstrumentCell(row)}</td>
-                      <td className="performance-cell-number">{formatQuantity(row.quantity)}</td>
-                      <td className="performance-cell-number">
-                        {formatUnitPrice(row.last_price, holdingCurrency(row))}
-                      </td>
-                      <td className="performance-cell-number">
-                        {formatCurrency(regionBaseAmount(row), workspace.base_currency)}
-                      </td>
-                      <td className="performance-cell-number">{formatPercent(row.allocation)}</td>
-                      <td className={`performance-cell-number ${signedValueClass(row.day_change_pct)}`}>
-                        {holdingDayChangeUnavailable(row) ? 'N/A' : signedPercent(row.day_change_pct)}
-                      </td>
-                      <td className={`performance-cell-number ${signedValueClass(row.forward_risk_share)}`}>
-                        {row.forward_risk_status === 'ok' ? signedPercent(row.forward_risk_share) : 'N/A'}
-                      </td>
-                    </tr>
-                  )) : <TableStatusRow colSpan={7} label="No holdings in this region." />}
-                </tbody>
-              </>
-            ) : null}
-            {region === 'structured_and_long_derivatives' ? (
-              <>
-                <thead>
-                  <tr>
-                    <th>Instrument</th>
-                    <th>Lifecycle</th>
-                    <th className="performance-cell-number">Carrying Value</th>
-                    <th className="performance-cell-number">Cost Basis</th>
-                    <th>Valuation Basis</th>
-                    <th>Performance Scope</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {rows.length ? rows.map((row) => (
-                    <tr key={row.line_id}>
-                      <td>{regionInstrumentCell(row)}</td>
-                      <td>{structuredLifecycleLabel(row)}</td>
-                      <td className="performance-cell-number">
-                        {formatCurrency(regionBaseAmount(row), workspace.base_currency)}
-                      </td>
-                      <td className="performance-cell-number">
-                        {formatCurrency(row.cost_basis_base, workspace.base_currency)}
-                      </td>
-                      <td>{formatLabel(row.valuation_basis ?? row.valuation_basis_policy)}</td>
-                      <td title={row.exclusion_reason ?? undefined}>{formatLabel(row.performance_scope)}</td>
-                    </tr>
-                  )) : <TableStatusRow colSpan={6} label="No holdings in this region." />}
-                </tbody>
-              </>
-            ) : null}
-            {region === 'written_option_obligations' ? (
-              <>
-                <thead>
-                  <tr>
-                    <th>Position</th>
-                    <th>Expiry</th>
-                    <th className="performance-cell-number">Strike</th>
-                    <th>Settlement</th>
-                    <th className="performance-cell-number">Open Contracts</th>
-                    <th className="performance-cell-number">Underlying Units</th>
-                    <th className="performance-cell-number">Premium Basis</th>
-                    <th className="performance-cell-number">Carrying Liability</th>
-                    <th>Status</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {rows.length ? rows.map((row) => (
-                    <tr key={row.line_id}>
-                      <td>{regionInstrumentCell(row)}</td>
-                      <td>{holdingMaturityOrExpiry(row) ?? 'N/A'}</td>
-                      <td className="performance-cell-number">
-                        {formatUnitPrice(holdingStrike(row), holdingCurrency(row))}
-                      </td>
-                      <td>{holdingSettlementTypeLabel(row)}</td>
-                      <td className="performance-cell-number">{formatQuantity(row.open_contract_quantity)}</td>
-                      <td className="performance-cell-number">{formatQuantity(row.required_underlying_quantity)}</td>
-                      <td className="performance-cell-number">
-                        {formatCurrency(row.premium_basis_remaining, holdingCurrency(row))}
-                      </td>
-                      <td className="performance-cell-number">
-                        {formatCurrency(
-                          row.liability_value_base == null ? null : Math.abs(row.liability_value_base),
-                          workspace.base_currency,
-                        )}
-                      </td>
-                      <td>{formatLabel(row.obligation_status ?? 'open')}</td>
-                    </tr>
-                  )) : <TableStatusRow colSpan={9} label="No holdings in this region." />}
-                </tbody>
-              </>
-            ) : null}
-            {region === 'cash_and_settlement' ? (
-              <>
-                <thead>
-                  <tr>
-                    <th>Cash / Settlement Line</th>
-                    <th>Currency</th>
-                    <th>Kind</th>
-                    <th>Settlement Date</th>
-                    <th className="performance-cell-number">Amount</th>
-                    <th className="performance-cell-number">Amount Base</th>
-                    <th>Analytics Scope</th>
-                    <th>Pending Status</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {rows.length ? rows.map((row) => (
-                    <tr key={row.line_id}>
-                      <td>{regionInstrumentCell(row)}</td>
-                      <td>{holdingCurrency(row)}</td>
-                      <td>{formatLabel(row.holding_kind ?? 'cash')}</td>
-                      <td>{row.settlement_date ?? 'N/A'}</td>
-                      <td className="performance-cell-number">
-                        {formatCurrency(
-                          row.settlement_amount ?? row.quantity,
-                          holdingCurrency(row),
-                        )}
-                      </td>
-                      <td className="performance-cell-number">
-                        {formatCurrency(
-                          row.settlement_amount_base ?? regionBaseAmount(row),
-                          workspace.base_currency,
-                        )}
-                      </td>
-                      <td title={row.exclusion_reason ?? undefined}>{formatLabel(row.performance_scope)}</td>
-                      <td>{formatLabel(row.pending_status ?? 'settled')}</td>
-                    </tr>
-                  )) : <TableStatusRow colSpan={8} label="No holdings in this region." />}
-                </tbody>
-              </>
-            ) : null}
-          </table>
         </div>
       </section>
     )
@@ -3865,25 +3469,7 @@ export default function PortfolioHomePage() {
             </label>
           </div>
           <div className="transaction-filter-actions holdings-filter-actions">
-            <div className="holdings-layout-segmented" role="group" aria-label="Holdings layout">
-              <button
-                type="button"
-                className={holdingsLayoutMode === 'regions' ? 'active' : undefined}
-                aria-pressed={holdingsLayoutMode === 'regions'}
-                onClick={() => setHoldingsLayoutMode('regions')}
-              >
-                Regions
-              </button>
-              <button
-                type="button"
-                className={holdingsLayoutMode === 'advanced' ? 'active' : undefined}
-                aria-pressed={holdingsLayoutMode === 'advanced'}
-                onClick={() => setHoldingsLayoutMode('advanced')}
-              >
-                Advanced Table
-              </button>
-            </div>
-            {holdingsLayoutMode === 'advanced' && holdingsViewStoreReadyPortfolioId === portfolioId ? (
+            {holdingsViewStoreReadyPortfolioId === portfolioId ? (
               <PortfolioTableViewControls
                 views={holdingsViews}
                 activeViewId={activeHoldingsViewId}
@@ -3895,33 +3481,29 @@ export default function PortfolioHomePage() {
                 onSaveAs={handleSaveHoldingsViewAs}
                 onDelete={handleDeleteHoldingsView}
               />
-            ) : holdingsLayoutMode === 'advanced' ? (
+            ) : (
               <span className="portfolio-detail-meta">
                 {holdingsViewStoreError ? 'Table views unavailable' : 'Loading table views'}
               </span>
-            ) : null}
-            {holdingsLayoutMode === 'advanced' ? (
-              <>
-                <button
-                  type="button"
-                  className={`holdings-toolbar-button ${columnsEdited ? 'holdings-toolbar-button-active' : ''}`}
-                  onClick={() => {
-                    setHoldingsColumnDraft(holdingsColumns)
-                    setHoldingsColumnsOpen(true)
-                  }}
-                >
-                  Data &amp; Columns
-                </button>
-                <button
-                  type="button"
-                  className="holdings-toolbar-button"
-                  onClick={() => setHoldingsGroupByOpen(true)}
-                >
-                  Group By{'\u00A0: '}
-                  {selectedGroupByOption.label}
-                </button>
-              </>
-            ) : null}
+            )}
+            <button
+              type="button"
+              className={`holdings-toolbar-button ${columnsEdited ? 'holdings-toolbar-button-active' : ''}`}
+              onClick={() => {
+                setHoldingsColumnDraft(holdingsColumns)
+                setHoldingsColumnsOpen(true)
+              }}
+            >
+              Data &amp; Columns
+            </button>
+            <button
+              type="button"
+              className="holdings-toolbar-button"
+              onClick={() => setHoldingsGroupByOpen(true)}
+            >
+              Group Securities By{'\u00A0: '}
+              {selectedGroupByOption.label}
+            </button>
             <DownloadFormatMenu
               wrapperClassName="portfolio-download-menu"
               buttonClassName="holdings-toolbar-button"
@@ -3934,24 +3516,17 @@ export default function PortfolioHomePage() {
         </div>
         {loading ? <CalculationStatus /> : null}
         {error ? <div className="error-state">{error}</div> : null}
-        {holdingsLayoutMode === 'advanced' && holdingsViewStoreError ? (
+        {holdingsViewStoreError ? (
           <div className="inline-notice inline-notice-error" role="alert">
             {holdingsViewStoreError}
           </div>
         ) : null}
         <QualityWarningsNotice warnings={workspace?.quality_warnings} />
         {!loading && !error && workspace ? renderOperationalStatus() : null}
-        {holdingsLayoutMode === 'advanced' && taxonomyError && holdingsGroupBy.startsWith('taxonomy') ? (
+        {taxonomyError && holdingsGroupBy.startsWith('taxonomy') ? (
           <div className="inline-notice inline-notice-warning">{taxonomyError}</div>
         ) : null}
-        {!loading && !error && workspace && columnContext ? holdingsLayoutMode === 'regions' ? (
-          <div className="holdings-region-stack">
-            {renderHoldingRegion('market_valued_positions')}
-            {renderHoldingRegion('structured_and_long_derivatives')}
-            {renderHoldingRegion('written_option_obligations')}
-            {renderHoldingRegion('cash_and_settlement')}
-          </div>
-        ) : (
+        {!loading && !error && workspace && columnContext ? (
           <div className="table-shell holdings-table-shell" ref={holdingsTableShellRef}>
             <table className="holdings-table holdings-main-table" style={{ minWidth: `${displayHoldingsTableMinWidth}px` }}>
               <colgroup>
@@ -4024,45 +3599,22 @@ export default function PortfolioHomePage() {
                 </tr>
               </thead>
               <tbody>
-                {sortedHoldingRows.length ? (
-                  holdingsGroupBy === 'none' ? (
-                    ungroupedHoldingDisplayItems.map((item) =>
-                      item.kind === 'noncash-total'
-                        ? renderHoldingsTotalRow(
-                            nonCashPortfolioRows,
-                            nonCashPortfolioLabel,
-                            'total-row holdings-noncash-row',
-                            'noncash-portfolio',
-                          )
-                        : renderHoldingDataRow(item.row),
-                    )
-                  ) : (
-                    <>
-                      {groupedHoldingRows.map((group) => (
-                        <Fragment key={group.key}>
-                          {renderHoldingsGroupRow(group)}
-                          {group.rows.map((row) => renderHoldingDataRow(row))}
-                        </Fragment>
-                      ))}
-                      {showNonCashPortfolioRow
-                        ? renderHoldingsTotalRow(
-                            nonCashPortfolioRows,
-                            nonCashPortfolioLabel,
-                            'total-row holdings-noncash-row',
-                            'noncash-portfolio',
-                          )
-                        : null}
-                      {groupedCashHoldingRows.map((group) => (
-                        <Fragment key={`cash:${group.key}`}>
-                          {renderHoldingsGroupRow(group)}
-                          {group.rows.map((row) => renderHoldingDataRow(row))}
-                        </Fragment>
-                      ))}
-                    </>
-                  )
-                ) : (
+                {holdingCategoryGroups.map((categoryGroup) => (
+                  <Fragment key={categoryGroup.key}>
+                    {renderHoldingsGroupRow(categoryGroup, 'category')}
+                    {categoryGroup.key === 'securities' && holdingsGroupBy !== 'none'
+                      ? groupedSecurityRows.map((group) => (
+                          <Fragment key={`${categoryGroup.key}:${group.key}`}>
+                            {renderHoldingsGroupRow(group, 'subgroup')}
+                            {group.rows.map((row) => renderHoldingDataRow(row))}
+                          </Fragment>
+                        ))
+                      : categoryGroup.rows.map((row) => renderHoldingDataRow(row))}
+                  </Fragment>
+                ))}
+                {!sortedHoldingRows.length ? (
                   <TableStatusRow colSpan={visibleColumns.length} label="No holdings." />
-                )}
+                ) : null}
                 {sortedHoldingRows.length
                   ? renderHoldingsTotalRow(
                       sortedHoldingRows,
@@ -4186,14 +3738,14 @@ export default function PortfolioHomePage() {
             className="holdings-modal holdings-compact-modal"
             role="dialog"
             aria-modal="true"
-            aria-label="Group holdings"
+            aria-label="Group securities"
             tabIndex={-1}
             onClick={(event) => event.stopPropagation()}
           >
             <div className="holdings-modal-header">
               <div>
-                <div className="panel-title">Group By</div>
-                <div className="section-heading">Grouping</div>
+                <div className="panel-title">Group Securities By</div>
+                <div className="section-heading">Securities only</div>
               </div>
               <button type="button" onClick={() => setHoldingsGroupByOpen(false)}>
                 Close

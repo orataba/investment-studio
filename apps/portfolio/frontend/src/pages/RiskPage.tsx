@@ -63,6 +63,8 @@ const DEFAULT_RISK_MODEL_ID = 'ewma_vol_shrinkage_corr_covariance'
 const MATRIX_SCOPE_CURRENT_HOLDINGS = '__current_holdings__'
 const MATRIX_SCOPE_FULL_UNIVERSE = '__full_universe__'
 const RISK_PAGE_SETTINGS_STORAGE_KEY = 'portfolio_ops.portfolio.risk.settings.v1'
+const SYSTEM_CASH_TARGET_MEMBER_ID = '__cash__'
+const SYSTEM_DERIVATIVE_TARGET_MEMBER_ID = '__derivatives__'
 
 type RiskModelId = 'ewma_vol_shrinkage_corr_covariance' | 'ewma_covariance' | 'sample_covariance'
 type RiskContributionMode = 'signed' | 'abs'
@@ -103,12 +105,6 @@ type CurrentPlanningGroup = {
   label: string
   currentWeight: number | null
   currentValueBase: number | null
-  marketWeight?: number | null
-  marketValueBase?: number | null
-  cashWeight?: number | null
-  cashValueBase?: number | null
-  hasMarketRiskInput: boolean
-  hasCashLikeInput: boolean
 }
 
 type RiskContributionRow = {
@@ -600,6 +596,10 @@ function isNonCashPositionHoldingRow(row: HoldingsRow): row is MarketInstrumentH
     !isCashHoldingRow(row) &&
     !isPendingMonetaryHoldingRow(row)
   )
+}
+
+function isSecurityHoldingRow(row: HoldingsRow): row is MarketInstrumentHoldingRow {
+  return row.holding_category === 'securities' && isNonCashPositionHoldingRow(row)
 }
 
 function isCashUniverseInstrument(record: PortfolioTaxonomyCatalogResponse['instrument_universe'][number]) {
@@ -1542,13 +1542,11 @@ export function buildCurrentPlanningGroups({
     entityId,
     valueBase,
     weightInput,
-    cashLike,
   }: {
     targetScope: TaxonomyAssignmentScope
     entityId: string
     valueBase: number | null
     weightInput: number | null
-    cashLike: boolean
   }) {
     const assignmentResult = resolveActiveAssignment(catalog, taxonomyId, targetScope, entityId, currentReferenceDate)
     if (assignmentResult.error) {
@@ -1559,40 +1557,40 @@ export function buildCurrentPlanningGroups({
     const topLevelNode = resolveScopedTaxonomyNode(assignment?.taxonomy_node_id, nodeById, '')
     const groupKey = topLevelNode?.taxonomy_node_id ?? `unassigned:${taxonomyId}`
     const label = topLevelNode?.node_name ?? 'Unassigned'
-    const hasExposure = Math.abs(valueBase ?? 0) > 1e-9 || Math.abs(weightInput ?? 0) > 1e-9
     const current = groups.get(groupKey) ?? {
       groupKey,
       label,
       currentWeight: null,
       currentValueBase: null,
-      marketWeight: null,
-      marketValueBase: null,
-      cashWeight: null,
-      cashValueBase: null,
-      hasMarketRiskInput: false,
-      hasCashLikeInput: false,
     }
     if (weightInput != null) {
       current.currentWeight = (current.currentWeight ?? 0) + weightInput
-      if (cashLike) {
-        current.cashWeight = (current.cashWeight ?? 0) + weightInput
-      } else {
-        current.marketWeight = (current.marketWeight ?? 0) + weightInput
-      }
     }
     if (valueBase != null) {
       current.currentValueBase = (current.currentValueBase ?? 0) + valueBase
-      if (cashLike) {
-        current.cashValueBase = (current.cashValueBase ?? 0) + valueBase
-      } else {
-        current.marketValueBase = (current.marketValueBase ?? 0) + valueBase
-      }
-    }
-    if (hasExposure) {
-      current.hasMarketRiskInput = current.hasMarketRiskInput || !cashLike
-      current.hasCashLikeInput = current.hasCashLikeInput || cashLike
     }
     groups.set(groupKey, current)
+  }
+
+  function addSystemGroup({
+    memberType,
+    memberId,
+    label,
+    valueBase,
+    totalValueBase,
+  }: {
+    memberType: 'cash_bucket' | 'derivative_bucket'
+    memberId: string
+    label: string
+    valueBase: number
+    totalValueBase: number
+  }) {
+    groups.set(targetMemberKey(memberType, memberId), {
+      groupKey: targetMemberKey(memberType, memberId),
+      label,
+      currentWeight: totalValueBase > 1e-9 ? valueBase / totalValueBase : null,
+      currentValueBase: valueBase,
+    })
   }
 
   if (taxonomy.primary_assignment_scope === 'instrument') {
@@ -1602,47 +1600,46 @@ export function buildCurrentPlanningGroups({
         [] satisfies CurrentPlanningGroup[],
       )
     }
-    const accountRows = accountsWorkspace.accounts
-    const liquidityAccounts = taxonomy.planning_enabled
-      ? accountRows.filter((accountRow) => {
-          const liquidityBase = accountLiquidityBase(accountRow)
-          if (liquidityBase == null) {
-            errors.push(
-              `Current drift requires base-currency cash and pending settlement for account ${accountRow.account.account_id}.`,
-            )
-            return false
-          }
-          const activeCashAssignmentResult = resolveActiveAssignment(
-            catalog,
-            taxonomyId,
-            'cash_bucket',
-            accountRow.account.account_id,
-            referenceDate,
-          )
-          if (activeCashAssignmentResult.error) {
-            errors.push(activeCashAssignmentResult.error)
-            return false
-          }
-          return Boolean(activeCashAssignmentResult.assignment) || Math.abs(liquidityBase) > 1e-9
-        })
-      : []
-    const nonCashHoldingRows = holdingsWorkspace.rows.filter((row) => isNonCashPositionHoldingRow(row))
-    const missingHoldingValueRows = nonCashHoldingRows.filter((row) => finiteNumber(row.market_value_base) == null)
+    const liquidityAccounts = accountsWorkspace.accounts.filter((accountRow) => {
+      const liquidityBase = accountLiquidityBase(accountRow)
+      if (liquidityBase == null) {
+        errors.push(
+          `Current drift requires base-currency cash and pending settlement for account ${accountRow.account.account_id}.`,
+        )
+        return false
+      }
+      return accountRow.account.account_type === 'deposit_account' || Math.abs(liquidityBase) > 1e-9
+    })
+    const securityHoldingRows = holdingsWorkspace.rows.filter(isSecurityHoldingRow)
+    const derivativeHoldingRows = holdingsWorkspace.rows.filter(
+      (row) => row.holding_category === 'derivatives',
+    )
+    const valuedHoldingRows = [...securityHoldingRows, ...derivativeHoldingRows]
+    const missingHoldingValueRows = valuedHoldingRows.filter((row) => finiteNumber(row.market_value_base) == null)
     if (missingHoldingValueRows.length) {
       errors.push(
         `Current drift requires market_value_base for every holding; missing: ${missingHoldingValueRows
-          .map((row) => row.instrument_core.instrument_name || row.instrument_core.instrument_id)
+          .map((row) => holdingRiskLabel(row))
           .join(', ')}.`,
       )
     }
+    const derivativeValueBase = derivativeHoldingRows.reduce(
+      (total, row) => total + (finiteNumber(row.market_value_base) ?? 0),
+      0,
+    )
+    const cashValueBase = liquidityAccounts.reduce(
+      (total, accountRow) => total + (accountLiquidityBase(accountRow) ?? 0),
+      0,
+    )
     const totalValueBase =
-      nonCashHoldingRows.reduce((total, row) => total + (finiteNumber(row.market_value_base) ?? 0), 0) +
-      liquidityAccounts.reduce((total, accountRow) => total + (accountLiquidityBase(accountRow) ?? 0), 0)
-    if (totalValueBase <= 1e-9 && (nonCashHoldingRows.length || liquidityAccounts.length)) {
+      securityHoldingRows.reduce((total, row) => total + (finiteNumber(row.market_value_base) ?? 0), 0) +
+      derivativeValueBase +
+      cashValueBase
+    if (totalValueBase <= 1e-9 && (valuedHoldingRows.length || liquidityAccounts.length)) {
       errors.push('Current drift requires positive portfolio NAV from holdings plus account cash and pending settlement.')
     }
 
-    nonCashHoldingRows.forEach((row) => {
+    securityHoldingRows.forEach((row) => {
       const valueBase = finiteNumber(row.market_value_base)
       if (valueBase == null || totalValueBase <= 1e-9) {
         return
@@ -1653,23 +1650,25 @@ export function buildCurrentPlanningGroups({
         entityId: row.instrument_core.instrument_id,
         valueBase,
         weightInput,
-        cashLike: false,
       })
     })
 
-    liquidityAccounts.forEach((accountRow) => {
-      const valueBase = accountLiquidityBase(accountRow)
-      if (valueBase == null || totalValueBase <= 1e-9) {
-        return
-      }
-      addEntity({
-        targetScope: 'cash_bucket',
-        entityId: accountRow.account.account_id,
-        valueBase,
-        weightInput: valueBase / totalValueBase,
-        cashLike: true,
+    if (totalValueBase > 1e-9) {
+      addSystemGroup({
+        memberType: 'derivative_bucket',
+        memberId: SYSTEM_DERIVATIVE_TARGET_MEMBER_ID,
+        label: 'Derivatives',
+        valueBase: derivativeValueBase,
+        totalValueBase,
       })
-    })
+      addSystemGroup({
+        memberType: 'cash_bucket',
+        memberId: SYSTEM_CASH_TARGET_MEMBER_ID,
+        label: 'Cash',
+        valueBase: cashValueBase,
+        totalValueBase,
+      })
+    }
   } else if (taxonomy.primary_assignment_scope === 'cash_bucket') {
     if (!accountsWorkspace) {
       return riskFail('Current drift requires the accounts workspace for cash-bucket taxonomies.', [] satisfies CurrentPlanningGroup[])
@@ -1700,7 +1699,6 @@ export function buildCurrentPlanningGroups({
         entityId: accountRow.account.account_id,
         valueBase,
         weightInput: valueBase / totalValueBase,
-        cashLike: true,
       })
     })
   } else {
@@ -1725,13 +1723,11 @@ export function buildCurrentPlanningGroups({
       if (valueBase == null || totalValueBase <= 1e-9) {
         return
       }
-      const positionValue = finiteNumber(accountRow.position_market_value) ?? 0
       addEntity({
         targetScope: 'account',
         entityId: accountRow.account.account_id,
         valueBase,
         weightInput: valueBase / totalValueBase,
-        cashLike: accountRow.account.account_type === 'deposit_account' && Math.abs(positionValue) <= 1e-9,
       })
     })
   }
@@ -1761,110 +1757,19 @@ function lineDisplayLabel(line: PortfolioTargetSetLineRecord, nodeById: Map<stri
   if (line.target_member_type === 'taxonomy_node') {
     return nodeById.get(line.target_member_id)?.node_name ?? line.target_member_id
   }
+  if (
+    line.target_member_type === 'cash_bucket' &&
+    line.target_member_id === SYSTEM_CASH_TARGET_MEMBER_ID
+  ) {
+    return 'Cash'
+  }
+  if (
+    line.target_member_type === 'derivative_bucket' &&
+    line.target_member_id === SYSTEM_DERIVATIVE_TARGET_MEMBER_ID
+  ) {
+    return 'Derivatives'
+  }
   return `${formatLabel(line.target_member_type)} ${line.target_member_id}`
-}
-
-function isCashTaxonomyNode(node: PortfolioTaxonomyNodeRecord | null | undefined) {
-  if (!node) {
-    return false
-  }
-  const normalizedName = node.node_name.trim().toLowerCase()
-  const normalizedCode = (node.node_code ?? '').trim().toLowerCase()
-  return normalizedCode === 'cash' || normalizedName === 'cash' || normalizedName === '现金'
-}
-
-function isCashLikeTaxonomyNodeId(
-  nodeId: string,
-  nodeById: Map<string, PortfolioTaxonomyNodeRecord>,
-) {
-  const visited = new Set<string>()
-  let node = nodeById.get(nodeId) ?? null
-  while (node && !visited.has(node.taxonomy_node_id)) {
-    if (isCashTaxonomyNode(node)) {
-      return true
-    }
-    visited.add(node.taxonomy_node_id)
-    node = node.parent_taxonomy_node_id
-      ? nodeById.get(node.parent_taxonomy_node_id) ?? null
-      : null
-  }
-  return false
-}
-
-function isCashLikeRiskTargetLine(
-  line: PortfolioTargetSetLineRecord,
-  nodeById: Map<string, PortfolioTaxonomyNodeRecord>,
-  cashLikeNodeIds: ReadonlySet<string>,
-) {
-  return (
-    line.target_member_type === 'cash_bucket' ||
-    (line.target_member_type === 'taxonomy_node' &&
-      (cashLikeNodeIds.has(line.target_member_id) ||
-        isCashLikeTaxonomyNodeId(line.target_member_id, nodeById)))
-  )
-}
-
-function isCashLikeCurrentPlanningGroup(
-  group: CurrentPlanningGroup,
-  nodeById: Map<string, PortfolioTaxonomyNodeRecord>,
-  cashLikeNodeIds: ReadonlySet<string>,
-) {
-  return (
-    cashLikeNodeIds.has(group.groupKey) ||
-    isCashLikeTaxonomyNodeId(group.groupKey, nodeById) ||
-    (group.hasCashLikeInput && !group.hasMarketRiskInput)
-  )
-}
-
-function buildCashLikeTaxonomyNodeIds(
-  catalog: PortfolioTaxonomyCatalogResponse | null,
-  taxonomyId: string | null | undefined,
-  nodeById: Map<string, PortfolioTaxonomyNodeRecord>,
-) {
-  const resolvedTaxonomyId = taxonomyId ?? ''
-  const childrenByParent = new Map<string, string[]>()
-  nodeById.forEach((node) => {
-    if (node.status !== 'active') {
-      return
-    }
-    const parentId = node.parent_taxonomy_node_id ?? ''
-    childrenByParent.set(parentId, [...(childrenByParent.get(parentId) ?? []), node.taxonomy_node_id])
-  })
-  const assignmentScopesByNode = new Map<string, string[]>()
-  ;(catalog?.taxonomy_assignments ?? []).forEach((assignment) => {
-    if (assignment.taxonomy_id !== resolvedTaxonomyId || assignment.status !== 'active') {
-      return
-    }
-    assignmentScopesByNode.set(assignment.taxonomy_node_id, [
-      ...(assignmentScopesByNode.get(assignment.taxonomy_node_id) ?? []),
-      assignment.target_scope,
-    ])
-  })
-
-  const cashLikeNodeIds = new Set<string>()
-  nodeById.forEach((node) => {
-    if (isCashLikeTaxonomyNodeId(node.taxonomy_node_id, nodeById)) {
-      cashLikeNodeIds.add(node.taxonomy_node_id)
-      return
-    }
-    const pending = [node.taxonomy_node_id]
-    const subtreeNodeIds = new Set<string>()
-    while (pending.length) {
-      const currentNodeId = pending.pop()!
-      if (subtreeNodeIds.has(currentNodeId)) {
-        continue
-      }
-      subtreeNodeIds.add(currentNodeId)
-      pending.push(...(childrenByParent.get(currentNodeId) ?? []))
-    }
-    const assignmentScopes = [...subtreeNodeIds].flatMap(
-      (subtreeNodeId) => assignmentScopesByNode.get(subtreeNodeId) ?? [],
-    )
-    if (assignmentScopes.length && assignmentScopes.every((scope) => scope === 'cash_bucket')) {
-      cashLikeNodeIds.add(node.taxonomy_node_id)
-    }
-  })
-  return cashLikeNodeIds
 }
 
 export function buildTargetGapRows({
@@ -1874,7 +1779,6 @@ export function buildTargetGapRows({
   riskSharesByGroup,
   riskShareErrors = [],
   nodeById,
-  cashLikeNodeIds = new Set<string>(),
   riskBudgetEligibleNodeIds,
   dimension,
   baseCurrency,
@@ -1885,7 +1789,6 @@ export function buildTargetGapRows({
   riskSharesByGroup: Map<string, number | null>
   riskShareErrors?: string[]
   nodeById: Map<string, PortfolioTaxonomyNodeRecord>
-  cashLikeNodeIds?: ReadonlySet<string>
   riskBudgetEligibleNodeIds: ReadonlySet<string>
   dimension: 'weight' | 'risk_budget'
   baseCurrency: string
@@ -1901,21 +1804,15 @@ export function buildTargetGapRows({
   }
   const eligibleTargetLines =
     dimension === 'risk_budget'
-      ? targetLines
-          .filter((line) => !isCashLikeRiskTargetLine(line, nodeById, cashLikeNodeIds))
-          .filter(
-            (line) =>
-              line.target_member_type !== 'taxonomy_node' ||
-              riskBudgetEligibleNodeIds.has(line.target_member_id),
-          )
+      ? targetLines.filter(
+          (line) =>
+            line.target_member_type === 'taxonomy_node' &&
+            riskBudgetEligibleNodeIds.has(line.target_member_id),
+        )
       : targetLines
   const eligibleCurrentGroups =
     dimension === 'risk_budget'
-      ? currentGroups.filter(
-          (group) =>
-            riskSharesByGroup.has(group.groupKey) &&
-            !isCashLikeCurrentPlanningGroup(group, nodeById, cashLikeNodeIds),
-        )
+      ? currentGroups.filter((group) => riskSharesByGroup.has(group.groupKey))
       : currentGroups
   if (!eligibleTargetLines.length) {
     if (dimension === 'risk_budget' && !eligibleCurrentGroups.length) {
@@ -1928,24 +1825,15 @@ export function buildTargetGapRows({
       [] satisfies TargetGapComparatorRow[],
     )
   }
-  const directCashTargetLines =
-    dimension === 'weight'
-      ? eligibleTargetLines.filter((line) => line.target_member_type === 'cash_bucket')
-      : []
-  if (directCashTargetLines.length > 1) {
-    return riskFail(
-      `${targetSet.name} root weight drift supports one aggregate direct cash bucket; got ${directCashTargetLines
-        .map((line) => line.target_member_id)
-        .join(', ')}.`,
-      [] satisfies TargetGapComparatorRow[],
-    )
-  }
   const unsupportedDirectLines = eligibleTargetLines.filter(
-    (line) => line.target_member_type !== 'taxonomy_node' && line.target_member_type !== 'cash_bucket',
+    (line) =>
+      line.target_member_type !== 'taxonomy_node' &&
+      line.target_member_type !== 'cash_bucket' &&
+      line.target_member_type !== 'derivative_bucket',
   )
   if (unsupportedDirectLines.length) {
     return riskFail(
-      `${targetSet.name} root target drift must be defined on taxonomy_node budgeting members with an optional aggregate cash bucket; unsupported direct members: ${unsupportedDirectLines
+      `${targetSet.name} root target drift must use taxonomy nodes plus the fixed Derivatives and Cash members; unsupported direct members: ${unsupportedDirectLines
         .map((line) => `${line.target_member_type}:${line.target_member_id}`)
         .join(', ')}.`,
       [] satisfies TargetGapComparatorRow[],
@@ -1962,23 +1850,6 @@ export function buildTargetGapRows({
   }
   if (dimension === 'risk_budget' && riskShareErrors.length) {
     return riskFail(riskShareErrors, [] satisfies TargetGapComparatorRow[])
-  }
-  const directCashTargetLine = directCashTargetLines[0] ?? null
-  if (directCashTargetLine) {
-    const duplicateCashTaxonomyLines = eligibleTargetLines.filter(
-      (line) =>
-        line.target_member_type === 'taxonomy_node' &&
-        (cashLikeNodeIds.has(line.target_member_id) ||
-          isCashLikeTaxonomyNodeId(line.target_member_id, nodeById)),
-    )
-    if (duplicateCashTaxonomyLines.length) {
-      return riskFail(
-        `${targetSet.name} defines cash both as a direct cash bucket and as taxonomy node(s): ${duplicateCashTaxonomyLines
-          .map((line) => lineDisplayLabel(line, nodeById))
-          .join(', ')}.`,
-        [] satisfies TargetGapComparatorRow[],
-      )
-    }
   }
   const targetLineErrors = eligibleTargetLines
     .filter((line) => (dimension === 'weight' ? line.target_weight : line.target_risk_share) == null)
@@ -2005,61 +1876,7 @@ export function buildTargetGapRows({
     )
   }
 
-  const comparisonCurrentGroups = directCashTargetLine
-    ? [
-        ...eligibleCurrentGroups.map((group) => {
-          const marketWeight =
-            group.marketWeight ??
-            (group.hasCashLikeInput && !group.hasMarketRiskInput ? 0 : group.currentWeight)
-          const marketValueBase =
-            group.marketValueBase ??
-            (group.hasCashLikeInput && !group.hasMarketRiskInput ? 0 : group.currentValueBase)
-          return {
-            ...group,
-            currentWeight: marketWeight,
-            currentValueBase: marketValueBase,
-            hasCashLikeInput: false,
-          }
-        }),
-        {
-          groupKey: lineDisplayKey(directCashTargetLine),
-          label: 'Cash',
-          currentWeight: eligibleCurrentGroups.reduce(
-            (total, group) =>
-              total +
-              (group.cashWeight ??
-                (group.hasCashLikeInput && !group.hasMarketRiskInput ? group.currentWeight ?? 0 : 0)),
-            0,
-          ),
-          currentValueBase: eligibleCurrentGroups.reduce(
-            (total, group) =>
-              total +
-              (group.cashValueBase ??
-                (group.hasCashLikeInput && !group.hasMarketRiskInput ? group.currentValueBase ?? 0 : 0)),
-            0,
-          ),
-          marketWeight: 0,
-          marketValueBase: 0,
-          cashWeight: eligibleCurrentGroups.reduce(
-            (total, group) =>
-              total +
-              (group.cashWeight ??
-                (group.hasCashLikeInput && !group.hasMarketRiskInput ? group.currentWeight ?? 0 : 0)),
-            0,
-          ),
-          cashValueBase: eligibleCurrentGroups.reduce(
-            (total, group) =>
-              total +
-              (group.cashValueBase ??
-                (group.hasCashLikeInput && !group.hasMarketRiskInput ? group.currentValueBase ?? 0 : 0)),
-            0,
-          ),
-          hasMarketRiskInput: false,
-          hasCashLikeInput: true,
-        } satisfies CurrentPlanningGroup,
-      ]
-    : eligibleCurrentGroups
-  const currentGroupByKey = new Map(comparisonCurrentGroups.map((group) => [group.groupKey, group] as const))
+  const currentGroupByKey = new Map(eligibleCurrentGroups.map((group) => [group.groupKey, group] as const))
   const lineByKey = new Map(eligibleTargetLines.map((line) => [lineDisplayKey(line), line] as const))
   const allKeys = new Set([...currentGroupByKey.keys(), ...lineByKey.keys()])
   const rows: TargetGapComparatorRow[] = []
@@ -2073,12 +1890,10 @@ export function buildTargetGapRows({
         ? currentGroup?.currentWeight ?? 0
         : riskSharesByGroup.has(key)
           ? riskSharesByGroup.get(key) ?? 0
-          : currentGroup?.hasCashLikeInput && !currentGroup.hasMarketRiskInput
-            ? 0
-            : currentGroup
-              ? null
-              : 0
-    if (dimension === 'risk_budget' && current == null && currentGroup?.hasMarketRiskInput) {
+          : currentGroup
+            ? null
+            : 0
+    if (dimension === 'risk_budget' && current == null && currentGroup) {
       errors.push(`${targetSet.name} risk target gap is missing current risk share for ${currentGroup.label}.`)
       return
     }
@@ -2533,15 +2348,6 @@ export default function RiskPage() {
     () => buildNodeLookup(taxonomyCatalog, defaultPlanningTaxonomy?.taxonomy_id),
     [defaultPlanningTaxonomy?.taxonomy_id, taxonomyCatalog],
   )
-  const cashLikePlanningNodeIds = useMemo(
-    () =>
-      buildCashLikeTaxonomyNodeIds(
-        taxonomyCatalog,
-        defaultPlanningTaxonomy?.taxonomy_id,
-        defaultTaxonomyNodeById,
-      ),
-    [defaultPlanningTaxonomy?.taxonomy_id, defaultTaxonomyNodeById, taxonomyCatalog],
-  )
   const activeRootTargetSets = useMemo(
     () =>
       (taxonomyCatalog?.target_sets ?? []).filter(
@@ -2931,14 +2737,12 @@ export default function RiskPage() {
         currentGroups: currentPlanningGroups,
         riskSharesByGroup: riskBudgetSharesByTopLevelGroup,
         nodeById: defaultTaxonomyNodeById,
-        cashLikeNodeIds: cashLikePlanningNodeIds,
         riskBudgetEligibleNodeIds,
         dimension: 'weight',
         baseCurrency: portfolioBaseCurrency,
       }),
     [
       activeRootSaaTargetSet,
-      cashLikePlanningNodeIds,
       currentPlanningGroups,
       defaultTaxonomyNodeById,
       portfolioBaseCurrency,
@@ -2956,14 +2760,12 @@ export default function RiskPage() {
         currentGroups: currentPlanningGroups,
         riskSharesByGroup: riskBudgetSharesByTopLevelGroup,
         nodeById: defaultTaxonomyNodeById,
-        cashLikeNodeIds: cashLikePlanningNodeIds,
         riskBudgetEligibleNodeIds,
         dimension: 'weight',
         baseCurrency: portfolioBaseCurrency,
       }),
     [
       activeRootTaaTargetSet,
-      cashLikePlanningNodeIds,
       currentPlanningGroups,
       defaultTaxonomyNodeById,
       portfolioBaseCurrency,
@@ -2982,14 +2784,12 @@ export default function RiskPage() {
         riskSharesByGroup: riskBudgetSharesByTopLevelGroup,
         riskShareErrors: topLevelRiskBudgetContributionResult.errors,
         nodeById: defaultTaxonomyNodeById,
-        cashLikeNodeIds: cashLikePlanningNodeIds,
         riskBudgetEligibleNodeIds,
         dimension: 'risk_budget',
         baseCurrency: portfolioBaseCurrency,
       }),
     [
       activeRootSaaTargetSet,
-      cashLikePlanningNodeIds,
       currentPlanningGroups,
       defaultTaxonomyNodeById,
       portfolioBaseCurrency,
@@ -3009,14 +2809,12 @@ export default function RiskPage() {
         riskSharesByGroup: riskBudgetSharesByTopLevelGroup,
         riskShareErrors: topLevelRiskBudgetContributionResult.errors,
         nodeById: defaultTaxonomyNodeById,
-        cashLikeNodeIds: cashLikePlanningNodeIds,
         riskBudgetEligibleNodeIds,
         dimension: 'risk_budget',
         baseCurrency: portfolioBaseCurrency,
       }),
     [
       activeRootTaaTargetSet,
-      cashLikePlanningNodeIds,
       currentPlanningGroups,
       defaultTaxonomyNodeById,
       portfolioBaseCurrency,
@@ -3369,9 +3167,9 @@ export default function RiskPage() {
                     </thead>
                     <tbody>
                       {analyticsScope.excluded_rows.map((row) => (
-                        <tr key={row.line_id ?? `${row.instrument_id}:${row.holding_region}`}>
+                        <tr key={row.line_id ?? `${row.instrument_id}:${row.holding_category}`}>
                           <td>{row.instrument_name ?? row.instrument_id ?? row.line_id ?? 'N/A'}</td>
-                          <td>{formatLabel(row.holding_region)}</td>
+                          <td>{formatLabel(row.holding_category)}</td>
                           <td>{row.exclusion_reason ?? 'No exclusion reason recorded.'}</td>
                           <td className="performance-cell-number">
                             {formatCurrency(row.exposure_base, holdingsWorkspace.base_currency)}

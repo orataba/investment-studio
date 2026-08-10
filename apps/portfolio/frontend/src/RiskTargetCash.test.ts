@@ -1,30 +1,11 @@
 import { describe, expect, it } from 'vitest'
 
-import { buildTargetGapRows } from './pages/RiskPage'
 import type {
   PortfolioTargetSetLineRecord,
   PortfolioTargetSetRecord,
   PortfolioTaxonomyNodeRecord,
 } from './lib/api'
-
-function node(
-  taxonomyNodeId: string,
-  nodeName: string,
-  overrides: Partial<PortfolioTaxonomyNodeRecord> = {},
-): PortfolioTaxonomyNodeRecord {
-  return {
-    taxonomy_node_id: taxonomyNodeId,
-    taxonomy_id: 'taxonomy-1',
-    parent_taxonomy_node_id: null,
-    node_name: nodeName,
-    node_code: null,
-    sort_order: 1,
-    is_terminal: true,
-    default_target_dimension: 'weight',
-    status: 'active',
-    ...overrides,
-  }
-}
+import { buildTargetGapRows } from './pages/RiskPage'
 
 function targetLine(
   targetLineId: string,
@@ -55,186 +36,78 @@ const targetSet: PortfolioTargetSetRecord = {
   status: 'active',
 }
 
-const riskAssetsNode = node('risk-assets', 'Risk Assets')
-const cashNode = node('cash-node', 'Cash', { node_code: 'CASH', sort_order: 2 })
-const cashChildNode = node('cash-child', 'Operating Liquidity', {
-  parent_taxonomy_node_id: 'cash-node',
-  sort_order: 3,
-})
-const assignmentCashNode = node('reserve-node', 'Reserve', { sort_order: 4 })
-const excludedDerivativeNode = node('derivatives', 'Structured Derivatives', { sort_order: 5 })
-const nodeById = new Map(
-  [riskAssetsNode, cashNode, cashChildNode, assignmentCashNode, excludedDerivativeNode].map(
-    (item) => [item.taxonomy_node_id, item] as const,
-  ),
-)
+const riskAssetsNode: PortfolioTaxonomyNodeRecord = {
+  taxonomy_node_id: 'risk-assets',
+  taxonomy_id: 'taxonomy-1',
+  parent_taxonomy_node_id: null,
+  node_name: 'Risk Assets',
+  node_code: null,
+  sort_order: 1,
+  is_terminal: true,
+  default_target_dimension: 'risk_budget',
+  status: 'active',
+}
+const nodeById = new Map([[riskAssetsNode.taxonomy_node_id, riskAssetsNode]])
 const currentGroups = [
   {
     groupKey: 'risk-assets',
     label: 'Risk Assets',
-    currentWeight: 0.7,
-    currentValueBase: 700,
-    hasMarketRiskInput: true,
-    hasCashLikeInput: false,
+    currentWeight: 0.65,
+    currentValueBase: 650,
   },
   {
-    groupKey: 'cash-node',
-    label: 'Cash',
-    currentWeight: 0.3,
-    currentValueBase: 300,
-    hasMarketRiskInput: false,
-    hasCashLikeInput: true,
+    groupKey: 'derivative_bucket:__derivatives__',
+    label: 'Derivatives',
+    currentWeight: 0.15,
+    currentValueBase: 150,
   },
+  {
+    groupKey: 'cash_bucket:__cash__',
+    label: 'Cash',
+    currentWeight: 0.2,
+    currentValueBase: 200,
+  },
+]
+const targetLines = [
+  targetLine('risk-line', 'taxonomy_node', 'risk-assets', 0.7, 1),
+  targetLine('derivative-line', 'derivative_bucket', '__derivatives__', 0.1, null),
+  targetLine('cash-line', 'cash_bucket', '__cash__', 0.2, null),
 ]
 const riskBudgetEligibleNodeIds = new Set(['risk-assets'])
 
-describe('Risk target cash boundary', () => {
-  it('filters direct cash buckets, cash nodes, and descendants before risk completeness and totals', () => {
+describe('Risk target system bucket boundary', () => {
+  it('compares fixed Derivatives and Cash members in the weight target gap', () => {
     const result = buildTargetGapRows({
       targetSet,
-      targetLines: [
-        targetLine('risk-line', 'taxonomy_node', 'risk-assets', 0.7, 1),
-        targetLine('cash-node-line', 'taxonomy_node', 'cash-node', 0.3, null),
-        targetLine('cash-child-line', 'taxonomy_node', 'cash-child', 0, 0),
-        targetLine('cash-bucket-line', 'cash_bucket', '__cash__', 0, 0),
-      ],
+      targetLines,
       currentGroups,
-      riskSharesByGroup: new Map([
-        ['risk-assets', 1],
-        ['cash-node', null],
+      riskSharesByGroup: new Map(),
+      nodeById,
+      riskBudgetEligibleNodeIds,
+      dimension: 'weight',
+      baseCurrency: 'USD',
+    })
+
+    expect(result.errors).toEqual([])
+    expect(result.value).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ key: 'risk-assets', label: 'Risk Assets', current: 0.65, target: 0.7 }),
+        expect.objectContaining({
+          key: 'derivative_bucket:__derivatives__',
+          label: 'Derivatives',
+          current: 0.15,
+          target: 0.1,
+        }),
+        expect.objectContaining({ key: 'cash_bucket:__cash__', label: 'Cash', current: 0.2, target: 0.2 }),
       ]),
-      nodeById,
-      riskBudgetEligibleNodeIds,
-      dimension: 'risk_budget',
-      baseCurrency: 'USD',
-    })
-
-    expect(result.errors).toEqual([])
-    expect(result.value).toHaveLength(1)
-    expect(result.value[0]).toMatchObject({
-      key: 'risk-assets',
-      label: 'Risk Assets',
-      current: 1,
-      target: 1,
-    })
+    )
   })
 
-  it('retains cash taxonomy nodes in the weight target gap', () => {
+  it('excludes Derivatives and Cash from risk-target completeness and comparison', () => {
     const result = buildTargetGapRows({
       targetSet,
-      targetLines: [
-        targetLine('risk-line', 'taxonomy_node', 'risk-assets', 0.7, 1),
-        targetLine('cash-node-line', 'taxonomy_node', 'cash-node', 0.3, null),
-      ],
+      targetLines,
       currentGroups,
-      riskSharesByGroup: new Map(),
-      nodeById,
-      riskBudgetEligibleNodeIds,
-      dimension: 'weight',
-      baseCurrency: 'USD',
-    })
-
-    expect(result.errors).toEqual([])
-    expect(result.value.map((row) => row.label)).toEqual(expect.arrayContaining(['Risk Assets', 'Cash']))
-  })
-
-  it('compares one direct cash bucket against aggregate current cash without double-counting taxonomy groups', () => {
-    const result = buildTargetGapRows({
-      targetSet,
-      targetLines: [
-        targetLine('risk-line', 'taxonomy_node', 'risk-assets', 1, 1),
-        targetLine('cash-bucket-line', 'cash_bucket', '__cash__', 0, 0),
-      ],
-      currentGroups: [
-        {
-          ...currentGroups[0],
-          marketWeight: 0.7,
-          marketValueBase: 700,
-          cashWeight: 0,
-          cashValueBase: 0,
-        },
-        {
-          ...currentGroups[1],
-          marketWeight: 0,
-          marketValueBase: 0,
-          cashWeight: 0.3,
-          cashValueBase: 300,
-        },
-      ],
-      riskSharesByGroup: new Map(),
-      nodeById,
-      riskBudgetEligibleNodeIds,
-      dimension: 'weight',
-      baseCurrency: 'USD',
-    })
-
-    expect(result.errors).toEqual([])
-    expect(result.value).toHaveLength(2)
-    expect(result.value.find((row) => row.label === 'Risk Assets')).toMatchObject({
-      current: 0.7,
-      target: 1,
-    })
-    expect(result.value.find((row) => row.label === 'Cash')).toMatchObject({
-      key: 'cash_bucket:__cash__',
-      current: 0.3,
-      target: 0,
-    })
-  })
-
-  it('filters an all-cash assignment subtree even when its label is not Cash', () => {
-    const result = buildTargetGapRows({
-      targetSet,
-      targetLines: [
-        targetLine('risk-line', 'taxonomy_node', 'risk-assets', 0.7, 1),
-        targetLine('reserve-line', 'taxonomy_node', 'reserve-node', 0.3, null),
-      ],
-      currentGroups,
-      riskSharesByGroup: new Map([['risk-assets', 1]]),
-      nodeById,
-      cashLikeNodeIds: new Set(['reserve-node']),
-      riskBudgetEligibleNodeIds,
-      dimension: 'risk_budget',
-      baseCurrency: 'USD',
-    })
-
-    expect(result.errors).toEqual([])
-    expect(result.value.map((row) => row.key)).toEqual(['risk-assets'])
-  })
-
-  it('returns an unavailable empty risk gap when a scope contains no risky members', () => {
-    const result = buildTargetGapRows({
-      targetSet,
-      targetLines: [],
-      currentGroups: [currentGroups[1]],
-      riskSharesByGroup: new Map(),
-      nodeById,
-      riskBudgetEligibleNodeIds,
-      dimension: 'risk_budget',
-      baseCurrency: 'USD',
-    })
-
-    expect(result.errors).toEqual([])
-    expect(result.value).toEqual([])
-  })
-
-  it('omits excluded target nodes and excluded current capital from eligible risk-budget drift', () => {
-    const result = buildTargetGapRows({
-      targetSet,
-      targetLines: [
-        targetLine('risk-line', 'taxonomy_node', 'risk-assets', 0.4, 1),
-        targetLine('derivative-line', 'taxonomy_node', 'derivatives', 0.6, 0.6),
-      ],
-      currentGroups: [
-        currentGroups[0],
-        {
-          groupKey: 'derivatives',
-          label: 'Structured Derivatives',
-          currentWeight: 0.6,
-          currentValueBase: 600,
-          hasMarketRiskInput: true,
-          hasCashLikeInput: false,
-        },
-      ],
       riskSharesByGroup: new Map([['risk-assets', 1]]),
       nodeById,
       riskBudgetEligibleNodeIds,
@@ -246,10 +119,27 @@ describe('Risk target cash boundary', () => {
     expect(result.value).toEqual([
       expect.objectContaining({
         key: 'risk-assets',
+        label: 'Risk Assets',
         current: 1,
         target: 1,
         gap: 0,
       }),
     ])
+  })
+
+  it('returns an empty risk gap when the scope has no risk-bearing members', () => {
+    const result = buildTargetGapRows({
+      targetSet,
+      targetLines: targetLines.slice(1),
+      currentGroups: currentGroups.slice(1),
+      riskSharesByGroup: new Map(),
+      nodeById,
+      riskBudgetEligibleNodeIds: new Set(),
+      dimension: 'risk_budget',
+      baseCurrency: 'USD',
+    })
+
+    expect(result.errors).toEqual([])
+    expect(result.value).toEqual([])
   })
 })

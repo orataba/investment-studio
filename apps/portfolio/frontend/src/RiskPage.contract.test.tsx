@@ -166,17 +166,6 @@ const taxonomyCatalog = {
       default_target_dimension: 'risk_budget',
       status: 'active',
     },
-    {
-      taxonomy_node_id: 'cash-node',
-      taxonomy_id: 'taxonomy-1',
-      parent_taxonomy_node_id: null,
-      node_name: 'Cash',
-      node_code: 'CASH',
-      sort_order: 2,
-      is_terminal: true,
-      default_target_dimension: 'weight',
-      status: 'active',
-    },
   ],
   taxonomy_assignments: [
     {
@@ -185,14 +174,6 @@ const taxonomyCatalog = {
       target_scope: 'instrument',
       target_entity_id: 'asset-1',
       taxonomy_node_id: 'risk-assets',
-      status: 'active',
-    },
-    {
-      assignment_id: 'assignment-cash',
-      taxonomy_id: 'taxonomy-1',
-      target_scope: 'cash_bucket',
-      target_entity_id: 'cash-1',
-      taxonomy_node_id: 'cash-node',
       status: 'active',
     },
   ],
@@ -263,12 +244,21 @@ const taxonomyCatalog = {
       target_risk_share: 1,
     },
     {
+      target_line_id: 'saa-derivatives',
+      target_set_id: 'saa-root',
+      target_member_type: 'derivative_bucket',
+      target_member_id: '__derivatives__',
+      taxonomy_node_id: null,
+      target_weight: 0.1,
+      target_risk_share: null,
+    },
+    {
       target_line_id: 'saa-cash',
       target_set_id: 'saa-root',
-      target_member_type: 'taxonomy_node',
-      target_member_id: 'cash-node',
-      taxonomy_node_id: 'cash-node',
-      target_weight: 0.3,
+      target_member_type: 'cash_bucket',
+      target_member_id: '__cash__',
+      taxonomy_node_id: null,
+      target_weight: 0.2,
       target_risk_share: null,
     },
     {
@@ -281,12 +271,21 @@ const taxonomyCatalog = {
       target_risk_share: 1,
     },
     {
+      target_line_id: 'taa-derivatives',
+      target_set_id: 'taa-root',
+      target_member_type: 'derivative_bucket',
+      target_member_id: '__derivatives__',
+      taxonomy_node_id: null,
+      target_weight: 0.1,
+      target_risk_share: null,
+    },
+    {
       target_line_id: 'taa-cash',
       target_set_id: 'taa-root',
-      target_member_type: 'taxonomy_node',
-      target_member_id: 'cash-node',
-      taxonomy_node_id: 'cash-node',
-      target_weight: 0.25,
+      target_member_type: 'cash_bucket',
+      target_member_id: '__cash__',
+      taxonomy_node_id: null,
+      target_weight: 0.15,
       target_risk_share: null,
     },
   ],
@@ -337,7 +336,34 @@ describe('Risk rendered page contract', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     apiMocks.getHoldingsWorkspace.mockResolvedValue(
-      holdingsWorkspaceFixture({ rows: [riskHolding], totals: { market_value: 800, day_change_pct: 0.01, day_change_value: 8, cost_basis: 700, allocation: 0.8 } }),
+      holdingsWorkspaceFixture({
+        rows: [
+          {
+            ...riskHolding,
+            market_value: 700,
+            market_value_base: 700,
+            allocation: 0.7,
+          },
+          holdingFixture({
+            line_id: 'holding:planning-fcn',
+            position_reference_id: 'planning-fcn',
+            derivative_contract_id: 'planning-fcn',
+            holding_category: 'derivatives',
+            holding_kind: 'derivative_contract',
+            instrument_core: null,
+            derivative_contract: fcnContractFixture({
+              derivative_contract_id: 'planning-fcn',
+              contract_name: 'Planning FCN',
+            }),
+            market_value: 100,
+            market_value_base: 100,
+            allocation: 0.1,
+            risk_eligible: false,
+            risk_budget_eligible: false,
+          }),
+        ],
+        totals: { market_value: 800, day_change_pct: null, day_change_value: null, cost_basis: null, allocation: 0.8 },
+      }),
     )
     apiMocks.getPortfolioAccountsWorkspace.mockResolvedValue(accountsWorkspace)
     apiMocks.getPortfolioTaxonomyCatalog.mockResolvedValue(taxonomyCatalog)
@@ -370,6 +396,7 @@ describe('Risk rendered page contract', () => {
           line_id: 'holding:fcn-1',
           position_reference_id: 'fcn-1',
           derivative_contract_id: 'fcn-1',
+          holding_category: 'derivatives',
           instrument_core: null,
           derivative_contract: fcnContractFixture({
             derivative_contract_id: 'fcn-1',
@@ -430,7 +457,7 @@ describe('Risk rendered page contract', () => {
     expect(result.value.statusLabel).toBe('Daily risk basis')
   })
 
-  it('shows cash in capital drift, excludes it from risk drift, and compares SAA with TAA', async () => {
+  it('shows Cash and Derivatives in weight drift but excludes both from risk drift', async () => {
     renderRiskPage()
 
     const weightGap = await screen.findByRole('img', { name: 'Weight target drift' })
@@ -438,9 +465,10 @@ describe('Risk rendered page contract', () => {
     const riskHealth = screen.getByRole('region', { name: 'Risk health' })
 
     expect(within(weightGap).getByText('Cash')).toBeInTheDocument()
-    expect(within(weightGap).getByText('30.00%')).toBeInTheDocument()
-    expect(within(weightGap).getByText('25.00%')).toBeInTheDocument()
+    expect(within(weightGap).getByText('Derivatives')).toBeInTheDocument()
+    expect(within(weightGap).getAllByText('10.00%').length).toBeGreaterThan(0)
     expect(within(riskGap).queryByText('Cash')).not.toBeInTheDocument()
+    expect(within(riskGap).queryByText('Derivatives')).not.toBeInTheDocument()
     expect(within(riskGap).getByText('Risk Assets')).toBeInTheDocument()
     expect(within(riskGap).getAllByText('100.00%')).toHaveLength(3)
     expect(within(riskHealth).getByText('Modeled Market Sleeve Volatility')).toBeInTheDocument()

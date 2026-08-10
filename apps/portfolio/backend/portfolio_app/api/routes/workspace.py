@@ -300,15 +300,18 @@ def _enrich_holdings_analytics_scope(
             taxonomy_selection_versions.add(taxonomy_selection_version)
 
         holding_kind = str(row.get("holding_kind") or "position")
-        if holding_kind == "option_obligation":
-            holding_region = "written_option_obligations"
-        elif is_cash_or_settlement:
-            holding_region = "cash_and_settlement"
-        elif instrument_type in {"fcn", "option"}:
-            holding_region = "structured_and_long_derivatives"
+        if is_cash_or_settlement:
+            holding_category = "cash_and_settlement"
+        elif (
+            holding_kind in {"derivative_contract", "option_obligation"}
+            or instrument_type in {"fcn", "option"}
+            or bool(row.get("derivative_contract_id"))
+            or isinstance(row.get("derivative_contract"), dict)
+        ):
+            holding_category = "derivatives"
         else:
-            holding_region = "market_valued_positions"
-        row["holding_region"] = holding_region
+            holding_category = "securities"
+        row["holding_category"] = holding_category
 
         exposure = (
             float(row["market_value_base"])
@@ -336,7 +339,7 @@ def _enrich_holdings_analytics_scope(
                         "line_id": row.get("line_id"),
                         "instrument_id": instrument_core.get("instrument_id"),
                         "instrument_name": instrument_core.get("instrument_name"),
-                        "holding_region": holding_region,
+                        "holding_category": holding_category,
                         "exposure_base": exposure,
                         "exclusion_reason": row.get("exclusion_reason"),
                         "scope_status": row.get("scope_status"),

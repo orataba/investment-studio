@@ -199,6 +199,19 @@ def _holding_row_is_cash(row: dict[str, object]) -> bool:
     )
 
 
+def _holding_row_is_derivative(row: dict[str, object]) -> bool:
+    instrument_core = row.get("instrument_core") if isinstance(row.get("instrument_core"), dict) else {}
+    return (
+        row.get("holding_category") == "derivatives"
+        or str(row.get("holding_kind") or "").strip().lower()
+        in {"derivative_contract", "option_obligation"}
+        or str(instrument_core.get("instrument_type") or "").strip().lower()
+        in {"fcn", "option"}
+        or bool(row.get("derivative_contract_id"))
+        or isinstance(row.get("derivative_contract"), dict)
+    )
+
+
 def _row_label(row: dict[str, object]) -> str:
     instrument_core = row.get("instrument_core") if isinstance(row.get("instrument_core"), dict) else {}
     return str(
@@ -350,12 +363,14 @@ def _validate_aligned_return_periods(
             )
 
 
-def _clear_forward_risk_fields(row: dict[str, object], *, cash: bool = False) -> None:
-    row["forward_risk_share"] = 0.0 if cash else None
-    row["forward_contribution_to_variance"] = 0.0 if cash else None
-    row["forward_annualized_volatility"] = 0.0 if cash else None
-    row["forward_risk_observation_count"] = 0 if cash else None
-    row["forward_risk_status"] = "cash" if cash else "unavailable"
+def _clear_forward_risk_fields(
+    row: dict[str, object], *, modeled_zero: bool = False
+) -> None:
+    row["forward_risk_share"] = 0.0 if modeled_zero else None
+    row["forward_contribution_to_variance"] = 0.0 if modeled_zero else None
+    row["forward_annualized_volatility"] = 0.0 if modeled_zero else None
+    row["forward_risk_observation_count"] = 0 if modeled_zero else None
+    row["forward_risk_status"] = "modeled_zero" if modeled_zero else "unavailable"
 
 
 def _forward_risk_scope_disclosure(
@@ -429,23 +444,39 @@ def enrich_holdings_forward_risk(
         instrument_currency = str(instrument_core.get("currency") or "").strip().upper()
         market_value = _safe_float(raw_row.get("market_value_base"))
         has_exposure = abs(market_value or 0.0) > 1e-9
+        is_derivative = _holding_row_is_derivative(raw_row)
+        is_cash = _holding_row_is_cash(raw_row)
+        is_pending = is_pending_monetary_holding(raw_row)
+        is_base_currency_monetary = not has_exposure or (
+            base_currency and instrument_currency == base_currency
+        )
         if raw_row.get("risk_eligible") is not True:
-            _clear_forward_risk_fields(raw_row)
-            raw_row["forward_risk_status"] = (
-                "pending_settlement"
-                if is_pending_monetary_holding(raw_row)
-                else "cash_unallocated"
-                if _holding_row_is_cash(raw_row)
-                else "policy_excluded"
+            modeled_zero = is_derivative or (
+                (is_cash or is_pending) and is_base_currency_monetary
             )
+            _clear_forward_risk_fields(raw_row, modeled_zero=modeled_zero)
+            if not modeled_zero:
+                raw_row["forward_risk_status"] = (
+                    "pending_settlement"
+                    if is_pending
+                    else "cash_unallocated"
+                    if is_cash
+                    else "policy_excluded"
+                )
             continue
-        if is_pending_monetary_holding(raw_row):
-            _clear_forward_risk_fields(raw_row)
-            raw_row["forward_risk_status"] = "pending_settlement"
+        if is_derivative:
+            _clear_forward_risk_fields(raw_row, modeled_zero=True)
             continue
-        if _holding_row_is_cash(raw_row):
-            if not has_exposure or (base_currency and instrument_currency == base_currency):
-                _clear_forward_risk_fields(raw_row, cash=True)
+        if is_pending:
+            _clear_forward_risk_fields(
+                raw_row, modeled_zero=is_base_currency_monetary
+            )
+            if not is_base_currency_monetary:
+                raw_row["forward_risk_status"] = "pending_settlement"
+            continue
+        if is_cash:
+            if is_base_currency_monetary:
+                _clear_forward_risk_fields(raw_row, modeled_zero=True)
             else:
                 _clear_forward_risk_fields(raw_row)
                 errors.append(

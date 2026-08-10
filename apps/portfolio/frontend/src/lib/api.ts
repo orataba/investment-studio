@@ -66,6 +66,7 @@ export type WorkspaceSection = {
 }
 
 export type TaxonomyAssignmentScope = 'instrument' | 'account' | 'cash_bucket'
+export type PortfolioTargetMemberType = 'taxonomy_node' | TaxonomyAssignmentScope | 'derivative_bucket'
 
 export type PortfolioWorkspaceSummary = {
   portfolio_id: string
@@ -420,10 +421,9 @@ export type PortfolioForwardRiskSummary = {
   } | null
 }
 
-export type PortfolioHoldingRegion =
-  | 'market_valued_positions'
-  | 'structured_and_long_derivatives'
-  | 'written_option_obligations'
+export type PortfolioHoldingCategory =
+  | 'securities'
+  | 'derivatives'
   | 'cash_and_settlement'
 
 export type PortfolioPerformanceScope =
@@ -436,7 +436,7 @@ export type PortfolioAnalyticsScopeExcludedRow = {
   line_id: string | null
   instrument_id: string | null
   instrument_name: string | null
-  holding_region: PortfolioHoldingRegion
+  holding_category: PortfolioHoldingCategory
   exposure_base: number
   exclusion_reason: string | null
   scope_status: string
@@ -689,7 +689,7 @@ export type PortfolioContributionReportResponse = {
 
 export type PortfolioHoldingRow = {
   line_id: string
-  holding_region: PortfolioHoldingRegion
+  holding_category: PortfolioHoldingCategory
   holding_kind?:
     | 'position'
     | 'derivative_contract'
@@ -1059,7 +1059,7 @@ export type PortfolioTargetSetRecord = {
 export type PortfolioTargetSetLineRecord = {
   target_line_id: string
   target_set_id: string
-  target_member_type: 'taxonomy_node' | TaxonomyAssignmentScope
+  target_member_type: PortfolioTargetMemberType
   target_member_id: string
   taxonomy_node_id?: string | null
   target_weight?: number | null
@@ -1793,7 +1793,7 @@ export type PortfolioTaxonomyAssignmentUpdatePayload = {
 }
 
 export type PortfolioTargetSetLinePayload = {
-  target_member_type: 'taxonomy_node' | TaxonomyAssignmentScope
+  target_member_type: PortfolioTargetMemberType
   target_member_id: string
   taxonomy_node_id?: string | null
   target_weight?: number | null
