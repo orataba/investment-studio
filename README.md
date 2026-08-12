@@ -130,7 +130,7 @@ ENV_ROOT="$HOME/.config/orataba/secrets/portfolio-operations-workbench" \
 - `platform` backend 直接使用共享表，但不拥有 Registry 的迁移入口；`apps/platform/backend/alembic` 只管理私有 `platform` schema。
 - 统一迁移入口会在 destructive NAV cleanup 前先建立 Platform 原始证据表，不要把它替换为各 migration chain 无序的独立 `upgrade head`。
 - 本机现有真实数据库不要直接运行上述命令；使用
-  `PORTFOLIO_OPS_LOCAL_DATABASE_URL='postgresql://portfolio_ops@127.0.0.1:5432/portfolio_ops' infra/launchd/install_local_services.sh`，由安装器统一停写、备份四个 schema、迁移、执行 31 项只读完整性审计、失败恢复和健康检查。
+  `PORTFOLIO_OPS_LOCAL_DATABASE_URL='postgresql://portfolio_ops@127.0.0.1:5432/portfolio_ops' infra/launchd/install_local_services.sh`，由安装器统一停写、备份四个 schema、迁移、重建因版本或输入血缘失效的 Portfolio 派生快照、执行只读完整性审计、失败恢复和健康检查。
 - `portfolio@20260809_0045` 会改写 FCN 生命周期事实，后续 clean-cut migrations 也删除旧模型；这些 revision 明确拒绝 downgrade。恢复必须使用安装器生成的迁移前四 schema 备份。
 
 如果本地库已经跑脏或迁移链断过，直接执行：

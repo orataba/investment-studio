@@ -61,7 +61,7 @@ manual/API/email observations.
 For the managed local database, use `infra/launchd/install_local_services.sh`
 instead. It stops all managed writers, creates and retains a verified backup of
 all four schemas, runs the ordered migration, restores the backup automatically
-if migration, the 31-check read-only integrity audit, or deployment fails, and
+if migration, release snapshot refresh, the read-only integrity audit, or deployment fails, and
 only resumes service after health checks.
 Migration `portfolio@20260809_0045` rewrites derivative lifecycle facts and is
 data-irreversible; it now refuses Alembic downgrade because schema shape alone

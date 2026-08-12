@@ -21,6 +21,7 @@ prepare_case() {
     "$project_root/apps/platform/frontend/dist" \
     "$project_root/apps/watchlist/frontend/dist" \
     "$project_root/apps/portfolio/frontend/dist" \
+    "$project_root/apps/portfolio/backend/scripts" \
     "$mock_bin" \
     "$plist_root" \
     "$env_root" \
@@ -60,6 +61,14 @@ prepare_case() {
     'with Path(os.environ["EVENT_LOG"]).open("a", encoding="utf-8") as handle:' \
     '    handle.write("audit\n")' \
     > "$project_root/infra/scripts/audit_live_data.py"
+  printf '%s\n' \
+    'from __future__ import annotations' \
+    'import os' \
+    'from pathlib import Path' \
+    'with Path(os.environ["EVENT_LOG"]).open("a", encoding="utf-8") as handle:' \
+    '    handle.write("snapshot-refresh\n")' \
+    'raise SystemExit(1 if os.environ.get("SNAPSHOT_REFRESH_FAIL") == "true" else 0)' \
+    > "$project_root/apps/portfolio/backend/scripts/refresh_release_snapshots.py"
 
   printf '%s\n' '#!/usr/bin/env bash' 'printf "%s\n" Darwin' > "$mock_bin/uname"
   printf '%s\n' '#!/usr/bin/env bash' 'exit 0' > "$mock_bin/node"
@@ -250,6 +259,25 @@ if grep -q '^credential-in-argv$' "$EVENT_LOG"; then
   echo "Launchd migration put database credentials in a child-process argument." >&2
   exit 1
 fi
+
+SNAPSHOT_REFRESH_CASE="$TEST_ROOT/snapshot-refresh-failure"
+prepare_case "$SNAPSHOT_REFRESH_CASE"
+export EVENT_LOG="$SNAPSHOT_REFRESH_CASE/events"
+set +e
+SNAPSHOT_REFRESH_FAIL=true FAIL_ROLLBACK=false run_installer "$SNAPSHOT_REFRESH_CASE" \
+  > "$SNAPSHOT_REFRESH_CASE/output" 2>&1
+snapshot_refresh_status=$?
+set -e
+[[ $snapshot_refresh_status -ne 0 ]]
+grep -q '^backup$' "$EVENT_LOG"
+grep -q '^migrate$' "$EVENT_LOG"
+grep -q '^snapshot-refresh$' "$EVENT_LOG"
+if grep -q '^audit$' "$EVENT_LOG"; then
+  echo "Installer ran the audit after a failed snapshot refresh." >&2
+  exit 1
+fi
+grep -q '^restore$' "$EVENT_LOG"
+assert_old_plists_restored "$SNAPSHOT_REFRESH_CASE"
 
 ROLLBACK_CASE="$TEST_ROOT/rollback-failure"
 prepare_case "$ROLLBACK_CASE"

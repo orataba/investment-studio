@@ -7,6 +7,7 @@ from portfolio_ops_instrument_core.db_models import Instrument
 from portfolio_app.db.models import PortfolioCalculationStateModel, PortfolioDailySnapshotModel
 from portfolio_app.db.session import get_session_factory
 from portfolio_app.services import daily_snapshots
+from scripts import refresh_release_snapshots
 
 
 def _published_snapshot_fingerprint() -> list[tuple[object, str, dict[str, object]]]:
@@ -116,6 +117,34 @@ def test_legacy_calculation_version_forces_full_snapshot_rebuild(monkeypatch) ->
             row.snapshot_json["calculation_version"]
             == daily_snapshots.DAILY_SNAPSHOT_CALCULATION_VERSION
             for row in rows
+        )
+
+
+def test_release_refresh_rebuilds_stale_source_lineage() -> None:
+    baseline = daily_snapshots._run_portfolio_daily_snapshot_recalculation_synchronously(
+        "portfolio-ops"
+    )
+    assert baseline is not None
+
+    session_factory = get_session_factory()
+    with session_factory() as session:
+        instrument = session.get(Instrument, "equity-us-abbv")
+        state = session.get(PortfolioCalculationStateModel, "portfolio-ops")
+        assert instrument is not None
+        assert state is not None
+        instrument.calculation_inputs_updated_at = "2099-01-01T00:00:00.000001Z"
+        state.daily_snapshot_status = "current"
+        session.commit()
+
+    assert refresh_release_snapshots.main() == 0
+
+    with session_factory() as session:
+        state = session.get(PortfolioCalculationStateModel, "portfolio-ops")
+        assert state is not None
+        assert state.daily_snapshot_status == "current"
+        assert (
+            state.source_calculation_inputs_updated_at
+            == "2099-01-01T00:00:00.000001Z"
         )
 
 
