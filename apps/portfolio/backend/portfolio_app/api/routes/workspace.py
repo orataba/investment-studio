@@ -835,9 +835,6 @@ def workspace_summary(portfolio_id: str | None = None) -> dict[str, object]:
         "toolbar_label": "View: Portfolio Summary",
         "badges": [
             calculation_frequency_status,
-            "Ledger and performance kernel live",
-            "Planning taxonomy and target sets live",
-            "Current research target-weight solve live",
         ],
         "sections": [
             {"label": "Holdings", "href": "/holdings", "status": "api-backed"},
@@ -884,7 +881,6 @@ def holdings_workspace(
     resolved_portfolio_id = str(resolved_portfolio["portfolio_id"])
     transactions = list_transactions(resolved_portfolio_id)
     risk_policy = get_portfolio_risk_policy(resolved_portfolio_id)
-    requested_risk_frequency = str((risk_policy or {}).get("calculation_frequency") or "auto")
     materialized_workspace = get_cached_materialized_holdings_workspace(
         resolved_portfolio_id,
         as_of_date=resolved_as_of_date,
@@ -896,7 +892,6 @@ def holdings_workspace(
             risk_basis_profile = calculation_frequency_profile_for_instruments(
                 instrument_ids,
                 end_date=resolved_as_of_date,
-                requested_frequency=requested_risk_frequency,
                 detail_loader=instrument_details.get,
             )
             calculation_frequency = cast(CalculationFrequency, str(risk_basis_profile.get("resolved_frequency") or "daily"))
@@ -987,7 +982,6 @@ def holdings_workspace(
         risk_basis_profile = calculation_frequency_profile_for_instruments(
             instrument_ids,
             end_date=resolved_as_of_date,
-            requested_frequency=requested_risk_frequency,
             detail_loader=instrument_details.get,
         )
         calculation_frequency = cast(CalculationFrequency, str(risk_basis_profile.get("resolved_frequency") or "daily"))

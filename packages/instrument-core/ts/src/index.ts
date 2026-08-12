@@ -7,7 +7,7 @@ export type InstrumentType =
   | 'fx'
   | 'other'
 export type BrokerIdentifierType = 'symbol' | 'product_code'
-export type ExpectedFrequency = 'daily' | 'weekly' | 'monthly' | 'event_driven'
+export type ExpectedFrequency = 'daily' | 'event_driven'
 export type SourceMode = 'manual' | 'email' | 'api'
 export type ReturnSemantics = 'unknown' | 'price_return' | 'total_return'
 export type IdentifierType =

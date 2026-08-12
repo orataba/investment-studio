@@ -253,6 +253,52 @@ def test_position_summary_does_not_count_event_carried_derivative_as_priced() ->
     }
 
 
+def test_derivative_opening_balance_establishes_coupon_entitlement() -> None:
+    accounts = [
+        {
+            "account_id": "broker",
+            "account_type": "securities_account",
+            "cost_basis_method": "fifo",
+        }
+    ]
+    opening_balance = _transaction(
+        "txn-90",
+        "opening_balance",
+        "2026-01-01",
+        instrument_id="fcn-1",
+        instrument_type="fcn",
+        quantity=1,
+        price=100_000,
+        gross_amount=100_000,
+    )
+    coupon = _transaction(
+        "txn-91",
+        "coupon",
+        "2026-03-31",
+        instrument_id="fcn-1",
+        instrument_type="fcn",
+        gross_amount=2_000,
+    )
+    coupon["entitlement_date"] = "2026-03-30"
+
+    validate_transaction_position_history(
+        "portfolio",
+        [opening_balance, coupon],
+        account_cost_methods={"broker": "fifo"},
+    )
+    lots = build_position_lots(
+        "portfolio",
+        accounts,
+        [opening_balance, coupon],
+        as_of_date=date(2026, 3, 31),
+        resolve_pricing=False,
+    )
+
+    assert len(lots) == 1
+    assert lots[0]["derivative_contract_id"] == "fcn-1"
+    assert lots[0]["income_cash_amount"] == pytest.approx(2_000.0)
+
+
 def test_simulated_stock_fund_option_and_fcn_chain_uses_independent_facts() -> None:
     accounts = [
         {

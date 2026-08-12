@@ -469,10 +469,8 @@ def test_period_group_return_fails_closed_on_active_incomplete_row() -> None:
     assert contracts["asset-1"]["observation_count"] == 1
 
 
-@pytest.mark.parametrize("calculation_frequency", ["daily", "weekly"])
-def test_realized_risk_attribution_golden_contract(
-    calculation_frequency: str,
-) -> None:
+def test_realized_risk_attribution_golden_contract() -> None:
+    calculation_frequency = "daily"
     daily_rows = [
         (date(2026, 1, 5), 0.10, 0.06, 0.04),
         (date(2026, 1, 6), 0.10, 0.04, 0.06),

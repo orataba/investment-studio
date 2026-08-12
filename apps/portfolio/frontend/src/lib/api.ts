@@ -383,8 +383,8 @@ export type PortfolioPerformanceCalculationResponse = {
 }
 
 export type PortfolioContributionAxis = 'instrument' | 'account' | 'instrument_type' | 'currency' | 'taxonomy'
-export type PortfolioCalculationFrequency = 'daily' | 'weekly' | 'monthly'
-export type PortfolioRiskCalculationFrequency = 'auto' | PortfolioCalculationFrequency
+export type PortfolioCalculationFrequency = 'daily'
+export type PortfolioRiskCalculationFrequency = 'daily'
 export type PortfolioRiskCovarianceModel =
   | 'ewma_vol_shrinkage_corr_covariance'
   | 'ewma_covariance'
@@ -896,7 +896,7 @@ export type HoldingsWorkspaceResponse = {
   coverage_note: string
   quality_warnings: string[]
   risk_basis?: {
-    requested_frequency: 'auto' | PortfolioCalculationFrequency
+    requested_frequency: PortfolioCalculationFrequency
     resolved_frequency: PortfolioCalculationFrequency
     default_frequency: PortfolioCalculationFrequency
     source_frequency_counts: Record<string, number>
@@ -1131,7 +1131,7 @@ export type PortfolioTaxonomyCatalogResponse = {
   portfolio_id: string
   default_planning_taxonomy_id?: string | null
   risk_basis?: {
-    requested_frequency: 'auto' | PortfolioCalculationFrequency
+    requested_frequency: PortfolioCalculationFrequency
     resolved_frequency: PortfolioCalculationFrequency
     default_frequency: PortfolioCalculationFrequency
     source_frequency_counts: Record<string, number>
@@ -1173,7 +1173,7 @@ export type PortfolioResearchInstrumentEligibilityUpdatePayload = {
 export type PortfolioResearchRunStatus = 'running' | 'completed' | 'failed'
 export type PortfolioResearchTargetDimension = 'scope_default' | 'weight' | 'risk_budget'
 export type PortfolioResearchCapitalMode = 'unit_notional' | 'fixed_gross' | 'target_volatility' | 'volatility_cap'
-export type PortfolioResearchCalculationFrequency = 'auto' | 'daily' | 'weekly' | 'monthly'
+export type PortfolioResearchCalculationFrequency = 'daily'
 export type PortfolioResearchMissingReturnPolicy = 'strict' | 'complete_case_drop'
 export type PortfolioResearchBacktestRebalanceFrequency = '1w' | '1m' | '3m'
 export type PortfolioResearchArtifactPreviewKind = 'text' | 'html' | 'binary'
@@ -1282,11 +1282,11 @@ export type PortfolioResearchContextSignalRecord = {
 
 export type PortfolioResearchCalculationFrequencyProfile = {
   requested_frequency: PortfolioResearchCalculationFrequency
-  resolved_frequency: Exclude<PortfolioResearchCalculationFrequency, 'auto'>
-  default_frequency: Exclude<PortfolioResearchCalculationFrequency, 'auto'>
+  resolved_frequency: PortfolioResearchCalculationFrequency
+  default_frequency: PortfolioResearchCalculationFrequency
   source_frequency_counts: Record<string, number>
   options: Array<{
-    frequency: Exclude<PortfolioResearchCalculationFrequency, 'auto'>
+    frequency: PortfolioResearchCalculationFrequency
     label: string
     available: boolean
     reason?: string | null
@@ -1447,7 +1447,7 @@ export type PortfolioResearchSolveEventRecord = {
   dropped_return_rows?: Array<{ date: string; missing_members: string[] }> | null
   latest_complete_return_date?: string | null
   trailing_complete_return_staleness_days?: number | null
-  calculation_frequency?: Exclude<PortfolioResearchCalculationFrequency, 'auto'> | null
+  calculation_frequency?: PortfolioResearchCalculationFrequency | null
   gap_turnover?: number | null
   current_weight_total?: number | null
   target_weight_total?: number | null

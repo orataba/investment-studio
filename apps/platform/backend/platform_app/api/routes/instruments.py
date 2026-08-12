@@ -178,6 +178,7 @@ def create_instrument_record(
 def update_instrument_quote_selection_policy(
     instrument_id: str,
     payload: PlatformQuoteSelectionPolicyUpdateRequest,
+    background_tasks: BackgroundTasks,
 ) -> PlatformInstrumentRecord:
     try:
         record = upsert_quote_selection_policy(
@@ -188,6 +189,11 @@ def update_instrument_quote_selection_policy(
         raise HTTPException(status_code=400, detail=str(error)) from error
     if record is None:
         raise HTTPException(status_code=404, detail="Instrument not found")
+    queue_market_data_downstream_refresh(
+        background_tasks,
+        instrument_ids=[instrument_id],
+        refresh_all_portfolios=instrument_id.startswith("fx-"),
+    )
     return PlatformInstrumentRecord.model_validate(record)
 
 
@@ -555,6 +561,7 @@ def upsert_instrument_market_data(
 def update_instrument_source_settings(
     instrument_id: str,
     payload: PlatformSourceSettingsUpdateRequest,
+    background_tasks: BackgroundTasks,
 ) -> PlatformInstrumentRecord:
     optional_semantics: dict[str, object] = {}
     if payload.expected_frequency is not None:
@@ -583,6 +590,11 @@ def update_instrument_source_settings(
         raise HTTPException(status_code=400, detail=str(error)) from error
     if record is None:
         raise HTTPException(status_code=404, detail="Instrument not found")
+    queue_market_data_downstream_refresh(
+        background_tasks,
+        instrument_ids=[instrument_id],
+        refresh_all_portfolios=instrument_id.startswith("fx-"),
+    )
     return PlatformInstrumentRecord.model_validate(record)
 
 

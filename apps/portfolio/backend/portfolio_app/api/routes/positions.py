@@ -36,7 +36,10 @@ def list_portfolio_positions(
         raise HTTPException(status_code=404, detail="Portfolio not found")
 
     accounts = list_accounts(portfolio_id)
-    transactions = list_transactions(portfolio_id, end_date=as_of_date)
+    # Economic recognition can precede the recorded trade/payment date (for
+    # example a late-recorded dividend with an earlier entitlement date).  The
+    # canonical builders apply the as-of boundary on that economic date.
+    transactions = list_transactions(portfolio_id)
     try:
         positions = build_portfolio_positions(
             portfolio_id,
@@ -65,7 +68,7 @@ def list_portfolio_position_lots(
         raise HTTPException(status_code=404, detail="Portfolio not found")
 
     accounts = list_accounts(portfolio_id)
-    transactions = list_transactions(portfolio_id, end_date=as_of_date)
+    transactions = list_transactions(portfolio_id)
     try:
         position_lots = build_position_lots(
             portfolio_id,

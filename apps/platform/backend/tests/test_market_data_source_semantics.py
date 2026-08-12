@@ -70,6 +70,14 @@ def test_source_schedule_contract_validates_frequency_calendar_and_release_lag()
         contracts.PlatformSourceSettingsUpdateRequest.model_validate(
             {"expected_frequency": "quarterly"}
         )
+    with pytest.raises(ValidationError, match="expected_frequency"):
+        contracts.PlatformSourceSettingsUpdateRequest.model_validate(
+            {"expected_frequency": "weekly"}
+        )
+    with pytest.raises(ValidationError, match="expected_frequency"):
+        contracts.PlatformSourceSettingsUpdateRequest.model_validate(
+            {"expected_frequency": "monthly"}
+        )
 
 
 def test_source_schedule_api_forwards_and_returns_all_semantics(

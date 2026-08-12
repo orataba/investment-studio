@@ -19,8 +19,6 @@ from portfolio_app.services.analytics_scope import (
 from portfolio_app.services.calculation_frequency import (
     CalculationFrequency,
     calculation_frequency_profile,
-    infer_observation_frequency,
-    period_end_date,
 )
 from portfolio_app.services import holdings_market_profile, valuation_fx
 from portfolio_app.services.instrument_registry import (
@@ -72,20 +70,6 @@ RESEARCH_COVARIANCE_FREQUENCY_PARAMETERS: dict[CalculationFrequency, dict[str, o
         "corr_shrinkage": 0.15,
         "max_period_staleness_days": 0,
     },
-    "weekly": {
-        "min_observations": 9,
-        "vol_decay": 0.9737,
-        "corr_min_observations": 9,
-        "corr_shrinkage": 0.15,
-        "max_period_staleness_days": 4,
-    },
-    "monthly": {
-        "min_observations": 3,
-        "vol_decay": 0.8909,
-        "corr_min_observations": 3,
-        "corr_shrinkage": 0.15,
-        "max_period_staleness_days": 7,
-    },
 }
 RESEARCH_MIN_OBSERVATION_COVERAGE_RATIO = 0.75
 RESEARCH_WINDOW_MONTHS_BY_LOOKBACK_DAYS = {
@@ -97,8 +81,6 @@ RESEARCH_WINDOW_MONTHS_BY_LOOKBACK_DAYS = {
 }
 RESEARCH_OBSERVATIONS_PER_MONTH_BY_FREQUENCY: dict[CalculationFrequency, float] = {
     "daily": 20.0,
-    "weekly": 4.0,
-    "monthly": 1.0,
 }
 RESEARCH_RISK_CONTRIBUTION_MODE = "signed"
 RESEARCH_MAX_RISK_BUDGET_SHARE_GAP = 1e-4
@@ -111,8 +93,6 @@ RESEARCH_DEFAULT_MISSING_RETURN_POLICY = MISSING_RETURN_POLICY_STRICT
 RESEARCH_COMPLETE_CASE_DROP_MAX_MISSING_ROW_FRACTION = 0.10
 RESEARCH_COMPLETE_CASE_DROP_MAX_TRAILING_STALENESS_DAYS: dict[CalculationFrequency, int] = {
     "daily": 5,
-    "weekly": 14,
-    "monthly": 62,
 }
 SUPPORTED_RESEARCH_LOOKBACK_DAYS = frozenset(RESEARCH_WINDOW_MONTHS_BY_LOOKBACK_DAYS)
 RESEARCH_BACKTEST_METHODOLOGY_WARNINGS: tuple[str, ...] = (
@@ -1845,14 +1825,6 @@ def _resolve_volatility_overlay_gross_exposure(
     return min(target_gross, max_gross)
 
 
-def _series_observation_frequency(series: pd.Series) -> CalculationFrequency:
-    return infer_observation_frequency(_index_dates(series.index))
-
-
-def _max_period_staleness_days(calculation_frequency: CalculationFrequency) -> int:
-    return int(_research_covariance_parameters(calculation_frequency).get("max_period_staleness_days", 0))
-
-
 def _periodic_nav_series(
     series: pd.Series,
     *,
@@ -1865,27 +1837,8 @@ def _periodic_nav_series(
     visible = series.loc[(series.index >= start_date) & (series.index <= end_date)].sort_index()
     if visible.empty:
         return pd.Series(dtype="float64")
-    rows: dict[date, tuple[date, float]] = {}
-    for raw_date, raw_value in visible.items():
-        point_date = raw_date if isinstance(raw_date, date) else pd.Timestamp(raw_date).date()
-        point_value = _safe_float(raw_value)
-        if point_value is None:
-            continue
-        target_date = period_end_date(point_date, calculation_frequency, final_date=end_date)
-        current = rows.get(target_date)
-        if current is None or point_date >= current[0]:
-            rows[target_date] = (point_date, point_value)
-    if calculation_frequency != "daily":
-        max_stale_days = _max_period_staleness_days(calculation_frequency)
-        for target_date, (point_date, _point_value) in rows.items():
-            stale_days = (target_date - point_date).days
-            if stale_days >= max_stale_days:
-                raise ValueError(
-                    f"{calculation_frequency.title()} research alignment found a stale observation: "
-                    f"period ending {target_date.isoformat()} uses {point_date.isoformat()} "
-                    f"({stale_days} days old)."
-                )
-    return pd.Series({target_date: value for target_date, (_point_date, value) in rows.items()}, dtype="float64").sort_index()
+    del calculation_frequency
+    return visible.map(_safe_float).astype("float64")
 
 
 def _periodic_series_by_member(
@@ -1960,6 +1913,13 @@ def _align_member_series(
         raw_series = nav_series_by_member[(member.member_type, member.member_id)].sort_index()
         periodic_series = periodic_nav_series_by_member[(member.member_type, member.member_id)]
         aligned = periodic_series.reindex(calendar)
+        if member.member_type == TARGET_MEMBER_INSTRUMENT:
+            aligned = (
+                periodic_series.reindex(periodic_series.index.union(calendar))
+                .sort_index()
+                .ffill()
+                .reindex(calendar)
+            )
         first_valid_index = aligned.first_valid_index()
         if first_valid_index is None:
             raise ValueError(f"{member.label} does not have enough history for aligned research dates.")
@@ -2262,18 +2222,17 @@ def _scope_members(
     return members, "direct_members"
 
 
-def _scope_source_frequencies(
+def _scope_instrument_count(
     state: TaxonomyResearchState,
     *,
     scope_node_id: str | None,
     start_date: date,
     end_date: date,
-) -> list[CalculationFrequency]:
+) -> int:
     if scope_node_id is None:
         node_ids = set(state.node_by_id)
     else:
         node_ids = state.node_subtree_by_id.get(scope_node_id, {scope_node_id})
-    frequencies: list[CalculationFrequency] = []
     seen_instrument_ids: set[str] = set()
     for node_id in node_ids:
         for assignment in state.direct_assignments_by_node.get(node_id, []):
@@ -2282,7 +2241,6 @@ def _scope_source_frequencies(
             instrument_id = str(assignment.get("target_entity_id") or "").strip()
             if not instrument_id or instrument_id in seen_instrument_ids:
                 continue
-            seen_instrument_ids.add(instrument_id)
             detail = _instrument_detail(state, instrument_id)
             if not isinstance(detail, dict):
                 continue
@@ -2291,8 +2249,9 @@ def _scope_source_frequencies(
                 for point_date, _point_value, _point_currency in _selected_price_points(detail, end_date=end_date)
                 if start_date <= point_date <= end_date
             ]
-            frequencies.append(_series_observation_frequency(pd.Series(1.0, index=pd.Index(dates, dtype="object"))))
-    return frequencies
+            if dates:
+                seen_instrument_ids.add(instrument_id)
+    return len(seen_instrument_ids)
 
 
 def _scope_default_target_dimension(state: TaxonomyResearchState, scope_node_id: str | None) -> str:
@@ -3744,15 +3703,11 @@ def build_research_calculation_frequency_profile(
     comparator_taxonomy_node_id: str | None,
     as_of_date: date,
     lookback_days: int,
-    requested_frequency: str,
     _instrument_detail_cache: dict[str, dict[str, object] | None] | None = None,
     _direct_fx_instruments: dict[tuple[str, str], str] | None = None,
 ) -> dict[str, object]:
     if not planning_taxonomy_id:
-        return calculation_frequency_profile(
-            requested_frequency=requested_frequency,
-            source_frequencies=[],
-        )
+        return calculation_frequency_profile(instrument_count=0)
     state = _build_taxonomy_state(
         portfolio_id,
         planning_taxonomy_id=planning_taxonomy_id,
@@ -3763,15 +3718,14 @@ def build_research_calculation_frequency_profile(
     if comparator_taxonomy_node_id and comparator_taxonomy_node_id not in state.node_by_id:
         raise ValueError("Selected research scope was not found in the planning taxonomy.")
     start_day = research_window_start_date(as_of_date, lookback_days)
-    source_frequencies = _scope_source_frequencies(
+    instrument_count = _scope_instrument_count(
         state,
         scope_node_id=comparator_taxonomy_node_id,
         start_date=start_day,
         end_date=as_of_date,
     )
     return calculation_frequency_profile(
-        requested_frequency=requested_frequency,
-        source_frequencies=source_frequencies,
+        instrument_count=instrument_count,
     )
 
 
@@ -4128,7 +4082,7 @@ def _build_backtest_metrics(points: list[dict[str, object]], returns: dict[str, 
     year_start = date(end_date.year, 1, 1) if end_date is not None else None
     # A YTD base must represent the year boundary, not merely be any older NAV
     # point.  Seven days accommodates normal year-end market closures across
-    # the supported daily/weekly/monthly sampled backtests without relabelling
+    # daily backtests without relabelling
     # a stale multi-period return as YTD.
     earliest_ytd_anchor = year_start - timedelta(days=7) if year_start is not None else None
     ytd_anchor = next(
@@ -4286,29 +4240,16 @@ def rebuild_backtest_metrics_from_points(points: list[dict[str, object]]) -> dic
     )
 
 
-def _resolved_backtest_calculation_frequency(solution: dict[str, object], requested_frequency: object) -> CalculationFrequency:
-    profile = solution.get("calculation_frequency")
-    if isinstance(profile, dict):
-        resolved = str(profile.get("resolved_frequency") or "").strip().lower()
-        if resolved in RESEARCH_COVARIANCE_FREQUENCY_PARAMETERS:
-            return resolved  # type: ignore[return-value]
-    requested = str(requested_frequency or "").strip().lower()
-    if requested in RESEARCH_COVARIANCE_FREQUENCY_PARAMETERS:
-        return requested  # type: ignore[return-value]
-    return "daily"
-
-
 def _build_backtest_sampled_nav_by_instrument(
     nav_by_instrument: dict[str, pd.Series],
     *,
-    calculation_frequency: CalculationFrequency,
     end_date: date,
 ) -> dict[str, pd.Series]:
     sampled: dict[str, pd.Series] = {}
     for instrument_id, series in nav_by_instrument.items():
         sampled_series = _periodic_nav_series(
             series,
-            calculation_frequency=calculation_frequency,
+            calculation_frequency="daily",
             start_date=date(1900, 1, 1),
             end_date=end_date,
         )
@@ -4317,24 +4258,12 @@ def _build_backtest_sampled_nav_by_instrument(
     return sampled
 
 
-def _common_return_dates(returns_by_instrument: dict[str, pd.Series]) -> list[date]:
-    return_sets = [set(series.index.tolist()) for series in returns_by_instrument.values() if not series.empty]
-    if not return_sets:
-        return []
-    common_dates = set.intersection(*return_sets)
-    return sorted(item for item in common_dates if isinstance(item, date))
-
-
 def _backtest_rebalance_dates(
     *,
     start_date: date,
     end_date: date,
     frequency: str,
-    calculation_frequency: CalculationFrequency,
-    returns_by_instrument: dict[str, pd.Series],
 ) -> list[date]:
-    if frequency == "1w" and calculation_frequency != "daily":
-        return [item for item in _common_return_dates(returns_by_instrument) if start_date <= item <= end_date]
     return _rebalance_schedule(start_date=start_date, end_date=end_date, frequency=frequency)
 
 
@@ -5248,7 +5177,7 @@ def build_current_target_backtest(
     comparator_taxonomy_node_id: str | None,
     as_of_date: date,
     lookback_days: int,
-    calculation_frequency: str = "auto",
+    calculation_frequency: str = "daily",
     target_dimension: str,
     capital_mode: str,
     gross_exposure: float | None,
@@ -5412,10 +5341,8 @@ def build_current_target_backtest(
         first_observation_by_instrument[instrument_id] = nav_series.index[0].isoformat()
         warnings.extend(instrument_warnings)
 
-    backtest_calculation_frequency = _resolved_backtest_calculation_frequency(solution, calculation_frequency)
     sampled_nav_by_instrument = _build_backtest_sampled_nav_by_instrument(
         nav_by_instrument,
-        calculation_frequency=backtest_calculation_frequency,
         end_date=as_of_date,
     )
     portfolio_first_dates = [
@@ -5470,8 +5397,6 @@ def build_current_target_backtest(
         start_date=earliest_start_date,
         end_date=as_of_date,
         frequency=frequency,
-        calculation_frequency=backtest_calculation_frequency,
-        returns_by_instrument=returns_by_instrument,
     )
     if not rebal_dates:
         rebal_dates = [earliest_start_date]
@@ -5742,7 +5667,7 @@ def solve_current_target_weights(
     comparator_taxonomy_node_id: str | None,
     as_of_date: date,
     lookback_days: int,
-    calculation_frequency: str = "auto",
+    calculation_frequency: str = "daily",
     target_dimension: str,
     capital_mode: str,
     gross_exposure: float | None,
@@ -5769,15 +5694,14 @@ def solve_current_target_weights(
     if comparator_taxonomy_node_id and comparator_taxonomy_node_id not in state.node_by_id:
         raise ValueError("Selected research scope was not found in the planning taxonomy.")
     start_day = research_window_start_date(as_of_date, lookback_days)
-    source_frequencies = _scope_source_frequencies(
+    instrument_count = _scope_instrument_count(
         state,
         scope_node_id=comparator_taxonomy_node_id,
         start_date=start_day,
         end_date=as_of_date,
     )
     frequency_profile = calculation_frequency_profile(
-        requested_frequency=calculation_frequency,
-        source_frequencies=source_frequencies,
+        instrument_count=instrument_count,
     )
     resolved_calculation_frequency = str(frequency_profile["resolved_frequency"])
 

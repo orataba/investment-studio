@@ -1932,6 +1932,21 @@ def test_accepts_late_paid_dividend_when_entitlement_date_precedes_sale(client):
     assert closed_lot["income_cash_amount"] == pytest.approx(50.0)
     assert open_lot["income_cash_amount"] == pytest.approx(50.0)
 
+    historical_response = client.get(
+        "/api/portfolios/portfolio-ops/position-lots",
+        params={
+            "account_id": account["account_id"],
+            "position_reference_id": "equity-us-abbv",
+            "as_of_date": "2026-04-10",
+        },
+    )
+    assert historical_response.status_code == 200
+    historical_lots = historical_response.json()["position_lots"]
+    assert len(historical_lots) == 2
+    assert sum(lot["income_cash_amount"] for lot in historical_lots) == pytest.approx(
+        100.0
+    )
+
 
 def test_entitlement_bod_excludes_same_day_buy_from_income_allocation():
     instrument_ref = {

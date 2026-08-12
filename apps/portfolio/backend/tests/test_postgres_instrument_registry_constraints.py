@@ -27,7 +27,11 @@ if INSTRUMENT_CORE_PYTHON_STR in sys.path:
     sys.path.remove(INSTRUMENT_CORE_PYTHON_STR)
 sys.path.insert(0, INSTRUMENT_CORE_PYTHON_STR)
 
-from portfolio_app.db.models import PortfolioRecordModel, TransactionRecordModel
+from portfolio_app.db.models import (
+    AccountRecordModel,
+    PortfolioRecordModel,
+    TransactionRecordModel,
+)
 from portfolio_ops_instrument_core import instrument_store as shared_store
 
 
@@ -174,6 +178,7 @@ def test_transaction_record_instrument_registry_fk_is_enforced(
     portfolio_id = f"portfolio-fk-{uuid4().hex[:8]}"
     valid_transaction_id = f"tx-valid-{uuid4().hex[:8]}"
     invalid_transaction_id = f"tx-invalid-{uuid4().hex[:8]}"
+    orphan_account_transaction_id = f"tx-orphan-account-{uuid4().hex[:8]}"
 
     with session_factory() as session:
         session.add(
@@ -183,6 +188,17 @@ def test_transaction_record_instrument_registry_fk_is_enforced(
                 base_currency="USD",
                 valuation_timezone="UTC",
                 valuation_cutoff_policy="close",
+            )
+        )
+        session.add(
+            AccountRecordModel(
+                account_id="account-fk-valid",
+                portfolio_id=portfolio_id,
+                account_name="Constraint Verification Account",
+                account_type="securities_account",
+                currency="USD",
+                cost_basis_method="fifo",
+                status="active",
             )
         )
         session.commit()
@@ -219,8 +235,30 @@ def test_transaction_record_instrument_registry_fk_is_enforced(
                 trade_at="2026-04-21T09:45:00Z",
                 trade_timezone="UTC",
                 settlement_date=date(2026, 4, 23),
-                account_id="account-fk-invalid",
+                account_id="account-fk-valid",
                 instrument_id=f"missing-{uuid4().hex[:8]}",
+                gross_amount=1200.0,
+                currency="USD",
+            )
+        )
+        with pytest.raises(IntegrityError):
+            session.commit()
+        session.rollback()
+
+    with session_factory() as session:
+        session.add(
+            TransactionRecordModel(
+                transaction_id=orphan_account_transaction_id,
+                transaction_sequence=3,
+                portfolio_id=portfolio_id,
+                transaction_type="buy",
+                trade_date=date(2026, 4, 21),
+                trade_time="10:00",
+                trade_at="2026-04-21T10:00:00Z",
+                trade_timezone="UTC",
+                settlement_date=date(2026, 4, 23),
+                account_id="missing-account",
+                instrument_id=postgres_portfolio_env["instrument_id"],
                 gross_amount=1200.0,
                 currency="USD",
             )

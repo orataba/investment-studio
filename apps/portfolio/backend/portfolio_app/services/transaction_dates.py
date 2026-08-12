@@ -24,7 +24,11 @@ def _transaction_has_position_effect(
 ) -> bool:
     transaction_type = str(transaction.get("transaction_type") or "").strip()
     if transaction_type in POSITION_EFFECTIVE_TRANSACTION_TYPES:
-        return bool(transaction.get("instrument_id")) or transaction_type != "opening_balance"
+        return (
+            bool(transaction.get("instrument_id"))
+            or bool(transaction.get("derivative_contract_id"))
+            or transaction_type != "opening_balance"
+        )
     return (
         transaction_type in {"transfer_in", "transfer_out"}
         and str(transaction.get("transfer_object_type") or "").strip() == "position"

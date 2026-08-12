@@ -107,8 +107,8 @@ describe('DataOperationsDashboard', () => {
       </LanguageProvider>,
     )
 
-    expect(markup).toContain('href="http://127.0.0.1:5173"')
-    expect(markup).toContain('href="http://127.0.0.1:5174"')
+    expect(markup).toContain('href="/watchlist"')
+    expect(markup).toContain('href="/portfolio"')
     expect(markup).toContain('href="/instruments"')
     expect(markup).toContain('Watchlist')
     expect(markup).toContain('Portfolio')

@@ -63,7 +63,7 @@ shared market data。`total_return_nav` 不存在时必须为 NA；不得回退�
 ### `SourceSettings`
 
 - `source_mode / source_email / source_location / source_api_profile / source_email_rules`
-- `expected_frequency`: `daily | weekly | monthly | event_driven`
+- `expected_frequency`: `daily | event_driven`
 - `market_calendar`: 非空 calendar identifier 或 `null`；无法可靠推断 venue 时必须为 `null`
 - `release_lag_days`: 非负整数，表示 observation date 后的预期可用日延迟
 
@@ -163,7 +163,7 @@ security-master 事实；基金 NAV 分红再投只用于构造 TWR 指数，不
 共享 store 以 canonical instrument type、`metric_family` 与 `quote_basis` 作为唯一权威确定性派生：
 FX 为 `rate / 1`，其余为 `per_unit / 1`。
 批量写入若携带这两个派生字段会拒绝整批，避免调用方与共享 contract 形成第二套规则。
-Python runtime 只支持 Instrument Registry head `20260810_0023`，不会探测或兼容更早物理 schema。当前 Registry 类型集合是 `fund | etf | index | equity | cash | fx | other`；直接债券、FCN 与期权不进入共享资产表。FCN 与期权合约条款、生命周期和交易事实属于 Portfolio 私域；直接债券当前不在产品交易范围内。直接 SQL 也必须满足 canonical 行情、NAV lineage、基金行为状态机、计算输入与 broker identity 约束。
+Python runtime 只支持 Instrument Registry head `20260812_0024`，不会探测或兼容更早物理 schema。当前 Registry 类型集合是 `fund | etf | index | equity | cash | fx | other`；直接债券、FCN 与期权不进入共享资产表。FCN 与期权合约条款、生命周期和交易事实属于 Portfolio 私域；直接债券当前不在产品交易范围内。直接 SQL 也必须满足 canonical 行情、NAV lineage、基金行为状态机、计算输入与 broker identity 约束。
 
 每条 market-data observation（不只 FX）都必须使用 instrument master currency，`value`
 必须是有限正数，`status` 只能是 `complete | partial | unavailable`。共享 store 的单点、批量、

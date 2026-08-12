@@ -57,6 +57,7 @@ DAILY_SNAPSHOT_CALCULATION_VERSION = (
     "-effective-analytics-scope-policy-v1"
     "-option-cash-settlement-v1"
     "-market-risk-zero-return-cash-derivatives-v2"
+    "-daily-mark-to-last-risk-observations-v1"
 )
 
 
@@ -64,12 +65,14 @@ DAILY_SNAPSHOT_CALCULATION_VERSION = (
 class _SnapshotSourceGeneration:
     refresh_request_id: str | None
     market_data_updated_at: str | None
+    calculation_inputs_updated_at: str | None
     analytics_policy_version: int
 
     def as_payload(self) -> dict[str, object]:
         return {
             "refresh_request_id": self.refresh_request_id,
             "market_data_updated_at": self.market_data_updated_at,
+            "calculation_inputs_updated_at": self.calculation_inputs_updated_at,
             "analytics_policy_version": self.analytics_policy_version,
         }
 
@@ -197,12 +200,37 @@ def _source_market_data_watermark(session, portfolio_id: str) -> str | None:
     return str(value) if value not in (None, "") else None
 
 
-def _source_market_data_is_current(
+def _source_calculation_inputs_watermark(
+    session,
+    portfolio_id: str,
+) -> str | None:
+    portfolio_instrument_ids = select(TransactionRecordModel.instrument_id).where(
+        TransactionRecordModel.portfolio_id == portfolio_id,
+        TransactionRecordModel.instrument_id.is_not(None),
+    )
+    value = session.scalar(
+        select(func.max(Instrument.calculation_inputs_updated_at)).where(
+            Instrument.calculation_inputs_updated_at.is_not(None),
+            or_(
+                Instrument.instrument_id.in_(portfolio_instrument_ids),
+                Instrument.instrument_type == "fx",
+            ),
+        )
+    )
+    return str(value) if value not in (None, "") else None
+
+
+def _source_inputs_are_current(
     session,
     portfolio_id: str,
     state: PortfolioCalculationStateModel,
 ) -> bool:
-    return state.source_market_data_updated_at == _source_market_data_watermark(session, portfolio_id)
+    return (
+        state.source_market_data_updated_at
+        == _source_market_data_watermark(session, portfolio_id)
+        and state.source_calculation_inputs_updated_at
+        == _source_calculation_inputs_watermark(session, portfolio_id)
+    )
 
 
 def _snapshot_source_generation(
@@ -216,6 +244,10 @@ def _snapshot_source_generation(
     return _SnapshotSourceGeneration(
         refresh_request_id=state.refresh_request_id,
         market_data_updated_at=_source_market_data_watermark(session, portfolio_id),
+        calculation_inputs_updated_at=_source_calculation_inputs_watermark(
+            session,
+            portfolio_id,
+        ),
         analytics_policy_version=(
             int(analytics_state.current_version)
             if analytics_state is not None
@@ -505,6 +537,9 @@ def _current_refresh_result(session, portfolio_id: str) -> dict[str, object] | N
         "refreshed_to": state.refreshed_to,
         "refreshed_at": state.refreshed_at,
         "source_market_data_updated_at": state.source_market_data_updated_at,
+        "source_calculation_inputs_updated_at": (
+            state.source_calculation_inputs_updated_at
+        ),
         "calculation_version": DAILY_SNAPSHOT_CALCULATION_VERSION,
         "source_generation_status": "stable",
         "source_generation_reason": None,
@@ -550,6 +585,11 @@ def _discard_source_generation_attempt(
             "refreshed_at": state.refreshed_at if state is not None else None,
             "source_market_data_updated_at": (
                 state.source_market_data_updated_at if state is not None else None
+            ),
+            "source_calculation_inputs_updated_at": (
+                state.source_calculation_inputs_updated_at
+                if state is not None
+                else None
             ),
             "calculation_version": DAILY_SNAPSHOT_CALCULATION_VERSION,
             "source_generation_status": "discarded",
@@ -707,7 +747,7 @@ def _claim_daily_snapshot_refresh(portfolio_id: str) -> dict[str, object]:
             if (
                 _latest_snapshot_calculation_version(session, portfolio_id)
                 == DAILY_SNAPSHOT_CALCULATION_VERSION
-                and _source_market_data_is_current(session, portfolio_id, state)
+                and _source_inputs_are_current(session, portfolio_id, state)
             ):
                 return {
                     "status": "current",
@@ -794,6 +834,9 @@ def _recalculate_portfolio_daily_snapshots_once(
             accounts = [_serialize_account_row(item) for item in account_records]
             transactions = [_serialize_transaction_row(item) for item in transaction_records]
             source_market_data_updated_at = _source_market_data_watermark(session, portfolio_id)
+            source_calculation_inputs_updated_at = (
+                _source_calculation_inputs_watermark(session, portfolio_id)
+            )
             analytics_state = session.get(
                 PortfolioAnalyticsPolicyStateModel,
                 portfolio_id,
@@ -801,6 +844,9 @@ def _recalculate_portfolio_daily_snapshots_once(
             source_generation_before = _SnapshotSourceGeneration(
                 refresh_request_id=request_id,
                 market_data_updated_at=source_market_data_updated_at,
+                calculation_inputs_updated_at=(
+                    source_calculation_inputs_updated_at
+                ),
                 analytics_policy_version=(
                     int(analytics_state.current_version)
                     if analytics_state is not None
@@ -1031,6 +1077,9 @@ def _recalculate_portfolio_daily_snapshots_once(
                     refreshed_to=refreshed_to,
                     refreshed_at=calculated_at,
                     source_market_data_updated_at=source_market_data_updated_at,
+                    source_calculation_inputs_updated_at=(
+                        source_calculation_inputs_updated_at
+                    ),
                     refresh_request_id=None,
                     refresh_completed_at=calculated_at,
                     error_message=None,
@@ -1060,6 +1109,9 @@ def _recalculate_portfolio_daily_snapshots_once(
                 "refreshed_to": refreshed_to,
                 "refreshed_at": calculated_at,
                 "source_market_data_updated_at": source_market_data_updated_at,
+                "source_calculation_inputs_updated_at": (
+                    source_calculation_inputs_updated_at
+                ),
                 "recalculated_from": persist_from or refreshed_from,
                 "source_generation_status": "stable",
                 "source_generation_reason": None,
@@ -1325,7 +1377,7 @@ def _state_requires_refresh(session, portfolio_id: str) -> bool:
         return True
     if _latest_snapshot_calculation_version(session, portfolio_id) != DAILY_SNAPSHOT_CALCULATION_VERSION:
         return True
-    return not _source_market_data_is_current(session, portfolio_id, state)
+    return not _source_inputs_are_current(session, portfolio_id, state)
 
 
 def ensure_portfolio_daily_snapshots(portfolio_id: str) -> None:
@@ -1382,33 +1434,60 @@ def build_materialized_performance_report(
     start_date: date | None = None,
     end_date: date | None = None,
 ) -> dict[str, object] | None:
-    ensure_portfolio_daily_snapshots(portfolio_id)
     session_factory = get_session_factory()
-    with session_factory() as session:
-        portfolio_record = session.get(PortfolioRecordModel, portfolio_id)
-        if portfolio_record is None:
-            return None
-        portfolio = _serialize_portfolio_row(portfolio_record)
-        transactions = [_serialize_transaction_row(item) for item in _load_transactions(session, portfolio_id)]
-
     snapshot_context_start = (
         start_date - timedelta(days=1)
         if start_date is not None
         else None
     )
-    snapshots = list_materialized_daily_snapshots(
-        portfolio_id,
-        start_date=snapshot_context_start,
-        end_date=end_date,
-        ensure_current=False,
-    )
-    return performance.build_portfolio_performance_report_from_snapshots(
-        portfolio,
-        snapshots,
-        transactions=transactions,
-        start_date=start_date,
-        end_date=end_date,
-    )
+    for _attempt in range(3):
+        ensure_portfolio_daily_snapshots(portfolio_id)
+        with session_factory() as session:
+            portfolio_record = session.scalar(
+                select(PortfolioRecordModel)
+                .where(PortfolioRecordModel.portfolio_id == portfolio_id)
+                .with_for_update(read=True)
+            )
+            if portfolio_record is None:
+                return None
+            if _state_requires_refresh(session, portfolio_id):
+                continue
+
+            portfolio = _serialize_portfolio_row(portfolio_record)
+            transactions = [
+                _serialize_transaction_row(item)
+                for item in _load_transactions(session, portfolio_id)
+            ]
+            snapshot_statement = select(PortfolioDailySnapshotModel).where(
+                PortfolioDailySnapshotModel.portfolio_id == portfolio_id
+            )
+            if snapshot_context_start is not None:
+                snapshot_statement = snapshot_statement.where(
+                    PortfolioDailySnapshotModel.as_of_date
+                    >= snapshot_context_start
+                )
+            if end_date is not None:
+                snapshot_statement = snapshot_statement.where(
+                    PortfolioDailySnapshotModel.as_of_date <= end_date
+                )
+            snapshot_rows = session.scalars(
+                snapshot_statement.order_by(
+                    PortfolioDailySnapshotModel.as_of_date
+                )
+            ).all()
+            snapshots = [
+                _restore_snapshot(dict(row.snapshot_json))
+                for row in snapshot_rows
+            ]
+
+        return performance.build_portfolio_performance_report_from_snapshots(
+            portfolio,
+            snapshots,
+            transactions=transactions,
+            start_date=start_date,
+            end_date=end_date,
+        )
+    raise RuntimeError("Portfolio facts changed while building the performance report.")
 
 
 def _sum_complete(values: list[object]) -> float | None:

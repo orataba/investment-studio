@@ -99,9 +99,9 @@ jobs:
           --health-timeout 5s
           --health-retries 20
     env:
-      PGPASSWORD: postgres
       PYTHONUNBUFFERED: "1"
-      PORTFOLIO_OPS_TEST_POSTGRES_URL: postgresql+psycopg://portfolio_ops_test:portfolio_ops_test@127.0.0.1:5432/portfolio_ops_test_admin
+      PGPASSFILE: /tmp/portfolio-ops.pgpass
+      PORTFOLIO_OPS_TEST_POSTGRES_URL: postgresql+psycopg://portfolio_ops_test@127.0.0.1:5432/portfolio_ops_test_admin
     steps:
       - name: Check out repository
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
@@ -147,6 +147,8 @@ jobs:
         run: infra/scripts/sync_python_env.sh
 
       - name: Create isolated CI roles and migration database
+        env:
+          PGPASSWORD: postgres
         run: |
           psql --host 127.0.0.1 --username postgres --dbname postgres --set ON_ERROR_STOP=1 <<'SQL'
           CREATE ROLE portfolio_ops
@@ -160,22 +162,28 @@ jobs:
             --owner portfolio_ops portfolio_ops_ci
           createdb --host 127.0.0.1 --username postgres \
             --owner portfolio_ops_test portfolio_ops_test_admin
+          install -m 600 /dev/null "$PGPASSFILE"
+          printf '%s\n' \
+            '127.0.0.1:5432:*:postgres:postgres' \
+            '127.0.0.1:5432:*:portfolio_ops:portfolio_ops' \
+            '127.0.0.1:5432:*:portfolio_ops_test:portfolio_ops_test' \
+            > "$PGPASSFILE"
 
       - name: Upgrade every migration chain to head
         env:
           PORTFOLIO_OPS_MIGRATION_EXPECTED_DATABASE: portfolio_ops_ci
-          PORTFOLIO_OPS_INSTRUMENT_REGISTRY_DATABASE_URL: postgresql+psycopg://portfolio_ops:portfolio_ops@127.0.0.1:5432/portfolio_ops_ci
-          PORTFOLIO_OPS_INSTRUMENT_REGISTRY_ALEMBIC_DATABASE_URL: postgresql+psycopg://portfolio_ops:portfolio_ops@127.0.0.1:5432/portfolio_ops_ci
+          PORTFOLIO_OPS_INSTRUMENT_REGISTRY_DATABASE_URL: postgresql+psycopg://portfolio_ops@127.0.0.1:5432/portfolio_ops_ci
+          PORTFOLIO_OPS_INSTRUMENT_REGISTRY_ALEMBIC_DATABASE_URL: postgresql+psycopg://portfolio_ops@127.0.0.1:5432/portfolio_ops_ci
           PORTFOLIO_OPS_INSTRUMENT_REGISTRY_SCHEMA: instrument_registry
-          PORTFOLIO_OPS_PLATFORM_DATABASE_URL: postgresql+psycopg://portfolio_ops:portfolio_ops@127.0.0.1:5432/portfolio_ops_ci
-          PORTFOLIO_OPS_PLATFORM_ALEMBIC_DATABASE_URL: postgresql+psycopg://portfolio_ops:portfolio_ops@127.0.0.1:5432/portfolio_ops_ci
+          PORTFOLIO_OPS_PLATFORM_DATABASE_URL: postgresql+psycopg://portfolio_ops@127.0.0.1:5432/portfolio_ops_ci
+          PORTFOLIO_OPS_PLATFORM_ALEMBIC_DATABASE_URL: postgresql+psycopg://portfolio_ops@127.0.0.1:5432/portfolio_ops_ci
           PORTFOLIO_OPS_PLATFORM_DATABASE_SCHEMA: instrument_registry
           PORTFOLIO_OPS_PLATFORM_OPERATIONS_DATABASE_SCHEMA: platform
-          PORTFOLIO_OPS_PORTFOLIO_DATABASE_URL: postgresql+psycopg://portfolio_ops:portfolio_ops@127.0.0.1:5432/portfolio_ops_ci
-          PORTFOLIO_OPS_PORTFOLIO_ALEMBIC_DATABASE_URL: postgresql+psycopg://portfolio_ops:portfolio_ops@127.0.0.1:5432/portfolio_ops_ci
+          PORTFOLIO_OPS_PORTFOLIO_DATABASE_URL: postgresql+psycopg://portfolio_ops@127.0.0.1:5432/portfolio_ops_ci
+          PORTFOLIO_OPS_PORTFOLIO_ALEMBIC_DATABASE_URL: postgresql+psycopg://portfolio_ops@127.0.0.1:5432/portfolio_ops_ci
           PORTFOLIO_OPS_PORTFOLIO_DATABASE_SCHEMA: portfolio
-          PORTFOLIO_OPS_WATCHLIST_DATABASE_URL: postgresql+psycopg://portfolio_ops:portfolio_ops@127.0.0.1:5432/portfolio_ops_ci
-          PORTFOLIO_OPS_WATCHLIST_ALEMBIC_DATABASE_URL: postgresql+psycopg://portfolio_ops:portfolio_ops@127.0.0.1:5432/portfolio_ops_ci
+          PORTFOLIO_OPS_WATCHLIST_DATABASE_URL: postgresql+psycopg://portfolio_ops@127.0.0.1:5432/portfolio_ops_ci
+          PORTFOLIO_OPS_WATCHLIST_ALEMBIC_DATABASE_URL: postgresql+psycopg://portfolio_ops@127.0.0.1:5432/portfolio_ops_ci
           PORTFOLIO_OPS_WATCHLIST_DATABASE_SCHEMA: watchlist
         run: infra/scripts/verify_repository.sh migration-heads
 

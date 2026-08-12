@@ -587,7 +587,8 @@ button:disabled {
 }
 
 .portfolio-entry-change-positive,
-.portfolio-entry-change-negative {
+.portfolio-entry-change-negative,
+.portfolio-entry-change-neutral {
   font-size: 18px;
   font-weight: 500;
 }
@@ -598,6 +599,10 @@ button:disabled {
 
 .portfolio-entry-change-negative {
   color: var(--portfolio-negative);
+}
+
+.portfolio-entry-change-neutral {
+  color: var(--portfolio-muted);
 }
 
 .portfolio-entry-list-shell {
@@ -645,7 +650,7 @@ button:disabled {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 20px;
+  width: 34px;
   height: 20px;
 }
 
@@ -654,16 +659,17 @@ button:disabled {
   border: none;
   background: transparent;
   color: inherit;
-  cursor: grab;
+  gap: 1px;
 }
 
-.portfolio-entry-grip:active {
-  cursor: grabbing;
-}
-
-.portfolio-entry-grip svg {
-  width: 12px;
-  height: 16px;
+.portfolio-entry-grip button {
+  width: 16px;
+  height: 20px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  line-height: 1;
 }
 
 .portfolio-entry-card-menu {

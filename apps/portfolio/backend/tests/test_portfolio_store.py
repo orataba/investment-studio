@@ -369,7 +369,7 @@ def test_live_portfolio_as_of_uses_current_holding_market_date(monkeypatch) -> N
     ) == date(2026, 4, 28)
 
 
-def test_live_portfolio_as_of_uses_settlement_activity_date(monkeypatch) -> None:
+def test_live_portfolio_as_of_caps_future_settlement_at_valuation_today(monkeypatch) -> None:
     portfolio = PortfolioRecordModel(
         portfolio_id="p1",
         portfolio_name="Portfolio",
@@ -430,13 +430,18 @@ def test_live_portfolio_as_of_uses_settlement_activity_date(monkeypatch) -> None
         "build_position_lots",
         lambda *args, **kwargs: [{"instrument_id": "open"}],
     )
+    monkeypatch.setattr(
+        portfolio_store,
+        "_portfolio_valuation_today",
+        lambda _portfolio: date(2026, 5, 22),
+    )
 
     assert portfolio_store._resolve_live_portfolio_as_of_date(
         object(),
         portfolio,
         accounts=[account],
         transactions=transactions,
-    ) == date(2026, 5, 26)
+    ) == date(2026, 5, 22)
 
 
 def test_live_portfolio_as_of_ignores_stale_cached_portfolio_date(monkeypatch) -> None:

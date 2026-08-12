@@ -39,6 +39,16 @@ printf '%s\n' \
 chmod +x "$PROJECT_ROOT/infra/scripts/migrate_all.sh"
 
 printf '%s\n' \
+  '#!/usr/bin/env python3' \
+  'from os import environ' \
+  'from pathlib import Path' \
+  'with Path(environ["EVENT_LOG"]).open("a", encoding="utf-8") as event_log:' \
+  '    event_log.write("audit\n")' \
+  'raise SystemExit(1 if environ.get("AUDIT_FAIL") == "true" else 0)' \
+  > "$PROJECT_ROOT/infra/scripts/audit_live_data.py"
+chmod +x "$PROJECT_ROOT/infra/scripts/audit_live_data.py"
+
+printf '%s\n' \
   '#!/usr/bin/env bash' \
   'portfolio_ops_create_project_schema_backup() {' \
   '  local _database_url="$1" backup_root="$2" label="$3"' \
@@ -215,6 +225,17 @@ for unit in "${MANAGED_UNITS[@]}"; do
 done
 test -f "$SUCCESS_CASE/backups/portfolio-ops-pre-systemd-install-test.pgdump"
 grep -q 'Safety backup retained at:' "$SUCCESS_CASE/output"
+backup_line="$(grep -n '^backup$' "$SUCCESS_CASE/events" | head -n 1 | cut -d: -f1)"
+migration_line="$(grep -n '^migrate$' "$SUCCESS_CASE/events" | head -n 1 | cut -d: -f1)"
+audit_line="$(grep -n '^audit$' "$SUCCESS_CASE/events" | head -n 1 | cut -d: -f1)"
+restart_line="$(grep -n 'systemctl:restart' "$SUCCESS_CASE/events" | head -n 1 | cut -d: -f1)"
+if [[ -z "$backup_line" || -z "$migration_line" || -z "$audit_line" || -z "$restart_line" \
+  || "$backup_line" -ge "$migration_line" \
+  || "$migration_line" -ge "$audit_line" \
+  || "$audit_line" -ge "$restart_line" ]]; then
+  echo "Systemd install ordering was not backup, migration, audit, then restart." >&2
+  exit 1
+fi
 
 MIGRATION_CASE="$TEST_ROOT/migration-failure"
 prepare_case "$MIGRATION_CASE"
@@ -230,6 +251,22 @@ assert_original_state_restored "$MIGRATION_CASE"
 grep -q '^backup$' "$MIGRATION_CASE/events"
 grep -q '^migrate$' "$MIGRATION_CASE/events"
 grep -q '^database-restore$' "$MIGRATION_CASE/events"
+
+AUDIT_CASE="$TEST_ROOT/audit-failure"
+prepare_case "$AUDIT_CASE"
+set +e
+AUDIT_FAIL=true run_case "$AUDIT_CASE" > "$AUDIT_CASE/output" 2>&1
+audit_status=$?
+set -e
+if [[ $audit_status -eq 0 ]]; then
+  echo "The systemd installer accepted an injected post-migration audit failure." >&2
+  exit 1
+fi
+assert_original_state_restored "$AUDIT_CASE"
+grep -q '^backup$' "$AUDIT_CASE/events"
+grep -q '^migrate$' "$AUDIT_CASE/events"
+grep -q '^audit$' "$AUDIT_CASE/events"
+grep -q '^database-restore$' "$AUDIT_CASE/events"
 
 RESTART_CASE="$TEST_ROOT/restart-failure"
 prepare_case "$RESTART_CASE"

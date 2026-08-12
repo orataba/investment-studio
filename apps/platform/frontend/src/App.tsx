@@ -125,11 +125,11 @@ export default function App() {
       setRegistryNotice(`Created instrument “${created.instrument_name}”.`)
       setRegistryError(null)
     } catch (requestError) {
-      setRegistryError(
-        requestError instanceof Error
-          ? requestError.message
-          : 'Failed to create instrument.',
-      )
+      const message = requestError instanceof Error
+        ? requestError.message
+        : 'Failed to create instrument.'
+      setRegistryError(message)
+      throw requestError instanceof Error ? requestError : new Error(message)
     }
   }
 
@@ -197,11 +197,11 @@ export default function App() {
       )
       setRegistryError(null)
     } catch (requestError) {
-      setRegistryError(
-        requestError instanceof Error
-          ? requestError.message
-          : 'Failed to save market data.',
-      )
+      const message = requestError instanceof Error
+        ? requestError.message
+        : 'Failed to save market data.'
+      setRegistryError(message)
+      throw requestError instanceof Error ? requestError : new Error(message)
     }
   }
 
@@ -221,11 +221,11 @@ export default function App() {
       setRegistryNotice(`Saved source settings for “${updated.instrument_name}”.`)
       setRegistryError(null)
     } catch (requestError) {
-      setRegistryError(
-        requestError instanceof Error
-          ? requestError.message
-          : 'Failed to save source settings.',
-      )
+      const message = requestError instanceof Error
+        ? requestError.message
+        : 'Failed to save source settings.'
+      setRegistryError(message)
+      throw requestError instanceof Error ? requestError : new Error(message)
     }
   }
 
@@ -248,11 +248,11 @@ export default function App() {
       )
       setRegistryError(null)
     } catch (requestError) {
-      setRegistryError(
-        requestError instanceof Error
-          ? requestError.message
-          : 'Failed to trigger refresh.',
-      )
+      const message = requestError instanceof Error
+        ? requestError.message
+        : 'Failed to trigger refresh.'
+      setRegistryError(message)
+      throw requestError instanceof Error ? requestError : new Error(message)
     }
   }
 
@@ -288,11 +288,11 @@ export default function App() {
       )
       setRegistryError(null)
     } catch (requestError) {
-      setRegistryError(
-        requestError instanceof Error
-          ? requestError.message
-          : 'Failed to refresh source channel.',
-      )
+      const message = requestError instanceof Error
+        ? requestError.message
+        : 'Failed to refresh source channel.'
+      setRegistryError(message)
+      throw requestError instanceof Error ? requestError : new Error(message)
     }
   }
 
@@ -315,11 +315,11 @@ export default function App() {
       )
       setRegistryError(null)
     } catch (requestError) {
-      setRegistryError(
-        requestError instanceof Error
-          ? requestError.message
-          : 'Failed to import NAV history.',
-      )
+      const message = requestError instanceof Error
+        ? requestError.message
+        : 'Failed to import NAV history.'
+      setRegistryError(message)
+      throw requestError instanceof Error ? requestError : new Error(message)
     }
   }
 
@@ -342,11 +342,11 @@ export default function App() {
       )
       setRegistryError(null)
     } catch (requestError) {
-      setRegistryError(
-        requestError instanceof Error
-          ? requestError.message
-          : 'Failed to import NAV file.',
-      )
+      const message = requestError instanceof Error
+        ? requestError.message
+        : 'Failed to import NAV file.'
+      setRegistryError(message)
+      throw requestError instanceof Error ? requestError : new Error(message)
     }
   }
 
@@ -368,11 +368,11 @@ export default function App() {
       )
       setRegistryError(null)
     } catch (requestError) {
-      setRegistryError(
-        requestError instanceof Error
-          ? requestError.message
-          : 'Failed to archive instrument.',
-      )
+      const message = requestError instanceof Error
+        ? requestError.message
+        : 'Failed to archive instrument.'
+      setRegistryError(message)
+      throw requestError instanceof Error ? requestError : new Error(message)
     }
   }
 
@@ -392,11 +392,11 @@ export default function App() {
       setRegistryNotice(`Restored “${updated.instrument_name}” to downstream discovery.`)
       setRegistryError(null)
     } catch (requestError) {
-      setRegistryError(
-        requestError instanceof Error
-          ? requestError.message
-          : 'Failed to restore instrument.',
-      )
+      const message = requestError instanceof Error
+        ? requestError.message
+        : 'Failed to restore instrument.'
+      setRegistryError(message)
+      throw requestError instanceof Error ? requestError : new Error(message)
     }
   }
 

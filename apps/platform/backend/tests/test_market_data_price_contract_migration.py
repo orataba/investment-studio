@@ -186,7 +186,7 @@ def _insert_equity_contract_in_worker(
         )
 
 
-def _update_instrument_to_bond_in_worker(
+def _update_instrument_currency_in_worker(
     engine: Engine,
     *,
     schema: str,
@@ -199,7 +199,7 @@ def _update_instrument_to_bond_in_worker(
         pid_queue.put(int(connection.scalar(sa.text("SELECT pg_backend_pid()"))))
         connection.execute(
             sa.text(
-                "UPDATE instrument SET instrument_type = 'bond' "
+                "UPDATE instrument SET currency = 'CNY' "
                 "WHERE instrument_id = :instrument_id"
             ),
             {"instrument_id": instrument_id},
@@ -990,7 +990,7 @@ def test_price_contract_serialization_blocks_both_concurrent_write_orders(
             _set_search_path(update_connection, schema)
             update_connection.execute(
                 sa.text(
-                    "UPDATE instrument SET instrument_type = 'bond' "
+                    "UPDATE instrument SET currency = 'CNY' "
                     "WHERE instrument_id = :instrument_id"
                 ),
                 {"instrument_id": update_first_id},
@@ -1009,7 +1009,10 @@ def test_price_contract_serialization_blocks_both_concurrent_write_orders(
                 future=insert_future,
             )
             update_transaction.commit()
-            with pytest.raises(IntegrityError, match="price contract is not canonical"):
+            with pytest.raises(
+                IntegrityError,
+                match="market-data currency must match instrument currency",
+            ):
                 insert_future.result(timeout=5)
         finally:
             if update_transaction.is_active:
@@ -1034,7 +1037,7 @@ def test_price_contract_serialization_blocks_both_concurrent_write_orders(
             )
             update_pid_queue: Queue[int] = Queue()
             update_future = executor.submit(
-                _update_instrument_to_bond_in_worker,
+                _update_instrument_currency_in_worker,
                 engine,
                 schema=schema,
                 instrument_id=insert_first_id,
@@ -1061,11 +1064,13 @@ def test_price_contract_serialization_blocks_both_concurrent_write_orders(
             sa.text(
                 """
                 SELECT instrument.instrument_id, instrument.instrument_type,
+                       instrument.currency,
                        count(market_data.instrument_market_data_id)
                 FROM instrument
                 LEFT JOIN instrument_market_data AS market_data USING (instrument_id)
                 WHERE instrument.instrument_id IN (:update_first_id, :insert_first_id)
-                GROUP BY instrument.instrument_id, instrument.instrument_type
+                GROUP BY instrument.instrument_id, instrument.instrument_type,
+                         instrument.currency
                 ORDER BY instrument.instrument_id
                 """
             ),
@@ -1075,8 +1080,8 @@ def test_price_contract_serialization_blocks_both_concurrent_write_orders(
             },
         ).all()
     assert rows == [
-        (insert_first_id, "equity", 1),
-        (update_first_id, "bond", 0),
+        (insert_first_id, "equity", "USD", 1),
+        (update_first_id, "equity", "CNY", 0),
     ]
 
 
@@ -1254,7 +1259,7 @@ def test_option_contract_identity_migration_on_postgresql(
     with engine.connect() as connection:
         _set_search_path(connection, schema)
         assert connection.scalar(sa.text("SELECT version_num FROM alembic_version")) == (
-            "20260810_0023"
+            "20260812_0024"
         )
 
 

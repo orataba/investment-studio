@@ -128,7 +128,7 @@ const baseMessages: LanguageMessages = {
     Holdings: '持仓',
     Performance: '业绩',
     Risk: '风险',
-    Price: '费用',
+    Price: '价格',
     Exposure: '持仓',
     People: '团队',
     Strategy: '策略',

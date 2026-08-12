@@ -1,4 +1,4 @@
-export type CalculationFrequency = 'daily' | 'weekly' | 'monthly'
+export type CalculationFrequency = 'daily'
 
 export type ReturnPoint = {
   date: string
@@ -75,84 +75,14 @@ export function absoluteDayDiff(left: string, right: string) {
   return Math.abs((rightTime - leftTime) / 86_400_000)
 }
 
-export function periodEndKey(dateKey: string, frequency: CalculationFrequency, finalDate: string) {
-  if (frequency === 'daily') {
-    return dateKey
-  }
-  const [year, month, day] = dateKey.split('-').map(Number)
-  const current = new Date(year, (month || 1) - 1, day || 1)
-  if (frequency === 'weekly') {
-    const dayOfWeek = current.getDay()
-    const mondayBasedDay = dayOfWeek === 0 ? 6 : dayOfWeek - 1
-    current.setDate(current.getDate() + (4 - mondayBasedDay))
-  } else {
-    current.setMonth(current.getMonth() + 1, 0)
-  }
-  const resolved = localDateIso(current)
-  return resolved > finalDate ? finalDate : resolved
-}
-
-export function compoundReturns(values: number[]) {
-  return values.reduce((growth, value) => growth * (1 + value), 1) - 1
-}
-
 export function alignReturnSeriesToFrequency(
   series: GroupReturnSeries[],
   frequency: CalculationFrequency,
   finalDate: string,
 ) {
-  if (frequency === 'daily' || !finalDate) {
-    return series
-  }
+  void frequency
+  void finalDate
   return series
-    .map((item) => {
-      const returnBuckets = new Map<
-        string,
-        Array<{ date: string; startDate: string | null; value: number }>
-      >()
-      item.returnsByDate.forEach((value, dateKey) => {
-        if (!Number.isFinite(value) || dateKey > finalDate) {
-          return
-        }
-        const bucketKey = periodEndKey(dateKey, frequency, finalDate)
-        const bucket = returnBuckets.get(bucketKey) ?? []
-        bucket.push({
-          date: dateKey,
-          startDate: item.periodStartByDate.get(dateKey) ?? null,
-          value,
-        })
-        returnBuckets.set(bucketKey, bucket)
-      })
-      const returnsByDate = new Map<string, number>()
-      const periodStartByDate = new Map<string, string | null>()
-      returnBuckets.forEach((points, bucketKey) => {
-        if (points.length) {
-          const sortedPoints = points.slice().sort((left, right) => left.date.localeCompare(right.date))
-          returnsByDate.set(
-            bucketKey,
-            compoundReturns(sortedPoints.map((point) => point.value)),
-          )
-          periodStartByDate.set(bucketKey, sortedPoints[0]?.startDate ?? null)
-        }
-      })
-
-      const endingWeightByDate = new Map<string, number>()
-      item.endingWeightByDate.forEach((weight, dateKey) => {
-        if (!Number.isFinite(weight) || dateKey > finalDate) {
-          return
-        }
-        endingWeightByDate.set(periodEndKey(dateKey, frequency, finalDate), weight)
-      })
-
-      return {
-        ...item,
-        returnsByDate,
-        periodStartByDate,
-        endingWeightByDate,
-        observationCount: returnsByDate.size,
-      } satisfies GroupReturnSeries
-    })
-    .filter((item) => item.observationCount > 0)
 }
 
 export function alignReturnPointsToFrequency(
@@ -160,30 +90,9 @@ export function alignReturnPointsToFrequency(
   frequency: CalculationFrequency,
   finalDate: string,
 ) {
-  if (frequency === 'daily' || !finalDate) {
-    return returnPoints
-  }
-  const buckets = new Map<string, ReturnPoint[]>()
-  returnPoints.forEach((point) => {
-    if (!Number.isFinite(point.value) || point.date > finalDate) {
-      return
-    }
-    const bucketKey = periodEndKey(point.date, frequency, finalDate)
-    const bucket = buckets.get(bucketKey) ?? []
-    bucket.push(point)
-    buckets.set(bucketKey, bucket)
-  })
-  return [...buckets.entries()]
-    .map(([dateKey, points]) => {
-      const sortedPoints = points.slice().sort((left, right) => left.date.localeCompare(right.date))
-      const startDate = sortedPoints[0]?.start_date
-      return {
-        date: dateKey,
-        value: compoundReturns(sortedPoints.map((point) => point.value)),
-        ...(startDate ? { start_date: startDate } : {}),
-      }
-    })
-    .sort((left, right) => left.date.localeCompare(right.date))
+  void frequency
+  void finalDate
+  return returnPoints
 }
 
 export function commonReturnDateKeys(

@@ -190,7 +190,7 @@ const workbenchFixture = {
     as_of_date: '2026-07-15',
     pinned_as_of_date: null,
     lookback_days: 365,
-    calculation_frequency: 'auto',
+    calculation_frequency: 'daily',
     missing_return_policy: 'strict',
     target_dimension: 'scope_default',
     capital_mode: 'unit_notional',
@@ -283,7 +283,7 @@ describe('Research rendered page contract', () => {
     apiMocks.getPortfolioInstruments.mockResolvedValue({ portfolio_id: '3', instruments: [] })
     apiMocks.getPortfolioRiskPolicy.mockResolvedValue({
       lookback_days: 365,
-      calculation_frequency: 'auto',
+      calculation_frequency: 'daily',
       missing_return_policy: 'strict',
       covariance_model_id: 'sample_covariance',
       contribution_mode: 'signed',

@@ -393,3 +393,44 @@ def test_worker_reconciles_a_missed_market_data_notification() -> None:
             == "2099-01-01T00:00:00.000001Z"
             for row in rows
         )
+
+
+def test_worker_reconciles_a_missed_calculation_input_notification() -> None:
+    baseline = daily_snapshots._run_portfolio_daily_snapshot_recalculation_synchronously(
+        PORTFOLIO_ID
+    )
+    assert baseline is not None
+    session_factory = get_session_factory()
+    with session_factory() as session:
+        state = session.get(PortfolioCalculationStateModel, PORTFOLIO_ID)
+        instrument = session.get(Instrument, "equity-us-abbv")
+        assert state is not None
+        assert instrument is not None
+        previous_generation = state.source_calculation_inputs_updated_at
+        instrument.calculation_inputs_updated_at = "2099-01-01T00:00:00.000002Z"
+        session.commit()
+
+    assert _calculation_state()["daily_snapshot_status"] == "current"
+    assert daily_snapshot_worker.run_daily_snapshot_recalculation_worker_once()
+
+    with session_factory() as session:
+        state = session.get(PortfolioCalculationStateModel, PORTFOLIO_ID)
+        rows = (
+            session.query(PortfolioDailySnapshotModel)
+            .filter(PortfolioDailySnapshotModel.portfolio_id == PORTFOLIO_ID)
+            .all()
+        )
+        assert state is not None
+        assert state.daily_snapshot_status == "current"
+        assert state.source_calculation_inputs_updated_at == (
+            "2099-01-01T00:00:00.000002Z"
+        )
+        assert state.source_calculation_inputs_updated_at != previous_generation
+        assert rows
+        assert all(
+            row.snapshot_json["source_generation"][
+                "calculation_inputs_updated_at"
+            ]
+            == "2099-01-01T00:00:00.000002Z"
+            for row in rows
+        )

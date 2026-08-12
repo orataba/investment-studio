@@ -84,10 +84,10 @@ describe('Risk correlation numeric golden contract', () => {
     })
   })
 
-  it('keeps weekly return compounding, period identity, weights, and window coverage semantics', () => {
-    const weeklySource = matrixSeries({
-      key: 'weekly',
-      label: 'Weekly',
+  it('keeps daily return identity, weights, and window coverage semantics', () => {
+    const dailySource = matrixSeries({
+      key: 'daily',
+      label: 'Daily',
       dates: ['2026-02-23', '2026-02-24', '2026-02-28'],
       values: [0.1, 0.2, 0.3],
       weight: 0.5,
@@ -97,34 +97,42 @@ describe('Risk correlation numeric golden contract', () => {
         ['2026-02-28', '2026-02-27'],
       ]),
     })
-    weeklySource.endingWeightByDate = new Map([
+    dailySource.endingWeightByDate = new Map([
       ['2026-02-23', 0.4],
       ['2026-02-24', 0.45],
       ['2026-02-28', 0.5],
     ])
 
-    const alignedSeries = alignReturnSeriesToFrequency([weeklySource], 'weekly', AS_OF_DATE)[0]
+    const alignedSeries = alignReturnSeriesToFrequency([dailySource], 'daily', AS_OF_DATE)[0]
     const alignedPoints = alignReturnPointsToFrequency(
       ['2026-02-23', '2026-02-24', '2026-02-28'].map((date, index) => ({
         date,
         value: [0.1, 0.2, 0.3][index],
       })),
-      'weekly',
+      'daily',
       AS_OF_DATE,
     )
 
     expect([...alignedSeries.returnsByDate.entries()]).toEqual([
-      ['2026-02-27', 0.7160000000000002],
+      ['2026-02-23', 0.1],
+      ['2026-02-24', 0.2],
+      ['2026-02-28', 0.3],
     ])
     expect([...alignedSeries.periodStartByDate.entries()]).toEqual([
-      ['2026-02-27', '2026-02-22'],
+      ['2026-02-23', '2026-02-22'],
+      ['2026-02-24', '2026-02-23'],
+      ['2026-02-28', '2026-02-27'],
     ])
     expect([...alignedSeries.endingWeightByDate.entries()]).toEqual([
-      ['2026-02-27', 0.5],
+      ['2026-02-23', 0.4],
+      ['2026-02-24', 0.45],
+      ['2026-02-28', 0.5],
     ])
-    expect(alignedSeries.observationCount).toBe(1)
+    expect(alignedSeries.observationCount).toBe(3)
     expect(alignedPoints).toEqual([
-      { date: '2026-02-27', value: 0.7160000000000002 },
+      { date: '2026-02-23', value: 0.1 },
+      { date: '2026-02-24', value: 0.2 },
+      { date: '2026-02-28', value: 0.3 },
     ])
     expect(assessRiskWindowCoverage(sampleDates, AS_OF_DATE, LOOKBACK_DAYS, 'daily')).toEqual({
       ok: true,

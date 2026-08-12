@@ -689,7 +689,7 @@ def test_daily_api_source_metadata_migration_excludes_manual_instruments(
                 text(
                     """
                     SELECT instrument_id, source_settings_json,
-                           market_data_updated_at
+                           market_data_updated_at, calculation_inputs_updated_at
                     FROM instrument
                     WHERE instrument_id IN (
                         '510300-sh', 'manual-etf', 'weekly-api-etf', 'h11001-csi'
@@ -714,8 +714,10 @@ def test_daily_api_source_metadata_migration_excludes_manual_instruments(
     assert rows["manual-etf"]["market_data_updated_at"] is None
 
     weekly_source = source_settings("weekly-api-etf")
-    assert weekly_source["expected_frequency"] == "weekly"
+    assert weekly_source["expected_frequency"] == "daily"
     assert "market_calendar" not in weekly_source
+    assert rows["weekly-api-etf"]["market_data_updated_at"]
+    assert rows["weekly-api-etf"]["calculation_inputs_updated_at"]
 
     h11001_source = source_settings("h11001-csi")
     assert h11001_source["source_api_fallback_profile"] == "csindex"

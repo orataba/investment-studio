@@ -123,7 +123,7 @@
 - 每个 `Portfolio` 必须定义 `valuation_timezone` 和 `valuation_cutoff_policy`；
 - 组合日度结果按 `as_of_date` 归档，`as_of_date` 表示**市场日**，不是实际计算发生的墙上时间；
 - 单个资产优先使用其本地市场在该 `as_of_date` 的最新官方收盘价或该日最终可用估值；
-- 行情源必须携带可审计的 `expected_frequency`、market calendar / schedule 与 `release_lag`；缺点判断以该 source schedule 为准，不能把尚未到发布时间的数据误报为缺失，也不能把超过 release lag 的缺口当成正常休市；
+- 行情源必须携带可审计的 daily/event-driven 更新口径、market calendar / schedule 与 `release_lag`；缺点判断以该 source schedule 为准，不能把尚未到发布时间的数据误报为缺失，也不能把超过 release lag 的缺口当成正常休市；
 - 组合绝对口径快照只有在该 `as_of_date` 所需市场和 FX 数据满足覆盖率阈值后，才能标记为 `complete`；
 - benchmark 相关区块的 `complete / partial / unavailable` 由 benchmark coverage 单独决定，不反向阻塞绝对口径 snapshot；
 - 组合 summary、Overview 和未显式指定日期的 Holdings 默认展示 latest fresh complete `as_of_date`，而不是当前本地时钟下尚未收齐数据的“今天”。fresh complete 表示 `valuation_coverage_state = complete`、`nav` 存在且 `stale_price_flag = false`；它要求当前持仓资产价格/NAV 都没有 stale carry-forward。`stale_fx_flag` 是独立质量标记，不单独把资产新鲜度日期向前推，也不能作为资产新鲜度兜底。
@@ -274,9 +274,7 @@
 
 - TWR annualization：calendar-anniversary Actual/Actual；相同月日的一周年（29 February 按目标年 2 月最后一日截断）精确记为 1 年
 - XIRR 现金流折现：沿用独立的 daily year-fraction policy
-- Daily volatility / tracking error：优先使用实际有效收益观察密度推断 `periods_per_year`
-- Weekly volatility：`52`
-- Monthly volatility：`12`
+- Daily volatility / tracking error：使用实际有效收益观察密度推断 `periods_per_year`
 
 累计测量期短于一年时：
 
@@ -293,16 +291,14 @@
 
 Holdings / Risk / Research 中所有 forward-looking covariance / risk contribution 计算共享组合级 `Production Risk Model`。该模型存储在 `portfolio_record.risk_policy_json`，包括 covariance model、lookback days、calculation frequency、missing-return policy 和 contribution mode。Production risk window 只允许 `1M / 3M / 6M / 12M / 24M`，API 枚举值分别为 `30 / 90 / 180 / 366 / 730`，但窗口边界必须从请求的 as-of date 回看 `1 / 3 / 6 / 12 / 24` 个自然月，不能按固定日数或交易日数量相减，也不能把窗口锚到最新一条较早的收益观察。起止日期都是 EOD boundary，收益行按 `(window_start EOD, as_of EOD]` 选取：结束于 window start 当天的收益属于前一区间，不得计入；若 window start 是非交易日，首条合法收益可以从该边界之前最近一个有效交易日收盘开始，并结束于边界后的首个有效交易日。它是 forward RC、风险预算偏离、risk-budget solve 和 target-volatility overlay 的唯一生产风险模型来源；Research settings 中保留的 lookback/frequency 字段只作为 run setup 表单输入，不得成为第二套风险模型来源。Performance 中基于实际历史组合路径的 realized attribution 仍然独立保留，不和 forward RC 混用。
 
-Risk 与 Research 的 covariance / correlation / risk contribution 必须先确定一个 target calculation frequency，再把各资产 NAV/price series 对齐到该频率：
+Risk 与 Research 的 covariance / correlation / risk contribution 固定使用日频组合路径：
 
-- `auto` 规则：每个 instrument 优先采用 Registry `source_settings.expected_frequency`，只有该设置缺失或为 event-driven 时才从观测间隔推断。全部资产为日频时使用 `daily`；日频和周频混合时使用 `weekly`；存在月频资产时使用 `monthly`。一段早期稀疏或周频历史不能把已注册为 daily 的当前数据整体降级成 weekly。
-- Research 允许用户通过组合级 `Production Risk Model` 显式选择 `daily` / `weekly` / `monthly`，但不能选择高于数据支持的频率。例如日频+周频混合不能强制按日频计算。
-- 对齐规则：每个资产在目标 period 内只取最后一个有效观测点；不得跨目标 period 前向填充生成假 NAV。若某资产缺少某个目标 period，该资产该 period 的 return 为 missing。
-- 节假日规则：若标准资产在某个交易所共同节假日都没有更新，则该日期不会进入共同收益样本；若只有单个资产缺失，而其他资产在该目标 period 有观测，则这是该资产的缺失数据，不应被当作 0 return 或 stale return。
-- Missing-return policy：默认 `strict`，任何 active member 在目标 period 缺失都使该风险/研究样本不可解。`strict` 与 `complete_case_drop` 都必须校验 latest complete row 的尾部新鲜度（日频 `5` 天、周频 `14` 天、月频 `62` 天）；不能因为矩阵没有空值就接受已经陈旧的整段数据。Research 可以由用户显式选择 `complete_case_drop`，但只能删除含缺失成员的整行，并额外受缺失行比例 `10%` 和最小完整观测数约束；结果必须暴露 rows before / after、missing rows、latest complete date 与 trailing staleness。
-- 周频 period end 使用自然周五；若 as-of date 落在周中，则最后一个未完整周以 as-of date 作为 capped period end。月频使用自然月末，同样以 as-of date cap 最后一个 period。
+- 组合计算频率只有 `daily`，不是用户设置项。Registry `source_settings.expected_frequency` 只保留 `daily` 与 `event_driven`，不能把组合降级成周频或月频。
+- 对齐规则：在所有成员有效观测日期的并集上，未发布新值的成员沿用最近有效 mark；来源更新日一次性确认自上次发布以来的变化。所有来源均无新观测的日期不进入风险样本。
+- 节假日规则：共同非交易日不生成样本；预期应更新却缺失的数据必须由 `risk_basis` 标记 incomplete，不能用 carry-forward 掩盖数据缺口。
+- Missing-return policy：默认 `strict`。共同起点之前的缺失、无法取得初值或预期更新缺口均使风险/研究样本不可解。`strict` 与 `complete_case_drop` 都必须校验 latest complete row 的日频尾部新鲜度 `5` 天；结果必须暴露 rows before / after、missing rows、latest complete date 与 trailing staleness。
 - 日频 instrument 配置 `market_calendar` 时，以该日历校验 holiday vs missing：共同非交易日不生成样本；任何日历交易日缺价都进入 coverage / missing 诊断。未配置或日历无法解析时使用保守的日历日 gap threshold，不隐式填值。
-- Portfolio Risk 页的 `risk_basis` 来自 Holdings workspace，是当前 `risk_eligible=true` 非现金 modeled sleeve 的 return alignment 元数据，不是一个风险指标。它必须能覆盖全部 eligible members，并且 `resolved_frequency` 只能是 `daily` / `weekly` / `monthly`；缺失、非法、来源频率不完整或所有 eligible members 共同缺少同一个预期观测日时，Risk 页面和 Holdings Forward RC 都进入 basis unavailable / incomplete，不得临时从 calculation groups、默认 daily 或“成员彼此仍对齐”兜底。
+- Portfolio Risk 页的 `risk_basis` 来自 Holdings workspace，是当前 `risk_eligible=true` 非现金 modeled sleeve 的来源覆盖元数据，不是一个风险指标。它必须能覆盖全部 eligible members，并且 `resolved_frequency` 恒为 `daily`；缺失、非法或来源更新不完整时，Risk 页面和 Holdings Forward RC 都进入 basis unavailable / incomplete。
 - Holdings `Forward RC` 和 Risk 页 Current Drift 使用 total-NAV 当前权重：eligible exposure 按 `signed market_value_base / total NAV` 形成权重，衍生品和 base-currency cash 不进入 covariance，但作为 0-return capital 留在分母中。Forward covariance 必须先在全部 eligible leaf instruments 上估计一次；taxonomy / sleeve 的 current risk share 只能把这些 leaf contribution 按同一个 total-portfolio variance 分母相加，禁止先合成 sleeve return、再对 sleeve 重新做 shrinkage covariance。输出同时披露 modeled/excluded exposure、cash 与 coverage。真实成立以来/真实持仓期间的 realized attribution 留在 Performance `Calculation`。Risk 页不再提供单独的 point-in-time Risk Contribution 表；风险预算偏离只在 Current Drift 中展示。
 - Risk 页 Rolling Risk 是窗口内 sample volatility / sample Sharpe 展示层，只受 rolling lookback、calculation frequency 和 coverage 影响；不提供 EWMA / shrinkage 等 covariance model 选择。当前权重篮子同样要求所有 active members 在共同 inception 之后具有完全一致的 dates 与 period identity；不能先取交集静默丢掉缺失日再计算。凡是用于 risk-budget drift、rebalance trigger、Research solve 或 Holdings Forward RC 的 RC 相关指标，必须使用组合级 `Production Risk Model`，不能在不同页面各自硬编码 decay、shrinkage、lookback 或 contribution mode。
 - Risk 页 Correlation Matrix 是窗口内 sample correlation 展示层，只受 lookback、calculation frequency、coverage 和 scope 影响；不提供 EWMA、vol shrinkage 或 correlation shrinkage 方法选择。EWMA / shrinkage 是 forward covariance 估计模型，应保留在 Production Risk Model 驱动的 Current Drift risk gap、Research solve 和 Holdings Forward RC 中。
@@ -536,8 +532,8 @@ Holdings 可以展示 quote-derived instrument market trend 指标，作为扫�
 - `Current DD` 使用 confirmed total-return series，计算为 `latest_total_return_level / max_available_total_return_level_to_date - 1`；
 - `Max DD` 使用同一序列，计算历史各点相对此前峰值的最小值 `min(level_t / running_peak_t - 1)`；
 - `Held Max DD` 只在 instrument row 计算，起点是当前开放头寸中最早的 holding start date；它不纳入已经平掉的旧头寸；
-- 普通证券的 `Vol 1M / 3M / 6M / 1Y` 使用同一 confirmed total-return series 先按组合 resolved risk frequency 取 daily / weekly / monthly period returns，再按实际 elapsed days 年化；不得使用 `Chart *` sampled points。衍生品显示 `N/A`，modeled-zero monetary row 显示 0；
-- volatility 窗口必须有接近窗口起点的初始 quote、足够 elapsed-day 覆盖和最小收益样本数，否则为空。当前门槛为 daily `10 / 30 / 60 / 120`、weekly `3 / 6 / 12 / 24`、monthly `2 / 2 / 4 / 6`，分别对应 `1M / 3M / 6M / 1Y`；
+- 普通证券的 `Vol 1M / 3M / 6M / 1Y` 使用同一 confirmed total-return series 的日频收益，再按实际 elapsed days 年化；不得使用 `Chart *` sampled points。衍生品显示 `N/A`，modeled-zero monetary row 显示 0；
+- volatility 窗口必须有接近窗口起点的初始 quote、足够 elapsed-day 覆盖和最小收益样本数，否则为空。日频门槛为 `10 / 30 / 60 / 120`，分别对应 `1M / 3M / 6M / 1Y`；
 - 这些指标不读取 quantity、cash flow、cost basis、FIFO / moving average、realized gain 或 income，因此不属于组合 TWR、holding contribution 或 book P&L。
 
 Holdings `Forward RC` 是当前正式风险持仓的组合级 forward risk contribution：
@@ -1238,7 +1234,7 @@ Risk 页和 Research solver 使用同一套 covariance model id 与 contribution
 - `sample_covariance`
 - contribution mode: `signed` / `abs`
 
-这里的 `\Sigma` 是年化 covariance matrix。`sample_covariance` 的日/周/月 period return 样本使用 `n - 1` 分母；EWMA 和 Ledoit-Wolf 这类模型可在模型内部使用其自身估计口径，但必须通过 model id 明确区分。混合日频 / 周频 / 稀疏 NAV 时，先按 2.6.1 的 target calculation frequency 取 period-end 观测，再计算收益；不做 stale 价格生成的 0 return。默认 `strict` policy 下，active return matrix 必须在所有参与成员上完整，协方差和相关性按同一组完整收益日期估计并按这些日期的实际观察密度年化。Research 只有在用户显式选择 `complete_case_drop` 且通过覆盖率与尾部新鲜度约束时，才可以整行删除缺失 period 后继续求解。若完整有效收益不足两期，solver 必须进入 insufficient-history 诊断，而不是用不同长度的持有期收益硬拼协方差。
+这里的 `\Sigma` 是年化 covariance matrix。`sample_covariance` 的日频 return 样本使用 `n - 1` 分母；EWMA 和 Ledoit-Wolf 这类模型可在模型内部使用其自身估计口径，但必须通过 model id 明确区分。来源更新节奏不同时，先构造 2.6.1 的日频 mark-to-last 路径，再在共同日期上估计协方差和相关性，并按实际观察密度年化。若完整有效收益不足两期，solver 必须进入 insufficient-history 诊断。
 
 ### Marginal contribution to variance
 
@@ -1368,7 +1364,7 @@ Research 的历史模拟合同是 `Point-in-time target-policy simulation`，不
 
 每次 run 必须输出 root `solve_event` 和完整 `scope_solve_events`，用于复核每层 scope 的默认维度、实际维度、solver、RC mode、risk gap 与成员数。
 
-每次 run 还必须输出 `calculation_frequency` profile，包括用户请求频率、最终解析频率、可选频率、源数据频率计数和状态文案；同时输出 missing-return policy、rows before / after、missing rows、dropped rows、latest complete date 与 trailing staleness，便于复核样本是否被严格保留或显式 complete-case 删除。组合 workspace 的组合名状态栏展示当前组合的默认 risk basis，方便用户确认当前是 daily / weekly / monthly 口径。
+每次 run 还必须输出 `calculation_frequency` profile，其中 requested / resolved / default 均为 `daily`，并保留源数据发布节奏计数；同时输出 missing-return policy、rows before / after、missing rows、dropped rows、latest complete date 与 trailing staleness，便于复核日频样本。
 
 ## 11. Scenario P&L 口径
 

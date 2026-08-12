@@ -231,8 +231,6 @@ const GROUP_VOL_WINDOW_MONTHS: Record<GroupVolatilityRangeKey, number> = {
 const GROUP_VOL_MIN_WINDOW_COVERAGE_RATIO = 0.8
 const GROUP_RISK_MAX_TRAILING_STALENESS_DAYS: Record<PortfolioCalculationFrequency, number> = {
   daily: 5,
-  weekly: 14,
-  monthly: 62,
 }
 const GROUP_VOL_MIN_RETURN_OBSERVATIONS: Record<PortfolioCalculationFrequency, Record<GroupVolatilityRangeKey, number>> = {
   daily: {
@@ -240,18 +238,6 @@ const GROUP_VOL_MIN_RETURN_OBSERVATIONS: Record<PortfolioCalculationFrequency, R
     '3m': 30,
     '6m': 60,
     '1y': 120,
-  },
-  weekly: {
-    '1m': 3,
-    '3m': 6,
-    '6m': 12,
-    '1y': 24,
-  },
-  monthly: {
-    '1m': 2,
-    '3m': 2,
-    '6m': 4,
-    '1y': 6,
   },
 }
 
@@ -1215,15 +1201,8 @@ function normalizedReturnSeries(series: HoldingReturnSeries | null | undefined) 
 }
 
 function calculationFrequencyForRows(rows: PortfolioHoldingRow[]): PortfolioCalculationFrequency {
-  const frequencies = new Set(
-    rows
-      .filter((row) => !isPendingMonetaryHoldingRow(row))
-      .map((row) => row.instrument_risk_frequency),
-  )
-  if (frequencies.has('monthly')) {
-    return 'monthly'
-  }
-  return frequencies.has('weekly') ? 'weekly' : 'daily'
+  void rows
+  return 'daily'
 }
 
 export function groupedReturnSeries(

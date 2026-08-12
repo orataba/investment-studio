@@ -48,7 +48,6 @@ from watchlist_app.services.fund_taxonomy import (
 from watchlist_app.services.calculation_frequency import (
     assess_latest_observation_freshness,
     build_calculation_frequency_context,
-    normalize_frequency,
 )
 from watchlist_app.services.read_models import (
     build_watchlist_row_materialization,
@@ -1415,9 +1414,7 @@ def _validated_shared_quote_point(
         "as_of_date": as_of_date,
         "value": value,
         "currency": currency,
-        "frequency": normalize_frequency(
-            item.get("frequency") or item.get("observation_frequency")
-        ),
+        "frequency": "daily",
         "adopted_at": None,
         "metric_family": metric_family,
         "quote_basis": quote_basis,
@@ -2738,8 +2735,7 @@ class CanonicalRecalcService:
         resolved_frequency = str(
             calculation_frequency_profile.get("resolved_frequency") or "daily"
         ).strip().lower()
-        if resolved_frequency not in {"daily", "weekly", "monthly"}:
-            resolved_frequency = "daily"
+        resolved_frequency = "daily"
         observation_freshness = assess_latest_observation_freshness(
             latest_observation_date=(
                 latest_observation_date

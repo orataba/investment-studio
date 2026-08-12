@@ -8,7 +8,7 @@ describe('SourceScheduleFields', () => {
   it('renders all schedule semantics as editable controlled fields', () => {
     const markup = renderToStaticMarkup(
       <SourceScheduleFields
-        expectedFrequency="weekly"
+        expectedFrequency="daily"
         marketCalendar="CN_FUND_WEEKLY"
         releaseLagDays={2}
         onExpectedFrequencyChange={() => undefined}
@@ -18,7 +18,7 @@ describe('SourceScheduleFields', () => {
     )
 
     expect(markup).toContain('aria-label="Expected frequency"')
-    expect(markup).toContain('<option value="weekly" selected="">Weekly</option>')
+    expect(markup).toContain('<option value="daily" selected="">Daily</option>')
     expect(markup).toContain('<option value="event_driven">Event driven</option>')
     expect(markup).toMatch(
       /<input(?=[^>]*aria-label="Market calendar")(?=[^>]*value="CN_FUND_WEEKLY")[^>]*>/,

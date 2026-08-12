@@ -6,7 +6,7 @@ from datetime import date, timedelta
 from decimal import Decimal, InvalidOperation
 from math import sqrt
 
-from portfolio_app.services.calculation_frequency import CalculationFrequency, period_end_date
+from portfolio_app.services.calculation_frequency import CalculationFrequency
 from portfolio_ops_instrument_core import resolve_quote_return_semantics
 from portfolio_app.services.instrument_registry import get_registry_instrument_detail
 from portfolio_app.services.market_data import (
@@ -29,28 +29,12 @@ ASSET_RISK_MIN_RETURN_OBSERVATIONS: dict[CalculationFrequency, dict[str, int]] =
         "6m": 60,
         "1y": 120,
     },
-    "weekly": {
-        "1m": 3,
-        "3m": 6,
-        "6m": 12,
-        "1y": 24,
-    },
-    "monthly": {
-        "1m": 2,
-        "3m": 2,
-        "6m": 4,
-        "1y": 6,
-    },
 }
 ASSET_RISK_MAX_START_GAP_DAYS: dict[CalculationFrequency, int] = {
     "daily": 10,
-    "weekly": 21,
-    "monthly": 45,
 }
 ASSET_RISK_MAX_TRAILING_STALENESS_DAYS: dict[CalculationFrequency, int] = {
     "daily": 5,
-    "weekly": 14,
-    "monthly": 62,
 }
 ASSET_RISK_MIN_WINDOW_COVERAGE_RATIO = 0.8
 DAYS_PER_YEAR = 365.25
@@ -675,28 +659,6 @@ def _period_return_series(
     return returns, first_return_start_date, last_return_end_date
 
 
-def _points_for_calculation_frequency(
-    points: list[dict[str, object]],
-    *,
-    calculation_frequency: CalculationFrequency,
-    final_date: date | None,
-) -> list[dict[str, object]]:
-    if calculation_frequency == "daily":
-        return points
-
-    sampled_by_period: dict[date, dict[str, object]] = {}
-    for point in points:
-        point_date = point.get("date")
-        if not isinstance(point_date, date):
-            continue
-        target_date = period_end_date(point_date, calculation_frequency, final_date=final_date)
-        current_point = sampled_by_period.get(target_date)
-        current_date = current_point.get("date") if isinstance(current_point, dict) else None
-        if not isinstance(current_date, date) or point_date >= current_date:
-            sampled_by_period[target_date] = point
-    return [sampled_by_period[target_date] for target_date in sorted(sampled_by_period)]
-
-
 def _annualized_volatility(
     points: list[dict[str, object]],
     *,
@@ -709,11 +671,8 @@ def _annualized_volatility(
     required_end_date: date | None = None,
     max_trailing_staleness_days: int | None = None,
 ) -> float | None:
-    sampled_points = _points_for_calculation_frequency(
-        points,
-        calculation_frequency=calculation_frequency,
-        final_date=final_date,
-    )
+    del calculation_frequency, final_date
+    sampled_points = points
     returns, first_return_start_date, last_return_end_date = _period_return_observations(sampled_points)
     if len(returns) < min_return_observations:
         return None
@@ -785,11 +744,8 @@ def _return_series_payload(
     final_date: date | None = None,
     min_return_observations: int = 2,
 ) -> dict[str, object]:
-    sampled_points = _points_for_calculation_frequency(
-        points,
-        calculation_frequency=calculation_frequency,
-        final_date=final_date,
-    )
+    del calculation_frequency, final_date
+    sampled_points = points
     returns, first_return_start_date, last_return_end_date = _period_return_series(sampled_points)
     if len(returns) < min_return_observations or first_return_start_date is None or last_return_end_date is None:
         return _empty_return_series_payload()
@@ -818,11 +774,7 @@ def _window_return_series_payload(
         start_date=window_start_date,
         max_anchor_gap_days=max_start_gap_days,
     )
-    sampled_points = _points_for_calculation_frequency(
-        window_points,
-        calculation_frequency=calculation_frequency,
-        final_date=as_of_date,
-    )
+    sampled_points = window_points
     returns, first_return_start_date, last_return_end_date = _period_return_series(sampled_points)
     if len(returns) < ASSET_RISK_MIN_RETURN_OBSERVATIONS[calculation_frequency][range_key]:
         return _empty_return_series_payload()

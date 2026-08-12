@@ -30,9 +30,9 @@ from portfolio_ops_instrument_core import (  # noqa: E402
 
 
 FINAL_FLAT_TABLE_HEADS = {
-    "instrument_registry": "20260810_0023",
+    "instrument_registry": "20260812_0024",
     "platform": "20260716_0002",
-    "portfolio": "20260810_0049",
+    "portfolio": "20260812_0050",
     "watchlist": "20260809_0036",
 }
 VERSION_TABLES = {
@@ -633,6 +633,51 @@ def _run_flat_table_audit(database_url: str) -> list[AuditCheck]:
                         "Registry and Watchlist constraints and indexes must use the "
                         "canonical instrument-era identifiers, with no rewritten-revision "
                         "legacy names remaining."
+                    ),
+                )
+            )
+            checks.append(
+                _count_check(
+                    cursor,
+                    name="portfolio_snapshot_source_generation",
+                    query="""
+                        SELECT count(*)
+                        FROM portfolio.portfolio_calculation_state state
+                        WHERE state.daily_snapshot_status = 'current'
+                          AND (
+                            state.source_market_data_updated_at IS DISTINCT FROM (
+                                SELECT max(instrument.market_data_updated_at)
+                                FROM instrument_registry.instrument instrument
+                                WHERE instrument.market_data_updated_at IS NOT NULL
+                                  AND (
+                                    instrument.instrument_type = 'fx'
+                                    OR EXISTS (
+                                        SELECT 1
+                                        FROM portfolio.transaction_record transaction
+                                        WHERE transaction.portfolio_id = state.portfolio_id
+                                          AND transaction.instrument_id = instrument.instrument_id
+                                    )
+                                  )
+                            )
+                            OR state.source_calculation_inputs_updated_at IS DISTINCT FROM (
+                                SELECT max(instrument.calculation_inputs_updated_at)
+                                FROM instrument_registry.instrument instrument
+                                WHERE instrument.calculation_inputs_updated_at IS NOT NULL
+                                  AND (
+                                    instrument.instrument_type = 'fx'
+                                    OR EXISTS (
+                                        SELECT 1
+                                        FROM portfolio.transaction_record transaction
+                                        WHERE transaction.portfolio_id = state.portfolio_id
+                                          AND transaction.instrument_id = instrument.instrument_id
+                                    )
+                                  )
+                            )
+                          )
+                    """,
+                    detail=(
+                        "Every current Portfolio snapshot generation must match both "
+                        "market-data and calculation-input Registry watermarks."
                     ),
                 )
             )

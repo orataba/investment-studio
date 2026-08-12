@@ -25,6 +25,7 @@ function isAllCoverageWatchlist(watchlist: WatchlistRecord) {
 export default function WatchlistEntryPage() {
   const navigate = useNavigate()
   const [watchlists, setWatchlists] = useState<WatchlistRecord[]>([])
+  const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [menuOpenId, setMenuOpenId] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
@@ -34,8 +35,10 @@ export default function WatchlistEntryPage() {
   const [createWatchlistName, setCreateWatchlistName] = useState('')
   const [createWatchlistDescription, setCreateWatchlistDescription] = useState('')
   const [isCreatingWatchlist, setIsCreatingWatchlist] = useState(false)
+  const [createError, setCreateError] = useState<string | null>(null)
   const [pendingDelete, setPendingDelete] = useState<WatchlistRecord | null>(null)
   const [deleting, setDeleting] = useState(false)
+  const [deleteError, setDeleteError] = useState<string | null>(null)
   const menuRef = useRef<HTMLDivElement | null>(null)
   const createNameRef = useRef<HTMLInputElement | null>(null)
   const createDialogRef = useModalDialog(
@@ -63,6 +66,9 @@ export default function WatchlistEntryPage() {
         if (!cancelled) {
           setError(requestError instanceof Error ? requestError.message : 'Failed to load watchlists.')
         }
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false)
       })
 
     return () => {
@@ -129,6 +135,16 @@ export default function WatchlistEntryPage() {
     }
   }
 
+  function moveWatchlistByOffset(watchlistId: string, offset: -1 | 1) {
+    const movableWatchlists = watchlists.filter((item) => !isAllCoverageWatchlist(item))
+    const currentIndex = movableWatchlists.findIndex((item) => item.watchlist_id === watchlistId)
+    const target = movableWatchlists[currentIndex + offset]
+    if (currentIndex === -1 || !target) {
+      return
+    }
+    void moveWatchlist(watchlistId, target.watchlist_id)
+  }
+
   function resetCreateWatchlistForm() {
     setCreateWatchlistName('')
     setCreateWatchlistDescription('')
@@ -142,7 +158,7 @@ export default function WatchlistEntryPage() {
     }
 
     setIsCreatingWatchlist(true)
-    setError(null)
+    setCreateError(null)
     setNotice(null)
     try {
       const created = await createWatchlist({
@@ -156,7 +172,7 @@ export default function WatchlistEntryPage() {
       setNotice(`Created watchlist "${created.name}".`)
       navigate(buildWatchlistPath(created.watchlist_id))
     } catch (requestError) {
-      setError(
+      setCreateError(
         requestError instanceof Error
           ? requestError.message
           : 'Failed to create watchlist.',
@@ -170,6 +186,7 @@ export default function WatchlistEntryPage() {
       return
     }
     setDeleting(true)
+    setDeleteError(null)
     try {
       await deleteWatchlist(pendingDelete.watchlist_id)
       setWatchlists((current) =>
@@ -178,7 +195,7 @@ export default function WatchlistEntryPage() {
       setNotice(`Deleted watchlist "${pendingDelete.name}".`)
       setPendingDelete(null)
     } catch (requestError) {
-      setNotice(
+      setDeleteError(
         requestError instanceof Error ? requestError.message : 'Failed to delete watchlist.',
       )
     } finally {
@@ -199,7 +216,11 @@ export default function WatchlistEntryPage() {
         <div className="watchlist-entry-hero">
           <h1 className="watchlist-entry-title">All Watchlists</h1>
           <span className="watchlist-entry-hero-meta">
-            {watchlists.length} Watchlists · {totalProducts} Securities
+            {loading
+              ? 'Loading watchlists…'
+              : error
+                ? 'Watchlist totals unavailable'
+                : `${watchlists.length} Watchlists · ${totalProducts} Securities`}
           </span>
         </div>
       </header>
@@ -238,22 +259,26 @@ export default function WatchlistEntryPage() {
             >
               <div className="watchlist-entry-card-leading">
                 {!systemCoverage ? (
-                  <button
-                    type="button"
-                    className="watchlist-entry-grip"
-                    onClick={() => setNotice('Drag rows to reorder watchlists.')}
-                    aria-label={`Reorder ${watchlist.name}`}
-                    title="Drag to reorder"
-                  >
-                    <svg viewBox="0 0 12 16">
-                      <circle cx="4" cy="4" r="1" fill="currentColor" />
-                      <circle cx="8" cy="4" r="1" fill="currentColor" />
-                      <circle cx="4" cy="8" r="1" fill="currentColor" />
-                      <circle cx="8" cy="8" r="1" fill="currentColor" />
-                      <circle cx="4" cy="12" r="1" fill="currentColor" />
-                      <circle cx="8" cy="12" r="1" fill="currentColor" />
-                    </svg>
-                  </button>
+                  <div className="watchlist-entry-grip" aria-label={`Reorder ${watchlist.name}`}>
+                    <button
+                      type="button"
+                      onClick={() => moveWatchlistByOffset(watchlist.watchlist_id, -1)}
+                      disabled={reordering || watchlists.filter((item) => !isAllCoverageWatchlist(item))[0]?.watchlist_id === watchlist.watchlist_id}
+                      aria-label={`Move ${watchlist.name} up`}
+                      title="Move up"
+                    >
+                      ↑
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => moveWatchlistByOffset(watchlist.watchlist_id, 1)}
+                      disabled={reordering || watchlists.filter((item) => !isAllCoverageWatchlist(item)).slice(-1)[0]?.watchlist_id === watchlist.watchlist_id}
+                      aria-label={`Move ${watchlist.name} down`}
+                      title="Move down"
+                    >
+                      ↓
+                    </button>
+                  </div>
                 ) : (
                   <span className="watchlist-entry-grip watchlist-entry-grip-placeholder" aria-hidden="true">
                     <svg viewBox="0 0 12 16">
@@ -308,6 +333,7 @@ export default function WatchlistEntryPage() {
                         <button
                           type="button"
                           onClick={() => {
+                            setDeleteError(null)
                             setPendingDelete(watchlist)
                             setMenuOpenId(null)
                           }}
@@ -344,6 +370,7 @@ export default function WatchlistEntryPage() {
             className="watchlist-create-link"
             onClick={() => {
               resetCreateWatchlistForm()
+              setCreateError(null)
               setCreateModalOpen(true)
               setError(null)
               setNotice(null)
@@ -391,7 +418,8 @@ export default function WatchlistEntryPage() {
             </div>
 
             <div className="watchlists-modal-body">
-              <div className="form-field">
+              {createError ? <div className="panel error-state">{createError}</div> : null}
+              <label className="form-field">
                 <span>Name</span>
                 <input
                   ref={createNameRef}
@@ -400,8 +428,8 @@ export default function WatchlistEntryPage() {
                   onChange={(event) => setCreateWatchlistName(event.target.value)}
                   placeholder="Coverage"
                 />
-              </div>
-              <div className="form-field">
+              </label>
+              <label className="form-field">
                 <span>Description</span>
                 <textarea
                   className="form-textarea"
@@ -409,7 +437,7 @@ export default function WatchlistEntryPage() {
                   onChange={(event) => setCreateWatchlistDescription(event.target.value)}
                   placeholder="Optional description for this watchlist."
                 />
-              </div>
+              </label>
             </div>
 
             <div className="watchlists-modal-actions">
@@ -444,7 +472,11 @@ export default function WatchlistEntryPage() {
         confirmLabel="Delete Watchlist"
         confirmationText={pendingDelete?.name}
         busy={deleting}
-        onCancel={() => setPendingDelete(null)}
+        error={deleteError}
+        onCancel={() => {
+          setDeleteError(null)
+          setPendingDelete(null)
+        }}
         onConfirm={handleDeleteWatchlist}
       />
     </section>

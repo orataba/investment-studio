@@ -203,7 +203,7 @@ def test_realized_risk_contribution_uses_common_matrix_for_sparse_instruments():
     assert metrics["instrument-b"]["risk_return_observation_count"] == 2
 
 
-def test_realized_risk_contribution_links_daily_contributions_for_weekly_frequency():
+def test_realized_risk_contribution_links_daily_contributions():
     daily_rows = [
         (date(2026, 1, 5), 0.10, 0.06, 0.04),
         (date(2026, 1, 6), 0.10, 0.04, 0.06),
@@ -246,20 +246,20 @@ def test_realized_risk_contribution_links_daily_contributions_for_weekly_frequen
     metrics = attribution.realized_risk_attribution_by_group(
         daily_slices,
         portfolio_daily_series,
-        calculation_frequency="weekly",
+        calculation_frequency="daily",
         final_date=date(2026, 1, 20),
     )
 
-    assert isclose(metrics["instrument-a"]["realized_risk_contribution"], 0.522095588536811)
-    assert isclose(metrics["instrument-b"]["realized_risk_contribution"], 0.47790441146318824)
+    assert isclose(metrics["instrument-a"]["realized_risk_contribution"], 0.5253164556962024)
+    assert isclose(metrics["instrument-b"]["realized_risk_contribution"], 0.4746835443037975)
     assert isclose(
         sum(item["realized_risk_contribution"] or 0.0 for item in metrics.values()),
         1.0,
         rel_tol=0.0,
         abs_tol=1e-12,
     )
-    assert metrics["instrument-a"]["risk_return_observation_count"] == 3
-    assert metrics["instrument-b"]["risk_return_observation_count"] == 3
+    assert metrics["instrument-a"]["risk_return_observation_count"] == 6
+    assert metrics["instrument-b"]["risk_return_observation_count"] == 6
 
 
 def test_valuation_quote_selection_rejects_reference_and_total_return_fallbacks():
@@ -2665,6 +2665,11 @@ def test_zero_nav_gap_breaks_history_and_refunding_starts_new_segment(
 
 
 def test_performance_summary_reports_full_calendar_year_twr_annualized_and_irr(client, monkeypatch):
+    monkeypatch.setattr(
+        portfolio_store,
+        "_portfolio_valuation_today",
+        lambda _portfolio: date(2027, 1, 2),
+    )
     instrument_detail = _test_instrument_detail(
         instrument_id="equity-us-test",
         instrument_name="Test Equity",
@@ -7716,7 +7721,10 @@ def test_period_calculation_groups_support_instrument_type_axis(client, monkeypa
     assert isclose(fund_children["fund-us-test"]["final_value"], 190.0, rel_tol=0.0, abs_tol=1e-12)
 
 
-def test_period_calculation_groups_use_unified_weekly_risk_basis_for_mixed_frequency(client, monkeypatch):
+def test_period_calculation_groups_use_daily_risk_basis_for_daily_sources(
+    client,
+    monkeypatch,
+):
     daily_detail = _test_instrument_detail(
         instrument_id="equity-us-daily-risk-test",
         instrument_name="Daily Risk Test Equity",
@@ -7735,19 +7743,28 @@ def test_period_calculation_groups_use_unified_weekly_risk_basis_for_mixed_frequ
             ("2026-01-16", "111.00"),
         ],
     )
-    weekly_detail = _test_instrument_detail(
-        instrument_id="fund-us-weekly-risk-test",
-        instrument_name="Weekly Risk Test Fund",
+    fund_detail = _test_instrument_detail(
+        instrument_id="fund-us-daily-risk-test",
+        instrument_name="Daily Risk Test Fund",
         history=[
             ("2026-01-01", "100.00"),
+            ("2026-01-02", "100.50"),
+            ("2026-01-05", "101.50"),
+            ("2026-01-06", "102.00"),
+            ("2026-01-07", "103.00"),
             ("2026-01-08", "104.00"),
+            ("2026-01-09", "103.50"),
+            ("2026-01-12", "103.00"),
+            ("2026-01-13", "102.80"),
+            ("2026-01-14", "102.50"),
+            ("2026-01-15", "102.20"),
             ("2026-01-16", "102.00"),
         ],
         instrument_type="fund",
     )
     instrument_details = {
         "equity-us-daily-risk-test": daily_detail,
-        "fund-us-weekly-risk-test": weekly_detail,
+        "fund-us-daily-risk-test": fund_detail,
     }
     monkeypatch.setattr(
         performance,
@@ -7789,7 +7806,7 @@ def test_period_calculation_groups_use_unified_weekly_risk_basis_for_mixed_frequ
     for index, (instrument_id, instrument_name, instrument_type) in enumerate(
         [
             ("equity-us-daily-risk-test", "Daily Risk Test Equity", "equity"),
-            ("fund-us-weekly-risk-test", "Weekly Risk Test Fund", "fund"),
+            ("fund-us-daily-risk-test", "Daily Risk Test Fund", "fund"),
         ],
         start=2,
     ):
@@ -7872,7 +7889,7 @@ def test_period_calculation_groups_use_unified_weekly_risk_basis_for_mixed_frequ
             "effective_to": None,
             "status": "active",
         }
-        for instrument_id in ("equity-us-daily-risk-test", "fund-us-weekly-risk-test")
+        for instrument_id in ("equity-us-daily-risk-test", "fund-us-daily-risk-test")
     ]
     _write_store(store)
 
@@ -7882,26 +7899,26 @@ def test_period_calculation_groups_use_unified_weekly_risk_basis_for_mixed_frequ
     )
     assert response.status_code == 200
     payload = response.json()
-    assert payload["summary"]["risk_calculation_frequency"] == "weekly"
-    assert payload["summary"]["risk_frequency_status_label"] == "Weekly risk basis - mixed daily/weekly data"
-    assert payload["summary"]["risk_return_observation_count"] == 2
+    assert payload["summary"]["risk_calculation_frequency"] == "daily"
+    assert payload["summary"]["risk_frequency_status_label"] == "Daily risk basis"
+    assert payload["summary"]["risk_return_observation_count"] == 11
     assert payload["summary"]["risk_annualization_periods_per_year"] == pytest.approx(
-        2 / 15 * period_metrics.DAYS_PER_YEAR
+        11 / 15 * period_metrics.DAYS_PER_YEAR
     )
     groups = {item["group_key"]: item for item in payload["groups"]}
 
-    assert groups["equity-us-daily-risk-test"]["risk_calculation_frequency"] == "weekly"
-    assert groups["fund-us-weekly-risk-test"]["risk_calculation_frequency"] == "weekly"
-    assert groups["equity-us-daily-risk-test"]["risk_return_observation_count"] == 3
-    assert groups["fund-us-weekly-risk-test"]["risk_return_observation_count"] == 2
+    assert groups["equity-us-daily-risk-test"]["risk_calculation_frequency"] == "daily"
+    assert groups["fund-us-daily-risk-test"]["risk_calculation_frequency"] == "daily"
+    assert groups["equity-us-daily-risk-test"]["risk_return_observation_count"] == 11
+    assert groups["fund-us-daily-risk-test"]["risk_return_observation_count"] == 11
     assert groups["equity-us-daily-risk-test"][
         "risk_annualization_periods_per_year"
-    ] == pytest.approx(3 / 15 * period_metrics.DAYS_PER_YEAR)
-    assert groups["fund-us-weekly-risk-test"][
+    ] == pytest.approx(11 / 15 * period_metrics.DAYS_PER_YEAR)
+    assert groups["fund-us-daily-risk-test"][
         "risk_annualization_periods_per_year"
-    ] == pytest.approx(2 / 15 * period_metrics.DAYS_PER_YEAR)
+    ] == pytest.approx(11 / 15 * period_metrics.DAYS_PER_YEAR)
     assert groups["equity-us-daily-risk-test"]["annualized_volatility"] is not None
-    assert groups["fund-us-weekly-risk-test"]["annualized_volatility"] is not None
+    assert groups["fund-us-daily-risk-test"]["annualized_volatility"] is not None
 
     taxonomy_response = client.get(
         f"/api/portfolios/{portfolio_id}/performance/calculation/groups"
@@ -7918,14 +7935,30 @@ def test_period_calculation_groups_use_unified_weekly_risk_basis_for_mixed_frequ
         if item["annualized_volatility"] is not None
     )
 
-    assert core_group["risk_calculation_frequency"] == "weekly"
-    assert core_group["risk_return_observation_count"] == 2
+    assert core_group["risk_calculation_frequency"] == "daily"
+    assert core_group["risk_return_observation_count"] == 11
     assert core_group["risk_annualization_periods_per_year"] == pytest.approx(
-        2 / 15 * period_metrics.DAYS_PER_YEAR
+        11 / 15 * period_metrics.DAYS_PER_YEAR
     )
     assert core_group["annualized_volatility"] is not None
     assert not isclose(core_group["annualized_volatility"], child_volatility, rel_tol=0.0, abs_tol=1e-12)
     assert isclose(core_group["total_pnl"], child_total_pnl, rel_tol=0.0, abs_tol=1e-12)
+
+    performance_response = client.get(
+        f"/api/portfolios/{portfolio_id}/performance"
+        "?start_date=2026-01-01&end_date=2026-01-16"
+    )
+    assert performance_response.status_code == 200
+    daily_series = performance_response.json()["daily_series"]
+    by_date = {item["as_of_date"]: item for item in daily_series}
+    assert by_date["2026-01-07"]["market_risk_return_observation_eligible"] is True
+    assert by_date["2026-01-08"]["market_risk_daily_return"] == pytest.approx(209 / 207 - 1)
+    assert by_date["2026-01-16"]["market_risk_daily_return"] == pytest.approx(213 / 211.2 - 1)
+    compounded_return = 1.0
+    for item in daily_series:
+        if item["market_risk_return_observation_eligible"]:
+            compounded_return *= 1 + item["market_risk_daily_return"]
+    assert compounded_return - 1 == pytest.approx(213 / 200 - 1)
 
 
 def test_period_calculation_groups_instrument_includes_cash_balance(client, monkeypatch):

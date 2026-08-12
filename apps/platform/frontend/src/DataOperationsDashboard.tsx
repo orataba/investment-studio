@@ -1,13 +1,39 @@
-import { LanguageSelector } from '../../../../packages/ui/src/i18n'
+import { useEffect, useState } from 'react'
 
-function siblingUrl(port: string) {
-  const hostname = window.location.hostname.includes(':')
-    ? `[${window.location.hostname}]`
-    : window.location.hostname
-  return `${window.location.protocol}//${hostname}:${port}`
+import { LanguageSelector } from '../../../../packages/ui/src/i18n'
+import { fetchJson } from './instrumentRegistryModel'
+
+type PlatformAppsResponse = {
+  apps: Array<{ app_id: string; url: string }>
 }
 
+const WATCHLIST_URL = import.meta.env.VITE_WATCHLIST_URL || '/watchlist'
+const PORTFOLIO_URL = import.meta.env.VITE_PORTFOLIO_URL || '/portfolio'
+
 export default function DataOperationsDashboard() {
+  const [watchlistUrl, setWatchlistUrl] = useState(WATCHLIST_URL)
+  const [portfolioUrl, setPortfolioUrl] = useState(PORTFOLIO_URL)
+
+  useEffect(() => {
+    let cancelled = false
+    fetchJson<PlatformAppsResponse>('/api/apps')
+      .then((response) => {
+        if (cancelled) return
+        setWatchlistUrl(
+          response.apps.find((app) => app.app_id === 'watchlist')?.url
+            || WATCHLIST_URL,
+        )
+        setPortfolioUrl(
+          response.apps.find((app) => app.app_id === 'portfolio')?.url
+            || PORTFOLIO_URL,
+        )
+      })
+      .catch(() => undefined)
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
   return (
     <main className="platform-shell home-shell">
       <header className="home-masthead">
@@ -27,7 +53,7 @@ export default function DataOperationsDashboard() {
       </section>
 
       <nav className="home-primary-links" aria-label="Investment workspaces">
-        <a href={siblingUrl('5173')}>
+        <a href={watchlistUrl}>
           <span className="home-link-number">01</span>
           <span className="home-link-copy">
             <small>Research and monitoring</small>
@@ -36,7 +62,7 @@ export default function DataOperationsDashboard() {
           </span>
           <span className="home-link-arrow" aria-hidden="true">↗</span>
         </a>
-        <a href={siblingUrl('5174')}>
+        <a href={portfolioUrl}>
           <span className="home-link-number">02</span>
           <span className="home-link-copy">
             <small>Portfolio management</small>

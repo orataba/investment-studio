@@ -29,12 +29,14 @@ function formatAsOfDate(value: string | null | undefined) {
 export default function PortfoliosPage() {
   const navigate = useNavigate()
   const [portfolios, setPortfolios] = useState<PortfolioEntryRecord[]>([])
+  const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [menuOpenId, setMenuOpenId] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
   const [draggingId, setDraggingId] = useState<string | null>(null)
   const [pendingDelete, setPendingDelete] = useState<PortfolioEntryRecord | null>(null)
   const [deleting, setDeleting] = useState(false)
+  const [deleteError, setDeleteError] = useState<string | null>(null)
   const menuRef = useRef<HTMLDivElement | null>(null)
 
   useEffect(() => {
@@ -56,6 +58,9 @@ export default function PortfoliosPage() {
               : 'Failed to load portfolios entry.',
           )
         }
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false)
       })
 
     return () => {
@@ -83,16 +88,43 @@ export default function PortfoliosPage() {
     return () => window.clearTimeout(timeoutId)
   }, [notice])
 
-  const resolvedPortfolios = portfolios.length ? portfolios : FALLBACK_PORTFOLIOS
-  const totalNav = resolvedPortfolios.reduce((sum, item) => sum + item.nav, 0)
-  const totalDayChange = resolvedPortfolios.reduce((sum, item) => sum + (item.day_change_value ?? 0), 0)
-  const totalDayChangePct = totalNav === 0 ? 0 : totalDayChange / (totalNav - totalDayChange || totalNav || 1)
-  const totalNavLabel = formatCurrency(totalNav, resolvedPortfolios[0]?.base_currency ?? 'USD')
-  const totalChangeLabel = formatSignedCurrency(totalDayChange, resolvedPortfolios[0]?.base_currency ?? 'USD')
+  const resolvedPortfolios = portfolios
+  const baseCurrencies = new Set(resolvedPortfolios.map((item) => item.base_currency))
+  const commonBaseCurrency = baseCurrencies.size === 1
+    ? resolvedPortfolios[0]?.base_currency
+    : undefined
+  const aggregateAvailable = Boolean(
+    !loading && !error && resolvedPortfolios.length && commonBaseCurrency,
+  )
+  const totalNav = aggregateAvailable
+    ? resolvedPortfolios.reduce((sum, item) => sum + item.nav, 0)
+    : null
+  const totalDayChange = aggregateAvailable
+    ? resolvedPortfolios.reduce((sum, item) => sum + (item.day_change_value ?? 0), 0)
+    : null
+  const totalDayChangePct = totalNav != null && totalDayChange != null && totalNav !== 0
+    ? totalDayChange / (totalNav - totalDayChange || totalNav)
+    : null
+  const totalNavLabel = loading
+    ? 'Loading…'
+    : error
+      ? 'Unavailable'
+      : !resolvedPortfolios.length
+        ? 'No portfolios'
+        : !commonBaseCurrency
+          ? 'Multiple base currencies'
+          : formatCurrency(totalNav, commonBaseCurrency)
+  const totalChangeLabel = aggregateAvailable
+    ? `${formatSignedCurrency(totalDayChange, commonBaseCurrency)} (${formatPercent(totalDayChangePct)})`
+    : !loading && !error && resolvedPortfolios.length && !commonBaseCurrency
+      ? 'Totals shown per portfolio'
+      : ''
   const totalChangeClassName =
-    totalDayChange < 0
+    totalDayChange != null && totalDayChange < 0
       ? 'portfolio-entry-change-negative'
-      : 'portfolio-entry-change-positive'
+      : totalDayChange != null && totalDayChange > 0
+        ? 'portfolio-entry-change-positive'
+        : 'portfolio-entry-change-neutral'
 
   function movePortfolio(sourceId: string, targetId: string) {
     if (sourceId === targetId) {
@@ -123,6 +155,15 @@ export default function PortfoliosPage() {
         void getPortfolios().then(setPortfolios).catch(() => undefined)
       })
     }
+  }
+
+  function movePortfolioByOffset(portfolioId: string, offset: -1 | 1) {
+    const currentIndex = portfolios.findIndex((item) => item.portfolio_id === portfolioId)
+    const target = portfolios[currentIndex + offset]
+    if (currentIndex === -1 || !target) {
+      return
+    }
+    movePortfolio(portfolioId, target.portfolio_id)
   }
 
   async function handleCreatePortfolio() {
@@ -158,6 +199,7 @@ export default function PortfoliosPage() {
       return
     }
     setDeleting(true)
+    setDeleteError(null)
     try {
       await deletePortfolio(pendingDelete.portfolio_id)
       setPortfolios((current) =>
@@ -166,7 +208,7 @@ export default function PortfoliosPage() {
       setNotice(`Deleted portfolio "${pendingDelete.portfolio_name}".`)
       setPendingDelete(null)
     } catch (requestError) {
-      setNotice(
+      setDeleteError(
         requestError instanceof Error ? requestError.message : 'Failed to delete portfolio.',
       )
     } finally {
@@ -187,9 +229,7 @@ export default function PortfoliosPage() {
         <div className="portfolio-entry-hero">
           <h1 className="portfolio-entry-title">All Portfolios</h1>
           <span className="portfolio-entry-nav">{totalNavLabel}</span>
-          <span className={totalChangeClassName}>
-            {totalChangeLabel} ({formatPercent(totalDayChangePct)})
-          </span>
+          {totalChangeLabel ? <span className={totalChangeClassName}>{totalChangeLabel}</span> : null}
         </div>
       </header>
 
@@ -213,22 +253,26 @@ export default function PortfoliosPage() {
             }}
           >
             <div className="portfolio-entry-card-leading">
-              <button
-                type="button"
-                className="portfolio-entry-grip"
-                onClick={() => setNotice('Drag cards to reorder portfolios.')}
-                aria-label={`Reorder ${portfolio.portfolio_name}`}
-                title="Drag to reorder"
-              >
-                <svg viewBox="0 0 12 16">
-                  <circle cx="4" cy="4" r="1" fill="currentColor" />
-                  <circle cx="8" cy="4" r="1" fill="currentColor" />
-                  <circle cx="4" cy="8" r="1" fill="currentColor" />
-                  <circle cx="8" cy="8" r="1" fill="currentColor" />
-                  <circle cx="4" cy="12" r="1" fill="currentColor" />
-                  <circle cx="8" cy="12" r="1" fill="currentColor" />
-                </svg>
-              </button>
+              <div className="portfolio-entry-grip" aria-label={`Reorder ${portfolio.portfolio_name}`}>
+                <button
+                  type="button"
+                  onClick={() => movePortfolioByOffset(portfolio.portfolio_id, -1)}
+                  disabled={resolvedPortfolios[0]?.portfolio_id === portfolio.portfolio_id}
+                  aria-label={`Move ${portfolio.portfolio_name} up`}
+                  title="Move up"
+                >
+                  ↑
+                </button>
+                <button
+                  type="button"
+                  onClick={() => movePortfolioByOffset(portfolio.portfolio_id, 1)}
+                  disabled={resolvedPortfolios[resolvedPortfolios.length - 1]?.portfolio_id === portfolio.portfolio_id}
+                  aria-label={`Move ${portfolio.portfolio_name} down`}
+                  title="Move down"
+                >
+                  ↓
+                </button>
+              </div>
               <div className="workspace-selector-menu-shell" ref={menuOpenId === portfolio.portfolio_id ? menuRef : null}>
                 <button
                   type="button"
@@ -263,6 +307,7 @@ export default function PortfoliosPage() {
                     <button
                       type="button"
                       onClick={() => {
+                        setDeleteError(null)
                         setPendingDelete(portfolio)
                         setMenuOpenId(null)
                       }}
@@ -316,7 +361,11 @@ export default function PortfoliosPage() {
         confirmLabel="Delete Portfolio"
         confirmationText={pendingDelete?.portfolio_name}
         busy={deleting}
-        onCancel={() => setPendingDelete(null)}
+        error={deleteError}
+        onCancel={() => {
+          setDeleteError(null)
+          setPendingDelete(null)
+        }}
         onConfirm={handleDeletePortfolio}
       />
     </section>

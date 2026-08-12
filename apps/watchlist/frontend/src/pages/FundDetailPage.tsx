@@ -277,7 +277,6 @@ const DETAIL_TAB_CODES: DetailTab[] = [
 
 type DetailKind = 'fund' | 'index'
 type QuoteBasis = NavQuoteBasis
-type ChartFrequency = 'daily' | 'weekly' | 'monthly'
 type ChartDisplayStyle = 'mountain' | 'line' | 'dot'
 type QuoteChartMenu = 'settings'
 type ChartHoverPanel = 'primary' | 'drawdown'
@@ -1703,10 +1702,10 @@ function defaultFundResearchResponse(): FundResearchResponse {
 
 function defaultCalculationFrequencyProfile(): CalculationFrequencyProfile {
   return {
-    requested_frequency: 'auto',
+    requested_frequency: 'daily',
     resolved_frequency: 'daily',
     inferred_frequency: 'daily',
-    source_frequency_counts: { daily: 0, weekly: 0, monthly: 0, unknown: 0 },
+    source_frequency_counts: { daily: 0, unknown: 0 },
     raw_observation_count: 0,
     observation_count: 0,
     start_date: null,
@@ -2330,18 +2329,8 @@ function resolveCommonChartWindow(
   return resolvedWindow.start <= resolvedWindow.end ? resolvedWindow : null
 }
 
-function resampleSeriesPreservingBounds(points: FundChartPoint[], frequency: ChartFrequency) {
-  if (frequency === 'daily' || points.length < 2) {
-    return points
-  }
-
-  const sampledPoints = resampleSeries(points, frequency)
-  const firstPoint = points[0]
-  const lastPoint = points[points.length - 1]
-  const pointMap = new Map(sampledPoints.map((point) => [point.date, point] as const))
-  pointMap.set(firstPoint.date, firstPoint)
-  pointMap.set(lastPoint.date, lastPoint)
-  return sortSeriesByDate(Array.from(pointMap.values()))
+function resampleSeriesPreservingBounds(points: FundChartPoint[]) {
+  return points
 }
 
 function getPointAtDate<T extends FundChartPoint>(points: T[], targetDate: string | undefined) {
@@ -3087,32 +3076,8 @@ function getHeatmapCellStyle(value: number | null, maxAbsValue: number) {
   }
 }
 
-function getWeekBucket(value: string) {
-  const date = new Date(`${value}T00:00:00`)
-  if (Number.isNaN(date.getTime())) {
-    return value
-  }
-  const day = date.getDay()
-  const diff = day === 0 ? -6 : 1 - day
-  date.setDate(date.getDate() + diff)
-  return date.toISOString().slice(0, 10)
-}
-
-function resampleSeries(points: FundChartPoint[], frequency: ChartFrequency) {
-  if (frequency === 'daily') {
-    return points
-  }
-
-  const buckets = new Map<string, FundChartPoint>()
-  points.forEach((point) => {
-    const bucket =
-      frequency === 'weekly'
-        ? getWeekBucket(point.date)
-        : point.date.slice(0, 7)
-    buckets.set(bucket, point)
-  })
-
-  return Array.from(buckets.values()).sort((left, right) => left.date.localeCompare(right.date))
+function resampleSeries(points: FundChartPoint[]) {
+  return points
 }
 
 function buildCalculationPointSeries(series: FundNavSeriesResponse['calculation_series']) {
@@ -3658,10 +3623,6 @@ export default function FundDetailPage({
       ? requested
       : 'nav_with_dividend'
   })
-  const [chartFrequency, setChartFrequency] = useState<ChartFrequency>(() => {
-    const requested = detailSearchParams.get('frequency')
-    return requested === 'weekly' || requested === 'monthly' ? requested : 'daily'
-  })
   const [selectedCurrency, setSelectedCurrency] = useState(
     () => detailSearchParams.get('currency') || 'USD',
   )
@@ -3744,6 +3705,7 @@ export default function FundDetailPage({
   const detailBundleKeyRef = useRef('')
   const detailRequestCoordinatorRef = useRef(createDetailRequestCoordinator(''))
   const appliedDefaultBenchmarkKeyRef = useRef('')
+  const detailUrlSyncRef = useRef('')
 
   function closeSettingsDialog() {
     if (savingSection !== 'fund_settings') {
@@ -3770,22 +3732,19 @@ export default function FundDetailPage({
   const detailSearchKey = detailSearchParams.toString()
 
   useEffect(() => {
+    detailUrlSyncRef.current = detailSearchKey
     const requestedTab = detailSearchParams.get('tab')
-    if (requestedTab && DETAIL_TAB_CODES.includes(requestedTab as DetailTab)) {
-      setActiveTab(requestedTab as DetailTab)
-    }
+    setActiveTab(
+      requestedTab && DETAIL_TAB_CODES.includes(requestedTab as DetailTab)
+        ? requestedTab as DetailTab
+        : 'overview',
+    )
     const requestedBasis = detailSearchParams.get('basis')
-    if (requestedBasis === 'nav' || requestedBasis === 'nav_with_dividend') {
-      setQuoteBasis(requestedBasis)
-    }
-    const requestedFrequency = detailSearchParams.get('frequency')
-    if (
-      requestedFrequency === 'daily' ||
-      requestedFrequency === 'weekly' ||
-      requestedFrequency === 'monthly'
-    ) {
-      setChartFrequency(requestedFrequency)
-    }
+    setQuoteBasis(
+      requestedBasis === 'nav' || requestedBasis === 'nav_with_dividend'
+        ? requestedBasis
+        : 'nav_with_dividend',
+    )
     setSelectedCurrency(detailSearchParams.get('currency') || 'USD')
     setBenchmarkFundId(detailSearchParams.get('benchmark') || '')
     setChartStartDate(detailSearchParams.get('start') || '')
@@ -3793,6 +3752,10 @@ export default function FundDetailPage({
   }, [detailSearchKey])
 
   useEffect(() => {
+    if (detailUrlSyncRef.current === detailSearchKey) {
+      detailUrlSyncRef.current = ''
+      return
+    }
     setDetailSearchParams(
       (current) => {
         const next = new URLSearchParams(current)
@@ -3805,7 +3768,7 @@ export default function FundDetailPage({
         }
         setOrDelete('tab', activeTab, 'overview')
         setOrDelete('basis', quoteBasis, 'nav_with_dividend')
-        setOrDelete('frequency', chartFrequency, 'daily')
+        next.delete('frequency')
         setOrDelete('currency', selectedCurrency, 'USD')
         setOrDelete('benchmark', benchmarkFundId)
         setOrDelete('start', chartStartDate)
@@ -3818,8 +3781,8 @@ export default function FundDetailPage({
     activeTab,
     benchmarkFundId,
     chartEndDate,
-    chartFrequency,
     chartStartDate,
+    detailSearchKey,
     quoteBasis,
     selectedCurrency,
     setDetailSearchParams,
@@ -4197,7 +4160,6 @@ export default function FundDetailPage({
     setTimelineNoteViewAnchorDate(null)
   }, [
     quoteBasis,
-    chartFrequency,
     selectedCurrency,
     chartStartDate,
     chartEndDate,
@@ -5025,21 +4987,19 @@ export default function FundDetailPage({
     )
   const benchmarkReturnWindow = alignedChartReturnWindows?.right ?? null
   const visibleNavSeries = fundReturnWindow
-    ? resampleSeriesPreservingBounds(fundReturnWindow.points, chartFrequency)
+    ? resampleSeriesPreservingBounds(fundReturnWindow.points)
     : []
   const benchmarkVisibleNavSeries = benchmarkReturnWindow
-    ? resampleSeriesPreservingBounds(benchmarkReturnWindow.points, chartFrequency)
+    ? resampleSeriesPreservingBounds(benchmarkReturnWindow.points)
     : []
   const chartNavSeries = fundReturnWindow
     ? resampleSeriesPreservingBounds(
         normalizeCumulativeReturn(fundReturnWindow),
-        chartFrequency,
       )
     : []
   const chartBenchmarkSeries = benchmarkReturnWindow
     ? resampleSeriesPreservingBounds(
         normalizeCumulativeReturn(benchmarkReturnWindow),
-        chartFrequency,
       )
     : []
   const chartDateWindow = {
@@ -6372,10 +6332,7 @@ export default function FundDetailPage({
     }
     return snapshot.recoveryOpen ? 'In drawdown' : 'Recovered'
   }
-  const riskProfileSeries = resampleSeries(
-    returnDrawdownSeries,
-    riskCalculationSeries.length > 260 ? 'weekly' : 'daily',
-  )
+  const riskProfileSeries = resampleSeries(returnDrawdownSeries)
   const riskProfileBounds = getDrawdownAxisBounds(riskProfileSeries)
   const riskProfileTickValues = getLinearTickValues(riskProfileBounds.min, riskProfileBounds.max, 4)
   const riskProfileTickDates = getChartTickDates(riskProfileSeries, 6)
@@ -7403,17 +7360,6 @@ export default function FundDetailPage({
               <strong>{effectiveCurrency || 'Unavailable'}</strong>
             </div>
             <div className="instrument-chart-settings-field-grid">
-              <label className="instrument-chart-settings-field">
-                <span>Frequency</span>
-                <select
-                  value={chartFrequency}
-                  onChange={(event) => setChartFrequency(event.target.value as ChartFrequency)}
-                >
-                  <option value="daily">Daily</option>
-                  <option value="weekly">Weekly</option>
-                  <option value="monthly">Monthly</option>
-                </select>
-              </label>
               <label className="instrument-chart-settings-field">
                 <span>Currency</span>
                 <select

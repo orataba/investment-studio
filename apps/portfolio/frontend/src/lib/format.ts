@@ -49,7 +49,8 @@ export function formatPercent(value: number | null | undefined, digits = 2) {
     return '—'
   }
 
-  return `${(value * 100).toFixed(digits)}%`
+  const rounded = Number((value * 100).toFixed(digits))
+  return `${(Object.is(rounded, -0) ? 0 : rounded).toFixed(digits)}%`
 }
 
 export function formatPercentInput(value: number | null | undefined, digits = 4) {
@@ -65,8 +66,10 @@ export function formatSignedCurrency(value: number | null | undefined, currency 
     return '—'
   }
 
-  const absolute = formatCurrency(Math.abs(value), currency)
-  return value > 0 ? `+${absolute}` : value < 0 ? `-${absolute}` : absolute
+  const rounded = Number(value.toFixed(2))
+  const displayValue = Object.is(rounded, -0) ? 0 : rounded
+  const absolute = formatCurrency(Math.abs(displayValue), currency)
+  return displayValue > 0 ? `+${absolute}` : displayValue < 0 ? `-${absolute}` : absolute
 }
 
 export function signedValueClass(value: number | null | undefined) {

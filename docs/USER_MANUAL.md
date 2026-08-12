@@ -393,7 +393,7 @@ Research 用于 target solve 和假设回测。它不改变真实持仓，结果
 - target dimension：使用 scope default、weight 或 risk budget。
 - capital mode：`unit_notional`、`fixed_gross`、`target_volatility` 或 `volatility_cap`。
 - lookback days：风险和收益窗口长度。
-- calculation frequency：auto、daily、weekly、monthly。
+- calculation frequency：固定为 daily，不需要设置。
 - missing return policy：`strict` 或 `complete_case_drop`。
 - rebalance frequency：`1W / 1M / 3M`。
 - benchmark：选择用于回测比较的资产。

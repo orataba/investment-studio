@@ -3,8 +3,6 @@ import type { ExpectedFrequency } from '../../../../packages/instrument-core/ts/
 
 const FREQUENCY_OPTIONS: Array<{ value: ExpectedFrequency; label: string }> = [
   { value: 'daily', label: 'Daily' },
-  { value: 'weekly', label: 'Weekly' },
-  { value: 'monthly', label: 'Monthly' },
   { value: 'event_driven', label: 'Event driven' },
 ]
 

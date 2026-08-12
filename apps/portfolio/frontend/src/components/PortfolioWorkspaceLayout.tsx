@@ -10,7 +10,6 @@ import {
   getWorkspaceSummaryForPortfolio,
   updatePortfolioRiskPolicy,
   type PortfolioResearchMissingReturnPolicy,
-  type PortfolioRiskCalculationFrequency,
   type PortfolioRiskContributionMode,
   type PortfolioRiskCovarianceModel,
   type PortfolioRiskPolicyRecord,
@@ -53,12 +52,6 @@ const RISK_WINDOW_OPTIONS = [
   { value: 366, label: '12M' },
   { value: 730, label: '24M' },
 ] as const
-const RISK_FREQUENCY_OPTIONS: Array<{ value: PortfolioRiskCalculationFrequency; label: string }> = [
-  { value: 'auto', label: 'Auto' },
-  { value: 'daily', label: 'Daily' },
-  { value: 'weekly', label: 'Weekly' },
-  { value: 'monthly', label: 'Monthly' },
-]
 const RISK_MISSING_RETURN_POLICY_OPTIONS: Array<{ value: PortfolioResearchMissingReturnPolicy; label: string }> = [
   { value: 'strict', label: 'Strict' },
   { value: 'complete_case_drop', label: 'Complete Case Drop' },
@@ -95,12 +88,12 @@ export default function PortfolioWorkspaceLayout({
   const [selectorNotice, setSelectorNotice] = useState<string | null>(null)
   const [pendingPortfolioDelete, setPendingPortfolioDelete] = useState<PortfolioSelectorOption | null>(null)
   const [deletingPortfolio, setDeletingPortfolio] = useState(false)
+  const [deletePortfolioError, setDeletePortfolioError] = useState<string | null>(null)
   const [riskSettingsOpen, setRiskSettingsOpen] = useState(false)
   const [riskSettingsLoading, setRiskSettingsLoading] = useState(false)
   const [riskSettingsSaving, setRiskSettingsSaving] = useState(false)
   const [riskSettingsError, setRiskSettingsError] = useState<string | null>(null)
   const [riskPolicyLookbackDays, setRiskPolicyLookbackDays] = useState(String(DEFAULT_RISK_POLICY_WINDOW_DAYS))
-  const [riskPolicyFrequency, setRiskPolicyFrequency] = useState<PortfolioRiskCalculationFrequency>('auto')
   const [riskPolicyMissingReturnPolicy, setRiskPolicyMissingReturnPolicy] =
     useState<PortfolioResearchMissingReturnPolicy>('strict')
   const [riskPolicyModelId, setRiskPolicyModelId] =
@@ -223,9 +216,7 @@ export default function PortfolioWorkspaceLayout({
   const changeClassName = changeToneClassName
     ? `portfolio-change-value ${changeToneClassName}`
     : 'portfolio-change-value neutral-cell'
-  const badges = summaryError
-    ? [...(activeSummary?.badges ?? []), 'Workspace summary unavailable']
-    : activeSummary?.badges ?? []
+  const badges = summaryError ? ['Workspace summary unavailable'] : []
   const selectorPortfolios =
     resolvedPortfolioId && !portfolioOptions.some((portfolio) => portfolio.portfolio_id === resolvedPortfolioId)
       ? [
@@ -262,6 +253,7 @@ export default function PortfolioWorkspaceLayout({
   async function handleSelectorAction(action: 'copy' | 'delete') {
     if (action === 'delete') {
       setSelectorMenuOpen(false)
+      setDeletePortfolioError(null)
       setPendingPortfolioDelete({
         portfolio_id: resolvedPortfolioId,
         portfolio_name: portfolioName,
@@ -294,6 +286,7 @@ export default function PortfolioWorkspaceLayout({
     }
     const target = pendingPortfolioDelete
     setDeletingPortfolio(true)
+    setDeletePortfolioError(null)
     try {
       await deletePortfolio(target.portfolio_id)
       setPortfolioOptions((current) =>
@@ -302,7 +295,7 @@ export default function PortfolioWorkspaceLayout({
       setPendingPortfolioDelete(null)
       navigate('/portfolios')
     } catch (requestError) {
-      setSelectorNotice(
+      setDeletePortfolioError(
         requestError instanceof Error ? requestError.message : 'Failed to delete portfolio.',
       )
     } finally {
@@ -312,7 +305,6 @@ export default function PortfolioWorkspaceLayout({
 
   function applyRiskPolicy(policy: PortfolioRiskPolicyRecord) {
     setRiskPolicyLookbackDays(String(policy.lookback_days))
-    setRiskPolicyFrequency(policy.calculation_frequency)
     setRiskPolicyMissingReturnPolicy(policy.missing_return_policy)
     setRiskPolicyModelId(policy.covariance_model_id)
     setRiskPolicyContributionMode(policy.contribution_mode)
@@ -352,7 +344,7 @@ export default function PortfolioWorkspaceLayout({
       const policy = await updatePortfolioRiskPolicy(resolvedPortfolioId, {
         covariance_model_id: riskPolicyModelId,
         lookback_days: resolvedLookbackDays,
-        calculation_frequency: riskPolicyFrequency,
+        calculation_frequency: 'daily',
         missing_return_policy: riskPolicyMissingReturnPolicy,
         contribution_mode: riskPolicyContributionMode,
       })
@@ -592,22 +584,6 @@ export default function PortfolioWorkspaceLayout({
                         </select>
                       </label>
                       <label>
-                        <span>Frequency</span>
-                        <select
-                          value={riskPolicyFrequency}
-                          onChange={(event) =>
-                            setRiskPolicyFrequency(event.target.value as PortfolioRiskCalculationFrequency)
-                          }
-                          disabled={riskSettingsSaving}
-                        >
-                          {RISK_FREQUENCY_OPTIONS.map((option) => (
-                            <option key={option.value} value={option.value}>
-                              {option.label}
-                            </option>
-                          ))}
-                        </select>
-                      </label>
-                      <label>
                         <span>Missing Returns</span>
                         <select
                           value={riskPolicyMissingReturnPolicy}
@@ -701,7 +677,11 @@ export default function PortfolioWorkspaceLayout({
         confirmLabel="Delete Portfolio"
         confirmationText={pendingPortfolioDelete?.portfolio_name}
         busy={deletingPortfolio}
-        onCancel={() => setPendingPortfolioDelete(null)}
+        error={deletePortfolioError}
+        onCancel={() => {
+          setDeletePortfolioError(null)
+          setPendingPortfolioDelete(null)
+        }}
         onConfirm={handleConfirmedDelete}
       />
     </section>

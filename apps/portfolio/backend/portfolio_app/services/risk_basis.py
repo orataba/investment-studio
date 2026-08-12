@@ -8,19 +8,13 @@ import exchange_calendars
 from exchange_calendars.errors import CalendarError
 
 from portfolio_app.services.calculation_frequency import (
-    CalculationFrequency,
     calculation_frequency_profile,
-    infer_observation_frequency,
     selected_observation_dates_from_detail,
 )
 from portfolio_app.services.instrument_registry import get_registry_instrument_detail
 
 
-_EXPECTED_MAX_GAP_DAYS: dict[CalculationFrequency, int] = {
-    "daily": 4,
-    "weekly": 10,
-    "monthly": 45,
-}
+_EXPECTED_MAX_GAP_DAYS = 4
 
 
 @lru_cache(maxsize=64)
@@ -42,38 +36,29 @@ def _market_calendar_sessions(
         return None
 
 
-def _normalized_expected_frequency(value: object) -> CalculationFrequency | None:
-    normalized = str(value or "").strip().lower().replace("-", "_")
-    if normalized in {"d", "day", "daily", "trading_day", "business_day"}:
-        return "daily"
-    if normalized in {"w", "week", "weekly"}:
-        return "weekly"
-    if normalized in {"m", "month", "monthly"}:
-        return "monthly"
-    return None
-
-
-def _source_schedule(detail: dict[str, object]) -> tuple[CalculationFrequency | None, str | None]:
+def _source_schedule(
+    detail: dict[str, object],
+) -> tuple[str | None, bool]:
     source_settings = detail.get("source_settings")
     if not isinstance(source_settings, dict):
-        return None, None
-    expected_frequency = _normalized_expected_frequency(
-        source_settings.get("expected_frequency")
+        return None, False
+    event_driven = (
+        str(source_settings.get("expected_frequency") or "").strip().lower()
+        == "event_driven"
     )
     market_calendar = str(source_settings.get("market_calendar") or "").strip() or None
-    return expected_frequency, market_calendar
+    return market_calendar, event_driven
 
 
 def _missing_observation_dates(
     dates: list[date],
     *,
-    frequency: CalculationFrequency,
     market_calendar: str | None,
 ) -> tuple[list[date], str]:
     ordered_dates = sorted(set(dates))
     if len(ordered_dates) < 2:
         return [], "insufficient_history"
-    if frequency == "daily" and market_calendar:
+    if market_calendar:
         sessions = _market_calendar_sessions(
             market_calendar,
             ordered_dates[0],
@@ -90,11 +75,10 @@ def _missing_observation_dates(
                 f"market_calendar:{market_calendar}",
             )
     missing_dates: list[date] = []
-    max_gap_days = _EXPECTED_MAX_GAP_DAYS[frequency]
     for index in range(1, len(ordered_dates)):
         previous_date = ordered_dates[index - 1]
         point_date = ordered_dates[index]
-        if (point_date - previous_date).days > max_gap_days:
+        if (point_date - previous_date).days > _EXPECTED_MAX_GAP_DAYS:
             missing_dates.append(point_date)
     return missing_dates, "calendar_day_threshold"
 
@@ -103,7 +87,6 @@ def calculation_frequency_profile_for_instruments(
     instrument_ids: list[str] | set[str] | tuple[str, ...],
     *,
     end_date: date,
-    requested_frequency: object = "auto",
     lookback_days: int = 366,
     detail_loader: Callable[[str], dict[str, object] | None] = get_registry_instrument_detail,
 ) -> dict[str, object]:
@@ -114,8 +97,7 @@ def calculation_frequency_profile_for_instruments(
         if instrument_id and instrument_id not in normalized_instrument_ids:
             normalized_instrument_ids.append(instrument_id)
 
-    source_frequencies: list[CalculationFrequency] = []
-    source_frequency_by_instrument: dict[str, CalculationFrequency] = {}
+    source_frequency_by_instrument: dict[str, str] = {}
     missing_instrument_ids: list[str] = []
     insufficient_history_instrument_ids: list[str] = []
     gap_instrument_ids: list[str] = []
@@ -133,13 +115,12 @@ def calculation_frequency_profile_for_instruments(
         if len(set(dates)) < 2:
             insufficient_history_instrument_ids.append(instrument_id)
             continue
-        expected_frequency, market_calendar = _source_schedule(detail)
-        frequency = expected_frequency or infer_observation_frequency(dates)
-        source_frequencies.append(frequency)
-        source_frequency_by_instrument[instrument_id] = frequency
+        market_calendar, event_driven = _source_schedule(detail)
+        source_frequency_by_instrument[instrument_id] = "daily"
+        if event_driven:
+            continue
         missing_dates, detection_basis = _missing_observation_dates(
             dates,
-            frequency=frequency,
             market_calendar=market_calendar,
         )
         if missing_dates:
@@ -161,8 +142,7 @@ def calculation_frequency_profile_for_instruments(
             )
 
     profile = calculation_frequency_profile(
-        requested_frequency=requested_frequency,
-        source_frequencies=source_frequencies,
+        instrument_count=len(source_frequency_by_instrument),
     )
     profile["instrument_ids"] = normalized_instrument_ids
     profile["source_frequency_by_instrument"] = source_frequency_by_instrument

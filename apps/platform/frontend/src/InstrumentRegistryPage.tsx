@@ -8,6 +8,7 @@ import {
   useState,
 } from 'react'
 import { LanguageSelector } from '../../../../packages/ui/src/i18n'
+import { useModalDialog } from '../../../../packages/ui/src/useModalDialog'
 import {
   beginRequest,
   invalidateRequests,
@@ -222,6 +223,7 @@ export default function InstrumentRegistryPage({
   const [archiveConfirmation, setArchiveConfirmation] = useState(false)
   const detailRequestSequenceRef = useRef(0)
   const selectedInstrumentIdRef = useRef(selectedInstrumentId)
+  const actionDrawerRef = useModalDialog(Boolean(activePanel), () => setActivePanel(null))
 
   selectedInstrumentIdRef.current = selectedInstrumentId
 
@@ -649,9 +651,18 @@ export default function InstrumentRegistryPage({
     setSortMode('name_asc')
   }
 
+  async function panelActionSucceeded(action: () => Promise<void>) {
+    try {
+      await action()
+      return true
+    } catch {
+      return false
+    }
+  }
+
   async function handleCreate(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
-    await onCreateInstrument({
+    const saved = await panelActionSucceeded(() => onCreateInstrument({
       instrument_name: instrumentName.trim(),
       instrument_type: instrumentType,
       currency: currency.trim().toUpperCase(),
@@ -663,14 +674,15 @@ export default function InstrumentRegistryPage({
         },
       ],
       broker_identifiers: [],
-    })
+    }))
+    if (!saved) return
     setInstrumentName('')
     setIdentifierValue('')
   }
 
   async function handleMetricSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
-    await onUpsertMarketData({
+    const saved = await panelActionSucceeded(() => onUpsertMarketData({
       instrument_id: selectedInstrumentId,
       metric_family: metricFamily,
       quote_basis: quoteBasis,
@@ -679,7 +691,8 @@ export default function InstrumentRegistryPage({
       currency: metricCurrency.trim().toUpperCase(),
       status: metricStatus,
       provider: 'platform_manual',
-    })
+    }))
+    if (!saved) return
     setMetricValue('')
     await refreshSelectedInstrumentDetail(selectedInstrumentId)
   }
@@ -687,7 +700,7 @@ export default function InstrumentRegistryPage({
   async function handleSourceSettingsSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
     if (!selectedInstrumentId || !selectedInstrument) return
-    await onUpdateSourceSettings({
+    const saved = await panelActionSucceeded(() => onUpdateSourceSettings({
       instrument_id: selectedInstrumentId,
       source_mode: sourceMode,
       source_email: sourceEmail.trim(),
@@ -698,25 +711,28 @@ export default function InstrumentRegistryPage({
       release_lag_days: releaseLagDays,
       return_semantics:
         selectedInstrument.instrument_type === 'index' ? returnSemantics : 'unknown',
-    })
+    }))
+    if (!saved) return
     await refreshSelectedInstrumentDetail(selectedInstrumentId)
   }
 
   async function handleRefreshClick() {
     if (!selectedInstrumentId) return
-    await onTriggerRefresh({
+    const refreshed = await panelActionSucceeded(() => onTriggerRefresh({
       instrument_id: selectedInstrumentId,
       updated_by: 'platform_ui',
       source: refreshChannel === 'all' ? 'configured' : refreshChannel,
-    })
+    }))
+    if (!refreshed) return
     await refreshSelectedInstrumentDetail(selectedInstrumentId)
   }
 
   async function handleRefreshChannelClick() {
-    await onTriggerChannelRefresh({
+    const refreshed = await panelActionSucceeded(() => onTriggerChannelRefresh({
       source: refreshChannel,
       updated_by: 'platform_ui',
-    })
+    }))
+    if (!refreshed) return
     if (selectedInstrumentId) await refreshSelectedInstrumentDetail(selectedInstrumentId)
   }
 
@@ -763,22 +779,24 @@ export default function InstrumentRegistryPage({
     event.preventDefault()
     if (!selectedInstrumentId) return
     if (navImportFileName && navImportFileContent) {
-      await onImportNavFile({
+      const saved = await panelActionSucceeded(() => onImportNavFile({
         instrument_id: selectedInstrumentId,
         file_name: navImportFileName,
         file_content_base64: navImportFileContent,
         provider: 'platform_file_import',
         status: 'complete',
         updated_by: 'platform_ui',
-      })
+      }))
+      if (!saved) return
     } else if (navImportText.trim()) {
-      await onImportNavText({
+      const saved = await panelActionSucceeded(() => onImportNavText({
         instrument_id: selectedInstrumentId,
         raw_text: navImportText.trim(),
         provider: 'platform_paste_import',
         status: 'complete',
         updated_by: 'platform_ui',
-      })
+      }))
+      if (!saved) return
     } else {
       return
     }
@@ -802,6 +820,23 @@ export default function InstrumentRegistryPage({
       provider: 'platform_fx_manual',
       status: fxRateStatus,
     })
+  }
+
+  async function handleRestoreSelectedInstrument() {
+    if (!selectedInstrument) return
+    await panelActionSucceeded(() => onRestoreInstrument({
+      instrument_id: selectedInstrument.instrument_id,
+      updated_by: 'platform_ui',
+    }))
+  }
+
+  async function handleArchiveSelectedInstrument() {
+    if (!selectedInstrument) return
+    const archived = await panelActionSucceeded(() => onArchiveInstrument({
+      instrument_id: selectedInstrument.instrument_id,
+      updated_by: 'platform_ui',
+    }))
+    if (archived) setArchiveConfirmation(false)
   }
 
   function handleEditPoint(point: PlatformMarketDataPoint) {
@@ -1810,12 +1845,7 @@ export default function InstrumentRegistryPage({
                         <button
                           type="button"
                           className="registry-submit secondary"
-                          onClick={() =>
-                            void onRestoreInstrument({
-                              instrument_id: selectedInstrument.instrument_id,
-                              updated_by: 'platform_ui',
-                            })
-                          }
+                          onClick={() => void handleRestoreSelectedInstrument()}
                         >
                           Restore instrument
                         </button>
@@ -1830,12 +1860,7 @@ export default function InstrumentRegistryPage({
                             <button
                               type="button"
                               className="registry-submit danger"
-                              onClick={() =>
-                                void onArchiveInstrument({
-                                  instrument_id: selectedInstrument.instrument_id,
-                                  updated_by: 'platform_ui',
-                                }).then(() => setArchiveConfirmation(false))
-                              }
+                              onClick={() => void handleArchiveSelectedInstrument()}
                             >
                               Confirm archive
                             </button>
@@ -1924,10 +1949,12 @@ export default function InstrumentRegistryPage({
           }}
         >
           <aside
+            ref={actionDrawerRef}
             className="ir-action-drawer"
             role="dialog"
             aria-modal="true"
             aria-labelledby="ir-drawer-title"
+            tabIndex={-1}
           >
             <header>
               <div>
@@ -1974,6 +2001,12 @@ export default function InstrumentRegistryPage({
               </button>
             </header>
             <div className="ir-drawer-body">
+              {error ? (
+                <div className="ir-message ir-message-error" role="alert">
+                  <span className="ir-message-dot" aria-hidden="true" />
+                  <span>{error}</span>
+                </div>
+              ) : null}
               {activePanel === 'create' ? (
                 <form
                   className="registry-form ir-drawer-form"

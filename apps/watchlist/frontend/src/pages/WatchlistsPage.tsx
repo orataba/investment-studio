@@ -823,6 +823,8 @@ export default function WatchlistsPage() {
   const [viewToast, setViewToast] = useState<NoticeToastMessage | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const [modalError, setModalError] = useState<string | null>(null)
+  const [confirmError, setConfirmError] = useState<string | null>(null)
   const [pendingDeleteWatchlist, setPendingDeleteWatchlist] = useState<WatchlistRecord | null>(null)
   const [deletingWatchlist, setDeletingWatchlist] = useState(false)
   const [pendingDeleteItems, setPendingDeleteItems] = useState<PendingDeleteItems | null>(null)
@@ -856,6 +858,7 @@ export default function WatchlistsPage() {
   const modalBusy = isSavingView || isCreatingWatchlist || isCopyingItems || isMovingItems || isAdding || isBatchAdding
   function closeActiveModal() {
     if (!modalBusy) {
+      setModalError(null)
       setModalKind(null)
     }
   }
@@ -991,6 +994,8 @@ export default function WatchlistsPage() {
     setScreenerResultOwnerId('')
     setSelectedRows([])
     setModalKind(null)
+    setModalError(null)
+    setConfirmError(null)
     setPendingDeleteItems(null)
     setPendingGroupAssignment(null)
 
@@ -1262,7 +1267,7 @@ export default function WatchlistsPage() {
     }
 
     setIsBatchAdding(true)
-    setError(null)
+    setModalError(null)
     setNotice(null)
 
     try {
@@ -1323,7 +1328,7 @@ export default function WatchlistsPage() {
           : `Processed ${rows.length} rows. Added ${addResult.accepted_count} from shared registry.`,
       )
     } catch (batchError) {
-      setError(batchError instanceof Error ? batchError.message : 'Failed to add instruments from file.')
+      setModalError(batchError instanceof Error ? batchError.message : 'Failed to add instruments from file.')
     } finally {
       setIsBatchAdding(false)
       event.target.value = ''
@@ -1340,6 +1345,7 @@ export default function WatchlistsPage() {
       return
     }
     setDeletingWatchlist(true)
+    setConfirmError(null)
     try {
       await deleteWatchlist(pendingDeleteWatchlist.watchlist_id)
       setWatchlists((current) =>
@@ -1348,7 +1354,7 @@ export default function WatchlistsPage() {
       setPendingDeleteWatchlist(null)
       navigate('/watchlists')
     } catch (requestError) {
-      setError(requestError instanceof Error ? requestError.message : 'Failed to delete watchlist.')
+      setConfirmError(requestError instanceof Error ? requestError.message : 'Failed to delete watchlist.')
     } finally {
       setDeletingWatchlist(false)
     }
@@ -1360,7 +1366,7 @@ export default function WatchlistsPage() {
       return
     }
     setDeletingItems(true)
-    setError(null)
+    setConfirmError(null)
     try {
       await deleteWatchlistItems(pending.watchlistId, pending.instrumentIds)
       if (activeWatchlistIdRef.current === pending.watchlistId) {
@@ -1373,7 +1379,7 @@ export default function WatchlistsPage() {
         `Deleted ${pending.instrumentIds.length} instruments from "${pending.watchlistName}".`,
       )
     } catch (deleteError) {
-      setError(
+      setConfirmError(
         deleteError instanceof Error ? deleteError.message : 'Failed to delete instruments.',
       )
     } finally {
@@ -1796,6 +1802,7 @@ export default function WatchlistsPage() {
       target,
       attributeKey: activeAttributeGroupDefinition,
     })
+    setConfirmError(null)
     setDraggingInstrumentId(null)
   }
 
@@ -1816,7 +1823,7 @@ export default function WatchlistsPage() {
       Object.keys(target.rowPatch).map((fieldKey) => [fieldKey, currentRow[fieldKey]]),
     )
     setUpdatingGroupInstrumentId(instrumentId)
-    setError(null)
+    setConfirmError(null)
     setNotice(null)
     patchScreenerRow(instrumentId, target.rowPatch)
 
@@ -1842,13 +1849,13 @@ export default function WatchlistsPage() {
         message: `Moved ${instrumentName} to ${target.value || 'Unspecified'}.`,
         tone: 'success',
       })
+      setPendingGroupAssignment(null)
     } catch (dropError) {
       patchScreenerRow(instrumentId, previousPatch)
-      setError(dropError instanceof Error ? dropError.message : 'Failed to update group assignment.')
+      setConfirmError(dropError instanceof Error ? dropError.message : 'Failed to update group assignment.')
     } finally {
       setUpdatingGroupInstrumentId(null)
       setDraggingInstrumentId(null)
-      setPendingGroupAssignment(null)
     }
   }
 
@@ -2318,6 +2325,7 @@ export default function WatchlistsPage() {
     setSaveViewName(defaultName)
     setSaveViewDescription('')
     setModalKind('save-view')
+    setModalError(null)
     setFilterMenuOpen(false)
     setGroupMenuOpen(false)
     setNotice(null)
@@ -2377,16 +2385,19 @@ export default function WatchlistsPage() {
     setCreateWatchlistName('')
     setCreateWatchlistDescription('')
     setIsCreatingWatchlist(false)
+    setModalError(null)
   }
 
   function resetCopyItemsForm() {
     setCopyTargetWatchlistId(moveTargetOptions[0]?.watchlist_id || '')
     setIsCopyingItems(false)
+    setModalError(null)
   }
 
   function resetMoveItemsForm() {
     setMoveTargetWatchlistId(moveTargetOptions[0]?.watchlist_id || '')
     setIsMovingItems(false)
+    setModalError(null)
   }
 
   function toggleFilterValue(fieldKey: string, value: unknown) {
@@ -2605,6 +2616,7 @@ export default function WatchlistsPage() {
                       <button
                         type="button"
                         onClick={() => {
+                          setConfirmError(null)
                           setPendingDeleteWatchlist(watchlist)
                           setSelectorMenuOpen(false)
                         }}
@@ -2668,6 +2680,7 @@ export default function WatchlistsPage() {
                   setInstrumentSearch('')
                   setSharedInstrumentResults([])
                   setSelectedInstrumentId('')
+                  setModalError(null)
                   setModalKind('add')
                   setFilterMenuOpen(false)
                   setGroupMenuOpen(false)
@@ -2747,6 +2760,7 @@ export default function WatchlistsPage() {
               className="watchlists-toolbar-button"
               onClick={() => {
                 setColumnDraft(ensureRequiredColumns(visibleColumns))
+                setModalError(null)
                 setModalKind('columns')
                 setFilterMenuOpen(false)
                 setGroupMenuOpen(false)
@@ -2998,6 +3012,7 @@ export default function WatchlistsPage() {
                   if (!rowsAreCurrent || !watchlistId || !selectedRows.length) {
                     return
                   }
+                  setConfirmError(null)
                   setPendingDeleteItems({
                     watchlistId,
                     watchlistName: activeWatchlist?.name || watchlistDetail?.name || watchlistId,
@@ -3531,10 +3546,11 @@ export default function WatchlistsPage() {
             </div>
 
             <div className="watchlists-modal-body">
+              {modalError ? <div className="panel error-state" role="alert">{modalError}</div> : null}
               <div className="watchlists-move-summary">
                 {selectedRows.length} selected from {activeWatchlist?.name || 'current watchlist'}.
               </div>
-              <div className="form-field">
+              <label className="form-field">
                 <span>Target Watchlist</span>
                 <select
                   className="form-input"
@@ -3547,7 +3563,7 @@ export default function WatchlistsPage() {
                     </option>
                   ))}
                 </select>
-              </div>
+              </label>
               <div className="watchlists-move-note">
                 Instruments already present in the target will not be duplicated. They will remain in the current
                 watchlist after the copy.
@@ -3575,7 +3591,7 @@ export default function WatchlistsPage() {
                     return
                   }
                   setIsCopyingItems(true)
-                  setError(null)
+                  setModalError(null)
                   setNotice(null)
                   try {
                     const result = await copyWatchlistItems(
@@ -3594,7 +3610,7 @@ export default function WatchlistsPage() {
                         : `Copied ${result.copied_count} instruments to "${copyTargetWatchlist.name}".`,
                     )
                   } catch (copyError) {
-                    setError(copyError instanceof Error ? copyError.message : 'Failed to copy instruments.')
+                    setModalError(copyError instanceof Error ? copyError.message : 'Failed to copy instruments.')
                   } finally {
                     setIsCopyingItems(false)
                   }
@@ -3636,10 +3652,11 @@ export default function WatchlistsPage() {
             </div>
 
             <div className="watchlists-modal-body">
+              {modalError ? <div className="panel error-state" role="alert">{modalError}</div> : null}
               <div className="watchlists-move-summary">
                 {selectedRows.length} selected from {activeWatchlist?.name || 'current watchlist'}.
               </div>
-              <div className="form-field">
+              <label className="form-field">
                 <span>Target Watchlist</span>
                 <select
                   className="form-input"
@@ -3652,7 +3669,7 @@ export default function WatchlistsPage() {
                     </option>
                   ))}
                 </select>
-              </div>
+              </label>
               <div className="watchlists-move-note">
                 Instruments already present in the target will not be duplicated. They will still be removed from the
                 current watchlist.
@@ -3680,7 +3697,7 @@ export default function WatchlistsPage() {
                     return
                   }
                   setIsMovingItems(true)
-                  setError(null)
+                  setModalError(null)
                   setNotice(null)
                   try {
                     const result = await moveWatchlistItems(
@@ -3701,7 +3718,7 @@ export default function WatchlistsPage() {
                         : `Moved ${result.moved_count} instruments to "${moveTargetWatchlist.name}".`,
                     )
                   } catch (moveError) {
-                    setError(moveError instanceof Error ? moveError.message : 'Failed to move instruments.')
+                    setModalError(moveError instanceof Error ? moveError.message : 'Failed to move instruments.')
                   } finally {
                     setIsMovingItems(false)
                   }
@@ -3743,7 +3760,8 @@ export default function WatchlistsPage() {
             </div>
 
             <div className="watchlists-modal-body">
-              <div className="form-field">
+              {modalError ? <div className="panel error-state" role="alert">{modalError}</div> : null}
+              <label className="form-field">
                 <span>Name</span>
                 <input
                   className="form-input"
@@ -3751,8 +3769,8 @@ export default function WatchlistsPage() {
                   onChange={(event) => setCreateWatchlistName(event.target.value)}
                   placeholder="Coverage"
                 />
-              </div>
-              <div className="form-field">
+              </label>
+              <label className="form-field">
                 <span>Description</span>
                 <textarea
                   className="form-textarea"
@@ -3760,7 +3778,7 @@ export default function WatchlistsPage() {
                   onChange={(event) => setCreateWatchlistDescription(event.target.value)}
                   placeholder="Optional description for this watchlist."
                 />
-              </div>
+              </label>
             </div>
 
             <div className="watchlists-modal-actions">
@@ -3784,7 +3802,7 @@ export default function WatchlistsPage() {
                     return
                   }
                   setIsCreatingWatchlist(true)
-                  setError(null)
+                  setModalError(null)
                   try {
                     const created = await createWatchlist({
                       name,
@@ -3799,7 +3817,7 @@ export default function WatchlistsPage() {
                     })
                     setNotice(`Watchlist "${created.name}" created.`)
                   } catch (createError) {
-                    setError(
+                    setModalError(
                       createError instanceof Error
                         ? createError.message
                         : 'Failed to create watchlist.',
@@ -3837,7 +3855,8 @@ export default function WatchlistsPage() {
             </div>
 
             <div className="watchlists-modal-body">
-              <div className="form-field">
+              {modalError ? <div className="panel error-state" role="alert">{modalError}</div> : null}
+              <label className="form-field">
                 <span>View Name</span>
                 <input
                   className="form-input"
@@ -3845,8 +3864,8 @@ export default function WatchlistsPage() {
                   onChange={(event) => setSaveViewName(event.target.value)}
                   placeholder="Custom View"
                 />
-              </div>
-              <div className="form-field">
+              </label>
+              <label className="form-field">
                 <span>Description</span>
                 <textarea
                   className="form-textarea"
@@ -3854,7 +3873,7 @@ export default function WatchlistsPage() {
                   onChange={(event) => setSaveViewDescription(event.target.value)}
                   placeholder="Optional notes about this view."
                 />
-              </div>
+              </label>
             </div>
 
             <div className="watchlists-modal-actions">
@@ -3871,7 +3890,7 @@ export default function WatchlistsPage() {
                     return
                   }
                   setIsSavingView(true)
-                  setError(null)
+                  setModalError(null)
                   try {
                     const payload = buildViewPayload(
                       saveViewName.trim(),
@@ -3882,7 +3901,7 @@ export default function WatchlistsPage() {
                     setModalKind(null)
                     setViewToast({ id: Date.now(), message: `View saved as "${created.name}".`, tone: 'success' })
                   } catch (saveError) {
-                    setError(saveError instanceof Error ? saveError.message : 'Failed to save view.')
+                    setModalError(saveError instanceof Error ? saveError.message : 'Failed to save view.')
                   } finally {
                     setIsSavingView(false)
                   }
@@ -3917,7 +3936,8 @@ export default function WatchlistsPage() {
             </div>
 
             <div className="watchlists-modal-body">
-              <div className="form-field">
+              {modalError ? <div className="panel error-state" role="alert">{modalError}</div> : null}
+              <label className="form-field">
                 <span>Search Shared Registry</span>
                 <input
                   className="form-input"
@@ -3925,7 +3945,7 @@ export default function WatchlistsPage() {
                   onChange={(event) => setInstrumentSearch(event.target.value)}
                   placeholder="Ticker, ISIN, or instrument name"
                 />
-              </div>
+              </label>
               <p className="watchlists-registry-note">
                 Watchlist only references existing instruments from{' '}
                 <a href={`${PLATFORM_HOME_URL}/database-dashboard`}>Database Dashboard</a>. This release accepts
@@ -4001,6 +4021,7 @@ export default function WatchlistsPage() {
                     return
                   }
                   setIsAdding(true)
+                  setModalError(null)
                   try {
                     const addResult = await addWatchlistItems(sourceWatchlistId, [selectedSharedInstrument.instrument_id])
                     await refreshWatchlistDetail(undefined, sourceWatchlistId)
@@ -4015,7 +4036,7 @@ export default function WatchlistsPage() {
                     }
                     setReloadToken(Date.now())
                   } catch (addError) {
-                    setError(addError instanceof Error ? addError.message : 'Failed to add instrument.')
+                    setModalError(addError instanceof Error ? addError.message : 'Failed to add instrument.')
                   } finally {
                     setIsAdding(false)
                   }
@@ -4040,7 +4061,11 @@ export default function WatchlistsPage() {
         confirmLabel="Apply Classification"
         busy={Boolean(updatingGroupInstrumentId)}
         busyLabel="Applying…"
-        onCancel={() => setPendingGroupAssignment(null)}
+        error={confirmError}
+        onCancel={() => {
+          setConfirmError(null)
+          setPendingGroupAssignment(null)
+        }}
         onConfirm={confirmGroupAssignment}
       />
       <ConfirmDialog
@@ -4054,7 +4079,11 @@ export default function WatchlistsPage() {
         confirmLabel="Delete Instruments"
         busy={deletingItems}
         busyLabel="Deleting…"
-        onCancel={() => setPendingDeleteItems(null)}
+        error={confirmError}
+        onCancel={() => {
+          setConfirmError(null)
+          setPendingDeleteItems(null)
+        }}
         onConfirm={handleDeleteSelectedItems}
       />
       <ConfirmDialog
@@ -4064,7 +4093,11 @@ export default function WatchlistsPage() {
         confirmLabel="Delete Watchlist"
         confirmationText={pendingDeleteWatchlist?.name}
         busy={deletingWatchlist}
-        onCancel={() => setPendingDeleteWatchlist(null)}
+        error={confirmError}
+        onCancel={() => {
+          setConfirmError(null)
+          setPendingDeleteWatchlist(null)
+        }}
         onConfirm={handleDeleteWatchlist}
       />
     </>

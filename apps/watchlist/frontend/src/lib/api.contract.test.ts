@@ -22,10 +22,10 @@ describe('instrument NAV series API contract', () => {
       selected_series_label: 'NAV with dividend',
       selected_date_label: 'NAV date',
       calculation_frequency_profile: {
-        requested_frequency: 'auto',
+        requested_frequency: 'daily',
         resolved_frequency: 'daily',
         inferred_frequency: 'daily',
-        source_frequency_counts: { daily: 1, weekly: 0, monthly: 0, unknown: 0 },
+        source_frequency_counts: { daily: 1, unknown: 0 },
         raw_observation_count: 1,
         observation_count: 1,
         start_date: '2026-07-15',

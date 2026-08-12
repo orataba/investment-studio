@@ -61,6 +61,10 @@ if [[ ! -x "$PROJECT_ROOT/infra/scripts/migrate_all.sh" ]]; then
   echo "Cannot find executable infra/scripts/migrate_all.sh under PROJECT_ROOT: $PROJECT_ROOT" >&2
   exit 1
 fi
+if [[ "$RUN_MIGRATIONS" == "true" && ! -x "$PROJECT_ROOT/infra/scripts/audit_live_data.py" ]]; then
+  echo "Cannot find executable infra/scripts/audit_live_data.py under PROJECT_ROOT: $PROJECT_ROOT" >&2
+  exit 1
+fi
 
 if [[ -z "$ENV_ROOT" ]]; then
   echo "ENV_ROOT must explicitly name the external runtime environment directory." >&2
@@ -491,6 +495,9 @@ if [[ "$RUN_MIGRATIONS" == "true" ]]; then
   echo "Applying release migrations."
   PROJECT_ROOT="$PROJECT_ROOT" PYTHON_BIN="$PYTHON_BIN" ENV_ROOT="$ENV_ROOT" \
     "$PROJECT_ROOT/infra/scripts/migrate_all.sh"
+  echo "Running the read-only live-data integrity gate."
+  PORTFOLIO_OPS_LOCAL_DATABASE_URL="$DATABASE_URL" \
+    "$PYTHON_BIN" "$PROJECT_ROOT/infra/scripts/audit_live_data.py" --fail-on-warning
 fi
 
 publish_staged_units

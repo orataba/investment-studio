@@ -28,7 +28,7 @@ INSTRUMENT_TYPES = frozenset(
         "other",
     }
 )
-ExpectedFrequency = Literal["daily", "weekly", "monthly", "event_driven"]
+ExpectedFrequency = Literal["daily", "event_driven"]
 SourceMode = Literal["manual", "email", "api"]
 ReturnSemantics = Literal["unknown", "price_return", "total_return"]
 IdentifierType = Literal[

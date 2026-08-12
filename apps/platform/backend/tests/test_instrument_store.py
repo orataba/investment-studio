@@ -2053,12 +2053,12 @@ def test_source_schedule_semantics_default_and_roundtrip_by_instrument_type(
         source_location="Tushare daily queue",
         source_api_profile="tushare",
         source_email_rules=None,
-        expected_frequency="weekly",
+        expected_frequency="daily",
         market_calendar="CN_FUND_WEEKLY",
         release_lag_days=2,
     )
     assert updated is not None
-    assert updated["source_settings"]["expected_frequency"] == "weekly"
+    assert updated["source_settings"]["expected_frequency"] == "daily"
     assert updated["source_settings"]["market_calendar"] == "CN_FUND_WEEKLY"
     assert updated["source_settings"]["release_lag_days"] == 2
 
@@ -2066,7 +2066,7 @@ def test_source_schedule_semantics_default_and_roundtrip_by_instrument_type(
     assert refreshed is not None
     assert refreshed["source_settings"] == updated["source_settings"]
 
-    legacy_update = upsert_source_settings(
+    mode_only_update = upsert_source_settings(
         instrument_id=equity["instrument_id"],
         source_mode="manual",
         source_email=None,
@@ -2074,10 +2074,31 @@ def test_source_schedule_semantics_default_and_roundtrip_by_instrument_type(
         source_api_profile=None,
         source_email_rules=None,
     )
-    assert legacy_update is not None
-    assert legacy_update["source_settings"]["expected_frequency"] == "weekly"
-    assert legacy_update["source_settings"]["market_calendar"] == "CN_FUND_WEEKLY"
-    assert legacy_update["source_settings"]["release_lag_days"] == 2
+    assert mode_only_update is not None
+    assert mode_only_update["source_settings"]["expected_frequency"] == "daily"
+    assert mode_only_update["source_settings"]["market_calendar"] == "CN_FUND_WEEKLY"
+    assert mode_only_update["source_settings"]["release_lag_days"] == 2
+
+    with pytest.raises(ValueError, match="expected_frequency"):
+        upsert_source_settings(
+            instrument_id=equity["instrument_id"],
+            source_mode="api",
+            source_email=None,
+            source_location=None,
+            source_api_profile="tushare",
+            source_email_rules=None,
+            expected_frequency="weekly",
+        )
+    with pytest.raises(ValueError, match="expected_frequency"):
+        upsert_source_settings(
+            instrument_id=equity["instrument_id"],
+            source_mode="api",
+            source_email=None,
+            source_location=None,
+            source_api_profile="tushare",
+            source_email_rules=None,
+            expected_frequency="monthly",
+        )
 
     with pytest.raises(ValueError, match="release_lag_days"):
         upsert_source_settings(

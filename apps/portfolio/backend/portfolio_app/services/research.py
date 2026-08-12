@@ -310,9 +310,6 @@ def _ensure_research_settings_record(
         if not record.capital_mode:
             record.capital_mode = "unit_notional"
             changed = True
-        if not getattr(record, "calculation_frequency", None):
-            record.calculation_frequency = "auto"
-            changed = True
         if not getattr(record, "missing_return_policy", None):
             record.missing_return_policy = RESEARCH_DEFAULT_MISSING_RETURN_POLICY
             changed = True
@@ -342,7 +339,7 @@ def _ensure_research_settings_record(
         as_of_mode=RESEARCH_AS_OF_MODE_DYNAMIC,
         as_of_date=None,
         lookback_days=90,
-        calculation_frequency="auto",
+        calculation_frequency="daily",
         missing_return_policy=RESEARCH_DEFAULT_MISSING_RETURN_POLICY,
         target_dimension="scope_default",
         capital_mode="unit_notional",
@@ -541,7 +538,7 @@ def _serialize_settings_row(
             else None
         ),
         "lookback_days": int(row.lookback_days or 90),
-        "calculation_frequency": row.calculation_frequency or "auto",
+        "calculation_frequency": "daily",
         "missing_return_policy": row.missing_return_policy or RESEARCH_DEFAULT_MISSING_RETURN_POLICY,
         "target_dimension": row.target_dimension or "scope_default",
         "capital_mode": row.capital_mode or "unit_notional",
@@ -697,7 +694,7 @@ def _research_run_reliability(
             "calculation_frequency": str(
                 production_risk_model.get("calculation_frequency")
                 or settings_payload.get("calculation_frequency")
-                or "auto"
+                or "daily"
             ),
             "missing_return_policy": str(
                 production_risk_model.get("missing_return_policy")
@@ -1279,7 +1276,7 @@ def _build_current_target_signals(
         },
         {
             "label": "Frequency",
-            "value": str(event.get("calculation_frequency") or settings_payload.get("calculation_frequency") or "auto").replace("_", " ").title(),
+            "value": "Daily",
             "tone": "neutral",
         },
         {
@@ -1430,7 +1427,7 @@ def _build_target_assumptions(
     assumptions = [
         "Local target solves are long-only and fully invested within each selected scope; member weights are bounded between 0% and 100%.",
     ]
-    frequency = str((solve_event or {}).get("calculation_frequency") or settings_payload.get("calculation_frequency") or "auto")
+    frequency = "daily"
     assumptions.append(
         f"Risk inputs are first aligned to a {frequency.replace('_', ' ')} calculation frequency, using the last valid observation inside each target period."
     )
@@ -1754,9 +1751,7 @@ def get_research_workbench(
         )
 
     risk_lookback_days = int(production_risk_model.get("lookback_days") or settings_payload.get("lookback_days") or 90)
-    risk_calculation_frequency = str(
-        production_risk_model.get("calculation_frequency") or settings_payload.get("calculation_frequency") or "auto"
-    )
+    risk_calculation_frequency = "daily"
     instrument_detail_cache: dict[str, dict[str, object] | None] = {}
     context = _build_research_context(
         portfolio_id,
@@ -1771,7 +1766,6 @@ def get_research_workbench(
         comparator_taxonomy_node_id=str(settings_payload.get("comparator_taxonomy_node_id") or "").strip() or None,
         as_of_date=date.fromisoformat(str(settings_payload["as_of_date"])),
         lookback_days=risk_lookback_days,
-        requested_frequency=risk_calculation_frequency,
         _instrument_detail_cache=instrument_detail_cache,
     )
 
@@ -1893,7 +1887,7 @@ def update_research_settings(
         row.as_of_date = as_of_date if resolved_as_of_mode == RESEARCH_AS_OF_MODE_PINNED else None
         row.comparator_taxonomy_node_id = resolved_scope_node_id
         row.lookback_days = int(lookback_days or 90)
-        row.calculation_frequency = (calculation_frequency or "auto").strip() or "auto"
+        row.calculation_frequency = "daily"
         row.missing_return_policy = (missing_return_policy or RESEARCH_DEFAULT_MISSING_RETURN_POLICY).strip() or RESEARCH_DEFAULT_MISSING_RETURN_POLICY
         row.target_dimension = (target_dimension or "scope_default").strip() or "scope_default"
         row.capital_mode = (capital_mode or "unit_notional").strip() or "unit_notional"
@@ -2045,9 +2039,7 @@ def run_portfolio_research(
         )
         production_risk_model = get_portfolio_risk_policy(portfolio_id)
         risk_lookback_days = int((production_risk_model or {}).get("lookback_days") or settings_row.lookback_days or 90)
-        risk_calculation_frequency = str(
-            (production_risk_model or {}).get("calculation_frequency") or settings_row.calculation_frequency or "auto"
-        )
+        risk_calculation_frequency = "daily"
         risk_missing_return_policy = str(
             (production_risk_model or {}).get("missing_return_policy")
             or settings_row.missing_return_policy

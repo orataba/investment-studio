@@ -42,7 +42,7 @@ Portfolio 和 Watchlist 各自实现自己的读路径，不导入对方服务�
 
 - `1W / 1M / 3M / 6M / MTD / YTD / 1Y Return`、drawdown 和 volatility 只使用 Registry 已明确确认的单一 total-return series。基金使用 `total_return_nav`；其他 basis 只有在 Registry 明确声明 total-return semantics 时才可用。
 - 滚动窗口从**请求的** `as_of_date` 回看；终点是 `as_of_date` 或之前最新点，锚点仍按请求日期计算，不能因为终点 stale 就整体向前平移窗口。1M/3M/6M/1Y 按自然月/年回看，1W 按 7 个日历日回看。
-- Volatility 和用于分组 Drawdown 的 return path 还必须通过尾部新鲜度检查：日频最多落后 `5` 个自然日、周频 `14` 日、月频 `62` 日。整组成员即使共同停在同一个旧日期，也不能因为“彼此对齐”就发布已经陈旧的风险值。
+- Volatility 和用于分组 Drawdown 的 return path 还必须通过日频尾部新鲜度检查，最多落后 `5` 个自然日。整组成员即使共同停在同一个旧日期，也不能因为“彼此对齐”就发布已经陈旧的风险值。
 - MTD / YTD 使用严格早于月初 / 年初的最近有效点作为锚点；期间内第一点不能冒充完整自然期间。
 - `Chart *` 是有界采样的展示路径，可以是明确标注的 price-return 或 total-return path；它不是 Return、Volatility 或 Drawdown 的替代输入。
 - 缺少完整覆盖、唯一 series identity、合法 return semantics、必要锚点、共同 return currency 或最小样本时显示 `—`，不把缺失解释为 0。只有 base-currency cash 的经济收益和风险天然为 0。
@@ -164,7 +164,7 @@ CSV/XLSX 只导出当前视图的可见列，并始终以 `Category` 作为第�
 
 ### 4.2 当前篮子风险
 
-普通证券先在共同 period identity 和共同 observation dates 上构造成员收益，再用当前权重得到 group return series，不能加权平均成员风险值。衍生品与本币现金保留市值、收益固定为 0；非本币 monetary exposure 必须提供可比较的 FX return。group 与 subtotal 使用各自篮子的净市值分母，`Portfolio Total` 使用 total NAV。只有至少一个可建模市场成员并且共同路径完整时才发布 Volatility、Current DD 与 Max DD；纯本币现金/衍生品 scope 显示 unavailable，不冒充实际 0。混合数据频率使用 workspace 已解析的共同 daily / weekly / monthly basis，不跨 period forward-fill。
+普通证券先构造共同的日频 mark-to-last 路径，再用当前权重得到 group return series，不能加权平均成员风险值。衍生品与本币现金保留市值、收益固定为 0；非本币 monetary exposure 必须提供可比较的 FX return。group 与 subtotal 使用各自篮子的净市值分母，`Portfolio Total` 使用 total NAV。只有至少一个可建模市场成员并且共同路径完整时才发布 Volatility、Current DD 与 Max DD；纯本币现金/衍生品 scope 显示 unavailable，不冒充实际 0。
 
 成员可以在共同起点之前拥有不同长度的早期历史；共同起点取各成员首个合法 period start 中最晚者。从该点开始，每个成员必须具有完全相同、内部连续且顺序一致的 `(period_start, period_end)` identity：后一段的 start 必须等于前一段的 end。任何成员在共同区间中间或尾部缺一段，或所有成员共同缺失同一段，整个 group 指标都应显示不可用，不能静默取交集后把缺口隐藏。
 

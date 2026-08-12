@@ -131,11 +131,11 @@ ResearchArtifactPreviewKind = Literal["text", "html", "binary"]
 ResearchAsOfMode = Literal["dynamic", "pinned"]
 ResearchTargetDimension = Literal["scope_default", "weight", "risk_budget"]
 ResearchCapitalMode = Literal["unit_notional", "fixed_gross", "target_volatility", "volatility_cap"]
-ResearchCalculationFrequency = Literal["auto", "daily", "weekly", "monthly"]
+ResearchCalculationFrequency = Literal["daily"]
 ResearchMissingReturnPolicy = Literal["strict", "complete_case_drop"]
 ResearchBacktestRebalanceFrequency = Literal["1w", "1m", "3m"]
-PortfolioCalculationFrequency = Literal["daily", "weekly", "monthly"]
-PortfolioRiskCalculationFrequency = Literal["auto", "daily", "weekly", "monthly"]
+PortfolioCalculationFrequency = Literal["daily"]
+PortfolioRiskCalculationFrequency = Literal["daily"]
 PortfolioRiskResultStatus = Literal["available", "insufficient_samples", "unavailable"]
 PerformanceStartBoundaryKind = Literal[
     "close_eod",
@@ -1635,16 +1635,16 @@ class ResearchPlanningScopeOption(BaseModel):
 
 
 class ResearchCalculationFrequencyOption(BaseModel):
-    frequency: Literal["daily", "weekly", "monthly"]
+    frequency: Literal["daily"]
     label: str
     available: bool
     reason: str | None = None
 
 
 class ResearchCalculationFrequencyProfile(BaseModel):
-    requested_frequency: ResearchCalculationFrequency = "auto"
-    resolved_frequency: Literal["daily", "weekly", "monthly"] = "daily"
-    default_frequency: Literal["daily", "weekly", "monthly"] = "daily"
+    requested_frequency: ResearchCalculationFrequency = "daily"
+    resolved_frequency: Literal["daily"] = "daily"
+    default_frequency: Literal["daily"] = "daily"
     source_frequency_counts: dict[str, int] = Field(default_factory=dict)
     options: list[ResearchCalculationFrequencyOption] = Field(default_factory=list)
     status_label: str
@@ -1694,7 +1694,7 @@ class ResearchSettingsRecord(BaseModel):
     as_of_date: date | None = None
     pinned_as_of_date: date | None = None
     lookback_days: int = Field(default=90)
-    calculation_frequency: ResearchCalculationFrequency = "auto"
+    calculation_frequency: ResearchCalculationFrequency = "daily"
     missing_return_policy: ResearchMissingReturnPolicy = "strict"
     target_dimension: ResearchTargetDimension = "scope_default"
     capital_mode: ResearchCapitalMode = "unit_notional"
@@ -1730,7 +1730,7 @@ class ResearchSettingsUpdateRequest(BaseModel):
     as_of_mode: ResearchAsOfMode = "dynamic"
     as_of_date: date | None = None
     lookback_days: int = Field(default=90)
-    calculation_frequency: ResearchCalculationFrequency = "auto"
+    calculation_frequency: ResearchCalculationFrequency = "daily"
     missing_return_policy: ResearchMissingReturnPolicy = "strict"
     covariance_model_id: PortfolioRiskCovarianceModel = "ewma_vol_shrinkage_corr_covariance"
     contribution_mode: PortfolioRiskContributionMode = "signed"
@@ -1824,7 +1824,7 @@ class PortfolioRiskPolicyRecord(BaseModel):
     model_role: str = "production"
     covariance_model_id: PortfolioRiskCovarianceModel = "ewma_vol_shrinkage_corr_covariance"
     lookback_days: int = Field(default=90)
-    calculation_frequency: PortfolioRiskCalculationFrequency = "auto"
+    calculation_frequency: PortfolioRiskCalculationFrequency = "daily"
     resolved_calculation_frequency: PortfolioCalculationFrequency = "daily"
     missing_return_policy: ResearchMissingReturnPolicy = "strict"
     contribution_mode: PortfolioRiskContributionMode = "signed"
@@ -1840,7 +1840,7 @@ class PortfolioRiskPolicyRecord(BaseModel):
 class PortfolioRiskPolicyUpdateRequest(BaseModel):
     covariance_model_id: PortfolioRiskCovarianceModel = "ewma_vol_shrinkage_corr_covariance"
     lookback_days: int = Field(default=90)
-    calculation_frequency: PortfolioRiskCalculationFrequency = "auto"
+    calculation_frequency: PortfolioRiskCalculationFrequency = "daily"
     missing_return_policy: ResearchMissingReturnPolicy = "strict"
     contribution_mode: PortfolioRiskContributionMode = "signed"
 
@@ -2009,7 +2009,7 @@ class ResearchSolveEventRecord(BaseModel):
     dropped_return_rows: list[dict[str, object]] = Field(default_factory=list)
     latest_complete_return_date: str | None = None
     trailing_complete_return_staleness_days: int | None = None
-    calculation_frequency: Literal["daily", "weekly", "monthly"] | None = None
+    calculation_frequency: Literal["daily"] | None = None
     gap_turnover: float | None = None
     current_weight_total: float | None = None
     target_weight_total: float | None = None

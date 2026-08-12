@@ -1166,6 +1166,17 @@ def _max_transaction_activity_date(transactions: list[TransactionRecordModel]) -
     return max(activity_dates, default=None)
 
 
+def _portfolio_valuation_today(item: PortfolioRecordModel) -> date:
+    timezone_name = str(
+        item.valuation_timezone or get_settings().default_trade_timezone
+    ).strip()
+    try:
+        timezone = ZoneInfo(timezone_name)
+    except (KeyError, ValueError):
+        timezone = ZoneInfo(get_settings().default_trade_timezone)
+    return datetime.now(timezone).date()
+
+
 def _latest_market_data_date_for_instruments(session, instrument_ids: set[str]) -> date | None:
     normalized_instrument_ids = {instrument_id for instrument_id in instrument_ids if instrument_id}
     if not normalized_instrument_ids:
@@ -1192,6 +1203,7 @@ def _resolve_live_portfolio_as_of_date(
     accounts: list[AccountRecordModel],
     transactions: list[TransactionRecordModel],
 ) -> date:
+    valuation_today = _portfolio_valuation_today(item)
     transaction_rows = [_serialize_transaction_row(transaction) for transaction in transactions]
     portfolio_as_of_date = item.as_of_date
     latest_trade_date = _max_transaction_trade_date(transactions)
@@ -1211,7 +1223,10 @@ def _resolve_live_portfolio_as_of_date(
         )
         if candidate is not None
     ]
-    candidate_as_of_date = max(source_candidate_dates, default=portfolio_as_of_date or date.today())
+    candidate_as_of_date = min(
+        max(source_candidate_dates, default=portfolio_as_of_date or valuation_today),
+        valuation_today,
+    )
 
     boundary_transactions = [
         transaction
@@ -1243,7 +1258,10 @@ def _resolve_live_portfolio_as_of_date(
             )
             if candidate is not None
         ]
-        return max(resolved_candidate_dates, default=candidate_as_of_date)
+        return min(
+            max(resolved_candidate_dates, default=candidate_as_of_date),
+            valuation_today,
+        )
 
     fallback_candidate_dates = [
         candidate
@@ -1254,7 +1272,10 @@ def _resolve_live_portfolio_as_of_date(
         )
         if candidate is not None
     ]
-    return max(fallback_candidate_dates, default=candidate_as_of_date)
+    return min(
+        max(fallback_candidate_dates, default=candidate_as_of_date),
+        valuation_today,
+    )
 
 
 def _build_live_portfolio_rollup(

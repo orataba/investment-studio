@@ -171,28 +171,19 @@ export default function MonitoringPage() {
   const [loading, setLoading] = useState(true)
   const [refreshing, setRefreshing] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const [selectedWatchlistId, setSelectedWatchlistId] = useState(
-    () => monitoringSearchParams.get('watchlist') || 'all',
-  )
+  const selectedWatchlistId = monitoringSearchParams.get('watchlist') || 'all'
 
-  useEffect(() => {
-    setSelectedWatchlistId(monitoringSearchParams.get('watchlist') || 'all')
-  }, [monitoringSearchParams])
-
-  useEffect(() => {
-    setMonitoringSearchParams(
-      (current) => {
-        const next = new URLSearchParams(current)
-        if (selectedWatchlistId === 'all') {
-          next.delete('watchlist')
-        } else {
-          next.set('watchlist', selectedWatchlistId)
-        }
-        return next.toString() === current.toString() ? current : next
-      },
-      { replace: true },
-    )
-  }, [selectedWatchlistId, setMonitoringSearchParams])
+  function selectWatchlist(watchlistId: string) {
+    setMonitoringSearchParams((current) => {
+      const next = new URLSearchParams(current)
+      if (watchlistId === 'all') {
+        next.delete('watchlist')
+      } else {
+        next.set('watchlist', watchlistId)
+      }
+      return next
+    })
+  }
   const [recalculatingInstrumentIds, setRecalculatingInstrumentIds] = useState<string[]>([])
   const [notice, setNotice] = useState<{ tone: 'success' | 'error'; message: string } | null>(
     null,
@@ -401,7 +392,7 @@ export default function MonitoringPage() {
               <select
                 className="toolbar-select"
                 value={selectedWatchlistId}
-                onChange={(event) => setSelectedWatchlistId(event.target.value)}
+                onChange={(event) => selectWatchlist(event.target.value)}
               >
                 <option value="all">All Watchlists</option>
                 {dashboard?.watchlists.map((item) => (

@@ -2746,8 +2746,6 @@ def build_daily_portfolio_snapshots(
             and market_risk_daily_return is not None
             and isfinite(market_risk_daily_return)
             and has_fresh_market_risk_observation
-            and not stale_price_flag
-            and not stale_fx_flag
         )
         market_risk_return_observation_exclusion_reason = None
         if not modeled_market_scope_for_return:
@@ -2757,10 +2755,6 @@ def build_daily_portfolio_snapshots(
         elif is_imported_valuation_anchor:
             market_risk_return_observation_exclusion_reason = (
                 "initial_valuation_anchor"
-            )
-        elif stale_price_flag or stale_fx_flag:
-            market_risk_return_observation_exclusion_reason = (
-                "stale_market_or_fx_input"
             )
         elif market_risk_return_coverage_state != "complete":
             market_risk_return_observation_exclusion_reason = (
@@ -2839,17 +2833,21 @@ def build_daily_portfolio_snapshots(
                 daily_twr is not None
                 and isfinite(daily_twr)
                 and return_coverage_state == "complete"
-                and (fresh_price_count > 0 or abs(daily_twr) > 1e-12)
-                and not stale_price_flag
-                and not stale_fx_flag
+                and (
+                    fresh_price_count > 0
+                    or fresh_fx_observation_count > 0
+                    or abs(daily_twr) > 1e-12
+                )
             ),
             "return_observation_exclusion_reason": (
-                "stale_market_or_fx_input"
-                if stale_price_flag or stale_fx_flag
-                else "return_coverage_incomplete"
+                "return_coverage_incomplete"
                 if return_coverage_state != "complete" or daily_twr is None
                 else "no_fresh_market_observation"
-                if fresh_price_count <= 0 and abs(daily_twr) <= 1e-12
+                if (
+                    fresh_price_count <= 0
+                    and fresh_fx_observation_count <= 0
+                    and abs(daily_twr) <= 1e-12
+                )
                 else None
             ),
             "modeled_market_exposure_present": modeled_market_exposure_present,
@@ -7182,10 +7180,6 @@ def _build_contribution_slices_for_date(
         has_derivative_lifecycle_activity = bool(
             (current_event or {}).get("_derivative_lifecycle_activity")
         )
-        has_stale_market_input = any(
-            bool((current_state or {}).get(field_name))
-            for field_name in ("stale_price_flag", "stale_fx_flag")
-        )
         return_observation_eligible = (
             daily_return is not None
             and isfinite(daily_return)
@@ -7193,7 +7187,6 @@ def _build_contribution_slices_for_date(
             and (market_observation_count > 0 or abs(daily_return) > 1e-12)
             and not has_derivative_exposure
             and not has_derivative_lifecycle_activity
-            and not has_stale_market_input
         )
         market_risk_return_coverage_state = (
             slice_coverage_state
@@ -7212,7 +7205,6 @@ def _build_contribution_slices_for_date(
                 market_risk_observation_count > 0
                 or abs(market_risk_daily_return) > 1e-12
             )
-            and not has_stale_market_input
         )
 
         daily_slices.append(

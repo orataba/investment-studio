@@ -1669,7 +1669,7 @@ def test_research_workbench_returns_target_solve_defaults(client):
     assert payload["settings"]["planning_taxonomy_id"] is None
     assert payload["settings"]["target_dimension"] == "scope_default"
     assert payload["settings"]["capital_mode"] == "unit_notional"
-    assert payload["settings"]["calculation_frequency"] == "auto"
+    assert payload["settings"]["calculation_frequency"] == "daily"
     assert payload["settings"]["missing_return_policy"] == "strict"
     assert payload["settings"]["backtest_rebalance_frequency"] == "1m"
     assert payload["settings"]["backtest_benchmark_instrument_id"] is None
@@ -1678,15 +1678,15 @@ def test_research_workbench_returns_target_solve_defaults(client):
     assert payload["risk_policy"]["model_role"] == "production"
     assert payload["risk_policy"]["covariance_model_id"] == "ewma_vol_shrinkage_corr_covariance"
     assert payload["risk_policy"]["lookback_days"] == 90
-    assert payload["risk_policy"]["calculation_frequency"] == "auto"
+    assert payload["risk_policy"]["calculation_frequency"] == "daily"
     assert payload["risk_policy"]["resolved_calculation_frequency"] == "daily"
     assert payload["risk_policy"]["missing_return_policy"] == "strict"
     assert payload["risk_policy"]["contribution_mode"] == "signed"
     assert payload["risk_policy"]["parameters"]["min_observations"] == 45
     assert payload["risk_policy"]["parameters"]["corr_min_observations"] == 45
     assert payload["risk_policy"]["parameters_by_frequency"]["daily"]["min_observations"] == 45
-    assert payload["risk_policy"]["parameters_by_frequency"]["weekly"]["min_observations"] == 9
-    assert payload["risk_policy"]["parameters_by_frequency"]["monthly"]["min_observations"] == 3
+    assert "weekly" not in payload["risk_policy"]["parameters_by_frequency"]
+    assert "monthly" not in payload["risk_policy"]["parameters_by_frequency"]
     assert payload["settings"]["gross_exposure"] is None
     assert payload["settings"]["target_volatility"] is None
     assert payload["settings"]["max_gross_exposure"] is None
@@ -1708,8 +1708,6 @@ def test_production_risk_window_min_observations_scale_with_calendar_window() ->
     assert risk_min_observations_for_window("daily", 30) == 15
     assert risk_min_observations_for_window("daily", 90) == 45
     assert risk_min_observations_for_window("daily", 180) == 90
-    assert risk_min_observations_for_window("weekly", 90) == 9
-    assert risk_min_observations_for_window("monthly", 90) == 3
 
 
 def test_production_risk_policy_rejects_unsupported_windows() -> None:
@@ -1875,20 +1873,33 @@ def test_top_sleeve_bounds_reject_fixed_gross_above_max_capacity() -> None:
         )
 
 
-def test_research_settings_updates_production_risk_policy(client):
+def test_research_settings_only_accepts_daily_production_risk_frequency(client):
+    settings_payload = {
+        "planning_taxonomy_id": None,
+        "comparator_taxonomy_node_id": None,
+        "as_of_date": "2026-04-15",
+        "lookback_days": 180,
+        "missing_return_policy": "complete_case_drop",
+        "covariance_model_id": "sample_covariance",
+        "contribution_mode": "abs",
+        "target_dimension": "scope_default",
+        "capital_mode": "unit_notional",
+    }
+    for unsupported_frequency in ("auto", "weekly", "monthly"):
+        unsupported_response = client.put(
+            "/api/portfolios/portfolio-ops/research/settings",
+            json={
+                **settings_payload,
+                "calculation_frequency": unsupported_frequency,
+            },
+        )
+        assert unsupported_response.status_code == 422
+
     settings_response = client.put(
         "/api/portfolios/portfolio-ops/research/settings",
         json={
-            "planning_taxonomy_id": None,
-            "comparator_taxonomy_node_id": None,
-            "as_of_date": "2026-04-15",
-            "lookback_days": 180,
-            "calculation_frequency": "weekly",
-            "missing_return_policy": "complete_case_drop",
-            "covariance_model_id": "sample_covariance",
-            "contribution_mode": "abs",
-            "target_dimension": "scope_default",
-            "capital_mode": "unit_notional",
+            **settings_payload,
+            "calculation_frequency": "daily",
         },
     )
     assert settings_response.status_code == 200
@@ -1898,22 +1909,22 @@ def test_research_settings_updates_production_risk_policy(client):
     risk_policy = risk_policy_response.json()
     assert risk_policy["covariance_model_id"] == "sample_covariance"
     assert risk_policy["lookback_days"] == 180
-    assert risk_policy["calculation_frequency"] == "weekly"
-    assert risk_policy["resolved_calculation_frequency"] == "weekly"
+    assert risk_policy["calculation_frequency"] == "daily"
+    assert risk_policy["resolved_calculation_frequency"] == "daily"
     assert risk_policy["missing_return_policy"] == "complete_case_drop"
     assert risk_policy["contribution_mode"] == "abs"
-    assert risk_policy["parameters"]["min_observations"] == 18
-    assert risk_policy["parameters"]["corr_min_observations"] == 18
+    assert risk_policy["parameters"]["min_observations"] == 90
+    assert risk_policy["parameters"]["corr_min_observations"] == 90
     assert risk_policy["parameters_by_frequency"]["daily"]["min_observations"] == 90
-    assert risk_policy["parameters_by_frequency"]["weekly"]["min_observations"] == 18
-    assert risk_policy["parameters_by_frequency"]["monthly"]["min_observations"] == 5
+    assert "weekly" not in risk_policy["parameters_by_frequency"]
+    assert "monthly" not in risk_policy["parameters_by_frequency"]
 
     workbench_response = client.get("/api/portfolios/portfolio-ops/research/workbench")
     assert workbench_response.status_code == 200
     workbench_policy = workbench_response.json()["risk_policy"]
     assert workbench_policy["covariance_model_id"] == "sample_covariance"
     assert workbench_policy["lookback_days"] == 180
-    assert workbench_policy["calculation_frequency"] == "weekly"
+    assert workbench_policy["calculation_frequency"] == "daily"
     assert workbench_policy["missing_return_policy"] == "complete_case_drop"
     assert workbench_policy["contribution_mode"] == "abs"
 
@@ -2407,28 +2418,7 @@ def test_instrument_trend_volatility_uses_quote_observation_density() -> None:
     assert _annualized_volatility(points) == pytest.approx(sample_stddev * sqrt(periods_per_year))
 
 
-def test_instrument_trend_volatility_can_use_weekly_risk_basis() -> None:
-    points = [
-        {"date": date(2026, 1, 1), "value": 100.0},
-        {"date": date(2026, 1, 2), "value": 101.0},
-        {"date": date(2026, 1, 5), "value": 104.0},
-        {"date": date(2026, 1, 9), "value": 106.0},
-        {"date": date(2026, 1, 12), "value": 102.0},
-        {"date": date(2026, 1, 16), "value": 103.0},
-    ]
-    returns = [106.0 / 101.0 - 1.0, 103.0 / 106.0 - 1.0]
-    mean_return = sum(returns) / len(returns)
-    sample_stddev = sqrt(sum((item - mean_return) ** 2 for item in returns) / (len(returns) - 1))
-    periods_per_year = 2 / 14 * 365.25
-
-    assert _annualized_volatility(
-        points,
-        calculation_frequency="weekly",
-        final_date=date(2026, 1, 16),
-    ) == pytest.approx(sample_stddev * sqrt(periods_per_year))
-
-
-def test_holdings_instrument_volatility_requires_window_start_coverage() -> None:
+def test_holdings_daily_volatility_requires_window_start_coverage() -> None:
     detail = {
         "instrument_type": "equity",
         "currency": "USD",
@@ -2451,39 +2441,10 @@ def test_holdings_instrument_volatility_requires_window_start_coverage() -> None
     metrics = build_instrument_trend_metrics_from_detail(
         detail,
         as_of_date=date(2026, 4, 16),
-        calculation_frequency="weekly",
+        calculation_frequency="daily",
     )
 
     assert metrics["instrument_volatility_6m"] is None
-
-
-def test_holdings_instrument_volatility_allows_complete_weekly_window() -> None:
-    detail = {
-        "instrument_type": "equity",
-        "currency": "USD",
-        "quote_selection_policy": {"total_return": ["adjusted_close"]},
-        "market_data": [
-            {
-                "metric_family": "price",
-                "quote_basis": "adjusted_close",
-                "as_of_date": (date(2025, 10, 16) + timedelta(days=offset)).isoformat(),
-                "value": str(100.0 + offset / 10),
-                "currency": "USD",
-                "price_unit": "per_unit",
-                "price_scale": 1.0,
-                "status": "complete",
-            }
-            for offset in range(0, 183, 7)
-        ],
-    }
-
-    metrics = build_instrument_trend_metrics_from_detail(
-        detail,
-        as_of_date=date(2026, 4, 16),
-        calculation_frequency="weekly",
-    )
-
-    assert metrics["instrument_volatility_6m"] is not None
 
 
 def test_holdings_risk_window_stays_anchored_to_requested_as_of_calendar_month() -> None:
@@ -2619,7 +2580,7 @@ def test_research_series_prefers_adjusted_close_for_equities() -> None:
     ]
 
 
-def test_research_daily_alignment_does_not_span_missing_dates() -> None:
+def test_research_daily_alignment_carries_last_valid_marks_between_source_updates() -> None:
     members = [
         ScopeMemberRecord(
             member_type=TARGET_MEMBER_INSTRUMENT,
@@ -2660,82 +2621,10 @@ def test_research_daily_alignment_does_not_span_missing_dates() -> None:
 
     returns_by_member = {item.member.member_id: item.returns for item in aligned_members}
     assert calendar == [date(2026, 1, 1), date(2026, 1, 2), date(2026, 1, 5)]
-    assert pd.isna(returns_by_member["instrument-a"].loc[date(2026, 1, 2)])
-    assert pd.isna(returns_by_member["instrument-a"].loc[date(2026, 1, 5)])
+    assert returns_by_member["instrument-a"].loc[date(2026, 1, 2)] == pytest.approx(0.0)
+    assert returns_by_member["instrument-a"].loc[date(2026, 1, 5)] == pytest.approx(0.1)
     assert returns_by_member["instrument-b"].loc[date(2026, 1, 2)] == pytest.approx(0.02)
     assert _infer_periods_per_year([date(2026, 1, 2), date(2026, 1, 5)]) == pytest.approx(2 / 6 * 365.25)
-
-
-def test_research_weekly_alignment_uses_period_end_observations() -> None:
-    members = [
-        ScopeMemberRecord(
-            member_type=TARGET_MEMBER_INSTRUMENT,
-            member_id="instrument-a",
-            label="Instrument A",
-        ),
-        ScopeMemberRecord(
-            member_type=TARGET_MEMBER_INSTRUMENT,
-            member_id="instrument-b",
-            label="Instrument B",
-        ),
-    ]
-    nav_series_by_member = {
-        (TARGET_MEMBER_INSTRUMENT, "instrument-a"): pd.Series(
-            {
-                date(2026, 1, 1): 100.0,
-                date(2026, 1, 5): 110.0,
-            },
-            dtype="float64",
-        ),
-        (TARGET_MEMBER_INSTRUMENT, "instrument-b"): pd.Series(
-            {
-                date(2026, 1, 1): 100.0,
-                date(2026, 1, 2): 102.0,
-                date(2026, 1, 5): 101.0,
-            },
-            dtype="float64",
-        ),
-    }
-
-    aligned_members, calendar, _warnings = _align_member_series(
-        members,
-        nav_series_by_member,
-        start_date=date(2026, 1, 1),
-        end_date=date(2026, 1, 5),
-        calculation_frequency="weekly",
-    )
-
-    returns_by_member = {item.member.member_id: item.returns for item in aligned_members}
-    assert calendar == [date(2026, 1, 2), date(2026, 1, 5)]
-    assert returns_by_member["instrument-a"].loc[date(2026, 1, 5)] == pytest.approx(0.1)
-    assert returns_by_member["instrument-b"].loc[date(2026, 1, 5)] == pytest.approx(101.0 / 102.0 - 1.0)
-
-
-def test_research_weekly_staleness_applies_to_selected_period_observation_only() -> None:
-    series = pd.Series(
-        {
-            date(2026, 1, 5): 100.0,
-            date(2026, 1, 9): 101.0,
-            date(2026, 1, 12): 102.0,
-        },
-        dtype="float64",
-    )
-
-    periodic = _periodic_nav_series(
-        series,
-        calculation_frequency="weekly",
-        start_date=date(2026, 1, 5),
-        end_date=date(2026, 1, 9),
-    )
-
-    assert periodic.loc[date(2026, 1, 9)] == pytest.approx(101.0)
-    with pytest.raises(ValueError, match="stale observation"):
-        _periodic_nav_series(
-            pd.Series({date(2026, 1, 12): 102.0}, dtype="float64"),
-            calculation_frequency="weekly",
-            start_date=date(2026, 1, 12),
-            end_date=date(2026, 1, 16),
-        )
 
 
 def test_recursive_child_nav_preserves_first_valid_return_without_filling_internal_gaps() -> None:
@@ -3484,7 +3373,7 @@ def test_research_benchmark_distinguishes_index_close_return_semantics() -> None
     assert total_return_result["backtest_benchmark"]["warnings"] == []
 
 
-def test_backtest_weekly_sampling_uses_periodic_returns_for_daily_series() -> None:
+def test_weekly_rebalance_uses_daily_calculation_returns() -> None:
     daily_nav = pd.Series(
         {
             date(2026, 3, 27): 100.0,
@@ -3506,7 +3395,6 @@ def test_backtest_weekly_sampling_uses_periodic_returns_for_daily_series() -> No
 
     sampled = _build_backtest_sampled_nav_by_instrument(
         {"daily": daily_nav, "weekly": weekly_nav},
-        calculation_frequency="weekly",
         end_date=date(2026, 4, 10),
     )
     returns_by_instrument = {instrument_id: sampled_nav.pct_change().dropna() for instrument_id, sampled_nav in sampled.items()}
@@ -3514,13 +3402,11 @@ def test_backtest_weekly_sampling_uses_periodic_returns_for_daily_series() -> No
         start_date=date(2026, 3, 30),
         end_date=date(2026, 4, 10),
         frequency="1w",
-        calculation_frequency="weekly",
-        returns_by_instrument=returns_by_instrument,
     )
 
-    assert returns_by_instrument["daily"].loc[date(2026, 4, 3)] == pytest.approx(110.0 / 100.0 - 1.0)
+    assert returns_by_instrument["daily"].loc[date(2026, 4, 3)] == pytest.approx(110.0 / 103.0 - 1.0)
     assert returns_by_instrument["daily"].loc[date(2026, 4, 10)] == pytest.approx(121.0 / 110.0 - 1.0)
-    assert rebal_dates == [date(2026, 4, 3), date(2026, 4, 10)]
+    assert rebal_dates == [date(2026, 3, 30), date(2026, 4, 6)]
 
 
 def test_research_run_replaces_previous_run(client):

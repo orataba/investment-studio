@@ -239,12 +239,10 @@ function finiteNumber(value: number | null | undefined) {
 
 const CALCULATION_FREQUENCY_LABELS: Record<CalculationFrequency, string> = {
   daily: 'Daily',
-  weekly: 'Weekly',
-  monthly: 'Monthly',
 }
 
 function isCalculationFrequency(value: string | null | undefined): value is CalculationFrequency {
-  return value === 'daily' || value === 'weekly' || value === 'monthly'
+  return value === 'daily'
 }
 
 export function riskFrequencyProfileFromHoldingsWorkspace(

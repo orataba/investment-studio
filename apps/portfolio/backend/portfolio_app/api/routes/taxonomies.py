@@ -65,7 +65,6 @@ from portfolio_app.services.portfolio_store import (
     upsert_portfolio_instrument_universe_record,
 )
 from portfolio_app.services.risk_basis import calculation_frequency_profile_for_instruments
-from portfolio_app.services.risk_model import get_portfolio_risk_policy
 
 
 router = APIRouter()
@@ -100,7 +99,6 @@ def _enrich_universe_market_profiles(
     records: list[dict[str, object]],
     *,
     as_of_date: date,
-    requested_frequency: object = "auto",
 ) -> tuple[list[dict[str, object]], dict[str, object]]:
     instrument_ids = [
         str(record.get("instrument_id") or "").strip()
@@ -112,7 +110,6 @@ def _enrich_universe_market_profiles(
     risk_basis_profile = calculation_frequency_profile_for_instruments(
         instrument_ids,
         end_date=as_of_date,
-        requested_frequency=requested_frequency,
     )
     calculation_frequency = cast(CalculationFrequency, str(risk_basis_profile.get("resolved_frequency") or "daily"))
     enriched_records: list[dict[str, object]] = []
@@ -154,13 +151,10 @@ def get_portfolio_taxonomies(
             )
             or date.today()
         )
-        risk_policy = get_portfolio_risk_policy(portfolio_id)
-        requested_risk_frequency = str((risk_policy or {}).get("calculation_frequency") or "auto")
         try:
             universe_records, risk_basis_profile = _enrich_universe_market_profiles(
                 universe_records,
                 as_of_date=resolved_as_of_date,
-                requested_frequency=requested_risk_frequency,
             )
         except InstrumentRegistryError as error:
             raise HTTPException(status_code=502, detail=str(error)) from error

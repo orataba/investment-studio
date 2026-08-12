@@ -241,6 +241,7 @@ class PortfolioCalculationStateModel(Base):
     refresh_started_at: Mapped[str | None] = mapped_column(String)
     refresh_completed_at: Mapped[str | None] = mapped_column(String)
     source_market_data_updated_at: Mapped[str | None] = mapped_column(String)
+    source_calculation_inputs_updated_at: Mapped[str | None] = mapped_column(String)
     error_message: Mapped[str | None] = mapped_column(String)
 
     portfolio: Mapped[PortfolioRecordModel] = relationship(back_populates="calculation_state")
@@ -428,6 +429,24 @@ class TransactionRecordModel(Base):
                 "derivative_contract_record.derivative_contract_id",
             ],
             name="fk_transaction_derivative_contract_portfolio",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["portfolio_id", "account_id"],
+            ["account_record.portfolio_id", "account_record.account_id"],
+            name="fk_transaction_portfolio_account",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["portfolio_id", "settlement_cash_account_id"],
+            ["account_record.portfolio_id", "account_record.account_id"],
+            name="fk_transaction_portfolio_settlement_cash_account",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["portfolio_id", "counterparty_account_id"],
+            ["account_record.portfolio_id", "account_record.account_id"],
+            name="fk_transaction_portfolio_counterparty_account",
             ondelete="RESTRICT",
         ),
         UniqueConstraint(
@@ -1095,6 +1114,10 @@ class ResearchSettingsRecordModel(Base):
             name="ck_research_settings_supported_lookback",
         ),
         CheckConstraint(
+            "calculation_frequency = 'daily'",
+            name="calculation_frequency",
+        ),
+        CheckConstraint(
             "backtest_cash_yield_annual >= -1 AND "
             "backtest_commission_bps >= 0 AND backtest_tax_bps >= 0 AND "
             "backtest_slippage_bps >= 0 AND backtest_implementation_delay_days >= 0",
@@ -1116,7 +1139,7 @@ class ResearchSettingsRecordModel(Base):
     as_of_mode: Mapped[str] = mapped_column(String, nullable=False, default="dynamic")
     as_of_date: Mapped[date | None] = mapped_column(Date)
     lookback_days: Mapped[int] = mapped_column(nullable=False, default=90)
-    calculation_frequency: Mapped[str] = mapped_column(String, nullable=False, default="auto")
+    calculation_frequency: Mapped[str] = mapped_column(String, nullable=False, default="daily")
     missing_return_policy: Mapped[str] = mapped_column(String, nullable=False, default="strict")
     target_dimension: Mapped[str] = mapped_column(String, nullable=False, default="scope_default")
     capital_mode: Mapped[str] = mapped_column(String, nullable=False, default="unit_notional")

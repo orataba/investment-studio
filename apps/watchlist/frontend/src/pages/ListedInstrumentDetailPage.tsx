@@ -352,12 +352,14 @@ export default function ListedInstrumentDetailPage({ instrument, watchlistContex
   const [risk, setRisk] = useState<FundRiskResponse | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const [standardizedError, setStandardizedError] = useState<string | null>(null)
 
   useEffect(() => {
     let cancelled = false
     async function load() {
       setLoading(true)
       setError(null)
+      setStandardizedError(null)
       const [barsResult, summaryResult, chartResult, performanceResult, riskResult] = await Promise.allSettled([
         getInstrumentPriceBars(instrumentId, { limit: 1250 }),
         getInstrumentSummary(instrumentId),
@@ -379,6 +381,15 @@ export default function ListedInstrumentDetailPage({ instrument, watchlistContex
       setChart(chartResult.status === 'fulfilled' ? chartResult.value : null)
       setPerformance(performanceResult.status === 'fulfilled' ? performanceResult.value : null)
       setRisk(riskResult.status === 'fulfilled' ? riskResult.value : null)
+      const failedStandardizedSurfaces = [
+        performanceResult.status === 'rejected' ? 'performance' : null,
+        riskResult.status === 'rejected' ? 'risk' : null,
+      ].filter((value): value is string => Boolean(value))
+      if (failedStandardizedSurfaces.length) {
+        setStandardizedError(
+          `Standardized ${failedStandardizedSurfaces.join(' and ')} data is unavailable; affected metrics are withheld.`,
+        )
+      }
       setLoading(false)
     }
     void load()
@@ -432,19 +443,19 @@ export default function ListedInstrumentDetailPage({ instrument, watchlistContex
     ...returns,
     oneMonth: standardizedReturns.oneMonth.present
       ? standardizedReturns.oneMonth.value
-      : returns.oneMonth,
+      : null,
     threeMonth: standardizedReturns.threeMonth.present
       ? standardizedReturns.threeMonth.value
-      : returns.threeMonth,
+      : null,
     sixMonth: standardizedReturns.sixMonth.present
       ? standardizedReturns.sixMonth.value
-      : returns.sixMonth,
+      : null,
     ytd: standardizedReturns.ytd.present
       ? standardizedReturns.ytd.value
-      : returns.ytd,
+      : null,
     oneYear: standardizedReturns.oneYear.present
       ? standardizedReturns.oneYear.value
-      : returns.oneYear,
+      : null,
   }), [returns, standardizedReturns])
   const riskStats = useMemo(() => priceRiskStats(analysisBars), [analysisBars])
   const standardizedRisk = useMemo(
@@ -460,10 +471,10 @@ export default function ListedInstrumentDetailPage({ instrument, watchlistContex
     ...riskStats,
     annualizedVolatility: standardizedRisk.annualizedVolatility.present
       ? standardizedRisk.annualizedVolatility.value
-      : riskStats.annualizedVolatility,
+      : null,
     maximumDrawdown: standardizedRisk.maximumDrawdown.present
       ? standardizedRisk.maximumDrawdown.value
-      : riskStats.maximumDrawdown,
+      : null,
     currentDrawdown:
       riskPathMetricsWithheld || !risk || typeof risk.current_drawdown !== 'number'
         ? null
@@ -479,12 +490,12 @@ export default function ListedInstrumentDetailPage({ instrument, watchlistContex
     : chart?.selected_series?.label || chart?.base_series_type || 'canonical close series'
   const performanceAsOfNote = performance?.snapshot_metadata?.as_of_date
     ? `Standardized · as of ${formatDate(performance.snapshot_metadata.as_of_date)}`
-    : analysisBasisLabel
+    : 'Standardized performance unavailable'
   const riskAsOfNote = riskPathMetricsWithheld
     ? `Withheld · ${risk?.data_quality?.gap_count ?? 0} missing observation(s)`
     : risk?.snapshot_metadata?.as_of_date
       ? `Standardized · as of ${formatDate(risk.snapshot_metadata.as_of_date)}`
-      : analysisBasisLabel
+      : 'Standardized risk unavailable'
 
   if (loading) return <LoadingOverlay label="Loading market detail" />
 
@@ -562,6 +573,10 @@ export default function ListedInstrumentDetailPage({ instrument, watchlistContex
           <em className={signedValueClass(displayReturns.dailyChange)}>{percentValue(displayReturns.dailyChange)}</em>
         </div>
       </section>
+
+      {standardizedError ? (
+        <div className="listed-source-alert" role="alert">{standardizedError}</div>
+      ) : null}
 
       <div className="instrument-detail-tabs-row">
         <div className="instrument-detail-tabs">

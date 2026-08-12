@@ -56,9 +56,9 @@ Performance 页的自然期矩阵另有一条闭合规则：月度收益使用�
 
 ## 4. 频率、缺点与风险
 
-- 计算频率优先使用 Registry `source_settings.expected_frequency`；单点历史标签和样本间隔只用于审计或在注册设置不可用时推断，不能让一条早期 weekly 标签把当前 daily 序列整体降采样。
+- 计算频率固定为 daily；行情点统一按日频计算，不做降采样。
 - daily 数据若配置 `market_calendar`，内部缺点按该交易所真实 session 检测，春节、周末等休市不算缺失；未配置或日历不可解析时才使用保守的日历日阈值。
-- 尾部新鲜度按该 instrument 自己的 expected frequency、market calendar 和 `release_lag_days` 判断，不拿 Watchlist 中其他 instrument 的最新日期做基准。`release_lag_days` 是自然日发布滞后，不是交易日数量；当日盘中不会强制要求“计划于当日发布”的观测已经到达。
+- 尾部新鲜度按该 instrument 自己的 market calendar 和 `release_lag_days` 判断，不拿 Watchlist 中其他 instrument 的最新日期做基准。`release_lag_days` 是自然日发布滞后，不是交易日数量；当日盘中不会强制要求“计划于当日发布”的观测已经到达。
 - 标量端点收益在起点和终点可信时仍可计算；最大回撤、当前回撤、波动率、downside deviation、Sharpe、Sortino 等路径指标在存在预期观测缺失时 fail closed。downside deviation 以全部期间为分母，非负期间的 downside 为 0；Sharpe/Sortino 当前风险自由利率为 0。
 
 ## 5. 私募基金断段规则

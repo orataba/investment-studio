@@ -17,18 +17,12 @@ const RISK_WINDOW_MONTHS_BY_DAYS: Record<number, number> = {
 }
 const RISK_OBSERVATIONS_PER_MONTH_BY_FREQUENCY: Record<CalculationFrequency, number> = {
   daily: 20,
-  weekly: 4,
-  monthly: 1,
 }
 const RISK_MAX_START_GAP_DAYS: Record<CalculationFrequency, number> = {
   daily: 10,
-  weekly: 21,
-  monthly: 45,
 }
 const RISK_MAX_TRAILING_STALENESS_DAYS: Record<CalculationFrequency, number> = {
   daily: 5,
-  weekly: 14,
-  monthly: 62,
 }
 const RISK_WINDOW_LABELS_BY_DAYS: Record<number, string> = {
   30: '1M',

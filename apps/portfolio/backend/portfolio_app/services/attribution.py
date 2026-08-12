@@ -924,7 +924,7 @@ def group_contribution_slices_by_taxonomy(
             and grouped_slice["coverage_state"] == "complete"
             and (
                 not market_return_eligibility_by_group[slice_key]
-                or all(market_return_eligibility_by_group[slice_key])
+                or any(market_return_eligibility_by_group[slice_key])
             )
             and (
                 int(grouped_slice.get("market_observation_count") or 0) > 0
@@ -936,7 +936,7 @@ def group_contribution_slices_by_taxonomy(
             and grouped_slice["market_risk_return_coverage_state"] == "complete"
             and (
                 not market_risk_eligibility_by_group[slice_key]
-                or all(market_risk_eligibility_by_group[slice_key])
+                or any(market_risk_eligibility_by_group[slice_key])
             )
             and (
                 int(grouped_slice.get("market_risk_observation_count") or 0) > 0

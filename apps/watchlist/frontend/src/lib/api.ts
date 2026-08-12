@@ -440,15 +440,15 @@ export type ReturnSparklineSeries = {
   end_date: string | null
 }
 
-export type CalculationFrequency = 'daily' | 'weekly' | 'monthly'
+export type CalculationFrequency = 'daily'
 
 export type CalculationFrequencyProfile = {
-  requested_frequency: 'auto'
+  requested_frequency: 'daily'
   expected_frequency?: CalculationFrequency | null
   resolved_frequency: CalculationFrequency
   inferred_frequency: CalculationFrequency
   source_frequency_counts: Record<CalculationFrequency | 'unknown', number>
-  frequency_source?: 'registry_expected' | 'mixed_declared' | 'declared' | 'inferred'
+  frequency_source?: 'daily_policy'
   raw_observation_count: number
   observation_count: number
   start_date: string | null

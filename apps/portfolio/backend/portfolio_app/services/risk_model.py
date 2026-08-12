@@ -43,7 +43,6 @@ SUPPORTED_COVARIANCE_MODELS = {
     "sample_covariance",
 }
 SUPPORTED_CONTRIBUTION_MODES = {"signed", "abs"}
-SUPPORTED_CALCULATION_FREQUENCIES = {"auto", "daily", "weekly", "monthly"}
 
 
 def _safe_float(value: object) -> float | None:
@@ -70,11 +69,6 @@ def _normalize_risk_window(value: object) -> int:
     return lookback_days
 
 
-def _normalized_calculation_frequency(value: object) -> str:
-    normalized = str(value or "auto").strip().lower()
-    return normalized if normalized in SUPPORTED_CALCULATION_FREQUENCIES else "auto"
-
-
 def _normalized_covariance_model(value: object) -> str:
     normalized = str(value or RESEARCH_COVARIANCE_MODEL_ID).strip().lower()
     return normalized if normalized in SUPPORTED_COVARIANCE_MODELS else RESEARCH_COVARIANCE_MODEL_ID
@@ -91,7 +85,7 @@ def normalize_portfolio_risk_policy(
     source: dict[str, object] = {
         "covariance_model_id": RESEARCH_COVARIANCE_MODEL_ID,
         "lookback_days": DEFAULT_PORTFOLIO_RISK_LOOKBACK_DAYS,
-        "calculation_frequency": "auto",
+        "calculation_frequency": "daily",
         "missing_return_policy": RESEARCH_DEFAULT_MISSING_RETURN_POLICY,
         "contribution_mode": RESEARCH_RISK_CONTRIBUTION_MODE,
     }
@@ -106,17 +100,10 @@ def normalize_portfolio_risk_policy(
         "model_name": str(source.get("model_name") or PORTFOLIO_RISK_POLICY_MODEL_NAME),
         "covariance_model_id": _normalized_covariance_model(source.get("covariance_model_id")),
         "lookback_days": lookback_days,
-        "calculation_frequency": _normalized_calculation_frequency(source.get("calculation_frequency")),
+        "calculation_frequency": "daily",
         "missing_return_policy": missing_return_policy,
         "contribution_mode": _normalized_contribution_mode(source.get("contribution_mode")),
     }
-
-
-def _resolved_frequency(policy: dict[str, object], calculation_frequency: CalculationFrequency | None) -> CalculationFrequency:
-    configured = str(policy.get("calculation_frequency") or "auto")
-    if configured in {"daily", "weekly", "monthly"}:
-        return configured  # type: ignore[return-value]
-    return calculation_frequency or "daily"
 
 
 def risk_min_observations_for_window(
@@ -139,11 +126,9 @@ def risk_policy_covariance_parameters(
 
 def portfolio_risk_model_snapshot(
     policy: dict[str, object],
-    *,
-    calculation_frequency: CalculationFrequency | None = None,
 ) -> dict[str, object]:
     normalized_policy = normalize_portfolio_risk_policy(policy if isinstance(policy, dict) else None)
-    resolved_frequency = _resolved_frequency(normalized_policy, calculation_frequency)
+    resolved_frequency: CalculationFrequency = "daily"
     lookback_days = int(normalized_policy["lookback_days"])
     parameters = risk_policy_covariance_parameters(resolved_frequency, lookback_days)
     return {
@@ -152,16 +137,13 @@ def portfolio_risk_model_snapshot(
         "resolved_calculation_frequency": resolved_frequency,
         "parameters": parameters,
         "parameters_by_frequency": {
-            frequency: risk_policy_covariance_parameters(frequency, lookback_days)
-            for frequency in ("daily", "weekly", "monthly")
+            "daily": risk_policy_covariance_parameters("daily", lookback_days)
         },
     }
 
 
 def get_portfolio_risk_policy(
     portfolio_id: str,
-    *,
-    calculation_frequency: CalculationFrequency | None = None,
 ) -> dict[str, object] | None:
     session_factory = get_session_factory()
     with session_factory() as session:
@@ -171,7 +153,7 @@ def get_portfolio_risk_policy(
         policy = normalize_portfolio_risk_policy(
             portfolio.risk_policy_json if isinstance(portfolio.risk_policy_json, dict) else None,
         )
-        return portfolio_risk_model_snapshot(policy, calculation_frequency=calculation_frequency)
+        return portfolio_risk_model_snapshot(policy)
 
 
 def update_portfolio_risk_policy(
@@ -360,6 +342,35 @@ def _validate_aligned_return_periods(
             )
 
 
+def _daily_mark_to_last_return_matrix(
+    active: list[tuple[str, dict[str, object], pd.Series, dict[date, date]]],
+) -> tuple[pd.DataFrame, dict[str, dict[date, date]]]:
+    nav_by_key: dict[str, pd.Series] = {}
+    for key, _row, series, period_starts in active:
+        ordered = series.sort_index()
+        first_end_date = pd.Timestamp(ordered.index[0]).date()
+        growth = 1.0
+        nav_points: dict[date, float] = {period_starts[first_end_date]: growth}
+        for raw_end_date, raw_return in ordered.items():
+            growth *= 1.0 + float(raw_return)
+            nav_points[pd.Timestamp(raw_end_date).date()] = growth
+        nav_by_key[key] = pd.Series(nav_points, dtype="float64").sort_index()
+
+    aligned_nav = pd.DataFrame(nav_by_key).sort_index().ffill()
+    returns = aligned_nav.pct_change(fill_method=None)
+    aligned_period_starts: dict[str, dict[date, date]] = {
+        key: {} for key in nav_by_key
+    }
+    ordered_dates = [pd.Timestamp(raw_date).date() for raw_date in returns.index]
+    for index in range(1, len(ordered_dates)):
+        start_date = ordered_dates[index - 1]
+        end_date = ordered_dates[index]
+        for key in returns.columns:
+            if pd.notna(returns.at[end_date, key]):
+                aligned_period_starts[str(key)][end_date] = start_date
+    return returns, aligned_period_starts
+
+
 def _clear_forward_risk_fields(
     row: dict[str, object],
     *,
@@ -417,7 +428,7 @@ def enrich_holdings_forward_risk(
         }
         return workspace
 
-    snapshot = portfolio_risk_model_snapshot(risk_policy, calculation_frequency=calculation_frequency)
+    snapshot = portfolio_risk_model_snapshot(risk_policy)
     workspace["risk_policy"] = snapshot
     scope_disclosure = _forward_risk_scope_disclosure(
         workspace,
@@ -550,9 +561,8 @@ def enrich_holdings_forward_risk(
         }
         return workspace
 
-    returns = pd.DataFrame({key: series for key, _row, series, _starts in active}).sort_index()
+    returns, period_starts_by_key = _daily_mark_to_last_return_matrix(active)
     labels_by_key = {key: _row_label(row) for key, row, _series, _starts in active}
-    period_starts_by_key = {key: starts for key, _row, _series, starts in active}
     modeled_exposures = np.asarray(
         [
             _safe_float(row.get("market_value_base")) or 0.0

@@ -127,6 +127,33 @@ def test_forward_risk_uses_one_canonical_leaf_model_and_reports_coverage() -> No
     )
 
 
+def test_forward_risk_updates_daily_with_a_slow_source_cadence() -> None:
+    slow_points = [
+        {
+            "start_date": "2026-06-23",
+            "date": "2026-07-24",
+            "value": 0.05,
+        }
+    ]
+    workspace = _workspace(
+        [
+            _holding("daily", 0.6, points=_return_points(1.0)),
+            _holding("slow", 0.4, points=slow_points),
+        ]
+    )
+
+    result = enrich_holdings_forward_risk(
+        workspace,
+        as_of_date=AS_OF_DATE,
+        calculation_frequency="daily",
+        risk_policy=_risk_policy(),
+    )
+
+    assert result["forward_risk"]["status"] == "ok"
+    assert result["forward_risk"]["coverage"]["complete_row_count"] == 22
+    assert all(row["forward_risk_status"] == "ok" for row in result["rows"])
+
+
 def test_forward_risk_uses_total_nav_weights_and_discloses_derivative_exclusion() -> None:
     eligible = _holding("equity", 0.4)
     ineligible = {

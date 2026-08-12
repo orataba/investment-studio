@@ -181,33 +181,36 @@ def test_monthly_risk_helpers_reset_at_calendar_gaps() -> None:
     assert _rolling_annualized_volatility(with_gap, window=12) == []
 
 
-def test_calculation_frequency_context_resamples_declared_weekly_points() -> None:
+def test_calculation_frequency_context_keeps_all_points_on_daily_basis() -> None:
     from watchlist_app.services.calculation_frequency import build_calculation_frequency_context
 
     nav_points = [
         {"as_of_date": date(2026, 1, 5), "value": 100.0, "frequency": "daily"},
         {"as_of_date": date(2026, 1, 6), "value": 101.0, "frequency": "daily"},
-        {"as_of_date": date(2026, 1, 9), "value": 102.0, "frequency": "weekly"},
+        {"as_of_date": date(2026, 1, 9), "value": 102.0, "frequency": "daily"},
         {"as_of_date": date(2026, 1, 12), "value": 103.0, "frequency": "daily"},
-        {"as_of_date": date(2026, 1, 16), "value": 104.0, "frequency": "weekly"},
+        {"as_of_date": date(2026, 1, 16), "value": 104.0, "frequency": "daily"},
     ]
 
     context = build_calculation_frequency_context(nav_points)
 
-    assert context["profile"]["resolved_frequency"] == "weekly"
+    assert context["profile"]["resolved_frequency"] == "daily"
     assert context["profile"]["raw_observation_count"] == 5
-    assert context["profile"]["observation_count"] == 2
+    assert context["profile"]["observation_count"] == 5
     assert [point["as_of_date"] for point in context["points"]] == [
+        date(2026, 1, 5),
+        date(2026, 1, 6),
         date(2026, 1, 9),
+        date(2026, 1, 12),
         date(2026, 1, 16),
     ]
 
 
-def test_registry_expected_frequency_overrides_legacy_point_labels() -> None:
+def test_registry_daily_frequency_is_reflected_in_profile() -> None:
     from watchlist_app.services.calculation_frequency import build_calculation_frequency_context
 
     nav_points = [
-        {"as_of_date": date(2026, 1, 5), "value": 100.0, "frequency": "weekly"},
+        {"as_of_date": date(2026, 1, 5), "value": 100.0, "frequency": "daily"},
         {"as_of_date": date(2026, 1, 6), "value": 101.0, "frequency": "daily"},
         {"as_of_date": date(2026, 1, 7), "value": 102.0, "frequency": "daily"},
     ]
@@ -219,7 +222,7 @@ def test_registry_expected_frequency_overrides_legacy_point_labels() -> None:
 
     assert context["profile"]["expected_frequency"] == "daily"
     assert context["profile"]["resolved_frequency"] == "daily"
-    assert context["profile"]["frequency_source"] == "registry_expected"
+    assert context["profile"]["frequency_source"] == "daily_policy"
     assert context["profile"]["observation_count"] == 3
 
 
@@ -260,26 +263,6 @@ def test_market_calendar_gap_detection_ignores_holidays_but_detects_missing_sess
     assert aligned["profile"]["gap_detection_basis"] == "market_calendar:XSHG"
     assert missing["profile"]["gap_count"] == 1
     assert missing["profile"]["missing_observation_date_sample"] == ["2026-02-24"]
-
-
-def test_monthly_frequency_gap_detection_uses_calendar_months() -> None:
-    from watchlist_app.services.calculation_frequency import (
-        build_calculation_frequency_context,
-    )
-
-    context = build_calculation_frequency_context(
-        [
-            {"as_of_date": date(2026, 1, 31), "value": 100.0},
-            # February is absent even though the elapsed-day gap is short
-            # enough to evade a 45-day threshold.
-            {"as_of_date": date(2026, 3, 1), "value": 101.0},
-        ],
-        expected_frequency="monthly",
-    )
-
-    assert context["profile"]["resolved_frequency"] == "monthly"
-    assert context["profile"]["gap_count"] == 1
-    assert context["profile"]["gap_detection_basis"] == "calendar_month_period"
 
 
 def test_xshg_calendar_treats_lunar_new_year_closure_as_non_sessions() -> None:
@@ -1724,7 +1707,7 @@ def test_aligned_decimal_nav_series_materializes_path_risk_metrics(
             "instrument_name": "Aligned Decimal Risk Fund",
             "instrument_type": "fund",
             "currency": "USD",
-            "source_settings": {"expected_frequency": "weekly"},
+            "source_settings": {"expected_frequency": "event_driven"},
             "quote_selection_policy": canonical_quote_policy("fund"),
             "identifiers": [
                 {"identifier_type": "ticker", "identifier_value": "ADRF", "is_primary": True},
@@ -2040,7 +2023,7 @@ def test_instrument_performance_and_risk_payloads_include_materialized_metrics(
     assert performance_payload["calculation_frequency_profile"]["resolved_frequency"] == "daily"
 
 
-def test_instrument_detail_payload_exposes_weekly_calculation_frequency(
+def test_instrument_detail_payload_uses_daily_calculation_frequency(
     client: TestClient,
 ) -> None:
     seed_shared_instrument(
@@ -2050,7 +2033,7 @@ def test_instrument_detail_payload_exposes_weekly_calculation_frequency(
             "instrument_type": "fund",
             "currency": "USD",
             "source_settings": {
-                "expected_frequency": "weekly",
+                "expected_frequency": "daily",
                 "market_calendar": None,
                 "release_lag_days": 2,
             },
@@ -2071,7 +2054,7 @@ def test_instrument_detail_payload_exposes_weekly_calculation_frequency(
                     "currency": "USD",
                     "price_unit": "per_unit",
                     "price_scale": "1",
-                    "frequency": "weekly",
+                    "frequency": "daily",
                     "status": "complete",
                 }
                 for as_of_date, value in zip(
@@ -2096,7 +2079,7 @@ def test_instrument_detail_payload_exposes_weekly_calculation_frequency(
     nav_response = client.get("/api/instruments/weekly-risk-fund/nav-series")
     assert nav_response.status_code == 200
     nav_payload = nav_response.json()
-    assert nav_payload["calculation_frequency_profile"]["resolved_frequency"] == "weekly"
+    assert nav_payload["calculation_frequency_profile"]["resolved_frequency"] == "daily"
     assert [
         row["date"]
         for row in nav_payload["rows"]
@@ -2112,7 +2095,7 @@ def test_instrument_detail_payload_exposes_weekly_calculation_frequency(
     assert risk_response.status_code == 200
     risk_payload = risk_response.json()
     assert risk_payload["snapshot_metadata"]["methodology_version"] == "canonical-risk/v6"
-    assert risk_payload["calculation_frequency_profile"]["resolved_frequency"] == "weekly"
+    assert risk_payload["calculation_frequency_profile"]["resolved_frequency"] == "daily"
     assert risk_payload["calculation_frequency_profile"]["annualization_periods_per_year"] == pytest.approx(
         52.178571,
         abs=1e-6,

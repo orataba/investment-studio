@@ -147,14 +147,12 @@ platform frontend 不再把 backend / watchlist / portfolio 地址写死在代�
   当前前端访问 platform backend 的基地址；留空时默认走同源 `/api/*`
 - `VITE_DEV_PROXY_TARGET`
   本地 `vite dev` 代理目标；不配时默认转到 `http://127.0.0.1:8002`
-- `VITE_PLATFORM_NAME`
-  backend app registry 不可用时的前端兜底平台名
 - `VITE_WATCHLIST_URL`
 - `VITE_WATCHLIST_API_URL`
 - `VITE_PORTFOLIO_URL`
 - `VITE_PORTFOLIO_API_URL`
 
-其中 `WATCHLIST/PORTFOLIO` 这组变量只在 platform backend 的 `/api/apps` 不可用时作为前端兜底入口使用。
+其中 `WATCHLIST/PORTFOLIO` 地址由 platform backend 的 `/api/apps` 返回；前端环境变量用于首屏链接。
 
 ## 常用校验命令
 
