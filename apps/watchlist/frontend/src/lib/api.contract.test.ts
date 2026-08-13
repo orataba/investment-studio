@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { getInstrumentNavSeries } from './api'
+import { getInstrumentNavSeries, updateInstrumentSettings } from './api'
 
 describe('instrument NAV series API contract', () => {
   afterEach(() => {
@@ -69,5 +69,54 @@ describe('instrument NAV series API contract', () => {
     expect(response.rows[0].selected_value).toBeNull()
     expect(response.series).toEqual([])
     expect(response.calculation_series).toEqual([])
+  })
+})
+
+describe('instrument settings API contract', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  it('saves taxonomy and investment status in one request', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        instrument_id: 'equity/a',
+        definitions: [],
+        values: { coverage_status: 'Invested' },
+        taxonomy: {
+          taxonomy_code: 'instrument_taxonomy',
+          assigned_node_id: 'equity-sector-information-technology',
+          assigned_label: '信息技术',
+          path_labels: ['股票', '信息技术'],
+          path_node_ids: ['equity', 'equity-sector-information-technology'],
+          depth: 2,
+          derived_values: {},
+        },
+        updated: true,
+        taxonomy_updated: true,
+        status_updated: true,
+      }),
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    await updateInstrumentSettings('equity/a', {
+      taxonomy_node_id: 'equity-sector-information-technology',
+      coverage_status: 'Invested',
+      updated_by: 'terminal_ui',
+    })
+
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/api/instrument-attributes/instruments/equity%2Fa/settings',
+      expect.objectContaining({
+        method: 'PUT',
+        body: JSON.stringify({
+          taxonomy_node_id: 'equity-sector-information-technology',
+          coverage_status: 'Invested',
+          updated_by: 'terminal_ui',
+        }),
+      }),
+    )
   })
 })

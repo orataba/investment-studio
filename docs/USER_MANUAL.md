@@ -35,7 +35,7 @@ Portfolio Operations Workbench 分为三块：
 - 资产主档：名称、资产类型、币种、ticker、ISIN、内部 ID、生命周期状态。
 - 市场行情：基金单位净值、分红再投资复权累计净值、指数 close、股票价格、FX spot。
 - 组合事实：账户、交易、现金流、持仓、成本、费用、税费、内部转账。
-- 分类体系：Watchlist fund taxonomy、研究标签、Portfolio planning taxonomy、sleeve tree、TargetSet。
+- 分类体系：Watchlist instrument taxonomy、研究标签、Portfolio planning taxonomy、sleeve tree、TargetSet。
 
 系统不会用示例数据补空，也不会自动猜业务分类。字段为空通常代表数据确实缺失、口径不适用、日期不重叠或刷新尚未完成。
 
@@ -131,7 +131,7 @@ Watchlist 管理“哪些资产进入观察范围”和“如何展示这些资�
 - 排序：点击列头或使用当前 view 的默认排序。
 - 筛选：按字段值缩小结果范围。
 - Data & Columns：选择展示字段和列顺序，`Name` 固定为第一列。
-- Group By：按 taxonomy、属性或可分组字段查看资产分布。
+- Group By：所有 watchlist 使用同一组通用分组，可按资产类别、taxonomy 或数据新鲜度查看分布；基金风格、研究标签和投资状态不进入 Group By。
 - Download：导出当前筛选和排序后的全量结果，不只导出当前页。
 
 导出前应确认当前筛选、排序、分组和日期区间符合沟通口径。导出的 CSV 可用于复核和会议讨论，但不要把导出文件当作新的事实来源再回灌系统。
@@ -148,11 +148,13 @@ Watchlist 的字段来自 field registry 和 instrument attributes。字段可�
 
 `Group By` 支持可写 taxonomy 或只读字段分组。可写 taxonomy 分组支持拖拽资产到目标分组，并把分类结果写回后端。只读指标分组只用于查看，不能拖拽修改。
 
-基金分类应由研究或业务负责人明确维护。系统不会自动推断 fund taxonomy。遇到基金分类为空，应补标签或 taxonomy assignment，而不是等待系统自动填充。
+Watchlist 使用一套多资产 `instrument_taxonomy`：基金使用公募/私募产品策略树，ETF 使用基金产品分类，股票使用一级行业分类，指数使用指数分类。系统不会自动猜分类；遇到分类为空，应由研究或业务负责人在详情页设置 taxonomy assignment。
 
 ### 5.6 基金详情页
 
 基金详情页包含 Overview、Quote、Performance、Risk、Price、Exposure、People、Strategy、Documents、Research、Monitoring 等信息区。自动 Ratings 已移除；人工评级只在 Research 中维护。实际可见 tab 会根据数据覆盖情况变化。
+
+基金、ETF、股票和指数详情页右上角的 `Settings` 同时维护投资状态和适用于该资产类型的 taxonomy。投资状态可选择未设置、观察、拟投、在投、暂停或退出；两项设置都属于共享 instrument，在所有 watchlist 中同步生效。
 
 常用区域：
 

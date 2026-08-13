@@ -412,7 +412,7 @@ class CopilotService:
         analysis_fields = [
             "instrument_name",
             "ticker_or_isin",
-            "attr.fund_taxonomy_path",
+            "attr.instrument_taxonomy_path",
             "return_1y",
             "max_drawdown",
             "data_freshness_status",

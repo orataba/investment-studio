@@ -33,7 +33,7 @@ FINAL_FLAT_TABLE_HEADS = {
     "instrument_registry": "20260812_0024",
     "platform": "20260716_0002",
     "portfolio": "20260812_0050",
-    "watchlist": "20260809_0036",
+    "watchlist": "20260813_0041",
 }
 VERSION_TABLES = {
     "instrument_registry": "alembic_version",
@@ -242,6 +242,9 @@ SCHEMA_IDENTIFIER_RENAMES = (
 AUDIT_CHECK_NAMES = (
     "schema_identifier_contract",
     "watchlist_field_identity_contract",
+    "watchlist_group_by_contract",
+    "watchlist_saved_view_field_contract",
+    "watchlist_taxonomy_history_contract",
     "derivative_registry_boundary",
     "portfolio_derivative_contract_integrity",
     "market_data_invalid_values",
@@ -633,6 +636,167 @@ def _run_flat_table_audit(database_url: str) -> list[AuditCheck]:
                         "Registry and Watchlist constraints and indexes must use the "
                         "canonical instrument-era identifiers, with no rewritten-revision "
                         "legacy names remaining."
+                    ),
+                )
+            )
+            checks.append(
+                _count_check(
+                    cursor,
+                    name="watchlist_group_by_contract",
+                    query="""
+                        SELECT
+                            CASE
+                                WHEN (
+                                    SELECT count(*)
+                                    FROM watchlist.field_registry
+                                    WHERE field_key = 'instrument_type'
+                                      AND group_mode = 'discrete'
+                                      AND source_metric_code =
+                                          'watchlist_row_read_model.instrument_type'
+                                ) = 1
+                                THEN 0
+                                ELSE 1
+                            END
+                            + (
+                                SELECT count(*)
+                                FROM watchlist.watchlist_view
+                                WHERE coalesce(default_group_by, 'none') NOT IN (
+                                    'none',
+                                    'instrument_type',
+                                    'taxonomy',
+                                    'data_freshness_status'
+                                )
+                            )
+                    """,
+                    detail=(
+                        "Every saved Watchlist view must use one of the four "
+                        "supported universal Group By values."
+                    ),
+                )
+            )
+            checks.append(
+                _count_check(
+                    cursor,
+                    name="watchlist_saved_view_field_contract",
+                    query="""
+                        WITH RECURSIVE advanced_nodes AS (
+                            SELECT
+                                watchlist_view_id,
+                                coalesce(default_advanced_filter_json::jsonb, '{}'::jsonb)
+                                    AS node
+                            FROM watchlist.watchlist_view
+                            UNION ALL
+                            SELECT parent.watchlist_view_id, child.value
+                            FROM advanced_nodes parent
+                            CROSS JOIN LATERAL jsonb_array_elements(
+                                CASE
+                                    WHEN jsonb_typeof(parent.node -> 'conditions') = 'array'
+                                    THEN parent.node -> 'conditions'
+                                    ELSE '[]'::jsonb
+                                END
+                            ) child(value)
+                        ), field_references AS (
+                            SELECT
+                                view_record.watchlist_view_id,
+                                filter_key.field_key,
+                                'filter'::text AS operation
+                            FROM watchlist.watchlist_view view_record
+                            CROSS JOIN LATERAL jsonb_object_keys(
+                                coalesce(view_record.default_filters_json::jsonb, '{}'::jsonb)
+                            ) filter_key(field_key)
+                            UNION ALL
+                            SELECT
+                                view_record.watchlist_view_id,
+                                sort_rule.value ->> 'field',
+                                'sort'::text
+                            FROM watchlist.watchlist_view view_record
+                            CROSS JOIN LATERAL jsonb_array_elements(
+                                CASE
+                                    WHEN jsonb_typeof(view_record.default_sort_json::jsonb) = 'array'
+                                    THEN view_record.default_sort_json::jsonb
+                                    ELSE '[]'::jsonb
+                                END
+                            ) sort_rule(value)
+                            UNION ALL
+                            SELECT
+                                node.watchlist_view_id,
+                                node.node ->> 'field',
+                                'filter'::text
+                            FROM advanced_nodes node
+                            WHERE node.node ->> 'type' = 'rule'
+                            UNION ALL
+                            SELECT
+                                view_column.watchlist_view_id,
+                                view_column.field_key,
+                                'selected'::text
+                            FROM watchlist.watchlist_view_column view_column
+                        ), invalid_references AS (
+                            SELECT reference.*
+                            FROM field_references reference
+                            LEFT JOIN watchlist.field_registry field
+                              ON field.field_key = reference.field_key
+                            WHERE coalesce(trim(reference.field_key), '') = ''
+                               OR reference.field_key IN (
+                                    'asset_type', 'asset_class', 'instrument_class'
+                               )
+                               OR (
+                                    field.field_key IS NULL
+                                    AND NOT (
+                                        reference.operation = 'selected'
+                                        AND reference.field_key IN (
+                                            'instrument_id',
+                                            'metric_as_of_date',
+                                            'metric_return_kind',
+                                            'metric_quote_basis',
+                                            'metric_series_type'
+                                        )
+                                    )
+                               )
+                               OR (
+                                    reference.operation = 'filter'
+                                    AND coalesce(field.filter_mode, 'none') = 'none'
+                               )
+                               OR (
+                                    reference.operation = 'sort'
+                                    AND coalesce(field.sort_mode, 'none') = 'none'
+                               )
+                        )
+                        SELECT
+                            (
+                                SELECT count(*)
+                                FROM watchlist.field_registry
+                                WHERE field_key IN (
+                                    'asset_type', 'asset_class', 'instrument_class'
+                                )
+                            )
+                            + (SELECT count(*) FROM invalid_references)
+                    """,
+                    detail=(
+                        "Saved Watchlist filters, sorts, advanced filters, and columns "
+                        "must reference canonical fields supported for that operation."
+                    ),
+                )
+            )
+            checks.append(
+                _count_check(
+                    cursor,
+                    name="watchlist_taxonomy_history_contract",
+                    query="""
+                        SELECT count(*)
+                        FROM watchlist.instrument_taxonomy_assignment assignment
+                        LEFT JOIN LATERAL (
+                            SELECT history.node_id
+                            FROM watchlist.instrument_taxonomy_assignment_history history
+                            WHERE history.instrument_id = assignment.instrument_id
+                              AND history.taxonomy_code = assignment.taxonomy_code
+                            ORDER BY history.assigned_at DESC, history.history_id DESC
+                            LIMIT 1
+                        ) latest_history ON true
+                        WHERE latest_history.node_id IS DISTINCT FROM assignment.node_id
+                    """,
+                    detail=(
+                        "Every current Watchlist taxonomy assignment must match its "
+                        "latest append-only history record."
                     ),
                 )
             )

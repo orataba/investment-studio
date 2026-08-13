@@ -25,7 +25,7 @@ from watchlist_app.repositories.sqlalchemy.manual_profiles import (
 from watchlist_app.repositories.sqlalchemy.read_models import SQLAlchemyReadModelRepository
 from watchlist_app.repositories.sqlalchemy.taxonomy import SQLAlchemyTaxonomyRepository
 from watchlist_app.services.canonical_recalc import CanonicalRecalcService
-from watchlist_app.services.fund_taxonomy import (
+from watchlist_app.services.instrument_taxonomy import (
     build_taxonomy_context,
     merge_taxonomy_into_summary,
 )

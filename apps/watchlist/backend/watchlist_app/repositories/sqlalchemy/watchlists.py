@@ -52,6 +52,7 @@ ALL_COVERAGE_WATCHLIST_DESCRIPTION = (
 SYSTEM_OWNER_TYPE = "system"
 SYSTEM_OWNER_ID = "watchlist"
 TAXONOMY_GROUP_BY_CODE = "taxonomy"
+INSTRUMENT_TYPE_GROUP_BY_CODE = "instrument_type"
 
 
 def _local_detail_view_filters() -> dict[str, list[str]]:
@@ -135,7 +136,7 @@ class SQLAlchemyWatchlistRepository:
         is_shared: bool = False,
         sort_order: int | None = None,
         overview_default_group_by: str | None = "none",
-        fund_screening_default_group_by: str | None = "attr.fund_taxonomy_level_1",
+        fund_screening_default_group_by: str | None = TAXONOMY_GROUP_BY_CODE,
     ) -> Watchlist:
         next_sort_order = self._next_sort_order(session) if sort_order is None else sort_order
         record = Watchlist(
@@ -202,7 +203,7 @@ class SQLAlchemyWatchlistRepository:
                     is_default=True,
                     is_shared=True,
                     sort_order=sort_order,
-                    overview_default_group_by=TAXONOMY_GROUP_BY_CODE,
+                    overview_default_group_by=INSTRUMENT_TYPE_GROUP_BY_CODE,
                     fund_screening_default_group_by=TAXONOMY_GROUP_BY_CODE,
                 )
                 session.flush()
@@ -233,7 +234,7 @@ class SQLAlchemyWatchlistRepository:
                 name="Overview",
                 description="Default overview view",
                 kind="system",
-                default_group_by=TAXONOMY_GROUP_BY_CODE,
+                default_group_by=INSTRUMENT_TYPE_GROUP_BY_CODE,
                 default_sort=[],
                 default_filters={},
                 default_advanced_filter={},
@@ -242,7 +243,7 @@ class SQLAlchemyWatchlistRepository:
             )
         else:
             overview.kind = "system"
-            overview.default_group_by = TAXONOMY_GROUP_BY_CODE
+            overview.default_group_by = INSTRUMENT_TYPE_GROUP_BY_CODE
             overview.default_filters_json = {}
             overview.is_default = True
 

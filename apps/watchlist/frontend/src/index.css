@@ -3272,6 +3272,13 @@ td:last-child {
   color: #111827;
 }
 
+.instrument-settings-description {
+  margin-top: 5px;
+  color: #6b7280;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
 .instrument-settings-current-path {
   display: grid;
   gap: 3px;

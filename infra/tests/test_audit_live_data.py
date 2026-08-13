@@ -47,7 +47,7 @@ def test_flat_table_profile_accepts_only_final_heads(
         "instrument_registry": "20260812_0024",
         "platform": "20260716_0002",
         "portfolio": "20260812_0050",
-        "watchlist": "20260809_0036",
+        "watchlist": "20260813_0041",
     }
     monkeypatch.setattr(
         audit_module,
@@ -81,9 +81,12 @@ def test_flat_table_profile_accepts_only_final_heads(
 def test_audit_contract_names_cover_registry_0019(
     audit_module: ModuleType,
 ) -> None:
-    assert len(audit_module.AUDIT_CHECK_NAMES) == 31
+    assert len(audit_module.AUDIT_CHECK_NAMES) == 34
     assert "schema_identifier_contract" in audit_module.AUDIT_CHECK_NAMES
     assert "watchlist_field_identity_contract" in audit_module.AUDIT_CHECK_NAMES
+    assert "watchlist_group_by_contract" in audit_module.AUDIT_CHECK_NAMES
+    assert "watchlist_saved_view_field_contract" in audit_module.AUDIT_CHECK_NAMES
+    assert "watchlist_taxonomy_history_contract" in audit_module.AUDIT_CHECK_NAMES
     assert "derivative_registry_boundary" in audit_module.AUDIT_CHECK_NAMES
     assert (
         "portfolio_derivative_contract_integrity"
@@ -352,6 +355,15 @@ def test_twr_audit_cte_projects_daily_twr(
     assert "published_return_kind" in index_semantics_query
     assert "IS DISTINCT FROM expected_return_kind" in index_semantics_query
     assert "IS DISTINCT FROM 'nav_with_dividend'" in index_semantics_query
+    saved_view_query = next(
+        query for query in queries if "WITH RECURSIVE advanced_nodes" in query
+    )
+    assert "watchlist.watchlist_view_column" in saved_view_query
+    assert "asset_type" in saved_view_query
+    assert "asset_class" in saved_view_query
+    assert "instrument_class" in saved_view_query
+    assert "field.filter_mode" in saved_view_query
+    assert "field.sort_mode" in saved_view_query
     missing_selection_query = next(
         query
         for query in queries

@@ -96,6 +96,177 @@ def test_watchlist_migrations_upgrade_an_empty_database(tmp_path, monkeypatch) -
                 "WHERE field_key = 'asset_name'"
             )
         ) == 0
+        assert connection.scalar(
+            text(
+                "SELECT count(*) FROM field_registry "
+                "WHERE field_key IN ('asset_type', 'asset_class', 'instrument_class')"
+            )
+        ) == 0
+
+
+def test_watchlist_view_contract_cleanup_rewrites_legacy_fields(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    database_url = f"sqlite+pysqlite:///{tmp_path / 'watchlist-view-contract.db'}"
+    monkeypatch.setenv("PORTFOLIO_OPS_WATCHLIST_DATABASE_URL", database_url)
+    monkeypatch.setenv("PORTFOLIO_OPS_WATCHLIST_DATABASE_SCHEMA", "")
+
+    from watchlist_app.core.settings import get_settings
+
+    get_settings.cache_clear()
+    config = Config(str(BACKEND_ROOT / "alembic.ini"))
+    config.set_main_option("script_location", str(BACKEND_ROOT / "alembic"))
+    command.upgrade(config, "20260813_0040")
+
+    engine = create_engine(database_url)
+    with engine.begin() as connection:
+        for legacy_key in ("asset_type", "asset_class"):
+            connection.execute(
+                text(
+                    """
+                    INSERT INTO field_registry (
+                        field_key, label, description, category_code, data_type,
+                        formatter_code, sort_mode, filter_mode, group_mode,
+                        instrument_scope_json, product_scope_json,
+                        availability_rule_json, source_domain, source_metric_code,
+                        default_width, default_visible
+                    )
+                    SELECT
+                        :legacy_key, :legacy_key, description, category_code, data_type,
+                        formatter_code, sort_mode, filter_mode, group_mode,
+                        instrument_scope_json, product_scope_json,
+                        availability_rule_json, source_domain, source_metric_code,
+                        default_width, default_visible
+                    FROM field_registry
+                    WHERE field_key = 'instrument_type'
+                    """
+                ),
+                {"legacy_key": legacy_key},
+            )
+        connection.execute(
+            text(
+                """
+                INSERT INTO watchlist (
+                    watchlist_id, name, description, owner_type, owner_id,
+                    is_default, is_shared, sort_order, created_at, updated_at
+                ) VALUES (
+                    'all-coverage', 'All Covered', NULL, 'system', 'watchlist',
+                    1, 1, 0, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+                )
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO watchlist_view (
+                    watchlist_view_id, watchlist_id, name, description, kind,
+                    default_sort_json, default_filters_json,
+                    default_advanced_filter_json, default_group_by, density,
+                    is_default, created_at
+                ) VALUES (
+                    'all-coverage::overview', 'all-coverage', 'Overview', NULL,
+                    'system', :sort_json, :filters_json, :advanced_json,
+                    'taxonomy', 'standard', 1, CURRENT_TIMESTAMP
+                )
+                """
+            ),
+            {
+                "sort_json": json.dumps(
+                    [
+                        {"field": "asset_type", "direction": "asc"},
+                        {"field": "asset_class", "direction": "desc"},
+                    ]
+                ),
+                "filters_json": json.dumps(
+                    {"asset_type": ["fund"], "asset_class": ["legacy"]}
+                ),
+                "advanced_json": json.dumps(
+                    {
+                        "type": "group",
+                        "operator": "and",
+                        "conditions": [
+                            {
+                                "type": "rule",
+                                "field": "asset_type",
+                                "operator": "in",
+                                "value": ["fund"],
+                            },
+                            {
+                                "type": "rule",
+                                "field": "instrument_class",
+                                "operator": "exists",
+                                "value": None,
+                            },
+                        ],
+                    }
+                ),
+            },
+        )
+        for display_order, field_key in enumerate(
+            ("instrument_type", "asset_type", "asset_class", "instrument_class")
+        ):
+            connection.execute(
+                text(
+                    """
+                    INSERT INTO watchlist_view_column (
+                        watchlist_view_id, field_key, display_order, width,
+                        is_visible, pin_side
+                    ) VALUES (
+                        'all-coverage::overview', :field_key, :display_order,
+                        140, 1, NULL
+                    )
+                    """
+                ),
+                {"field_key": field_key, "display_order": display_order},
+            )
+
+    command.upgrade(config, "head")
+    with engine.connect() as connection:
+        assert connection.scalar(
+            text(
+                "SELECT count(*) FROM field_registry "
+                "WHERE field_key IN ('asset_type', 'asset_class', 'instrument_class')"
+            )
+        ) == 0
+        assert connection.execute(
+            text(
+                "SELECT field_key FROM watchlist_view_column "
+                "WHERE watchlist_view_id = 'all-coverage::overview' "
+                "ORDER BY display_order"
+            )
+        ).scalars().all() == ["instrument_type"]
+        migrated_view = connection.execute(
+            text(
+                "SELECT default_sort_json, default_filters_json, "
+                "default_advanced_filter_json, default_group_by "
+                "FROM watchlist_view "
+                "WHERE watchlist_view_id = 'all-coverage::overview'"
+            )
+        ).mappings().one()
+
+        default_sort = migrated_view["default_sort_json"]
+        default_filters = migrated_view["default_filters_json"]
+        advanced_filter = migrated_view["default_advanced_filter_json"]
+        if isinstance(default_sort, str):
+            default_sort = json.loads(default_sort)
+        if isinstance(default_filters, str):
+            default_filters = json.loads(default_filters)
+        if isinstance(advanced_filter, str):
+            advanced_filter = json.loads(advanced_filter)
+        assert default_sort == [{"field": "instrument_type", "direction": "asc"}]
+        assert default_filters == {"instrument_type": ["fund"]}
+        assert advanced_filter["conditions"] == [
+            {
+                "type": "rule",
+                "field": "instrument_type",
+                "operator": "in",
+                "value": ["fund"],
+            }
+        ]
+        assert migrated_view["default_group_by"] == "instrument_type"
+    get_settings.cache_clear()
 
 
 def test_holding_revision_migration_rejects_duplicate_input_hashes(
@@ -278,5 +449,5 @@ def test_primary_display_field_migration_reconciles_upgraded_seed_data(
             {"field": "instrument_name", "direction": "asc"}
         ]
         assert default_filters == {"instrument_name": "Audit"}
-        assert migrated_view["default_group_by"] == "instrument_name"
+        assert migrated_view["default_group_by"] == "none"
     get_settings.cache_clear()

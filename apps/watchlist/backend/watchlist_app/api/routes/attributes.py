@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 from watchlist_app.api.contracts import (
     FundAttributesUpsertRequest,
     InstrumentAttributeDefinitionCreateRequest,
+    InstrumentSettingsUpsertRequest,
 )
 from watchlist_app.api.presenters import present_attribute_definition, present_attribute_values
 from watchlist_app.db.session import get_db_session
@@ -21,7 +22,12 @@ from watchlist_app.repositories.sqlalchemy.instrument_attributes import (
 )
 from watchlist_app.repositories.sqlalchemy.taxonomy import SQLAlchemyTaxonomyRepository
 from watchlist_app.services.canonical_recalc import CanonicalRecalcService
-from watchlist_app.services.fund_taxonomy import build_taxonomy_context
+from watchlist_app.reference_data.instrument_taxonomy import INSTRUMENT_TAXONOMY_CODE
+from watchlist_app.services.instrument_taxonomy import (
+    SUPPORTED_TAXONOMY_INSTRUMENT_TYPES,
+    build_taxonomy_context,
+    taxonomy_node_supports_instrument,
+)
 
 
 router = APIRouter()
@@ -243,5 +249,126 @@ def upsert_instrument_attribute_values(
         "updated": True,
         "taxonomy": taxonomy_context,
         "recalculated": True,
+        "execution": execution,
+    }
+
+
+@router.put("/instruments/{instrument_id}/settings")
+def update_instrument_settings(
+    instrument_id: str,
+    payload: InstrumentSettingsUpsertRequest,
+    session: Session = Depends(get_db_session),
+) -> dict[str, object]:
+    instrument = _require_asset(session, instrument_id)
+    instrument_type = str(instrument.instrument_type or "").strip().lower()
+    if instrument_type not in SUPPORTED_TAXONOMY_INSTRUMENT_TYPES:
+        raise HTTPException(
+            status_code=400,
+            detail="Settings are only available for fund, ETF, equity, and index instruments.",
+        )
+
+    node_id = str(payload.taxonomy_node_id or "").strip() or None
+    node = taxonomy_repository.get_node(session, node_id=node_id) if node_id else None
+    if node_id and node is None:
+        raise HTTPException(status_code=404, detail="Instrument taxonomy node not found")
+    if node is not None:
+        if node.taxonomy_code != INSTRUMENT_TAXONOMY_CODE:
+            raise HTTPException(status_code=400, detail="Invalid taxonomy node")
+        if not taxonomy_node_supports_instrument(
+            instrument_type=instrument_type,
+            node=node,
+        ):
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    f"{instrument_type} instruments cannot be assigned to a "
+                    f"{node.instrument_type} taxonomy node"
+                ),
+            )
+
+    definitions = {
+        item.attribute_key: item for item in attribute_repository.list_definitions(session)
+    }
+    status_definition = definitions.get("coverage_status")
+    if status_definition is None:
+        raise HTTPException(status_code=500, detail="Investment status definition is missing")
+    instrument_scope = {
+        str(item).strip().lower()
+        for item in status_definition.instrument_scope_json or []
+    }
+    if instrument_scope and instrument_type not in instrument_scope:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Investment status does not apply to {instrument_type} instruments.",
+        )
+    try:
+        coverage_status = _validated_attribute_value(
+            status_definition,
+            payload.coverage_status,
+        )
+    except (TypeError, ValueError) as error:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Invalid investment status: {error}.",
+        ) from error
+
+    current_assignment = taxonomy_repository.get_assignment(
+        session,
+        instrument_id=instrument_id,
+    )
+    current_values = present_attribute_values(
+        instrument_id,
+        list(definitions.values()),
+        attribute_repository.get_values_for_asset(session, instrument_id),
+    )
+    taxonomy_changed = (current_assignment.node_id if current_assignment else None) != node_id
+    status_changed = current_values["values"].get("coverage_status") != coverage_status
+    source_record_id = str(payload.updated_by or "terminal_ui").strip() or "terminal_ui"
+
+    if taxonomy_changed:
+        taxonomy_repository.upsert_assignment(
+            session,
+            instrument_id=instrument_id,
+            taxonomy_code=INSTRUMENT_TAXONOMY_CODE,
+            node_id=node_id,
+            source_record_id=source_record_id,
+        )
+    if status_changed:
+        attribute_repository.add_value(
+            session,
+            instrument_id=instrument_id,
+            attribute_key="coverage_status",
+            value_json=coverage_status,
+            effective_from=None,
+            source_record_id=source_record_id,
+        )
+
+    execution = None
+    if taxonomy_changed or status_changed:
+        execution = canonical_recalc_service.execute_recalc(
+            session,
+            instrument_id=instrument_id,
+            job_type="performance",
+            trigger_type="instrument_settings_update",
+            trigger_ref_type="instrument_settings",
+            trigger_ref_id=source_record_id,
+        )
+
+    next_values = present_attribute_values(
+        instrument_id,
+        list(definitions.values()),
+        attribute_repository.get_values_for_asset(session, instrument_id),
+    )
+    taxonomy_context = _taxonomy_context_for_asset(
+        session,
+        instrument_id=instrument_id,
+    )
+    session.commit()
+    return next_values | {
+        "updated": taxonomy_changed or status_changed,
+        "taxonomy_updated": taxonomy_changed,
+        "status_updated": status_changed,
+        "taxonomy": taxonomy_context,
+        "recalculated": execution is not None,
         "execution": execution,
     }

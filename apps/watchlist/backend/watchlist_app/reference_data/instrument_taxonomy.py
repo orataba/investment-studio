@@ -5,22 +5,21 @@ from copy import deepcopy
 from typing import Any
 
 
-FUND_TAXONOMY_CODE = "fund_taxonomy"
-FUND_TAXONOMY_LABEL = "Fund Taxonomy"
-FUND_TAXONOMY_ASSET_TYPE = "fund"
-FUND_TAXONOMY_MAX_LEVELS = 6
-FUND_TAXONOMY_DERIVED_KEYS = {
-    "fund_regime",
-    "fund_taxonomy_leaf",
-    "fund_taxonomy_path",
+INSTRUMENT_TAXONOMY_CODE = "instrument_taxonomy"
+INSTRUMENT_TAXONOMY_LABEL = "Instrument Taxonomy"
+INSTRUMENT_TAXONOMY_DEFAULT_ASSET_TYPE = "fund"
+INSTRUMENT_TAXONOMY_MAX_LEVELS = 7
+INSTRUMENT_TAXONOMY_DERIVED_KEYS = {
+    "instrument_taxonomy_leaf",
+    "instrument_taxonomy_path",
     *{
-        f"fund_taxonomy_level_{level}"
-        for level in range(1, FUND_TAXONOMY_MAX_LEVELS + 1)
+        f"instrument_taxonomy_level_{level}"
+        for level in range(1, INSTRUMENT_TAXONOMY_MAX_LEVELS + 1)
     },
 }
 
 
-FUND_TAXONOMY_TREE = [
+INSTRUMENT_TAXONOMY_TREE = [
     {
         "node_id": "fund-public",
         "label": "公募",
@@ -207,6 +206,24 @@ FUND_TAXONOMY_TREE = [
             {"node_id": "fund-private-other", "label": "其他"},
         ],
     },
+    {
+        "node_id": "equity",
+        "label": "股票",
+        "instrument_type": "equity",
+        "children": [
+            {"node_id": "equity-sector-energy", "label": "能源"},
+            {"node_id": "equity-sector-materials", "label": "原材料"},
+            {"node_id": "equity-sector-industrials", "label": "工业"},
+            {"node_id": "equity-sector-consumer-discretionary", "label": "可选消费"},
+            {"node_id": "equity-sector-consumer-staples", "label": "日常消费"},
+            {"node_id": "equity-sector-health-care", "label": "医疗保健"},
+            {"node_id": "equity-sector-financials", "label": "金融"},
+            {"node_id": "equity-sector-information-technology", "label": "信息技术"},
+            {"node_id": "equity-sector-communication-services", "label": "通信服务"},
+            {"node_id": "equity-sector-utilities", "label": "公用事业"},
+            {"node_id": "equity-sector-real-estate", "label": "房地产"},
+        ],
+    },
     {"node_id": "index", "label": "指数", "instrument_type": "index"},
 ]
 
@@ -218,6 +235,7 @@ def _flatten_nodes(
     level_index: int,
     path_labels: list[str],
     path_node_ids: list[str],
+    inherited_instrument_type: str | None = None,
 ) -> list[dict[str, Any]]:
     flattened: list[dict[str, Any]] = []
     for display_order, node in enumerate(nodes, start=1):
@@ -226,12 +244,17 @@ def _flatten_nodes(
         children = [dict(item) for item in node.get("children", []) if isinstance(item, dict)]
         next_path_labels = [*path_labels, label]
         next_path_node_ids = [*path_node_ids, node_id]
+        instrument_type = str(
+            node.get("instrument_type")
+            or inherited_instrument_type
+            or INSTRUMENT_TAXONOMY_DEFAULT_ASSET_TYPE
+        )
         flattened.append(
             {
                 "node_id": node_id,
-                "taxonomy_code": FUND_TAXONOMY_CODE,
-                "taxonomy_label": FUND_TAXONOMY_LABEL,
-                "instrument_type": str(node.get("instrument_type") or FUND_TAXONOMY_ASSET_TYPE),
+                "taxonomy_code": INSTRUMENT_TAXONOMY_CODE,
+                "taxonomy_label": INSTRUMENT_TAXONOMY_LABEL,
+                "instrument_type": instrument_type,
                 "label": label,
                 "parent_node_id": parent_node_id,
                 "level_index": level_index,
@@ -248,16 +271,18 @@ def _flatten_nodes(
                 level_index=level_index + 1,
                 path_labels=next_path_labels,
                 path_node_ids=next_path_node_ids,
+                inherited_instrument_type=instrument_type,
             )
         )
     return flattened
 
 
-def fund_taxonomy_nodes() -> list[dict[str, Any]]:
+def instrument_taxonomy_nodes() -> list[dict[str, Any]]:
     return _flatten_nodes(
-        deepcopy(FUND_TAXONOMY_TREE),
+        deepcopy(INSTRUMENT_TAXONOMY_TREE),
         parent_node_id=None,
         level_index=1,
         path_labels=[],
         path_node_ids=[],
+        inherited_instrument_type=None,
     )

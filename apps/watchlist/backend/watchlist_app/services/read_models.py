@@ -17,13 +17,8 @@ from watchlist_app.services.return_windows import (
 
 TAXONOMY_GROUP_BY_CODE = "taxonomy"
 TAXONOMY_GROUP_FIELDS = [
-    "attr.fund_regime",
-    "attr.fund_taxonomy_level_1",
-    "attr.fund_taxonomy_level_2",
-    "attr.fund_taxonomy_level_3",
-    "attr.fund_taxonomy_level_4",
-    "attr.fund_taxonomy_level_5",
-    "attr.fund_taxonomy_level_6",
+    f"attr.instrument_taxonomy_level_{level}"
+    for level in range(1, 8)
 ]
 
 
@@ -667,7 +662,7 @@ def execute_watchlist_query(
             if column.is_visible
         ]
     if not selected_fields:
-        selected_fields = ["instrument_name", "last_nav_date", "attr.fund_taxonomy_path"]
+        selected_fields = ["instrument_name", "last_nav_date", "attr.instrument_taxonomy_path"]
     if group_by == TAXONOMY_GROUP_BY_CODE:
         for field in TAXONOMY_GROUP_FIELDS:
             if field not in selected_fields:
@@ -760,7 +755,7 @@ def default_fund_summary_payload(
         "management_firm_name": None,
         "instrument_attributes": instrument_attributes or {},
         "taxonomy": {
-            "taxonomy_code": "fund_taxonomy",
+            "taxonomy_code": "instrument_taxonomy",
             "assigned_node_id": None,
             "assigned_label": None,
             "path_labels": [],

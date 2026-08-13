@@ -890,7 +890,7 @@ def test_create_watchlist_generates_unique_ids_and_required_columns(
         if item["view_id"] == "fund-screening"
     )
     assert fund_screening_view["name"] == "产品分类筛选"
-    assert fund_screening_view["default_group_by"] == "attr.fund_taxonomy_level_1"
+    assert fund_screening_view["default_group_by"] == "taxonomy"
     assert fund_screening_view["default_filters"] == {
         "instrument_type": ["fund", "etf", "index"],
     }
@@ -1113,16 +1113,17 @@ def test_adding_index_shared_registry_instrument_is_supported(
     assert bars_payload["bars"][0]["date"] == "2026-04-15"
     assert bars_payload["bars"][0]["close"] == "3600.12"
 
-    tree_response = client.get("/api/taxonomies/fund-taxonomy")
+    tree_response = client.get("/api/taxonomies/instrument-taxonomy")
     assert tree_response.status_code == 200
     tree_payload = tree_response.json()
-    assert tree_payload["instrument_types"] == ["fund", "etf", "index"]
+    assert tree_payload["instrument_types"] == ["fund", "etf", "equity", "index"]
+    assert "equity" in {node["node_id"] for node in tree_payload["nodes"]}
     assert "index" in {node["node_id"] for node in tree_payload["nodes"]}
 
-    taxonomy_response = client.get("/api/taxonomies/fund-taxonomy/instruments/index-csi-300")
+    taxonomy_response = client.get("/api/taxonomies/instrument-taxonomy/instruments/index-csi-300")
     assert taxonomy_response.status_code == 200
     taxonomy_payload = taxonomy_response.json()
-    assert taxonomy_payload["taxonomy_code"] == "fund_taxonomy"
+    assert taxonomy_payload["taxonomy_code"] == "instrument_taxonomy"
     assert taxonomy_payload["assigned_node_id"] is None
     assert taxonomy_payload["derived_values"] == {}
 
@@ -1250,6 +1251,158 @@ def test_adding_equity_shared_registry_instrument_uses_listed_detail(
     assert resolve_response.status_code == 200
     assert resolve_response.json()["detail_view_type"] == "listed"
     assert resolve_response.json()["detail_subject_id"] == "equity-demo"
+
+    tree_response = client.get("/api/taxonomies/instrument-taxonomy")
+    assert tree_response.status_code == 200
+    equity_node = next(
+        node for node in tree_response.json()["nodes"] if node["node_id"] == "equity"
+    )
+    assert equity_node["instrument_type"] == "equity"
+    technology_node = next(
+        node
+        for node in tree_response.json()["nodes"]
+        if node["node_id"] == "equity-sector-information-technology"
+    )
+    assert technology_node["instrument_type"] == "equity"
+    assert technology_node["path_labels"] == ["股票", "信息技术"]
+
+    settings_response = client.put(
+        "/api/instrument-attributes/instruments/equity-demo/settings",
+        json={
+            "taxonomy_node_id": "equity-sector-information-technology",
+            "coverage_status": "Invested",
+            "updated_by": "test",
+        },
+    )
+    assert settings_response.status_code == 200
+    settings_payload = settings_response.json()
+    assert settings_payload["updated"] is True
+    assert settings_payload["taxonomy_updated"] is True
+    assert settings_payload["status_updated"] is True
+    assert settings_payload["values"]["coverage_status"] == "Invested"
+    assert settings_payload["taxonomy"]["taxonomy_code"] == "instrument_taxonomy"
+    assert settings_payload["taxonomy"]["derived_values"] == {
+        "instrument_taxonomy_level_1": "股票",
+        "instrument_taxonomy_level_2": "信息技术",
+        "instrument_taxonomy_leaf": "信息技术",
+        "instrument_taxonomy_path": "股票 / 信息技术",
+    }
+
+    from watchlist_app.db.session import get_session_factory
+    from watchlist_app.repositories.sqlalchemy.taxonomy import SQLAlchemyTaxonomyRepository
+    from watchlist_app.services.canonical_recalc import _active_peer_instrument_ids
+
+    with get_session_factory()() as session:
+        history = SQLAlchemyTaxonomyRepository().list_assignment_history(
+            session,
+            instrument_id="equity-demo",
+        )
+        assert [(item.node_id, item.path_labels_json) for item in history] == [
+            ("equity-sector-information-technology", ["股票", "信息技术"]),
+        ]
+        assert "equity-demo" in _active_peer_instrument_ids(session)
+
+    grouped_response = client.post(
+        "/api/screener/query",
+        json={
+            "watchlist_id": watchlist_id,
+            "view_id": "overview",
+            "selected_fields": ["instrument_name"],
+            "sort": [],
+            "group_by": "taxonomy",
+            "pagination": {"page": 1, "page_size": 20},
+        },
+    )
+    assert grouped_response.status_code == 200
+    assert grouped_response.json()["groups"] == [
+        {
+            "group_value": "股票",
+            "row_count": 1,
+            "group_depth": 0,
+            "group_path": ["股票"],
+        },
+        {
+            "group_value": "股票 / 信息技术",
+            "row_count": 1,
+            "group_depth": 1,
+            "group_path": ["股票", "信息技术"],
+        },
+    ]
+
+    assert client.get("/api/taxonomies/fund-taxonomy").status_code == 404
+
+
+def test_instrument_settings_roll_back_taxonomy_and_status_together(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from fastapi import HTTPException
+    from watchlist_app.api.routes import attributes as attributes_route
+    from watchlist_app.db.session import get_session_factory
+    from watchlist_app.repositories.sqlalchemy.taxonomy import SQLAlchemyTaxonomyRepository
+
+    watchlist = client.post(
+        "/api/watchlists",
+        json={"name": "Atomic Instrument Settings", "description": None},
+    ).json()
+    add_response = client.post(
+        f"/api/watchlists/{watchlist['watchlist_id']}/items",
+        json={"instrument_ids": ["sxv264"]},
+    )
+    assert add_response.status_code == 200
+
+    before = client.get("/api/instrument-attributes/instruments/sxv264")
+    assert before.status_code == 200
+    before_payload = before.json()
+    before_node_id = before_payload["taxonomy"]["assigned_node_id"]
+    before_status = before_payload["values"].get("coverage_status")
+
+    tree = client.get("/api/taxonomies/instrument-taxonomy").json()
+    next_node_id = next(
+        node["node_id"]
+        for node in tree["nodes"]
+        if node["instrument_type"] == "fund" and node["node_id"] != before_node_id
+    )
+    next_status = "Invested" if before_status != "Invested" else "Watch"
+    with get_session_factory()() as session:
+        history_count_before = len(
+            SQLAlchemyTaxonomyRepository().list_assignment_history(
+                session,
+                instrument_id="sxv264",
+            )
+        )
+
+    def _fail_recalc(*_args, **_kwargs):
+        raise HTTPException(status_code=500, detail="recalc failed")
+
+    monkeypatch.setattr(
+        attributes_route.canonical_recalc_service,
+        "execute_recalc",
+        _fail_recalc,
+    )
+    response = client.put(
+        "/api/instrument-attributes/instruments/sxv264/settings",
+        json={
+            "taxonomy_node_id": next_node_id,
+            "coverage_status": next_status,
+            "updated_by": "atomic-test",
+        },
+    )
+    assert response.status_code == 500
+
+    after = client.get("/api/instrument-attributes/instruments/sxv264")
+    assert after.status_code == 200
+    after_payload = after.json()
+    assert after_payload["taxonomy"]["assigned_node_id"] == before_node_id
+    assert after_payload["values"].get("coverage_status") == before_status
+    with get_session_factory()() as session:
+        history_count_after = len(
+            SQLAlchemyTaxonomyRepository().list_assignment_history(
+                session,
+                instrument_id="sxv264",
+            )
+        )
+    assert history_count_after == history_count_before
 
 
 def test_move_watchlist_items_transfers_membership_to_target_watchlist(
@@ -2224,7 +2377,7 @@ def test_instrument_performance_payload_includes_taxonomy_peer_ranking(
         "peer-stale-date",
     ):
         update_response = client.put(
-            f"/api/taxonomies/fund-taxonomy/instruments/{instrument_id}",
+            f"/api/taxonomies/instrument-taxonomy/instruments/{instrument_id}",
             json={"node_id": "fund-private-equity-quant-long-500", "updated_by": "test"},
         )
         assert update_response.status_code == 200
@@ -2325,7 +2478,7 @@ def test_instrument_performance_payload_includes_taxonomy_peer_ranking(
     # Moving a peer must change the target's comparison immediately, without
     # requiring a target recalc that could leave the cross-section stale.
     peer_move_response = client.put(
-        "/api/taxonomies/fund-taxonomy/instruments/peer-strong",
+        "/api/taxonomies/instrument-taxonomy/instruments/peer-strong",
         json={"node_id": "fund-private-equity-quant-long-1000", "updated_by": "test"},
     )
     assert peer_move_response.status_code == 200
@@ -3652,10 +3805,16 @@ def test_default_all_coverage_watchlist_syncs_active_shared_funds(
     assert detail.status_code == 200
     detail_payload = detail.json()
     assert detail_payload["item_count"] == len(TEST_SHARED_INSTRUMENTS)
+    assert [item["code"] for item in detail_payload["available_group_bys"]] == [
+        "none",
+        "instrument_type",
+        "taxonomy",
+        "data_freshness_status",
+    ]
     overview_view = next(
         item for item in detail_payload["views"] if item["view_id"] == "overview"
     )
-    assert overview_view["default_group_by"] == "taxonomy"
+    assert overview_view["default_group_by"] == "instrument_type"
 
     screener = client.post(
         "/api/screener/query",
@@ -4030,6 +4189,81 @@ def test_duplicate_custom_view_name_returns_409(client: TestClient) -> None:
     duplicate = client.post(f"/api/watchlists/{watchlist_id}/views", json=payload)
     assert duplicate.status_code == 409
     assert duplicate.json()["detail"] == "Watchlist view name already exists"
+
+
+def test_saved_view_create_rejects_unknown_field_references(client: TestClient) -> None:
+    created_watchlist = client.post(
+        "/api/watchlists",
+        json={"name": "Strict Saved View", "description": None},
+    )
+    watchlist_id = created_watchlist.json()["watchlist_id"]
+
+    response = client.post(
+        f"/api/watchlists/{watchlist_id}/views",
+        json={
+            "name": "Legacy Filter",
+            "description": None,
+            "default_group_by": "none",
+            "default_sort": [],
+            "default_filters": {"asset_type": ["fund"]},
+            "default_advanced_filters": None,
+            "columns": [
+                {
+                    "field_key": "instrument_name",
+                    "display_order": 1,
+                    "width": 320,
+                    "is_visible": True,
+                }
+            ],
+        },
+    )
+
+    assert response.status_code == 422
+    assert response.json()["detail"] == "Unknown filter field 'asset_type'."
+
+
+def test_saved_view_update_rejects_unknown_columns(client: TestClient) -> None:
+    created_watchlist = client.post(
+        "/api/watchlists",
+        json={"name": "Strict View Update", "description": None},
+    )
+    watchlist_id = created_watchlist.json()["watchlist_id"]
+    payload = {
+        "name": "Current View",
+        "description": None,
+        "default_group_by": "none",
+        "default_sort": [],
+        "default_filters": {},
+        "default_advanced_filters": None,
+        "columns": [
+            {
+                "field_key": "instrument_name",
+                "display_order": 1,
+                "width": 320,
+                "is_visible": True,
+            }
+        ],
+    }
+    created = client.post(f"/api/watchlists/{watchlist_id}/views", json=payload)
+    assert created.status_code == 200
+
+    response = client.put(
+        f"/api/watchlists/{watchlist_id}/views/{created.json()['view_id']}",
+        json={
+            **payload,
+            "columns": [
+                {
+                    "field_key": "instrument_class",
+                    "display_order": 1,
+                    "width": 160,
+                    "is_visible": True,
+                }
+            ],
+        },
+    )
+
+    assert response.status_code == 422
+    assert response.json()["detail"] == "Unknown selected field 'instrument_class'."
 
 
 def test_custom_view_ids_are_slugged_to_path_safe_values(client: TestClient) -> None:
@@ -4674,13 +4908,13 @@ def test_seeded_private_fund_watchlist_tags_are_available(client: TestClient) ->
     fields = field_registry_response.json()["fields"]
     fields_by_key = {item["field_key"]: item for item in fields}
 
-    assert "attr.fund_regime" in fields_by_key
-    assert fields_by_key["attr.fund_regime"]["filter_mode"] == "multi_select"
-    assert "attr.fund_taxonomy_level_1" in fields_by_key
-    assert fields_by_key["attr.fund_taxonomy_level_1"]["filter_mode"] == "multi_select"
-    assert fields_by_key["attr.fund_taxonomy_level_1"]["group_mode"] == "discrete"
+    assert "attr.instrument_taxonomy_level_1" in fields_by_key
+    assert fields_by_key["attr.instrument_taxonomy_level_1"]["filter_mode"] == "multi_select"
+    assert "attr.instrument_taxonomy_level_2" in fields_by_key
+    assert fields_by_key["attr.instrument_taxonomy_level_2"]["filter_mode"] == "multi_select"
+    assert fields_by_key["attr.instrument_taxonomy_level_2"]["group_mode"] == "discrete"
     assert (
-        fields_by_key["attr.fund_taxonomy_level_1"]["category_code"]
+        fields_by_key["attr.instrument_taxonomy_level_2"]["category_code"]
         == "product_taxonomy"
     )
     assert fields_by_key["attr.coverage_status"]["product_scope_json"] == []
@@ -4708,7 +4942,7 @@ def test_seeded_private_fund_watchlist_tags_are_available(client: TestClient) ->
     assert fields_by_key["attr.peer_annualized_return_percentile"]["label"] == "Ann. Pctl"
 
 
-def test_custom_attribute_group_by_is_available_for_watchlist_views(client: TestClient) -> None:
+def test_custom_attribute_group_by_is_not_exposed_in_watchlist_menu(client: TestClient) -> None:
     created_watchlist = client.post(
         "/api/watchlists",
         json={"name": "Attribute Grouping", "description": None},
@@ -4729,7 +4963,13 @@ def test_custom_attribute_group_by_is_available_for_watchlist_views(client: Test
     detail_response = client.get(f"/api/watchlists/{watchlist_id}")
     assert detail_response.status_code == 200
     group_by_codes = [item["code"] for item in detail_response.json()["available_group_bys"]]
-    assert "attr.coverage_status" in group_by_codes
+    assert group_by_codes == [
+        "none",
+        "instrument_type",
+        "taxonomy",
+        "data_freshness_status",
+    ]
+    assert "attr.coverage_status" not in group_by_codes
 
     screener_response = client.post(
         "/api/screener/query",
@@ -4740,11 +4980,8 @@ def test_custom_attribute_group_by_is_available_for_watchlist_views(client: Test
             "pagination": {"page": 1, "page_size": 20},
         },
     )
-    assert screener_response.status_code == 200
-    payload = screener_response.json()
-    group_counts = {item["group_value"]: item["row_count"] for item in payload["groups"]}
-    assert group_counts["Invested"] == 1
-    assert group_counts["Unspecified"] == 1
+    assert screener_response.status_code == 422
+    assert "group_by" in str(screener_response.json()).lower()
 
 
 def test_adding_funds_does_not_inject_product_framework_values(client: TestClient) -> None:
@@ -4981,7 +5218,7 @@ def test_instrument_attributes_can_be_cleared_with_null_and_empty_list(client: T
     assert payload["values"]["tag_clear_multi"] == []
 
 
-def test_fund_taxonomy_assignment_updates_summary_attribute_context_and_watchlist_rows(
+def test_instrument_taxonomy_assignment_updates_summary_attribute_context_and_watchlist_rows(
     client: TestClient,
 ) -> None:
     created_watchlist = client.post(
@@ -4996,29 +5233,29 @@ def test_fund_taxonomy_assignment_updates_summary_attribute_context_and_watchlis
     )
     assert add_response.status_code == 200
 
-    tree_response = client.get("/api/taxonomies/fund-taxonomy")
+    tree_response = client.get("/api/taxonomies/instrument-taxonomy")
     assert tree_response.status_code == 200
     tree_payload = tree_response.json()
-    assert tree_payload["taxonomy_code"] == "fund_taxonomy"
+    assert tree_payload["taxonomy_code"] == "instrument_taxonomy"
     assert any(node["node_id"] == "fund-private-equity-quant-long-500" for node in tree_payload["nodes"])
 
     update_response = client.put(
-        "/api/taxonomies/fund-taxonomy/instruments/sxv264",
+        "/api/taxonomies/instrument-taxonomy/instruments/sxv264",
         json={"node_id": "fund-private-equity-quant-long-500", "updated_by": "test"},
     )
     assert update_response.status_code == 200
     update_payload = update_response.json()
     assert update_payload["path_labels"] == ["私募", "股票策略", "量化多头", "500指增"]
-    assert update_payload["derived_values"]["fund_regime"] == "私募"
-    assert update_payload["derived_values"]["fund_taxonomy_level_1"] == "股票策略"
-    assert update_payload["derived_values"]["fund_taxonomy_level_2"] == "量化多头"
-    assert update_payload["derived_values"]["fund_taxonomy_leaf"] == "500指增"
+    assert update_payload["derived_values"]["instrument_taxonomy_level_1"] == "私募"
+    assert update_payload["derived_values"]["instrument_taxonomy_level_2"] == "股票策略"
+    assert update_payload["derived_values"]["instrument_taxonomy_level_3"] == "量化多头"
+    assert update_payload["derived_values"]["instrument_taxonomy_leaf"] == "500指增"
 
     attributes_response = client.get("/api/instrument-attributes/instruments/sxv264")
     assert attributes_response.status_code == 200
     attributes_payload = attributes_response.json()
     assert attributes_payload["taxonomy"]["assigned_node_id"] == "fund-private-equity-quant-long-500"
-    assert "fund_regime" not in attributes_payload["values"]
+    assert "instrument_taxonomy_level_1" not in attributes_payload["values"]
 
     summary_response = client.get("/api/instruments/sxv264/summary")
     assert summary_response.status_code == 200
@@ -5028,14 +5265,14 @@ def test_fund_taxonomy_assignment_updates_summary_attribute_context_and_watchlis
     detail_response = client.get(f"/api/watchlists/{watchlist_id}")
     assert detail_response.status_code == 200
     group_by_codes = [item["code"] for item in detail_response.json()["available_group_bys"]]
-    assert group_by_codes[:4] == [
+    assert group_by_codes == [
         "none",
+        "instrument_type",
         "taxonomy",
-        "management_firm_name",
         "data_freshness_status",
     ]
-    assert "attr.coverage_status" in group_by_codes
-    assert "attr.focus_bucket" in group_by_codes
+    assert "attr.coverage_status" not in group_by_codes
+    assert "attr.focus_bucket" not in group_by_codes
 
     screener_response = client.post(
         "/api/screener/query",
@@ -5044,20 +5281,16 @@ def test_fund_taxonomy_assignment_updates_summary_attribute_context_and_watchlis
             "view_id": "fund-screening",
             "selected_fields": [
                 "instrument_name",
-                "attr.fund_regime",
-                "attr.fund_taxonomy_level_1",
-                "attr.fund_taxonomy_leaf",
+                "attr.instrument_taxonomy_level_1",
+                "attr.instrument_taxonomy_level_2",
+                "attr.instrument_taxonomy_leaf",
             ],
-            "group_by": "attr.fund_taxonomy_level_1",
+            "group_by": "attr.instrument_taxonomy_level_2",
             "pagination": {"page": 1, "page_size": 20},
         },
     )
-    assert screener_response.status_code == 200
-    screener_payload = screener_response.json()
-    assert screener_payload["groups"] == [{"group_value": "股票策略", "row_count": 1}]
-    assert screener_payload["rows"][0]["attr.fund_regime"] == "私募"
-    assert screener_payload["rows"][0]["attr.fund_taxonomy_level_1"] == "股票策略"
-    assert screener_payload["rows"][0]["attr.fund_taxonomy_leaf"] == "500指增"
+    assert screener_response.status_code == 422
+    assert "group_by" in str(screener_response.json()).lower()
 
     taxonomy_group_response = client.post(
         "/api/screener/query",
@@ -5066,9 +5299,9 @@ def test_fund_taxonomy_assignment_updates_summary_attribute_context_and_watchlis
             "view_id": "fund-screening",
             "selected_fields": ["instrument_name"],
             "filters": {
-                "attr.fund_regime": ["私募"],
-                "attr.fund_taxonomy_level_1": ["股票策略"],
-                "attr.fund_taxonomy_level_2": ["量化多头"],
+                "attr.instrument_taxonomy_level_1": ["私募"],
+                "attr.instrument_taxonomy_level_2": ["股票策略"],
+                "attr.instrument_taxonomy_level_3": ["量化多头"],
             },
             "group_by": "taxonomy",
             "pagination": {"page": 1, "page_size": 20},
@@ -5077,9 +5310,9 @@ def test_fund_taxonomy_assignment_updates_summary_attribute_context_and_watchlis
     assert taxonomy_group_response.status_code == 200
     taxonomy_group_payload = taxonomy_group_response.json()
     assert taxonomy_group_payload["total_rows"] == 1
-    assert taxonomy_group_payload["rows"][0]["attr.fund_regime"] == "私募"
-    assert taxonomy_group_payload["rows"][0]["attr.fund_taxonomy_level_1"] == "股票策略"
-    assert taxonomy_group_payload["rows"][0]["attr.fund_taxonomy_level_2"] == "量化多头"
+    assert taxonomy_group_payload["rows"][0]["attr.instrument_taxonomy_level_1"] == "私募"
+    assert taxonomy_group_payload["rows"][0]["attr.instrument_taxonomy_level_2"] == "股票策略"
+    assert taxonomy_group_payload["rows"][0]["attr.instrument_taxonomy_level_3"] == "量化多头"
     assert [
         (item["group_value"], item["group_depth"], item["row_count"])
         for item in taxonomy_group_payload["groups"]
@@ -5165,8 +5398,8 @@ def test_monitoring_dashboard_surfaces_missing_labels_quotes_and_open_recalc_job
         for item in payload["missing_label_instruments"]
         if item["instrument_id"] == "fund-no-data"
     )
-    assert "fund_regime" in missing_label_asset["missing_attribute_keys"]
-    assert "fund_taxonomy_leaf" in missing_label_asset["missing_attribute_keys"]
+    assert "instrument_taxonomy_level_1" in missing_label_asset["missing_attribute_keys"]
+    assert "instrument_taxonomy_leaf" in missing_label_asset["missing_attribute_keys"]
     assert len(payload["missing_label_instruments"]) == 2
 
     assert len(payload["open_recalc_jobs"]) == 1

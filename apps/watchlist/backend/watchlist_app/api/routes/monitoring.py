@@ -30,9 +30,9 @@ FRESHNESS_PRIORITY = {
     "fresh": 4,
 }
 OPEN_RECALC_JOB_STATUSES = {"queued", "running", "failed"}
-REQUIRED_FUND_TAXONOMY_KEYS = (
-    ("fund_regime", "公募/私募"),
-    ("fund_taxonomy_leaf", "基金分类"),
+REQUIRED_TAXONOMY_KEYS = (
+    ("instrument_taxonomy_level_1", "分类根"),
+    ("instrument_taxonomy_leaf", "分类叶子"),
 )
 
 
@@ -259,14 +259,14 @@ def get_monitoring_dashboard(
             ]
             missing_attribute_keys.extend(
                 key
-                for key, _ in REQUIRED_FUND_TAXONOMY_KEYS
+                for key, _ in REQUIRED_TAXONOMY_KEYS
                 if _value_missing(attributes.get(key))
             )
 
         missing_attribute_labels = [
             attribute_labels.get(key, key) for key in missing_attribute_keys
         ]
-        for key, label in REQUIRED_FUND_TAXONOMY_KEYS:
+        for key, label in REQUIRED_TAXONOMY_KEYS:
             if key in missing_attribute_keys and label not in missing_attribute_labels:
                 missing_attribute_labels.append(label)
         instrument_summary["missing_attribute_keys"] = missing_attribute_keys

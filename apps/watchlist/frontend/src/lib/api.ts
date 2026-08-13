@@ -147,7 +147,7 @@ export type InstrumentAttributeDefinition = {
   required_for_monitoring: boolean
 }
 
-export type FundTaxonomyContext = {
+export type InstrumentTaxonomyContext = {
   taxonomy_code: string
   assigned_node_id: string | null
   assigned_label: string | null
@@ -157,9 +157,10 @@ export type FundTaxonomyContext = {
   derived_values: Record<string, string>
 }
 
-export type FundTaxonomyTreeNode = {
+export type InstrumentTaxonomyTreeNode = {
   node_id: string
   label: string
+  instrument_type: string
   parent_node_id: string | null
   level_index: number
   display_order: number
@@ -168,19 +169,18 @@ export type FundTaxonomyTreeNode = {
   path_node_ids: string[]
 }
 
-export type FundTaxonomyTreeResponse = {
+export type InstrumentTaxonomyTreeResponse = {
   taxonomy_code: string
-  instrument_type: string
   instrument_types: string[]
   max_depth: number
-  nodes: FundTaxonomyTreeNode[]
+  nodes: InstrumentTaxonomyTreeNode[]
 }
 
 export type InstrumentAttributeValuesResponse = {
   instrument_id: string
   definitions: InstrumentAttributeDefinition[]
   values: Record<string, unknown>
-  taxonomy: FundTaxonomyContext
+  taxonomy: InstrumentTaxonomyContext
 }
 
 export type InstrumentResolveResponse = {
@@ -265,6 +265,12 @@ export type InstrumentAttributeUpdatePayload = {
     attribute_key: string
     value: unknown
   }>
+}
+
+export type InstrumentSettingsUpdatePayload = {
+  taxonomy_node_id: string | null
+  coverage_status: string | null
+  updated_by?: string
 }
 
 export type ScreenerGroup = {
@@ -378,7 +384,7 @@ export type FundSummaryResponse = {
   ticker_or_isin: string
   management_firm_name: string | null
   instrument_attributes: Record<string, unknown>
-  taxonomy: FundTaxonomyContext
+  taxonomy: InstrumentTaxonomyContext
   key_stats: Array<{ label: string; value: string | number | null }>
   freshness: {
     data_freshness_status: string
@@ -1161,19 +1167,19 @@ export function getInstrumentAttributes(instrumentId: string) {
   )
 }
 
-export function getFundTaxonomyTree() {
-  return fetchReferenceJson<FundTaxonomyTreeResponse>('/api/taxonomies/fund-taxonomy')
+export function getInstrumentTaxonomyTree() {
+  return fetchReferenceJson<InstrumentTaxonomyTreeResponse>('/api/taxonomies/instrument-taxonomy')
 }
 
-export function updateFundTaxonomy(
+export function updateInstrumentTaxonomy(
   instrumentId: string,
   payload: {
     node_id: string | null
     updated_by?: string
   },
 ) {
-  return fetchJson<FundTaxonomyContext & { instrument_id: string; updated: boolean }>(
-    `/api/taxonomies/fund-taxonomy/instruments/${encodeURIComponent(instrumentId)}`,
+  return fetchJson<InstrumentTaxonomyContext & { instrument_id: string; updated: boolean }>(
+    `/api/taxonomies/instrument-taxonomy/instruments/${encodeURIComponent(instrumentId)}`,
     {
       method: 'PUT',
       body: JSON.stringify(payload),
@@ -1192,6 +1198,22 @@ export function updateInstrumentAttributes(
       body: JSON.stringify(payload),
     },
   )
+}
+
+export function updateInstrumentSettings(
+  instrumentId: string,
+  payload: InstrumentSettingsUpdatePayload,
+) {
+  return fetchJson<
+    InstrumentAttributeValuesResponse & {
+      updated: boolean
+      taxonomy_updated: boolean
+      status_updated: boolean
+    }
+  >(`/api/instrument-attributes/instruments/${encodeURIComponent(instrumentId)}/settings`, {
+    method: 'PUT',
+    body: JSON.stringify(payload),
+  })
 }
 
 export function runScreenerQuery(payload: Record<string, unknown>) {

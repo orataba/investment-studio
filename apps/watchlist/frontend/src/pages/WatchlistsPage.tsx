@@ -7,8 +7,8 @@ import {
   type FieldCategory,
   type FieldRegistryRecord,
   type ReturnSparklineSeries,
-  type FundTaxonomyTreeNode,
-  type FundTaxonomyTreeResponse,
+  type InstrumentTaxonomyTreeNode,
+  type InstrumentTaxonomyTreeResponse,
   type ScreenerResponse,
   type SharedInstrumentRecord,
   type WatchlistDetail,
@@ -20,13 +20,13 @@ import {
   deleteWatchlist,
   deleteWatchlistItems,
   getFieldRegistry,
-  getFundTaxonomyTree,
+  getInstrumentTaxonomyTree,
   getSharedInstruments,
   getWatchlistDetail,
   getWatchlists,
   moveWatchlistItems,
   resolveSharedInstrumentsBulk,
-  updateFundTaxonomy,
+  updateInstrumentTaxonomy,
   updateInstrumentAttributes,
   updateWatchlistView,
   runScreenerQuery,
@@ -116,18 +116,18 @@ const ALL_COVERAGE_WATCHLIST_ID = 'all-coverage'
 const TAXONOMY_FILTER_FIELD_KEY = 'taxonomy'
 const TAXONOMY_GROUP_BY_CODE = 'taxonomy'
 const TAXONOMY_GROUP_FIELD_KEYS = [
-  'attr.fund_regime',
-  'attr.fund_taxonomy_level_1',
-  'attr.fund_taxonomy_level_2',
-  'attr.fund_taxonomy_level_3',
-  'attr.fund_taxonomy_level_4',
-  'attr.fund_taxonomy_level_5',
-  'attr.fund_taxonomy_level_6',
+  'attr.instrument_taxonomy_level_1',
+  'attr.instrument_taxonomy_level_2',
+  'attr.instrument_taxonomy_level_3',
+  'attr.instrument_taxonomy_level_4',
+  'attr.instrument_taxonomy_level_5',
+  'attr.instrument_taxonomy_level_6',
+  'attr.instrument_taxonomy_level_7',
 ]
 const TAXONOMY_ASSIGNMENT_FIELD_KEYS = [
   ...TAXONOMY_GROUP_FIELD_KEYS,
-  'attr.fund_taxonomy_path',
-  'attr.fund_taxonomy_leaf',
+  'attr.instrument_taxonomy_path',
+  'attr.instrument_taxonomy_leaf',
 ]
 const TAXONOMY_GROUP_DEPTH_INDENT_PX = 18
 const TAXONOMY_GROUP_LABEL_OFFSET_PX = 26
@@ -143,11 +143,11 @@ const TAXONOMY_FILTER_FIELD: FieldRegistryRecord = {
   sort_mode: 'none',
   filter_mode: 'multi_select',
   group_mode: 'none',
-  instrument_scope_json: ['fund'],
+  instrument_scope_json: ['fund', 'etf', 'equity', 'index'],
   product_scope_json: [],
   availability_rule_json: {},
   source_domain: 'taxonomy',
-  source_metric_code: 'fund_taxonomy.tree',
+  source_metric_code: 'instrument_taxonomy.tree',
   default_width: null,
   default_visible: false,
 }
@@ -244,7 +244,7 @@ function isTaxonomyFieldKey(fieldKey: string) {
 }
 
 function taxonomyFieldKeyForPathIndex(index: number) {
-  return index === 0 ? 'attr.fund_regime' : `attr.fund_taxonomy_level_${index}`
+  return `attr.instrument_taxonomy_level_${index + 1}`
 }
 
 function taxonomyPathKey(pathLabels: string[]) {
@@ -280,8 +280,8 @@ function taxonomyRowPatch(path: string[]) {
   TAXONOMY_GROUP_FIELD_KEYS.forEach((fieldKey, index) => {
     patch[fieldKey] = path[index] || null
   })
-  patch['attr.fund_taxonomy_path'] = path.length ? taxonomyPathKey(path) : null
-  patch['attr.fund_taxonomy_leaf'] = path[path.length - 1] || null
+  patch['attr.instrument_taxonomy_path'] = path.length ? taxonomyPathKey(path) : null
+  patch['attr.instrument_taxonomy_leaf'] = path[path.length - 1] || null
   return patch
 }
 
@@ -756,7 +756,7 @@ export default function WatchlistsPage() {
   const [watchlists, setWatchlists] = useState<WatchlistRecord[]>([])
   const [fieldCategories, setFieldCategories] = useState<FieldCategory[]>([])
   const [fieldRegistry, setFieldRegistry] = useState<FieldRegistryRecord[]>([])
-  const [fundTaxonomy, setFundTaxonomy] = useState<FundTaxonomyTreeResponse | null>(null)
+  const [instrumentTaxonomy, setInstrumentTaxonomy] = useState<InstrumentTaxonomyTreeResponse | null>(null)
   const [activeViewId, setActiveViewId] = useState(
     () => watchlistSearchParams.get('view') || '',
   )
@@ -933,7 +933,7 @@ export default function WatchlistsPage() {
         const [watchlistData, fieldRegistryData, taxonomyData] = await Promise.all([
           getWatchlists(),
           getFieldRegistry(),
-          getFundTaxonomyTree(),
+          getInstrumentTaxonomyTree(),
         ])
 
         if (cancelled) {
@@ -943,7 +943,7 @@ export default function WatchlistsPage() {
         setWatchlists(watchlistData)
         setFieldCategories(fieldRegistryData.categories)
         setFieldRegistry(fieldRegistryData.fields)
-        setFundTaxonomy(taxonomyData)
+        setInstrumentTaxonomy(taxonomyData)
       } catch (loadError) {
         if (!cancelled) {
           setError(loadError instanceof Error ? loadError.message : 'Failed to load watchlists.')
@@ -1415,22 +1415,22 @@ export default function WatchlistsPage() {
       activeInstrumentTypes.includes(String(instrumentType).trim().toLowerCase()),
     )
   }
-  const supportsAllInstrumentScope = (field: FieldRegistryRecord) => {
-    if (!field.instrument_scope_json.length) {
-      return true
-    }
-    const normalizedScope = field.instrument_scope_json.map((instrumentType) =>
-      String(instrumentType).trim().toLowerCase(),
-    )
-    return activeInstrumentTypes.every((instrumentType) => normalizedScope.includes(instrumentType))
-  }
   const scopedFieldRegistry = useMemo(
     () => mergedFieldRegistry.filter((field) => supportsAnyInstrumentScope(field)),
     [mergedFieldRegistry, activeInstrumentTypes],
   )
+  const applicableTaxonomyNodes = useMemo(
+    () =>
+      (instrumentTaxonomy?.nodes || []).filter(
+        (node) =>
+          activeInstrumentTypes.includes(node.instrument_type) ||
+          (node.instrument_type === 'fund' && activeInstrumentTypes.includes('etf')),
+      ),
+    [activeInstrumentTypes, instrumentTaxonomy],
+  )
   const taxonomyNodesByParent = useMemo(() => {
-    const map = new Map<string | null, FundTaxonomyTreeNode[]>()
-    ;(fundTaxonomy?.nodes || []).forEach((node) => {
+    const map = new Map<string | null, InstrumentTaxonomyTreeNode[]>()
+    applicableTaxonomyNodes.forEach((node) => {
       const key = node.parent_node_id || null
       map.set(key, [...(map.get(key) || []), node])
     })
@@ -1438,14 +1438,14 @@ export default function WatchlistsPage() {
       nodes.sort((left, right) => left.display_order - right.display_order || left.label.localeCompare(right.label, 'zh-Hans-CN'))
     })
     return map
-  }, [fundTaxonomy])
+  }, [applicableTaxonomyNodes])
   const taxonomyNodeByPath = useMemo(() => {
-    const map = new Map<string, FundTaxonomyTreeNode>()
-    ;(fundTaxonomy?.nodes || []).forEach((node) => {
+    const map = new Map<string, InstrumentTaxonomyTreeNode>()
+    applicableTaxonomyNodes.forEach((node) => {
       map.set(taxonomyPathKey(node.path_labels), node)
     })
     return map
-  }, [fundTaxonomy])
+  }, [applicableTaxonomyNodes])
   const taxonomyDisplayOrderByPath = useMemo(() => {
     const map = new Map<string, number>()
     let index = 0
@@ -1612,9 +1612,7 @@ export default function WatchlistsPage() {
     Boolean(activeAttributeGroupDefinition) &&
     activeGroupField?.group_mode === 'discrete' &&
     ['single_select', 'text', 'string'].includes(activeGroupField?.data_type || '')
-  const activeGroupIsWritableTaxonomy =
-    activeGroupBy === TAXONOMY_GROUP_BY_CODE ||
-    (activeGroupBy === 'attr.fund_taxonomy_path' && activeGroupField?.source_domain === 'taxonomy')
+  const activeGroupIsWritableTaxonomy = activeGroupBy === TAXONOMY_GROUP_BY_CODE
   const activeGroupSupportsDrop = activeGroupIsWritableAttribute || activeGroupIsWritableTaxonomy
   const sortField = sortRules[0]?.field || null
   const sortDirection = sortRules[0]?.direction || 'asc'
@@ -1829,7 +1827,7 @@ export default function WatchlistsPage() {
 
     try {
       if (target.fieldKey === TAXONOMY_GROUP_BY_CODE) {
-        await updateFundTaxonomy(instrumentId, {
+        await updateInstrumentTaxonomy(instrumentId, {
           node_id: target.taxonomyNodeId || null,
           updated_by: 'watchlist_group_drag',
         })
@@ -1909,18 +1907,7 @@ export default function WatchlistsPage() {
       field.field_key.toLowerCase().includes(fieldSearch.trim().toLowerCase())
     return matchesCategory && matchesSearch
   })
-  const availableGroupByOptions = useMemo(() => {
-    return (watchlistDetail?.available_group_bys || []).filter((option) => {
-      if (option.code === 'none') {
-        return true
-      }
-      const field = mergedFieldRegistry.find((item) => item.field_key === option.code)
-      if (!field) {
-        return true
-      }
-      return supportsAllInstrumentScope(field)
-    })
-  }, [watchlistDetail?.available_group_bys, mergedFieldRegistry, activeInstrumentTypes])
+  const availableGroupByOptions = watchlistDetail?.available_group_bys || []
 
   const filterableFields = useMemo(
     () => {
@@ -2418,7 +2405,7 @@ export default function WatchlistsPage() {
     })
   }
 
-  function setTaxonomyFilter(node: FundTaxonomyTreeNode) {
+  function setTaxonomyFilter(node: InstrumentTaxonomyTreeNode) {
     setWorkingFilters((current) => {
       const next = removeTaxonomyFilters(current)
       node.path_labels.forEach((label, index) => {
@@ -2912,7 +2899,7 @@ export default function WatchlistsPage() {
                                   <span className="watchlists-taxonomy-node-label">All Taxonomy</span>
                                   <span className="watchlists-taxonomy-node-count">{filterOptionRows.length}</span>
                                 </button>
-                                {fundTaxonomy?.nodes.length ? (
+                                {applicableTaxonomyNodes.length ? (
                                   renderTaxonomyFilterNodes()
                                 ) : (
                                   <div className="watchlists-filter-empty">No taxonomy tree is available.</div>

@@ -40,8 +40,8 @@ from watchlist_app.repositories.sqlalchemy.read_models import SQLAlchemyReadMode
 from watchlist_app.repositories.sqlalchemy.recalc_jobs import SQLAlchemyRecalcJobRepository
 from watchlist_app.repositories.sqlalchemy.snapshots import SQLAlchemySnapshotRepository
 from watchlist_app.repositories.sqlalchemy.taxonomy import SQLAlchemyTaxonomyRepository
-from watchlist_app.reference_data.fund_taxonomy import FUND_TAXONOMY_CODE
-from watchlist_app.services.fund_taxonomy import (
+from watchlist_app.reference_data.instrument_taxonomy import INSTRUMENT_TAXONOMY_CODE
+from watchlist_app.services.instrument_taxonomy import (
     build_taxonomy_context,
     merge_taxonomy_attributes,
 )
@@ -429,19 +429,20 @@ def _node_path_labels(node: object | None) -> list[str]:
     return _string_list(getattr(node, "path_labels_json", None))
 
 
-def _active_fund_instrument_ids(session: Session) -> set[str]:
+def _active_peer_instrument_ids(session: Session) -> set[str]:
+    supported_types = ("fund", "etf", "equity", "index")
     local_active_instrument_ids = {
         str(instrument_id)
         for instrument_id in session.scalars(
             select(InstrumentDetail.instrument_id).where(
-                InstrumentDetail.instrument_type.in_(("fund", "etf")),
+                InstrumentDetail.instrument_type.in_(supported_types),
                 InstrumentDetail.is_active.is_(True),
             )
         ).all()
     }
     shared_active_instrument_ids = {
         str(item.get("instrument_id"))
-        for instrument_type in ("fund", "etf")
+        for instrument_type in supported_types
         for item in list_shared_instruments(instrument_type=instrument_type, limit=None)
         if str(item.get("instrument_id") or "").strip()
     }
@@ -2850,14 +2851,14 @@ class CanonicalRecalcService:
     def _peer_comparison_context(self, session: Session) -> dict[str, object]:
         nodes = self.taxonomy_repository.list_nodes(
             session,
-            taxonomy_code=FUND_TAXONOMY_CODE,
+            taxonomy_code=INSTRUMENT_TAXONOMY_CODE,
         )
         node_by_id = {str(node.node_id): node for node in nodes}
         assignments = self.taxonomy_repository.list_assignments(
             session,
-            taxonomy_code=FUND_TAXONOMY_CODE,
+            taxonomy_code=INSTRUMENT_TAXONOMY_CODE,
         )
-        active_peer_instrument_ids = _active_fund_instrument_ids(session)
+        active_peer_instrument_ids = _active_peer_instrument_ids(session)
         assigned_node_by_asset = {
             str(assignment.instrument_id): node_by_id.get(str(assignment.node_id))
             for assignment in assignments
@@ -2906,7 +2907,7 @@ class CanonicalRecalcService:
                     if performance_snapshot is not None
                     else None
                 ),
-                "taxonomy_code": FUND_TAXONOMY_CODE,
+                "taxonomy_code": INSTRUMENT_TAXONOMY_CODE,
                 "assigned_node_id": None,
                 "assigned_path": [],
                 "peer_node_id": None,
@@ -3069,7 +3070,7 @@ class CanonicalRecalcService:
                 if isinstance(performance_as_of_date, date)
                 else None
             ),
-            "taxonomy_code": FUND_TAXONOMY_CODE,
+            "taxonomy_code": INSTRUMENT_TAXONOMY_CODE,
             "assigned_node_id": getattr(taxonomy_node, "node_id", None),
             "assigned_path": _node_path_labels(taxonomy_node),
             "peer_node_id": selected_peer_node_id,

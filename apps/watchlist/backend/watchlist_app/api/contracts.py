@@ -77,6 +77,14 @@ class AdvancedFilterGroupInput(BaseModel):
 AdvancedFilterGroupInput.model_rebuild()
 
 
+WatchlistGroupBy = Literal[
+    "none",
+    "instrument_type",
+    "taxonomy",
+    "data_freshness_status",
+]
+
+
 class SortRule(BaseModel):
     field: str
     direction: Literal["asc", "desc"] = "asc"
@@ -92,9 +100,9 @@ class WatchlistViewColumnInput(BaseModel):
 class WatchlistViewCreateRequest(BaseModel):
     name: str
     description: str | None = None
-    default_group_by: str | None = "none"
+    default_group_by: WatchlistGroupBy = "none"
     default_sort: list[SortRule] = Field(default_factory=list)
-    default_filters: dict[str, Any] = Field(default_factory=dict)
+    default_filters: dict[str, list[Any]] = Field(default_factory=dict)
     default_advanced_filters: AdvancedFilterGroupInput | None = None
     columns: list[WatchlistViewColumnInput] = Field(default_factory=list)
 
@@ -111,7 +119,7 @@ class ScreenerQueryRequest(BaseModel):
     filters: dict[str, list[Any]] = Field(default_factory=dict)
     advanced_filters: AdvancedFilterGroupInput | None = None
     sort: list[SortRule] = Field(default_factory=list)
-    group_by: str | None = "none"
+    group_by: WatchlistGroupBy = "none"
     pagination: PaginationInput = Field(default_factory=PaginationInput)
     fetch_all: bool = False
 
@@ -155,6 +163,12 @@ class FundAttributesUpsertRequest(BaseModel):
 
 class TaxonomyAssignmentUpsertRequest(BaseModel):
     node_id: str | None = None
+    updated_by: str | None = None
+
+
+class InstrumentSettingsUpsertRequest(BaseModel):
+    taxonomy_node_id: str | None = None
+    coverage_status: str | None = None
     updated_by: str | None = None
 
 
@@ -246,7 +260,7 @@ class WatchlistCopilotChatRequest(BaseModel):
     filters: dict[str, list[Any]] = Field(default_factory=dict)
     advanced_filters: AdvancedFilterGroupInput | None = None
     sort: list[SortRule] = Field(default_factory=list)
-    group_by: str | None = "none"
+    group_by: WatchlistGroupBy = "none"
     history: list[CopilotMessageInput] = Field(default_factory=list)
 
 

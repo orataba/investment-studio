@@ -298,3 +298,26 @@ class InstrumentTaxonomyAssignment(Base):
     )
     assigned_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     source_record_id: Mapped[str | None]
+
+
+class InstrumentTaxonomyAssignmentHistory(Base):
+    __tablename__ = "instrument_taxonomy_assignment_history"
+    __table_args__ = (
+        Index(
+            "idx_instrument_taxonomy_assignment_history_instrument_time",
+            "instrument_id",
+            "taxonomy_code",
+            "assigned_at",
+        ),
+    )
+
+    history_id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    instrument_id: Mapped[str] = mapped_column(
+        ForeignKey("instrument_detail.instrument_id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    taxonomy_code: Mapped[str] = mapped_column(String, nullable=False)
+    node_id: Mapped[str | None] = mapped_column(String)
+    path_labels_json: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
+    assigned_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    source_record_id: Mapped[str | None]

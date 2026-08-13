@@ -1,6 +1,3 @@
-from datetime import date, datetime
-from numbers import Real
-
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from sqlalchemy.orm import Session
 
@@ -18,6 +15,10 @@ from watchlist_app.services.read_model_freshness import (
     schedule_instrument_refreshes_if_stale,
 )
 from watchlist_app.services.shared_instrument_registry import SharedInstrumentRegistryError
+from watchlist_app.services.watchlist_query_contract import (
+    WatchlistQueryContractError,
+    validate_watchlist_query_contract,
+)
 
 
 router = APIRouter()
@@ -25,92 +26,6 @@ read_model_repository = SQLAlchemyReadModelRepository()
 watchlist_repository = SQLAlchemyWatchlistRepository()
 canonical_recalc_service = CanonicalRecalcService()
 field_registry_repository = SQLAlchemyFieldRegistryRepository()
-
-SYSTEM_QUERY_FIELDS = {
-    "instrument_id",
-    "metric_as_of_date",
-    "metric_return_kind",
-    "metric_quote_basis",
-    "metric_series_type",
-}
-SYSTEM_GROUP_BY_FIELDS = {"taxonomy"}
-COMPARISON_OPERATORS = {"gte", "lte", "gt", "lt"}
-
-
-def _validate_filter_value(field, value: object, *, field_key: str) -> None:
-    if value is None:
-        return
-    data_type = str(field.data_type).strip().lower()
-    if data_type == "number":
-        if isinstance(value, bool) or not isinstance(value, Real):
-            raise HTTPException(status_code=422, detail=f"Filter {field_key!r} requires a number.")
-        return
-    if data_type == "date":
-        if not isinstance(value, str):
-            raise HTTPException(status_code=422, detail=f"Filter {field_key!r} requires an ISO date.")
-        try:
-            date.fromisoformat(value)
-        except ValueError as error:
-            raise HTTPException(status_code=422, detail=f"Filter {field_key!r} requires an ISO date.") from error
-        return
-    if data_type == "datetime":
-        if not isinstance(value, str):
-            raise HTTPException(status_code=422, detail=f"Filter {field_key!r} requires an ISO datetime.")
-        try:
-            datetime.fromisoformat(value.replace("Z", "+00:00"))
-        except ValueError as error:
-            raise HTTPException(status_code=422, detail=f"Filter {field_key!r} requires an ISO datetime.") from error
-        return
-    if data_type in {"string", "single_select", "sparkline"} and not isinstance(value, str):
-        raise HTTPException(status_code=422, detail=f"Filter {field_key!r} requires text.")
-    if data_type == "multi_select" and not isinstance(value, str):
-        raise HTTPException(status_code=422, detail=f"Filter {field_key!r} requires a selectable text value.")
-
-
-def _require_query_field(fields: dict[str, object], field_key: str, *, operation: str):
-    if field_key in SYSTEM_QUERY_FIELDS:
-        return None
-    field = fields.get(field_key)
-    if field is None:
-        raise HTTPException(status_code=422, detail=f"Unknown {operation} field {field_key!r}.")
-    return field
-
-
-def _validate_advanced_filter(fields: dict[str, object], node: object) -> None:
-    if not isinstance(node, dict):
-        return
-    if node.get("type") == "rule":
-        field_key = str(node.get("field") or "").strip()
-        field = _require_query_field(fields, field_key, operation="filter")
-        if field is None:
-            raise HTTPException(status_code=422, detail=f"Field {field_key!r} is not filterable.")
-        if str(field.filter_mode) == "none":
-            raise HTTPException(status_code=422, detail=f"Field {field_key!r} is not filterable.")
-        operator = str(node.get("operator") or "")
-        if operator in COMPARISON_OPERATORS and str(field.data_type) not in {"number", "date", "datetime"}:
-            raise HTTPException(
-                status_code=422,
-                detail=f"Operator {operator!r} is not valid for field {field_key!r}.",
-            )
-        if operator == "contains" and str(field.data_type) in {"number", "date", "datetime"}:
-            raise HTTPException(
-                status_code=422,
-                detail=f"Operator 'contains' is not valid for field {field_key!r}.",
-            )
-        if operator == "exists":
-            return
-        value = node.get("value")
-        if operator in {"in", "not_in"}:
-            if not isinstance(value, list):
-                raise HTTPException(status_code=422, detail=f"Operator {operator!r} requires a list.")
-            for item in value:
-                _validate_filter_value(field, item, field_key=field_key)
-        else:
-            _validate_filter_value(field, value, field_key=field_key)
-        return
-    for child in node.get("conditions") or []:
-        _validate_advanced_filter(fields, child)
-
 
 def _validate_query_contract(session: Session, payload_data: dict[str, object], view) -> None:
     fields = {item.field_key: item for item in field_registry_repository.list_fields(session)}
@@ -139,30 +54,17 @@ def _validate_query_contract(session: Session, payload_data: dict[str, object], 
         if "advanced_filters" in payload_data
         else view.default_advanced_filter_json if view else None
     )
-    for field_key in selected or []:
-        _require_query_field(fields, str(field_key), operation="selected")
-    for field_key, values in (filters or {}).items():
-        field = _require_query_field(fields, str(field_key), operation="filter")
-        if field is None or str(field.filter_mode) == "none":
-            raise HTTPException(status_code=422, detail=f"Field {field_key!r} is not filterable.")
-        for value in values or []:
-            _validate_filter_value(field, value, field_key=str(field_key))
-    for rule in sort_rules or []:
-        if not isinstance(rule, dict):
-            raise HTTPException(status_code=422, detail="Sort rules must be objects.")
-        field_key = str(rule.get("field") or "")
-        field = _require_query_field(fields, field_key, operation="sort")
-        if field is None or str(field.sort_mode) == "none":
-            raise HTTPException(status_code=422, detail=f"Field {field_key!r} is not sortable.")
-    if (
-        group_by
-        and str(group_by) != "none"
-        and str(group_by) not in SYSTEM_GROUP_BY_FIELDS
-    ):
-        field = _require_query_field(fields, str(group_by), operation="group")
-        if field is None or str(field.group_mode) == "none":
-            raise HTTPException(status_code=422, detail=f"Field {group_by!r} is not groupable.")
-    _validate_advanced_filter(fields, advanced)
+    try:
+        validate_watchlist_query_contract(
+            fields,
+            selected_fields=selected,
+            filters=filters,
+            sort_rules=sort_rules,
+            group_by=group_by,
+            advanced_filters=advanced,
+        )
+    except WatchlistQueryContractError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
 
 
 def _advanced_filter_fields(node: object) -> set[str]:

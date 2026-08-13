@@ -8,9 +8,10 @@ from sqlalchemy.orm import Session
 
 from watchlist_app.db.models.watchlists import (
     InstrumentTaxonomyAssignment,
+    InstrumentTaxonomyAssignmentHistory,
     InstrumentTaxonomyNode,
 )
-from watchlist_app.reference_data.fund_taxonomy import FUND_TAXONOMY_CODE
+from watchlist_app.reference_data.instrument_taxonomy import INSTRUMENT_TAXONOMY_CODE
 
 
 class SQLAlchemyTaxonomyRepository:
@@ -18,7 +19,7 @@ class SQLAlchemyTaxonomyRepository:
         self,
         session: Session,
         *,
-        taxonomy_code: str = FUND_TAXONOMY_CODE,
+        taxonomy_code: str = INSTRUMENT_TAXONOMY_CODE,
     ) -> Sequence[InstrumentTaxonomyNode]:
         stmt = (
             select(InstrumentTaxonomyNode)
@@ -44,7 +45,7 @@ class SQLAlchemyTaxonomyRepository:
         session: Session,
         *,
         instrument_id: str,
-        taxonomy_code: str = FUND_TAXONOMY_CODE,
+        taxonomy_code: str = INSTRUMENT_TAXONOMY_CODE,
     ) -> InstrumentTaxonomyAssignment | None:
         stmt = select(InstrumentTaxonomyAssignment).where(
             InstrumentTaxonomyAssignment.instrument_id == instrument_id,
@@ -56,7 +57,7 @@ class SQLAlchemyTaxonomyRepository:
         self,
         session: Session,
         *,
-        taxonomy_code: str = FUND_TAXONOMY_CODE,
+        taxonomy_code: str = INSTRUMENT_TAXONOMY_CODE,
     ) -> Sequence[InstrumentTaxonomyAssignment]:
         stmt = (
             select(InstrumentTaxonomyAssignment)
@@ -65,12 +66,32 @@ class SQLAlchemyTaxonomyRepository:
         )
         return session.scalars(stmt).all()
 
+    def list_assignment_history(
+        self,
+        session: Session,
+        *,
+        instrument_id: str,
+        taxonomy_code: str = INSTRUMENT_TAXONOMY_CODE,
+    ) -> Sequence[InstrumentTaxonomyAssignmentHistory]:
+        stmt = (
+            select(InstrumentTaxonomyAssignmentHistory)
+            .where(
+                InstrumentTaxonomyAssignmentHistory.instrument_id == instrument_id,
+                InstrumentTaxonomyAssignmentHistory.taxonomy_code == taxonomy_code,
+            )
+            .order_by(
+                InstrumentTaxonomyAssignmentHistory.assigned_at,
+                InstrumentTaxonomyAssignmentHistory.history_id,
+            )
+        )
+        return session.scalars(stmt).all()
+
     def upsert_assignment(
         self,
         session: Session,
         *,
         instrument_id: str,
-        taxonomy_code: str = FUND_TAXONOMY_CODE,
+        taxonomy_code: str = INSTRUMENT_TAXONOMY_CODE,
         node_id: str | None,
         source_record_id: str | None,
     ) -> InstrumentTaxonomyAssignment:
@@ -79,7 +100,18 @@ class SQLAlchemyTaxonomyRepository:
             instrument_id=instrument_id,
             taxonomy_code=taxonomy_code,
         )
+        if record is not None and record.node_id == node_id:
+            return record
         now = datetime.now(UTC).replace(microsecond=0)
+        node = self.get_node(session, node_id=node_id) if node_id else None
+        history = InstrumentTaxonomyAssignmentHistory(
+            instrument_id=instrument_id,
+            taxonomy_code=taxonomy_code,
+            node_id=node_id,
+            path_labels_json=list(node.path_labels_json or []) if node is not None else [],
+            assigned_at=now,
+            source_record_id=source_record_id,
+        )
         if record is None:
             record = InstrumentTaxonomyAssignment(
                 instrument_id=instrument_id,
@@ -88,10 +120,11 @@ class SQLAlchemyTaxonomyRepository:
                 assigned_at=now,
                 source_record_id=source_record_id,
             )
-            session.add(record)
+            session.add_all([record, history])
             session.flush()
             return record
 
+        session.add(history)
         record.node_id = node_id
         record.assigned_at = now
         record.source_record_id = source_record_id

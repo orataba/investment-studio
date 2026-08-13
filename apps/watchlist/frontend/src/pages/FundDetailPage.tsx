@@ -25,14 +25,14 @@ import {
   type FundRiskResponse,
   type FundStrategyResponse,
   type FundSummaryResponse,
-  type FundTaxonomyTreeNode,
-  type FundTaxonomyTreeResponse,
+  type InstrumentTaxonomyTreeNode,
+  type InstrumentTaxonomyTreeResponse,
   type SharedInstrumentRecord,
   type FundExposureHoldingsResponse as FundPortfolioHoldingsResponse,
   type FundExposureResponse as FundPortfolioResponse,
   type InstrumentAttributeValuesResponse,
   type InstrumentAttributeDefinition,
-  getFundTaxonomyTree,
+  getInstrumentTaxonomyTree,
   getInstrumentAttributes,
   getInstrumentDocuments,
   getInstrumentExposureHoldings as getInstrumentPortfolioHoldings,
@@ -49,8 +49,8 @@ import {
   getSharedInstruments,
   resolveInstrumentDetail,
   uploadInstrumentDocument,
-  updateFundTaxonomy,
   updateInstrumentAttributes,
+  updateInstrumentSettings,
   updateInstrumentDocuments,
   updateInstrumentPeople,
   updateInstrumentPrice,
@@ -541,6 +541,8 @@ const SYSTEM_LABELS: Record<string, LocalizedText> = {
   fileName: { en: 'File Name', zh: '文件名' },
   fundDetail: { en: 'Fund Detail', zh: '基金详情' },
   indexDetail: { en: 'Index Detail', zh: '指数详情' },
+  instrumentSettings: { en: 'Instrument Settings', zh: '标的设置' },
+  investmentStatus: { en: 'Investment Status', zh: '投资状态' },
   notes: { en: 'Notes', zh: '备注' },
   noDocuments: { en: 'No documents yet.', zh: '暂无文档。' },
   noNavHistory: {
@@ -556,9 +558,13 @@ const SYSTEM_LABELS: Record<string, LocalizedText> = {
   selectParentFirst: { en: 'Select parent first', zh: '请先选择上一级' },
   settings: { en: 'Settings', zh: '设置' },
   stopHere: { en: 'Stop here', zh: '停在此级' },
-  taxonomySettings: { en: 'Taxonomy Settings', zh: '分类设置' },
+  statusScope: {
+    en: 'This status belongs to the instrument and is shared across all watchlists.',
+    zh: '该状态属于当前标的，并在所有关注列表中同步。',
+  },
   unclassified: { en: 'Unclassified', zh: '未分类' },
   unclassify: { en: 'Unclassify', zh: '取消分类' },
+  unspecified: { en: 'Unspecified', zh: '未设置' },
   uploadFailed: { en: 'Failed to upload document.', zh: '文档上传失败。' },
   unavailableBasis: {
     en: 'is unavailable for the current currency or date window. Switch Data Type, Currency, or range.',
@@ -3441,12 +3447,12 @@ const ATTRIBUTE_DOMAIN_META: Record<
   research: {
     title: 'Qualitative Research Tags',
     note: '',
-    emptyState: 'Complete fund taxonomy first to unlock category-specific research tags.',
+    emptyState: 'Complete instrument taxonomy first to unlock category-specific research tags.',
   },
   monitoring: {
     title: 'Monitoring Assessment',
     note: '',
-    emptyState: 'Complete fund taxonomy first to unlock category-specific monitoring labels.',
+    emptyState: 'Complete instrument taxonomy first to unlock category-specific monitoring labels.',
   },
 }
 
@@ -3510,8 +3516,8 @@ function definitionMatchesApplicability(
 
 function isTaxonomyComplete(attributeValues: InstrumentAttributeValuesResponse | null) {
   return Boolean(
-    hasAttributeValue(attributeValues?.taxonomy?.derived_values?.fund_regime) &&
-      hasAttributeValue(attributeValues?.taxonomy?.derived_values?.fund_taxonomy_leaf),
+    hasAttributeValue(attributeValues?.taxonomy?.derived_values?.instrument_taxonomy_level_1) &&
+      hasAttributeValue(attributeValues?.taxonomy?.derived_values?.instrument_taxonomy_leaf),
   )
 }
 
@@ -3562,8 +3568,8 @@ function buildAttributeFrameworkSections(
       classificationReady
         ? ATTRIBUTE_DOMAIN_META[domain].emptyState
         : domain === 'research'
-          ? 'Complete fund taxonomy first to unlock category-specific research tags.'
-          : 'Complete fund taxonomy first to unlock category-specific monitoring labels.'
+          ? 'Complete instrument taxonomy first to unlock category-specific research tags.'
+          : 'Complete instrument taxonomy first to unlock category-specific monitoring labels.'
 
     return {
       domain,
@@ -3696,8 +3702,9 @@ export default function FundDetailPage({
   const [sectionNotice, setSectionNotice] = useState<string | null>(null)
   const [sectionError, setSectionError] = useState<string | null>(null)
   const [settingsModalOpen, setSettingsModalOpen] = useState(false)
-  const [taxonomyTree, setTaxonomyTree] = useState<FundTaxonomyTreeResponse | null>(null)
+  const [taxonomyTree, setTaxonomyTree] = useState<InstrumentTaxonomyTreeResponse | null>(null)
   const [taxonomyDraftNodeId, setTaxonomyDraftNodeId] = useState('')
+  const [coverageStatusDraft, setCoverageStatusDraft] = useState('')
   const quoteChartMenuRef = useRef<HTMLDivElement | null>(null)
   const riskSettingsMenuRef = useRef<HTMLDivElement | null>(null)
   const productFrameworkPickerRef = useRef<HTMLDivElement | null>(null)
@@ -4092,6 +4099,16 @@ export default function FundDetailPage({
   }, [bundle?.summary.taxonomy?.assigned_node_id, productFrameworkAttributes?.taxonomy?.assigned_node_id])
 
   useEffect(() => {
+    const value =
+      productFrameworkAttributes?.values.coverage_status ??
+      bundle?.summary.instrument_attributes.coverage_status
+    setCoverageStatusDraft(typeof value === 'string' ? value : '')
+  }, [
+    bundle?.summary.instrument_attributes.coverage_status,
+    productFrameworkAttributes?.values.coverage_status,
+  ])
+
+  useEffect(() => {
     if (!settingsModalOpen || taxonomyTree) {
       return
     }
@@ -4099,13 +4116,13 @@ export default function FundDetailPage({
 
     async function loadTaxonomyTree() {
       try {
-        const response = await getFundTaxonomyTree()
+        const response = await getInstrumentTaxonomyTree()
         if (!cancelled) {
           setTaxonomyTree(response)
         }
       } catch (loadError) {
         if (!cancelled) {
-          setSectionError(loadError instanceof Error ? loadError.message : 'Failed to load fund taxonomy.')
+          setSectionError(loadError instanceof Error ? loadError.message : 'Failed to load instrument taxonomy.')
         }
       }
     }
@@ -4740,32 +4757,38 @@ export default function FundDetailPage({
     setSectionError(null)
     setSectionNotice(null)
     try {
-      const response = await updateFundTaxonomy(fundId, {
-        node_id: taxonomyDraftNodeId || null,
-        updated_by: 'terminal_ui',
-      })
-      setProductFrameworkAttributes((current) =>
-        current
-          ? {
-              ...current,
-              taxonomy: response,
-            }
-          : current,
-      )
-      setBundle((current) =>
-        current
-          ? {
-              ...current,
-              summary: {
-                ...current.summary,
-                taxonomy: response,
-              },
-            }
-          : current,
-      )
+      const taxonomyChanged = taxonomyDraftNodeId !== currentTaxonomyNodeId
+      const statusChanged = coverageStatusDraft !== currentCoverageStatus
+
+      if (taxonomyChanged || statusChanged) {
+        const response = await updateInstrumentSettings(fundId, {
+          taxonomy_node_id: taxonomyDraftNodeId || null,
+          coverage_status: coverageStatusDraft || null,
+          updated_by: 'terminal_ui',
+        })
+        setProductFrameworkAttributes(response)
+        setBundle((current) =>
+          current
+            ? {
+                ...current,
+                summary: {
+                  ...current.summary,
+                  instrument_attributes: {
+                    ...current.summary.instrument_attributes,
+                    ...response.values,
+                  },
+                  taxonomy: response.taxonomy,
+                },
+              }
+            : current,
+        )
+      }
+
       setSettingsModalOpen(false)
       setSectionNotice('Fund settings saved.')
-      setRefreshToken((value) => value + 1)
+      if (taxonomyChanged || statusChanged) {
+        setRefreshToken((value) => value + 1)
+      }
     } catch (saveError) {
       setSectionError(saveError instanceof Error ? saveError.message : 'Failed to save fund settings.')
     } finally {
@@ -6738,9 +6761,22 @@ export default function FundDetailPage({
         ? summary.taxonomy.path_labels.join(' / ')
         : summary.taxonomy?.assigned_label || ''
   const taxonomyPathLabel = localizeTaxonomyPath(rawTaxonomyPathLabel, language)
+  const currentTaxonomyNodeId =
+    productFrameworkAttributes?.taxonomy?.assigned_node_id ||
+    summary.taxonomy?.assigned_node_id ||
+    ''
+  const rawCoverageStatus =
+    productFrameworkAttributes?.values.coverage_status ??
+    summary.instrument_attributes.coverage_status
+  const currentCoverageStatus = typeof rawCoverageStatus === 'string' ? rawCoverageStatus : ''
+  const coverageStatusDefinition = productFrameworkAttributes?.definitions.find(
+    (definition) => definition.attribute_key === 'coverage_status',
+  )
   const detailClassificationLabel =
     localizeTaxonomyPath(peerComparison?.peer_path?.filter(Boolean).join(' / ') || rawTaxonomyPathLabel, language)
-  const taxonomyNodes = taxonomyTree?.nodes || []
+  const taxonomyNodes = (taxonomyTree?.nodes || []).filter(
+    (node) => node.instrument_type === 'fund',
+  )
   const taxonomyDraftNode =
     taxonomyNodes.find((node) => node.node_id === taxonomyDraftNodeId) || null
   const taxonomyDraftPathNodeIds = taxonomyDraftNode?.path_node_ids || []
@@ -6749,7 +6785,7 @@ export default function FundDetailPage({
       levelIndex: number
       parentNodeId: string | null
       selectedNodeId: string
-      options: FundTaxonomyTreeNode[]
+      options: InstrumentTaxonomyTreeNode[]
       disabled: boolean
     }> = []
     let parentNodeId: string | null = null
@@ -7552,7 +7588,16 @@ export default function FundDetailPage({
             <span className="instrument-detail-breadcrumb-current">{summary.ticker_or_isin}</span>
           </div>
           <div className="instrument-detail-actions">
-            <button type="button" onClick={() => setSettingsModalOpen(true)}>
+            <button
+              type="button"
+              onClick={() => {
+                setCoverageStatusDraft(currentCoverageStatus)
+                setTaxonomyDraftNodeId(currentTaxonomyNodeId)
+                setSectionError(null)
+                setSectionNotice(null)
+                setSettingsModalOpen(true)
+              }}
+            >
               {localize(language, SYSTEM_LABELS.settings)}
             </button>
           </div>
@@ -7631,7 +7676,7 @@ export default function FundDetailPage({
             <div className="instrument-modal-header">
               <div>
                 <div className="panel-title">{localize(language, SYSTEM_LABELS.settings)}</div>
-                <div className="instrument-quote-source-title">{localize(language, SYSTEM_LABELS.taxonomySettings)}</div>
+                <div className="instrument-quote-source-title">{localize(language, SYSTEM_LABELS.instrumentSettings)}</div>
               </div>
               <div className="toolbar">
                 <button
@@ -7654,6 +7699,43 @@ export default function FundDetailPage({
               </div>
             </div>
             <div className="instrument-settings-body">
+              {sectionError ? (
+                <div className="inline-notice inline-notice-error" role="alert">
+                  {sectionError}
+                </div>
+              ) : null}
+              <section className="instrument-settings-section">
+                <div className="instrument-settings-section-header">
+                  <div>
+                    <div className="instrument-settings-title">
+                      {localize(language, SYSTEM_LABELS.investmentStatus)}
+                    </div>
+                    <div className="instrument-settings-description">
+                      {localize(language, SYSTEM_LABELS.statusScope)}
+                    </div>
+                  </div>
+                </div>
+                <div className="instrument-settings-taxonomy-stack">
+                  <label className="instrument-settings-taxonomy-row">
+                    <span className="instrument-settings-taxonomy-label">
+                      {localize(language, SYSTEM_LABELS.status)}
+                    </span>
+                    <select
+                      className="instrument-settings-taxonomy-select"
+                      value={coverageStatusDraft}
+                      disabled={!coverageStatusDefinition}
+                      onChange={(event) => setCoverageStatusDraft(event.target.value)}
+                    >
+                      <option value="">{localize(language, SYSTEM_LABELS.unspecified)}</option>
+                      {(coverageStatusDefinition?.options || []).map((status) => (
+                        <option key={status} value={status}>
+                          {localizeSystemValue(status, language)}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                </div>
+              </section>
               <section className="instrument-settings-section">
                 <div className="instrument-settings-section-header">
                   <div>

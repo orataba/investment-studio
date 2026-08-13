@@ -37,7 +37,7 @@ from watchlist_app.repositories.sqlalchemy.watchlists import (
     SQLAlchemyWatchlistRepository,
 )
 from watchlist_app.services.canonical_recalc import CanonicalRecalcService
-from watchlist_app.services.fund_taxonomy import (
+from watchlist_app.services.instrument_taxonomy import (
     build_taxonomy_context,
     merge_taxonomy_attributes,
 )
@@ -51,6 +51,10 @@ from watchlist_app.services.shared_instrument_registry import (
     get_shared_instrument,
     list_shared_active_instrument_ids,
     list_shared_instruments,
+)
+from watchlist_app.services.watchlist_query_contract import (
+    WatchlistQueryContractError,
+    validate_watchlist_query_contract,
 )
 
 
@@ -249,6 +253,28 @@ def _ensure_required_columns(columns: list[dict[str, object]]) -> list[dict[str,
         )
         display_order += 1
     return merged
+
+
+def _validate_saved_view_contract(
+    session: Session,
+    payload: WatchlistViewCreateRequest,
+) -> None:
+    fields = {item.field_key: item for item in field_registry_repository.list_fields(session)}
+    try:
+        validate_watchlist_query_contract(
+            fields,
+            selected_fields=[item.field_key for item in payload.columns],
+            filters=payload.default_filters,
+            sort_rules=[item.model_dump() for item in payload.default_sort],
+            group_by=payload.default_group_by,
+            advanced_filters=(
+                payload.default_advanced_filters.model_dump()
+                if payload.default_advanced_filters
+                else None
+            ),
+        )
+    except WatchlistQueryContractError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
 
 
 def _normalize_instrument_ids(instrument_ids: list[str]) -> list[str]:
@@ -775,7 +801,7 @@ def get_watchlist(
     return {
         **present_watchlist(record),
         "views": [present_watchlist_view(item) for item in watchlist_repository.list_views(session, watchlist_id)],
-        "available_group_bys": present_group_by_options(scoped_fields),
+        "available_group_bys": present_group_by_options(fields),
         "default_filters_summary": present_default_filter_summary(scoped_fields),
     }
 
@@ -1039,6 +1065,7 @@ def create_view_for_watchlist(
     view_name = payload.name.strip()
     if not view_name:
         raise HTTPException(status_code=400, detail="Watchlist view name is required")
+    _validate_saved_view_contract(session, payload)
     columns = _ensure_required_columns([item.model_dump() for item in payload.columns])
     record = _create_watchlist_view_with_retry(
         session,
@@ -1068,6 +1095,7 @@ def update_view_for_watchlist(
     view_name = payload.name.strip()
     if not view_name:
         raise HTTPException(status_code=400, detail="Watchlist view name is required")
+    _validate_saved_view_contract(session, payload)
     existing_view = watchlist_repository.get_view(
         session,
         watchlist_id=watchlist_id,

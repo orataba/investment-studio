@@ -1,10 +1,10 @@
-from watchlist_app.reference_data.fund_taxonomy import (
-    FUND_TAXONOMY_ASSET_TYPE,
-    FUND_TAXONOMY_DERIVED_KEYS,
-    FUND_TAXONOMY_MAX_LEVELS,
-    FUND_TAXONOMY_CODE,
-    FUND_TAXONOMY_LABEL,
-    fund_taxonomy_nodes,
+from watchlist_app.reference_data.instrument_taxonomy import (
+    INSTRUMENT_TAXONOMY_CODE,
+    INSTRUMENT_TAXONOMY_DEFAULT_ASSET_TYPE,
+    INSTRUMENT_TAXONOMY_DERIVED_KEYS,
+    INSTRUMENT_TAXONOMY_LABEL,
+    INSTRUMENT_TAXONOMY_MAX_LEVELS,
+    instrument_taxonomy_nodes,
 )
 from watchlist_app.reference_data.watchlist_fields import (
     FIELD_CATEGORIES,
@@ -15,15 +15,15 @@ from watchlist_app.reference_data.watchlist_fields import (
 )
 
 __all__ = [
-    "FUND_TAXONOMY_ASSET_TYPE",
-    "FUND_TAXONOMY_DERIVED_KEYS",
-    "FUND_TAXONOMY_MAX_LEVELS",
-    "FUND_TAXONOMY_CODE",
-    "FUND_TAXONOMY_LABEL",
+    "INSTRUMENT_TAXONOMY_CODE",
+    "INSTRUMENT_TAXONOMY_DEFAULT_ASSET_TYPE",
+    "INSTRUMENT_TAXONOMY_DERIVED_KEYS",
+    "INSTRUMENT_TAXONOMY_LABEL",
+    "INSTRUMENT_TAXONOMY_MAX_LEVELS",
     "FIELD_CATEGORIES",
     "FIELD_REGISTRY",
     "INSTRUMENT_ATTRIBUTE_DEFINITIONS",
     "build_attribute_field_definition",
     "current_field_registry",
-    "fund_taxonomy_nodes",
+    "instrument_taxonomy_nodes",
 ]

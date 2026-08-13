@@ -7,9 +7,14 @@ from watchlist_app.api.contracts import TaxonomyAssignmentUpsertRequest
 from watchlist_app.db.session import get_db_session
 from watchlist_app.repositories.sqlalchemy.instruments import SQLAlchemyInstrumentRepository
 from watchlist_app.repositories.sqlalchemy.taxonomy import SQLAlchemyTaxonomyRepository
-from watchlist_app.reference_data.fund_taxonomy import FUND_TAXONOMY_CODE
+from watchlist_app.reference_data.instrument_taxonomy import INSTRUMENT_TAXONOMY_CODE
 from watchlist_app.services.canonical_recalc import CanonicalRecalcService
-from watchlist_app.services.fund_taxonomy import build_taxonomy_context, taxonomy_tree_payload
+from watchlist_app.services.instrument_taxonomy import (
+    SUPPORTED_TAXONOMY_INSTRUMENT_TYPES,
+    build_taxonomy_context,
+    taxonomy_node_supports_instrument,
+    taxonomy_tree_payload,
+)
 
 
 router = APIRouter()
@@ -22,8 +27,11 @@ def _require_taxonomy_asset(session: Session, instrument_id: str):
     instrument = instrument_repository.get(session, instrument_id)
     if instrument is None:
         raise HTTPException(status_code=404, detail="Instrument not found")
-    if str(instrument.instrument_type or "").strip().lower() not in {"fund", "etf", "index"}:
-        raise HTTPException(status_code=400, detail="Taxonomy is only available for fund, ETF, and index instruments.")
+    if str(instrument.instrument_type or "").strip().lower() not in SUPPORTED_TAXONOMY_INSTRUMENT_TYPES:
+        raise HTTPException(
+            status_code=400,
+            detail="Taxonomy is only available for fund, ETF, equity, and index instruments.",
+        )
     return instrument
 
 
@@ -41,20 +49,20 @@ def _taxonomy_context_for_asset(
     return build_taxonomy_context(node)
 
 
-@router.get("/fund-taxonomy")
-def get_fund_taxonomy_tree(
+@router.get("/instrument-taxonomy")
+def get_instrument_taxonomy_tree(
     session: Session = Depends(get_db_session),
 ) -> dict[str, object]:
     return taxonomy_tree_payload(
         taxonomy_repository.list_nodes(
             session,
-            taxonomy_code=FUND_TAXONOMY_CODE,
+            taxonomy_code=INSTRUMENT_TAXONOMY_CODE,
         )
     )
 
 
-@router.get("/fund-taxonomy/instruments/{instrument_id}")
-def get_fund_taxonomy_assignment(
+@router.get("/instrument-taxonomy/instruments/{instrument_id}")
+def get_instrument_taxonomy_assignment(
     instrument_id: str,
     session: Session = Depends(get_db_session),
 ) -> dict[str, object]:
@@ -62,8 +70,8 @@ def get_fund_taxonomy_assignment(
     return _taxonomy_context_for_asset(session, instrument_id=instrument_id) | {"instrument_id": instrument_id}
 
 
-@router.put("/fund-taxonomy/instruments/{instrument_id}")
-def update_fund_taxonomy_assignment(
+@router.put("/instrument-taxonomy/instruments/{instrument_id}")
+def update_instrument_taxonomy_assignment(
     instrument_id: str,
     payload: TaxonomyAssignmentUpsertRequest,
     session: Session = Depends(get_db_session),
@@ -73,15 +81,15 @@ def update_fund_taxonomy_assignment(
     if node_id is not None:
         node = taxonomy_repository.get_node(session, node_id=node_id)
         if node is None:
-            raise HTTPException(status_code=404, detail="Fund taxonomy node not found")
-        if node.taxonomy_code != FUND_TAXONOMY_CODE:
+            raise HTTPException(status_code=404, detail="Instrument taxonomy node not found")
+        if node.taxonomy_code != INSTRUMENT_TAXONOMY_CODE:
             raise HTTPException(status_code=400, detail="Invalid taxonomy node")
         instrument_type = str(instrument.instrument_type).strip().lower()
         node_type = str(node.instrument_type).strip().lower()
-        compatible = node_type == instrument_type or (
-            instrument_type == "etf" and node_type == "fund"
-        )
-        if not compatible:
+        if not taxonomy_node_supports_instrument(
+            instrument_type=instrument_type,
+            node=node,
+        ):
             raise HTTPException(
                 status_code=422,
                 detail=(
@@ -92,7 +100,7 @@ def update_fund_taxonomy_assignment(
     taxonomy_repository.upsert_assignment(
         session,
         instrument_id=instrument_id,
-        taxonomy_code=FUND_TAXONOMY_CODE,
+        taxonomy_code=INSTRUMENT_TAXONOMY_CODE,
         node_id=node_id,
         source_record_id=str(payload.updated_by or "terminal_ui"),
     )

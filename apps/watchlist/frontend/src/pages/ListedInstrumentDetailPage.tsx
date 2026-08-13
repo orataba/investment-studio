@@ -2,16 +2,22 @@ import { useEffect, useMemo, useState, type MouseEvent as ReactMouseEvent } from
 import { Link } from 'react-router'
 
 import LoadingOverlay from '../components/LoadingOverlay'
+import { useModalDialog } from '../../../../../packages/ui/src/useModalDialog'
 import {
+  getInstrumentAttributes,
   getInstrumentPerformance,
   getInstrumentPriceBars,
   getInstrumentRisk,
   getInstrumentSummary,
   getInstrumentChart,
+  getInstrumentTaxonomyTree,
+  updateInstrumentSettings,
   type FundChartResponse,
   type FundPerformanceResponse,
   type FundRiskResponse,
   type FundSummaryResponse,
+  type InstrumentTaxonomyTreeResponse,
+  type InstrumentAttributeValuesResponse,
   type InstrumentResolveResponse,
 } from '../lib/api'
 import { formatDate, formatLabel, formatNumber, formatPercent, signedValueClass } from '../lib/format'
@@ -353,6 +359,20 @@ export default function ListedInstrumentDetailPage({ instrument, watchlistContex
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [standardizedError, setStandardizedError] = useState<string | null>(null)
+  const [settingsOpen, setSettingsOpen] = useState(false)
+  const [settingsLoading, setSettingsLoading] = useState(false)
+  const [settingsSaving, setSettingsSaving] = useState(false)
+  const [settingsError, setSettingsError] = useState<string | null>(null)
+  const [attributeValues, setAttributeValues] = useState<InstrumentAttributeValuesResponse | null>(null)
+  const [taxonomyTree, setTaxonomyTree] = useState<InstrumentTaxonomyTreeResponse | null>(null)
+  const [taxonomyDraftNodeId, setTaxonomyDraftNodeId] = useState('')
+  const [coverageStatusDraft, setCoverageStatusDraft] = useState('')
+
+  function closeSettings() {
+    if (!settingsSaving) setSettingsOpen(false)
+  }
+
+  const settingsDialogRef = useModalDialog(settingsOpen, closeSettings)
 
   useEffect(() => {
     let cancelled = false
@@ -395,6 +415,76 @@ export default function ListedInstrumentDetailPage({ instrument, watchlistContex
     void load()
     return () => { cancelled = true }
   }, [instrument.instrument_type, instrumentId])
+
+  useEffect(() => {
+    if (!settingsOpen) return
+    let cancelled = false
+
+    async function loadSettings() {
+      setSettingsLoading(true)
+      setSettingsError(null)
+      try {
+        const [attributes, taxonomy] = await Promise.all([
+          getInstrumentAttributes(instrumentId),
+          getInstrumentTaxonomyTree(),
+        ])
+        if (cancelled) return
+        setAttributeValues(attributes)
+        setTaxonomyTree(taxonomy)
+        setTaxonomyDraftNodeId(attributes.taxonomy.assigned_node_id || '')
+        const status = attributes.values.coverage_status
+        setCoverageStatusDraft(typeof status === 'string' ? status : '')
+      } catch (loadError) {
+        if (!cancelled) {
+          setSettingsError(
+            loadError instanceof Error ? loadError.message : 'Failed to load instrument settings.',
+          )
+        }
+      } finally {
+        if (!cancelled) setSettingsLoading(false)
+      }
+    }
+
+    void loadSettings()
+    return () => {
+      cancelled = true
+    }
+  }, [instrumentId, settingsOpen])
+
+  async function saveSettings() {
+    if (settingsSaving || settingsLoading || !attributeValues) return
+    setSettingsSaving(true)
+    setSettingsError(null)
+    try {
+      const taxonomyChanged =
+        taxonomyDraftNodeId !== (attributeValues.taxonomy.assigned_node_id || '')
+      const currentStatus = attributeValues.values.coverage_status
+      const statusChanged =
+        coverageStatusDraft !== (typeof currentStatus === 'string' ? currentStatus : '')
+
+      if (taxonomyChanged || statusChanged) {
+        await updateInstrumentSettings(instrumentId, {
+          taxonomy_node_id: taxonomyDraftNodeId || null,
+          coverage_status: coverageStatusDraft || null,
+          updated_by: 'terminal_ui',
+        })
+      }
+
+      const [nextAttributes, nextSummary] = await Promise.all([
+        getInstrumentAttributes(instrumentId),
+        getInstrumentSummary(instrumentId),
+      ])
+      setAttributeValues(nextAttributes)
+      setSummary(nextSummary)
+      setSettingsOpen(false)
+    } catch (saveError) {
+      setSettingsError(
+        saveError instanceof Error ? saveError.message : 'Failed to save instrument settings.',
+      )
+    } finally {
+      setSettingsSaving(false)
+    }
+  }
 
   const qfqAvailable =
     instrument.instrument_type !== 'index' &&
@@ -496,6 +586,20 @@ export default function ListedInstrumentDetailPage({ instrument, watchlistContex
     : risk?.snapshot_metadata?.as_of_date
       ? `Standardized · as of ${formatDate(risk.snapshot_metadata.as_of_date)}`
       : 'Standardized risk unavailable'
+  const coverageStatusDefinition = attributeValues?.definitions.find(
+    (definition) => definition.attribute_key === 'coverage_status',
+  )
+  const compatibleTaxonomyNodes = (taxonomyTree?.nodes || [])
+    .filter(
+      (node) =>
+        node.instrument_type === instrument.instrument_type ||
+        (instrument.instrument_type === 'etf' && node.instrument_type === 'fund'),
+    )
+    .sort((left, right) =>
+      left.path_labels.join(' / ').localeCompare(right.path_labels.join(' / '), 'zh-Hans-CN'),
+    )
+  const currentTaxonomyPath = attributeValues?.taxonomy.path_labels.join(' / ') || 'Unclassified'
+  const displayedCoverageStatus = summary?.instrument_attributes.coverage_status
 
   if (loading) return <LoadingOverlay label="Loading market detail" />
 
@@ -538,23 +642,28 @@ export default function ListedInstrumentDetailPage({ instrument, watchlistContex
 
   return (
     <div className="instrument-detail-page listed-detail-page">
-      <div className="stub-breadcrumbs">
-        <a href={PLATFORM_HOME_URL} className="watchlist-breadcrumb-link">Home</a>
-        <span className="watchlist-breadcrumb-separator">/</span>
-        <Link to="/watchlists" className="watchlist-breadcrumb-link">Watchlist</Link>
-        {watchlistContext ? (
-          <>
-            <span className="watchlist-breadcrumb-separator">/</span>
-            <Link to={buildWatchlistPath(watchlistContext.watchlistId)} className="watchlist-breadcrumb-link">{watchlistContext.watchlistName}</Link>
-          </>
-        ) : null}
-        <span className="watchlist-breadcrumb-separator">/</span>
-        <span className="watchlist-breadcrumb-current">{instrument.instrument_name}</span>
+      <div className="instrument-detail-topbar">
+        <div className="stub-breadcrumbs">
+          <a href={PLATFORM_HOME_URL} className="watchlist-breadcrumb-link">Home</a>
+          <span className="watchlist-breadcrumb-separator">/</span>
+          <Link to="/watchlists" className="watchlist-breadcrumb-link">Watchlist</Link>
+          {watchlistContext ? (
+            <>
+              <span className="watchlist-breadcrumb-separator">/</span>
+              <Link to={buildWatchlistPath(watchlistContext.watchlistId)} className="watchlist-breadcrumb-link">{watchlistContext.watchlistName}</Link>
+            </>
+          ) : null}
+          <span className="watchlist-breadcrumb-separator">/</span>
+          <span className="watchlist-breadcrumb-current">{instrument.instrument_name}</span>
+        </div>
+        <div className="instrument-detail-actions">
+          <button type="button" onClick={() => setSettingsOpen(true)}>Settings</button>
+        </div>
       </div>
 
       <section className="panel listed-detail-hero">
         <div>
-          <div className="instrument-detail-eyebrow">{instrumentTypeLabel(instrument.instrument_type)} Detail</div>
+          <div className="instrument-detail-eyebrow">{`${instrumentTypeLabel(instrument.instrument_type)} Detail`}</div>
           <h1 className="instrument-detail-title">{instrument.instrument_name}</h1>
           <div className="instrument-detail-badges">
             {instrument.primary_identifier ? <span className="context-chip">{instrument.primary_identifier}</span> : null}
@@ -565,6 +674,12 @@ export default function ListedInstrumentDetailPage({ instrument, watchlistContex
             </span>
             {sourceRefreshFailed ? <span className="context-chip listed-source-failed-chip">Source update failed</span> : null}
             {summary?.freshness.data_freshness_status ? <span className="context-chip">{formatLabel(summary.freshness.data_freshness_status)}</span> : null}
+            {typeof displayedCoverageStatus === 'string' && displayedCoverageStatus ? (
+              <span className="context-chip">{formatLabel(displayedCoverageStatus)}</span>
+            ) : null}
+            {summary?.taxonomy.path_labels.length ? (
+              <span className="context-chip">{summary.taxonomy.path_labels.join(' / ')}</span>
+            ) : null}
           </div>
         </div>
         <div className="listed-hero-quote">
@@ -573,6 +688,99 @@ export default function ListedInstrumentDetailPage({ instrument, watchlistContex
           <em className={signedValueClass(displayReturns.dailyChange)}>{percentValue(displayReturns.dailyChange)}</em>
         </div>
       </section>
+
+      {settingsOpen ? (
+        <div className="instrument-modal-backdrop" onClick={closeSettings}>
+          <div
+            ref={settingsDialogRef}
+            className="instrument-modal instrument-settings-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-label="Settings"
+            tabIndex={-1}
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="instrument-modal-header">
+              <div>
+                <div className="panel-title">Settings</div>
+                <div className="instrument-quote-source-title">Instrument Settings</div>
+              </div>
+              <div className="toolbar">
+                <button type="button" disabled={settingsSaving} onClick={closeSettings}>Cancel</button>
+                <button
+                  type="button"
+                  className="button-primary"
+                  disabled={settingsSaving || settingsLoading || !attributeValues}
+                  onClick={() => void saveSettings()}
+                >
+                  {settingsSaving ? 'Saving…' : 'Save'}
+                </button>
+              </div>
+            </div>
+            <div className="instrument-settings-body">
+              {settingsError ? (
+                <div className="inline-notice inline-notice-error" role="alert">{settingsError}</div>
+              ) : null}
+              <section className="instrument-settings-section">
+                <div className="instrument-settings-section-header">
+                  <div>
+                    <div className="instrument-settings-title">Investment Status</div>
+                    <div className="instrument-settings-description">
+                      Set this specific instrument to Watch, Proposed, Invested, Paused, or Exited.
+                    </div>
+                  </div>
+                </div>
+                <div className="instrument-settings-taxonomy-stack">
+                  <label className="instrument-settings-taxonomy-row">
+                    <span className="instrument-settings-taxonomy-label">Status</span>
+                    <select
+                      className="instrument-settings-taxonomy-select"
+                      value={coverageStatusDraft}
+                      disabled={settingsLoading || !coverageStatusDefinition}
+                      onChange={(event) => setCoverageStatusDraft(event.target.value)}
+                    >
+                      <option value="">Unspecified</option>
+                      {(coverageStatusDefinition?.options || []).map((status) => (
+                        <option key={status} value={status}>{formatLabel(status)}</option>
+                      ))}
+                    </select>
+                  </label>
+                </div>
+              </section>
+              <section className="instrument-settings-section">
+                <div className="instrument-settings-section-header">
+                  <div>
+                    <div className="instrument-settings-title">Classification Path</div>
+                    <div className="instrument-settings-current-path">
+                      <span>Current path</span>
+                      <strong>{currentTaxonomyPath}</strong>
+                    </div>
+                  </div>
+                </div>
+                <div className="instrument-settings-taxonomy-stack">
+                  <label className="instrument-settings-taxonomy-row">
+                    <span className="instrument-settings-taxonomy-label">Taxonomy</span>
+                    <select
+                      className="instrument-settings-taxonomy-select"
+                      value={taxonomyDraftNodeId}
+                      disabled={settingsLoading || !taxonomyTree}
+                      onChange={(event) => setTaxonomyDraftNodeId(event.target.value)}
+                    >
+                      <option value="">Unclassified</option>
+                      {compatibleTaxonomyNodes.map((node) => (
+                        <option key={node.node_id} value={node.node_id}>
+                          {node.path_labels.join(' / ')}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  {settingsLoading ? <div className="instrument-settings-loading">Loading settings…</div> : null}
+                </div>
+              </section>
+            </div>
+          </div>
+        </div>
+      ) : null}
 
       {standardizedError ? (
         <div className="listed-source-alert" role="alert">{standardizedError}</div>

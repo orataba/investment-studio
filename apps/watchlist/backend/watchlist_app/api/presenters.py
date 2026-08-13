@@ -15,13 +15,11 @@ from watchlist_app.db.models.watchlists import (
 
 
 TAXONOMY_GROUP_BY_CODE = "taxonomy"
-GROUP_BY_FIELD_ORDER = (
-    "management_firm_name",
+GROUP_BY_OPTION_ORDER = (
+    "instrument_type",
+    TAXONOMY_GROUP_BY_CODE,
     "data_freshness_status",
 )
-GROUP_BY_FIELD_ORDER_INDEX = {
-    field_key: index for index, field_key in enumerate(GROUP_BY_FIELD_ORDER)
-}
 
 
 def _local_view_id(record: WatchlistView) -> str:
@@ -163,29 +161,19 @@ def present_recalc_job(record: RecalcJob) -> dict[str, object]:
 
 def present_group_by_options(fields: Sequence[FieldRegistry]) -> list[dict[str, str]]:
     options = [{"code": "none", "label": "None"}]
+    fields_by_key = {field.field_key: field for field in fields}
     has_taxonomy_fields = any(
-        field.field_key in {"attr.fund_regime", "attr.fund_taxonomy_level_1"}
+        field.field_key == "attr.instrument_taxonomy_level_1"
         for field in fields
     )
-    if has_taxonomy_fields:
-        options.append({"code": TAXONOMY_GROUP_BY_CODE, "label": "Taxonomy"})
-    groupable_fields = [
-        field
-        for field in fields
-        if field.group_mode != "none"
-        and (
-            field.field_key in GROUP_BY_FIELD_ORDER_INDEX
-            or field.source_domain == "custom_attribute"
-        )
-    ]
-    for field in sorted(
-        groupable_fields,
-        key=lambda item: (
-            GROUP_BY_FIELD_ORDER_INDEX.get(item.field_key, len(GROUP_BY_FIELD_ORDER_INDEX)),
-            item.label,
-        ),
-    ):
-        options.append({"code": field.field_key, "label": field.label})
+    for field_key in GROUP_BY_OPTION_ORDER:
+        if field_key == TAXONOMY_GROUP_BY_CODE:
+            if has_taxonomy_fields:
+                options.append({"code": field_key, "label": "Taxonomy"})
+            continue
+        field = fields_by_key.get(field_key)
+        if field is not None and field.group_mode != "none":
+            options.append({"code": field.field_key, "label": field.label})
     return options
 
 
