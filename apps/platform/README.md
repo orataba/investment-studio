@@ -66,7 +66,7 @@ Database Dashboard 的邮件刷新使用显式产品规则匹配发件人、主�
 
 邮件或文件中解析出的值先作为 Platform 私有原始证据保存。Registry 对基金只接受 `official_nav`（单位净值）和 `total_return_nav`（分红再投资复权累计净值）。单位净值加历史现金分红的普通累计净值不得写成 `total_return_nav`；缺少可信供应商复权序列，或缺少完整分红/再投资信息时，累计净值保持 unavailable/NA。系统不以单位净值、现金累计值或交易价格兜底制造回报曲线。
 
-Database Dashboard 也支持 Tushare SDK 兼容刷新。将 instrument 的 `Source Mode` 设为 `API`，`API Profile` 设为 `tushare` 后，所有调用都通过 [tushare_client.py](./backend/platform_app/services/tushare_client.py) 初始化 `pro`，并把 SDK 的 `_DataApi__http_url` 指向 `PORTFOLIO_OPS_PLATFORM_TUSHARE_API_URL`，默认值为 `https://ttx.dailyfetch.top/`；`pro_bar` 也统一由该模块按 `ts.pro_bar(api=pro, ...)` 调用。公募 `.OF` 代码通过 `fund_nav` 写入 `official_nav / total_return_nav`，场内基金 `.SH/.SZ` 通过 `fund_daily` 写入 `price/close`，指数 `.SH/.SZ/.CSI/.CNI` 通过 `index_daily` 写入 `price/close`。Tushare token 只从仓库外的 `platform.env` 或显式进程环境读取；backend 目录中的 `.env.example` 仅说明键名，不承载真实值。
+Database Dashboard 通过 DataHub REST 接口刷新 Tushare 数据集。将 instrument 的 `Source Mode` 设为 `API`、`API Profile` 设为 `tushare` 后，所有请求都由 [datahub_client.py](./backend/platform_app/services/datahub_client.py) 发送到 `PORTFOLIO_OPS_PLATFORM_DATAHUB_TUSHARE_API_URL`，并以 `X-API-Key` 携带仓库外配置的 `PORTFOLIO_OPS_PLATFORM_DATAHUB_API_KEY`。客户端按 DataHub 的 `fields + items + has_more` 合约解码并使用 `offset` 读取全部分页。公募 `.OF` 代码通过 `fund-nav` 写入 `official_nav / total_return_nav`，场内基金 `.SH/.SZ` 通过 `fund-daily` 与 `fund-adj` 写入原始收盘价、OHLCV 和前复权序列，股票使用 `daily` 与 `adj-factor`，指数 `.SH/.SZ/.CSI/.CNI` 使用 `index-daily`。批量刷新默认串行请求 DataHub，并对实际观察到的临时 40203/40204 响应做有限退避重试；其他提供方错误立即失败。新写入的来源标记为 `datahub:tushare:*`，历史来源记录保持原始 provenance。真实 API key 只存放在仓库外的 `platform.env` 或显式进程环境中；backend 目录中的 `.env.example` 仅说明键名。
 
 `H11001.CSI` 是显式例外：Registry 必须同时配置
 `source_api_fallback_profile=csindex` 与 `source_api_fallback_code=H11001`，

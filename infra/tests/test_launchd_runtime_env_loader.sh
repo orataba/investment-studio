@@ -14,7 +14,7 @@ mkdir -p "$ENV_ROOT" "$MOCK_BIN"
 chmod 700 "$ENV_ROOT"
 
 printf '%s\n' \
-  'PORTFOLIO_OPS_PLATFORM_TUSHARE_TOKEN=api-token-loaded' \
+  'PORTFOLIO_OPS_PLATFORM_DATAHUB_API_KEY=api-key-loaded' \
   'PORTFOLIO_OPS_PLATFORM_EMAIL_SYNC_ENABLED=true' \
   'PORTFOLIO_OPS_PLATFORM_EMAIL_IMAP_PASSWORD=$(touch "'$SENTINEL_PATH'")' \
   'PORTFOLIO_OPS_PLATFORM_DATABASE_URL=postgresql://must-not-win/from-file' \
@@ -24,7 +24,7 @@ chmod 600 "$ENV_ROOT/platform.env"
 printf '%s\n' \
   '#!/usr/bin/env bash' \
   'set -euo pipefail' \
-  'printf "%s\n" "${PORTFOLIO_OPS_PLATFORM_TUSHARE_TOKEN:-}" "${PORTFOLIO_OPS_PLATFORM_EMAIL_SYNC_ENABLED:-}" "${PORTFOLIO_OPS_PLATFORM_EMAIL_IMAP_PASSWORD:-}" "${PORTFOLIO_OPS_PLATFORM_DATABASE_URL:-}" "${PORTFOLIO_OPS_PLATFORM_DATABASE_SCHEMA:-}" "${PORTFOLIO_OPS_PLATFORM_OPERATIONS_DATABASE_SCHEMA:-}" "$*" > "$CAPTURE_PATH"' \
+  'printf "%s\n" "${PORTFOLIO_OPS_PLATFORM_DATAHUB_API_KEY:-}" "${PORTFOLIO_OPS_PLATFORM_EMAIL_SYNC_ENABLED:-}" "${PORTFOLIO_OPS_PLATFORM_EMAIL_IMAP_PASSWORD:-}" "${PORTFOLIO_OPS_PLATFORM_DATABASE_URL:-}" "${PORTFOLIO_OPS_PLATFORM_DATABASE_SCHEMA:-}" "${PORTFOLIO_OPS_PLATFORM_OPERATIONS_DATABASE_SCHEMA:-}" "$*" > "$CAPTURE_PATH"' \
   > "$MOCK_BIN/python"
 printf '%s\n' \
   '#!/usr/bin/env bash' \
@@ -42,7 +42,7 @@ if [[ -e "$SENTINEL_PATH" ]]; then
   echo "The API runner executed shell syntax from the Platform environment file." >&2
   exit 1
 fi
-[[ "$(sed -n '1p' "$CAPTURE_PATH")" == "api-token-loaded" ]]
+[[ "$(sed -n '1p' "$CAPTURE_PATH")" == "api-key-loaded" ]]
 [[ "$(sed -n '2p' "$CAPTURE_PATH")" == "true" ]]
 [[ "$(sed -n '3p' "$CAPTURE_PATH")" == '$(touch "'$SENTINEL_PATH'")' ]]
 [[ "$(sed -n '4p' "$CAPTURE_PATH")" == "postgresql+psycopg://explicit/local" ]]

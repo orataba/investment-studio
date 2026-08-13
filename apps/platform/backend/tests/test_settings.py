@@ -27,7 +27,10 @@ def test_settings_define_a_private_operations_schema_and_migration_target() -> N
     assert settings.database_schema == "instrument_registry"
     assert settings.operations_database_schema == "platform"
     assert settings.migration_database_url == settings.database_url
-    assert settings.tushare_api_url == "https://ttx.dailyfetch.top"
+    assert settings.datahub_tushare_api_url == (
+        "http://datahubco.com/app-api/openapi/v1/tushare"
+    )
+    assert settings.datahub_timeout_seconds == 30
     assert settings.csindex_api_url == "https://www.csindex.com.cn/csindex-home"
     assert settings.csindex_timeout_seconds == 30
 

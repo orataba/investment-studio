@@ -24,7 +24,7 @@ chmod 700 "$ENV_ROOT"
 cp "$REPOSITORY_ROOT/infra/launchd/load_runtime_env.sh" "$PROJECT_ROOT/infra/launchd/load_runtime_env.sh"
 
 printf '%s\n' \
-  'PORTFOLIO_OPS_PLATFORM_TUSHARE_TOKEN=test-token-loaded' \
+  'PORTFOLIO_OPS_PLATFORM_DATAHUB_API_KEY=test-key-loaded' \
   'PORTFOLIO_OPS_PLATFORM_EMAIL_SYNC_ENABLED=true' \
   'PORTFOLIO_OPS_PLATFORM_EMAIL_IMAP_PASSWORD=$(touch "'$SENTINEL_PATH'")' \
   > "$ENV_ROOT/platform.env"
@@ -44,7 +44,7 @@ printf '%s\n' \
   '    "environment": os.environ.get("PORTFOLIO_OPS_PLATFORM_ENVIRONMENT"),' \
   '    "watchlist_api_url": os.environ.get("PORTFOLIO_OPS_PLATFORM_WATCHLIST_API_URL"),' \
   '    "portfolio_api_url": os.environ.get("PORTFOLIO_OPS_PLATFORM_PORTFOLIO_API_URL"),' \
-  '    "tushare_token": os.environ.get("PORTFOLIO_OPS_PLATFORM_TUSHARE_TOKEN"),' \
+  '    "datahub_api_key": os.environ.get("PORTFOLIO_OPS_PLATFORM_DATAHUB_API_KEY"),' \
   '    "email_sync_enabled": os.environ.get("PORTFOLIO_OPS_PLATFORM_EMAIL_SYNC_ENABLED"),' \
   '    "email_password": os.environ.get("PORTFOLIO_OPS_PLATFORM_EMAIL_IMAP_PASSWORD"),' \
   '    "pythonpath": os.environ.get("PYTHONPATH"),' \
@@ -108,7 +108,7 @@ assert payload["operations_database_schema"] == "platform"
 assert payload["environment"] == "local"
 assert payload["watchlist_api_url"] == "http://127.0.0.1:8000"
 assert payload["portfolio_api_url"] == "http://127.0.0.1:8001"
-assert payload["tushare_token"] == "test-token-loaded"
+assert payload["datahub_api_key"] == "test-key-loaded"
 assert payload["email_sync_enabled"] == "true"
 assert payload["email_password"].startswith("$(touch ")
 assert audit_payload["database_url"] == "postgresql+psycopg://explicit/local"

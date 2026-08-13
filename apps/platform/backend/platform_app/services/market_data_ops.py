@@ -55,7 +55,7 @@ from platform_app.services.nav_raw_store import (
     list_raw_nav_observations,
     record_raw_nav_observations,
 )
-from platform_app.services import csindex_client, tushare_client
+from platform_app.services import csindex_client, datahub_client
 
 try:
     from openpyxl import load_workbook
@@ -197,6 +197,7 @@ TUSHARE_PROFILE_ALIASES = {"tushare", "tushare_pro", "tushare-pro"}
 TUSHARE_PRICE_SUFFIXES = {"SH", "SZ"}
 TUSHARE_INDEX_SUFFIXES = {"SH", "SZ", "CSI", "CNI"}
 TUSHARE_HISTORY_START_DATE = date(2024, 1, 1)
+DATAHUB_TUSHARE_PROVIDER = "datahub:tushare"
 CSINDEX_FALLBACK_PROFILE = "csindex"
 CSINDEX_FALLBACK_INDEX_CODES = {
     "H11001.CSI": "H11001",
@@ -3253,7 +3254,7 @@ def _ensure_tushare_listed_security_quote_policy(
     )
 
 
-class TushareRefreshError(RuntimeError):
+class DataHubTushareRefreshError(RuntimeError):
     pass
 
 
@@ -3266,45 +3267,36 @@ def _is_tushare_missing_value(value: object) -> bool:
         return False
 
 
-def _call_tushare_api(
+def _call_datahub_tushare_api(
     *,
     api_name: str,
     params: dict[str, object],
     fields: str,
 ) -> list[dict[str, object]]:
     settings = get_settings()
-    if not settings.tushare_ready:
-        raise TushareRefreshError("Tushare token is not configured. Set PORTFOLIO_OPS_PLATFORM_TUSHARE_TOKEN first.")
+    if not settings.datahub_ready:
+        raise DataHubTushareRefreshError(
+            "DataHub API key is not configured. Set "
+            "PORTFOLIO_OPS_PLATFORM_DATAHUB_API_KEY first."
+        )
 
     try:
-        pro = tushare_client.create_tushare_client(
-            token=settings.tushare_token,
-            api_url=settings.tushare_api_url,
-            timeout_seconds=getattr(settings, "tushare_timeout_seconds", 30),
-        )
-        frame = tushare_client.invoke_tushare_api(
-            client=pro,
+        raw_rows = datahub_client.fetch_tushare_rows(
+            api_key=settings.datahub_api_key,
+            api_url=settings.datahub_tushare_api_url,
             api_name=api_name,
             params=params,
             fields=fields,
+            timeout_seconds=getattr(settings, "datahub_timeout_seconds", 30),
         )
     except Exception as exc:
-        safe_message = tushare_client.redact_tushare_error_message(
+        safe_message = datahub_client.redact_datahub_error_message(
             exc,
-            token=settings.tushare_token,
+            api_key=settings.datahub_api_key,
         )
-        raise TushareRefreshError(
-            f"Tushare SDK request failed: {safe_message}"
+        raise DataHubTushareRefreshError(
+            f"DataHub Tushare request failed: {safe_message}"
         ) from exc
-
-    if frame is None:
-        return []
-    to_dict = getattr(frame, "to_dict", None)
-    if not callable(to_dict):
-        return []
-    raw_rows = to_dict("records")
-    if not isinstance(raw_rows, list):
-        return []
 
     rows: list[dict[str, object]] = []
     for raw_row in raw_rows:
@@ -3362,9 +3354,9 @@ def _tushare_nav_rows(
                     else ""
                 ),
                 "_provider_revision_scope": (
-                    f"tushare:fund_nav:{provider_code}"
+                    f"{DATAHUB_TUSHARE_PROVIDER}:fund_nav:{provider_code}"
                     if provider_code
-                    else "tushare:fund_nav"
+                    else f"{DATAHUB_TUSHARE_PROVIDER}:fund_nav"
                 ),
                 "_provider_revision_sequence": provider_revision_sequence,
                 "currency": normalized_currency,
@@ -3468,9 +3460,9 @@ def _tushare_price_bar_rows(
                 "volume_unit": "lot" if volume is not None else None,
                 "turnover_unit": "thousand_cny" if turnover is not None else None,
                 "provider": (
-                    f"tushare:{api_name}+adjustment_factor"
+                    f"{DATAHUB_TUSHARE_PROVIDER}:{api_name}+adjustment_factor"
                     if adjustment_factor is not None
-                    else f"tushare:{api_name}"
+                    else f"{DATAHUB_TUSHARE_PROVIDER}:{api_name}"
                 ),
                 "status": (
                     "complete"
@@ -3946,8 +3938,8 @@ def _refresh_tushare_listed_security(
     changes, all available history is recomputed from canonical raw closes.
     """
     if str(instrument.get("currency") or "").strip().upper() != "CNY":
-        raise TushareRefreshError(
-            f"Tushare listed-security price data for {ts_code} requires a CNY instrument."
+        raise DataHubTushareRefreshError(
+            f"DataHub Tushare listed-security price data for {ts_code} requires a CNY instrument."
         )
     _ensure_tushare_listed_security_quote_policy(
         instrument_id=instrument_id,
@@ -3983,7 +3975,7 @@ def _refresh_tushare_listed_security(
         "end_date": _format_tushare_date(today),
     }
     close_rows = _tushare_price_rows(
-        _call_tushare_api(
+        _call_datahub_tushare_api(
             api_name=price_api_name,
             params=params,
             fields=(
@@ -3992,7 +3984,7 @@ def _refresh_tushare_listed_security(
         ),
         latest_date=None,
     )
-    factor_rows = _call_tushare_api(
+    factor_rows = _call_datahub_tushare_api(
         api_name=factor_api_name,
         params=params,
         fields="ts_code,trade_date,adj_factor",
@@ -4002,7 +3994,7 @@ def _refresh_tushare_listed_security(
             instrument_id=instrument_id,
             status="failed",
             message=(
-                f"Tushare returned an empty response for both {price_api_name} and "
+                f"DataHub Tushare returned an empty response for both {price_api_name} and "
                 f"{factor_api_name} for established listed security {ts_code}; "
                 "existing canonical price history was preserved without rewriting it."
             ),
@@ -4044,7 +4036,7 @@ def _refresh_tushare_listed_security(
     if query_start > TUSHARE_HISTORY_START_DATE and (
         full_history or factor_changed or missing_candidate_factors
     ):
-        full_factor_rows = _call_tushare_api(
+        full_factor_rows = _call_datahub_tushare_api(
             api_name=factor_api_name,
             params={
                 "ts_code": ts_code,
@@ -4087,7 +4079,7 @@ def _refresh_tushare_listed_security(
                     "value": _decimal_text(adjusted_close),
                     "currency": "CNY",
                     "provider": (
-                        f"tushare:{factor_api_name}:qfq:latest_factor={factor_text}"
+                        f"{DATAHUB_TUSHARE_PROVIDER}:{factor_api_name}:qfq:latest_factor={factor_text}"
                     ),
                     "status": "complete",
                 }
@@ -4102,7 +4094,7 @@ def _refresh_tushare_listed_security(
             "as_of_date": point_date,
             "value": value,
             "currency": "CNY",
-            "provider": f"tushare:{price_api_name}",
+            "provider": f"{DATAHUB_TUSHARE_PROVIDER}:{price_api_name}",
             "status": (
                 "complete" if point_date in adjusted_complete_dates else "partial"
             ),
@@ -4124,7 +4116,7 @@ def _refresh_tushare_listed_security(
                 "as_of_date": point_date,
                 "value": close_value,
                 "currency": "CNY",
-                "provider": f"tushare:{price_api_name}",
+                "provider": f"{DATAHUB_TUSHARE_PROVIDER}:{price_api_name}",
                 "status": "complete",
             }
         )
@@ -4139,7 +4131,7 @@ def _refresh_tushare_listed_security(
                 "as_of_date": point_date,
                 "value": close_value,
                 "currency": "CNY",
-                "provider": f"tushare:{price_api_name}",
+                "provider": f"{DATAHUB_TUSHARE_PROVIDER}:{price_api_name}",
                 "status": "partial",
             }
         )
@@ -4151,7 +4143,7 @@ def _refresh_tushare_listed_security(
                 "as_of_date": point_date,
                 "value": existing_adjusted_by_date[point_date],
                 "currency": "CNY",
-                "provider": f"tushare:{factor_api_name}:stale_missing_factor",
+                "provider": f"{DATAHUB_TUSHARE_PROVIDER}:{factor_api_name}:stale_missing_factor",
                 "status": "partial",
             }
         )
@@ -4185,7 +4177,7 @@ def _refresh_tushare_listed_security(
             effective_date=action["effective_date"],
             new_units=action["new_units"],
             old_units=action["old_units"],
-            source=f"tushare:{factor_api_name}",
+            source=f"{DATAHUB_TUSHARE_PROVIDER}:{factor_api_name}",
             status=str(action["status"]),
             quantity_rounding=str(action["quantity_rounding"]),
             quantity_precision=int(action["quantity_precision"]),
@@ -4207,7 +4199,7 @@ def _refresh_tushare_listed_security(
             instrument_id=instrument_id,
             status="partial",
             message=(
-                f"Tushare listed-security refresh is partial for {ts_code}: "
+                f"DataHub Tushare listed-security refresh is partial for {ts_code}: "
                 f"missing adjustment factor for {missing_dates_text}. "
                 "Affected raw closes were stored as partial; no complete close was "
                 "stored without a same-date adjusted_close."
@@ -4219,7 +4211,7 @@ def _refresh_tushare_listed_security(
         return update_refresh_status(
             instrument_id=instrument_id,
             status="no_new_data",
-            message=f"Tushare returned no changed listed-security rows for {ts_code}.",
+            message=f"DataHub Tushare returned no changed listed-security rows for {ts_code}.",
             updated_by=updated_by,
             mode="api",
         )
@@ -4293,7 +4285,7 @@ def _refresh_from_csindex_fallback(
             instrument_id=instrument_id,
             status="no_new_data",
             message=(
-                f"Tushare index_daily returned no new close rows for {ts_code}; "
+                f"DataHub Tushare index_daily returned no new close rows for {ts_code}; "
                 f"CSI official index-performance fallback also returned no new "
                 f"{index_code} rows{since_text}."
             ),
@@ -4334,7 +4326,7 @@ def _refresh_from_csindex_fallback(
         status="refreshed",
         message=(
             f"Imported {changed_count} official CSI close rows for {index_code} "
-            f"after Tushare index_daily returned no new rows for {ts_code}. "
+            f"after DataHub Tushare index_daily returned no new rows for {ts_code}. "
             "The CSI endpoint publishes close-only data, so no OHLCV bars were invented."
         ),
         updated_by=updated_by,
@@ -4364,7 +4356,7 @@ def _refresh_from_tushare(
     try:
         if instrument_type == "fund" and suffix == "OF":
             latest_date = None if full_history else _latest_nav_date_from_instrument(instrument)
-            rows = _call_tushare_api(
+            rows = _call_datahub_tushare_api(
                 api_name="fund_nav",
                 params={"ts_code": ts_code},
                 fields="ts_code,ann_date,end_date,nav_date,unit_nav,accum_nav,adj_nav,update_flag",
@@ -4379,7 +4371,7 @@ def _refresh_from_tushare(
                 return update_refresh_status(
                     instrument_id=instrument_id,
                     status="no_new_data",
-                    message=f"Tushare fund_nav returned no new NAV rows for {ts_code}{since_text}.",
+                    message=f"DataHub Tushare fund_nav returned no new NAV rows for {ts_code}{since_text}.",
                     updated_by=updated_by,
                     mode="api",
                 )
@@ -4387,8 +4379,8 @@ def _refresh_from_tushare(
                 instrument_id=instrument_id,
                 rows=nav_rows,
                 source_kind="api_observation",
-                source_ref="tushare:fund_nav",
-                provider="tushare:fund_nav",
+                source_ref=f"{DATAHUB_TUSHARE_PROVIDER}:fund_nav",
+                provider=f"{DATAHUB_TUSHARE_PROVIDER}:fund_nav",
                 status="complete",
                 evidence={"ts_code": ts_code, "source_field": "adj_nav"},
             )
@@ -4398,11 +4390,11 @@ def _refresh_from_tushare(
                     instrument_id=instrument_id,
                     instrument=current_instrument,
                 ),
-                source_provider="tushare:fund_nav",
+                source_provider=f"{DATAHUB_TUSHARE_PROVIDER}:fund_nav",
                 refresh_status="imported",
                 updated_by=updated_by,
                 message_factory=lambda publication: (
-                    f"Stored {len(nav_rows)} Tushare NAV observations for {ts_code} "
+                    f"Stored {len(nav_rows)} DataHub Tushare NAV observations for {ts_code} "
                     f"and rebuilt {len(publication.rows)} canonical NAV dates; "
                     f"{len(publication.action_candidates)} NAV action signal(s) require review."
                 ),
@@ -4434,8 +4426,8 @@ def _refresh_from_tushare(
 
         if instrument_type == "index" and suffix in TUSHARE_INDEX_SUFFIXES:
             if str(instrument.get("currency") or "").strip().upper() != "CNY":
-                raise TushareRefreshError(
-                    f"Tushare index price data for {ts_code} requires a CNY instrument."
+                raise DataHubTushareRefreshError(
+                    f"DataHub Tushare index price data for {ts_code} requires a CNY instrument."
                 )
             latest_date = None if full_history else _latest_market_data_date_from_instrument(
                 instrument,
@@ -4466,7 +4458,7 @@ def _refresh_from_tushare(
             )
             params["start_date"] = _format_tushare_date(query_start)
             params["end_date"] = _format_tushare_date(date.today())
-            rows = _call_tushare_api(
+            rows = _call_datahub_tushare_api(
                 api_name="index_daily",
                 params=params,
                 fields=(
@@ -4501,11 +4493,11 @@ def _refresh_from_tushare(
             updated_by=updated_by,
             mode="api",
         )
-    except TushareRefreshError as exc:
+    except DataHubTushareRefreshError as exc:
         return update_refresh_status(
             instrument_id=instrument_id,
             status="failed",
-            message=f"Tushare refresh failed for {ts_code}: {exc}",
+            message=f"DataHub Tushare refresh failed for {ts_code}: {exc}",
             updated_by=updated_by,
             mode="api",
         )
@@ -4531,7 +4523,7 @@ def _upsert_tushare_price_rows(
         return update_refresh_status(
             instrument_id=instrument_id,
             status="no_new_data",
-            message=f"Tushare {api_name} returned no new close rows for {ts_code}.",
+            message=f"DataHub Tushare {api_name} returned no new close rows for {ts_code}.",
             updated_by=updated_by,
             mode="api",
         )
@@ -4545,7 +4537,7 @@ def _upsert_tushare_price_rows(
                 "as_of_date": row["as_of_date"],
                 "value": row["value"],
                 "currency": "CNY",
-                "provider": f"tushare:{api_name}",
+                "provider": f"{DATAHUB_TUSHARE_PROVIDER}:{api_name}",
                 "status": "complete",
             }
             for row in rows
@@ -4563,7 +4555,7 @@ def _upsert_tushare_price_rows(
         return update_refresh_status(
             instrument_id=instrument_id,
             status="no_new_data",
-            message=f"Tushare {api_name} returned no changed close rows for {ts_code}.",
+            message=f"DataHub Tushare {api_name} returned no changed close rows for {ts_code}.",
             updated_by=updated_by,
             mode="api",
         )
@@ -4572,7 +4564,7 @@ def _upsert_tushare_price_rows(
         status="refreshed",
         message=(
             f"Imported {changed_count} close rows and {bar_changed_count} raw OHLCV bars "
-            f"from Tushare {api_name} for {ts_code}."
+            f"from DataHub Tushare {api_name} for {ts_code}."
         ),
         updated_by=updated_by,
         mode="api",
@@ -4645,18 +4637,18 @@ def _run_tushare_refresh_process_batch(
     if not targets:
         return []
     context = multiprocessing.get_context("spawn")
-    max_workers = min(max(1, int(getattr(settings, "tushare_batch_max_workers", 4))), len(targets))
+    max_workers = 1
     configured_item_timeout = int(
         getattr(settings, "market_data_batch_item_timeout_seconds", 300) or 0
     )
-    request_timeout = max(1, int(getattr(settings, "tushare_timeout_seconds", 30) or 30))
+    request_timeout = max(1, int(getattr(settings, "datahub_timeout_seconds", 30) or 30))
     item_timeout = (
         configured_item_timeout
         if configured_item_timeout > 0
         else max(60, request_timeout * 4)
     )
     configured_batch_timeout = int(
-        getattr(settings, "tushare_batch_timeout_seconds", 3600) or 0
+        getattr(settings, "datahub_tushare_batch_timeout_seconds", 3600) or 0
     )
     batch_timeout = (
         configured_batch_timeout
@@ -5055,13 +5047,13 @@ def refresh_market_data_batch(
             "results": combined_results,
         }
     if normalized_source == "tushare" and targets:
-        max_workers = min(getattr(settings, "tushare_batch_max_workers", 4), len(targets))
+        max_workers = 1
         LOGGER.info(
             "tushare batch executing in isolated processes target_count=%s max_workers=%s item_timeout=%s batch_timeout=%s",
             len(targets),
             max_workers,
             getattr(settings, "market_data_batch_item_timeout_seconds", 300),
-            getattr(settings, "tushare_batch_timeout_seconds", 3600),
+            getattr(settings, "datahub_tushare_batch_timeout_seconds", 3600),
         )
         ordered_results = _run_tushare_refresh_process_batch(
             targets=targets,

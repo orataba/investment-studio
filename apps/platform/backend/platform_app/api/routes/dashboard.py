@@ -86,7 +86,7 @@ def get_data_operations_dashboard() -> dict[str, object]:
         "last_refresh_at": max(refresh_times) if refresh_times else None,
         "sync_readiness": {
             "email": settings.email_sync_enabled and settings.email_sync_ready,
-            "tushare": settings.tushare_ready,
+            "tushare": settings.datahub_ready,
         },
         "problems": problems[:12],
     }

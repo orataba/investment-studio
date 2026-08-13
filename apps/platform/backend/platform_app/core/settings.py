@@ -37,11 +37,12 @@ class Settings(BaseSettings):
     email_attachment_max_bytes: int = 25 * 1024 * 1024
     email_ingestion_lease_seconds: int = 1800
     market_data_batch_item_timeout_seconds: int = 300
-    tushare_token: str | None = None
-    tushare_api_url: str = "https://ttx.dailyfetch.top"
-    tushare_timeout_seconds: int = 30
-    tushare_batch_max_workers: int = 4
-    tushare_batch_timeout_seconds: int = 3600
+    datahub_api_key: str | None = None
+    datahub_tushare_api_url: str = (
+        "http://datahubco.com/app-api/openapi/v1/tushare"
+    )
+    datahub_timeout_seconds: int = 30
+    datahub_tushare_batch_timeout_seconds: int = 3600
     csindex_api_url: str = "https://www.csindex.com.cn/csindex-home"
     csindex_timeout_seconds: int = 30
 
@@ -170,20 +171,14 @@ class Settings(BaseSettings):
             return normalized
         return value
 
-    @field_validator("tushare_batch_max_workers", mode="before")
+    @field_validator("datahub_tushare_batch_timeout_seconds", mode="before")
     @classmethod
-    def _coerce_tushare_batch_workers(cls, value: object) -> int:
-        workers = int(value)
-        if workers < 1 or workers > 8:
-            raise ValueError("tushare_batch_max_workers must be between 1 and 8.")
-        return workers
-
-    @field_validator("tushare_batch_timeout_seconds", mode="before")
-    @classmethod
-    def _coerce_tushare_batch_timeout(cls, value: object) -> int:
+    def _coerce_datahub_tushare_batch_timeout(cls, value: object) -> int:
         timeout = int(value)
         if timeout < 60 or timeout > 21600:
-            raise ValueError("tushare_batch_timeout_seconds must be between 60 and 21600.")
+            raise ValueError(
+                "datahub_tushare_batch_timeout_seconds must be between 60 and 21600."
+            )
         return timeout
 
     @field_validator("csindex_timeout_seconds", mode="before")
@@ -210,8 +205,8 @@ class Settings(BaseSettings):
         return bool(self.email_imap_host and self.email_imap_username and self.email_imap_password)
 
     @property
-    def tushare_ready(self) -> bool:
-        return bool(self.tushare_token)
+    def datahub_ready(self) -> bool:
+        return bool(self.datahub_api_key)
 
     @property
     def migration_database_url(self) -> str:

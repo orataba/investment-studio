@@ -1140,7 +1140,9 @@ def test_tushare_nav_rows_use_announcement_date_as_strict_revision_order() -> No
     assert str(merged[0]["cash_cumulative_nav"]) == "0.793"
     assert str(merged[0]["nav_with_dividend"]) == "0.793"
     assert merged[0]["_provider_revision_at"] == "2026-07-24"
-    assert merged[0]["_provider_revision_scope"] == "tushare:fund_nav:018201.OF"
+    assert merged[0]["_provider_revision_scope"] == (
+        "datahub:tushare:fund_nav:018201.OF"
+    )
 
 
 def test_cash_distribution_reversal_breaks_the_derived_chain() -> None:
@@ -1708,56 +1710,47 @@ def test_public_item_timeout_uses_configured_limit_and_returns_failed_status(mon
     }
 
 
-def test_tushare_api_uses_sdk_with_configured_proxy_url(monkeypatch) -> None:
+def test_tushare_api_uses_datahub_rest_transport(monkeypatch) -> None:
     captured: dict[str, object] = {}
 
     class FakeSettings:
-        tushare_ready = True
-        tushare_token = "secret-token"
-        tushare_api_url = "https://ttx.dailyfetch.top/"
+        datahub_ready = True
+        datahub_api_key = "secret-key"
+        datahub_tushare_api_url = (
+            "http://datahubco.com/app-api/openapi/v1/tushare"
+        )
+        datahub_timeout_seconds = 30
 
-    class FakeFrame:
-        def to_dict(self, orient: str) -> list[dict[str, object]]:
-            assert orient == "records"
-            return [{"ts_code": "000300.SH", "trade_date": "20260615", "close": "4200.12"}]
-
-    class FakePro:
-        def __init__(self) -> None:
-            self._DataApi__http_url = ""
-
-        def index_daily(self, **kwargs: object) -> FakeFrame:
-            captured["http_url"] = self._DataApi__http_url
-            captured["index_daily_kwargs"] = kwargs
-            return FakeFrame()
-
-    class FakeTushareModule:
-        def __init__(self) -> None:
-            self.pro = FakePro()
-
-        def pro_api(self, token: str, timeout: int) -> FakePro:
-            captured["token"] = token
-            captured["timeout"] = timeout
-            return self.pro
+    def fake_fetch_tushare_rows(**kwargs: object) -> list[dict[str, object]]:
+        captured.update(kwargs)
+        return [
+            {
+                "ts_code": "000300.SH",
+                "trade_date": "20260615",
+                "close": "4200.12",
+            }
+        ]
 
     monkeypatch.setattr(market_data_ops, "get_settings", lambda: FakeSettings())
     monkeypatch.setattr(
-        market_data_ops.tushare_client,
-        "ts",
-        FakeTushareModule(),
+        market_data_ops.datahub_client,
+        "fetch_tushare_rows",
+        fake_fetch_tushare_rows,
     )
 
-    rows = market_data_ops._call_tushare_api(
+    rows = market_data_ops._call_datahub_tushare_api(
         api_name="index_daily",
         params={"ts_code": "000300.SH"},
         fields="ts_code,trade_date,close",
     )
 
-    assert captured["token"] == "secret-token"
-    assert captured["timeout"] == 30
-    assert captured["http_url"] == "https://ttx.dailyfetch.top"
-    assert captured["index_daily_kwargs"] == {
-        "ts_code": "000300.SH",
+    assert captured == {
+        "api_key": "secret-key",
+        "api_url": "http://datahubco.com/app-api/openapi/v1/tushare",
+        "api_name": "index_daily",
+        "params": {"ts_code": "000300.SH"},
         "fields": "ts_code,trade_date,close",
+        "timeout_seconds": 30,
     }
     assert rows == [{"ts_code": "000300.SH", "trade_date": "20260615", "close": "4200.12"}]
 
@@ -1865,7 +1858,7 @@ def test_unchanged_fund_nav_publication_clears_stale_refresh_failure(
 def test_tushare_refresh_imports_public_fund_nav(monkeypatch) -> None:
     captured: dict[str, object] = {}
 
-    def fake_call_tushare_api(**kwargs: object) -> list[dict[str, object]]:
+    def fake_call_datahub_tushare_api(**kwargs: object) -> list[dict[str, object]]:
         captured["api_call"] = kwargs
         return [
             {
@@ -1922,7 +1915,11 @@ def test_tushare_refresh_imports_public_fund_nav(monkeypatch) -> None:
                 "candidates": candidates,
             }
 
-    monkeypatch.setattr(market_data_ops, "_call_tushare_api", fake_call_tushare_api)
+    monkeypatch.setattr(
+        market_data_ops,
+        "_call_datahub_tushare_api",
+        fake_call_datahub_tushare_api,
+    )
     monkeypatch.setattr(
         market_data_ops,
         "get_instrument",
@@ -2019,8 +2016,10 @@ def test_tushare_refresh_imports_public_fund_nav(monkeypatch) -> None:
     assert latest_row["nav"] == "1.2345"
     assert "cash_cumulative_nav" not in latest_row
     assert str(latest_row["nav_with_dividend"]) == "1.4567000000000000"
-    assert latest_row["nav_source_provider"] == "tushare:fund_nav"
-    assert latest_row["nav_with_dividend_source_provider"] == "tushare:fund_nav"
+    assert latest_row["nav_source_provider"] == "datahub:tushare:fund_nav"
+    assert latest_row["nav_with_dividend_source_provider"] == (
+        "datahub:tushare:fund_nav"
+    )
     assert latest_row["nav_lineage"] == {
         "kind": "provider_explicit",
         "evidence": {"source_field": "unit_nav"},
@@ -2047,7 +2046,7 @@ def test_tushare_refresh_imports_public_fund_nav(monkeypatch) -> None:
 def test_tushare_refresh_imports_index_close(monkeypatch) -> None:
     captured: dict[str, object] = {}
 
-    def fake_call_tushare_api(**kwargs: object) -> list[dict[str, object]]:
+    def fake_call_datahub_tushare_api(**kwargs: object) -> list[dict[str, object]]:
         captured["api_call"] = kwargs
         return [
             {"ts_code": "000300.SH", "trade_date": "20260615", "close": "4200.12"},
@@ -2062,7 +2061,11 @@ def test_tushare_refresh_imports_index_close(monkeypatch) -> None:
         captured["refresh_status"] = kwargs
         return {"instrument_id": kwargs["instrument_id"]}
 
-    monkeypatch.setattr(market_data_ops, "_call_tushare_api", fake_call_tushare_api)
+    monkeypatch.setattr(
+        market_data_ops,
+        "_call_datahub_tushare_api",
+        fake_call_datahub_tushare_api,
+    )
     monkeypatch.setattr(
         market_data_ops,
         "get_price_bar_coverage",
@@ -2116,7 +2119,7 @@ def test_tushare_refresh_imports_index_close(monkeypatch) -> None:
                 "as_of_date": market_data_ops.date(2026, 6, 15),
                 "value": market_data_ops.Decimal("4200.12"),
                 "currency": "CNY",
-                "provider": "tushare:index_daily",
+                "provider": "datahub:tushare:index_daily",
                 "status": "complete",
             }
         ],
@@ -2130,7 +2133,7 @@ def test_h11001_uses_explicit_csindex_fallback_when_tushare_is_empty(
 ) -> None:
     captured: dict[str, object] = {}
 
-    def fake_call_tushare_api(**kwargs: object) -> list[dict[str, object]]:
+    def fake_call_datahub_tushare_api(**kwargs: object) -> list[dict[str, object]]:
         captured["tushare_call"] = kwargs
         return []
 
@@ -2162,7 +2165,11 @@ def test_h11001_uses_explicit_csindex_fallback_when_tushare_is_empty(
         captured["refresh_status"] = kwargs
         return {"instrument_id": kwargs["instrument_id"]}
 
-    monkeypatch.setattr(market_data_ops, "_call_tushare_api", fake_call_tushare_api)
+    monkeypatch.setattr(
+        market_data_ops,
+        "_call_datahub_tushare_api",
+        fake_call_datahub_tushare_api,
+    )
     monkeypatch.setattr(
         market_data_ops.csindex_client,
         "fetch_index_performance",
@@ -2276,7 +2283,7 @@ def test_tushare_index_refresh_repairs_ohlcv_history_behind_existing_closes(
 ) -> None:
     captured: dict[str, object] = {}
 
-    def fake_call_tushare_api(**kwargs: object) -> list[dict[str, object]]:
+    def fake_call_datahub_tushare_api(**kwargs: object) -> list[dict[str, object]]:
         captured["api_call"] = kwargs
         return [
             {
@@ -2303,7 +2310,11 @@ def test_tushare_index_refresh_repairs_ohlcv_history_behind_existing_closes(
             },
         ]
 
-    monkeypatch.setattr(market_data_ops, "_call_tushare_api", fake_call_tushare_api)
+    monkeypatch.setattr(
+        market_data_ops,
+        "_call_datahub_tushare_api",
+        fake_call_datahub_tushare_api,
+    )
     monkeypatch.setattr(
         market_data_ops,
         "get_price_bar_coverage",
@@ -2383,7 +2394,7 @@ def test_listed_security_refresh_repairs_missing_factor_and_bar_history(
 ) -> None:
     captured: dict[str, object] = {"api_calls": []}
 
-    def fake_call_tushare_api(**kwargs: object) -> list[dict[str, object]]:
+    def fake_call_datahub_tushare_api(**kwargs: object) -> list[dict[str, object]]:
         captured["api_calls"].append(kwargs)
         if kwargs["api_name"] == "fund_adj":
             return [
@@ -2415,7 +2426,11 @@ def test_listed_security_refresh_repairs_missing_factor_and_bar_history(
             },
         ]
 
-    monkeypatch.setattr(market_data_ops, "_call_tushare_api", fake_call_tushare_api)
+    monkeypatch.setattr(
+        market_data_ops,
+        "_call_datahub_tushare_api",
+        fake_call_datahub_tushare_api,
+    )
     monkeypatch.setattr(
         market_data_ops,
         "get_price_bar_coverage",
@@ -2509,7 +2524,7 @@ def test_listed_security_refresh_repairs_missing_factor_and_bar_history(
 def test_tushare_price_refresh_starts_at_2024_when_no_existing_history(monkeypatch) -> None:
     captured: dict[str, object] = {}
 
-    def fake_call_tushare_api(**kwargs: object) -> list[dict[str, object]]:
+    def fake_call_datahub_tushare_api(**kwargs: object) -> list[dict[str, object]]:
         captured.setdefault("api_calls", []).append(kwargs)
         if kwargs["api_name"] == "fund_adj":
             return [
@@ -2532,7 +2547,11 @@ def test_tushare_price_refresh_starts_at_2024_when_no_existing_history(monkeypat
         captured["quote_selection_policy"] = kwargs
         return {"instrument_id": kwargs["instrument_id"]}
 
-    monkeypatch.setattr(market_data_ops, "_call_tushare_api", fake_call_tushare_api)
+    monkeypatch.setattr(
+        market_data_ops,
+        "_call_datahub_tushare_api",
+        fake_call_datahub_tushare_api,
+    )
     monkeypatch.setattr(
         market_data_ops,
         "upsert_market_data_points",
@@ -2580,7 +2599,7 @@ def test_tushare_price_refresh_starts_at_2024_when_no_existing_history(monkeypat
             "as_of_date": market_data_ops.date(2024, 1, 2),
             "value": market_data_ops.Decimal("0.91"),
             "currency": "CNY",
-            "provider": "tushare:fund_daily",
+            "provider": "datahub:tushare:fund_daily",
             "status": "complete",
         },
         {
@@ -2589,7 +2608,7 @@ def test_tushare_price_refresh_starts_at_2024_when_no_existing_history(monkeypat
             "as_of_date": market_data_ops.date(2024, 1, 2),
             "value": "0.91",
             "currency": "CNY",
-            "provider": "tushare:fund_adj:qfq:latest_factor=1",
+            "provider": "datahub:tushare:fund_adj:qfq:latest_factor=1",
             "status": "complete",
         },
     ]
@@ -2600,7 +2619,7 @@ def test_empty_listed_security_response_preserves_existing_history(monkeypatch) 
 
     monkeypatch.setattr(
         market_data_ops,
-        "_call_tushare_api",
+        "_call_datahub_tushare_api",
         lambda **_kwargs: [],
     )
 
@@ -2675,7 +2694,7 @@ def test_tushare_listed_security_never_persists_complete_close_without_adjusted_
 ) -> None:
     captured: dict[str, object] = {}
 
-    def fake_call_tushare_api(**kwargs: object) -> list[dict[str, object]]:
+    def fake_call_datahub_tushare_api(**kwargs: object) -> list[dict[str, object]]:
         if kwargs["api_name"] == "adj_factor":
             return [
                 {"ts_code": "600000.SH", "trade_date": "20260714", "adj_factor": "1"},
@@ -2693,7 +2712,11 @@ def test_tushare_listed_security_never_persists_complete_close_without_adjusted_
         captured["refresh_status"] = kwargs
         return {"instrument_id": kwargs["instrument_id"]}
 
-    monkeypatch.setattr(market_data_ops, "_call_tushare_api", fake_call_tushare_api)
+    monkeypatch.setattr(
+        market_data_ops,
+        "_call_datahub_tushare_api",
+        fake_call_datahub_tushare_api,
+    )
     monkeypatch.setattr(
         market_data_ops,
         "upsert_market_data_points",
@@ -2788,7 +2811,7 @@ def test_tushare_factor_change_without_inverse_raw_price_move_is_not_a_split() -
 def test_tushare_full_history_is_capped_at_2024(monkeypatch) -> None:
     captured: dict[str, object] = {}
 
-    def fake_call_tushare_api(**kwargs: object) -> list[dict[str, object]]:
+    def fake_call_datahub_tushare_api(**kwargs: object) -> list[dict[str, object]]:
         captured["api_call"] = kwargs
         return []
 
@@ -2796,7 +2819,11 @@ def test_tushare_full_history_is_capped_at_2024(monkeypatch) -> None:
         captured["refresh_status"] = kwargs
         return {"instrument_id": kwargs["instrument_id"]}
 
-    monkeypatch.setattr(market_data_ops, "_call_tushare_api", fake_call_tushare_api)
+    monkeypatch.setattr(
+        market_data_ops,
+        "_call_datahub_tushare_api",
+        fake_call_datahub_tushare_api,
+    )
     monkeypatch.setattr(market_data_ops, "update_refresh_status", fake_update_refresh_status)
 
     market_data_ops._refresh_from_tushare(

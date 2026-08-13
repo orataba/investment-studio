@@ -24,8 +24,10 @@ def test_health_reports_email_readiness(monkeypatch) -> None:
         email_imap_host = None
         email_imap_username = None
         email_imap_password = None
-        tushare_ready = False
-        tushare_api_url = "https://ttx.dailyfetch.top/"
+        datahub_ready = False
+        datahub_tushare_api_url = (
+            "http://datahubco.com/app-api/openapi/v1/tushare"
+        )
 
     monkeypatch.setattr(health, "get_settings", lambda: StubSettings())
 
@@ -51,7 +53,7 @@ def test_health_reports_email_readiness(monkeypatch) -> None:
             "PORTFOLIO_OPS_PLATFORM_EMAIL_IMAP_PASSWORD",
         ],
     }
-    assert payload["tushare_sync"] == {
+    assert payload["datahub_tushare_sync"] == {
         "ready": False,
-        "api_url": "https://ttx.dailyfetch.top/",
+        "api_url": "http://datahubco.com/app-api/openapi/v1/tushare",
     }

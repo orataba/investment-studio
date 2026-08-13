@@ -32,8 +32,8 @@ def get_health() -> dict[str, object]:
             "ingestion_lease_seconds": settings.email_ingestion_lease_seconds,
             "missing_required_settings": missing_email_settings,
         },
-        "tushare_sync": {
-            "ready": settings.tushare_ready,
-            "api_url": settings.tushare_api_url,
+        "datahub_tushare_sync": {
+            "ready": settings.datahub_ready,
+            "api_url": settings.datahub_tushare_api_url,
         },
     }

@@ -79,7 +79,7 @@ Platform API 和定时任务都会读取当前
 内的 runtime `.env`。秘密目录必须由当前用户拥有且权限为 `0700`，文件必须由
 当前用户拥有且权限为 `0600`。安全加载器只接受
 `PORTFOLIO_OPS_PLATFORM_*` 赋值，把值作为纯文本导入，不会执行 `$()`、反引号
-等 shell 语法。安装器不会把 Tushare token、邮件密码等秘密复制进 plist；数据库
+等 shell 语法。安装器不会把 DataHub API key、邮件密码等秘密复制进 plist；数据库
 连接只写入确实需要它的三个 API 与定时刷新 plist，三个纯 web job 不携带数据库
 凭据。为了避免 Pydantic 再从第二来源补入配置，安装器、三个 API runner 和定时
 runner 都会拒绝任一 backend 目录中存在

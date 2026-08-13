@@ -14,8 +14,8 @@ dependencies = [
   "openpyxl>=3.1,<4.0",
   "pydantic-settings>=2.10,<3.0",
   "psycopg[binary]>=3.2,<4.0",
+  "requests>=2.32,<3.0",
   "sqlalchemy>=2.0,<3.0",
-  "tushare>=1.4,<2.0",
   "uvicorn[standard]>=0.34,<1.0",
   "xlrd>=2.0,<3.0",
 ]
