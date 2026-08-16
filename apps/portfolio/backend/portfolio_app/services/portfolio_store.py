@@ -2332,6 +2332,7 @@ def _validate_target_set_lines(
     risk_eligible_member_keys = expected_member_keys - risk_excluded_member_keys
     if risk_budget_enabled and not risk_eligible_member_keys:
         raise ValueError("Risk-budget target sets require at least one risk-eligible member.")
+    weight_total = 0.0
     risk_share_total = 0.0
 
     for raw_line in lines:
@@ -2352,6 +2353,7 @@ def _validate_target_set_lines(
             resolved_weight = float(target_weight)
             if resolved_weight < 0:
                 raise ValueError("target_weight must be zero or greater.")
+            weight_total += resolved_weight
         elif target_weight is not None:
             raise ValueError("target_weight must be empty when weight is disabled.")
 
@@ -2375,6 +2377,8 @@ def _validate_target_set_lines(
     required_member_keys = expected_member_keys if weight_enabled else risk_eligible_member_keys
     if not required_member_keys.issubset(seen_member_keys):
         raise ValueError("Target set lines must cover every direct member in the selected scope.")
+    if weight_enabled and abs(weight_total - 1.0) > TARGET_SET_EPSILON:
+        raise ValueError("target_weight values must sum to 100%.")
     if risk_budget_enabled and abs(risk_share_total - 1.0) > TARGET_SET_EPSILON:
         raise ValueError("Risk-eligible target_risk_share values must sum to 100%.")
 

@@ -27,10 +27,6 @@ from portfolio_app.db.models import (
     TransactionRecordModel,
 )
 from portfolio_app.db.session import get_session_factory
-from portfolio_app.services.instrument_charts import (
-    build_instrument_sparkline,
-    build_instrument_sparkline_from_detail,
-)
 from portfolio_app.services.instrument_registry import InstrumentRegistryError
 from portfolio_app.services.ledger import build_account_workspace
 from portfolio_app.services.performance import build_holdings_report
@@ -62,6 +58,7 @@ from portfolio_app.services.portfolio_store import (
 )
 from portfolio_app.services.research_eligibility import derive_research_lifecycle
 from portfolio_app.services.risk_model import get_portfolio_risk_policy, normalize_portfolio_risk_policy, risk_window_label
+from portfolio_app.services.workspace_cache import get_cached_materialized_performance_report
 
 TEXT_SUFFIXES = {".csv", ".json", ".md", ".txt", ".yaml", ".yml"}
 HTML_SUFFIXES = {".html"}
@@ -1080,6 +1077,16 @@ def _build_research_context(
         instrument_detail_cache=resolved_instrument_detail_cache,
     )
     lookback_start = research_window_start_date(as_of_date, lookback_days)
+    performance_report = get_cached_materialized_performance_report(
+        portfolio_id,
+        start_date=lookback_start,
+        end_date=as_of_date,
+    )
+    performance_summary = (
+        performance_report.get("summary")
+        if isinstance(performance_report, dict) and isinstance(performance_report.get("summary"), dict)
+        else {}
+    )
     statement_positions = list(statement.get("positions", []))
     research_security_positions = [
         position
@@ -1114,38 +1121,45 @@ def _build_research_context(
             "Research target solve is unavailable until all securities are assigned to the selected planning taxonomy "
             f"({int(unassigned_group.get('position_count') or 0)} unassigned security holding(s))."
         )
-    chart_label = None
-    chart_note = None
-    chart_currency = None
-    daily_points: list[dict[str, object]] = []
-    if top_holdings:
-        reference_instrument = top_holdings[0]
-        reference_instrument_id = str(reference_instrument.get("instrument_id") or "")
-        cached_reference_detail = resolved_instrument_detail_cache.get(reference_instrument_id)
-        daily_points = (
-            build_instrument_sparkline_from_detail(
-                cached_reference_detail,
-                instrument_id=reference_instrument_id,
-                as_of_date=as_of_date,
-                max_points=20,
-            )
-            if isinstance(cached_reference_detail, dict)
-            else build_instrument_sparkline(
-                reference_instrument_id,
-                as_of_date=as_of_date,
-                max_points=20,
-            )
+    daily_points = [
+        {
+            "date": point["as_of_date"].isoformat(),
+            "value": float(point["ending_nav"]),
+        }
+        for point in (
+            list(performance_report.get("daily_series") or [])
+            if isinstance(performance_report, dict)
+            else []
         )
-        chart_label = "Reference Tape"
-        chart_currency = str(reference_instrument.get("base_currency") or statement.get("base_currency") or "USD")
-        chart_note = (
-            f"Using the six-month sparkline for {reference_instrument.get('instrument_name') or reference_instrument.get('instrument_id')} "
-            "until a cheaper portfolio daily tape is wired into the research workbench."
-        )
+        if isinstance(point, dict)
+        and isinstance(point.get("as_of_date"), date)
+        and bool(point.get("return_observation_eligible"))
+        and _safe_float(point.get("ending_nav")) is not None
+    ]
+    chart_label = "Portfolio NAV" if performance_report is not None else None
+    chart_note = (
+        "Canonical portfolio NAV from Performance; only return-observation-eligible dates are included."
+        if performance_report is not None
+        else None
+    )
+    chart_currency = (
+        str(performance_report.get("base_currency") or statement.get("base_currency") or "USD")
+        if isinstance(performance_report, dict)
+        else None
+    )
+    if performance_report is None:
+        quality_warnings.append("Canonical portfolio Performance context is unavailable for the selected date.")
 
     statement_nav_base = _safe_float(statement.get("total_nav_base"))
     portfolio_nav_base = _safe_float(portfolio.get("nav"))
-    resolved_nav_base = statement_nav_base if statement_nav_base is not None else portfolio_nav_base
+    performance_end_nav = _safe_float(performance_summary.get("end_nav"))
+    resolved_nav_base = (
+        performance_end_nav
+        if performance_end_nav is not None
+        else statement_nav_base
+        if statement_nav_base is not None
+        else portfolio_nav_base
+    )
 
     return {
         "portfolio_id": portfolio_id,
@@ -1161,12 +1175,12 @@ def _build_research_context(
         "chart_note": chart_note,
         "chart_currency": chart_currency,
         "summary": {
-            "period_return": None,
-            "annualized_volatility": None,
-            "current_drawdown": None,
-            "max_drawdown": None,
-            "start_nav": None,
-            "end_nav": resolved_nav_base,
+            "period_return": _safe_float(performance_summary.get("cumulative_twr")),
+            "annualized_volatility": _safe_float(performance_summary.get("annualized_volatility")),
+            "current_drawdown": _safe_float(performance_summary.get("current_drawdown")),
+            "max_drawdown": _safe_float(performance_summary.get("max_drawdown")),
+            "start_nav": _safe_float(performance_summary.get("start_nav")),
+            "end_nav": performance_end_nav if performance_end_nav is not None else resolved_nav_base,
         },
         "planning_target_summary": planning_target_summary,
         "quality_warnings": quality_warnings,
@@ -1174,6 +1188,7 @@ def _build_research_context(
         "top_holdings": top_holdings,
         "planning_groups": planning_groups,
     }
+
 
 def _build_current_target_findings(
     solution: dict[str, object],
@@ -1560,7 +1575,7 @@ def _write_artifacts(
     settings_path = run_root / "request.json"
     holdings_path = run_root / "top_holdings.csv"
     groups_path = run_root / "planning_groups.csv"
-    reference_tape_path = run_root / "reference_tape.csv"
+    portfolio_nav_tape_path = run_root / "portfolio_nav_tape.csv"
     target_weights_path = run_root / "target_weights.csv"
     member_targets_path = run_root / "member_targets.csv"
     leaf_targets_path = run_root / "leaf_targets.csv"
@@ -1625,7 +1640,7 @@ def _write_artifacts(
     )
     _write_csv(holdings_path, list(detail.get("top_holdings") or []))
     _write_csv(groups_path, list(detail.get("planning_groups") or []))
-    _write_csv(reference_tape_path, list(context.get("chart_points") or []))
+    _write_csv(portfolio_nav_tape_path, list(context.get("chart_points") or []))
     _write_csv(target_weights_path, list(detail.get("target_rows") or []))
     _write_csv(member_targets_path, list(detail.get("member_targets") or []))
     _write_csv(leaf_targets_path, list(detail.get("leaf_targets") or []))
@@ -1641,7 +1656,7 @@ def _write_artifacts(
         ("request", "Run Request", settings_path),
         ("holdings", "Top Holdings CSV", holdings_path),
         ("groups", "Planning Groups CSV", groups_path),
-        ("reference_tape", "Reference Tape CSV", reference_tape_path),
+        ("portfolio_nav_tape", "Portfolio NAV Tape CSV", portfolio_nav_tape_path),
         ("target_weights", "Target Weights CSV", target_weights_path),
         ("member_targets", "Member Targets CSV", member_targets_path),
         ("leaf_targets", "Leaf Targets CSV", leaf_targets_path),

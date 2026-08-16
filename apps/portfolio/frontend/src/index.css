@@ -6952,6 +6952,20 @@ input[type='checkbox'] {
   line-height: 1.35;
 }
 
+.taxonomy-target-validation-message {
+  display: inline-flex;
+  align-items: center;
+  min-height: 24px;
+  padding: 3px 8px;
+  border: 1px solid #f3a6a6;
+  border-radius: 999px;
+  background: #fff1f1;
+  color: #a32121;
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1.35;
+}
+
 .taxonomy-target-integrity-warning {
   display: flex;
   align-items: flex-start;

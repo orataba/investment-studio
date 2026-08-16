@@ -624,7 +624,7 @@ def test_security_taxonomy_rejects_cash_bucket_assignments(client):
     assert "instrument" in str(assignment_response.json())
 
 
-def test_target_set_accepts_levered_weight_totals_with_normalized_risk_share(client):
+def test_target_set_rejects_non_normalized_weight_totals(client):
     taxonomy_response = client.post(
         "/api/portfolios/portfolio-ops/taxonomies",
         json={"effective_from": EFFECTIVE_FROM,
@@ -669,18 +669,8 @@ def test_target_set_accepts_levered_weight_totals_with_normalized_risk_share(cli
             ],
         },
     )
-    assert target_set_response.status_code == 200
-    assert target_set_response.json()["target_set_type"] == "saa"
-
-    catalog_response = client.get("/api/portfolios/portfolio-ops/taxonomies")
-    assert catalog_response.status_code == 200
-    saved_lines = [
-        item
-        for item in catalog_response.json()["target_set_lines"]
-        if item["target_set_id"] == target_set_response.json()["target_set_id"]
-    ]
-    assert sum(item["target_weight"] for item in saved_lines) == pytest.approx(1.5)
-    assert sum(item["target_risk_share"] for item in saved_lines) == pytest.approx(1.0)
+    assert target_set_response.status_code == 400
+    assert "target_weight values must sum to 100%." in str(target_set_response.json())
 
 
 def test_target_set_rejects_non_normalized_risk_share_totals(client):

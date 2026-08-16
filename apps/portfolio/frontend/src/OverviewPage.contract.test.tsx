@@ -162,6 +162,7 @@ describe('Overview rendered page contract', () => {
             line_id: 'holding:fcn-1',
             position_reference_id: 'fcn-1',
             derivative_contract_id: 'fcn-1',
+            holding_category: 'derivatives',
             instrument_core: null,
             derivative_contract: fcnContractFixture({
               derivative_contract_id: 'fcn-1',
@@ -199,6 +200,8 @@ describe('Overview rendered page contract', () => {
     expect(within(holdingRow!).getAllByText('N/A').length).toBeGreaterThanOrEqual(5)
     expect(within(holdingRow!).queryByText('$0.00')).not.toBeInTheDocument()
     expect(within(holdingRow!).queryByText('0.00%')).not.toBeInTheDocument()
+    expect(screen.getAllByText('Derivatives').length).toBeGreaterThanOrEqual(2)
+    expect(screen.queryByText('Unassigned')).not.toBeInTheDocument()
   })
 
   it.each([

@@ -420,8 +420,15 @@ describe('Taxonomies rendered page contract', () => {
     })
     await user.clear(saaRiskAssetsWeight)
     await user.type(saaRiskAssetsWeight, '79')
+    expect(screen.getByRole('alert')).toHaveTextContent(
+      'Target weight total must be 100% within the selected scope.',
+    )
+    expect(screen.getByRole('button', { name: 'Save' })).toBeDisabled()
+    expect(apiMocks.updatePortfolioTargetSet).not.toHaveBeenCalled()
+
     await user.clear(saaCashWeight)
     await user.type(saaCashWeight, '21')
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Save' })).toBeEnabled())
     await user.click(screen.getByRole('button', { name: 'Save' }))
 
     await waitFor(() => expect(apiMocks.updatePortfolioTargetSet).toHaveBeenCalledTimes(1))

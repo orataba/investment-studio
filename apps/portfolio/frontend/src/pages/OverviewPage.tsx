@@ -142,6 +142,7 @@ const TOP_HOLDING_COLUMN_GROUPS: Array<{ label: string; columns: TopHoldingColum
 ]
 
 const TOP_HOLDINGS_LIMIT = 10
+const DERIVATIVES_BUCKET_ID = 'derivative_bucket:__derivatives__'
 
 const DONUT_COLORS = ['#0b72d7', '#0f766e', '#64748b', '#7c3aed', '#db2777', '#14b8a6', '#475569']
 
@@ -1131,13 +1132,16 @@ export default function OverviewPage() {
       const weight =
         row.allocation != null && Number.isFinite(row.allocation) ? row.allocation : null
       const rowReferenceId = holdingReferenceId(row)
-      const assignment = assignmentByInstrumentId.get(rowReferenceId)
+      const isDerivative = row.holding_category === 'derivatives'
+      const assignment = isDerivative ? null : assignmentByInstrumentId.get(rowReferenceId)
       const leafNode = assignment ? nodesById.get(assignment.taxonomy_node_id) ?? null : null
       const path = leafNode ? resolveNodePath(leafNode.taxonomy_node_id, nodesById) : []
       const topLevelNode = path[0] ?? leafNode
-      const topLevelId = topLevelNode?.taxonomy_node_id ?? '__unassigned__'
-      const topLevelLabel = topLevelNode?.node_name ?? 'Unassigned'
-      const leafLabel = leafNode?.node_name ?? 'Unassigned'
+      const topLevelId = isDerivative
+        ? DERIVATIVES_BUCKET_ID
+        : topLevelNode?.taxonomy_node_id ?? '__unassigned__'
+      const topLevelLabel = isDerivative ? 'Derivatives' : topLevelNode?.node_name ?? 'Unassigned'
+      const leafLabel = isDerivative ? 'Derivatives' : leafNode?.node_name ?? 'Unassigned'
 
       accumulateBucket(topLevelBuckets, {
         id: topLevelId,

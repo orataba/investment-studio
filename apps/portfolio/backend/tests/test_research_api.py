@@ -30,6 +30,7 @@ from portfolio_app.services.research_solver import (
     SYSTEM_CASH_TARGET_LABEL,
     SYSTEM_DERIVATIVE_TARGET_MEMBER_ID,
     TARGET_MEMBER_CASH,
+    TARGET_MEMBER_DERIVATIVE,
     TARGET_MEMBER_INSTRUMENT,
     TARGET_MEMBER_NODE,
     ScopeMemberRecord,
@@ -1181,6 +1182,51 @@ def test_positive_top_sleeve_minimum_overrides_zero_configured_weight(monkeypatc
             include_actuals=False,
         )
 
+    all_fixed_capital_state = replace(
+        state,
+        target_sets_by_scope_type={
+            (None, "taa"): [
+                {
+                    "target_set_id": "root-all-fixed-capital",
+                    "target_set_type": "taa",
+                    "name": "Root all fixed capital",
+                    "weight_enabled": True,
+                    "risk_budget_enabled": False,
+                    "status": "active",
+                }
+            ]
+        },
+        target_lines_by_set_id={
+            "root-all-fixed-capital": {
+                (TARGET_MEMBER_NODE, "node-a"): {"target_weight": 0.0},
+                (TARGET_MEMBER_NODE, "node-b"): {"target_weight": 0.0},
+                (TARGET_MEMBER_DERIVATIVE, SYSTEM_DERIVATIVE_TARGET_MEMBER_ID): {"target_weight": 0.0},
+                (TARGET_MEMBER_CASH, SYSTEM_CASH_TARGET_MEMBER_ID): {"target_weight": 1.0},
+            }
+        },
+        top_sleeve_weight_bounds={},
+    )
+    with pytest.raises(ValueError, match="capital overlay is unavailable: no positive risky target weight"):
+        _solve_current_scope(
+            all_fixed_capital_state,
+            scope_node_id=None,
+            as_of_date=dates[-1],
+            lookback_days=30,
+            calculation_frequency="daily",
+            target_dimension="weight",
+            capital_mode=CAPITAL_MODE_VOLATILITY_CAP,
+            gross_exposure=None,
+            target_volatility=0.08,
+            max_gross_exposure=None,
+            missing_return_policy="strict",
+            apply_capital_overlay=True,
+            risk_model_config={
+                "covariance_model_id": "sample_covariance",
+                "parameters": {"min_observations": 2},
+            },
+            include_actuals=False,
+        )
+
 
 def test_backtest_universe_comes_from_point_in_time_assignment_revisions() -> None:
     assert _historical_backtest_instrument_ids(
@@ -1710,6 +1756,62 @@ def test_research_workbench_returns_target_solve_defaults(client):
     assert payload["current_context"]["holdings_count"] == 3
     assert payload["current_context"]["planning_group_count"] == 0
     assert payload["current_context"]["nav"] == payload["current_context"]["summary"]["end_nav"]
+
+
+def test_research_current_context_uses_canonical_portfolio_performance(client, monkeypatch):
+    monkeypatch.setattr(
+        research_service,
+        "get_cached_materialized_performance_report",
+        lambda _portfolio_id, *, start_date, end_date: {
+            "base_currency": "USD",
+            "summary": {
+                "cumulative_twr": 0.025,
+                "annualized_volatility": 0.12,
+                "current_drawdown": -0.01,
+                "max_drawdown": -0.04,
+                "start_nav": 200_000.0,
+                "end_nav": 216_470.0,
+            },
+            "daily_series": [
+                {
+                    "as_of_date": date(2026, 4, 13),
+                    "ending_nav": 210_000.0,
+                    "return_observation_eligible": True,
+                },
+                {
+                    "as_of_date": date(2026, 4, 14),
+                    "ending_nav": 212_000.0,
+                    "return_observation_eligible": False,
+                },
+                {
+                    "as_of_date": date(2026, 4, 15),
+                    "ending_nav": 216_470.0,
+                    "return_observation_eligible": True,
+                },
+            ],
+        },
+    )
+
+    response = client.get("/api/portfolios/portfolio-ops/research/workbench")
+    assert response.status_code == 200
+    context = response.json()["current_context"]
+
+    assert context["chart_label"] == "Portfolio NAV"
+    assert "Canonical portfolio NAV from Performance" in context["chart_note"]
+    assert context["chart_currency"] == "USD"
+    assert context["chart_points"] == [
+        {"date": "2026-04-13", "value": 210_000.0},
+        {"date": "2026-04-15", "value": 216_470.0},
+    ]
+    assert context["nav"] == pytest.approx(216_470.0)
+    assert context["summary"] == {
+        "period_return": pytest.approx(0.025),
+        "annualized_volatility": pytest.approx(0.12),
+        "current_drawdown": pytest.approx(-0.01),
+        "max_drawdown": pytest.approx(-0.04),
+        "start_nav": pytest.approx(200_000.0),
+        "end_nav": pytest.approx(216_470.0),
+    }
 
 
 def test_production_risk_window_min_observations_scale_with_calendar_window() -> None:
@@ -3109,9 +3211,11 @@ def test_research_run_creates_current_target_weight_outputs(client):
     assert "Solver" in signal_labels
     assert "Missing Returns" in signal_labels
     assert "Estimated Volatility" in signal_labels
-    reference_tape_artifact = next(item for item in run_payload["artifacts"] if item["artifact_id"] == "reference_tape")
-    assert reference_tape_artifact["label"] == "Reference Tape CSV"
-    assert reference_tape_artifact["path"].endswith("/reference_tape.csv")
+    portfolio_nav_tape_artifact = next(
+        item for item in run_payload["artifacts"] if item["artifact_id"] == "portfolio_nav_tape"
+    )
+    assert portfolio_nav_tape_artifact["label"] == "Portfolio NAV Tape CSV"
+    assert portfolio_nav_tape_artifact["path"].endswith("/portfolio_nav_tape.csv")
     assert any(item["artifact_id"] == "target_weights" for item in run_payload["artifacts"])
     assert any(item["artifact_id"] == "leaf_targets" for item in run_payload["artifacts"])
     assert all(item["artifact_id"] != "backtest_curve" for item in run_payload["artifacts"])

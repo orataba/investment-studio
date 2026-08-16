@@ -2899,17 +2899,14 @@ def _solve_current_scope(
 
     if overlay_applies_to_risk_sleeves and not fixed_gross_overlay and risk_bearing_keys:
         risk_bearing_total = float(implementation_weights.reindex(risk_bearing_keys, fill_value=0.0).sum())
-        if risk_bearing_total > 1e-12:
-            implementation_weights.loc[risk_bearing_keys] = (
-                implementation_weights.reindex(risk_bearing_keys, fill_value=0.0) / risk_bearing_total
+        if risk_bearing_total <= 1e-12:
+            raise ValueError(
+                f"{scope_label} capital overlay is unavailable: no positive risky target weight."
             )
-            implementation_weights.loc[fixed_capital_keys] = 0.0
-        else:
-            implementation_weights.loc[risk_bearing_keys] = 1.0 / float(len(risk_bearing_keys))
-            implementation_weights.loc[fixed_capital_keys] = 0.0
-            warnings.append(
-                f"{scope_label} had no positive risky target weight before capital overlay, so Research used equal risky-sleeve weights."
-            )
+        implementation_weights.loc[risk_bearing_keys] = (
+            implementation_weights.reindex(risk_bearing_keys, fill_value=0.0) / risk_bearing_total
+        )
+        implementation_weights.loc[fixed_capital_keys] = 0.0
 
     estimated_risk_sleeve_volatility = None
     effective_gross_exposure = None

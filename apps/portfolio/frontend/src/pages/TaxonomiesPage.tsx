@@ -198,11 +198,7 @@ type TargetSetDraft = {
 }
 
 type TargetSetValidation = {
-  savable: boolean
   errors: string[]
-  warnings: string[]
-  weight_sum_pct: number | null
-  risk_sum_pct: number | null
 }
 
 type DefaultTargetDimension = 'weight' | 'risk_budget'
@@ -588,7 +584,6 @@ function validateTargetSetDraft(
   allowedDimensions: { weight: boolean; risk_budget: boolean },
 ) {
   const errors: string[] = []
-  const warnings: string[] = []
   let weightSum = 0
   let riskSum = 0
   let weightSeen = false
@@ -634,18 +629,14 @@ function validateTargetSetDraft(
   })
 
   if (draft.weight_enabled && weightSeen && Math.abs(weightSum - 1) > 0.0005) {
-    warnings.push('Target weight total is not 100% within the selected scope.')
+    errors.push('Target weight total must be 100% within the selected scope.')
   }
   if (draft.risk_budget_enabled && riskSeen && Math.abs(riskSum - 1) > 0.0005) {
-    warnings.push('Risk-eligible target risk budget total is not 100% within the selected scope.')
+    errors.push('Risk-eligible target risk budget total must be 100% within the selected scope.')
   }
 
   return {
-    savable: errors.length === 0,
     errors,
-    warnings,
-    weight_sum_pct: draft.weight_enabled && weightSeen ? weightSum * 100 : null,
-    risk_sum_pct: draft.risk_budget_enabled && riskSeen ? riskSum * 100 : null,
   } satisfies TargetSetValidation
 }
 
@@ -2283,7 +2274,7 @@ export default function TaxonomiesPage() {
   }
 
   function targetValidationMessage(kind: 'saa' | 'taa', validation: TargetSetValidation) {
-    return [...validation.errors, ...validation.warnings]
+    return validation.errors
       .map((message) => `${kind.toUpperCase()} ${currentScopeLabel}: ${message}`)
       .join(' ')
   }
@@ -3391,6 +3382,11 @@ export default function TaxonomiesPage() {
                       role="status"
                     >
                       Target edit mode · edit values/type only; structure and assignment moves locked
+                    </span>
+                  ) : null}
+                  {targetEditMode && targetSaveBlockedReason ? (
+                    <span className="taxonomy-target-validation-message" role="alert">
+                      {targetSaveBlockedReason}
                     </span>
                   ) : null}
                   <span>
