@@ -9,10 +9,14 @@ import '../../../../packages/ui/src/language.css'
 import '../../../../packages/ui/src/notice-toast.css'
 import '../../../../packages/ui/src/sparkline.css'
 
+const routerBasename = import.meta.env.BASE_URL === '/'
+  ? undefined
+  : import.meta.env.BASE_URL.replace(/\/$/, '')
+
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>
     <LanguageProvider>
-      <BrowserRouter>
+      <BrowserRouter basename={routerBasename}>
         <App />
       </BrowserRouter>
     </LanguageProvider>

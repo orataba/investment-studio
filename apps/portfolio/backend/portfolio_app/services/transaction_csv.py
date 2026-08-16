@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import json
 from dataclasses import dataclass
 from hashlib import sha256
 from io import StringIO
@@ -41,14 +42,13 @@ IMPORT_COLUMNS = (
     "option_strike",
     "option_contract_multiplier",
     "fcn_notional",
+    "fcn_annual_coupon_rate_pct",
     "fcn_issue_date",
+    "fcn_final_observation_date",
     "fcn_maturity_date",
     "fcn_issuer",
     "fcn_counterparty",
-    "fcn_underlying_instrument_ids",
-    "fcn_deliverable_instrument_ids",
-    "fcn_barrier_type",
-    "fcn_barrier_level",
+    "fcn_underlyings_json",
     "quantity",
     "price",
     "gross_amount",
@@ -67,6 +67,8 @@ EXPORT_ONLY_COLUMNS = (
     "transaction_id",
     "row_version",
     "created_at",
+    "asset_domain",
+    "asset_subtype",
     # Derived read-only semantic; imports use the persisted transaction_type
     # and the backend resolver remains authoritative.
     "option_action",
@@ -96,14 +98,13 @@ DERIVATIVE_DEFINITION_COLUMNS = frozenset(
         "option_strike",
         "option_contract_multiplier",
         "fcn_notional",
+        "fcn_annual_coupon_rate_pct",
         "fcn_issue_date",
+        "fcn_final_observation_date",
         "fcn_maturity_date",
         "fcn_issuer",
         "fcn_counterparty",
-        "fcn_underlying_instrument_ids",
-        "fcn_deliverable_instrument_ids",
-        "fcn_barrier_type",
-        "fcn_barrier_level",
+        "fcn_underlyings_json",
     }
 )
 OPTION_TERM_COLUMNS = frozenset(
@@ -118,14 +119,13 @@ OPTION_TERM_COLUMNS = frozenset(
 FCN_TERM_COLUMNS = frozenset(
     {
         "fcn_notional",
+        "fcn_annual_coupon_rate_pct",
         "fcn_issue_date",
+        "fcn_final_observation_date",
         "fcn_maturity_date",
         "fcn_issuer",
         "fcn_counterparty",
-        "fcn_underlying_instrument_ids",
-        "fcn_deliverable_instrument_ids",
-        "fcn_barrier_type",
-        "fcn_barrier_level",
+        "fcn_underlyings_json",
     }
 )
 
@@ -169,10 +169,16 @@ def _validation_errors(error: ValidationError) -> tuple[str, ...]:
     return tuple(rendered)
 
 
-def _split_instrument_ids(value: object) -> list[str]:
+def _parse_fcn_underlyings(value: object) -> list[object]:
     if value is None:
         return []
-    return [item.strip() for item in str(value).split(";") if item.strip()]
+    try:
+        parsed = json.loads(str(value))
+    except json.JSONDecodeError as error:
+        raise ValueError("fcn_underlyings_json must contain valid JSON.") from error
+    if not isinstance(parsed, list):
+        raise ValueError("fcn_underlyings_json must be a JSON array.")
+    return parsed
 
 
 def _build_derivative_contract(
@@ -223,18 +229,19 @@ def _build_derivative_contract(
         terms = FCNContractTerms.model_validate(
             {
                 "notional": values.get("fcn_notional"),
+                "annual_coupon_rate_pct": values.get(
+                    "fcn_annual_coupon_rate_pct"
+                ),
                 "issue_date": values.get("fcn_issue_date"),
+                "final_observation_date": values.get(
+                    "fcn_final_observation_date"
+                ),
                 "maturity_date": values.get("fcn_maturity_date"),
                 "issuer": values.get("fcn_issuer"),
                 "counterparty": values.get("fcn_counterparty"),
-                "underlying_instrument_ids": _split_instrument_ids(
-                    values.get("fcn_underlying_instrument_ids")
+                "underlyings": _parse_fcn_underlyings(
+                    values.get("fcn_underlyings_json")
                 ),
-                "deliverable_instrument_ids": _split_instrument_ids(
-                    values.get("fcn_deliverable_instrument_ids")
-                ),
-                "barrier_type": values.get("fcn_barrier_type") or "none",
-                "barrier_level": values.get("fcn_barrier_level"),
             }
         )
     else:
@@ -365,6 +372,24 @@ def render_transaction_csv(records: Iterable[dict[str, object]]) -> str:
             if derivative_contract is not None
             else ""
         )
+        instrument_ref = (
+            record.get("instrument_ref")
+            if isinstance(record.get("instrument_ref"), dict)
+            else None
+        )
+        if record.get("derivative_contract_id"):
+            asset_domain = "derivative"
+            asset_subtype = contract_type or None
+        elif record.get("instrument_id"):
+            asset_domain = "security"
+            asset_subtype = (
+                instrument_ref.get("instrument_type")
+                if instrument_ref is not None
+                else None
+            )
+        else:
+            asset_domain = "cash"
+            asset_subtype = None
         flattened_derivative: dict[str, object] = {
             "derivative_contract_name": (
                 derivative_contract.get("contract_name")
@@ -377,6 +402,8 @@ def render_transaction_csv(records: Iterable[dict[str, object]]) -> str:
                 if derivative_contract is not None
                 else None
             ),
+            "asset_domain": asset_domain,
+            "asset_subtype": asset_subtype,
         }
         if contract_type == "option":
             flattened_derivative.update(
@@ -396,24 +423,21 @@ def render_transaction_csv(records: Iterable[dict[str, object]]) -> str:
             flattened_derivative.update(
                 {
                     "fcn_notional": derivative_terms.get("notional"),
+                    "fcn_annual_coupon_rate_pct": derivative_terms.get(
+                        "annual_coupon_rate_pct"
+                    ),
                     "fcn_issue_date": derivative_terms.get("issue_date"),
+                    "fcn_final_observation_date": derivative_terms.get(
+                        "final_observation_date"
+                    ),
                     "fcn_maturity_date": derivative_terms.get("maturity_date"),
                     "fcn_issuer": derivative_terms.get("issuer"),
                     "fcn_counterparty": derivative_terms.get("counterparty"),
-                    "fcn_underlying_instrument_ids": ";".join(
-                        str(item)
-                        for item in derivative_terms.get(
-                            "underlying_instrument_ids", []
-                        )
+                    "fcn_underlyings_json": json.dumps(
+                        derivative_terms.get("underlyings", []),
+                        ensure_ascii=False,
+                        separators=(",", ":"),
                     ),
-                    "fcn_deliverable_instrument_ids": ";".join(
-                        str(item)
-                        for item in derivative_terms.get(
-                            "deliverable_instrument_ids", []
-                        )
-                    ),
-                    "fcn_barrier_type": derivative_terms.get("barrier_type"),
-                    "fcn_barrier_level": derivative_terms.get("barrier_level"),
                 }
             )
         row: dict[str, object] = {}

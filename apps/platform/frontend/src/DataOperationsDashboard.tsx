@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 
 import { LanguageSelector } from '../../../../packages/ui/src/i18n'
+import { appPath } from './appPath'
 import { fetchJson } from './instrumentRegistryModel'
 
 type PlatformAppsResponse = {
@@ -37,7 +38,7 @@ export default function DataOperationsDashboard() {
   return (
     <main className="platform-shell home-shell">
       <header className="home-masthead">
-        <a className="home-brand" href="/">
+        <a className="home-brand" href={appPath('/')}>
           <span>Portfolio Operations</span>
           <strong>Workbench</strong>
         </a>
@@ -73,7 +74,7 @@ export default function DataOperationsDashboard() {
         </a>
       </nav>
 
-      <a className="home-registry-link" href="/instruments">
+      <a className="home-registry-link" href={appPath('/instruments')}>
         <span className="home-link-number">03</span>
         <span className="home-registry-link-copy">
           <strong>Instrument Registry</strong>

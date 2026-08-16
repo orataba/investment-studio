@@ -19,8 +19,10 @@ export const TRANSACTION_EXPORT_HEADERS: TableCell[] = [
   'Type',
   'Flow Scope',
   'Account',
-  'Instrument ID',
-  'Instrument Name',
+  'Asset Domain',
+  'Asset Type',
+  'Asset ID',
+  'Asset Name',
   'Quantity',
   'Price',
   'Gross Amount',
@@ -46,13 +48,17 @@ export function buildTransactionExportRows(transactions: PortfolioTransactionRec
       transaction.external_flow_date ?? '',
       transactionActivityLabel(
         transaction.transaction_type,
-        transaction.instrument_ref?.instrument_type,
+        transaction.asset_subtype,
         transaction.option_action,
       ),
       transaction.flow_scope,
       transaction.account.account_name,
-      transaction.instrument_id ?? '',
-      transaction.instrument_ref?.instrument_name ?? '',
+      transaction.asset_domain,
+      transaction.asset_subtype ?? '',
+      transaction.instrument_id ?? transaction.derivative_contract_id ?? '',
+      transaction.instrument_ref?.instrument_name ??
+        transaction.derivative_contract?.contract_name ??
+        '',
       transaction.quantity,
       transaction.price,
       transaction.gross_amount,
@@ -68,8 +74,9 @@ export function buildTransactionExportRows(transactions: PortfolioTransactionRec
 
 export function countActiveTransactionFilters(filters: {
   account_id?: string
+  asset_domain?: string
   transaction_type?: string
-  instrument_id?: string
+  position_reference_id?: string
   start_date?: string
   end_date?: string
 }) {
@@ -117,34 +124,6 @@ export function transactionActivityLabel(
     .split('_')
     .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
     .join(' ')
-}
-
-export function transactionTypeChoiceLabel(
-  transactionType: string,
-  instrumentType?: string | null,
-) {
-  if (instrumentType) {
-    return transactionActivityLabel(transactionType, instrumentType)
-  }
-  if (transactionType === 'buy') {
-    return 'Buy / FCN Entry / Option Buy to Open'
-  }
-  if (transactionType === 'sell') {
-    return 'Sell / Option Sell to Close'
-  }
-  if (transactionType === 'option_write') {
-    return 'Option Sell to Open'
-  }
-  if (transactionType === 'option_buy_to_close') {
-    return 'Option Buy to Close'
-  }
-  if (transactionType === 'coupon') {
-    return 'Coupon / FCN Income'
-  }
-  if (transactionType === 'maturity_redemption') {
-    return 'Contract Close / Maturity'
-  }
-  return transactionActivityLabel(transactionType)
 }
 
 const AUDIT_FIELD_LABELS: Record<string, string> = {

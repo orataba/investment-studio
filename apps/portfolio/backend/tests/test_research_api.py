@@ -475,14 +475,22 @@ def test_current_scope_actuals_keeps_derivatives_and_all_account_liquidity_as_ze
                         "currency": "USD",
                         "terms": {
                             "notional": "50",
+                            "annual_coupon_rate_pct": None,
                             "issue_date": "2026-01-01",
+                            "final_observation_date": None,
                             "maturity_date": "2026-12-31",
                             "issuer": "Test Issuer",
                             "counterparty": "Test Broker",
-                            "underlying_instrument_ids": ["ordinary-fund"],
-                            "deliverable_instrument_ids": ["ordinary-fund"],
-                            "barrier_type": "none",
-                            "barrier_level": None,
+                            "underlyings": [
+                                {
+                                    "instrument_id": "ordinary-fund",
+                                    "initial_reference_price": None,
+                                    "strike_level_pct": None,
+                                    "knock_in_level_pct": None,
+                                    "knock_out_level_pct": None,
+                                    "deliverable": True,
+                                }
+                            ],
                         },
                         "created_at": "2026-01-01T00:00:00Z",
                     },

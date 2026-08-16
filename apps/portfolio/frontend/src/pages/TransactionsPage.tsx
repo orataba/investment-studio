@@ -55,7 +55,6 @@ import {
   transactionActivityLabel,
   transactionChangedFields,
   transactionDateLabels,
-  transactionTypeChoiceLabel,
 } from '../lib/transactionPresentation'
 import {
   requiredDerivativeContractType,
@@ -76,14 +75,21 @@ import {
 import { executionQuoteUnavailableMessage } from '../lib/executionQuotePresentation'
 import {
   buildInitialDerivativeContractDraft,
+  buildInitialFcnUnderlyingDraft,
   derivativeContractDraftFromRecord,
   derivativeContractFromDraft,
   type DerivativeContractDraft,
 } from '../lib/derivativeContractDraft'
+import {
+  resolveTransactionAction,
+  transactionActionGroups,
+  transactionActionValue,
+  type TransactionAssetDomain,
+} from '../lib/transactionActions'
 
 const DEFAULT_FORM_TIME = (import.meta.env.VITE_PORTFOLIO_DEFAULT_TRADE_TIME || '12:00').slice(0, 5)
 const DEFAULT_TRADE_TIMEZONE = import.meta.env.VITE_PORTFOLIO_DEFAULT_TRADE_TIMEZONE || 'Asia/Shanghai'
-const TRANSACTION_TYPE_GROUPS = [
+const TRANSACTION_FILTER_TYPE_GROUPS = [
   {
     label: 'Trades',
     types: ['buy', 'sell', 'option_write', 'option_buy_to_close'],
@@ -122,16 +128,6 @@ const ACCOUNT_SCOPE_ENFORCED_TRANSACTION_TYPES = new Set([
   'dividend_reinvestment',
   'opening_balance',
 ])
-
-const LIFECYCLE_EVENT_OPTIONS = [
-  'fcn_knock_in',
-  'fcn_knock_out',
-  'fcn_maturity',
-  'option_long_expiry',
-  'option_long_cash_settlement',
-  'option_writer_expiry',
-  'option_writer_cash_settlement',
-] as const
 
 type TransactionInspectorTab = 'fact' | 'postings' | 'lots' | 'history'
 
@@ -264,87 +260,18 @@ function requiresSettlement(
   return (transactionType === 'fee' || transactionType === 'tax') && accountType === 'securities_account'
 }
 
-function requiresAsset(
-  transactionType: string,
-  accountType?: string | null,
-  transferObjectType?: string | null,
-) {
-  if (isFxConversionTransaction(transactionType)) {
-    return false
-  }
-  if (
-    transactionType === 'buy' ||
-    transactionType === 'sell' ||
-    transactionType === 'option_write' ||
-    transactionType === 'option_buy_to_close' ||
-    transactionType === 'dividend' ||
-    transactionType === 'dividend_reinvestment' ||
-    transactionType === 'coupon' ||
-    transactionType === 'return_of_capital' ||
-    transactionType === 'maturity_redemption' ||
-    transactionType === 'lifecycle_event'
-  ) {
-    return true
-  }
-
-  if (isTransferTransaction(transactionType) && transferObjectType === 'position') {
-    return true
-  }
-
-  return transactionType === 'opening_balance' && accountType === 'securities_account'
-}
-
-function allowsRegistryInstrument(
-  transactionType: string,
-  accountType?: string | null,
-  transferObjectType?: string | null,
-) {
-  if (isFxConversionTransaction(transactionType)) {
-    return false
-  }
-  if (
-    transactionType === 'option_write' ||
-    transactionType === 'option_buy_to_close' ||
-    transactionType === 'lifecycle_event'
-  ) {
-    return false
-  }
-  if (requiresAsset(transactionType, accountType, transferObjectType)) {
-    return true
-  }
-
-  return (
-    (transactionType === 'fee' || transactionType === 'tax') &&
-    accountType === 'securities_account'
-  )
-}
-
-function allowsDerivativeContract(
-  transactionType: string,
-  accountType?: string | null,
-) {
-  if (accountType !== 'securities_account') {
-    return false
-  }
-  return (
-    transactionType === 'buy' ||
-    transactionType === 'sell' ||
-    transactionType === 'option_write' ||
-    transactionType === 'option_buy_to_close' ||
-    transactionType === 'coupon' ||
-    transactionType === 'maturity_redemption' ||
-    transactionType === 'lifecycle_event' ||
-    transactionType === 'fee' ||
-    transactionType === 'tax' ||
-    transactionType === 'opening_balance'
-  )
-}
-
 function eligibleAccounts(
   transactionType: string,
   accounts: PortfolioAccountRecord[],
   transferObjectType?: string | null,
+  assetDomain?: TransactionAssetDomain,
 ) {
+  if (assetDomain === 'security' || assetDomain === 'derivative') {
+    return accounts.filter((account) => account.account_type === 'securities_account')
+  }
+  if (assetDomain === 'cash') {
+    return accounts.filter((account) => account.account_type === 'deposit_account')
+  }
   if (
     transactionType === 'deposit' ||
     transactionType === 'withdrawal' ||
@@ -666,6 +593,7 @@ function quantityDeltaForPreview(
 }
 
 type TransactionFormState = {
+  asset_domain: TransactionAssetDomain
   transaction_type: string
   lifecycle_event_type: string
   trade_date: string
@@ -678,7 +606,6 @@ type TransactionFormState = {
   counterparty_account_id: string
   settlement_cash_account_id: string
   transfer_object_type: string
-  asset_kind: 'instrument' | 'derivative_contract'
   instrument_id: string
   derivative_contract_id: string
   quantity: string
@@ -705,6 +632,7 @@ function buildInitialFormState(accounts: PortfolioAccountRecord[]): TransactionF
     accounts.find((account) => account.account_type === 'deposit_account')
 
   return {
+    asset_domain: 'security',
     transaction_type: 'buy',
     lifecycle_event_type: '',
     trade_date: defaultFormDate,
@@ -717,7 +645,6 @@ function buildInitialFormState(accounts: PortfolioAccountRecord[]): TransactionF
     counterparty_account_id: '',
     settlement_cash_account_id: defaultCashAccount?.account_id ?? '',
     transfer_object_type: 'cash',
-    asset_kind: 'instrument',
     instrument_id: '',
     derivative_contract_id: '',
     quantity: '',
@@ -737,6 +664,7 @@ function buildInitialFormState(accounts: PortfolioAccountRecord[]): TransactionF
 
 function buildFormStateFromTransaction(transaction: PortfolioTransactionRecord): TransactionFormState {
   return {
+    asset_domain: transaction.asset_domain,
     transaction_type: transaction.transaction_type,
     lifecycle_event_type: transaction.lifecycle_event_type || '',
     trade_date: transaction.trade_date,
@@ -750,7 +678,6 @@ function buildFormStateFromTransaction(transaction: PortfolioTransactionRecord):
     counterparty_account_id: transaction.counterparty_account_id || '',
     settlement_cash_account_id: transaction.settlement_cash_account?.account_id || '',
     transfer_object_type: transaction.transfer_object_type || 'cash',
-    asset_kind: transaction.derivative_contract_id ? 'derivative_contract' : 'instrument',
     instrument_id: transaction.instrument_id || '',
     derivative_contract_id: transaction.derivative_contract_id || '',
     quantity: formatFormNumber(transaction.quantity, { zeroAsEmpty: true }),
@@ -856,7 +783,7 @@ export default function TransactionsPage() {
   const { portfolioId = '' } = useParams()
   const currentPortfolioIdRef = useRef(portfolioId)
   const [searchParams, setSearchParams] = useSearchParams()
-  const transactionTypeSelectRef = useRef<HTMLSelectElement | null>(null)
+  const assetDomainSelectRef = useRef<HTMLSelectElement | null>(null)
   const securitySearchRef = useRef<HTMLInputElement | null>(null)
   const accountSelectRef = useRef<HTMLSelectElement | null>(null)
   const csvFileInputRef = useRef<HTMLInputElement | null>(null)
@@ -928,6 +855,8 @@ export default function TransactionsPage() {
 
   const filters: PortfolioTransactionFilters = {
     account_id: searchParams.get('account_id') ?? '',
+    asset_domain:
+      (searchParams.get('asset_domain') as PortfolioTransactionFilters['asset_domain']) ?? '',
     transaction_type: searchParams.get('transaction_type') ?? '',
     position_reference_id: searchParams.get('position_reference_id') ?? '',
     start_date: searchParams.get('start_date') ?? '',
@@ -1064,6 +993,7 @@ export default function TransactionsPage() {
   }, [
     portfolioId,
     filters.account_id,
+    filters.asset_domain,
     filters.transaction_type,
     filters.position_reference_id,
     filters.start_date,
@@ -1073,7 +1003,12 @@ export default function TransactionsPage() {
 
   const selectedAccount =
     accounts.find((account) => account.account_id === form.account_id) ??
-    eligibleAccounts(form.transaction_type, accounts, form.transfer_object_type)[0]
+    eligibleAccounts(
+      form.transaction_type,
+      accounts,
+      form.transfer_object_type,
+      form.asset_domain,
+    )[0]
   const cashAccounts = accounts.filter((account) => account.account_type === 'deposit_account')
   const counterpartyAccounts = eligibleCounterpartyAccounts(
     form.transaction_type,
@@ -1086,20 +1021,9 @@ export default function TransactionsPage() {
     counterpartyAccounts[0] ??
     null
   const isFxConversion = isFxConversionTransaction(form.transaction_type)
-  const shouldRequireAsset = requiresAsset(
-    form.transaction_type,
-    selectedAccount?.account_type,
-    form.transfer_object_type,
-  )
-  const shouldAllowRegistryInstrument = allowsRegistryInstrument(
-    form.transaction_type,
-    selectedAccount?.account_type,
-    form.transfer_object_type,
-  )
-  const shouldAllowDerivativeContract = allowsDerivativeContract(
-    form.transaction_type,
-    selectedAccount?.account_type,
-  )
+  const shouldRequireAsset = form.asset_domain !== 'cash'
+  const shouldAllowRegistryInstrument = form.asset_domain === 'security'
+  const shouldAllowDerivativeContract = form.asset_domain === 'derivative'
   const shouldRequireSettlement = requiresSettlement(
     form.transaction_type,
     selectedAccount?.account_type,
@@ -1138,10 +1062,12 @@ export default function TransactionsPage() {
     form.transaction_type,
     form.lifecycle_event_type,
   )
+  const selectedDerivativeType =
+    selectedDerivativeContract?.contract_type ?? derivativeDraft.contract_type
   const filteredDerivativeContracts = derivativeContracts.filter(
     (contract) =>
       contract.account_id === selectedAccount?.account_id &&
-      (!requiredContractType || contract.contract_type === requiredContractType) &&
+      contract.contract_type === (requiredContractType ?? selectedDerivativeType) &&
       supportsTransactionAssetType(
         form.transaction_type,
         contract.contract_type,
@@ -1154,7 +1080,7 @@ export default function TransactionsPage() {
       ),
   )
   const isCreatingDerivativeContract =
-    form.asset_kind === 'derivative_contract' && !form.derivative_contract_id
+    form.asset_domain === 'derivative' && !form.derivative_contract_id
   const draftDerivativeContract = (() => {
     if (!isCreatingDerivativeContract) {
       return null
@@ -1168,9 +1094,28 @@ export default function TransactionsPage() {
   const activeDerivativeContract =
     selectedDerivativeContract ?? draftDerivativeContract
   const resolvedAssetType =
-    form.asset_kind === 'derivative_contract'
+    form.asset_domain === 'derivative'
       ? activeDerivativeContract?.contract_type ?? derivativeDraft.contract_type
-      : selectedInstrument?.instrument_type ?? null
+      : form.asset_domain === 'security'
+        ? selectedInstrument?.instrument_type ?? null
+        : null
+  const activeOptionType =
+    activeDerivativeContract?.contract_type === 'option'
+      ? activeDerivativeContract.terms.option_type
+      : derivativeDraft.contract_type === 'option'
+        ? derivativeDraft.option_type
+        : null
+  const formActionGroups = transactionActionGroups(
+    form.asset_domain,
+    resolvedAssetType,
+    activeOptionType,
+  )
+  const selectedActionValue = transactionActionValue(
+    formActionGroups,
+    form.transaction_type,
+    form.lifecycle_event_type,
+    form.transfer_object_type,
+  )
   const isFundTrade =
     shouldUsePrice && selectedInstrument?.instrument_type === 'fund'
   const transactionUnitPriceDecimals = isFundTrade ? 12 : 6
@@ -1252,7 +1197,6 @@ export default function TransactionsPage() {
   const selectedInstrumentLabel = selectedInstrument ? instrumentSearchLabel(selectedInstrument) : ''
   const showInstrumentResults =
     shouldAllowRegistryInstrument &&
-    form.asset_kind === 'instrument' &&
     form.instrument_search.trim() !== '' &&
     (!selectedInstrument || form.instrument_search.trim() !== selectedInstrumentLabel)
   const activeHistoricalQuote =
@@ -1261,11 +1205,11 @@ export default function TransactionsPage() {
       ? historicalQuote
       : null
   const fallbackPriceContract =
-    form.asset_kind === 'derivative_contract'
+    form.asset_domain === 'derivative'
       ? transactionPriceContractForDerivative(activeDerivativeContract)
       : transactionPriceContractForInstrument(selectedInstrument)
   const transactionPriceContract = resolveTransactionPriceContract(
-    form.asset_kind === 'derivative_contract'
+    form.asset_domain === 'derivative'
       ? fallbackPriceContract
         ? [fallbackPriceContract]
         : []
@@ -1332,7 +1276,7 @@ export default function TransactionsPage() {
       !drawerOpen ||
       !portfolioId ||
       !shouldUsePrice ||
-      form.asset_kind !== 'instrument' ||
+      form.asset_domain !== 'security' ||
       !selectedInstrument ||
       !form.trade_date
     ) {
@@ -1466,7 +1410,7 @@ export default function TransactionsPage() {
     }
   }, [
     drawerOpen,
-    form.asset_kind,
+    form.asset_domain,
     form.trade_date,
     portfolioId,
     selectedInstrument?.instrument_id,
@@ -1474,7 +1418,7 @@ export default function TransactionsPage() {
   ])
 
   const selectedPositionReferenceId =
-    form.asset_kind === 'derivative_contract'
+    form.asset_domain === 'derivative'
       ? form.derivative_contract_id
       : selectedInstrument?.instrument_id ?? ''
 
@@ -1496,7 +1440,8 @@ export default function TransactionsPage() {
 
     let cancelled = false
     const positionReferenceId = selectedPositionReferenceId
-    const positionKind = form.asset_kind
+    const positionKind =
+      form.asset_domain === 'derivative' ? 'derivative_contract' : 'instrument'
     const accountId = positionPreviewAccountId
     const tradeDate = form.trade_date
     setPositionPreviewLoading(true)
@@ -1520,7 +1465,9 @@ export default function TransactionsPage() {
               const canApplyQuantity = !current.quantity.trim() || autoQuantityKeyRef.current !== null
               if (
                 current.transaction_type !== 'sell' ||
-                current.asset_kind !== response.position_kind ||
+                (current.asset_domain === 'derivative'
+                  ? 'derivative_contract'
+                  : 'instrument') !== response.position_kind ||
                 (response.position_kind === 'instrument'
                   ? current.instrument_id
                   : current.derivative_contract_id) !== response.position_reference_id ||
@@ -1591,7 +1538,7 @@ export default function TransactionsPage() {
     form.trade_date,
     form.trade_time,
     form.transaction_type,
-    form.asset_kind,
+    form.asset_domain,
     portfolioId,
     positionPreviewAccountId,
     selectedPositionReferenceId,
@@ -1616,7 +1563,7 @@ export default function TransactionsPage() {
       }
       return {
         ...current,
-        asset_kind: 'instrument',
+        asset_domain: 'security',
         instrument_id: instrument.instrument_id,
         derivative_contract_id: '',
         instrument_search: instrumentSearchLabel(instrument),
@@ -1635,7 +1582,7 @@ export default function TransactionsPage() {
     setPricingAnchor('price')
     setForm((current) => ({
       ...current,
-      asset_kind: 'derivative_contract',
+      asset_domain: 'derivative',
       instrument_id: '',
       instrument_search: '',
       derivative_contract_id: contractId,
@@ -1649,24 +1596,50 @@ export default function TransactionsPage() {
     setDerivativeDraft(
       selected
         ? derivativeContractDraftFromRecord(selected)
-        : buildInitialDerivativeContractDraft(requiredContractType ?? 'option'),
+        : buildInitialDerivativeContractDraft(
+            requiredContractType ?? derivativeDraft.contract_type,
+          ),
     )
   }
 
-  function updateTransactionType(nextTransactionType: string) {
+  function updateAssetDomain(nextAssetDomain: TransactionAssetDomain) {
+    const nextTransactionType = nextAssetDomain === 'cash' ? 'deposit' : 'buy'
+    const nextAccount = accounts.find((account) =>
+      nextAssetDomain === 'cash'
+        ? account.account_type === 'deposit_account'
+        : account.account_type === 'securities_account',
+    )
+    autoQuoteKeyRef.current = null
+    autoQuantityKeyRef.current = null
+    autoGrossDerivedRef.current = false
+    setPricingAnchor('price')
+    setForm((current) => ({
+      ...current,
+      asset_domain: nextAssetDomain,
+      transaction_type: nextTransactionType,
+      lifecycle_event_type: '',
+      account_id: nextAccount?.account_id ?? '',
+      transfer_object_type: 'cash',
+      instrument_id: '',
+      instrument_search: '',
+      derivative_contract_id: '',
+      quantity: '',
+      price: '',
+      gross_amount: '',
+    }))
+  }
+
+  function updateTransactionAction(actionValue: string) {
+    const selectedAction = resolveTransactionAction(formActionGroups, actionValue)
+    if (!selectedAction) {
+      return
+    }
+    const nextTransactionType = selectedAction.transactionType
     setPricingAnchor(
       selectedInstrument?.instrument_type === 'fund' && usesPrice(nextTransactionType)
         ? 'gross_amount'
         : 'price',
     )
-    const derivativeOnly =
-      allowsDerivativeContract(nextTransactionType, selectedAccount?.account_type) &&
-      !allowsRegistryInstrument(
-        nextTransactionType,
-        selectedAccount?.account_type,
-        form.transfer_object_type,
-      )
-    const nextRequiredContractType = requiredDerivativeContractType(nextTransactionType)
     setForm((current) => {
       const shouldClearAutoSellQuantity =
         autoQuantityKeyRef.current !== null &&
@@ -1679,29 +1652,19 @@ export default function TransactionsPage() {
       return {
         ...current,
         transaction_type: nextTransactionType,
-        asset_kind: derivativeOnly ? 'derivative_contract' : current.asset_kind,
-        instrument_id: derivativeOnly ? '' : current.instrument_id,
-        instrument_search: derivativeOnly ? '' : current.instrument_search,
-        lifecycle_event_type:
-          nextTransactionType === 'lifecycle_event' ||
-          nextTransactionType === 'maturity_redemption'
-            ? current.lifecycle_event_type
-            : '',
+        lifecycle_event_type: selectedAction.lifecycleEventType ?? '',
+        transfer_object_type:
+          selectedAction.transferObjectType ?? current.transfer_object_type,
         quantity: shouldClearAutoSellQuantity ? '' : current.quantity,
         gross_amount:
-          nextTransactionType === 'lifecycle_event'
+          selectedAction.lifecycleEventType === 'option_long_expiry' ||
+          selectedAction.lifecycleEventType === 'option_writer_expiry'
             ? '0'
             : shouldClearAutoSellQuantity
               ? ''
               : current.gross_amount,
       }
     })
-    if (nextRequiredContractType) {
-      setDerivativeDraft((current) => ({
-        ...current,
-        contract_type: nextRequiredContractType,
-      }))
-    }
   }
 
   function updatePricingField(
@@ -1726,9 +1689,12 @@ export default function TransactionsPage() {
         current.transaction_type === 'sell' &&
         positionPreview &&
         positionPreview.account_id === current.account_id &&
-        positionPreview.position_kind === current.asset_kind &&
+        positionPreview.position_kind ===
+          (current.asset_domain === 'derivative'
+            ? 'derivative_contract'
+            : 'instrument') &&
         positionPreview.position_reference_id ===
-          (current.asset_kind === 'instrument'
+          (current.asset_domain === 'security'
             ? current.instrument_id
             : current.derivative_contract_id) &&
         positionPreview.as_of_date === current.trade_date
@@ -1820,7 +1786,12 @@ export default function TransactionsPage() {
   }
 
   useEffect(() => {
-    const nextEligibleAccounts = eligibleAccounts(form.transaction_type, accounts, form.transfer_object_type)
+    const nextEligibleAccounts = eligibleAccounts(
+      form.transaction_type,
+      accounts,
+      form.transfer_object_type,
+      form.asset_domain,
+    )
     if (nextEligibleAccounts.length === 0) {
       return
     }
@@ -1832,7 +1803,13 @@ export default function TransactionsPage() {
         account_id: nextAccount.account_id,
       }))
     }
-  }, [accounts, form.account_id, form.transaction_type, form.transfer_object_type])
+  }, [
+    accounts,
+    form.account_id,
+    form.asset_domain,
+    form.transaction_type,
+    form.transfer_object_type,
+  ])
 
   useEffect(() => {
     if (shouldRequireSettlement) {
@@ -1893,49 +1870,7 @@ export default function TransactionsPage() {
   }, [form.counter_amount, form.fx_rate, isFxConversion, sharedFxRate?.rate])
 
   useEffect(() => {
-    if (shouldAllowDerivativeContract && !shouldAllowRegistryInstrument && form.asset_kind !== 'derivative_contract') {
-      setForm((current) => ({
-        ...current,
-        asset_kind: 'derivative_contract',
-        instrument_id: '',
-        instrument_search: '',
-      }))
-      setDerivativeDraft((current) => ({
-        ...current,
-        contract_type: requiredContractType ?? current.contract_type,
-      }))
-      return
-    }
-    if (shouldAllowRegistryInstrument && !shouldAllowDerivativeContract && form.asset_kind !== 'instrument') {
-      setForm((current) => ({
-        ...current,
-        asset_kind: 'instrument',
-        derivative_contract_id: '',
-      }))
-    }
-  }, [
-    form.asset_kind,
-    requiredContractType,
-    shouldAllowDerivativeContract,
-    shouldAllowRegistryInstrument,
-  ])
-
-  useEffect(() => {
-    if (
-      form.asset_kind === 'instrument' &&
-      !shouldAllowRegistryInstrument &&
-      form.instrument_id
-    ) {
-      setForm((current) => ({
-        ...current,
-        instrument_id: '',
-        instrument_search: '',
-      }))
-    }
-  }, [form.asset_kind, form.instrument_id, shouldAllowRegistryInstrument])
-
-  useEffect(() => {
-    if (form.asset_kind !== 'instrument' || !selectedInstrument || !selectedAccount) {
+    if (form.asset_domain !== 'security' || !selectedInstrument || !selectedAccount) {
       return
     }
     if (selectedInstrument.currency.toUpperCase() === selectedAccount.currency.toUpperCase()) {
@@ -1965,13 +1900,13 @@ export default function TransactionsPage() {
   }, [
     form.transaction_type,
     form.transfer_object_type,
-    form.asset_kind,
+    form.asset_domain,
     selectedAccount,
     selectedInstrument,
   ])
 
   useEffect(() => {
-    if (form.asset_kind !== 'derivative_contract' || !selectedDerivativeContract || !selectedAccount) {
+    if (form.asset_domain !== 'derivative' || !selectedDerivativeContract || !selectedAccount) {
       return
     }
     if (
@@ -1990,7 +1925,7 @@ export default function TransactionsPage() {
       buildInitialDerivativeContractDraft(requiredContractType ?? 'option'),
     )
   }, [
-    form.asset_kind,
+    form.asset_domain,
     form.transaction_type,
     requiredContractType,
     selectedAccount,
@@ -2308,7 +2243,7 @@ export default function TransactionsPage() {
     window.addEventListener('keydown', handleKeyDown)
     window.setTimeout(() => {
       const firstControl =
-        transactionTypeSelectRef.current ?? securitySearchRef.current ?? accountSelectRef.current
+        assetDomainSelectRef.current ?? securitySearchRef.current ?? accountSelectRef.current
       firstControl?.focus()
     }, 0)
     return () => window.removeEventListener('keydown', handleKeyDown)
@@ -2350,7 +2285,7 @@ export default function TransactionsPage() {
     }
 
     let inlineDerivativeContract: PortfolioDerivativeContractCreate | null = null
-    if (form.asset_kind === 'derivative_contract' && !selectedDerivativeContract) {
+    if (form.asset_domain === 'derivative' && !selectedDerivativeContract) {
       try {
         inlineDerivativeContract = derivativeContractFromDraft(derivativeDraft)
       } catch (error) {
@@ -2363,9 +2298,11 @@ export default function TransactionsPage() {
     const resolvedDerivativeContract =
       selectedDerivativeContract ?? inlineDerivativeContract
     const hasSelectedAsset =
-      form.asset_kind === 'instrument'
+      form.asset_domain === 'security'
         ? selectedInstrument !== null
-        : resolvedDerivativeContract !== null
+        : form.asset_domain === 'derivative'
+          ? resolvedDerivativeContract !== null
+          : true
     if (shouldRequireAsset && !hasSelectedAsset) {
       setFormError('Select a Registry security or Portfolio derivative contract.')
       return
@@ -2623,15 +2560,15 @@ export default function TransactionsPage() {
       account_id: resolvedAccount.account_id,
       settlement_cash_account_id: shouldRequireSettlement ? form.settlement_cash_account_id || null : null,
       instrument_id:
-        form.asset_kind === 'instrument' && shouldAllowRegistryInstrument
+        form.asset_domain === 'security' && shouldAllowRegistryInstrument
           ? selectedInstrument?.instrument_id ?? null
           : null,
       derivative_contract_id:
-        form.asset_kind === 'derivative_contract'
+        form.asset_domain === 'derivative'
           ? resolvedDerivativeContract?.derivative_contract_id ?? null
           : null,
       derivative_contract:
-        form.asset_kind === 'derivative_contract' && !selectedDerivativeContract
+        form.asset_domain === 'derivative' && !selectedDerivativeContract
           ? inlineDerivativeContract
           : null,
       quantity: shouldUseQuantity && form.quantity ? Number(form.quantity) : null,
@@ -2934,6 +2871,9 @@ export default function TransactionsPage() {
             <div className="panel-title">Activity</div>
             <div className="portfolio-detail-meta">
               {summary ? `${summary.total_transactions} facts` : `${visibleTransactions.length} facts`}
+              {summary
+                ? ` · ${summary.security_transactions} security · ${summary.derivative_transactions} derivative · ${summary.cash_transactions} cash`
+                : ''}
               {latestTradeDate ? ` · latest trade ${latestTradeDate}` : ''}
               {summary?.external_cash_flows ? ` · ${summary.external_cash_flows} external flows` : ''}
               {activeFilterCount ? ` · ${visibleTransactions.length} shown` : ''}
@@ -3017,6 +2957,25 @@ export default function TransactionsPage() {
               </select>
             </label>
             <label>
+              <span>Asset Class</span>
+              <select
+                className="toolbar-select transaction-filter-input"
+                value={filters.asset_domain ?? ''}
+                onChange={(event) =>
+                  patchSearchParams({
+                    asset_domain: event.target.value,
+                    position_reference_id: null,
+                    transaction_id: null,
+                  })
+                }
+              >
+                <option value="">All asset classes</option>
+                <option value="security">Security</option>
+                <option value="derivative">Derivative</option>
+                <option value="cash">Cash &amp; Operations</option>
+              </select>
+            </label>
+            <label>
               <span>Type</span>
               <select
                 className="toolbar-select transaction-filter-input"
@@ -3029,7 +2988,7 @@ export default function TransactionsPage() {
                 }
               >
                 <option value="">All types</option>
-                {TRANSACTION_TYPE_GROUPS.map((group) => (
+                {TRANSACTION_FILTER_TYPE_GROUPS.map((group) => (
                   <optgroup key={group.label} label={group.label}>
                     {group.types.map((transactionType) => (
                       <option key={transactionType} value={transactionType}>
@@ -3045,7 +3004,7 @@ export default function TransactionsPage() {
               <select
                 className="toolbar-select transaction-filter-input"
                 value={filters.position_reference_id ?? ''}
-                disabled={metaLoading}
+                disabled={metaLoading || filters.asset_domain === 'cash'}
                 onChange={(event) =>
                   patchSearchParams({
                     position_reference_id: event.target.value,
@@ -3054,20 +3013,24 @@ export default function TransactionsPage() {
                 }
               >
                 <option value="">All assets</option>
-                <optgroup label="Registry securities">
-                  {instruments.map((instrument) => (
-                    <option key={instrument.instrument_id} value={instrument.instrument_id}>
-                      {instrumentSearchLabel(instrument)}
-                    </option>
-                  ))}
-                </optgroup>
-                <optgroup label="Portfolio derivative contracts">
-                  {derivativeContracts.map((contract) => (
-                    <option key={contract.derivative_contract_id} value={contract.derivative_contract_id}>
-                      {contract.contract_name} · {formatLabel(contract.contract_type)}
-                    </option>
-                  ))}
-                </optgroup>
+                {filters.asset_domain !== 'derivative' ? (
+                  <optgroup label="Registry securities">
+                    {instruments.map((instrument) => (
+                      <option key={instrument.instrument_id} value={instrument.instrument_id}>
+                        {instrumentSearchLabel(instrument)}
+                      </option>
+                    ))}
+                  </optgroup>
+                ) : null}
+                {filters.asset_domain !== 'security' && filters.asset_domain !== 'cash' ? (
+                  <optgroup label="Portfolio derivative contracts">
+                    {derivativeContracts.map((contract) => (
+                      <option key={contract.derivative_contract_id} value={contract.derivative_contract_id}>
+                        {contract.contract_name} · {formatLabel(contract.contract_type)}
+                      </option>
+                    ))}
+                  </optgroup>
+                ) : null}
               </select>
             </label>
             <label>
@@ -3108,6 +3071,7 @@ export default function TransactionsPage() {
               onClick={() =>
                 patchSearchParams({
                   account_id: null,
+                  asset_domain: null,
                   transaction_type: null,
                   position_reference_id: null,
                   start_date: null,
@@ -3126,6 +3090,12 @@ export default function TransactionsPage() {
             {filters.account_id ? (
               <button type="button" onClick={() => patchSearchParams({ account_id: null, transaction_id: null })}>
                 Account: {accountNameById[filters.account_id] || filters.account_id} <span aria-hidden="true">×</span>
+              </button>
+            ) : null}
+            {filters.asset_domain ? (
+              <button type="button" onClick={() => patchSearchParams({ asset_domain: null, transaction_id: null })}>
+                Asset Class: {filters.asset_domain === 'cash' ? 'Cash & Operations' : formatLabel(filters.asset_domain)}{' '}
+                <span aria-hidden="true">×</span>
               </button>
             ) : null}
             {filters.transaction_type ? (
@@ -3239,15 +3209,27 @@ export default function TransactionsPage() {
                                 <span className="transaction-type-pill">
                                   {transactionActivityLabel(
                                     transaction.transaction_type,
-                                    transaction.instrument_ref?.instrument_type,
+                                    transaction.asset_subtype,
                                     transaction.option_action,
                                   )}
                                 </span>
+                              </span>
+                              <span className="holding-secondary">
+                                {transaction.asset_domain === 'cash'
+                                  ? 'Cash & Operations'
+                                  : `${formatLabel(transaction.asset_domain)} · ${formatLabel(transaction.asset_subtype || 'other')}`}
                               </span>
                               {transaction.instrument_ref ? (
                                 <>
                                   <strong>{primaryIdentifier(transaction.instrument_ref)}</strong>
                                   <span className="holding-secondary">{transaction.instrument_ref.instrument_name}</span>
+                                </>
+                              ) : transaction.derivative_contract ? (
+                                <>
+                                  <strong>{transaction.derivative_contract.contract_name}</strong>
+                                  <span className="holding-secondary">
+                                    {transaction.derivative_contract.derivative_contract_id}
+                                  </span>
                                 </>
                               ) : isFxConversionTransaction(transaction.transaction_type) ? (
                                 <span className="holding-secondary">
@@ -3332,7 +3314,7 @@ export default function TransactionsPage() {
                       <div className="panel-title">
                         {transactionActivityLabel(
                           selectedTransaction.transaction_type,
-                          selectedTransaction.instrument_ref?.instrument_type,
+                          selectedTransaction.asset_subtype,
                           selectedTransaction.option_action,
                         )}
                       </div>
@@ -3618,122 +3600,98 @@ export default function TransactionsPage() {
               <div className="transaction-ticket-main">
                 <div className="transaction-ticket-section-heading">
                   <div>
-                    <span>Activity</span>
-                    <strong>What happened</strong>
+                    <span>Classification</span>
+                    <strong>Choose the asset class, then the action</strong>
                   </div>
                   <em>All dates use {DEFAULT_TRADE_TIMEZONE}</em>
                 </div>
                 <div className="transaction-entry-kind-row">
                   <label className="transaction-ticket-field">
-                    <span>Transaction Type</span>
+                    <span>Asset Category</span>
                     <select
-                      ref={transactionTypeSelectRef}
-                      value={form.transaction_type}
+                      ref={assetDomainSelectRef}
+                      value={form.asset_domain}
                       disabled={Boolean(activeEventTask) || submittingTransaction}
-                      onChange={(event) => updateTransactionType(event.target.value)}
+                      onChange={(event) =>
+                        updateAssetDomain(event.target.value as TransactionAssetDomain)
+                      }
                     >
-                      {TRANSACTION_TYPE_GROUPS.map((group) => (
-                        <optgroup key={group.label} label={group.label}>
-                          {group.types.map((transactionType) => (
-                            <option key={transactionType} value={transactionType}>
-                              {transactionTypeChoiceLabel(
-                                transactionType,
-                                resolvedAssetType ?? undefined,
-                              )}
-                            </option>
-                          ))}
-                        </optgroup>
-                      ))}
+                      <option value="security">Security</option>
+                      <option value="derivative">Derivative</option>
+                      <option value="cash">Cash &amp; Operations</option>
                     </select>
                   </label>
                   <p>
-                    {isFundTrade
-                      ? 'Fund subscriptions and redemptions use confirmed amount and shares; unit price is calculated.'
-                      : 'Choose the economic event first so account, date, and pricing fields stay in the correct scope.'}
+                    Security, derivative, and cash facts stay separate throughout entry,
+                    filtering, tracking, and export.
                   </p>
                 </div>
-              {form.transaction_type === 'lifecycle_event' ||
-              form.transaction_type === 'maturity_redemption' ? (
+
+              {form.asset_domain === 'derivative' ? (
                 <div className="transaction-form-grid transaction-ticket-grid">
                   <label className="transaction-ticket-field">
-                    <span>Lifecycle Event</span>
+                    <span>Derivative Type</span>
                     <select
-                      value={form.lifecycle_event_type}
-                      onChange={(event) =>
-                        setForm((current) => ({
-                          ...current,
-                          lifecycle_event_type: event.target.value,
-                          gross_amount:
-                            event.target.value === 'option_long_expiry' ||
-                            event.target.value === 'option_writer_expiry'
-                              ? '0'
-                              : current.gross_amount,
-                        }))
-                      }
-                    >
-                      <option value="" disabled={resolvedAssetType === 'option'}>
-                        {resolvedAssetType === 'option'
-                          ? 'Select option outcome'
-                          : 'Generic / not specified'}
-                      </option>
-                      {LIFECYCLE_EVENT_OPTIONS.filter((eventType) =>
-                        form.transaction_type === 'lifecycle_event'
-                          ? eventType === 'option_writer_expiry' ||
-                            eventType === 'option_writer_cash_settlement'
-                          : resolvedAssetType === 'fcn'
-                            ? eventType === 'fcn_knock_in' ||
-                              eventType === 'fcn_knock_out' ||
-                              eventType === 'fcn_maturity'
-                            : resolvedAssetType === 'option'
-                              ? eventType === 'option_long_expiry' ||
-                                eventType === 'option_long_cash_settlement'
-                              : false,
-                      ).map((eventType) => (
-                        <option key={eventType} value={eventType}>
-                          {formatLabel(eventType)}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                  <div className="portfolio-detail-meta">
-                    This closes only the selected option contract. If the real-world event
-                    delivered stock, record the equivalent option cash settlement and an
-                    independent stock trade at the delivery-date market or reference price.
-                    The two facts are intentionally not linked.
-                  </div>
-                </div>
-              ) : null}
-              {shouldAllowRegistryInstrument && shouldAllowDerivativeContract ? (
-                <div className="transaction-form-grid transaction-ticket-grid">
-                  <label className="transaction-ticket-field">
-                    <span>Asset Source</span>
-                    <select
-                      value={form.asset_kind}
+                      value={resolvedAssetType ?? derivativeDraft.contract_type}
                       onChange={(event) => {
-                        const assetKind = event.target.value as TransactionFormState['asset_kind']
+                        const contractType = event.target.value as 'option' | 'fcn'
                         setForm((current) => ({
                           ...current,
-                          asset_kind: assetKind,
-                          instrument_id: assetKind === 'instrument' ? current.instrument_id : '',
-                          instrument_search: assetKind === 'instrument' ? current.instrument_search : '',
-                          derivative_contract_id:
-                            assetKind === 'derivative_contract'
-                              ? current.derivative_contract_id
-                              : '',
+                          transaction_type: 'buy',
+                          lifecycle_event_type: '',
+                          derivative_contract_id: '',
                           quantity: '',
                           price: '',
                           gross_amount: '',
                         }))
+                        setDerivativeDraft(buildInitialDerivativeContractDraft(contractType))
                       }}
                     >
-                      <option value="instrument">Registry security</option>
-                      <option value="derivative_contract">Portfolio derivative contract</option>
+                      <option value="option">Option</option>
+                      <option value="fcn">FCN</option>
                     </select>
                   </label>
                 </div>
               ) : null}
 
-              {shouldAllowRegistryInstrument && form.asset_kind === 'instrument' ? (
+              <div className="transaction-entry-kind-row">
+                <label className="transaction-ticket-field">
+                  <span>Action</span>
+                  <select
+                    value={selectedActionValue}
+                    disabled={Boolean(activeEventTask) || submittingTransaction}
+                    onChange={(event) => updateTransactionAction(event.target.value)}
+                  >
+                    {formActionGroups.map((group) => (
+                      <optgroup key={group.label} label={group.label}>
+                        {group.actions.map((transactionAction) => (
+                          <option key={transactionAction.value} value={transactionAction.value}>
+                            {transactionAction.label}
+                          </option>
+                        ))}
+                      </optgroup>
+                    ))}
+                  </select>
+                </label>
+                <p>
+                  {isFundTrade
+                    ? 'Fund subscriptions and redemptions use confirmed amount and shares; unit price is calculated.'
+                    : form.asset_domain === 'derivative'
+                      ? 'Option open/close direction and lifecycle outcome are recorded explicitly.'
+                      : 'Only actions valid for this asset class are shown.'}
+                </p>
+              </div>
+
+              {(form.transaction_type === 'lifecycle_event' ||
+                form.transaction_type === 'maturity_redemption') &&
+              resolvedAssetType === 'option' ? (
+                <div className="portfolio-detail-meta">
+                  This closes only the selected option contract. Physical delivery is recorded
+                  as a separate Security transaction at the delivery-date reference price.
+                </div>
+              ) : null}
+
+              {shouldAllowRegistryInstrument ? (
                 <section className="transaction-instrument-search transaction-instrument-search-top">
                   <label className="transaction-picker-search">
                     <span>Security</span>
@@ -3797,7 +3755,7 @@ export default function TransactionsPage() {
                 </section>
               ) : null}
 
-              {shouldAllowDerivativeContract && form.asset_kind === 'derivative_contract' ? (
+              {shouldAllowDerivativeContract ? (
                 <section className="transaction-instrument-search transaction-instrument-search-top">
                   <label className="transaction-ticket-field">
                     <span>Portfolio Contract</span>
@@ -3844,22 +3802,6 @@ export default function TransactionsPage() {
                         }))
                       }
                     />
-                  </label>
-                  <label className="transaction-ticket-field">
-                    <span>Contract Type</span>
-                    <select
-                      value={derivativeDraft.contract_type}
-                      disabled={requiredContractType !== null}
-                      onChange={(event) =>
-                        setDerivativeDraft((current) => ({
-                          ...current,
-                          contract_type: event.target.value as 'fcn' | 'option',
-                        }))
-                      }
-                    >
-                      <option value="option">Option</option>
-                      <option value="fcn">FCN</option>
-                    </select>
                   </label>
                   <label className="transaction-ticket-field">
                     <span>Contract Reference</span>
@@ -3969,12 +3911,40 @@ export default function TransactionsPage() {
                         />
                       </label>
                       <label className="transaction-ticket-field">
+                        <span>Annual Coupon Rate (%)</span>
+                        <input
+                          type="number"
+                          min="0"
+                          step="any"
+                          value={derivativeDraft.fcn_annual_coupon_rate_pct}
+                          onChange={(event) =>
+                            setDerivativeDraft((current) => ({
+                              ...current,
+                              fcn_annual_coupon_rate_pct: event.target.value,
+                            }))
+                          }
+                        />
+                      </label>
+                      <label className="transaction-ticket-field">
                         <span>Issue Date</span>
                         <input
                           type="date"
                           value={derivativeDraft.fcn_issue_date}
                           onChange={(event) =>
                             setDerivativeDraft((current) => ({ ...current, fcn_issue_date: event.target.value }))
+                          }
+                        />
+                      </label>
+                      <label className="transaction-ticket-field">
+                        <span>Final Observation Date</span>
+                        <input
+                          type="date"
+                          value={derivativeDraft.fcn_final_observation_date}
+                          onChange={(event) =>
+                            setDerivativeDraft((current) => ({
+                              ...current,
+                              fcn_final_observation_date: event.target.value,
+                            }))
                           }
                         />
                       </label>
@@ -4006,58 +3976,117 @@ export default function TransactionsPage() {
                           }
                         />
                       </label>
-                      <label className="transaction-ticket-field">
-                        <span>Underlying IDs</span>
-                        <input
-                          value={derivativeDraft.fcn_underlying_instrument_ids}
-                          placeholder="Registry ids separated by semicolons"
-                          onChange={(event) =>
-                            setDerivativeDraft((current) => ({ ...current, fcn_underlying_instrument_ids: event.target.value }))
-                          }
-                        />
-                      </label>
-                      <label className="transaction-ticket-field">
-                        <span>Deliverable IDs</span>
-                        <input
-                          value={derivativeDraft.fcn_deliverable_instrument_ids}
-                          placeholder="Optional; semicolon separated"
-                          onChange={(event) =>
-                            setDerivativeDraft((current) => ({ ...current, fcn_deliverable_instrument_ids: event.target.value }))
-                          }
-                        />
-                      </label>
-                      <label className="transaction-ticket-field">
-                        <span>Barrier Type</span>
-                        <select
-                          value={derivativeDraft.fcn_barrier_type}
-                          onChange={(event) =>
-                            setDerivativeDraft((current) => ({
-                              ...current,
-                              fcn_barrier_type: event.target.value as DerivativeContractDraft['fcn_barrier_type'],
-                              fcn_barrier_level: event.target.value === 'none' ? '' : current.fcn_barrier_level,
-                            }))
-                          }
-                        >
-                          <option value="none">None</option>
-                          <option value="knock_in">Knock in</option>
-                          <option value="knock_out">Knock out</option>
-                          <option value="dual">Dual</option>
-                        </select>
-                      </label>
-                      {derivativeDraft.fcn_barrier_type !== 'none' ? (
-                        <label className="transaction-ticket-field">
-                          <span>Barrier Level</span>
-                          <input
-                            type="number"
-                            min="0"
-                            step="any"
-                            value={derivativeDraft.fcn_barrier_level}
-                            onChange={(event) =>
-                              setDerivativeDraft((current) => ({ ...current, fcn_barrier_level: event.target.value }))
+                      <div className="transaction-fcn-underlyings">
+                        <div className="transaction-fcn-underlyings-head">
+                          <div>
+                            <strong>FCN Underlyings</strong>
+                            <span>Reference prices and levels are stored per security.</span>
+                          </div>
+                          <button
+                            type="button"
+                            className="toolbar-link"
+                            onClick={() =>
+                              setDerivativeDraft((current) => ({
+                                ...current,
+                                fcn_underlyings: [
+                                  ...current.fcn_underlyings,
+                                  buildInitialFcnUnderlyingDraft(),
+                                ],
+                              }))
                             }
-                          />
-                        </label>
-                      ) : null}
+                          >
+                            Add Underlying
+                          </button>
+                        </div>
+                        {derivativeDraft.fcn_underlyings.map((underlying, index) => (
+                          <div className="transaction-fcn-underlying-row" key={index}>
+                            <label className="transaction-ticket-field transaction-fcn-security-field">
+                              <span>Security</span>
+                              <select
+                                aria-label={`FCN underlying ${index + 1}`}
+                                value={underlying.instrument_id}
+                                onChange={(event) =>
+                                  setDerivativeDraft((current) => ({
+                                    ...current,
+                                    fcn_underlyings: current.fcn_underlyings.map((item, itemIndex) =>
+                                      itemIndex === index
+                                        ? { ...item, instrument_id: event.target.value }
+                                        : item,
+                                    ),
+                                  }))
+                                }
+                              >
+                                <option value="">Select Registry security</option>
+                                {instruments.map((instrument) => (
+                                  <option key={instrument.instrument_id} value={instrument.instrument_id}>
+                                    {instrumentSearchLabel(instrument)}
+                                  </option>
+                                ))}
+                              </select>
+                            </label>
+                            <div className="transaction-fcn-underlying-actions">
+                              <label className="transaction-fcn-deliverable">
+                                <input
+                                  type="checkbox"
+                                  checked={underlying.deliverable}
+                                  onChange={(event) =>
+                                    setDerivativeDraft((current) => ({
+                                      ...current,
+                                      fcn_underlyings: current.fcn_underlyings.map((item, itemIndex) =>
+                                        itemIndex === index
+                                          ? { ...item, deliverable: event.target.checked }
+                                          : item,
+                                      ),
+                                    }))
+                                  }
+                                />
+                                <span>Deliverable</span>
+                              </label>
+                              <button
+                                type="button"
+                                className="toolbar-link transaction-danger-action"
+                                disabled={derivativeDraft.fcn_underlyings.length === 1}
+                                onClick={() =>
+                                  setDerivativeDraft((current) => ({
+                                    ...current,
+                                    fcn_underlyings: current.fcn_underlyings.filter(
+                                      (_, itemIndex) => itemIndex !== index,
+                                    ),
+                                  }))
+                                }
+                              >
+                                Remove
+                              </button>
+                            </div>
+                            {([
+                              ['initial_reference_price', 'Initial Price'],
+                              ['strike_level_pct', 'Strike (%)'],
+                              ['knock_in_level_pct', 'Knock-In (%)'],
+                              ['knock_out_level_pct', 'Knock-Out (%)'],
+                            ] as const).map(([field, label]) => (
+                              <label className="transaction-ticket-field" key={field}>
+                                <span>{label}</span>
+                                <input
+                                  type="number"
+                                  min="0"
+                                  step="any"
+                                  value={underlying[field]}
+                                  onChange={(event) =>
+                                    setDerivativeDraft((current) => ({
+                                      ...current,
+                                      fcn_underlyings: current.fcn_underlyings.map((item, itemIndex) =>
+                                        itemIndex === index
+                                          ? { ...item, [field]: event.target.value }
+                                          : item,
+                                      ),
+                                    }))
+                                  }
+                                />
+                              </label>
+                            ))}
+                          </div>
+                        ))}
+                      </div>
                     </>
                   )}
                 </div>
@@ -4093,7 +4122,12 @@ export default function TransactionsPage() {
                       }))
                     }
                   >
-                    {eligibleAccounts(form.transaction_type, accounts, form.transfer_object_type).map((account) => (
+                    {eligibleAccounts(
+                      form.transaction_type,
+                      accounts,
+                      form.transfer_object_type,
+                      form.asset_domain,
+                    ).map((account) => (
                       <option key={account.account_id} value={account.account_id}>
                         {account.account_name} · {account.currency}
                       </option>

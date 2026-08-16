@@ -395,35 +395,29 @@ restore_schema_args=()
 for schema in "${PORTFOLIO_OPS_PROJECT_SCHEMAS[@]}"; do
   restore_schema_args+=(--schema="$schema")
 done
-INCOMING_ARCHIVE_SQL="$WORK_DIR/incoming-archive.sql"
-INCOMING_RESTORE_SQL="$WORK_DIR/incoming-restore.sql"
-"$PG_RESTORE_BIN" \
-  --file "$INCOMING_ARCHIVE_SQL" \
-  --no-owner \
-  --no-acl \
-  "${restore_schema_args[@]}" \
-  "$DUMP_PATH"
-chmod 600 "$INCOMING_ARCHIVE_SQL"
-printf '%s\n' '
-  DROP SCHEMA IF EXISTS watchlist CASCADE;
-  DROP SCHEMA IF EXISTS portfolio CASCADE;
-  DROP SCHEMA IF EXISTS platform CASCADE;
-  DROP SCHEMA IF EXISTS instrument_registry CASCADE;
-  CREATE SCHEMA instrument_registry;
-  CREATE SCHEMA platform;
-  CREATE SCHEMA portfolio;
-  CREATE SCHEMA watchlist;
-' > "$INCOMING_RESTORE_SQL"
-chmod 600 "$INCOMING_RESTORE_SQL"
-command cat "$INCOMING_ARCHIVE_SQL" >> "$INCOMING_RESTORE_SQL"
-
 destructive_started="true"
-portfolio_ops_run_libpq_command "$LIBPQ_PASSFILE" \
+(
+  printf '%s\n' '
+    DROP SCHEMA IF EXISTS watchlist CASCADE;
+    DROP SCHEMA IF EXISTS portfolio CASCADE;
+    DROP SCHEMA IF EXISTS platform CASCADE;
+    DROP SCHEMA IF EXISTS instrument_registry CASCADE;
+    CREATE SCHEMA instrument_registry;
+    CREATE SCHEMA platform;
+    CREATE SCHEMA portfolio;
+    CREATE SCHEMA watchlist;
+  '
+  exec "$PG_RESTORE_BIN" \
+    --file - \
+    --no-owner \
+    --no-acl \
+    "${restore_schema_args[@]}" \
+    "$DUMP_PATH"
+) | portfolio_ops_run_libpq_command "$LIBPQ_PASSFILE" \
   "$PSQL_BIN" "${PSQL_CONNECTION_ARGS[@]}" \
-  --no-password \
-  --set ON_ERROR_STOP=1 \
-  --single-transaction \
-  --file "$INCOMING_RESTORE_SQL"
+    --no-password \
+    --set ON_ERROR_STOP=1 \
+    --single-transaction
 
 export PORTFOLIO_OPS_INSTRUMENT_REGISTRY_DATABASE_URL="$DATABASE_URL"
 export PORTFOLIO_OPS_INSTRUMENT_REGISTRY_ALEMBIC_DATABASE_URL="$DATABASE_URL"

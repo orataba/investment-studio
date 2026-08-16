@@ -67,14 +67,22 @@ def _buy(
             "external_reference": f"TEST-{instrument_id}",
             "terms": {
                 "notional": "1000",
+                "annual_coupon_rate_pct": None,
                 "issue_date": "2026-01-01",
+                "final_observation_date": None,
                 "maturity_date": "2026-12-31",
                 "issuer": "Test Issuer",
                 "counterparty": "Test Broker",
-                "underlying_instrument_ids": ["equity-a"],
-                "deliverable_instrument_ids": ["equity-a"],
-                "barrier_type": "none",
-                "barrier_level": None,
+                "underlyings": [
+                    {
+                        "instrument_id": "equity-a",
+                        "initial_reference_price": None,
+                        "strike_level_pct": None,
+                        "knock_in_level_pct": None,
+                        "knock_out_level_pct": None,
+                        "deliverable": True,
+                    }
+                ],
             },
             "created_at": "2026-04-01T10:00:00Z",
         }

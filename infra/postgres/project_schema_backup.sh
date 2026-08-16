@@ -391,7 +391,7 @@ portfolio_ops_restore_project_schema_backup() (
   local database_url="$1"
   local backup_path="$2"
   local manifest_path="$3"
-  local libpq_url passfile psql_bin pg_restore_bin work_dir restore_sql archive_sql
+  local libpq_url passfile psql_bin pg_restore_bin work_dir
   psql_bin="$(portfolio_ops_find_postgres_binary psql || true)"
   pg_restore_bin="$(portfolio_ops_find_postgres_binary pg_restore || true)"
   if [[ -z "$psql_bin" || -z "$pg_restore_bin" ]]; then
@@ -452,35 +452,25 @@ portfolio_ops_restore_project_schema_backup() (
     return 1
   fi
 
-  restore_sql="$work_dir/restore.sql"
-  archive_sql="$work_dir/archive.sql"
-  printf '%s\n' '
-      DROP SCHEMA IF EXISTS watchlist CASCADE;
-      DROP SCHEMA IF EXISTS portfolio CASCADE;
-      DROP SCHEMA IF EXISTS platform CASCADE;
-      DROP SCHEMA IF EXISTS instrument_registry CASCADE;
-    ' > "$restore_sql"
-  chmod 600 "$restore_sql"
-
-  if [[ "$manifest_has_schemas" == "true" ]]; then
-    if ! "$pg_restore_bin" \
-      --file "$archive_sql" \
-      --no-owner \
-      --no-acl \
-      "$backup_path"; then
-      return 1
+  if ! (
+    printf '%s\n' '
+        DROP SCHEMA IF EXISTS watchlist CASCADE;
+        DROP SCHEMA IF EXISTS portfolio CASCADE;
+        DROP SCHEMA IF EXISTS platform CASCADE;
+        DROP SCHEMA IF EXISTS instrument_registry CASCADE;
+      '
+    if [[ "$manifest_has_schemas" == "true" ]]; then
+      exec "$pg_restore_bin" \
+        --file - \
+        --no-owner \
+        --no-acl \
+        "$backup_path"
     fi
-    chmod 600 "$archive_sql"
-    if ! command cat "$archive_sql" >> "$restore_sql"; then
-      return 1
-    fi
-  fi
-
-  if ! portfolio_ops_run_libpq_command "$passfile" "$psql_bin" "$libpq_url" \
+    exit 0
+  ) | portfolio_ops_run_libpq_command "$passfile" "$psql_bin" "$libpq_url" \
     --no-password \
     --set ON_ERROR_STOP=1 \
-    --single-transaction \
-    --file "$restore_sql"; then
+    --single-transaction; then
     echo "Atomic project-schema rollback failed; the pre-rollback schemas were preserved." >&2
     return 1
   fi

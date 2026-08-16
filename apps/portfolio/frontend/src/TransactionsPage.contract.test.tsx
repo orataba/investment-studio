@@ -140,6 +140,8 @@ const selectedTransaction = {
   transaction_sequence: 1,
   portfolio_id: '3',
   transaction_type: 'buy',
+  asset_domain: 'security',
+  asset_subtype: 'etf',
   flow_scope: 'internal',
   trade_date: '2026-07-14',
   trade_time: '12:00',
@@ -233,7 +235,9 @@ describe('Transactions rendered page contract', () => {
       portfolio_id: '3',
       summary: {
         total_transactions: 1,
-        instrument_transactions: 1,
+        security_transactions: 1,
+        derivative_transactions: 0,
+        cash_transactions: 0,
         external_cash_flows: 0,
         opening_balance_records: 0,
       },
@@ -340,7 +344,7 @@ describe('Transactions rendered page contract', () => {
     expect(within(review).getByText('-$250.00')).toBeInTheDocument()
   })
 
-  it('limits lifecycle events to securities accounts before submission', async () => {
+  it('chooses the asset class before exposing derivative-specific actions', async () => {
     const user = userEvent.setup()
     renderPortfolioPage(
       <TransactionsPage />,
@@ -350,15 +354,34 @@ describe('Transactions rendered page contract', () => {
 
     await user.click(await screen.findByRole('button', { name: 'Record Transaction' }))
     const dialog = screen.getByRole('dialog', { name: 'Record transaction' })
-    const transactionType = within(dialog).getByRole('combobox', {
-      name: 'Transaction Type',
+    const assetCategory = within(dialog).getByRole('combobox', {
+      name: 'Asset Category',
     })
+    const securityAction = within(dialog).getByRole('combobox', { name: 'Action' })
     expect(
-      within(transactionType).getByRole('option', {
-        name: 'Buy / FCN Entry / Option Buy to Open',
-      }),
+      within(securityAction).getByRole('option', { name: 'Buy' }),
     ).toBeInTheDocument()
-    await user.selectOptions(transactionType, 'lifecycle_event')
+    expect(
+      within(securityAction).queryByRole('option', { name: 'Buy to Open Call' }),
+    ).not.toBeInTheDocument()
+
+    await user.selectOptions(assetCategory, 'derivative')
+    const derivativeType = within(dialog).getByRole('combobox', {
+      name: 'Derivative Type',
+    })
+    expect(derivativeType).toHaveValue('option')
+    const derivativeAction = within(dialog).getByRole('combobox', { name: 'Action' })
+    for (const label of [
+      'Buy to Open Call',
+      'Sell to Close Call',
+      'Sell to Open Call',
+      'Buy to Close Call',
+    ]) {
+      expect(within(derivativeAction).getByRole('option', { name: label })).toBeInTheDocument()
+    }
+    expect(
+      within(derivativeAction).queryByRole('option', { name: 'Deposit' }),
+    ).not.toBeInTheDocument()
 
     const account = within(dialog).getByRole('combobox', { name: 'Account' })
     await waitFor(() => expect(account).toHaveValue(securitiesAccount.account_id))

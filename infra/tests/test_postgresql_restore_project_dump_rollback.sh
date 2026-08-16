@@ -90,7 +90,11 @@ printf '%s\n' \
   '    if [[ "$1" == "--file" ]]; then output="$2"; shift 2; else shift; fi' \
   '  done' \
   '  [[ -n "$output" ]]' \
-  '  printf "%s\n" "CREATE SCHEMA instrument_registry;" "CREATE SCHEMA platform;" "CREATE SCHEMA portfolio;" "CREATE SCHEMA watchlist;" "SELECT 1 / 0;" > "$output"' \
+  '  if [[ "$output" == "-" ]]; then' \
+  '    printf "%s\n" "CREATE SCHEMA instrument_registry;" "CREATE SCHEMA platform;" "CREATE SCHEMA portfolio;" "CREATE SCHEMA watchlist;" "SELECT 1 / 0;"' \
+  '  else' \
+  '    printf "%s\n" "CREATE SCHEMA instrument_registry;" "CREATE SCHEMA platform;" "CREATE SCHEMA portfolio;" "CREATE SCHEMA watchlist;" "SELECT 1 / 0;" > "$output"' \
+  '  fi' \
   '  printf "helper-rollback-sql-injected\n" >> "$EVENT_LOG"' \
   '  exit 0' \
   'fi' \

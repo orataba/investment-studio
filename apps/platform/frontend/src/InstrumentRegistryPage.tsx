@@ -8,6 +8,7 @@ import {
   useState,
 } from 'react'
 import { LanguageSelector } from '../../../../packages/ui/src/i18n'
+import { appPath } from './appPath'
 import { useModalDialog } from '../../../../packages/ui/src/useModalDialog'
 import {
   beginRequest,
@@ -880,15 +881,15 @@ export default function InstrumentRegistryPage({
   return (
     <main className="platform-shell ir-shell">
       <header className="platform-masthead data-ops-masthead ir-masthead">
-        <a className="data-ops-brand" href="/">
+        <a className="data-ops-brand" href={appPath('/')}>
           <span>Portfolio Operations</span>
           <strong>Data Operations</strong>
         </a>
         <nav className="data-ops-nav" aria-label="Data operations navigation">
-          <a className="platform-nav-link" href="/">Overview</a>
+          <a className="platform-nav-link" href={appPath('/')}>Overview</a>
           <a
             className="platform-nav-link platform-nav-link-active"
-            href="/instruments"
+            href={appPath('/instruments')}
             aria-current="page"
           >
             Instrument Registry
@@ -900,7 +901,7 @@ export default function InstrumentRegistryPage({
       <section className="ir-pagehead">
         <div>
           <div className="registry-breadcrumbs">
-            <a href="/">Data Operations</a>
+            <a href={appPath('/')}>Data Operations</a>
             <span>/</span>
             <span>Instrument Registry</span>
           </div>

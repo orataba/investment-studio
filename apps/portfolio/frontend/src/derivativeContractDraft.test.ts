@@ -41,14 +41,30 @@ describe('derivative contract form mapping', () => {
       derivative_contract_id: 'fcn-001',
       contract_name: 'USD FCN 2027',
       fcn_notional: '100000',
+      fcn_annual_coupon_rate_pct: '12',
       fcn_issue_date: '2026-08-09',
+      fcn_final_observation_date: '2027-02-05',
       fcn_maturity_date: '2027-02-09',
       fcn_issuer: 'Issuer Bank',
       fcn_counterparty: 'Broker Account',
-      fcn_underlying_instrument_ids: 'equity-001; equity-002 ;equity-003',
-      fcn_deliverable_instrument_ids: 'equity-001; equity-002',
-      fcn_barrier_type: 'knock_in',
-      fcn_barrier_level: '70',
+      fcn_underlyings: [
+        {
+          instrument_id: 'equity-001',
+          initial_reference_price: '100',
+          strike_level_pct: '100',
+          knock_in_level_pct: '70',
+          knock_out_level_pct: '105',
+          deliverable: true,
+        },
+        {
+          instrument_id: 'equity-002',
+          initial_reference_price: '200',
+          strike_level_pct: '95',
+          knock_in_level_pct: '65',
+          knock_out_level_pct: '',
+          deliverable: false,
+        },
+      ],
     })
 
     const contract = derivativeContractFromDraft(draft)
@@ -56,16 +72,26 @@ describe('derivative contract form mapping', () => {
     if (contract.contract_type !== 'fcn') {
       throw new Error('Expected FCN contract')
     }
-    expect(contract.terms.underlying_instrument_ids).toEqual([
-      'equity-001',
-      'equity-002',
-      'equity-003',
+    expect(contract.terms.annual_coupon_rate_pct).toBe(12)
+    expect(contract.terms.final_observation_date).toBe('2027-02-05')
+    expect(contract.terms.underlyings).toEqual([
+      {
+        instrument_id: 'equity-001',
+        initial_reference_price: 100,
+        strike_level_pct: 100,
+        knock_in_level_pct: 70,
+        knock_out_level_pct: 105,
+        deliverable: true,
+      },
+      {
+        instrument_id: 'equity-002',
+        initial_reference_price: 200,
+        strike_level_pct: 95,
+        knock_in_level_pct: 65,
+        knock_out_level_pct: null,
+        deliverable: false,
+      },
     ])
-    expect(contract.terms.deliverable_instrument_ids).toEqual([
-      'equity-001',
-      'equity-002',
-    ])
-    expect(contract.terms.barrier_level).toBe(70)
   })
 
   it('round-trips persisted option terms into an immutable form draft', () => {

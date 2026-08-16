@@ -37,6 +37,7 @@ from portfolio_app.api.contracts import (
     TransactionDeleteRequest,
     TransactionDeleteResponse,
     TransactionExecutionQuoteResponse,
+    TransactionAssetDomain,
     TransactionListResponse,
     TransactionPositionPreviewResponse,
     TransactionRecord,
@@ -220,8 +221,8 @@ def _load_derivative_contract_ref(
         registry_instrument_ids = [str(terms["underlying_instrument_id"])]
     else:
         registry_instrument_ids = [
-            *[str(value) for value in terms["underlying_instrument_ids"]],
-            *[str(value) for value in terms["deliverable_instrument_ids"]],
+            str(item["instrument_id"])
+            for item in terms["underlyings"]
         ]
     for registry_instrument_id in dict.fromkeys(registry_instrument_ids):
         _load_instrument_ref(registry_instrument_id)
@@ -1259,6 +1260,7 @@ def list_portfolio_derivative_contracts(
 def list_transaction_records(
     portfolio_id: str,
     account_id: str | None = None,
+    asset_domain: TransactionAssetDomain | None = None,
     transaction_type: str | None = None,
     position_reference_id: str | None = None,
     start_date: date | None = Query(default=None),
@@ -1271,6 +1273,7 @@ def list_transaction_records(
     records = list_transactions(
         portfolio_id,
         account_id=account_id,
+        asset_domain=asset_domain,
         transaction_type=transaction_type,
         position_reference_id=position_reference_id,
         start_date=start_date,
@@ -1450,6 +1453,7 @@ def list_transaction_change_log_records(
 def get_transaction_workspace(
     portfolio_id: str,
     account_id: str | None = None,
+    asset_domain: TransactionAssetDomain | None = None,
     transaction_type: str | None = None,
     position_reference_id: str | None = None,
     start_date: date | None = Query(default=None),
@@ -1465,6 +1469,7 @@ def get_transaction_workspace(
     filtered_records = list_transactions(
         portfolio_id,
         account_id=account_id,
+        asset_domain=asset_domain,
         transaction_type=transaction_type,
         position_reference_id=position_reference_id,
         start_date=start_date,

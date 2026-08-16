@@ -32,7 +32,7 @@ from portfolio_ops_instrument_core import (  # noqa: E402
 FINAL_FLAT_TABLE_HEADS = {
     "instrument_registry": "20260812_0024",
     "platform": "20260716_0002",
-    "portfolio": "20260812_0050",
+    "portfolio": "20260816_0051",
     "watchlist": "20260813_0041",
 }
 VERSION_TABLES = {
@@ -1001,6 +1001,33 @@ def _run_flat_table_audit(database_url: str) -> list[AuditCheck]:
                                             )::numeric <= 0
                                             ELSE false
                                         END
+                                        OR CASE
+                                            WHEN contract.terms_json
+                                                    -> 'annual_coupon_rate_pct'
+                                                IS NULL
+                                              OR json_typeof(
+                                                    contract.terms_json
+                                                        -> 'annual_coupon_rate_pct'
+                                                ) = 'null'
+                                            THEN false
+                                            WHEN NOT pg_input_is_valid(
+                                                coalesce(
+                                                    contract.terms_json
+                                                        ->> 'annual_coupon_rate_pct',
+                                                    ''
+                                                ),
+                                                'numeric'
+                                            )
+                                            THEN true
+                                            ELSE (
+                                                contract.terms_json
+                                                    ->> 'annual_coupon_rate_pct'
+                                            )::numeric < 0
+                                              OR (
+                                                contract.terms_json
+                                                    ->> 'annual_coupon_rate_pct'
+                                            )::numeric >= 1000000
+                                        END
                                         OR NOT pg_input_is_valid(
                                             coalesce(
                                                 contract.terms_json ->> 'issue_date',
@@ -1037,6 +1064,52 @@ def _run_flat_table_audit(database_url: str) -> list[AuditCheck]:
                                             )::date
                                             ELSE false
                                         END
+                                        OR CASE
+                                            WHEN contract.terms_json
+                                                    -> 'final_observation_date'
+                                                IS NULL
+                                              OR json_typeof(
+                                                    contract.terms_json
+                                                        -> 'final_observation_date'
+                                                ) = 'null'
+                                            THEN false
+                                            WHEN NOT pg_input_is_valid(
+                                                coalesce(
+                                                    contract.terms_json
+                                                        ->> 'final_observation_date',
+                                                    ''
+                                                ),
+                                                'date'
+                                            )
+                                            THEN true
+                                            WHEN pg_input_is_valid(
+                                                coalesce(
+                                                    contract.terms_json ->> 'issue_date',
+                                                    ''
+                                                ),
+                                                'date'
+                                            )
+                                             AND pg_input_is_valid(
+                                                coalesce(
+                                                    contract.terms_json ->> 'maturity_date',
+                                                    ''
+                                                ),
+                                                'date'
+                                            )
+                                            THEN (
+                                                contract.terms_json
+                                                    ->> 'final_observation_date'
+                                            )::date < (
+                                                contract.terms_json ->> 'issue_date'
+                                            )::date
+                                              OR (
+                                                contract.terms_json
+                                                    ->> 'final_observation_date'
+                                            )::date > (
+                                                contract.terms_json ->> 'maturity_date'
+                                            )::date
+                                            ELSE false
+                                        END
                                         OR trim(coalesce(
                                             contract.terms_json ->> 'issuer',
                                             ''
@@ -1047,61 +1120,164 @@ def _run_flat_table_audit(database_url: str) -> list[AuditCheck]:
                                         )) = ''
                                         OR json_typeof(
                                             contract.terms_json
-                                                -> 'underlying_instrument_ids'
+                                                -> 'underlyings'
                                         ) <> 'array'
                                         OR json_array_length(
                                             CASE
                                                 WHEN json_typeof(
                                                     contract.terms_json
-                                                        -> 'underlying_instrument_ids'
+                                                        -> 'underlyings'
                                                 ) = 'array'
                                                 THEN contract.terms_json
-                                                    -> 'underlying_instrument_ids'
+                                                    -> 'underlyings'
                                                 ELSE '[]'::json
                                             END
                                         ) = 0
-                                        OR json_typeof(
-                                            contract.terms_json
-                                                -> 'deliverable_instrument_ids'
-                                        ) <> 'array'
-                                        OR contract.terms_json ->> 'barrier_type'
-                                           NOT IN ('none', 'knock_in', 'knock_out', 'dual')
-                                        OR (
-                                            contract.terms_json ->> 'barrier_type' = 'none'
-                                            AND contract.terms_json -> 'barrier_level'
-                                                IS NOT NULL
-                                            AND json_typeof(
-                                                contract.terms_json -> 'barrier_level'
-                                            ) <> 'null'
-                                        )
-                                        OR (
-                                            contract.terms_json ->> 'barrier_type'
-                                                <> 'none'
-                                            AND (
-                                                NOT pg_input_is_valid(
-                                                    coalesce(
+                                        OR EXISTS (
+                                            SELECT 1
+                                            FROM json_array_elements(
+                                                CASE
+                                                    WHEN json_typeof(
                                                         contract.terms_json
-                                                            ->> 'barrier_level',
-                                                        ''
-                                                    ),
-                                                    'numeric'
-                                                )
-                                                OR CASE
-                                                    WHEN pg_input_is_valid(
+                                                            -> 'underlyings'
+                                                    ) = 'array'
+                                                    THEN contract.terms_json
+                                                        -> 'underlyings'
+                                                    ELSE '[]'::json
+                                                END
+                                            ) underlying(value)
+                                            WHERE json_typeof(underlying.value) <> 'object'
+                                               OR trim(coalesce(
+                                                    underlying.value ->> 'instrument_id',
+                                                    ''
+                                               )) = ''
+                                               OR CASE
+                                                    WHEN underlying.value
+                                                            -> 'initial_reference_price'
+                                                        IS NULL
+                                                      OR json_typeof(
+                                                            underlying.value
+                                                                -> 'initial_reference_price'
+                                                        ) = 'null'
+                                                    THEN false
+                                                    WHEN NOT pg_input_is_valid(
                                                         coalesce(
-                                                            contract.terms_json
-                                                                ->> 'barrier_level',
+                                                            underlying.value
+                                                                ->> 'initial_reference_price',
                                                             ''
                                                         ),
                                                         'numeric'
                                                     )
-                                                    THEN (
-                                                        contract.terms_json
-                                                            ->> 'barrier_level'
+                                                    THEN true
+                                                    ELSE (
+                                                        underlying.value
+                                                            ->> 'initial_reference_price'
                                                     )::numeric <= 0
-                                                    ELSE false
+                                               END
+                                               OR CASE
+                                                    WHEN underlying.value
+                                                            -> 'strike_level_pct'
+                                                        IS NULL
+                                                      OR json_typeof(
+                                                            underlying.value
+                                                                -> 'strike_level_pct'
+                                                        ) = 'null'
+                                                    THEN false
+                                                    WHEN NOT pg_input_is_valid(
+                                                        coalesce(
+                                                            underlying.value
+                                                                ->> 'strike_level_pct',
+                                                            ''
+                                                        ),
+                                                        'numeric'
+                                                    )
+                                                    THEN true
+                                                    ELSE (
+                                                        underlying.value
+                                                            ->> 'strike_level_pct'
+                                                    )::numeric <= 0
+                                               END
+                                               OR CASE
+                                                    WHEN underlying.value
+                                                            -> 'knock_in_level_pct'
+                                                        IS NULL
+                                                      OR json_typeof(
+                                                            underlying.value
+                                                                -> 'knock_in_level_pct'
+                                                        ) = 'null'
+                                                    THEN false
+                                                    WHEN NOT pg_input_is_valid(
+                                                        coalesce(
+                                                            underlying.value
+                                                                ->> 'knock_in_level_pct',
+                                                            ''
+                                                        ),
+                                                        'numeric'
+                                                    )
+                                                    THEN true
+                                                    ELSE (
+                                                        underlying.value
+                                                            ->> 'knock_in_level_pct'
+                                                    )::numeric <= 0
+                                               END
+                                               OR CASE
+                                                    WHEN underlying.value
+                                                            -> 'knock_out_level_pct'
+                                                        IS NULL
+                                                      OR json_typeof(
+                                                            underlying.value
+                                                                -> 'knock_out_level_pct'
+                                                        ) = 'null'
+                                                    THEN false
+                                                    WHEN NOT pg_input_is_valid(
+                                                        coalesce(
+                                                            underlying.value
+                                                                ->> 'knock_out_level_pct',
+                                                            ''
+                                                        ),
+                                                        'numeric'
+                                                    )
+                                                    THEN true
+                                                    ELSE (
+                                                        underlying.value
+                                                            ->> 'knock_out_level_pct'
+                                                    )::numeric <= 0
+                                               END
+                                               OR (
+                                                    underlying.value::jsonb ? 'deliverable'
+                                                    AND json_typeof(
+                                                        underlying.value -> 'deliverable'
+                                                    ) <> 'boolean'
+                                               )
+                                        )
+                                        OR (
+                                            SELECT count(*)
+                                            FROM json_array_elements(
+                                                CASE
+                                                    WHEN json_typeof(
+                                                        contract.terms_json
+                                                            -> 'underlyings'
+                                                    ) = 'array'
+                                                    THEN contract.terms_json
+                                                        -> 'underlyings'
+                                                    ELSE '[]'::json
                                                 END
+                                            ) underlying(value)
+                                        ) <> (
+                                            SELECT count(DISTINCT
+                                                underlying.value ->> 'instrument_id'
                                             )
+                                            FROM json_array_elements(
+                                                CASE
+                                                    WHEN json_typeof(
+                                                        contract.terms_json
+                                                            -> 'underlyings'
+                                                    ) = 'array'
+                                                    THEN contract.terms_json
+                                                        -> 'underlyings'
+                                                    ELSE '[]'::json
+                                                END
+                                            ) underlying(value)
                                         )
                                     )
                                )
@@ -1117,37 +1293,20 @@ def _run_flat_table_audit(database_url: str) -> list[AuditCheck]:
                             SELECT
                                 contract.portfolio_id,
                                 contract.derivative_contract_id,
-                                reference.instrument_id
+                                reference.value ->> 'instrument_id'
+                                    AS instrument_id
                             FROM portfolio.derivative_contract_record contract
-                            CROSS JOIN LATERAL json_array_elements_text(
+                            CROSS JOIN LATERAL json_array_elements(
                                 CASE
                                     WHEN json_typeof(
                                         contract.terms_json
-                                            -> 'underlying_instrument_ids'
+                                            -> 'underlyings'
                                     ) = 'array'
                                     THEN contract.terms_json
-                                        -> 'underlying_instrument_ids'
+                                        -> 'underlyings'
                                     ELSE '[]'::json
                                 END
-                            ) reference(instrument_id)
-                            WHERE contract.contract_type = 'fcn'
-                            UNION ALL
-                            SELECT
-                                contract.portfolio_id,
-                                contract.derivative_contract_id,
-                                reference.instrument_id
-                            FROM portfolio.derivative_contract_record contract
-                            CROSS JOIN LATERAL json_array_elements_text(
-                                CASE
-                                    WHEN json_typeof(
-                                        contract.terms_json
-                                            -> 'deliverable_instrument_ids'
-                                    ) = 'array'
-                                    THEN contract.terms_json
-                                        -> 'deliverable_instrument_ids'
-                                    ELSE '[]'::json
-                                END
-                            ) reference(instrument_id)
+                            ) reference(value)
                             WHERE contract.contract_type = 'fcn'
                         ), invalid_instrument_reference AS (
                             SELECT reference.portfolio_id,

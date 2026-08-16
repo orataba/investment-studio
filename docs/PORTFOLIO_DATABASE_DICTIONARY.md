@@ -1,6 +1,6 @@
 # Portfolio database dictionary
 
-As of 2026-08-12. Verified against SQLAlchemy metadata and migration heads `instrument_registry@20260812_0024` and `portfolio@20260812_0050`.
+As of 2026-08-16. Verified against SQLAlchemy metadata and migration heads `instrument_registry@20260812_0024` and `portfolio@20260816_0051`.
 
 This file is for architecture and integration review. External systems should use the APIs documented in [`TRANSACTION_INTEGRATION.md`](TRANSACTION_INTEGRATION.md), not write these tables directly.
 
@@ -38,7 +38,7 @@ Cash and securities accounts owned by a portfolio.
 
 ### `portfolio.transaction_record`
 
-Canonical transaction fact. Long positions, cash movements, FCN lifecycle events, and short-option positions originate here.
+Canonical transaction fact. Long positions, cash movements, FCN lifecycle events, and short-option positions originate here. The API derives every row's `asset_domain` as `security`, `derivative`, or `cash` from its canonical reference; this is a read model, not a second persisted classification.
 
 | Field group | Columns |
 |---|---|
@@ -67,7 +67,7 @@ Immutable Portfolio-local FCN and option terms. A contract is created atomically
 |---|
 | **PK** `(portfolio_id, derivative_contract_id)`; composite **FK** `(portfolio_id, account_id) → account_record`; `contract_name VARCHAR`; `contract_type VARCHAR` (`fcn` or `option`); `currency VARCHAR`; unique `(portfolio_id, external_reference)`; `terms_json JSON`; `created_at VARCHAR` |
 
-Option terms contain one Registry `underlying_instrument_id`, Call/Put type, expiry, strike, and multiplier. Settlement mode is deliberately not a contract term; the operator records expiry or cash settlement when the outcome is known. FCN terms contain notional, issue/maturity dates, issuer, counterparty, Registry underlying/deliverable IDs, and barrier description. The terms support event accounting; they do not create daily derivative pricing, covariance, or research-series eligibility.
+Option terms contain one Registry `underlying_instrument_id`, Call/Put type, expiry, strike, and multiplier. Settlement mode is deliberately not a contract term; the operator records expiry or cash settlement when the outcome is known. FCN master terms contain notional, optional annual coupon rate, issue/final-observation/maturity dates, issuer, and counterparty. Each FCN underlying is a separate term object with Registry `instrument_id`, optional initial reference price, strike/knock-in/knock-out levels expressed in percentage points, and a deliverable flag. The terms support event accounting; they do not create daily derivative pricing, covariance, or research-series eligibility.
 
 ### `portfolio.transaction_change_log`
 

@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 
 import DataOperationsDashboard from './DataOperationsDashboard'
 import InstrumentRegistryPage from './InstrumentRegistryPage'
+import { stripAppBasePath } from './appPath'
 import { instrumentsForVisibility } from './instrumentVisibility'
 import {
   type CreateInstrumentPayload,
@@ -35,7 +36,7 @@ function normalizePath(pathname: string) {
 }
 
 export default function App() {
-  const currentPath = normalizePath(window.location.pathname)
+  const currentPath = normalizePath(stripAppBasePath(window.location.pathname))
   const [instruments, setInstruments] = useState<PlatformInstrumentRecord[]>([])
   const [allInstruments, setAllInstruments] = useState<PlatformInstrumentRecord[]>([])
   const [fxRates, setFxRates] = useState<PlatformFxRatesResponse | null>(null)

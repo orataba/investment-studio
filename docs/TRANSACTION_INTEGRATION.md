@@ -49,7 +49,7 @@ Example: sell three Put contracts to open, with a multiplier of 100:
 
 ## One row, one fact
 
-Portfolio does not create or bind multi-leg derivative transactions, and the transaction schema has no derivative relation or event-group field. If two rows are economically related, record both independently and explain the relationship in `note` when useful. Market securities use Registry `instrument_id`; an FCN or option uses a Portfolio-local `derivative_contract_id`.
+The entry workflow chooses the asset domain first: `Security`, `Derivative`, or `Cash & Operations`. The API derives the same domain on every returned transaction, and filters and exports preserve it. Portfolio does not create or bind multi-leg derivative transactions, and the transaction schema has no derivative relation or event-group field. If two rows are economically related, record both independently and explain the relationship in `note` when useful. Market securities use Registry `instrument_id`; an FCN or option uses a Portfolio-local `derivative_contract_id`.
 
 Examples:
 
@@ -97,7 +97,7 @@ Long options remain at transaction cost between recorded events. Short options a
 
 FCNs remain at transaction cost between recorded events. Portfolio does not verify barrier levels and does not infer or bind any delivered asset.
 
-The first FCN transaction creates a Portfolio-local contract with notional, issue/maturity dates, issuer, counterparty, Registry underlying IDs, optional deliverable Registry IDs, and barrier description. Those fields are recorded terms, not a live valuation model or automatic barrier monitor.
+The first FCN transaction creates a Portfolio-local contract. Master terms contain notional, optional annual coupon rate, issue/final-observation/maturity dates, issuer, and counterparty. The `underlyings` array records each Registry security with optional initial reference price, strike/knock-in/knock-out levels in percentage points, and a deliverable flag. These are recorded terms, not a live valuation model or automatic barrier monitor. Revision `20260816_0051` converts the former shared barrier field to per-underlying terms and deliberately rejects ambiguous legacy `dual` barriers instead of guessing two levels.
 
 ## CSV fields
 
@@ -105,8 +105,8 @@ Required columns are `transaction_type`, `trade_date`, `account_id`, `gross_amou
 
 `lifecycle_event_type`, `trade_time`, `settlement_date`, `position_effective_date`, `entitlement_date`, `acquisition_date`, `settlement_cash_account_id`, `instrument_id`, `derivative_contract_id`, derivative definition/term columns, `quantity`, `price`, `counter_amount`, `fx_rate`, `fees`, `fee_category`, `taxes`, `counterparty_account_id`, `source_system`, `external_reference`, `note`.
 
-For a new derivative contract, place its definition on the first CSV row. Later rows leave the definition columns blank and keep only `derivative_contract_id`. A row may use `instrument_id` or `derivative_contract_id`, never both.
+For a new derivative contract, place its definition on the first CSV row. FCN rows use `fcn_annual_coupon_rate_pct`, `fcn_final_observation_date`, and `fcn_underlyings_json` for the per-underlying term array. Later rows leave the definition columns blank and keep only `derivative_contract_id`. A row may use `instrument_id` or `derivative_contract_id`, never both.
 
-Downloads add read-only `transaction_id`, `row_version`, `created_at`, and derived `option_action`. CSV preview validates the complete candidate history; import is all-or-nothing and requires the unchanged `preview_digest` returned by preview.
+Downloads add read-only `transaction_id`, `row_version`, `created_at`, derived `asset_domain` / `asset_subtype`, and derived `option_action`. CSV preview validates the complete candidate history; import is all-or-nothing and requires the unchanged `preview_digest` returned by preview.
 
 See [the mixed stock, fund, option, and FCN example](examples/transaction_import_stock_fund_option_fcn.csv). Database ownership and fields are documented in [PORTFOLIO_DATABASE_DICTIONARY.md](PORTFOLIO_DATABASE_DICTIONARY.md).

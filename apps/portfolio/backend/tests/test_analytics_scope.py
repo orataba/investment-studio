@@ -787,14 +787,22 @@ def test_workspace_scopes_independent_fcn_and_stock_cash_facts(
                     "currency": "USD",
                     "terms": {
                         "notional": "100",
+                        "annual_coupon_rate_pct": None,
                         "issue_date": "2026-04-01",
+                        "final_observation_date": None,
                         "maturity_date": "2026-04-15",
                         "issuer": "Test Issuer",
                         "counterparty": "Test Broker",
-                        "underlying_instrument_ids": ["equity-1"],
-                        "deliverable_instrument_ids": ["equity-1"],
-                        "barrier_type": "none",
-                        "barrier_level": None,
+                        "underlyings": [
+                            {
+                                "instrument_id": "equity-1",
+                                "initial_reference_price": None,
+                                "strike_level_pct": None,
+                                "knock_in_level_pct": None,
+                                "knock_out_level_pct": None,
+                                "deliverable": True,
+                            }
+                        ],
                     },
                     "created_at": "2026-04-01T00:00:00Z",
                 },
@@ -821,14 +829,22 @@ def test_workspace_scopes_independent_fcn_and_stock_cash_facts(
                     "currency": "USD",
                     "terms": {
                         "notional": "100",
+                        "annual_coupon_rate_pct": None,
                         "issue_date": "2026-04-01",
+                        "final_observation_date": None,
                         "maturity_date": "2026-04-15",
                         "issuer": "Test Issuer",
                         "counterparty": "Test Broker",
-                        "underlying_instrument_ids": ["equity-1"],
-                        "deliverable_instrument_ids": ["equity-1"],
-                        "barrier_type": "none",
-                        "barrier_level": None,
+                        "underlyings": [
+                            {
+                                "instrument_id": "equity-1",
+                                "initial_reference_price": None,
+                                "strike_level_pct": None,
+                                "knock_in_level_pct": None,
+                                "knock_out_level_pct": None,
+                                "deliverable": True,
+                            }
+                        ],
                     },
                     "created_at": "2026-04-01T00:00:00Z",
                 },

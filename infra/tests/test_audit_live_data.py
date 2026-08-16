@@ -46,7 +46,7 @@ def test_flat_table_profile_accepts_only_final_heads(
     expected_heads = {
         "instrument_registry": "20260812_0024",
         "platform": "20260716_0002",
-        "portfolio": "20260812_0050",
+        "portfolio": "20260816_0051",
         "watchlist": "20260813_0041",
     }
     monkeypatch.setattr(
@@ -290,6 +290,12 @@ def test_twr_audit_cte_projects_daily_twr(
     assert "invalid_option_lifecycle" in derivative_contract_query
     assert "option_long_cash_settlement" in derivative_contract_query
     assert "option_writer_cash_settlement" in derivative_contract_query
+    assert "annual_coupon_rate_pct" in derivative_contract_query
+    assert "final_observation_date" in derivative_contract_query
+    assert "-> 'underlyings'" in derivative_contract_query
+    assert "underlying_instrument_ids" not in derivative_contract_query
+    assert "deliverable_instrument_ids" not in derivative_contract_query
+    assert "barrier_type" not in derivative_contract_query
 
     analytics_selection_query = next(
         query

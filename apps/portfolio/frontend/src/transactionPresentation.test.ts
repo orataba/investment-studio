@@ -9,7 +9,6 @@ import {
   transactionActivityLabel,
   transactionChangedFields,
   transactionDateLabels,
-  transactionTypeChoiceLabel,
 } from './lib/transactionPresentation'
 
 function instrument(
@@ -63,6 +62,8 @@ describe('transaction presentation', () => {
       transaction_sequence: 1,
       portfolio_id: 'portfolio-1',
       transaction_type: 'buy',
+      asset_domain: 'security',
+      asset_subtype: 'fund',
       flow_scope: 'internal_portfolio',
       trade_date: '2026-07-01',
       trade_time: '12:00',
@@ -130,6 +131,10 @@ describe('transaction presentation', () => {
     expect(rows[1][column('Position Effective Date')]).toBe('2026-07-03')
     expect(rows[1][column('Economic Date')]).toBe('2026-07-03')
     expect(rows[1][column('Fee Category')]).toBe('transaction_cost')
+    expect(rows[1][column('Asset Domain')]).toBe('security')
+    expect(rows[1][column('Asset Type')]).toBe('fund')
+    expect(rows[1][column('Asset ID')]).toBe('fund-1')
+    expect(rows[1][column('Asset Name')]).toBe('Fund One')
     expect(rows[1][column('Note')]).toBe('=unsafe')
   })
 
@@ -137,12 +142,13 @@ describe('transaction presentation', () => {
     expect(
       countActiveTransactionFilters({
         account_id: 'broker',
+        asset_domain: 'security',
         transaction_type: '',
-        instrument_id: 'fund-1',
+        position_reference_id: 'fund-1',
         start_date: undefined,
         end_date: '2026-07-01',
       }),
-    ).toBe(3)
+    ).toBe(4)
   })
 
   it('uses income-event date labels for dividends and coupons only', () => {
@@ -173,12 +179,6 @@ describe('transaction presentation', () => {
     expect(transactionActivityLabel('buy', null, 'buy_to_close')).toBe(
       'Option Buy to Close',
     )
-  })
-
-  it('names the option meaning of buy and sell before security selection', () => {
-    expect(transactionTypeChoiceLabel('buy')).toBe('Buy / FCN Entry / Option Buy to Open')
-    expect(transactionTypeChoiceLabel('sell')).toBe('Sell / Option Sell to Close')
-    expect(transactionTypeChoiceLabel('buy', 'option')).toBe('Option Buy to Open')
   })
 
   it('summarizes only the fields changed by an audited correction', () => {

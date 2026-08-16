@@ -77,14 +77,22 @@ def _derivative_contract(
     elif contract_type == "fcn":
         terms = {
             "notional": "100000",
+            "annual_coupon_rate_pct": None,
             "issue_date": "2026-01-01",
+            "final_observation_date": None,
             "maturity_date": "2026-12-31",
             "issuer": "Test Issuer",
             "counterparty": "Test Broker",
-            "underlying_instrument_ids": ["equity-1"],
-            "deliverable_instrument_ids": ["equity-1"],
-            "barrier_type": "none",
-            "barrier_level": None,
+            "underlyings": [
+                {
+                    "instrument_id": "equity-1",
+                    "initial_reference_price": None,
+                    "strike_level_pct": None,
+                    "knock_in_level_pct": None,
+                    "knock_out_level_pct": None,
+                    "deliverable": True,
+                }
+            ],
         }
     else:
         raise ValueError("Derivative test fixtures support only FCN and option contracts.")

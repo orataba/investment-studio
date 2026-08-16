@@ -44,11 +44,11 @@ def _run_instrument_registry_upgrade() -> None:
     command.upgrade(config, "head")
 
 
-def _run_watchlist_upgrade(database_url: str) -> None:
+def _run_watchlist_upgrade(database_url: str, revision: str = "head") -> None:
     config = Config(str(BACKEND_ROOT / "alembic.ini"))
     config.set_main_option("script_location", str(BACKEND_ROOT / "alembic"))
     config.set_main_option("sqlalchemy.url", database_url)
-    command.upgrade(config, "head")
+    command.upgrade(config, revision)
 
 
 def _run_watchlist_upgrade_until_fk(database_url: str) -> None:
@@ -377,6 +377,14 @@ def test_postgres_primary_display_field_reconciles_upgraded_database(
     engine = create_engine(postgres_watchlist_env["database_url"])
     try:
         with engine.begin() as connection:
+            connection.execute(text("DROP SCHEMA watchlist CASCADE"))
+            connection.execute(text("CREATE SCHEMA watchlist"))
+        _run_watchlist_upgrade(
+            postgres_watchlist_env["database_url"],
+            "20260809_0035",
+        )
+
+        with engine.begin() as connection:
             connection.execute(
                 text(
                     """
@@ -451,14 +459,10 @@ def test_postgres_primary_display_field_reconciles_upgraded_database(
                     """
                 )
             )
-            connection.execute(
-                text(
-                    "UPDATE watchlist.alembic_version "
-                    "SET version_num = '20260809_0035'"
-                )
-            )
-
-        _run_watchlist_upgrade(postgres_watchlist_env["database_url"])
+        _run_watchlist_upgrade(
+            postgres_watchlist_env["database_url"],
+            "20260809_0036",
+        )
 
         with engine.connect() as connection:
             canonical_count = connection.scalar(

@@ -62,6 +62,7 @@ TransactionCommandType = Literal[
     "opening_balance",
 ]
 TransactionType = TransactionCommandType | Literal["transfer_in", "transfer_out"]
+TransactionAssetDomain = Literal["security", "derivative", "cash"]
 OptionAction = Literal[
     "buy_to_open",
     "sell_to_close",
@@ -445,41 +446,72 @@ class OptionContractTerms(BaseModel):
         return _normalize_required_text(value)
 
 
+class FCNUnderlyingTerms(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    instrument_id: str = Field(min_length=1)
+    initial_reference_price: Decimal | None = Field(
+        default=None,
+        gt=0,
+        lt=Decimal("1e16"),
+    )
+    strike_level_pct: Decimal | None = Field(
+        default=None,
+        gt=0,
+        lt=Decimal("1e6"),
+    )
+    knock_in_level_pct: Decimal | None = Field(
+        default=None,
+        gt=0,
+        lt=Decimal("1e6"),
+    )
+    knock_out_level_pct: Decimal | None = Field(
+        default=None,
+        gt=0,
+        lt=Decimal("1e6"),
+    )
+    deliverable: bool = False
+
+    @field_validator("instrument_id", mode="before")
+    @classmethod
+    def normalize_instrument_id(cls, value: object) -> object:
+        return _normalize_required_text(value)
+
+
 class FCNContractTerms(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     notional: Decimal = Field(gt=0, lt=Decimal("1e20"))
+    annual_coupon_rate_pct: Decimal | None = Field(
+        default=None,
+        ge=0,
+        lt=Decimal("1e6"),
+    )
     issue_date: date
+    final_observation_date: date | None = None
     maturity_date: date
     issuer: str = Field(min_length=1)
     counterparty: str = Field(min_length=1)
-    underlying_instrument_ids: list[str] = Field(min_length=1)
-    deliverable_instrument_ids: list[str] = Field(default_factory=list)
-    barrier_type: Literal["none", "knock_in", "knock_out", "dual"] = "none"
-    barrier_level: Decimal | None = Field(default=None, gt=0, lt=Decimal("1e16"))
+    underlyings: list[FCNUnderlyingTerms] = Field(min_length=1)
 
     @field_validator("issuer", "counterparty", mode="before")
     @classmethod
     def normalize_required_text(cls, value: object) -> object:
         return _normalize_required_text(value)
 
-    @field_validator(
-        "underlying_instrument_ids",
-        "deliverable_instrument_ids",
-        mode="before",
-    )
-    @classmethod
-    def normalize_instrument_ids(cls, value: object) -> object:
-        return _normalize_optional_text_list(value)
-
     @model_validator(mode="after")
     def validate_terms(self) -> "FCNContractTerms":
         if self.maturity_date < self.issue_date:
             raise ValueError("maturity_date must not precede issue_date.")
-        if self.barrier_type == "none" and self.barrier_level is not None:
-            raise ValueError("barrier_level must be omitted when barrier_type is none.")
-        if self.barrier_type != "none" and self.barrier_level is None:
-            raise ValueError("barrier_level is required for an active barrier.")
+        if self.final_observation_date is not None and not (
+            self.issue_date <= self.final_observation_date <= self.maturity_date
+        ):
+            raise ValueError(
+                "final_observation_date must fall between issue_date and maturity_date."
+            )
+        instrument_ids = [item.instrument_id for item in self.underlyings]
+        if len(instrument_ids) != len(set(instrument_ids)):
+            raise ValueError("FCN underlyings must use unique instrument_id values.")
         return self
 
 
@@ -530,6 +562,8 @@ class TransactionRecord(BaseModel):
     transaction_sequence: int = Field(ge=1)
     portfolio_id: str
     transaction_type: TransactionType
+    asset_domain: TransactionAssetDomain
+    asset_subtype: str | None = None
     # Read-only canonical meaning derived from the current persisted action.
     option_action: OptionAction | None = None
     lifecycle_event_type: LifecycleEventType | None = None
@@ -581,7 +615,9 @@ class TransactionRecord(BaseModel):
 
 class TransactionListSummary(BaseModel):
     total_transactions: int
-    instrument_transactions: int
+    security_transactions: int
+    derivative_transactions: int
+    cash_transactions: int
     external_cash_flows: int
     opening_balance_records: int
 

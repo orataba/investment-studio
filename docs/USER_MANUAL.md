@@ -227,7 +227,7 @@ Accounts 管理组合内账户。账户类型通常包括证券账户和现金/�
 
 ### 6.3 Transactions
 
-Transactions 是组合事实入口。新增交易前确认账户、资产、币种、trade date、settlement date、数量、价格、费用和税费。交易保存后会生成 ledger postings，并影响持仓、现金、成本和组合快照。
+Transactions 是组合事实入口。新增时先选 `Security`、`Derivative` 或 `Cash & Operations`，再从该类别自己的动作列表选择交易；不同资产类别不会共用一张混杂的动作菜单。Derivative 还需先选 Option 或 FCN。确认账户、资产、币种、trade date、settlement date、数量、价格、费用和税费后保存，系统再生成 ledger postings，并影响持仓、现金、成本和组合快照。
 
 日期用途不同：证券头寸通常在 trade date 生效，结算现金在 settlement date 生效；dividend / coupon 可在 entitlement date 确认收益；deposit / withdrawal 在实际收付日进入 TWR 外部现金流。页面会分别展示这些日期，不能为了让绩效落到预期日期而改写另一种日期。
 
@@ -252,8 +252,9 @@ Transactions 是组合事实入口。新增交易前确认账户、资产、币�
 FCN 与期权使用 Portfolio 本地合约，不从 Platform instrument 列表中选择一个“衍生品资产”：
 
 - 首笔 FCN/期权交易同时创建不可变合约，记录合约名称、币种、账户和条款；后续交易及生命周期事件只选择同一 `derivative_contract_id`。
-- 期权支持 long buy/sell、short write/buy-to-close，以及 long/writer expiry、long/writer cash settlement；数量单位是合约张数，premium gross amount 按张数、每单位权利金和 multiplier 计算。合约不预设现金或实物结算方式。
+- 期权动作明确区分 `Buy to Open`、`Sell to Close`、`Sell to Open`、`Buy to Close`，并在选定合约后标明 Call 或 Put；另外分别提供 long/writer expiry 与 long/writer cash settlement。数量单位是合约张数，premium gross amount 按张数、每单位权利金和 multiplier 计算。合约不预设现金或实物结算方式。
 - FCN 支持买入、coupon，以及 normal maturity、knock-in、knock-out 关闭结果。系统记录事件，不自动验证障碍是否触发，也不把交付资产与关闭事件绑定成一笔复合交易。
+- FCN 合约主条款记录名义本金、年化票息率、发行日、最终观察日、到期日、发行人和对手方；每个 underlying 单独记录 Registry security、初始参考价、strike/knock-in/knock-out 百分比水平和是否可交付。
 - 一行只记录一个经济事实。若实际发生期权实物交割，按“期权现金结算 + 交割日市场/参考价的独立股票买卖”录入；两者共同还原交割经济结果，但系统不建立关联。FCN 敲入后的资产接收也另录普通证券交易。
 - 合约条款创建后不可修改；录错时应撤销错误交易并创建新的合约身份，不能改写历史条款。
 

@@ -18,16 +18,24 @@ export type PortfolioOptionContractTerms = {
   contract_multiplier: number
 }
 
+export type PortfolioFcnUnderlyingTerms = {
+  instrument_id: string
+  initial_reference_price: number | null
+  strike_level_pct: number | null
+  knock_in_level_pct: number | null
+  knock_out_level_pct: number | null
+  deliverable: boolean
+}
+
 export type PortfolioFcnContractTerms = {
   notional: number
+  annual_coupon_rate_pct: number | null
   issue_date: string
+  final_observation_date: string | null
   maturity_date: string
   issuer: string
   counterparty: string
-  underlying_instrument_ids: string[]
-  deliverable_instrument_ids: string[]
-  barrier_type: 'none' | 'knock_in' | 'knock_out' | 'dual'
-  barrier_level: number | null
+  underlyings: PortfolioFcnUnderlyingTerms[]
 }
 
 export type PortfolioDerivativeContractCreate =
@@ -2058,6 +2066,8 @@ export type PortfolioTransactionRecord = {
   transaction_sequence: number
   portfolio_id: string
   transaction_type: string
+  asset_domain: 'security' | 'derivative' | 'cash'
+  asset_subtype: string | null
   option_action?: PortfolioOptionAction | null
   lifecycle_event_type?: string | null
   flow_scope: string
@@ -2137,7 +2147,9 @@ export type PortfolioTransactionListResponse = {
   portfolio_id: string
   summary: {
     total_transactions: number
-    instrument_transactions: number
+    security_transactions: number
+    derivative_transactions: number
+    cash_transactions: number
     external_cash_flows: number
     opening_balance_records: number
   }
@@ -2369,6 +2381,7 @@ export type PortfolioPositionLotListResponse = {
 
 export type PortfolioTransactionFilters = {
   account_id?: string
+  asset_domain?: 'security' | 'derivative' | 'cash' | ''
   transaction_type?: string
   position_reference_id?: string
   start_date?: string

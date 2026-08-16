@@ -3,6 +3,15 @@ import type {
   PortfolioDerivativeContractRecord,
 } from './api'
 
+export type FcnUnderlyingDraft = {
+  instrument_id: string
+  initial_reference_price: string
+  strike_level_pct: string
+  knock_in_level_pct: string
+  knock_out_level_pct: string
+  deliverable: boolean
+}
+
 export type DerivativeContractDraft = {
   derivative_contract_id: string
   contract_name: string
@@ -14,20 +23,30 @@ export type DerivativeContractDraft = {
   option_strike: string
   option_contract_multiplier: string
   fcn_notional: string
+  fcn_annual_coupon_rate_pct: string
   fcn_issue_date: string
+  fcn_final_observation_date: string
   fcn_maturity_date: string
   fcn_issuer: string
   fcn_counterparty: string
-  fcn_underlying_instrument_ids: string
-  fcn_deliverable_instrument_ids: string
-  fcn_barrier_type: 'none' | 'knock_in' | 'knock_out' | 'dual'
-  fcn_barrier_level: string
+  fcn_underlyings: FcnUnderlyingDraft[]
 }
 
 function localTodayIso() {
   const now = new Date()
   const timezoneOffsetMs = now.getTimezoneOffset() * 60 * 1000
   return new Date(now.getTime() - timezoneOffsetMs).toISOString().slice(0, 10)
+}
+
+export function buildInitialFcnUnderlyingDraft(): FcnUnderlyingDraft {
+  return {
+    instrument_id: '',
+    initial_reference_price: '',
+    strike_level_pct: '',
+    knock_in_level_pct: '',
+    knock_out_level_pct: '',
+    deliverable: false,
+  }
 }
 
 export function buildInitialDerivativeContractDraft(
@@ -45,14 +64,13 @@ export function buildInitialDerivativeContractDraft(
     option_strike: '',
     option_contract_multiplier: '100',
     fcn_notional: '',
+    fcn_annual_coupon_rate_pct: '',
     fcn_issue_date: today,
+    fcn_final_observation_date: '',
     fcn_maturity_date: today,
     fcn_issuer: '',
     fcn_counterparty: '',
-    fcn_underlying_instrument_ids: '',
-    fcn_deliverable_instrument_ids: '',
-    fcn_barrier_type: 'none',
-    fcn_barrier_level: '',
+    fcn_underlyings: [buildInitialFcnUnderlyingDraft()],
   }
 }
 
@@ -74,23 +92,50 @@ export function derivativeContractDraftFromRecord(
     draft.option_contract_multiplier = String(contract.terms.contract_multiplier)
   } else {
     draft.fcn_notional = String(contract.terms.notional)
+    draft.fcn_annual_coupon_rate_pct =
+      contract.terms.annual_coupon_rate_pct == null
+        ? ''
+        : String(contract.terms.annual_coupon_rate_pct)
     draft.fcn_issue_date = contract.terms.issue_date
+    draft.fcn_final_observation_date = contract.terms.final_observation_date || ''
     draft.fcn_maturity_date = contract.terms.maturity_date
     draft.fcn_issuer = contract.terms.issuer
     draft.fcn_counterparty = contract.terms.counterparty
-    draft.fcn_underlying_instrument_ids = contract.terms.underlying_instrument_ids.join('; ')
-    draft.fcn_deliverable_instrument_ids = contract.terms.deliverable_instrument_ids.join('; ')
-    draft.fcn_barrier_type = contract.terms.barrier_type
-    draft.fcn_barrier_level = contract.terms.barrier_level == null ? '' : String(contract.terms.barrier_level)
+    draft.fcn_underlyings = contract.terms.underlyings.map((underlying) => ({
+      instrument_id: underlying.instrument_id,
+      initial_reference_price:
+        underlying.initial_reference_price == null
+          ? ''
+          : String(underlying.initial_reference_price),
+      strike_level_pct:
+        underlying.strike_level_pct == null
+          ? ''
+          : String(underlying.strike_level_pct),
+      knock_in_level_pct:
+        underlying.knock_in_level_pct == null
+          ? ''
+          : String(underlying.knock_in_level_pct),
+      knock_out_level_pct:
+        underlying.knock_out_level_pct == null
+          ? ''
+          : String(underlying.knock_out_level_pct),
+      deliverable: underlying.deliverable,
+    }))
   }
   return draft
 }
 
-function parseInstrumentIds(value: string) {
-  return value
-    .split(';')
-    .map((item) => item.trim())
-    .filter(Boolean)
+function optionalNumber(value: string, label: string, options?: { allowZero?: boolean }) {
+  if (!value.trim()) {
+    return null
+  }
+  const parsed = Number(value)
+  const valid =
+    Number.isFinite(parsed) && (options?.allowZero ? parsed >= 0 : parsed > 0)
+  if (!valid) {
+    throw new Error(`${label} must be ${options?.allowZero ? 'non-negative' : 'positive'}.`)
+  }
+  return parsed
 }
 
 export function derivativeContractFromDraft(
@@ -132,12 +177,6 @@ export function derivativeContractFromDraft(
   }
 
   const notional = Number(draft.fcn_notional)
-  const barrierLevel = draft.fcn_barrier_level.trim()
-    ? Number(draft.fcn_barrier_level)
-    : null
-  const underlyingInstrumentIds = parseInstrumentIds(
-    draft.fcn_underlying_instrument_ids,
-  )
   if (!Number.isFinite(notional) || notional <= 0) {
     throw new Error('FCN notional must be positive.')
   }
@@ -149,19 +188,27 @@ export function derivativeContractFromDraft(
     throw new Error('FCN maturity must be on or after its issue date.')
   }
   if (
-    !draft.fcn_issuer.trim() ||
-    !draft.fcn_counterparty.trim() ||
-    !underlyingInstrumentIds.length
+    draft.fcn_final_observation_date &&
+    (draft.fcn_final_observation_date < draft.fcn_issue_date ||
+      draft.fcn_final_observation_date > draft.fcn_maturity_date)
   ) {
-    throw new Error('FCN issuer, counterparty, and at least one underlying are required.')
+    throw new Error('FCN final observation must fall between issue and maturity.')
   }
-  if (
-    (draft.fcn_barrier_type === 'none' && barrierLevel !== null) ||
-    (draft.fcn_barrier_type !== 'none' &&
-      (barrierLevel === null || !Number.isFinite(barrierLevel) || barrierLevel <= 0))
-  ) {
-    throw new Error('FCN barrier level must match the selected barrier type.')
+  if (!draft.fcn_issuer.trim() || !draft.fcn_counterparty.trim()) {
+    throw new Error('FCN issuer and counterparty are required.')
   }
+  if (!draft.fcn_underlyings.length) {
+    throw new Error('FCN requires at least one underlying.')
+  }
+
+  const instrumentIds = draft.fcn_underlyings.map((item) => item.instrument_id.trim())
+  if (instrumentIds.some((instrumentId) => !instrumentId)) {
+    throw new Error('Select a Registry security for every FCN underlying.')
+  }
+  if (new Set(instrumentIds).size !== instrumentIds.length) {
+    throw new Error('FCN underlyings must be unique.')
+  }
+
   return {
     derivative_contract_id: derivativeContractId,
     contract_name: contractName,
@@ -169,16 +216,36 @@ export function derivativeContractFromDraft(
     external_reference: draft.external_reference.trim() || null,
     terms: {
       notional,
+      annual_coupon_rate_pct: optionalNumber(
+        draft.fcn_annual_coupon_rate_pct,
+        'FCN annual coupon rate',
+        { allowZero: true },
+      ),
       issue_date: draft.fcn_issue_date,
+      final_observation_date: draft.fcn_final_observation_date || null,
       maturity_date: draft.fcn_maturity_date,
       issuer: draft.fcn_issuer.trim(),
       counterparty: draft.fcn_counterparty.trim(),
-      underlying_instrument_ids: underlyingInstrumentIds,
-      deliverable_instrument_ids: parseInstrumentIds(
-        draft.fcn_deliverable_instrument_ids,
-      ),
-      barrier_type: draft.fcn_barrier_type,
-      barrier_level: barrierLevel,
+      underlyings: draft.fcn_underlyings.map((underlying) => ({
+        instrument_id: underlying.instrument_id.trim(),
+        initial_reference_price: optionalNumber(
+          underlying.initial_reference_price,
+          'FCN initial reference price',
+        ),
+        strike_level_pct: optionalNumber(
+          underlying.strike_level_pct,
+          'FCN strike level',
+        ),
+        knock_in_level_pct: optionalNumber(
+          underlying.knock_in_level_pct,
+          'FCN knock-in level',
+        ),
+        knock_out_level_pct: optionalNumber(
+          underlying.knock_out_level_pct,
+          'FCN knock-out level',
+        ),
+        deliverable: underlying.deliverable,
+      })),
     },
   }
 }

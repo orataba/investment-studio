@@ -124,7 +124,11 @@ prepare_case() {
     '  printf "restore-failed\n" >> "$EVENT_LOG"' \
     '  exit 12' \
     'fi' \
-    'if [[ -n "$output" ]]; then printf "%s\n" "CREATE SCHEMA instrument_registry;" "CREATE SCHEMA platform;" "CREATE SCHEMA portfolio;" "CREATE SCHEMA watchlist;" > "$output"; fi' \
+    'if [[ "$output" == "-" ]]; then' \
+    '  printf "%s\n" "CREATE SCHEMA instrument_registry;" "CREATE SCHEMA platform;" "CREATE SCHEMA portfolio;" "CREATE SCHEMA watchlist;"' \
+    'elif [[ -n "$output" ]]; then' \
+    '  printf "%s\n" "CREATE SCHEMA instrument_registry;" "CREATE SCHEMA platform;" "CREATE SCHEMA portfolio;" "CREATE SCHEMA watchlist;" > "$output"' \
+    'fi' \
     'printf "restore\n" >> "$EVENT_LOG"' \
     > "$mock_bin/pg_restore"
 

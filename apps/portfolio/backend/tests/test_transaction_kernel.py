@@ -45,6 +45,98 @@ def _share_split_event(
     }
 
 
+def test_transaction_asset_domain_is_derived_and_filterable(client):
+    account_response = client.patch(
+        "/api/portfolios/portfolio-ops/accounts/broker-us-core",
+        json={"allowed_instrument_types": ["equity", "option"]},
+    )
+    assert account_response.status_code == 200
+
+    security_response = client.post(
+        "/api/portfolios/portfolio-ops/transactions",
+        json={
+            "transaction_type": "buy",
+            "trade_date": "2026-08-01",
+            "account_id": "broker-us-core",
+            "settlement_cash_account_id": "cash-usd-main",
+            "instrument_id": "equity-us-abbv",
+            "quantity": 1,
+            "price": 100,
+            "gross_amount": 100,
+            "currency": "USD",
+        },
+    )
+    assert security_response.status_code == 200, security_response.json()
+
+    derivative_response = client.post(
+        "/api/portfolios/portfolio-ops/transactions",
+        json={
+            "transaction_type": "buy",
+            "trade_date": "2026-08-02",
+            "account_id": "broker-us-core",
+            "settlement_cash_account_id": "cash-usd-main",
+            "derivative_contract_id": "domain-option",
+            "derivative_contract": {
+                "derivative_contract_id": "domain-option",
+                "contract_name": "Domain Test Call",
+                "contract_type": "option",
+                "external_reference": "DOMAIN-OPTION",
+                "terms": {
+                    "underlying_instrument_id": "equity-us-abbv",
+                    "option_type": "call",
+                    "expiry_date": "2026-12-18",
+                    "strike": 110,
+                    "contract_multiplier": 100,
+                },
+            },
+            "quantity": 1,
+            "price": 1,
+            "gross_amount": 100,
+            "currency": "USD",
+        },
+    )
+    assert derivative_response.status_code == 200, derivative_response.json()
+
+    cash_response = client.post(
+        "/api/portfolios/portfolio-ops/transactions",
+        json={
+            "transaction_type": "deposit",
+            "trade_date": "2026-08-03",
+            "account_id": "cash-usd-main",
+            "gross_amount": 1000,
+            "currency": "USD",
+        },
+    )
+    assert cash_response.status_code == 200, cash_response.json()
+
+    expected = {
+        "security": ("equity", "security_transactions"),
+        "derivative": ("option", "derivative_transactions"),
+        "cash": (None, "cash_transactions"),
+    }
+    for asset_domain, (asset_subtype, summary_field) in expected.items():
+        response = client.get(
+            "/api/portfolios/portfolio-ops/transactions",
+            params={
+                "asset_domain": asset_domain,
+                "start_date": "2026-08-01",
+                "end_date": "2026-08-03",
+            },
+        )
+        assert response.status_code == 200
+        payload = response.json()
+        assert len(payload["transactions"]) == 1
+        assert payload["transactions"][0]["asset_domain"] == asset_domain
+        assert payload["transactions"][0]["asset_subtype"] == asset_subtype
+        assert payload["summary"][summary_field] == 1
+
+    invalid_response = client.get(
+        "/api/portfolios/portfolio-ops/transactions",
+        params={"asset_domain": "mixed"},
+    )
+    assert invalid_response.status_code == 422
+
+
 def _split_test_transaction(
     transaction_id: str,
     transaction_type: str,
@@ -3325,7 +3417,7 @@ def test_accounts_workspace_includes_selected_account_linked_transactions(client
     payload = response.json()
     assert payload["selected_account_id"] == "broker-us-core"
     assert payload["linked_transactions_summary"]["total_transactions"] > 0
-    assert payload["linked_transactions_summary"]["instrument_transactions"] > 0
+    assert payload["linked_transactions_summary"]["security_transactions"] > 0
     assert payload["ledger_postings"]
     assert payload["positions"]
     assert all(

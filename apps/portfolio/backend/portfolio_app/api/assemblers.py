@@ -27,6 +27,24 @@ def resolve_transaction_flow_scope(transaction_type: str) -> str:
     return "internal_portfolio"
 
 
+def resolve_transaction_asset_domain(record: dict[str, object]) -> str:
+    if record.get("derivative_contract_id"):
+        return "derivative"
+    if record.get("instrument_id"):
+        return "security"
+    return "cash"
+
+
+def resolve_transaction_asset_subtype(record: dict[str, object]) -> str | None:
+    derivative_contract = record.get("derivative_contract")
+    if isinstance(derivative_contract, dict) and derivative_contract.get("contract_type"):
+        return str(derivative_contract["contract_type"])
+    instrument_ref = record.get("instrument_ref")
+    if isinstance(instrument_ref, dict) and instrument_ref.get("instrument_type"):
+        return str(instrument_ref["instrument_type"])
+    return None
+
+
 def resolve_transaction_net_cash_effect(
     record: dict[str, object],
 ) -> float | None:
@@ -97,6 +115,8 @@ def serialize_transaction(
         transaction_sequence=int(record.get("transaction_sequence") or 0),
         portfolio_id=portfolio_id,
         transaction_type=str(record.get("transaction_type") or ""),
+        asset_domain=resolve_transaction_asset_domain(record),
+        asset_subtype=resolve_transaction_asset_subtype(record),
         option_action=resolve_option_action(record),
         lifecycle_event_type=(
             str(record.get("lifecycle_event_type"))
@@ -200,7 +220,15 @@ def serialize_transactions(
 def summarize_transactions(records: list[dict[str, object]]) -> TransactionListSummary:
     return TransactionListSummary(
         total_transactions=len(records),
-        instrument_transactions=sum(1 for item in records if item.get("instrument_id")),
+        security_transactions=sum(
+            1 for item in records if resolve_transaction_asset_domain(item) == "security"
+        ),
+        derivative_transactions=sum(
+            1 for item in records if resolve_transaction_asset_domain(item) == "derivative"
+        ),
+        cash_transactions=sum(
+            1 for item in records if resolve_transaction_asset_domain(item) == "cash"
+        ),
         external_cash_flows=sum(1 for item in records if item.get("transaction_type") in {"deposit", "withdrawal"}),
         opening_balance_records=sum(1 for item in records if item.get("transaction_type") == "opening_balance"),
     )

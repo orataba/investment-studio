@@ -4619,6 +4619,7 @@ def list_transactions(
     portfolio_id: str,
     *,
     account_id: str | None = None,
+    asset_domain: str | None = None,
     transaction_type: str | None = None,
     position_reference_id: str | None = None,
     start_date: date | None = None,
@@ -4638,6 +4639,17 @@ def list_transactions(
                         TransactionRecordModel.counterparty_account_id == account_id,
                     ),
                 )
+            )
+        if asset_domain == "security":
+            statement = statement.where(TransactionRecordModel.instrument_id.is_not(None))
+        elif asset_domain == "derivative":
+            statement = statement.where(
+                TransactionRecordModel.derivative_contract_id.is_not(None)
+            )
+        elif asset_domain == "cash":
+            statement = statement.where(
+                TransactionRecordModel.instrument_id.is_(None),
+                TransactionRecordModel.derivative_contract_id.is_(None),
             )
         if transaction_type:
             statement = statement.where(TransactionRecordModel.transaction_type == transaction_type)
