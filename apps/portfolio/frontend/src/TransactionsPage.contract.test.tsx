@@ -487,6 +487,12 @@ describe('Transactions rendered page contract', () => {
     const review = within(dialog).getByRole('complementary', { name: 'Transaction review' })
     expect(within(review).getByText('Net Cash Effect')).toBeInTheDocument()
     expect(within(review).getByText('-$250.00')).toBeInTheDocument()
+    expect(within(review).queryByRole('textbox')).not.toBeInTheDocument()
+
+    await user.click(within(dialog).getByText('Additional details'))
+    expect(within(dialog).getByRole('textbox', { name: 'Source System' })).toBeInTheDocument()
+    expect(within(dialog).getByRole('textbox', { name: 'External Reference' })).toBeInTheDocument()
+    expect(within(dialog).getByRole('textbox', { name: 'Note' })).toBeInTheDocument()
   })
 
   it('uses one entry-type menu and keeps accounts and derivative actions contextual', async () => {
@@ -529,9 +535,17 @@ describe('Transactions rendered page contract', () => {
     expect(within(account).queryByRole('option', { name: 'ETF Brokerage · USD' })).not.toBeInTheDocument()
 
     const newContractAction = within(dialog).getByRole('combobox', { name: 'Action' })
+    const optionType = within(dialog).getByRole('combobox', { name: 'Option Type' })
+    expect(
+      optionType.compareDocumentPosition(newContractAction) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy()
     expect(within(newContractAction).getByRole('option', { name: 'Buy to Open Call' })).toBeInTheDocument()
     expect(within(newContractAction).getByRole('option', { name: 'Sell to Open Call' })).toBeInTheDocument()
     expect(within(newContractAction).queryByRole('option', { name: 'Sell to Close Call' })).not.toBeInTheDocument()
+
+    await user.selectOptions(optionType, 'put')
+    expect(within(newContractAction).getByRole('option', { name: 'Buy to Open Put' })).toBeInTheDocument()
+    expect(within(newContractAction).getByRole('option', { name: 'Sell to Open Put' })).toBeInTheDocument()
 
     await user.selectOptions(
       within(dialog).getByRole('combobox', { name: 'Option Contract' }),

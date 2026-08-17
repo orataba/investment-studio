@@ -7787,10 +7787,6 @@ input[type='checkbox'] {
   gap: 8px;
 }
 
-.transaction-instrument-search-top {
-  margin-bottom: -4px;
-}
-
 .transaction-instrument-results {
   position: absolute;
   top: calc(100% + 4px);
@@ -10269,7 +10265,7 @@ input[type='date']::-webkit-calendar-picker-indicator {
 
 /* Transaction entry ticket */
 .transaction-entry-modal {
-  width: min(1000px, calc(100vw - 48px));
+  width: min(1080px, calc(100vw - 32px));
   height: min(900px, calc(100dvh - 32px));
   max-height: none;
   display: grid;
@@ -10283,7 +10279,7 @@ input[type='date']::-webkit-calendar-picker-indicator {
 }
 
 .transaction-form {
-  grid-template-columns: minmax(0, 1fr) 286px;
+  grid-template-columns: minmax(0, 1fr) 260px;
   grid-template-rows: minmax(0, 1fr) auto;
   gap: 0;
   min-height: 0;
@@ -10294,7 +10290,7 @@ input[type='date']::-webkit-calendar-picker-indicator {
 .transaction-ticket-main {
   display: grid;
   align-content: start;
-  gap: 14px;
+  gap: 16px;
   min-width: 0;
   min-height: 0;
   overflow-y: auto;
@@ -10340,27 +10336,14 @@ input[type='date']::-webkit-calendar-picker-indicator {
   font-weight: 500;
 }
 
+.transaction-ticket-section-heading-compact {
+  margin-top: 2px;
+}
+
 .transaction-ticket-grid {
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 12px 14px;
   align-items: start;
-}
-
-.transaction-entry-kind-row {
-  display: grid;
-  grid-template-columns: minmax(220px, 0.72fr) minmax(0, 1.28fr);
-  gap: 16px;
-  align-items: end;
-  padding: 12px;
-  border: 1px solid var(--portfolio-line);
-  background: var(--portfolio-band);
-}
-
-.transaction-entry-kind-row p {
-  margin: 0;
-  color: var(--portfolio-muted);
-  font-size: 12px;
-  line-height: 1.5;
 }
 
 .transaction-entry-kind-selector {
@@ -10371,12 +10354,11 @@ input[type='date']::-webkit-calendar-picker-indicator {
 }
 
 .transaction-entry-kind-option {
-  display: grid;
-  align-content: start;
-  gap: 4px;
+  display: flex;
+  align-items: center;
   min-width: 0;
-  min-height: 76px;
-  padding: 11px 12px;
+  min-height: 44px;
+  padding: 9px 12px;
   border: 0;
   border-right: 1px solid var(--portfolio-line);
   background: #ffffff;
@@ -10394,10 +10376,46 @@ input[type='date']::-webkit-calendar-picker-indicator {
   font-weight: 600;
 }
 
-.transaction-entry-kind-option span {
+.transaction-entry-kind-description,
+.transaction-entry-action-note {
+  margin: -8px 0 0;
   color: var(--portfolio-muted);
-  font-size: 10px;
-  line-height: 1.35;
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.transaction-entry-context-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 12px;
+  align-items: start;
+}
+
+.transaction-entry-context-grid > * {
+  min-width: 0;
+}
+
+.transaction-entry-context-grid .transaction-instrument-search {
+  gap: 0;
+}
+
+.transaction-entry-account-warning {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: -4px;
+  padding: 8px 10px;
+  border: 1px solid color-mix(in srgb, var(--portfolio-warning) 45%, var(--portfolio-line));
+  background: color-mix(in srgb, var(--portfolio-warning) 8%, #ffffff);
+  color: var(--portfolio-warning);
+  font-size: 11px;
+}
+
+.transaction-entry-account-warning a {
+  flex: 0 0 auto;
+  color: inherit;
+  font-weight: 600;
 }
 
 .transaction-entry-kind-option:hover,
@@ -10421,6 +10439,54 @@ input[type='date']::-webkit-calendar-picker-indicator {
   padding: 14px;
   border: 1px solid var(--portfolio-line-strong);
   background: color-mix(in srgb, var(--portfolio-band) 70%, #ffffff);
+}
+
+.transaction-entry-additional-details {
+  padding-top: 12px;
+  border-top: 1px solid var(--portfolio-line);
+}
+
+.transaction-entry-additional-details > summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  list-style: none;
+  cursor: pointer;
+}
+
+.transaction-entry-additional-details > summary::-webkit-details-marker {
+  display: none;
+}
+
+.transaction-entry-additional-details > summary::after {
+  content: '+';
+  flex: 0 0 auto;
+  color: var(--portfolio-muted);
+  font-size: 16px;
+  line-height: 1;
+}
+
+.transaction-entry-additional-details[open] > summary::after {
+  content: '−';
+}
+
+.transaction-entry-additional-details > summary > span {
+  color: var(--portfolio-muted);
+  font-size: 11px;
+}
+
+.transaction-entry-additional-details > summary > strong {
+  margin-left: auto;
+  color: var(--portfolio-ink);
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.transaction-entry-additional-body {
+  display: grid;
+  gap: 14px;
+  padding-top: 14px;
 }
 
 .transaction-contract-definition-head {
@@ -10541,7 +10607,7 @@ input[type='date']::-webkit-calendar-picker-indicator {
   border-bottom: 0;
 }
 
-.transaction-ticket-review .transaction-notes-field textarea {
+.transaction-entry-additional-body .transaction-notes-field textarea {
   min-height: 110px;
 }
 
@@ -11071,7 +11137,6 @@ input[type='date']::-webkit-calendar-picker-indicator {
   }
 
   .transaction-ticket-grid,
-  .transaction-entry-kind-row,
   .transaction-fcn-underlying-row,
   .portfolio-security-hero-metrics,
   .portfolio-security-lot-summary {

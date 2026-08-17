@@ -1165,9 +1165,11 @@ export default function TransactionsPage() {
       (contract) => contract.derivative_contract_id === form.derivative_contract_id,
     )?.contract_type ?? derivativeDraft.contract_type,
   )
-  const formEntryKindLabel =
-    TRANSACTION_ENTRY_KINDS.find((entryKind) => entryKind.value === formEntryKind)?.label ??
-    formEntryKind
+  const formEntryKindConfig = TRANSACTION_ENTRY_KINDS.find(
+    (entryKind) => entryKind.value === formEntryKind,
+  )
+  const formEntryKindLabel = formEntryKindConfig?.label ?? formEntryKind
+  const formEntryKindDescription = formEntryKindConfig?.description ?? ''
   const formAccountOptions = eligibleAccounts(
     form.transaction_type,
     accounts,
@@ -3765,9 +3767,8 @@ export default function TransactionsPage() {
                 <div className="transaction-ticket-section-heading">
                   <div>
                     <span>Entry setup</span>
-                    <strong>Choose the entry type, account, asset, and action</strong>
+                    <strong>Choose what happened</strong>
                   </div>
-                  <em>All dates use {DEFAULT_TRADE_TIMEZONE}</em>
                 </div>
                 <div
                   className="transaction-entry-kind-selector"
@@ -3785,22 +3786,23 @@ export default function TransactionsPage() {
                           : 'transaction-entry-kind-option'
                       }
                       aria-pressed={formEntryKind === entryKind.value}
+                      title={entryKind.description}
                       disabled={Boolean(activeEventTask) || submittingTransaction}
                       onClick={() => updateEntryKind(entryKind.value)}
                     >
                       <strong>{entryKind.label}</strong>
-                      <span>{entryKind.description}</span>
                     </button>
                   ))}
                 </div>
+                <p className="transaction-entry-kind-description">{formEntryKindDescription}</p>
 
-                <div className="transaction-form-grid transaction-ticket-grid">
+                <div className="transaction-entry-context-grid">
                   <label className="transaction-ticket-field">
                     <span>Account</span>
                     <select
                       ref={accountSelectRef}
                       value={form.account_id}
-                      disabled={submittingTransaction}
+                      disabled={submittingTransaction || formAccountOptions.length === 0}
                       onChange={(event) =>
                         setForm((current) => ({
                           ...current,
@@ -3808,139 +3810,159 @@ export default function TransactionsPage() {
                         }))
                       }
                     >
+                      {!formAccountOptions.length ? <option value="">No eligible account</option> : null}
                       {formAccountOptions.map((account) => (
                         <option key={account.account_id} value={account.account_id}>
                           {account.account_name} · {account.currency}
                         </option>
                       ))}
                     </select>
-                    {!formAccountOptions.length ? (
-                      <span className="transaction-ticket-hint transaction-ticket-hint-warning">
-                        No account is configured for this entry type.
-                      </span>
-                    ) : null}
-                  </label>
-                </div>
-
-              {shouldAllowRegistryInstrument ? (
-                <section className="transaction-instrument-search transaction-instrument-search-top">
-                  <label className="transaction-picker-search">
-                    <span>Security</span>
-                    <input
-                      ref={securitySearchRef}
-                      type="search"
-                      value={instrumentInputValue}
-                      placeholder="Search ticker or name"
-                      onChange={(event) => {
-                        const instrumentSearch = event.target.value
-                        autoQuoteKeyRef.current = null
-                        autoQuantityKeyRef.current = null
-                        autoGrossDerivedRef.current = false
-                        setPricingAnchor('price')
-                        setForm((current) => {
-                          const clearsSelectedInstrument = Boolean(current.instrument_id)
-                          return {
-                            ...current,
-                            instrument_id: '',
-                            instrument_search: instrumentSearch,
-                            quantity: clearsSelectedInstrument ? '' : current.quantity,
-                            price: clearsSelectedInstrument ? '' : current.price,
-                            gross_amount: clearsSelectedInstrument ? '' : current.gross_amount,
-                          }
-                        })
-                      }}
-                      onKeyDown={(event) => {
-                        if (event.key !== 'Enter') {
-                          return
-                        }
-                        if (filteredInstrumentOptions.length === 0) {
-                          return
-                        }
-                        event.preventDefault()
-                        selectInstrument(filteredInstrumentOptions[0])
-                      }}
-                    />
                   </label>
 
-                  {showInstrumentResults ? (
-                    <div className="transaction-instrument-results">
-                      {filteredInstrumentOptions.map((instrument) => (
-                        <button
-                          type="button"
-                          key={instrument.instrument_id}
-                          className="transaction-instrument-result"
-                          onClick={() => selectInstrument(instrument)}
-                        >
-                          <div className="holding-name-stack">
-                            <span>{primaryIdentifier(instrument)}</span>
-                            <span className="holding-secondary">{instrument.instrument_name}</span>
-                          </div>
-                          <span className="transaction-picker-meta">{instrument.currency}</span>
-                        </button>
-                      ))}
-                      {!filteredInstrumentOptions.length ? (
-                        <div className="transaction-instrument-empty">No matching security.</div>
+                  {shouldAllowRegistryInstrument ? (
+                    <section className="transaction-instrument-search">
+                      <label className="transaction-picker-search">
+                        <span>Security</span>
+                        <input
+                          ref={securitySearchRef}
+                          type="search"
+                          value={instrumentInputValue}
+                          placeholder="Search ticker or name"
+                          onChange={(event) => {
+                            const instrumentSearch = event.target.value
+                            autoQuoteKeyRef.current = null
+                            autoQuantityKeyRef.current = null
+                            autoGrossDerivedRef.current = false
+                            setPricingAnchor('price')
+                            setForm((current) => {
+                              const clearsSelectedInstrument = Boolean(current.instrument_id)
+                              return {
+                                ...current,
+                                instrument_id: '',
+                                instrument_search: instrumentSearch,
+                                quantity: clearsSelectedInstrument ? '' : current.quantity,
+                                price: clearsSelectedInstrument ? '' : current.price,
+                                gross_amount: clearsSelectedInstrument ? '' : current.gross_amount,
+                              }
+                            })
+                          }}
+                          onKeyDown={(event) => {
+                            if (event.key !== 'Enter') {
+                              return
+                            }
+                            if (filteredInstrumentOptions.length === 0) {
+                              return
+                            }
+                            event.preventDefault()
+                            selectInstrument(filteredInstrumentOptions[0])
+                          }}
+                        />
+                      </label>
+
+                      {showInstrumentResults ? (
+                        <div className="transaction-instrument-results">
+                          {filteredInstrumentOptions.map((instrument) => (
+                            <button
+                              type="button"
+                              key={instrument.instrument_id}
+                              className="transaction-instrument-result"
+                              onClick={() => selectInstrument(instrument)}
+                            >
+                              <div className="holding-name-stack">
+                                <span>{primaryIdentifier(instrument)}</span>
+                                <span className="holding-secondary">{instrument.instrument_name}</span>
+                              </div>
+                              <span className="transaction-picker-meta">{instrument.currency}</span>
+                            </button>
+                          ))}
+                          {!filteredInstrumentOptions.length ? (
+                            <div className="transaction-instrument-empty">No matching security.</div>
+                          ) : null}
+                        </div>
                       ) : null}
-                    </div>
+                    </section>
                   ) : null}
-                </section>
-              ) : null}
 
-              {shouldAllowDerivativeContract ? (
-                <section className="transaction-instrument-search transaction-instrument-search-top">
-                  <label className="transaction-ticket-field">
-                    <span>{formEntryKindLabel} Contract</span>
-                    <select
-                      value={form.derivative_contract_id}
-                      onChange={(event) => selectDerivativeContract(event.target.value)}
-                    >
-                      <option value="">Create new contract with this transaction</option>
-                      {filteredDerivativeContracts.map((contract) => (
-                        <option
-                          key={contract.derivative_contract_id}
-                          value={contract.derivative_contract_id}
+                  {shouldAllowDerivativeContract ? (
+                    <section className="transaction-instrument-search">
+                      <label className="transaction-ticket-field">
+                        <span>{formEntryKindLabel} Contract</span>
+                        <select
+                          value={form.derivative_contract_id}
+                          onChange={(event) => selectDerivativeContract(event.target.value)}
                         >
-                          {contract.contract_name} · {formatLabel(contract.contract_type)} · {contract.currency}
-                        </option>
+                          <option value="">Create new contract</option>
+                          {filteredDerivativeContracts.map((contract) => (
+                            <option
+                              key={contract.derivative_contract_id}
+                              value={contract.derivative_contract_id}
+                            >
+                              {contract.contract_name} · {formatLabel(contract.contract_type)} · {contract.currency}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                    </section>
+                  ) : null}
+
+                  {formEntryKind === 'option' && isCreatingDerivativeContract ? (
+                    <label className="transaction-ticket-field">
+                      <span>Option Type</span>
+                      <select
+                        value={derivativeDraft.option_type}
+                        onChange={(event) =>
+                          setDerivativeDraft((current) => ({
+                            ...current,
+                            option_type: event.target.value as 'call' | 'put',
+                          }))
+                        }
+                      >
+                        <option value="call">Call</option>
+                        <option value="put">Put</option>
+                      </select>
+                    </label>
+                  ) : null}
+
+                  <label className="transaction-ticket-field">
+                    <span>Action</span>
+                    <select
+                      value={selectedActionValue}
+                      disabled={Boolean(activeEventTask) || submittingTransaction}
+                      onChange={(event) => updateTransactionAction(event.target.value)}
+                    >
+                      {formActionGroups.map((group) => (
+                        <optgroup key={group.label} label={group.label}>
+                          {group.actions.map((transactionAction) => (
+                            <option key={transactionAction.value} value={transactionAction.value}>
+                              {transactionAction.label}
+                            </option>
+                          ))}
+                        </optgroup>
                       ))}
                     </select>
                   </label>
-                </section>
-              ) : null}
+                </div>
 
-              <div className="transaction-entry-kind-row">
-                <label className="transaction-ticket-field">
-                  <span>Action</span>
-                  <select
-                    value={selectedActionValue}
-                    disabled={Boolean(activeEventTask) || submittingTransaction}
-                    onChange={(event) => updateTransactionAction(event.target.value)}
-                  >
-                    {formActionGroups.map((group) => (
-                      <optgroup key={group.label} label={group.label}>
-                        {group.actions.map((transactionAction) => (
-                          <option key={transactionAction.value} value={transactionAction.value}>
-                            {transactionAction.label}
-                          </option>
-                        ))}
-                      </optgroup>
-                    ))}
-                  </select>
-                </label>
-                <p>
+                {!formAccountOptions.length ? (
+                  <div className="transaction-entry-account-warning" role="status">
+                    <span>Set up an eligible account before recording this entry.</span>
+                    <Link to={`/portfolios/${portfolioId}/accounts`}>Open Accounts</Link>
+                  </div>
+                ) : null}
+
+                <p className="transaction-entry-action-note">
                   {isFundTrade
                     ? 'Fund subscriptions and redemptions use confirmed amount and shares; unit price is calculated.'
                     : formEntryKind === 'option'
                       ? isCreatingDerivativeContract
-                        ? 'A new option can only open or establish a position. Close and lifecycle actions require an existing contract.'
-                        : 'Call or put open, close, and lifecycle direction is recorded explicitly.'
+                        ? 'New options can only open or establish a position; close and lifecycle actions use an existing contract.'
+                        : 'Open, close, and lifecycle direction is recorded explicitly for the selected contract.'
                       : formEntryKind === 'fcn'
                         ? isCreatingDerivativeContract
-                          ? 'A new FCN records an entry or opening balance. Lifecycle actions require an existing contract.'
+                          ? 'A new FCN records an entry or opening balance; lifecycle actions use an existing contract.'
                           : 'Entry, coupon, exit, and lifecycle outcomes remain separate economic facts.'
                         : 'Only actions valid for this entry type are shown.'}
                 </p>
-              </div>
 
               {(form.transaction_type === 'lifecycle_event' ||
                 form.transaction_type === 'maturity_redemption') &&
@@ -4011,21 +4033,6 @@ export default function TransactionsPage() {
                           }))
                         }
                       />
-                      <label className="transaction-ticket-field">
-                        <span>Option Type</span>
-                        <select
-                          value={derivativeDraft.option_type}
-                          onChange={(event) =>
-                            setDerivativeDraft((current) => ({
-                              ...current,
-                              option_type: event.target.value as 'call' | 'put',
-                            }))
-                          }
-                        >
-                          <option value="call">Call</option>
-                          <option value="put">Put</option>
-                        </select>
-                      </label>
                       <label className="transaction-ticket-field">
                         <span>Expiry Date</span>
                         <input
@@ -4276,6 +4283,14 @@ export default function TransactionsPage() {
                   {activeDerivativeContract.terms.issuer}
                 </div>
               ) : null}
+
+              <div className="transaction-ticket-section-heading transaction-ticket-section-heading-compact">
+                <div>
+                  <span>Transaction facts</span>
+                  <strong>Dates, settlement, and economics</strong>
+                </div>
+                <em>{DEFAULT_TRADE_TIMEZONE}</em>
+              </div>
 
               <div className="transaction-form-grid transaction-ticket-grid">
                 {isFxConversion ? (
@@ -4675,6 +4690,57 @@ export default function TransactionsPage() {
                   <div className="transaction-form-spacer" />
                 )}
               </div>
+
+              <details className="transaction-entry-additional-details">
+                <summary>
+                  <span>Additional details</span>
+                  <strong>Source, external reference, and note</strong>
+                </summary>
+                <div className="transaction-entry-additional-body">
+                  <div className="transaction-form-grid transaction-ticket-grid">
+                    <label className="transaction-ticket-field">
+                      <span>Source System</span>
+                      <input
+                        value={form.source_system}
+                        placeholder="Optional; required with external reference"
+                        onChange={(event) =>
+                          setForm((current) => ({
+                            ...current,
+                            source_system: event.target.value,
+                          }))
+                        }
+                      />
+                    </label>
+                    <label className="transaction-ticket-field">
+                      <span>External Reference</span>
+                      <input
+                        value={form.external_reference}
+                        placeholder="Unique within this portfolio and source"
+                        onChange={(event) =>
+                          setForm((current) => ({
+                            ...current,
+                            external_reference: event.target.value,
+                          }))
+                        }
+                      />
+                    </label>
+                  </div>
+
+                  <label className="transaction-notes-field">
+                    <span>Note</span>
+                    <textarea
+                      rows={3}
+                      value={form.note}
+                      onChange={(event) =>
+                        setForm((current) => ({
+                          ...current,
+                          note: event.target.value,
+                        }))
+                      }
+                    />
+                  </label>
+                </div>
+              </details>
               </div>
 
               <aside className="transaction-ticket-review" aria-label="Transaction review">
@@ -4758,49 +4824,6 @@ export default function TransactionsPage() {
                   {formatNumber(sharedFxRate.rate, 6)} as of {sharedFxRate.as_of_date}.
                 </div>
               ) : null}
-
-              <div className="transaction-form-grid transaction-ticket-grid">
-                <label className="transaction-ticket-field">
-                  <span>Source System</span>
-                  <input
-                    value={form.source_system}
-                    placeholder="Optional; required with external reference"
-                    onChange={(event) =>
-                      setForm((current) => ({
-                        ...current,
-                        source_system: event.target.value,
-                      }))
-                    }
-                  />
-                </label>
-                <label className="transaction-ticket-field">
-                  <span>External Reference</span>
-                  <input
-                    value={form.external_reference}
-                    placeholder="Unique within this portfolio and source"
-                    onChange={(event) =>
-                      setForm((current) => ({
-                        ...current,
-                        external_reference: event.target.value,
-                      }))
-                    }
-                  />
-                </label>
-              </div>
-
-              <label className="transaction-notes-field">
-                <span>Note</span>
-                <textarea
-                  rows={3}
-                  value={form.note}
-                  onChange={(event) =>
-                    setForm((current) => ({
-                      ...current,
-                      note: event.target.value,
-                    }))
-                  }
-                />
-              </label>
 
               {formError ? <div className="error-state transaction-form-error">{formError}</div> : null}
               </aside>
