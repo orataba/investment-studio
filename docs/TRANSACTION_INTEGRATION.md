@@ -1,14 +1,18 @@
 # Portfolio transaction integration
 
-External projects write transactions through the Portfolio HTTP API, not directly to database tables. The API applies the same validation, audit, idempotency, and snapshot invalidation rules to manual entry, direct API writes, and CSV imports.
+External projects write transactions through the Portfolio HTTP API, not directly to database tables. The API applies the same validation, audit, idempotency, and snapshot invalidation rules to manual entry, direct API writes, and CSV/Excel imports.
+
+Accounts are first-class transaction routing facts. Create `Cash`, `Security`, `FCN`, and `Option` accounts separately; each holding account must point to a same-currency Cash account. A Registry security may use only a Security account, an FCN contract only an FCN account, and an option contract only an Option account. The API does not accept the removed instrument-scope field or a mixed holding account.
 
 ## Write paths
 
 - Single fact: `POST /api/portfolios/{portfolio_id}/transactions`
-- CSV preview: `POST /api/portfolios/{portfolio_id}/transactions/csv/preview`
-- CSV import: `POST /api/portfolios/{portfolio_id}/transactions/csv/import`
-- Blank import template: `GET /api/portfolios/{portfolio_id}/transactions/csv-template`
-- Importable all-transaction export: `GET /api/portfolios/{portfolio_id}/transactions.csv`
+- CSV or Excel file preview: `POST /api/portfolios/{portfolio_id}/transactions/files/preview`
+- CSV or Excel file import: `POST /api/portfolios/{portfolio_id}/transactions/files/import`
+- Blank templates: `GET /api/portfolios/{portfolio_id}/transactions/csv-template` and `.../xlsx-template`
+- Importable all-transaction exports: `GET /api/portfolios/{portfolio_id}/transactions.csv` and `.../transactions.xlsx`
+
+The original JSON-body CSV preview/import endpoints remain the integration contract for systems that already send CSV text. The workspace itself uses the multipart file endpoints so CSV and Excel go through one file parser and the same portfolio validation path.
 
 Send a unique `Idempotency-Key` header with writes. An upstream project should also send `source_system` and a stable `external_reference`; that pair is unique inside a portfolio.
 
@@ -19,7 +23,7 @@ Example: sell three Put contracts to open, with a multiplier of 100:
   "transaction_type": "option_write",
   "trade_date": "2026-02-15",
   "settlement_date": "2026-02-15",
-  "account_id": "broker-us-core",
+  "account_id": "broker-us-option",
   "settlement_cash_account_id": "cash-usd-main",
   "derivative_contract_id": "option-demo-put-001",
   "derivative_contract": {
@@ -99,32 +103,32 @@ FCNs remain at transaction cost between recorded events. Portfolio does not veri
 
 The first FCN transaction creates a Portfolio-local contract. Master terms contain notional, optional annual coupon rate, issue/final-observation/maturity dates, issuer, and counterparty. The `underlyings` array records each Registry security with optional initial reference price, strike/knock-in/knock-out levels in percentage points, and a deliverable flag. These are recorded terms, not a live valuation model or automatic barrier monitor. Revision `20260816_0051` converts the former shared barrier field to per-underlying terms and deliberately rejects ambiguous legacy `dual` barriers instead of guessing two levels.
 
-## CSV fields
+## Transaction files
 
-The Transactions workspace uses one canonical CSV schema:
+The Transactions workspace uses one canonical schema in both CSV and Excel. Excel workbooks use a worksheet named `Transactions`; formulas and legacy `.xls` files are rejected. The populated export and blank template use the same columns in both formats.
 
 | Action | Scope | Result |
 |---|---|---|
-| Export All Transactions | every current transaction in the portfolio | populated canonical CSV accepted by Import CSV |
-| Blank CSV Template | canonical headers with no rows | starting point for manual batch entry |
-| Import CSV | either of the files above after review or editing | atomic preview and batch creation |
+| Export | every current transaction in the portfolio, independent of current filters | populated canonical CSV or Excel file accepted by Import |
+| Template | canonical headers with no rows | CSV or Excel starting point for manual batch entry |
+| Import | either format after review or editing | atomic preview and batch creation through the same validation path |
 
 The CSV represents transaction commands, not database rows. It therefore excludes transaction IDs,
 row versions, change history, resolved timestamps, and internal pair IDs. Ordinary transactions use
 their normal `transaction_type`. One internal transfer is exported as one
 `transaction_type=internal_transfer` row with `transfer_object_type`, `from_account_id`, and
 `to_account_id`; import regenerates the atomic `transfer_out` / `transfer_in` pair. Persisted legs are
-not accepted as CSV input.
+not accepted as transaction-file input.
 
 Required columns are `transaction_type`, `trade_date`, `account_id`, `gross_amount`, and `currency`. The template also contains:
 
 `lifecycle_event_type`, `trade_time`, `settlement_date`, `position_effective_date`, `entitlement_date`, `acquisition_date`, `transfer_object_type`, `from_account_id`, `to_account_id`, `settlement_cash_account_id`, `instrument_id`, `derivative_contract_id`, derivative definition/term columns, `quantity`, `price`, `counter_amount`, `fx_rate`, `fees`, `fee_category`, `taxes`, `counterparty_account_id`, `source_system`, `external_reference`, `note`.
 
-For a new derivative contract, place its definition on the first CSV row. FCN rows use `fcn_annual_coupon_rate_pct`, `fcn_final_observation_date`, and `fcn_underlyings_json` for the per-underlying term array. Later rows leave the definition columns blank and keep only `derivative_contract_id`. A row may use `instrument_id` or `derivative_contract_id`, never both.
+For a new derivative contract, place its definition on the first file row. FCN rows use `fcn_annual_coupon_rate_pct`, `fcn_final_observation_date`, and `fcn_underlyings_json` for the per-underlying term array. Later rows leave the definition columns blank and keep only `derivative_contract_id`. A row may use `instrument_id` or `derivative_contract_id`, never both.
 
-CSV preview validates the complete candidate history against the target portfolio's accounts,
+File preview validates the complete candidate history against the target portfolio's accounts,
 instruments, contracts, currencies, and existing positions. Import is all-or-nothing and requires the
 unchanged `preview_digest` returned by preview. Database backup and transaction change history remain
-separate operational concerns rather than a second transaction CSV format.
+separate operational concerns rather than a second transaction-file format.
 
-See [the mixed stock, fund, option, and FCN example](examples/transaction_import_stock_fund_option_fcn.csv). Database ownership and fields are documented in [PORTFOLIO_DATABASE_DICTIONARY.md](PORTFOLIO_DATABASE_DICTIONARY.md).
+The example expects `broker-us-core`, `broker-us-option`, and `broker-us-fcn` to exist as same-currency Security, Option, and FCN accounts before preview. See [the mixed stock, fund, option, and FCN example](examples/transaction_import_stock_fund_option_fcn.csv). Database ownership and fields are documented in [PORTFOLIO_DATABASE_DICTIONARY.md](PORTFOLIO_DATABASE_DICTIONARY.md).

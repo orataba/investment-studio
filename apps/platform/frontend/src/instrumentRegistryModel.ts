@@ -13,6 +13,7 @@ import type {
   SourceSettings,
 } from '../../../../packages/instrument-core/ts/src'
 import { resolveQuoteBasis, resolveRoleQuote } from './quoteRoleResolution'
+import { sanitizeSpreadsheetText } from '../../../../packages/ui/src/tableExport'
 
 export type SourceMode = 'manual' | 'email' | 'api'
 export type RefreshChannel = 'configured' | 'email' | 'tushare' | 'all'
@@ -356,12 +357,13 @@ export function findFxRate(
   )
 }
 
-function csvCell(value: string | number | null | undefined) {
-  const normalized = String(value ?? '')
+function csvCell(value: string | number | null | undefined, numericText = false) {
+  const source = String(value ?? '')
+  const normalized = numericText ? source : sanitizeSpreadsheetText(source)
   return /[",\n\r]/.test(normalized) ? `"${normalized.replace(/"/g, '""')}"` : normalized
 }
 
-export function marketDataToCsv(points: PlatformMarketDataPoint[]) {
+export function marketDataExportRows(points: PlatformMarketDataPoint[]) {
   const header = [
     'as_of_date',
     'metric_family',
@@ -373,8 +375,7 @@ export function marketDataToCsv(points: PlatformMarketDataPoint[]) {
     'status',
     'provider',
   ]
-  const rows = points.map((point) =>
-    [
+  const rows = points.map((point) => [
       point.as_of_date,
       point.metric_family,
       point.quote_basis,
@@ -384,11 +385,20 @@ export function marketDataToCsv(points: PlatformMarketDataPoint[]) {
       point.price_scale,
       point.status,
       point.provider ?? '',
-    ]
-      .map(csvCell)
-      .join(','),
-  )
-  return [header.join(','), ...rows].join('\n')
+    ])
+  return [header, ...rows]
+}
+
+export function marketDataToCsv(points: PlatformMarketDataPoint[]) {
+  return marketDataExportRows(points)
+    .map((row, rowIndex) =>
+      row
+        .map((value, columnIndex) =>
+          csvCell(value, rowIndex > 0 && (columnIndex === 3 || columnIndex === 6)),
+        )
+        .join(','),
+    )
+    .join('\n')
 }
 
 export async function fetchJson<T>(path: string, init?: RequestInit): Promise<T> {

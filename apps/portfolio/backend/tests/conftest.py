@@ -342,6 +342,17 @@ def isolated_portfolio_store(request, tmp_path, monkeypatch):
     if migration_base is not None:
         engine = session_module.get_engine()
         with engine.begin() as connection:
+            account_columns = {
+                str(column["name"])
+                for column in sa.inspect(connection).get_columns("account_record")
+            }
+            if "account_category" not in account_columns:
+                connection.exec_driver_sql(
+                    "ALTER TABLE account_record ADD COLUMN account_category VARCHAR"
+                )
+                temporary_seed_columns.append(
+                    ("account_record", "account_category")
+                )
             transaction_columns = {
                 str(column["name"])
                 for column in sa.inspect(connection).get_columns("transaction_record")

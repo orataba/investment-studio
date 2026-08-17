@@ -46,11 +46,18 @@ def _share_split_event(
 
 
 def test_transaction_asset_domain_is_derived_and_filterable(client):
-    account_response = client.patch(
-        "/api/portfolios/portfolio-ops/accounts/broker-us-core",
-        json={"allowed_instrument_types": ["equity", "option"]},
+    account_response = client.post(
+        "/api/portfolios/portfolio-ops/accounts",
+        json={
+            "account_name": "USD Options",
+            "account_category": "option",
+            "currency": "USD",
+            "default_settlement_cash_account_id": "cash-usd-main",
+            "cost_basis_method": "fifo",
+        },
     )
     assert account_response.status_code == 200
+    option_account_id = account_response.json()["account_id"]
 
     security_response = client.post(
         "/api/portfolios/portfolio-ops/transactions",
@@ -73,7 +80,7 @@ def test_transaction_asset_domain_is_derived_and_filterable(client):
         json={
             "transaction_type": "buy",
             "trade_date": "2026-08-02",
-            "account_id": "broker-us-core",
+            "account_id": option_account_id,
             "settlement_cash_account_id": "cash-usd-main",
             "derivative_contract_id": "domain-option",
             "derivative_contract": {
@@ -452,11 +459,10 @@ def test_securities_account_defaults_to_fifo_when_cost_basis_omitted(client):
         "/api/portfolios/portfolio-ops/accounts",
         json={
             "account_name": "FIFO Default Account",
-            "account_type": "securities_account",
+            "account_category": "security",
             "currency": "USD",
             "institution": "Test Broker",
             "default_settlement_cash_account_id": "cash-usd-main",
-            "allowed_instrument_types": ["fund"],
             "opened_at": "2026-04-22",
             "status": "active",
         },
@@ -466,17 +472,143 @@ def test_securities_account_defaults_to_fifo_when_cost_basis_omitted(client):
     assert response.json()["cost_basis_method"] == "fifo"
 
 
+def test_account_category_is_first_class_and_legacy_scope_is_rejected(client):
+    response = client.post(
+        "/api/portfolios/portfolio-ops/accounts",
+        json={
+            "account_name": "First Class Options",
+            "account_category": "option",
+            "currency": "USD",
+            "default_settlement_cash_account_id": "cash-usd-main",
+        },
+    )
+    assert response.status_code == 200, response.json()
+    assert response.json()["account_category"] == "option"
+    assert response.json()["account_type"] == "securities_account"
+    assert "allowed_instrument_types" not in response.json()
+
+    legacy_response = client.post(
+        "/api/portfolios/portfolio-ops/accounts",
+        json={
+            "account_name": "Legacy Mixed Account",
+            "account_type": "securities_account",
+            "account_category": "security",
+            "currency": "USD",
+            "default_settlement_cash_account_id": "cash-usd-main",
+            "allowed_instrument_types": ["equity", "option"],
+        },
+    )
+    assert legacy_response.status_code == 422
+
+
+def test_holding_account_requires_same_currency_cash_and_stable_history_category(client):
+    cross_currency_response = client.post(
+        "/api/portfolios/portfolio-ops/accounts",
+        json={
+            "account_name": "Invalid HKD Options",
+            "account_category": "option",
+            "currency": "HKD",
+            "default_settlement_cash_account_id": "cash-usd-main",
+        },
+    )
+    assert cross_currency_response.status_code == 400
+    assert "same currency" in cross_currency_response.json()["detail"]
+
+    editable_response = client.post(
+        "/api/portfolios/portfolio-ops/accounts",
+        json={
+            "account_name": "Empty Holding Account",
+            "account_category": "security",
+            "currency": "USD",
+            "default_settlement_cash_account_id": "cash-usd-main",
+        },
+    )
+    assert editable_response.status_code == 200
+    editable_account_id = editable_response.json()["account_id"]
+    changed_response = client.patch(
+        f"/api/portfolios/portfolio-ops/accounts/{editable_account_id}",
+        json={"account_category": "fcn"},
+    )
+    assert changed_response.status_code == 200
+    assert changed_response.json()["account_category"] == "fcn"
+
+    protected_response = client.patch(
+        "/api/portfolios/portfolio-ops/accounts/broker-us-core",
+        json={"account_category": "option"},
+    )
+    assert protected_response.status_code == 400
+    assert "cannot change after transaction" in protected_response.json()["detail"]
+
+
+def test_transaction_rejects_asset_on_wrong_account_category(client):
+    response = client.post(
+        "/api/portfolios/portfolio-ops/transactions",
+        json={
+            "transaction_type": "buy",
+            "trade_date": "2026-08-02",
+            "account_id": "broker-us-core",
+            "settlement_cash_account_id": "cash-usd-main",
+            "derivative_contract_id": "wrong-account-option",
+            "derivative_contract": {
+                "derivative_contract_id": "wrong-account-option",
+                "contract_name": "Wrong Account Call",
+                "contract_type": "option",
+                "external_reference": "WRONG-ACCOUNT-OPTION",
+                "terms": {
+                    "underlying_instrument_id": "equity-us-abbv",
+                    "option_type": "call",
+                    "expiry_date": "2026-12-18",
+                    "strike": 110,
+                    "contract_multiplier": 100,
+                },
+            },
+            "quantity": 1,
+            "price": 1,
+            "gross_amount": 100,
+            "currency": "USD",
+        },
+    )
+    assert response.status_code == 400
+    assert "Option category" in response.json()["detail"]
+
+    option_account_response = client.post(
+        "/api/portfolios/portfolio-ops/accounts",
+        json={
+            "account_name": "Wrong Security Exit Account",
+            "account_category": "option",
+            "currency": "USD",
+            "default_settlement_cash_account_id": "cash-usd-main",
+        },
+    )
+    assert option_account_response.status_code == 200
+    wrong_exit_response = client.post(
+        "/api/portfolios/portfolio-ops/transactions",
+        json={
+            "transaction_type": "sell",
+            "trade_date": "2026-08-02",
+            "account_id": option_account_response.json()["account_id"],
+            "settlement_cash_account_id": "cash-usd-main",
+            "instrument_id": "equity-us-abbv",
+            "quantity": 1,
+            "price": 100,
+            "gross_amount": 100,
+            "currency": "USD",
+        },
+    )
+    assert wrong_exit_response.status_code == 400
+    assert "Security category" in wrong_exit_response.json()["detail"]
+
+
 def test_account_cost_method_can_be_updated_before_instrument_history(client):
     created_response = client.post(
         "/api/portfolios/portfolio-ops/accounts",
         json={
             "account_name": "Cost Method Editable Account",
-            "account_type": "securities_account",
+            "account_category": "security",
             "currency": "USD",
             "institution": "Test Broker",
             "default_settlement_cash_account_id": "cash-usd-main",
             "cost_basis_method": "fifo",
-            "allowed_instrument_types": ["equity"],
             "opened_at": "2026-04-22",
             "status": "active",
         },
@@ -491,7 +623,6 @@ def test_account_cost_method_can_be_updated_before_instrument_history(client):
             "institution": "Test Broker",
             "default_settlement_cash_account_id": "cash-usd-main",
             "cost_basis_method": "moving_average",
-            "allowed_instrument_types": ["equity"],
             "opened_at": "2026-04-22",
             "status": "active",
         },
@@ -506,12 +637,11 @@ def test_account_cost_method_change_restates_instrument_history(client):
         "/api/portfolios/portfolio-ops/accounts",
         json={
             "account_name": "Cost Method Restatement Account",
-            "account_type": "securities_account",
+            "account_category": "security",
             "currency": "USD",
             "institution": "Test Broker",
             "default_settlement_cash_account_id": "cash-usd-main",
             "cost_basis_method": "fifo",
-            "allowed_instrument_types": ["equity"],
             "opened_at": "2026-04-01",
             "status": "active",
         },
@@ -559,7 +689,6 @@ def test_account_cost_method_change_restates_instrument_history(client):
             "institution": "Test Broker",
             "default_settlement_cash_account_id": "cash-usd-main",
             "cost_basis_method": "moving_average",
-            "allowed_instrument_types": ["equity"],
             "opened_at": "2026-04-01",
             "status": "active",
         },
@@ -1056,12 +1185,11 @@ def test_position_transfer_uses_average_cost_bucket_for_moving_average_accounts(
         "/api/portfolios/portfolio-ops/accounts",
         json={
             "account_name": "Test MA Equity Source",
-            "account_type": "securities_account",
+            "account_category": "security",
             "currency": "USD",
             "institution": "Test Broker",
             "default_settlement_cash_account_id": "cash-usd-main",
             "cost_basis_method": "moving_average",
-            "allowed_instrument_types": ["equity"],
             "status": "active",
         },
     ).json()
@@ -1069,12 +1197,11 @@ def test_position_transfer_uses_average_cost_bucket_for_moving_average_accounts(
         "/api/portfolios/portfolio-ops/accounts",
         json={
             "account_name": "Test Equity Destination",
-            "account_type": "securities_account",
+            "account_category": "security",
             "currency": "USD",
             "institution": "Test Broker",
             "default_settlement_cash_account_id": "cash-usd-reserve",
             "cost_basis_method": "fifo",
-            "allowed_instrument_types": ["equity"],
             "status": "active",
         },
     ).json()
@@ -1141,12 +1268,11 @@ def test_position_transfer_allows_zero_cost_basis_lots(client):
         "/api/portfolios/portfolio-ops/accounts",
         json={
             "account_name": "Zero Cost Source",
-            "account_type": "securities_account",
+            "account_category": "security",
             "currency": "USD",
             "institution": "Test Broker",
             "default_settlement_cash_account_id": "cash-usd-main",
             "cost_basis_method": "fifo",
-            "allowed_instrument_types": ["equity"],
             "opened_at": "2026-04-01",
             "status": "active",
         },
@@ -1155,12 +1281,11 @@ def test_position_transfer_allows_zero_cost_basis_lots(client):
         "/api/portfolios/portfolio-ops/accounts",
         json={
             "account_name": "Zero Cost Destination",
-            "account_type": "securities_account",
+            "account_category": "security",
             "currency": "USD",
             "institution": "Test Broker",
             "default_settlement_cash_account_id": "cash-usd-main",
             "cost_basis_method": "fifo",
-            "allowed_instrument_types": ["equity"],
             "opened_at": "2026-04-01",
             "status": "active",
         },
@@ -1265,12 +1390,11 @@ def test_rejects_backdated_sell_before_position_exists(client):
         f"/api/portfolios/{copied_portfolio_id}/accounts",
         json={
             "account_name": "Copy Equity Destination",
-            "account_type": "securities_account",
+            "account_category": "security",
             "currency": "USD",
             "institution": "Test Broker",
             "default_settlement_cash_account_id": "cash-usd-reserve-portfolio-ops-copy",
             "cost_basis_method": "fifo",
-            "allowed_instrument_types": ["equity"],
             "opened_at": "2026-01-15",
             "status": "active",
         },
@@ -1411,12 +1535,11 @@ def test_rejects_inconsistent_opening_balance_and_dividend_reinvestment_amount_c
         "/api/portfolios/portfolio-ops/accounts",
         json={
             "account_name": "Opening Balance Review",
-            "account_type": "securities_account",
+            "account_category": "security",
             "currency": "USD",
             "institution": "Test Broker",
             "default_settlement_cash_account_id": "cash-usd-main",
             "cost_basis_method": "fifo",
-            "allowed_instrument_types": ["equity"],
             "opened_at": "2026-04-01",
             "status": "active",
         },
@@ -1614,12 +1737,11 @@ def test_dividend_and_return_of_capital_keep_gross_income_and_separate_expense_a
         "/api/portfolios/portfolio-ops/accounts",
         json={
             "account_name": "Income Attribution Review",
-            "account_type": "securities_account",
+            "account_category": "security",
             "currency": "USD",
             "institution": "Test Broker",
             "default_settlement_cash_account_id": "cash-usd-main",
             "cost_basis_method": "fifo",
-            "allowed_instrument_types": ["equity"],
             "opened_at": "2026-04-01",
             "status": "active",
         },
@@ -1706,12 +1828,11 @@ def test_flat_position_rejects_follow_on_sell_transfer_and_return_of_capital(cli
         "/api/portfolios/portfolio-ops/accounts",
         json={
             "account_name": "Flat Position Source",
-            "account_type": "securities_account",
+            "account_category": "security",
             "currency": "USD",
             "institution": "Test Broker",
             "default_settlement_cash_account_id": "cash-usd-main",
             "cost_basis_method": "fifo",
-            "allowed_instrument_types": ["equity"],
             "opened_at": "2026-04-01",
             "status": "active",
         },
@@ -1720,12 +1841,11 @@ def test_flat_position_rejects_follow_on_sell_transfer_and_return_of_capital(cli
         "/api/portfolios/portfolio-ops/accounts",
         json={
             "account_name": "Flat Position Destination",
-            "account_type": "securities_account",
+            "account_category": "security",
             "currency": "USD",
             "institution": "Test Broker",
             "default_settlement_cash_account_id": "cash-usd-reserve",
             "cost_basis_method": "fifo",
-            "allowed_instrument_types": ["equity"],
             "opened_at": "2026-04-01",
             "status": "active",
         },
@@ -1815,12 +1935,11 @@ def test_rejects_instrument_income_and_expense_without_open_position(client):
         "/api/portfolios/portfolio-ops/accounts",
         json={
             "account_name": "Post-Close Income Review",
-            "account_type": "securities_account",
+            "account_category": "security",
             "currency": "USD",
             "institution": "Test Broker",
             "default_settlement_cash_account_id": "cash-usd-main",
             "cost_basis_method": "fifo",
-            "allowed_instrument_types": ["equity"],
             "opened_at": "2026-04-01",
             "status": "active",
         },
@@ -1925,12 +2044,11 @@ def test_rejects_dividend_reinvestment_without_entitled_position(client):
         "/api/portfolios/portfolio-ops/accounts",
         json={
             "account_name": "Empty DRIP Review",
-            "account_type": "securities_account",
+            "account_category": "security",
             "currency": "USD",
             "institution": "Test Broker",
             "default_settlement_cash_account_id": "cash-usd-main",
             "cost_basis_method": "fifo",
-            "allowed_instrument_types": ["equity"],
             "opened_at": "2026-04-01",
             "status": "active",
         },
@@ -1977,12 +2095,11 @@ def test_accepts_late_paid_dividend_when_entitlement_date_precedes_sale(client):
         "/api/portfolios/portfolio-ops/accounts",
         json={
             "account_name": "Late Income Review",
-            "account_type": "securities_account",
+            "account_category": "security",
             "currency": "USD",
             "institution": "Test Broker",
             "default_settlement_cash_account_id": "cash-usd-main",
             "cost_basis_method": "fifo",
-            "allowed_instrument_types": ["equity"],
             "opened_at": "2026-04-01",
             "status": "active",
         },
@@ -2262,12 +2379,11 @@ def test_accepts_late_paid_dividend_reinvestment_after_entitled_position_was_sol
         "/api/portfolios/portfolio-ops/accounts",
         json={
             "account_name": "Late DRIP Review",
-            "account_type": "securities_account",
+            "account_category": "security",
             "currency": "USD",
             "institution": "Test Broker",
             "default_settlement_cash_account_id": "cash-usd-main",
             "cost_basis_method": "fifo",
-            "allowed_instrument_types": ["equity"],
             "opened_at": "2026-04-01",
             "status": "active",
         },
@@ -2434,12 +2550,11 @@ def test_dividend_reinvestment_allocates_income_to_existing_position_lots(client
         "/api/portfolios/portfolio-ops/accounts",
         json={
             "account_name": "DRIP Attribution Review",
-            "account_type": "securities_account",
+            "account_category": "security",
             "currency": "USD",
             "institution": "Test Broker",
             "default_settlement_cash_account_id": "cash-usd-main",
             "cost_basis_method": "fifo",
-            "allowed_instrument_types": ["equity"],
             "opened_at": "2026-04-01",
             "status": "active",
         },
@@ -2683,12 +2798,11 @@ def test_rejects_transactions_outside_account_lifecycle(client):
         "/api/portfolios/portfolio-ops/accounts",
         json={
             "account_name": "Closed Equity Sleeve",
-            "account_type": "securities_account",
+            "account_category": "security",
             "currency": "USD",
             "institution": "Test Broker",
             "default_settlement_cash_account_id": "cash-usd-main",
             "cost_basis_method": "fifo",
-            "allowed_instrument_types": ["equity"],
             "opened_at": "2026-01-01",
             "closed_at": "2026-02-01",
             "status": "closed",
@@ -2720,7 +2834,7 @@ def test_rejects_transactions_outside_account_lifecycle(client):
         "/api/portfolios/portfolio-ops/accounts",
         json={
             "account_name": "Future HKD Cash",
-            "account_type": "deposit_account",
+            "account_category": "cash",
             "currency": "HKD",
             "institution": "Test Bank",
             "opened_at": "2026-05-01",
@@ -3048,12 +3162,11 @@ def test_rejects_same_day_sell_before_later_buy_by_trade_time(client):
         "/api/portfolios/portfolio-ops/accounts",
         json={
             "account_name": "Timed Equity Sleeve",
-            "account_type": "securities_account",
+            "account_category": "security",
             "currency": "USD",
             "institution": "Test Broker",
             "default_settlement_cash_account_id": "cash-usd-main",
             "cost_basis_method": "fifo",
-            "allowed_instrument_types": ["equity"],
             "opened_at": "2026-04-01",
             "status": "active",
         },
@@ -3104,12 +3217,11 @@ def test_same_day_buy_then_sell_uses_trade_order_not_settlement_order(client):
         "/api/portfolios/portfolio-ops/accounts",
         json={
             "account_name": "Same Day Equity",
-            "account_type": "securities_account",
+            "account_category": "security",
             "currency": "USD",
             "institution": "Test Broker",
             "default_settlement_cash_account_id": "cash-usd-main",
             "cost_basis_method": "fifo",
-            "allowed_instrument_types": ["equity"],
             "opened_at": "2026-04-01",
             "status": "active",
         },
@@ -3190,12 +3302,11 @@ def test_position_lot_entry_price_excludes_capitalized_fees_and_taxes(client):
         "/api/portfolios/portfolio-ops/accounts",
         json={
             "account_name": "Entry Price Review Account",
-            "account_type": "securities_account",
+            "account_category": "security",
             "currency": "USD",
             "institution": "Test Broker",
             "default_settlement_cash_account_id": "cash-usd-main",
             "cost_basis_method": "fifo",
-            "allowed_instrument_types": ["equity"],
             "opened_at": "2026-04-01",
             "status": "active",
         },
@@ -3240,12 +3351,11 @@ def test_moving_average_position_lots_match_account_cost_basis_method(client):
         "/api/portfolios/portfolio-ops/accounts",
         json={
             "account_name": "MA Review Account",
-            "account_type": "securities_account",
+            "account_category": "security",
             "currency": "USD",
             "institution": "Test Broker",
             "default_settlement_cash_account_id": "cash-usd-main",
             "cost_basis_method": "moving_average",
-            "allowed_instrument_types": ["equity"],
             "opened_at": "2026-04-01",
             "status": "active",
         },
@@ -3320,12 +3430,11 @@ def test_rejects_position_transfer_with_inconsistent_gross_amount(client):
         "/api/portfolios/portfolio-ops/accounts",
         json={
             "account_name": "Transfer Source",
-            "account_type": "securities_account",
+            "account_category": "security",
             "currency": "USD",
             "institution": "Test Broker",
             "default_settlement_cash_account_id": "cash-usd-main",
             "cost_basis_method": "fifo",
-            "allowed_instrument_types": ["equity"],
             "opened_at": "2026-04-01",
             "status": "active",
         },
@@ -3334,12 +3443,11 @@ def test_rejects_position_transfer_with_inconsistent_gross_amount(client):
         "/api/portfolios/portfolio-ops/accounts",
         json={
             "account_name": "Transfer Dest",
-            "account_type": "securities_account",
+            "account_category": "security",
             "currency": "USD",
             "institution": "Test Broker",
             "default_settlement_cash_account_id": "cash-usd-reserve",
             "cost_basis_method": "fifo",
-            "allowed_instrument_types": ["equity"],
             "opened_at": "2026-04-01",
             "status": "active",
         },
@@ -3384,12 +3492,11 @@ def test_rejects_return_of_capital_above_remaining_cost_basis(client):
         "/api/portfolios/portfolio-ops/accounts",
         json={
             "account_name": "ROC Review",
-            "account_type": "securities_account",
+            "account_category": "security",
             "currency": "USD",
             "institution": "Test Broker",
             "default_settlement_cash_account_id": "cash-usd-main",
             "cost_basis_method": "fifo",
-            "allowed_instrument_types": ["equity"],
             "opened_at": "2026-04-01",
             "status": "active",
         },
@@ -3480,12 +3587,11 @@ def test_security_trade_cash_posting_uses_settlement_effective_date(client):
         "/api/portfolios/portfolio-ops/accounts",
         json={
             "account_name": "Settlement Timing Review",
-            "account_type": "securities_account",
+            "account_category": "security",
             "currency": "USD",
             "institution": "Test Broker",
             "default_settlement_cash_account_id": "cash-usd-main",
             "cost_basis_method": "fifo",
-            "allowed_instrument_types": ["equity"],
             "opened_at": "2026-04-01",
             "status": "active",
         },
@@ -3528,12 +3634,11 @@ def test_confirmed_later_trade_enters_holdings_on_position_effective_date(client
         "/api/portfolios/portfolio-ops/accounts",
         json={
             "account_name": "T Plus One Fund Account",
-            "account_type": "securities_account",
+            "account_category": "security",
             "currency": "USD",
             "institution": "Test Broker",
             "default_settlement_cash_account_id": "cash-usd-main",
             "cost_basis_method": "fifo",
-            "allowed_instrument_types": ["equity"],
             "opened_at": "2026-04-01",
             "status": "active",
         },
@@ -3662,12 +3767,11 @@ def test_confirmed_later_position_cannot_be_sold_before_it_is_effective(client):
         "/api/portfolios/portfolio-ops/accounts",
         json={
             "account_name": "Confirmed Later Disposal Review",
-            "account_type": "securities_account",
+            "account_category": "security",
             "currency": "USD",
             "institution": "Test Broker",
             "default_settlement_cash_account_id": "cash-usd-main",
             "cost_basis_method": "fifo",
-            "allowed_instrument_types": ["equity"],
             "opened_at": "2026-04-01",
             "status": "active",
         },
@@ -3763,12 +3867,11 @@ def test_security_opening_balance_preserves_acquisition_date_in_position_lots(cl
         "/api/portfolios/portfolio-ops/accounts",
         json={
             "account_name": "Imported Lot Account",
-            "account_type": "securities_account",
+            "account_category": "security",
             "currency": "USD",
             "institution": "Test Broker",
             "default_settlement_cash_account_id": "cash-usd-main",
             "cost_basis_method": "fifo",
-            "allowed_instrument_types": ["equity"],
             "opened_at": "2026-04-01",
             "status": "active",
         },

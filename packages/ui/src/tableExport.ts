@@ -68,7 +68,7 @@ function normalizeSheetName(value: string) {
   return normalized || 'Sheet1'
 }
 
-function buildXlsxWorkbook(rows: TableCell[][], sheetName: string) {
+export function buildXlsxWorkbook(rows: TableCell[][], sheetName: string) {
   return createZip([
     {
       name: '[Content_Types].xml',
@@ -79,6 +79,7 @@ function buildXlsxWorkbook(rows: TableCell[][], sheetName: string) {
         '<Default Extension="xml" ContentType="application/xml"/>' +
         '<Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>' +
         '<Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>' +
+        '<Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>' +
         '</Types>',
     },
     {
@@ -105,7 +106,12 @@ function buildXlsxWorkbook(rows: TableCell[][], sheetName: string) {
         '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
         '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">' +
         '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>' +
+        '<Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>' +
         '</Relationships>',
+    },
+    {
+      name: 'xl/styles.xml',
+      content: buildWorkbookStylesXml(),
     },
     {
       name: 'xl/worksheets/sheet1.xml',
@@ -130,7 +136,8 @@ function buildWorksheetXml(rows: TableCell[][]) {
         .map((cell, columnIndex) => buildCellXml(cell, rowNumber, columnIndex))
         .filter(Boolean)
         .join('')
-      return `<row r="${rowNumber}">${cells}</row>`
+      const headerHeight = rowNumber === 1 ? ' ht="24" customHeight="1"' : ''
+      return `<row r="${rowNumber}"${headerHeight}>${cells}</row>`
     })
     .join('')
 
@@ -138,8 +145,10 @@ function buildWorksheetXml(rows: TableCell[][]) {
     '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
     '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">' +
     `<dimension ref="${dimension}"/>` +
+    '<sheetViews><sheetView workbookViewId="0"><pane ySplit="1" topLeftCell="A2" activePane="bottomLeft" state="frozen"/></sheetView></sheetViews>' +
     columns +
     `<sheetData>${sheetData}</sheetData>` +
+    (rows.length && columnCount ? `<autoFilter ref="${dimension}"/>` : '') +
     '</worksheet>'
   )
 }
@@ -149,15 +158,30 @@ function buildCellXml(value: TableCell, rowNumber: number, columnIndex: number) 
     return ''
   }
   const ref = `${columnName(columnIndex)}${rowNumber}`
+  const style = rowNumber === 1 ? ' s="1"' : ''
   if (typeof value === 'number' && Number.isFinite(value)) {
-    return `<c r="${ref}"><v>${value}</v></c>`
+    return `<c r="${ref}"${style}><v>${value}</v></c>`
   }
   if (typeof value === 'boolean') {
-    return `<c r="${ref}" t="b"><v>${value ? 1 : 0}</v></c>`
+    return `<c r="${ref}"${style} t="b"><v>${value ? 1 : 0}</v></c>`
   }
-  const text = sanitizeSpreadsheetText(String(value))
+  const text = String(value)
   const preserveSpace = /^\s|\s$|\n|\r/.test(text) ? ' xml:space="preserve"' : ''
-  return `<c r="${ref}" t="inlineStr"><is><t${preserveSpace}>${escapeXmlText(text)}</t></is></c>`
+  return `<c r="${ref}"${style} t="inlineStr"><is><t${preserveSpace}>${escapeXmlText(text)}</t></is></c>`
+}
+
+function buildWorkbookStylesXml() {
+  return (
+    '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
+    '<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">' +
+    '<fonts count="2"><font><sz val="11"/><name val="Aptos"/></font><font><b/><color rgb="FFFFFFFF"/><sz val="11"/><name val="Aptos"/></font></fonts>' +
+    '<fills count="3"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill><fill><patternFill patternType="solid"><fgColor rgb="FF1F2937"/><bgColor indexed="64"/></patternFill></fill></fills>' +
+    '<borders count="1"><border><left/><right/><top/><bottom/><diagonal/></border></borders>' +
+    '<cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>' +
+    '<cellXfs count="2"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/><xf numFmtId="0" fontId="1" fillId="2" borderId="0" xfId="0" applyFont="1" applyFill="1" applyAlignment="1"><alignment vertical="center"/></xf></cellXfs>' +
+    '<cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles>' +
+    '</styleSheet>'
+  )
 }
 
 function estimateColumnWidth(rows: TableCell[][], columnIndex: number) {

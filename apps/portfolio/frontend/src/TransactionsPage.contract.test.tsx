@@ -19,10 +19,10 @@ const apiMocks = vi.hoisted(() => ({
   getPortfolioTransactionExecutionQuote: vi.fn(),
   getPortfolioTransactionPositionPreview: vi.fn(),
   getPortfolioTransactionsWorkspace: vi.fn(),
-  importPortfolioTransactionCsv: vi.fn(),
-  portfolioTransactionCsvDownloadUrl: vi.fn(() => '/transactions.csv'),
-  portfolioTransactionCsvTemplateUrl: vi.fn(() => '/transactions/csv-template'),
-  previewPortfolioTransactionCsv: vi.fn(),
+  importPortfolioTransactionFile: vi.fn(),
+  portfolioTransactionDownloadUrl: vi.fn((_portfolioId: string, format: string) => `/transactions.${format}`),
+  portfolioTransactionTemplateUrl: vi.fn((_portfolioId: string, format: string) => `/transactions/${format}-template`),
+  previewPortfolioTransactionFile: vi.fn(),
   reviewPortfolioInstrumentEventTask: vi.fn(),
   updatePortfolioTransaction: vi.fn(),
 }))
@@ -36,9 +36,9 @@ const securitiesAccount = {
   portfolio_id: '3',
   account_name: 'ETF Brokerage',
   account_type: 'securities_account',
+  account_category: 'security' as const,
   currency: 'USD',
   default_settlement_cash_account_id: 'cash-1',
-  allowed_instrument_types: ['etf'],
   status: 'active',
 }
 
@@ -47,6 +47,7 @@ const cashAccount = {
   portfolio_id: '3',
   account_name: 'Settlement Cash',
   account_type: 'deposit_account',
+  account_category: 'cash' as const,
   currency: 'USD',
   status: 'active',
 }
@@ -55,7 +56,7 @@ const optionAccount = {
   ...securitiesAccount,
   account_id: 'options-1',
   account_name: 'Options Account',
-  allowed_instrument_types: ['option'],
+  account_category: 'option' as const,
 }
 
 const optionContract = {
@@ -89,14 +90,14 @@ const fundSecuritiesAccount = {
   account_name: 'Fund Account',
   currency: 'CNY',
   default_settlement_cash_account_id: 'cash-cny-1',
-  allowed_instrument_types: ['fund'],
+  account_category: 'security' as const,
 }
 
 const fcnAccount = {
   ...fundSecuritiesAccount,
   account_id: 'fcn-cny-1',
   account_name: 'FCN CNY Account',
-  allowed_instrument_types: ['fcn'],
+  account_category: 'fcn' as const,
 }
 
 const etfInstrument = {
@@ -337,30 +338,30 @@ describe('Transactions rendered page contract', () => {
     })
   })
 
-  it('uses one importable CSV contract for all-transaction export and import', async () => {
+  it('keeps four transaction actions while exposing CSV and Excel formats', async () => {
+    const user = userEvent.setup()
     renderPortfolioPage(
       <TransactionsPage />,
       '/portfolios/3/transactions',
       '/portfolios/:portfolioId/transactions',
     )
 
-    expect(await screen.findByRole('link', { name: 'Export' })).toHaveAttribute(
-      'href',
-      '/transactions.csv',
-    )
+    const exportButton = await screen.findByRole('button', { name: 'Export' })
     expect(screen.getByRole('button', { name: 'Import' })).toBeInTheDocument()
-    expect(screen.getByRole('link', { name: 'Template' })).toHaveAttribute(
-      'href',
-      '/transactions/csv-template',
-    )
+    expect(screen.getByRole('button', { name: 'Template' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Record Transaction' })).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Transaction CSV' })).not.toBeInTheDocument()
     expect(screen.queryByText('Select visible')).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Export View' })).not.toBeInTheDocument()
+
+    await user.click(exportButton)
+    expect(screen.getByRole('menuitem', { name: 'CSV' })).toBeInTheDocument()
+    expect(screen.getByRole('menuitem', { name: 'Excel' })).toBeInTheDocument()
+    expect(document.querySelector<HTMLInputElement>('input[type="file"]')?.accept).toContain('.xlsx')
   })
 
-  it('shows CSV row and batch errors before allowing any import', async () => {
-    apiMocks.previewPortfolioTransactionCsv.mockResolvedValue({
+  it('shows file row and batch errors before allowing any import', async () => {
+    apiMocks.previewPortfolioTransactionFile.mockResolvedValue({
       portfolio_id: '3',
       preview_digest: 'a'.repeat(64),
       headers: ['transaction_type', 'trade_date', 'account_id', 'gross_amount', 'currency'],
@@ -377,9 +378,6 @@ describe('Transactions rendered page contract', () => {
     const file = new File(['transaction_type,trade_date'], 'candidate.csv', {
       type: 'text/csv',
     })
-    Object.defineProperty(file, 'text', {
-      value: vi.fn().mockResolvedValue('transaction_type,trade_date'),
-    })
     renderPortfolioPage(
       <TransactionsPage />,
       '/portfolios/3/transactions',
@@ -391,7 +389,7 @@ describe('Transactions rendered page contract', () => {
     fireEvent.change(fileInput!, { target: { files: [file] } })
 
     const dialog = await screen.findByRole('alertdialog', {
-      name: 'Review Transaction CSV',
+      name: 'Review Transaction File',
     })
     expect(within(dialog).getByText('2 rows · 1 valid · 2 issues')).toBeInTheDocument()
     expect(within(dialog).getByText('Source identity already exists.')).toBeInTheDocument()
@@ -399,11 +397,11 @@ describe('Transactions rendered page contract', () => {
       within(dialog).getByText('Row 2: account_id: Account not found'),
     ).toBeInTheDocument()
     expect(within(dialog).getByRole('button', { name: 'Import 1 Rows' })).toBeDisabled()
-    expect(apiMocks.importPortfolioTransactionCsv).not.toHaveBeenCalled()
+    expect(apiMocks.importPortfolioTransactionFile).not.toHaveBeenCalled()
   })
 
-  it('imports a CSV batch only after a clean preview is confirmed', async () => {
-    apiMocks.previewPortfolioTransactionCsv.mockResolvedValue({
+  it('imports an Excel batch only after a clean preview is confirmed', async () => {
+    apiMocks.previewPortfolioTransactionFile.mockResolvedValue({
       portfolio_id: '3',
       preview_digest: 'b'.repeat(64),
       headers: ['transaction_type', 'trade_date', 'account_id', 'gross_amount', 'currency'],
@@ -414,17 +412,14 @@ describe('Transactions rendered page contract', () => {
       batch_errors: [],
       rows: [{ row_number: 2, transaction: {}, errors: [] }],
     })
-    apiMocks.importPortfolioTransactionCsv.mockResolvedValue({
+    apiMocks.importPortfolioTransactionFile.mockResolvedValue({
       portfolio_id: '3',
       preview_digest: 'b'.repeat(64),
       created_count: 1,
       transactions: [selectedTransaction],
     })
-    const file = new File(['transaction_type,trade_date'], 'clean.csv', {
-      type: 'text/csv',
-    })
-    Object.defineProperty(file, 'text', {
-      value: vi.fn().mockResolvedValue('transaction_type,trade_date'),
+    const file = new File(['xlsx-bytes'], 'clean.xlsx', {
+      type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
     })
     const user = userEvent.setup()
     renderPortfolioPage(
@@ -436,23 +431,23 @@ describe('Transactions rendered page contract', () => {
     const fileInput = document.querySelector<HTMLInputElement>('input[type="file"]')
     fireEvent.change(fileInput!, { target: { files: [file] } })
     const dialog = await screen.findByRole('alertdialog', {
-      name: 'Review Transaction CSV',
+      name: 'Review Transaction File',
     })
     const confirm = within(dialog).getByRole('button', { name: 'Import 1 Rows' })
     expect(confirm).toBeEnabled()
     expect(within(dialog).getByText('Source identity is incomplete.')).toBeInTheDocument()
-    expect(apiMocks.importPortfolioTransactionCsv).not.toHaveBeenCalled()
+    expect(apiMocks.importPortfolioTransactionFile).not.toHaveBeenCalled()
 
     await user.click(confirm)
     await waitFor(() =>
-      expect(apiMocks.importPortfolioTransactionCsv).toHaveBeenCalledWith(
+      expect(apiMocks.importPortfolioTransactionFile).toHaveBeenCalledWith(
         '3',
-        'transaction_type,trade_date',
+        file,
         'b'.repeat(64),
-        expect.stringContaining('transaction-csv-import-'),
+        expect.stringContaining('transaction-file-import-'),
       ),
     )
-    expect(await screen.findByText('Imported 1 transaction facts from CSV.')).toBeInTheDocument()
+    expect(await screen.findByText('Imported 1 transaction facts from clean.xlsx.')).toBeInTheDocument()
   })
 
   it('enforces buy instrument eligibility and keeps transaction/accounting inspectors rendered', async () => {

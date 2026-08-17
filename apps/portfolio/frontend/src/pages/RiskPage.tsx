@@ -1621,7 +1621,7 @@ export function buildCurrentPlanningGroups({
       )
       return false
     }
-    return accountRow.account.account_type === 'deposit_account' || Math.abs(liquidityBase) > 1e-9
+    return accountRow.account.account_category === 'cash' || Math.abs(liquidityBase) > 1e-9
   })
   const securityHoldingRows = holdingsWorkspace.rows.filter(isSecurityHoldingRow)
   const derivativeHoldingRows = holdingsWorkspace.rows.filter((row) => row.holding_category === 'derivatives')

@@ -41,6 +41,7 @@ from portfolio_app.db.models import (
     TransactionRecordModel,
 )
 from portfolio_app.db.session import get_session_factory
+from portfolio_app.services.account_categories import validate_account_category
 from portfolio_app.services.ledger import (
     build_account_workspace,
     build_position_lots,
@@ -292,12 +293,47 @@ def _normalize_store(store: dict[str, object]) -> dict[str, object]:
     for account in normalized["accounts"]:
         if not isinstance(account, dict):
             continue
-        if "allowed_asset_types" in account:
+        if "allowed_asset_types" in account or "allowed_instrument_types" in account:
             raise ValueError(
-                f"Account '{account.get('account_id')}' uses legacy allowed_asset_types; use allowed_instrument_types."
+                f"Account '{account.get('account_id')}' uses a removed instrument-scope field; use account_category."
             )
-        if "allowed_instrument_types" not in account:
-            account["allowed_instrument_types"] = None
+        try:
+            account["account_category"] = validate_account_category(
+                account_type=account.get("account_type"),
+                account_category=account.get("account_category"),
+            )
+        except ValueError as error:
+            raise ValueError(
+                f"Account '{account.get('account_id')}' is invalid: {error}"
+            ) from error
+    account_by_key = {
+        (str(account.get("portfolio_id") or ""), str(account.get("account_id") or "")): account
+        for account in normalized["accounts"]
+        if isinstance(account, dict)
+    }
+    for account in normalized["accounts"]:
+        if not isinstance(account, dict) or account.get("account_type") != "securities_account":
+            continue
+        settlement_account_id = str(
+            account.get("default_settlement_cash_account_id") or ""
+        )
+        settlement_account = account_by_key.get(
+            (str(account.get("portfolio_id") or ""), settlement_account_id)
+        )
+        if not settlement_account_id or settlement_account is None:
+            raise ValueError(
+                f"Account '{account.get('account_id')}' requires a default settlement cash account."
+            )
+        if settlement_account.get("account_type") != "deposit_account":
+            raise ValueError(
+                f"Account '{account.get('account_id')}' settlement mapping must target a cash account."
+            )
+        if str(settlement_account.get("currency") or "").upper() != str(
+            account.get("currency") or ""
+        ).upper():
+            raise ValueError(
+                f"Account '{account.get('account_id')}' settlement mapping must use the same currency."
+            )
     for transaction in normalized["transactions"]:
         if not isinstance(transaction, dict):
             continue
@@ -507,11 +543,11 @@ def _load_store_from_db(session) -> dict[str, object]:
                 "portfolio_id": item.portfolio_id,
                 "account_name": item.account_name,
                 "account_type": item.account_type,
+                "account_category": item.account_category,
                 "currency": item.currency,
                 "institution": item.institution,
                 "default_settlement_cash_account_id": item.default_settlement_cash_account_id,
                 "cost_basis_method": item.cost_basis_method,
-                "allowed_instrument_types": deepcopy(item.allowed_instrument_types_json),
                 "opened_at": item.opened_at.isoformat() if item.opened_at is not None else None,
                 "closed_at": item.closed_at.isoformat() if item.closed_at is not None else None,
                 "status": item.status,
@@ -727,6 +763,7 @@ def _save_store_to_db(session, data: dict[str, object]) -> None:
                 portfolio_id=str(raw_account.get("portfolio_id") or "").strip(),
                 account_name=str(raw_account.get("account_name") or "").strip(),
                 account_type=str(raw_account.get("account_type") or "").strip(),
+                account_category=str(raw_account.get("account_category") or "").strip(),
                 currency=str(raw_account.get("currency") or "USD").strip().upper() or "USD",
                 institution=(str(raw_account.get("institution")).strip() if raw_account.get("institution") else None),
                 default_settlement_cash_account_id=(
@@ -737,17 +774,6 @@ def _save_store_to_db(session, data: dict[str, object]) -> None:
                 cost_basis_method=(
                     str(raw_account.get("cost_basis_method")).strip()
                     if raw_account.get("cost_basis_method")
-                    else None
-                ),
-                allowed_instrument_types_json=(
-                    sorted(
-                        {
-                            str(item).strip()
-                            for item in raw_account.get("allowed_instrument_types", [])
-                            if str(item).strip()
-                        }
-                    )
-                    if isinstance(raw_account.get("allowed_instrument_types"), list)
                     else None
                 ),
                 opened_at=date.fromisoformat(str(opened_at)) if opened_at else None,
@@ -1400,11 +1426,11 @@ def _serialize_account_row(item: AccountRecordModel) -> dict[str, object]:
         "portfolio_id": item.portfolio_id,
         "account_name": item.account_name,
         "account_type": item.account_type,
+        "account_category": item.account_category,
         "currency": item.currency,
         "institution": item.institution,
         "default_settlement_cash_account_id": item.default_settlement_cash_account_id,
         "cost_basis_method": item.cost_basis_method,
-        "allowed_instrument_types": deepcopy(item.allowed_instrument_types_json),
         "opened_at": item.opened_at.isoformat() if item.opened_at is not None else None,
         "closed_at": item.closed_at.isoformat() if item.closed_at is not None else None,
         "status": item.status,
@@ -3941,6 +3967,7 @@ def copy_portfolio(portfolio_id: str) -> dict[str, object] | None:
                     portfolio_id=candidate,
                     account_name=account.account_name,
                     account_type=account.account_type,
+                    account_category=account.account_category,
                     currency=account.currency,
                     institution=account.institution,
                     default_settlement_cash_account_id=(
@@ -3949,7 +3976,6 @@ def copy_portfolio(portfolio_id: str) -> dict[str, object] | None:
                         else None
                     ),
                     cost_basis_method=account.cost_basis_method,
-                    allowed_instrument_types_json=deepcopy(account.allowed_instrument_types_json),
                     opened_at=account.opened_at,
                     closed_at=account.closed_at,
                     status=account.status,
@@ -4501,16 +4527,54 @@ def list_transaction_change_logs(
         return [_serialize_transaction_change_log_row(item) for item in records]
 
 
+def _validate_account_storage_contract(
+    session,
+    *,
+    portfolio_id: str,
+    account_type: str,
+    account_category: str,
+    currency: str,
+    default_settlement_cash_account_id: str | None,
+    cost_basis_method: str | None,
+) -> str:
+    account_category = validate_account_category(
+        account_type=account_type,
+        account_category=account_category,
+    )
+    if account_category == "cash":
+        if default_settlement_cash_account_id is not None:
+            raise ValueError("Cash accounts must not carry a default settlement account.")
+        if cost_basis_method is not None:
+            raise ValueError("Cash accounts must not carry a cost-basis method.")
+        return account_category
+
+    if not default_settlement_cash_account_id:
+        raise ValueError("Holding accounts require a default settlement cash account.")
+    if cost_basis_method not in {"fifo", "moving_average"}:
+        raise ValueError("Holding accounts require FIFO or moving-average cost basis.")
+    settlement_account = session.scalar(
+        select(AccountRecordModel).where(
+            AccountRecordModel.portfolio_id == portfolio_id,
+            AccountRecordModel.account_id == default_settlement_cash_account_id,
+        )
+    )
+    if settlement_account is None or settlement_account.account_type != "deposit_account":
+        raise ValueError("Default settlement account must be a cash account in this portfolio.")
+    if settlement_account.currency.upper() != currency.upper():
+        raise ValueError("Settlement cash mapping must use the same currency.")
+    return account_category
+
+
 def create_account(
     portfolio_id: str,
     *,
     account_name: str,
     account_type: str,
+    account_category: str,
     currency: str,
     institution: str | None,
     default_settlement_cash_account_id: str | None,
     cost_basis_method: str | None,
-    allowed_instrument_types: list[str] | None,
     opened_at: date | None,
     closed_at: date | None,
     status: str,
@@ -4519,6 +4583,15 @@ def create_account(
     with session_factory() as session:
         if not _lock_portfolio_for_transaction_mutation(session, portfolio_id):
             raise ValueError("Portfolio no longer exists.")
+        normalized_account_category = _validate_account_storage_contract(
+            session,
+            portfolio_id=portfolio_id,
+            account_type=account_type,
+            account_category=account_category,
+            currency=currency,
+            default_settlement_cash_account_id=default_settlement_cash_account_id,
+            cost_basis_method=cost_basis_method,
+        )
         base = _slugify(account_name)
         prefix = "cash" if account_type == "deposit_account" else "broker"
         existing_account_ids = session.scalars(
@@ -4531,11 +4604,11 @@ def create_account(
             portfolio_id=portfolio_id,
             account_name=account_name.strip(),
             account_type=account_type,
+            account_category=normalized_account_category,
             currency=currency.upper(),
             institution=(institution or "").strip() or None,
             default_settlement_cash_account_id=default_settlement_cash_account_id,
             cost_basis_method=cost_basis_method,
-            allowed_instrument_types_json=sorted(set(allowed_instrument_types or [])) or None,
             opened_at=opened_at,
             closed_at=closed_at,
             status=(status or "active").strip() or "active",
@@ -4555,10 +4628,10 @@ def update_account(
     account_id: str,
     *,
     account_name: str,
+    account_category: str,
     institution: str | None,
     default_settlement_cash_account_id: str | None,
     cost_basis_method: str | None,
-    allowed_instrument_types: list[str] | None,
     opened_at: date | None,
     closed_at: date | None,
     status: str,
@@ -4575,6 +4648,37 @@ def update_account(
         )
         if record is None:
             return None
+
+        previous_account_category = record.account_category
+        next_account_category = _validate_account_storage_contract(
+            session,
+            portfolio_id=portfolio_id,
+            account_type=record.account_type,
+            account_category=account_category,
+            currency=record.currency,
+            default_settlement_cash_account_id=default_settlement_cash_account_id,
+            cost_basis_method=cost_basis_method,
+        )
+        if next_account_category != previous_account_category:
+            transaction_history_count = session.scalar(
+                select(func.count()).select_from(TransactionRecordModel).where(
+                    TransactionRecordModel.portfolio_id == portfolio_id,
+                    or_(
+                        TransactionRecordModel.account_id == account_id,
+                        TransactionRecordModel.counterparty_account_id == account_id,
+                    ),
+                )
+            )
+            derivative_contract_count = session.scalar(
+                select(func.count()).select_from(DerivativeContractRecordModel).where(
+                    DerivativeContractRecordModel.portfolio_id == portfolio_id,
+                    DerivativeContractRecordModel.account_id == account_id,
+                )
+            )
+            if int(transaction_history_count or 0) or int(derivative_contract_count or 0):
+                raise ValueError(
+                    "Account category cannot change after transaction or contract history exists."
+                )
 
         previous_opened_at = record.opened_at
         previous_cost_basis_method = record.cost_basis_method
@@ -4595,10 +4699,10 @@ def update_account(
             )
 
         record.account_name = account_name.strip()
+        record.account_category = next_account_category
         record.institution = (institution or "").strip() or None
         record.default_settlement_cash_account_id = default_settlement_cash_account_id
         record.cost_basis_method = cost_basis_method
-        record.allowed_instrument_types_json = sorted(set(allowed_instrument_types or [])) or None
         record.opened_at = opened_at
         record.closed_at = closed_at
         record.status = (status or "active").strip() or "active"

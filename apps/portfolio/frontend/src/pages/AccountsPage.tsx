@@ -7,6 +7,7 @@ import {
   SUPPORTED_PORTFOLIO_CURRENCIES,
   createPortfolioAccount,
   updatePortfolioAccount,
+  type PortfolioAccountCategory,
   type PortfolioAccountRecord,
   getPortfolioAccountsWorkspace,
   type PortfolioAccountCreatePayload,
@@ -41,7 +42,15 @@ import {
 import { transactionActivityLabel } from '../lib/transactionPresentation'
 import { holdingUsesEventValuation } from '../lib/holdingPresentation'
 
-const ACCOUNT_SCOPE_OPTIONS = ['equity', 'etf', 'fund', 'fcn', 'option', 'other'] as const
+const ACCOUNT_CATEGORY_OPTIONS: Array<{
+  value: PortfolioAccountCategory
+  label: string
+}> = [
+  { value: 'cash', label: 'Cash' },
+  { value: 'security', label: 'Security' },
+  { value: 'fcn', label: 'FCN' },
+  { value: 'option', label: 'Option' },
+]
 type AccountDetailTab = 'overview' | 'positions' | 'transactions' | 'ledger'
 
 function parseAccountDetailTab(value: string | null): AccountDetailTab {
@@ -85,16 +94,8 @@ function primaryIdentifier(position: {
   )
 }
 
-function formatAccountInstrumentScope(account: PortfolioAccountRecord) {
-  if (account.account_type !== 'securities_account') {
-    return '—'
-  }
-
-  if (!account.allowed_instrument_types?.length) {
-    return 'All supported'
-  }
-
-  return account.allowed_instrument_types.map((instrumentType) => formatLabel(instrumentType)).join(' / ')
+function accountCategoryLabel(accountCategory: PortfolioAccountCategory) {
+  return ACCOUNT_CATEGORY_OPTIONS.find((option) => option.value === accountCategory)?.label ?? accountCategory
 }
 
 function accountTransactionHref(portfolioId: string, accountId: string, transactionId: string) {
@@ -286,7 +287,7 @@ export default function AccountsPage() {
     [workspace?.accounts],
   )
   const depositAccounts = useMemo(
-    () => accountRecords.filter((account) => account.account_type === 'deposit_account'),
+    () => accountRecords.filter((account) => account.account_category === 'cash'),
     [accountRecords],
   )
   const compatibleDepositAccounts = useMemo(
@@ -301,17 +302,15 @@ export default function AccountsPage() {
   )
 
   useEffect(() => {
-    if (form.account_type !== 'securities_account') {
+    if (form.account_category === 'cash') {
       if (
         form.default_settlement_cash_account_id ||
-        form.cost_basis_method !== 'fifo' ||
-        form.allowed_instrument_types.length
+        form.cost_basis_method !== 'fifo'
       ) {
         setForm((current) => ({
           ...current,
           default_settlement_cash_account_id: '',
           cost_basis_method: 'fifo',
-          allowed_instrument_types: [],
         }))
       }
       return
@@ -321,7 +320,9 @@ export default function AccountsPage() {
       form.default_settlement_cash_account_id,
       compatibleDepositAccountIds,
     )
-    if (nextSettlementAccountId === form.default_settlement_cash_account_id) {
+    if (
+      nextSettlementAccountId === form.default_settlement_cash_account_id
+    ) {
       return
     }
 
@@ -330,7 +331,9 @@ export default function AccountsPage() {
         current.default_settlement_cash_account_id,
         compatibleDepositAccountIds,
       )
-      if (nextAccountId === current.default_settlement_cash_account_id) {
+      if (
+        nextAccountId === current.default_settlement_cash_account_id
+      ) {
         return current
       }
       return {
@@ -340,8 +343,7 @@ export default function AccountsPage() {
     })
   }, [
     compatibleDepositAccountIds,
-    form.account_type,
-    form.allowed_instrument_types.length,
+    form.account_category,
     form.cost_basis_method,
     form.default_settlement_cash_account_id,
   ])
@@ -353,6 +355,10 @@ export default function AccountsPage() {
     visibleAccounts.find((item) => item.account.account_id === resolvedSelectedAccountId) ?? visibleAccounts[0] ?? null
   const editingAccount =
     visibleAccounts.find((item) => item.account.account_id === editingAccountId)?.account ?? null
+  const editingAccountRow =
+    visibleAccounts.find((item) => item.account.account_id === editingAccountId) ?? null
+  const accountCategoryLocked =
+    drawerMode === 'edit' && Boolean(editingAccountRow?.linked_transaction_count)
 
   const visibleLedgerPostings = workspace?.ledger_postings ?? []
   const visiblePositions = workspace?.positions ?? []
@@ -386,16 +392,12 @@ export default function AccountsPage() {
   function accountPayloadFromForm(): PortfolioAccountCreatePayload {
     return {
       account_name: form.account_name.trim(),
-      account_type: form.account_type,
+      account_category: form.account_category,
       currency: form.currency.trim().toUpperCase(),
       institution: form.institution.trim() || null,
       default_settlement_cash_account_id:
-        form.account_type === 'securities_account' ? form.default_settlement_cash_account_id || null : null,
-      cost_basis_method: form.account_type === 'securities_account' ? form.cost_basis_method : null,
-      allowed_instrument_types:
-        form.account_type === 'securities_account' && form.allowed_instrument_types.length
-          ? [...form.allowed_instrument_types]
-          : null,
+        form.account_category !== 'cash' ? form.default_settlement_cash_account_id || null : null,
+      cost_basis_method: form.account_category !== 'cash' ? form.cost_basis_method : null,
       opened_at: form.opened_at || null,
       closed_at: form.closed_at || null,
       status: form.status || 'active',
@@ -434,6 +436,13 @@ export default function AccountsPage() {
       setFormError('Enter an account name.')
       return
     }
+    if (
+      form.account_category !== 'cash' &&
+      !form.default_settlement_cash_account_id
+    ) {
+      setFormError('Create or select a same-currency cash account first.')
+      return
+    }
 
     const payload = accountPayloadFromForm()
 
@@ -445,10 +454,10 @@ export default function AccountsPage() {
         }
         const updatePayload: PortfolioAccountUpdatePayload = {
           account_name: payload.account_name,
+          account_category: payload.account_category,
           institution: payload.institution,
           default_settlement_cash_account_id: payload.default_settlement_cash_account_id,
           cost_basis_method: payload.cost_basis_method,
-          allowed_instrument_types: payload.allowed_instrument_types,
           opened_at: payload.opened_at,
           closed_at: payload.closed_at,
           status: payload.status,
@@ -456,7 +465,8 @@ export default function AccountsPage() {
         const currentCostMethod = editingAccount?.cost_basis_method ?? 'fifo'
         const nextCostMethod = updatePayload.cost_basis_method ?? currentCostMethod
         if (
-          editingAccount?.account_type === 'securities_account' &&
+          editingAccount &&
+          editingAccount.account_category !== 'cash' &&
           nextCostMethod !== currentCostMethod
         ) {
           setPendingCostMethodChange({
@@ -475,7 +485,7 @@ export default function AccountsPage() {
 
       const created = await createPortfolioAccount(portfolioId, payload)
       setDrawerOpen(false)
-      setNotice(`Added ${formatLabel(created.account_type)} ${created.account_name}.`)
+      setNotice(`Added ${accountCategoryLabel(created.account_category)} ${created.account_name}.`)
       setForm(buildInitialAccountForm(accountRecords))
       await refreshWorkspace(created.account_id)
     } catch (requestError) {
@@ -545,7 +555,7 @@ export default function AccountsPage() {
               <span className="account-page-inventory">
                 {countLabel(workspace.summary.account_count, 'account')} ·{' '}
                 {countLabel(workspace.summary.deposit_account_count, 'cash account')} ·{' '}
-                {countLabel(workspace.summary.securities_account_count, 'securities account')} ·{' '}
+                {countLabel(workspace.summary.securities_account_count, 'holding account')} ·{' '}
                 {countLabel(workspace.summary.open_option_obligation_count, 'open option obligation')}
               </span>
             ) : null}
@@ -587,7 +597,7 @@ export default function AccountsPage() {
                         </span>
                       </span>
                       <span className="account-directory-meta">
-                        {formatLabel(accountRow.account.account_type)} · {accountRow.account.currency}
+                        {accountCategoryLabel(accountRow.account.account_category)} · {accountRow.account.currency}
                         {accountRow.account.institution ? ` · ${accountRow.account.institution}` : ''}
                       </span>
                       <span className="account-directory-stats">
@@ -622,7 +632,7 @@ export default function AccountsPage() {
                       <span className="account-detail-eyebrow">Selected account</span>
                       <h2>{selectedAccount.account.account_name}</h2>
                       <div className="account-detail-tags">
-                        <span>{formatLabel(selectedAccount.account.account_type)}</span>
+                        <span>{accountCategoryLabel(selectedAccount.account.account_category)}</span>
                         <span>{selectedAccount.account.currency}</span>
                         <span className={`account-status-pill account-status-${selectedAccount.account.status}`}>
                           {formatLabel(selectedAccount.account.status)}
@@ -746,8 +756,8 @@ export default function AccountsPage() {
                             </dd>
                           </div>
                           <div>
-                            <dt>Instrument scope</dt>
-                            <dd>{formatAccountInstrumentScope(selectedAccount.account)}</dd>
+                            <dt>Account category</dt>
+                            <dd>{accountCategoryLabel(selectedAccount.account.account_category)}</dd>
                           </div>
                           <div>
                             <dt>Opened</dt>
@@ -992,19 +1002,22 @@ export default function AccountsPage() {
                 </label>
 
                 <label>
-                  <span>Account Type</span>
+                  <span>Account Category</span>
                   <select
-                    value={form.account_type}
-                    disabled={drawerMode === 'edit'}
+                    value={form.account_category}
+                    disabled={accountCategoryLocked}
                     onChange={(event) =>
                       setForm((current) => ({
                         ...current,
-                        account_type: event.target.value,
+                        account_category: event.target.value as PortfolioAccountCategory,
                       }))
                     }
                   >
-                    <option value="deposit_account">Deposit Account</option>
-                    <option value="securities_account">Securities Account</option>
+                    {ACCOUNT_CATEGORY_OPTIONS.map((option) => (
+                      <option key={option.value} value={option.value}>
+                        {option.label}
+                      </option>
+                    ))}
                   </select>
                 </label>
 
@@ -1071,7 +1084,7 @@ export default function AccountsPage() {
                   </select>
                 </label>
 
-                {form.account_type === 'securities_account' ? (
+                {form.account_category !== 'cash' ? (
                   <label>
                     <span>Default Settlement Cash</span>
                     <select
@@ -1095,7 +1108,7 @@ export default function AccountsPage() {
                   <div className="transaction-form-spacer" />
                 )}
 
-                {form.account_type === 'securities_account' ? (
+                {form.account_category !== 'cash' ? (
                   <label>
                     <span>Cost Method</span>
                     <select
@@ -1111,38 +1124,6 @@ export default function AccountsPage() {
                       <option value="moving_average">Moving Average</option>
                     </select>
                   </label>
-                ) : (
-                  <div className="transaction-form-spacer" />
-                )}
-
-                {form.account_type === 'securities_account' ? (
-                  <fieldset className="transaction-form-fieldset">
-                    <legend>Instrument Scope</legend>
-                    <div className="transaction-checkbox-grid">
-                      {ACCOUNT_SCOPE_OPTIONS.map((instrumentType) => {
-                        const checked = form.allowed_instrument_types.includes(instrumentType)
-                        return (
-                          <label key={instrumentType} className="transaction-checkbox-option">
-                            <input
-                              type="checkbox"
-                              checked={checked}
-                              onChange={(event) =>
-                                setForm((current) => ({
-                                  ...current,
-                                  allowed_instrument_types: event.target.checked
-                                    ? [...current.allowed_instrument_types, instrumentType].filter(
-                                        (value, index, array) => array.indexOf(value) === index,
-                                      )
-                                    : current.allowed_instrument_types.filter((value) => value !== instrumentType),
-                                }))
-                              }
-                            />
-                            <span>{formatLabel(instrumentType)}</span>
-                          </label>
-                        )
-                      })}
-                    </div>
-                  </fieldset>
                 ) : (
                   <div className="transaction-form-spacer" />
                 )}
@@ -1166,16 +1147,21 @@ export default function AccountsPage() {
                 )}
               </div>
 
-              {form.account_type === 'securities_account' && compatibleDepositAccounts.length === 0 ? (
+              {form.account_category !== 'cash' && compatibleDepositAccounts.length === 0 ? (
                 <div className="portfolio-detail-meta">
-                  Settlement cash account required.
+                  Create a {form.currency} cash account before this holding account.
                 </div>
               ) : null}
 
               {formError ? <div className="error-state transaction-form-error">{formError}</div> : null}
 
               <div className="transaction-form-footer">
-                <button type="button" className="toolbar-link button-primary" onClick={() => void handleSaveAccount()}>
+                <button
+                  type="button"
+                  className="toolbar-link button-primary"
+                  disabled={form.account_category !== 'cash' && compatibleDepositAccounts.length === 0}
+                  onClick={() => void handleSaveAccount()}
+                >
                   {drawerMode === 'edit' ? 'Update Account' : 'Save Account'}
                 </button>
               </div>
@@ -1249,12 +1235,11 @@ export default function AccountsPage() {
 
 type AccountFormState = {
   account_name: string
-  account_type: string
+  account_category: PortfolioAccountCategory
   currency: string
   institution: string
   default_settlement_cash_account_id: string
   cost_basis_method: 'moving_average' | 'fifo'
-  allowed_instrument_types: string[]
   opened_at: string
   closed_at: string
   status: string
@@ -1273,15 +1258,14 @@ function formatCostMethodLabel(method: 'moving_average' | 'fifo') {
 }
 
 function buildInitialAccountForm(accounts: PortfolioAccountRecord[] = []): AccountFormState {
-  const defaultCashAccount = accounts.find((account) => account.account_type === 'deposit_account')
+  const defaultCashAccount = accounts.find((account) => account.account_category === 'cash')
   return {
     account_name: '',
-    account_type: 'deposit_account',
+    account_category: 'cash',
     currency: defaultCashAccount?.currency ?? 'USD',
     institution: '',
     default_settlement_cash_account_id: defaultCashAccount?.account_id ?? '',
     cost_basis_method: 'fifo',
-    allowed_instrument_types: [],
     opened_at: localTodayIso(),
     closed_at: '',
     status: 'active',
@@ -1291,12 +1275,11 @@ function buildInitialAccountForm(accounts: PortfolioAccountRecord[] = []): Accou
 function buildAccountFormFromRecord(account: PortfolioAccountRecord): AccountFormState {
   return {
     account_name: account.account_name,
-    account_type: account.account_type,
+    account_category: account.account_category,
     currency: account.currency,
     institution: account.institution ?? '',
     default_settlement_cash_account_id: account.default_settlement_cash_account_id ?? '',
     cost_basis_method: account.cost_basis_method ?? 'fifo',
-    allowed_instrument_types: account.allowed_instrument_types ?? [],
     opened_at: account.opened_at ?? '',
     closed_at: account.closed_at ?? '',
     status: account.status || 'active',

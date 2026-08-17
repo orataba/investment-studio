@@ -1106,7 +1106,7 @@ export default function TaxonomiesPage() {
       accountRows.filter((accountRow) => {
         const monetaryBalance = accountMonetaryBalanceBase(accountRow)
         return (
-          accountRow.account.account_type === 'deposit_account' ||
+          accountRow.account.account_category === 'cash' ||
           (monetaryBalance != null && Math.abs(monetaryBalance) > 1e-9)
         )
       }),

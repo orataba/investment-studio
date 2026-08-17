@@ -5,6 +5,7 @@ alembic==1.18.5
     #   portfolio-ops-platform-backend (apps/platform/backend/pyproject.toml)
     #   portfolio-ops-portfolio-backend (apps/portfolio/backend/pyproject.toml)
     #   portfolio-ops-watchlist-backend (apps/watchlist/backend/pyproject.toml)
+    #   portfolio-ops-watchlist-backend (apps/watchlist/backend/pyproject.toml)
 annotated-doc==0.0.4
     # via fastapi
 annotated-types==0.7.0
@@ -71,7 +72,9 @@ numpy==2.5.1
     #   pandas
     #   scipy
 openpyxl==3.1.5
-    # via portfolio-ops-platform-backend (apps/platform/backend/pyproject.toml)
+    # via
+    #   portfolio-ops-platform-backend (apps/platform/backend/pyproject.toml)
+    #   portfolio-ops-portfolio-backend (apps/portfolio/backend/pyproject.toml)
 packaging==26.2
     # via pytest
 pandas==2.3.3
@@ -115,7 +118,9 @@ python-dotenv==1.2.2
     #   pydantic-settings
     #   uvicorn
 python-multipart==0.0.32
-    # via portfolio-ops-watchlist-backend (apps/watchlist/backend/pyproject.toml)
+    # via
+    #   portfolio-ops-portfolio-backend (apps/portfolio/backend/pyproject.toml)
+    #   portfolio-ops-watchlist-backend (apps/watchlist/backend/pyproject.toml)
 pytz==2026.2
     # via pandas
 pyyaml==6.0.3

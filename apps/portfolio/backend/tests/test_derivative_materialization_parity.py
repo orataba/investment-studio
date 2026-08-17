@@ -41,7 +41,7 @@ def _option_contract(
     return {
         "derivative_contract_id": derivative_contract_id,
         "portfolio_id": "portfolio-ops",
-        "account_id": "broker-us-core",
+        "account_id": "broker-us-options",
         "contract_name": "ABBV Dec 2026 Covered Call",
         "contract_type": "option",
         "currency": "USD",
@@ -171,12 +171,21 @@ def test_dynamic_and_materialized_option_asset_and_obligation_are_identical(
 
     store = deepcopy(TEST_PORTFOLIO_STORE)
     store["portfolios"][0]["as_of_date"] = "2026-02-11"
-    broker = next(
-        account
-        for account in store["accounts"]
-        if account["account_id"] == "broker-us-core"
+    store["accounts"].append(
+        {
+            "account_id": "broker-us-options",
+            "portfolio_id": portfolio_id,
+            "account_name": "USD Options",
+            "account_type": "securities_account",
+            "account_category": "option",
+            "currency": "USD",
+            "institution": "Test Broker",
+            "default_settlement_cash_account_id": "cash-usd-main",
+            "cost_basis_method": "fifo",
+            "opened_at": "2026-01-02",
+            "status": "active",
+        }
     )
-    broker["allowed_instrument_types"] = ["equity", "option"]
     store["transactions"] = [
         _transaction(
             "txn-parity-0001",
@@ -190,7 +199,7 @@ def test_dynamic_and_materialized_option_asset_and_obligation_are_identical(
             "txn-parity-0002",
             "buy",
             "2026-02-10",
-            account_id="broker-us-core",
+            account_id="broker-us-options",
             settlement_cash_account_id="cash-usd-main",
             instrument_ref=equity_ref,
             quantity=100.0,
@@ -201,7 +210,7 @@ def test_dynamic_and_materialized_option_asset_and_obligation_are_identical(
             "txn-parity-0003",
             "buy",
             "2026-02-11",
-            account_id="broker-us-core",
+            account_id="broker-us-options",
             settlement_cash_account_id="cash-usd-main",
             derivative_contract=option_contract,
             quantity=1.0,

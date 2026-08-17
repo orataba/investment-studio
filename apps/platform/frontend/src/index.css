@@ -2617,6 +2617,34 @@ textarea {
   gap: 6px;
 }
 
+.ir-download-menu {
+  position: relative;
+}
+
+.ir-download-menu-list {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 30;
+  min-width: 116px;
+  padding: 5px;
+  border: 1px solid var(--platform-line-strong);
+  border-radius: 2px;
+  background: #fff;
+  box-shadow: 0 10px 24px rgba(17, 24, 39, 0.12);
+}
+
+.ir-series-actions .ir-download-menu-item {
+  display: block;
+  width: 100%;
+  border: 0;
+  text-align: left;
+}
+
+.ir-series-actions .ir-download-menu-item:hover {
+  background: var(--ir-surface-subtle);
+}
+
 .ir-series-actions button,
 .ir-series-table td button,
 .ir-series-pagination button {

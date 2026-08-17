@@ -4,7 +4,7 @@ from datetime import UTC, date, datetime
 from decimal import Decimal
 from uuid import NAMESPACE_URL, uuid4, uuid5
 
-from fastapi import APIRouter, Header, HTTPException, Query, Response
+from fastapi import APIRouter, File, Form, Header, HTTPException, Query, Response, UploadFile
 from sqlalchemy.exc import IntegrityError
 
 from portfolio_app.api.assemblers import (
@@ -62,13 +62,24 @@ from portfolio_app.services.instrument_registry import (
     list_registry_instruments,
 )
 from portfolio_app.services.execution_quotes import get_execution_quote_on_or_before
+from portfolio_app.services.account_categories import (
+    account_category_from_record,
+    asset_account_category,
+)
 from portfolio_app.services.transaction_pricing import transaction_price_scale
 from portfolio_app.services.option_actions import resolve_option_action
 from portfolio_app.services.transaction_csv import (
+    MAX_CSV_BYTES,
     parse_transaction_csv,
     render_transaction_csv,
     render_transaction_csv_template,
     transaction_csv_digest,
+)
+from portfolio_app.services.transaction_files import transaction_upload_to_csv
+from portfolio_app.services.transaction_xlsx import (
+    XLSX_MEDIA_TYPE,
+    render_transaction_xlsx,
+    render_transaction_xlsx_template,
 )
 from portfolio_app.services.portfolio_store import (
     TransactionIdempotencyConflictError,
@@ -95,12 +106,6 @@ from portfolio_app.services.transaction_dates import transaction_execution_sort_
 router = APIRouter()
 
 POSITION_INSTRUMENT_TYPES = {"fund", "etf", "equity", "other"}
-ACCOUNT_SCOPE_ENFORCED_TRANSACTION_TYPES = {
-    "buy",
-    "option_write",
-    "dividend_reinvestment",
-    "opening_balance",
-}
 INCOME_ASSET_TYPES: dict[str, set[str]] = {
     "dividend": {"fund", "etf", "equity"},
     "dividend_reinvestment": {"fund", "etf", "equity"},
@@ -550,50 +555,40 @@ def _asset_type(
     return None
 
 
-def _normalized_allowed_instrument_types(account: dict[str, object] | None) -> list[str]:
-    raw_values = (account or {}).get("allowed_instrument_types")
-    if not isinstance(raw_values, list):
-        return []
-
-    normalized: list[str] = []
-    for raw_value in raw_values:
-        value = str(raw_value or "").strip().lower()
-        if value and value not in normalized:
-            normalized.append(value)
-    return normalized
-
-
-def _validate_account_asset_scope(
+def _validate_account_asset_category(
     *,
     account: dict[str, object],
     instrument_ref: dict[str, object] | None,
     derivative_contract: dict[str, object] | None,
-    transaction_type: str,
 ) -> None:
     if (
         (instrument_ref is None and derivative_contract is None)
         or str(account.get("account_type") or "") != "securities_account"
-        or transaction_type not in ACCOUNT_SCOPE_ENFORCED_TRANSACTION_TYPES
     ):
-        return
-
-    allowed_instrument_types = _normalized_allowed_instrument_types(account)
-    if not allowed_instrument_types:
         return
 
     asset_type = _asset_type(
         instrument_ref=instrument_ref,
         derivative_contract=derivative_contract,
     )
-    if asset_type in allowed_instrument_types:
+    try:
+        account_category = account_category_from_record(account)
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    asset_category = asset_account_category(
+        instrument_ref=instrument_ref,
+        derivative_contract=derivative_contract,
+    )
+    if asset_category == account_category:
         return
 
     account_name = str(account.get("account_name") or account.get("account_id") or "Selected account")
     raise HTTPException(
         status_code=400,
         detail=(
-            f"{account_name} only accepts {', '.join(allowed_instrument_types)} assets. "
-            f"'{asset_type}' is out of scope for inbound positions."
+            f"{account_name} is a {account_category.title()} holding account. "
+            f"'{asset_type}' requires a holding account in the "
+            f"{str(asset_category or 'supported').title()} category."
         ),
     )
 
@@ -962,11 +957,10 @@ def _prepare_csv_transaction_values(
         instrument_ref=instrument_ref,
         derivative_contract=derivative_contract_ref,
     )
-    _validate_account_asset_scope(
+    _validate_account_asset_category(
         account=account,
         instrument_ref=instrument_ref,
         derivative_contract=derivative_contract_ref,
-        transaction_type=transaction_type,
     )
     _validate_asset_amount_contract(
         payload=payload,
@@ -1112,11 +1106,15 @@ def _prepare_internal_transfer_values(
             instrument_ref=instrument_ref,
             derivative_contract=None,
         )
-        _validate_account_asset_scope(
+        _validate_account_asset_category(
+            account=from_account,
+            instrument_ref=instrument_ref,
+            derivative_contract=None,
+        )
+        _validate_account_asset_category(
             account=to_account,
             instrument_ref=instrument_ref,
             derivative_contract=None,
-            transaction_type="opening_balance",
         )
         transfer_currency = str(instrument_ref.get("currency") or "").upper()
         if (
@@ -1293,7 +1291,7 @@ def _build_transaction_csv_preview(
         if previous_scope != scope:
             batch_errors.append(
                 f"Derivative contract '{contract_id}' is used across multiple "
-                "accounts or currencies in one CSV batch."
+                "accounts or currencies in one import file."
             )
         if transaction.derivative_contract is None:
             continue
@@ -1304,7 +1302,7 @@ def _build_transaction_csv_preview(
         if previous_contract != transaction.derivative_contract:
             batch_errors.append(
                 f"Derivative contract '{contract_id}' has conflicting immutable terms "
-                "in the CSV batch."
+                "in the import file."
             )
     for parsed_row in parsed_rows:
         if parsed_row.transaction is None and parsed_row.internal_transfer is None:
@@ -1428,7 +1426,7 @@ def _build_transaction_csv_preview(
             source_identities.add(identity)
     if duplicate_source_identities:
         batch_errors.append(
-            "CSV repeats source_system/external_reference identities: "
+            "Import file repeats source_system/external_reference identities: "
             + ", ".join(
                 f"{source}/{reference}"
                 for source, reference in sorted(duplicate_source_identities)
@@ -1579,6 +1577,36 @@ def download_transaction_csv_template(portfolio_id: str) -> Response:
     )
 
 
+@router.get("/{portfolio_id}/transactions.xlsx")
+def download_transaction_xlsx(portfolio_id: str) -> Response:
+    if get_portfolio(portfolio_id) is None:
+        raise HTTPException(status_code=404, detail="Portfolio not found")
+    return Response(
+        content=render_transaction_xlsx(list_transactions(portfolio_id)),
+        media_type=XLSX_MEDIA_TYPE,
+        headers={
+            "Content-Disposition": (
+                f'attachment; filename="{portfolio_id}-transactions.xlsx"'
+            )
+        },
+    )
+
+
+@router.get("/{portfolio_id}/transactions/xlsx-template")
+def download_transaction_xlsx_template(portfolio_id: str) -> Response:
+    if get_portfolio(portfolio_id) is None:
+        raise HTTPException(status_code=404, detail="Portfolio not found")
+    return Response(
+        content=render_transaction_xlsx_template(),
+        media_type=XLSX_MEDIA_TYPE,
+        headers={
+            "Content-Disposition": (
+                f'attachment; filename="{portfolio_id}-transaction-import-template.xlsx"'
+            )
+        },
+    )
+
+
 @router.post(
     "/{portfolio_id}/transactions/csv/preview",
     response_model=TransactionCsvPreviewResponse,
@@ -1610,7 +1638,7 @@ def import_transaction_csv(
     if payload.preview_digest != expected_digest:
         raise HTTPException(
             status_code=409,
-            detail="CSV content changed after preview; preview the file again.",
+            detail="Transaction file content changed after preview; preview the file again.",
         )
 
     idempotency_payload = {
@@ -1686,6 +1714,65 @@ def import_transaction_csv(
             created,
             account_lookup,
         ),
+    )
+
+
+async def _read_transaction_upload(file: UploadFile) -> str:
+    try:
+        content = await file.read(MAX_CSV_BYTES + 1)
+    finally:
+        await file.close()
+    try:
+        return transaction_upload_to_csv(file.filename, content)
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+
+
+@router.post(
+    "/{portfolio_id}/transactions/files/preview",
+    response_model=TransactionCsvPreviewResponse,
+)
+async def preview_transaction_file(
+    portfolio_id: str,
+    file: UploadFile = File(...),
+    default_source_system: str | None = Form(
+        default="portfolio_file_upload",
+        max_length=100,
+    ),
+) -> TransactionCsvPreviewResponse:
+    csv_text = await _read_transaction_upload(file)
+    return preview_transaction_csv(
+        portfolio_id,
+        TransactionCsvPreviewRequest(
+            csv_text=csv_text,
+            default_source_system=default_source_system,
+        ),
+    )
+
+
+@router.post(
+    "/{portfolio_id}/transactions/files/import",
+    response_model=TransactionCsvImportResponse,
+)
+async def import_transaction_file(
+    portfolio_id: str,
+    file: UploadFile = File(...),
+    preview_digest: str = Form(..., min_length=64, max_length=64),
+    default_source_system: str | None = Form(
+        default="portfolio_file_upload",
+        max_length=100,
+    ),
+    idempotency_key: str = Header(..., alias="Idempotency-Key"),
+) -> TransactionCsvImportResponse:
+    csv_text = await _read_transaction_upload(file)
+    return import_transaction_csv(
+        portfolio_id,
+        TransactionCsvImportRequest(
+            csv_text=csv_text,
+            default_source_system=default_source_system,
+            preview_digest=preview_digest,
+        ),
+        idempotency_key,
     )
 
 
@@ -2168,11 +2255,10 @@ def _persist_transaction_record(
         instrument_ref=instrument_ref,
         derivative_contract=derivative_contract_ref,
     )
-    _validate_account_asset_scope(
+    _validate_account_asset_category(
         account=account,
         instrument_ref=instrument_ref,
         derivative_contract=derivative_contract_ref,
-        transaction_type=transaction_type,
     )
     _validate_asset_amount_contract(
         payload=payload,

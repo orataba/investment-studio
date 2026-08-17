@@ -10,6 +10,8 @@ import {
 import { LanguageSelector } from '../../../../packages/ui/src/i18n'
 import { appPath } from './appPath'
 import { useModalDialog } from '../../../../packages/ui/src/useModalDialog'
+import DownloadFormatMenu from '../../../../packages/ui/src/DownloadFormatMenu'
+import { downloadTable, type TableExportFormat } from '../../../../packages/ui/src/tableExport'
 import {
   beginRequest,
   invalidateRequests,
@@ -62,6 +64,7 @@ import {
   type ImportNavTextPayload,
   latestQuoteSnapshot,
   type LifecycleTransitionPayload,
+  marketDataExportRows,
   marketDataToCsv,
   type PlatformFxRatesResponse,
   type PlatformInstrumentDetail,
@@ -854,14 +857,24 @@ export default function InstrumentRegistryPage({
     openActionPanel('quote')
   }
 
-  function downloadFilteredSeries() {
+  function downloadFilteredSeries(format: TableExportFormat) {
     if (!selectedInstrument || !filteredSeries.length) return
+    const filenameBase = `${fileSafeIdentifier(primaryIdentifier(selectedInstrument))}-series`
+    if (format === 'xlsx') {
+      downloadTable(
+        filenameBase,
+        marketDataExportRows(filteredSeries),
+        format,
+        'Market Data',
+      )
+      return
+    }
     const csv = marketDataToCsv(filteredSeries)
     const blob = new Blob([`\uFEFF${csv}`], { type: 'text/csv;charset=utf-8' })
     const url = URL.createObjectURL(blob)
     const anchor = document.createElement('a')
     anchor.href = url
-    anchor.download = `${fileSafeIdentifier(primaryIdentifier(selectedInstrument))}-series.csv`
+    anchor.download = `${filenameBase}.csv`
     document.body.appendChild(anchor)
     anchor.click()
     anchor.remove()
@@ -1528,13 +1541,14 @@ export default function InstrumentRegistryPage({
                           <h3>Market-data series</h3>
                         </div>
                         <div className="ir-series-actions">
-                          <button
-                            type="button"
+                          <DownloadFormatMenu
+                            wrapperClassName="ir-download-menu"
+                            menuClassName="ir-download-menu-list"
+                            itemClassName="ir-download-menu-item"
+                            buttonLabel="Download"
                             disabled={!filteredSeries.length}
-                            onClick={downloadFilteredSeries}
-                          >
-                            Download CSV
-                          </button>
+                            onSelect={downloadFilteredSeries}
+                          />
                         </div>
                       </div>
                       <div className="ir-series-filters">

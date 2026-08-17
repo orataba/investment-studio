@@ -1050,6 +1050,21 @@ export function resolveSharedInstrumentsBulk(identifiers: string[]) {
   })
 }
 
+export function resolveSharedInstrumentsFile(file: File) {
+  const form = new FormData()
+  form.append('file', file)
+  return fetchForm<{
+    results: Array<{
+      identifier: string
+      status: 'resolved' | 'not_found'
+      instrument: SharedInstrumentRecord | null
+    }>
+  }>('/api/instruments/resolve-file', {
+    method: 'POST',
+    body: form,
+  })
+}
+
 export function createWatchlistView(
   watchlistId: string,
   payload: WatchlistViewCreatePayload,

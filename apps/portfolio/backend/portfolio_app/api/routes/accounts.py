@@ -16,6 +16,7 @@ from portfolio_app.api.contracts import (
     DerivationBoundaryStatus,
     LedgerPostingRecord,
 )
+from portfolio_app.services.account_categories import account_type_for_category
 from portfolio_app.services.instrument_registry import InstrumentRegistryError
 from portfolio_app.services.ledger import build_account_workspace
 from portfolio_app.services.portfolio_store import (
@@ -83,26 +84,30 @@ def create_account_record(
         raise HTTPException(status_code=404, detail="Portfolio not found")
 
     settlement_account_id = payload.default_settlement_cash_account_id
-    if payload.account_type == "securities_account" and settlement_account_id:
+    account_type = account_type_for_category(payload.account_category)
+    if account_type == "securities_account":
         _validate_default_settlement_account(
             portfolio_id=portfolio_id,
             settlement_account_id=settlement_account_id,
             currency=payload.currency,
         )
 
-    record = create_account(
-        portfolio_id=portfolio_id,
-        account_name=payload.account_name,
-        account_type=payload.account_type,
-        currency=payload.currency,
-        institution=payload.institution,
-        default_settlement_cash_account_id=settlement_account_id,
-        cost_basis_method=payload.cost_basis_method,
-        allowed_instrument_types=payload.allowed_instrument_types,
-        opened_at=payload.opened_at,
-        closed_at=payload.closed_at,
-        status=payload.status,
-    )
+    try:
+        record = create_account(
+            portfolio_id=portfolio_id,
+            account_name=payload.account_name,
+            account_type=account_type,
+            account_category=payload.account_category,
+            currency=payload.currency,
+            institution=payload.institution,
+            default_settlement_cash_account_id=settlement_account_id,
+            cost_basis_method=payload.cost_basis_method,
+            opened_at=payload.opened_at,
+            closed_at=payload.closed_at,
+            status=payload.status,
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
     return AccountRecord.model_validate(record)
 
 
@@ -134,16 +139,27 @@ def update_account_record(
     status = payload.status if payload.status is not None else str(existing_account.get("status") or "active")
 
     if account_type == "deposit_account":
+        if payload.account_category not in {None, "cash"}:
+            raise HTTPException(
+                status_code=400,
+                detail="Cash accounts cannot change to a holding-account category.",
+            )
         if payload.default_settlement_cash_account_id is not None:
             raise HTTPException(status_code=400, detail="deposit_account must not carry default_settlement_cash_account_id.")
         if payload.cost_basis_method is not None:
             raise HTTPException(status_code=400, detail="deposit_account must not carry cost_basis_method.")
-        if payload.allowed_instrument_types is not None:
-            raise HTTPException(status_code=400, detail="deposit_account must not carry allowed_instrument_types.")
         settlement_account_id = None
         cost_basis_method = None
-        allowed_instrument_types = None
+        account_category = "cash"
     else:
+        account_category = payload.account_category or str(
+            existing_account.get("account_category") or ""
+        )
+        if account_category not in {"security", "fcn", "option"}:
+            raise HTTPException(
+                status_code=400,
+                detail="Holding accounts require a Security, FCN, or Option category.",
+            )
         settlement_account_id = (
             payload.default_settlement_cash_account_id
             if "default_settlement_cash_account_id" in payload.model_fields_set
@@ -156,24 +172,22 @@ def update_account_record(
         )
         current_cost_basis_method = str(existing_account.get("cost_basis_method") or "fifo")
         cost_basis_method = payload.cost_basis_method or current_cost_basis_method
-        allowed_instrument_types = (
-            payload.allowed_instrument_types
-            if "allowed_instrument_types" in payload.model_fields_set
-            else existing_account.get("allowed_instrument_types")
-        )
 
-    record = update_account(
-        portfolio_id=portfolio_id,
-        account_id=account_id,
-        account_name=account_name,
-        institution=institution if isinstance(institution, str) else None,
-        default_settlement_cash_account_id=settlement_account_id if isinstance(settlement_account_id, str) else None,
-        cost_basis_method=cost_basis_method,
-        allowed_instrument_types=allowed_instrument_types if isinstance(allowed_instrument_types, list) else None,
-        opened_at=opened_at if isinstance(opened_at, date) else date.fromisoformat(str(opened_at)) if opened_at else None,
-        closed_at=closed_at if isinstance(closed_at, date) else date.fromisoformat(str(closed_at)) if closed_at else None,
-        status=str(status or "active"),
-    )
+    try:
+        record = update_account(
+            portfolio_id=portfolio_id,
+            account_id=account_id,
+            account_name=account_name,
+            account_category=account_category,
+            institution=institution if isinstance(institution, str) else None,
+            default_settlement_cash_account_id=settlement_account_id if isinstance(settlement_account_id, str) else None,
+            cost_basis_method=cost_basis_method,
+            opened_at=opened_at if isinstance(opened_at, date) else date.fromisoformat(str(opened_at)) if opened_at else None,
+            closed_at=closed_at if isinstance(closed_at, date) else date.fromisoformat(str(closed_at)) if closed_at else None,
+            status=str(status or "active"),
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
     if record is None:
         raise HTTPException(status_code=404, detail="Account not found")
     return AccountRecord.model_validate(record)

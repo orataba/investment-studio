@@ -23,14 +23,7 @@ from portfolio_ops_instrument_core import (
 )
 
 
-AccountScopedInstrumentType = Literal[
-    "fund",
-    "etf",
-    "equity",
-    "fcn",
-    "option",
-    "other",
-]
+AccountCategory = Literal["cash", "security", "fcn", "option"]
 AccountType = Literal["deposit_account", "securities_account"]
 CostBasisMethod = Literal["moving_average", "fifo"]
 SupportedCurrency = Literal["USD", "HKD", "CNY"]
@@ -344,11 +337,11 @@ class AccountRecord(BaseModel):
     portfolio_id: str
     account_name: str
     account_type: AccountType
+    account_category: AccountCategory
     currency: str
     institution: str | None = None
     default_settlement_cash_account_id: str | None = None
     cost_basis_method: CostBasisMethod | None = None
-    allowed_instrument_types: list[AccountScopedInstrumentType] | None = None
     opened_at: date | None = None
     closed_at: date | None = None
     status: str = "active"
@@ -360,13 +353,14 @@ class AccountListResponse(BaseModel):
 
 
 class AccountCreateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     account_name: str = Field(min_length=1)
-    account_type: AccountType
+    account_category: AccountCategory
     currency: str = Field(min_length=1, max_length=8)
     institution: str | None = None
     default_settlement_cash_account_id: str | None = None
     cost_basis_method: CostBasisMethod | None = None
-    allowed_instrument_types: list[AccountScopedInstrumentType] | None = None
     opened_at: date | None = None
     closed_at: date | None = None
     status: str = "active"
@@ -383,50 +377,37 @@ class AccountCreateRequest(BaseModel):
 
     @model_validator(mode="after")
     def validate_account_contract(self) -> "AccountCreateRequest":
-        if self.allowed_instrument_types == []:
-            self.allowed_instrument_types = None
-        if self.account_type == "deposit_account":
+        if self.account_category == "cash":
             if self.default_settlement_cash_account_id is not None:
-                raise ValueError("deposit_account must not carry default_settlement_cash_account_id.")
+                raise ValueError("Cash accounts must not carry a default settlement account.")
             if self.cost_basis_method is not None:
-                raise ValueError("deposit_account must not carry cost_basis_method.")
-            if self.allowed_instrument_types is not None:
-                raise ValueError("deposit_account must not carry allowed_instrument_types.")
-        if self.account_type == "securities_account" and self.cost_basis_method is None:
-            self.cost_basis_method = "fifo"
-        if self.allowed_instrument_types:
-            normalized: list[AccountScopedInstrumentType] = []
-            for raw_value in self.allowed_instrument_types:
-                value = str(raw_value).strip().lower()
-                if value and value not in normalized:
-                    normalized.append(value)  # type: ignore[arg-type]
-            self.allowed_instrument_types = normalized or None
+                raise ValueError("Cash accounts must not carry a cost-basis method.")
+        else:
+            if not self.default_settlement_cash_account_id:
+                raise ValueError(
+                    "Holding accounts require a default settlement cash account."
+                )
+            if self.cost_basis_method is None:
+                self.cost_basis_method = "fifo"
         if self.opened_at and self.closed_at and self.closed_at < self.opened_at:
             raise ValueError("closed_at must not be earlier than opened_at.")
         return self
 
 
 class AccountUpdateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     account_name: str | None = Field(default=None, min_length=1)
+    account_category: AccountCategory | None = None
     institution: str | None = None
     default_settlement_cash_account_id: str | None = None
     cost_basis_method: CostBasisMethod | None = None
-    allowed_instrument_types: list[AccountScopedInstrumentType] | None = None
     opened_at: date | None = None
     closed_at: date | None = None
     status: str | None = None
 
     @model_validator(mode="after")
     def validate_account_update_contract(self) -> "AccountUpdateRequest":
-        if self.allowed_instrument_types == []:
-            self.allowed_instrument_types = None
-        if self.allowed_instrument_types:
-            normalized: list[AccountScopedInstrumentType] = []
-            for raw_value in self.allowed_instrument_types:
-                value = str(raw_value).strip().lower()
-                if value and value not in normalized:
-                    normalized.append(value)  # type: ignore[arg-type]
-            self.allowed_instrument_types = normalized or None
         if self.opened_at and self.closed_at and self.closed_at < self.opened_at:
             raise ValueError("closed_at must not be earlier than opened_at.")
         return self

@@ -101,6 +101,8 @@ FX 维护 spot：
 
 行情录入后，下游不会立即“猜算”缺失历史。若需要完整区间分析，应补齐区间内必要日期的数据。
 
+基金 NAV 文件导入支持 CSV、TSV、文本、XLSX 和旧版 XLS，并在正式写入前展示解析预览；工作簿可包含供应商原始列和多个 sheet，后端按内容识别格式和 canonical NAV 字段。选中资产的 Market-data series 可按当前 Family/Basis 筛选下载 CSV 或 Excel，保留 `as_of_date`、metric/quote basis、原始数值精度、币种、price contract、status 和 provider。该下载是类型化行情审计文件，不等同于 NAV 导入模板；只有字段满足 NAV 导入契约的文件才能回灌。
+
 ### 4.4 刷新和生命周期
 
 资产有 active / archived 生命周期。已停用或重复资产应 archive，不应删除业务历史。Archive 后下游新搜索一般不再优先展示，但历史记录仍可追溯。
@@ -123,6 +125,8 @@ Watchlist 管理“哪些资产进入观察范围”和“如何展示这些资�
 
 加入后，资产会出现在主表中。若指标为空，先看资产详情页的数据状态，再看 Monitoring 是否提示缺失行情、缺失标签或 recalc 失败。
 
+`Add From File` 支持 CSV、TSV、文本和 XLSX，读取 `Identifier`、`Ticker`、`ISIN`、`Ticker / ISIN` 或 `Instrument ID` 列；没有表头时读取第一列。文件中的 identifier 会先去重并全部到共享 Registry 解析，存在未找到或不支持的类型时整批不添加，避免得到半截 watchlist。Excel 单元格必须是字面值，不能用公式生成 identifier。
+
 ### 5.3 主表浏览
 
 主表支持分批显示、筛选、排序、列配置、分组和导出：
@@ -134,7 +138,7 @@ Watchlist 管理“哪些资产进入观察范围”和“如何展示这些资�
 - Group By：所有 watchlist 使用同一组通用分组，可按资产类别、taxonomy 或数据新鲜度查看分布；基金风格、研究标签和投资状态不进入 Group By。
 - Download：导出当前筛选和排序后的全量结果，不只导出当前页。
 
-导出前应确认当前筛选、排序、分组和日期区间符合沟通口径。导出的 CSV 可用于复核和会议讨论，但不要把导出文件当作新的事实来源再回灌系统。
+导出前应确认当前筛选、排序、分组和日期区间符合沟通口径。CSV/Excel 都导出当前 view 的可见字段和筛选、排序后的全量结果；涉及端点敏感指标时会同时带出 metric as-of、return kind、quote basis 和 series type。导出首列固定包含 `instrument_id`，因此可通过 `Add From File` 把这些成员加入另一 watchlist；导入只读取 identifier 列，其他分析字段不会回灌或覆盖 Registry 事实。
 
 Watchlist 允许不同 instrument 的最新数据日期不同。`1M / 3M / YTD` 等字段各自从该行显示的 `Metric As Of` 回看，不使用名单中最晚日期统一截断。页脚会显示当前结果的 as-of 范围；若同一分组内终点不同，收益和风险平均显示 `—`，不要把它理解为 0。Peer 排名只使用同一 as-of 的可比样本。
 
@@ -203,7 +207,9 @@ Portfolio 以交易和行情为事实来源。持仓、市值、绩效、风险�
 
 ### 6.2 Accounts
 
-Accounts 管理组合内账户。账户类型通常包括证券账户和现金/存款账户。证券账户可设置默认 settlement cash account，用于证券买卖、分红和 FCN/期权现金事件的结算。
+Accounts 管理组合内账户。新增账户时直接选择 `Cash`、`Security`、`FCN` 或 `Option`。后三类是相互独立的持仓账户，不能在同一账户中混放；每个持仓账户必须绑定组合内同币种的 Cash 账户，用于交易和现金事件结算。
+
+持仓账户应按“大类 × 币种”分开，例如 CNY Security、HKD Option、USD FCN。Cash 则按真实资金池和币种建立：如果三类持仓实际上共用同一个券商现金余额，可以共同绑定一个同币种 Cash；只有资金在现实中确实隔离时，才建立多个 Cash 账户。系统不会为了形式上的分类重复计算现金。
 
 页面左侧是账户目录，右侧是所选账户工作区。账户价值、现金余额、持仓市值和待交收余额始终显示在顶部；下方视图分开处理：
 
@@ -215,19 +221,20 @@ Accounts 管理组合内账户。账户类型通常包括证券账户和现金/�
 账户关键字段：
 
 - account name：账户名称。
-- account type：账户类型。
+- account category：`Cash`、`Security`、`FCN` 或 `Option`。
 - currency：账户币种。
 - institution：机构或平台。
-- default settlement cash account：证券账户对应的默认结算现金账户。
+- default settlement cash account：持仓账户对应的同币种结算 Cash 账户。
 - cost basis method：成本法，支持 `fifo` 和 `moving_average`。
-- allowed instrument types：账户允许持有的资产类型。
 - status：账户状态。
+
+账户已有交易或衍生品合约后不能更改 category；需要调整时应创建正确类别的账户并按事实迁移。账户币种在创建后固定，避免历史现金、成本、NAV 和风险换算口径发生漂移。
 
 成本法影响成本、已实现/未实现盈亏和 lot 展示，不影响 TWR 绩效口径。修改成本法前应确认历史交易是否需要重算。
 
 ### 6.3 Transactions
 
-Transactions 是组合事实入口。新增时先选 `Security`、`Derivative` 或 `Cash & Operations`，再从该类别自己的动作列表选择交易；不同资产类别不会共用一张混杂的动作菜单。Derivative 还需先选 Option 或 FCN。确认账户、资产、币种、trade date、settlement date、数量、价格、费用和税费后保存，系统再生成 ledger postings，并影响持仓、现金、成本和组合快照。
+Transactions 是组合事实入口。新增时先选 `Security`、`Derivative` 或 `Cash & Operations`，再从该类别自己的动作列表选择交易；不同资产类别不会共用一张混杂的动作菜单。Derivative 还需先选 Option 或 FCN。确认账户、资产、trade date、settlement date、数量、价格、费用和税费后保存；币种由所选账户确定，结算现金账户必须同币种。系统随后生成 ledger postings，并影响持仓、现金、成本和组合快照。
 
 日期用途不同：证券头寸通常在 trade date 生效，结算现金在 settlement date 生效；dividend / coupon 可在 entitlement date 确认收益；deposit / withdrawal 在实际收付日进入 TWR 外部现金流。页面会分别展示这些日期，不能为了让绩效落到预期日期而改写另一种日期。
 
@@ -262,6 +269,8 @@ FCN 与期权使用 Portfolio 本地合约，不从 Platform instrument 列表�
 
 费用应选择可证明的 fee category；来源无法分类时保留 `Unknown`，不要猜测。重复提交会通过 idempotency key 去重；若页面提示记录版本冲突，说明事实已在别处更新，应刷新后重新核对，不能覆盖较新版本。
 
+页面右上角固定为 `Export / Import / Template / Record Transaction` 四个操作。Export 和 Template 都可选 CSV 或 Excel；Export 始终包含组合的全部交易命令，不受当前筛选影响，导出的任一格式都可再次 Import。Excel 文件使用 `Transactions` 工作表。Import 会先显示逐行和整批校验结果，只有全部通过后才能原子写入；CSV 与 Excel 使用同一字段、账户/币种规则、仓位校验和 preview digest。不要把数据库行 ID、内部 transfer legs 或页面筛选结果另做成第二种导入格式。
+
 内部转账用于组合内账户之间移动现金或持仓。现金转账填写金额；持仓转账填写 instrument、quantity，必要时填写 transferred cost basis。内部转账会生成 transfer in/out 配对记录，不应手工分别录入两边。
 
 删除交易会影响由该交易派生的现金、持仓、成本和绩效。删除内部转账配对时，系统会按 transfer group 处理对应记录。删除前应确认该交易不是后续复盘口径的一部分。
@@ -279,7 +288,7 @@ Holdings 的指标分成两种主要口径：
 
 FCN 和 long option 在已记录事件之间按 transaction cost carrying；short option 以剩余 premium liability 进入 NAV。它们不接收实时行情，不计算日常未实现盈亏、协方差、Risk Budget 或 Research 序列；相关现金、费用、coupon 和已实现盈亏仍完整进入组合 NAV 与经营绩效。市场风险收益链会把衍生品现金结果、FCN coupon 和衍生品费用从风险收益分子中剔除，并把衍生品资本与本币现金一样保留在总 NAV 分母中，作为 0-return capital。
 
-主表始终分为 `Securities`、`Derivatives`、`Cash & Settlement` 三个固定区段。`Group By` 由底层限定为只对 Securities 做 taxonomy、instrument type、currency 等二级分组；衍生品与现金不分类，Taxonomy 列显示 `N/A`。导出始终包含 `Category`，启用证券分组时才增加 `Group`。
+主表始终分为 `Securities`、`Derivatives`、`Cash & Settlement` 三个固定区段。`Group By` 由底层限定为只对 Securities 做 taxonomy、instrument type、currency 等二级分组；衍生品与现金不分类，Taxonomy 列显示 `N/A`。CSV/Excel 导出始终包含当前筛选和排序后的全量结果、`Category`、各级 subtotal 与 `Portfolio Total`；启用证券分组时才增加 `Group`。这是当前持仓分析文件，不是交易导入文件。
 
 Group、Non-cash subtotal 和 `Portfolio Total` 仍然是**当前持仓篮子**：金额加总、比例用组级分子分母重算；Return 用当前 base-market-value 权重合成；Vol / Drawdown 用内部连续、起止完全一致且尾部仍新鲜的共同历史区间先生成当前权重篮子路径再算。Group 与 subtotal 使用各自篮子净市值分母，`Portfolio Total` 使用 total NAV；衍生品与本币现金在所在 scope 内按 0 return 保留。Forward RC 统一使用 total-NAV 权重，并加总相对于同一组合方差的贡献。非本币现金仍需要兑本币 FX 收益。当前成员收益或市值覆盖不足、return currency 无法统一、共同路径中间缺段或整条路径已经陈旧时显示 `—`，不剔除缺失成员后重新归一。Holding Since、Quantity、Avg Cost、Quote、Accounts、Chart、Coverage 和 Held Max DD 等没有稳定分组含义的字段只在 instrument row 展示。
 
@@ -324,6 +333,8 @@ Performance 用于真实组合区间复盘。核心口径是日频经营 TWR、�
 - Entries / drilldown：追踪计算条目。
 
 期间工具栏提供 Latest、Reset 以及 MTD、QTD、YTD、1Y、SI 快捷项。一次选择会同时作用于 scorecard、chart、Calculation 和 Groups；切换期间后无需在各区块重复设置。少于一年仍可看 period TWR，但 annualized TWR/MWR 和 Calmar 显示不可用。XIRR 只有唯一有效解时才显示；无解、多解或现金流非法会显示对应原因，不显示 0。
+
+Calculation 的 Download 可选 CSV 或 Excel，内容严格对应当前 requested/effective 区间、分组、排序和可见列，并在文件名中保留组合、日期和分组口径。它是绩效计算分析文件，不可导入 Transactions，也不会改写任何组合事实。
 
 Performance 反映真实历史组合，不是当前权重假设。若与 Risk 或 Research 结果不同，先确认三者口径：Performance 是历史事实，Risk 是当前持仓风险，Research 是规划求解和假设回测。
 

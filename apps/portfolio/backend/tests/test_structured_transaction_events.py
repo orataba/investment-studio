@@ -29,6 +29,30 @@ from portfolio_app.services.transaction_csv import (
 )
 
 
+def _create_holding_account(
+    client,
+    *,
+    account_name: str,
+    account_category: str,
+    settlement_cash_account_id: str = "cash-usd-main",
+) -> str:
+    response = client.post(
+        "/api/portfolios/portfolio-ops/accounts",
+        json={
+            "account_name": account_name,
+            "account_category": account_category,
+            "currency": "USD",
+            "institution": "Test Broker",
+            "default_settlement_cash_account_id": settlement_cash_account_id,
+            "cost_basis_method": "fifo",
+            "opened_at": "2026-01-01",
+            "status": "active",
+        },
+    )
+    assert response.status_code == 200, response.json()
+    return str(response.json()["account_id"])
+
+
 def _instrument_ref(
     instrument_id: str,
     instrument_type: str,
@@ -268,6 +292,7 @@ def test_derivative_opening_balance_establishes_coupon_entitlement() -> None:
         {
             "account_id": "broker",
             "account_type": "securities_account",
+            "account_category": "security",
             "cost_basis_method": "fifo",
         }
     ]
@@ -314,6 +339,7 @@ def test_simulated_stock_fund_option_and_fcn_chain_uses_independent_facts() -> N
         {
             "account_id": "broker",
             "account_type": "securities_account",
+            "account_category": "security",
             "cost_basis_method": "fifo",
         }
     ]
@@ -497,6 +523,7 @@ def test_event_valued_fcn_is_carried_at_remaining_cost_without_quote() -> None:
         {
             "account_id": "broker",
             "account_type": "securities_account",
+            "account_category": "security",
             "cost_basis_method": "fifo",
         }
     ]
@@ -557,12 +584,14 @@ def test_event_valued_fcn_daily_holding_uses_cost_without_market_lookup(
             "account_id": "cash",
             "account_name": "Cash",
             "account_type": "deposit_account",
+            "account_category": "cash",
             "currency": "USD",
         },
         {
             "account_id": "broker",
             "account_name": "Broker",
             "account_type": "securities_account",
+            "account_category": "security",
             "currency": "USD",
             "cost_basis_method": "fifo",
         },
@@ -622,6 +651,7 @@ def test_fcn_knock_in_close_and_stock_buy_are_independent_facts() -> None:
         {
             "account_id": "broker",
             "account_type": "securities_account",
+            "account_category": "security",
             "cost_basis_method": "fifo",
         }
     ]
@@ -726,6 +756,7 @@ def test_fcn_knock_in_close_and_stock_buy_are_independent_facts() -> None:
                 "portfolio_id": "portfolio",
                 "account_name": "Broker",
                 "account_type": "securities_account",
+                "account_category": "security",
                 "currency": "USD",
                 "cost_basis_method": "fifo",
             },
@@ -734,6 +765,7 @@ def test_fcn_knock_in_close_and_stock_buy_are_independent_facts() -> None:
                 "portfolio_id": "portfolio",
                 "account_name": "Cash",
                 "account_type": "deposit_account",
+                "account_category": "cash",
                 "currency": "USD",
             },
         },
@@ -780,12 +812,14 @@ def test_independent_stock_buy_after_fcn_knock_in_requires_stock_quote(
             "account_id": "cash",
             "account_name": "Cash",
             "account_type": "deposit_account",
+            "account_category": "cash",
             "currency": "USD",
         },
         {
             "account_id": "broker",
             "account_name": "Broker",
             "account_type": "securities_account",
+            "account_category": "security",
             "currency": "USD",
             "cost_basis_method": "fifo",
         },
@@ -903,12 +937,14 @@ def test_independent_fcn_close_and_stock_buy_reconcile_to_nav(
             "account_id": "cash",
             "account_name": "Cash",
             "account_type": "deposit_account",
+            "account_category": "cash",
             "currency": "USD",
         },
         {
             "account_id": "broker",
             "account_name": "Broker",
             "account_type": "securities_account",
+            "account_category": "security",
             "currency": "USD",
             "cost_basis_method": "fifo",
         },
@@ -1027,6 +1063,7 @@ def test_physical_long_option_delivery_is_recorded_as_cash_settlement_and_indepe
         {
             "account_id": "broker",
             "account_type": "securities_account",
+            "account_category": "security",
             "cost_basis_method": "fifo",
         }
     ]
@@ -1325,12 +1362,14 @@ def test_written_option_write_date_nav_changes_only_by_charges(
             "account_id": "cash",
             "account_name": "Cash",
             "account_type": "deposit_account",
+            "account_category": "cash",
             "currency": "USD",
         },
         {
             "account_id": "broker",
             "account_name": "Broker",
             "account_type": "securities_account",
+            "account_category": "security",
             "currency": "USD",
             "cost_basis_method": "fifo",
         },
@@ -1456,12 +1495,14 @@ def test_written_option_lifecycle_reconciles_portfolio_calculation_and_attributi
             "account_id": "cash",
             "account_name": "Cash",
             "account_type": "deposit_account",
+            "account_category": "cash",
             "currency": "USD",
         },
         {
             "account_id": "broker",
             "account_name": "Broker",
             "account_type": "securities_account",
+            "account_category": "security",
             "currency": "USD",
             "cost_basis_method": "fifo",
         },
@@ -1728,12 +1769,14 @@ def test_market_risk_return_excludes_long_option_cash_settlement_pnl(
             "account_id": "cash",
             "account_name": "Cash",
             "account_type": "deposit_account",
+            "account_category": "cash",
             "currency": "USD",
         },
         {
             "account_id": "broker",
             "account_name": "Broker",
             "account_type": "securities_account",
+            "account_category": "security",
             "currency": "USD",
             "cost_basis_method": "fifo",
         },
@@ -1869,12 +1912,14 @@ def test_delayed_option_cash_settlement_does_not_create_market_risk_return(
             "account_id": "cash",
             "account_name": "Cash",
             "account_type": "deposit_account",
+            "account_category": "cash",
             "currency": "USD",
         },
         {
             "account_id": "broker",
             "account_name": "Broker",
             "account_type": "securities_account",
+            "account_category": "security",
             "currency": "USD",
             "cost_basis_method": "fifo",
         },
@@ -1967,12 +2012,14 @@ def test_market_risk_return_keeps_security_income_and_excludes_fcn_coupon_and_ca
             "account_id": "cash",
             "account_name": "Cash",
             "account_type": "deposit_account",
+            "account_category": "cash",
             "currency": "USD",
         },
         {
             "account_id": "broker",
             "account_name": "Broker",
             "account_type": "securities_account",
+            "account_category": "security",
             "currency": "USD",
             "cost_basis_method": "fifo",
         },
@@ -2097,12 +2144,14 @@ def test_market_risk_is_unavailable_without_any_modeled_market_asset(
             "account_id": "cash",
             "account_name": "Cash",
             "account_type": "deposit_account",
+            "account_category": "cash",
             "currency": "USD",
         },
         {
             "account_id": "broker",
             "account_name": "Broker",
             "account_type": "securities_account",
+            "account_category": "security",
             "currency": "USD",
             "cost_basis_method": "fifo",
         },
@@ -2569,12 +2618,11 @@ def test_csv_api_imports_position_transfer_after_earlier_row_in_same_batch(clien
         "/api/portfolios/portfolio-ops/accounts",
         json={
             "account_name": "CSV Transfer Source",
-            "account_type": "securities_account",
+            "account_category": "security",
             "currency": "USD",
             "institution": "Test Broker",
             "default_settlement_cash_account_id": "cash-usd-main",
             "cost_basis_method": "fifo",
-            "allowed_instrument_types": ["equity"],
             "opened_at": "2026-05-01",
             "status": "active",
         },
@@ -2583,12 +2631,11 @@ def test_csv_api_imports_position_transfer_after_earlier_row_in_same_batch(clien
         "/api/portfolios/portfolio-ops/accounts",
         json={
             "account_name": "CSV Transfer Destination",
-            "account_type": "securities_account",
+            "account_category": "security",
             "currency": "USD",
             "institution": "Test Broker",
             "default_settlement_cash_account_id": "cash-usd-reserve",
             "cost_basis_method": "fifo",
-            "allowed_instrument_types": ["equity"],
             "opened_at": "2026-05-01",
             "status": "active",
         },
@@ -2638,11 +2685,11 @@ def test_csv_api_imports_position_transfer_after_earlier_row_in_same_batch(clien
 
 
 def test_csv_api_imports_short_option_cash_settlement_and_independent_stock_trade(client) -> None:
-    account_response = client.patch(
-        "/api/portfolios/portfolio-ops/accounts/broker-us-core",
-        json={"allowed_instrument_types": ["equity", "fund", "etf", "option"]},
+    option_account_id = _create_holding_account(
+        client,
+        account_name="CSV USD Options",
+        account_category="option",
     )
-    assert account_response.status_code == 200
 
     csv_text = "\n".join(
         [
@@ -2657,7 +2704,7 @@ def test_csv_api_imports_short_option_cash_settlement_and_independent_stock_trad
                 "external_reference"
             ),
             (
-                "option_write,2026-05-01,2026-05-01,broker-us-core,"
+                f"option_write,2026-05-01,2026-05-01,{option_account_id},"
                 "cash-usd-main,option-short-call-1,ABBV Dec 220 Call,option,"
                 "equity-us-abbv,call,2026-12-18,220,100,1,5,"
                 "500,0,0,USD,colleague_project,CALL-001-WRITE"
@@ -2718,7 +2765,7 @@ def test_csv_api_imports_short_option_cash_settlement_and_independent_stock_trad
             ),
             (
                 "lifecycle_event,option_writer_cash_settlement,2026-05-10,2026-05-10,"
-                "broker-us-core,cash-usd-main,,option-short-call-1,1,,1000,0,0,USD,colleague_project,"
+                f"{option_account_id},cash-usd-main,,option-short-call-1,1,,1000,0,0,USD,colleague_project,"
                 "CALL-001-CASH-SETTLEMENT"
             ),
             (
@@ -2800,12 +2847,17 @@ def test_direct_transaction_source_identity_conflict_returns_409(client) -> None
 
 
 def test_inline_derivative_contract_rejects_unknown_registry_underlying(client) -> None:
+    option_account_id = _create_holding_account(
+        client,
+        account_name="Unknown Underlying Options",
+        account_category="option",
+    )
     response = client.post(
         "/api/portfolios/portfolio-ops/transactions",
         json={
             "transaction_type": "buy",
             "trade_date": "2026-05-01",
-            "account_id": "broker-us-core",
+            "account_id": option_account_id,
             "settlement_cash_account_id": "cash-usd-main",
             "derivative_contract_id": "option-missing-underlying",
             "derivative_contract": {
@@ -2835,17 +2887,17 @@ def test_inline_derivative_contract_rejects_unknown_registry_underlying(client) 
 def test_derivative_contract_external_reference_is_unique_within_portfolio(
     client,
 ) -> None:
-    account_response = client.patch(
-        "/api/portfolios/portfolio-ops/accounts/broker-us-core",
-        json={"allowed_instrument_types": ["equity", "etf", "fund", "option"]},
+    option_account_id = _create_holding_account(
+        client,
+        account_name="Reference Identity Options",
+        account_category="option",
     )
-    assert account_response.status_code == 200, account_response.json()
 
     def payload(contract_id: str) -> dict[str, object]:
         return {
             "transaction_type": "buy",
             "trade_date": "2026-05-01",
-            "account_id": "broker-us-core",
+            "account_id": option_account_id,
             "settlement_cash_account_id": "cash-usd-main",
             "derivative_contract_id": contract_id,
             "derivative_contract": {
@@ -2899,17 +2951,17 @@ def test_derivative_contract_external_reference_is_unique_within_portfolio(
 
 def test_derivative_contract_identity_is_scoped_to_its_portfolio(client) -> None:
     contract_id = "option-local-identity"
-    account_response = client.patch(
-        "/api/portfolios/portfolio-ops/accounts/broker-us-core",
-        json={"allowed_instrument_types": ["equity", "etf", "fund", "option"]},
+    option_account_id = _create_holding_account(
+        client,
+        account_name="Portfolio Local Options",
+        account_category="option",
     )
-    assert account_response.status_code == 200, account_response.json()
     create_response = client.post(
         "/api/portfolios/portfolio-ops/transactions",
         json={
             "transaction_type": "buy",
             "trade_date": "2026-05-01",
-            "account_id": "broker-us-core",
+            "account_id": option_account_id,
             "settlement_cash_account_id": "cash-usd-main",
             "derivative_contract_id": contract_id,
             "derivative_contract": {
@@ -2957,19 +3009,16 @@ def test_documented_multi_asset_independent_transactions_csv_imports_cleanly(
     client,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    account_response = client.patch(
-        "/api/portfolios/portfolio-ops/accounts/broker-us-core",
-        json={
-            "allowed_instrument_types": [
-                "equity",
-                "fund",
-                "etf",
-                "fcn",
-                "option",
-            ]
-        },
+    option_account_id = _create_holding_account(
+        client,
+        account_name="Documented USD Options",
+        account_category="option",
     )
-    assert account_response.status_code == 200
+    fcn_account_id = _create_holding_account(
+        client,
+        account_name="Documented USD FCN",
+        account_category="fcn",
+    )
 
     instrument_refs = {
         "equity-demo-001": _instrument_ref(
@@ -2993,6 +3042,9 @@ def test_documented_multi_asset_independent_transactions_csv_imports_cleanly(
         / "examples"
         / "transaction_import_stock_fund_option_fcn.csv"
     ).read_text(encoding="utf-8")
+    csv_text = csv_text.replace("broker-us-option", option_account_id).replace(
+        "broker-us-fcn", fcn_account_id
+    )
 
     preview_response = client.post(
         "/api/portfolios/portfolio-ops/transactions/csv/preview",

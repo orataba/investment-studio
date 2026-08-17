@@ -15,10 +15,10 @@ import {
   getPortfolioTransactionExecutionQuote,
   getPortfolioTransactionPositionPreview,
   getPortfolioTransactionsWorkspace,
-  importPortfolioTransactionCsv,
-  portfolioTransactionCsvDownloadUrl,
-  portfolioTransactionCsvTemplateUrl,
-  previewPortfolioTransactionCsv,
+  importPortfolioTransactionFile,
+  portfolioTransactionDownloadUrl,
+  portfolioTransactionTemplateUrl,
+  previewPortfolioTransactionFile,
   reviewPortfolioInstrumentEventTask,
   type PortfolioAccountRecord,
   type PortfolioFeeCategory,
@@ -29,7 +29,8 @@ import {
   type PortfolioTransactionPositionPreviewResponse,
   type SharedInstrumentRecord,
   type PortfolioTransactionCreatePayload,
-  type PortfolioTransactionCsvPreviewResponse,
+  type PortfolioTransactionFileFormat,
+  type PortfolioTransactionFilePreviewResponse,
   type PortfolioTransactionFilters,
   type PortfolioTransactionRecord,
   type PortfolioTransactionUpdatePayload,
@@ -47,6 +48,7 @@ import {
 } from '../lib/format'
 import { useModalDialog } from '../../../../../packages/ui/src/useModalDialog'
 import ConfirmDialog from '../../../../../packages/ui/src/ConfirmDialog'
+import DownloadFormatMenu from '../../../../../packages/ui/src/DownloadFormatMenu'
 import {
   countActiveTransactionFilters,
   transactionActivityLabel,
@@ -119,13 +121,6 @@ const FEE_CATEGORIES: Array<{ value: PortfolioFeeCategory; label: string }> = [
   { value: 'other', label: 'Other' },
 ]
 
-const ACCOUNT_SCOPE_ENFORCED_TRANSACTION_TYPES = new Set([
-  'buy',
-  'option_write',
-  'dividend_reinvestment',
-  'opening_balance',
-])
-
 type TransactionEntryKind = 'security' | 'fcn' | 'option' | 'cash'
 
 const TRANSACTION_ENTRY_KINDS: Array<{
@@ -155,8 +150,6 @@ const TRANSACTION_ENTRY_KINDS: Array<{
   },
 ]
 
-const DERIVATIVE_ACCOUNT_INSTRUMENT_TYPES = new Set(['fcn', 'option'])
-
 function transactionEntryKind(
   assetDomain: TransactionAssetDomain,
   assetSubtype?: string | null,
@@ -176,29 +169,21 @@ function accountAllowsEntryKind(
   account: PortfolioAccountRecord,
   entryKind: TransactionEntryKind,
 ) {
-  if (entryKind === 'cash') {
-    return account.account_type === 'deposit_account'
-  }
-  if (account.account_type !== 'securities_account') {
-    return false
-  }
-  const allowedTypes = account.allowed_instrument_types ?? []
-  if (!allowedTypes.length) {
-    return true
-  }
-  if (entryKind === 'fcn' || entryKind === 'option') {
-    return allowedTypes.includes(entryKind)
-  }
-  return allowedTypes.some(
-    (instrumentType) => !DERIVATIVE_ACCOUNT_INSTRUMENT_TYPES.has(instrumentType),
-  )
+  return account.account_category === entryKind
+}
+
+function assetTypeAccountCategory(assetType: string): TransactionEntryKind | null {
+  const normalized = assetType.trim().toLowerCase()
+  if (normalized === 'fcn' || normalized === 'option') return normalized
+  if (['equity', 'etf', 'fund', 'other'].includes(normalized)) return 'security'
+  return null
 }
 
 type TransactionInspectorTab = 'fact' | 'postings' | 'lots' | 'history'
 
 let fallbackIdempotencySequence = 0
 
-function transactionIdempotencyKey(operation: 'create' | 'transfer' | 'csv-import') {
+function transactionIdempotencyKey(operation: 'create' | 'transfer' | 'file-import') {
   const randomId = globalThis.crypto?.randomUUID?.()
   if (randomId) {
     return `transaction-${operation}-${randomId}`
@@ -361,21 +346,15 @@ function formatCalculatedFormNumber(value: number, decimals: number) {
 function accountAllowsAssetType(
   account: PortfolioAccountRecord | null | undefined,
   assetType: string,
-  transactionType: string,
 ) {
   if (
     !account ||
-    account.account_type !== 'securities_account' ||
-    !ACCOUNT_SCOPE_ENFORCED_TRANSACTION_TYPES.has(transactionType)
+    account.account_category === 'cash'
   ) {
     return true
   }
 
-  if (!account.allowed_instrument_types?.length) {
-    return true
-  }
-
-  return account.allowed_instrument_types.includes(assetType.trim().toLowerCase())
+  return account.account_category === assetTypeAccountCategory(assetType)
 }
 
 function requiresSettlement(
@@ -432,7 +411,7 @@ function eligibleAccounts(
     transactionType === 'interest' ||
     isFxConversionTransaction(transactionType)
   ) {
-    return accounts.filter((account) => account.account_type === 'deposit_account')
+    return accounts.filter((account) => account.account_category === 'cash')
   }
 
   if (
@@ -447,15 +426,15 @@ function eligibleAccounts(
     transactionType === 'maturity_redemption' ||
     transactionType === 'lifecycle_event'
   ) {
-    return accounts.filter((account) => account.account_type === 'securities_account')
+    return accounts.filter((account) => account.account_category !== 'cash')
   }
 
   if (isTransferTransaction(transactionType)) {
     if (transferObjectType === 'cash') {
-      return accounts.filter((account) => account.account_type === 'deposit_account')
+      return accounts.filter((account) => account.account_category === 'cash')
     }
     if (transferObjectType === 'position') {
-      return accounts.filter((account) => account.account_type === 'securities_account')
+      return accounts.filter((account) => account.account_category !== 'cash')
     }
   }
 
@@ -473,7 +452,7 @@ function eligibleCounterpartyAccounts(
     const sourceCurrency = sourceAccount?.currency?.toUpperCase()
     return accounts.filter(
       (account) =>
-        account.account_type === 'deposit_account' &&
+        account.account_category === 'cash' &&
         account.account_id !== currentAccountId &&
         (!sourceCurrency || account.currency.toUpperCase() !== sourceCurrency),
     )
@@ -483,8 +462,13 @@ function eligibleCounterpartyAccounts(
     return []
   }
 
+  const sourceAccount = accounts.find((account) => account.account_id === currentAccountId)
   return eligibleAccounts(transactionType, accounts, transferObjectType).filter(
-    (account) => account.account_id !== currentAccountId,
+    (account) =>
+      account.account_id !== currentAccountId &&
+      (transferObjectType !== 'position' ||
+        !sourceAccount ||
+        account.account_category === sourceAccount.account_category),
   )
 }
 
@@ -519,7 +503,7 @@ function isSelectableInstrument(
   ) {
     return (
       supportsTransactionAssetType(transactionType, instrument.instrument_type) &&
-      accountAllowsAssetType(account, instrument.instrument_type, transactionType)
+      accountAllowsAssetType(account, instrument.instrument_type)
     )
   }
 
@@ -942,7 +926,7 @@ export default function TransactionsPage() {
   const entryKindControlRef = useRef<HTMLButtonElement | null>(null)
   const securitySearchRef = useRef<HTMLInputElement | null>(null)
   const accountSelectRef = useRef<HTMLSelectElement | null>(null)
-  const csvFileInputRef = useRef<HTMLInputElement | null>(null)
+  const transactionFileInputRef = useRef<HTMLInputElement | null>(null)
   const autoQuoteKeyRef = useRef<string | null>(null)
   const autoQuantityKeyRef = useRef<string | null>(null)
   const autoGrossDerivedRef = useRef(false)
@@ -965,13 +949,13 @@ export default function TransactionsPage() {
   const [drawerOpen, setDrawerOpen] = useState(false)
   const [editingTransactionId, setEditingTransactionId] = useState<string | null>(null)
   const [submittingTransaction, setSubmittingTransaction] = useState(false)
-  const [importingCsv, setImportingCsv] = useState(false)
-  const [pendingCsvImport, setPendingCsvImport] = useState<{
+  const [importingFile, setImportingFile] = useState(false)
+  const [pendingFileImport, setPendingFileImport] = useState<{
     fileName: string
-    csvText: string
-    preview: PortfolioTransactionCsvPreviewResponse
+    file: File
+    preview: PortfolioTransactionFilePreviewResponse
   } | null>(null)
-  const [csvImportError, setCsvImportError] = useState<string | null>(null)
+  const [fileImportError, setFileImportError] = useState<string | null>(null)
   const [pendingDeleteTransaction, setPendingDeleteTransaction] = useState<PortfolioTransactionRecord | null>(null)
   const [deletingTransaction, setDeletingTransaction] = useState(false)
   const [deleteError, setDeleteError] = useState<string | null>(null)
@@ -1245,7 +1229,6 @@ export default function TransactionsPage() {
       accountAllowsAssetType(
         selectedAccount,
         contract.contract_type,
-        form.transaction_type,
       ),
   )
   const isCreatingDerivativeContract =
@@ -2233,68 +2216,81 @@ export default function TransactionsPage() {
     }
   }
 
-  async function handleTransactionCsvFile(file: File | null) {
-    if (!file || importingCsv) {
+  function handleTransactionFileDownload(
+    kind: 'export' | 'template',
+    format: PortfolioTransactionFileFormat,
+  ) {
+    const link = document.createElement('a')
+    link.href = kind === 'export'
+      ? portfolioTransactionDownloadUrl(portfolioId, format)
+      : portfolioTransactionTemplateUrl(portfolioId, format)
+    link.download = ''
+    document.body.appendChild(link)
+    link.click()
+    link.remove()
+  }
+
+  async function handleTransactionFile(file: File | null) {
+    if (!file || importingFile) {
       return
     }
-    setImportingCsv(true)
+    setImportingFile(true)
     setLedgerError(null)
-    setCsvImportError(null)
+    setFileImportError(null)
     setNotice(null)
     try {
-      const csvText = await file.text()
-      const preview = await previewPortfolioTransactionCsv(portfolioId, csvText)
-      setPendingCsvImport({ fileName: file.name, csvText, preview })
+      const preview = await previewPortfolioTransactionFile(portfolioId, file)
+      setPendingFileImport({ fileName: file.name, file, preview })
     } catch (error) {
       setLedgerError(
-        error instanceof Error ? error.message : 'Failed to import transaction CSV.',
+        error instanceof Error ? error.message : 'Failed to read the transaction file.',
       )
     } finally {
-      setImportingCsv(false)
-      if (csvFileInputRef.current) {
-        csvFileInputRef.current.value = ''
+      setImportingFile(false)
+      if (transactionFileInputRef.current) {
+        transactionFileInputRef.current.value = ''
       }
     }
   }
 
-  async function confirmTransactionCsvImport() {
-    const pendingImport = pendingCsvImport
+  async function confirmTransactionFileImport() {
+    const pendingImport = pendingFileImport
     const targetPortfolioId = portfolioId
     if (
       !pendingImport ||
       pendingImport.preview.error_count > 0 ||
       !targetPortfolioId ||
-      importingCsv
+      importingFile
     ) {
       return
     }
-    setImportingCsv(true)
-    setCsvImportError(null)
+    setImportingFile(true)
+    setFileImportError(null)
     setLedgerError(null)
     try {
-      const imported = await importPortfolioTransactionCsv(
+      const imported = await importPortfolioTransactionFile(
         targetPortfolioId,
-        pendingImport.csvText,
+        pendingImport.file,
         pendingImport.preview.preview_digest,
-        transactionIdempotencyKey('csv-import'),
+        transactionIdempotencyKey('file-import'),
       )
       if (currentPortfolioIdRef.current !== targetPortfolioId) {
         return
       }
-      setPendingCsvImport(null)
-      setNotice(`Imported ${imported.created_count} transaction facts from CSV.`)
+      setPendingFileImport(null)
+      setNotice(`Imported ${imported.created_count} transaction facts from ${pendingImport.fileName}.`)
       await refreshTransactions(
         filters,
         imported.transactions[0]?.transaction_id ?? null,
       )
     } catch (error) {
       if (currentPortfolioIdRef.current === targetPortfolioId) {
-        setCsvImportError(
-          error instanceof Error ? error.message : 'Failed to import transaction CSV.',
+        setFileImportError(
+          error instanceof Error ? error.message : 'Failed to import the transaction file.',
         )
       }
     } finally {
-      setImportingCsv(false)
+      setImportingFile(false)
     }
   }
 
@@ -3056,38 +3052,38 @@ export default function TransactionsPage() {
             </div>
           </div>
           <div className="transaction-toolbar-actions">
-            <a
-              className="toolbar-link transaction-toolbar-button"
-              href={portfolioTransactionCsvDownloadUrl(portfolioId)}
-              download
-              title="Export all transactions as an importable CSV"
-            >
-              Export
-            </a>
+            <DownloadFormatMenu
+              buttonLabel="Export"
+              wrapperClassName="portfolio-download-menu"
+              buttonClassName="toolbar-link transaction-toolbar-button"
+              menuClassName="portfolio-download-menu-list"
+              itemClassName="portfolio-download-menu-item"
+              onSelect={(format) => handleTransactionFileDownload('export', format)}
+            />
             <button
               type="button"
               className="toolbar-link transaction-toolbar-button"
-              disabled={importingCsv || metaLoading}
-              title="Import and preview a transaction CSV"
-              onClick={() => csvFileInputRef.current?.click()}
+              disabled={importingFile || metaLoading}
+              title="Import and preview a transaction CSV or Excel file"
+              onClick={() => transactionFileInputRef.current?.click()}
             >
-              {importingCsv ? 'Validating…' : 'Import'}
+              {importingFile ? 'Validating…' : 'Import'}
             </button>
-            <a
-              className="toolbar-link transaction-toolbar-button"
-              href={portfolioTransactionCsvTemplateUrl(portfolioId)}
-              download
-              title="Download a blank transaction CSV template"
-            >
-              Template
-            </a>
+            <DownloadFormatMenu
+              buttonLabel="Template"
+              wrapperClassName="portfolio-download-menu"
+              buttonClassName="toolbar-link transaction-toolbar-button"
+              menuClassName="portfolio-download-menu-list"
+              itemClassName="portfolio-download-menu-item"
+              onSelect={(format) => handleTransactionFileDownload('template', format)}
+            />
             <input
-              ref={csvFileInputRef}
+              ref={transactionFileInputRef}
               type="file"
-              accept=".csv,text/csv"
+              accept=".csv,text/csv,.xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
               hidden
               onChange={(event) =>
-                void handleTransactionCsvFile(event.target.files?.[0] ?? null)
+                void handleTransactionFile(event.target.files?.[0] ?? null)
               }
             />
             <button
@@ -3403,7 +3399,7 @@ export default function TransactionsPage() {
                                   ? `Counterparty ${accountNameById[transaction.counterparty_account_id] || transaction.counterparty_account_id}`
                                   : transaction.settlement_cash_account
                                     ? `Settle via ${transaction.settlement_cash_account.account_name}`
-                                    : formatLabel(transaction.account.account_type)}
+                                    : formatLabel(transaction.account.account_category)}
                               </span>
                             </div>
                           </td>
@@ -4837,38 +4833,38 @@ export default function TransactionsPage() {
         </div>
       ) : null}
       <ConfirmDialog
-        open={Boolean(pendingCsvImport)}
-        title="Review Transaction CSV"
+        open={Boolean(pendingFileImport)}
+        title="Review Transaction File"
         description={
-          pendingCsvImport ? (
-            <div className="transaction-csv-preview">
+          pendingFileImport ? (
+            <div className="transaction-file-preview">
               <div>
-                <strong>{pendingCsvImport.fileName}</strong>
+                <strong>{pendingFileImport.fileName}</strong>
                 <span>
-                  {pendingCsvImport.preview.row_count} rows · {pendingCsvImport.preview.valid_count} valid ·{' '}
-                  {pendingCsvImport.preview.error_count} issues
+                  {pendingFileImport.preview.row_count} rows · {pendingFileImport.preview.valid_count} valid ·{' '}
+                  {pendingFileImport.preview.error_count} issues
                 </span>
               </div>
               <p>
-                {pendingCsvImport.preview.error_count
+                {pendingFileImport.preview.error_count
                   ? 'Nothing has been imported. Fix the issues below, then choose the file again.'
-                  : `Import ${pendingCsvImport.preview.valid_count} validated transaction fact(s)?`}
+                  : `Import ${pendingFileImport.preview.valid_count} validated transaction fact(s)?`}
               </p>
-              {pendingCsvImport.preview.batch_errors.length ? (
-                <div className="transaction-csv-preview-issues">
+              {pendingFileImport.preview.batch_errors.length ? (
+                <div className="transaction-file-preview-issues">
                   <strong>File issues</strong>
                   <ul>
-                    {pendingCsvImport.preview.batch_errors.map((error) => (
+                    {pendingFileImport.preview.batch_errors.map((error) => (
                       <li key={error}>{error}</li>
                     ))}
                   </ul>
                 </div>
               ) : null}
-              {pendingCsvImport.preview.rows.some((row) => row.errors.length) ? (
-                <div className="transaction-csv-preview-issues">
+              {pendingFileImport.preview.rows.some((row) => row.errors.length) ? (
+                <div className="transaction-file-preview-issues">
                   <strong>Row issues</strong>
                   <ul>
-                    {pendingCsvImport.preview.rows
+                    {pendingFileImport.preview.rows
                       .filter((row) => row.errors.length)
                       .slice(0, 20)
                       .map((row) => (
@@ -4879,11 +4875,11 @@ export default function TransactionsPage() {
                   </ul>
                 </div>
               ) : null}
-              {pendingCsvImport.preview.warnings.length ? (
-                <div className="transaction-csv-preview-warnings">
+              {pendingFileImport.preview.warnings.length ? (
+                <div className="transaction-file-preview-warnings">
                   <strong>Warnings</strong>
                   <ul>
-                    {pendingCsvImport.preview.warnings.map((warning) => (
+                    {pendingFileImport.preview.warnings.map((warning) => (
                       <li key={warning}>{warning}</li>
                     ))}
                   </ul>
@@ -4892,17 +4888,17 @@ export default function TransactionsPage() {
             </div>
           ) : null
         }
-        confirmLabel={`Import ${pendingCsvImport?.preview.valid_count ?? 0} Rows`}
+        confirmLabel={`Import ${pendingFileImport?.preview.valid_count ?? 0} Rows`}
         busyLabel="Importing…"
-        error={csvImportError}
-        busy={importingCsv}
-        confirmDisabled={Boolean(pendingCsvImport?.preview.error_count)}
+        error={fileImportError}
+        busy={importingFile}
+        confirmDisabled={Boolean(pendingFileImport?.preview.error_count)}
         confirmTone="primary"
         onCancel={() => {
-          setPendingCsvImport(null)
-          setCsvImportError(null)
+          setPendingFileImport(null)
+          setFileImportError(null)
         }}
-        onConfirm={confirmTransactionCsvImport}
+        onConfirm={confirmTransactionFileImport}
       />
       <ConfirmDialog
         open={Boolean(pendingDeleteTransaction)}

@@ -6,6 +6,7 @@ import {
 
 import {
   formatDecimalValue,
+  marketDataExportRows,
   marketDataToCsv,
   parseFxPairLabel,
   type PlatformInstrumentRecord,
@@ -93,6 +94,39 @@ describe('instrument registry view model', () => {
     expect(formatDecimalValue('NA')).toBe('NA')
     expect(marketDataToCsv([{ ...marketPoint, value: '1.4000000000000000' }]))
       .toContain('1.4000000000000000')
+  })
+
+  it('uses the same market-data columns for CSV and Excel and protects text cells', () => {
+    const formulaProvider = '=HYPERLINK("https://example.com")'
+    const point = { ...marketPoint, value: '-1.25000000', provider: formulaProvider }
+
+    expect(marketDataExportRows([point])).toEqual([
+      [
+        'as_of_date',
+        'metric_family',
+        'quote_basis',
+        'value',
+        'currency',
+        'price_unit',
+        'price_scale',
+        'status',
+        'provider',
+      ],
+      [
+        '2026-07-27',
+        'price',
+        'close',
+        '-1.25000000',
+        'CNY',
+        'per_unit',
+        '1',
+        'complete',
+        formulaProvider,
+      ],
+    ])
+    const csv = marketDataToCsv([point])
+    expect(csv).toContain('-1.25000000')
+    expect(csv).toContain("'=HYPERLINK")
   })
 
   it('keeps archive semantics reversible without leaking archived records to active-only views', () => {

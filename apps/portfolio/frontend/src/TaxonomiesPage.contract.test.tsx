@@ -193,6 +193,7 @@ describe('Taxonomies rendered page contract', () => {
             portfolio_id: '3',
             account_name: 'Operating Cash',
             account_type: 'deposit_account',
+            account_category: 'cash',
             currency: 'USD',
             status: 'active',
           },

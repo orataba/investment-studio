@@ -68,6 +68,7 @@ function account(
       portfolio_id: '3',
       account_name: accountId,
       account_type: accountType,
+      account_category: accountType === 'deposit_account' ? 'cash' : 'security',
       currency: 'USD',
       status: 'active',
     },

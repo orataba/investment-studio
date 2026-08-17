@@ -1,11 +1,15 @@
 from datetime import date
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from sqlalchemy.orm import Session
 
 from watchlist_app.api.contracts import InstrumentBulkResolveRequest
 from watchlist_app.db.session import get_db_session
 from watchlist_app.services.instrument_resolution import resolve_watchlist_instrument
+from watchlist_app.services.identifier_files import (
+    MAX_IDENTIFIER_FILE_BYTES,
+    parse_identifier_file,
+)
 from watchlist_app.services.shared_instrument_registry import (
     SharedInstrumentRegistryError,
     get_shared_instrument,
@@ -71,6 +75,24 @@ def resolve_shared_instrument_records(
     except SharedInstrumentRegistryError as error:
         raise HTTPException(status_code=502, detail=str(error)) from error
     return {"results": results}
+
+
+@router.post("/resolve-file")
+async def resolve_shared_instrument_file(
+    file: UploadFile = File(...),
+) -> dict[str, object]:
+    filename = file.filename
+    try:
+        content = await file.read(MAX_IDENTIFIER_FILE_BYTES + 1)
+    finally:
+        await file.close()
+    try:
+        identifiers = parse_identifier_file(filename, content)
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+    return resolve_shared_instrument_records(
+        InstrumentBulkResolveRequest(identifiers=identifiers)
+    )
 
 
 @router.get("/{instrument_id}/price-bars")

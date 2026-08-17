@@ -1869,16 +1869,18 @@ export type PortfolioAnalyticsScopePolicyUpsertPayload = {
   effective_to?: string | null
 }
 
+export type PortfolioAccountCategory = 'cash' | 'security' | 'fcn' | 'option'
+
 export type PortfolioAccountRecord = {
   account_id: string
   portfolio_id: string
   account_name: string
   account_type: string
+  account_category: PortfolioAccountCategory
   currency: string
   institution?: string | null
   default_settlement_cash_account_id?: string | null
   cost_basis_method?: 'moving_average' | 'fifo' | null
-  allowed_instrument_types?: string[] | null
   opened_at?: string | null
   closed_at?: string | null
   status: string
@@ -1891,12 +1893,11 @@ export type PortfolioAccountsResponse = {
 
 export type PortfolioAccountCreatePayload = {
   account_name: string
-  account_type: string
+  account_category: PortfolioAccountCategory
   currency: string
   institution?: string | null
   default_settlement_cash_account_id?: string | null
   cost_basis_method?: 'moving_average' | 'fifo' | null
-  allowed_instrument_types?: string[] | null
   opened_at?: string | null
   closed_at?: string | null
   status?: string
@@ -1904,10 +1905,10 @@ export type PortfolioAccountCreatePayload = {
 
 export type PortfolioAccountUpdatePayload = {
   account_name?: string | null
+  account_category?: PortfolioAccountCategory | null
   institution?: string | null
   default_settlement_cash_account_id?: string | null
   cost_basis_method?: 'moving_average' | 'fifo' | null
-  allowed_instrument_types?: string[] | null
   opened_at?: string | null
   closed_at?: string | null
   status?: string | null
@@ -2450,14 +2451,14 @@ export type PortfolioTransactionBatchResponse = {
   transactions: PortfolioTransactionRecord[]
 }
 
-export type PortfolioTransactionCsvPreviewRow = {
+export type PortfolioTransactionFilePreviewRow = {
   row_number: number
   transaction: PortfolioTransactionCreatePayload | null
   internal_transfer?: (PortfolioInternalTransferCreatePayload & { currency: string }) | null
   errors: string[]
 }
 
-export type PortfolioTransactionCsvPreviewResponse = {
+export type PortfolioTransactionFilePreviewResponse = {
   portfolio_id: string
   preview_digest: string
   headers: string[]
@@ -2466,10 +2467,10 @@ export type PortfolioTransactionCsvPreviewResponse = {
   error_count: number
   warnings: string[]
   batch_errors: string[]
-  rows: PortfolioTransactionCsvPreviewRow[]
+  rows: PortfolioTransactionFilePreviewRow[]
 }
 
-export type PortfolioTransactionCsvImportResponse = {
+export type PortfolioTransactionFileImportResponse = {
   portfolio_id: string
   preview_digest: string
   created_count: number
@@ -2539,12 +2540,13 @@ function fetchJson<T>(
     }
   }
 
+  const isFormData = typeof FormData !== 'undefined' && init?.body instanceof FormData
   const request = fetch(`${baseUrl}${path}`, {
+    ...init,
     headers: {
-      'Content-Type': 'application/json',
+      ...(isFormData ? {} : { 'Content-Type': 'application/json' }),
       ...(init?.headers || {}),
     },
-    ...init,
   }).then(async (response) => {
     if (!response.ok) {
       const body = await response.text()
@@ -3234,52 +3236,60 @@ export function createPortfolioTransaction(
   )
 }
 
-export function portfolioTransactionCsvDownloadUrl(portfolioId: string) {
-  return `${API_BASE_URL}/api/portfolios/${encodeURIComponent(portfolioId)}/transactions.csv`
-}
+export type PortfolioTransactionFileFormat = 'csv' | 'xlsx'
 
-export function portfolioTransactionCsvTemplateUrl(portfolioId: string) {
-  return `${API_BASE_URL}/api/portfolios/${encodeURIComponent(portfolioId)}/transactions/csv-template`
-}
-
-export function previewPortfolioTransactionCsv(
+export function portfolioTransactionDownloadUrl(
   portfolioId: string,
-  csvText: string,
-  defaultSourceSystem = 'portfolio_csv_upload',
+  format: PortfolioTransactionFileFormat,
 ) {
-  return fetchJson<PortfolioTransactionCsvPreviewResponse>(
+  return `${API_BASE_URL}/api/portfolios/${encodeURIComponent(portfolioId)}/transactions.${format}`
+}
+
+export function portfolioTransactionTemplateUrl(
+  portfolioId: string,
+  format: PortfolioTransactionFileFormat,
+) {
+  return `${API_BASE_URL}/api/portfolios/${encodeURIComponent(portfolioId)}/transactions/${format}-template`
+}
+
+export function previewPortfolioTransactionFile(
+  portfolioId: string,
+  file: File,
+  defaultSourceSystem = 'portfolio_file_upload',
+) {
+  const form = new FormData()
+  form.append('file', file)
+  form.append('default_source_system', defaultSourceSystem)
+  return fetchJson<PortfolioTransactionFilePreviewResponse>(
     API_BASE_URL,
-    `/api/portfolios/${portfolioId}/transactions/csv/preview`,
+    `/api/portfolios/${encodeURIComponent(portfolioId)}/transactions/files/preview`,
     {
       method: 'POST',
-      body: JSON.stringify({
-        csv_text: csvText,
-        default_source_system: defaultSourceSystem,
-      }),
+      body: form,
     },
   )
 }
 
-export function importPortfolioTransactionCsv(
+export function importPortfolioTransactionFile(
   portfolioId: string,
-  csvText: string,
+  file: File,
   previewDigest: string,
   idempotencyKey: string,
-  defaultSourceSystem = 'portfolio_csv_upload',
+  defaultSourceSystem = 'portfolio_file_upload',
 ) {
-  return fetchJson<PortfolioTransactionCsvImportResponse>(
+  const form = new FormData()
+  form.append('file', file)
+  form.append('preview_digest', previewDigest)
+  form.append('default_source_system', defaultSourceSystem)
+  return fetchJson<PortfolioTransactionFileImportResponse>(
     API_BASE_URL,
-    `/api/portfolios/${portfolioId}/transactions/csv/import`,
+    `/api/portfolios/${encodeURIComponent(portfolioId)}/transactions/files/import`,
     {
       method: 'POST',
       headers: {
         'Idempotency-Key': idempotencyKey,
       },
-      body: JSON.stringify({
-        csv_text: csvText,
-        default_source_system: defaultSourceSystem,
-        preview_digest: previewDigest,
-      }),
+      body: form,
     },
   )
 }

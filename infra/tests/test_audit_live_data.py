@@ -46,7 +46,7 @@ def test_flat_table_profile_accepts_only_final_heads(
     expected_heads = {
         "instrument_registry": "20260812_0024",
         "platform": "20260716_0002",
-        "portfolio": "20260816_0051",
+        "portfolio": "20260817_0052",
         "watchlist": "20260813_0041",
     }
     monkeypatch.setattr(
@@ -81,12 +81,13 @@ def test_flat_table_profile_accepts_only_final_heads(
 def test_audit_contract_names_cover_registry_0019(
     audit_module: ModuleType,
 ) -> None:
-    assert len(audit_module.AUDIT_CHECK_NAMES) == 34
+    assert len(audit_module.AUDIT_CHECK_NAMES) == 35
     assert "schema_identifier_contract" in audit_module.AUDIT_CHECK_NAMES
     assert "watchlist_field_identity_contract" in audit_module.AUDIT_CHECK_NAMES
     assert "watchlist_group_by_contract" in audit_module.AUDIT_CHECK_NAMES
     assert "watchlist_saved_view_field_contract" in audit_module.AUDIT_CHECK_NAMES
     assert "watchlist_taxonomy_history_contract" in audit_module.AUDIT_CHECK_NAMES
+    assert "portfolio_account_category_contract" in audit_module.AUDIT_CHECK_NAMES
     assert "derivative_registry_boundary" in audit_module.AUDIT_CHECK_NAMES
     assert (
         "portfolio_derivative_contract_integrity"
@@ -284,6 +285,7 @@ def test_twr_audit_cte_projects_daily_twr(
         query
         for query in queries
         if "portfolio.derivative_contract_record contract" in query
+        and "contract.terms_json" in query
     )
     assert "contract.terms_json::jsonb" in derivative_contract_query
     assert "? 'settlement_type'" in derivative_contract_query

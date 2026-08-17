@@ -301,12 +301,42 @@ class PortfolioInstrumentUniverseRecordModel(Base):
 class AccountRecordModel(Base):
     __tablename__ = "account_record"
     __table_args__ = (
+        CheckConstraint(
+            "account_category IN ('cash', 'security', 'fcn', 'option')",
+            name="account_category",
+        ),
+        CheckConstraint(
+            "(account_type = 'deposit_account' AND account_category = 'cash') OR "
+            "(account_type = 'securities_account' "
+            "AND account_category IN ('security', 'fcn', 'option'))",
+            name="account_type_category",
+        ),
+        CheckConstraint(
+            "(account_category = 'cash' "
+            "AND default_settlement_cash_account_id IS NULL "
+            "AND cost_basis_method IS NULL) OR "
+            "(account_category IN ('security', 'fcn', 'option') "
+            "AND default_settlement_cash_account_id IS NOT NULL "
+            "AND cost_basis_method IN ('fifo', 'moving_average'))",
+            name="account_settlement_contract",
+        ),
+        ForeignKeyConstraint(
+            ["portfolio_id", "default_settlement_cash_account_id"],
+            ["account_record.portfolio_id", "account_record.account_id"],
+            name="fk_account_default_settlement_cash_account",
+            ondelete="RESTRICT",
+        ),
         UniqueConstraint(
             "portfolio_id",
             "account_id",
             name="uq_account_record_portfolio_account_id",
         ),
-        Index("ix_account_record_portfolio_type_currency", "portfolio_id", "account_type", "currency"),
+        Index(
+            "ix_account_record_portfolio_category_currency",
+            "portfolio_id",
+            "account_category",
+            "currency",
+        ),
         Index("ix_account_record_portfolio_name", "portfolio_id", "account_name"),
     )
 
@@ -317,11 +347,11 @@ class AccountRecordModel(Base):
     )
     account_name: Mapped[str] = mapped_column(String, nullable=False)
     account_type: Mapped[str] = mapped_column(String, nullable=False)
+    account_category: Mapped[str] = mapped_column(String, nullable=False)
     currency: Mapped[str] = mapped_column(String, nullable=False)
     institution: Mapped[str | None] = mapped_column(String)
     default_settlement_cash_account_id: Mapped[str | None] = mapped_column(String)
     cost_basis_method: Mapped[str | None] = mapped_column(String)
-    allowed_instrument_types_json: Mapped[list[str] | None] = mapped_column(JSON)
     opened_at: Mapped[date | None] = mapped_column(Date)
     closed_at: Mapped[date | None] = mapped_column(Date)
     status: Mapped[str] = mapped_column(String, nullable=False, default="active")

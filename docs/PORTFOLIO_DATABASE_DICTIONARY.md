@@ -1,6 +1,6 @@
 # Portfolio database dictionary
 
-As of 2026-08-16. Verified against SQLAlchemy metadata and migration heads `instrument_registry@20260812_0024` and `portfolio@20260816_0051`.
+As of 2026-08-17. Verified against SQLAlchemy metadata and migration heads `instrument_registry@20260812_0024` and `portfolio@20260817_0052`.
 
 This file is for architecture and integration review. External systems should use the APIs documented in [`TRANSACTION_INTEGRATION.md`](TRANSACTION_INTEGRATION.md), not write these tables directly.
 
@@ -30,11 +30,13 @@ One row per portfolio.
 
 ### `portfolio.account_record`
 
-Cash and securities accounts owned by a portfolio.
+Cash and holding accounts owned by a portfolio. `account_category` is the canonical business classification: `cash`, `security`, `fcn`, or `option`.
 
 | Columns |
 |---|
-| **PK** `account_id VARCHAR`; **FK** `portfolio_id → portfolio_record.portfolio_id`; `account_name VARCHAR`; `account_type VARCHAR`; `currency VARCHAR`; `institution VARCHAR?`; `default_settlement_cash_account_id VARCHAR?`; `cost_basis_method VARCHAR?`; `allowed_instrument_types_json JSON?`; `opened_at DATE?`; `closed_at DATE?`; `status VARCHAR` |
+| **PK** `account_id VARCHAR`; **FK** `portfolio_id → portfolio_record.portfolio_id`; `account_name VARCHAR`; `account_type VARCHAR`; `account_category VARCHAR`; `currency VARCHAR`; `institution VARCHAR?`; `default_settlement_cash_account_id VARCHAR?`; `cost_basis_method VARCHAR?`; `opened_at DATE?`; `closed_at DATE?`; `status VARCHAR` |
+
+`cash` requires the internal `deposit_account` type and carries neither a settlement mapping nor a cost method. `security`, `fcn`, and `option` require the internal `securities_account` type, one cost method, and a default Cash account in the same Portfolio and currency. A holding account cannot mix the three holding categories. Security transactions, FCN contracts/events, and option contracts/events must each use their matching category. Revision `20260817_0052` split mixed legacy accounts, moved derivative contracts and their transaction facts to the matching accounts, invalidated affected derived snapshots, and removed the former instrument-scope JSON field.
 
 ### `portfolio.transaction_record`
 

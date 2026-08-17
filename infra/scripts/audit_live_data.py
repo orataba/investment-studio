@@ -32,7 +32,7 @@ from portfolio_ops_instrument_core import (  # noqa: E402
 FINAL_FLAT_TABLE_HEADS = {
     "instrument_registry": "20260812_0024",
     "platform": "20260716_0002",
-    "portfolio": "20260816_0051",
+    "portfolio": "20260817_0052",
     "watchlist": "20260813_0041",
 }
 VERSION_TABLES = {
@@ -245,6 +245,7 @@ AUDIT_CHECK_NAMES = (
     "watchlist_group_by_contract",
     "watchlist_saved_view_field_contract",
     "watchlist_taxonomy_history_contract",
+    "portfolio_account_category_contract",
     "derivative_registry_boundary",
     "portfolio_derivative_contract_integrity",
     "market_data_invalid_values",
@@ -887,6 +888,89 @@ def _run_flat_table_audit(database_url: str) -> list[AuditCheck]:
                     detail=(
                         "Watchlist field metadata and saved views must use only the "
                         "canonical instrument_name identity."
+                    ),
+                )
+            )
+            checks.append(
+                _count_check(
+                    cursor,
+                    name="portfolio_account_category_contract",
+                    query="""
+                        WITH invalid_account AS (
+                            SELECT account.portfolio_id, account.account_id
+                            FROM portfolio.account_record account
+                            LEFT JOIN portfolio.account_record cash
+                              ON cash.portfolio_id = account.portfolio_id
+                             AND cash.account_id =
+                                 account.default_settlement_cash_account_id
+                            WHERE account.account_category IS NULL
+                               OR account.account_category NOT IN (
+                                      'cash', 'security', 'fcn', 'option'
+                                  )
+                               OR (
+                                    account.account_category = 'cash'
+                                    AND (
+                                        account.account_type <> 'deposit_account'
+                                        OR account.default_settlement_cash_account_id
+                                           IS NOT NULL
+                                        OR account.cost_basis_method IS NOT NULL
+                                    )
+                                  )
+                               OR (
+                                    account.account_category IN (
+                                        'security', 'fcn', 'option'
+                                    )
+                                    AND (
+                                        account.account_type <> 'securities_account'
+                                        OR account.cost_basis_method IS NULL
+                                        OR account.cost_basis_method NOT IN (
+                                               'fifo', 'moving_average'
+                                           )
+                                        OR cash.account_category IS DISTINCT FROM 'cash'
+                                        OR upper(cash.currency)
+                                           IS DISTINCT FROM upper(account.currency)
+                                    )
+                                  )
+                        ), invalid_contract_account AS (
+                            SELECT contract.portfolio_id, contract.account_id
+                            FROM portfolio.derivative_contract_record contract
+                            JOIN portfolio.account_record account
+                              ON account.portfolio_id = contract.portfolio_id
+                             AND account.account_id = contract.account_id
+                            WHERE account.account_category <> contract.contract_type
+                        ), invalid_transaction_account AS (
+                            SELECT txn.portfolio_id, txn.account_id
+                            FROM portfolio.transaction_record txn
+                            JOIN portfolio.account_record account
+                              ON account.portfolio_id = txn.portfolio_id
+                             AND account.account_id = txn.account_id
+                            LEFT JOIN portfolio.derivative_contract_record contract
+                              ON contract.portfolio_id = txn.portfolio_id
+                             AND contract.derivative_contract_id =
+                                 txn.derivative_contract_id
+                            WHERE (
+                                    txn.instrument_id IS NOT NULL
+                                    AND account.account_category <> 'security'
+                                  )
+                               OR (
+                                    txn.derivative_contract_id IS NOT NULL
+                                    AND account.account_category
+                                        <> contract.contract_type
+                                  )
+                        )
+                        SELECT count(*)
+                        FROM (
+                            SELECT * FROM invalid_account
+                            UNION ALL
+                            SELECT * FROM invalid_contract_account
+                            UNION ALL
+                            SELECT * FROM invalid_transaction_account
+                        ) issue
+                    """,
+                    detail=(
+                        "Every account must be exactly Cash, Security, FCN, or Option; "
+                        "holding accounts must map to same-currency Cash, and every "
+                        "asset fact must use the matching account category."
                     ),
                 )
             )

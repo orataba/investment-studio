@@ -192,11 +192,24 @@ def test_transaction_record_instrument_registry_fk_is_enforced(
         )
         session.add(
             AccountRecordModel(
+                account_id="account-fk-cash",
+                portfolio_id=portfolio_id,
+                account_name="Constraint Verification Cash",
+                account_type="deposit_account",
+                account_category="cash",
+                currency="USD",
+                status="active",
+            )
+        )
+        session.add(
+            AccountRecordModel(
                 account_id="account-fk-valid",
                 portfolio_id=portfolio_id,
                 account_name="Constraint Verification Account",
                 account_type="securities_account",
+                account_category="security",
                 currency="USD",
+                default_settlement_cash_account_id="account-fk-cash",
                 cost_basis_method="fifo",
                 status="active",
             )

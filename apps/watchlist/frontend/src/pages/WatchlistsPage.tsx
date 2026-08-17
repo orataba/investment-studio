@@ -25,7 +25,7 @@ import {
   getWatchlistDetail,
   getWatchlists,
   moveWatchlistItems,
-  resolveSharedInstrumentsBulk,
+  resolveSharedInstrumentsFile,
   updateInstrumentTaxonomy,
   updateInstrumentAttributes,
   updateWatchlistView,
@@ -625,9 +625,24 @@ function watchlistExportCell(value: unknown): TableCell {
   return String(value)
 }
 
-function downloadWatchlistRows(columns: string[], rows: Array<Record<string, unknown>>, format: TableExportFormat) {
+function fileNameSlug(value: string) {
+  return value
+    .normalize('NFKC')
+    .trim()
+    .replace(/[\\/:*?"<>|]+/g, '-')
+    .replace(/\s+/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/^-|-$/g, '') || 'view'
+}
+
+function downloadWatchlistRows(
+  filenameBase: string,
+  columns: string[],
+  rows: Array<Record<string, unknown>>,
+  format: TableExportFormat,
+) {
   downloadTable(
-    'watchlist-export',
+    filenameBase,
     [
       columns,
       ...rows.map((row) =>
@@ -637,73 +652,6 @@ function downloadWatchlistRows(columns: string[], rows: Array<Record<string, unk
     format,
     'Watchlist',
   )
-}
-
-function parseDelimitedRow(line: string, delimiter: string) {
-  const cells: string[] = []
-  let current = ''
-  let inQuotes = false
-
-  for (let index = 0; index < line.length; index += 1) {
-    const char = line[index]
-    const next = line[index + 1]
-
-    if (char === '"') {
-      if (inQuotes && next === '"') {
-        current += '"'
-        index += 1
-      } else {
-        inQuotes = !inQuotes
-      }
-      continue
-    }
-
-    if (char === delimiter && !inQuotes) {
-      cells.push(current.trim())
-      current = ''
-      continue
-    }
-
-    current += char
-  }
-
-  cells.push(current.trim())
-  return cells
-}
-
-function parseBatchInstrumentFile(text: string) {
-  const lines = text
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter(Boolean)
-
-  if (!lines.length) {
-    return []
-  }
-
-  const delimiter = lines.some((line) => line.includes('\t')) ? '\t' : ','
-  const parsedRows = lines.map((line) => parseDelimitedRow(line, delimiter))
-  const header = parsedRows[0].map((cell) => cell.trim().toLowerCase())
-  const hasHeader =
-    header.includes('ticker') ||
-    header.includes('ticker / isin') ||
-    header.includes('isin') ||
-    header.includes('identifier')
-  const identifierIndex = hasHeader
-    ? Math.max(
-        header.findIndex((cell) => cell === 'ticker'),
-        header.findIndex((cell) => cell === 'ticker / isin'),
-        header.findIndex((cell) => cell === 'isin'),
-        header.findIndex((cell) => cell === 'identifier'),
-      )
-    : 0
-  const dataRows = hasHeader ? parsedRows.slice(1) : parsedRows
-
-  return dataRows
-    .map((cells) => ({
-      identifier: (cells[identifierIndex] || '').trim(),
-    }))
-    .filter((row) => row.identifier)
 }
 
 function primarySharedIdentifier(instrument: SharedInstrumentRecord) {
@@ -1271,14 +1219,8 @@ export default function WatchlistsPage() {
     setNotice(null)
 
     try {
-      const text = await file.text()
-      const rows = parseBatchInstrumentFile(text)
-      if (!rows.length) {
-        throw new Error('No valid rows found. Expected an Identifier / Ticker / ISIN column.')
-      }
-
-      const identifiers = [...new Set(rows.map((row) => row.identifier))]
-      const resolution = await resolveSharedInstrumentsBulk(identifiers)
+      const resolution = await resolveSharedInstrumentsFile(file)
+      const identifierCount = resolution.results.length
       const missingIdentifiers = resolution.results
         .filter((result) => result.status === 'not_found' || !result.instrument)
         .map((result) => result.identifier)
@@ -1321,11 +1263,11 @@ export default function WatchlistsPage() {
       await refreshWatchlistDetail(undefined, sourceWatchlistId)
       setReloadToken(Date.now())
       setModalKind(null)
-      const skippedCount = Math.max(identifiers.length - addResult.accepted_count, 0)
+      const skippedCount = Math.max(identifierCount - addResult.accepted_count, 0)
       setNotice(
         skippedCount > 0
-          ? `Processed ${rows.length} rows. Added ${addResult.accepted_count}; ${skippedCount} were duplicate rows or already existed in this watchlist.`
-          : `Processed ${rows.length} rows. Added ${addResult.accepted_count} from shared registry.`,
+          ? `Processed ${identifierCount} unique identifiers. Added ${addResult.accepted_count}; ${skippedCount} already existed in this watchlist.`
+          : `Processed ${identifierCount} unique identifiers. Added ${addResult.accepted_count} from shared registry.`,
       )
     } catch (batchError) {
       setModalError(batchError instanceof Error ? batchError.message : 'Failed to add instruments from file.')
@@ -2356,6 +2298,7 @@ export default function WatchlistsPage() {
         ? ['metric_as_of_date', 'metric_return_kind', 'metric_quote_basis', 'metric_series_type']
         : []
       downloadWatchlistRows(
+        `watchlist-${fileNameSlug(activeWatchlist?.name || watchlistDetail?.name || watchlistId)}-${fileNameSlug(activeView?.name || 'default')}`,
         [...new Set(['instrument_id', ...visibleColumns, ...semanticColumns])],
         exportRows,
         format,
@@ -3987,13 +3930,14 @@ export default function WatchlistsPage() {
               <input
                 ref={batchFileInputRef}
                 type="file"
-                accept=".csv,.tsv,.txt"
+                accept=".csv,.tsv,.txt,.xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                 className="watchlists-hidden-file-input"
                 onChange={(event) => void handleBatchAddFileChange(event)}
               />
               <button
                 type="button"
                 disabled={isBatchAdding}
+                title="Add identifiers from CSV, TSV, text, or Excel"
                 onClick={() => batchFileInputRef.current?.click()}
               >
                 {isBatchAdding ? 'Processing File...' : 'Add From File'}

@@ -519,10 +519,10 @@ def _canonical_export_records(
     return [item[2] for item in sorted(ordered_commands, key=lambda item: (item[0], item[1]))]
 
 
-def render_transaction_csv(records: Iterable[dict[str, object]]) -> str:
-    output = StringIO(newline="")
-    writer = csv.DictWriter(output, fieldnames=list(IMPORT_COLUMNS), lineterminator="\r\n")
-    writer.writeheader()
+def transaction_export_rows(
+    records: Iterable[dict[str, object]],
+) -> list[dict[str, object]]:
+    rows: list[dict[str, object]] = []
     for record in _canonical_export_records(records):
         derivative_contract = (
             record.get("derivative_contract")
@@ -595,8 +595,19 @@ def render_transaction_csv(records: Iterable[dict[str, object]]) -> str:
                 value = _source_value(record, column)
             if value is None:
                 value = ""
-            row[column] = _sanitize_cell(value)
-        writer.writerow(row)
+            row[column] = value
+        rows.append(row)
+    return rows
+
+
+def render_transaction_csv(records: Iterable[dict[str, object]]) -> str:
+    output = StringIO(newline="")
+    writer = csv.DictWriter(output, fieldnames=list(IMPORT_COLUMNS), lineterminator="\r\n")
+    writer.writeheader()
+    for row in transaction_export_rows(records):
+        writer.writerow(
+            {column: _sanitize_cell(row.get(column, "")) for column in IMPORT_COLUMNS}
+        )
     return "\ufeff" + output.getvalue()
 
 
