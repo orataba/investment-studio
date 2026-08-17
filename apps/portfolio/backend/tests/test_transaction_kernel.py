@@ -130,6 +130,30 @@ def test_transaction_asset_domain_is_derived_and_filterable(client):
         assert payload["transactions"][0]["asset_subtype"] == asset_subtype
         assert payload["summary"][summary_field] == 1
 
+    option_response = client.get(
+        "/api/portfolios/portfolio-ops/transactions",
+        params={
+            "asset_domain": "derivative",
+            "asset_subtype": "option",
+            "start_date": "2026-08-01",
+            "end_date": "2026-08-03",
+        },
+    )
+    assert option_response.status_code == 200
+    option_payload = option_response.json()
+    assert [item["derivative_contract_id"] for item in option_payload["transactions"]] == [
+        "domain-option"
+    ]
+    assert option_payload["summary"]["option_transactions"] == 1
+    assert option_payload["summary"]["fcn_transactions"] == 0
+
+    workspace_response = client.get(
+        "/api/portfolios/portfolio-ops/transactions/workspace",
+        params={"asset_domain": "derivative", "asset_subtype": "option"},
+    )
+    assert workspace_response.status_code == 200
+    assert "domain-option" in workspace_response.json()["position_reference_ids"]
+
     invalid_response = client.get(
         "/api/portfolios/portfolio-ops/transactions",
         params={"asset_domain": "mixed"},

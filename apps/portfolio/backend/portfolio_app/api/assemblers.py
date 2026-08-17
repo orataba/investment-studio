@@ -226,6 +226,18 @@ def summarize_transactions(records: list[dict[str, object]]) -> TransactionListS
         derivative_transactions=sum(
             1 for item in records if resolve_transaction_asset_domain(item) == "derivative"
         ),
+        fcn_transactions=sum(
+            1
+            for item in records
+            if resolve_transaction_asset_domain(item) == "derivative"
+            and resolve_transaction_asset_subtype(item) == "fcn"
+        ),
+        option_transactions=sum(
+            1
+            for item in records
+            if resolve_transaction_asset_domain(item) == "derivative"
+            and resolve_transaction_asset_subtype(item) == "option"
+        ),
         cash_transactions=sum(
             1 for item in records if resolve_transaction_asset_domain(item) == "cash"
         ),

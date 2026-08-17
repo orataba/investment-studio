@@ -1,76 +1,8 @@
-import type { TableCell } from '../../../../../packages/ui/src/tableExport'
-
 import type {
   PortfolioOptionAction,
   PortfolioTransactionChangeLogRecord,
-  PortfolioTransactionRecord,
 } from './api'
 import { optionActionLabel, resolveOptionAction } from './optionActions'
-
-export const TRANSACTION_EXPORT_HEADERS: TableCell[] = [
-  'Transaction ID',
-  'Trade Date',
-  'Trade Time',
-  'Timezone',
-  'Settlement Date',
-  'Position Effective Date',
-  'Economic Date',
-  'External Flow Date',
-  'Type',
-  'Flow Scope',
-  'Account',
-  'Asset Domain',
-  'Asset Type',
-  'Asset ID',
-  'Asset Name',
-  'Quantity',
-  'Price',
-  'Gross Amount',
-  'Fees',
-  'Fee Category',
-  'Taxes',
-  'Net Cash Effect',
-  'Currency',
-  'Note',
-]
-
-export function buildTransactionExportRows(transactions: PortfolioTransactionRecord[]): TableCell[][] {
-  return [
-    TRANSACTION_EXPORT_HEADERS,
-    ...transactions.map((transaction) => [
-      transaction.transaction_id,
-      transaction.trade_date,
-      transaction.trade_time,
-      transaction.trade_timezone,
-      transaction.settlement_date,
-      transaction.position_effective_date ?? '',
-      transaction.economic_date,
-      transaction.external_flow_date ?? '',
-      transactionActivityLabel(
-        transaction.transaction_type,
-        transaction.asset_subtype,
-        transaction.option_action,
-      ),
-      transaction.flow_scope,
-      transaction.account.account_name,
-      transaction.asset_domain,
-      transaction.asset_subtype ?? '',
-      transaction.instrument_id ?? transaction.derivative_contract_id ?? '',
-      transaction.instrument_ref?.instrument_name ??
-        transaction.derivative_contract?.contract_name ??
-        '',
-      transaction.quantity,
-      transaction.price,
-      transaction.gross_amount,
-      transaction.fees,
-      transaction.fee_category,
-      transaction.taxes,
-      transaction.net_cash_effect,
-      transaction.currency,
-      transaction.note ?? '',
-    ]),
-  ]
-}
 
 export function countActiveTransactionFilters(filters: {
   account_id?: string

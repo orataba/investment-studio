@@ -7,8 +7,8 @@ External projects write transactions through the Portfolio HTTP API, not directl
 - Single fact: `POST /api/portfolios/{portfolio_id}/transactions`
 - CSV preview: `POST /api/portfolios/{portfolio_id}/transactions/csv/preview`
 - CSV import: `POST /api/portfolios/{portfolio_id}/transactions/csv/import`
-- CSV template: `GET /api/portfolios/{portfolio_id}/transactions/csv-template`
-- CSV download: `GET /api/portfolios/{portfolio_id}/transactions.csv`
+- Blank import template: `GET /api/portfolios/{portfolio_id}/transactions/csv-template`
+- Importable all-transaction export: `GET /api/portfolios/{portfolio_id}/transactions.csv`
 
 Send a unique `Idempotency-Key` header with writes. An upstream project should also send `source_system` and a stable `external_reference`; that pair is unique inside a portfolio.
 
@@ -101,12 +101,30 @@ The first FCN transaction creates a Portfolio-local contract. Master terms conta
 
 ## CSV fields
 
+The Transactions workspace uses one canonical CSV schema:
+
+| Action | Scope | Result |
+|---|---|---|
+| Export All Transactions | every current transaction in the portfolio | populated canonical CSV accepted by Import CSV |
+| Blank CSV Template | canonical headers with no rows | starting point for manual batch entry |
+| Import CSV | either of the files above after review or editing | atomic preview and batch creation |
+
+The CSV represents transaction commands, not database rows. It therefore excludes transaction IDs,
+row versions, change history, resolved timestamps, and internal pair IDs. Ordinary transactions use
+their normal `transaction_type`. One internal transfer is exported as one
+`transaction_type=internal_transfer` row with `transfer_object_type`, `from_account_id`, and
+`to_account_id`; import regenerates the atomic `transfer_out` / `transfer_in` pair. Persisted legs are
+not accepted as CSV input.
+
 Required columns are `transaction_type`, `trade_date`, `account_id`, `gross_amount`, and `currency`. The template also contains:
 
-`lifecycle_event_type`, `trade_time`, `settlement_date`, `position_effective_date`, `entitlement_date`, `acquisition_date`, `settlement_cash_account_id`, `instrument_id`, `derivative_contract_id`, derivative definition/term columns, `quantity`, `price`, `counter_amount`, `fx_rate`, `fees`, `fee_category`, `taxes`, `counterparty_account_id`, `source_system`, `external_reference`, `note`.
+`lifecycle_event_type`, `trade_time`, `settlement_date`, `position_effective_date`, `entitlement_date`, `acquisition_date`, `transfer_object_type`, `from_account_id`, `to_account_id`, `settlement_cash_account_id`, `instrument_id`, `derivative_contract_id`, derivative definition/term columns, `quantity`, `price`, `counter_amount`, `fx_rate`, `fees`, `fee_category`, `taxes`, `counterparty_account_id`, `source_system`, `external_reference`, `note`.
 
 For a new derivative contract, place its definition on the first CSV row. FCN rows use `fcn_annual_coupon_rate_pct`, `fcn_final_observation_date`, and `fcn_underlyings_json` for the per-underlying term array. Later rows leave the definition columns blank and keep only `derivative_contract_id`. A row may use `instrument_id` or `derivative_contract_id`, never both.
 
-Downloads add read-only `transaction_id`, `row_version`, `created_at`, derived `asset_domain` / `asset_subtype`, and derived `option_action`. CSV preview validates the complete candidate history; import is all-or-nothing and requires the unchanged `preview_digest` returned by preview.
+CSV preview validates the complete candidate history against the target portfolio's accounts,
+instruments, contracts, currencies, and existing positions. Import is all-or-nothing and requires the
+unchanged `preview_digest` returned by preview. Database backup and transaction change history remain
+separate operational concerns rather than a second transaction CSV format.
 
 See [the mixed stock, fund, option, and FCN example](examples/transaction_import_stock_fund_option_fcn.csv). Database ownership and fields are documented in [PORTFOLIO_DATABASE_DICTIONARY.md](PORTFOLIO_DATABASE_DICTIONARY.md).

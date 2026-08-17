@@ -14,6 +14,7 @@ from portfolio_app.api.contracts import (
     FCNContractTerms,
     OptionContractTerms,
     TransactionCreateRequest,
+    TransactionCsvInternalTransferRequest,
 )
 
 
@@ -29,6 +30,9 @@ IMPORT_COLUMNS = (
     "position_effective_date",
     "entitlement_date",
     "acquisition_date",
+    "transfer_object_type",
+    "from_account_id",
+    "to_account_id",
     "account_id",
     "settlement_cash_account_id",
     "instrument_id",
@@ -63,19 +67,11 @@ IMPORT_COLUMNS = (
     "external_reference",
     "note",
 )
-EXPORT_ONLY_COLUMNS = (
-    "transaction_id",
-    "row_version",
-    "created_at",
-    "asset_domain",
-    "asset_subtype",
-    # Derived read-only semantic; imports use the persisted transaction_type
-    # and the backend resolver remains authoritative.
-    "option_action",
-)
-EXPORT_COLUMNS = (*EXPORT_ONLY_COLUMNS, *IMPORT_COLUMNS)
 REQUIRED_COLUMNS = frozenset(
     {"transaction_type", "trade_date", "account_id", "gross_amount", "currency"}
+)
+TRANSFER_COMMAND_COLUMNS = frozenset(
+    {"transfer_object_type", "from_account_id", "to_account_id"}
 )
 NUMERIC_SOURCE_FIELDS = {
     "quantity": "source_quantity",
@@ -128,12 +124,34 @@ FCN_TERM_COLUMNS = frozenset(
         "fcn_underlyings_json",
     }
 )
+INTERNAL_TRANSFER_FORBIDDEN_COLUMNS = frozenset(
+    {
+        "lifecycle_event_type",
+        "position_effective_date",
+        "entitlement_date",
+        "acquisition_date",
+        "account_id",
+        "settlement_cash_account_id",
+        "derivative_contract_id",
+        *DERIVATIVE_DEFINITION_COLUMNS,
+        "price",
+        "counter_amount",
+        "fx_rate",
+        "fees",
+        "fee_category",
+        "taxes",
+        "counterparty_account_id",
+        "source_system",
+        "external_reference",
+    }
+)
 
 
 @dataclass(frozen=True)
 class ParsedTransactionCsvRow:
     row_number: int
     transaction: TransactionCreateRequest | None
+    internal_transfer: TransactionCsvInternalTransferRequest | None
     errors: tuple[str, ...]
 
 
@@ -278,7 +296,7 @@ def parse_transaction_csv(
         raise ValueError("CSV header contains a blank column name.")
     if len(headers) != len(set(headers)):
         raise ValueError("CSV header contains duplicate column names.")
-    unknown = sorted(set(headers) - set(EXPORT_COLUMNS))
+    unknown = sorted(set(headers) - set(IMPORT_COLUMNS))
     if unknown:
         raise ValueError("Unsupported CSV columns: " + ", ".join(unknown) + ".")
     missing = sorted(REQUIRED_COLUMNS - set(headers))
@@ -294,6 +312,7 @@ def parse_transaction_csv(
                 ParsedTransactionCsvRow(
                     row_number=row_number,
                     transaction=None,
+                    internal_transfer=None,
                     errors=("Row contains more values than the CSV header.",),
                 )
             )
@@ -307,23 +326,69 @@ def parse_transaction_csv(
                 continue
             normalized = _desanitize_cell(str(raw_row.get(column) or "").strip())
             values[column] = normalized if normalized else None
-        if not values.get("source_system") and default_source_system:
-            values["source_system"] = default_source_system.strip() or None
-        if values.get("fees") is None:
-            values["fees"] = "0"
-        if values.get("taxes") is None:
-            values["taxes"] = "0"
-        if values.get("fee_category") is None:
-            values["fee_category"] = "unknown"
         try:
-            derivative_contract = _build_derivative_contract(values)
-            transaction_values = {
-                key: value
-                for key, value in values.items()
-                if key not in DERIVATIVE_DEFINITION_COLUMNS
-            }
-            transaction_values["derivative_contract"] = derivative_contract
-            transaction = TransactionCreateRequest.model_validate(transaction_values)
+            transaction_type = str(values.get("transaction_type") or "").strip()
+            if transaction_type in {"transfer_in", "transfer_out"}:
+                raise ValueError(
+                    "Import internal transfers as one internal_transfer command, not as "
+                    "system-generated transfer_in or transfer_out legs."
+                )
+            if transaction_type == "internal_transfer":
+                unexpected = sorted(
+                    column
+                    for column in INTERNAL_TRANSFER_FORBIDDEN_COLUMNS
+                    if values.get(column) is not None
+                )
+                if unexpected:
+                    raise ValueError(
+                        "internal_transfer rows must not carry ordinary transaction columns: "
+                        + ", ".join(unexpected)
+                        + "."
+                    )
+                internal_transfer = TransactionCsvInternalTransferRequest.model_validate(
+                    {
+                        "trade_date": values.get("trade_date"),
+                        "trade_time": values.get("trade_time"),
+                        "settlement_date": values.get("settlement_date"),
+                        "transfer_object_type": values.get("transfer_object_type"),
+                        "from_account_id": values.get("from_account_id"),
+                        "to_account_id": values.get("to_account_id"),
+                        "instrument_id": values.get("instrument_id"),
+                        "quantity": values.get("quantity"),
+                        "gross_amount": values.get("gross_amount"),
+                        "currency": values.get("currency"),
+                        "note": values.get("note"),
+                    }
+                )
+                transaction = None
+            else:
+                unexpected = sorted(
+                    column for column in TRANSFER_COMMAND_COLUMNS if values.get(column) is not None
+                )
+                if unexpected:
+                    raise ValueError(
+                        "Transfer command columns require transaction_type=internal_transfer: "
+                        + ", ".join(unexpected)
+                        + "."
+                    )
+                if not values.get("source_system") and default_source_system:
+                    values["source_system"] = default_source_system.strip() or None
+                if values.get("fees") is None:
+                    values["fees"] = "0"
+                if values.get("taxes") is None:
+                    values["taxes"] = "0"
+                if values.get("fee_category") is None:
+                    values["fee_category"] = "unknown"
+                derivative_contract = _build_derivative_contract(values)
+                transaction_values = {
+                    key: value
+                    for key, value in values.items()
+                    if key not in DERIVATIVE_DEFINITION_COLUMNS
+                    and key not in TRANSFER_COMMAND_COLUMNS
+                }
+                transaction_values["derivative_contract"] = derivative_contract
+                transaction = TransactionCreateRequest.model_validate(transaction_values)
+                internal_transfer = None
         except (ValidationError, ValueError) as error:
             errors = (
                 _validation_errors(error)
@@ -334,6 +399,7 @@ def parse_transaction_csv(
                 ParsedTransactionCsvRow(
                     row_number=row_number,
                     transaction=None,
+                    internal_transfer=None,
                     errors=errors,
                 )
             )
@@ -342,6 +408,7 @@ def parse_transaction_csv(
             ParsedTransactionCsvRow(
                 row_number=row_number,
                 transaction=transaction,
+                internal_transfer=internal_transfer,
                 errors=(),
             )
         )
@@ -351,11 +418,112 @@ def parse_transaction_csv(
     return headers, parsed_rows
 
 
+def _source_value(record: dict[str, object], column: str) -> object:
+    source_field = NUMERIC_SOURCE_FIELDS.get(column)
+    if source_field and record.get(source_field) is not None:
+        return record.get(source_field)
+    return record.get(column)
+
+
+def _internal_transfer_command(
+    transfer_group_id: str,
+    records: list[dict[str, object]],
+) -> dict[str, object]:
+    if len(records) != 2:
+        raise ValueError(
+            f"Internal transfer group '{transfer_group_id}' must contain exactly two legs."
+        )
+    by_type = {str(record.get("transaction_type") or ""): record for record in records}
+    if set(by_type) != {"transfer_out", "transfer_in"}:
+        raise ValueError(
+            f"Internal transfer group '{transfer_group_id}' must contain one transfer_out "
+            "and one transfer_in leg."
+        )
+    transfer_out = by_type["transfer_out"]
+    transfer_in = by_type["transfer_in"]
+    from_account_id = str(transfer_out.get("account_id") or "")
+    to_account_id = str(transfer_in.get("account_id") or "")
+    if (
+        str(transfer_out.get("counterparty_account_id") or "") != to_account_id
+        or str(transfer_in.get("counterparty_account_id") or "") != from_account_id
+    ):
+        raise ValueError(
+            f"Internal transfer group '{transfer_group_id}' has inconsistent account legs."
+        )
+    matching_columns = (
+        "trade_date",
+        "trade_time",
+        "settlement_date",
+        "instrument_id",
+        "quantity",
+        "gross_amount",
+        "currency",
+        "transfer_object_type",
+        "note",
+    )
+    mismatches = [
+        column
+        for column in matching_columns
+        if str(_source_value(transfer_out, column) or "")
+        != str(_source_value(transfer_in, column) or "")
+    ]
+    if mismatches:
+        raise ValueError(
+            f"Internal transfer group '{transfer_group_id}' has mismatched legs: "
+            + ", ".join(mismatches)
+            + "."
+        )
+    command = {
+        **transfer_out,
+        "transaction_type": "internal_transfer",
+        "transfer_object_type": transfer_out.get("transfer_object_type"),
+        "from_account_id": from_account_id,
+        "to_account_id": to_account_id,
+        "account_id": None,
+        "counterparty_account_id": None,
+    }
+    for column in INTERNAL_TRANSFER_FORBIDDEN_COLUMNS:
+        command[column] = None
+        source_field = NUMERIC_SOURCE_FIELDS.get(column)
+        if source_field:
+            command[source_field] = None
+    return command
+
+
+def _canonical_export_records(
+    records: Iterable[dict[str, object]],
+) -> list[dict[str, object]]:
+    ordered_commands: list[tuple[int, int, dict[str, object]]] = []
+    transfer_groups: dict[str, list[tuple[int, dict[str, object]]]] = {}
+    for index, record in enumerate(records):
+        transaction_type = str(record.get("transaction_type") or "")
+        raw_sequence = record.get("transaction_sequence")
+        sequence = int(raw_sequence) if raw_sequence is not None else index + 1
+        if transaction_type in {"transfer_out", "transfer_in"}:
+            transfer_group_id = str(record.get("transfer_group_id") or "").strip()
+            if not transfer_group_id:
+                raise ValueError("Internal transfer leg is missing transfer_group_id.")
+            transfer_groups.setdefault(transfer_group_id, []).append((sequence, record))
+        else:
+            ordered_commands.append((sequence, index, record))
+
+    next_index = len(ordered_commands)
+    for transfer_group_id, grouped_records in transfer_groups.items():
+        sequence = min(item[0] for item in grouped_records)
+        command = _internal_transfer_command(
+            transfer_group_id,
+            [item[1] for item in grouped_records],
+        )
+        ordered_commands.append((sequence, next_index, command))
+        next_index += 1
+    return [item[2] for item in sorted(ordered_commands, key=lambda item: (item[0], item[1]))]
+
+
 def render_transaction_csv(records: Iterable[dict[str, object]]) -> str:
     output = StringIO(newline="")
-    writer = csv.DictWriter(output, fieldnames=list(EXPORT_COLUMNS), lineterminator="\r\n")
+    writer = csv.DictWriter(output, fieldnames=list(IMPORT_COLUMNS), lineterminator="\r\n")
     writer.writeheader()
-    for record in records:
+    for record in _canonical_export_records(records):
         derivative_contract = (
             record.get("derivative_contract")
             if isinstance(record.get("derivative_contract"), dict)
@@ -372,24 +540,6 @@ def render_transaction_csv(records: Iterable[dict[str, object]]) -> str:
             if derivative_contract is not None
             else ""
         )
-        instrument_ref = (
-            record.get("instrument_ref")
-            if isinstance(record.get("instrument_ref"), dict)
-            else None
-        )
-        if record.get("derivative_contract_id"):
-            asset_domain = "derivative"
-            asset_subtype = contract_type or None
-        elif record.get("instrument_id"):
-            asset_domain = "security"
-            asset_subtype = (
-                instrument_ref.get("instrument_type")
-                if instrument_ref is not None
-                else None
-            )
-        else:
-            asset_domain = "cash"
-            asset_subtype = None
         flattened_derivative: dict[str, object] = {
             "derivative_contract_name": (
                 derivative_contract.get("contract_name")
@@ -402,8 +552,6 @@ def render_transaction_csv(records: Iterable[dict[str, object]]) -> str:
                 if derivative_contract is not None
                 else None
             ),
-            "asset_domain": asset_domain,
-            "asset_subtype": asset_subtype,
         }
         if contract_type == "option":
             flattened_derivative.update(
@@ -441,11 +589,10 @@ def render_transaction_csv(records: Iterable[dict[str, object]]) -> str:
                 }
             )
         row: dict[str, object] = {}
-        for column in EXPORT_COLUMNS:
+        for column in IMPORT_COLUMNS:
             value = flattened_derivative.get(column, record.get(column))
-            source_field = NUMERIC_SOURCE_FIELDS.get(column)
-            if source_field and record.get(source_field) is not None:
-                value = record.get(source_field)
+            if column not in flattened_derivative:
+                value = _source_value(record, column)
             if value is None:
                 value = ""
             row[column] = _sanitize_cell(value)

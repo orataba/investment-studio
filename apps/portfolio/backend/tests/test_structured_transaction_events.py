@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import csv
 from copy import deepcopy
 from datetime import date
 from decimal import Decimal
+from io import StringIO
 from pathlib import Path
 
 import pytest
@@ -2394,13 +2396,245 @@ def test_transaction_csv_preserves_source_precision_and_formula_safety() -> None
             }
         ]
     )
-    headers, rows = parse_transaction_csv(rendered)
+    export_row = next(csv.DictReader(StringIO(rendered.lstrip("\ufeff"))))
+    assert export_row["gross_amount"] == "1.20000001"
+    assert export_row["note"] == "'=unsafe formula"
+    assert "transaction_id" not in export_row
+    _headers, exported_rows = parse_transaction_csv(rendered)
+    assert exported_rows[0].errors == ()
+    assert exported_rows[0].transaction is not None
+    assert exported_rows[0].transaction.gross_amount == Decimal("1.20000001")
+    assert exported_rows[0].transaction.note == "=unsafe formula"
 
-    assert "transaction_id" in headers
+    import_text = "\n".join(
+        [
+            "transaction_type,trade_date,account_id,gross_amount,fees,taxes,currency,note",
+            "deposit,2026-01-01,cash,1.20000001,0.00000000,0.00000000,USD,'=unsafe formula",
+        ]
+    )
+    _headers, rows = parse_transaction_csv(import_text)
     assert rows[0].errors == ()
     assert rows[0].transaction is not None
     assert rows[0].transaction.gross_amount == Decimal("1.20000001")
     assert rows[0].transaction.note == "=unsafe formula"
+
+
+def test_transaction_csv_collapses_internal_transfer_pair_into_importable_command() -> None:
+    rendered = render_transaction_csv(
+        [
+            {
+                "portfolio_id": "portfolio-ops",
+                "transaction_id": "txn-transfer-out",
+                "transaction_sequence": 42,
+                "row_version": 2,
+                "created_at": "2026-01-02T04:00:00Z",
+                "transaction_type": "transfer_out",
+                "trade_date": "2026-01-02",
+                "trade_time": "12:00",
+                "trade_at": "2026-01-02T12:00:00+08:00",
+                "trade_timezone": "Asia/Shanghai",
+                "trade_time_is_estimated": True,
+                "settlement_date": "2026-01-02",
+                "account_id": "cash-a",
+                "gross_amount": 100.0,
+                "fees": 0.0,
+                "fee_category": "unknown",
+                "taxes": 0.0,
+                "currency": "USD",
+                "transfer_scope": "internal_portfolio",
+                "transfer_object_type": "cash",
+                "transfer_group_id": "trf-pair-1",
+                "counterparty_account_id": "cash-b",
+            },
+            {
+                "portfolio_id": "portfolio-ops",
+                "transaction_id": "txn-transfer-in",
+                "transaction_sequence": 43,
+                "row_version": 2,
+                "created_at": "2026-01-02T04:00:00Z",
+                "transaction_type": "transfer_in",
+                "trade_date": "2026-01-02",
+                "trade_time": "12:00",
+                "trade_at": "2026-01-02T12:00:00+08:00",
+                "trade_timezone": "Asia/Shanghai",
+                "trade_time_is_estimated": True,
+                "settlement_date": "2026-01-02",
+                "account_id": "cash-b",
+                "gross_amount": 100.0,
+                "fees": 0.0,
+                "fee_category": "unknown",
+                "taxes": 0.0,
+                "currency": "USD",
+                "transfer_scope": "internal_portfolio",
+                "transfer_object_type": "cash",
+                "transfer_group_id": "trf-pair-1",
+                "counterparty_account_id": "cash-a",
+            },
+        ]
+    )
+    row = next(csv.DictReader(StringIO(rendered.lstrip("\ufeff"))))
+
+    assert row["transaction_type"] == "internal_transfer"
+    assert row["transfer_object_type"] == "cash"
+    assert row["from_account_id"] == "cash-a"
+    assert row["to_account_id"] == "cash-b"
+    assert "transfer_group_id" not in row
+    _headers, parsed_rows = parse_transaction_csv(rendered)
+    assert parsed_rows[0].errors == ()
+    assert parsed_rows[0].transaction is None
+    assert parsed_rows[0].internal_transfer is not None
+    assert parsed_rows[0].internal_transfer.from_account_id == "cash-a"
+    assert parsed_rows[0].internal_transfer.to_account_id == "cash-b"
+    assert parsed_rows[0].internal_transfer.gross_amount == Decimal("100.00000000")
+
+
+def test_transaction_csv_rejects_system_generated_internal_transfer_legs() -> None:
+    csv_text = "\n".join(
+        [
+            "transaction_type,trade_date,account_id,gross_amount,currency",
+            "transfer_out,2026-01-02,cash-a,100,USD",
+        ]
+    )
+    _headers, rows = parse_transaction_csv(csv_text)
+
+    assert rows[0].transaction is None
+    assert rows[0].errors == (
+        "Import internal transfers as one internal_transfer command, not as "
+        "system-generated transfer_in or transfer_out legs.",
+    )
+
+
+def test_csv_api_imports_internal_transfer_command_and_reexports_same_contract(client) -> None:
+    csv_text = "\n".join(
+        [
+            (
+                "transaction_type,trade_date,transfer_object_type,from_account_id,"
+                "to_account_id,account_id,gross_amount,currency,note"
+            ),
+            (
+                "internal_transfer,2026-05-20,cash,cash-usd-main,"
+                "cash-usd-reserve,,125.5,USD,CSV sweep"
+            ),
+        ]
+    )
+    preview_response = client.post(
+        "/api/portfolios/portfolio-ops/transactions/csv/preview",
+        json={"csv_text": csv_text},
+    )
+    assert preview_response.status_code == 200
+    preview = preview_response.json()
+    assert preview["error_count"] == 0, preview
+    assert preview["rows"][0]["transaction"] is None
+    assert preview["rows"][0]["internal_transfer"]["from_account_id"] == "cash-usd-main"
+
+    import_response = client.post(
+        "/api/portfolios/portfolio-ops/transactions/csv/import",
+        headers={"Idempotency-Key": "csv-internal-transfer-1"},
+        json={
+            "csv_text": csv_text,
+            "preview_digest": preview["preview_digest"],
+        },
+    )
+    assert import_response.status_code == 200, import_response.text
+    imported = import_response.json()
+    assert imported["created_count"] == 2
+    assert {row["transaction_type"] for row in imported["transactions"]} == {
+        "transfer_in",
+        "transfer_out",
+    }
+    assert len(
+        {row["transfer_group_id"] for row in imported["transactions"]}
+    ) == 1
+
+    download_response = client.get(
+        "/api/portfolios/portfolio-ops/transactions.csv"
+    )
+    assert download_response.status_code == 200
+    _headers, exported_rows = parse_transaction_csv(download_response.text)
+    assert all(not row.errors for row in exported_rows), [
+        (row.row_number, row.errors) for row in exported_rows if row.errors
+    ]
+    matching_commands = [
+        row.internal_transfer
+        for row in exported_rows
+        if row.internal_transfer is not None and row.internal_transfer.note == "CSV sweep"
+    ]
+    assert len(matching_commands) == 1
+    assert matching_commands[0].from_account_id == "cash-usd-main"
+    assert matching_commands[0].to_account_id == "cash-usd-reserve"
+
+
+def test_csv_api_imports_position_transfer_after_earlier_row_in_same_batch(client) -> None:
+    source_account = client.post(
+        "/api/portfolios/portfolio-ops/accounts",
+        json={
+            "account_name": "CSV Transfer Source",
+            "account_type": "securities_account",
+            "currency": "USD",
+            "institution": "Test Broker",
+            "default_settlement_cash_account_id": "cash-usd-main",
+            "cost_basis_method": "fifo",
+            "allowed_instrument_types": ["equity"],
+            "opened_at": "2026-05-01",
+            "status": "active",
+        },
+    ).json()
+    destination_account = client.post(
+        "/api/portfolios/portfolio-ops/accounts",
+        json={
+            "account_name": "CSV Transfer Destination",
+            "account_type": "securities_account",
+            "currency": "USD",
+            "institution": "Test Broker",
+            "default_settlement_cash_account_id": "cash-usd-reserve",
+            "cost_basis_method": "fifo",
+            "allowed_instrument_types": ["equity"],
+            "opened_at": "2026-05-01",
+            "status": "active",
+        },
+    ).json()
+    csv_text = "\n".join(
+        [
+            (
+                "transaction_type,trade_date,transfer_object_type,from_account_id,"
+                "to_account_id,account_id,instrument_id,quantity,price,gross_amount,currency"
+            ),
+            (
+                f"opening_balance,2026-05-01,,,,{source_account['account_id']},"
+                "equity-us-abbv,10,100,1000,USD"
+            ),
+            (
+                f"internal_transfer,2026-05-02,position,{source_account['account_id']},"
+                f"{destination_account['account_id']},,equity-us-abbv,4,,400,USD"
+            ),
+        ]
+    )
+    preview_response = client.post(
+        "/api/portfolios/portfolio-ops/transactions/csv/preview",
+        json={"csv_text": csv_text},
+    )
+    assert preview_response.status_code == 200
+    preview = preview_response.json()
+    assert preview["error_count"] == 0, preview
+
+    import_response = client.post(
+        "/api/portfolios/portfolio-ops/transactions/csv/import",
+        headers={"Idempotency-Key": "csv-position-transfer-1"},
+        json={
+            "csv_text": csv_text,
+            "preview_digest": preview["preview_digest"],
+        },
+    )
+    assert import_response.status_code == 200, import_response.text
+    imported = import_response.json()
+    assert imported["created_count"] == 3
+    transfer_rows = [
+        row
+        for row in imported["transactions"]
+        if row["transaction_type"] in {"transfer_in", "transfer_out"}
+    ]
+    assert len(transfer_rows) == 2
+    assert all(row["gross_amount"] == pytest.approx(400.0) for row in transfer_rows)
 
 
 def test_csv_api_imports_short_option_cash_settlement_and_independent_stock_trade(client) -> None:

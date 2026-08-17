@@ -1,6 +1,10 @@
 export type TransactionAssetDomain = 'security' | 'derivative' | 'cash'
 export type TransactionDerivativeSubtype = 'option' | 'fcn'
 
+export type TransactionActionContext = {
+  newDerivativeContract?: boolean
+}
+
 export type TransactionAction = {
   value: string
   label: string
@@ -34,6 +38,7 @@ export function transactionActionGroups(
   assetDomain: TransactionAssetDomain,
   assetSubtype?: string | null,
   optionType?: 'call' | 'put' | null,
+  context: TransactionActionContext = {},
 ): TransactionActionGroup[] {
   if (assetDomain === 'security') {
     const fund = assetSubtype === 'fund'
@@ -105,6 +110,17 @@ export function transactionActionGroups(
   }
 
   if (assetSubtype === 'fcn') {
+    if (context.newDerivativeContract) {
+      return [
+        {
+          label: 'Create position',
+          actions: [
+            action('fcn_entry', 'FCN Entry', 'buy'),
+            action('fcn_opening_balance', 'FCN Opening Balance', 'opening_balance'),
+          ],
+        },
+      ]
+    }
     return [
       {
         label: 'Contract activity',
@@ -134,6 +150,18 @@ export function transactionActionGroups(
   }
 
   const name = optionName(optionType)
+  if (context.newDerivativeContract) {
+    return [
+      {
+        label: 'Open position',
+        actions: [
+          action('option_buy_to_open', `Buy to Open ${name}`, 'buy'),
+          action('option_sell_to_open', `Sell to Open ${name}`, 'option_write'),
+          action('option_opening_balance', 'Option Opening Balance', 'opening_balance'),
+        ],
+      },
+    ]
+  }
   return [
     {
       label: 'Open and close',

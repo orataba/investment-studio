@@ -63,6 +63,7 @@ TransactionCommandType = Literal[
 ]
 TransactionType = TransactionCommandType | Literal["transfer_in", "transfer_out"]
 TransactionAssetDomain = Literal["security", "derivative", "cash"]
+TransactionAssetSubtype = Literal["fcn", "option"]
 OptionAction = Literal[
     "buy_to_open",
     "sell_to_close",
@@ -617,6 +618,8 @@ class TransactionListSummary(BaseModel):
     total_transactions: int
     security_transactions: int
     derivative_transactions: int
+    fcn_transactions: int
+    option_transactions: int
     cash_transactions: int
     external_cash_flows: int
     opening_balance_records: int
@@ -935,6 +938,7 @@ class TransactionWorkspaceResponse(BaseModel):
     summary: TransactionListSummary
     derivation_boundary: DerivationBoundaryStatus
     selected_transaction_id: str | None = None
+    position_reference_ids: list[str] = Field(default_factory=list)
     transactions: list[TransactionRecord]
     selected_transaction: TransactionRecord | None = None
     delete_scope_row_versions: dict[str, int]
@@ -3837,6 +3841,17 @@ class InternalTransferCreateRequest(BaseModel):
         return _quantize_numeric_input(value, quantum=AMOUNT_SOURCE_QUANTUM)
 
 
+class TransactionCsvInternalTransferRequest(InternalTransferCreateRequest):
+    currency: SupportedCurrency
+
+    @field_validator("currency", mode="before")
+    @classmethod
+    def validate_currency(cls, value: object) -> object:
+        if isinstance(value, str):
+            return value.strip().upper()
+        return value
+
+
 class TransactionBatchResponse(BaseModel):
     portfolio_id: str
     created_count: int
@@ -3863,6 +3878,7 @@ class TransactionCsvImportRequest(TransactionCsvPreviewRequest):
 class TransactionCsvPreviewRow(BaseModel):
     row_number: int = Field(ge=2)
     transaction: TransactionCreateRequest | None = None
+    internal_transfer: TransactionCsvInternalTransferRequest | None = None
     errors: list[str] = Field(default_factory=list)
 
 

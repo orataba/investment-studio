@@ -2149,6 +2149,8 @@ export type PortfolioTransactionListResponse = {
     total_transactions: number
     security_transactions: number
     derivative_transactions: number
+    fcn_transactions: number
+    option_transactions: number
     cash_transactions: number
     external_cash_flows: number
     opening_balance_records: number
@@ -2168,6 +2170,7 @@ export type PortfolioTransactionWorkspaceResponse = {
   summary: PortfolioTransactionListResponse['summary']
   derivation_boundary: PortfolioTransactionListResponse['derivation_boundary']
   selected_transaction_id: string | null
+  position_reference_ids: string[]
   transactions: PortfolioTransactionRecord[]
   selected_transaction: PortfolioTransactionRecord | null
   delete_scope_row_versions: Record<string, number>
@@ -2382,6 +2385,7 @@ export type PortfolioPositionLotListResponse = {
 export type PortfolioTransactionFilters = {
   account_id?: string
   asset_domain?: 'security' | 'derivative' | 'cash' | ''
+  asset_subtype?: 'fcn' | 'option' | ''
   transaction_type?: string
   position_reference_id?: string
   start_date?: string
@@ -2449,6 +2453,7 @@ export type PortfolioTransactionBatchResponse = {
 export type PortfolioTransactionCsvPreviewRow = {
   row_number: number
   transaction: PortfolioTransactionCreatePayload | null
+  internal_transfer?: (PortfolioInternalTransferCreatePayload & { currency: string }) | null
   errors: string[]
 }
 

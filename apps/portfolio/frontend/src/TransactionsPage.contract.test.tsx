@@ -26,7 +26,6 @@ const apiMocks = vi.hoisted(() => ({
   reviewPortfolioInstrumentEventTask: vi.fn(),
   updatePortfolioTransaction: vi.fn(),
 }))
-
 vi.mock('./lib/api', () => apiMocks)
 vi.mock('./components/PortfolioWorkspaceLayout', () => ({
   default: ({ children }: { children: unknown }) => children,
@@ -50,6 +49,31 @@ const cashAccount = {
   account_type: 'deposit_account',
   currency: 'USD',
   status: 'active',
+}
+
+const optionAccount = {
+  ...securitiesAccount,
+  account_id: 'options-1',
+  account_name: 'Options Account',
+  allowed_instrument_types: ['option'],
+}
+
+const optionContract = {
+  derivative_contract_id: 'option-call-1',
+  portfolio_id: '3',
+  account_id: 'options-1',
+  contract_name: 'GETF Dec 30 Call',
+  contract_type: 'option' as const,
+  currency: 'USD',
+  external_reference: 'GETF-20261218-C30',
+  terms: {
+    underlying_instrument_id: 'etf-1',
+    option_type: 'call' as const,
+    expiry_date: '2026-12-18',
+    strike: 30,
+    contract_multiplier: 100,
+  },
+  created_at: '2026-07-01T00:00:00Z',
 }
 
 const fundCashAccount = {
@@ -237,6 +261,8 @@ describe('Transactions rendered page contract', () => {
         total_transactions: 1,
         security_transactions: 1,
         derivative_transactions: 0,
+        fcn_transactions: 0,
+        option_transactions: 0,
         cash_transactions: 0,
         external_cash_flows: 0,
         opening_balance_records: 0,
@@ -249,6 +275,7 @@ describe('Transactions rendered page contract', () => {
         snapshot: 'fixture',
       },
       selected_transaction_id: 'txn-1',
+      position_reference_ids: ['etf-1'],
       delete_scope_row_versions: { 'txn-1': 3 },
       transactions: [selectedTransaction],
       selected_transaction: selectedTransaction,
@@ -303,6 +330,127 @@ describe('Transactions rendered page contract', () => {
     })
   })
 
+  it('uses one importable CSV contract for all-transaction export and import', async () => {
+    const user = userEvent.setup()
+    renderPortfolioPage(
+      <TransactionsPage />,
+      '/portfolios/3/transactions',
+      '/portfolios/:portfolioId/transactions',
+    )
+
+    await user.click(await screen.findByRole('button', { name: 'Transaction CSV' }))
+    const csvMenu = screen.getByRole('menu', { name: 'Transaction CSV actions' })
+    const exportAll = within(csvMenu).getByRole('menuitem', {
+      name: /Export All Transactions/,
+    })
+    const importTemplate = within(csvMenu).getByRole('menuitem', {
+      name: /Blank CSV Template/,
+    })
+    expect(exportAll).toHaveAttribute('href', '/transactions.csv')
+    expect(importTemplate).toHaveAttribute('href', '/transactions/csv-template')
+    expect(
+      within(csvMenu).getByRole('menuitem', { name: /^Import CSV/ }),
+    ).toBeInTheDocument()
+    expect(screen.queryByText('Select visible')).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Export View' })).not.toBeInTheDocument()
+  })
+
+  it('shows CSV row and batch errors before allowing any import', async () => {
+    apiMocks.previewPortfolioTransactionCsv.mockResolvedValue({
+      portfolio_id: '3',
+      preview_digest: 'a'.repeat(64),
+      headers: ['transaction_type', 'trade_date', 'account_id', 'gross_amount', 'currency'],
+      row_count: 2,
+      valid_count: 1,
+      error_count: 2,
+      warnings: [],
+      batch_errors: ['Source identity already exists.'],
+      rows: [
+        { row_number: 2, transaction: null, errors: ['account_id: Account not found'] },
+        { row_number: 3, transaction: {}, errors: [] },
+      ],
+    })
+    const file = new File(['transaction_type,trade_date'], 'candidate.csv', {
+      type: 'text/csv',
+    })
+    Object.defineProperty(file, 'text', {
+      value: vi.fn().mockResolvedValue('transaction_type,trade_date'),
+    })
+    renderPortfolioPage(
+      <TransactionsPage />,
+      '/portfolios/3/transactions',
+      '/portfolios/:portfolioId/transactions',
+    )
+
+    const fileInput = document.querySelector<HTMLInputElement>('input[type="file"]')
+    expect(fileInput).not.toBeNull()
+    fireEvent.change(fileInput!, { target: { files: [file] } })
+
+    const dialog = await screen.findByRole('alertdialog', {
+      name: 'Review Transaction CSV',
+    })
+    expect(within(dialog).getByText('2 rows · 1 valid · 2 issues')).toBeInTheDocument()
+    expect(within(dialog).getByText('Source identity already exists.')).toBeInTheDocument()
+    expect(
+      within(dialog).getByText('Row 2: account_id: Account not found'),
+    ).toBeInTheDocument()
+    expect(within(dialog).getByRole('button', { name: 'Import 1 Rows' })).toBeDisabled()
+    expect(apiMocks.importPortfolioTransactionCsv).not.toHaveBeenCalled()
+  })
+
+  it('imports a CSV batch only after a clean preview is confirmed', async () => {
+    apiMocks.previewPortfolioTransactionCsv.mockResolvedValue({
+      portfolio_id: '3',
+      preview_digest: 'b'.repeat(64),
+      headers: ['transaction_type', 'trade_date', 'account_id', 'gross_amount', 'currency'],
+      row_count: 1,
+      valid_count: 1,
+      error_count: 0,
+      warnings: ['Source identity is incomplete.'],
+      batch_errors: [],
+      rows: [{ row_number: 2, transaction: {}, errors: [] }],
+    })
+    apiMocks.importPortfolioTransactionCsv.mockResolvedValue({
+      portfolio_id: '3',
+      preview_digest: 'b'.repeat(64),
+      created_count: 1,
+      transactions: [selectedTransaction],
+    })
+    const file = new File(['transaction_type,trade_date'], 'clean.csv', {
+      type: 'text/csv',
+    })
+    Object.defineProperty(file, 'text', {
+      value: vi.fn().mockResolvedValue('transaction_type,trade_date'),
+    })
+    const user = userEvent.setup()
+    renderPortfolioPage(
+      <TransactionsPage />,
+      '/portfolios/3/transactions',
+      '/portfolios/:portfolioId/transactions',
+    )
+
+    const fileInput = document.querySelector<HTMLInputElement>('input[type="file"]')
+    fireEvent.change(fileInput!, { target: { files: [file] } })
+    const dialog = await screen.findByRole('alertdialog', {
+      name: 'Review Transaction CSV',
+    })
+    const confirm = within(dialog).getByRole('button', { name: 'Import 1 Rows' })
+    expect(confirm).toBeEnabled()
+    expect(within(dialog).getByText('Source identity is incomplete.')).toBeInTheDocument()
+    expect(apiMocks.importPortfolioTransactionCsv).not.toHaveBeenCalled()
+
+    await user.click(confirm)
+    await waitFor(() =>
+      expect(apiMocks.importPortfolioTransactionCsv).toHaveBeenCalledWith(
+        '3',
+        'transaction_type,trade_date',
+        'b'.repeat(64),
+        expect.stringContaining('transaction-csv-import-'),
+      ),
+    )
+    expect(await screen.findByText('Imported 1 transaction facts from CSV.')).toBeInTheDocument()
+  })
+
   it('enforces buy instrument eligibility and keeps transaction/accounting inspectors rendered', async () => {
     const user = userEvent.setup()
     renderPortfolioPage(
@@ -344,7 +492,15 @@ describe('Transactions rendered page contract', () => {
     expect(within(review).getByText('-$250.00')).toBeInTheDocument()
   })
 
-  it('chooses the asset class before exposing derivative-specific actions', async () => {
+  it('uses one entry-type menu and keeps accounts and derivative actions contextual', async () => {
+    apiMocks.getPortfolioAccounts.mockResolvedValue({
+      portfolio_id: '3',
+      accounts: [optionAccount, securitiesAccount, cashAccount],
+    })
+    apiMocks.getPortfolioDerivativeContracts.mockResolvedValue({
+      portfolio_id: '3',
+      derivative_contracts: [optionContract],
+    })
     const user = userEvent.setup()
     renderPortfolioPage(
       <TransactionsPage />,
@@ -354,9 +510,14 @@ describe('Transactions rendered page contract', () => {
 
     await user.click(await screen.findByRole('button', { name: 'Record Transaction' }))
     const dialog = screen.getByRole('dialog', { name: 'Record transaction' })
-    const assetCategory = within(dialog).getByRole('combobox', {
-      name: 'Asset Category',
-    })
+    const entryType = within(dialog).getByRole('group', { name: 'Entry Type' })
+    for (const label of ['Security', 'FCN', 'Option', 'Cash & Operations']) {
+      expect(within(entryType).getByRole('button', { name: new RegExp(`^${label}`) })).toBeInTheDocument()
+    }
+    const account = within(dialog).getByRole('combobox', { name: 'Account' })
+    await waitFor(() => expect(account).toHaveValue(securitiesAccount.account_id))
+    expect(within(account).queryByRole('option', { name: 'Options Account · USD' })).not.toBeInTheDocument()
+
     const securityAction = within(dialog).getByRole('combobox', { name: 'Action' })
     expect(
       within(securityAction).getByRole('option', { name: 'Buy' }),
@@ -365,29 +526,26 @@ describe('Transactions rendered page contract', () => {
       within(securityAction).queryByRole('option', { name: 'Buy to Open Call' }),
     ).not.toBeInTheDocument()
 
-    await user.selectOptions(assetCategory, 'derivative')
-    const derivativeType = within(dialog).getByRole('combobox', {
-      name: 'Derivative Type',
-    })
-    expect(derivativeType).toHaveValue('option')
-    const derivativeAction = within(dialog).getByRole('combobox', { name: 'Action' })
-    for (const label of [
-      'Buy to Open Call',
-      'Sell to Close Call',
-      'Sell to Open Call',
-      'Buy to Close Call',
-    ]) {
-      expect(within(derivativeAction).getByRole('option', { name: label })).toBeInTheDocument()
+    await user.click(within(entryType).getByRole('button', { name: /^Option/ }))
+    await waitFor(() => expect(account).toHaveValue(optionAccount.account_id))
+    expect(within(account).getByRole('option', { name: 'Options Account · USD' })).toBeInTheDocument()
+    expect(within(account).queryByRole('option', { name: 'ETF Brokerage · USD' })).not.toBeInTheDocument()
+
+    const newContractAction = within(dialog).getByRole('combobox', { name: 'Action' })
+    expect(within(newContractAction).getByRole('option', { name: 'Buy to Open Call' })).toBeInTheDocument()
+    expect(within(newContractAction).getByRole('option', { name: 'Sell to Open Call' })).toBeInTheDocument()
+    expect(within(newContractAction).queryByRole('option', { name: 'Sell to Close Call' })).not.toBeInTheDocument()
+
+    await user.selectOptions(
+      within(dialog).getByRole('combobox', { name: 'Option Contract' }),
+      optionContract.derivative_contract_id,
+    )
+    const existingContractAction = within(dialog).getByRole('combobox', { name: 'Action' })
+    for (const label of ['Buy to Open Call', 'Sell to Close Call', 'Sell to Open Call', 'Buy to Close Call']) {
+      expect(within(existingContractAction).getByRole('option', { name: label })).toBeInTheDocument()
     }
     expect(
-      within(derivativeAction).queryByRole('option', { name: 'Deposit' }),
-    ).not.toBeInTheDocument()
-
-    const account = within(dialog).getByRole('combobox', { name: 'Account' })
-    await waitFor(() => expect(account).toHaveValue(securitiesAccount.account_id))
-    expect(within(account).getByRole('option', { name: 'ETF Brokerage · USD' })).toBeInTheDocument()
-    expect(
-      within(account).queryByRole('option', { name: 'Settlement Cash · USD' }),
+      within(existingContractAction).queryByRole('option', { name: 'Deposit' }),
     ).not.toBeInTheDocument()
   })
 

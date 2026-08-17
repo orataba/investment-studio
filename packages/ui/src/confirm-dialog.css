@@ -85,7 +85,14 @@
   color: #fff;
 }
 
-.portfolio-ops-dialog-danger:disabled {
+.portfolio-ops-dialog-primary {
+  border-color: #1d4ed8;
+  background: #1d4ed8;
+  color: #fff;
+}
+
+.portfolio-ops-dialog-danger:disabled,
+.portfolio-ops-dialog-primary:disabled {
   border-color: #cbd5e1;
   background: #e2e8f0;
   color: #64748b;

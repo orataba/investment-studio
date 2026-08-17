@@ -12,6 +12,8 @@ type ConfirmDialogProps = {
   error?: ReactNode
   busy?: boolean
   busyLabel?: string
+  confirmDisabled?: boolean
+  confirmTone?: 'danger' | 'primary'
   onCancel: () => void
   onConfirm: () => void | Promise<void>
 }
@@ -25,6 +27,8 @@ export default function ConfirmDialog({
   error,
   busy = false,
   busyLabel = 'Deleting…',
+  confirmDisabled = false,
+  confirmTone = 'danger',
   onCancel,
   onConfirm,
 }: ConfirmDialogProps) {
@@ -100,8 +104,8 @@ export default function ConfirmDialog({
           </button>
           <button
             type="button"
-            className="portfolio-ops-dialog-danger"
-            disabled={busy || !confirmationMatches}
+            className={`portfolio-ops-dialog-${confirmTone}`}
+            disabled={busy || confirmDisabled || !confirmationMatches}
             onClick={() => {
               void Promise.resolve(onConfirm()).catch(() => undefined)
             }}

@@ -38,6 +38,7 @@ from portfolio_app.api.contracts import (
     TransactionDeleteResponse,
     TransactionExecutionQuoteResponse,
     TransactionAssetDomain,
+    TransactionAssetSubtype,
     TransactionListResponse,
     TransactionPositionPreviewResponse,
     TransactionRecord,
@@ -1040,6 +1041,219 @@ def _prepare_csv_transaction_values(
     }
 
 
+def _prepare_internal_transfer_values(
+    *,
+    portfolio_id: str,
+    payload: InternalTransferCreateRequest,
+    created_at: str,
+    transfer_group_id: str,
+    expected_currency: str | None = None,
+    pending_records: list[dict[str, object]] | None = None,
+) -> list[dict[str, object]]:
+    from_account = get_account(portfolio_id, payload.from_account_id)
+    to_account = get_account(portfolio_id, payload.to_account_id)
+    if from_account is None or to_account is None:
+        raise HTTPException(status_code=400, detail="Transfer accounts not found.")
+    settlement_date = payload.settlement_date or payload.trade_date
+    resolved_trade_timing = resolve_trade_timing(
+        trade_date=payload.trade_date,
+        trade_time=payload.trade_time,
+    )
+    _validate_account_fact_window(
+        from_account,
+        event_dates=[payload.trade_date, settlement_date],
+        role_label="Source account",
+    )
+    _validate_account_fact_window(
+        to_account,
+        event_dates=[payload.trade_date, settlement_date],
+        role_label="Destination account",
+    )
+
+    transfer_object_type = payload.transfer_object_type
+    if transfer_object_type == "cash":
+        if (
+            from_account.get("account_type") != "deposit_account"
+            or to_account.get("account_type") != "deposit_account"
+        ):
+            raise HTTPException(
+                status_code=400,
+                detail="Cash transfer requires deposit accounts on both legs.",
+            )
+        transfer_currency = _currency_of(from_account)
+        if transfer_currency != _currency_of(to_account):
+            raise HTTPException(
+                status_code=400,
+                detail="Cash transfer accounts must share the same currency.",
+            )
+        instrument_id = None
+        instrument_ref = None
+        transactions_as_of_trade_date: list[dict[str, object]] = []
+        account_cost_methods: dict[str, str] = {}
+    else:
+        if (
+            from_account.get("account_type") != "securities_account"
+            or to_account.get("account_type") != "securities_account"
+        ):
+            raise HTTPException(
+                status_code=400,
+                detail="Position transfer requires securities accounts on both legs.",
+            )
+        instrument_id = payload.instrument_id
+        if not instrument_id:
+            raise HTTPException(
+                status_code=400,
+                detail="Position transfer requires instrument.",
+            )
+        instrument_ref = _load_instrument_ref(instrument_id)
+        _validate_asset_transaction_compatibility(
+            transaction_type="opening_balance",
+            lifecycle_event_type=None,
+            instrument_ref=instrument_ref,
+            derivative_contract=None,
+        )
+        _validate_account_asset_scope(
+            account=to_account,
+            instrument_ref=instrument_ref,
+            derivative_contract=None,
+            transaction_type="opening_balance",
+        )
+        transfer_currency = str(instrument_ref.get("currency") or "").upper()
+        if (
+            _currency_of(from_account) != transfer_currency
+            or _currency_of(to_account) != transfer_currency
+        ):
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "Position transfer accounts must share the same currency as the instrument."
+                ),
+            )
+        account_cost_methods = _account_cost_methods(portfolio_id)
+        transactions_as_of_trade_date = _list_transactions_as_of_trade_moment(
+            portfolio_id,
+            trade_date=payload.trade_date,
+            trade_at=str(resolved_trade_timing["trade_at"]),
+            created_at=created_at,
+            settlement_date=settlement_date,
+        )
+        if pending_records:
+            existing_sequences = [
+                int(record.get("transaction_sequence") or 0)
+                for record in transactions_as_of_trade_date
+            ]
+            next_sequence = max(existing_sequences, default=0) + 1
+            pending_sort_key = _pending_transaction_sort_key(
+                trade_date=payload.trade_date,
+                trade_at=str(resolved_trade_timing["trade_at"]),
+                created_at=created_at,
+                settlement_date=settlement_date,
+            )
+            pending_candidates = [
+                {
+                    **record,
+                    "transaction_id": f"csv-pending-{index:06d}",
+                    "transaction_sequence": next_sequence + index - 1,
+                    "portfolio_id": portfolio_id,
+                }
+                for index, record in enumerate(pending_records, start=1)
+            ]
+            pending_as_of = [
+                record
+                for record in pending_candidates
+                if transaction_execution_sort_key(record) <= pending_sort_key
+            ]
+            transactions_as_of_trade_date = [
+                *transactions_as_of_trade_date,
+                *pending_as_of,
+            ]
+        available_quantity = estimate_position_quantity(
+            portfolio_id,
+            transactions_as_of_trade_date,
+            account_id=payload.from_account_id,
+            position_reference_id=instrument_id,
+            account_cost_methods=account_cost_methods,
+            as_of_date=payload.trade_date,
+        )
+        requested_quantity = float(payload.quantity or 0.0)
+        if requested_quantity > available_quantity + 1e-9:
+            raise HTTPException(
+                status_code=400,
+                detail="Transfer quantity exceeds source position as of trade_date.",
+            )
+
+    if expected_currency and expected_currency.upper() != transfer_currency:
+        raise HTTPException(
+            status_code=400,
+            detail="Internal transfer currency must match the transferred cash or position.",
+        )
+
+    transferred_amount = payload.gross_amount
+    if transfer_object_type == "position":
+        estimated_transferred_amount = estimate_position_cost_basis(
+            portfolio_id,
+            transactions_as_of_trade_date,
+            account_id=payload.from_account_id,
+            position_reference_id=instrument_id or "",
+            quantity=float(payload.quantity or 0.0),
+            account_cost_methods=account_cost_methods,
+            as_of_date=payload.trade_date,
+        )
+        if estimated_transferred_amount < -1e-9:
+            raise HTTPException(
+                status_code=400,
+                detail="Unable to derive transferred cost basis from current source position.",
+            )
+        if transferred_amount is not None and transferred_amount > 0:
+            if abs(float(transferred_amount) - estimated_transferred_amount) > 1e-6:
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        "Position transfer gross_amount must match source cost basis as of trade_date."
+                    ),
+                )
+        transferred_amount = estimated_transferred_amount
+
+    common_values: dict[str, object] = {
+        "trade_date": payload.trade_date,
+        "trade_time": payload.trade_time,
+        "trade_at": resolved_trade_timing["trade_at"],
+        "settlement_date": settlement_date,
+        "entitlement_date": None,
+        "acquisition_date": None,
+        "settlement_cash_account_id": None,
+        "instrument_id": instrument_id,
+        "instrument_ref": instrument_ref,
+        "quantity": payload.quantity,
+        "price": None,
+        "gross_amount": float(transferred_amount or 0.0),
+        "counter_amount": None,
+        "fx_rate": None,
+        "fees": 0,
+        "taxes": 0,
+        "currency": transfer_currency,
+        "transfer_scope": "internal_portfolio",
+        "transfer_object_type": transfer_object_type,
+        "transfer_group_id": transfer_group_id,
+        "note": payload.note,
+        "created_at": created_at,
+    }
+    return [
+        {
+            **common_values,
+            "transaction_type": "transfer_out",
+            "account_id": payload.from_account_id,
+            "counterparty_account_id": payload.to_account_id,
+        },
+        {
+            **common_values,
+            "transaction_type": "transfer_in",
+            "account_id": payload.to_account_id,
+            "counterparty_account_id": payload.from_account_id,
+        },
+    ]
+
+
 def _build_transaction_csv_preview(
     *,
     portfolio_id: str,
@@ -1093,7 +1307,7 @@ def _build_transaction_csv_preview(
                 "in the CSV batch."
             )
     for parsed_row in parsed_rows:
-        if parsed_row.transaction is None:
+        if parsed_row.transaction is None and parsed_row.internal_transfer is None:
             response_rows.append(
                 TransactionCsvPreviewRow(
                     row_number=parsed_row.row_number,
@@ -1101,6 +1315,47 @@ def _build_transaction_csv_preview(
                 )
             )
             continue
+        if parsed_row.internal_transfer is not None:
+            internal_transfer = parsed_row.internal_transfer
+            transfer_group_id = (
+                "trf-"
+                + uuid5(
+                    NAMESPACE_URL,
+                    f"{portfolio_id}:csv:{preview_digest}:{parsed_row.row_number}",
+                ).hex[:12]
+            )
+            try:
+                transfer_values = _prepare_internal_transfer_values(
+                    portfolio_id=portfolio_id,
+                    payload=internal_transfer,
+                    created_at=created_at,
+                    transfer_group_id=transfer_group_id,
+                    expected_currency=internal_transfer.currency,
+                    pending_records=prepared_records,
+                )
+            except (HTTPException, InstrumentRegistryError, ValueError) as error:
+                detail = (
+                    str(error.detail)
+                    if isinstance(error, HTTPException)
+                    else str(error)
+                )
+                response_rows.append(
+                    TransactionCsvPreviewRow(
+                        row_number=parsed_row.row_number,
+                        internal_transfer=internal_transfer,
+                        errors=[detail],
+                    )
+                )
+                continue
+            prepared_records.extend(transfer_values)
+            response_rows.append(
+                TransactionCsvPreviewRow(
+                    row_number=parsed_row.row_number,
+                    internal_transfer=internal_transfer,
+                )
+            )
+            continue
+        assert parsed_row.transaction is not None
         try:
             values = _prepare_csv_transaction_values(
                 portfolio_id=portfolio_id,
@@ -1132,7 +1387,11 @@ def _build_transaction_csv_preview(
         )
 
     existing_records = list_transactions(portfolio_id)
-    if len(prepared_records) == len(parsed_rows):
+    if (
+        len(response_rows) == len(parsed_rows)
+        and not any(row.errors for row in response_rows)
+        and not batch_errors
+    ):
         next_preview_sequence = max(
             (
                 int(record["transaction_sequence"])
@@ -1261,6 +1520,7 @@ def list_transaction_records(
     portfolio_id: str,
     account_id: str | None = None,
     asset_domain: TransactionAssetDomain | None = None,
+    asset_subtype: TransactionAssetSubtype | None = None,
     transaction_type: str | None = None,
     position_reference_id: str | None = None,
     start_date: date | None = Query(default=None),
@@ -1274,6 +1534,7 @@ def list_transaction_records(
         portfolio_id,
         account_id=account_id,
         asset_domain=asset_domain,
+        asset_subtype=asset_subtype,
         transaction_type=transaction_type,
         position_reference_id=position_reference_id,
         start_date=start_date,
@@ -1312,7 +1573,7 @@ def download_transaction_csv_template(portfolio_id: str) -> Response:
         media_type="text/csv; charset=utf-8",
         headers={
             "Content-Disposition": (
-                f'attachment; filename="{portfolio_id}-transaction-template.csv"'
+                f'attachment; filename="{portfolio_id}-transaction-import-template.csv"'
             )
         },
     )
@@ -1454,6 +1715,7 @@ def get_transaction_workspace(
     portfolio_id: str,
     account_id: str | None = None,
     asset_domain: TransactionAssetDomain | None = None,
+    asset_subtype: TransactionAssetSubtype | None = None,
     transaction_type: str | None = None,
     position_reference_id: str | None = None,
     start_date: date | None = Query(default=None),
@@ -1470,6 +1732,7 @@ def get_transaction_workspace(
         portfolio_id,
         account_id=account_id,
         asset_domain=asset_domain,
+        asset_subtype=asset_subtype,
         transaction_type=transaction_type,
         position_reference_id=position_reference_id,
         start_date=start_date,
@@ -1576,6 +1839,13 @@ def get_transaction_workspace(
             snapshot="not_started",
         ),
         selected_transaction_id=selected_transaction_id,
+        position_reference_ids=sorted(
+            {
+                str(item.get("instrument_id") or item.get("derivative_contract_id"))
+                for item in all_transactions
+                if item.get("instrument_id") or item.get("derivative_contract_id")
+            }
+        ),
         transactions=serialized_transactions,
         selected_transaction=selected_transaction,
         delete_scope_row_versions=delete_scope_row_versions,
@@ -2240,173 +2510,23 @@ def create_internal_transfer_records(
             ),
         )
 
-    from_account = get_account(portfolio_id, payload.from_account_id)
-    to_account = get_account(portfolio_id, payload.to_account_id)
-    if from_account is None or to_account is None:
-        raise HTTPException(status_code=400, detail="Transfer accounts not found.")
-    settlement_date = payload.settlement_date or payload.trade_date
-    resolved_trade_timing = resolve_trade_timing(
-        trade_date=payload.trade_date,
-        trade_time=payload.trade_time,
-    )
     pending_created_at = datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
-    _validate_account_fact_window(
-        from_account,
-        event_dates=[payload.trade_date, settlement_date],
-        role_label="Source account",
-    )
-    _validate_account_fact_window(
-        to_account,
-        event_dates=[payload.trade_date, settlement_date],
-        role_label="Destination account",
-    )
-
-    transfer_object_type = payload.transfer_object_type
-    if transfer_object_type == "cash":
-        if from_account.get("account_type") != "deposit_account" or to_account.get("account_type") != "deposit_account":
-            raise HTTPException(status_code=400, detail="Cash transfer requires deposit accounts on both legs.")
-        transfer_currency = str(from_account.get("currency") or "").upper()
-        if transfer_currency != str(to_account.get("currency") or "").upper():
-            raise HTTPException(status_code=400, detail="Cash transfer accounts must share the same currency.")
-        instrument_id = None
-        instrument_ref = None
-    else:
-        if from_account.get("account_type") != "securities_account" or to_account.get("account_type") != "securities_account":
-            raise HTTPException(status_code=400, detail="Position transfer requires securities accounts on both legs.")
-        instrument_id = payload.instrument_id
-        if not instrument_id:
-            raise HTTPException(status_code=400, detail="Position transfer requires instrument.")
-        instrument_ref = _load_instrument_ref(instrument_id)
-        _validate_asset_transaction_compatibility(
-            transaction_type="opening_balance",
-            lifecycle_event_type=None,
-            instrument_ref=instrument_ref,
-            derivative_contract=None,
-        )
-        _validate_account_asset_scope(
-            account=to_account,
-            instrument_ref=instrument_ref,
-            derivative_contract=None,
-            transaction_type="opening_balance",
-        )
-        transfer_currency = str(instrument_ref.get("currency") or "").upper()
-        if _currency_of(from_account) != transfer_currency or _currency_of(to_account) != transfer_currency:
-            raise HTTPException(
-                status_code=400,
-                detail="Position transfer accounts must share the same currency as the instrument.",
-            )
-        account_cost_methods = {
-            str(account_item.get("account_id") or ""): str(account_item.get("cost_basis_method") or "fifo")
-            for account_item in list_accounts(portfolio_id)
-            if account_item.get("account_type") == "securities_account"
-        }
-        transactions_as_of_trade_date = _list_transactions_as_of_trade_moment(
-            portfolio_id,
-            trade_date=payload.trade_date,
-            trade_at=str(resolved_trade_timing["trade_at"]),
-            created_at=pending_created_at,
-            settlement_date=settlement_date,
-        )
-        available_quantity = estimate_position_quantity(
-            portfolio_id,
-            transactions_as_of_trade_date,
-            account_id=payload.from_account_id,
-            position_reference_id=instrument_id,
-            account_cost_methods=account_cost_methods,
-            as_of_date=payload.trade_date,
-        )
-        requested_quantity = float(payload.quantity or 0.0)
-        if requested_quantity > available_quantity + 1e-9:
-            raise HTTPException(status_code=400, detail="Transfer quantity exceeds source position as of trade_date.")
-
-    transferred_amount = payload.gross_amount
-    if transfer_object_type == "position":
-        estimated_transferred_amount = estimate_position_cost_basis(
-            portfolio_id,
-            transactions_as_of_trade_date,
-            account_id=payload.from_account_id,
-            position_reference_id=instrument_id or "",
-            quantity=float(payload.quantity or 0.0),
-            account_cost_methods=account_cost_methods,
-            as_of_date=payload.trade_date,
-        )
-        if estimated_transferred_amount < -1e-9:
-            raise HTTPException(
-                status_code=400,
-                detail="Unable to derive transferred cost basis from current source position.",
-            )
-        if transferred_amount is not None and transferred_amount > 0:
-            if abs(float(transferred_amount) - estimated_transferred_amount) > 1e-6:
-                raise HTTPException(
-                    status_code=400,
-                    detail="Position transfer gross_amount must match source cost basis as of trade_date.",
-                )
-        transferred_amount = estimated_transferred_amount
-
     transfer_group_id = (
         f"trf-{uuid5(NAMESPACE_URL, f'{portfolio_id}:{idempotency_key.strip()}').hex[:12]}"
         if idempotency_key
         else f"trf-{uuid4().hex[:12]}"
     )
-    trade_date = payload.trade_date
+    prepared_records = _prepare_internal_transfer_values(
+        portfolio_id=portfolio_id,
+        payload=payload,
+        created_at=pending_created_at,
+        transfer_group_id=transfer_group_id,
+    )
 
     try:
         created_records = create_transactions(
             portfolio_id=portfolio_id,
-            records=[
-                {
-                    "transaction_type": "transfer_out",
-                    "trade_date": trade_date,
-                    "trade_time": payload.trade_time,
-                    "settlement_date": settlement_date,
-                    "entitlement_date": None,
-                    "acquisition_date": None,
-                    "account_id": payload.from_account_id,
-                    "settlement_cash_account_id": None,
-                    "instrument_id": instrument_id,
-                    "instrument_ref": instrument_ref,
-                    "quantity": payload.quantity,
-                    "price": None,
-                    "gross_amount": float(transferred_amount or 0.0),
-                    "counter_amount": None,
-                    "fx_rate": None,
-                    "fees": 0,
-                    "taxes": 0,
-                    "currency": transfer_currency,
-                    "transfer_scope": "internal_portfolio",
-                    "transfer_object_type": transfer_object_type,
-                    "transfer_group_id": transfer_group_id,
-                    "counterparty_account_id": payload.to_account_id,
-                    "note": payload.note,
-                    "created_at": pending_created_at,
-                },
-                {
-                    "transaction_type": "transfer_in",
-                    "trade_date": trade_date,
-                    "trade_time": payload.trade_time,
-                    "settlement_date": settlement_date,
-                    "entitlement_date": None,
-                    "acquisition_date": None,
-                    "account_id": payload.to_account_id,
-                    "settlement_cash_account_id": None,
-                    "instrument_id": instrument_id,
-                    "instrument_ref": instrument_ref,
-                    "quantity": payload.quantity,
-                    "price": None,
-                    "gross_amount": float(transferred_amount or 0.0),
-                    "counter_amount": None,
-                    "fx_rate": None,
-                    "fees": 0,
-                    "taxes": 0,
-                    "currency": transfer_currency,
-                    "transfer_scope": "internal_portfolio",
-                    "transfer_object_type": transfer_object_type,
-                    "transfer_group_id": transfer_group_id,
-                    "counterparty_account_id": payload.from_account_id,
-                    "note": payload.note,
-                    "created_at": pending_created_at,
-                },
-            ],
+            records=prepared_records,
             idempotency_key=idempotency_key,
             idempotency_payload=idempotency_payload,
             idempotency_operation=INTERNAL_TRANSFER_IDEMPOTENCY_OPERATION,

@@ -191,6 +191,8 @@ function accountsWorkspaceFixture(): PortfolioAccountsWorkspaceResponse {
       total_transactions: 1,
       security_transactions: 1,
       derivative_transactions: 0,
+      fcn_transactions: 0,
+      option_transactions: 0,
       cash_transactions: 0,
       external_cash_flows: 0,
       opening_balance_records: 0,

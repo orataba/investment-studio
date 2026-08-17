@@ -4624,6 +4624,7 @@ def list_transactions(
     *,
     account_id: str | None = None,
     asset_domain: str | None = None,
+    asset_subtype: str | None = None,
     transaction_type: str | None = None,
     position_reference_id: str | None = None,
     start_date: date | None = None,
@@ -4654,6 +4655,12 @@ def list_transactions(
             statement = statement.where(
                 TransactionRecordModel.instrument_id.is_(None),
                 TransactionRecordModel.derivative_contract_id.is_(None),
+            )
+        if asset_subtype in {"fcn", "option"}:
+            statement = statement.where(
+                TransactionRecordModel.derivative_contract.has(
+                    DerivativeContractRecordModel.contract_type == asset_subtype
+                )
             )
         if transaction_type:
             statement = statement.where(TransactionRecordModel.transaction_type == transaction_type)

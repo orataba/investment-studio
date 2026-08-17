@@ -43,4 +43,28 @@ describe('asset-first transaction actions', () => {
       lifecycleEventType: 'fcn_knock_in',
     })
   })
+
+  it('limits a new option contract to opening actions', () => {
+    const actions = transactionActionGroups('derivative', 'option', 'put', {
+      newDerivativeContract: true,
+    }).flatMap((group) => group.actions)
+
+    expect(actions.map((item) => item.label)).toEqual([
+      'Buy to Open Put',
+      'Sell to Open Put',
+      'Option Opening Balance',
+    ])
+    expect(actions.map((item) => item.label)).not.toContain('Buy to Close Put')
+  })
+
+  it('limits a new FCN contract to entry and opening balance', () => {
+    const actions = transactionActionGroups('derivative', 'fcn', null, {
+      newDerivativeContract: true,
+    }).flatMap((group) => group.actions)
+
+    expect(actions.map((item) => item.label)).toEqual([
+      'FCN Entry',
+      'FCN Opening Balance',
+    ])
+  })
 })

@@ -47,10 +47,7 @@ import {
 } from '../lib/format'
 import { useModalDialog } from '../../../../../packages/ui/src/useModalDialog'
 import ConfirmDialog from '../../../../../packages/ui/src/ConfirmDialog'
-import DownloadFormatMenu from '../../../../../packages/ui/src/DownloadFormatMenu'
-import { downloadTable, type TableExportFormat } from '../../../../../packages/ui/src/tableExport'
 import {
-  buildTransactionExportRows,
   countActiveTransactionFilters,
   transactionActivityLabel,
   transactionChangedFields,
@@ -129,6 +126,74 @@ const ACCOUNT_SCOPE_ENFORCED_TRANSACTION_TYPES = new Set([
   'opening_balance',
 ])
 
+type TransactionEntryKind = 'security' | 'fcn' | 'option' | 'cash'
+
+const TRANSACTION_ENTRY_KINDS: Array<{
+  value: TransactionEntryKind
+  label: string
+  description: string
+}> = [
+  {
+    value: 'security',
+    label: 'Security',
+    description: 'Equity, ETF, fund, and other Registry securities',
+  },
+  {
+    value: 'fcn',
+    label: 'FCN',
+    description: 'Fixed coupon note contract activity and lifecycle',
+  },
+  {
+    value: 'option',
+    label: 'Option',
+    description: 'Call or put positions with explicit open and close direction',
+  },
+  {
+    value: 'cash',
+    label: 'Cash & Operations',
+    description: 'Cash movements, FX, fees, tax, and setup',
+  },
+]
+
+const DERIVATIVE_ACCOUNT_INSTRUMENT_TYPES = new Set(['fcn', 'option'])
+
+function transactionEntryKind(
+  assetDomain: TransactionAssetDomain,
+  assetSubtype?: string | null,
+): TransactionEntryKind {
+  if (assetDomain === 'cash') return 'cash'
+  if (assetDomain === 'derivative') return assetSubtype === 'fcn' ? 'fcn' : 'option'
+  return 'security'
+}
+
+function entryKindAssetDomain(entryKind: TransactionEntryKind): TransactionAssetDomain {
+  if (entryKind === 'cash') return 'cash'
+  if (entryKind === 'security') return 'security'
+  return 'derivative'
+}
+
+function accountAllowsEntryKind(
+  account: PortfolioAccountRecord,
+  entryKind: TransactionEntryKind,
+) {
+  if (entryKind === 'cash') {
+    return account.account_type === 'deposit_account'
+  }
+  if (account.account_type !== 'securities_account') {
+    return false
+  }
+  const allowedTypes = account.allowed_instrument_types ?? []
+  if (!allowedTypes.length) {
+    return true
+  }
+  if (entryKind === 'fcn' || entryKind === 'option') {
+    return allowedTypes.includes(entryKind)
+  }
+  return allowedTypes.some(
+    (instrumentType) => !DERIVATIVE_ACCOUNT_INSTRUMENT_TYPES.has(instrumentType),
+  )
+}
+
 type TransactionInspectorTab = 'fact' | 'postings' | 'lots' | 'history'
 
 let fallbackIdempotencySequence = 0
@@ -159,6 +224,98 @@ function primaryIdentifier(
 
 function instrumentSearchLabel(instrument: SharedInstrumentRecord) {
   return `${primaryIdentifier(instrument)} · ${instrument.instrument_name}`
+}
+
+function RegistryInstrumentPicker({
+  label,
+  value,
+  instruments,
+  onSelect,
+}: {
+  label: string
+  value: string
+  instruments: SharedInstrumentRecord[]
+  onSelect: (instrumentId: string) => void
+}) {
+  const [query, setQuery] = useState('')
+  const deferredQuery = useDeferredValue(query)
+  const selectedInstrument =
+    instruments.find((instrument) => instrument.instrument_id === value) ?? null
+  const inputValue = selectedInstrument
+    ? instrumentSearchLabel(selectedInstrument)
+    : query
+  const normalizedQuery = deferredQuery.trim().toLowerCase()
+  const results = useMemo(() => {
+    if (!normalizedQuery) {
+      return []
+    }
+    return instruments
+      .filter((instrument) =>
+        [
+          primaryIdentifier(instrument),
+          instrument.instrument_name,
+          instrument.instrument_type,
+          instrument.currency,
+        ]
+          .join(' ')
+          .toLowerCase()
+          .includes(normalizedQuery),
+      )
+      .slice(0, 12)
+  }, [instruments, normalizedQuery])
+  const showResults = !selectedInstrument && query.trim() !== ''
+
+  function selectResult(instrument: SharedInstrumentRecord) {
+    setQuery('')
+    onSelect(instrument.instrument_id)
+  }
+
+  return (
+    <div className="transaction-instrument-search transaction-registry-picker">
+      <label className="transaction-picker-search">
+        <span>{label}</span>
+        <input
+          type="search"
+          value={inputValue}
+          placeholder="Search ticker or name"
+          onChange={(event) => {
+            setQuery(event.target.value)
+            if (selectedInstrument) {
+              onSelect('')
+            }
+          }}
+          onKeyDown={(event) => {
+            if (event.key !== 'Enter' || results.length === 0) {
+              return
+            }
+            event.preventDefault()
+            selectResult(results[0])
+          }}
+        />
+      </label>
+      {showResults ? (
+        <div className="transaction-instrument-results">
+          {results.map((instrument) => (
+            <button
+              type="button"
+              key={instrument.instrument_id}
+              className="transaction-instrument-result"
+              onClick={() => selectResult(instrument)}
+            >
+              <div className="holding-name-stack">
+                <span>{primaryIdentifier(instrument)}</span>
+                <span className="holding-secondary">{instrument.instrument_name}</span>
+              </div>
+              <span className="transaction-picker-meta">{instrument.currency}</span>
+            </button>
+          ))}
+          {!results.length ? (
+            <div className="transaction-instrument-empty">No matching Registry security.</div>
+          ) : null}
+        </div>
+      ) : null}
+    </div>
+  )
 }
 
 function isTransferTransaction(transactionType: string) {
@@ -264,13 +421,10 @@ function eligibleAccounts(
   transactionType: string,
   accounts: PortfolioAccountRecord[],
   transferObjectType?: string | null,
-  assetDomain?: TransactionAssetDomain,
+  entryKind?: TransactionEntryKind,
 ) {
-  if (assetDomain === 'security' || assetDomain === 'derivative') {
-    return accounts.filter((account) => account.account_type === 'securities_account')
-  }
-  if (assetDomain === 'cash') {
-    return accounts.filter((account) => account.account_type === 'deposit_account')
+  if (entryKind) {
+    return accounts.filter((account) => accountAllowsEntryKind(account, entryKind))
   }
   if (
     transactionType === 'deposit' ||
@@ -626,7 +780,9 @@ type PricingAnchor = 'price' | 'gross_amount'
 
 function buildInitialFormState(accounts: PortfolioAccountRecord[]): TransactionFormState {
   const defaultFormDate = localTodayIso()
-  const defaultSecurityAccount = accounts.find((account) => account.account_type === 'securities_account')
+  const defaultSecurityAccount = accounts.find((account) =>
+    accountAllowsEntryKind(account, 'security'),
+  )
   const defaultCashAccount =
     accounts.find((account) => account.account_id === defaultSecurityAccount?.default_settlement_cash_account_id) ??
     accounts.find((account) => account.account_type === 'deposit_account')
@@ -641,7 +797,7 @@ function buildInitialFormState(accounts: PortfolioAccountRecord[]): TransactionF
     position_effective_date: defaultFormDate,
     entitlement_date: '',
     acquisition_date: '',
-    account_id: defaultSecurityAccount?.account_id ?? accounts[0]?.account_id ?? '',
+    account_id: defaultSecurityAccount?.account_id ?? '',
     counterparty_account_id: '',
     settlement_cash_account_id: defaultCashAccount?.account_id ?? '',
     transfer_object_type: 'cash',
@@ -783,7 +939,7 @@ export default function TransactionsPage() {
   const { portfolioId = '' } = useParams()
   const currentPortfolioIdRef = useRef(portfolioId)
   const [searchParams, setSearchParams] = useSearchParams()
-  const assetDomainSelectRef = useRef<HTMLSelectElement | null>(null)
+  const entryKindControlRef = useRef<HTMLButtonElement | null>(null)
   const securitySearchRef = useRef<HTMLInputElement | null>(null)
   const accountSelectRef = useRef<HTMLSelectElement | null>(null)
   const csvFileInputRef = useRef<HTMLInputElement | null>(null)
@@ -811,6 +967,7 @@ export default function TransactionsPage() {
   const [submittingTransaction, setSubmittingTransaction] = useState(false)
   const [importingCsv, setImportingCsv] = useState(false)
   const [pendingCsvImport, setPendingCsvImport] = useState<{
+    fileName: string
     csvText: string
     preview: PortfolioTransactionCsvPreviewResponse
   } | null>(null)
@@ -818,7 +975,6 @@ export default function TransactionsPage() {
   const [pendingDeleteTransaction, setPendingDeleteTransaction] = useState<PortfolioTransactionRecord | null>(null)
   const [deletingTransaction, setDeletingTransaction] = useState(false)
   const [deleteError, setDeleteError] = useState<string | null>(null)
-  const [selectedTransactionIds, setSelectedTransactionIds] = useState<Set<string>>(() => new Set())
   const [inspectorTab, setInspectorTab] = useState<TransactionInspectorTab>('fact')
   const [form, setForm] = useState<TransactionFormState>(() => buildInitialFormState([]))
   const [derivativeDraft, setDerivativeDraft] = useState<DerivativeContractDraft>(() =>
@@ -857,6 +1013,8 @@ export default function TransactionsPage() {
     account_id: searchParams.get('account_id') ?? '',
     asset_domain:
       (searchParams.get('asset_domain') as PortfolioTransactionFilters['asset_domain']) ?? '',
+    asset_subtype:
+      (searchParams.get('asset_subtype') as PortfolioTransactionFilters['asset_subtype']) ?? '',
     transaction_type: searchParams.get('transaction_type') ?? '',
     position_reference_id: searchParams.get('position_reference_id') ?? '',
     start_date: searchParams.get('start_date') ?? '',
@@ -891,7 +1049,6 @@ export default function TransactionsPage() {
     setPendingDeleteTransaction(null)
     setDeleteError(null)
     setDeletingTransaction(false)
-    setSelectedTransactionIds(new Set())
     setInspectorTab('fact')
 
     if (!portfolioId) {
@@ -994,6 +1151,7 @@ export default function TransactionsPage() {
     portfolioId,
     filters.account_id,
     filters.asset_domain,
+    filters.asset_subtype,
     filters.transaction_type,
     filters.position_reference_id,
     filters.start_date,
@@ -1001,14 +1159,24 @@ export default function TransactionsPage() {
     selectedTransactionId,
   ])
 
+  const formEntryKind = transactionEntryKind(
+    form.asset_domain,
+    derivativeContracts.find(
+      (contract) => contract.derivative_contract_id === form.derivative_contract_id,
+    )?.contract_type ?? derivativeDraft.contract_type,
+  )
+  const formEntryKindLabel =
+    TRANSACTION_ENTRY_KINDS.find((entryKind) => entryKind.value === formEntryKind)?.label ??
+    formEntryKind
+  const formAccountOptions = eligibleAccounts(
+    form.transaction_type,
+    accounts,
+    form.transfer_object_type,
+    formEntryKind,
+  )
   const selectedAccount =
-    accounts.find((account) => account.account_id === form.account_id) ??
-    eligibleAccounts(
-      form.transaction_type,
-      accounts,
-      form.transfer_object_type,
-      form.asset_domain,
-    )[0]
+    formAccountOptions.find((account) => account.account_id === form.account_id) ??
+    formAccountOptions[0]
   const cashAccounts = accounts.filter((account) => account.account_type === 'deposit_account')
   const counterpartyAccounts = eligibleCounterpartyAccounts(
     form.transaction_type,
@@ -1109,6 +1277,7 @@ export default function TransactionsPage() {
     form.asset_domain,
     resolvedAssetType,
     activeOptionType,
+    { newDerivativeContract: isCreatingDerivativeContract },
   )
   const selectedActionValue = transactionActionValue(
     formActionGroups,
@@ -1583,6 +1752,8 @@ export default function TransactionsPage() {
     setForm((current) => ({
       ...current,
       asset_domain: 'derivative',
+      transaction_type: contractId ? current.transaction_type : 'buy',
+      lifecycle_event_type: contractId ? current.lifecycle_event_type : '',
       instrument_id: '',
       instrument_search: '',
       derivative_contract_id: contractId,
@@ -1602,13 +1773,15 @@ export default function TransactionsPage() {
     )
   }
 
-  function updateAssetDomain(nextAssetDomain: TransactionAssetDomain) {
-    const nextTransactionType = nextAssetDomain === 'cash' ? 'deposit' : 'buy'
-    const nextAccount = accounts.find((account) =>
-      nextAssetDomain === 'cash'
-        ? account.account_type === 'deposit_account'
-        : account.account_type === 'securities_account',
-    )
+  function updateEntryKind(nextEntryKind: TransactionEntryKind) {
+    const nextAssetDomain = entryKindAssetDomain(nextEntryKind)
+    const nextTransactionType = nextEntryKind === 'cash' ? 'deposit' : 'buy'
+    const nextAccount = eligibleAccounts(
+      nextTransactionType,
+      accounts,
+      'cash',
+      nextEntryKind,
+    )[0]
     autoQuoteKeyRef.current = null
     autoQuantityKeyRef.current = null
     autoGrossDerivedRef.current = false
@@ -1627,6 +1800,9 @@ export default function TransactionsPage() {
       price: '',
       gross_amount: '',
     }))
+    if (nextEntryKind === 'option' || nextEntryKind === 'fcn') {
+      setDerivativeDraft(buildInitialDerivativeContractDraft(nextEntryKind))
+    }
   }
 
   function updateTransactionAction(actionValue: string) {
@@ -1790,7 +1966,7 @@ export default function TransactionsPage() {
       form.transaction_type,
       accounts,
       form.transfer_object_type,
-      form.asset_domain,
+      formEntryKind,
     )
     if (nextEligibleAccounts.length === 0) {
       return
@@ -1806,7 +1982,7 @@ export default function TransactionsPage() {
   }, [
     accounts,
     form.account_id,
-    form.asset_domain,
+    formEntryKind,
     form.transaction_type,
     form.transfer_object_type,
   ])
@@ -1922,7 +2098,9 @@ export default function TransactionsPage() {
     }
     setForm((current) => ({ ...current, derivative_contract_id: '' }))
     setDerivativeDraft(
-      buildInitialDerivativeContractDraft(requiredContractType ?? 'option'),
+      buildInitialDerivativeContractDraft(
+        requiredContractType ?? selectedDerivativeContract.contract_type,
+      ),
     )
   }, [
     form.asset_domain,
@@ -2067,17 +2245,7 @@ export default function TransactionsPage() {
     try {
       const csvText = await file.text()
       const preview = await previewPortfolioTransactionCsv(portfolioId, csvText)
-      if (preview.error_count > 0) {
-        const rowErrors = preview.rows
-          .filter((row) => row.errors.length)
-          .slice(0, 5)
-          .map((row) => `row ${row.row_number}: ${row.errors.join('; ')}`)
-        throw new Error(
-          [...preview.batch_errors, ...rowErrors].join(' ') ||
-            'CSV preview found invalid transaction rows.',
-        )
-      }
-      setPendingCsvImport({ csvText, preview })
+      setPendingCsvImport({ fileName: file.name, csvText, preview })
     } catch (error) {
       setLedgerError(
         error instanceof Error ? error.message : 'Failed to import transaction CSV.',
@@ -2093,7 +2261,12 @@ export default function TransactionsPage() {
   async function confirmTransactionCsvImport() {
     const pendingImport = pendingCsvImport
     const targetPortfolioId = portfolioId
-    if (!pendingImport || !targetPortfolioId || importingCsv) {
+    if (
+      !pendingImport ||
+      pendingImport.preview.error_count > 0 ||
+      !targetPortfolioId ||
+      importingCsv
+    ) {
       return
     }
     setImportingCsv(true)
@@ -2243,7 +2416,7 @@ export default function TransactionsPage() {
     window.addEventListener('keydown', handleKeyDown)
     window.setTimeout(() => {
       const firstControl =
-        assetDomainSelectRef.current ?? securitySearchRef.current ?? accountSelectRef.current
+        entryKindControlRef.current ?? accountSelectRef.current ?? securitySearchRef.current
       firstControl?.focus()
     }, 0)
     return () => window.removeEventListener('keydown', handleKeyDown)
@@ -2731,18 +2904,66 @@ export default function TransactionsPage() {
   const relatedPositionLots = transactionsWorkspace?.related_position_lots ?? []
   const selectedTransactionChangeLog = transactionsWorkspace?.change_log ?? []
   const visibleTransactions = transactionsWorkspace?.transactions ?? []
+  const selectedFilterEntryKind = filters.asset_domain
+    ? transactionEntryKind(filters.asset_domain, filters.asset_subtype)
+    : null
+  const transactionPositionReferenceIds = useMemo(() => {
+    const references = transactionsWorkspace?.position_reference_ids?.length
+      ? [...transactionsWorkspace.position_reference_ids]
+      : visibleTransactions.flatMap((transaction) => [
+          transaction.instrument_id ?? transaction.derivative_contract_id ?? '',
+        ])
+    if (filters.position_reference_id) {
+      references.push(filters.position_reference_id)
+    }
+    return new Set(references.filter(Boolean))
+  }, [filters.position_reference_id, transactionsWorkspace?.position_reference_ids, visibleTransactions])
+  const transactionFilterInstruments = instruments.filter(
+    (instrument) => transactionPositionReferenceIds.has(instrument.instrument_id),
+  )
+  const transactionFilterContracts = derivativeContracts.filter(
+    (contract) =>
+      transactionPositionReferenceIds.has(contract.derivative_contract_id) &&
+      (!selectedFilterEntryKind ||
+        selectedFilterEntryKind === contract.contract_type),
+  )
+  const fcnTransactionCount =
+    summary?.fcn_transactions ??
+    visibleTransactions.filter(
+      (transaction) =>
+        transaction.asset_domain === 'derivative' && transaction.asset_subtype === 'fcn',
+    ).length
+  const optionTransactionCount =
+    summary?.option_transactions ??
+    visibleTransactions.filter(
+      (transaction) =>
+        transaction.asset_domain === 'derivative' && transaction.asset_subtype === 'option',
+    ).length
+  const transactionFilterTypeGroups = useMemo(() => {
+    if (!selectedFilterEntryKind) {
+      return TRANSACTION_FILTER_TYPE_GROUPS
+    }
+    const allowedTransactionTypes = new Set(
+      transactionActionGroups(
+        entryKindAssetDomain(selectedFilterEntryKind),
+        selectedFilterEntryKind === 'fcn' || selectedFilterEntryKind === 'option'
+          ? selectedFilterEntryKind
+          : null,
+      ).flatMap((group) => group.actions.map((action) => action.transactionType)),
+    )
+    return TRANSACTION_FILTER_TYPE_GROUPS.map((group) => ({
+      ...group,
+      types: group.types.filter((transactionType) =>
+        allowedTransactionTypes.has(transactionType),
+      ),
+    })).filter((group) => group.types.length > 0)
+  }, [selectedFilterEntryKind])
   const latestTradeDate = visibleTransactions.reduce(
     (latest, transaction) =>
       !latest || transaction.trade_date > latest ? transaction.trade_date : latest,
     '',
   )
   const activeFilterCount = countActiveTransactionFilters(filters)
-  const selectedVisibleTransactions = useMemo(
-    () => visibleTransactions.filter((transaction) => selectedTransactionIds.has(transaction.transaction_id)),
-    [selectedTransactionIds, visibleTransactions],
-  )
-  const allVisibleTransactionsSelected =
-    visibleTransactions.length > 0 && selectedVisibleTransactions.length === visibleTransactions.length
   const ticketGrossNumber = Number(computedGrossAmount)
   const ticketGrossAmount =
     computedGrossAmount.trim() && Number.isFinite(ticketGrossNumber) && ticketGrossNumber >= 0
@@ -2776,51 +2997,9 @@ export default function TransactionsPage() {
   const previewCurrency = resolvedTransactionCurrency || selectedAccount?.currency || 'USD'
 
   useEffect(() => {
-    const visibleIds = new Set(visibleTransactions.map((transaction) => transaction.transaction_id))
-    setSelectedTransactionIds((current) => {
-      const retained = new Set(Array.from(current).filter((transactionId) => visibleIds.has(transactionId)))
-      if (retained.size === current.size) {
-        return current
-      }
-      return retained
-    })
-  }, [visibleTransactions])
-
-  useEffect(() => {
     setInspectorTab('fact')
   }, [selectedTransactionId])
 
-  function toggleTransactionSelection(transactionId: string) {
-    setSelectedTransactionIds((current) => {
-      const next = new Set(current)
-      if (next.has(transactionId)) {
-        next.delete(transactionId)
-      } else {
-        next.add(transactionId)
-      }
-      return next
-    })
-  }
-
-  function toggleAllVisibleTransactions() {
-    setSelectedTransactionIds(
-      allVisibleTransactionsSelected
-        ? new Set()
-        : new Set(visibleTransactions.map((transaction) => transaction.transaction_id)),
-    )
-  }
-
-  function exportTransactions(format: TableExportFormat) {
-    const exportRows = selectedVisibleTransactions.length
-      ? selectedVisibleTransactions
-      : visibleTransactions
-    downloadTable(
-      `transactions-${portfolioId}-${new Date().toISOString().slice(0, 10)}`,
-      buildTransactionExportRows(exportRows),
-      format,
-      'Transactions',
-    )
-  }
   const amountField = (
     <label className="transaction-ticket-field">
       <span>
@@ -2872,7 +3051,7 @@ export default function TransactionsPage() {
             <div className="portfolio-detail-meta">
               {summary ? `${summary.total_transactions} facts` : `${visibleTransactions.length} facts`}
               {summary
-                ? ` · ${summary.security_transactions} security · ${summary.derivative_transactions} derivative · ${summary.cash_transactions} cash`
+                ? ` · ${summary.security_transactions} security · ${fcnTransactionCount} FCN · ${optionTransactionCount} option · ${summary.cash_transactions} cash`
                 : ''}
               {latestTradeDate ? ` · latest trade ${latestTradeDate}` : ''}
               {summary?.external_cash_flows ? ` · ${summary.external_cash_flows} external flows` : ''}
@@ -2880,32 +3059,54 @@ export default function TransactionsPage() {
             </div>
           </div>
           <div className="transaction-filter-actions">
-            {selectedVisibleTransactions.length ? (
-              <span className="transaction-selection-count">{selectedVisibleTransactions.length} selected</span>
-            ) : null}
-            <DownloadFormatMenu
-              wrapperClassName="portfolio-download-menu"
-              buttonClassName="holdings-toolbar-button"
-              menuClassName="portfolio-download-menu-list"
-              itemClassName="portfolio-download-menu-item"
-              buttonLabel={selectedVisibleTransactions.length ? 'Export Selected' : 'Export Ledger'}
-              disabled={!visibleTransactions.length}
-              onSelect={exportTransactions}
-            />
-            <a
-              className="toolbar-link"
-              href={portfolioTransactionCsvDownloadUrl(portfolioId)}
-              download
-            >
-              Download CSV
-            </a>
-            <a
-              className="toolbar-link"
-              href={portfolioTransactionCsvTemplateUrl(portfolioId)}
-              download
-            >
-              CSV Template
-            </a>
+            <details className="portfolio-download-menu transaction-csv-menu">
+              <summary
+                className="holdings-toolbar-button"
+                role="button"
+                aria-haspopup="menu"
+              >
+                Transaction CSV
+              </summary>
+              <div
+                className="portfolio-download-menu-list transaction-csv-menu-list"
+                role="menu"
+                aria-label="Transaction CSV actions"
+              >
+                <a
+                  className="portfolio-download-menu-item transaction-csv-menu-item"
+                  href={portfolioTransactionCsvDownloadUrl(portfolioId)}
+                  download
+                  role="menuitem"
+                  onClick={(event) => event.currentTarget.closest('details')?.removeAttribute('open')}
+                >
+                  <strong>Export All Transactions</strong>
+                  <span>Every transaction in the portfolio, in the same format accepted by Import CSV.</span>
+                </a>
+                <a
+                  className="portfolio-download-menu-item transaction-csv-menu-item"
+                  href={portfolioTransactionCsvTemplateUrl(portfolioId)}
+                  download
+                  role="menuitem"
+                  onClick={(event) => event.currentTarget.closest('details')?.removeAttribute('open')}
+                >
+                  <strong>Blank CSV Template</strong>
+                  <span>The same columns as Export All, with no transaction rows.</span>
+                </a>
+                <button
+                  type="button"
+                  role="menuitem"
+                  className="portfolio-download-menu-item transaction-csv-menu-item"
+                  disabled={importingCsv || metaLoading}
+                  onClick={(event) => {
+                    event.currentTarget.closest('details')?.removeAttribute('open')
+                    csvFileInputRef.current?.click()
+                  }}
+                >
+                  <strong>{importingCsv ? 'Validating CSV…' : 'Import CSV'}</strong>
+                  <span>Preview every row first; nothing is written until confirmation.</span>
+                </button>
+              </div>
+            </details>
             <input
               ref={csvFileInputRef}
               type="file"
@@ -2915,14 +3116,6 @@ export default function TransactionsPage() {
                 void handleTransactionCsvFile(event.target.files?.[0] ?? null)
               }
             />
-            <button
-              type="button"
-              className="toolbar-link"
-              disabled={importingCsv || metaLoading}
-              onClick={() => csvFileInputRef.current?.click()}
-            >
-              {importingCsv ? 'Validating CSV…' : 'Import CSV'}
-            </button>
             <button
               type="button"
               className="toolbar-link button-primary"
@@ -2957,26 +3150,35 @@ export default function TransactionsPage() {
               </select>
             </label>
             <label>
-              <span>Asset Class</span>
+              <span>Asset Type</span>
               <select
                 className="toolbar-select transaction-filter-input"
-                value={filters.asset_domain ?? ''}
-                onChange={(event) =>
+                value={selectedFilterEntryKind ?? ''}
+                onChange={(event) => {
+                  const nextEntryKind = event.target.value as TransactionEntryKind | ''
                   patchSearchParams({
-                    asset_domain: event.target.value,
+                    asset_domain: nextEntryKind
+                      ? entryKindAssetDomain(nextEntryKind)
+                      : null,
+                    asset_subtype:
+                      nextEntryKind === 'fcn' || nextEntryKind === 'option'
+                        ? nextEntryKind
+                        : null,
+                    transaction_type: null,
                     position_reference_id: null,
                     transaction_id: null,
                   })
-                }
+                }}
               >
-                <option value="">All asset classes</option>
+                <option value="">All asset types</option>
                 <option value="security">Security</option>
-                <option value="derivative">Derivative</option>
+                <option value="fcn">FCN</option>
+                <option value="option">Option</option>
                 <option value="cash">Cash &amp; Operations</option>
               </select>
             </label>
             <label>
-              <span>Type</span>
+              <span>Action</span>
               <select
                 className="toolbar-select transaction-filter-input"
                 value={filters.transaction_type ?? ''}
@@ -2987,8 +3189,8 @@ export default function TransactionsPage() {
                   })
                 }
               >
-                <option value="">All types</option>
-                {TRANSACTION_FILTER_TYPE_GROUPS.map((group) => (
+                <option value="">All actions</option>
+                {transactionFilterTypeGroups.map((group) => (
                   <optgroup key={group.label} label={group.label}>
                     {group.types.map((transactionType) => (
                       <option key={transactionType} value={transactionType}>
@@ -3004,7 +3206,7 @@ export default function TransactionsPage() {
               <select
                 className="toolbar-select transaction-filter-input"
                 value={filters.position_reference_id ?? ''}
-                disabled={metaLoading || filters.asset_domain === 'cash'}
+                disabled={metaLoading || selectedFilterEntryKind === 'cash'}
                 onChange={(event) =>
                   patchSearchParams({
                     position_reference_id: event.target.value,
@@ -3013,18 +3215,18 @@ export default function TransactionsPage() {
                 }
               >
                 <option value="">All assets</option>
-                {filters.asset_domain !== 'derivative' ? (
+                {selectedFilterEntryKind !== 'fcn' && selectedFilterEntryKind !== 'option' ? (
                   <optgroup label="Registry securities">
-                    {instruments.map((instrument) => (
+                    {transactionFilterInstruments.map((instrument) => (
                       <option key={instrument.instrument_id} value={instrument.instrument_id}>
                         {instrumentSearchLabel(instrument)}
                       </option>
                     ))}
                   </optgroup>
                 ) : null}
-                {filters.asset_domain !== 'security' && filters.asset_domain !== 'cash' ? (
+                {selectedFilterEntryKind !== 'security' && selectedFilterEntryKind !== 'cash' ? (
                   <optgroup label="Portfolio derivative contracts">
-                    {derivativeContracts.map((contract) => (
+                    {transactionFilterContracts.map((contract) => (
                       <option key={contract.derivative_contract_id} value={contract.derivative_contract_id}>
                         {contract.contract_name} · {formatLabel(contract.contract_type)}
                       </option>
@@ -3072,6 +3274,7 @@ export default function TransactionsPage() {
                 patchSearchParams({
                   account_id: null,
                   asset_domain: null,
+                  asset_subtype: null,
                   transaction_type: null,
                   position_reference_id: null,
                   start_date: null,
@@ -3092,15 +3295,15 @@ export default function TransactionsPage() {
                 Account: {accountNameById[filters.account_id] || filters.account_id} <span aria-hidden="true">×</span>
               </button>
             ) : null}
-            {filters.asset_domain ? (
-              <button type="button" onClick={() => patchSearchParams({ asset_domain: null, transaction_id: null })}>
-                Asset Class: {filters.asset_domain === 'cash' ? 'Cash & Operations' : formatLabel(filters.asset_domain)}{' '}
+            {selectedFilterEntryKind ? (
+              <button type="button" onClick={() => patchSearchParams({ asset_domain: null, asset_subtype: null, position_reference_id: null, transaction_id: null })}>
+                Asset Type: {TRANSACTION_ENTRY_KINDS.find((item) => item.value === selectedFilterEntryKind)?.label}{' '}
                 <span aria-hidden="true">×</span>
               </button>
             ) : null}
             {filters.transaction_type ? (
               <button type="button" onClick={() => patchSearchParams({ transaction_type: null, transaction_id: null })}>
-                Type: {formatLabel(filters.transaction_type)} <span aria-hidden="true">×</span>
+                Action: {transactionActivityLabel(filters.transaction_type)} <span aria-hidden="true">×</span>
               </button>
             ) : null}
             {filters.position_reference_id ? (
@@ -3134,27 +3337,10 @@ export default function TransactionsPage() {
         {!ledgerError && transactionsWorkspace ? (
           <div className="transaction-workbench-grid">
             <section className={`transaction-ledger-panel ${loadingTransactions ? 'transaction-ledger-panel-refreshing' : ''}`}>
-              <div className="transaction-bulk-bar">
-                <label className="transaction-select-all">
-                  <input
-                    type="checkbox"
-                    checked={allVisibleTransactionsSelected}
-                    onChange={toggleAllVisibleTransactions}
-                  />
-                  <span>Select visible</span>
-                </label>
-                <span>{visibleTransactions.length} ledger facts</span>
-                {selectedVisibleTransactions.length ? (
-                  <button type="button" onClick={() => setSelectedTransactionIds(new Set())}>
-                    Clear selection
-                  </button>
-                ) : null}
-              </div>
               <div className="table-shell transaction-table-shell" aria-busy={loadingTransactions}>
                 <table className="transactions-table transaction-ledger-table">
                   <thead>
                     <tr>
-                      <th className="transaction-select-column"><span className="sr-only">Select</span></th>
                       <th>Trade</th>
                       <th>Activity</th>
                       <th>Account / Settlement</th>
@@ -3171,7 +3357,6 @@ export default function TransactionsPage() {
                         transaction.trade_time_is_estimated,
                       )
                       const isSelected = transaction.transaction_id === selectedTransactionId
-                      const isChecked = selectedTransactionIds.has(transaction.transaction_id)
                       return (
                         <tr
                           key={transaction.transaction_id}
@@ -3186,15 +3371,6 @@ export default function TransactionsPage() {
                             }
                           }}
                         >
-                          <td className="transaction-select-column">
-                            <input
-                              type="checkbox"
-                              aria-label={`Select transaction ${transaction.transaction_id}`}
-                              checked={isChecked}
-                              onClick={(event) => event.stopPropagation()}
-                              onChange={() => toggleTransactionSelection(transaction.transaction_id)}
-                            />
-                          </td>
                           <td>
                             <div className="holding-name-stack">
                               <strong>{transaction.trade_date}</strong>
@@ -3217,7 +3393,9 @@ export default function TransactionsPage() {
                               <span className="holding-secondary">
                                 {transaction.asset_domain === 'cash'
                                   ? 'Cash & Operations'
-                                  : `${formatLabel(transaction.asset_domain)} · ${formatLabel(transaction.asset_subtype || 'other')}`}
+                                  : transaction.asset_domain === 'derivative'
+                                    ? formatLabel(transaction.asset_subtype || 'derivative')
+                                    : `Security · ${formatLabel(transaction.asset_subtype || 'other')}`}
                               </span>
                               {transaction.instrument_ref ? (
                                 <>
@@ -3377,8 +3555,20 @@ export default function TransactionsPage() {
                       </div>
                       <dl className="transaction-fact-list">
                         <div>
-                          <dt>Instrument</dt>
-                          <dd>{selectedTransaction.instrument_ref ? `${primaryIdentifier(selectedTransaction.instrument_ref)} · ${selectedTransaction.instrument_ref.instrument_name}` : 'Cash ledger'}</dd>
+                          <dt>
+                            {selectedTransaction.derivative_contract
+                              ? 'Contract'
+                              : selectedTransaction.instrument_ref
+                                ? 'Security'
+                                : 'Ledger'}
+                          </dt>
+                          <dd>
+                            {selectedTransaction.instrument_ref
+                              ? `${primaryIdentifier(selectedTransaction.instrument_ref)} · ${selectedTransaction.instrument_ref.instrument_name}`
+                              : selectedTransaction.derivative_contract
+                                ? `${selectedTransaction.derivative_contract.contract_name} · ${formatLabel(selectedTransaction.derivative_contract.contract_type)}`
+                                : 'Cash & Operations'}
+                          </dd>
                         </div>
                         <div>
                           <dt>Account</dt>
@@ -3600,96 +3790,63 @@ export default function TransactionsPage() {
               <div className="transaction-ticket-main">
                 <div className="transaction-ticket-section-heading">
                   <div>
-                    <span>Classification</span>
-                    <strong>Choose the asset class, then the action</strong>
+                    <span>Entry setup</span>
+                    <strong>Choose the entry type, account, asset, and action</strong>
                   </div>
                   <em>All dates use {DEFAULT_TRADE_TIMEZONE}</em>
                 </div>
-                <div className="transaction-entry-kind-row">
-                  <label className="transaction-ticket-field">
-                    <span>Asset Category</span>
-                    <select
-                      ref={assetDomainSelectRef}
-                      value={form.asset_domain}
-                      disabled={Boolean(activeEventTask) || submittingTransaction}
-                      onChange={(event) =>
-                        updateAssetDomain(event.target.value as TransactionAssetDomain)
+                <div
+                  className="transaction-entry-kind-selector"
+                  role="group"
+                  aria-label="Entry Type"
+                >
+                  {TRANSACTION_ENTRY_KINDS.map((entryKind, index) => (
+                    <button
+                      key={entryKind.value}
+                      ref={index === 0 ? entryKindControlRef : undefined}
+                      type="button"
+                      className={
+                        formEntryKind === entryKind.value
+                          ? 'transaction-entry-kind-option transaction-entry-kind-option-active'
+                          : 'transaction-entry-kind-option'
                       }
+                      aria-pressed={formEntryKind === entryKind.value}
+                      disabled={Boolean(activeEventTask) || submittingTransaction}
+                      onClick={() => updateEntryKind(entryKind.value)}
                     >
-                      <option value="security">Security</option>
-                      <option value="derivative">Derivative</option>
-                      <option value="cash">Cash &amp; Operations</option>
-                    </select>
-                  </label>
-                  <p>
-                    Security, derivative, and cash facts stay separate throughout entry,
-                    filtering, tracking, and export.
-                  </p>
+                      <strong>{entryKind.label}</strong>
+                      <span>{entryKind.description}</span>
+                    </button>
+                  ))}
                 </div>
 
-              {form.asset_domain === 'derivative' ? (
                 <div className="transaction-form-grid transaction-ticket-grid">
                   <label className="transaction-ticket-field">
-                    <span>Derivative Type</span>
+                    <span>Account</span>
                     <select
-                      value={resolvedAssetType ?? derivativeDraft.contract_type}
-                      onChange={(event) => {
-                        const contractType = event.target.value as 'option' | 'fcn'
+                      ref={accountSelectRef}
+                      value={form.account_id}
+                      disabled={submittingTransaction}
+                      onChange={(event) =>
                         setForm((current) => ({
                           ...current,
-                          transaction_type: 'buy',
-                          lifecycle_event_type: '',
-                          derivative_contract_id: '',
-                          quantity: '',
-                          price: '',
-                          gross_amount: '',
+                          account_id: event.target.value,
                         }))
-                        setDerivativeDraft(buildInitialDerivativeContractDraft(contractType))
-                      }}
+                      }
                     >
-                      <option value="option">Option</option>
-                      <option value="fcn">FCN</option>
+                      {formAccountOptions.map((account) => (
+                        <option key={account.account_id} value={account.account_id}>
+                          {account.account_name} · {account.currency}
+                        </option>
+                      ))}
                     </select>
+                    {!formAccountOptions.length ? (
+                      <span className="transaction-ticket-hint transaction-ticket-hint-warning">
+                        No account is configured for this entry type.
+                      </span>
+                    ) : null}
                   </label>
                 </div>
-              ) : null}
-
-              <div className="transaction-entry-kind-row">
-                <label className="transaction-ticket-field">
-                  <span>Action</span>
-                  <select
-                    value={selectedActionValue}
-                    disabled={Boolean(activeEventTask) || submittingTransaction}
-                    onChange={(event) => updateTransactionAction(event.target.value)}
-                  >
-                    {formActionGroups.map((group) => (
-                      <optgroup key={group.label} label={group.label}>
-                        {group.actions.map((transactionAction) => (
-                          <option key={transactionAction.value} value={transactionAction.value}>
-                            {transactionAction.label}
-                          </option>
-                        ))}
-                      </optgroup>
-                    ))}
-                  </select>
-                </label>
-                <p>
-                  {isFundTrade
-                    ? 'Fund subscriptions and redemptions use confirmed amount and shares; unit price is calculated.'
-                    : form.asset_domain === 'derivative'
-                      ? 'Option open/close direction and lifecycle outcome are recorded explicitly.'
-                      : 'Only actions valid for this asset class are shown.'}
-                </p>
-              </div>
-
-              {(form.transaction_type === 'lifecycle_event' ||
-                form.transaction_type === 'maturity_redemption') &&
-              resolvedAssetType === 'option' ? (
-                <div className="portfolio-detail-meta">
-                  This closes only the selected option contract. Physical delivery is recorded
-                  as a separate Security transaction at the delivery-date reference price.
-                </div>
-              ) : null}
 
               {shouldAllowRegistryInstrument ? (
                 <section className="transaction-instrument-search transaction-instrument-search-top">
@@ -3758,7 +3915,7 @@ export default function TransactionsPage() {
               {shouldAllowDerivativeContract ? (
                 <section className="transaction-instrument-search transaction-instrument-search-top">
                   <label className="transaction-ticket-field">
-                    <span>Portfolio Contract</span>
+                    <span>{formEntryKindLabel} Contract</span>
                     <select
                       value={form.derivative_contract_id}
                       onChange={(event) => selectDerivativeContract(event.target.value)}
@@ -3777,8 +3934,59 @@ export default function TransactionsPage() {
                 </section>
               ) : null}
 
+              <div className="transaction-entry-kind-row">
+                <label className="transaction-ticket-field">
+                  <span>Action</span>
+                  <select
+                    value={selectedActionValue}
+                    disabled={Boolean(activeEventTask) || submittingTransaction}
+                    onChange={(event) => updateTransactionAction(event.target.value)}
+                  >
+                    {formActionGroups.map((group) => (
+                      <optgroup key={group.label} label={group.label}>
+                        {group.actions.map((transactionAction) => (
+                          <option key={transactionAction.value} value={transactionAction.value}>
+                            {transactionAction.label}
+                          </option>
+                        ))}
+                      </optgroup>
+                    ))}
+                  </select>
+                </label>
+                <p>
+                  {isFundTrade
+                    ? 'Fund subscriptions and redemptions use confirmed amount and shares; unit price is calculated.'
+                    : formEntryKind === 'option'
+                      ? isCreatingDerivativeContract
+                        ? 'A new option can only open or establish a position. Close and lifecycle actions require an existing contract.'
+                        : 'Call or put open, close, and lifecycle direction is recorded explicitly.'
+                      : formEntryKind === 'fcn'
+                        ? isCreatingDerivativeContract
+                          ? 'A new FCN records an entry or opening balance. Lifecycle actions require an existing contract.'
+                          : 'Entry, coupon, exit, and lifecycle outcomes remain separate economic facts.'
+                        : 'Only actions valid for this entry type are shown.'}
+                </p>
+              </div>
+
+              {(form.transaction_type === 'lifecycle_event' ||
+                form.transaction_type === 'maturity_redemption') &&
+              resolvedAssetType === 'option' ? (
+                <div className="portfolio-detail-meta">
+                  This closes only the selected option contract. Physical delivery is recorded
+                  as a separate Security transaction at the delivery-date reference price.
+                </div>
+              ) : null}
+
               {isCreatingDerivativeContract ? (
-                <div className="transaction-form-grid transaction-ticket-grid">
+                <section className="transaction-contract-definition">
+                  <div className="transaction-contract-definition-head">
+                    <div>
+                      <span>New {formEntryKindLabel} contract</span>
+                      <strong>Define the immutable contract terms</strong>
+                    </div>
+                    <em>The transaction below records the economic event.</em>
+                  </div>
+                  <div className="transaction-form-grid transaction-ticket-grid">
                   <label className="transaction-ticket-field">
                     <span>Contract ID</span>
                     <input
@@ -3818,25 +4026,17 @@ export default function TransactionsPage() {
 
                   {derivativeDraft.contract_type === 'option' ? (
                     <>
-                      <label className="transaction-ticket-field">
-                        <span>Underlying Security</span>
-                        <select
-                          value={derivativeDraft.option_underlying_instrument_id}
-                          onChange={(event) =>
-                            setDerivativeDraft((current) => ({
-                              ...current,
-                              option_underlying_instrument_id: event.target.value,
-                            }))
-                          }
-                        >
-                          <option value="">Select Registry security</option>
-                          {instruments.map((instrument) => (
-                            <option key={instrument.instrument_id} value={instrument.instrument_id}>
-                              {instrumentSearchLabel(instrument)}
-                            </option>
-                          ))}
-                        </select>
-                      </label>
+                      <RegistryInstrumentPicker
+                        label="Underlying Security"
+                        value={derivativeDraft.option_underlying_instrument_id}
+                        instruments={instruments}
+                        onSelect={(instrumentId) =>
+                          setDerivativeDraft((current) => ({
+                            ...current,
+                            option_underlying_instrument_id: instrumentId,
+                          }))
+                        }
+                      />
                       <label className="transaction-ticket-field">
                         <span>Option Type</span>
                         <select
@@ -4000,30 +4200,23 @@ export default function TransactionsPage() {
                         </div>
                         {derivativeDraft.fcn_underlyings.map((underlying, index) => (
                           <div className="transaction-fcn-underlying-row" key={index}>
-                            <label className="transaction-ticket-field transaction-fcn-security-field">
-                              <span>Security</span>
-                              <select
-                                aria-label={`FCN underlying ${index + 1}`}
+                            <div className="transaction-fcn-security-field">
+                              <RegistryInstrumentPicker
+                                label={`Underlying ${index + 1}`}
                                 value={underlying.instrument_id}
-                                onChange={(event) =>
+                                instruments={instruments}
+                                onSelect={(instrumentId) =>
                                   setDerivativeDraft((current) => ({
                                     ...current,
                                     fcn_underlyings: current.fcn_underlyings.map((item, itemIndex) =>
                                       itemIndex === index
-                                        ? { ...item, instrument_id: event.target.value }
+                                        ? { ...item, instrument_id: instrumentId }
                                         : item,
                                     ),
                                   }))
                                 }
-                              >
-                                <option value="">Select Registry security</option>
-                                {instruments.map((instrument) => (
-                                  <option key={instrument.instrument_id} value={instrument.instrument_id}>
-                                    {instrumentSearchLabel(instrument)}
-                                  </option>
-                                ))}
-                              </select>
-                            </label>
+                              />
+                            </div>
                             <div className="transaction-fcn-underlying-actions">
                               <label className="transaction-fcn-deliverable">
                                 <input
@@ -4089,7 +4282,8 @@ export default function TransactionsPage() {
                       </div>
                     </>
                   )}
-                </div>
+                  </div>
+                </section>
               ) : null}
 
               {activeDerivativeContract?.contract_type === 'option' ? (
@@ -4110,31 +4304,6 @@ export default function TransactionsPage() {
               ) : null}
 
               <div className="transaction-form-grid transaction-ticket-grid">
-                <label className="transaction-ticket-field">
-                  <span>Account</span>
-                  <select
-                    ref={accountSelectRef}
-                    value={form.account_id}
-                    onChange={(event) =>
-                      setForm((current) => ({
-                        ...current,
-                        account_id: event.target.value,
-                      }))
-                    }
-                  >
-                    {eligibleAccounts(
-                      form.transaction_type,
-                      accounts,
-                      form.transfer_object_type,
-                      form.asset_domain,
-                    ).map((account) => (
-                      <option key={account.account_id} value={account.account_id}>
-                        {account.account_name} · {account.currency}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-
                 {isFxConversion ? (
                   <label className="transaction-ticket-field">
                     <span>Target Cash Account</span>
@@ -4679,7 +4848,7 @@ export default function TransactionsPage() {
                 <button
                   type="submit"
                   className="toolbar-link button-primary"
-                  disabled={submittingTransaction}
+                  disabled={submittingTransaction || !selectedAccount}
                 >
                   {submittingTransaction
                     ? 'Saving…'
@@ -4694,15 +4863,49 @@ export default function TransactionsPage() {
       ) : null}
       <ConfirmDialog
         open={Boolean(pendingCsvImport)}
-        title="Import Transaction CSV"
+        title="Review Transaction CSV"
         description={
           pendingCsvImport ? (
-            <div>
+            <div className="transaction-csv-preview">
+              <div>
+                <strong>{pendingCsvImport.fileName}</strong>
+                <span>
+                  {pendingCsvImport.preview.row_count} rows · {pendingCsvImport.preview.valid_count} valid ·{' '}
+                  {pendingCsvImport.preview.error_count} issues
+                </span>
+              </div>
               <p>
-                Import {pendingCsvImport.preview.valid_count} validated transaction row(s)?
+                {pendingCsvImport.preview.error_count
+                  ? 'Nothing has been imported. Fix the issues below, then choose the file again.'
+                  : `Import ${pendingCsvImport.preview.valid_count} validated transaction fact(s)?`}
               </p>
+              {pendingCsvImport.preview.batch_errors.length ? (
+                <div className="transaction-csv-preview-issues">
+                  <strong>File issues</strong>
+                  <ul>
+                    {pendingCsvImport.preview.batch_errors.map((error) => (
+                      <li key={error}>{error}</li>
+                    ))}
+                  </ul>
+                </div>
+              ) : null}
+              {pendingCsvImport.preview.rows.some((row) => row.errors.length) ? (
+                <div className="transaction-csv-preview-issues">
+                  <strong>Row issues</strong>
+                  <ul>
+                    {pendingCsvImport.preview.rows
+                      .filter((row) => row.errors.length)
+                      .slice(0, 20)
+                      .map((row) => (
+                        <li key={row.row_number}>
+                          Row {row.row_number}: {row.errors.join('; ')}
+                        </li>
+                      ))}
+                  </ul>
+                </div>
+              ) : null}
               {pendingCsvImport.preview.warnings.length ? (
-                <div>
+                <div className="transaction-csv-preview-warnings">
                   <strong>Warnings</strong>
                   <ul>
                     {pendingCsvImport.preview.warnings.map((warning) => (
@@ -4714,10 +4917,12 @@ export default function TransactionsPage() {
             </div>
           ) : null
         }
-        confirmLabel="Import Rows"
+        confirmLabel={`Import ${pendingCsvImport?.preview.valid_count ?? 0} Rows`}
         busyLabel="Importing…"
         error={csvImportError}
         busy={importingCsv}
+        confirmDisabled={Boolean(pendingCsvImport?.preview.error_count)}
+        confirmTone="primary"
         onCancel={() => {
           setPendingCsvImport(null)
           setCsvImportError(null)
