@@ -10323,7 +10323,6 @@ input[type='date']::-webkit-calendar-picker-indicator {
   gap: 2px;
 }
 
-.transaction-ticket-section-heading span,
 .transaction-ticket-section-heading em {
   color: var(--portfolio-muted);
   font-size: 11px;
@@ -10374,14 +10373,6 @@ input[type='date']::-webkit-calendar-picker-indicator {
 .transaction-entry-kind-option strong {
   font-size: 12px;
   font-weight: 600;
-}
-
-.transaction-entry-kind-description,
-.transaction-entry-action-note {
-  margin: -8px 0 0;
-  color: var(--portfolio-muted);
-  font-size: 11px;
-  line-height: 1.45;
 }
 
 .transaction-entry-context-grid {
@@ -10471,13 +10462,7 @@ input[type='date']::-webkit-calendar-picker-indicator {
   content: '−';
 }
 
-.transaction-entry-additional-details > summary > span {
-  color: var(--portfolio-muted);
-  font-size: 11px;
-}
-
 .transaction-entry-additional-details > summary > strong {
-  margin-left: auto;
   color: var(--portfolio-ink);
   font-size: 12px;
   font-weight: 500;
@@ -10496,18 +10481,6 @@ input[type='date']::-webkit-calendar-picker-indicator {
   gap: 14px;
   padding-bottom: 10px;
   border-bottom: 1px solid var(--portfolio-line);
-}
-
-.transaction-contract-definition-head > div {
-  display: grid;
-  gap: 2px;
-}
-
-.transaction-contract-definition-head span,
-.transaction-contract-definition-head em {
-  color: var(--portfolio-muted);
-  font-size: 10px;
-  font-style: normal;
 }
 
 .transaction-contract-definition-head strong {
@@ -10537,20 +10510,10 @@ input[type='date']::-webkit-calendar-picker-indicator {
   gap: 12px;
 }
 
-.transaction-fcn-underlyings-head > div {
-  display: grid;
-  gap: 3px;
-}
-
 .transaction-fcn-underlyings-head strong {
   color: var(--portfolio-ink);
   font-size: 12px;
   font-weight: 600;
-}
-
-.transaction-fcn-underlyings-head span {
-  color: var(--portfolio-muted);
-  font-size: 11px;
 }
 
 .transaction-fcn-underlying-row {

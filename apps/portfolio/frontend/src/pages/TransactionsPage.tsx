@@ -1165,11 +1165,9 @@ export default function TransactionsPage() {
       (contract) => contract.derivative_contract_id === form.derivative_contract_id,
     )?.contract_type ?? derivativeDraft.contract_type,
   )
-  const formEntryKindConfig = TRANSACTION_ENTRY_KINDS.find(
-    (entryKind) => entryKind.value === formEntryKind,
-  )
-  const formEntryKindLabel = formEntryKindConfig?.label ?? formEntryKind
-  const formEntryKindDescription = formEntryKindConfig?.description ?? ''
+  const formEntryKindLabel =
+    TRANSACTION_ENTRY_KINDS.find((entryKind) => entryKind.value === formEntryKind)?.label ??
+    formEntryKind
   const formAccountOptions = eligibleAccounts(
     form.transaction_type,
     accounts,
@@ -1296,11 +1294,9 @@ export default function TransactionsPage() {
     positionPreviewAccountRole === 'source'
       ? selectedCounterparty?.account_id ?? ''
       : selectedAccount?.account_id ?? form.account_id
-  const resolvedTransactionCurrency =
-    selectedDerivativeContract?.currency?.toUpperCase() ??
-    selectedInstrument?.currency?.toUpperCase() ??
-    selectedAccount?.currency?.toUpperCase() ??
-    'USD'
+  const resolvedTransactionCurrency = selectedAccount?.currency?.toUpperCase() ?? ''
+  const activeDerivativeCurrency =
+    selectedDerivativeContract?.currency?.toUpperCase() ?? resolvedTransactionCurrency
   const resolvedCounterpartyCurrency = selectedCounterparty?.currency?.toUpperCase() ?? ''
   const sharedFxRate = useMemo(() => {
     if (!isFxConversion || !resolvedTransactionCurrency || !resolvedCounterpartyCurrency) {
@@ -2996,8 +2992,6 @@ export default function TransactionsPage() {
     ticketQuantityDelta < 0 &&
     projectedPositionQuantity != null &&
     projectedPositionQuantity < -1e-9
-  const previewCurrency = resolvedTransactionCurrency || selectedAccount?.currency || 'USD'
-
   useEffect(() => {
     setInspectorTab('fact')
   }, [selectedTransactionId])
@@ -3743,9 +3737,6 @@ export default function TransactionsPage() {
                 <div className="panel-title">
                   {isEditingTransaction ? 'Correct Transaction' : 'Record Transaction'}
                 </div>
-                <div className="portfolio-detail-meta">
-                  Store the confirmed economic fact; accounting postings and lots are derived.
-                </div>
               </div>
               <button
                 type="button"
@@ -3766,7 +3757,6 @@ export default function TransactionsPage() {
               <div className="transaction-ticket-main">
                 <div className="transaction-ticket-section-heading">
                   <div>
-                    <span>Entry setup</span>
                     <strong>Choose what happened</strong>
                   </div>
                 </div>
@@ -3794,7 +3784,6 @@ export default function TransactionsPage() {
                     </button>
                   ))}
                 </div>
-                <p className="transaction-entry-kind-description">{formEntryKindDescription}</p>
 
                 <div className="transaction-entry-context-grid">
                   <label className="transaction-ticket-field">
@@ -3950,20 +3939,6 @@ export default function TransactionsPage() {
                   </div>
                 ) : null}
 
-                <p className="transaction-entry-action-note">
-                  {isFundTrade
-                    ? 'Fund subscriptions and redemptions use confirmed amount and shares; unit price is calculated.'
-                    : formEntryKind === 'option'
-                      ? isCreatingDerivativeContract
-                        ? 'New options can only open or establish a position; close and lifecycle actions use an existing contract.'
-                        : 'Open, close, and lifecycle direction is recorded explicitly for the selected contract.'
-                      : formEntryKind === 'fcn'
-                        ? isCreatingDerivativeContract
-                          ? 'A new FCN records an entry or opening balance; lifecycle actions use an existing contract.'
-                          : 'Entry, coupon, exit, and lifecycle outcomes remain separate economic facts.'
-                        : 'Only actions valid for this entry type are shown.'}
-                </p>
-
               {(form.transaction_type === 'lifecycle_event' ||
                 form.transaction_type === 'maturity_redemption') &&
               resolvedAssetType === 'option' ? (
@@ -3976,11 +3951,7 @@ export default function TransactionsPage() {
               {isCreatingDerivativeContract ? (
                 <section className="transaction-contract-definition">
                   <div className="transaction-contract-definition-head">
-                    <div>
-                      <span>New {formEntryKindLabel} contract</span>
-                      <strong>Define the immutable contract terms</strong>
-                    </div>
-                    <em>The transaction below records the economic event.</em>
+                    <strong>New {formEntryKindLabel} contract</strong>
                   </div>
                   <div className="transaction-form-grid transaction-ticket-grid">
                   <label className="transaction-ticket-field">
@@ -4159,10 +4130,7 @@ export default function TransactionsPage() {
                       </label>
                       <div className="transaction-fcn-underlyings">
                         <div className="transaction-fcn-underlyings-head">
-                          <div>
-                            <strong>FCN Underlyings</strong>
-                            <span>Reference prices and levels are stored per security.</span>
-                          </div>
+                          <strong>FCN Underlyings</strong>
                           <button
                             type="button"
                             className="toolbar-link"
@@ -4277,8 +4245,8 @@ export default function TransactionsPage() {
                 </div>
               ) : activeDerivativeContract?.contract_type === 'fcn' ? (
                 <div className="portfolio-detail-meta">
-                  FCN · notional {activeDerivativeContract.terms.notional}{' '}
-                  {resolvedTransactionCurrency} · matures{' '}
+                  FCN · notional {activeDerivativeContract.terms.notional}
+                  {activeDerivativeCurrency ? ` ${activeDerivativeCurrency}` : ''} · matures{' '}
                   {activeDerivativeContract.terms.maturity_date} ·{' '}
                   {activeDerivativeContract.terms.issuer}
                 </div>
@@ -4286,8 +4254,7 @@ export default function TransactionsPage() {
 
               <div className="transaction-ticket-section-heading transaction-ticket-section-heading-compact">
                 <div>
-                  <span>Transaction facts</span>
-                  <strong>Dates, settlement, and economics</strong>
+                  <strong>Transaction facts</strong>
                 </div>
                 <em>{DEFAULT_TRADE_TIMEZONE}</em>
               </div>
@@ -4355,11 +4322,6 @@ export default function TransactionsPage() {
                 ) : null}
 
                 <label className="transaction-ticket-field">
-                  <span>Currency</span>
-                  <input value={resolvedTransactionCurrency} readOnly />
-                </label>
-
-                <label className="transaction-ticket-field">
                   <span>Trade Date</span>
                   <input
                     type="date"
@@ -4416,21 +4378,23 @@ export default function TransactionsPage() {
                           position_effective_date: event.target.value,
                         }))
                       }
+                      title="Trade Date for same-day holdings; confirmed share date for delayed funds"
                     />
-                    <span className="transaction-ticket-hint">
-                      Use the trade date for same-day EOD holdings; use the confirmed
-                      share date when a fund begins later.
-                    </span>
+                    {isFundTrade ? (
+                      <span className="transaction-ticket-hint">
+                        Use the confirmed share date when the fund position begins later.
+                      </span>
+                    ) : null}
                   </label>
                 ) : null}
 
                 <label className="transaction-ticket-field">
-                  <span>Trade Time</span>
+                  <span>Trade Time (optional)</span>
                   <input
                     type="time"
                     step={60}
                     value={form.trade_time}
-                    aria-describedby="transaction-trade-time-hint"
+                    title={`Blank stores an estimated ${DEFAULT_FORM_TIME}`}
                     onChange={(event) =>
                       setForm((current) => ({
                         ...current,
@@ -4438,9 +4402,6 @@ export default function TransactionsPage() {
                       }))
                     }
                   />
-                  <span id="transaction-trade-time-hint" className="transaction-ticket-hint">
-                    Leave blank when unknown; {DEFAULT_FORM_TIME} will be stored as an estimated time.
-                  </span>
                 </label>
 
                 {supportsEntitlementDate(form.transaction_type) ? (
@@ -4609,10 +4570,6 @@ export default function TransactionsPage() {
                         {activeHistoricalQuote.stale ? 'Prior ' : ''}{formatLabel(activeHistoricalQuote.quoteBasis)}:{' '}
                         {formatUnitPrice(activeHistoricalQuote.price, activeHistoricalQuote.currency)} · {activeHistoricalQuote.asOfDate}
                       </span>
-                    ) : isFundTrade ? (
-                      <span className="transaction-ticket-hint">
-                        Calculated from confirmed amount ÷ confirmed shares.
-                      </span>
                     ) : historicalQuoteError ? (
                       <span className="transaction-ticket-hint">{historicalQuoteError}</span>
                     ) : resolvedAssetType === 'option' ? (
@@ -4693,8 +4650,7 @@ export default function TransactionsPage() {
 
               <details className="transaction-entry-additional-details">
                 <summary>
-                  <span>Additional details</span>
-                  <strong>Source, external reference, and note</strong>
+                  <strong>Additional details</strong>
                 </summary>
                 <div className="transaction-entry-additional-body">
                   <div className="transaction-form-grid transaction-ticket-grid">
@@ -4746,7 +4702,6 @@ export default function TransactionsPage() {
               <aside className="transaction-ticket-review" aria-label="Transaction review">
                 <div className="transaction-ticket-section-heading">
                   <div>
-                    <span>Review</span>
                     <strong>Accounting impact</strong>
                   </div>
                 </div>
@@ -4756,7 +4711,7 @@ export default function TransactionsPage() {
                     <div className="transaction-ticket-summary-row">
                       <span>Source Amount</span>
                       <strong>
-                        {ticketGrossAmount == null
+                        {ticketGrossAmount == null || !resolvedTransactionCurrency
                           ? '—'
                           : formatCurrency(ticketGrossAmount, resolvedTransactionCurrency)}
                       </strong>
@@ -4768,8 +4723,8 @@ export default function TransactionsPage() {
                     <div className="transaction-ticket-summary-row transaction-ticket-summary-total">
                       <span>Received Amount</span>
                       <strong>
-                        {computedCounterAmount
-                          ? formatCurrency(Number(computedCounterAmount), resolvedCounterpartyCurrency || 'USD')
+                        {computedCounterAmount && resolvedCounterpartyCurrency
+                          ? formatCurrency(Number(computedCounterAmount), resolvedCounterpartyCurrency)
                           : '—'}
                       </strong>
                     </div>
@@ -4779,34 +4734,46 @@ export default function TransactionsPage() {
                     <div className="transaction-ticket-summary-row">
                       <span>Pre-fee Amount</span>
                       <strong>
-                        {ticketGrossAmount == null ? '—' : formatCurrency(ticketGrossAmount, previewCurrency)}
+                        {ticketGrossAmount == null || !resolvedTransactionCurrency
+                          ? '—'
+                          : formatCurrency(ticketGrossAmount, resolvedTransactionCurrency)}
                       </strong>
                     </div>
                     {shouldShowFees ? (
                       <div className="transaction-ticket-summary-row">
                         <span>Fee</span>
-                        <strong>{formatCurrency(ticketFeeAmount, previewCurrency)}</strong>
+                        <strong>
+                          {resolvedTransactionCurrency
+                            ? formatCurrency(ticketFeeAmount, resolvedTransactionCurrency)
+                            : '—'}
+                        </strong>
                       </div>
                     ) : null}
                     {shouldShowTaxes ? (
                       <div className="transaction-ticket-summary-row">
                         <span>Tax</span>
-                        <strong>{formatCurrency(ticketTaxAmount, previewCurrency)}</strong>
+                        <strong>
+                          {resolvedTransactionCurrency
+                            ? formatCurrency(ticketTaxAmount, resolvedTransactionCurrency)
+                            : '—'}
+                        </strong>
                       </div>
                     ) : null}
                     <div className="transaction-ticket-summary-row transaction-ticket-summary-total">
                       <span>Net Cash Effect</span>
                       <strong>
-                        {ticketNetCashEffect == null
+                        {ticketNetCashEffect == null || !resolvedTransactionCurrency
                           ? '—'
-                          : formatSignedCurrency(ticketNetCashEffect, previewCurrency)}
+                          : formatSignedCurrency(ticketNetCashEffect, resolvedTransactionCurrency)}
                       </strong>
                     </div>
                   </>
                 )}
               </div>
 
-              {shouldRequireSettlement && settlementAccountOptions.length === 0 ? (
+              {shouldRequireSettlement &&
+              resolvedTransactionCurrency &&
+              settlementAccountOptions.length === 0 ? (
                 <div className="portfolio-detail-meta">
                   Settlement cash account required for {resolvedTransactionCurrency}.
                 </div>

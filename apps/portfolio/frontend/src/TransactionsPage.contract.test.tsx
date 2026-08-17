@@ -471,6 +471,7 @@ describe('Transactions rendered page contract', () => {
     await user.click(screen.getByRole('button', { name: 'Record Transaction' }))
     const dialog = screen.getByRole('dialog', { name: 'Record transaction' })
     expect(within(dialog).getByText('Accounting impact')).toBeInTheDocument()
+    expect(within(dialog).queryByRole('textbox', { name: 'Currency' })).not.toBeInTheDocument()
 
     const securitySearch = within(dialog).getByRole('searchbox', { name: 'Security' })
     fireEvent.change(securitySearch, { target: { value: 'FUND1' } })
@@ -725,6 +726,7 @@ describe('Transactions rendered page contract', () => {
           quantity: 199_872.08,
           price: 1.250800011687,
           gross_amount: 250_000,
+          currency: 'CNY',
         }),
         expect.stringMatching(/^transaction-create-/),
       ),
