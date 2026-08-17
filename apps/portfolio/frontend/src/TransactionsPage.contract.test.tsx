@@ -92,6 +92,13 @@ const fundSecuritiesAccount = {
   allowed_instrument_types: ['fund'],
 }
 
+const fcnAccount = {
+  ...fundSecuritiesAccount,
+  account_id: 'fcn-cny-1',
+  account_name: 'FCN CNY Account',
+  allowed_instrument_types: ['fcn'],
+}
+
 const etfInstrument = {
   ...instrumentFixture({
     instrument_id: 'etf-1',
@@ -499,7 +506,7 @@ describe('Transactions rendered page contract', () => {
   it('uses one entry-type menu and keeps accounts and derivative actions contextual', async () => {
     apiMocks.getPortfolioAccounts.mockResolvedValue({
       portfolio_id: '3',
-      accounts: [optionAccount, securitiesAccount, cashAccount],
+      accounts: [optionAccount, fcnAccount, securitiesAccount, cashAccount, fundCashAccount],
     })
     apiMocks.getPortfolioDerivativeContracts.mockResolvedValue({
       portfolio_id: '3',
@@ -518,7 +525,7 @@ describe('Transactions rendered page contract', () => {
     for (const label of ['Security', 'FCN', 'Option', 'Cash & Operations']) {
       expect(within(entryType).getByRole('button', { name: new RegExp(`^${label}`) })).toBeInTheDocument()
     }
-    const account = within(dialog).getByRole('combobox', { name: 'Account' })
+    const account = within(dialog).getByRole('combobox', { name: 'Holding Account' })
     await waitFor(() => expect(account).toHaveValue(securitiesAccount.account_id))
     expect(within(account).queryByRole('option', { name: 'Options Account · USD' })).not.toBeInTheDocument()
 
@@ -530,10 +537,25 @@ describe('Transactions rendered page contract', () => {
       within(securityAction).queryByRole('option', { name: 'Buy to Open Call' }),
     ).not.toBeInTheDocument()
 
+    await user.click(within(entryType).getByRole('button', { name: /^FCN/ }))
+    await waitFor(() => expect(account).toHaveValue(fcnAccount.account_id))
+    expect(within(account).getByRole('option', { name: 'FCN CNY Account · CNY' })).toBeInTheDocument()
+    expect(within(account).queryByRole('option', { name: 'Options Account · USD' })).not.toBeInTheDocument()
+    await waitFor(() =>
+      expect(within(dialog).getByRole('combobox', { name: 'Settlement Cash Account' })).toHaveValue(
+        fundCashAccount.account_id,
+      ),
+    )
+
     await user.click(within(entryType).getByRole('button', { name: /^Option/ }))
     await waitFor(() => expect(account).toHaveValue(optionAccount.account_id))
     expect(within(account).getByRole('option', { name: 'Options Account · USD' })).toBeInTheDocument()
     expect(within(account).queryByRole('option', { name: 'ETF Brokerage · USD' })).not.toBeInTheDocument()
+    await waitFor(() =>
+      expect(within(dialog).getByRole('combobox', { name: 'Settlement Cash Account' })).toHaveValue(
+        cashAccount.account_id,
+      ),
+    )
 
     const newContractAction = within(dialog).getByRole('combobox', { name: 'Action' })
     const optionType = within(dialog).getByRole('combobox', { name: 'Option Type' })
@@ -617,7 +639,7 @@ describe('Transactions rendered page contract', () => {
     await user.click(await screen.findByRole('button', { name: 'Record Transaction' }))
     const dialog = screen.getByRole('dialog', { name: 'Record transaction' })
     await waitFor(() =>
-      expect(within(dialog).getByRole('combobox', { name: 'Account' })).toHaveValue(
+      expect(within(dialog).getByRole('combobox', { name: 'Holding Account' })).toHaveValue(
         'brokerage-1',
       ),
     )

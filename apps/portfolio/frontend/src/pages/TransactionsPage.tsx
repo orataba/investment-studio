@@ -1168,6 +1168,7 @@ export default function TransactionsPage() {
   const formEntryKindLabel =
     TRANSACTION_ENTRY_KINDS.find((entryKind) => entryKind.value === formEntryKind)?.label ??
     formEntryKind
+  const formAccountLabel = formEntryKind === 'cash' ? 'Cash Account' : 'Holding Account'
   const formAccountOptions = eligibleAccounts(
     form.transaction_type,
     accounts,
@@ -3787,7 +3788,7 @@ export default function TransactionsPage() {
 
                 <div className="transaction-entry-context-grid">
                   <label className="transaction-ticket-field">
-                    <span>Account</span>
+                    <span>{formAccountLabel}</span>
                     <select
                       ref={accountSelectRef}
                       value={form.account_id}
@@ -3799,7 +3800,13 @@ export default function TransactionsPage() {
                         }))
                       }
                     >
-                      {!formAccountOptions.length ? <option value="">No eligible account</option> : null}
+                      {!formAccountOptions.length ? (
+                        <option value="">
+                          {formEntryKind === 'cash'
+                            ? 'No cash account'
+                            : `No ${formEntryKindLabel} holding account`}
+                        </option>
+                      ) : null}
                       {formAccountOptions.map((account) => (
                         <option key={account.account_id} value={account.account_id}>
                           {account.account_name} · {account.currency}
@@ -3934,7 +3941,11 @@ export default function TransactionsPage() {
 
                 {!formAccountOptions.length ? (
                   <div className="transaction-entry-account-warning" role="status">
-                    <span>Set up an eligible account before recording this entry.</span>
+                    <span>
+                      {formEntryKind === 'cash'
+                        ? 'Set up a cash account before recording this entry.'
+                        : `Enable ${formEntryKindLabel} on a holding account with a same-currency settlement account.`}
+                    </span>
                     <Link to={`/portfolios/${portfolioId}/accounts`}>Open Accounts</Link>
                   </div>
                 ) : null}
