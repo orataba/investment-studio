@@ -331,26 +331,23 @@ describe('Transactions rendered page contract', () => {
   })
 
   it('uses one importable CSV contract for all-transaction export and import', async () => {
-    const user = userEvent.setup()
     renderPortfolioPage(
       <TransactionsPage />,
       '/portfolios/3/transactions',
       '/portfolios/:portfolioId/transactions',
     )
 
-    await user.click(await screen.findByRole('button', { name: 'Transaction CSV' }))
-    const csvMenu = screen.getByRole('menu', { name: 'Transaction CSV actions' })
-    const exportAll = within(csvMenu).getByRole('menuitem', {
-      name: /Export All Transactions/,
-    })
-    const importTemplate = within(csvMenu).getByRole('menuitem', {
-      name: /Blank CSV Template/,
-    })
-    expect(exportAll).toHaveAttribute('href', '/transactions.csv')
-    expect(importTemplate).toHaveAttribute('href', '/transactions/csv-template')
-    expect(
-      within(csvMenu).getByRole('menuitem', { name: /^Import CSV/ }),
-    ).toBeInTheDocument()
+    expect(await screen.findByRole('link', { name: 'Export' })).toHaveAttribute(
+      'href',
+      '/transactions.csv',
+    )
+    expect(screen.getByRole('button', { name: 'Import' })).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: 'Template' })).toHaveAttribute(
+      'href',
+      '/transactions/csv-template',
+    )
+    expect(screen.getByRole('button', { name: 'Record Transaction' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Transaction CSV' })).not.toBeInTheDocument()
     expect(screen.queryByText('Select visible')).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Export View' })).not.toBeInTheDocument()
   })

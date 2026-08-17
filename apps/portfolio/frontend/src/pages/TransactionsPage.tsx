@@ -3045,7 +3045,7 @@ export default function TransactionsPage() {
           refreshKey={eventTasksRefreshKey}
           onRecord={openEventTaskDrawer}
         />
-        <div className="portfolio-detail-toolbar">
+        <div className="portfolio-detail-toolbar transaction-activity-toolbar">
           <div>
             <div className="panel-title">Activity</div>
             <div className="portfolio-detail-meta">
@@ -3058,55 +3058,32 @@ export default function TransactionsPage() {
               {activeFilterCount ? ` · ${visibleTransactions.length} shown` : ''}
             </div>
           </div>
-          <div className="transaction-filter-actions">
-            <details className="portfolio-download-menu transaction-csv-menu">
-              <summary
-                className="holdings-toolbar-button"
-                role="button"
-                aria-haspopup="menu"
-              >
-                Transaction CSV
-              </summary>
-              <div
-                className="portfolio-download-menu-list transaction-csv-menu-list"
-                role="menu"
-                aria-label="Transaction CSV actions"
-              >
-                <a
-                  className="portfolio-download-menu-item transaction-csv-menu-item"
-                  href={portfolioTransactionCsvDownloadUrl(portfolioId)}
-                  download
-                  role="menuitem"
-                  onClick={(event) => event.currentTarget.closest('details')?.removeAttribute('open')}
-                >
-                  <strong>Export All Transactions</strong>
-                  <span>Every transaction in the portfolio, in the same format accepted by Import CSV.</span>
-                </a>
-                <a
-                  className="portfolio-download-menu-item transaction-csv-menu-item"
-                  href={portfolioTransactionCsvTemplateUrl(portfolioId)}
-                  download
-                  role="menuitem"
-                  onClick={(event) => event.currentTarget.closest('details')?.removeAttribute('open')}
-                >
-                  <strong>Blank CSV Template</strong>
-                  <span>The same columns as Export All, with no transaction rows.</span>
-                </a>
-                <button
-                  type="button"
-                  role="menuitem"
-                  className="portfolio-download-menu-item transaction-csv-menu-item"
-                  disabled={importingCsv || metaLoading}
-                  onClick={(event) => {
-                    event.currentTarget.closest('details')?.removeAttribute('open')
-                    csvFileInputRef.current?.click()
-                  }}
-                >
-                  <strong>{importingCsv ? 'Validating CSV…' : 'Import CSV'}</strong>
-                  <span>Preview every row first; nothing is written until confirmation.</span>
-                </button>
-              </div>
-            </details>
+          <div className="transaction-toolbar-actions">
+            <a
+              className="toolbar-link transaction-toolbar-button"
+              href={portfolioTransactionCsvDownloadUrl(portfolioId)}
+              download
+              title="Export all transactions as an importable CSV"
+            >
+              Export
+            </a>
+            <button
+              type="button"
+              className="toolbar-link transaction-toolbar-button"
+              disabled={importingCsv || metaLoading}
+              title="Import and preview a transaction CSV"
+              onClick={() => csvFileInputRef.current?.click()}
+            >
+              {importingCsv ? 'Validating…' : 'Import'}
+            </button>
+            <a
+              className="toolbar-link transaction-toolbar-button"
+              href={portfolioTransactionCsvTemplateUrl(portfolioId)}
+              download
+              title="Download a blank transaction CSV template"
+            >
+              Template
+            </a>
             <input
               ref={csvFileInputRef}
               type="file"
@@ -3265,27 +3242,6 @@ export default function TransactionsPage() {
             </label>
           </div>
 
-          <div className="transaction-filter-actions">
-            <button
-              type="button"
-              className="toolbar-link"
-              disabled={!activeFilterCount}
-              onClick={() =>
-                patchSearchParams({
-                  account_id: null,
-                  asset_domain: null,
-                  asset_subtype: null,
-                  transaction_type: null,
-                  position_reference_id: null,
-                  start_date: null,
-                  end_date: null,
-                  transaction_id: null,
-                })
-              }
-            >
-              Clear Filters
-            </button>
-          </div>
         </section>
 
         {activeFilterCount ? (
@@ -3324,6 +3280,24 @@ export default function TransactionsPage() {
                 To: {filters.end_date} <span aria-hidden="true">×</span>
               </button>
             ) : null}
+            <button
+              type="button"
+              className="transaction-active-filter-clear"
+              onClick={() =>
+                patchSearchParams({
+                  account_id: null,
+                  asset_domain: null,
+                  asset_subtype: null,
+                  transaction_type: null,
+                  position_reference_id: null,
+                  start_date: null,
+                  end_date: null,
+                  transaction_id: null,
+                })
+              }
+            >
+              Clear all
+            </button>
           </div>
         ) : null}
 

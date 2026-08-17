@@ -2533,11 +2533,7 @@ input[type='checkbox'] {
 }
 
 .transaction-filter-bar {
-  display: flex;
-  align-items: flex-end;
-  justify-content: space-between;
-  gap: 16px;
-  flex-wrap: wrap;
+  display: block;
   padding: 14px 0 4px;
 }
 
@@ -2600,9 +2596,19 @@ input[type='checkbox'] {
 
 .transaction-filter-group {
   display: grid;
-  grid-template-columns: repeat(5, minmax(132px, 1fr));
+  grid-template-columns:
+    minmax(160px, 1.05fr)
+    minmax(132px, 0.75fr)
+    minmax(150px, 0.85fr)
+    minmax(200px, 1.35fr)
+    minmax(132px, 0.72fr)
+    minmax(132px, 0.72fr);
   gap: 12px;
-  flex: 1 1 960px;
+  min-width: 0;
+}
+
+.transaction-filter-group input[type='date'] {
+  width: 100%;
 }
 
 .holdings-filter-group {
@@ -2837,61 +2843,6 @@ input[type='checkbox'] {
 .portfolio-download-menu-item:hover {
   background: var(--portfolio-band);
   color: var(--portfolio-accent);
-}
-
-.transaction-csv-menu > summary {
-  display: inline-flex;
-  align-items: center;
-  list-style: none;
-  cursor: pointer;
-}
-
-.transaction-csv-menu > summary::-webkit-details-marker {
-  display: none;
-}
-
-.transaction-csv-menu[open] > summary {
-  border-color: var(--portfolio-accent);
-  color: var(--portfolio-accent);
-}
-
-.transaction-csv-menu-list {
-  width: min(292px, calc(100vw - 32px));
-  padding: 6px;
-}
-
-.transaction-csv-menu-item {
-  display: grid;
-  gap: 3px;
-  box-sizing: border-box;
-  padding: 10px;
-  text-decoration: none;
-  cursor: pointer;
-}
-
-.transaction-csv-menu-item + .transaction-csv-menu-item {
-  border-top: 1px solid var(--portfolio-line);
-}
-
-.transaction-csv-menu-item strong {
-  color: var(--portfolio-ink);
-  font-size: 13px;
-  font-weight: 500;
-}
-
-.transaction-csv-menu-item span {
-  color: var(--portfolio-muted);
-  font-size: 11px;
-  line-height: 1.4;
-}
-
-.transaction-csv-menu-item:hover strong {
-  color: var(--portfolio-accent);
-}
-
-.transaction-csv-menu-item:disabled {
-  cursor: not-allowed;
-  opacity: 0.48;
 }
 
 .portfolio-workspace-page .holdings-toolbar-button,
@@ -4738,6 +4689,28 @@ input[type='checkbox'] {
   align-items: center;
   gap: 10px;
   flex-wrap: wrap;
+}
+
+.transaction-toolbar-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+}
+
+.transaction-toolbar-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
+  text-decoration: none;
+}
+
+.transaction-toolbar-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.48;
 }
 
 .transaction-csv-preview {
@@ -8022,11 +7995,26 @@ td b {
   font-weight: 400;
 }
 
+@media (max-width: 1120px) {
+  .transaction-filter-group {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
 @media (max-width: 960px) {
   .portfolio-header-row,
   .portfolio-controls-row,
   .portfolio-extra-controls {
     align-items: flex-start;
+  }
+
+  .transaction-activity-toolbar {
+    align-items: flex-start;
+    flex-wrap: wrap;
+  }
+
+  .transaction-toolbar-actions {
+    justify-content: flex-start;
   }
 
   .stub-layout-grid {
@@ -9831,6 +9819,12 @@ input[type='date']::-webkit-calendar-picker-indicator {
 .transaction-active-filters button:hover {
   border-color: var(--portfolio-accent);
   color: var(--portfolio-accent);
+}
+
+.transaction-active-filters .transaction-active-filter-clear {
+  margin-left: auto;
+  border-color: var(--portfolio-line-strong);
+  color: var(--portfolio-ink);
 }
 
 .fund-distribution-task-panel {
