@@ -3260,6 +3260,54 @@ def create_instrument(
         return _serialize_record(record)
 
 
+def ensure_secondary_identifier(
+    session_factory: SessionFactory,
+    *,
+    instrument_id: str,
+    identifier_type: str,
+    identifier_value: str,
+) -> dict[str, object] | None:
+    normalized_type = identifier_type.strip()
+    normalized_value = identifier_value.strip()
+    if not normalized_type or not normalized_value:
+        raise ValueError("Instrument identifier type and value must not be blank.")
+
+    with session_factory() as session:
+        target = session.get(Instrument, instrument_id)
+        if target is None:
+            return None
+        existing = session.scalar(
+            select(InstrumentIdentifier).where(
+                func.lower(InstrumentIdentifier.identifier_type)
+                == normalized_type.casefold(),
+                func.lower(InstrumentIdentifier.identifier_value)
+                == normalized_value.casefold(),
+            )
+        )
+        if existing is not None:
+            if existing.instrument_id != instrument_id:
+                raise ValueError(
+                    f'Identifier "{normalized_type}:{normalized_value}" already belongs '
+                    f'to instrument "{existing.instrument_id}".'
+                )
+            return _serialize_record(_instrument_to_store_dict(target))
+
+        session.add(
+            InstrumentIdentifier(
+                instrument_id=instrument_id,
+                identifier_type=normalized_type,
+                identifier_value=normalized_value,
+                is_primary=False,
+            )
+        )
+        target.calculation_inputs_updated_at = _next_calculation_input_watermark(
+            target.calculation_inputs_updated_at
+        )
+        session.commit()
+    refreshed = get_instrument(session_factory, instrument_id)
+    return _serialize_record(refreshed) if refreshed is not None else None
+
+
 def upsert_market_data(
     session_factory: SessionFactory,
     *,
@@ -3976,9 +4024,13 @@ def upsert_source_settings(
         if release_lag_days is not None:
             source_settings["release_lag_days"] = release_lag_days
         if return_semantics is not None:
-            if return_semantics != "unknown" and target.instrument_type not in {"index", "equity"}:
+            if return_semantics != "unknown" and target.instrument_type not in {
+                "index",
+                "equity",
+                "etf",
+            }:
                 raise ValueError(
-                    "Explicit return_semantics is only supported for index or equity instruments."
+                    "Explicit return_semantics is only supported for indexes and listed securities."
                 )
             source_settings["return_semantics"] = return_semantics
         source_settings = _normalized_source_settings(

@@ -20,12 +20,12 @@ const apiMocks = vi.hoisted(() => ({
   getPortfolioTransactionPositionPreview: vi.fn(),
   getPortfolioTransactionsWorkspace: vi.fn(),
   importPortfolioTransactionFile: vi.fn(),
-  materializePlatformEquity: vi.fn(),
+  materializePlatformSecurity: vi.fn(),
   portfolioTransactionDownloadUrl: vi.fn((_portfolioId: string, format: string) => `/transactions.${format}`),
   portfolioTransactionTemplateUrl: vi.fn((_portfolioId: string, format: string) => `/transactions/${format}-template`),
   previewPortfolioTransactionFile: vi.fn(),
   reviewPortfolioInstrumentEventTask: vi.fn(),
-  searchPlatformEquityCatalog: vi.fn(),
+  searchPlatformSecurityCatalog: vi.fn(),
   updatePortfolioTransaction: vi.fn(),
 }))
 vi.mock('./lib/api', () => apiMocks)
@@ -207,6 +207,43 @@ const materializedEquityInstrument = {
   coverage_state: 'complete' as const,
 }
 
+const fmpEtfCandidate = {
+  instrument_id: 'fmp:etf:MAGS',
+  instrument_name: 'Roundhill Magnificent Seven ETF',
+  instrument_type: 'etf' as const,
+  currency: 'USD',
+  exchange_code: null,
+  identifiers: [
+    {
+      identifier_type: 'exchange_ticker' as const,
+      identifier_value: 'MAGS',
+      is_primary: true,
+    },
+  ],
+  broker_identifiers: [],
+  fmp_symbol: 'MAGS',
+  source: 'fmp_catalog' as const,
+  existing_instrument_id: null,
+}
+
+const materializedEtfInstrument = {
+  ...instrumentFixture({
+    instrument_id: 'etf-mags',
+    instrument_name: 'Roundhill Magnificent Seven ETF',
+    instrument_type: 'etf',
+    currency: 'USD',
+    identifiers: [
+      {
+        identifier_type: 'exchange_ticker' as const,
+        identifier_value: 'MAGS',
+        is_primary: true,
+      },
+    ],
+  }),
+  latest_market_data: [],
+  coverage_state: 'complete' as const,
+}
+
 const selectedTransaction = {
   transaction_id: 'txn-1',
   transaction_sequence: 1,
@@ -285,8 +322,8 @@ describe('Transactions rendered page contract', () => {
       derivative_contracts: [],
     })
     apiMocks.getPortfolioFxRates.mockResolvedValue({ portfolio_id: '3', rates: [] })
-    apiMocks.searchPlatformEquityCatalog.mockResolvedValue([])
-    apiMocks.materializePlatformEquity.mockResolvedValue(materializedEquityInstrument)
+    apiMocks.searchPlatformSecurityCatalog.mockResolvedValue({ results: [], catalogErrors: {} })
+    apiMocks.materializePlatformSecurity.mockResolvedValue(materializedEquityInstrument)
     apiMocks.getPortfolioTransactionExecutionQuote.mockResolvedValue({
       portfolio_id: '3',
       instrument_id: '',
@@ -558,7 +595,10 @@ describe('Transactions rendered page contract', () => {
   })
 
   it('searches the local FMP catalog and materializes a stock before selection', async () => {
-    apiMocks.searchPlatformEquityCatalog.mockResolvedValue([fmpEquityCandidate])
+    apiMocks.searchPlatformSecurityCatalog.mockResolvedValue({
+      results: [fmpEquityCandidate],
+      catalogErrors: {},
+    })
     apiMocks.getPortfolioInstruments
       .mockResolvedValueOnce({
         portfolio_id: '3',
@@ -589,7 +629,53 @@ describe('Transactions rendered page contract', () => {
     )
 
     await waitFor(() =>
-      expect(apiMocks.materializePlatformEquity).toHaveBeenCalledWith('AAPL'),
+      expect(apiMocks.materializePlatformSecurity).toHaveBeenCalledWith('equity', 'AAPL'),
+    )
+    expect(apiMocks.getPortfolioInstruments).toHaveBeenCalledTimes(2)
+  })
+
+  it('searches and materializes an ETF through the same transaction flow', async () => {
+    apiMocks.searchPlatformSecurityCatalog.mockResolvedValue({
+      results: [fmpEtfCandidate],
+      catalogErrors: {},
+    })
+    apiMocks.materializePlatformSecurity.mockResolvedValue(materializedEtfInstrument)
+    apiMocks.getPortfolioInstruments
+      .mockResolvedValueOnce({
+        portfolio_id: '3',
+        instruments: [etfInstrument, alternateEtfInstrument, fundInstrument],
+      })
+      .mockResolvedValueOnce({
+        portfolio_id: '3',
+        instruments: [
+          etfInstrument,
+          alternateEtfInstrument,
+          fundInstrument,
+          materializedEtfInstrument,
+        ],
+      })
+
+    const user = userEvent.setup()
+    renderPortfolioPage(
+      <TransactionsPage />,
+      '/portfolios/3/transactions',
+      '/portfolios/:portfolioId/transactions',
+    )
+
+    await user.click(await screen.findByRole('button', { name: 'Record Transaction' }))
+    const dialog = screen.getByRole('dialog', { name: 'Record transaction' })
+    const securitySearch = within(dialog).getByRole('searchbox', { name: 'Security' })
+    await user.type(securitySearch, 'MAGS')
+    await user.click(
+      await within(dialog).findByRole(
+        'button',
+        { name: /MAGS.*Roundhill Magnificent Seven ETF.*USD/ },
+        { timeout: 3_000 },
+      ),
+    )
+
+    await waitFor(() =>
+      expect(apiMocks.materializePlatformSecurity).toHaveBeenCalledWith('etf', 'MAGS'),
     )
     expect(apiMocks.getPortfolioInstruments).toHaveBeenCalledTimes(2)
   })

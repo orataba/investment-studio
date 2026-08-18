@@ -27,7 +27,7 @@ from platform_app.services.downstream_notifications import (  # noqa: E402
     DownstreamRefreshResult,
     notify_market_data_downstream_refresh,
 )
-from platform_app.services.equities import sync_equity_catalog  # noqa: E402
+from platform_app.services.securities import sync_security_catalogs  # noqa: E402
 from platform_app.services.market_data_ops import (  # noqa: E402
     rebuild_stale_fund_nav_projections,
     refresh_market_data_batch,
@@ -168,8 +168,8 @@ def _parse_args() -> argparse.Namespace:
         choices=("all", "email", "tushare", "fmp", "projection"),
         default="all",
         help=(
-            "Data channel to refresh. all refreshes the local FMP stock catalog, "
-            "then runs tushare, email, used-stock FMP EOD, and fund NAV projection "
+            "Data channel to refresh. all refreshes the local FMP stock and ETF catalogs, "
+            "then runs tushare, email, used-security FMP EOD, and fund NAV projection "
             "reconciliation."
         ),
     )
@@ -543,12 +543,12 @@ def _run_refresh(
         LOGGER.info("refreshing channel=%s", channel)
         if channel == "fmp_catalog":
             try:
-                catalog_summary = sync_equity_catalog()
+                catalog_summary = sync_security_catalogs()
             except Exception as error:
                 result = {
-                    "instrument_id": "fmp-equity-catalog",
-                    "instrument_name": "FMP equity catalog",
-                    "instrument_type": "equity_catalog",
+                    "instrument_id": "fmp-security-catalogs",
+                    "instrument_name": "FMP stock and ETF catalogs",
+                    "instrument_type": "security_catalogs",
                     "source_mode": "api",
                     "source_api_profile": "fmp",
                     "status": "failed",
@@ -564,7 +564,7 @@ def _run_refresh(
                         "status_counts": {"failed": 1},
                     }
                 )
-                LOGGER.exception("FMP equity catalog sync failed")
+                LOGGER.exception("FMP stock and ETF catalog sync failed")
             else:
                 channel_summaries.append(
                     {
@@ -577,7 +577,7 @@ def _run_refresh(
                     }
                 )
                 LOGGER.info(
-                    "FMP equity catalog synced active_count=%s",
+                    "FMP stock and ETF catalogs synced active_count=%s",
                     catalog_summary["active_count"],
                 )
             continue

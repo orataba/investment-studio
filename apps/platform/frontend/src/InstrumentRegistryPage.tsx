@@ -2065,7 +2065,6 @@ export default function InstrumentRegistryPage({
                           <option value="public_fund">Public fund</option>
                           <option value="private_fund">Private fund</option>
                           <option value="index">Index</option>
-                          <option value="etf">ETF</option>
                           <option value="cash">Cash</option>
                           <option value="fx">FX</option>
                           <option value="other">Other</option>

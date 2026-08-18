@@ -24,7 +24,7 @@ import {
   getWatchlistDetail,
   getWatchlists,
   moveWatchlistItems,
-  materializePlatformEquity,
+  materializePlatformSecurity,
   resolveSharedInstrumentsFile,
   updateInstrumentTaxonomy,
   updateInstrumentAttributes,
@@ -1051,13 +1051,13 @@ export default function WatchlistsPage() {
 
     const timeoutId = window.setTimeout(() => {
       searchWatchlistInstrumentCandidates(instrumentSearch, 12)
-        .then(({ results, stockCatalogError }) => {
+        .then(({ results, securityCatalogError }) => {
           if (cancelled) {
             return
           }
           setModalError(
-            stockCatalogError
-              ? `Stock catalog unavailable; Registry results remain available. ${stockCatalogError}`
+            securityCatalogError
+              ? `Security catalog partially unavailable; Registry results remain available. ${securityCatalogError}`
               : null,
           )
           setSharedInstrumentResults(results)
@@ -3843,7 +3843,7 @@ export default function WatchlistsPage() {
             <div className="watchlists-modal-header">
               <div>
                 <div className="panel-title">Add</div>
-                <div className="section-heading">Registry &amp; FMP Equity Search</div>
+                <div className="section-heading">Registry &amp; FMP Security Search</div>
               </div>
               <button type="button" disabled={isAdding || isBatchAdding} onClick={closeActiveModal}>
                 Close
@@ -3862,9 +3862,9 @@ export default function WatchlistsPage() {
                 />
               </label>
               <p className="watchlists-registry-note">
-                Public funds, private funds, ETFs, and indexes come from the shared Registry. Stock searches use the
-                locally synchronized FMP catalog; choosing a new stock prepares its local identity and loads its EOD
-                history before it is added here. Taxonomy assignments remain inside Watchlist.
+                Public funds, private funds, indexes, and existing Tushare ETFs come from the shared Registry. FMP
+                stock and ETF searches use independently synchronized catalogs; choosing a new listing prepares its
+                local identity and loads its EOD history before it is added here. Taxonomy remains inside Watchlist.
               </p>
               {selectedSharedInstrument ? (
                 <div className="watchlists-registry-selected">
@@ -3903,7 +3903,7 @@ export default function WatchlistsPage() {
                 {!isSearchingInstruments && !sharedInstrumentResults.length ? (
                   <div className="empty-state">
                     {instrumentSearch.trim()
-                      ? `No Registry or local stock catalog result matched "${instrumentSearch.trim()}".`
+                      ? `No Registry or local stock or ETF catalog result matched "${instrumentSearch.trim()}".`
                       : 'No public fund, private fund, ETF, stock, or index instruments are available.'}
                   </div>
                 ) : null}
@@ -3941,7 +3941,10 @@ export default function WatchlistsPage() {
                     const registryInstrument =
                       selectedSharedInstrument.source === 'fmp_catalog' &&
                       !selectedSharedInstrument.existing_instrument_id
-                        ? await materializePlatformEquity(selectedSharedInstrument.fmp_symbol || '')
+                        ? await materializePlatformSecurity(
+                            selectedSharedInstrument.instrument_type as 'equity' | 'etf',
+                            selectedSharedInstrument.fmp_symbol || '',
+                          )
                         : selectedSharedInstrument
                     const instrumentId =
                       selectedSharedInstrument.existing_instrument_id ||

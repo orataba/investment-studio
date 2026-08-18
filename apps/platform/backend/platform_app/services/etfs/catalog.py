@@ -1,28 +1,21 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
-import re
 
 from sqlalchemy import case, delete, func, or_, select
 
-from platform_app.db.equity_models import FmpEquityCatalog
+from platform_app.db.etf_models import FmpEtfCatalog
 from platform_app.db.session import get_session_factory
 from platform_app.services.fmp.client import FmpClient
 from platform_app.services.fmp.exchanges import (
-    FMP_EQUITY_CATALOG_EXCHANGES,
+    FMP_ETF_CATALOG_EXCHANGES,
     canonical_exchange_ticker,
     resolve_exchange,
 )
 
 
-class EquityCatalogEmptyError(RuntimeError):
+class EtfCatalogEmptyError(RuntimeError):
     pass
-
-
-_CHINA_A_SHARE_SYMBOL_PATTERNS = {
-    "SHH": re.compile(r"^(?!900)\d{6}\.SS$"),
-    "SHZ": re.compile(r"^(?!200)\d{6}\.SZ$"),
-}
 
 
 def _text(value: object) -> str | None:
@@ -35,7 +28,7 @@ def _catalog_row(
     *,
     fmp_exchange_code: str,
 ) -> dict[str, object] | None:
-    exchange = FMP_EQUITY_CATALOG_EXCHANGES[fmp_exchange_code]
+    exchange = FMP_ETF_CATALOG_EXCHANGES[fmp_exchange_code]
     resolved = resolve_exchange(
         raw.get("exchangeShortName"),
         raw.get("exchange"),
@@ -43,16 +36,13 @@ def _catalog_row(
     )
     if resolved != exchange:
         return None
-    if raw.get("isEtf") is True or raw.get("isFund") is True:
+    if raw.get("isEtf") is not True or raw.get("isFund") is True:
         return None
     if raw.get("isActivelyTrading") is False:
         return None
     fmp_symbol = str(raw.get("symbol") or "").strip().upper()
     company_name = str(raw.get("companyName") or raw.get("name") or "").strip()
     if not fmp_symbol or not company_name:
-        return None
-    a_share_pattern = _CHINA_A_SHARE_SYMBOL_PATTERNS.get(fmp_exchange_code)
-    if a_share_pattern is not None and a_share_pattern.fullmatch(fmp_symbol) is None:
         return None
     return {
         "fmp_symbol": fmp_symbol,
@@ -70,21 +60,21 @@ def _catalog_row(
     }
 
 
-def sync_equity_catalog(*, client: FmpClient | None = None) -> dict[str, object]:
+def sync_etf_catalog(*, client: FmpClient | None = None) -> dict[str, object]:
     fmp = client or FmpClient()
     fetched: dict[str, dict[str, object]] = {}
     exchange_counts: dict[str, int] = {}
     exchange_ticker_owners: dict[str, str] = {}
-    for fmp_exchange_code in FMP_EQUITY_CATALOG_EXCHANGES:
+    for fmp_exchange_code in FMP_ETF_CATALOG_EXCHANGES:
         normalized_rows = [
             normalized
-            for raw in fmp.active_equities(fmp_exchange_code)
+            for raw in fmp.active_etfs(fmp_exchange_code)
             if (normalized := _catalog_row(raw, fmp_exchange_code=fmp_exchange_code))
             is not None
         ]
         if not normalized_rows:
             raise RuntimeError(
-                f"FMP returned no supported active stocks for {fmp_exchange_code}."
+                f"FMP returned no supported active ETFs for {fmp_exchange_code}."
             )
         exchange_counts[fmp_exchange_code] = len(normalized_rows)
         for row in normalized_rows:
@@ -93,22 +83,23 @@ def sync_equity_catalog(*, client: FmpClient | None = None) -> dict[str, object]
             other_symbol = exchange_ticker_owners.get(exchange_ticker)
             if other_symbol is not None and other_symbol != fmp_symbol:
                 raise RuntimeError(
-                    f"FMP catalog maps {exchange_ticker} to both {other_symbol} and {fmp_symbol}."
+                    f"FMP ETF catalog maps {exchange_ticker} to both "
+                    f"{other_symbol} and {fmp_symbol}."
                 )
             exchange_ticker_owners[exchange_ticker] = fmp_symbol
             fetched[fmp_symbol] = row
 
     if not fetched:
-        raise RuntimeError("FMP active equity catalog returned no supported stocks.")
+        raise RuntimeError("FMP active ETF catalog returned no supported ETFs.")
 
     now = datetime.now(UTC).replace(microsecond=0)
     with get_session_factory()() as session:
         replaced_count = int(
-            session.scalar(select(func.count()).select_from(FmpEquityCatalog)) or 0
+            session.scalar(select(func.count()).select_from(FmpEtfCatalog)) or 0
         )
-        session.execute(delete(FmpEquityCatalog))
+        session.execute(delete(FmpEtfCatalog))
         session.add_all(
-            FmpEquityCatalog(**row, synced_at=now)
+            FmpEtfCatalog(**row, synced_at=now)
             for row in fetched.values()
         )
         session.commit()
@@ -121,18 +112,18 @@ def sync_equity_catalog(*, client: FmpClient | None = None) -> dict[str, object]
     }
 
 
-def get_catalog_equity(fmp_symbol: str) -> dict[str, object] | None:
+def get_catalog_etf(fmp_symbol: str) -> dict[str, object] | None:
     normalized_symbol = fmp_symbol.strip().upper()
     if not normalized_symbol:
         return None
     with get_session_factory()() as session:
-        item = session.get(FmpEquityCatalog, normalized_symbol)
+        item = session.get(FmpEtfCatalog, normalized_symbol)
         if item is None:
             return None
         return _serialize(item)
 
 
-def search_equity_catalog(query: str, *, limit: int) -> list[dict[str, object]]:
+def search_etf_catalog(query: str, *, limit: int) -> list[dict[str, object]]:
     normalized_query = query.strip()
     if not normalized_query:
         return []
@@ -143,38 +134,38 @@ def search_equity_catalog(query: str, *, limit: int) -> list[dict[str, object]]:
     pattern = f"%{escaped}%"
     with get_session_factory()() as session:
         catalog_count = session.scalar(
-            select(func.count()).select_from(FmpEquityCatalog)
+            select(func.count()).select_from(FmpEtfCatalog)
         )
         if not catalog_count:
-            raise EquityCatalogEmptyError(
-                "The local FMP equity catalog is empty; run the catalog sync first."
+            raise EtfCatalogEmptyError(
+                "The local FMP ETF catalog is empty; run the catalog sync first."
             )
         statement = (
-            select(FmpEquityCatalog)
+            select(FmpEtfCatalog)
             .where(
                 or_(
-                    FmpEquityCatalog.fmp_symbol.ilike(pattern, escape="\\"),
-                    FmpEquityCatalog.exchange_ticker.ilike(pattern, escape="\\"),
-                    FmpEquityCatalog.company_name.ilike(pattern, escape="\\"),
+                    FmpEtfCatalog.fmp_symbol.ilike(pattern, escape="\\"),
+                    FmpEtfCatalog.exchange_ticker.ilike(pattern, escape="\\"),
+                    FmpEtfCatalog.company_name.ilike(pattern, escape="\\"),
                 ),
             )
             .order_by(
                 case(
-                    (func.lower(FmpEquityCatalog.fmp_symbol) == lowered, 0),
-                    (func.lower(FmpEquityCatalog.exchange_ticker) == lowered, 1),
-                    (func.lower(FmpEquityCatalog.fmp_symbol).like(f"{lowered}%"), 2),
-                    (func.lower(FmpEquityCatalog.exchange_ticker).like(f"{lowered}%"), 3),
+                    (func.lower(FmpEtfCatalog.fmp_symbol) == lowered, 0),
+                    (func.lower(FmpEtfCatalog.exchange_ticker) == lowered, 1),
+                    (func.lower(FmpEtfCatalog.fmp_symbol).like(f"{lowered}%"), 2),
+                    (func.lower(FmpEtfCatalog.exchange_ticker).like(f"{lowered}%"), 3),
                     else_=4,
                 ),
-                FmpEquityCatalog.company_name,
-                FmpEquityCatalog.fmp_symbol,
+                FmpEtfCatalog.company_name,
+                FmpEtfCatalog.fmp_symbol,
             )
             .limit(max(1, min(limit, 25)))
         )
         return [_serialize(item) for item in session.scalars(statement).all()]
 
 
-def _serialize(item: FmpEquityCatalog) -> dict[str, object]:
+def _serialize(item: FmpEtfCatalog) -> dict[str, object]:
     return {
         "fmp_symbol": item.fmp_symbol,
         "exchange_ticker": item.exchange_ticker,

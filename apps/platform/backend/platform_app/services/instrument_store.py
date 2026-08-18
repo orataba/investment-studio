@@ -126,6 +126,20 @@ def create_instrument(
     )
 
 
+def ensure_secondary_identifier(
+    *,
+    instrument_id: str,
+    identifier_type: str,
+    identifier_value: str,
+) -> dict[str, object] | None:
+    return shared_store.ensure_secondary_identifier(
+        get_session_factory(),
+        instrument_id=instrument_id,
+        identifier_type=identifier_type,
+        identifier_value=identifier_value,
+    )
+
+
 def upsert_market_data(
     *,
     instrument_id: str,

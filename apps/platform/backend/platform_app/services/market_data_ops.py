@@ -3845,9 +3845,9 @@ def refresh_market_data(
             full_history=full_history,
         )
     if requested_source == "fmp":
-        from platform_app.services.equities import refresh_equity_eod
+        from platform_app.services.securities import refresh_security_eod
 
-        return refresh_equity_eod(
+        return refresh_security_eod(
             instrument_id,
             full_history=full_history,
         )
@@ -3871,9 +3871,9 @@ def refresh_market_data(
                 full_history=full_history,
             )
         if profile.lower() == "fmp":
-            from platform_app.services.equities import refresh_equity_eod
+            from platform_app.services.securities import refresh_security_eod
 
-            return refresh_equity_eod(
+            return refresh_security_eod(
                 instrument_id,
                 full_history=full_history,
             )
@@ -3935,7 +3935,7 @@ def refresh_market_data_with_timeout(
     except Exception as exc:
         if str(source or "configured").strip().lower() != "fmp":
             raise
-        from platform_app.services.equities.fmp_client import FmpApiError
+        from platform_app.services.fmp import FmpApiError
 
         if not isinstance(exc, FmpApiError):
             raise

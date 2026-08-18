@@ -1,9 +1,6 @@
 from __future__ import annotations
 
-from platform_app.services.equities.catalog import (
-    get_catalog_equity,
-    search_equity_catalog,
-)
+from platform_app.services.etfs.catalog import get_catalog_etf, search_etf_catalog
 from platform_app.services.fmp import FmpClient, refresh_fmp_eod
 from platform_app.services.fmp.exchanges import exchange_by_code
 from platform_app.services.instrument_store import (
@@ -16,11 +13,11 @@ from platform_app.services.instrument_store import (
 )
 
 
-class EquityNotSupportedError(ValueError):
+class EtfNotSupportedError(ValueError):
     pass
 
 
-def _existing_equity(
+def _existing_etf(
     *,
     fmp_symbol: str,
     exchange_ticker: str,
@@ -37,34 +34,32 @@ def _existing_equity(
         )
         if existing is None:
             continue
-        if str(existing.get("instrument_type") or "") != "equity":
-            raise EquityNotSupportedError(
-                f"Identifier {identifier_type}:{identifier_value} belongs to a non-equity instrument."
+        if str(existing.get("instrument_type") or "") != "etf":
+            raise EtfNotSupportedError(
+                f"Identifier {identifier_type}:{identifier_value} belongs to a non-ETF instrument."
             )
         lifecycle = dict(existing.get("lifecycle_state") or {})
         if str(lifecycle.get("status") or "active") != "active":
-            raise EquityNotSupportedError("The matching Registry equity is archived.")
+            raise EtfNotSupportedError("The matching Registry ETF is archived.")
         return existing
     return None
 
 
-def _search_record(
-    catalog_record: dict[str, object],
-) -> dict[str, object]:
+def _search_record(catalog_record: dict[str, object]) -> dict[str, object]:
     symbol = str(catalog_record["fmp_symbol"])
     exchange_ticker = str(catalog_record["exchange_ticker"])
     exchange_code = str(catalog_record["exchange_code"])
     exchange = exchange_by_code(exchange_code)
     if exchange is None:
-        raise EquityNotSupportedError(
-            f"Local FMP catalog has unsupported exchange {exchange_code}."
+        raise EtfNotSupportedError(
+            f"Local FMP ETF catalog has unsupported exchange {exchange_code}."
         )
-    existing = _existing_equity(
+    existing = _existing_etf(
         fmp_symbol=symbol,
         exchange_ticker=exchange_ticker,
     )
     return {
-        "instrument_type": "equity",
+        "instrument_type": "etf",
         "symbol": exchange_ticker,
         "fmp_symbol": symbol,
         "name": str(catalog_record["company_name"]),
@@ -79,17 +74,13 @@ def _search_record(
     }
 
 
-def search_equities(
-    query: str,
-    *,
-    limit: int = 10,
-) -> list[dict[str, object]]:
+def search_etfs(query: str, *, limit: int = 10) -> list[dict[str, object]]:
     normalized_query = query.strip()
     if not normalized_query:
-        raise ValueError("Equity search query must not be blank.")
+        raise ValueError("ETF search query must not be blank.")
     return [
         _search_record(record)
-        for record in search_equity_catalog(normalized_query, limit=limit)
+        for record in search_etf_catalog(normalized_query, limit=limit)
     ]
 
 
@@ -107,40 +98,37 @@ def _source_settings(instrument_id: str, exchange_code: str) -> None:
         return_semantics="price_return",
     )
     if updated is None:
-        raise RuntimeError(f"Registry equity disappeared during materialization: {instrument_id}")
+        raise RuntimeError(f"Registry ETF disappeared during materialization: {instrument_id}")
 
 
-def materialize_equity(
+def materialize_etf(
     fmp_symbol: str,
     *,
     refresh_eod: bool = True,
     client: FmpClient | None = None,
 ) -> dict[str, object]:
     fmp = client or FmpClient()
-    catalog_record = get_catalog_equity(fmp_symbol)
+    catalog_record = get_catalog_etf(fmp_symbol)
     if catalog_record is None:
-        raise EquityNotSupportedError(
-            "Equity is not present in the local FMP stock catalog."
-        )
+        raise EtfNotSupportedError("ETF is not present in the local FMP ETF catalog.")
     symbol = str(catalog_record["fmp_symbol"])
     exchange_ticker = str(catalog_record["exchange_ticker"])
     exchange_code = str(catalog_record["exchange_code"])
     exchange = exchange_by_code(exchange_code)
     if exchange is None:
-        raise EquityNotSupportedError(
-            f"Local FMP catalog has unsupported exchange {exchange_code}."
+        raise EtfNotSupportedError(
+            f"Local FMP ETF catalog has unsupported exchange {exchange_code}."
         )
     currency = str(catalog_record["currency"])
-    existing = _existing_equity(
+    existing = _existing_etf(
         fmp_symbol=symbol,
         exchange_ticker=exchange_ticker,
     )
     if existing is None:
         existing = create_instrument(
             instrument_name=str(catalog_record["company_name"]),
-            instrument_type="equity",
+            instrument_type="etf",
             currency=currency,
-            exchange_code=exchange.exchange_code,
             identifiers=[
                 {
                     "identifier_type": "exchange_ticker",
@@ -154,15 +142,10 @@ def materialize_equity(
                 },
             ],
         )
-    else:
-        if str(existing.get("exchange_code") or "") != exchange.exchange_code:
-            raise EquityNotSupportedError(
-                "Registry exchange identity conflicts with the local FMP catalog."
-            )
-        if str(existing.get("currency") or "").strip().upper() != currency:
-            raise EquityNotSupportedError(
-                "Registry currency conflicts with the local FMP equity catalog."
-            )
+    elif str(existing.get("currency") or "").strip().upper() != currency:
+        raise EtfNotSupportedError(
+            "Registry currency conflicts with the local FMP ETF catalog."
+        )
 
     instrument_id = str(existing["instrument_id"])
     ensured = ensure_secondary_identifier(
@@ -171,22 +154,22 @@ def materialize_equity(
         identifier_value=f"fmp:{symbol}",
     )
     if ensured is None:
-        raise RuntimeError(f"Registry equity disappeared during materialization: {instrument_id}")
+        raise RuntimeError(f"Registry ETF disappeared during materialization: {instrument_id}")
     _source_settings(instrument_id, exchange.exchange_code)
     if refresh_eod:
         coverage = get_price_bar_coverage(instrument_id=instrument_id)
-        refresh_equity_eod(
+        refresh_etf_eod(
             instrument_id,
             full_history=not bool(coverage.get("latest_date")),
             client=fmp,
         )
     instrument = get_instrument(instrument_id)
     if instrument is None:
-        raise RuntimeError(f"Materialized equity is missing from Registry: {instrument_id}")
+        raise RuntimeError(f"Materialized ETF is missing from Registry: {instrument_id}")
     return instrument
 
 
-def refresh_equity_eod(
+def refresh_etf_eod(
     instrument_id: str,
     *,
     full_history: bool = False,
@@ -194,7 +177,7 @@ def refresh_equity_eod(
 ) -> dict[str, object]:
     return refresh_fmp_eod(
         instrument_id=instrument_id,
-        instrument_type="equity",
+        instrument_type="etf",
         full_history=full_history,
         client=client,
     )

@@ -2,14 +2,14 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import {
   getSharedInstruments,
-  searchPlatformEquityCatalog,
+  searchPlatformSecurityCatalog,
   type SharedInstrumentRecord,
 } from './api'
 import { searchWatchlistInstrumentCandidates } from './watchlistInstrumentSearch'
 
 vi.mock('./api', () => ({
   getSharedInstruments: vi.fn(),
-  searchPlatformEquityCatalog: vi.fn(),
+  searchPlatformSecurityCatalog: vi.fn(),
 }))
 
 function instrument(
@@ -34,9 +34,9 @@ describe('Watchlist instrument search', () => {
     })
   })
 
-  it('keeps Registry results available when the stock catalog fails', async () => {
-    vi.mocked(searchPlatformEquityCatalog).mockRejectedValue(
-      new Error('Stock catalog unavailable'),
+  it('keeps Registry results available when the security catalogs fail', async () => {
+    vi.mocked(searchPlatformSecurityCatalog).mockRejectedValue(
+      new Error('Security catalogs unavailable'),
     )
 
     const response = await searchWatchlistInstrumentCandidates('alpha')
@@ -49,7 +49,7 @@ describe('Watchlist instrument search', () => {
       'equity',
       'index',
     ])
-    expect(response.stockCatalogError).toBe('Stock catalog unavailable')
+    expect(response.securityCatalogError).toBe('Security catalogs unavailable')
   })
 
   it('deduplicates a catalog stock that already has a Registry identity', async () => {
@@ -57,18 +57,41 @@ describe('Watchlist instrument search', () => {
     vi.mocked(getSharedInstruments).mockImplementation(async (options) =>
       options?.instrument_type === 'equity' ? [registryEquity] : [],
     )
-    vi.mocked(searchPlatformEquityCatalog).mockResolvedValue([
-      {
-        ...registryEquity,
-        fmp_symbol: 'AAPL',
-        source: 'fmp_catalog',
-        existing_instrument_id: 'equity-aapl',
-      },
-    ])
+    vi.mocked(searchPlatformSecurityCatalog).mockResolvedValue({
+      results: [
+        {
+          ...registryEquity,
+          fmp_symbol: 'AAPL',
+          source: 'fmp_catalog',
+          existing_instrument_id: 'equity-aapl',
+        },
+      ],
+      catalogErrors: {},
+    })
 
     const response = await searchWatchlistInstrumentCandidates('AAPL')
 
     expect(response.results).toEqual([registryEquity])
-    expect(response.stockCatalogError).toBeNull()
+    expect(response.securityCatalogError).toBeNull()
+  })
+
+  it('returns a new ETF from the local FMP catalog', async () => {
+    vi.mocked(getSharedInstruments).mockResolvedValue([])
+    vi.mocked(searchPlatformSecurityCatalog).mockResolvedValue({
+      results: [
+        {
+          ...instrument('fmp:etf:MAGS', 'etf'),
+          fmp_symbol: 'MAGS',
+          source: 'fmp_catalog',
+          existing_instrument_id: null,
+        },
+      ],
+      catalogErrors: {},
+    })
+
+    const response = await searchWatchlistInstrumentCandidates('MAGS')
+
+    expect(response.results.map((item) => item.instrument_type)).toEqual(['etf'])
+    expect(response.securityCatalogError).toBeNull()
   })
 })

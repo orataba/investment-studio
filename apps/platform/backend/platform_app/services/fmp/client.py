@@ -51,11 +51,22 @@ class FmpClient:
         return [dict(item) for item in payload if isinstance(item, dict)]
 
     def active_equities(self, exchange: str) -> list[dict[str, object]]:
+        return self._active_listings(exchange, is_etf=False)
+
+    def active_etfs(self, exchange: str) -> list[dict[str, object]]:
+        return self._active_listings(exchange, is_etf=True)
+
+    def _active_listings(
+        self,
+        exchange: str,
+        *,
+        is_etf: bool,
+    ) -> list[dict[str, object]]:
         return self._get_list(
             "company-screener",
             params={
                 "exchange": exchange,
-                "isEtf": "false",
+                "isEtf": "true" if is_etf else "false",
                 "isFund": "false",
                 "isActivelyTrading": "true",
                 "limit": 10000,

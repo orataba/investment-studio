@@ -9,6 +9,7 @@ from platform_app.core.settings import get_settings
 from platform_app.db.base import Base
 from platform_app.db import email_models  # noqa: F401
 from platform_app.db import equity_models  # noqa: F401
+from platform_app.db import etf_models  # noqa: F401
 
 
 config = context.config

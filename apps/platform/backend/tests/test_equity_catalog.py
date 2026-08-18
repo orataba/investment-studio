@@ -16,8 +16,8 @@ from platform_app.services.equities.catalog import (
     search_equity_catalog,
     sync_equity_catalog,
 )
-from platform_app.services.equities.exchange_catalog import FMP_CATALOG_EXCHANGES
-from platform_app.services.equities.fmp_client import FmpClient
+from platform_app.services.fmp.client import FmpClient
+from platform_app.services.fmp.exchanges import FMP_EQUITY_CATALOG_EXCHANGES
 from platform_app.services.equities.service import materialize_equity, search_equities
 from platform_app.services.instrument_store import get_price_bar_coverage, list_instruments
 
@@ -133,7 +133,7 @@ def test_catalog_sync_supports_local_search_without_fmp_round_trip(
     client = FakeFmpClient()
     summary = sync_equity_catalog(client=client)
 
-    assert client.catalog_calls == list(FMP_CATALOG_EXCHANGES)
+    assert client.catalog_calls == list(FMP_EQUITY_CATALOG_EXCHANGES)
     assert summary["active_count"] == 6
     assert search_equity_catalog("600519", limit=10)[0]["exchange_ticker"] == "600519.SH"
 
@@ -143,6 +143,7 @@ def test_catalog_sync_supports_local_search_without_fmp_round_trip(
     result = search_equities("Tencent", limit=10)
     assert result == [
         {
+            "instrument_type": "equity",
             "symbol": "0700.HK",
             "fmp_symbol": "0700.HK",
             "name": "Tencent Holdings",

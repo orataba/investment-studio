@@ -22,12 +22,13 @@ SPEC.loader.exec_module(scheduled_refresh)
 def _empty_projection_reconciliation(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         scheduled_refresh,
-        "sync_equity_catalog",
+        "sync_security_catalogs",
         lambda: {
-            "active_count": 3,
-            "replaced_count": 2,
-            "exchange_counts": {"NASDAQ": 3},
-            "synced_at": "2026-08-18T00:00:00+00:00",
+            "active_count": 5,
+            "catalogs": {
+                "equity": {"active_count": 3},
+                "etf": {"active_count": 2},
+            },
         },
     )
     monkeypatch.setattr(

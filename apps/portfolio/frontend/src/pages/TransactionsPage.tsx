@@ -16,12 +16,12 @@ import {
   getPortfolioTransactionPositionPreview,
   getPortfolioTransactionsWorkspace,
   importPortfolioTransactionFile,
-  materializePlatformEquity,
+  materializePlatformSecurity,
   portfolioTransactionDownloadUrl,
   portfolioTransactionTemplateUrl,
   previewPortfolioTransactionFile,
   reviewPortfolioInstrumentEventTask,
-  searchPlatformEquityCatalog,
+  searchPlatformSecurityCatalog,
   type PortfolioAccountRecord,
   type PortfolioFeeCategory,
   type PortfolioDerivativeContractCreate,
@@ -971,10 +971,10 @@ export default function TransactionsPage() {
   const [inspectorTab, setInspectorTab] = useState<TransactionInspectorTab>('fact')
   const [form, setForm] = useState<TransactionFormState>(() => buildInitialFormState([]))
   const deferredInstrumentSearch = useDeferredValue(form.instrument_search)
-  const [equitySearchResults, setEquitySearchResults] = useState<SecuritySearchOption[]>([])
-  const [equitySearchLoading, setEquitySearchLoading] = useState(false)
-  const [equitySearchError, setEquitySearchError] = useState<string | null>(null)
-  const [equityMaterializing, setEquityMaterializing] = useState(false)
+  const [securityCatalogResults, setSecurityCatalogResults] = useState<SecuritySearchOption[]>([])
+  const [securityCatalogLoading, setSecurityCatalogLoading] = useState(false)
+  const [securityCatalogError, setSecurityCatalogError] = useState<string | null>(null)
+  const [securityMaterializing, setSecurityMaterializing] = useState(false)
   const [derivativeDraft, setDerivativeDraft] = useState<DerivativeContractDraft>(() =>
     buildInitialDerivativeContractDraft(),
   )
@@ -1107,33 +1107,39 @@ export default function TransactionsPage() {
   useEffect(() => {
     const query = deferredInstrumentSearch.trim()
     if (!drawerOpen || form.asset_domain !== 'security' || !query) {
-      setEquitySearchResults([])
-      setEquitySearchLoading(false)
-      setEquitySearchError(null)
+      setSecurityCatalogResults([])
+      setSecurityCatalogLoading(false)
+      setSecurityCatalogError(null)
       return undefined
     }
 
     let cancelled = false
     const timeoutId = window.setTimeout(() => {
-      setEquitySearchLoading(true)
-      setEquitySearchError(null)
-      searchPlatformEquityCatalog(query, 12)
-        .then((results) => {
+      setSecurityCatalogLoading(true)
+      setSecurityCatalogError(null)
+      searchPlatformSecurityCatalog(query, 12)
+        .then(({ results, catalogErrors }) => {
           if (!cancelled) {
-            setEquitySearchResults(results)
+            setSecurityCatalogResults(results)
+            const unavailableCatalogs = Object.keys(catalogErrors)
+            setSecurityCatalogError(
+              unavailableCatalogs.length
+                ? `${unavailableCatalogs.map((item) => item.toUpperCase()).join(' and ')} catalog unavailable.`
+                : null,
+            )
           }
         })
         .catch((error) => {
           if (!cancelled) {
-            setEquitySearchResults([])
-            setEquitySearchError(
-              error instanceof Error ? error.message : 'Failed to search the local stock catalog.',
+            setSecurityCatalogResults([])
+            setSecurityCatalogError(
+              error instanceof Error ? error.message : 'Failed to search the local stock and ETF catalogs.',
             )
           }
         })
         .finally(() => {
           if (!cancelled) {
-            setEquitySearchLoading(false)
+            setSecurityCatalogLoading(false)
           }
         })
     }, 250)
@@ -1390,7 +1396,7 @@ export default function TransactionsPage() {
         return haystack.includes(normalizedSearch)
       })
     const seenInstrumentIds = new Set(registryMatches.map((instrument) => instrument.instrument_id))
-    const fmpMatches = equitySearchResults.filter((instrument) => {
+    const fmpMatches = securityCatalogResults.filter((instrument) => {
       const existingInstrumentId =
         'existing_instrument_id' in instrument ? instrument.existing_instrument_id : null
       if (existingInstrumentId && seenInstrumentIds.has(existingInstrumentId)) {
@@ -1407,7 +1413,7 @@ export default function TransactionsPage() {
     return [...registryMatches, ...fmpMatches].slice(0, 12)
   }, [
     deferredInstrumentSearch,
-    equitySearchResults,
+    securityCatalogResults,
     form.transaction_type,
     form.transfer_object_type,
     instruments,
@@ -1800,13 +1806,16 @@ export default function TransactionsPage() {
       commitSelectedInstrument(instrument)
       return
     }
-    if (!portfolioId || equityMaterializing) {
+    if (!portfolioId || securityMaterializing) {
       return
     }
-    setEquityMaterializing(true)
-    setEquitySearchError(null)
+    setSecurityMaterializing(true)
+    setSecurityCatalogError(null)
     try {
-      const materialized = await materializePlatformEquity(instrument.fmp_symbol)
+      const materialized = await materializePlatformSecurity(
+        instrument.instrument_type,
+        instrument.fmp_symbol,
+      )
       const refreshed = await getPortfolioInstruments(portfolioId)
       setInstruments(refreshed.instruments)
       commitSelectedInstrument(
@@ -1814,13 +1823,13 @@ export default function TransactionsPage() {
           (candidate) => candidate.instrument_id === materialized.instrument_id,
         ) ?? materialized,
       )
-      setEquitySearchResults([])
+      setSecurityCatalogResults([])
     } catch (error) {
-      setEquitySearchError(
-        error instanceof Error ? error.message : 'Failed to prepare the FMP stock data.',
+      setSecurityCatalogError(
+        error instanceof Error ? error.message : 'Failed to prepare the FMP security data.',
       )
     } finally {
-      setEquityMaterializing(false)
+      setSecurityMaterializing(false)
     }
   }
 
@@ -3956,7 +3965,7 @@ export default function TransactionsPage() {
                               type="button"
                               key={instrument.instrument_id}
                               className="transaction-instrument-result"
-                              disabled={equityMaterializing}
+                              disabled={securityMaterializing}
                               onClick={() => void selectInstrument(instrument)}
                             >
                               <div className="holding-name-stack">
@@ -3968,13 +3977,13 @@ export default function TransactionsPage() {
                           ))}
                           {!filteredInstrumentOptions.length ? (
                             <div className="transaction-instrument-empty">
-                              {equitySearchLoading
-                                ? 'Searching Registry and the local stock catalog…'
+                              {securityCatalogLoading
+                                ? 'Searching Registry and the local stock and ETF catalogs…'
                                 : 'No matching security.'}
                             </div>
                           ) : null}
-                          {equitySearchError ? (
-                            <div className="transaction-instrument-empty">{equitySearchError}</div>
+                          {securityCatalogError ? (
+                            <div className="transaction-instrument-empty">{securityCatalogError}</div>
                           ) : null}
                         </div>
                       ) : null}

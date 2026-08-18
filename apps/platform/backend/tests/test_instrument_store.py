@@ -2004,7 +2004,30 @@ def test_source_schedule_semantics_default_and_roundtrip_by_instrument_type(
     )
     assert index_update is not None
     assert index_update["source_settings"]["return_semantics"] == "total_return"
-    with pytest.raises(ValueError, match="only supported for index or equity"):
+    etf = create_instrument(
+        instrument_name="FMP Schedule ETF",
+        instrument_type="etf",
+        currency="USD",
+        identifiers=[
+            {
+                "identifier_type": "exchange_ticker",
+                "identifier_value": "MAGS",
+                "is_primary": True,
+            }
+        ],
+    )
+    etf_update = upsert_source_settings(
+        instrument_id=etf["instrument_id"],
+        source_mode="api",
+        source_email=None,
+        source_location="FMP API",
+        source_api_profile="fmp",
+        source_email_rules=None,
+        return_semantics="price_return",
+    )
+    assert etf_update is not None
+    assert etf_update["source_settings"]["return_semantics"] == "price_return"
+    with pytest.raises(ValueError, match="only supported for indexes and listed securities"):
         upsert_source_settings(
             instrument_id=fund["instrument_id"],
             source_mode="api",

@@ -978,7 +978,8 @@ export type SharedInstrumentRecord = InstrumentCore & {
   coverage_state: DataStatus
 }
 
-export type PlatformEquitySearchResult = {
+export type PlatformSecuritySearchResult = {
+  instrument_type: 'equity' | 'etf'
   symbol: string
   fmp_symbol: string
   name: string
@@ -992,13 +993,14 @@ export type PlatformEquitySearchResult = {
   existing_instrument_id: string | null
 }
 
-export type PlatformEquitySearchCandidate = InstrumentCore & {
+export type PlatformSecuritySearchCandidate = Omit<InstrumentCore, 'instrument_type'> & {
+  instrument_type: 'equity' | 'etf'
   fmp_symbol: string
   source: 'fmp_catalog'
   existing_instrument_id: string | null
 }
 
-export type SecuritySearchOption = SharedInstrumentRecord | PlatformEquitySearchCandidate
+export type SecuritySearchOption = SharedInstrumentRecord | PlatformSecuritySearchCandidate
 
 export type PortfolioSharedInstrumentsResponse = {
   portfolio_id: string
@@ -3406,40 +3408,54 @@ export function getPortfolioInstruments(portfolioId: string) {
   )
 }
 
-export async function searchPlatformEquityCatalog(query: string, limit = 12) {
+export async function searchPlatformSecurityCatalog(query: string, limit = 12) {
   const normalizedQuery = query.trim()
   if (!normalizedQuery) {
-    return []
+    return { results: [] as PlatformSecuritySearchCandidate[], catalogErrors: {} as Record<string, string> }
   }
   const params = new URLSearchParams({ q: normalizedQuery, limit: String(limit) })
-  const payload = await fetchJson<{ results: PlatformEquitySearchResult[] }>(
+  const payload = await fetchJson<{
+    results: PlatformSecuritySearchResult[]
+    catalog_errors: Partial<Record<'equity' | 'etf', string>>
+  }>(
     PLATFORM_API_URL,
-    `/api/equities/search?${params.toString()}`,
+    `/api/securities/search?${params.toString()}`,
   )
-  return payload.results.map<PlatformEquitySearchCandidate>((item) => ({
-    instrument_id: item.existing_instrument_id || `fmp:${item.fmp_symbol}`,
-    instrument_name: item.name,
-    instrument_type: 'equity',
-    currency: item.currency,
-    exchange_code: item.exchange_code,
-    identifiers: [
-      {
-        identifier_type: 'exchange_ticker',
-        identifier_value: item.symbol,
-        is_primary: true,
-      },
-    ],
-    broker_identifiers: [],
-    fmp_symbol: item.fmp_symbol,
-    source: 'fmp_catalog',
-    existing_instrument_id: item.existing_instrument_id,
-  }))
+  return {
+    results: payload.results.map<PlatformSecuritySearchCandidate>((item) => ({
+      instrument_id:
+        item.existing_instrument_id || `fmp:${item.instrument_type}:${item.fmp_symbol}`,
+      instrument_name: item.name,
+      instrument_type: item.instrument_type,
+      currency: item.currency,
+      exchange_code: item.instrument_type === 'equity' ? item.exchange_code : null,
+      identifiers: [
+        {
+          identifier_type: 'exchange_ticker',
+          identifier_value: item.symbol,
+          is_primary: true,
+        },
+      ],
+      broker_identifiers: [],
+      fmp_symbol: item.fmp_symbol,
+      source: 'fmp_catalog',
+      existing_instrument_id: item.existing_instrument_id,
+    })),
+    catalogErrors: payload.catalog_errors,
+  }
 }
 
-export function materializePlatformEquity(fmpSymbol: string) {
-  return fetchJson<SharedInstrumentRecord>(PLATFORM_API_URL, '/api/equities/materialize', {
+export function materializePlatformSecurity(
+  instrumentType: 'equity' | 'etf',
+  fmpSymbol: string,
+) {
+  return fetchJson<SharedInstrumentRecord>(PLATFORM_API_URL, '/api/securities/materialize', {
     method: 'POST',
-    body: JSON.stringify({ fmp_symbol: fmpSymbol, refresh_eod: true }),
+    body: JSON.stringify({
+      instrument_type: instrumentType,
+      fmp_symbol: fmpSymbol,
+      refresh_eod: true,
+    }),
   })
 }
 

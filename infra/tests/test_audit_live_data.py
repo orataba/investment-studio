@@ -45,7 +45,7 @@ def test_flat_table_profile_accepts_only_final_heads(
 ) -> None:
     expected_heads = {
         "instrument_registry": "20260818_0025",
-        "platform": "20260818_0003",
+        "platform": "20260818_0004",
         "portfolio": "20260818_0053",
         "watchlist": "20260818_0042",
     }
@@ -81,10 +81,14 @@ def test_flat_table_profile_accepts_only_final_heads(
 def test_audit_contract_names_cover_registry_0019(
     audit_module: ModuleType,
 ) -> None:
-    assert len(audit_module.AUDIT_CHECK_NAMES) == 39
+    assert len(audit_module.AUDIT_CHECK_NAMES) == 40
     assert "schema_identifier_contract" in audit_module.AUDIT_CHECK_NAMES
-    assert "instrument_type_equity_identity_contract" in audit_module.AUDIT_CHECK_NAMES
+    assert (
+        "instrument_type_listed_security_identity_contract"
+        in audit_module.AUDIT_CHECK_NAMES
+    )
     assert "fmp_equity_catalog_contract" in audit_module.AUDIT_CHECK_NAMES
+    assert "fmp_etf_catalog_contract" in audit_module.AUDIT_CHECK_NAMES
     assert "watchlist_system_contract" in audit_module.AUDIT_CHECK_NAMES
     assert "watchlist_taxonomy_type_contract" in audit_module.AUDIT_CHECK_NAMES
     assert "watchlist_field_identity_contract" in audit_module.AUDIT_CHECK_NAMES

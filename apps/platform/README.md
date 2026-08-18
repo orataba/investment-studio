@@ -78,7 +78,7 @@ Database Dashboard 通过 DataHub REST 接口刷新 Tushare 数据集。将 inst
 
 指数的 provider 字段名与收益口径分开管理。`close` 只说明行情字段，不能自动等同于全收益；Database Dashboard 的 `Index Return Semantics` 必须按指数公司代码说明标记为 `Price return`、`Total return` 或 `Unknown`。例如普通沪深300代码与其全收益衍生代码是两条不同指数。该标记进入共享 Registry，Portfolio 再据此决定基准比较口径。
 
-后台定时刷新使用 [backend/scripts/refresh_market_data_scheduled.py](./backend/scripts/refresh_market_data_scheduled.py)。默认先从 FMP API 刷新美股、港股、A 股的本地轻量股票目录，再依次刷新 Tushare、公募/私募邮件、Registry 中已经使用的股票 FMP EOD，最后只重建方法版本落后的当前基金净值投影。股票搜索只查本地目录；首次加入 Watchlist 或 Portfolio 时回补完整 EOD，后续按已使用股票增量更新，不维护三地全市场完整日线。投影协调不访问行情源或邮箱，也可用 `--channel projection` 单独执行。
+后台定时刷新使用 [backend/scripts/refresh_market_data_scheduled.py](./backend/scripts/refresh_market_data_scheduled.py)。默认先从 FMP API 分别刷新本地轻量股票目录和 ETF 目录，再依次刷新 Tushare、公募/私募邮件、Registry 中已经使用的 FMP 股票/ETF EOD，最后只重建方法版本落后的当前基金净值投影。股票和 FMP 已覆盖的 ETF 都只查本地目录；首次加入 Watchlist 或 Portfolio 时回补完整 EOD，后续按已使用资产增量更新，不维护全市场完整日线。现有 A 股 ETF 继续使用覆盖更完整的 Tushare 链路。投影协调不访问行情源或邮箱，也可用 `--channel projection` 单独执行。
 
 ```bash
 PYTHON_BIN=/home/shaw/miniconda3/envs/us_sector_rotation/bin/python \

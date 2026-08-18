@@ -1,9 +1,15 @@
 from __future__ import annotations
 
+from typing import Literal
+
 from pydantic import BaseModel, Field, field_validator
 
 
-class EquitySearchResult(BaseModel):
+MaterializableSecurityType = Literal["equity", "etf"]
+
+
+class SecuritySearchResult(BaseModel):
+    instrument_type: MaterializableSecurityType
     symbol: str
     fmp_symbol: str
     name: str
@@ -17,11 +23,13 @@ class EquitySearchResult(BaseModel):
     existing_instrument_id: str | None = None
 
 
-class EquitySearchResponse(BaseModel):
-    results: list[EquitySearchResult]
+class SecuritySearchResponse(BaseModel):
+    results: list[SecuritySearchResult]
+    catalog_errors: dict[MaterializableSecurityType, str] = Field(default_factory=dict)
 
 
-class EquityMaterializeRequest(BaseModel):
+class SecurityMaterializeRequest(BaseModel):
+    instrument_type: MaterializableSecurityType
     fmp_symbol: str = Field(min_length=1)
     refresh_eod: bool = True
 

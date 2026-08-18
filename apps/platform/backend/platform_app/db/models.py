@@ -16,6 +16,7 @@ from platform_app.db.email_models import (
     PlatformMetadata,
 )
 from platform_app.db.equity_models import FmpEquityCatalog
+from platform_app.db.etf_models import FmpEtfCatalog
 
 __all__ = [
     "EmailAttachmentArtifact",
@@ -26,6 +27,7 @@ __all__ = [
     "EmailNavCandidate",
     "FundNavRawObservation",
     "FmpEquityCatalog",
+    "FmpEtfCatalog",
     "Instrument",
     "InstrumentIdentifier",
     "InstrumentMarketData",

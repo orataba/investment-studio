@@ -1,6 +1,6 @@
 import {
   getSharedInstruments,
-  searchPlatformEquityCatalog,
+  searchPlatformSecurityCatalog,
   type SharedInstrumentRecord,
 } from './api'
 
@@ -14,7 +14,7 @@ const REGISTRY_SEARCH_TYPES = [
 
 export type WatchlistInstrumentSearchResult = {
   results: SharedInstrumentRecord[]
-  stockCatalogError: string | null
+  securityCatalogError: string | null
 }
 
 export async function searchWatchlistInstrumentCandidates(
@@ -30,22 +30,27 @@ export async function searchWatchlistInstrumentCandidates(
       }),
     ),
   )
-  const stockCatalogRequest = searchPlatformEquityCatalog(query, limit)
-    .then((results) => ({ results, error: null as string | null }))
+  const securityCatalogRequest = searchPlatformSecurityCatalog(query, limit)
+    .then(({ results, catalogErrors }) => ({
+      results,
+      error: Object.keys(catalogErrors).length
+        ? `${Object.keys(catalogErrors).map((item) => item.toUpperCase()).join(' and ')} catalog unavailable.`
+        : null,
+    }))
     .catch((error: unknown) => ({
       results: [] as SharedInstrumentRecord[],
       error:
         error instanceof Error
           ? error.message
-          : 'The local FMP stock catalog is unavailable.',
+          : 'The local FMP stock and ETF catalogs are unavailable.',
     }))
 
-  const [registryGroups, stockCatalog] = await Promise.all([
+  const [registryGroups, securityCatalog] = await Promise.all([
     registryRequest,
-    stockCatalogRequest,
+    securityCatalogRequest,
   ])
   const seenInstrumentIds = new Set<string>()
-  const results = [...registryGroups.flat(), ...stockCatalog.results].filter((item) => {
+  const results = [...registryGroups.flat(), ...securityCatalog.results].filter((item) => {
     if (seenInstrumentIds.has(item.instrument_id)) {
       return false
     }
@@ -55,6 +60,6 @@ export async function searchWatchlistInstrumentCandidates(
 
   return {
     results,
-    stockCatalogError: stockCatalog.error,
+    securityCatalogError: securityCatalog.error,
   }
 }

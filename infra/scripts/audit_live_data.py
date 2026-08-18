@@ -31,7 +31,7 @@ from portfolio_ops_instrument_core import (  # noqa: E402
 
 FINAL_FLAT_TABLE_HEADS = {
     "instrument_registry": "20260818_0025",
-    "platform": "20260818_0003",
+    "platform": "20260818_0004",
     "portfolio": "20260818_0053",
     "watchlist": "20260818_0042",
 }
@@ -241,8 +241,9 @@ SCHEMA_IDENTIFIER_RENAMES = (
 
 AUDIT_CHECK_NAMES = (
     "schema_identifier_contract",
-    "instrument_type_equity_identity_contract",
+    "instrument_type_listed_security_identity_contract",
     "fmp_equity_catalog_contract",
+    "fmp_etf_catalog_contract",
     "watchlist_system_contract",
     "watchlist_taxonomy_type_contract",
     "watchlist_field_identity_contract",
@@ -647,7 +648,7 @@ def _run_flat_table_audit(database_url: str) -> list[AuditCheck]:
             checks.append(
                 _count_check(
                     cursor,
-                    name="instrument_type_equity_identity_contract",
+                    name="instrument_type_listed_security_identity_contract",
                     query="""
                         SELECT count(*)
                         FROM instrument_registry.instrument instrument
@@ -685,14 +686,96 @@ def _run_flat_table_audit(database_url: str) -> list[AuditCheck]:
                                 )
                               )
                            OR (
+                                instrument.instrument_type = 'etf'
+                                AND (
+                                    instrument.exchange_code IS NOT NULL
+                                    OR coalesce(
+                                        instrument.source_settings_json ->> 'source_mode',
+                                        ''
+                                    ) <> 'api'
+                                    OR coalesce(
+                                        instrument.source_settings_json ->> 'source_api_profile',
+                                        ''
+                                    ) NOT IN ('fmp', 'tushare', 'tushare_pro', 'tushare-pro')
+                                    OR (
+                                        coalesce(
+                                            instrument.source_settings_json ->> 'source_api_profile',
+                                            ''
+                                        ) = 'fmp'
+                                        AND (
+                                            coalesce(
+                                                instrument.source_settings_json ->> 'market_calendar',
+                                                ''
+                                            ) NOT IN (
+                                                'XNAS', 'XNYS', 'XASE', 'BATS',
+                                                'XHKG', 'XSHG', 'XSHE'
+                                            )
+                                            OR NOT EXISTS (
+                                                SELECT 1
+                                                FROM instrument_registry.instrument_identifier identifier
+                                                WHERE identifier.instrument_id = instrument.instrument_id
+                                                  AND identifier.identifier_type = 'exchange_ticker'
+                                            )
+                                            OR NOT EXISTS (
+                                                SELECT 1
+                                                FROM instrument_registry.instrument_identifier identifier
+                                                WHERE identifier.instrument_id = instrument.instrument_id
+                                                  AND identifier.identifier_type = 'provider_symbol'
+                                                  AND identifier.identifier_value LIKE 'fmp:%'
+                                            )
+                                        )
+                                    )
+                                )
+                              )
+                           OR (
                                 instrument.instrument_type <> 'equity'
+                                AND instrument.instrument_type <> 'etf'
                                 AND instrument.exchange_code IS NOT NULL
                               )
                     """,
                     detail=(
                         "Registry instrument types must use the split public/private fund "
-                        "contract; every equity must have a supported exchange and FMP "
-                        "identity, while non-equities must not carry exchange identity."
+                        "contract; stocks must use FMP, ETFs must use their configured "
+                        "FMP or Tushare source contract, and non-listed instruments must "
+                        "not carry exchange identity."
+                    ),
+                )
+            )
+            checks.append(
+                _count_check(
+                    cursor,
+                    name="fmp_etf_catalog_contract",
+                    query="""
+                        WITH required_exchange(exchange_code) AS (
+                            VALUES
+                                ('XNAS'), ('XNYS'), ('XASE'), ('BATS'),
+                                ('XHKG'), ('XSHG'), ('XSHE')
+                        )
+                        SELECT
+                            (
+                                SELECT count(*)
+                                FROM required_exchange required
+                                WHERE NOT EXISTS (
+                                    SELECT 1
+                                    FROM platform.fmp_etf_catalog catalog
+                                    WHERE catalog.exchange_code = required.exchange_code
+                                )
+                            )
+                            + (
+                                SELECT count(*)
+                                FROM platform.fmp_etf_catalog catalog
+                                WHERE trim(catalog.fmp_symbol) = ''
+                                   OR trim(catalog.exchange_ticker) = ''
+                                   OR trim(catalog.company_name) = ''
+                                   OR catalog.exchange_code NOT IN (
+                                        'XNAS', 'XNYS', 'XASE', 'BATS',
+                                        'XHKG', 'XSHG', 'XSHE'
+                                   )
+                            )
+                    """,
+                    detail=(
+                        "The local FMP ETF search catalog must cover all seven "
+                        "supported listing exchanges with complete identities."
                     ),
                 )
             )

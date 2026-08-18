@@ -59,7 +59,7 @@ Portfolio Operations Workbench 分为三块：
 
 1. 在搜索框输入资产名称、ticker、ISIN 或内部编号。
 2. 检查搜索结果中是否已有同一资产。
-3. 公募、私募、ETF、指数等不存在时按运营流程新建 instrument；股票不要手工建档，直接在 Watchlist 或 Portfolio 搜索本地 FMP 股票目录。
+3. 公募、私募、指数等不存在时按运营流程新建 instrument；股票和 FMP 已覆盖的 ETF 不要手工建档，直接在 Watchlist 或 Portfolio 搜索本地 FMP 目录。
 4. 填写 instrument type、名称、币种和 identifier。
 5. 录入或导入市场数据。
 6. 回到 Watchlist 或 Portfolio 引用该 instrument。
@@ -72,6 +72,7 @@ Portfolio Operations Workbench 分为三块：
 - 私募：instrument type 选 `private_fund`；邮件净值来源属于这一类。
 - 指数：instrument type 选 `index`，币种按指数点位或报价币种填写，identifier 可填写 ticker 或指数代码。
 - 股票：不在这里手工注册。Watchlist/Portfolio 搜索本地 FMP 目录后，系统按交易所创建 `equity` identity，并按需回补 EOD。
+- ETF：与股票使用同一操作方式，但底层仍保持独立 `etf` 类型和独立目录。FMP 已覆盖的 ETF 在 Watchlist/Portfolio 搜索后按需建档并回补 EOD；现有 A 股 ETF 可继续使用覆盖更完整的 Tushare 行情。
 - 现金：instrument type 选 `cash`，用于组合现金账户或现金桶，不作为普通证券交易标的。
 
 不要在 Platform 为直接债券、某一笔 FCN 或期权新建 instrument。FCN/期权的合约条款、到期日、行权价、障碍条件、发行人和对手方属于 Portfolio 本地交易事实；只有其 underlying、deliverable 或实际交付的证券需要先在 Platform 建档。
