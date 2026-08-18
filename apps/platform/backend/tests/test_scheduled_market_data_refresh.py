@@ -22,6 +22,16 @@ SPEC.loader.exec_module(scheduled_refresh)
 def _empty_projection_reconciliation(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         scheduled_refresh,
+        "sync_equity_catalog",
+        lambda: {
+            "active_count": 3,
+            "replaced_count": 2,
+            "exchange_counts": {"NASDAQ": 3},
+            "synced_at": "2026-08-18T00:00:00+00:00",
+        },
+    )
+    monkeypatch.setattr(
+        scheduled_refresh,
         "rebuild_stale_fund_nav_projections",
         lambda **kwargs: {
             "source": "fund_nav_projection",
@@ -141,7 +151,7 @@ def test_all_channels_merge_into_one_downstream_notification(monkeypatch, tmp_pa
     def fake_batch(*, source, **kwargs):  # type: ignore[no-untyped-def]
         del kwargs
         result = (
-            _updated_result("fund-a", "fund")
+            _updated_result("fund-a", "public_fund")
             if source == "tushare"
             else _updated_result("fx-usdcny", "fx")
         )
@@ -167,8 +177,10 @@ def test_all_channels_merge_into_one_downstream_notification(monkeypatch, tmp_pa
     assert summary["downstream_request_count"] == 2
     assert summary["refresh_all_portfolios"] is True
     assert [item["channel"] for item in summary["channels"]] == [
+        "fmp_catalog",
         "tushare",
         "email",
+        "fmp",
         "fund_nav_projection",
     ]
 
@@ -195,7 +207,7 @@ def test_all_channel_notifies_for_projection_only_rebuild(
             "source": "fund_nav_projection",
             "refreshed_count": 1,
             "skipped_count": 4,
-            "results": [_updated_result("fund-manual", "fund")],
+            "results": [_updated_result("fund-manual", "public_fund")],
         },
     )
     monkeypatch.setattr(
@@ -232,7 +244,7 @@ def test_strict_downstream_failure_sets_failed_summary(monkeypatch, tmp_path: Pa
             "refreshed_count": 1 if kwargs["source"] == "tushare" else 0,
             "skipped_count": 0,
             "results": (
-                [_updated_result("fund-a", "fund")]
+                [_updated_result("fund-a", "public_fund")]
                 if kwargs["source"] == "tushare"
                 else []
             ),
@@ -253,7 +265,7 @@ def test_strict_downstream_failure_sets_failed_summary(monkeypatch, tmp_path: Pa
 
 
 def test_channel_summary_uses_final_retry_result(monkeypatch, tmp_path: Path) -> None:
-    failed = _updated_result("fund-a", "fund")
+    failed = _updated_result("fund-a", "public_fund")
     failed["status"] = "failed"
 
     monkeypatch.setattr(
@@ -271,7 +283,7 @@ def test_channel_summary_uses_final_retry_result(monkeypatch, tmp_path: Path) ->
         lambda **kwargs: {
             "instrument_id": kwargs["instrument_id"],
             "instrument_name": "fund-a",
-            "instrument_type": "fund",
+            "instrument_type": "public_fund",
             "source_settings": {"source_mode": "api", "source_api_profile": "tushare"},
             "refresh_status": {"status": "refreshed", "message": "updated on retry"},
         },
@@ -287,7 +299,7 @@ def test_channel_summary_uses_final_retry_result(monkeypatch, tmp_path: Path) ->
     )
 
     assert exit_code == 0
-    tushare_summary = summary["channels"][0]
+    tushare_summary = summary["channels"][1]
     assert tushare_summary["refreshed_count"] == 1
     assert tushare_summary["status_counts"] == {"refreshed": 1}
     assert summary["updated_instrument_count"] == 1
@@ -303,7 +315,7 @@ def test_retry_timeout_keeps_failed_result_and_continues_to_next_item(monkeypatc
         return {
             "instrument_id": instrument_id,
             "instrument_name": instrument_id,
-            "instrument_type": "fund",
+            "instrument_type": "public_fund",
             "source_settings": {"source_mode": "api", "source_api_profile": "tushare"},
             "refresh_status": {
                 "status": status,
@@ -317,8 +329,8 @@ def test_retry_timeout_keeps_failed_result_and_continues_to_next_item(monkeypatc
         fake_refresh_with_timeout,
     )
     results = [
-        {**_updated_result("fund-timeout", "fund"), "status": "failed"},
-        {**_updated_result("fund-next", "fund"), "status": "failed"},
+        {**_updated_result("fund-timeout", "public_fund"), "status": "failed"},
+        {**_updated_result("fund-next", "public_fund"), "status": "failed"},
     ]
 
     retried = scheduled_refresh._retry_failed_results(
@@ -349,7 +361,7 @@ def test_retry_exception_keeps_failed_result_and_continues_to_next_item(
         return {
             "instrument_id": instrument_id,
             "instrument_name": instrument_id,
-            "instrument_type": "fund",
+            "instrument_type": "public_fund",
             "source_settings": {
                 "source_mode": "api",
                 "source_api_profile": "tushare",
@@ -366,8 +378,8 @@ def test_retry_exception_keeps_failed_result_and_continues_to_next_item(
         fake_refresh_with_timeout,
     )
     results = [
-        {**_updated_result("fund-conflict", "fund"), "status": "failed"},
-        {**_updated_result("fund-next", "fund"), "status": "failed"},
+        {**_updated_result("fund-conflict", "public_fund"), "status": "failed"},
+        {**_updated_result("fund-next", "public_fund"), "status": "failed"},
     ]
 
     retried = scheduled_refresh._retry_failed_results(
@@ -400,7 +412,7 @@ def test_email_failures_retry_one_mailbox_batch_not_once_per_failed_item(
         return {
             "source": "email",
             "skipped_count": 0,
-            "results": [_updated_result("fund-a", "fund")],
+            "results": [_updated_result("fund-a", "public_fund")],
         }
 
     monkeypatch.setattr(scheduled_refresh, "refresh_market_data_batch", fake_batch)
@@ -414,8 +426,8 @@ def test_email_failures_retry_one_mailbox_batch_not_once_per_failed_item(
 
     results, response = scheduled_refresh._retry_failed_email_batch(
         results=[
-            {**_updated_result("fund-a", "fund"), "status": "failed"},
-            {**_updated_result("fund-b", "fund"), "status": "failed"},
+            {**_updated_result("fund-a", "public_fund"), "status": "failed"},
+            {**_updated_result("fund-b", "public_fund"), "status": "failed"},
             {
                 **_updated_result("email-folder:INBOX", "other"),
                 "status": "failed",
@@ -443,17 +455,17 @@ def test_email_retry_preserves_updates_from_first_attempt_and_drops_resolved_fol
             "skipped_count": 0,
             "results": [
                 {
-                    **_updated_result("fund-a", "fund"),
+                    **_updated_result("fund-a", "public_fund"),
                     "status": "no_new_data",
                 },
-                _updated_result("fund-b", "fund"),
+                _updated_result("fund-b", "public_fund"),
             ],
         },
     )
 
     results, _ = scheduled_refresh._retry_failed_email_batch(
         results=[
-            _updated_result("fund-a", "fund"),
+            _updated_result("fund-a", "public_fund"),
             {
                 **_updated_result("email-folder:INBOX", "other"),
                 "status": "failed",
@@ -480,7 +492,7 @@ def test_projection_retry_targets_only_failed_reconciliations(
         calls.append(instrument_ids)
         return {
             "source": "fund_nav_projection",
-            "results": [_updated_result(instrument_id, "fund") for instrument_id in instrument_ids],
+            "results": [_updated_result(instrument_id, "public_fund") for instrument_id in instrument_ids],
         }
 
     monkeypatch.setattr(
@@ -490,8 +502,8 @@ def test_projection_retry_targets_only_failed_reconciliations(
     )
     results = scheduled_refresh._retry_failed_projection_batch(
         results=[
-            {**_updated_result("fund-failed", "fund"), "status": "failed"},
-            _updated_result("fund-ready", "fund"),
+            {**_updated_result("fund-failed", "public_fund"), "status": "failed"},
+            _updated_result("fund-ready", "public_fund"),
         ],
         updated_by="pytest",
         include_inactive=False,
@@ -518,8 +530,8 @@ def test_selected_email_ids_still_scan_mailbox_only_once(
             "refreshed_count": 2,
             "skipped_count": 0,
             "results": [
-                _updated_result("fund-a", "fund"),
-                _updated_result("fund-b", "fund"),
+                _updated_result("fund-a", "public_fund"),
+                _updated_result("fund-b", "public_fund"),
             ],
         }
 

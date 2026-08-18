@@ -60,13 +60,6 @@ def _canonical_quote_policy(instrument_type: str) -> dict[str, list[str]]:
             "chart": ["adjusted_close", "close", "last"],
             "reference": ["close", "last"],
         },
-        "fund": {
-            "trading": ["official_nav"],
-            "valuation": ["official_nav"],
-            "total_return": ["total_return_nav"],
-            "chart": ["total_return_nav"],
-            "reference": ["official_nav"],
-        },
         "etf": {
             "trading": ["last", "close"],
             "valuation": ["close", "last"],
@@ -91,6 +84,7 @@ REGISTRY_INSTRUMENT_DETAILS = [
         "instrument_name": "AbbVie Inc",
         "instrument_type": "equity",
         "currency": "USD",
+        "exchange_code": "XNYS",
         "identifiers": [
             {"identifier_type": "ticker", "identifier_value": "ABBV", "is_primary": True},
             {"identifier_type": "isin", "identifier_value": "US00287Y1091", "is_primary": False},

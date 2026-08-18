@@ -20,6 +20,10 @@ from .conftest import (
 )
 
 
+PUBLIC_FUND_IDS = {"savf63"}
+PRIVATE_FUND_IDS = {"sxv264"}
+
+
 def test_peer_metric_percentile_uses_midrank_for_ties() -> None:
     from watchlist_app.services.canonical_recalc import _rank_metric_value
 
@@ -442,21 +446,21 @@ def test_return_nav_basis_does_not_fallback_to_ordinary_nav() -> None:
         shared_instrument=shared_instrument,
         role="total_return",
         preference="auto",
-        instrument_type="fund",
+        instrument_type="public_fund",
     )
     explicit_nav_selection = _select_quote_series(
         points_by_basis,
         shared_instrument=shared_instrument,
         role="total_return",
         preference="nav",
-        instrument_type="fund",
+        instrument_type="public_fund",
     )
     quote_selection = _select_quote_series(
         points_by_basis,
         shared_instrument=shared_instrument,
         role="chart",
         preference="auto",
-        instrument_type="fund",
+        instrument_type="public_fund",
     )
 
     assert auto_selection["nav_basis_type"] is None
@@ -789,7 +793,7 @@ def test_quote_selection_rejects_partial_and_identity_mismatched_points() -> Non
         shared_instrument=None,
         role="total_return",
         preference="auto",
-        instrument_type="fund",
+        instrument_type="public_fund",
     )
 
     assert points_by_basis == {}
@@ -841,7 +845,7 @@ def test_quote_selection_rejects_noncanonical_currency_and_missing_policy() -> N
         shared_instrument={"currency": "CNY"},
         role="total_return",
         preference="auto",
-        instrument_type="fund",
+        instrument_type="public_fund",
     )
     assert selection["nav_basis_status"] == "unavailable"
     assert selection["points"] == []
@@ -884,26 +888,31 @@ def test_create_watchlist_generates_unique_ids_and_required_columns(
         "return_ytd",
         "attr.current_drawdown",
     ]
-    fund_screening_view = next(
+    classification_view = next(
         item
         for item in detail_payload["views"]
-        if item["view_id"] == "fund-screening"
+        if item["view_id"] == "classification"
     )
-    assert fund_screening_view["name"] == "产品分类筛选"
-    assert fund_screening_view["default_group_by"] == "taxonomy"
-    assert fund_screening_view["default_filters"] == {
-        "instrument_type": ["fund", "etf", "index"],
+    assert classification_view["name"] == "分类"
+    assert classification_view["default_group_by"] == "taxonomy"
+    assert classification_view["default_filters"] == {
+        "instrument_type": [
+            "public_fund",
+            "private_fund",
+            "etf",
+            "equity",
+            "index",
+        ],
     }
-    assert fund_screening_view["columns"] == [
+    assert classification_view["columns"] == [
         "instrument_name",
-        "attr.implementation_style",
-        "attr.style_profile",
-        "attr.manager_assessment",
-        "attr.volatility_bucket",
-        "attr.drawdown_control",
-        "attr.style_stability",
-        "attr.transparency_quality",
+        "instrument_type",
+        "attr.instrument_taxonomy_path",
+        "attr.instrument_taxonomy_leaf",
+        "latest_quote",
+        "latest_quote_date",
         "data_freshness_status",
+        "attr.coverage_status",
     ]
 
 
@@ -1060,7 +1069,7 @@ def test_adding_index_shared_registry_instrument_is_supported(
     assert resolve_response.status_code == 200
     payload = resolve_response.json()
     assert payload["detail_supported"] is True
-    assert payload["detail_view_type"] == "listed"
+    assert payload["detail_view_type"] == "index"
     assert payload["detail_subject_id"] == "index-csi-300"
 
     from portfolio_ops_instrument_core import instrument_store as shared_store
@@ -1116,9 +1125,16 @@ def test_adding_index_shared_registry_instrument_is_supported(
     tree_response = client.get("/api/taxonomies/instrument-taxonomy")
     assert tree_response.status_code == 200
     tree_payload = tree_response.json()
-    assert tree_payload["instrument_types"] == ["fund", "etf", "equity", "index"]
-    assert "equity" in {node["node_id"] for node in tree_payload["nodes"]}
-    assert "index" in {node["node_id"] for node in tree_payload["nodes"]}
+    assert tree_payload["instrument_types"] == [
+        "public_fund",
+        "private_fund",
+        "etf",
+        "equity",
+        "index",
+    ]
+    node_ids = {node["node_id"] for node in tree_payload["nodes"]}
+    assert "equity-exchange-xnas" in node_ids
+    assert "index-broad-market" in node_ids
 
     taxonomy_response = client.get("/api/taxonomies/instrument-taxonomy/instruments/index-csi-300")
     assert taxonomy_response.status_code == 200
@@ -1146,7 +1162,7 @@ def test_adding_index_shared_registry_instrument_is_supported(
         "/api/screener/query",
         json={
             "watchlist_id": watchlist_id,
-            "view_id": "fund-screening",
+            "view_id": "classification",
             "selected_fields": ["instrument_name", "instrument_type"],
             "sort": [],
             "group_by": "none",
@@ -1164,9 +1180,9 @@ def test_archived_shared_alias_resolves_to_canonical_without_recreating_duplicat
         {
             "instrument_id": "sh7639",
             "instrument_name": "龙旗巨星一号私募投资基金",
-            "instrument_type": "fund",
+            "instrument_type": "public_fund",
             "currency": "CNY",
-            "quote_selection_policy": canonical_quote_policy("fund"),
+            "quote_selection_policy": canonical_quote_policy("public_fund"),
             "identifiers": [
                 {"identifier_type": "ticker", "identifier_value": "SH7639", "is_primary": True},
             ],
@@ -1178,9 +1194,9 @@ def test_archived_shared_alias_resolves_to_canonical_without_recreating_duplicat
         {
             "instrument_id": "nav-8c76dae71a",
             "instrument_name": "龙旗巨星一号",
-            "instrument_type": "fund",
+            "instrument_type": "public_fund",
             "currency": "CNY",
-            "quote_selection_policy": canonical_quote_policy("fund"),
+            "quote_selection_policy": canonical_quote_policy("public_fund"),
             "identifiers": [
                 {"identifier_type": "internal", "identifier_value": "legacy-longqi", "is_primary": True},
             ],
@@ -1216,6 +1232,7 @@ def test_adding_equity_shared_registry_instrument_uses_listed_detail(
             "instrument_name": "Demo Equity",
             "instrument_type": "equity",
             "currency": "USD",
+            "exchange_code": "XNAS",
             "quote_selection_policy": canonical_quote_policy("equity"),
             "identifiers": [
                 {"identifier_type": "ticker", "identifier_value": "DEMO", "is_primary": True},
@@ -1249,27 +1266,29 @@ def test_adding_equity_shared_registry_instrument_uses_listed_detail(
     assert add_response.status_code == 200
     resolve_response = client.post("/api/instruments/equity-demo/resolve")
     assert resolve_response.status_code == 200
-    assert resolve_response.json()["detail_view_type"] == "listed"
+    assert resolve_response.json()["detail_view_type"] == "equity"
     assert resolve_response.json()["detail_subject_id"] == "equity-demo"
 
     tree_response = client.get("/api/taxonomies/instrument-taxonomy")
     assert tree_response.status_code == 200
     equity_node = next(
-        node for node in tree_response.json()["nodes"] if node["node_id"] == "equity"
-    )
-    assert equity_node["instrument_type"] == "equity"
-    technology_node = next(
         node
         for node in tree_response.json()["nodes"]
-        if node["node_id"] == "equity-sector-information-technology"
+        if node["node_id"] == "equity-market-us"
     )
-    assert technology_node["instrument_type"] == "equity"
-    assert technology_node["path_labels"] == ["股票", "信息技术"]
+    assert equity_node["instrument_type"] == "equity"
+    exchange_node = next(
+        node
+        for node in tree_response.json()["nodes"]
+        if node["node_id"] == "equity-exchange-xnas"
+    )
+    assert exchange_node["instrument_type"] == "equity"
+    assert exchange_node["path_labels"] == ["美股", "NASDAQ"]
 
     settings_response = client.put(
         "/api/instrument-attributes/instruments/equity-demo/settings",
         json={
-            "taxonomy_node_id": "equity-sector-information-technology",
+            "taxonomy_node_id": "equity-exchange-xnas",
             "coverage_status": "Invested",
             "updated_by": "test",
         },
@@ -1277,15 +1296,15 @@ def test_adding_equity_shared_registry_instrument_uses_listed_detail(
     assert settings_response.status_code == 200
     settings_payload = settings_response.json()
     assert settings_payload["updated"] is True
-    assert settings_payload["taxonomy_updated"] is True
+    assert settings_payload["taxonomy_updated"] is False
     assert settings_payload["status_updated"] is True
     assert settings_payload["values"]["coverage_status"] == "Invested"
     assert settings_payload["taxonomy"]["taxonomy_code"] == "instrument_taxonomy"
     assert settings_payload["taxonomy"]["derived_values"] == {
-        "instrument_taxonomy_level_1": "股票",
-        "instrument_taxonomy_level_2": "信息技术",
-        "instrument_taxonomy_leaf": "信息技术",
-        "instrument_taxonomy_path": "股票 / 信息技术",
+        "instrument_taxonomy_level_1": "美股",
+        "instrument_taxonomy_level_2": "NASDAQ",
+        "instrument_taxonomy_leaf": "NASDAQ",
+        "instrument_taxonomy_path": "美股 / NASDAQ",
     }
 
     from watchlist_app.db.session import get_session_factory
@@ -1298,7 +1317,7 @@ def test_adding_equity_shared_registry_instrument_uses_listed_detail(
             instrument_id="equity-demo",
         )
         assert [(item.node_id, item.path_labels_json) for item in history] == [
-            ("equity-sector-information-technology", ["股票", "信息技术"]),
+            ("equity-exchange-xnas", ["美股", "NASDAQ"]),
         ]
         assert "equity-demo" in _active_peer_instrument_ids(session)
 
@@ -1316,16 +1335,16 @@ def test_adding_equity_shared_registry_instrument_uses_listed_detail(
     assert grouped_response.status_code == 200
     assert grouped_response.json()["groups"] == [
         {
-            "group_value": "股票",
+            "group_value": "美股",
             "row_count": 1,
             "group_depth": 0,
-            "group_path": ["股票"],
+            "group_path": ["美股"],
         },
         {
-            "group_value": "股票 / 信息技术",
+            "group_value": "美股 / NASDAQ",
             "row_count": 1,
             "group_depth": 1,
-            "group_path": ["股票", "信息技术"],
+            "group_path": ["美股", "NASDAQ"],
         },
     ]
 
@@ -1361,7 +1380,7 @@ def test_instrument_settings_roll_back_taxonomy_and_status_together(
     next_node_id = next(
         node["node_id"]
         for node in tree["nodes"]
-        if node["instrument_type"] == "fund" and node["node_id"] != before_node_id
+        if node["instrument_type"] == "private_fund" and node["node_id"] != before_node_id
     )
     next_status = "Invested" if before_status != "Invested" else "Watch"
     with get_session_factory()() as session:
@@ -1741,9 +1760,9 @@ def test_screener_sort_keeps_missing_values_last_for_descending_metrics(
         {
             "instrument_id": "fund-no-return",
             "instrument_name": "No Return Fund",
-            "instrument_type": "fund",
+            "instrument_type": "public_fund",
             "currency": "USD",
-            "quote_selection_policy": canonical_quote_policy("fund"),
+            "quote_selection_policy": canonical_quote_policy("public_fund"),
             "identifiers": [
                 {"identifier_type": "ticker", "identifier_value": "NORET", "is_primary": True},
             ],
@@ -1789,9 +1808,9 @@ def test_calendar_period_returns_use_prior_close_as_base(
         {
             "instrument_id": "calendar-boundary-fund",
             "instrument_name": "Calendar Boundary Fund",
-            "instrument_type": "fund",
+            "instrument_type": "public_fund",
             "currency": "USD",
-            "quote_selection_policy": canonical_quote_policy("fund"),
+            "quote_selection_policy": canonical_quote_policy("public_fund"),
             "identifiers": [
                 {"identifier_type": "ticker", "identifier_value": "CBF", "is_primary": True},
             ],
@@ -1858,10 +1877,10 @@ def test_aligned_decimal_nav_series_materializes_path_risk_metrics(
         {
             "instrument_id": "aligned-decimal-risk-fund",
             "instrument_name": "Aligned Decimal Risk Fund",
-            "instrument_type": "fund",
+            "instrument_type": "public_fund",
             "currency": "USD",
             "source_settings": {"expected_frequency": "event_driven"},
-            "quote_selection_policy": canonical_quote_policy("fund"),
+            "quote_selection_policy": canonical_quote_policy("public_fund"),
             "identifiers": [
                 {"identifier_type": "ticker", "identifier_value": "ADRF", "is_primary": True},
             ],
@@ -2043,9 +2062,9 @@ def test_screener_returns_are_anchored_to_each_instruments_own_as_of_date(
             {
                 "instrument_id": instrument_id,
                 "instrument_name": instrument_name,
-                "instrument_type": "fund",
+                "instrument_type": "private_fund",
                 "currency": "USD",
-                "quote_selection_policy": canonical_quote_policy("fund"),
+                "quote_selection_policy": canonical_quote_policy("private_fund"),
                 "identifiers": [
                     {
                         "identifier_type": "ticker",
@@ -2183,14 +2202,14 @@ def test_instrument_detail_payload_uses_daily_calculation_frequency(
         {
             "instrument_id": "weekly-risk-fund",
             "instrument_name": "Weekly Risk Fund",
-            "instrument_type": "fund",
+            "instrument_type": "public_fund",
             "currency": "USD",
             "source_settings": {
                 "expected_frequency": "daily",
                 "market_calendar": None,
                 "release_lag_days": 2,
             },
-            "quote_selection_policy": canonical_quote_policy("fund"),
+            "quote_selection_policy": canonical_quote_policy("public_fund"),
             "identifiers": [
                 {"identifier_type": "ticker", "identifier_value": "WRF", "is_primary": True},
             ],
@@ -2282,9 +2301,9 @@ def test_instrument_performance_payload_includes_taxonomy_peer_ranking(
             {
                 "instrument_id": instrument_id,
                 "instrument_name": instrument_name,
-                "instrument_type": "fund",
+                "instrument_type": "private_fund",
                 "currency": "USD",
-                "quote_selection_policy": canonical_quote_policy("fund"),
+                "quote_selection_policy": canonical_quote_policy("private_fund"),
                 "identifiers": [
                     {"identifier_type": "ticker", "identifier_value": ticker, "is_primary": True},
                 ],
@@ -2316,9 +2335,9 @@ def test_instrument_performance_payload_includes_taxonomy_peer_ranking(
         {
             "instrument_id": "peer-stale-date",
             "instrument_name": "Peer Stale Date Fund",
-            "instrument_type": "fund",
+            "instrument_type": "private_fund",
             "currency": "USD",
-            "quote_selection_policy": canonical_quote_policy("fund"),
+            "quote_selection_policy": canonical_quote_policy("private_fund"),
             "identifiers": [
                 {
                     "identifier_type": "ticker",
@@ -2450,7 +2469,7 @@ def test_instrument_performance_payload_includes_taxonomy_peer_ranking(
         "/api/screener/query",
         json={
             "watchlist_id": watchlist_id,
-            "view_id": "fund-screening",
+            "view_id": "classification",
             "selected_fields": [
                 "instrument_name",
                 "attr.peer_group",
@@ -2469,7 +2488,7 @@ def test_instrument_performance_payload_includes_taxonomy_peer_ranking(
         for row in screener_response.json()["rows"]
         if row["instrument_id"] == "sxv264"
     )
-    assert sxv_row["attr.peer_group"] == "私募 / 股票策略 / 量化多头 / 500指增"
+    assert sxv_row["attr.peer_group"] == "股票策略 / 量化多头 / 500指增"
     assert sxv_row["attr.peer_sample_count"] == 3
     assert sxv_row["attr.peer_return_1w_percentile"] == pytest.approx(50.0)
     assert sxv_row["attr.peer_return_1m_percentile"] == pytest.approx(50.0)
@@ -3611,7 +3630,7 @@ def test_watchlist_rejects_archived_shared_instrument_ids(
         lambda instrument_id: {
             "instrument_id": instrument_id,
             "instrument_name": "Retired Asset",
-            "instrument_type": "fund",
+            "instrument_type": "public_fund",
             "currency": "USD",
             "lifecycle_state": {"status": "archived"},
             "identifiers": [],
@@ -3709,7 +3728,7 @@ def test_detail_resolution_does_not_use_cached_row_when_registry_returns_500(
     fund_record = {
         "instrument_id": "fund-msft-strategy",
         "instrument_name": "Microsoft Strategy Fund",
-        "instrument_type": "fund",
+        "instrument_type": "public_fund",
         "currency": "USD",
         "lifecycle_state": {"status": "active"},
         "identifiers": [
@@ -3763,10 +3782,10 @@ def test_local_detail_support_is_explicit_by_instrument_type(
 ) -> None:
     from watchlist_app.api.routes import watchlists as watchlists_route
 
-    assert watchlists_route._supports_local_detail({"instrument_type": "fund"}) is True
+    assert watchlists_route._supports_local_detail({"instrument_type": "public_fund"}) is True
     assert watchlists_route._supports_local_detail({"instrument_type": "index"}) is True
     assert watchlists_route._supports_local_detail({"instrument_type": "equity"}) is True
-    assert watchlists_route._local_detail_view_type({"instrument_type": "equity"}) == "listed"
+    assert watchlists_route.local_detail_view_type("equity") == "equity"
 
 
 def test_shared_registry_service_wraps_storage_errors_without_local_fallback(
@@ -3787,24 +3806,32 @@ def test_shared_registry_service_wraps_storage_errors_without_local_fallback(
         registry.resolve_shared_instrument(identifier_value="ARCH")
 
 
-def test_default_all_coverage_watchlist_syncs_active_shared_funds(
+def test_default_all_public_funds_watchlist_syncs_active_shared_funds(
     client: TestClient,
 ) -> None:
     response = client.get("/api/watchlists")
     assert response.status_code == 200
     payload = response.json()
-    assert len(payload) == 1
-    assert payload[0]["watchlist_id"] == "all-coverage"
-    assert payload[0]["name"] == "All Covered"
-    assert payload[0]["owner_type"] == "system"
-    assert payload[0]["is_default"] is True
-    assert payload[0]["is_shared"] is True
-    assert payload[0]["item_count"] == len(TEST_SHARED_INSTRUMENTS)
+    assert [item["watchlist_id"] for item in payload] == [
+        "index",
+        "all-public-funds",
+        "all-private-funds",
+    ]
+    by_id = {item["watchlist_id"]: item for item in payload}
+    public_funds = by_id["all-public-funds"]
+    assert public_funds["name"] == "All 公募"
+    assert public_funds["owner_type"] == "system"
+    assert public_funds["is_default"] is True
+    assert public_funds["is_shared"] is True
+    assert public_funds["item_count"] == len(PUBLIC_FUND_IDS)
+    assert by_id["all-private-funds"]["item_count"] == len(PRIVATE_FUND_IDS)
+    assert by_id["index"]["item_count"] == 0
+    assert "all-etfs" not in by_id
 
-    detail = client.get("/api/watchlists/all-coverage")
+    detail = client.get("/api/watchlists/all-public-funds")
     assert detail.status_code == 200
     detail_payload = detail.json()
-    assert detail_payload["item_count"] == len(TEST_SHARED_INSTRUMENTS)
+    assert detail_payload["item_count"] == len(PUBLIC_FUND_IDS)
     assert [item["code"] for item in detail_payload["available_group_bys"]] == [
         "none",
         "instrument_type",
@@ -3814,12 +3841,12 @@ def test_default_all_coverage_watchlist_syncs_active_shared_funds(
     overview_view = next(
         item for item in detail_payload["views"] if item["view_id"] == "overview"
     )
-    assert overview_view["default_group_by"] == "instrument_type"
+    assert overview_view["default_group_by"] == "none"
 
     screener = client.post(
         "/api/screener/query",
         json={
-            "watchlist_id": "all-coverage",
+            "watchlist_id": "all-public-funds",
             "view_id": "overview",
             "selected_fields": ["instrument_name"],
             "sort": [],
@@ -3829,88 +3856,76 @@ def test_default_all_coverage_watchlist_syncs_active_shared_funds(
     )
     assert screener.status_code == 200
     screener_payload = screener.json()
-    assert screener_payload["total_rows"] == len(TEST_SHARED_INSTRUMENTS)
-    assert {row["instrument_id"] for row in screener_payload["rows"]} == set(TEST_SHARED_INSTRUMENTS)
+    assert screener_payload["total_rows"] == len(PUBLIC_FUND_IDS)
+    assert {row["instrument_id"] for row in screener_payload["rows"]} == PUBLIC_FUND_IDS
 
 
-def test_list_watchlists_reuses_existing_all_coverage_without_resync(
+def test_list_watchlists_syncs_each_system_list_by_instrument_type(
     client: TestClient,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    initial = client.get("/api/watchlists")
-    assert initial.status_code == 200
-    assert initial.json()[0]["item_count"] == len(TEST_SHARED_INSTRUMENTS)
-
     from watchlist_app.api.routes import watchlists as watchlists_route
 
-    original_list = watchlists_route.watchlist_repository.list
-    list_call_count = 0
+    original_list_shared_instruments = watchlists_route.list_shared_instruments
+    requested_types: list[str] = []
 
-    def track_watchlist_list(session):
-        nonlocal list_call_count
-        list_call_count += 1
-        return original_list(session)
+    def track_list_shared_instruments(**kwargs):
+        requested_types.append(str(kwargs["instrument_type"]))
+        return original_list_shared_instruments(**kwargs)
 
-    def fail_if_resynced() -> list[dict[str, object]]:
-        raise AssertionError("list endpoint should not resync existing all-coverage")
-
-    monkeypatch.setattr(
-        watchlists_route.watchlist_repository,
-        "list",
-        track_watchlist_list,
-    )
     monkeypatch.setattr(
         watchlists_route,
-        "_list_shared_local_detail_instruments",
-        fail_if_resynced,
+        "list_shared_instruments",
+        track_list_shared_instruments,
     )
 
     response = client.get("/api/watchlists")
 
     assert response.status_code == 200
-    assert response.json()[0]["item_count"] == len(TEST_SHARED_INSTRUMENTS)
-    assert list_call_count == 1
+    assert {
+        item["watchlist_id"]: item["item_count"] for item in response.json()
+    }["all-public-funds"] == len(PUBLIC_FUND_IDS)
+    assert requested_types == ["index", "public_fund", "private_fund"]
 
 
-def test_all_coverage_detail_uses_membership_probe_without_full_sync_or_upsert(
+def test_system_watchlist_detail_syncs_only_its_instrument_type(
     client: TestClient,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    initial = client.get("/api/watchlists/all-coverage")
+    initial = client.get("/api/watchlists/all-public-funds")
     assert initial.status_code == 200
-    assert initial.json()["item_count"] == len(TEST_SHARED_INSTRUMENTS)
+    assert initial.json()["item_count"] == len(PUBLIC_FUND_IDS)
 
     from watchlist_app.api.routes import watchlists as watchlists_route
 
-    def fail_if_full_registry_loaded() -> list[dict[str, object]]:
-        raise AssertionError("unchanged all-coverage GET should not load full registry records")
+    original_list_shared_instruments = watchlists_route.list_shared_instruments
+    requested_types: list[str] = []
 
-    def fail_if_local_detail_upserted(*_args, **_kwargs) -> str | None:
-        raise AssertionError("unchanged all-coverage GET should not upsert local instruments")
+    def track_list_shared_instruments(**kwargs):
+        requested_types.append(str(kwargs["instrument_type"]))
+        return original_list_shared_instruments(**kwargs)
 
     monkeypatch.setattr(
         watchlists_route,
-        "_list_shared_local_detail_instruments",
-        fail_if_full_registry_loaded,
-    )
-    monkeypatch.setattr(
-        watchlists_route,
-        "_ensure_local_instrument_detail",
-        fail_if_local_detail_upserted,
+        "list_shared_instruments",
+        track_list_shared_instruments,
     )
 
-    response = client.get("/api/watchlists/all-coverage")
+    response = client.get("/api/watchlists/all-public-funds")
 
     assert response.status_code == 200
-    assert response.json()["item_count"] == len(TEST_SHARED_INSTRUMENTS)
+    assert response.json()["item_count"] == len(PUBLIC_FUND_IDS)
+    assert requested_types == ["public_fund"]
 
 
-def test_default_all_coverage_watchlist_resyncs_when_registry_grows(
+def test_default_all_public_funds_watchlist_resyncs_when_registry_grows(
     client: TestClient,
 ) -> None:
     initial = client.get("/api/watchlists")
     assert initial.status_code == 200
-    assert initial.json()[0]["item_count"] == len(TEST_SHARED_INSTRUMENTS)
+    assert {
+        item["watchlist_id"]: item["item_count"] for item in initial.json()
+    }["all-public-funds"] == len(PUBLIC_FUND_IDS)
 
     seed_shared_instrument(
         {
@@ -3929,16 +3944,18 @@ def test_default_all_coverage_watchlist_resyncs_when_registry_grows(
 
     summary = client.get("/api/watchlists")
     assert summary.status_code == 200
-    assert summary.json()[0]["item_count"] == len(TEST_SHARED_INSTRUMENTS) + 1
+    assert {
+        item["watchlist_id"]: item["item_count"] for item in summary.json()
+    }["all-public-funds"] == len(PUBLIC_FUND_IDS) + 1
 
-    detail = client.get("/api/watchlists/all-coverage")
+    detail = client.get("/api/watchlists/all-public-funds")
     assert detail.status_code == 200
-    assert detail.json()["item_count"] == len(TEST_SHARED_INSTRUMENTS) + 1
+    assert detail.json()["item_count"] == len(PUBLIC_FUND_IDS) + 1
 
     screener = client.post(
         "/api/screener/query",
         json={
-            "watchlist_id": "all-coverage",
+            "watchlist_id": "all-public-funds",
             "view_id": "overview",
             "selected_fields": ["instrument_name"],
             "sort": [],
@@ -3950,13 +3967,13 @@ def test_default_all_coverage_watchlist_resyncs_when_registry_grows(
     assert "fund-new-income" in {row["instrument_id"] for row in screener.json()["rows"]}
 
 
-def test_all_coverage_reconcile_rolls_back_membership_when_materialization_fails(
+def test_all_public_funds_reconcile_rolls_back_membership_when_materialization_fails(
     client: TestClient,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    initial = client.get("/api/watchlists/all-coverage")
+    initial = client.get("/api/watchlists/all-public-funds")
     assert initial.status_code == 200
-    assert initial.json()["item_count"] == len(TEST_SHARED_INSTRUMENTS)
+    assert initial.json()["item_count"] == len(PUBLIC_FUND_IDS)
 
     new_instrument_id = "fund-atomic-reconcile"
     seed_shared_instrument(
@@ -3992,19 +4009,19 @@ def test_all_coverage_reconcile_rolls_back_membership_when_materialization_fails
         materialize_then_fail,
     )
 
-    failed_refresh = client.get("/api/watchlists/all-coverage")
+    failed_refresh = client.get("/api/watchlists/all-public-funds")
     assert failed_refresh.status_code == 200
-    assert failed_refresh.json()["item_count"] == len(TEST_SHARED_INSTRUMENTS)
+    assert failed_refresh.json()["item_count"] == len(PUBLIC_FUND_IDS)
 
     with get_session_factory()() as session:
-        record = watchlists_route.watchlist_repository.get(session, "all-coverage")
+        record = watchlists_route.watchlist_repository.get(session, "all-public-funds")
         assert record is not None
         assert new_instrument_id not in {item.instrument_id for item in record.items}
         assert watchlists_route.instrument_repository.get(session, new_instrument_id) is None
         assert (
             watchlists_route.read_model_repository.get_watchlist_row(
                 session,
-                watchlist_id="all-coverage",
+                watchlist_id="all-public-funds",
                 instrument_id=new_instrument_id,
             )
             is None
@@ -4015,17 +4032,17 @@ def test_all_coverage_reconcile_rolls_back_membership_when_materialization_fails
         "_materialize_watchlist_rows",
         original_materialize,
     )
-    recovered = client.get("/api/watchlists/all-coverage")
+    recovered = client.get("/api/watchlists/all-public-funds")
     assert recovered.status_code == 200
-    assert recovered.json()["item_count"] == len(TEST_SHARED_INSTRUMENTS) + 1
+    assert recovered.json()["item_count"] == len(PUBLIC_FUND_IDS) + 1
 
 
-def test_default_all_coverage_watchlist_removes_archived_registry_members(
+def test_default_all_public_funds_watchlist_removes_archived_registry_members(
     client: TestClient,
 ) -> None:
-    initial = client.get("/api/watchlists/all-coverage")
+    initial = client.get("/api/watchlists/all-public-funds")
     assert initial.status_code == 200
-    assert initial.json()["item_count"] == len(TEST_SHARED_INSTRUMENTS)
+    assert initial.json()["item_count"] == len(PUBLIC_FUND_IDS)
 
     from portfolio_ops_instrument_core import instrument_store as shared_store
     from watchlist_app.db.session import get_session_factory
@@ -4038,17 +4055,17 @@ def test_default_all_coverage_watchlist_removes_archived_registry_members(
     assert archived is not None
     assert "savf63" not in shared_store.list_active_instrument_ids(
         get_session_factory(),
-        instrument_types={"fund", "etf", "index"},
+        instrument_types={"public_fund", "private_fund", "etf", "index"},
     )
 
-    detail = client.get("/api/watchlists/all-coverage")
+    detail = client.get("/api/watchlists/all-public-funds")
     assert detail.status_code == 200
-    assert detail.json()["item_count"] == len(TEST_SHARED_INSTRUMENTS) - 1
+    assert detail.json()["item_count"] == len(PUBLIC_FUND_IDS) - 1
 
     screener = client.post(
         "/api/screener/query",
         json={
-            "watchlist_id": "all-coverage",
+            "watchlist_id": "all-public-funds",
             "view_id": "overview",
             "selected_fields": ["instrument_name"],
             "sort": [],
@@ -4060,12 +4077,13 @@ def test_default_all_coverage_watchlist_removes_archived_registry_members(
     assert "savf63" not in {row["instrument_id"] for row in screener.json()["rows"]}
 
 
-def test_default_all_coverage_watchlist_syncs_active_shared_indexes(
+def test_default_index_watchlist_syncs_active_shared_indexes(
     client: TestClient,
 ) -> None:
     initial = client.get("/api/watchlists")
     assert initial.status_code == 200
-    assert initial.json()[0]["item_count"] == len(TEST_SHARED_INSTRUMENTS)
+    assert initial.json()[0]["watchlist_id"] == "index"
+    assert initial.json()[0]["item_count"] == 0
 
     seed_shared_instrument(
         {
@@ -4093,14 +4111,14 @@ def test_default_all_coverage_watchlist_syncs_active_shared_indexes(
         }
     )
 
-    detail = client.get("/api/watchlists/all-coverage")
+    detail = client.get("/api/watchlists/index")
     assert detail.status_code == 200
-    assert detail.json()["item_count"] == len(TEST_SHARED_INSTRUMENTS) + 1
+    assert detail.json()["item_count"] == 1
 
     screener = client.post(
         "/api/screener/query",
         json={
-            "watchlist_id": "all-coverage",
+            "watchlist_id": "index",
             "view_id": "overview",
             "selected_fields": ["instrument_name", "instrument_type"],
             "sort": [],
@@ -4116,8 +4134,8 @@ def test_default_all_coverage_watchlist_syncs_active_shared_indexes(
     screening_screener = client.post(
         "/api/screener/query",
         json={
-            "watchlist_id": "all-coverage",
-            "view_id": "fund-screening",
+            "watchlist_id": "index",
+            "view_id": "classification",
             "selected_fields": ["instrument_name", "instrument_type"],
             "sort": [],
             "group_by": "none",
@@ -4128,15 +4146,15 @@ def test_default_all_coverage_watchlist_syncs_active_shared_indexes(
     assert "index-csi-300" in {row["instrument_id"] for row in screening_screener.json()["rows"]}
 
 
-def test_default_all_coverage_watchlist_cannot_be_reduced_manually(
+def test_default_all_public_funds_watchlist_cannot_be_reduced_manually(
     client: TestClient,
 ) -> None:
     list_response = client.get("/api/watchlists")
     assert list_response.status_code == 200
 
     delete_items = client.post(
-        "/api/watchlists/all-coverage/items/delete",
-        json={"instrument_ids": ["sxv264"]},
+        "/api/watchlists/all-public-funds/items/delete",
+        json={"instrument_ids": ["savf63"]},
     )
     assert delete_items.status_code == 400
     assert "system-maintained" in delete_items.json()["detail"]
@@ -4147,20 +4165,20 @@ def test_default_all_coverage_watchlist_cannot_be_reduced_manually(
     )
     target_watchlist_id = target.json()["watchlist_id"]
     move_items = client.post(
-        "/api/watchlists/all-coverage/items/move",
-        json={"instrument_ids": ["sxv264"], "target_watchlist_id": target_watchlist_id},
+        "/api/watchlists/all-public-funds/items/move",
+        json={"instrument_ids": ["savf63"], "target_watchlist_id": target_watchlist_id},
     )
     assert move_items.status_code == 400
     assert "system-maintained" in move_items.json()["detail"]
 
     copy_items = client.post(
-        "/api/watchlists/all-coverage/items/copy",
-        json={"instrument_ids": ["sxv264"], "target_watchlist_id": target_watchlist_id},
+        "/api/watchlists/all-public-funds/items/copy",
+        json={"instrument_ids": ["savf63"], "target_watchlist_id": target_watchlist_id},
     )
     assert copy_items.status_code == 200
     assert copy_items.json()["added_count"] == 1
 
-    delete_watchlist = client.delete("/api/watchlists/all-coverage")
+    delete_watchlist = client.delete("/api/watchlists/all-public-funds")
     assert delete_watchlist.status_code == 400
     assert "system-maintained" in delete_watchlist.json()["detail"]
 
@@ -5245,10 +5263,10 @@ def test_instrument_taxonomy_assignment_updates_summary_attribute_context_and_wa
     )
     assert update_response.status_code == 200
     update_payload = update_response.json()
-    assert update_payload["path_labels"] == ["私募", "股票策略", "量化多头", "500指增"]
-    assert update_payload["derived_values"]["instrument_taxonomy_level_1"] == "私募"
-    assert update_payload["derived_values"]["instrument_taxonomy_level_2"] == "股票策略"
-    assert update_payload["derived_values"]["instrument_taxonomy_level_3"] == "量化多头"
+    assert update_payload["path_labels"] == ["股票策略", "量化多头", "500指增"]
+    assert update_payload["derived_values"]["instrument_taxonomy_level_1"] == "股票策略"
+    assert update_payload["derived_values"]["instrument_taxonomy_level_2"] == "量化多头"
+    assert update_payload["derived_values"]["instrument_taxonomy_level_3"] == "500指增"
     assert update_payload["derived_values"]["instrument_taxonomy_leaf"] == "500指增"
 
     attributes_response = client.get("/api/instrument-attributes/instruments/sxv264")
@@ -5260,7 +5278,7 @@ def test_instrument_taxonomy_assignment_updates_summary_attribute_context_and_wa
     summary_response = client.get("/api/instruments/sxv264/summary")
     assert summary_response.status_code == 200
     summary_payload = summary_response.json()
-    assert summary_payload["taxonomy"]["path_labels"] == ["私募", "股票策略", "量化多头", "500指增"]
+    assert summary_payload["taxonomy"]["path_labels"] == ["股票策略", "量化多头", "500指增"]
 
     detail_response = client.get(f"/api/watchlists/{watchlist_id}")
     assert detail_response.status_code == 200
@@ -5278,7 +5296,7 @@ def test_instrument_taxonomy_assignment_updates_summary_attribute_context_and_wa
         "/api/screener/query",
         json={
             "watchlist_id": watchlist_id,
-            "view_id": "fund-screening",
+            "view_id": "classification",
             "selected_fields": [
                 "instrument_name",
                 "attr.instrument_taxonomy_level_1",
@@ -5296,12 +5314,12 @@ def test_instrument_taxonomy_assignment_updates_summary_attribute_context_and_wa
         "/api/screener/query",
         json={
             "watchlist_id": watchlist_id,
-            "view_id": "fund-screening",
+            "view_id": "classification",
             "selected_fields": ["instrument_name"],
             "filters": {
-                "attr.instrument_taxonomy_level_1": ["私募"],
-                "attr.instrument_taxonomy_level_2": ["股票策略"],
-                "attr.instrument_taxonomy_level_3": ["量化多头"],
+                "attr.instrument_taxonomy_level_1": ["股票策略"],
+                "attr.instrument_taxonomy_level_2": ["量化多头"],
+                "attr.instrument_taxonomy_level_3": ["500指增"],
             },
             "group_by": "taxonomy",
             "pagination": {"page": 1, "page_size": 20},
@@ -5310,17 +5328,16 @@ def test_instrument_taxonomy_assignment_updates_summary_attribute_context_and_wa
     assert taxonomy_group_response.status_code == 200
     taxonomy_group_payload = taxonomy_group_response.json()
     assert taxonomy_group_payload["total_rows"] == 1
-    assert taxonomy_group_payload["rows"][0]["attr.instrument_taxonomy_level_1"] == "私募"
-    assert taxonomy_group_payload["rows"][0]["attr.instrument_taxonomy_level_2"] == "股票策略"
-    assert taxonomy_group_payload["rows"][0]["attr.instrument_taxonomy_level_3"] == "量化多头"
+    assert taxonomy_group_payload["rows"][0]["attr.instrument_taxonomy_level_1"] == "股票策略"
+    assert taxonomy_group_payload["rows"][0]["attr.instrument_taxonomy_level_2"] == "量化多头"
+    assert taxonomy_group_payload["rows"][0]["attr.instrument_taxonomy_level_3"] == "500指增"
     assert [
         (item["group_value"], item["group_depth"], item["row_count"])
         for item in taxonomy_group_payload["groups"]
     ] == [
-        ("私募", 0, 1),
-        ("私募 / 股票策略", 1, 1),
-        ("私募 / 股票策略 / 量化多头", 2, 1),
-        ("私募 / 股票策略 / 量化多头 / 500指增", 3, 1),
+        ("股票策略", 0, 1),
+        ("股票策略 / 量化多头", 1, 1),
+        ("股票策略 / 量化多头 / 500指增", 2, 1),
     ]
 
 
@@ -5331,9 +5348,9 @@ def test_monitoring_dashboard_surfaces_missing_labels_quotes_and_open_recalc_job
         {
         "instrument_id": "fund-no-data",
         "instrument_name": "No Data Fund",
-        "instrument_type": "fund",
+        "instrument_type": "public_fund",
         "currency": "USD",
-        "quote_selection_policy": canonical_quote_policy("fund"),
+        "quote_selection_policy": canonical_quote_policy("public_fund"),
         "identifiers": [
             {
                 "identifier_type": "ticker",
@@ -5367,7 +5384,7 @@ def test_monitoring_dashboard_surfaces_missing_labels_quotes_and_open_recalc_job
     payload = response.json()
 
     assert payload["overview"] == {
-        "watchlist_count": 1,
+            "watchlist_count": 4,
         "unique_instrument_count": 2,
         "needs_refresh_count": 2,
         "missing_quote_count": 1,
@@ -5376,7 +5393,9 @@ def test_monitoring_dashboard_surfaces_missing_labels_quotes_and_open_recalc_job
         "failed_recalc_job_count": 0,
     }
 
-    watchlist_summary = payload["watchlists"][0]
+    watchlist_summary = next(
+        item for item in payload["watchlists"] if item["watchlist_id"] == watchlist_id
+    )
     assert watchlist_summary["watchlist_id"] == watchlist_id
     assert watchlist_summary["item_count"] == 2
     assert watchlist_summary["needs_refresh_count"] == 2

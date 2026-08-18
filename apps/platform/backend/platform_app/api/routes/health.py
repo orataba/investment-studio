@@ -36,4 +36,8 @@ def get_health() -> dict[str, object]:
             "ready": settings.datahub_ready,
             "api_url": settings.datahub_tushare_api_url,
         },
+        "fmp_equity_sync": {
+            "ready": settings.fmp_ready,
+            "api_url": settings.fmp_api_url,
+        },
     }

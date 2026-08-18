@@ -28,7 +28,7 @@ Portfolio Operations Workbench 分为三块：
 - Watchlist：基金、ETF、股票和指数观察列表。用于资产池筛选、分组、单资产详情、研究标签、监控和导出。
 - Portfolio：组合管理工作台。用于账户、交易、持仓、绩效、风险、分类体系和研究调仓。
 
-三块系统共用同一套可复用市场资产主档。基金、ETF、指数、股票、现金、汇率等资产应先在 Platform 建档，再被 Watchlist 或 Portfolio 引用。FCN 和期权是组合特定合约，直接在 Portfolio 首笔交易中创建，不在 Platform 建档；它们的 underlying 或 deliverable 证券仍引用共享 instrument。直接债券不进入 Registry 或 Watchlist，当前也没有 Portfolio 债券交易入口。不要在不同模块里重复创建同一市场资产，也不要用临时名称绕过主档管理。
+三块系统共用同一套可复用市场资产主档。公募、私募、ETF、指数、现金和汇率等资产先在 Platform 建档，再被 Watchlist 或 Portfolio 引用。股票不走人工注册：Platform 定时维护美股、港股和 A 股的本地 FMP 目录，用户在 Watchlist 或 Portfolio 搜索后，系统才按需建立共享 identity 并加载 EOD。FCN 和期权是组合特定合约，直接在 Portfolio 首笔交易中创建，不在 Platform 建档；它们的 underlying 或 deliverable 证券仍引用共享 instrument。直接债券不进入 Registry 或 Watchlist，当前也没有 Portfolio 债券交易入口。不要在不同模块里重复创建同一市场资产，也不要用临时名称绕过主档管理。
 
 核心数据分四类：
 
@@ -59,7 +59,7 @@ Portfolio Operations Workbench 分为三块：
 
 1. 在搜索框输入资产名称、ticker、ISIN 或内部编号。
 2. 检查搜索结果中是否已有同一资产。
-3. 不存在时新建 instrument。
+3. 公募、私募、ETF、指数等不存在时按运营流程新建 instrument；股票不要手工建档，直接在 Watchlist 或 Portfolio 搜索本地 FMP 股票目录。
 4. 填写 instrument type、名称、币种和 identifier。
 5. 录入或导入市场数据。
 6. 回到 Watchlist 或 Portfolio 引用该 instrument。
@@ -68,9 +68,10 @@ Portfolio Operations Workbench 分为三块：
 
 新建时必须至少维护一个 identifier，并指定一个 primary identifier。常见填写方式：
 
-- 基金：instrument type 选 `fund`，币种按基金净值币种填写，identifier 可填写 ticker、ISIN、Bloomberg code 或内部代码。
+- 公募：instrument type 选 `public_fund`；Tushare `.OF` 净值属于这一类。
+- 私募：instrument type 选 `private_fund`；邮件净值来源属于这一类。
 - 指数：instrument type 选 `index`，币种按指数点位或报价币种填写，identifier 可填写 ticker 或指数代码。
-- 股票：instrument type 选 `equity`，币种按交易报价币种填写。
+- 股票：不在这里手工注册。Watchlist/Portfolio 搜索本地 FMP 目录后，系统按交易所创建 `equity` identity，并按需回补 EOD。
 - 现金：instrument type 选 `cash`，用于组合现金账户或现金桶，不作为普通证券交易标的。
 
 不要在 Platform 为直接债券、某一笔 FCN 或期权新建 instrument。FCN/期权的合约条款、到期日、行权价、障碍条件、发行人和对手方属于 Portfolio 本地交易事实；只有其 underlying、deliverable 或实际交付的证券需要先在 Platform 建档。
@@ -117,11 +118,11 @@ FX 维护 spot：
 
 访问 `http://172.188.30.166:3101/`。默认入口会进入 watchlist 选择或默认列表。每个 watchlist 是一个资产池，可用于基金池、ETF/股票候选池、指数池或专项研究池。
 
-Watchlist 管理“哪些资产进入观察范围”和“如何展示这些资产”，不负责创建资产主档。新增条目前，应先确保资产已在 Platform 存在。
+Watchlist 管理“哪些资产进入观察范围”和“如何展示这些资产”。系统列表固定为 `Index`、`All 公募`、`All 私募`，分别自动同步所有 active 指数、公募和私募；股票、ETF 以及其他自定义列表只按人工添加维护。公募、私募、ETF 和指数来自 Registry；股票搜索本地 FMP 目录，首次添加时由 Platform API 按需准备共享 identity 与 EOD。
 
 ### 5.2 添加资产
 
-在列表页面搜索共享资产并加入当前 watchlist。搜索不到时回到 Platform 检查 instrument 是否存在、是否 active、identifier 是否正确。不要用相似名称新建重复资产。
+在列表页面搜索资产并加入当前 watchlist。公募、私募、ETF 和指数搜索不到时，回到 Platform 检查 instrument 是否存在、是否 active、identifier 是否正确；股票搜索不到时，检查 FMP 本地目录最近一次刷新是否成功。不要用相似名称新建重复资产。
 
 加入后，资产会出现在主表中。若指标为空，先看资产详情页的数据状态，再看 Monitoring 是否提示缺失行情、缺失标签或 recalc 失败。
 
@@ -152,13 +153,13 @@ Watchlist 的字段来自 field registry 和 instrument attributes。字段可�
 
 `Group By` 支持可写 taxonomy 或只读字段分组。可写 taxonomy 分组支持拖拽资产到目标分组，并把分类结果写回后端。只读指标分组只用于查看，不能拖拽修改。
 
-Watchlist 使用一套多资产 `instrument_taxonomy`：基金使用公募/私募产品策略树，ETF 使用基金产品分类，股票使用一级行业分类，指数使用指数分类。系统不会自动猜分类；遇到分类为空，应由研究或业务负责人在详情页设置 taxonomy assignment。
+Watchlist 在自己的 schema 内维护多资产 `instrument_taxonomy`，Registry 不保存 taxonomy。公募与私募已经是不同的 `instrument_type`，各自在类型内使用产品/策略分类；ETF 使用 ETF 分类，股票按市场/交易所分类，指数使用指数分类。股票交易所分类由 Registry 的 canonical `exchange_code` 映射，其余产品分类仍由研究或业务负责人在 Watchlist 内人工设置。
 
 ### 5.6 基金详情页
 
 基金详情页包含 Overview、Quote、Performance、Risk、Price、Exposure、People、Strategy、Documents、Research、Monitoring 等信息区。自动 Ratings 已移除；人工评级只在 Research 中维护。实际可见 tab 会根据数据覆盖情况变化。
 
-基金、ETF、股票和指数详情页右上角的 `Settings` 同时维护投资状态和适用于该资产类型的 taxonomy。投资状态可选择未设置、观察、拟投、在投、暂停或退出；两项设置都属于共享 instrument，在所有 watchlist 中同步生效。
+基金、ETF、股票和指数详情页右上角的 `Settings` 同时维护投资状态和适用于该资产类型的 taxonomy。投资状态可选择未设置、观察、拟投、在投、暂停或退出；这些设置在 Watchlist 内按 instrument 共享，并不写回 Registry。
 
 常用区域：
 
@@ -435,9 +436,9 @@ Research 列表默认只取 compact run summary；选择某一 run 后再加载�
 ### 7.1 新基金进入观察池
 
 1. Platform 搜索基金 ticker / ISIN / 名称。
-2. 不存在时新建 fund instrument。
-3. 维护基金币种、primary identifier 和 NAV / NAV with dividend。
-4. Watchlist 搜索该 instrument 并加入目标 watchlist。
+2. 不存在时按产品性质新建 `public_fund` 或 `private_fund`；Tushare 来源属于公募，邮件来源属于私募。
+3. 维护基金币种、primary identifier 和 `official_nav / total_return_nav`。
+4. 系统会自动把 active 公募或私募同步到对应的 `All 公募 / All 私募`；需要进入其他名单时再人工添加。
 5. 在基金详情页维护 taxonomy、research overview、manual rating 或 notes。
 6. 触发或等待 recalc。
 7. 在主表配置字段、排序和筛选，导出或保存 view。
@@ -454,7 +455,7 @@ Research 列表默认只取 compact run summary；选择某一 run 后再加载�
 
 1. Portfolio 进入对应组合。
 2. Accounts 确认证券账户和默认结算现金账户存在。
-3. Platform 确认买入资产已建档并有行情。
+3. 在 Transactions 直接搜索资产。公募、私募、ETF 和指数来自 Registry；股票直接搜索本地 FMP 目录，不要求先加入 Watchlist，首次选中时系统会建立/确认 identity 并加载 EOD。
 4. Transactions 新增 `buy`。
 5. 填写 account、instrument、trade date、settlement date、quantity、price、gross amount、fee、tax、currency。
 6. 保存后查看 ledger posting、Holdings 和 Overview。

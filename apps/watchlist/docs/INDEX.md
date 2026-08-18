@@ -11,7 +11,7 @@
 3. [CURRENT_SYSTEM_BASELINE.md](./CURRENT_SYSTEM_BASELINE.md)
    当前 watchlist app 已经实现到哪里、哪些页面和接口是真实可用的。
 4. [FUND_PRODUCT_FRAMEWORK.md](./FUND_PRODUCT_FRAMEWORK.md)
-   fund 产品框架的三层模型：`Fund Taxonomy / Research Tags / Monitoring Assessment`。
+   公募/私募产品框架的三层模型：`Instrument Taxonomy / Research Tags / Monitoring Assessment`；instrument type 属于 Registry，分类树属于 Watchlist。
 5. [FUND_QUALITATIVE_RESEARCH_FRAMEWORK.md](./FUND_QUALITATIVE_RESEARCH_FRAMEWORK.md)
    fund detail `Research` 页的定性研究标签、`timeline_notes` 和人工 rating 规则。
 6. [FUND_TERMINAL_V2_DATA_MODEL_AND_API.md](./FUND_TERMINAL_V2_DATA_MODEL_AND_API.md)

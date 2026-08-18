@@ -105,12 +105,13 @@ from portfolio_app.services.transaction_dates import transaction_execution_sort_
 
 router = APIRouter()
 
-POSITION_INSTRUMENT_TYPES = {"fund", "etf", "equity", "other"}
+FUND_INSTRUMENT_TYPES = {"public_fund", "private_fund"}
+POSITION_INSTRUMENT_TYPES = {*FUND_INSTRUMENT_TYPES, "etf", "equity", "other"}
 INCOME_ASSET_TYPES: dict[str, set[str]] = {
-    "dividend": {"fund", "etf", "equity"},
-    "dividend_reinvestment": {"fund", "etf", "equity"},
+    "dividend": {*FUND_INSTRUMENT_TYPES, "etf", "equity"},
+    "dividend_reinvestment": {*FUND_INSTRUMENT_TYPES, "etf", "equity"},
     "coupon": {"fcn"},
-    "return_of_capital": {"fund", "etf", "equity"},
+    "return_of_capital": {*FUND_INSTRUMENT_TYPES, "etf", "equity"},
     "maturity_redemption": {"fcn", "option"},
     "option_write": {"option"},
     "option_buy_to_close": {"option"},
@@ -169,6 +170,7 @@ def _load_instrument_ref(instrument_id: str) -> dict[str, object]:
         "instrument_name": instrument["instrument_name"],
         "instrument_type": instrument["instrument_type"],
         "currency": instrument["currency"],
+        "exchange_code": instrument.get("exchange_code"),
         "broker_identifiers": instrument.get("broker_identifiers", []),
         "identifiers": instrument.get("identifiers", []),
     }
@@ -376,6 +378,7 @@ def _serialize_instrument_option(record: dict[str, object]) -> dict[str, object]
             "instrument_name": record["instrument_name"],
             "instrument_type": record["instrument_type"],
             "currency": record["currency"],
+            "exchange_code": record.get("exchange_code"),
             "identifiers": record["identifiers"],
             "broker_identifiers": record.get("broker_identifiers", []),
         },

@@ -76,7 +76,7 @@ case "$SERVICE" in
     export PORTFOLIO_OPS_PLATFORM_PORTFOLIO_URL=http://127.0.0.1:5174
     export PORTFOLIO_OPS_PLATFORM_WATCHLIST_API_URL=http://127.0.0.1:8000
     export PORTFOLIO_OPS_PLATFORM_PORTFOLIO_API_URL=http://127.0.0.1:8001
-    export PORTFOLIO_OPS_PLATFORM_CORS_ORIGINS='["http://127.0.0.1:5172","http://localhost:5172"]'
+    export PORTFOLIO_OPS_PLATFORM_CORS_ORIGINS='["http://127.0.0.1:5172","http://localhost:5172","http://127.0.0.1:5173","http://localhost:5173","http://127.0.0.1:5174","http://localhost:5174"]'
     cd "$PROJECT_ROOT/apps/platform/backend"
     exec "$PYTHON_BIN" -m uvicorn platform_app.main:app --host 127.0.0.1 --port 8002
     ;;

@@ -50,7 +50,7 @@ const securitiesAccount = {
 const fundInstrument = instrumentFixture({
   instrument_id: 'fund-1',
   instrument_name: 'Index Enhanced Fund C',
-  instrument_type: 'fund',
+  instrument_type: 'public_fund',
   currency: 'CNY',
   identifiers: [{ identifier_type: 'ticker', identifier_value: '017847', is_primary: true }],
 })
@@ -61,7 +61,7 @@ const fundSubscription = {
   portfolio_id: '3',
   transaction_type: 'buy',
   asset_domain: 'security',
-  asset_subtype: 'fund',
+  asset_subtype: 'public_fund',
   flow_scope: 'internal',
   trade_date: '2026-07-24',
   trade_time: '15:30',

@@ -20,7 +20,7 @@ class WatchlistRowReadModel(Base):
         primary_key=True,
     )
     instrument_id: Mapped[str] = mapped_column(primary_key=True)
-    instrument_type: Mapped[str] = mapped_column(nullable=False, default="fund")
+    instrument_type: Mapped[str] = mapped_column(nullable=False)
     instrument_name: Mapped[str] = mapped_column(nullable=False)
     share_class: Mapped[str | None]
     ticker_or_isin: Mapped[str | None]

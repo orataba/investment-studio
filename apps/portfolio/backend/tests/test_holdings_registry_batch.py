@@ -236,7 +236,7 @@ def test_snapshot_holding_aggregation_preserves_accounts_and_earliest_holding_pr
                 "instrument_ref": {
                     "instrument_id": "fund-1",
                     "instrument_name": "Fund 1",
-                    "instrument_type": "fund",
+                    "instrument_type": "public_fund",
                     "currency": "CNY",
                     "identifiers": [],
                 },

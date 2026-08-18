@@ -13,6 +13,7 @@ def _instrument_ref(instrument_id: str = "equity-a") -> dict[str, object]:
         "instrument_id": instrument_id,
         "instrument_name": "Asset A",
         "instrument_type": "Equity",
+        "exchange_code": "XNYS",
         "currency": "usd",
         "identifiers": [
             {
@@ -45,6 +46,7 @@ def test_holding_summary_instrument_core_and_cash_identity_golden_contract() -> 
         "instrument_id": "equity-a",
         "instrument_name": "Asset A",
         "instrument_type": "equity",
+        "exchange_code": "XNYS",
         "currency": "USD",
         "identifiers": instrument_ref["identifiers"],
         "broker_identifiers": [],
@@ -181,7 +183,7 @@ def test_pending_subscription_is_a_cash_account_receivable_not_cash_or_position(
                 "economic_instrument_ref": {
                     "instrument_id": "fund-a",
                     "instrument_name": "Fund A",
-                    "instrument_type": "fund",
+                    "instrument_type": "public_fund",
                     "currency": "USD",
                     "identifiers": [],
                 },

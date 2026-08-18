@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
+from dataclasses import dataclass
 from datetime import UTC, datetime
 import re
 
@@ -40,19 +41,43 @@ def _allocate_local_view_id(
     return candidate
 
 
-FUND_SCREENING_VIEW_ID = "fund-screening"
-FUND_SCREENING_VIEW_NAME = "产品分类筛选"
-FUND_SCREENING_VIEW_DESCRIPTION = "先按分类树缩小产品池，再叠加研究标签和监控判断。"
-LOCAL_DETAIL_VIEW_FILTERS = {"instrument_type": ["fund", "etf", "index"]}
-ALL_COVERAGE_WATCHLIST_ID = "all-coverage"
-ALL_COVERAGE_WATCHLIST_NAME = "All Covered"
-ALL_COVERAGE_WATCHLIST_DESCRIPTION = (
-    "System-maintained coverage of every active fund, ETF, stock, and index in the shared instrument registry."
-)
+CLASSIFICATION_VIEW_ID = "classification"
+CLASSIFICATION_VIEW_NAME = "分类"
+CLASSIFICATION_VIEW_DESCRIPTION = "使用 Watchlist 内部分类树组织当前列表。"
+LOCAL_DETAIL_VIEW_FILTERS = {
+    "instrument_type": ["public_fund", "private_fund", "etf", "equity", "index"]
+}
 SYSTEM_OWNER_TYPE = "system"
 SYSTEM_OWNER_ID = "watchlist"
 TAXONOMY_GROUP_BY_CODE = "taxonomy"
 INSTRUMENT_TYPE_GROUP_BY_CODE = "instrument_type"
+
+
+@dataclass(frozen=True)
+class SystemWatchlistSpec:
+    watchlist_id: str
+    name: str
+    description: str
+    instrument_type: str
+
+
+SYSTEM_WATCHLIST_SPECS = (
+    SystemWatchlistSpec("index", "Index", "All active indexes in the shared Registry.", "index"),
+    SystemWatchlistSpec(
+        "all-public-funds",
+        "All 公募",
+        "All active public funds in the shared Registry.",
+        "public_fund",
+    ),
+    SystemWatchlistSpec(
+        "all-private-funds",
+        "All 私募",
+        "All active private funds in the shared Registry.",
+        "private_fund",
+    ),
+)
+SYSTEM_WATCHLIST_IDS = frozenset(spec.watchlist_id for spec in SYSTEM_WATCHLIST_SPECS)
+SYSTEM_WATCHLIST_BY_ID = {spec.watchlist_id: spec for spec in SYSTEM_WATCHLIST_SPECS}
 
 
 def _local_detail_view_filters() -> dict[str, list[str]]:
@@ -73,17 +98,16 @@ def _overview_view_columns() -> list[dict[str, object]]:
     ]
 
 
-def _fund_screening_view_columns() -> list[dict[str, object]]:
+def _classification_view_columns() -> list[dict[str, object]]:
     return [
         {"field_key": "instrument_name", "display_order": 1, "width": 320},
-        {"field_key": "attr.implementation_style", "display_order": 2, "width": 140},
-        {"field_key": "attr.style_profile", "display_order": 3, "width": 220},
-        {"field_key": "attr.manager_assessment", "display_order": 4, "width": 220},
-        {"field_key": "attr.volatility_bucket", "display_order": 5, "width": 120},
-        {"field_key": "attr.drawdown_control", "display_order": 6, "width": 120},
-        {"field_key": "attr.style_stability", "display_order": 7, "width": 120},
-        {"field_key": "attr.transparency_quality", "display_order": 8, "width": 120},
-        {"field_key": "data_freshness_status", "display_order": 9, "width": 140},
+        {"field_key": "instrument_type", "display_order": 2, "width": 130},
+        {"field_key": "attr.instrument_taxonomy_path", "display_order": 3, "width": 280},
+        {"field_key": "attr.instrument_taxonomy_leaf", "display_order": 4, "width": 180},
+        {"field_key": "latest_quote", "display_order": 5, "width": 130},
+        {"field_key": "latest_quote_date", "display_order": 6, "width": 140},
+        {"field_key": "data_freshness_status", "display_order": 7, "width": 140},
+        {"field_key": "attr.coverage_status", "display_order": 8, "width": 110},
     ]
 
 
@@ -136,7 +160,8 @@ class SQLAlchemyWatchlistRepository:
         is_shared: bool = False,
         sort_order: int | None = None,
         overview_default_group_by: str | None = "none",
-        fund_screening_default_group_by: str | None = TAXONOMY_GROUP_BY_CODE,
+        classification_default_group_by: str | None = TAXONOMY_GROUP_BY_CODE,
+        instrument_type_filter: str | None = None,
     ) -> Watchlist:
         next_sort_order = self._next_sort_order(session) if sort_order is None else sort_order
         record = Watchlist(
@@ -168,73 +193,77 @@ class SQLAlchemyWatchlistRepository:
         self.create_view(
             session,
             watchlist_id=watchlist_id,
-            view_id=FUND_SCREENING_VIEW_ID,
-            name=FUND_SCREENING_VIEW_NAME,
-            description=FUND_SCREENING_VIEW_DESCRIPTION,
+            view_id=CLASSIFICATION_VIEW_ID,
+            name=CLASSIFICATION_VIEW_NAME,
+            description=CLASSIFICATION_VIEW_DESCRIPTION,
             kind="system",
-            default_group_by=fund_screening_default_group_by,
+            default_group_by=classification_default_group_by,
             default_sort=[],
-            default_filters=_local_detail_view_filters(),
+            default_filters=(
+                {"instrument_type": [instrument_type_filter]}
+                if instrument_type_filter
+                else _local_detail_view_filters()
+            ),
             default_advanced_filter={},
-            columns=_fund_screening_view_columns(),
+            columns=_classification_view_columns(),
             is_default=False,
         )
         session.flush()
         return record
 
-    def ensure_all_coverage_watchlist(self, session: Session) -> Watchlist:
-        record = self.get(session, ALL_COVERAGE_WATCHLIST_ID)
+    def ensure_system_watchlist(
+        self,
+        session: Session,
+        spec: SystemWatchlistSpec,
+    ) -> Watchlist:
+        record = self.get(session, spec.watchlist_id)
         if record is None:
-            existing_sort_orders = [
-                row[0]
-                for row in session.execute(select(Watchlist.sort_order)).all()
-                if row[0] is not None
-            ]
-            sort_order = min(existing_sort_orders) - 1 if existing_sort_orders else 0
             try:
                 record = self.create(
                     session,
-                    watchlist_id=ALL_COVERAGE_WATCHLIST_ID,
-                    name=ALL_COVERAGE_WATCHLIST_NAME,
-                    description=ALL_COVERAGE_WATCHLIST_DESCRIPTION,
+                    watchlist_id=spec.watchlist_id,
+                    name=spec.name,
+                    description=spec.description,
                     owner_type=SYSTEM_OWNER_TYPE,
                     owner_id=SYSTEM_OWNER_ID,
                     default_view_id="overview",
                     is_default=True,
                     is_shared=True,
-                    sort_order=sort_order,
-                    overview_default_group_by=INSTRUMENT_TYPE_GROUP_BY_CODE,
-                    fund_screening_default_group_by=TAXONOMY_GROUP_BY_CODE,
+                    sort_order=list(SYSTEM_WATCHLIST_SPECS).index(spec),
+                    overview_default_group_by="none",
+                    classification_default_group_by=TAXONOMY_GROUP_BY_CODE,
+                    instrument_type_filter=spec.instrument_type,
                 )
                 session.flush()
-                return self.get(session, ALL_COVERAGE_WATCHLIST_ID) or record
+                return self.get(session, spec.watchlist_id) or record
             except IntegrityError:
                 session.rollback()
-                record = self.get(session, ALL_COVERAGE_WATCHLIST_ID)
+                record = self.get(session, spec.watchlist_id)
                 if record is None:
                     raise
 
-        record.name = ALL_COVERAGE_WATCHLIST_NAME
-        record.description = ALL_COVERAGE_WATCHLIST_DESCRIPTION
+        record.name = spec.name
+        record.description = spec.description
         record.owner_type = SYSTEM_OWNER_TYPE
         record.owner_id = SYSTEM_OWNER_ID
         record.is_default = True
         record.is_shared = True
+        record.sort_order = list(SYSTEM_WATCHLIST_SPECS).index(spec)
 
         overview = self.get_view(
             session,
-            watchlist_id=ALL_COVERAGE_WATCHLIST_ID,
+            watchlist_id=spec.watchlist_id,
             view_id="overview",
         )
         if overview is None:
             self.create_view(
                 session,
-                watchlist_id=ALL_COVERAGE_WATCHLIST_ID,
+                watchlist_id=spec.watchlist_id,
                 view_id="overview",
                 name="Overview",
                 description="Default overview view",
                 kind="system",
-                default_group_by=INSTRUMENT_TYPE_GROUP_BY_CODE,
+                default_group_by="none",
                 default_sort=[],
                 default_filters={},
                 default_advanced_filter={},
@@ -243,47 +272,47 @@ class SQLAlchemyWatchlistRepository:
             )
         else:
             overview.kind = "system"
-            overview.default_group_by = INSTRUMENT_TYPE_GROUP_BY_CODE
+            overview.default_group_by = "none"
             overview.default_filters_json = {}
             overview.is_default = True
 
-        screening = self.get_view(
+        classification = self.get_view(
             session,
-            watchlist_id=ALL_COVERAGE_WATCHLIST_ID,
-            view_id=FUND_SCREENING_VIEW_ID,
+            watchlist_id=spec.watchlist_id,
+            view_id=CLASSIFICATION_VIEW_ID,
         )
-        if screening is None:
+        if classification is None:
             self.create_view(
                 session,
-                watchlist_id=ALL_COVERAGE_WATCHLIST_ID,
-                view_id=FUND_SCREENING_VIEW_ID,
-                name=FUND_SCREENING_VIEW_NAME,
-                description=FUND_SCREENING_VIEW_DESCRIPTION,
+                watchlist_id=spec.watchlist_id,
+                view_id=CLASSIFICATION_VIEW_ID,
+                name=CLASSIFICATION_VIEW_NAME,
+                description=CLASSIFICATION_VIEW_DESCRIPTION,
                 kind="system",
                 default_group_by=TAXONOMY_GROUP_BY_CODE,
                 default_sort=[],
-                default_filters=_local_detail_view_filters(),
+                default_filters={"instrument_type": [spec.instrument_type]},
                 default_advanced_filter={},
-                columns=_fund_screening_view_columns(),
+                columns=_classification_view_columns(),
                 is_default=False,
             )
         else:
-            screening.kind = "system"
-            screening.name = FUND_SCREENING_VIEW_NAME
-            screening.description = FUND_SCREENING_VIEW_DESCRIPTION
-            screening.default_group_by = TAXONOMY_GROUP_BY_CODE
-            screening.default_filters_json = _local_detail_view_filters()
+            classification.kind = "system"
+            classification.name = CLASSIFICATION_VIEW_NAME
+            classification.description = CLASSIFICATION_VIEW_DESCRIPTION
+            classification.default_group_by = TAXONOMY_GROUP_BY_CODE
+            classification.default_filters_json = {"instrument_type": [spec.instrument_type]}
 
-        default_view_key = _scoped_view_id(ALL_COVERAGE_WATCHLIST_ID, "overview")
+        default_view_key = _scoped_view_id(spec.watchlist_id, "overview")
         for view in session.scalars(
             select(WatchlistView).where(
-                WatchlistView.watchlist_id == ALL_COVERAGE_WATCHLIST_ID
+                WatchlistView.watchlist_id == spec.watchlist_id
             )
         ).all():
             view.is_default = view.watchlist_view_id == default_view_key
 
         session.flush()
-        return self.get(session, ALL_COVERAGE_WATCHLIST_ID) or record
+        return self.get(session, spec.watchlist_id) or record
 
     def _next_sort_order(self, session: Session) -> int:
         records = session.scalars(select(Watchlist).order_by(Watchlist.sort_order)).all()

@@ -13,6 +13,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from portfolio_ops_instrument_core import (
+    FUND_INSTRUMENT_TYPES,
     FUND_TOTAL_RETURN_QUOTE_BASES,
     QUOTE_BASIS_METRIC_FAMILY,
     resolve_quote_return_semantics,
@@ -44,6 +45,10 @@ from watchlist_app.reference_data.instrument_taxonomy import INSTRUMENT_TAXONOMY
 from watchlist_app.services.instrument_taxonomy import (
     build_taxonomy_context,
     merge_taxonomy_attributes,
+)
+from watchlist_app.services.instrument_resolution import (
+    LOCAL_DETAIL_INSTRUMENT_TYPES,
+    sync_local_instrument,
 )
 from watchlist_app.services.calculation_frequency import (
     assess_latest_observation_freshness,
@@ -430,7 +435,7 @@ def _node_path_labels(node: object | None) -> list[str]:
 
 
 def _active_peer_instrument_ids(session: Session) -> set[str]:
-    supported_types = ("fund", "etf", "equity", "index")
+    supported_types = tuple(sorted(LOCAL_DETAIL_INSTRUMENT_TYPES))
     local_active_instrument_ids = {
         str(instrument_id)
         for instrument_id in session.scalars(
@@ -1530,7 +1535,7 @@ def _selection_candidates(
     if not candidates:
         return []
     normalized_instrument_type = str(instrument_type or "").strip().lower()
-    if normalized_instrument_type == "fund":
+    if normalized_instrument_type in FUND_INSTRUMENT_TYPES:
         if normalized_preference == "nav":
             return []
         return [basis for basis in candidates if basis in FUND_TOTAL_RETURN_QUOTE_BASES]
@@ -1637,7 +1642,7 @@ def _select_quote_series(
         metric_family = str(points[-1]["metric_family"])
         projection = (
             _current_fund_nav_projection(shared_instrument)
-            if str(instrument_type or "").strip().lower() == "fund"
+            if str(instrument_type or "").strip().lower() in FUND_INSTRUMENT_TYPES
             and quote_basis == "total_return_nav"
             else None
         )
@@ -2228,15 +2233,11 @@ class CanonicalRecalcService:
         )
         if (
             shared_instrument is not None
-            and shared_instrument_type in {"fund", "etf", "equity", "index"}
+            and shared_instrument_type in LOCAL_DETAIL_INSTRUMENT_TYPES
         ):
-            instrument = self.instrument_repository.upsert_from_shared_instrument(
-                session,
-                shared_instrument=shared_instrument,
-                detail_view_type=(
-                    "fund" if shared_instrument_type == "fund" else "listed"
-                ),
-            )
+            instrument = sync_local_instrument(session, shared_instrument)
+            if instrument is None:
+                raise RuntimeError("Supported Watchlist instrument failed to materialize")
 
         now = _utcnow()
         manual_profile = self.manual_profile_repository.get(session, instrument_id)

@@ -140,7 +140,9 @@ class InstrumentAttributeDefinitionCreateRequest(BaseModel):
     group_code: str
     display_order: int = 999
     options: list[str] = Field(default_factory=list)
-    instrument_scope_json: list[str] = Field(default_factory=lambda: ["fund"])
+    instrument_scope_json: list[str] = Field(
+        default_factory=lambda: ["public_fund", "private_fund"]
+    )
     applicability_json: dict[str, list[str]] = Field(default_factory=dict)
     rubric_json: dict[str, Any] = Field(default_factory=dict)
     is_groupable: bool = True

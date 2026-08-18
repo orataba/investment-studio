@@ -109,7 +109,7 @@ def test_fund_close_cannot_be_relabelled_as_nav() -> None:
     resolution = resolve_quote_series(
         _detail(
             [_point(metric_family="nav", as_of_date="2026-01-02", value="100")],
-            instrument_type="fund",
+            instrument_type="public_fund",
         ),
         candidate_bases=["close"],
         end_date=date(2026, 1, 2),
@@ -123,7 +123,7 @@ def test_fund_analytical_consumers_do_not_fallback_to_unit_nav() -> None:
     detail = {
         "instrument_id": "fund-unit-nav-only",
         "instrument_name": "Unit NAV Only Fund",
-        "instrument_type": "fund",
+        "instrument_type": "public_fund",
         "currency": "USD",
         "quote_selection_policy": {
             "trading": ["official_nav"],

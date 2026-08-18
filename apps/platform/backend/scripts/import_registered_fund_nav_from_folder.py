@@ -7,25 +7,14 @@ import json
 from collections import defaultdict
 from pathlib import Path
 
-from sqlalchemy import select, text
-
-
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
 PROJECT_ROOT = Path(__file__).resolve().parents[4]
 NAV_DIR = PROJECT_ROOT / "nav"
 
 sys.path.insert(0, str(BACKEND_ROOT))
 
-from platform_app.db.models import Instrument, InstrumentIdentifier  # noqa: E402
-from platform_app.db.session import get_session_factory  # noqa: E402
 from platform_app.services import market_data_ops  # noqa: E402
-from platform_app.services.instrument_store import get_instrument  # noqa: E402
-from portfolio_ops_instrument_core.instrument_store import (  # noqa: E402
-    _default_lifecycle_state,
-    _default_quote_selection_policy,
-    _default_refresh_status,
-    _default_source_settings,
-)
+from platform_app.services.instrument_store import get_instrument, list_instruments  # noqa: E402
 from platform_app.services.downstream_notifications import notify_market_data_downstream_refresh  # noqa: E402
 
 
@@ -38,43 +27,29 @@ def _normalize_code(value: str) -> str:
     return re.sub(r"[^0-9A-Z]+", "", prefix.upper())
 
 
-def _load_coverage_instruments() -> dict[str, dict[str, str]]:
-    session_factory = get_session_factory()
-    with session_factory() as session:
-        rows = session.execute(
-            text(
-                """
-                SELECT
-                    row.instrument_id,
-                    row.instrument_name,
-                    row.instrument_type,
-                    COALESCE(
-                        NULLIF(detail.primary_identifier_value, ''),
-                        NULLIF(row.ticker_or_isin, ''),
-                        summary.payload_json ->> 'ticker_or_isin',
-                        row.instrument_id
-                    ) AS identifier_value
-                FROM watchlist.watchlist_row_read_model AS row
-                LEFT JOIN watchlist.instrument_detail AS detail
-                  ON detail.instrument_id = row.instrument_id
-                LEFT JOIN watchlist.instrument_summary_read_model AS summary
-                  ON summary.instrument_id = row.instrument_id
-                WHERE row.watchlist_id IN ('coverage', 'all-coverage')
-                  AND row.instrument_type = 'fund'
-                ORDER BY row.instrument_name
-                """
-            )
-        ).mappings()
-        return {
-            str(row["instrument_id"]): {
-                "instrument_id": str(row["instrument_id"]),
-                "instrument_name": str(row["instrument_name"]),
-                "instrument_type": str(row["instrument_type"] or "fund"),
-                "identifier_value": str(row["identifier_value"] or row["instrument_id"]).strip().upper(),
-                "currency": "CNY",
-            }
-            for row in rows
+def _load_registered_funds() -> dict[str, dict[str, str]]:
+    rows = [
+        *list_instruments(instrument_type="public_fund", limit=None),
+        *list_instruments(instrument_type="private_fund", limit=None),
+    ]
+    instruments: dict[str, dict[str, str]] = {}
+    for row in rows:
+        identifiers = [
+            item for item in list(row.get("identifiers") or []) if isinstance(item, dict)
+        ]
+        primary = next((item for item in identifiers if item.get("is_primary")), None)
+        identifier = primary or (identifiers[0] if identifiers else None)
+        instrument_id = str(row["instrument_id"])
+        instruments[instrument_id] = {
+            "instrument_id": instrument_id,
+            "instrument_name": str(row["instrument_name"]),
+            "instrument_type": str(row["instrument_type"]),
+            "identifier_value": str(
+                (identifier or {}).get("identifier_value") or instrument_id
+            ).strip().upper(),
+            "currency": str(row["currency"]),
         }
+    return instruments
 
 
 def _resolve_instrument_id(
@@ -123,74 +98,8 @@ def _resolve_instrument_id(
     return None
 
 
-def _ensure_instrument(instrument_data: dict[str, str]) -> None:
-    session_factory = get_session_factory()
-    with session_factory() as session:
-        record = session.get(Instrument, instrument_data["instrument_id"])
-        if record is None:
-            record = Instrument(
-                instrument_id=instrument_data["instrument_id"],
-                instrument_name=instrument_data["instrument_name"],
-                instrument_type=instrument_data["instrument_type"],
-                currency=instrument_data["currency"],
-                quote_selection_policy_json=_default_quote_selection_policy(instrument_data["instrument_type"]),
-                source_settings_json=_default_source_settings(
-                    instrument_type=instrument_data["instrument_type"],
-                    identifiers=[
-                        {
-                            "identifier_value": instrument_data["identifier_value"],
-                            "is_primary": True,
-                        }
-                    ],
-                ),
-                refresh_status_json=_default_refresh_status(),
-                lifecycle_state_json=_default_lifecycle_state(),
-            )
-            session.add(record)
-            session.flush()
-        else:
-            record.instrument_name = instrument_data["instrument_name"]
-            record.instrument_type = instrument_data["instrument_type"]
-            record.currency = instrument_data["currency"]
-
-        existing_identifier = session.scalar(
-            select(InstrumentIdentifier).where(
-                InstrumentIdentifier.identifier_value == instrument_data["identifier_value"],
-                InstrumentIdentifier.instrument_id != instrument_data["instrument_id"],
-            )
-        )
-        if existing_identifier is not None:
-            raise RuntimeError(
-                f'Identifier {instrument_data["identifier_value"]} already belongs to {existing_identifier.instrument_id}.'
-            )
-
-        identifiers = session.scalars(
-            select(InstrumentIdentifier).where(InstrumentIdentifier.instrument_id == instrument_data["instrument_id"])
-        ).all()
-        matched = next(
-            (
-                item
-                for item in identifiers
-                if item.identifier_value == instrument_data["identifier_value"] and item.identifier_type == "ticker"
-            ),
-            None,
-        )
-        if matched is None:
-            matched = InstrumentIdentifier(
-                instrument_id=instrument_data["instrument_id"],
-                identifier_type="ticker",
-                identifier_value=instrument_data["identifier_value"],
-                is_primary=True,
-            )
-            session.add(matched)
-        for identifier in identifiers:
-            identifier.is_primary = False
-        matched.is_primary = True
-        session.commit()
-
-
 def main() -> int:
-    instruments = _load_coverage_instruments()
+    instruments = _load_registered_funds()
     matched_rows_by_instrument: dict[str, list[dict[str, object]]] = defaultdict(list)
     matched_files_by_instrument: dict[str, list[str]] = defaultdict(list)
     unmatched_files: list[str] = []
@@ -215,7 +124,7 @@ def main() -> int:
 
         instrument_id = _resolve_instrument_id(file_name=path.name, rows=rows, instruments=instruments)
         if instrument_id is None:
-            unmatched_files.append(f"{path.name}: no coverage instrument match")
+            unmatched_files.append(f"{path.name}: no registered fund match")
             continue
 
         matched_rows_by_instrument[instrument_id].extend(rows)
@@ -224,7 +133,6 @@ def main() -> int:
     imported_instruments: list[tuple[str, int, str, str]] = []
     for instrument_id, rows in sorted(matched_rows_by_instrument.items()):
         instrument = instruments[instrument_id]
-        _ensure_instrument(instrument)
         registry_instrument = get_instrument(instrument_id)
         if registry_instrument is None:
             raise RuntimeError(f'Instrument "{instrument_id}" disappeared during import.')
@@ -246,7 +154,7 @@ def main() -> int:
             rows=merged_rows,
             provider="nav_folder_import",
             source_kind="manual_import",
-            source_ref=f"coverage-folder:{source_revision}",
+            source_ref=f"registered-fund-folder:{source_revision}",
             status="complete",
             evidence={"file_names": source_files},
         )

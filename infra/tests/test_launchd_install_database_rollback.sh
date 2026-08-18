@@ -21,6 +21,7 @@ prepare_case() {
     "$project_root/apps/platform/frontend/dist" \
     "$project_root/apps/watchlist/frontend/dist" \
     "$project_root/apps/portfolio/frontend/dist" \
+    "$project_root/apps/platform/backend/scripts" \
     "$project_root/apps/portfolio/backend/scripts" \
     "$mock_bin" \
     "$plist_root" \
@@ -54,6 +55,14 @@ prepare_case() {
     'printf "platform-migration-env:%s|%s\n" "$platform_alembic_status" "${PORTFOLIO_OPS_PLATFORM_OPERATIONS_DATABASE_SCHEMA:-}" >> "$EVENT_LOG"' \
     'if [[ "${MIGRATION_FAIL:-false}" == "true" ]]; then exit 9; fi' \
     > "$project_root/infra/scripts/migrate_all.sh"
+  printf '%s\n' \
+    'from __future__ import annotations' \
+    'import os' \
+    'import sys' \
+    'from pathlib import Path' \
+    'with Path(os.environ["EVENT_LOG"]).open("a", encoding="utf-8") as handle:' \
+    '    handle.write("market-refresh:" + " ".join(sys.argv[1:]) + "\n")' \
+    > "$project_root/apps/platform/backend/scripts/refresh_market_data_scheduled.py"
   printf '%s\n' \
     'from __future__ import annotations' \
     'import os' \
@@ -275,6 +284,7 @@ set -e
 [[ $snapshot_refresh_status -ne 0 ]]
 grep -q '^backup$' "$EVENT_LOG"
 grep -q '^migrate$' "$EVENT_LOG"
+grep -q '^market-refresh:--channel fmp --updated-by launchd-install --no-downstream-refresh --fail-on-item-failure$' "$EVENT_LOG"
 grep -q '^snapshot-refresh$' "$EVENT_LOG"
 if grep -q '^audit$' "$EVENT_LOG"; then
   echo "Installer ran the audit after a failed snapshot refresh." >&2
@@ -293,6 +303,7 @@ rollback_status=$?
 set -e
 [[ $rollback_status -eq 70 ]]
 grep -q '^migrate$' "$EVENT_LOG"
+grep -q '^market-refresh:--channel fmp --updated-by launchd-install --no-downstream-refresh --fail-on-item-failure$' "$EVENT_LOG"
 grep -q '^audit$' "$EVENT_LOG"
 grep -q '^health$' "$EVENT_LOG"
 grep -q '^restore-failed$' "$EVENT_LOG"

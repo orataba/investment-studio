@@ -194,6 +194,7 @@ def _split_test_transaction(
             "instrument_id": "equity-us-abbv",
             "instrument_name": "Split Security",
             "instrument_type": "equity",
+            "exchange_code": "XNYS",
             "currency": "USD",
             "identifiers": [],
         },
@@ -259,6 +260,7 @@ def test_instrument_option_rejects_missing_or_noncanonical_price_contract() -> N
             "instrument_id": "equity-test",
             "instrument_name": "Equity Test",
             "instrument_type": "equity",
+            "exchange_code": "XNYS",
             "currency": "USD",
             "identifiers": [],
         },
@@ -2186,6 +2188,7 @@ def test_entitlement_bod_excludes_same_day_buy_from_income_allocation():
         "instrument_id": "equity-entitlement-test",
         "instrument_name": "Entitlement Test Equity",
         "instrument_type": "equity",
+        "exchange_code": "XNYS",
         "currency": "USD",
         "identifiers": [],
     }
@@ -2254,6 +2257,7 @@ def test_entitlement_bod_keeps_same_day_sale_in_income_allocation():
         "instrument_id": "equity-entitlement-test",
         "instrument_name": "Entitlement Test Equity",
         "instrument_type": "equity",
+        "exchange_code": "XNYS",
         "currency": "USD",
         "identifiers": [],
     }
@@ -2322,6 +2326,7 @@ def test_entitlement_bod_accepts_same_day_opening_balance_with_prior_acquisition
         "instrument_id": "equity-entitlement-test",
         "instrument_name": "Entitlement Test Equity",
         "instrument_type": "equity",
+        "exchange_code": "XNYS",
         "currency": "USD",
         "identifiers": [],
     }
@@ -2468,6 +2473,7 @@ def test_ledger_postings_sort_by_trade_time_within_same_day():
         "instrument_id": "equity-us-abbv",
         "instrument_name": "AbbVie Inc",
         "instrument_type": "equity",
+        "exchange_code": "XNYS",
         "currency": "USD",
         "identifiers": [],
     }
@@ -2634,6 +2640,7 @@ def test_transfer_derivation_rejects_missing_source_lots():
                 "instrument_id": "equity-us-abbv",
                 "instrument_name": "AbbVie Inc",
                 "instrument_type": "equity",
+                "exchange_code": "XNYS",
                 "currency": "USD",
                 "identifiers": [],
             },
@@ -2657,6 +2664,7 @@ def test_transfer_derivation_rejects_missing_source_lots():
                 "instrument_id": "equity-us-abbv",
                 "instrument_name": "AbbVie Inc",
                 "instrument_type": "equity",
+                "exchange_code": "XNYS",
                 "currency": "USD",
                 "identifiers": [],
             },
@@ -2696,6 +2704,7 @@ def test_lot_kernels_reject_oversell_when_route_validation_is_bypassed():
         "instrument_id": "equity-us-abbv",
         "instrument_name": "AbbVie Inc",
         "instrument_type": "equity",
+        "exchange_code": "XNYS",
         "currency": "USD",
         "identifiers": [],
     }

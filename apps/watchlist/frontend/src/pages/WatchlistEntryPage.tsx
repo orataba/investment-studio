@@ -13,13 +13,8 @@ import { buildWatchlistPath, PLATFORM_HOME_URL } from '../lib/navigation'
 import ConfirmDialog from '../../../../../packages/ui/src/ConfirmDialog'
 import { useModalDialog } from '../../../../../packages/ui/src/useModalDialog'
 
-const ALL_COVERAGE_WATCHLIST_ID = 'all-coverage'
-
-function isAllCoverageWatchlist(watchlist: WatchlistRecord) {
-  return (
-    watchlist.watchlist_id === ALL_COVERAGE_WATCHLIST_ID ||
-    (watchlist.is_default && watchlist.owner_type === 'system')
-  )
+function isSystemWatchlist(watchlist: WatchlistRecord) {
+  return watchlist.is_default && watchlist.owner_type === 'system'
 }
 
 export default function WatchlistEntryPage() {
@@ -96,9 +91,9 @@ export default function WatchlistEntryPage() {
     return () => window.clearTimeout(timeoutId)
   }, [notice])
 
-  const allCoverageWatchlist = watchlists.find(isAllCoverageWatchlist)
-  const totalProducts =
-    allCoverageWatchlist?.item_count ?? watchlists.reduce((sum, item) => sum + item.item_count, 0)
+  const totalProducts = watchlists
+    .filter(isSystemWatchlist)
+    .reduce((sum, item) => sum + item.item_count, 0)
 
   async function moveWatchlist(sourceId: string, targetId: string) {
     if (sourceId === targetId || reordering) {
@@ -136,7 +131,7 @@ export default function WatchlistEntryPage() {
   }
 
   function moveWatchlistByOffset(watchlistId: string, offset: -1 | 1) {
-    const movableWatchlists = watchlists.filter((item) => !isAllCoverageWatchlist(item))
+    const movableWatchlists = watchlists.filter((item) => !isSystemWatchlist(item))
     const currentIndex = movableWatchlists.findIndex((item) => item.watchlist_id === watchlistId)
     const target = movableWatchlists[currentIndex + offset]
     if (currentIndex === -1 || !target) {
@@ -231,39 +226,39 @@ export default function WatchlistEntryPage() {
       <section className="watchlist-entry-list-shell">
         <div className="watchlist-entry-grid">
           {watchlists.map((watchlist) => {
-            const systemCoverage = isAllCoverageWatchlist(watchlist)
+            const systemWatchlist = isSystemWatchlist(watchlist)
             return (
             <article
               key={watchlist.watchlist_id}
-              className={`watchlist-entry-card ${systemCoverage ? 'watchlist-entry-card-system' : ''} ${
+              className={`watchlist-entry-card ${systemWatchlist ? 'watchlist-entry-card-system' : ''} ${
                 draggingId === watchlist.watchlist_id ? 'entry-card-dragging' : ''
               }`}
-              draggable={!systemCoverage && !reordering}
+              draggable={!systemWatchlist && !reordering}
               onDragStart={() => {
-                if (!systemCoverage && !reordering) {
+                if (!systemWatchlist && !reordering) {
                   setDraggingId(watchlist.watchlist_id)
                 }
               }}
               onDragEnd={() => setDraggingId(null)}
               onDragOver={(event) => {
-                if (!systemCoverage) {
+                if (!systemWatchlist) {
                   event.preventDefault()
                 }
               }}
               onDrop={() => {
-                if (draggingId && !systemCoverage) {
+                if (draggingId && !systemWatchlist) {
                   void moveWatchlist(draggingId, watchlist.watchlist_id)
                 }
                 setDraggingId(null)
               }}
             >
               <div className="watchlist-entry-card-leading">
-                {!systemCoverage ? (
+                {!systemWatchlist ? (
                   <div className="watchlist-entry-grip" aria-label={`Reorder ${watchlist.name}`}>
                     <button
                       type="button"
                       onClick={() => moveWatchlistByOffset(watchlist.watchlist_id, -1)}
-                      disabled={reordering || watchlists.filter((item) => !isAllCoverageWatchlist(item))[0]?.watchlist_id === watchlist.watchlist_id}
+                      disabled={reordering || watchlists.filter((item) => !isSystemWatchlist(item))[0]?.watchlist_id === watchlist.watchlist_id}
                       aria-label={`Move ${watchlist.name} up`}
                       title="Move up"
                     >
@@ -272,7 +267,7 @@ export default function WatchlistEntryPage() {
                     <button
                       type="button"
                       onClick={() => moveWatchlistByOffset(watchlist.watchlist_id, 1)}
-                      disabled={reordering || watchlists.filter((item) => !isAllCoverageWatchlist(item)).slice(-1)[0]?.watchlist_id === watchlist.watchlist_id}
+                      disabled={reordering || watchlists.filter((item) => !isSystemWatchlist(item)).slice(-1)[0]?.watchlist_id === watchlist.watchlist_id}
                       aria-label={`Move ${watchlist.name} down`}
                       title="Move down"
                     >
@@ -329,7 +324,7 @@ export default function WatchlistEntryPage() {
                       >
                         Copy Watchlist
                       </button>
-                      {!systemCoverage ? (
+                      {!systemWatchlist ? (
                         <button
                           type="button"
                           onClick={() => {
@@ -349,7 +344,7 @@ export default function WatchlistEntryPage() {
                 <div className="watchlist-entry-card-title-stack">
                   <strong className="watchlist-entry-name">{watchlist.name}</strong>
                   <span className="watchlist-entry-meta">
-                    {systemCoverage ? 'System Coverage' : 'Watchlist'}
+                    {systemWatchlist ? 'System List' : 'Watchlist'}
                   </span>
                 </div>
                 <div className="watchlist-entry-card-metrics">

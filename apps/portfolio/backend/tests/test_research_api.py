@@ -460,7 +460,7 @@ def test_current_scope_actuals_keeps_derivatives_and_all_account_liquidity_as_ze
                     "instrument_id": "ordinary-fund",
                     "instrument_ref": {
                         "instrument_id": "ordinary-fund",
-                        "instrument_type": "fund",
+                        "instrument_type": "public_fund",
                     },
                     "market_value_base": 100.0,
                 },
@@ -553,7 +553,7 @@ def test_taxonomy_state_uses_registry_instruments_only(monkeypatch) -> None:
     seeded_details = {
         "ordinary-fund": {
             "instrument_id": "ordinary-fund",
-            "instrument_type": "fund",
+            "instrument_type": "public_fund",
         },
     }
     monkeypatch.setattr(
@@ -771,7 +771,7 @@ def test_zero_risk_budget_member_is_excluded_from_covariance_and_kept_in_results
         return {
             "instrument_id": instrument_id,
             "instrument_name": instrument_id,
-            "instrument_type": "fund",
+            "instrument_type": "public_fund",
             "currency": "USD",
             "quote_selection_policy": {"total_return": ["total_return_nav"]},
             "market_data": points,
@@ -886,7 +886,7 @@ def test_zero_weight_member_starting_after_early_rebalance_does_not_block_backte
         return {
             "instrument_id": instrument_id,
             "instrument_name": instrument_id,
-            "instrument_type": "fund",
+            "instrument_type": "public_fund",
             "currency": "USD",
             "quote_selection_policy": {"total_return": ["total_return_nav"]},
             "market_data": points,
@@ -1021,7 +1021,7 @@ def test_positive_top_sleeve_minimum_overrides_zero_configured_weight(monkeypatc
         return {
             "instrument_id": instrument_id,
             "instrument_name": instrument_id,
-            "instrument_type": "fund",
+            "instrument_type": "public_fund",
             "currency": "USD",
             "quote_selection_policy": {"total_return": ["total_return_nav"]},
             "market_data": [
@@ -1256,7 +1256,7 @@ def test_backtest_universe_comes_from_point_in_time_assignment_revisions() -> No
             },
         ],
         instrument_detail_cache={
-            "former-member": {"instrument_type": "fund"},
+            "former-member": {"instrument_type": "public_fund"},
             "current-member": {"instrument_type": "equity"},
         },
     ) == ["current-member", "former-member"]
@@ -2317,7 +2317,7 @@ def test_research_pinned_as_of_requires_explicit_mode(client):
 def test_research_series_prefers_total_return_nav_for_funds() -> None:
     detail = {
         "instrument_id": "fund-test",
-        "instrument_type": "fund",
+        "instrument_type": "public_fund",
         "currency": "USD",
         "quote_selection_policy": {
             "valuation": ["official_nav"],
@@ -2380,7 +2380,7 @@ def test_research_series_prefers_total_return_nav_for_funds() -> None:
 def test_fund_analytics_remain_unavailable_without_total_return_nav() -> None:
     detail = {
         "instrument_id": "fund-unit-nav-only",
-        "instrument_type": "fund",
+        "instrument_type": "public_fund",
         "currency": "USD",
         "quote_selection_policy": {
             "valuation": ["official_nav"],
@@ -2418,7 +2418,7 @@ def test_fund_analytics_remain_unavailable_without_total_return_nav() -> None:
 def test_research_series_uses_only_complete_market_data() -> None:
     detail = {
         "instrument_id": "fund-status-test",
-        "instrument_type": "fund",
+        "instrument_type": "public_fund",
         "currency": "USD",
         "quote_selection_policy": {
             "valuation": ["official_nav"],
@@ -2457,7 +2457,7 @@ def test_research_series_uses_only_complete_market_data() -> None:
 
 def test_fund_instrument_chart_basis_is_exact_total_return_nav() -> None:
     detail = {
-        "instrument_type": "fund",
+        "instrument_type": "public_fund",
         "quote_selection_policy": {
             "valuation": ["official_nav"],
             "reference": ["official_nav"],
@@ -2472,6 +2472,7 @@ def test_fund_instrument_chart_basis_is_exact_total_return_nav() -> None:
 def test_instrument_trend_requires_an_explicit_quote_policy() -> None:
     detail = {
         "instrument_type": "equity",
+        "exchange_code": "XNYS",
         "currency": "USD",
         "market_data": [
             {
@@ -2531,6 +2532,7 @@ def test_instrument_trend_volatility_uses_quote_observation_density() -> None:
 def test_holdings_daily_volatility_requires_window_start_coverage() -> None:
     detail = {
         "instrument_type": "equity",
+        "exchange_code": "XNYS",
         "currency": "USD",
         "quote_selection_policy": {"total_return": ["adjusted_close"]},
         "market_data": [
@@ -2561,7 +2563,7 @@ def test_holdings_risk_window_stays_anchored_to_requested_as_of_calendar_month()
     first_date = date(2026, 6, 20)
     last_quote_date = date(2026, 7, 24)
     detail = {
-        "instrument_type": "fund",
+        "instrument_type": "public_fund",
         "currency": "USD",
         "quote_selection_policy": {"total_return": ["total_return_nav"]},
         "market_data": [
@@ -2595,7 +2597,7 @@ def test_holdings_risk_window_withholds_uniformly_stale_tail_data() -> None:
     first_date = date(2026, 6, 20)
     last_quote_date = date(2026, 7, 24)
     detail = {
-        "instrument_type": "fund",
+        "instrument_type": "public_fund",
         "currency": "USD",
         "quote_selection_policy": {"total_return": ["total_return_nav"]},
         "market_data": [
@@ -2631,6 +2633,7 @@ def test_research_series_prefers_adjusted_close_for_equities() -> None:
     detail = {
         "instrument_id": "equity-test",
         "instrument_type": "equity",
+        "exchange_code": "XNYS",
         "currency": "USD",
         "quote_selection_policy": {
             "valuation": ["close"],

@@ -28,6 +28,8 @@ def test_health_reports_email_readiness(monkeypatch) -> None:
         datahub_tushare_api_url = (
             "http://datahubco.com/app-api/openapi/v1/tushare"
         )
+        fmp_ready = False
+        fmp_api_url = "https://financialmodelingprep.com/stable"
 
     monkeypatch.setattr(health, "get_settings", lambda: StubSettings())
 
@@ -56,4 +58,8 @@ def test_health_reports_email_readiness(monkeypatch) -> None:
     assert payload["datahub_tushare_sync"] == {
         "ready": False,
         "api_url": "http://datahubco.com/app-api/openapi/v1/tushare",
+    }
+    assert payload["fmp_equity_sync"] == {
+        "ready": False,
+        "api_url": "https://financialmodelingprep.com/stable",
     }

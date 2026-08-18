@@ -4,9 +4,9 @@ import { describe, expect, it } from 'vitest'
 import { NavImportButton } from './NavImportButton'
 
 describe('NavImportButton', () => {
-  it('renders the NAV action for funds', () => {
+  it('renders the NAV action for public funds', () => {
     const markup = renderToStaticMarkup(
-      <NavImportButton instrumentType="fund" type="button" className="nav-action" />,
+      <NavImportButton instrumentType="public_fund" type="button" className="nav-action" />,
     )
 
     expect(markup).toContain('Import NAV')

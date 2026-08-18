@@ -28,6 +28,7 @@ NPM_BIN="${NPM_BIN:-$(command -v npm || true)}"
 MIGRATION_RUNNER="$PROJECT_ROOT/infra/scripts/migrate_all.sh"
 AUDIT_RUNNER="$PROJECT_ROOT/infra/scripts/audit_live_data.py"
 SNAPSHOT_REFRESH_RUNNER="$PROJECT_ROOT/apps/portfolio/backend/scripts/refresh_release_snapshots.py"
+MARKET_DATA_REFRESH_RUNNER="$PROJECT_ROOT/apps/platform/backend/scripts/refresh_market_data_scheduled.py"
 SERVICE_CONTROL="$SCRIPT_DIR/control_local_services.sh"
 LOG_COMPACTOR="$SCRIPT_DIR/compact_local_logs.sh"
 BACKUP_HELPER="$PROJECT_ROOT/infra/postgres/project_schema_backup.sh"
@@ -61,6 +62,7 @@ for required_executable in "$MIGRATION_RUNNER" "$SERVICE_CONTROL" "$LOG_COMPACTO
 done
 for required_file in \
   "$AUDIT_RUNNER" \
+  "$MARKET_DATA_REFRESH_RUNNER" \
   "$SNAPSHOT_REFRESH_RUNNER" \
   "$SCRIPT_DIR/generate_local_service_plists.py" \
   "$SCRIPT_DIR/load_runtime_env.sh" \
@@ -276,6 +278,14 @@ export PORTFOLIO_OPS_PORTFOLIO_DATABASE_SCHEMA=portfolio
 database_mutated="true"
 PROJECT_ROOT="$PROJECT_ROOT" PYTHON_BIN="$PYTHON_BIN" ENV_ROOT="" \
   "$MIGRATION_RUNNER"
+platform_env_file="$(portfolio_ops_runtime_env_file platform "$ENV_ROOT")"
+portfolio_ops_load_env_file "$platform_env_file" PORTFOLIO_OPS_PLATFORM_
+PYTHONPATH="$PROJECT_ROOT/apps/platform/backend:$PROJECT_ROOT/packages/instrument-core/python${PYTHONPATH:+:$PYTHONPATH}" \
+  "$PYTHON_BIN" "$MARKET_DATA_REFRESH_RUNNER" \
+    --channel fmp \
+    --updated-by launchd-install \
+    --no-downstream-refresh \
+    --fail-on-item-failure
 PYTHONPATH="$PROJECT_ROOT/apps/portfolio/backend:$PROJECT_ROOT/packages/instrument-core/python${PYTHONPATH:+:$PYTHONPATH}" \
   "$PYTHON_BIN" "$SNAPSHOT_REFRESH_RUNNER"
 PORTFOLIO_OPS_LOCAL_DATABASE_URL="$DATABASE_URL" \

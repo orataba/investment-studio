@@ -121,6 +121,7 @@ describe('Current planning system buckets', () => {
             instrument_name: 'Subscription receivable · Asset 1',
             instrument_type: 'other',
             currency: 'USD',
+            exchange_code: null,
             identifiers: [],
             broker_identifiers: [],
           },

@@ -99,13 +99,20 @@ export default function App() {
     const activeCount = base.filter(
       (item) => item.lifecycle_state.status === 'active',
     ).length
-    const fundInstruments = base.filter((item) => item.instrument_type === 'fund')
+    const publicFundInstruments = base.filter(
+      (item) => item.instrument_type === 'public_fund',
+    )
+    const privateFundInstruments = base.filter(
+      (item) => item.instrument_type === 'private_fund',
+    )
+    const fundInstruments = [...publicFundInstruments, ...privateFundInstruments]
     const indexInstruments = base.filter((item) => item.instrument_type === 'index')
     return {
       total_count: base.length,
       active_count: activeCount,
       archived_count: base.length - activeCount,
-      fund_count: fundInstruments.length,
+      public_fund_count: publicFundInstruments.length,
+      private_fund_count: privateFundInstruments.length,
       index_count: indexInstruments.length,
       fund_with_quote_count: fundInstruments.filter(
         (item) => latestQuoteSnapshot(item).latestQuoteDate,

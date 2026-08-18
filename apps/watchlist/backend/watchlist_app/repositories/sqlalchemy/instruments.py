@@ -110,5 +110,8 @@ class SQLAlchemyInstrumentRepository:
             instrument_name=str(shared_instrument.get("instrument_name") or instrument_id),
             primary_identifier_type=identifier_type,
             primary_identifier_value=identifier_value,
-            metadata_json={},
+            metadata_json={
+                "exchange_code": str(shared_instrument.get("exchange_code") or "").strip().upper()
+                or None
+            },
         )

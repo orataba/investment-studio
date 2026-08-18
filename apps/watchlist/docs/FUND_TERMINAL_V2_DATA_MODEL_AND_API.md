@@ -1,4 +1,4 @@
-# Fund Terminal V2 数据模型与 API 基线
+# Watchlist 数据模型与 API 基线
 
 适用范围：当前 `apps/watchlist` 已经实现的数据分层、关键表语义和后端 API 边界
 
@@ -7,7 +7,7 @@
 这里只回答当前工程的四个问题：
 
 1. 数据现在按什么层次组织
-2. fund 产品框架如何入库和读取
+2. type-specific 产品框架如何入库和读取
 3. facts / manual profile / read model / recalc 怎样串起来
 4. 后端当前到底暴露了哪些 API
 
@@ -63,7 +63,7 @@ shared instruments / manual ingest / facts ingest
 
 ### 4.2 Instrument Product Framework
 
-这一层负责 fund 的分类、研究标签和监控评估：
+这一层负责 `public_fund / private_fund / etf / equity / index` 各自的分类，以及适用的研究标签和监控评估：
 
 - `instrument_taxonomy_node`
 - `instrument_taxonomy_assignment`
@@ -75,10 +75,10 @@ shared instruments / manual ingest / facts ingest
 其中：
 
 - taxonomy tables
-  管 fund 分类树本身和当前叶子赋值
+  管 Watchlist-local、按 instrument type 隔离的分类树和当前叶子赋值；Registry 不保存 taxonomy
 - attribute tables
   管 `fund_vehicle`、研究标签、监控评估等非树形字段
-- fund peer 口径
+- 基金 peer 口径
   由 taxonomy assignment / peer path 推导，不再通过 legacy category 字段维护
 
 `instrument_attribute_definition` 当前关键字段：
@@ -144,7 +144,7 @@ Performance snapshot 的 `return_1w / return_1m / return_3m / return_6m / return
 stale read repair 也只会写 job，不会直接在 Web 请求里补算；后台 worker 会异步消费这些 queued jobs。
 Registry 通知只是低延迟提示，不是正确性边界；worker 会分页对账源版本与本地 materialization cutoff，并通过同一条 durable、per-instrument 串行队列修复漏通知。
 
-## 5. fund 产品框架如何落地
+## 5. 产品框架如何落地
 
 ### 5.1 三层域
 
@@ -171,7 +171,7 @@ field registry 对应的 category 现在是：
 
 ### 5.3 Monitoring 缺失项检查
 
-Monitoring 页面不再硬编码一张“所有 fund 必填 tags”清单。
+Monitoring 页面不再硬编码一张“所有资产或所有基金必填 tags”清单。
 
 当前逻辑是：
 
@@ -255,16 +255,17 @@ Monitoring 页面不再硬编码一张“所有 fund 必填 tags”清单。
 
 ### 6.6 Taxonomies
 
-- `GET /api/taxonomies/fund-taxonomy`
-- `GET /api/taxonomies/fund-taxonomy/instruments/{instrument_id}`
-- `PUT /api/taxonomies/fund-taxonomy/instruments/{instrument_id}`
+- `GET /api/taxonomies/instrument-taxonomy`
+- `GET /api/taxonomies/instrument-taxonomy/instruments/{instrument_id}`
+- `PUT /api/taxonomies/instrument-taxonomy/instruments/{instrument_id}`
 
 说明：
 
-- 这组接口只服务于 `fund` 的内部分类树
-- taxonomy assignment 默认允许为空；系统不会自动推断，正式分类由详情页人工 `PUT` 确认
-- `fund_regime` 代表根节点 `公募 / 私募`
-- `fund_taxonomy_level_1..6` 从根节点内部的一级分类开始编号
+- 这组接口服务 `public_fund / private_fund / etf / equity / index` 的 Watchlist-local 分类，不把 taxonomy 写回共享 Registry
+- 节点带 `instrument_type`，assignment 必须与资产类型一致；不同类型之间不能交叉赋值
+- 公募、私募、ETF 和指数 assignment 默认允许为空，正式分类由详情页人工 `PUT` 确认
+- 股票分类由 Registry 的 canonical `exchange_code` 映射到市场/交易所节点，接口拒绝人工改写
+- 派生字段统一为 `instrument_taxonomy_level_1..7 / instrument_taxonomy_leaf / instrument_taxonomy_path`
 
 ### 6.7 Screener
 
@@ -323,7 +324,7 @@ Monitoring 页面不再硬编码一张“所有 fund 必填 tags”清单。
 
 - 详情页 canonical 路由已经收口到 `/instruments/:instrumentId`
 - `watchlist` 来源只作为 query context 透传，不再进入主路径
-- watchlist 不再提供独立的 shared registry 页面；共享资产浏览与维护统一放在 `Database Dashboard`
+- watchlist 不再提供独立的 shared registry 页面；公募、私募、ETF 和指数的共享资产浏览与维护统一放在 `Database Dashboard`，股票从添加弹窗搜索本地 FMP 目录并按需 materialize
 - 旧 `/funds/*` 前端路由已删除
 
 ## 8. 当前明确不再维护的东西
@@ -342,4 +343,4 @@ Monitoring 页面不再硬编码一张“所有 fund 必填 tags”清单。
 - 新接口一律走 `instrument` 主语
 - 产品分类先落 taxonomy，再考虑 research/monitoring labels
 - watchlist 前台优先消费 read models，而不是直接扫 facts
-- 只在没有更好归属时，才把内容继续放进 fund overlay 的 manual profiles
+- 只在没有更好归属时，才把内容继续放进公募/私募详情共享的 manual profiles

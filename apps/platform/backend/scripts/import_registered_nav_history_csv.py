@@ -24,6 +24,7 @@ from platform_app.services.downstream_notifications import (  # noqa: E402
     notify_market_data_downstream_refresh,
 )
 from platform_app.services.instrument_store import list_instruments  # noqa: E402
+from portfolio_ops_instrument_core import FUND_INSTRUMENT_TYPES  # noqa: E402
 
 
 REQUIRED_COLUMNS = (
@@ -130,7 +131,7 @@ def _load_targets(
     targets: dict[str, ImportTarget] = {}
     code_index: dict[str, set[str]] = defaultdict(set)
     for instrument in list_instruments(include_inactive=include_inactive):
-        if str(instrument.get("instrument_type") or "") != "fund":
+        if str(instrument.get("instrument_type") or "") not in FUND_INSTRUMENT_TYPES:
             continue
         configured_source = str(
             dict(instrument.get("source_settings", {})).get("source_mode")

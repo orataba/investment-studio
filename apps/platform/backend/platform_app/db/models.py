@@ -15,6 +15,7 @@ from platform_app.db.email_models import (
     FundNavRawObservation,
     PlatformMetadata,
 )
+from platform_app.db.equity_models import FmpEquityCatalog
 
 __all__ = [
     "EmailAttachmentArtifact",
@@ -24,6 +25,7 @@ __all__ = [
     "EmailMessageOccurrence",
     "EmailNavCandidate",
     "FundNavRawObservation",
+    "FmpEquityCatalog",
     "Instrument",
     "InstrumentIdentifier",
     "InstrumentMarketData",

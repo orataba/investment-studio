@@ -240,7 +240,7 @@ def get_monitoring_dashboard(
         missing_quote = instrument_summary["latest_quote_date"] is None
 
         missing_attribute_keys: list[str] = []
-        if str(instrument_summary["instrument_type"]) == "fund":
+        if str(instrument_summary["instrument_type"]) in {"public_fund", "private_fund"}:
             attributes = (
                 instrument_summary["attributes"]
                 if isinstance(instrument_summary["attributes"], dict)

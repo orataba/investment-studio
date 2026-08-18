@@ -9,15 +9,19 @@ from watchlist_app.reference_data.instrument_taxonomy import (
 )
 
 
-SUPPORTED_TAXONOMY_INSTRUMENT_TYPES = ("fund", "etf", "equity", "index")
+SUPPORTED_TAXONOMY_INSTRUMENT_TYPES = (
+    "public_fund",
+    "private_fund",
+    "etf",
+    "equity",
+    "index",
+)
 
 
 def taxonomy_node_supports_instrument(*, instrument_type: str, node: object) -> bool:
     normalized_instrument_type = str(instrument_type or "").strip().lower()
     node_type = str(_node_value(node, "instrument_type") or "").strip().lower()
-    return node_type == normalized_instrument_type or (
-        normalized_instrument_type == "etf" and node_type == "fund"
-    )
+    return node_type == normalized_instrument_type
 
 
 def _node_value(node: object, key: str) -> object:
@@ -134,7 +138,7 @@ def taxonomy_tree_payload(
         )
     return {
         "taxonomy_code": INSTRUMENT_TAXONOMY_CODE,
-        "instrument_types": ["fund", "etf", "equity", "index"],
+        "instrument_types": list(SUPPORTED_TAXONOMY_INSTRUMENT_TYPES),
         "max_depth": max_depth,
         "nodes": serialized_nodes,
     }

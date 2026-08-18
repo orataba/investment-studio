@@ -1,5 +1,6 @@
 export type InstrumentType =
-  | 'fund'
+  | 'public_fund'
+  | 'private_fund'
   | 'etf'
   | 'index'
   | 'equity'
@@ -20,6 +21,7 @@ export type IdentifierType =
   | 'internal'
   | 'fund_name'
   | 'cash_currency'
+  | 'provider_symbol'
   | 'other'
 export type MetricFamily = 'price' | 'nav' | 'fx'
 export type PriceUnit = 'per_unit' | 'rate'
@@ -68,7 +70,11 @@ export const QUOTE_BASIS_METRIC_FAMILY: Readonly<Record<QuoteBasis, MetricFamily
   par: 'price',
 }
 
-export const NAV_HISTORY_INSTRUMENT_TYPES: ReadonlySet<InstrumentType> = new Set(['fund'])
+export const FUND_INSTRUMENT_TYPES: ReadonlySet<InstrumentType> = new Set([
+  'public_fund',
+  'private_fund',
+])
+export const NAV_HISTORY_INSTRUMENT_TYPES: ReadonlySet<InstrumentType> = FUND_INSTRUMENT_TYPES
 
 export function supportsNavHistoryImport(instrumentType: InstrumentType): boolean {
   return NAV_HISTORY_INSTRUMENT_TYPES.has(instrumentType)
@@ -102,6 +108,7 @@ export interface InstrumentCore {
   instrument_name: string
   instrument_type: InstrumentType
   currency: string
+  exchange_code: string | null
   identifiers: InstrumentIdentifier[]
   broker_identifiers: BrokerIdentifier[]
   market_data_updated_at?: string | null

@@ -724,7 +724,7 @@ describe('Holdings rendered page contract', () => {
             instrument_core: instrumentFixture({
               instrument_id: 'quoted-fund',
               instrument_name: 'Quoted Fund',
-              instrument_type: 'fund',
+              instrument_type: 'public_fund',
               currency: 'USD',
               identifiers: [],
             }),
@@ -917,7 +917,7 @@ describe('Holdings rendered page contract', () => {
             instrument_core: instrumentFixture({
               instrument_id: 'fund-a',
               instrument_name: 'Fund A',
-              instrument_type: 'fund',
+              instrument_type: 'public_fund',
               currency: 'USD',
               identifiers: [{ identifier_type: 'ticker', identifier_value: 'FUNDA', is_primary: true }],
             }),
@@ -933,7 +933,7 @@ describe('Holdings rendered page contract', () => {
             instrument_core: instrumentFixture({
               instrument_id: 'fund-b',
               instrument_name: 'Fund B',
-              instrument_type: 'fund',
+              instrument_type: 'public_fund',
               currency: 'USD',
               identifiers: [{ identifier_type: 'ticker', identifier_value: 'FUNDB', is_primary: true }],
             }),
@@ -998,7 +998,7 @@ describe('Holdings rendered page contract', () => {
             instrument_core: instrumentFixture({
               instrument_id: 'usd-fund',
               instrument_name: 'USD Fund',
-              instrument_type: 'fund',
+              instrument_type: 'public_fund',
               currency: 'USD',
               identifiers: [],
             }),
@@ -1014,7 +1014,7 @@ describe('Holdings rendered page contract', () => {
             instrument_core: instrumentFixture({
               instrument_id: 'cny-fund',
               instrument_name: 'CNY Fund',
-              instrument_type: 'fund',
+              instrument_type: 'public_fund',
               currency: 'CNY',
               identifiers: [],
             }),
@@ -1076,7 +1076,7 @@ describe('Holdings rendered page contract', () => {
             instrument_core: instrumentFixture({
               instrument_id: 'fund-missing',
               instrument_name: 'Missing Return Fund',
-              instrument_type: 'fund',
+              instrument_type: 'public_fund',
               currency: 'USD',
               identifiers: [],
             }),

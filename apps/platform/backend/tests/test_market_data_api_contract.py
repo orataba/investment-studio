@@ -19,6 +19,7 @@ def _instrument_record() -> dict[str, object]:
         "instrument_id": "contract-equity",
         "instrument_name": "Contract Equity",
         "instrument_type": "equity",
+        "exchange_code": "XNYS",
         "currency": "USD",
         "identifiers": [
             {
@@ -298,7 +299,7 @@ def test_non_fund_nav_apis_return_400_before_parsing(
 
     assert response.status_code == 400
     assert response.json()["detail"] == (
-        "NAV history import is only supported for fund instruments; "
+        "NAV history import is only supported for public or private fund instruments; "
         '"contract-equity" is equity.'
     )
 

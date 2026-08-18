@@ -125,7 +125,7 @@ class SQLAlchemyReadModelRepository:
             record = WatchlistRowReadModel(
                 watchlist_id=watchlist_id,
                 instrument_id=instrument_id,
-                instrument_type=str(data.get("instrument_type") or "fund"),
+                instrument_type=str(data["instrument_type"]),
                 instrument_name=str(data["instrument_name"]),
                 share_class=data.get("share_class"),
                 ticker_or_isin=data.get("ticker_or_isin"),
@@ -163,7 +163,7 @@ class SQLAlchemyReadModelRepository:
             session.flush()
             return record
 
-        record.instrument_type = str(data.get("instrument_type") or record.instrument_type or "fund")
+        record.instrument_type = str(data.get("instrument_type") or record.instrument_type)
         record.instrument_name = str(data["instrument_name"])
         record.share_class = data.get("share_class")
         record.ticker_or_isin = data.get("ticker_or_isin")

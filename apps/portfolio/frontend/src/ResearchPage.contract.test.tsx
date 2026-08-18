@@ -222,7 +222,7 @@ const workbenchFixture = {
       instrument_ref: {
         instrument_id: 'held-asset',
         instrument_name: 'Current Holding Fund',
-        instrument_type: 'fund',
+        instrument_type: 'public_fund',
         currency: 'USD',
         identifiers: [],
       },
@@ -240,7 +240,7 @@ const workbenchFixture = {
       instrument_ref: {
         instrument_id: 'observed-asset',
         instrument_name: 'Observed Fund',
-        instrument_type: 'fund',
+        instrument_type: 'public_fund',
         currency: 'USD',
         identifiers: [],
       },
@@ -258,7 +258,7 @@ const workbenchFixture = {
       instrument_ref: {
         instrument_id: 'former-asset',
         instrument_name: 'Former Holding Fund',
-        instrument_type: 'fund',
+        instrument_type: 'public_fund',
         currency: 'USD',
         identifiers: [],
       },

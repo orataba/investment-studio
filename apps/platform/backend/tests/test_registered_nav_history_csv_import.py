@@ -27,7 +27,7 @@ def _target(instrument_id: str, name: str) -> object:
     instrument = {
         "instrument_id": instrument_id,
         "instrument_name": name,
-        "instrument_type": "fund",
+        "instrument_type": "public_fund",
         "currency": "CNY",
         "identifiers": [
             {"identifier_type": "ticker", "identifier_value": instrument_id.upper()}

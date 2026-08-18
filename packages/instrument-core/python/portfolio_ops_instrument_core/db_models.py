@@ -76,7 +76,7 @@ class Instrument(InstrumentRegistryBase):
     __tablename__ = "instrument"
     __table_args__ = (
         CheckConstraint(
-            "instrument_type IN ('fund', 'etf', 'index', 'equity', "
+            "instrument_type IN ('public_fund', 'private_fund', 'etf', 'index', 'equity', "
             "'cash', 'fx', 'other')",
             name="instrument_type_contract",
         ),
@@ -84,12 +84,19 @@ class Instrument(InstrumentRegistryBase):
             "currency = upper(trim(currency)) AND length(currency) BETWEEN 1 AND 8",
             name="instrument_currency_contract",
         ),
+        CheckConstraint(
+            "((instrument_type = 'equity' AND exchange_code IN "
+            "('XNAS', 'XNYS', 'XASE', 'XHKG', 'XSHG', 'XSHE')) OR "
+            "(instrument_type <> 'equity' AND exchange_code IS NULL))",
+            name="instrument_exchange_contract",
+        ),
     )
 
     instrument_id: Mapped[str] = mapped_column(String, primary_key=True)
     instrument_name: Mapped[str] = mapped_column(String, nullable=False)
     instrument_type: Mapped[str] = mapped_column(String, nullable=False)
     currency: Mapped[str] = mapped_column(String, nullable=False)
+    exchange_code: Mapped[str | None] = mapped_column(String(4))
     quote_selection_policy_json: Mapped[dict[str, object]] = mapped_column(
         JSON,
         nullable=False,

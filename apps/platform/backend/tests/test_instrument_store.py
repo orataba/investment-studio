@@ -37,7 +37,6 @@ from platform_app.services.instrument_store import (
     upsert_source_settings,
 )
 from platform_app.services.market_data_ops import import_nav_file, preview_nav_import
-from scripts.import_coverage_nav_from_folder import _ensure_instrument as ensure_coverage_nav_instrument
 
 TEST_SHARED_STORE = {
     "registry_name": DEFAULT_REGISTRY_NAME,
@@ -78,7 +77,7 @@ TEST_SHARED_STORE = {
         {
             "instrument_id": "fund-us-agg",
             "instrument_name": "iShares Core U.S. Aggregate Bond ETF",
-            "instrument_type": "fund",
+            "instrument_type": "public_fund",
             "currency": "USD",
             "identifiers": [
                 {
@@ -836,7 +835,7 @@ def test_create_rejects_identifier_collision_with_archived_instrument(
     with pytest.raises(ValueError, match='Identifier "ticker:AGG" already belongs'):
         create_instrument(
             instrument_name="Duplicate AGG",
-            instrument_type="fund",
+            instrument_type="public_fund",
             currency="USD",
             identifiers=[
                 {
@@ -853,7 +852,7 @@ def test_create_allows_same_identifier_value_across_different_types(
 ) -> None:
     created = create_instrument(
         instrument_name="Internal AGG Alias",
-        instrument_type="fund",
+        instrument_type="public_fund",
         currency="USD",
         identifiers=[
             {
@@ -882,6 +881,7 @@ def test_listed_security_with_only_adjusted_close_has_no_valuation_quote(
         instrument_name=f"Adjusted-only {instrument_type}",
         instrument_type=instrument_type,
         currency="CNY",
+        exchange_code="XSHG" if instrument_type == "equity" else None,
         identifiers=[
             {
                 "identifier_type": "ticker",
@@ -918,7 +918,7 @@ def test_create_rejects_same_identifier_type_value_in_request(
     with pytest.raises(ValueError, match='Duplicate identifier "ticker:dup"'):
         create_instrument(
             instrument_name="Duplicate Request Identifier",
-            instrument_type="fund",
+            instrument_type="public_fund",
             currency="USD",
             identifiers=[
                 {
@@ -941,7 +941,7 @@ def test_create_rejects_blank_master_data_and_multiple_primary_identifiers(
     with pytest.raises(ValueError, match="Instrument name must not be blank"):
         create_instrument(
             instrument_name="   ",
-            instrument_type="fund",
+            instrument_type="public_fund",
             currency="USD",
             identifiers=[
                 {
@@ -955,7 +955,7 @@ def test_create_rejects_blank_master_data_and_multiple_primary_identifiers(
     with pytest.raises(ValueError, match="Exactly one instrument identifier must be primary"):
         create_instrument(
             instrument_name="Two Primary Identifiers",
-            instrument_type="fund",
+            instrument_type="public_fund",
             currency="USD",
             identifiers=[
                 {"identifier_type": "ticker", "identifier_value": "NEW", "is_primary": True},
@@ -978,7 +978,7 @@ def test_list_instruments_filters_in_sql_semantics_and_returns_latest_points(
         status="complete",
     )
 
-    records = list_instruments(search="agg", instrument_type="fund", limit=1)
+    records = list_instruments(search="agg", instrument_type="public_fund", limit=1)
 
     assert [record["instrument_id"] for record in records] == ["fund-us-agg"]
     assert records[0]["latest_market_data"] == [
@@ -1011,42 +1011,6 @@ def test_market_data_upsert_rejects_noncanonical_currency(
             provider="pytest",
             status="complete",
         )
-
-
-def test_coverage_nav_import_ensure_instrument_upserts_shared_record(
-    isolated_store: Path,
-) -> None:
-    ensure_coverage_nav_instrument(
-        {
-            "instrument_id": "fund-sbmm07",
-            "instrument_name": "CTA Factor Composite 3",
-            "instrument_type": "fund",
-            "identifier_value": "SBMM07",
-            "currency": "CNY",
-        }
-    )
-
-    created = get_instrument("fund-sbmm07")
-    assert created is not None
-    assert created["instrument_name"] == "CTA Factor Composite 3"
-    assert created["instrument_type"] == "fund"
-    assert created["currency"] == "CNY"
-    assert created["quote_selection_policy"]["valuation"][0] == "official_nav"
-    assert find_instrument_by_identifier(identifier_value="SBMM07", identifier_type="ticker")["instrument_id"] == "fund-sbmm07"
-
-    ensure_coverage_nav_instrument(
-        {
-            "instrument_id": "fund-sbmm07",
-            "instrument_name": "CTA Factor Composite 3 Updated",
-            "instrument_type": "fund",
-            "identifier_value": "SBMM07",
-            "currency": "CNY",
-        }
-    )
-
-    updated = get_instrument("fund-sbmm07")
-    assert updated is not None
-    assert updated["instrument_name"] == "CTA Factor Composite 3 Updated"
 
 
 def test_upsert_market_data_updates_shared_store_without_app_callbacks(
@@ -1142,6 +1106,7 @@ def test_market_data_price_contract_is_derived_for_all_write_paths(
         instrument_name="Contract Equity",
         instrument_type="equity",
         currency="USD",
+        exchange_code="XNAS",
         identifiers=[
             {
                 "identifier_type": "internal",
@@ -1364,6 +1329,7 @@ def test_market_data_price_contract_rejects_invalid_batch_atomically(
         instrument_name="Fail Closed Equity",
         instrument_type="equity",
         currency="USD",
+        exchange_code="XNAS",
         identifiers=[
             {
                 "identifier_type": "internal",
@@ -1496,6 +1462,7 @@ def test_market_data_batch_rejects_malformed_rows_atomically(
         instrument_name="Malformed Batch Equity",
         instrument_type="equity",
         currency="USD",
+        exchange_code="XNAS",
         identifiers=[
             {
                 "identifier_type": "internal",
@@ -1549,6 +1516,7 @@ def test_market_data_batch_rejects_duplicate_keys_atomically(
         instrument_name="Duplicate Batch Equity",
         instrument_type="equity",
         currency="USD",
+        exchange_code="XNAS",
         identifiers=[
             {
                 "identifier_type": "internal",
@@ -1738,7 +1706,7 @@ def test_fund_return_policy_requires_the_canonical_total_return_nav(
 ) -> None:
     created = create_instrument(
         instrument_name="Strict Return Fund",
-        instrument_type="fund",
+        instrument_type="public_fund",
         currency="CNY",
         identifiers=[
             {
@@ -1887,7 +1855,7 @@ def test_publish_fund_nav_history_rejects_fx_before_persistence(
 
     with pytest.raises(
         ValueError,
-        match="NAV history import is only supported for fund instruments",
+        match="NAV history import is only supported for public or private fund instruments",
     ):
         publish_fund_nav_history(
             instrument_id=str(fx["instrument_id"]),
@@ -1999,6 +1967,7 @@ def test_source_schedule_semantics_default_and_roundtrip_by_instrument_type(
         instrument_name="Shanghai Schedule Equity",
         instrument_type="equity",
         currency="CNY",
+        exchange_code="XSHG",
         identifiers=[
             {
                 "identifier_type": "ticker",
@@ -2035,9 +2004,9 @@ def test_source_schedule_semantics_default_and_roundtrip_by_instrument_type(
     )
     assert index_update is not None
     assert index_update["source_settings"]["return_semantics"] == "total_return"
-    with pytest.raises(ValueError, match="only supported for index"):
+    with pytest.raises(ValueError, match="only supported for index or equity"):
         upsert_source_settings(
-            instrument_id=equity["instrument_id"],
+            instrument_id=fund["instrument_id"],
             source_mode="api",
             source_email=None,
             source_location=None,
@@ -2138,6 +2107,7 @@ def test_registry_rejects_portfolio_local_derivative_types_and_contract_identifi
             instrument_name="Ordinary Equity With Contract ID",
             instrument_type="equity",
             currency="USD",
+            exchange_code="XNAS",
             identifiers=[
                 {
                     "identifier_type": "internal",

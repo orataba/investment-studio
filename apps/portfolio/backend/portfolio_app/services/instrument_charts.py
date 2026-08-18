@@ -1052,6 +1052,7 @@ def build_instrument_price_chart_from_detail(
             "instrument_id": str(detail.get("instrument_id") or instrument_id),
             "instrument_name": str(detail.get("instrument_name") or instrument_id),
             "instrument_type": str(detail.get("instrument_type") or "other"),
+            "exchange_code": detail.get("exchange_code"),
             "currency": str(detail.get("currency") or "USD"),
             "identifiers": list(detail.get("identifiers", [])) if isinstance(detail.get("identifiers"), list) else [],
         },

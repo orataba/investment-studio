@@ -18,6 +18,9 @@ function isLoopbackUrl(value: string) {
 }
 
 function buildSiblingAppUrl(port: string) {
+  if (typeof window === 'undefined') {
+    return `http://127.0.0.1:${port}`
+  }
   const hostname = window.location.hostname.includes(':')
     ? `[${window.location.hostname}]`
     : window.location.hostname
@@ -33,6 +36,7 @@ function normalizeAppUrl(value: string | undefined, port: string) {
 }
 
 export const PLATFORM_HOME_URL = normalizeAppUrl(import.meta.env.VITE_PLATFORM_URL, '5172')
+export const PLATFORM_API_URL = normalizeAppUrl(import.meta.env.VITE_PLATFORM_API_URL, '8002')
 
 export const WATCHLIST_ENTRY_PATH = '/watchlists'
 

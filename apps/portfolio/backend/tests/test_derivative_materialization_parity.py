@@ -26,6 +26,7 @@ def _instrument_ref(
         "instrument_id": instrument_id,
         "instrument_name": instrument_id,
         "instrument_type": instrument_type,
+        **({"exchange_code": "XNYS"} if instrument_type == "equity" else {}),
         "currency": "USD",
         "identifiers": [],
         "broker_identifiers": [],

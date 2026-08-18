@@ -184,13 +184,13 @@ def test_non_fund_nav_preview_and_file_import_fail_before_parsing_or_persistence
     monkeypatch.setattr(market_data_ops, "_parse_nav_rows_from_uploaded_file", fail_if_called)
     monkeypatch.setattr(market_data_ops, "publish_fund_nav_history", fail_if_called)
 
-    with pytest.raises(ValueError, match="only supported for fund instruments"):
+    with pytest.raises(ValueError, match="only supported for public or private fund instruments"):
         market_data_ops.preview_nav_import(
             instrument_id="fx-usd-cny",
             raw_text="not-a-nav-row",
         )
 
-    with pytest.raises(ValueError, match="only supported for fund instruments"):
+    with pytest.raises(ValueError, match="only supported for public or private fund instruments"):
         market_data_ops.import_nav_file(
             instrument_id="fx-usd-cny",
             file_name="not-a-workbook.xlsx",
@@ -436,7 +436,7 @@ def test_busy_email_ingestion_is_retryable_failure_not_configuration_block(
     instrument = {
         "instrument_id": "fund-a",
         "instrument_name": "基金甲",
-        "instrument_type": "fund",
+        "instrument_type": "public_fund",
         "source_settings": {"source_mode": "email"},
     }
 
@@ -532,7 +532,7 @@ def test_projection_reconciliation_rebuilds_only_outdated_current_runs(
     stale = {
         "instrument_id": "fund-stale",
         "instrument_name": "旧方法基金",
-        "instrument_type": "fund",
+        "instrument_type": "public_fund",
         "source_settings": {"source_mode": "email"},
         "current_fund_nav_projection_run_id": "run-v2",
         "fund_nav_projection_runs": [
@@ -546,7 +546,7 @@ def test_projection_reconciliation_rebuilds_only_outdated_current_runs(
     current = {
         "instrument_id": "fund-current",
         "instrument_name": "新方法基金",
-        "instrument_type": "fund",
+        "instrument_type": "public_fund",
         "source_settings": {"source_mode": "manual"},
         "current_fund_nav_projection_run_id": "run-v3",
         "fund_nav_projection_runs": [
@@ -600,7 +600,7 @@ def test_email_batch_rebuilds_existing_publication_that_crosses_history_boundary
     instrument = {
         "instrument_id": "fund-a",
         "instrument_name": "基金甲",
-        "instrument_type": "fund",
+        "instrument_type": "public_fund",
         "currency": "CNY",
         "source_settings": {"source_mode": "email"},
     }
@@ -1976,7 +1976,7 @@ def test_tushare_refresh_imports_public_fund_nav(monkeypatch) -> None:
         instrument_id="018654-of",
         instrument={
             "instrument_id": "018654-of",
-            "instrument_type": "fund",
+                "instrument_type": "public_fund",
             "currency": "CNY",
             "identifiers": [
                 {"identifier_type": "ticker", "identifier_value": "018654.OF", "is_primary": True}
@@ -2568,7 +2568,7 @@ def test_tushare_price_refresh_starts_at_2024_when_no_existing_history(monkeypat
         instrument_id="513050-sh",
         instrument={
             "instrument_id": "513050-sh",
-            "instrument_type": "fund",
+                "instrument_type": "etf",
             "currency": "CNY",
             "identifiers": [
                 {"identifier_type": "ticker", "identifier_value": "513050.SH", "is_primary": True}
@@ -2689,88 +2689,19 @@ def test_empty_listed_security_response_preserves_existing_history(monkeypatch) 
     assert "preserved" in str(captured["message"])
 
 
-def test_tushare_listed_security_never_persists_complete_close_without_adjusted_close(
-    monkeypatch,
-) -> None:
-    captured: dict[str, object] = {}
-
-    def fake_call_datahub_tushare_api(**kwargs: object) -> list[dict[str, object]]:
-        if kwargs["api_name"] == "adj_factor":
-            return [
-                {"ts_code": "600000.SH", "trade_date": "20260714", "adj_factor": "1"},
-            ]
-        return [
-            {"ts_code": "600000.SH", "trade_date": "20260714", "close": "10.00"},
-            {"ts_code": "600000.SH", "trade_date": "20260715", "close": "10.10"},
-        ]
-
-    def fake_upsert_market_data_points(**kwargs: object) -> int:
-        captured["upsert"] = kwargs
-        return len(kwargs["rows"])
-
-    def fake_update_refresh_status(**kwargs: object) -> dict[str, object]:
-        captured["refresh_status"] = kwargs
-        return {"instrument_id": kwargs["instrument_id"]}
-
-    monkeypatch.setattr(
-        market_data_ops,
-        "_call_datahub_tushare_api",
-        fake_call_datahub_tushare_api,
-    )
-    monkeypatch.setattr(
-        market_data_ops,
-        "upsert_market_data_points",
-        fake_upsert_market_data_points,
-    )
-    monkeypatch.setattr(market_data_ops, "update_refresh_status", fake_update_refresh_status)
-
-    market_data_ops._refresh_from_tushare(
-        instrument_id="600000-sh",
-        instrument={
-            "instrument_id": "600000-sh",
-            "instrument_type": "equity",
-            "currency": "CNY",
-            "identifiers": [
-                {
-                    "identifier_type": "ticker",
-                    "identifier_value": "600000.SH",
-                    "is_primary": True,
-                }
-            ],
-            "market_data": [],
-            "quote_selection_policy": {
-                "trading": ["last", "close"],
-                "valuation": ["close", "last"],
-                "total_return": ["adjusted_close", "close", "last"],
-                "chart": ["adjusted_close", "close", "last"],
-                "reference": ["close", "last"],
+def test_tushare_refresh_rejects_equities() -> None:
+    with pytest.raises(ValueError, match="FMP"):
+        market_data_ops._refresh_from_tushare(
+            instrument_id="600000-sh",
+            instrument={
+                "instrument_id": "600000-sh",
+                "instrument_type": "equity",
+                "currency": "CNY",
+                "identifiers": [],
             },
-        },
-        updated_by="test",
-        full_history=False,
-    )
-
-    points = captured["upsert"]["rows"]
-    complete_close_dates = {
-        point["as_of_date"]
-        for point in points
-        if point["quote_basis"] == "close" and point["status"] == "complete"
-    }
-    adjusted_close_dates = {
-        point["as_of_date"]
-        for point in points
-        if point["quote_basis"] == "adjusted_close" and point["status"] == "complete"
-    }
-    assert complete_close_dates <= adjusted_close_dates
-    assert next(
-        point
-        for point in points
-        if point["quote_basis"] == "close"
-        and point["as_of_date"] == market_data_ops.date(2026, 7, 15)
-    )["status"] == "partial"
-    assert captured["refresh_status"]["status"] == "partial"
-    assert "missing adjustment factor" in captured["refresh_status"]["message"]
-    assert "2026-07-15" in captured["refresh_status"]["message"]
+            updated_by="test",
+            full_history=False,
+        )
 
 
 def test_tushare_share_split_detection_is_review_only_until_issuer_confirmation() -> None:

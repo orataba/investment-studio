@@ -70,6 +70,7 @@ def _instrument_ref(
         "instrument_id": instrument_id,
         "instrument_name": instrument_id,
         "instrument_type": instrument_type,
+        **({"exchange_code": "XNYS"} if instrument_type == "equity" else {}),
         "currency": currency,
         "identifiers": [],
         "broker_identifiers": [],
@@ -237,6 +238,7 @@ def _equity_detail(
         "instrument_id": instrument_id,
         "instrument_name": instrument_id,
         "instrument_type": "equity",
+        "exchange_code": "XNYS",
         "currency": "USD",
         "identifiers": [],
         "quote_selection_policy": {
@@ -359,7 +361,7 @@ def test_simulated_stock_fund_option_and_fcn_chain_uses_independent_facts() -> N
             "buy",
             "2026-01-06",
             instrument_id="fund-1",
-            instrument_type="fund",
+            instrument_type="public_fund",
             quantity=200,
             price=10,
             gross_amount=2_000,
@@ -3025,7 +3027,7 @@ def test_documented_multi_asset_independent_transactions_csv_imports_cleanly(
             "equity-demo-001",
             "equity",
         ),
-        "fund-demo-001": _instrument_ref("fund-demo-001", "fund"),
+        "fund-demo-001": _instrument_ref("fund-demo-001", "public_fund"),
     }
     original_loader = transaction_routes._load_instrument_ref
 

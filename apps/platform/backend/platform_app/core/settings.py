@@ -1,6 +1,7 @@
 from datetime import date
 from functools import lru_cache
 import json
+from pathlib import Path
 from typing import Annotated
 
 from pydantic import field_validator, model_validator
@@ -12,7 +13,14 @@ class Settings(BaseSettings):
     app_version: str = "0.1.0"
     environment: str = "development"
     frontend_url: str = "http://127.0.0.1:5172"
-    cors_origins: list[str] = ["http://127.0.0.1:5172", "http://localhost:5172"]
+    cors_origins: Annotated[list[str], NoDecode] = [
+        "http://127.0.0.1:5172",
+        "http://localhost:5172",
+        "http://127.0.0.1:5173",
+        "http://localhost:5173",
+        "http://127.0.0.1:5174",
+        "http://localhost:5174",
+    ]
     watchlist_url: str = "http://127.0.0.1:5173"
     portfolio_url: str = "http://127.0.0.1:5174"
     watchlist_api_url: str = "http://127.0.0.1:8000"
@@ -45,6 +53,10 @@ class Settings(BaseSettings):
     datahub_tushare_batch_timeout_seconds: int = 3600
     csindex_api_url: str = "https://www.csindex.com.cn/csindex-home"
     csindex_timeout_seconds: int = 30
+    fmp_api_key: str | None = None
+    fmp_api_key_file: Path | None = None
+    fmp_api_url: str = "https://financialmodelingprep.com/stable"
+    fmp_timeout_seconds: int = 30
 
     model_config = SettingsConfigDict(
         env_prefix="PORTFOLIO_OPS_PLATFORM_",
@@ -62,7 +74,14 @@ class Settings(BaseSettings):
     @classmethod
     def _coerce_cors_origins(cls, value: object) -> object:
         if isinstance(value, str):
-            return [item.strip() for item in value.split(",") if item.strip()]
+            normalized = value.strip()
+            if normalized.startswith("[") and normalized.endswith("]"):
+                normalized = normalized[1:-1]
+            return [
+                item.strip().strip("'\"")
+                for item in normalized.split(",")
+                if item.strip().strip("'\"")
+            ]
         return value
 
     @field_validator("email_imap_folders", mode="before")
@@ -189,6 +208,14 @@ class Settings(BaseSettings):
             raise ValueError("csindex_timeout_seconds must be between 1 and 300.")
         return timeout
 
+    @field_validator("fmp_timeout_seconds", mode="before")
+    @classmethod
+    def _coerce_fmp_timeout(cls, value: object) -> int:
+        timeout = int(value)
+        if timeout < 1 or timeout > 300:
+            raise ValueError("fmp_timeout_seconds must be between 1 and 300.")
+        return timeout
+
     @model_validator(mode="after")
     def _validate_cors_policy(self) -> "Settings":
         environment = self.environment.strip().lower()
@@ -207,6 +234,32 @@ class Settings(BaseSettings):
     @property
     def datahub_ready(self) -> bool:
         return bool(self.datahub_api_key)
+
+    def resolved_fmp_api_key(self) -> str:
+        if self.fmp_api_key and self.fmp_api_key.strip():
+            return self.fmp_api_key.strip()
+        if self.fmp_api_key_file is None:
+            raise ValueError(
+                "Configure PORTFOLIO_OPS_PLATFORM_FMP_API_KEY_FILE or "
+                "PORTFOLIO_OPS_PLATFORM_FMP_API_KEY."
+            )
+        key_file = self.fmp_api_key_file.expanduser()
+        if not key_file.is_file():
+            raise ValueError(f"FMP API key file does not exist: {key_file}")
+        if key_file.stat().st_mode & 0o077:
+            raise ValueError("FMP API key file must not be accessible by group or others.")
+        token = key_file.read_text(encoding="utf-8").strip()
+        if not token:
+            raise ValueError("FMP API key file is empty.")
+        return token
+
+    @property
+    def fmp_ready(self) -> bool:
+        try:
+            self.resolved_fmp_api_key()
+        except (OSError, ValueError):
+            return False
+        return True
 
     @property
     def migration_database_url(self) -> str:

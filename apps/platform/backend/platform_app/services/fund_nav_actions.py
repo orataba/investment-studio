@@ -9,6 +9,7 @@ import json
 import logging
 
 from portfolio_ops_instrument_core.models import (
+    FUND_INSTRUMENT_TYPES,
     FundNavEvent,
     FundNavReinvestmentEvidence,
 )
@@ -201,8 +202,8 @@ def _find_by_id(
 
 
 def _require_fund(instrument: Mapping[str, object]) -> None:
-    if str(instrument.get("instrument_type") or "").strip().lower() != "fund":
-        raise ValueError("Fund NAV actions are only supported for fund instruments.")
+    if str(instrument.get("instrument_type") or "").strip().lower() not in FUND_INSTRUMENT_TYPES:
+        raise ValueError("Fund NAV actions require a public or private fund instrument.")
 
 
 def _event_model(

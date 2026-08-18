@@ -10,12 +10,14 @@
 - `instrument_name`
 - identifiers
 - `instrument_type`
-  - 当前类型集合：`fund | etf | index | equity | cash | fx | other`
+  - 当前类型集合：`public_fund | private_fund | etf | index | equity | cash | fx | other`
+- `exchange_code`
+  - 仅股票必填，使用 canonical MIC；其他类型必须为空
 - `currency`
 - typed `market_data`
   - `metric_family`: `price | nav | fx`
   - `quote_basis`: `last | close | adjusted_close | official_nav | total_return_nav | spot | par`
-  - fund NAV 对外仅 `official_nav`（单位净值）与带强 lineage 的 `total_return_nav`（分红再投资复权累计净值）
+  - 公募和私募 NAV 对外仅 `official_nav`（单位净值）与带强 lineage 的 `total_return_nav`（分红再投资复权累计净值）
   - source cadence: `expected_frequency`, optional `market_calendar`, and non-negative `release_lag_days`
 - `quote_selection_policy`
   - `trading`
@@ -58,15 +60,15 @@
 
 ## 原则
 
-- Python runtime 要求 Instrument Registry 已迁移到 `20260812_0024`；该 head 完整包含 observation/FX、NAV lineage、区间归一化收益锚点、基金行为账本、计算输入与 broker identity，数据源更新频率只保留 daily 与 event driven，并已从 Registry 删除 FCN、期权和直接债券类型。运行时不探测或兼容更早物理 schema。
+- Python runtime 要求 Instrument Registry 已迁移到 `20260818_0025`；该 head 将基金拆成 `public_fund / private_fund`，并为股票增加 canonical `exchange_code`，同时完整包含 observation/FX、NAV lineage、区间归一化收益锚点、基金行为账本、计算输入与 broker identity。运行时不探测或兼容更早物理 schema。
 - market-data 写入命令只提交 instrument identity、metric/basis 与观测值；共享 store 唯一负责派生并持久化必填的 `price_unit / price_scale`，读取响应不得省略它们。
 - 每条 market-data observation 必须显式提交 canonical `currency / status` 与有限正数 value；API、批量写入和 restore 都不推断缺失 status 或 currency。
 - `quote_selection_policy` 的五个 role 都必须完整、非空持久化；0011 一次性物化历史缺口，此后运行时不再补 role。类型默认只在创建新 instrument 时显式写入。
 - FX instrument/pair/quote-currency mapping 只在 Python `fx_contract` 中维护；FX 仅允许 canonical `fx/spot` 有限正数 observation，读取不修补错误币种或无效 rate。
-- NAV history 批量导入只面向 `fund`；非基金在文件解析和持久化前统一拒绝，不提供兼容路径。
-- fund 的 `total_return/chart` 只允许 `total_return_nav`，缺失时返回 NA；不回退单位净值或价格。现金累计净值只留在 Platform raw evidence。
+- NAV history 批量导入只面向 `public_fund / private_fund`；其他类型在文件解析和持久化前统一拒绝，不提供兼容路径。
+- 公募和私募的 `total_return/chart` 只允许 `total_return_nav`，缺失时返回 NA；不回退单位净值或价格。现金累计净值只留在 Platform raw evidence。
 - complete `total_return_nav` 必须引用当前 projection run 的确定性 factor，且严格满足 `total_return_nav = official_nav × factor_level`；缺少复投证据时发布 unavailable run，不写猜测值。
-- fund NAV 发布以 source watermark 做乐观并发控制，并在单事务内追加 revisions、冻结 run、写 factors/曲线和切换 current pointer；精确重放不更新 watermark。
+- 基金 NAV 发布以 source watermark 做乐观并发控制，并在单事务内追加 revisions、冻结 run、写 factors/曲线和切换 current pointer；精确重放不更新 watermark。
 - NAV ledger revisions 和历史 runs/factors 禁止物理更新或删除；修正、撤销和重投影一律追加新记录。
 - `instrument-core` 只负责“资产身份 + typed market facts + 最小 quote selector policy + canonical corporate action facts”。
 - 上层 app 必须自己 materialize 自己的 read models。

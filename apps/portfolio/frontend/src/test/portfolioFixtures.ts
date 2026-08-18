@@ -23,11 +23,12 @@ export function instrumentFixture(
   return {
     instrument_id: 'asset-1',
     instrument_name: 'Alpha Fund',
-    instrument_type: 'fund',
+    instrument_type: 'public_fund',
     currency: 'USD',
     identifiers: [{ identifier_type: 'ticker', identifier_value: 'ALPHA', is_primary: true }],
     broker_identifiers: [],
     ...overrides,
+    exchange_code: overrides.exchange_code ?? null,
   }
 }
 

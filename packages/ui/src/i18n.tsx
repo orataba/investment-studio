@@ -202,7 +202,6 @@ const baseMessages: LanguageMessages = {
     'Find Assets': '查找资产',
     'Code / name / asset id / identifier': '代码 / 名称 / 资产 ID / 标识',
     'All Types': '全部类型',
-    'All Coverage': '全部覆盖',
     'All Sources': '全部来源',
     'All Assets': '全部资产',
     'Has NAV': '已有净值',

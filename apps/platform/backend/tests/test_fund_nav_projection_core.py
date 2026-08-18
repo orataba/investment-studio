@@ -71,7 +71,7 @@ def nav_store(
                 {
                     "instrument_id": FUND_ID,
                     "instrument_name": "Projection Core Fund",
-                    "instrument_type": "fund",
+                    "instrument_type": "public_fund",
                     "currency": "CNY",
                     "quote_selection_policy": FUND_POLICY,
                     "identifiers": [
@@ -1076,7 +1076,7 @@ def test_reset_store_refuses_to_invent_a_projection_factor(
                     {
                         "instrument_id": FUND_ID,
                         "instrument_name": "Projection Core Fund",
-                        "instrument_type": "fund",
+                        "instrument_type": "public_fund",
                         "currency": "CNY",
                         "quote_selection_policy": FUND_POLICY,
                         "market_data": [

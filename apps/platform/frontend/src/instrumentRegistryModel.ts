@@ -16,7 +16,7 @@ import { resolveQuoteBasis, resolveRoleQuote } from './quoteRoleResolution'
 import { sanitizeSpreadsheetText } from '../../../../packages/ui/src/tableExport'
 
 export type SourceMode = 'manual' | 'email' | 'api'
-export type RefreshChannel = 'configured' | 'email' | 'tushare' | 'all'
+export type RefreshChannel = 'configured' | 'email' | 'tushare' | 'fmp' | 'all'
 export type InstrumentLifecycleStatus = 'active' | 'archived'
 
 export type PlatformMarketDataPoint = {
@@ -84,7 +84,8 @@ export type PlatformRegistrySummary = {
   total_count: number
   active_count: number
   archived_count: number
-  fund_count: number
+  public_fund_count: number
+  private_fund_count: number
   index_count: number
   fund_with_quote_count: number
 }
@@ -213,7 +214,6 @@ export function primaryIdentifier(record: PlatformInstrumentRecord) {
 
 export function allowedFamiliesForInstrument(instrumentType: InstrumentType): MetricFamily[] {
   if (instrumentType === 'fx') return ['fx']
-  if (instrumentType === 'fund') return ['price']
   return ['price']
 }
 

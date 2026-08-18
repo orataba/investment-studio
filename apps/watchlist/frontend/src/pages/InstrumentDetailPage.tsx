@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react'
 import { Link, useParams, useSearchParams } from 'react-router'
 
-import FundDetailPage from './FundDetailPage'
+import PrivateFundDetailPage from './PrivateFundDetailPage'
+import PublicFundDetailPage from './PublicFundDetailPage'
 import ListedInstrumentDetailPage from './ListedInstrumentDetailPage'
 import LoadingOverlay from '../components/LoadingOverlay'
 import {
@@ -99,11 +100,25 @@ export default function InstrumentDetailPage() {
 
   if (
     instrument.detail_supported &&
-    instrument.detail_view_type === 'fund' &&
+    instrument.instrument_type === 'public_fund' &&
     instrument.detail_subject_id
   ) {
     return (
-      <FundDetailPage
+      <PublicFundDetailPage
+        fundId={instrument.detail_subject_id}
+        watchlistContext={watchlistContext}
+        corporateActions={instrument.corporate_actions}
+      />
+    )
+  }
+
+  if (
+    instrument.detail_supported &&
+    instrument.instrument_type === 'private_fund' &&
+    instrument.detail_subject_id
+  ) {
+    return (
+      <PrivateFundDetailPage
         fundId={instrument.detail_subject_id}
         watchlistContext={watchlistContext}
         corporateActions={instrument.corporate_actions}
@@ -140,7 +155,7 @@ export default function InstrumentDetailPage() {
       </div>
       <div className="stub-body">
         <p>
-          This watchlist release supports fund, ETF, and index detail workspaces.{' '}
+          Watchlist supports public fund, private fund, ETF, equity, and index detail workspaces.{' '}
           <strong>{instrument.instrument_type}</strong> instruments can exist in the shared registry, but they do not
           have a local watchlist detail workspace yet.
         </p>

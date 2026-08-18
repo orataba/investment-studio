@@ -32,6 +32,7 @@ function instrument(status: 'active' | 'archived'): PlatformInstrumentRecord {
     instrument_name: 'Test Instrument',
     instrument_type: 'equity',
     currency: 'CNY',
+    exchange_code: 'XSHG',
     identifiers: [
       {
         identifier_type: 'ticker',

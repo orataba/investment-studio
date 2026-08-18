@@ -100,7 +100,7 @@ def _seed_required_instrument_registry_rows(database_url: str, instrument_ids: l
                     {
                         "instrument_id": instrument_id,
                         "instrument_name": instrument_id.replace("-", " ").title(),
-                        "instrument_type": "fund",
+                        "instrument_type": "public_fund",
                         "currency": "USD",
                         "quote_selection_policy_json": empty_json,
                         "source_settings_json": empty_json,
@@ -181,7 +181,7 @@ def postgres_watchlist_env(monkeypatch: pytest.MonkeyPatch) -> dict[str, str]:
     instrument = shared_store.create_instrument(
         session_factory,
         instrument_name="Watchlist FK Integration Asset",
-        instrument_type="fund",
+        instrument_type="public_fund",
         currency="USD",
         identifiers=[
             {
@@ -323,8 +323,8 @@ def test_watchlist_instrument_registry_foreign_keys_are_enforced(
         session.add(
             InstrumentDetail(
                 instrument_id=postgres_watchlist_env["instrument_id"],
-                instrument_type="fund",
-                detail_view_type="fund",
+                instrument_type="public_fund",
+                detail_view_type="public_fund",
                 instrument_name="Watchlist FK Integration Asset",
                 primary_identifier_type="ticker",
                 primary_identifier_value="WATCHFK",
@@ -345,8 +345,8 @@ def test_watchlist_instrument_registry_foreign_keys_are_enforced(
         session.add(
             InstrumentDetail(
                 instrument_id=f"missing-{uuid4().hex[:8]}",
-                instrument_type="fund",
-                detail_view_type="fund",
+                instrument_type="public_fund",
+                detail_view_type="public_fund",
                 instrument_name="Missing Shared Instrument",
                 primary_identifier_type="ticker",
                 primary_identifier_value="MISSINGFK",
@@ -552,8 +552,8 @@ def test_postgres_recalc_claim_serializes_job_types_for_one_instrument(
         session.add(
             InstrumentDetail(
                 instrument_id=instrument_id,
-                instrument_type="fund",
-                detail_view_type="fund",
+                instrument_type="public_fund",
+                detail_view_type="public_fund",
                 instrument_name="PostgreSQL claim asset",
                 primary_identifier_type="ticker",
                 primary_identifier_value="CLAIMLOCK",

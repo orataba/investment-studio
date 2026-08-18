@@ -55,7 +55,7 @@ class _NoopCandidateRepository:
 def _base_instrument() -> dict[str, object]:
     return {
         "instrument_id": "fund-a",
-        "instrument_type": "fund",
+        "instrument_type": "public_fund",
         "currency": "CNY",
         "market_data_updated_at": "2026-07-16T00:00:00Z",
         "fund_nav_events": [],

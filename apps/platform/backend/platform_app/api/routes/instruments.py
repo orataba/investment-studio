@@ -150,6 +150,14 @@ def refresh_instrument_market_data_batch(
 def create_instrument_record(
     payload: PlatformInstrumentCreateRequest,
 ) -> PlatformInstrumentRecord:
+    if payload.instrument_type == "equity":
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Equities are discovered through /api/equities/search and "
+                "materialized from FMP; generic Registry creation is disabled."
+            ),
+        )
     try:
         record = create_instrument(
             instrument_name=payload.instrument_name,

@@ -1,6 +1,6 @@
 # Portfolio database dictionary
 
-As of 2026-08-17. Verified against SQLAlchemy metadata and migration heads `instrument_registry@20260812_0024` and `portfolio@20260817_0052`.
+As of 2026-08-18. Verified against SQLAlchemy metadata and migration heads `instrument_registry@20260818_0025` and `portfolio@20260818_0053`.
 
 This file is for architecture and integration review. External systems should use the APIs documented in [`TRANSACTION_INTEGRATION.md`](TRANSACTION_INTEGRATION.md), not write these tables directly.
 
@@ -255,11 +255,11 @@ Point-in-time snapshot of the selected taxonomy, nodes, assignments, target sets
 
 ### `instrument_registry.instrument`
 
-Canonical reusable market-asset identity. `instrument_type` supports `fund`, `etf`, `index`, `equity`, `cash`, `fx`, and `other`. Direct bonds, FCNs, and options are deliberately outside Registry; direct bonds also have no current Portfolio transaction model.
+Canonical reusable market-asset identity. `instrument_type` supports `public_fund`, `private_fund`, `etf`, `index`, `equity`, `cash`, `fx`, and `other`. Equity rows also require a canonical MIC `exchange_code`; non-equity rows must leave it empty. Direct bonds, FCNs, and options are deliberately outside Registry; direct bonds also have no current Portfolio transaction model.
 
 | Columns |
 |---|
-| **PK** `instrument_id VARCHAR`; `instrument_name VARCHAR`; `instrument_type VARCHAR`; `currency VARCHAR`; `quote_selection_policy_json JSON`; `source_settings_json JSON`; `refresh_status_json JSON`; `lifecycle_state_json JSON`; `market_data_updated_at VARCHAR?`; `calculation_inputs_updated_at VARCHAR?` |
+| **PK** `instrument_id VARCHAR`; `instrument_name VARCHAR`; `instrument_type VARCHAR`; `currency VARCHAR`; `exchange_code VARCHAR(4)?`; `quote_selection_policy_json JSON`; `source_settings_json JSON`; `refresh_status_json JSON`; `lifecycle_state_json JSON`; `market_data_updated_at VARCHAR?`; `calculation_inputs_updated_at VARCHAR?` |
 
 Registry owns identity, quote selection, market data, and corporate actions for assets reusable across portfolios. Portfolio owns the contract-specific FCN/option terms and event history. Boundary migrations do not guess or silently backfill removed bond or derivative records; they require those rows to be resolved before migration.
 

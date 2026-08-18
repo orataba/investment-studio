@@ -228,7 +228,7 @@ def test_total_return_windows_match_watchlist_calendar_boundary_contract() -> No
             _point("total_return_nav", "2026-06-25", "1.1784"),
             _point("total_return_nav", "2026-07-24", "1.2849"),
         ],
-        instrument_type="fund",
+        instrument_type="public_fund",
     )
     detail["quote_selection_policy"] = {
         role: ["total_return_nav"]
@@ -256,7 +256,7 @@ def test_total_return_window_anchor_stays_on_requested_as_of_when_latest_nav_is_
             _point("total_return_nav", "2026-06-24", "1.25"),
             _point("total_return_nav", "2026-07-23", "1.30"),
         ],
-        instrument_type="fund",
+        instrument_type="public_fund",
     )
     detail["quote_selection_policy"] = {
         role: ["total_return_nav"]

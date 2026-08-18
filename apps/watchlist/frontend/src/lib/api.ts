@@ -1,3 +1,5 @@
+import { PLATFORM_API_URL } from './navigation'
+
 export type WatchlistRecord = {
   watchlist_id: string
   name: string
@@ -83,6 +85,24 @@ export type SharedInstrumentRecord = {
     is_primary: boolean
   }>
   coverage_state?: string
+  exchange_code?: string | null
+  fmp_symbol?: string
+  source?: 'registry' | 'fmp_catalog'
+  existing_instrument_id?: string | null
+}
+
+export type EquitySearchResult = {
+  symbol: string
+  fmp_symbol: string
+  name: string
+  exchange_code: string
+  exchange_label: string
+  market: string
+  currency: string
+  country: string | null
+  sector: string | null
+  industry: string | null
+  existing_instrument_id: string | null
 }
 
 export type GroupByOption = {
@@ -822,6 +842,20 @@ async function fetchJson<T>(
   return (await response.json()) as T
 }
 
+async function fetchPlatformJson<T>(path: string, init?: RequestInit): Promise<T> {
+  const response = await fetch(`${PLATFORM_API_URL}${path}`, {
+    headers: {
+      'Content-Type': 'application/json',
+      ...(init?.headers || {}),
+    },
+    ...init,
+  })
+  if (!response.ok) {
+    throw new Error(await responseErrorMessage(response))
+  }
+  return (await response.json()) as T
+}
+
 function fetchReferenceJson<T>(path: string, ttlMs: number = 5 * 60_000): Promise<T> {
   const now = Date.now()
   const cached = referenceGetCache.get(path)
@@ -856,7 +890,7 @@ function normalizeFundLibraryItem(item: RawFundLibraryItem): FundLibraryItem {
     fund_id: item.instrument_id,
     fund_name: item.instrument_name,
     ticker_or_isin: item.primary_identifier,
-    product_type: item.instrument_type || item.detail_view_type || 'fund',
+    product_type: item.instrument_type || item.detail_view_type || 'unknown',
   }
 }
 
@@ -1024,6 +1058,42 @@ export function getSharedInstruments(options?: {
   }
   const query = params.toString()
   return fetchJson<SharedInstrumentRecord[]>(`/api/instruments${query ? `?${query}` : ''}`)
+}
+
+export async function searchPlatformEquityCatalog(query: string, limit = 12) {
+  const normalizedQuery = query.trim()
+  if (!normalizedQuery) {
+    return []
+  }
+  const params = new URLSearchParams({ q: normalizedQuery, limit: String(limit) })
+  const payload = await fetchPlatformJson<{ results: EquitySearchResult[] }>(
+    `/api/equities/search?${params.toString()}`,
+  )
+  return payload.results.map<SharedInstrumentRecord>((item) => ({
+    instrument_id: item.existing_instrument_id || `fmp:${item.fmp_symbol}`,
+    instrument_name: item.name,
+    instrument_type: 'equity',
+    currency: item.currency,
+    exchange_code: item.exchange_code,
+    fmp_symbol: item.fmp_symbol,
+    source: 'fmp_catalog',
+    existing_instrument_id: item.existing_instrument_id,
+    coverage_state: item.existing_instrument_id ? 'registry' : 'FMP',
+    identifiers: [
+      {
+        identifier_type: 'exchange_ticker',
+        identifier_value: item.symbol,
+        is_primary: true,
+      },
+    ],
+  }))
+}
+
+export async function materializePlatformEquity(fmpSymbol: string) {
+  return fetchPlatformJson<SharedInstrumentRecord>('/api/equities/materialize', {
+    method: 'POST',
+    body: JSON.stringify({ fmp_symbol: fmpSymbol, refresh_eod: true }),
+  })
 }
 
 export function resolveSharedInstrument(

@@ -27,6 +27,7 @@ def _detail(
         "instrument_id": instrument_id,
         "instrument_name": instrument_id,
         "instrument_type": "equity",
+        "exchange_code": "XNYS",
         "currency": "USD",
         "identifiers": [],
         "quote_selection_policy": {"valuation": [quote_basis]},

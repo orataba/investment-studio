@@ -7,7 +7,7 @@
 - `apps/platform`
   平台入口和 Database Dashboard。
 - `apps/watchlist`
-  fund / ETF / equity / index Watchlist、local detail、monitoring 与 recalc；Copilot 当前只保留后端扩展接口，不作为已发布 UI。
+  公募 / 私募 / ETF / 股票 / 指数 Watchlist、local detail、monitoring 与 recalc；Copilot 当前只保留后端扩展接口，不作为已发布 UI。
 - `apps/portfolio`
   Portfolio / account / transaction / performance / risk / research / taxonomy。
 
@@ -37,7 +37,7 @@
 
 - 直接读写 `watchlist`
 - 直接读取 `instrument_registry`
-- 当前已发布范围是 `fund / etf / equity / index`；其他共享资产可以存在于 registry，但不进入 Watchlist 主工作面
+- 当前已发布范围是 `public_fund / private_fund / etf / equity / index`；其他共享资产可以存在于 registry，但不进入 Watchlist 主工作面
 - 在本地维护自己的 read models、recalc jobs、manual profile 和产品框架；Copilot 仅保留 backend extension boundary
 
 ### Portfolio
@@ -51,7 +51,7 @@
 
 Watchlist 与 Portfolio 会使用相同的投资术语，但这些页面不是同一个业务对象：
 
-- Watchlist Instrument Detail 位于 `/instruments/:instrumentId`，Performance / Risk 面向单一 fund 或 instrument 的 NAV、price、benchmark 和单资产统计。
+- Watchlist Instrument Detail 位于 `/instruments/:instrumentId`，Performance / Risk 面向单一公募、私募或上市资产的 NAV、price、benchmark 和单资产统计。
 - Portfolio workspace 位于 `/portfolios/:portfolioId/...`，Overview / Performance / Risk / Research 面向组合账户、交易、现金流、持仓、TWR、归因、风险预算和规划求解。
 - 两边可以遵守相同的视觉基线，但不得互用业务计算、页面 fixture、截图或验收结果。
 - 修改或验收前必须同时确认 app、URL、源码目录与 API origin；页面标题相同不能证明页面身份相同。

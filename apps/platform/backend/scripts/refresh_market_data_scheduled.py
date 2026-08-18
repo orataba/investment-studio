@@ -27,6 +27,7 @@ from platform_app.services.downstream_notifications import (  # noqa: E402
     DownstreamRefreshResult,
     notify_market_data_downstream_refresh,
 )
+from platform_app.services.equities import sync_equity_catalog  # noqa: E402
 from platform_app.services.market_data_ops import (  # noqa: E402
     rebuild_stale_fund_nav_projections,
     refresh_market_data_batch,
@@ -164,11 +165,12 @@ def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Refresh Portfolio Operations market data without a browser session.")
     parser.add_argument(
         "--channel",
-        choices=("all", "email", "tushare", "projection"),
+        choices=("all", "email", "tushare", "fmp", "projection"),
         default="all",
         help=(
-            "Data channel to refresh. all runs tushare, email, then reconciles "
-            "outdated fund NAV projections without another source fetch."
+            "Data channel to refresh. all refreshes the local FMP stock catalog, "
+            "then runs tushare, email, used-stock FMP EOD, and fund NAV projection "
+            "reconciliation."
         ),
     )
     parser.add_argument("--updated-by", default="scheduler", help="Audit label for refresh_status.")
@@ -253,7 +255,9 @@ def _parse_args() -> argparse.Namespace:
 
 def _channels(selected_channel: str) -> list[str]:
     if selected_channel == "all":
-        return ["tushare", "email", "fund_nav_projection"]
+        return ["fmp_catalog", "tushare", "email", "fmp", "fund_nav_projection"]
+    if selected_channel == "fmp":
+        return ["fmp_catalog", "fmp"]
     if selected_channel == "projection":
         return ["fund_nav_projection"]
     return [selected_channel]
@@ -533,8 +537,50 @@ def _run_refresh(
     all_updated_ids: list[str] = []
     seen_updated_ids: set[str] = set()
     channels = ["configured"] if requested_instrument_ids and args.channel == "all" else _channels(args.channel)
+    if requested_instrument_ids:
+        channels = [channel for channel in channels if channel != "fmp_catalog"]
     for channel in channels:
         LOGGER.info("refreshing channel=%s", channel)
+        if channel == "fmp_catalog":
+            try:
+                catalog_summary = sync_equity_catalog()
+            except Exception as error:
+                result = {
+                    "instrument_id": "fmp-equity-catalog",
+                    "instrument_name": "FMP equity catalog",
+                    "instrument_type": "equity_catalog",
+                    "source_mode": "api",
+                    "source_api_profile": "fmp",
+                    "status": "failed",
+                    "message": f"{type(error).__name__}: {error}",
+                }
+                all_results.append(result)
+                channel_summaries.append(
+                    {
+                        "channel": channel,
+                        "refreshed_count": 0,
+                        "skipped_count": 0,
+                        "result_count": 1,
+                        "status_counts": {"failed": 1},
+                    }
+                )
+                LOGGER.exception("FMP equity catalog sync failed")
+            else:
+                channel_summaries.append(
+                    {
+                        "channel": channel,
+                        "refreshed_count": 1,
+                        "skipped_count": 0,
+                        "result_count": int(catalog_summary["active_count"]),
+                        "status_counts": {"refreshed": 1},
+                        **catalog_summary,
+                    }
+                )
+                LOGGER.info(
+                    "FMP equity catalog synced active_count=%s",
+                    catalog_summary["active_count"],
+                )
+            continue
         if channel == "fund_nav_projection":
             response = rebuild_stale_fund_nav_projections(
                 updated_by=args.updated_by,

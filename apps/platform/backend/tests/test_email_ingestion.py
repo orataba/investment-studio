@@ -77,7 +77,7 @@ def _fund(
     return {
         "instrument_id": instrument_id,
         "instrument_name": name,
-        "instrument_type": "fund",
+        "instrument_type": "private_fund",
         "currency": "CNY",
         "identifiers": (
             [{"identifier_type": "manager_code", "identifier_value": code}]

@@ -9,7 +9,8 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 
 InstrumentType = Literal[
-    "fund",
+    "public_fund",
+    "private_fund",
     "etf",
     "index",
     "equity",
@@ -19,7 +20,8 @@ InstrumentType = Literal[
 ]
 INSTRUMENT_TYPES = frozenset(
     {
-        "fund",
+        "public_fund",
+        "private_fund",
         "etf",
         "index",
         "equity",
@@ -41,6 +43,7 @@ IdentifierType = Literal[
     "internal",
     "fund_name",
     "cash_currency",
+    "provider_symbol",
     "other",
 ]
 MetricFamily = Literal["price", "nav", "fx"]
@@ -101,7 +104,8 @@ PRICE_UNIT_SCALES: dict[PriceUnit, Decimal] = {
     "rate": Decimal("1"),
 }
 QUOTE_SELECTION_PROHIBITED_BASES: frozenset[str] = frozenset()
-NAV_HISTORY_INSTRUMENT_TYPES = frozenset({"fund"})
+FUND_INSTRUMENT_TYPES = frozenset({"public_fund", "private_fund"})
+NAV_HISTORY_INSTRUMENT_TYPES = FUND_INSTRUMENT_TYPES
 FUND_TOTAL_RETURN_QUOTE_BASES = ("total_return_nav",)
 FUND_NAV_FACTOR_QUANTUM = Decimal("0.000000000000000001")
 
@@ -199,7 +203,7 @@ def validate_nav_history_instrument_type(
         return
     instrument_context = f'"{instrument_id}"' if instrument_id else "instrument"
     raise ValueError(
-        "NAV history import is only supported for fund instruments; "
+        "NAV history import is only supported for public or private fund instruments; "
         f"{instrument_context} is {normalized_instrument_type or 'untyped'}."
     )
 
@@ -268,6 +272,7 @@ class InstrumentCore(BaseModel):
     instrument_name: str = Field(min_length=1)
     instrument_type: InstrumentType
     currency: str = Field(min_length=1, max_length=8)
+    exchange_code: str | None = Field(default=None, pattern=r"^[A-Z]{4}$")
     identifiers: list[InstrumentIdentifier] = Field(default_factory=list)
     broker_identifiers: list[BrokerIdentifier] = Field(default_factory=list)
 
@@ -275,6 +280,24 @@ class InstrumentCore(BaseModel):
     @classmethod
     def normalize_currency(cls, value: object) -> str:
         return normalize_market_data_currency(value)
+
+    @field_validator("exchange_code", mode="before")
+    @classmethod
+    def normalize_exchange_code(cls, value: object) -> object:
+        if value is None:
+            return None
+        if isinstance(value, str):
+            normalized = value.strip().upper()
+            return normalized or None
+        return value
+
+    @model_validator(mode="after")
+    def validate_exchange_identity(self) -> "InstrumentCore":
+        if self.instrument_type == "equity" and self.exchange_code is None:
+            raise ValueError("Equity instruments require an exchange_code")
+        if self.instrument_type != "equity" and self.exchange_code is not None:
+            raise ValueError("exchange_code is reserved for equity instruments")
+        return self
 
     @model_validator(mode="after")
     def validate_broker_identifiers(self) -> "InstrumentCore":
@@ -374,12 +397,13 @@ def validate_quote_selection_policy_for_instrument_type(
     """
 
     policy = QuoteSelectionPolicy.model_validate(quote_selection_policy)
-    if normalize_instrument_type(instrument_type) != "fund":
+    normalized_type = normalize_instrument_type(instrument_type)
+    if normalized_type not in FUND_INSTRUMENT_TYPES:
         return policy
     for role in ("total_return", "chart"):
         if tuple(getattr(policy, role)) != FUND_TOTAL_RETURN_QUOTE_BASES:
             raise ValueError(
-                f"fund {role} must use only total_return_nav; missing total-return "
+                f"{normalized_type} {role} must use only total_return_nav; missing total-return "
                 "NAV must remain unavailable"
             )
     return policy

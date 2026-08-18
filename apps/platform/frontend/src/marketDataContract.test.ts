@@ -32,7 +32,7 @@ describe('Platform market-data price identity', () => {
       price_unit: 'rate',
       price_scale: '1',
     })
-    expect(canonicalPriceContract('fund', 'nav')).toEqual({
+    expect(canonicalPriceContract('public_fund', 'nav')).toEqual({
       price_unit: 'per_unit',
       price_scale: '1',
     })
@@ -67,7 +67,8 @@ describe('Platform market-data price identity', () => {
   })
 
   it('allows NAV history import only for funds', () => {
-    expect(supportsNavHistoryImport('fund')).toBe(true)
+    expect(supportsNavHistoryImport('public_fund')).toBe(true)
+    expect(supportsNavHistoryImport('private_fund')).toBe(true)
     expect(supportsNavHistoryImport('etf')).toBe(false)
     expect(supportsNavHistoryImport('fx')).toBe(false)
   })

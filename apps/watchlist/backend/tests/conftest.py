@@ -42,7 +42,14 @@ FACTOR_QUANTUM = Decimal("0.000000000000000001")
 
 def canonical_quote_policy(instrument_type: str) -> dict[str, list[str]]:
     policies = {
-        "fund": {
+        "public_fund": {
+            "trading": ["official_nav"],
+            "valuation": ["official_nav"],
+            "total_return": ["total_return_nav"],
+            "chart": ["total_return_nav"],
+            "reference": ["official_nav"],
+        },
+        "private_fund": {
             "trading": ["official_nav"],
             "valuation": ["official_nav"],
             "total_return": ["total_return_nav"],
@@ -51,6 +58,13 @@ def canonical_quote_policy(instrument_type: str) -> dict[str, list[str]]:
         },
         "index": {
             "trading": ["close", "last"],
+            "valuation": ["close", "last"],
+            "total_return": ["adjusted_close", "close", "last"],
+            "chart": ["adjusted_close", "close", "last"],
+            "reference": ["close", "last"],
+        },
+        "etf": {
+            "trading": ["last", "close"],
             "valuation": ["close", "last"],
             "total_return": ["adjusted_close", "close", "last"],
             "chart": ["adjusted_close", "close", "last"],
@@ -70,9 +84,9 @@ TEST_SHARED_INSTRUMENTS = {
     "fund-us-agg": {
         "instrument_id": "fund-us-agg",
         "instrument_name": "iShares Core U.S. Aggregate Bond ETF",
-        "instrument_type": "fund",
+        "instrument_type": "etf",
         "currency": "USD",
-        "quote_selection_policy": canonical_quote_policy("fund"),
+        "quote_selection_policy": canonical_quote_policy("etf"),
         "identifiers": [
             {"identifier_type": "ticker", "identifier_value": "AGG", "is_primary": True},
         ],
@@ -93,9 +107,9 @@ TEST_SHARED_INSTRUMENTS = {
     "sxv264": {
         "instrument_id": "sxv264",
         "instrument_name": "SXV264 Total Return Fund",
-        "instrument_type": "fund",
+        "instrument_type": "private_fund",
         "currency": "USD",
-        "quote_selection_policy": canonical_quote_policy("fund"),
+        "quote_selection_policy": canonical_quote_policy("private_fund"),
         "identifiers": [
             {"identifier_type": "ticker", "identifier_value": "SXV264", "is_primary": True},
         ],
@@ -162,9 +176,9 @@ TEST_SHARED_INSTRUMENTS = {
     "savf63": {
         "instrument_id": "savf63",
         "instrument_name": "SAVF63 Short Duration Income Fund",
-        "instrument_type": "fund",
+        "instrument_type": "public_fund",
         "currency": "USD",
-        "quote_selection_policy": canonical_quote_policy("fund"),
+        "quote_selection_policy": canonical_quote_policy("public_fund"),
         "identifiers": [
             {"identifier_type": "ticker", "identifier_value": "SAVF63", "is_primary": True},
         ],
@@ -422,6 +436,7 @@ def _rekey_fresh_test_instrument(
             "instrument_name": source.instrument_name,
             "instrument_type": source.instrument_type,
             "currency": source.currency,
+            "exchange_code": source.exchange_code,
             "quote_selection_policy_json": deepcopy(source.quote_selection_policy_json),
             "source_settings_json": deepcopy(source.source_settings_json),
             "refresh_status_json": deepcopy(source.refresh_status_json),
@@ -461,6 +476,11 @@ def seed_shared_instrument(instrument: dict[str, object]) -> None:
             instrument_name=str(instrument["instrument_name"]),
             instrument_type=str(instrument["instrument_type"]),
             currency=str(instrument["currency"]),
+            exchange_code=(
+                str(instrument["exchange_code"])
+                if instrument.get("exchange_code")
+                else None
+            ),
             identifiers=identifiers,
             quote_selection_policy=deepcopy(instrument.get("quote_selection_policy")),
         )

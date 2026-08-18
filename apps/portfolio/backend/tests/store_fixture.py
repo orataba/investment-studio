@@ -174,6 +174,7 @@ TEST_PORTFOLIO_STORE: dict[str, list[dict[str, Any]]] = {
                 "instrument_id": "equity-us-abbv",
                 "instrument_name": "AbbVie Inc",
                 "instrument_type": "equity",
+                "exchange_code": "XNYS",
                 "currency": "USD",
                 "identifiers": [
                     {
@@ -261,6 +262,7 @@ TEST_PORTFOLIO_STORE: dict[str, list[dict[str, Any]]] = {
                 "instrument_id": "equity-us-abbv",
                 "instrument_name": "AbbVie Inc",
                 "instrument_type": "equity",
+                "exchange_code": "XNYS",
                 "currency": "USD",
                 "identifiers": [
                     {
@@ -338,6 +340,7 @@ TEST_PORTFOLIO_STORE: dict[str, list[dict[str, Any]]] = {
                 "instrument_id": "equity-us-abbv",
                 "instrument_name": "AbbVie Inc",
                 "instrument_type": "equity",
+                "exchange_code": "XNYS",
                 "currency": "USD",
                 "identifiers": [
                     {

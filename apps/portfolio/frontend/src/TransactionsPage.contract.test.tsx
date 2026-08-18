@@ -20,10 +20,12 @@ const apiMocks = vi.hoisted(() => ({
   getPortfolioTransactionPositionPreview: vi.fn(),
   getPortfolioTransactionsWorkspace: vi.fn(),
   importPortfolioTransactionFile: vi.fn(),
+  materializePlatformEquity: vi.fn(),
   portfolioTransactionDownloadUrl: vi.fn((_portfolioId: string, format: string) => `/transactions.${format}`),
   portfolioTransactionTemplateUrl: vi.fn((_portfolioId: string, format: string) => `/transactions/${format}-template`),
   previewPortfolioTransactionFile: vi.fn(),
   reviewPortfolioInstrumentEventTask: vi.fn(),
+  searchPlatformEquityCatalog: vi.fn(),
   updatePortfolioTransaction: vi.fn(),
 }))
 vi.mock('./lib/api', () => apiMocks)
@@ -148,7 +150,7 @@ const fundInstrument = {
   ...instrumentFixture({
     instrument_id: 'fund-1',
     instrument_name: 'Confirmed Allocation Fund',
-    instrument_type: 'fund',
+    instrument_type: 'private_fund',
     currency: 'CNY',
     identifiers: [{ identifier_type: 'ticker' as const, identifier_value: 'FUND1', is_primary: true }],
   }),
@@ -164,6 +166,44 @@ const fundInstrument = {
       status: 'complete' as const,
     },
   ],
+  coverage_state: 'complete' as const,
+}
+
+const fmpEquityCandidate = {
+  instrument_id: 'fmp:AAPL',
+  instrument_name: 'Apple Inc.',
+  instrument_type: 'equity' as const,
+  currency: 'USD',
+  exchange_code: 'XNAS',
+  identifiers: [
+    {
+      identifier_type: 'exchange_ticker' as const,
+      identifier_value: 'AAPL',
+      is_primary: true,
+    },
+  ],
+  broker_identifiers: [],
+  fmp_symbol: 'AAPL',
+  source: 'fmp_catalog' as const,
+  existing_instrument_id: null,
+}
+
+const materializedEquityInstrument = {
+  ...instrumentFixture({
+    instrument_id: 'equity-aapl',
+    instrument_name: 'Apple Inc.',
+    instrument_type: 'equity',
+    currency: 'USD',
+    exchange_code: 'XNAS',
+    identifiers: [
+      {
+        identifier_type: 'exchange_ticker' as const,
+        identifier_value: 'AAPL',
+        is_primary: true,
+      },
+    ],
+  }),
+  latest_market_data: [],
   coverage_state: 'complete' as const,
 }
 
@@ -245,6 +285,25 @@ describe('Transactions rendered page contract', () => {
       derivative_contracts: [],
     })
     apiMocks.getPortfolioFxRates.mockResolvedValue({ portfolio_id: '3', rates: [] })
+    apiMocks.searchPlatformEquityCatalog.mockResolvedValue([])
+    apiMocks.materializePlatformEquity.mockResolvedValue(materializedEquityInstrument)
+    apiMocks.getPortfolioTransactionExecutionQuote.mockResolvedValue({
+      portfolio_id: '3',
+      instrument_id: '',
+      requested_as_of_date: '2026-07-15',
+      selection_role: null,
+      value: null,
+      quote_date: null,
+      quote_basis: null,
+      metric_family: null,
+      currency: 'USD',
+      provider: null,
+      status: 'unavailable',
+      stale: false,
+      price_unit: null,
+      price_scale: null,
+      unavailable_reason: 'no_eligible_execution_quote',
+    })
     apiMocks.getPortfolioInstrumentEventTasks.mockResolvedValue({
       portfolio_id: '3',
       accounting_policy: 'official_unit_nav_assume_no_unrecorded_distribution',
@@ -496,6 +555,43 @@ describe('Transactions rendered page contract', () => {
     expect(within(dialog).getByRole('textbox', { name: 'Source System' })).toBeInTheDocument()
     expect(within(dialog).getByRole('textbox', { name: 'External Reference' })).toBeInTheDocument()
     expect(within(dialog).getByRole('textbox', { name: 'Note' })).toBeInTheDocument()
+  })
+
+  it('searches the local FMP catalog and materializes a stock before selection', async () => {
+    apiMocks.searchPlatformEquityCatalog.mockResolvedValue([fmpEquityCandidate])
+    apiMocks.getPortfolioInstruments
+      .mockResolvedValueOnce({
+        portfolio_id: '3',
+        instruments: [etfInstrument, alternateEtfInstrument, fundInstrument],
+      })
+      .mockResolvedValueOnce({
+        portfolio_id: '3',
+        instruments: [etfInstrument, alternateEtfInstrument, fundInstrument, materializedEquityInstrument],
+      })
+
+    const user = userEvent.setup()
+    renderPortfolioPage(
+      <TransactionsPage />,
+      '/portfolios/3/transactions',
+      '/portfolios/:portfolioId/transactions',
+    )
+
+    await user.click(await screen.findByRole('button', { name: 'Record Transaction' }))
+    const dialog = screen.getByRole('dialog', { name: 'Record transaction' })
+    const securitySearch = within(dialog).getByRole('searchbox', { name: 'Security' })
+    await user.type(securitySearch, 'AAPL')
+    await user.click(
+      await within(dialog).findByRole(
+        'button',
+        { name: /AAPL.*Apple Inc\..*USD/ },
+        { timeout: 3_000 },
+      ),
+    )
+
+    await waitFor(() =>
+      expect(apiMocks.materializePlatformEquity).toHaveBeenCalledWith('AAPL'),
+    )
+    expect(apiMocks.getPortfolioInstruments).toHaveBeenCalledTimes(2)
   })
 
   it('uses one entry-type menu and keeps accounts and derivative actions contextual', async () => {

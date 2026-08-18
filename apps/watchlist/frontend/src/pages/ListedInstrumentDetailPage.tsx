@@ -590,11 +590,7 @@ export default function ListedInstrumentDetailPage({ instrument, watchlistContex
     (definition) => definition.attribute_key === 'coverage_status',
   )
   const compatibleTaxonomyNodes = (taxonomyTree?.nodes || [])
-    .filter(
-      (node) =>
-        node.instrument_type === instrument.instrument_type ||
-        (instrument.instrument_type === 'etf' && node.instrument_type === 'fund'),
-    )
+    .filter((node) => node.instrument_type === instrument.instrument_type)
     .sort((left, right) =>
       left.path_labels.join(' / ').localeCompare(right.path_labels.join(' / '), 'zh-Hans-CN'),
     )

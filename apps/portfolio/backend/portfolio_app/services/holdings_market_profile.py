@@ -10,7 +10,8 @@ from portfolio_app.services import valuation_fx
 
 
 _SUPPORTED_INSTRUMENT_TYPES = {
-    "fund",
+    "public_fund",
+    "private_fund",
     "etf",
     "equity",
     "cash",
@@ -122,6 +123,7 @@ def normalize_instrument_core(
         "instrument_name": instrument_name,
         "instrument_type": resolved_type,
         "currency": currency,
+        "exchange_code": instrument_ref.get("exchange_code"),
         "identifiers": deepcopy(instrument_ref.get("identifiers") or []),
         "broker_identifiers": deepcopy(
             instrument_ref.get("broker_identifiers") or []

@@ -30,10 +30,10 @@ from portfolio_ops_instrument_core import (  # noqa: E402
 
 
 FINAL_FLAT_TABLE_HEADS = {
-    "instrument_registry": "20260812_0024",
-    "platform": "20260716_0002",
-    "portfolio": "20260817_0052",
-    "watchlist": "20260813_0041",
+    "instrument_registry": "20260818_0025",
+    "platform": "20260818_0003",
+    "portfolio": "20260818_0053",
+    "watchlist": "20260818_0042",
 }
 VERSION_TABLES = {
     "instrument_registry": "alembic_version",
@@ -241,6 +241,10 @@ SCHEMA_IDENTIFIER_RENAMES = (
 
 AUDIT_CHECK_NAMES = (
     "schema_identifier_contract",
+    "instrument_type_equity_identity_contract",
+    "fmp_equity_catalog_contract",
+    "watchlist_system_contract",
+    "watchlist_taxonomy_type_contract",
     "watchlist_field_identity_contract",
     "watchlist_group_by_contract",
     "watchlist_saved_view_field_contract",
@@ -637,6 +641,245 @@ def _run_flat_table_audit(database_url: str) -> list[AuditCheck]:
                         "Registry and Watchlist constraints and indexes must use the "
                         "canonical instrument-era identifiers, with no rewritten-revision "
                         "legacy names remaining."
+                    ),
+                )
+            )
+            checks.append(
+                _count_check(
+                    cursor,
+                    name="instrument_type_equity_identity_contract",
+                    query="""
+                        SELECT count(*)
+                        FROM instrument_registry.instrument instrument
+                        WHERE instrument.instrument_type NOT IN (
+                                'public_fund', 'private_fund', 'etf', 'index',
+                                'equity', 'cash', 'fx', 'other'
+                              )
+                           OR (
+                                instrument.instrument_type = 'equity'
+                                AND (
+                                    instrument.exchange_code NOT IN (
+                                        'XNAS', 'XNYS', 'XASE', 'XHKG', 'XSHG', 'XSHE'
+                                    )
+                                    OR coalesce(
+                                        instrument.source_settings_json ->> 'source_mode',
+                                        ''
+                                    ) <> 'api'
+                                    OR coalesce(
+                                        instrument.source_settings_json ->> 'source_api_profile',
+                                        ''
+                                    ) <> 'fmp'
+                                    OR NOT EXISTS (
+                                        SELECT 1
+                                        FROM instrument_registry.instrument_identifier identifier
+                                        WHERE identifier.instrument_id = instrument.instrument_id
+                                          AND identifier.identifier_type = 'exchange_ticker'
+                                    )
+                                    OR NOT EXISTS (
+                                        SELECT 1
+                                        FROM instrument_registry.instrument_identifier identifier
+                                        WHERE identifier.instrument_id = instrument.instrument_id
+                                          AND identifier.identifier_type = 'provider_symbol'
+                                          AND identifier.identifier_value LIKE 'fmp:%'
+                                    )
+                                )
+                              )
+                           OR (
+                                instrument.instrument_type <> 'equity'
+                                AND instrument.exchange_code IS NOT NULL
+                              )
+                    """,
+                    detail=(
+                        "Registry instrument types must use the split public/private fund "
+                        "contract; every equity must have a supported exchange and FMP "
+                        "identity, while non-equities must not carry exchange identity."
+                    ),
+                )
+            )
+            checks.append(
+                _count_check(
+                    cursor,
+                    name="fmp_equity_catalog_contract",
+                    query="""
+                        WITH required_exchange(exchange_code) AS (
+                            VALUES ('XNAS'), ('XNYS'), ('XASE'), ('XHKG'), ('XSHG'), ('XSHE')
+                        )
+                        SELECT
+                            (
+                                SELECT count(*)
+                                FROM required_exchange required
+                                WHERE NOT EXISTS (
+                                    SELECT 1
+                                    FROM platform.fmp_equity_catalog catalog
+                                    WHERE catalog.exchange_code = required.exchange_code
+                                )
+                            )
+                            + (
+                                SELECT count(*)
+                                FROM platform.fmp_equity_catalog catalog
+                                WHERE trim(catalog.fmp_symbol) = ''
+                                   OR trim(catalog.exchange_ticker) = ''
+                                   OR trim(catalog.company_name) = ''
+                                   OR catalog.exchange_code NOT IN (
+                                        'XNAS', 'XNYS', 'XASE', 'XHKG', 'XSHG', 'XSHE'
+                                   )
+                                   OR (
+                                        catalog.exchange_code = 'XSHG'
+                                        AND catalog.fmp_symbol ~ '^900[0-9]{3}[.]SS$'
+                                   )
+                                   OR (
+                                        catalog.exchange_code = 'XSHE'
+                                        AND catalog.fmp_symbol ~ '^200[0-9]{3}[.]SZ$'
+                                   )
+                            )
+                    """,
+                    detail=(
+                        "The local FMP search catalog must cover all six supported "
+                        "exchanges and must not misclassify China B shares as CNY A shares."
+                    ),
+                )
+            )
+            checks.append(
+                _count_check(
+                    cursor,
+                    name="watchlist_system_contract",
+                    query="""
+                        WITH specs(
+                            watchlist_id,
+                            watchlist_name,
+                            instrument_type,
+                            sort_order
+                        ) AS (
+                            VALUES
+                                ('index', 'Index', 'index', 0),
+                                ('all-public-funds', 'All 公募', 'public_fund', 1),
+                                ('all-private-funds', 'All 私募', 'private_fund', 2)
+                        ), metadata_errors AS (
+                            SELECT specs.watchlist_id
+                            FROM specs
+                            LEFT JOIN watchlist.watchlist record
+                              ON record.watchlist_id = specs.watchlist_id
+                            WHERE record.watchlist_id IS NULL
+                               OR record.name <> specs.watchlist_name
+                               OR record.owner_type <> 'system'
+                               OR record.owner_id <> 'watchlist'
+                               OR record.is_default IS NOT TRUE
+                               OR record.is_shared IS NOT TRUE
+                               OR record.sort_order <> specs.sort_order
+                        ), unexpected_system_lists AS (
+                            SELECT record.watchlist_id
+                            FROM watchlist.watchlist record
+                            WHERE (
+                                    record.owner_type = 'system'
+                                    AND record.owner_id = 'watchlist'
+                                  )
+                              AND NOT EXISTS (
+                                    SELECT 1
+                                    FROM specs
+                                    WHERE specs.watchlist_id = record.watchlist_id
+                              )
+                        ), invalid_memberships AS (
+                            SELECT item.watchlist_id, item.instrument_id
+                            FROM watchlist.watchlist_item item
+                            JOIN specs ON specs.watchlist_id = item.watchlist_id
+                            LEFT JOIN instrument_registry.instrument instrument
+                              ON instrument.instrument_id = item.instrument_id
+                            WHERE instrument.instrument_id IS NULL
+                               OR instrument.instrument_type <> specs.instrument_type
+                               OR coalesce(
+                                    instrument.lifecycle_state_json ->> 'status',
+                                    'active'
+                                  ) <> 'active'
+                        ), invalid_rows AS (
+                            SELECT row.watchlist_id, row.instrument_id
+                            FROM watchlist.watchlist_row_read_model row
+                            JOIN specs ON specs.watchlist_id = row.watchlist_id
+                            LEFT JOIN watchlist.watchlist_item item
+                              ON item.watchlist_id = row.watchlist_id
+                             AND item.instrument_id = row.instrument_id
+                            WHERE item.instrument_id IS NULL
+                               OR row.instrument_type <> specs.instrument_type
+                        ), missing_rows AS (
+                            SELECT item.watchlist_id, item.instrument_id
+                            FROM watchlist.watchlist_item item
+                            JOIN specs ON specs.watchlist_id = item.watchlist_id
+                            LEFT JOIN watchlist.watchlist_row_read_model row
+                              ON row.watchlist_id = item.watchlist_id
+                             AND row.instrument_id = item.instrument_id
+                            WHERE row.instrument_id IS NULL
+                        )
+                        SELECT
+                            (SELECT count(*) FROM metadata_errors)
+                            + (SELECT count(*) FROM unexpected_system_lists)
+                            + (SELECT count(*) FROM invalid_memberships)
+                            + (SELECT count(*) FROM invalid_rows)
+                            + (SELECT count(*) FROM missing_rows)
+                    """,
+                    detail=(
+                        "The only system Watchlists are Index, All 公募, and All 私募; "
+                        "their existing memberships and read models must contain active "
+                        "instruments of the matching type."
+                    ),
+                )
+            )
+            checks.append(
+                _count_check(
+                    cursor,
+                    name="watchlist_taxonomy_type_contract",
+                    query="""
+                        WITH invalid_nodes AS (
+                            SELECT node.node_id
+                            FROM watchlist.instrument_taxonomy_node node
+                            WHERE node.instrument_type NOT IN (
+                                    'public_fund', 'private_fund', 'etf', 'equity', 'index'
+                                  )
+                               OR node.node_id IN (
+                                    'fund-public', 'fund-private', 'equity', 'index'
+                                  )
+                               OR node.node_id LIKE 'equity-sector-%'
+                        ), invalid_assignments AS (
+                            SELECT detail.instrument_id
+                            FROM watchlist.instrument_detail detail
+                            LEFT JOIN watchlist.instrument_taxonomy_assignment assignment
+                              ON assignment.instrument_id = detail.instrument_id
+                             AND assignment.taxonomy_code = 'instrument_taxonomy'
+                            LEFT JOIN watchlist.instrument_taxonomy_node node
+                              ON node.node_id = assignment.node_id
+                            WHERE (
+                                    assignment.node_id IS NOT NULL
+                                    AND (
+                                        node.node_id IS NULL
+                                        OR node.instrument_type <> detail.instrument_type
+                                    )
+                                  )
+                               OR (
+                                    detail.instrument_type = 'equity'
+                                    AND (
+                                        coalesce(detail.metadata_json ->> 'exchange_code', '')
+                                            NOT IN (
+                                                'XNAS', 'XNYS', 'XASE',
+                                                'XHKG', 'XSHG', 'XSHE'
+                                            )
+                                        OR assignment.node_id IS DISTINCT FROM CASE
+                                            detail.metadata_json ->> 'exchange_code'
+                                            WHEN 'XNAS' THEN 'equity-exchange-xnas'
+                                            WHEN 'XNYS' THEN 'equity-exchange-xnys'
+                                            WHEN 'XASE' THEN 'equity-exchange-xase'
+                                            WHEN 'XHKG' THEN 'equity-exchange-xhkg'
+                                            WHEN 'XSHG' THEN 'equity-exchange-xshg'
+                                            WHEN 'XSHE' THEN 'equity-exchange-xshe'
+                                            ELSE NULL
+                                        END
+                                    )
+                                  )
+                        )
+                        SELECT
+                            (SELECT count(*) FROM invalid_nodes)
+                            + (SELECT count(*) FROM invalid_assignments)
+                    """,
+                    detail=(
+                        "Watchlist taxonomy remains Watchlist-local and type-specific; "
+                        "stock taxonomy must match the Registry exchange identity."
                     ),
                 )
             )
@@ -1959,7 +2202,7 @@ def _run_flat_table_audit(database_url: str) -> list[AuditCheck]:
                              AND latest.as_of_date = holding.as_of_date
                             JOIN instrument_registry.instrument instrument
                               ON instrument.instrument_id = holding.instrument_id
-                             AND instrument.instrument_type = 'fund'
+                             AND instrument.instrument_type IN ('public_fund', 'private_fund')
                             WHERE holding.quantity <> 0
                             GROUP BY holding.instrument_id
                         ), coverage AS (

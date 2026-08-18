@@ -7,7 +7,7 @@
 - `apps/platform`
   平台入口与 `Database Dashboard`，维护 `instrument_registry` 中的 `Instruments / FX / NAV` 主数据，并在私有 `platform` schema 保存邮件抓取、原始证据、解析与重试状态；不是其他 app 的运行时依赖。
 - `apps/watchlist`
-  已有可运行的前后端、数据库迁移、测试与文档，承载 fund / ETF / equity / index watchlist、local detail、facts、recalc 与 read model；Copilot 当前只保留后端扩展接口，默认 UI 不对外开放。
+  已有可运行的前后端、数据库迁移、测试与文档，承载公募 / 私募 / ETF / 股票 / 指数 watchlist、local detail、facts、recalc 与 read model；Copilot 当前只保留后端扩展接口，默认 UI 不对外开放。
 - `apps/portfolio`
   已有可运行的前后端、数据库迁移、交易、绩效、持仓、风险与研究工作台，以及成体系的领域文档。
 
@@ -61,7 +61,7 @@ portfolio-operations-workbench/
 ## 当前边界
 
 - `apps/watchlist`
-  承载 fund / ETF / equity / index watchlist、local detail、facts、read model 与 recalc；Copilot 仅保留后端接口边界，不作为当前已发布 UI 能力。
+  承载公募 / 私募 / ETF / 股票 / 指数 watchlist、local detail、facts、read model 与 recalc；Copilot 仅保留后端接口边界，不作为当前已发布 UI 能力。
 - `apps/portfolio`
   承载 portfolio / account / transaction / performance / risk / research 语境。
 - `apps/platform`
@@ -79,7 +79,7 @@ portfolio-operations-workbench/
 - `Watchlist` 与 `Portfolio` 直接访问同一个 PostgreSQL 中的 `instrument_registry` + 各自私有 schema，不通过 app-to-app HTTP 互相取数。
 - 共享资产身份与 typed market facts / selector policy，不共享上层业务 read model。
 - 私募基金 canonical NAV 只有单位净值 `official_nav` 与分红再投资复权累计净值 `total_return_nav`；现金分红简单累加值只保留为私有原始证据，不能进入回报曲线。
-- `Watchlist` 面向 fund / ETF / equity / index 的观察、筛选与单资产分析，不承载 portfolio 业务事实。
+- `Watchlist` 面向公募 / 私募 / ETF / 股票 / 指数的观察、筛选与单资产分析，不承载 portfolio 业务事实。
 - FCN 与期权不是可复用市场资产，不进入 `instrument_registry`；Portfolio 以本地不可变合约及事件交易记录其条款、现金流与已实现结果。合约引用的标的或交付证券仍使用 Registry instrument。
 - `Portfolio` 继续 portfolio/account/transaction/performance/risk/research 语境。
 - 前端视觉基线统一为白底、冷中性灰线条和表格优先的信息密度；不要再引入米黄、沙色或暖灰页面背景。

@@ -24,6 +24,7 @@ def _trade(
         "instrument_ref": {
             "instrument_id": "equity-1",
             "instrument_type": "equity",
+            "exchange_code": "XNYS",
             "currency": "CNY",
         },
         "quantity": quantity,

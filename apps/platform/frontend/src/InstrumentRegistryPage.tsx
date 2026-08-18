@@ -29,6 +29,7 @@ import type {
 } from '../../../../packages/instrument-core/ts/src'
 import {
   canonicalPriceContract,
+  FUND_INSTRUMENT_TYPES,
   supportsNavHistoryImport,
 } from '../../../../packages/instrument-core/ts/src'
 import { FundNavActionReview } from './FundNavActionReview'
@@ -95,6 +96,7 @@ const ROLE_LABELS: Record<QuoteRole, string> = {
 type ActionPanel = 'create' | 'quote' | 'source' | 'nav' | 'fx'
 type InspectorTab = 'overview' | 'series' | 'source' | 'governance'
 type SortMode = 'name_asc' | 'quote_desc' | 'identifier_asc' | 'coverage'
+type InstrumentTypeFilter = 'all' | 'funds' | InstrumentType
 
 type InstrumentRegistryPageProps = {
   instruments: PlatformInstrumentRecord[]
@@ -170,7 +172,7 @@ export default function InstrumentRegistryPage({
   onRestoreInstrument,
 }: InstrumentRegistryPageProps) {
   const [instrumentName, setInstrumentName] = useState('')
-  const [instrumentType, setInstrumentType] = useState<InstrumentType>('equity')
+  const [instrumentType, setInstrumentType] = useState<InstrumentType>('public_fund')
   const [currency, setCurrency] = useState('CNY')
   const [identifierType, setIdentifierType] = useState<IdentifierType>('ticker')
   const [identifierValue, setIdentifierValue] = useState('')
@@ -209,7 +211,7 @@ export default function InstrumentRegistryPage({
   const [inspectorTab, setInspectorTab] = useState<InspectorTab>('overview')
   const [searchText, setSearchText] = useState('')
   const [instrumentTypeFilter, setInstrumentTypeFilter] =
-    useState<'all' | InstrumentType>('all')
+    useState<InstrumentTypeFilter>('all')
   const [coverageFilter, setCoverageFilter] = useState<'all' | DataStatus>('all')
   const [sourceFilter, setSourceFilter] = useState<'all' | SourceMode>('all')
   const [quoteFilter, setQuoteFilter] =
@@ -312,7 +314,12 @@ export default function InstrumentRegistryPage({
   const filteredInstruments = useMemo(() => {
     const searchNeedle = searchText.trim().toLowerCase()
     const filtered = instruments.filter((item) => {
-      if (instrumentTypeFilter !== 'all' && item.instrument_type !== instrumentTypeFilter) {
+      if (
+        instrumentTypeFilter !== 'all' &&
+        (instrumentTypeFilter === 'funds'
+          ? !FUND_INSTRUMENT_TYPES.has(item.instrument_type)
+          : item.instrument_type !== instrumentTypeFilter)
+      ) {
         return false
       }
       if (coverageFilter !== 'all' && item.coverage_state !== coverageFilter) return false
@@ -641,7 +648,7 @@ export default function InstrumentRegistryPage({
     ) {
       return
     }
-    if (panel === 'quote' && targetInstrument?.instrument_type === 'fund') return
+    if (panel === 'quote' && targetInstrument && supportsNavHistoryImport(targetInstrument.instrument_type)) return
     if (instrumentId) syncSelectedInstrument(instrumentId)
     setActivePanel(panel)
   }
@@ -844,8 +851,10 @@ export default function InstrumentRegistryPage({
   }
 
   function handleEditPoint(point: PlatformMarketDataPoint) {
-    if (!selectedInstrument || selectedInstrument.instrument_type === 'fund') {
-      if (selectedInstrument?.instrument_type === 'fund') openActionPanel('nav')
+    if (!selectedInstrument || supportsNavHistoryImport(selectedInstrument.instrument_type)) {
+      if (selectedInstrument && supportsNavHistoryImport(selectedInstrument.instrument_type)) {
+        openActionPanel('nav')
+      }
       return
     }
     setMetricFamily(point.metric_family)
@@ -936,9 +945,10 @@ export default function InstrumentRegistryPage({
                   setRefreshChannel(event.target.value as RefreshChannel)
                 }
               >
-                <option value="all">Email + Tushare</option>
+                <option value="all">Email + Tushare + FMP</option>
                 <option value="email">Email</option>
                 <option value="tushare">Tushare</option>
+                <option value="fmp">FMP equities</option>
               </select>
             </label>
             <button
@@ -1052,9 +1062,9 @@ export default function InstrumentRegistryPage({
           </button>
           <button
             type="button"
-            className={instrumentTypeFilter === 'fund' ? 'is-active' : ''}
+            className={instrumentTypeFilter === 'funds' ? 'is-active' : ''}
             onClick={() => {
-              setInstrumentTypeFilter('fund')
+              setInstrumentTypeFilter('funds')
               setQuoteFilter('all')
             }}
           >
@@ -1093,14 +1103,15 @@ export default function InstrumentRegistryPage({
               <select
                 value={instrumentTypeFilter}
                 onChange={(event) =>
-                  setInstrumentTypeFilter(event.target.value as 'all' | InstrumentType)
+                  setInstrumentTypeFilter(event.target.value as InstrumentTypeFilter)
                 }
               >
                 <option value="all">All types</option>
-                <option value="equity">Equity</option>
+                <option value="public_fund">Public fund</option>
+                <option value="private_fund">Private fund</option>
                 <option value="index">Index</option>
-                <option value="fund">Fund</option>
                 <option value="etf">ETF</option>
+                <option value="equity">Equity</option>
                 <option value="cash">Cash</option>
                 <option value="fx">FX</option>
                 <option value="other">Other</option>
@@ -1353,7 +1364,7 @@ export default function InstrumentRegistryPage({
                   ×
                 </button>
                 <div className="ir-inspector-actions">
-                  {selectedInstrument.instrument_type === 'fund' ? (
+                  {supportsNavHistoryImport(selectedInstrument.instrument_type) ? (
                     <NavImportButton
                       instrumentType={selectedInstrument.instrument_type}
                       type="button"
@@ -1643,7 +1654,7 @@ export default function InstrumentRegistryPage({
                                     <span>Scale {point.price_scale}</span>
                                   </td>
                                   <td>
-                                    {selectedInstrument.instrument_type !== 'fund' ? (
+                                    {!supportsNavHistoryImport(selectedInstrument.instrument_type) ? (
                                       <button
                                         type="button"
                                         onClick={() => handleEditPoint(point)}
@@ -1899,7 +1910,7 @@ export default function InstrumentRegistryPage({
                       )}
                     </section>
 
-                    {selectedInstrument.instrument_type === 'fund' ? (
+                    {supportsNavHistoryImport(selectedInstrument.instrument_type) ? (
                       <FundNavActionReview
                         instrumentId={selectedInstrument.instrument_id}
                         request={fetchJson}
@@ -2051,9 +2062,9 @@ export default function InstrumentRegistryPage({
                             setInstrumentType(event.target.value as InstrumentType)
                           }
                         >
-                          <option value="equity">Equity</option>
+                          <option value="public_fund">Public fund</option>
+                          <option value="private_fund">Private fund</option>
                           <option value="index">Index</option>
-                          <option value="fund">Fund</option>
                           <option value="etf">ETF</option>
                           <option value="cash">Cash</option>
                           <option value="fx">FX</option>

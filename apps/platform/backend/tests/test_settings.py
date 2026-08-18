@@ -46,6 +46,23 @@ def test_platform_search_path_precedes_the_shared_registry() -> None:
     ) == ["instrument_registry", "public"]
 
 
+def test_cors_origins_accept_local_env_list_syntax(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(
+        "PORTFOLIO_OPS_PLATFORM_CORS_ORIGINS",
+        "[http://127.0.0.1:5172,http://127.0.0.1:5173,http://127.0.0.1:5174]",
+    )
+
+    settings = Settings(database_url="sqlite+pysqlite:///:memory:")
+
+    assert settings.cors_origins == [
+        "http://127.0.0.1:5172",
+        "http://127.0.0.1:5173",
+        "http://127.0.0.1:5174",
+    ]
+
+
 def test_email_ingestion_settings_normalize_folders_and_apply_safe_defaults() -> None:
     settings = Settings(
         database_url="sqlite+pysqlite:///:memory:",

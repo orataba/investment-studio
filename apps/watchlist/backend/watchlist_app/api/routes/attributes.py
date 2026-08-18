@@ -28,6 +28,7 @@ from watchlist_app.services.instrument_taxonomy import (
     build_taxonomy_context,
     taxonomy_node_supports_instrument,
 )
+from watchlist_app.services.instrument_resolution import equity_exchange_taxonomy_node
 
 
 router = APIRouter()
@@ -130,7 +131,9 @@ def create_attribute_definition(
         group_code=payload_data["group_code"],
         display_order=payload_data.get("display_order", 999),
         options_json=payload_data.get("options", []),
-        instrument_scope_json=payload_data.get("instrument_scope_json", ["fund"]),
+        instrument_scope_json=payload_data.get(
+            "instrument_scope_json", ["public_fund", "private_fund"]
+        ),
         applicability_json=payload_data.get("applicability_json", {}),
         rubric_json=payload_data.get("rubric_json", {}),
         is_groupable=payload_data.get("is_groupable", True),
@@ -264,10 +267,15 @@ def update_instrument_settings(
     if instrument_type not in SUPPORTED_TAXONOMY_INSTRUMENT_TYPES:
         raise HTTPException(
             status_code=400,
-            detail="Settings are only available for fund, ETF, equity, and index instruments.",
+            detail="Settings are only available for public funds, private funds, ETFs, equities, and indexes.",
         )
 
     node_id = str(payload.taxonomy_node_id or "").strip() or None
+    if instrument_type == "equity" and node_id != equity_exchange_taxonomy_node(instrument):
+        raise HTTPException(
+            status_code=422,
+            detail="Equity taxonomy is maintained from the Registry exchange identity.",
+        )
     node = taxonomy_repository.get_node(session, node_id=node_id) if node_id else None
     if node_id and node is None:
         raise HTTPException(status_code=404, detail="Instrument taxonomy node not found")

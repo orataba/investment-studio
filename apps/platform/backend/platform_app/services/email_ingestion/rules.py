@@ -196,7 +196,7 @@ def discovery_identity_tokens(
 def build_route_targets(instruments: Iterable[dict[str, object]]) -> list[RouteTarget]:
     targets: list[RouteTarget] = []
     for instrument in instruments:
-        if str(instrument.get("instrument_type") or "").strip().lower() != "fund":
+        if str(instrument.get("instrument_type") or "").strip().lower() != "private_fund":
             continue
         lifecycle = instrument.get("lifecycle_state", {})
         if isinstance(lifecycle, dict) and lifecycle.get("status") == "archived":

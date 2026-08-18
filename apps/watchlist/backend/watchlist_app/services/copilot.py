@@ -177,9 +177,15 @@ class StubCopilotProvider:
         elif any(keyword in question for keyword in ("评级", "观点", "rating")):
             focus = "人工投研记录"
 
+        group_summary = "当前未分组。"
+        if group_by and group_by != "none" and largest_group:
+            group_summary = (
+                f"按 {group_by} 分组，最大组是 {largest_group.get('group_value')}"
+                f"（{largest_group.get('row_count')} 条）。"
+            )
         answer_lines = [
             f"基于当前 Watchlist「{watchlist_name}」的 {total_rows} 条可见记录，我先按{focus}给出摘要。",
-            f"当前视图是「{view_name or '当前视图'}」；{f'按 {group_by} 分组，最大组是 {largest_group.get('group_value')}（{largest_group.get('row_count')} 条）。' if group_by and group_by != 'none' and largest_group else '当前未分组。'}",
+            f"当前视图是「{view_name or '当前视图'}」；{group_summary}",
             f"数据新鲜度方面，需优先关注 {len(stale_rows)} 条记录；最近需要核查的对象包括 {_list_join([str(row.get('ticker_or_isin') or row.get('instrument_name') or '') for row in stale_rows[:3]])}。",
             f"表现上，1Y 平均回报约 {_format_percent(avg_one_year)}；最好的是 {best_return_row.get('ticker_or_isin') if best_return_row else '—'}（{_format_percent(best_return_row.get('return_1y')) if best_return_row else '—'}）。",
             f"风险上，最大回撤最深的是 {worst_drawdown_row.get('ticker_or_isin') if worst_drawdown_row else '—'}（{_format_percent(worst_drawdown_row.get('max_drawdown')) if worst_drawdown_row else '—'}）。系统不会把不同量纲的市场指标合成为投资评级；观点与评级仅来自人工研究记录。",
@@ -344,7 +350,7 @@ class StubCopilotProvider:
             "citations": [
                 {
                     "label": "Instrument summary",
-                    "ref_type": "fund",
+                    "ref_type": "instrument",
                     "ref_id": instrument_id,
                     "note": f"{fund_name} / {ticker}",
                 },

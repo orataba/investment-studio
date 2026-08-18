@@ -59,7 +59,7 @@ if [[ ! -f "$AUDIT_SCRIPT" ]]; then
   exit 1
 fi
 case "$CHANNEL" in
-  all|email|tushare|projection) ;;
+  all|email|tushare|fmp|projection) ;;
   *)
     echo "Invalid refresh channel: $CHANNEL" >&2
     exit 64

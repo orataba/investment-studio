@@ -33,7 +33,7 @@ export function transactionActivityLabel(
   if (resolvedOptionAction) {
     return optionActionLabel(resolvedOptionAction)
   }
-  if (instrumentType === 'fund') {
+  if (instrumentType === 'public_fund' || instrumentType === 'private_fund') {
     if (transactionType === 'buy') {
       return 'Subscription'
     }

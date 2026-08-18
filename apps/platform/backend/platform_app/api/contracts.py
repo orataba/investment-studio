@@ -65,7 +65,7 @@ RefreshOperationMode = Literal[
     "api",
     "projection_reconciliation",
 ]
-RefreshChannel = Literal["configured", "email", "tushare", "all"]
+RefreshChannel = Literal["configured", "email", "tushare", "fmp", "all"]
 FxRateSourceKind = Literal["direct", "inverse", "cross"]
 InstrumentLifecycleStatus = Literal["active", "archived"]
 EmailParserProfile = Literal[
@@ -204,6 +204,7 @@ class PlatformInstrumentRecord(BaseModel):
     instrument_name: str
     instrument_type: InstrumentType
     currency: str
+    exchange_code: str | None = Field(default=None, pattern=r"^[A-Z]{4}$")
     identifiers: list[PlatformInstrumentIdentifier]
     broker_identifiers: list[PlatformBrokerIdentifier] = Field(default_factory=list)
     latest_market_data: list[PlatformMarketDataPoint]
@@ -223,6 +224,7 @@ class PlatformInstrumentRecord(BaseModel):
                 "instrument_name": self.instrument_name,
                 "instrument_type": self.instrument_type,
                 "currency": self.currency,
+                "exchange_code": self.exchange_code,
                 "identifiers": self.identifiers,
                 "broker_identifiers": self.broker_identifiers,
             }

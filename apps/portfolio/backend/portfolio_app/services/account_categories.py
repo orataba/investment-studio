@@ -5,7 +5,13 @@ from collections.abc import Mapping
 
 ACCOUNT_CATEGORIES = ("cash", "security", "fcn", "option")
 HOLDING_ACCOUNT_CATEGORIES = ("security", "fcn", "option")
-SECURITY_INSTRUMENT_TYPES = ("equity", "etf", "fund", "other")
+SECURITY_INSTRUMENT_TYPES = (
+    "equity",
+    "etf",
+    "public_fund",
+    "private_fund",
+    "other",
+)
 
 _INSTRUMENT_CATEGORY_BY_TYPE = {
     **{instrument_type: "security" for instrument_type in SECURITY_INSTRUMENT_TYPES},

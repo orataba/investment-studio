@@ -16,10 +16,12 @@ import {
   getPortfolioTransactionPositionPreview,
   getPortfolioTransactionsWorkspace,
   importPortfolioTransactionFile,
+  materializePlatformEquity,
   portfolioTransactionDownloadUrl,
   portfolioTransactionTemplateUrl,
   previewPortfolioTransactionFile,
   reviewPortfolioInstrumentEventTask,
+  searchPlatformEquityCatalog,
   type PortfolioAccountRecord,
   type PortfolioFeeCategory,
   type PortfolioDerivativeContractCreate,
@@ -28,6 +30,7 @@ import {
   type PortfolioSharedFxRateRecord,
   type PortfolioTransactionPositionPreviewResponse,
   type SharedInstrumentRecord,
+  type SecuritySearchOption,
   type PortfolioTransactionCreatePayload,
   type PortfolioTransactionFileFormat,
   type PortfolioTransactionFilePreviewResponse,
@@ -123,6 +126,12 @@ const FEE_CATEGORIES: Array<{ value: PortfolioFeeCategory; label: string }> = [
 
 type TransactionEntryKind = 'security' | 'fcn' | 'option' | 'cash'
 
+const FUND_INSTRUMENT_TYPES = new Set(['public_fund', 'private_fund'])
+
+function isFundInstrumentType(instrumentType?: string | null) {
+  return FUND_INSTRUMENT_TYPES.has((instrumentType || '').trim().toLowerCase())
+}
+
 const TRANSACTION_ENTRY_KINDS: Array<{
   value: TransactionEntryKind
   label: string
@@ -175,7 +184,7 @@ function accountAllowsEntryKind(
 function assetTypeAccountCategory(assetType: string): TransactionEntryKind | null {
   const normalized = assetType.trim().toLowerCase()
   if (normalized === 'fcn' || normalized === 'option') return normalized
-  if (['equity', 'etf', 'fund', 'other'].includes(normalized)) return 'security'
+  if (['equity', 'etf', 'public_fund', 'private_fund', 'other'].includes(normalized)) return 'security'
   return null
 }
 
@@ -194,7 +203,7 @@ function transactionIdempotencyKey(operation: 'create' | 'transfer' | 'file-impo
 
 function primaryIdentifier(
   instrument:
-    | SharedInstrumentRecord
+    | SecuritySearchOption
     | {
         instrument_id: string
         identifiers: Array<{ identifier_value: string; is_primary: boolean }>
@@ -207,7 +216,7 @@ function primaryIdentifier(
   )
 }
 
-function instrumentSearchLabel(instrument: SharedInstrumentRecord) {
+function instrumentSearchLabel(instrument: SecuritySearchOption) {
   return `${primaryIdentifier(instrument)} · ${instrument.instrument_name}`
 }
 
@@ -474,7 +483,7 @@ function eligibleCounterpartyAccounts(
 
 function isSelectableInstrument(
   transactionType: string,
-  instrument: SharedInstrumentRecord,
+  instrument: SecuritySearchOption,
   account?: PortfolioAccountRecord | null,
   accountCurrency?: string | null,
   transferObjectType?: string | null,
@@ -961,6 +970,11 @@ export default function TransactionsPage() {
   const [deleteError, setDeleteError] = useState<string | null>(null)
   const [inspectorTab, setInspectorTab] = useState<TransactionInspectorTab>('fact')
   const [form, setForm] = useState<TransactionFormState>(() => buildInitialFormState([]))
+  const deferredInstrumentSearch = useDeferredValue(form.instrument_search)
+  const [equitySearchResults, setEquitySearchResults] = useState<SecuritySearchOption[]>([])
+  const [equitySearchLoading, setEquitySearchLoading] = useState(false)
+  const [equitySearchError, setEquitySearchError] = useState<string | null>(null)
+  const [equityMaterializing, setEquityMaterializing] = useState(false)
   const [derivativeDraft, setDerivativeDraft] = useState<DerivativeContractDraft>(() =>
     buildInitialDerivativeContractDraft(),
   )
@@ -1089,6 +1103,46 @@ export default function TransactionsPage() {
       cancelled = true
     }
   }, [portfolioId])
+
+  useEffect(() => {
+    const query = deferredInstrumentSearch.trim()
+    if (!drawerOpen || form.asset_domain !== 'security' || !query) {
+      setEquitySearchResults([])
+      setEquitySearchLoading(false)
+      setEquitySearchError(null)
+      return undefined
+    }
+
+    let cancelled = false
+    const timeoutId = window.setTimeout(() => {
+      setEquitySearchLoading(true)
+      setEquitySearchError(null)
+      searchPlatformEquityCatalog(query, 12)
+        .then((results) => {
+          if (!cancelled) {
+            setEquitySearchResults(results)
+          }
+        })
+        .catch((error) => {
+          if (!cancelled) {
+            setEquitySearchResults([])
+            setEquitySearchError(
+              error instanceof Error ? error.message : 'Failed to search the local stock catalog.',
+            )
+          }
+        })
+        .finally(() => {
+          if (!cancelled) {
+            setEquitySearchLoading(false)
+          }
+        })
+    }, 250)
+
+    return () => {
+      cancelled = true
+      window.clearTimeout(timeoutId)
+    }
+  }, [deferredInstrumentSearch, drawerOpen, form.asset_domain])
 
   useEffect(() => {
     let cancelled = false
@@ -1270,7 +1324,7 @@ export default function TransactionsPage() {
     form.transfer_object_type,
   )
   const isFundTrade =
-    shouldUsePrice && selectedInstrument?.instrument_type === 'fund'
+    shouldUsePrice && isFundInstrumentType(selectedInstrument?.instrument_type)
   const transactionUnitPriceDecimals = isFundTrade ? 12 : 6
   const positionPreviewAccountRole: 'selected' | 'source' =
     form.transaction_type === 'transfer_in' && form.transfer_object_type === 'position' ? 'source' : 'selected'
@@ -1300,7 +1354,6 @@ export default function TransactionsPage() {
       .filter((account) => account.currency.toUpperCase() === resolvedTransactionCurrency)
       .sort((left, right) => left.account_name.localeCompare(right.account_name))
   }, [cashAccounts, resolvedTransactionCurrency])
-  const deferredInstrumentSearch = useDeferredValue(form.instrument_search)
   const instrumentInputValue = selectedInstrument && !form.instrument_search
     ? instrumentSearchLabel(selectedInstrument)
     : form.instrument_search
@@ -1310,7 +1363,7 @@ export default function TransactionsPage() {
     if (!normalizedSearch) {
       return []
     }
-    return instruments
+    const registryMatches = instruments
       .filter((instrument) =>
         isSelectableInstrument(
           form.transaction_type,
@@ -1336,9 +1389,25 @@ export default function TransactionsPage() {
           .toLowerCase()
         return haystack.includes(normalizedSearch)
       })
-      .slice(0, 12)
+    const seenInstrumentIds = new Set(registryMatches.map((instrument) => instrument.instrument_id))
+    const fmpMatches = equitySearchResults.filter((instrument) => {
+      const existingInstrumentId =
+        'existing_instrument_id' in instrument ? instrument.existing_instrument_id : null
+      if (existingInstrumentId && seenInstrumentIds.has(existingInstrumentId)) {
+        return false
+      }
+      return isSelectableInstrument(
+        form.transaction_type,
+        instrument,
+        selectedAccount,
+        selectedAccount?.currency,
+        form.transfer_object_type,
+      )
+    })
+    return [...registryMatches, ...fmpMatches].slice(0, 12)
   }, [
     deferredInstrumentSearch,
+    equitySearchResults,
     form.transaction_type,
     form.transfer_object_type,
     instruments,
@@ -1504,7 +1573,7 @@ export default function TransactionsPage() {
             current.instrument_id !== instrumentId ||
             current.trade_date !== tradeDate ||
             !canApplyQuote ||
-            selectedInstrument.instrument_type === 'fund' ||
+            isFundInstrumentType(selectedInstrument.instrument_type) ||
             !usesPrice(current.transaction_type)
           ) {
             return current
@@ -1699,9 +1768,9 @@ export default function TransactionsPage() {
     transactionPriceContract?.price_unit,
   ])
 
-  function selectInstrument(instrument: SharedInstrumentRecord) {
+  function commitSelectedInstrument(instrument: SharedInstrumentRecord) {
     setPricingAnchor(
-      instrument.instrument_type === 'fund' && usesPrice(form.transaction_type)
+      isFundInstrumentType(instrument.instrument_type) && usesPrice(form.transaction_type)
         ? 'gross_amount'
         : 'price',
     )
@@ -1724,6 +1793,35 @@ export default function TransactionsPage() {
       }
     })
     window.setTimeout(() => accountSelectRef.current?.focus(), 0)
+  }
+
+  async function selectInstrument(instrument: SecuritySearchOption) {
+    if (!('fmp_symbol' in instrument)) {
+      commitSelectedInstrument(instrument)
+      return
+    }
+    if (!portfolioId || equityMaterializing) {
+      return
+    }
+    setEquityMaterializing(true)
+    setEquitySearchError(null)
+    try {
+      const materialized = await materializePlatformEquity(instrument.fmp_symbol)
+      const refreshed = await getPortfolioInstruments(portfolioId)
+      setInstruments(refreshed.instruments)
+      commitSelectedInstrument(
+        refreshed.instruments.find(
+          (candidate) => candidate.instrument_id === materialized.instrument_id,
+        ) ?? materialized,
+      )
+      setEquitySearchResults([])
+    } catch (error) {
+      setEquitySearchError(
+        error instanceof Error ? error.message : 'Failed to prepare the FMP stock data.',
+      )
+    } finally {
+      setEquityMaterializing(false)
+    }
   }
 
   function selectDerivativeContract(contractId: string) {
@@ -1794,7 +1892,7 @@ export default function TransactionsPage() {
     }
     const nextTransactionType = selectedAction.transactionType
     setPricingAnchor(
-      selectedInstrument?.instrument_type === 'fund' && usesPrice(nextTransactionType)
+      isFundInstrumentType(selectedInstrument?.instrument_type) && usesPrice(nextTransactionType)
         ? 'gross_amount'
         : 'price',
     )
@@ -2325,7 +2423,7 @@ export default function TransactionsPage() {
       derivativeContractDraftFromRecord(transaction.derivative_contract),
     )
     setPricingAnchor(
-      transaction.instrument_ref?.instrument_type === 'fund' &&
+      isFundInstrumentType(transaction.instrument_ref?.instrument_type) &&
       usesPrice(transaction.transaction_type)
         ? 'gross_amount'
         : 'price',
@@ -3846,7 +3944,7 @@ export default function TransactionsPage() {
                               return
                             }
                             event.preventDefault()
-                            selectInstrument(filteredInstrumentOptions[0])
+                            void selectInstrument(filteredInstrumentOptions[0])
                           }}
                         />
                       </label>
@@ -3858,7 +3956,8 @@ export default function TransactionsPage() {
                               type="button"
                               key={instrument.instrument_id}
                               className="transaction-instrument-result"
-                              onClick={() => selectInstrument(instrument)}
+                              disabled={equityMaterializing}
+                              onClick={() => void selectInstrument(instrument)}
                             >
                               <div className="holding-name-stack">
                                 <span>{primaryIdentifier(instrument)}</span>
@@ -3868,7 +3967,14 @@ export default function TransactionsPage() {
                             </button>
                           ))}
                           {!filteredInstrumentOptions.length ? (
-                            <div className="transaction-instrument-empty">No matching security.</div>
+                            <div className="transaction-instrument-empty">
+                              {equitySearchLoading
+                                ? 'Searching Registry and the local stock catalog…'
+                                : 'No matching security.'}
+                            </div>
+                          ) : null}
+                          {equitySearchError ? (
+                            <div className="transaction-instrument-empty">{equitySearchError}</div>
                           ) : null}
                         </div>
                       ) : null}

@@ -23,7 +23,7 @@ WATCH_INSTRUMENT_REF = {
 OBSERVED_INSTRUMENT_REF = {
     "instrument_id": "manual-observed",
     "instrument_name": "Manual Observed Fund",
-    "instrument_type": "fund",
+    "instrument_type": "public_fund",
     "currency": "USD",
     "identifiers": [],
 }

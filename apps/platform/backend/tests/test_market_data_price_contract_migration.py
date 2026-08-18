@@ -1114,6 +1114,13 @@ def test_option_contract_identity_migration_on_postgresql(
             },
         )
         connection.execute(
+            sa.text(
+                "INSERT INTO instrument_identifier "
+                "(instrument_id, identifier_type, identifier_value, is_primary) "
+                "VALUES ('option-underlying', 'ticker', '0700.HK', true)"
+            )
+        )
+        connection.execute(
             base_insert,
             {
                 "instrument_id": "identity-less-option",
@@ -1259,7 +1266,7 @@ def test_option_contract_identity_migration_on_postgresql(
     with engine.connect() as connection:
         _set_search_path(connection, schema)
         assert connection.scalar(sa.text("SELECT version_num FROM alembic_version")) == (
-            "20260812_0024"
+            "20260818_0025"
         )
 
 

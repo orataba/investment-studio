@@ -110,6 +110,7 @@ def create_instrument(
     instrument_type: str,
     currency: str,
     identifiers: list[dict[str, object]],
+    exchange_code: str | None = None,
     quote_selection_policy: dict[str, object] | None = None,
     broker_identifiers: list[dict[str, object]] | None = None,
 ) -> dict[str, object]:
@@ -118,6 +119,7 @@ def create_instrument(
         instrument_name=instrument_name,
         instrument_type=instrument_type,
         currency=currency,
+        exchange_code=exchange_code,
         identifiers=identifiers,
         quote_selection_policy=quote_selection_policy,
         broker_identifiers=broker_identifiers,

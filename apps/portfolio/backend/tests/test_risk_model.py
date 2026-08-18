@@ -40,7 +40,7 @@ def _holding(
         "instrument_core": {
             "instrument_id": instrument_id,
             "instrument_name": instrument_id,
-            "instrument_type": "fund",
+            "instrument_type": "public_fund",
             "currency": currency,
         },
         "quantity": 100,

@@ -52,6 +52,7 @@ def _transactions() -> list[dict[str, object]]:
         "instrument_id": SECURITY_INSTRUMENT_ID,
         "instrument_name": "Flat-price HKD Equity",
         "instrument_type": "equity",
+        "exchange_code": "XNYS",
         "currency": "HKD",
         "identifiers": [],
     }
@@ -102,6 +103,7 @@ def _security_detail() -> dict[str, object]:
         "instrument_id": SECURITY_INSTRUMENT_ID,
         "instrument_name": "Flat-price HKD Equity",
         "instrument_type": "equity",
+        "exchange_code": "XNYS",
         "currency": "HKD",
         "identifiers": [],
         "quote_selection_policy": {"valuation": ["close"], "reference": ["close"]},

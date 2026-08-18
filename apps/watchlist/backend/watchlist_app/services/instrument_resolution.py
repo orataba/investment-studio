@@ -3,20 +3,69 @@ from __future__ import annotations
 from sqlalchemy.orm import Session
 
 from watchlist_app.repositories.sqlalchemy.instruments import SQLAlchemyInstrumentRepository
+from watchlist_app.repositories.sqlalchemy.taxonomy import SQLAlchemyTaxonomyRepository
 from watchlist_app.services.shared_instrument_registry import get_shared_instrument
 
 
 instrument_repository = SQLAlchemyInstrumentRepository()
-LOCAL_DETAIL_INSTRUMENT_TYPES = {"fund", "etf", "equity", "index"}
+taxonomy_repository = SQLAlchemyTaxonomyRepository()
+LOCAL_DETAIL_INSTRUMENT_TYPES = {
+    "public_fund",
+    "private_fund",
+    "etf",
+    "equity",
+    "index",
+}
+EQUITY_EXCHANGE_TAXONOMY_NODES = {
+    "XNAS": "equity-exchange-xnas",
+    "XNYS": "equity-exchange-xnys",
+    "XASE": "equity-exchange-xase",
+    "XHKG": "equity-exchange-xhkg",
+    "XSHG": "equity-exchange-xshg",
+    "XSHE": "equity-exchange-xshe",
+}
 
 
-def _local_detail_view_type(instrument_type: str) -> str | None:
+def equity_exchange_taxonomy_node(instrument: object) -> str | None:
+    metadata = getattr(instrument, "metadata_json", None)
+    if not isinstance(metadata, dict):
+        return None
+    exchange_code = str(metadata.get("exchange_code") or "").strip().upper()
+    return EQUITY_EXCHANGE_TAXONOMY_NODES.get(exchange_code)
+
+
+def local_detail_view_type(instrument_type: str) -> str | None:
     normalized = instrument_type.strip().lower()
-    if normalized == "fund":
-        return "fund"
-    if normalized in {"etf", "equity", "index"}:
-        return "listed"
-    return None
+    return normalized if normalized in LOCAL_DETAIL_INSTRUMENT_TYPES else None
+
+
+def sync_local_instrument(
+    session: Session,
+    shared_record: dict[str, object],
+):
+    instrument_type = str(shared_record.get("instrument_type") or "other").strip().lower()
+    detail_view_type = local_detail_view_type(instrument_type)
+    if detail_view_type is None:
+        return None
+    local_instrument = instrument_repository.upsert_from_shared_instrument(
+        session,
+        shared_instrument=shared_record,
+        detail_view_type=detail_view_type,
+    )
+    if instrument_type == "equity":
+        exchange_code = str(shared_record.get("exchange_code") or "").strip().upper()
+        node_id = EQUITY_EXCHANGE_TAXONOMY_NODES.get(exchange_code)
+        if node_id is None:
+            raise ValueError(f"Unsupported Registry equity exchange_code: {exchange_code or 'missing'}")
+        if taxonomy_repository.get_node(session, node_id=node_id) is None:
+            raise ValueError(f"Watchlist exchange taxonomy node is missing: {node_id}")
+        taxonomy_repository.upsert_assignment(
+            session,
+            instrument_id=local_instrument.instrument_id,
+            node_id=node_id,
+            source_record_id=f"registry_exchange:{exchange_code}",
+        )
+    return local_instrument
 
 
 def _primary_identifier(shared_record: dict[str, object] | None) -> str | None:
@@ -105,7 +154,7 @@ def resolve_watchlist_instrument(
 
     instrument_type = str(shared_record.get("instrument_type") or "other")
     canonical_instrument_id = str(shared_record.get("instrument_id") or requested_instrument_id)
-    detail_view_type = _local_detail_view_type(instrument_type)
+    detail_view_type = local_detail_view_type(instrument_type)
     corporate_actions = (
         list(shared_record.get("corporate_actions", []))
         if isinstance(shared_record.get("corporate_actions"), list)
@@ -122,11 +171,9 @@ def resolve_watchlist_instrument(
             corporate_actions=corporate_actions,
         )
 
-    local_instrument = instrument_repository.upsert_from_shared_instrument(
-        session,
-        shared_instrument=shared_record,
-        detail_view_type=detail_view_type,
-    )
+    local_instrument = sync_local_instrument(session, shared_record)
+    if local_instrument is None:
+        raise RuntimeError("Supported Watchlist instrument failed to materialize")
     return _build_supported_detail_response(
         requested_instrument_id=requested_instrument_id,
         canonical_instrument_id=canonical_instrument_id,

@@ -96,7 +96,7 @@ def postgres_portfolio_env(monkeypatch: pytest.MonkeyPatch) -> dict[str, str]:
     instrument = shared_store.create_instrument(
         session_factory,
         instrument_name="Portfolio FK Integration Asset",
-        instrument_type="equity",
+        instrument_type="public_fund",
         currency="USD",
         identifiers=[
             {

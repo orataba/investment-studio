@@ -61,6 +61,7 @@ def _transaction(
             "instrument_id": instrument_id,
             "instrument_name": "Gap Asset",
             "instrument_type": "equity",
+            "exchange_code": "XNYS",
             "currency": "USD",
             "identifiers": [],
         }
@@ -237,6 +238,7 @@ def test_external_flow_inside_unreliable_valuation_gap_reanchors_return_chain(mo
         "instrument_id": instrument_id,
         "instrument_name": "Gap Asset",
         "instrument_type": "equity",
+        "exchange_code": "XNYS",
         "currency": "USD",
         "identifiers": [],
         "quote_selection_policy": {"valuation": ["close"], "reference": ["close"]},

@@ -48,6 +48,7 @@ def _insert_fund(
     connection: sa.Connection,
     *,
     policy: dict[str, object] = FUND_POLICY,
+    instrument_type: str = "private_fund",
 ) -> None:
     connection.execute(
         sa.text(
@@ -58,12 +59,19 @@ def _insert_fund(
                 refresh_status_json, lifecycle_state_json,
                 market_data_updated_at
             ) VALUES (
-                :instrument_id, 'Canonical NAV Fund', 'fund', 'CNY',
-                :policy, '{}', '{}', '{"status": "active"}', NULL
+                :instrument_id, 'Canonical NAV Fund', :instrument_type, 'CNY',
+                :policy, :source_settings, '{}', '{"status": "active"}', NULL
             )
             """
         ),
-        {"instrument_id": FUND_ID, "policy": json.dumps(policy)},
+        {
+            "instrument_id": FUND_ID,
+            "instrument_type": instrument_type,
+            "policy": json.dumps(policy),
+            "source_settings": json.dumps(
+                {"source_mode": "email", "source_email": "nav@example.test"}
+            ),
+        },
     )
 
 
@@ -267,7 +275,7 @@ def test_migration_snapshots_then_deletes_untrusted_return_semantics(
     command.upgrade(config, "20260715_0011")
     engine = sa.create_engine(database_url)
     with engine.begin() as connection:
-        _insert_fund(connection, policy=LEGACY_POLICY)
+        _insert_fund(connection, policy=LEGACY_POLICY, instrument_type="fund")
         _insert_legacy_nav(connection, quote_basis="official_nav", value="1.00")
         _insert_legacy_nav(connection, quote_basis="cumulative_nav", value="1.05")
         _insert_legacy_nav(connection, quote_basis="total_return_nav", value="1.10")

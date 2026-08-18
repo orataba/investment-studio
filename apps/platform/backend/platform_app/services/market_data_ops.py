@@ -3844,6 +3844,13 @@ def refresh_market_data(
             updated_by=updated_by,
             full_history=full_history,
         )
+    if requested_source == "fmp":
+        from platform_app.services.equities import refresh_equity_eod
+
+        return refresh_equity_eod(
+            instrument_id,
+            full_history=full_history,
+        )
 
     source_mode = str(source_settings.get("source_mode") or "manual")
     if source_mode == "email":
@@ -3861,6 +3868,13 @@ def refresh_market_data(
                 instrument_id=instrument_id,
                 instrument=instrument,
                 updated_by=updated_by,
+                full_history=full_history,
+            )
+        if profile.lower() == "fmp":
+            from platform_app.services.equities import refresh_equity_eod
+
+            return refresh_equity_eod(
+                instrument_id,
                 full_history=full_history,
             )
         return update_refresh_status(
@@ -3903,7 +3917,7 @@ def refresh_market_data_with_timeout(
         refresh_mode = (
             "email"
             if normalized_source == "email"
-            else "api" if normalized_source == "tushare" else None
+            else "api" if normalized_source in {"tushare", "fmp"} else None
         )
         LOGGER.warning(
             "market data item timed out instrument_id=%s source=%s message=%s",
@@ -3917,6 +3931,20 @@ def refresh_market_data_with_timeout(
             message=str(exc),
             updated_by=updated_by,
             mode=refresh_mode,
+        )
+    except Exception as exc:
+        if str(source or "configured").strip().lower() != "fmp":
+            raise
+        from platform_app.services.equities.fmp_client import FmpApiError
+
+        if not isinstance(exc, FmpApiError):
+            raise
+        return update_refresh_status(
+            instrument_id=instrument_id,
+            status="failed",
+            message=str(exc),
+            updated_by=updated_by,
+            mode="api",
         )
 
 
@@ -4341,6 +4369,10 @@ def _refresh_from_tushare(
     updated_by: str | None,
     full_history: bool,
 ) -> dict[str, object] | None:
+    instrument_type = str(instrument.get("instrument_type") or "").strip().lower()
+    if instrument_type == "equity":
+        raise ValueError("Equity EOD must be refreshed from FMP, not Tushare.")
+
     ts_code = _tushare_identifier_code(instrument)
     if ts_code is None:
         return update_refresh_status(
@@ -4351,10 +4383,9 @@ def _refresh_from_tushare(
             mode="api",
         )
 
-    instrument_type = str(instrument.get("instrument_type") or "").strip().lower()
     suffix = ts_code.rsplit(".", 1)[-1]
     try:
-        if instrument_type == "fund" and suffix == "OF":
+        if instrument_type == "public_fund" and suffix == "OF":
             latest_date = None if full_history else _latest_nav_date_from_instrument(instrument)
             rows = _call_datahub_tushare_api(
                 api_name="fund_nav",
@@ -4402,24 +4433,13 @@ def _refresh_from_tushare(
             )
             return record
 
-        if instrument_type in {"fund", "etf"} and suffix in TUSHARE_PRICE_SUFFIXES:
+        if instrument_type == "etf" and suffix in TUSHARE_PRICE_SUFFIXES:
             return _refresh_tushare_listed_security(
                 instrument_id=instrument_id,
                 instrument=instrument,
                 ts_code=ts_code,
                 price_api_name="fund_daily",
                 factor_api_name="fund_adj",
-                updated_by=updated_by,
-                full_history=full_history,
-            )
-
-        if instrument_type == "equity" and suffix in TUSHARE_PRICE_SUFFIXES:
-            return _refresh_tushare_listed_security(
-                instrument_id=instrument_id,
-                instrument=instrument,
-                ts_code=ts_code,
-                price_api_name="daily",
-                factor_api_name="adj_factor",
                 updated_by=updated_by,
                 full_history=full_history,
             )
@@ -4579,8 +4599,12 @@ def _matches_batch_source(instrument: dict[str, object], source: str) -> bool:
         return source_mode == "email"
     if normalized_source == "tushare":
         return source_mode == "api" and _tushare_profile_enabled(source_settings)
+    if normalized_source == "fmp":
+        return source_mode == "api" and str(
+            source_settings.get("source_api_profile") or ""
+        ).strip().lower() == "fmp"
     if normalized_source == "all":
-        return source_mode == "email" or (source_mode == "api" and _tushare_profile_enabled(source_settings))
+        return source_mode == "email" or source_mode == "api"
     return False
 
 
@@ -5028,9 +5052,16 @@ def refresh_market_data_batch(
             updated_by=updated_by,
             full_history=full_history,
         )
+        fmp_result = refresh_market_data_batch(
+            source="fmp",
+            updated_by=updated_by,
+            full_history=full_history,
+            include_inactive=include_inactive,
+        )
         combined_results = [
             *list(tushare_result.get("results", [])),
             *list(email_result.get("results", [])),
+            *list(fmp_result.get("results", [])),
         ]
         return {
             **email_result,
@@ -5040,9 +5071,16 @@ def refresh_market_data_batch(
                 for item in combined_results
                 if item.get("status") in {"imported", "refreshed"}
             ),
-            "skipped_count": min(
-                int(tushare_result.get("skipped_count", 0)),
-                int(email_result.get("skipped_count", 0)),
+            "skipped_count": max(
+                0,
+                len(instruments)
+                - len(
+                    {
+                        str(item.get("instrument_id") or "")
+                        for item in combined_results
+                        if str(item.get("instrument_id") or "")
+                    }
+                ),
             ),
             "results": combined_results,
         }
@@ -5082,6 +5120,38 @@ def refresh_market_data_batch(
             "source": normalized_source,
             "refreshed_count": sum(
                 1 for item in results if item["status"] in {"imported", "refreshed"}
+            ),
+            "skipped_count": len(instruments) - len(targets),
+            "results": results,
+        }
+    if normalized_source == "fmp" and targets:
+        results: list[dict[str, object]] = []
+        for target in targets:
+            refreshed = refresh_market_data_with_timeout(
+                instrument_id=str(target["instrument_id"]),
+                updated_by=updated_by,
+                full_history=full_history,
+                source="fmp",
+            )
+            if refreshed is None:
+                continue
+            source_settings = dict(refreshed.get("source_settings", {}))
+            refresh_status = dict(refreshed.get("refresh_status", {}))
+            results.append(
+                {
+                    "instrument_id": refreshed["instrument_id"],
+                    "instrument_name": refreshed["instrument_name"],
+                    "instrument_type": refreshed["instrument_type"],
+                    "source_mode": source_settings.get("source_mode") or "api",
+                    "source_api_profile": "fmp",
+                    "status": refresh_status.get("status") or "idle",
+                    "message": refresh_status.get("message") or "",
+                }
+            )
+        return {
+            "source": "fmp",
+            "refreshed_count": sum(
+                1 for item in results if item["status"] == "refreshed"
             ),
             "skipped_count": len(instruments) - len(targets),
             "results": results,

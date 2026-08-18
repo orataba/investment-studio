@@ -12,6 +12,7 @@
 - `instrument_name`
 - `instrument_type`
 - `currency`
+- `exchange_code`（仅 `equity` 必填；canonical MIC）
 - `identifiers[]`
 
 ### `InstrumentIdentifier`
@@ -32,6 +33,7 @@ Supported `identifier_type` values:
 - `fund_name`
 - `cash_currency`
 - `other`
+- `provider_symbol`
 
 ### `MarketDataPoint`
 
@@ -67,11 +69,11 @@ shared market data。`total_return_nav` 不存在时必须为 NA；不得回退�
 - `market_calendar`: 非空 calendar identifier 或 `null`；无法可靠推断 venue 时必须为 `null`
 - `release_lag_days`: 非负整数，表示 observation date 后的预期可用日延迟
 
-默认 cadence 按品种确定：fund 为 `daily / lag 1`；equity、ETF、index 与 FX 为
+默认 cadence 按品种确定：`public_fund / private_fund` 为 `daily / lag 1`；equity、ETF、index 与 FX 为
 `daily / lag 0`；cash 与 other 为 `event_driven / lag 0`。只有 `.SH`、`.SZ`、`.HK`
 这类能从 canonical identifier 明确推断的 venue 才默认 calendar；其他品种保持 `null` 并由数据运营配置。
 
-Tushare listed-security ingestion 的 complete raw `close` 必须有同日 complete
+Tushare 场内基金 ingestion 的 complete raw `close` 必须有同日 complete
 `adjusted_close`。若 adjustment factor 不可用，raw close 只能以 `partial` 写入，refresh status
 也必须为 `partial` 并列出缺失日期；不得静默发布孤立的 complete close。
 
@@ -163,7 +165,7 @@ security-master 事实；基金 NAV 分红再投只用于构造 TWR 指数，不
 共享 store 以 canonical instrument type、`metric_family` 与 `quote_basis` 作为唯一权威确定性派生：
 FX 为 `rate / 1`，其余为 `per_unit / 1`。
 批量写入若携带这两个派生字段会拒绝整批，避免调用方与共享 contract 形成第二套规则。
-Python runtime 只支持 Instrument Registry head `20260812_0024`，不会探测或兼容更早物理 schema。当前 Registry 类型集合是 `fund | etf | index | equity | cash | fx | other`；直接债券、FCN 与期权不进入共享资产表。FCN 与期权合约条款、生命周期和交易事实属于 Portfolio 私域；直接债券当前不在产品交易范围内。直接 SQL 也必须满足 canonical 行情、NAV lineage、基金行为状态机、计算输入与 broker identity 约束。
+Python runtime 只支持 Instrument Registry head `20260818_0025`，不会探测或兼容更早物理 schema。当前 Registry 类型集合是 `public_fund | private_fund | etf | index | equity | cash | fx | other`；股票还必须持有 canonical MIC `exchange_code` 和 FMP `provider_symbol` identity。直接债券、FCN 与期权不进入共享资产表。FCN 与期权合约条款、生命周期和交易事实属于 Portfolio 私域；直接债券当前不在产品交易范围内。直接 SQL 也必须满足 canonical 行情、NAV lineage、基金行为状态机、计算输入与 broker identity 约束。
 
 每条 market-data observation（不只 FX）都必须使用 instrument master currency，`value`
 必须是有限正数，`status` 只能是 `complete | partial | unavailable`。共享 store 的单点、批量、
@@ -187,14 +189,14 @@ email success 的 `requested_at` 提升为该 cursor；运行时不再从当前 
 运行时读取和更新不再按 instrument type 补 role 或替换空数组。只有创建新 instrument 时，
 才把类型默认 policy 作为显式创建规则完整写入。
 
-NAV history 的批量预览、导入与替换只支持 `instrument_type=fund`。非基金资产必须在解析上传内容前拒绝，shared store 也必须在删除或写入前执行同一条断言；其他资产的行情通过 typed market-data 写入路径维护。
+NAV history 的批量预览、导入与替换只支持 `public_fund` 和 `private_fund`。非基金资产必须在解析上传内容前拒绝，shared store 也必须在删除或写入前执行同一条断言；其他资产的行情通过 typed market-data 写入路径维护。
 
 `quote role` 不直接固化到每条 market data point 上，而是放进 `QuoteSelectionPolicy`。
 原因是同一个 basis 往往会被多个读取场景复用；例如 `official_nav` 既可用于 valuation，也可作为 reference。
 
 默认 selector 约定：
 
-- `fund`
+- `public_fund` / `private_fund`
   - `valuation`: `official_nav -> close`
   - `total_return/chart`: `total_return_nav`（缺失即 NA，无 fallback）
 - `equity`
@@ -215,7 +217,7 @@ NAV history 的批量预览、导入与替换只支持 `instrument_type=fund`。
 下面这些不属于 shared instrument core：
 
 - watchlist row
-- fund detail read model
+- public/private fund detail read model
 - portfolio holdings
 - transaction ledger
 - risk snapshots
@@ -223,7 +225,7 @@ NAV history 的批量预览、导入与替换只支持 `instrument_type=fund`。
 
 ## 当前消费方式
 
-- `Watchlist` 用它承接 fund identity 和 canonical NAV / market data
+- `Watchlist` 用它承接公募、私募等 instrument identity 和 canonical NAV / market data；Watchlist taxonomy 只存放在 Watchlist 自己的 schema
 - `Portfolio` 用它承接 instrument identity 和 role-based quote selection
 - `Portfolio` 只把 `confirmed` corporate action 作为份额账本事件；`adjusted_close` 仅用于收益、风险和图表
 

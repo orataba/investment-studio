@@ -7,7 +7,7 @@
 - `frontend/` 与 `backend/` 都已可运行
 - `Platform` 只负责平台首页、app switcher 和 `Database Dashboard`
 - `Platform` 直接维护 `instrument_registry` 中的 canonical 市场事实，在私有 `platform` schema 保存数据摄取运行状态，并在共享市场数据更新后通知 downstream app 刷新物化读模型
-- `Platform` 对 `Watchlist` 的入口和 app registry 文案应反映当前真实发布范围：fund / ETF / equity / index，Copilot 仅保留 backend extension boundary
+- `Platform` 对 `Watchlist` 的入口和 app registry 文案应反映当前真实发布范围：公募 / 私募 / ETF / 股票 / 指数，Copilot 仅保留 backend extension boundary
 
 ## 当前职责
 
@@ -48,7 +48,7 @@
 
 ## Local NAV Imports
 
-仓库根目录的 `nav/` 只作为本机 NAV / Excel 文件导入暂存目录，供 [backend/scripts/import_coverage_nav_from_folder.py](./backend/scripts/import_coverage_nav_from_folder.py) 读取。
+仓库根目录的 `nav/` 只作为本机 NAV / Excel 文件导入暂存目录，供 [backend/scripts/import_registered_fund_nav_from_folder.py](./backend/scripts/import_registered_fund_nav_from_folder.py) 读取；脚本只匹配 Registry 中已有的公募和私募，不依赖 Watchlist 成员或分类。
 
 这些文件包含迁移保留的运行数据，当前已作为私有仓库恢复资产提交；后续新增大批量原始材料前先确认是否应进入仓库。
 
@@ -66,7 +66,7 @@ Database Dashboard 的邮件刷新使用显式产品规则匹配发件人、主�
 
 邮件或文件中解析出的值先作为 Platform 私有原始证据保存。Registry 对基金只接受 `official_nav`（单位净值）和 `total_return_nav`（分红再投资复权累计净值）。单位净值加历史现金分红的普通累计净值不得写成 `total_return_nav`；缺少可信供应商复权序列，或缺少完整分红/再投资信息时，累计净值保持 unavailable/NA。系统不以单位净值、现金累计值或交易价格兜底制造回报曲线。
 
-Database Dashboard 通过 DataHub REST 接口刷新 Tushare 数据集。将 instrument 的 `Source Mode` 设为 `API`、`API Profile` 设为 `tushare` 后，所有请求都由 [datahub_client.py](./backend/platform_app/services/datahub_client.py) 发送到 `PORTFOLIO_OPS_PLATFORM_DATAHUB_TUSHARE_API_URL`，并以 `X-API-Key` 携带仓库外配置的 `PORTFOLIO_OPS_PLATFORM_DATAHUB_API_KEY`。客户端按 DataHub 的 `fields + items + has_more` 合约解码并使用 `offset` 读取全部分页。公募 `.OF` 代码通过 `fund-nav` 写入 `official_nav / total_return_nav`，场内基金 `.SH/.SZ` 通过 `fund-daily` 与 `fund-adj` 写入原始收盘价、OHLCV 和前复权序列，股票使用 `daily` 与 `adj-factor`，指数 `.SH/.SZ/.CSI/.CNI` 使用 `index-daily`。批量刷新默认串行请求 DataHub，并对实际观察到的临时 40203/40204 响应做有限退避重试；其他提供方错误立即失败。新写入的来源标记为 `datahub:tushare:*`，历史来源记录保持原始 provenance。真实 API key 只存放在仓库外的 `platform.env` 或显式进程环境中；backend 目录中的 `.env.example` 仅说明键名。
+Database Dashboard 通过 DataHub REST 接口刷新 Tushare 数据集。将 instrument 的 `Source Mode` 设为 `API`、`API Profile` 设为 `tushare` 后，所有请求都由 [datahub_client.py](./backend/platform_app/services/datahub_client.py) 发送到 `PORTFOLIO_OPS_PLATFORM_DATAHUB_TUSHARE_API_URL`，并以 `X-API-Key` 携带仓库外配置的 `PORTFOLIO_OPS_PLATFORM_DATAHUB_API_KEY`。客户端按 DataHub 的 `fields + items + has_more` 合约解码并使用 `offset` 读取全部分页。公募 `.OF` 代码通过 `fund-nav` 写入 `official_nav / total_return_nav`，场内基金 `.SH/.SZ` 通过 `fund-daily` 与 `fund-adj` 写入原始收盘价、OHLCV 和前复权序列，指数 `.SH/.SZ/.CSI/.CNI` 使用 `index-daily`。股票不再走 Tushare：本地目录和已使用股票的 EOD 都由 FMP API 直接维护。批量刷新默认串行请求 DataHub，并对实际观察到的临时 40203/40204 响应做有限退避重试；其他提供方错误立即失败。真实 API key 只存放在仓库外的 `platform.env` 或 token 文件中；backend 目录中的 `.env.example` 仅说明键名。
 
 `H11001.CSI` 是显式例外：Registry 必须同时配置
 `source_api_fallback_profile=csindex` 与 `source_api_fallback_code=H11001`，
@@ -78,7 +78,7 @@ Database Dashboard 通过 DataHub REST 接口刷新 Tushare 数据集。将 inst
 
 指数的 provider 字段名与收益口径分开管理。`close` 只说明行情字段，不能自动等同于全收益；Database Dashboard 的 `Index Return Semantics` 必须按指数公司代码说明标记为 `Price return`、`Total return` 或 `Unknown`。例如普通沪深300代码与其全收益衍生代码是两条不同指数。该标记进入共享 Registry，Portfolio 再据此决定基准比较口径。
 
-后台定时刷新使用 [backend/scripts/refresh_market_data_scheduled.py](./backend/scripts/refresh_market_data_scheduled.py)。默认依次刷新 Tushare、邮件，再用 Registry 精确查询只重建方法版本落后的当前基金净值投影；最后同步等待 Portfolio 刷新响应，并让 Watchlist 可靠入队后由 worker 异步重算。投影协调不访问行情源或邮箱，也可用 `--channel projection` 单独执行。安装每天 21:00 刷新 timer：
+后台定时刷新使用 [backend/scripts/refresh_market_data_scheduled.py](./backend/scripts/refresh_market_data_scheduled.py)。默认先从 FMP API 刷新美股、港股、A 股的本地轻量股票目录，再依次刷新 Tushare、公募/私募邮件、Registry 中已经使用的股票 FMP EOD，最后只重建方法版本落后的当前基金净值投影。股票搜索只查本地目录；首次加入 Watchlist 或 Portfolio 时回补完整 EOD，后续按已使用股票增量更新，不维护三地全市场完整日线。投影协调不访问行情源或邮箱，也可用 `--channel projection` 单独执行。
 
 ```bash
 PYTHON_BIN=/home/shaw/miniconda3/envs/us_sector_rotation/bin/python \

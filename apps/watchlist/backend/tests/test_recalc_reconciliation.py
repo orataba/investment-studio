@@ -173,7 +173,7 @@ def test_single_instrument_legacy_source_date_does_not_requeue_forever(
     shared = {
         "instrument_id": "legacy-fund",
         "instrument_name": "Legacy Fund",
-        "instrument_type": "fund",
+        "instrument_type": "public_fund",
         "identifiers": [],
         "market_data_updated_at": None,
         "latest_market_data": [{"as_of_date": "2026-04-28"}],
@@ -224,8 +224,8 @@ def test_stale_generation_creates_one_durable_per_instrument_job(
         session.add(
             InstrumentDetail(
                 instrument_id="fund-a",
-                instrument_type="fund",
-                detail_view_type="fund",
+                instrument_type="public_fund",
+                detail_view_type="public_fund",
                 instrument_name="Fund A",
                 primary_identifier_type="internal",
                 primary_identifier_value="FUND-A",
@@ -240,7 +240,7 @@ def test_stale_generation_creates_one_durable_per_instrument_job(
     shared_summary = {
         "instrument_id": "fund-a",
         "instrument_name": "Fund A",
-        "instrument_type": "fund",
+        "instrument_type": "public_fund",
         "identifiers": [
             {
                 "identifier_type": "internal",
@@ -330,7 +330,7 @@ def test_same_source_generation_with_old_materialization_version_is_stale(
     shared = {
         "instrument_id": "fund-a",
         "instrument_name": "Fund A",
-        "instrument_type": "fund",
+        "instrument_type": "public_fund",
         "identifiers": [
             {
                 "identifier_type": "internal",

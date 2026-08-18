@@ -15,6 +15,7 @@ from watchlist_app.services.instrument_taxonomy import (
     taxonomy_node_supports_instrument,
     taxonomy_tree_payload,
 )
+from watchlist_app.services.instrument_resolution import equity_exchange_taxonomy_node
 
 
 router = APIRouter()
@@ -30,7 +31,7 @@ def _require_taxonomy_asset(session: Session, instrument_id: str):
     if str(instrument.instrument_type or "").strip().lower() not in SUPPORTED_TAXONOMY_INSTRUMENT_TYPES:
         raise HTTPException(
             status_code=400,
-            detail="Taxonomy is only available for fund, ETF, equity, and index instruments.",
+            detail="Taxonomy is only available for public funds, private funds, ETFs, equities, and indexes.",
         )
     return instrument
 
@@ -78,13 +79,20 @@ def update_instrument_taxonomy_assignment(
 ) -> dict[str, object]:
     instrument = _require_taxonomy_asset(session, instrument_id)
     node_id = str(payload.node_id or "").strip() or None
+    instrument_type = str(instrument.instrument_type).strip().lower()
+    if instrument_type == "equity":
+        expected_node_id = equity_exchange_taxonomy_node(instrument)
+        if node_id != expected_node_id:
+            raise HTTPException(
+                status_code=422,
+                detail="Equity taxonomy is maintained from the Registry exchange identity.",
+            )
     if node_id is not None:
         node = taxonomy_repository.get_node(session, node_id=node_id)
         if node is None:
             raise HTTPException(status_code=404, detail="Instrument taxonomy node not found")
         if node.taxonomy_code != INSTRUMENT_TAXONOMY_CODE:
             raise HTTPException(status_code=400, detail="Invalid taxonomy node")
-        instrument_type = str(instrument.instrument_type).strip().lower()
         node_type = str(node.instrument_type).strip().lower()
         if not taxonomy_node_supports_instrument(
             instrument_type=instrument_type,

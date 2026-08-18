@@ -6,6 +6,7 @@ from math import isfinite
 from typing import Iterable
 
 from portfolio_ops_instrument_core import (
+    FUND_INSTRUMENT_TYPES,
     FUND_TOTAL_RETURN_QUOTE_BASES,
     QUOTE_BASIS_METRIC_FAMILY,
     canonical_price_contract,
@@ -112,7 +113,7 @@ def analytical_return_quote_bases(detail: dict[str, object]) -> list[str]:
     explicit policy order, including adjusted close and raw-price fallbacks.
     """
 
-    if _normalized_text(detail.get("instrument_type")) == "fund":
+    if _normalized_text(detail.get("instrument_type")) in FUND_INSTRUMENT_TYPES:
         return [
             quote_basis
             for quote_basis in quote_policy_bases(detail, ("total_return", "chart"))

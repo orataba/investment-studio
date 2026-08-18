@@ -16,7 +16,17 @@ export function benchmarkInstrumentLabel(instrument: SharedInstrumentRecord) {
 }
 
 function instrumentTypeRank(type: string) {
-  return type === 'index' ? 0 : type === 'fund' ? 1 : type === 'etf' ? 2 : type === 'equity' ? 3 : 4
+  return type === 'index'
+    ? 0
+    : type === 'public_fund'
+      ? 1
+      : type === 'private_fund'
+        ? 2
+        : type === 'etf'
+          ? 3
+          : type === 'equity'
+            ? 4
+            : 5
 }
 
 type BenchmarkSearchBoxProps = {

@@ -145,7 +145,7 @@ GIPS 的 ex-post risk disclosure 与行业实践都要求风险统计基于收�
 - transaction costs 不得从 gross return 中加回；
 - `fee_category` 缺失时返回 `unknown`，不能猜测 management / custody / transaction-cost 分类。
 
-直接债券当前不在 Registry 或 Portfolio 交易范围内，因此系统不发布直接债券 fair value 或相关 GIPS 口径。债券基金与债券 ETF 仍按各自 `fund` / `etf` 行情和收益合同处理。
+直接债券当前不在 Registry 或 Portfolio 交易范围内，因此系统不发布直接债券 fair value 或相关 GIPS 口径。债券公募/私募与债券 ETF 仍按各自 `public_fund / private_fund / etf` 行情和收益合同处理。
 
 ## 3. 当前实现映射与边界
 

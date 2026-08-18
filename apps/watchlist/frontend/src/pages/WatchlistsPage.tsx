@@ -21,16 +21,17 @@ import {
   deleteWatchlistItems,
   getFieldRegistry,
   getInstrumentTaxonomyTree,
-  getSharedInstruments,
   getWatchlistDetail,
   getWatchlists,
   moveWatchlistItems,
+  materializePlatformEquity,
   resolveSharedInstrumentsFile,
   updateInstrumentTaxonomy,
   updateInstrumentAttributes,
   updateWatchlistView,
   runScreenerQuery,
 } from '../lib/api'
+import { searchWatchlistInstrumentCandidates } from '../lib/watchlistInstrumentSearch'
 import {
   buildInstrumentDetailPath,
   buildWatchlistPath,
@@ -111,8 +112,13 @@ type PendingGroupAssignment = {
   attributeKey: string
 }
 const WATCHLIST_INITIAL_RENDER_ROWS = 80
-const WATCHLIST_SUPPORTED_INSTRUMENT_TYPES = ['fund', 'etf', 'equity', 'index'] as const
-const ALL_COVERAGE_WATCHLIST_ID = 'all-coverage'
+const WATCHLIST_SUPPORTED_INSTRUMENT_TYPES = [
+  'public_fund',
+  'private_fund',
+  'etf',
+  'equity',
+  'index',
+] as const
 const TAXONOMY_FILTER_FIELD_KEY = 'taxonomy'
 const TAXONOMY_GROUP_BY_CODE = 'taxonomy'
 const TAXONOMY_GROUP_FIELD_KEYS = [
@@ -143,7 +149,7 @@ const TAXONOMY_FILTER_FIELD: FieldRegistryRecord = {
   sort_mode: 'none',
   filter_mode: 'multi_select',
   group_mode: 'none',
-  instrument_scope_json: ['fund', 'etf', 'equity', 'index'],
+  instrument_scope_json: [...WATCHLIST_SUPPORTED_INSTRUMENT_TYPES],
   product_scope_json: [],
   availability_rule_json: {},
   source_domain: 'taxonomy',
@@ -188,11 +194,9 @@ function compactTableColumnWidths<T extends string>(
   return { widths, totalWidth }
 }
 
-function isAllCoverageWatchlist(watchlist?: WatchlistRecord | WatchlistDetail | null) {
+function isSystemWatchlist(watchlist?: WatchlistRecord | WatchlistDetail | null) {
   return Boolean(
-    watchlist &&
-      (watchlist.watchlist_id === ALL_COVERAGE_WATCHLIST_ID ||
-        (watchlist.is_default && watchlist.owner_type === 'system')),
+    watchlist && watchlist.is_default && watchlist.owner_type === 'system',
   )
 }
 
@@ -1043,65 +1047,48 @@ export default function WatchlistsPage() {
 
     let cancelled = false
     setIsSearchingInstruments(true)
+    setModalError(null)
 
-    Promise.all([
-      getSharedInstruments({
-        search: instrumentSearch,
-        instrument_type: 'fund',
-        limit: 12,
-      }),
-      getSharedInstruments({
-        search: instrumentSearch,
-        instrument_type: 'etf',
-        limit: 12,
-      }),
-      getSharedInstruments({
-        search: instrumentSearch,
-        instrument_type: 'equity',
-        limit: 12,
-      }),
-      getSharedInstruments({
-        search: instrumentSearch,
-        instrument_type: 'index',
-        limit: 12,
-      }),
-    ])
-      .then(([fundResults, etfResults, equityResults, indexResults]) => {
-        if (cancelled) {
-          return
-        }
-
-        const seenInstrumentIds = new Set<string>()
-        const results = [...fundResults, ...etfResults, ...equityResults, ...indexResults].filter((item) => {
-          if (seenInstrumentIds.has(item.instrument_id)) {
-            return false
+    const timeoutId = window.setTimeout(() => {
+      searchWatchlistInstrumentCandidates(instrumentSearch, 12)
+        .then(({ results, stockCatalogError }) => {
+          if (cancelled) {
+            return
           }
-          seenInstrumentIds.add(item.instrument_id)
-          return true
+          setModalError(
+            stockCatalogError
+              ? `Stock catalog unavailable; Registry results remain available. ${stockCatalogError}`
+              : null,
+          )
+          setSharedInstrumentResults(results)
+          setSelectedInstrumentId((current) => {
+            if (current && results.some((item) => item.instrument_id === current)) {
+              return current
+            }
+            return results[0]?.instrument_id || ''
+          })
         })
-        setSharedInstrumentResults(results)
-        setSelectedInstrumentId((current) => {
-          if (current && results.some((item) => item.instrument_id === current)) {
-            return current
+        .catch((loadError) => {
+          if (!cancelled) {
+            setModalError(
+              loadError instanceof Error
+                ? loadError.message
+                : 'Failed to load shared registry.',
+            )
+            setSharedInstrumentResults([])
+            setSelectedInstrumentId('')
           }
-          return results[0]?.instrument_id || ''
         })
-      })
-      .catch((loadError) => {
-        if (!cancelled) {
-          setError(loadError instanceof Error ? loadError.message : 'Failed to load shared registry.')
-          setSharedInstrumentResults([])
-          setSelectedInstrumentId('')
-        }
-      })
-      .finally(() => {
-        if (!cancelled) {
-          setIsSearchingInstruments(false)
-        }
-      })
+        .finally(() => {
+          if (!cancelled) {
+            setIsSearchingInstruments(false)
+          }
+        })
+    }, 250)
 
     return () => {
       cancelled = true
+      window.clearTimeout(timeoutId)
     }
   }, [instrumentSearch, modalKind])
 
@@ -1278,7 +1265,7 @@ export default function WatchlistsPage() {
   }
 
   const activeWatchlist = watchlists.find((item) => item.watchlist_id === watchlistId) || null
-  const activeWatchlistIsAllCoverage = isAllCoverageWatchlist(
+  const activeWatchlistIsSystem = isSystemWatchlist(
     activeWatchlist || (detailIsCurrent ? watchlistDetail : null),
   )
 
@@ -1329,7 +1316,7 @@ export default function WatchlistsPage() {
     }
   }
   const moveTargetOptions = useMemo(
-    () => watchlists.filter((item) => item.watchlist_id !== watchlistId && !isAllCoverageWatchlist(item)),
+    () => watchlists.filter((item) => item.watchlist_id !== watchlistId && !isSystemWatchlist(item)),
     [watchlists, watchlistId],
   )
   const copyTargetWatchlist =
@@ -1347,7 +1334,7 @@ export default function WatchlistsPage() {
         types.add(instrumentType)
       }
     })
-    return types.size ? [...types] : ['fund']
+    return types.size ? [...types] : [...WATCHLIST_SUPPORTED_INSTRUMENT_TYPES]
   }, [screenerResult])
   const supportsAnyInstrumentScope = (field: FieldRegistryRecord) => {
     if (!field.instrument_scope_json.length) {
@@ -1364,9 +1351,7 @@ export default function WatchlistsPage() {
   const applicableTaxonomyNodes = useMemo(
     () =>
       (instrumentTaxonomy?.nodes || []).filter(
-        (node) =>
-          activeInstrumentTypes.includes(node.instrument_type) ||
-          (node.instrument_type === 'fund' && activeInstrumentTypes.includes('etf')),
+        (node) => activeInstrumentTypes.includes(node.instrument_type),
       ),
     [activeInstrumentTypes, instrumentTaxonomy],
   )
@@ -2542,7 +2527,7 @@ export default function WatchlistsPage() {
                     >
                       Copy Watchlist
                     </button>
-                    {!isAllCoverageWatchlist(watchlist) ? (
+                    {!isSystemWatchlist(watchlist) ? (
                       <button
                         type="button"
                         onClick={() => {
@@ -2601,7 +2586,7 @@ export default function WatchlistsPage() {
               />
             </label>
 
-            {!activeWatchlistIsAllCoverage ? (
+            {!activeWatchlistIsSystem ? (
               <button
                 type="button"
                 className="watchlists-toolbar-button"
@@ -2917,7 +2902,7 @@ export default function WatchlistsPage() {
                 Copy
               </button>
             ) : null}
-            {selectedRows.length && rowsAreCurrent && !activeWatchlistIsAllCoverage ? (
+            {selectedRows.length && rowsAreCurrent && !activeWatchlistIsSystem ? (
               <button
                 type="button"
                 className="watchlists-toolbar-button"
@@ -2933,7 +2918,7 @@ export default function WatchlistsPage() {
                 Move
               </button>
             ) : null}
-            {selectedRows.length && rowsAreCurrent && !activeWatchlistIsAllCoverage ? (
+            {selectedRows.length && rowsAreCurrent && !activeWatchlistIsSystem ? (
               <button
                 type="button"
                 className="watchlists-toolbar-button watchlists-danger"
@@ -3858,7 +3843,7 @@ export default function WatchlistsPage() {
             <div className="watchlists-modal-header">
               <div>
                 <div className="panel-title">Add</div>
-                <div className="section-heading">Shared Registry</div>
+                <div className="section-heading">Registry &amp; FMP Equity Search</div>
               </div>
               <button type="button" disabled={isAdding || isBatchAdding} onClick={closeActiveModal}>
                 Close
@@ -3868,7 +3853,7 @@ export default function WatchlistsPage() {
             <div className="watchlists-modal-body">
               {modalError ? <div className="panel error-state" role="alert">{modalError}</div> : null}
               <label className="form-field">
-                <span>Search Shared Registry</span>
+                <span>Search Instruments</span>
                 <input
                   className="form-input"
                   value={instrumentSearch}
@@ -3877,10 +3862,9 @@ export default function WatchlistsPage() {
                 />
               </label>
               <p className="watchlists-registry-note">
-                Watchlist only references existing instruments from{' '}
-                <a href={`${PLATFORM_HOME_URL}/database-dashboard`}>Database Dashboard</a>. This release accepts
-                funds, ETFs, equities, and indexes. If the instrument is not listed here, it does not exist in the shared
-                registry yet.
+                Public funds, private funds, ETFs, and indexes come from the shared Registry. Stock searches use the
+                locally synchronized FMP catalog; choosing a new stock prepares its local identity and loads its EOD
+                history before it is added here. Taxonomy assignments remain inside Watchlist.
               </p>
               {selectedSharedInstrument ? (
                 <div className="watchlists-registry-selected">
@@ -3919,8 +3903,8 @@ export default function WatchlistsPage() {
                 {!isSearchingInstruments && !sharedInstrumentResults.length ? (
                   <div className="empty-state">
                     {instrumentSearch.trim()
-                      ? `Instrument "${instrumentSearch.trim()}" does not exist in the shared registry.`
-                      : 'No fund, ETF, equity, or index instruments are available in the shared registry.'}
+                      ? `No Registry or local stock catalog result matched "${instrumentSearch.trim()}".`
+                      : 'No public fund, private fund, ETF, stock, or index instruments are available.'}
                   </div>
                 ) : null}
               </div>
@@ -3954,16 +3938,24 @@ export default function WatchlistsPage() {
                   setIsAdding(true)
                   setModalError(null)
                   try {
-                    const addResult = await addWatchlistItems(sourceWatchlistId, [selectedSharedInstrument.instrument_id])
+                    const registryInstrument =
+                      selectedSharedInstrument.source === 'fmp_catalog' &&
+                      !selectedSharedInstrument.existing_instrument_id
+                        ? await materializePlatformEquity(selectedSharedInstrument.fmp_symbol || '')
+                        : selectedSharedInstrument
+                    const instrumentId =
+                      selectedSharedInstrument.existing_instrument_id ||
+                      registryInstrument.instrument_id
+                    const addResult = await addWatchlistItems(sourceWatchlistId, [instrumentId])
                     await refreshWatchlistDetail(undefined, sourceWatchlistId)
                     setInstrumentSearch('')
                     setSharedInstrumentResults([])
                     setSelectedInstrumentId('')
                     setModalKind(null)
                     if (addResult.accepted_count === 0) {
-                      setNotice(`${primarySharedIdentifier(selectedSharedInstrument)} is already in this watchlist.`)
+                      setNotice(`${primarySharedIdentifier(registryInstrument)} is already in this watchlist.`)
                     } else {
-                      setNotice(`Added ${primarySharedIdentifier(selectedSharedInstrument)} from the shared registry.`)
+                      setNotice(`Added ${primarySharedIdentifier(registryInstrument)} to this watchlist.`)
                     }
                     setReloadToken(Date.now())
                   } catch (addError) {

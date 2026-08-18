@@ -17,8 +17,9 @@ function instrument(
   return {
     instrument_id: instrumentId,
     instrument_name: instrumentName,
-    instrument_type: 'fund',
+    instrument_type: 'public_fund',
     currency: 'CNY',
+    exchange_code: null,
     latest_market_data: [],
     quote_selection_policy: {
       trading: [],
@@ -80,8 +81,8 @@ describe('transaction presentation', () => {
   })
 
   it('uses fund subscription language without changing the stored transaction command', () => {
-    expect(transactionActivityLabel('buy', 'fund')).toBe('Subscription')
-    expect(transactionActivityLabel('sell', 'fund')).toBe('Redemption')
+    expect(transactionActivityLabel('buy', 'public_fund')).toBe('Subscription')
+    expect(transactionActivityLabel('sell', 'private_fund')).toBe('Redemption')
     expect(transactionActivityLabel('buy', 'etf')).toBe('Buy')
   })
 

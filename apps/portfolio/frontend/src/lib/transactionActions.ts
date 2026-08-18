@@ -41,7 +41,7 @@ export function transactionActionGroups(
   context: TransactionActionContext = {},
 ): TransactionActionGroup[] {
   if (assetDomain === 'security') {
-    const fund = assetSubtype === 'fund'
+    const fund = assetSubtype === 'public_fund' || assetSubtype === 'private_fund'
     return [
       {
         label: 'Trades',

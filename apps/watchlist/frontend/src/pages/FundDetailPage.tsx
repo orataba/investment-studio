@@ -275,7 +275,7 @@ const DETAIL_TAB_CODES: DetailTab[] = [
   'monitoring',
 ]
 
-type DetailKind = 'fund' | 'index'
+export type FundInstrumentType = 'public_fund' | 'private_fund'
 type QuoteBasis = NavQuoteBasis
 type ChartDisplayStyle = 'mountain' | 'line' | 'dot'
 type QuoteChartMenu = 'settings'
@@ -454,7 +454,6 @@ const TAB_ORDER: DetailTab[] = [
 ]
 
 const CORE_TABS: DetailTab[] = ['overview', 'performance', 'risk', 'price', 'exposure', 'people', 'strategy']
-const INDEX_TABS: DetailTab[] = ['overview', 'performance', 'risk']
 
 type LocalizedText = {
   en: string
@@ -539,8 +538,8 @@ const SYSTEM_LABELS: Record<string, LocalizedText> = {
   documentTitle: { en: 'Documents', zh: '文档' },
   documentUploaded: { en: 'Document uploaded.', zh: '文档已上传。' },
   fileName: { en: 'File Name', zh: '文件名' },
-  fundDetail: { en: 'Fund Detail', zh: '基金详情' },
-  indexDetail: { en: 'Index Detail', zh: '指数详情' },
+  publicFundDetail: { en: 'Public Fund Detail', zh: '公募基金详情' },
+  privateFundDetail: { en: 'Private Fund Detail', zh: '私募基金详情' },
   instrumentSettings: { en: 'Instrument Settings', zh: '标的设置' },
   investmentStatus: { en: 'Investment Status', zh: '投资状态' },
   notes: { en: 'Notes', zh: '备注' },
@@ -1109,7 +1108,17 @@ function registryBenchmarkOption(item: SharedInstrumentRecord): FundLibraryItem 
 }
 
 function benchmarkTypeRank(type: string) {
-  return type === 'index' ? 0 : type === 'fund' ? 1 : type === 'etf' ? 2 : type === 'equity' ? 3 : 4
+  return type === 'index'
+    ? 0
+    : type === 'public_fund'
+      ? 1
+      : type === 'private_fund'
+        ? 2
+        : type === 'etf'
+          ? 3
+          : type === 'equity'
+            ? 4
+            : 5
 }
 
 function filterBenchmarkOptions(options: FundLibraryItem[], search: string) {
@@ -1654,11 +1663,7 @@ function upsertKeyValueRows(rows: EditableKeyValueRow[], key: string, value: str
   return [...rows, { id: makeRowId('overview'), key, value }]
 }
 
-function normalizeTabs(sourceTabs: string[], detailKind: DetailKind = 'fund'): DetailTab[] {
-  if (detailKind === 'index') {
-    return INDEX_TABS
-  }
-
+function normalizeTabs(sourceTabs: string[]): DetailTab[] {
   const set = new Set<DetailTab>(CORE_TABS)
 
   sourceTabs.forEach((tab) => {
@@ -3597,7 +3602,7 @@ function EmptyPanel({ title, note }: { title: string; note: string }) {
 
 type FundDetailPageProps = {
   fundId?: string
-  detailKind?: DetailKind
+  fundType: FundInstrumentType
   watchlistContext?: {
     watchlistId: string
     watchlistName?: string | null
@@ -3607,10 +3612,10 @@ type FundDetailPageProps = {
 
 export default function FundDetailPage({
   fundId: propFundId,
-  detailKind = 'fund',
+  fundType,
   watchlistContext = null,
   corporateActions = [],
-}: FundDetailPageProps = {}) {
+}: FundDetailPageProps) {
   const { language } = useLanguage()
   const { fundId: routeFundId = 'fax' } = useParams()
   const [detailSearchParams, setDetailSearchParams] = useSearchParams()
@@ -3830,7 +3835,7 @@ export default function FundDetailPage({
   useEffect(() => {
     let cancelled = false
     const previousBundle = bundle?.summary.instrument_id === fundId ? bundle : null
-    const bundleKey = `${detailKind}:${fundId}:${refreshToken}`
+    const bundleKey = `${fundType}:${fundId}:${refreshToken}`
     const requestCoordinator = createDetailRequestCoordinator(bundleKey)
     detailBundleKeyRef.current = ''
     detailRequestCoordinatorRef.current = requestCoordinator
@@ -3851,9 +3856,7 @@ export default function FundDetailPage({
           getInstrumentSummary(fundId),
           getInstrumentLibrary(),
           getInstrumentNavSeries(fundId),
-          detailKind === 'index'
-            ? Promise.resolve(defaultFundResearchResponse())
-            : getInstrumentResearch(fundId),
+          getInstrumentResearch(fundId),
         ] as const)
         const [
           summaryResult,
@@ -3881,7 +3884,7 @@ export default function FundDetailPage({
           'research timeline',
         ])
 
-        const nextTabs = normalizeTabs(summary.tabs || [], detailKind)
+        const nextTabs = normalizeTabs(summary.tabs || [])
 
         detailBundleKeyRef.current = bundleKey
         setBundle({
@@ -3938,10 +3941,10 @@ export default function FundDetailPage({
         detailBundleKeyRef.current = ''
       }
     }
-  }, [detailKind, fundId, refreshToken])
+  }, [fundId, fundType, refreshToken])
 
   useEffect(() => {
-    const bundleKey = `${detailKind}:${fundId}:${refreshToken}`
+    const bundleKey = `${fundType}:${fundId}:${refreshToken}`
     if (
       !bundle ||
       detailBundleKey !== bundleKey ||
@@ -4051,7 +4054,7 @@ export default function FundDetailPage({
       }
     })
     return undefined
-  }, [activeTab, detailBundleKey, detailKind, fundId, refreshToken, sectionRetryToken])
+  }, [activeTab, detailBundleKey, fundId, fundType, refreshToken, sectionRetryToken])
 
   useEffect(() => {
     setTimelineNoteDraft(null)
@@ -4273,7 +4276,11 @@ export default function FundDetailPage({
         }
         setRegistryBenchmarkOptions(
           records
-            .filter((record) => ['fund', 'etf', 'equity', 'index'].includes(record.instrument_type))
+            .filter((record) =>
+              ['public_fund', 'private_fund', 'etf', 'equity', 'index'].includes(
+                record.instrument_type,
+              ),
+            )
             .map(registryBenchmarkOption),
         )
       })
@@ -4868,7 +4875,7 @@ export default function FundDetailPage({
   if (loading) {
     return (
       <div className="terminal-page">
-        <LoadingOverlay label={detailKind === 'index' ? 'Loading index detail' : 'Loading fund detail'} />
+        <LoadingOverlay label={fundType === 'public_fund' ? 'Loading public fund detail' : 'Loading private fund detail'} />
       </div>
     )
   }
@@ -5045,10 +5052,12 @@ export default function FundDetailPage({
   const quoteLatestStats = getLatestPointChangeStats(navBasisSeries)
   const quoteChange = quoteLatestStats.change
   const quoteChangePct = quoteLatestStats.changePct
-  const availableTabs = normalizeTabs(summary.tabs || [], detailKind)
+  const availableTabs = normalizeTabs(summary.tabs || [])
   const detailPageLabel = localize(
     language,
-    detailKind === 'index' ? SYSTEM_LABELS.indexDetail : SYSTEM_LABELS.fundDetail,
+    fundType === 'public_fund'
+      ? SYSTEM_LABELS.publicFundDetail
+      : SYSTEM_LABELS.privateFundDetail,
   )
   const navBasisType = navSeries.nav_basis_type || summary.nav_snapshot?.nav_basis_type || 'auto'
   const selectedSeriesLabel =
@@ -5074,9 +5083,7 @@ export default function FundDetailPage({
       ? navSeries.return_kind || 'unknown'
       : activeQuoteBasis === 'nav_with_dividend'
         ? 'total_return'
-        : detailKind === 'index'
-          ? 'price_return'
-          : 'unit_nav_return'
+        : 'unit_nav_return'
   const chartSeriesBasisLabel =
     activeReturnKind === 'total_return'
       ? 'Cumulative Total Return'
@@ -6775,7 +6782,7 @@ export default function FundDetailPage({
   const detailClassificationLabel =
     localizeTaxonomyPath(peerComparison?.peer_path?.filter(Boolean).join(' / ') || rawTaxonomyPathLabel, language)
   const taxonomyNodes = (taxonomyTree?.nodes || []).filter(
-    (node) => node.instrument_type === 'fund',
+    (node) => node.instrument_type === fundType,
   )
   const taxonomyDraftNode =
     taxonomyNodes.find((node) => node.node_id === taxonomyDraftNodeId) || null

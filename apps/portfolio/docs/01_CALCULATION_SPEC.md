@@ -144,7 +144,7 @@
 
 共享层允许同一资产同时维护多种 quote basis，例如：
 
-- `fund`: `official_nav` 与 `total_return_nav`
+- `public_fund / private_fund`: `official_nav` 与 `total_return_nav`
 - `equity`: `close` 与 `adjusted_close`
 
 这里必须区分两种用途：
@@ -155,7 +155,7 @@
 规范如下：
 
 - 组合账面估值不得静默切到 total-return basis；若分红或派息已作为交易/现金流入账，再用复权价会造成双算；
-- fund 的 research/risk 序列只使用 `total_return_nav`；缺失时结果为 unavailable/NA。`official_nav` 只用于估值和明确标注的单位净值视图，不能作为 total-return 序列的兼容回退；
+- 公募和私募的 research/risk 序列只使用 `total_return_nav`；缺失时结果为 unavailable/NA。`official_nav` 只用于估值和明确标注的单位净值视图，不能作为 total-return 序列的兼容回退；
 - equity 的 research/risk 序列使用 `adjusted_close`；若改用 `close`，必须在结果中标记 quote basis，且不得把除权除息导致的机械跳空当成真实损失；
 - chart / sparkline 必须展示实际采用的 quote basis。basis 缺失时，图表可以降级为 `partial / unavailable`，不能静默换基准。
 
@@ -423,7 +423,7 @@ Portfolio 级 TWR、IRR、drawdown 和 contribution 必须基于 fair value、ca
 
 ### 3.5.1 Direct bond boundary
 
-直接债券当前不进入 Instrument Registry、Watchlist 或 Portfolio 交易模型，因此没有债券行情、percent-of-par 价格、票息、到期兑付、持仓估值或收益计算路径。债券基金与债券 ETF 仍分别作为 `fund` / `etf` 普通证券处理。未来若需要直接债券，应另行设计 Portfolio-local 事件记账合同，不能把已删除的 Registry 债券模型恢复为兼容分支。
+直接债券当前不进入 Instrument Registry、Watchlist 或 Portfolio 交易模型，因此没有债券行情、percent-of-par 价格、票息、到期兑付、持仓估值或收益计算路径。债券公募/私募与债券 ETF 仍分别按 `public_fund / private_fund / etf` 普通证券处理。未来若需要直接债券，应另行设计 Portfolio-local 事件记账合同，不能把已删除的 Registry 债券模型恢复为兼容分支。
 
 #### Open position book cost
 

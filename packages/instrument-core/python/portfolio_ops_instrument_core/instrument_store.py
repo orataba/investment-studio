@@ -65,7 +65,8 @@ SessionFactory = Callable[[], Session]
 EMAIL_REFRESH_SUCCESS_STATUSES = frozenset({"imported", "no_match", "no_new_data"})
 _SOURCE_SETTING_UNSET = object()
 SOURCE_SCHEDULE_DEFAULTS: dict[str, tuple[str, int]] = {
-    "fund": ("daily", 1),
+    "public_fund": ("daily", 1),
+    "private_fund": ("daily", 1),
     "etf": ("daily", 0),
     "index": ("daily", 0),
     "equity": ("daily", 0),
@@ -322,7 +323,14 @@ def _default_lifecycle_state(
 
 
 QUOTE_SELECTION_POLICY_DEFAULTS: dict[str, dict[str, list[str]]] = {
-    "fund": {
+    "public_fund": {
+        "trading": ["last", "close", "official_nav"],
+        "valuation": ["official_nav", "close", "last"],
+        "total_return": ["total_return_nav"],
+        "chart": ["total_return_nav"],
+        "reference": ["official_nav", "close", "last"],
+    },
+    "private_fund": {
         "trading": ["last", "close", "official_nav"],
         "valuation": ["official_nav", "close", "last"],
         "total_return": ["total_return_nav"],
@@ -888,6 +896,7 @@ def _validated_instrument_core(
     instrument_name: str,
     instrument_type: str,
     currency: str,
+    exchange_code: str | None,
     identifiers: list[dict[str, object]],
     broker_identifiers: list[dict[str, object]],
 ) -> InstrumentCore:
@@ -897,6 +906,7 @@ def _validated_instrument_core(
             "instrument_name": instrument_name,
             "instrument_type": instrument_type,
             "currency": currency,
+            "exchange_code": exchange_code,
             "identifiers": identifiers,
             "broker_identifiers": broker_identifiers,
         }
@@ -1021,6 +1031,7 @@ def _instrument_to_store_dict(
         instrument_name=item.instrument_name,
         instrument_type=item.instrument_type,
         currency=item.currency,
+        exchange_code=item.exchange_code,
         identifiers=identifiers,
         broker_identifiers=broker_identifiers,
     )
@@ -1029,6 +1040,7 @@ def _instrument_to_store_dict(
         "instrument_name": item.instrument_name,
         "instrument_type": item.instrument_type,
         "currency": item.currency,
+        "exchange_code": item.exchange_code,
         "broker_identifiers": broker_identifiers,
         "identifiers": identifiers,
         "market_data": _sort_market_data(resolved_market_data),
@@ -1126,6 +1138,7 @@ def _save_store_to_db(session: Session, data: dict[str, object]) -> None:
             instrument_name=instrument_name,
             instrument_type=instrument_type,
             currency=instrument_currency,
+            exchange_code=(str(item.get("exchange_code") or "").strip().upper() or None),
             identifiers=[
                 raw_identifier
                 for raw_identifier in list(item.get("identifiers", []))
@@ -1152,6 +1165,7 @@ def _save_store_to_db(session: Session, data: dict[str, object]) -> None:
             instrument_name=instrument_name,
             instrument_type=instrument_type,
             currency=instrument_currency,
+            exchange_code=(str(item.get("exchange_code") or "").strip().upper() or None),
             quote_selection_policy_json=_normalized_quote_selection_policy(item),
             source_settings_json=_normalized_source_settings(item),
             refresh_status_json=_normalized_refresh_status(item),
@@ -1386,6 +1400,7 @@ def _serialize_record(item: dict[str, object]) -> dict[str, object]:
         "instrument_name": item["instrument_name"],
         "instrument_type": item["instrument_type"],
         "currency": item["currency"],
+        "exchange_code": item.get("exchange_code"),
         "broker_identifiers": deepcopy(item.get("broker_identifiers", [])),
         "identifiers": deepcopy(item.get("identifiers", [])),
         "latest_market_data": _latest_market_data(market_data),
@@ -3060,12 +3075,18 @@ def create_instrument(
     instrument_type: str,
     currency: str,
     identifiers: list[dict[str, object]],
+    exchange_code: str | None = None,
     quote_selection_policy: dict[str, object] | None = None,
     broker_identifiers: list[dict[str, object]] | None = None,
 ) -> dict[str, object]:
     normalized_name = instrument_name.strip()
     normalized_instrument_type = normalize_instrument_type(instrument_type)
     normalized_currency = normalize_market_data_currency(currency)
+    normalized_exchange_code = (
+        exchange_code.strip().upper()
+        if isinstance(exchange_code, str) and exchange_code.strip()
+        else None
+    )
     normalized_broker_identifiers = _normalized_broker_identifiers(
         {"broker_identifiers": broker_identifiers or []}
     )
@@ -3133,6 +3154,7 @@ def create_instrument(
             instrument_name=normalized_name,
             instrument_type=normalized_instrument_type,
             currency=normalized_currency,
+            exchange_code=normalized_exchange_code,
             identifiers=identifiers,
             broker_identifiers=normalized_broker_identifiers,
         )
@@ -3163,6 +3185,7 @@ def create_instrument(
             "instrument_name": normalized_name,
             "instrument_type": normalized_instrument_type,
             "currency": normalized_currency,
+            "exchange_code": normalized_exchange_code,
             "broker_identifiers": normalized_broker_identifiers,
             "identifiers": identifiers,
             "market_data": [],
@@ -3195,6 +3218,7 @@ def create_instrument(
                 instrument_name=record["instrument_name"],
                 instrument_type=record["instrument_type"],
                 currency=record["currency"],
+                exchange_code=record["exchange_code"],
                 quote_selection_policy_json=record["quote_selection_policy"],
                 source_settings_json=record["source_settings"],
                 refresh_status_json=record["refresh_status"],
@@ -3952,9 +3976,9 @@ def upsert_source_settings(
         if release_lag_days is not None:
             source_settings["release_lag_days"] = release_lag_days
         if return_semantics is not None:
-            if return_semantics != "unknown" and target.instrument_type != "index":
+            if return_semantics != "unknown" and target.instrument_type not in {"index", "equity"}:
                 raise ValueError(
-                    "Explicit return_semantics is only supported for index instruments."
+                    "Explicit return_semantics is only supported for index or equity instruments."
                 )
             source_settings["return_semantics"] = return_semantics
         source_settings = _normalized_source_settings(

@@ -8,6 +8,8 @@ import type {
   QuoteSelectionPolicy,
 } from '../../../../../packages/instrument-core/ts/src'
 
+import { PLATFORM_API_URL } from './navigation'
+
 export type { InstrumentCore, InstrumentIdentifier } from '../../../../../packages/instrument-core/ts/src'
 
 export type PortfolioOptionContractTerms = {
@@ -975,6 +977,28 @@ export type SharedInstrumentRecord = InstrumentCore & {
   quote_selection_policy: QuoteSelectionPolicy
   coverage_state: DataStatus
 }
+
+export type PlatformEquitySearchResult = {
+  symbol: string
+  fmp_symbol: string
+  name: string
+  exchange_code: string
+  exchange_label: string
+  market: string
+  currency: string
+  country: string | null
+  sector: string | null
+  industry: string | null
+  existing_instrument_id: string | null
+}
+
+export type PlatformEquitySearchCandidate = InstrumentCore & {
+  fmp_symbol: string
+  source: 'fmp_catalog'
+  existing_instrument_id: string | null
+}
+
+export type SecuritySearchOption = SharedInstrumentRecord | PlatformEquitySearchCandidate
 
 export type PortfolioSharedInstrumentsResponse = {
   portfolio_id: string
@@ -3380,6 +3404,43 @@ export function getPortfolioInstruments(portfolioId: string) {
       })),
     }),
   )
+}
+
+export async function searchPlatformEquityCatalog(query: string, limit = 12) {
+  const normalizedQuery = query.trim()
+  if (!normalizedQuery) {
+    return []
+  }
+  const params = new URLSearchParams({ q: normalizedQuery, limit: String(limit) })
+  const payload = await fetchJson<{ results: PlatformEquitySearchResult[] }>(
+    PLATFORM_API_URL,
+    `/api/equities/search?${params.toString()}`,
+  )
+  return payload.results.map<PlatformEquitySearchCandidate>((item) => ({
+    instrument_id: item.existing_instrument_id || `fmp:${item.fmp_symbol}`,
+    instrument_name: item.name,
+    instrument_type: 'equity',
+    currency: item.currency,
+    exchange_code: item.exchange_code,
+    identifiers: [
+      {
+        identifier_type: 'exchange_ticker',
+        identifier_value: item.symbol,
+        is_primary: true,
+      },
+    ],
+    broker_identifiers: [],
+    fmp_symbol: item.fmp_symbol,
+    source: 'fmp_catalog',
+    existing_instrument_id: item.existing_instrument_id,
+  }))
+}
+
+export function materializePlatformEquity(fmpSymbol: string) {
+  return fetchJson<SharedInstrumentRecord>(PLATFORM_API_URL, '/api/equities/materialize', {
+    method: 'POST',
+    body: JSON.stringify({ fmp_symbol: fmpSymbol, refresh_eod: true }),
+  })
 }
 
 export function getPortfolioDerivativeContracts(portfolioId: string) {

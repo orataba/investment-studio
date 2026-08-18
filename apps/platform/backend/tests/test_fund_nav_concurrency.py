@@ -73,7 +73,7 @@ def nav_database(
                 {
                     "instrument_id": FUND_ID,
                     "instrument_name": "Concurrent NAV Fund",
-                    "instrument_type": "fund",
+                    "instrument_type": "public_fund",
                     "currency": "CNY",
                     "identifiers": [
                         {

@@ -222,7 +222,7 @@ def test_watchlist_view_contract_cleanup_rewrites_legacy_fields(
                 {"field_key": field_key, "display_order": display_order},
             )
 
-    command.upgrade(config, "head")
+    command.upgrade(config, "20260813_0041")
     with engine.connect() as connection:
         assert connection.scalar(
             text(
