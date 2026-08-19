@@ -3086,14 +3086,14 @@ export default function PortfolioHomePage() {
       <button
         type="button"
         draggable={false}
-        className={`holdings-th-label holdings-th-sortable ${active ? 'holdings-th-sortable-active' : ''}`}
+        className={`portfolio-table-th-label portfolio-table-th-sortable ${active ? 'portfolio-table-th-sortable-active' : ''}`}
         onClick={() => handleHoldingsSort(column.key)}
         title={`Sort ${column.label}: ${nextSortLabel}`}
         aria-label={`Sort ${column.label}: ${nextSortLabel}`}
       >
         <span>{column.label}</span>
         {active ? (
-          <span className="holdings-sort-indicator">{holdingsSortDirection === 'asc' ? '↑' : '↓'}</span>
+          <span className="portfolio-table-sort-indicator">{holdingsSortDirection === 'asc' ? '↑' : '↓'}</span>
         ) : null}
       </button>
     )
@@ -3483,11 +3483,11 @@ export default function PortfolioHomePage() {
         busy={loading}
       >
       <section className="portfolio-detail-surface holdings-surface">
-        <div className="transaction-filter-bar holdings-filter-bar">
-          <div className="transaction-filter-group holdings-filter-group">
+        <div className="holdings-filter-bar">
+          <div className="holdings-filter-group">
             <label>
               <input
-                className="transaction-filter-input"
+                className="holdings-filter-input"
                 type="date"
                 aria-label="As Of Date"
                 value={requestedAsOfDate || workspace?.as_of_date || ''}
@@ -3495,7 +3495,7 @@ export default function PortfolioHomePage() {
               />
             </label>
           </div>
-          <div className="transaction-filter-actions holdings-filter-actions">
+          <div className="holdings-filter-actions">
             {holdingsViewStoreReadyPortfolioId === portfolioId ? (
               <PortfolioTableViewControls
                 views={holdingsViews}
@@ -3515,7 +3515,7 @@ export default function PortfolioHomePage() {
             )}
             <button
               type="button"
-              className={`holdings-toolbar-button ${columnsEdited ? 'holdings-toolbar-button-active' : ''}`}
+              className={`portfolio-table-toolbar-button ${columnsEdited ? 'portfolio-table-toolbar-button-active' : ''}`}
               onClick={() => {
                 setHoldingsColumnDraft(holdingsColumns)
                 setHoldingsColumnsOpen(true)
@@ -3525,7 +3525,7 @@ export default function PortfolioHomePage() {
             </button>
             <button
               type="button"
-              className="holdings-toolbar-button"
+              className="portfolio-table-toolbar-button"
               onClick={() => setHoldingsGroupByOpen(true)}
             >
               Group By{'\u00A0: '}
@@ -3533,7 +3533,7 @@ export default function PortfolioHomePage() {
             </button>
             <DownloadFormatMenu
               wrapperClassName="portfolio-download-menu"
-              buttonClassName="holdings-toolbar-button"
+              buttonClassName="portfolio-table-toolbar-button"
               menuClassName="portfolio-download-menu-list"
               itemClassName="portfolio-download-menu-item"
               disabled={!workspace || !sortedHoldingRows.length}
@@ -3656,17 +3656,17 @@ export default function PortfolioHomePage() {
       </section>
 
       {holdingsColumnsOpen ? (
-        <div className="holdings-modal-backdrop" onClick={() => setHoldingsColumnsOpen(false)}>
+        <div className="portfolio-table-config-backdrop" onClick={() => setHoldingsColumnsOpen(false)}>
           <div
             ref={holdingsColumnsDialogRef}
-            className="holdings-modal holdings-columns-modal"
+            className="portfolio-table-config-modal portfolio-table-config-columns-modal"
             role="dialog"
             aria-modal="true"
             aria-label="Choose holdings columns"
             tabIndex={-1}
             onClick={(event) => event.stopPropagation()}
           >
-            <div className="holdings-modal-header">
+            <div className="portfolio-table-config-header">
               <div>
                 <div className="panel-title">Data &amp; Columns</div>
                 <div className="section-heading">Columns</div>
@@ -3676,24 +3676,24 @@ export default function PortfolioHomePage() {
               </button>
             </div>
 
-            <div className="holdings-modal-search">
+            <div className="portfolio-table-config-search">
               <input
-                className="holdings-modal-search-input"
+                className="portfolio-table-config-search-input"
                 placeholder="Search fields"
                 value={holdingsColumnSearch}
                 onChange={(event) => setHoldingsColumnSearch(event.target.value)}
               />
             </div>
 
-            <div className="holdings-modal-grid">
-              <div className="holdings-modal-categories">
+            <div className="portfolio-table-config-grid">
+              <div className="portfolio-table-config-categories">
                 {HOLDINGS_COLUMN_GROUPS.map((group) => (
                   <button
                     type="button"
                     className={
                       group.label === holdingsColumnCategory
-                        ? 'holdings-category-item holdings-category-item-active'
-                        : 'holdings-category-item'
+                        ? 'portfolio-table-config-category-item portfolio-table-config-category-item-active'
+                        : 'portfolio-table-config-category-item'
                     }
                     key={group.label}
                     onClick={() => setHoldingsColumnCategory(group.label)}
@@ -3703,12 +3703,12 @@ export default function PortfolioHomePage() {
                 ))}
               </div>
 
-              <div className="holdings-modal-fields">
+              <div className="portfolio-table-config-fields">
                 {filteredHoldingsColumns.length ? (
                   filteredHoldingsColumns.map(({ column, groupLabel }) => {
                     const locked = column === LOCKED_HOLDINGS_COLUMN
                     return (
-                      <label className="holdings-field-item" key={`${groupLabel}:${column}`}>
+                      <label className="portfolio-table-config-field-item" key={`${groupLabel}:${column}`}>
                         <input
                           type="checkbox"
                           checked={holdingsColumnDraft.includes(column)}
@@ -3716,8 +3716,8 @@ export default function PortfolioHomePage() {
                           onChange={(event) => handleHoldingsColumnDraftToggle(column, event.target.checked)}
                         />
                         <div>
-                          <div className="holdings-field-label">{HOLDINGS_COLUMN_DEFINITIONS[column].label}</div>
-                          <div className="holdings-field-meta">
+                          <div className="portfolio-table-config-field-label">{HOLDINGS_COLUMN_DEFINITIONS[column].label}</div>
+                          <div className="portfolio-table-config-field-meta">
                             {column}
                             {holdingsColumnSearch.trim() ? ` · ${groupLabel}` : ''}
                             {locked ? ' · required' : ''}
@@ -3727,13 +3727,13 @@ export default function PortfolioHomePage() {
                     )
                   })
                 ) : (
-                  <div className="holdings-field-empty">No fields.</div>
+                  <div className="portfolio-table-config-field-empty">No fields.</div>
                 )}
               </div>
 
             </div>
 
-            <div className="holdings-modal-actions holdings-modal-actions-sticky">
+            <div className="portfolio-table-config-actions portfolio-table-config-actions-sticky">
               <button
                 type="button"
                 onClick={() => {
@@ -3759,17 +3759,17 @@ export default function PortfolioHomePage() {
       ) : null}
 
       {holdingsGroupByOpen ? (
-        <div className="holdings-modal-backdrop" onClick={() => setHoldingsGroupByOpen(false)}>
+        <div className="portfolio-table-config-backdrop" onClick={() => setHoldingsGroupByOpen(false)}>
           <div
             ref={holdingsGroupByDialogRef}
-            className="holdings-modal holdings-compact-modal"
+            className="portfolio-table-config-modal portfolio-table-config-compact-modal"
             role="dialog"
             aria-modal="true"
             aria-label="Group securities"
             tabIndex={-1}
             onClick={(event) => event.stopPropagation()}
           >
-            <div className="holdings-modal-header">
+            <div className="portfolio-table-config-header">
               <div>
                 <div className="panel-title">Group By</div>
                 <div className="section-heading">Securities only</div>
@@ -3778,11 +3778,11 @@ export default function PortfolioHomePage() {
                 Close
               </button>
             </div>
-            <div className="holdings-modal-body holdings-groupby-list">
+            <div className="portfolio-table-config-body portfolio-table-config-groupby-list">
               {HOLDINGS_GROUP_BY_OPTIONS.map((option) => (
                 <button
                   type="button"
-                  className={`holdings-groupby-option ${option.value === holdingsGroupBy ? 'holdings-groupby-option-active' : ''}`}
+                  className={`portfolio-table-config-groupby-option ${option.value === holdingsGroupBy ? 'portfolio-table-config-groupby-option-active' : ''}`}
                   key={option.value}
                   onClick={() => handleGroupByChange(option.value)}
                 >

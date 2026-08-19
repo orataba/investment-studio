@@ -230,6 +230,7 @@ button:disabled {
   align-items: center;
   justify-content: flex-end;
   gap: 10px;
+  flex-wrap: wrap;
   margin-left: auto;
 }
 
@@ -1736,11 +1737,11 @@ input[type='checkbox'] {
   gap: 18px;
 }
 
-.performance-section-block {
+.portfolio-section-block {
   min-width: 0;
 }
 
-.performance-subsection-toolbar {
+.portfolio-section-toolbar {
   margin-top: 16px;
 }
 
@@ -2522,6 +2523,7 @@ input[type='checkbox'] {
   align-items: center;
   justify-content: space-between;
   gap: 12px;
+  flex-wrap: wrap;
   padding: 12px 0 11px;
   border-top: 2px solid var(--portfolio-ink);
   border-bottom: 1px solid var(--portfolio-line-strong);
@@ -2538,60 +2540,12 @@ input[type='checkbox'] {
 }
 
 .holdings-filter-bar {
-  justify-content: flex-start;
-  align-items: center;
-  padding-top: 0;
-}
-
-.performance-filter-bar {
   display: flex;
-  align-items: center;
   justify-content: flex-start;
+  align-items: center;
   gap: 16px;
   flex-wrap: wrap;
-  padding: 14px 0 4px;
-}
-
-.performance-filter-group,
-.performance-filter-group label {
-  display: grid;
-  gap: 6px;
-}
-
-.performance-filter-group {
-  grid-template-columns: repeat(2, minmax(180px, 220px));
-}
-
-.performance-filter-group span {
-  font-size: 12px;
-  font-weight: 400;
-  letter-spacing: 0.01em;
-  color: var(--portfolio-muted);
-}
-
-.performance-filter-actions {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  flex-wrap: wrap;
-}
-
-.performance-filter-actions button {
-  min-height: 30px;
-  padding: 6px 10px;
-  border: 1px solid var(--portfolio-line-strong);
-  border-radius: 0;
-  background: transparent;
-  color: var(--portfolio-ink);
-  font-size: 13px;
-  font-weight: 400;
-  line-height: 1.2;
-  box-shadow: none;
-}
-
-.performance-filter-actions button:hover {
-  border-color: var(--portfolio-accent);
-  color: var(--portfolio-accent);
+  padding-top: 0;
 }
 
 .transaction-filter-group {
@@ -2623,10 +2577,15 @@ input[type='checkbox'] {
 }
 
 .holdings-filter-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: 0 1 auto;
+  flex-wrap: wrap;
   margin-left: 0;
 }
 
-.holdings-toolbar-button {
+.portfolio-table-toolbar-button {
   height: 30px;
   min-height: 30px;
   padding: 0 10px;
@@ -2640,23 +2599,23 @@ input[type='checkbox'] {
   box-shadow: none;
 }
 
-.holdings-toolbar-button:hover:not(:disabled) {
+.portfolio-table-toolbar-button:hover:not(:disabled) {
   border-color: var(--portfolio-accent);
   color: var(--portfolio-accent);
 }
 
-.holdings-toolbar-button-active {
+.portfolio-table-toolbar-button-active {
   border-color: var(--portfolio-line-strong);
   background: transparent;
   color: var(--portfolio-ink);
 }
 
-.holdings-toolbar-button-active:hover:not(:disabled) {
+.portfolio-table-toolbar-button-active:hover:not(:disabled) {
   border-color: var(--portfolio-line-strong);
   color: var(--portfolio-ink);
 }
 
-.holdings-toolbar-button:disabled {
+.portfolio-table-toolbar-button:disabled {
   cursor: not-allowed;
   opacity: 0.48;
 }
@@ -2845,8 +2804,10 @@ input[type='checkbox'] {
   color: var(--portfolio-accent);
 }
 
-.portfolio-workspace-page .holdings-toolbar-button,
+.portfolio-workspace-page .portfolio-table-toolbar-button,
 .portfolio-workspace-page .portfolio-table-view-controls,
+.portfolio-workspace-page .holdings-filter-input,
+.portfolio-workspace-page .performance-window-input,
 .portfolio-workspace-page .transaction-filter-bar .transaction-filter-input,
 .portfolio-workspace-page .overview-benchmark-search-box input,
 .portfolio-workspace-page .portfolio-nav-settings-trigger {
@@ -3217,7 +3178,7 @@ input[type='checkbox'] {
   color: #ffffff;
 }
 
-.holdings-th-label {
+.portfolio-table-th-label {
   display: inline-flex;
   align-items: center;
   gap: 6px;
@@ -3226,13 +3187,13 @@ input[type='checkbox'] {
   flex-wrap: nowrap;
 }
 
-.holdings-th-label > span:first-child {
+.portfolio-table-th-label > span:first-child {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
-.holdings-th-sortable {
+.portfolio-table-th-sortable {
   padding: 0;
   border: none;
   background: transparent;
@@ -3276,12 +3237,12 @@ input[type='checkbox'] {
   box-shadow: 1px 0 0 var(--portfolio-line);
 }
 
-.holdings-th-sortable:hover,
-.holdings-th-sortable-active {
+.portfolio-table-th-sortable:hover,
+.portfolio-table-th-sortable-active {
   color: var(--portfolio-ink);
 }
 
-.holdings-sort-indicator {
+.portfolio-table-sort-indicator {
   color: var(--portfolio-accent);
   font-size: 14px;
   line-height: 1;
@@ -3292,7 +3253,7 @@ input[type='checkbox'] {
   white-space: nowrap;
 }
 
-.holdings-main-table th.numeric-cell .holdings-th-sortable {
+.holdings-main-table th.numeric-cell .portfolio-table-th-sortable {
   justify-content: flex-end;
 }
 
@@ -3301,7 +3262,7 @@ input[type='checkbox'] {
   white-space: nowrap;
 }
 
-.holdings-main-table th.center-cell .holdings-th-sortable {
+.holdings-main-table th.center-cell .portfolio-table-th-sortable {
   justify-content: center;
   width: 100%;
 }
@@ -3313,7 +3274,7 @@ input[type='checkbox'] {
   text-align: center;
 }
 
-.holdings-main-table th.chart-cell .holdings-th-label {
+.holdings-main-table th.chart-cell .portfolio-table-th-label {
   justify-content: center;
   width: 100%;
 }
@@ -3398,7 +3359,7 @@ input[type='checkbox'] {
     1px 0 0 var(--portfolio-line);
 }
 
-.holdings-modal-backdrop {
+.portfolio-table-config-backdrop {
   position: fixed;
   inset: 0;
   z-index: 40;
@@ -3408,7 +3369,7 @@ input[type='checkbox'] {
   background: rgba(17, 17, 17, 0.24);
 }
 
-.holdings-modal {
+.portfolio-table-config-modal {
   display: flex;
   flex-direction: column;
   width: min(1080px, 100%);
@@ -3421,18 +3382,18 @@ input[type='checkbox'] {
   box-shadow: 0 18px 42px rgba(17, 17, 17, 0.12);
 }
 
-.holdings-columns-modal {
+.portfolio-table-config-columns-modal {
   width: min(720px, calc(100vw - 48px));
   height: min(520px, calc(100vh - 48px));
   max-height: none;
   overflow: hidden;
 }
 
-.holdings-compact-modal {
+.portfolio-table-config-compact-modal {
   width: min(560px, 100%);
 }
 
-.holdings-modal-header {
+.portfolio-table-config-header {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
@@ -3440,8 +3401,8 @@ input[type='checkbox'] {
   padding: 14px 16px 8px;
 }
 
-.holdings-modal-header button,
-.holdings-modal-actions button {
+.portfolio-table-config-header button,
+.portfolio-table-config-actions button {
   min-height: 30px;
   padding: 6px 10px;
   border: 1px solid var(--portfolio-line-strong);
@@ -3454,17 +3415,17 @@ input[type='checkbox'] {
   box-shadow: none;
 }
 
-.holdings-modal-header button:hover,
-.holdings-modal-actions button:hover {
+.portfolio-table-config-header button:hover,
+.portfolio-table-config-actions button:hover {
   border-color: var(--portfolio-accent);
   color: var(--portfolio-accent);
 }
 
-.holdings-modal-search {
+.portfolio-table-config-search {
   padding: 0 16px 12px;
 }
 
-.holdings-modal-search-input {
+.portfolio-table-config-search-input {
   width: 100%;
   height: 32px;
   padding: 6px 10px;
@@ -3476,19 +3437,19 @@ input[type='checkbox'] {
   box-shadow: none;
 }
 
-.holdings-modal-search-input:focus {
+.portfolio-table-config-search-input:focus {
   border-color: var(--portfolio-accent);
   outline: none;
   box-shadow: 0 0 0 1px var(--portfolio-accent) inset;
 }
 
-.holdings-modal-body {
+.portfolio-table-config-body {
   display: grid;
   gap: 14px;
   padding: 0 18px 18px;
 }
 
-.holdings-modal-grid {
+.portfolio-table-config-grid {
   display: grid;
   grid-template-columns: 180px minmax(0, 1fr);
   gap: 12px;
@@ -3497,21 +3458,21 @@ input[type='checkbox'] {
   padding: 0 16px 12px;
 }
 
-.holdings-modal-categories,
-.holdings-modal-fields {
+.portfolio-table-config-categories,
+.portfolio-table-config-fields {
   min-height: 0;
   border: 1px solid var(--portfolio-line-strong);
   border-radius: 0;
   background: transparent;
 }
 
-.holdings-modal-categories {
+.portfolio-table-config-categories {
   display: grid;
   align-content: start;
   overflow: auto;
 }
 
-.holdings-category-item {
+.portfolio-table-config-category-item {
   padding: 9px 12px;
   border: none;
   border-left: 3px solid transparent;
@@ -3523,16 +3484,16 @@ input[type='checkbox'] {
   text-align: left;
 }
 
-.holdings-category-item:hover,
-.holdings-category-item-active {
+.portfolio-table-config-category-item:hover,
+.portfolio-table-config-category-item-active {
   background: var(--portfolio-accent-soft);
 }
 
-.holdings-category-item-active {
+.portfolio-table-config-category-item-active {
   border-left-color: var(--portfolio-accent);
 }
 
-.holdings-modal-fields {
+.portfolio-table-config-fields {
   display: grid;
   align-content: start;
   gap: 0;
@@ -3540,7 +3501,7 @@ input[type='checkbox'] {
   padding: 0 10px;
 }
 
-.holdings-field-item {
+.portfolio-table-config-field-item {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr);
   gap: 10px;
@@ -3551,7 +3512,7 @@ input[type='checkbox'] {
   background: transparent;
 }
 
-.holdings-field-item > div {
+.portfolio-table-config-field-item > div {
   display: flex;
   align-items: baseline;
   justify-content: space-between;
@@ -3559,7 +3520,7 @@ input[type='checkbox'] {
   min-width: 0;
 }
 
-.holdings-field-label {
+.portfolio-table-config-field-label {
   overflow: hidden;
   color: var(--portfolio-ink);
   font-size: 13px;
@@ -3567,31 +3528,31 @@ input[type='checkbox'] {
   white-space: nowrap;
 }
 
-.holdings-field-meta,
-.holdings-field-empty {
+.portfolio-table-config-field-meta,
+.portfolio-table-config-field-empty {
   color: var(--portfolio-muted);
   font-size: 12px;
 }
 
-.holdings-field-meta {
+.portfolio-table-config-field-meta {
   margin-top: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.holdings-field-empty {
+.portfolio-table-config-field-empty {
   padding: 16px 0;
 }
 
-.holdings-modal-actions {
+.portfolio-table-config-actions {
   display: flex;
   justify-content: flex-end;
   gap: 10px;
   padding: 0 18px 18px;
 }
 
-.holdings-modal-actions-sticky {
+.portfolio-table-config-actions-sticky {
   position: sticky;
   bottom: 0;
   z-index: 5;
@@ -3600,12 +3561,12 @@ input[type='checkbox'] {
   background: #ffffff;
 }
 
-.holdings-groupby-list {
+.portfolio-table-config-groupby-list {
   display: grid;
   gap: 0;
 }
 
-.holdings-groupby-option {
+.portfolio-table-config-groupby-option {
   display: grid;
   gap: 3px;
   width: 100%;
@@ -3618,30 +3579,30 @@ input[type='checkbox'] {
   text-align: left;
 }
 
-.holdings-groupby-option:hover,
-.holdings-groupby-option-active {
+.portfolio-table-config-groupby-option:hover,
+.portfolio-table-config-groupby-option-active {
   background: var(--portfolio-accent-soft);
 }
 
-.holdings-groupby-option-active {
+.portfolio-table-config-groupby-option-active {
   border-left-color: var(--portfolio-accent);
 }
 
-.holdings-groupby-option:disabled {
+.portfolio-table-config-groupby-option:disabled {
   color: var(--portfolio-subtle);
   cursor: not-allowed;
 }
 
-.holdings-groupby-option:disabled:hover {
+.portfolio-table-config-groupby-option:disabled:hover {
   background: transparent;
 }
 
-.holdings-groupby-option span {
+.portfolio-table-config-groupby-option span {
   font-size: 14px;
   font-weight: 400;
 }
 
-.holdings-groupby-option small {
+.portfolio-table-config-groupby-option small {
   color: var(--portfolio-muted);
   font-size: 12px;
   font-weight: 400;
@@ -4654,6 +4615,7 @@ input[type='checkbox'] {
 }
 
 .transaction-filter-input,
+.portfolio-table-view-input,
 .transaction-form input,
 .transaction-form select,
 .transaction-picker-search input,
@@ -4670,6 +4632,9 @@ input[type='checkbox'] {
 }
 
 .transaction-filter-input:focus,
+.portfolio-table-view-input:focus,
+.holdings-filter-input:focus,
+.performance-window-input:focus,
 .transaction-form input:focus,
 .transaction-form select:focus,
 .transaction-picker-search input:focus,
@@ -4839,6 +4804,7 @@ input[type='checkbox'] {
   justify-content: flex-end;
   gap: 14px;
   flex: 0 0 auto;
+  flex-wrap: wrap;
 }
 
 .account-page-inventory {
@@ -8031,7 +7997,6 @@ td b {
 
   .transaction-inspector-grid,
   .transaction-filter-group,
-  .performance-filter-group,
   .transaction-form-grid,
   .taxonomy-workbench-grid,
   .taxonomy-detail-grid,
@@ -8059,7 +8024,7 @@ td b {
   .overview-sleeve-donut,
   .overview-columns-modal-body,
   .overview-columns-field-groups,
-  .holdings-modal-grid {
+  .portfolio-table-config-grid {
     grid-template-columns: 1fr;
   }
 
@@ -8174,7 +8139,7 @@ td b {
     padding: 12px;
   }
 
-  .holdings-modal-backdrop {
+  .portfolio-table-config-backdrop {
     align-items: stretch;
     padding: 12px;
   }
@@ -8183,13 +8148,13 @@ td b {
     max-height: calc(100vh - 24px);
   }
 
-  .holdings-modal {
+  .portfolio-table-config-modal {
     max-height: calc(100vh - 24px);
   }
 
   .overview-columns-modal-body,
   .overview-columns-field-groups,
-  .holdings-modal-grid {
+  .portfolio-table-config-grid {
     grid-template-columns: 1fr;
   }
 
@@ -8204,7 +8169,6 @@ td b {
 
   .transaction-inspector-grid,
   .transaction-filter-group,
-  .performance-filter-group,
   .transaction-form-grid,
   .taxonomy-workbench-grid,
   .taxonomy-detail-grid,
@@ -8296,16 +8260,21 @@ td b {
 }
 
 .performance-window-bar {
+  display: flex;
   justify-content: flex-start;
   align-items: center;
+  gap: 16px;
+  flex-wrap: wrap;
   padding-top: 0;
   padding-bottom: 4px;
 }
 
 .performance-window-group {
+  display: grid;
   grid-template-columns: repeat(2, max-content);
   align-items: center;
   column-gap: 12px;
+  row-gap: 6px;
 }
 
 .performance-window-group label {
@@ -8316,6 +8285,10 @@ td b {
 
 .performance-window-group span {
   flex: 0 0 auto;
+  color: var(--portfolio-muted);
+  font-size: 12px;
+  font-weight: 400;
+  letter-spacing: 0.01em;
   white-space: nowrap;
 }
 
@@ -8352,7 +8325,7 @@ td b {
   color: var(--portfolio-ink);
 }
 
-.performance-window-bar .transaction-filter-input,
+.performance-window-input,
 .performance-window-bar .overview-benchmark-search-box input {
   box-sizing: border-box;
   height: 30px;
@@ -8363,7 +8336,7 @@ td b {
   line-height: 1.2;
 }
 
-.performance-window-bar .transaction-filter-input {
+.performance-window-input {
   width: var(--portfolio-date-control-width);
 }
 
@@ -8412,6 +8385,10 @@ input[type='date']::-webkit-calendar-picker-indicator {
 
 .performance-section-toolbar .portfolio-detail-meta {
   margin-top: 2px;
+}
+
+.overview-section-toolbar {
+  margin-top: 10px;
 }
 
 .performance-history-reliability-warning {
@@ -8484,6 +8461,10 @@ input[type='date']::-webkit-calendar-picker-indicator {
 }
 
 .performance-calculation-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
   margin-left: 0;
 }
 
@@ -8677,11 +8658,11 @@ input[type='date']::-webkit-calendar-picker-indicator {
   text-align: right;
 }
 
-.performance-calculation-table th .holdings-th-sortable {
+.performance-calculation-table th .portfolio-table-th-sortable {
   max-width: 100%;
 }
 
-.performance-calculation-table th.performance-cell-number .holdings-th-sortable {
+.performance-calculation-table th.performance-cell-number .portfolio-table-th-sortable {
   justify-content: flex-end;
   width: 100%;
   text-align: right;
@@ -8768,6 +8749,10 @@ input[type='date']::-webkit-calendar-picker-indicator {
 }
 
 @media (max-width: 640px) {
+  .holdings-filter-actions {
+    width: 100%;
+  }
+
   .performance-window-group {
     grid-template-columns: 1fr;
     width: 100%;
@@ -9079,7 +9064,7 @@ input[type='date']::-webkit-calendar-picker-indicator {
 }
 
 .portfolio-workspace-page > .portfolio-detail-surface > .portfolio-detail-toolbar:first-child,
-.portfolio-workspace-page > .portfolio-detail-surface > .performance-block-grid:first-child > .performance-section-block:first-child > .portfolio-detail-toolbar:first-child,
+.portfolio-workspace-page > .portfolio-detail-surface > .performance-block-grid:first-child > .portfolio-section-block:first-child > .portfolio-detail-toolbar:first-child,
 .portfolio-workspace-page > .panel:first-of-type > .panel-header:first-child {
   padding-top: 10px;
   border-top: none;

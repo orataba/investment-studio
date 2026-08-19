@@ -2273,7 +2273,7 @@ export default function ResearchPage() {
               </section>
 
               <section className="performance-block-grid research-backtest-grid">
-                <div className="performance-section-block research-chart-panel">
+                <div className="portfolio-section-block research-chart-panel">
                   <div className="panel-header panel-header-inline">
                     <div><div className="panel-title">Backtest</div></div>
                   </div>
@@ -2291,7 +2291,7 @@ export default function ResearchPage() {
                     </div>
                   ) : null}
                 </div>
-                <div className="performance-section-block research-metrics-panel">
+                <div className="portfolio-section-block research-metrics-panel">
                   <div className="panel-header panel-header-inline">
                     <div><div className="panel-title">Metrics</div></div>
                   </div>
@@ -2304,7 +2304,7 @@ export default function ResearchPage() {
               </section>
 
               <section className="performance-block-grid research-validation-grid">
-                <div className="performance-section-block">
+                <div className="portfolio-section-block">
                   <div className="panel-header panel-header-inline">
                     <div><div className="panel-title">Point-in-Time Coverage</div></div>
                   </div>
@@ -2366,7 +2366,7 @@ export default function ResearchPage() {
                     </div>
                   ) : null}
                 </div>
-                <div className="performance-section-block">
+                <div className="portfolio-section-block">
                   <div className="panel-header panel-header-inline">
                     <div><div className="panel-title">Execution & Costs</div></div>
                   </div>
@@ -2404,7 +2404,7 @@ export default function ResearchPage() {
               </section>
 
               <section className="performance-block-grid research-validation-grid">
-                <div className="performance-section-block">
+                <div className="portfolio-section-block">
                   <div className="panel-header panel-header-inline">
                     <div><div className="panel-title">Robustness</div></div>
                   </div>
@@ -2445,7 +2445,7 @@ export default function ResearchPage() {
                     </table>
                   </div>
                 </div>
-                <div className="performance-section-block">
+                <div className="portfolio-section-block">
                   <div className="panel-header panel-header-inline">
                     <div><div className="panel-title">Rolling OOS Holdout</div></div>
                   </div>
@@ -2492,13 +2492,13 @@ export default function ResearchPage() {
               </section>
 
               <section className="performance-block-grid research-sleeve-grid">
-                <div className="performance-section-block research-chart-panel">
+                <div className="portfolio-section-block research-chart-panel">
                   <div className="panel-header panel-header-inline">
                     <div><div className="panel-title">Top-Level Sleeve Weights</div></div>
                   </div>
                   <ResearchSleeveStackedAreaChart points={backtest?.top_sleeve_weight_points ?? []} />
                 </div>
-                <div className="performance-section-block research-chart-panel">
+                <div className="portfolio-section-block research-chart-panel">
                   <div className="panel-header panel-header-inline">
                     <div><div className="panel-title">Top-Level Sleeve Contribution</div></div>
                   </div>

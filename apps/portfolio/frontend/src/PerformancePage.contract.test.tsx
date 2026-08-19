@@ -125,6 +125,16 @@ describe('Performance rendered page contract', () => {
     )
 
     expect(await screen.findByRole('button', { name: /View\s*: Default/ })).toBeInTheDocument()
+    const windowToolbar = screen.getByLabelText('Performance period controls').closest('.performance-window-bar')
+    expect(windowToolbar).not.toBeNull()
+    expect(windowToolbar).not.toHaveClass('transaction-filter-bar')
+    expect(within(windowToolbar as HTMLElement).getByLabelText('Start Date')).toBeInTheDocument()
+    const calculationToolbar = screen.getByText('Calculation').closest('.performance-calculation-toolbar')
+    expect(calculationToolbar).not.toBeNull()
+    expect(within(calculationToolbar as HTMLElement).getByRole('button', { name: /Data & Columns/ })).toHaveClass(
+      'portfolio-table-toolbar-button',
+    )
+    expect(calculationToolbar?.querySelector('.holdings-filter-actions')).toBeNull()
     expect(screen.getByRole('columnheader', { name: /Begin Weight/ })).toBeInTheDocument()
     expect(
       window.localStorage.getItem('portfolio_ops.portfolio.performance.calculation.views.v1'),

@@ -3005,8 +3005,8 @@ export default function RiskPage() {
 
         {holdingsWorkspace ? (
           <>
-            <section className="performance-section-block" aria-label="Risk health">
-              <div className="portfolio-detail-toolbar performance-subsection-toolbar risk-section-toolbar">
+            <section className="portfolio-section-block" aria-label="Risk health">
+              <div className="portfolio-detail-toolbar portfolio-section-toolbar risk-section-toolbar">
                 <div>
                   <div className="panel-title">Risk Health</div>
                   <div className="portfolio-detail-meta">
@@ -3127,7 +3127,7 @@ export default function RiskPage() {
                   </table>
                 </div>
               ) : null}
-              <div className="portfolio-detail-toolbar performance-subsection-toolbar risk-section-toolbar risk-scoped-contribution-toolbar">
+              <div className="portfolio-detail-toolbar portfolio-section-toolbar risk-section-toolbar risk-scoped-contribution-toolbar">
                 <div>
                   <div className="panel-title">Scoped Risk Contribution</div>
                   <div className="portfolio-detail-meta">Shares sum to 100% inside the eligible modeled sleeve.</div>
@@ -3160,8 +3160,8 @@ export default function RiskPage() {
               ) : null}
             </section>
 
-            <section className="performance-section-block">
-              <div className="portfolio-detail-toolbar performance-subsection-toolbar risk-section-toolbar">
+            <section className="portfolio-section-block">
+              <div className="portfolio-detail-toolbar portfolio-section-toolbar risk-section-toolbar">
                 <div>
                   <div className="panel-title">Current Drift</div>
                   <div className="portfolio-detail-meta">
@@ -3199,8 +3199,8 @@ export default function RiskPage() {
               </div>
             </section>
 
-            <section className="performance-section-block risk-rolling-section">
-              <div className="portfolio-detail-toolbar performance-subsection-toolbar risk-section-toolbar risk-rolling-toolbar">
+            <section className="portfolio-section-block risk-rolling-section">
+              <div className="portfolio-detail-toolbar portfolio-section-toolbar risk-section-toolbar risk-rolling-toolbar">
                 <div className="risk-toolbar-primary risk-rolling-toolbar-primary">
                   <div>
                     <div className="panel-title">Rolling Risk</div>
@@ -3268,8 +3268,8 @@ export default function RiskPage() {
               </div>
             </section>
 
-            <section className="performance-section-block">
-              <div className="portfolio-detail-toolbar performance-subsection-toolbar risk-section-toolbar risk-matrix-toolbar">
+            <section className="portfolio-section-block">
+              <div className="portfolio-detail-toolbar portfolio-section-toolbar risk-section-toolbar risk-matrix-toolbar">
                 <div className="risk-toolbar-primary risk-matrix-toolbar-primary">
                   <div>
                     <div className="panel-title">Correlation Matrix</div>

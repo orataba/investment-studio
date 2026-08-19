@@ -306,7 +306,7 @@ export default function PortfolioTableViewControls({
                 <span>View Name</span>
                 <input
                   ref={draftNameRef}
-                  className="transaction-filter-input"
+                  className="portfolio-table-view-input"
                   value={draftName}
                   onChange={(event) => setDraftName(event.target.value)}
                   placeholder="Custom View"

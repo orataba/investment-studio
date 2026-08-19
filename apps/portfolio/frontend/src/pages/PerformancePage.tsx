@@ -2480,14 +2480,14 @@ function PerformancePage() {
     return (
       <button
         type="button"
-        className={`holdings-th-label holdings-th-sortable ${active ? 'holdings-th-sortable-active' : ''}`}
+        className={`portfolio-table-th-label portfolio-table-th-sortable ${active ? 'portfolio-table-th-sortable-active' : ''}`}
         onClick={() => handleCalculationSort(column)}
         title={`${description ? `${description} ` : ''}Sort ${CALCULATION_COLUMN_LABELS[column]}: ${nextSortLabel}`}
         aria-label={`Sort ${CALCULATION_COLUMN_LABELS[column]}: ${nextSortLabel}`}
       >
         <span>{CALCULATION_COLUMN_LABELS[column]}</span>
         {active ? (
-          <span className="holdings-sort-indicator">{calculationSortDirection === 'asc' ? '↑' : '↓'}</span>
+          <span className="portfolio-table-sort-indicator">{calculationSortDirection === 'asc' ? '↑' : '↓'}</span>
         ) : null}
       </button>
     )
@@ -2547,12 +2547,12 @@ function PerformancePage() {
         busy={loading || waitingForDefaultEndDate}
       >
       <section className="portfolio-detail-surface performance-surface">
-        <div className="transaction-filter-bar performance-window-bar">
-          <div className="performance-filter-group performance-window-group">
+        <div className="performance-window-bar">
+          <div className="performance-window-group">
             <label>
               <span>Start Date</span>
               <input
-                className="transaction-filter-input"
+                className="performance-window-input"
                 type="date"
                 title="Normally an end-of-day boundary; a funded-segment start includes that day's BOD-to-EOD return."
                 value={effectiveStartDate}
@@ -2562,7 +2562,7 @@ function PerformancePage() {
             <label>
               <span>End Date</span>
               <input
-                className="transaction-filter-input"
+                className="performance-window-input"
                 type="date"
                 title="The interval ends at this date's end-of-day valuation."
                 value={effectiveEndDate}
@@ -2709,8 +2709,8 @@ function PerformancePage() {
 
         {workspace && summary ? (
           <div className="performance-section-stack">
-            <section className="performance-section-block">
-              <div className="portfolio-detail-toolbar performance-subsection-toolbar performance-section-toolbar">
+            <section className="portfolio-section-block">
+              <div className="portfolio-detail-toolbar portfolio-section-toolbar performance-section-toolbar">
                 <div>
                   <div className="panel-title">{summary.performance_label}</div>
                   <div className="portfolio-detail-meta">
@@ -2727,14 +2727,14 @@ function PerformancePage() {
               <MetricGrid rows={metricRows} />
             </section>
 
-            <section className="performance-section-block">
-              <div className="portfolio-detail-toolbar performance-subsection-toolbar performance-section-toolbar performance-calculation-toolbar">
+            <section className="portfolio-section-block">
+              <div className="portfolio-detail-toolbar portfolio-section-toolbar performance-section-toolbar performance-calculation-toolbar">
                 <div className="performance-calculation-toolbar-main">
                   <div>
                     <div className="panel-title">Calculation</div>
                     <div className="portfolio-detail-meta">{calculationMeta}</div>
                   </div>
-                  <div className="transaction-filter-actions holdings-filter-actions performance-calculation-actions">
+                  <div className="performance-calculation-actions">
                     {calculationTableViewStoreReadyPortfolioId === portfolioId ? (
                       <PortfolioTableViewControls
                         views={calculationTableViews}
@@ -2754,7 +2754,7 @@ function PerformancePage() {
                     )}
                     <button
                       type="button"
-                      className={`holdings-toolbar-button ${calculationTableViewEdited ? 'holdings-toolbar-button-active' : ''}`}
+                      className={`portfolio-table-toolbar-button ${calculationTableViewEdited ? 'portfolio-table-toolbar-button-active' : ''}`}
                       onClick={() => {
                         setCalculationColumnDraft(calculationColumns)
                         setCalculationModeDraft(calculationTableMode)
@@ -2765,7 +2765,7 @@ function PerformancePage() {
                     </button>
                     <button
                       type="button"
-                      className="holdings-toolbar-button"
+                      className="portfolio-table-toolbar-button"
                       onClick={() => setCalculationGroupByOpen(true)}
                     >
                       Group By{'\u00A0: '}
@@ -2773,7 +2773,7 @@ function PerformancePage() {
                     </button>
                     <DownloadFormatMenu
                       wrapperClassName="portfolio-download-menu"
-                      buttonClassName="holdings-toolbar-button"
+                      buttonClassName="portfolio-table-toolbar-button"
                       menuClassName="portfolio-download-menu-list"
                       itemClassName="portfolio-download-menu-item"
                       disabled={!calculationGroupsWorkspace || calculationGroupsLoading}
@@ -2851,17 +2851,17 @@ function PerformancePage() {
         ) : null}
       </section>
       {calculationColumnsOpen ? (
-        <div className="holdings-modal-backdrop" onClick={() => setCalculationColumnsOpen(false)}>
+        <div className="portfolio-table-config-backdrop" onClick={() => setCalculationColumnsOpen(false)}>
           <div
             ref={calculationColumnsDialogRef}
-            className="holdings-modal holdings-columns-modal"
+            className="portfolio-table-config-modal portfolio-table-config-columns-modal"
             role="dialog"
             aria-modal="true"
             aria-label="Choose calculation columns"
             tabIndex={-1}
             onClick={(event) => event.stopPropagation()}
           >
-            <div className="holdings-modal-header">
+            <div className="portfolio-table-config-header">
               <div>
                 <div className="panel-title">Data &amp; Columns</div>
                 <div className="section-heading">Manage Calculation Table View</div>
@@ -2874,8 +2874,8 @@ function PerformancePage() {
             <div className="performance-calculation-mode-panel">
               <button
                 type="button"
-                className={`holdings-groupby-option ${
-                  calculationModeDraft === 'risk_attribution' ? 'holdings-groupby-option-active' : ''
+                className={`portfolio-table-config-groupby-option ${
+                  calculationModeDraft === 'risk_attribution' ? 'portfolio-table-config-groupby-option-active' : ''
                 }`}
                 onClick={() => setCalculationModeDraft('risk_attribution')}
               >
@@ -2883,8 +2883,8 @@ function PerformancePage() {
               </button>
               <button
                 type="button"
-                className={`holdings-groupby-option ${
-                  calculationModeDraft === 'calculation' ? 'holdings-groupby-option-active' : ''
+                className={`portfolio-table-config-groupby-option ${
+                  calculationModeDraft === 'calculation' ? 'portfolio-table-config-groupby-option-active' : ''
                 }`}
                 onClick={() => setCalculationModeDraft('calculation')}
               >
@@ -2892,24 +2892,24 @@ function PerformancePage() {
               </button>
             </div>
 
-            <div className="holdings-modal-search">
+            <div className="portfolio-table-config-search">
               <input
-                className="holdings-modal-search-input"
+                className="portfolio-table-config-search-input"
                 placeholder="Search fields"
                 value={calculationColumnSearch}
                 onChange={(event) => setCalculationColumnSearch(event.target.value)}
               />
             </div>
 
-            <div className="holdings-modal-grid">
-              <div className="holdings-modal-categories">
+            <div className="portfolio-table-config-grid">
+              <div className="portfolio-table-config-categories">
                 {CALCULATION_COLUMN_GROUPS.map((group) => (
                   <button
                     type="button"
                     className={
                       group.label === calculationColumnCategory
-                        ? 'holdings-category-item holdings-category-item-active'
-                        : 'holdings-category-item'
+                        ? 'portfolio-table-config-category-item portfolio-table-config-category-item-active'
+                        : 'portfolio-table-config-category-item'
                     }
                     key={group.label}
                     onClick={() => setCalculationColumnCategory(group.label)}
@@ -2919,12 +2919,12 @@ function PerformancePage() {
                 ))}
               </div>
 
-              <div className="holdings-modal-fields">
+              <div className="portfolio-table-config-fields">
                 {filteredCalculationColumns.length ? (
                   filteredCalculationColumns.map(({ column, groupLabel }) => {
                     const locked = column === LOCKED_CALCULATION_COLUMN
                     return (
-                      <label className="holdings-field-item" key={`${groupLabel}:${column}`}>
+                      <label className="portfolio-table-config-field-item" key={`${groupLabel}:${column}`}>
                         <input
                           type="checkbox"
                           checked={calculationColumnDraft.includes(column)}
@@ -2932,8 +2932,8 @@ function PerformancePage() {
                           onChange={(event) => handleCalculationColumnDraftToggle(column, event.target.checked)}
                         />
                         <div>
-                          <div className="holdings-field-label">{CALCULATION_COLUMN_LABELS[column]}</div>
-                          <div className="holdings-field-meta">
+                          <div className="portfolio-table-config-field-label">{CALCULATION_COLUMN_LABELS[column]}</div>
+                          <div className="portfolio-table-config-field-meta">
                             {column}
                             {calculationColumnSearch.trim() ? ` · ${groupLabel}` : ''}
                             {locked ? ' · required' : ''}
@@ -2943,12 +2943,12 @@ function PerformancePage() {
                     )
                   })
                 ) : (
-                  <div className="holdings-field-empty">No fields.</div>
+                  <div className="portfolio-table-config-field-empty">No fields.</div>
                 )}
               </div>
             </div>
 
-            <div className="holdings-modal-actions holdings-modal-actions-sticky">
+            <div className="portfolio-table-config-actions portfolio-table-config-actions-sticky">
               <button
                 type="button"
                 onClick={() => {
@@ -2975,17 +2975,17 @@ function PerformancePage() {
         </div>
       ) : null}
       {calculationGroupByOpen ? (
-        <div className="holdings-modal-backdrop" onClick={() => setCalculationGroupByOpen(false)}>
+        <div className="portfolio-table-config-backdrop" onClick={() => setCalculationGroupByOpen(false)}>
           <div
             ref={calculationGroupByDialogRef}
-            className="holdings-modal holdings-compact-modal"
+            className="portfolio-table-config-modal portfolio-table-config-compact-modal"
             role="dialog"
             aria-modal="true"
             aria-label="Group performance calculations"
             tabIndex={-1}
             onClick={(event) => event.stopPropagation()}
           >
-            <div className="holdings-modal-header">
+            <div className="portfolio-table-config-header">
               <div>
                 <div className="panel-title">Group By</div>
                 <div className="section-heading">Grouping</div>
@@ -2994,12 +2994,12 @@ function PerformancePage() {
                 Close
               </button>
             </div>
-            <div className="holdings-modal-body holdings-groupby-list">
+            <div className="portfolio-table-config-body portfolio-table-config-groupby-list">
               {calculationGroupByOptions.map((option) => (
                 <button
                   type="button"
-                  className={`holdings-groupby-option ${
-                    option.value === effectiveCalculationGroupBy ? 'holdings-groupby-option-active' : ''
+                  className={`portfolio-table-config-groupby-option ${
+                    option.value === effectiveCalculationGroupBy ? 'portfolio-table-config-groupby-option-active' : ''
                   }`}
                   key={option.value}
                   onClick={() => handleCalculationGroupByChange(option.value)}

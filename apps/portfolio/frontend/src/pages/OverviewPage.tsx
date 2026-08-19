@@ -1648,7 +1648,7 @@ export default function OverviewPage() {
         {!workspaceLoading && holdingsWorkspace ? (
           <>
             <div className="performance-block-grid">
-              <section className="performance-section-block overview-performance-block">
+              <section className="portfolio-section-block overview-performance-block">
                 <div className="overview-nav-grid">
                   <div className="overview-nav-chart-panel">
                     <div className="overview-chart-controls">
@@ -1769,8 +1769,8 @@ export default function OverviewPage() {
                 </div>
               </section>
 
-              <section className="performance-section-block">
-                <div className="portfolio-detail-toolbar performance-subsection-toolbar performance-section-toolbar">
+              <section className="portfolio-section-block">
+                <div className="portfolio-detail-toolbar portfolio-section-toolbar overview-section-toolbar">
                   <div className="panel-title">Monthly Return Matrix</div>
                 </div>
                 <div className="table-shell">
@@ -1828,8 +1828,8 @@ export default function OverviewPage() {
               </section>
 
               <div className="overview-panel-grid">
-                <section className="performance-section-block">
-                  <div className="portfolio-detail-toolbar performance-subsection-toolbar">
+                <section className="portfolio-section-block">
+                  <div className="portfolio-detail-toolbar portfolio-section-toolbar">
                     <div className="panel-title">Strategy Sleeves</div>
                   </div>
                   {sleeveRibbonSegments ? (
@@ -1839,8 +1839,8 @@ export default function OverviewPage() {
                   )}
                 </section>
 
-                <section className="performance-section-block">
-                  <div className="portfolio-detail-toolbar performance-subsection-toolbar">
+                <section className="portfolio-section-block">
+                  <div className="portfolio-detail-toolbar portfolio-section-toolbar">
                     <div className="panel-title">Top Holdings</div>
                   </div>
                   {topHoldingBarItems ? (
@@ -1855,8 +1855,8 @@ export default function OverviewPage() {
                 </section>
               </div>
 
-              <section className="performance-section-block">
-                <div className="portfolio-detail-toolbar performance-subsection-toolbar">
+              <section className="portfolio-section-block">
+                <div className="portfolio-detail-toolbar portfolio-section-toolbar">
                   <div className="panel-title">Top Holdings Detail</div>
                   <button
                     type="button"
