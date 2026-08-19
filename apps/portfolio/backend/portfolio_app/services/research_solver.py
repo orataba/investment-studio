@@ -519,7 +519,14 @@ def _allocate_fixed_capital_weights(
         return pd.Series(0.0, index=member_index, dtype="float64")
     if preferred_total > 1e-12:
         return preferred / preferred_total * clipped_total
-    return pd.Series(clipped_total / float(len(member_index)), index=member_index, dtype="float64")
+    cash_key = f"{TARGET_MEMBER_CASH}::{SYSTEM_CASH_TARGET_MEMBER_ID}"
+    if cash_key not in member_index:
+        raise ValueError(
+            "Fixed-capital residual requires the system cash member when no fixed-capital target is configured."
+        )
+    fallback = pd.Series(0.0, index=member_index, dtype="float64")
+    fallback.loc[cash_key] = clipped_total
+    return fallback
 
 
 def _research_covariance_parameters(calculation_frequency: CalculationFrequency) -> dict[str, object]:

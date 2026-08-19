@@ -1347,7 +1347,7 @@ Research current target solve 使用 planning taxonomy 的层级 scope 做递归
 - risk-budget solve 的 achieved risk share 最大绝对误差必须在显式阈值内；当前阈值为 `1e-4` share units，即 `0.01 percentage points`。超过阈值或产生负 signed risk share 时，该 scope 求解失败，不切换到 `abs` mode，也不返回旧求解器状态；
 - Research `Solved Result` 的 `Look-through RC` 使用最终 leaf 权重在全组合 leaf covariance 上重新计算。父 scope 的风险预算求解误差仍以该父 scope 的本地 covariance 为准；当 covariance model 在每层重新做 correlation shrinkage 时，look-through RC 可以与父层本地 achieved risk share 有差异，UI 和报告必须明确区分两种口径；
 - 单成员风险证券 scope 只允许输出数学上唯一确定的本地风险权重；只有 Cash / Derivatives 而没有风险证券的 scope 进入 `no risky members / unavailable`，不生成风险预算；
-- 根 scope 完成风险 sleeve 权重后，`target_volatility` / `volatility_cap` / `fixed_gross` capital overlay 才对风险证券权重整体放缩；剩余 capital 按已配置的 Cash / Derivatives 目标权重比例分配给两个 fixed-capital system members。root top sleeve bounds 只约束 root 的风险证券 sleeve；违反上下限、目标波动率不可解或与 frozen/fixed gross 不可行时，该 run 必须失败或显式 unavailable，不用 unit gross、等权或旧算法兜底。
+- 根 scope 完成风险 sleeve 权重后，`target_volatility` / `volatility_cap` / `fixed_gross` capital overlay 才对风险证券权重整体放缩；剩余 capital 按已配置的 Cash / Derivatives 目标权重比例分配给两个 fixed-capital system members。两者都没有正的显式资金目标时，残余全部进入系统 Cash，Derivatives 保持 `0`，不得因系统桶存在而自动生成衍生品目标。root top sleeve bounds 只约束 root 的风险证券 sleeve；违反上下限、目标波动率不可解或与 frozen/fixed gross 不可行时，该 run 必须失败或显式 unavailable，不用 unit gross、等权或旧算法兜底。
 
 Research 的历史模拟合同是 `Point-in-time target-policy simulation`，不是用今天 taxonomy/targets 回放历史的 current-policy replay：
 

@@ -35,6 +35,7 @@ from portfolio_app.services.research_solver import (
     TARGET_MEMBER_NODE,
     ScopeMemberRecord,
     TaxonomyResearchState,
+    _allocate_fixed_capital_weights,
     _historical_backtest_instrument_ids,
     _align_member_series,
     _backtest_return_map_from_points,
@@ -66,6 +67,32 @@ from portfolio_app.services.research_solver import (
 )
 
 EFFECTIVE_FROM = "2026-01-01"
+
+
+def test_fixed_capital_residual_defaults_to_cash_without_configured_targets() -> None:
+    derivative_key = f"{TARGET_MEMBER_DERIVATIVE}::{SYSTEM_DERIVATIVE_TARGET_MEMBER_ID}"
+    cash_key = f"{TARGET_MEMBER_CASH}::{SYSTEM_CASH_TARGET_MEMBER_ID}"
+    member_index = [derivative_key, cash_key]
+
+    fallback = _allocate_fixed_capital_weights(
+        member_index=member_index,
+        preferred_weights=pd.Series(0.0, index=member_index, dtype="float64"),
+        total_weight=0.2,
+    )
+    assert fallback[derivative_key] == pytest.approx(0.0)
+    assert fallback[cash_key] == pytest.approx(0.2)
+
+    configured = _allocate_fixed_capital_weights(
+        member_index=member_index,
+        preferred_weights=pd.Series(
+            {derivative_key: 0.1, cash_key: 0.3},
+            dtype="float64",
+        ),
+        total_weight=0.2,
+    )
+    assert configured[derivative_key] == pytest.approx(0.05)
+    assert configured[cash_key] == pytest.approx(0.15)
+
 
 def _create_planning_taxonomy(client, *, root_default_target_dimension: str = "weight") -> tuple[str, dict[str, str]]:
     taxonomy_response = client.post(
