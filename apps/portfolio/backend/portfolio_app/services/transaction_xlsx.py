@@ -1,28 +1,38 @@
 from __future__ import annotations
 
 import csv
+from collections.abc import Iterable
 from datetime import date, datetime, time
 from decimal import Decimal, InvalidOperation
 from io import BytesIO, StringIO
-from typing import Iterable
+from math import isfinite
 from zipfile import BadZipFile
 
 from openpyxl import Workbook, load_workbook
 from openpyxl.cell import Cell
-from openpyxl.styles import Alignment, Font, PatternFill
+from openpyxl.comments import Comment
+from openpyxl.formatting.rule import FormulaRule
+from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 from openpyxl.utils.exceptions import InvalidFileException
+from openpyxl.workbook.defined_name import DefinedName
+from openpyxl.worksheet.datavalidation import DataValidation
 
 from portfolio_app.services.transaction_csv import (
     IMPORT_COLUMNS,
     MAX_CSV_BYTES,
     MAX_CSV_ROWS,
+    REQUIRED_COLUMNS,
     transaction_export_rows,
 )
 
-
 TRANSACTION_SHEET_NAME = "Transactions"
+INSTRUCTIONS_SHEET_NAME = "Instructions"
+FIELD_GUIDE_SHEET_NAME = "Field Guide"
+EXAMPLES_SHEET_NAME = "Examples"
+LISTS_SHEET_NAME = "Lists"
 XLSX_MEDIA_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+TEMPLATE_INPUT_LAST_ROW = MAX_CSV_ROWS + 1
 
 DATE_COLUMNS = frozenset(
     {
@@ -55,6 +65,974 @@ NUMERIC_COLUMNS = frozenset(
 
 HEADER_FILL = PatternFill(fill_type="solid", fgColor="1F2937")
 HEADER_FONT = Font(color="FFFFFF", bold=True)
+REQUIRED_HEADER_FILL = PatternFill(fill_type="solid", fgColor="B45309")
+DROPDOWN_HEADER_FILL = PatternFill(fill_type="solid", fgColor="075985")
+TITLE_FILL = PatternFill(fill_type="solid", fgColor="0F766E")
+SECTION_FILL = PatternFill(fill_type="solid", fgColor="E2E8F0")
+EXAMPLE_FILL = PatternFill(fill_type="solid", fgColor="ECFDF5")
+WARNING_FILL = PatternFill(fill_type="solid", fgColor="FEF3C7")
+REFERENCE_FILL = PatternFill(fill_type="solid", fgColor="EFF6FF")
+INVALID_FILL = PatternFill(fill_type="solid", fgColor="FECACA")
+THIN_GRAY_BORDER = Border(bottom=Side(style="thin", color="CBD5E1"))
+
+TRANSACTION_TYPE_VALUES = (
+    "buy",
+    "sell",
+    "option_write",
+    "option_buy_to_close",
+    "dividend",
+    "dividend_reinvestment",
+    "coupon",
+    "interest",
+    "return_of_capital",
+    "maturity_redemption",
+    "fee",
+    "tax",
+    "deposit",
+    "withdrawal",
+    "fx_conversion",
+    "lifecycle_event",
+    "opening_balance",
+    "internal_transfer",
+)
+LIFECYCLE_EVENT_VALUES = (
+    "fcn_knock_in",
+    "fcn_knock_out",
+    "fcn_maturity",
+    "option_long_expiry",
+    "option_long_cash_settlement",
+    "option_writer_expiry",
+    "option_writer_cash_settlement",
+)
+FEE_CATEGORY_VALUES = (
+    "unknown",
+    "transaction_cost",
+    "management_fee",
+    "custody_fee",
+    "administration_fee",
+    "performance_fee",
+    "other",
+)
+CURRENCY_VALUES = ("USD", "HKD", "CNY")
+TRANSFER_OBJECT_TYPE_VALUES = ("cash", "position")
+DERIVATIVE_CONTRACT_TYPE_VALUES = ("fcn", "option")
+OPTION_TYPE_VALUES = ("call", "put")
+
+TRANSACTION_TYPE_GUIDANCE = {
+    "buy": "买入证券、基金、ETF、FCN 或期权多头开仓",
+    "sell": "卖出证券、基金、ETF、FCN 提前退出或期权多头平仓",
+    "option_write": "卖出开仓期权",
+    "option_buy_to_close": "买入平仓已卖出的期权",
+    "dividend": "证券或基金现金分红",
+    "dividend_reinvestment": "红利再投资形成的证券份额",
+    "coupon": "FCN 利息收入",
+    "interest": "现金账户利息",
+    "return_of_capital": "证券或基金返还资本",
+    "maturity_redemption": "FCN 到期或期权多头到期/现金结算",
+    "fee": "费用事实；金额写 gross_amount",
+    "tax": "税费事实；金额写 gross_amount",
+    "deposit": "外部资金存入现金账户",
+    "withdrawal": "外部资金从现金账户转出",
+    "fx_conversion": "同一组合内两现金账户之间换汇",
+    "lifecycle_event": "期权卖方到期或现金结算",
+    "opening_balance": "期初现金、证券、FCN 或 Option 多头持仓",
+    "internal_transfer": "组合内部现金或证券仓位转移；一行会生成两条系统记录",
+}
+LIFECYCLE_EVENT_GUIDANCE = {
+    "fcn_knock_in": "FCN 敲入结束，transaction_type 必须为 maturity_redemption",
+    "fcn_knock_out": "FCN 敲出结束，transaction_type 必须为 maturity_redemption",
+    "fcn_maturity": "FCN 正常到期，transaction_type 必须为 maturity_redemption",
+    "option_long_expiry": "期权多头到期作废，transaction_type 必须为 maturity_redemption",
+    "option_long_cash_settlement": "期权多头现金结算，transaction_type 必须为 maturity_redemption",
+    "option_writer_expiry": "期权空头到期作废，transaction_type 必须为 lifecycle_event",
+    "option_writer_cash_settlement": "期权空头现金结算，transaction_type 必须为 lifecycle_event",
+}
+FEE_CATEGORY_GUIDANCE = {
+    "unknown": "未分类；未填写时的系统默认值",
+    "transaction_cost": "与某笔交易直接相关的佣金或手续费",
+    "management_fee": "管理费",
+    "custody_fee": "托管费",
+    "administration_fee": "行政或运营费",
+    "performance_fee": "业绩报酬",
+    "other": "其他费用",
+}
+
+FIELD_GUIDANCE: dict[str, tuple[str, str, str]] = {
+    "transaction_type": (
+        "交易类型",
+        "条件必填",
+        "从下拉列表选择；internal_transfer 是单独的导入命令。",
+    ),
+    "lifecycle_event_type": (
+        "生命周期事件",
+        "按需填写",
+        "只用于 FCN 到期结果或期权到期/现金结算。",
+    ),
+    "trade_date": ("交易日期", "条件必填", "格式 yyyy-mm-dd；所有交易均需填写。"),
+    "trade_time": (
+        "交易时间",
+        "可选",
+        "格式 HH:MM；未知请留空，系统会标记为估算时间。",
+    ),
+    "settlement_date": (
+        "结算日期",
+        "可选",
+        "格式 yyyy-mm-dd；留空时默认为 trade_date，且不能早于 trade_date。",
+    ),
+    "position_effective_date": (
+        "持仓生效日",
+        "可选",
+        "仅买入、卖出、红利再投资、到期赎回可用；不能早于 trade_date。",
+    ),
+    "entitlement_date": (
+        "权益确认日",
+        "可选",
+        "仅分红、红利再投资、票息、费用和税费可用，且不能晚于 trade_date。",
+    ),
+    "acquisition_date": (
+        "取得日期",
+        "可选",
+        "仅证券、FCN 或 Option 多头期初余额可用；未填时使用 trade_date。",
+    ),
+    "transfer_object_type": (
+        "内部转移对象",
+        "内部转移必填",
+        "internal_transfer 时选择 cash 或 position；其他交易必须留空。",
+    ),
+    "from_account_id": (
+        "转出账户 ID",
+        "内部转移必填",
+        "仅 internal_transfer 使用；填写已预先设置的精确账户 ID。",
+    ),
+    "to_account_id": (
+        "转入账户 ID",
+        "内部转移必填",
+        "仅 internal_transfer 使用；必须不同于 from_account_id。",
+    ),
+    "account_id": (
+        "交易账户 ID",
+        "普通交易必填",
+        "填写已预先设置的精确账户 ID；internal_transfer 时必须留空。",
+    ),
+    "settlement_cash_account_id": (
+        "结算现金账户 ID",
+        "按需填写",
+        "证券交易、现金结算和部分费用税费需要；可留空让系统使用账户默认结算账户。",
+    ),
+    "instrument_id": (
+        "证券 ID",
+        "按需填写",
+        "Registry 证券 ID；不可与 derivative_contract_id 同时填写。",
+    ),
+    "derivative_contract_id": (
+        "衍生品合约 ID",
+        "按需填写",
+        "Portfolio 内的 FCN 或 Option 合约 ID；不可与 instrument_id 同时填写。",
+    ),
+    "derivative_contract_name": (
+        "新合约名称",
+        "新合约时必填",
+        "仅在首次创建 FCN 或 Option 合约时填写；已有合约留空。",
+    ),
+    "derivative_contract_type": (
+        "新合约类型",
+        "新合约时必填",
+        "首次创建合约时从下拉选择 fcn 或 option；已有合约留空。",
+    ),
+    "derivative_contract_external_reference": (
+        "新合约外部编号",
+        "可选",
+        "首次创建合约时可填写外部系统中的合约编号。",
+    ),
+    "option_underlying_instrument_id": (
+        "期权标的证券 ID",
+        "新 Option 必填",
+        "仅新建 Option 合约时填写。",
+    ),
+    "option_type": (
+        "期权类型",
+        "新 Option 必填",
+        "仅新建 Option 合约时从下拉选择 call 或 put。",
+    ),
+    "option_expiry_date": (
+        "期权到期日",
+        "新 Option 必填",
+        "仅新建 Option 合约时填写，格式 yyyy-mm-dd。",
+    ),
+    "option_strike": ("期权行权价", "新 Option 必填", "仅新建 Option 合约时填写正数。"),
+    "option_contract_multiplier": (
+        "期权乘数",
+        "新 Option 必填",
+        "仅新建 Option 合约时填写正数，例如 100。",
+    ),
+    "fcn_notional": ("FCN 名义本金", "新 FCN 必填", "仅新建 FCN 合约时填写正数。"),
+    "fcn_annual_coupon_rate_pct": (
+        "FCN 年化票息 (%)",
+        "可选",
+        "仅新建 FCN 合约时填写非负百分数，例如 12 表示 12%。",
+    ),
+    "fcn_issue_date": (
+        "FCN 起息日",
+        "新 FCN 必填",
+        "仅新建 FCN 合约时填写，格式 yyyy-mm-dd。",
+    ),
+    "fcn_final_observation_date": (
+        "FCN 最终观察日",
+        "可选",
+        "仅新建 FCN 合约时填写；必须在起息日与到期日之间。",
+    ),
+    "fcn_maturity_date": (
+        "FCN 到期日",
+        "新 FCN 必填",
+        "仅新建 FCN 合约时填写，且不能早于起息日。",
+    ),
+    "fcn_issuer": ("FCN 发行人", "新 FCN 必填", "仅新建 FCN 合约时填写。"),
+    "fcn_counterparty": ("FCN 对手方", "新 FCN 必填", "仅新建 FCN 合约时填写。"),
+    "fcn_underlyings_json": (
+        "FCN 标的条款 JSON",
+        "新 FCN 必填",
+        "仅新建 FCN 合约时填写 JSON 数组；参考 Examples 中的格式。",
+    ),
+    "quantity": (
+        "数量",
+        "按需填写",
+        "输入非负绝对值；方向由交易类型决定。证券为份额，期权为张数，FCN 通常为 1。",
+    ),
+    "price": (
+        "单价",
+        "按需填写",
+        "输入非负绝对值；买卖必须为正数。期权是每标的单位权利金。",
+    ),
+    "gross_amount": (
+        "交易总额",
+        "普通交易必填",
+        "输入非负绝对值；方向由交易类型决定。不要把费用或税费混入其中。",
+    ),
+    "counter_amount": (
+        "换入金额",
+        "换汇必填",
+        "仅 fx_conversion 使用，填写目标币种的非负绝对金额。",
+    ),
+    "fx_rate": (
+        "换汇汇率",
+        "换汇必填",
+        "仅 fx_conversion 使用；counter_amount 必须等于 gross_amount × fx_rate。",
+    ),
+    "fees": (
+        "附加费用",
+        "可选",
+        "与该交易直接相关的非负费用；留空按 0 处理。fee/tax 交易本身必须填 0。",
+    ),
+    "fee_category": (
+        "费用类别",
+        "可选",
+        "从下拉选择；留空按 unknown 处理。非 unknown 需要费用交易或正的 fees。",
+    ),
+    "taxes": (
+        "附加税费",
+        "可选",
+        "与该交易直接相关的非负税费；留空按 0 处理。fee/tax 交易本身必须填 0。",
+    ),
+    "currency": (
+        "交易币种",
+        "条件必填",
+        "从下拉选择 USD、HKD 或 CNY；必须与账户和资产的币种规则匹配。",
+    ),
+    "counterparty_account_id": (
+        "换汇目标账户 ID",
+        "换汇必填",
+        "仅 fx_conversion 使用；填写不同币种的已设置现金账户 ID。",
+    ),
+    "source_system": (
+        "来源系统",
+        "建议填写",
+        "建议每批使用稳定来源名称；留空时系统使用上传来源默认值。",
+    ),
+    "external_reference": (
+        "外部流水号",
+        "建议填写",
+        "建议填写来源系统中的唯一流水号；填写时必须同时填写 source_system。",
+    ),
+    "note": (
+        "备注",
+        "可选",
+        "只写必要的业务说明，不要用备注替代日期、金额、数量或账户等结构化字段。",
+    ),
+}
+
+
+def _template_example(
+    scenario: str,
+    external_reference: str | None = None,
+    **values: object,
+) -> dict[str, object]:
+    row: dict[str, object] = {"scenario": scenario, "currency": "USD", **values}
+    if external_reference is not None:
+        row["source_system"] = "template_example"
+        row["external_reference"] = external_reference
+    return row
+
+
+TEMPLATE_EXAMPLE_ROWS = (
+    _template_example(
+        "现金｜外部入金",
+        "CASH-DEPOSIT-001",
+        transaction_type="deposit",
+        trade_date="2026-01-02",
+        account_id="USD_CASH_ACCOUNT_ID",
+        gross_amount=100000,
+        note="客户向组合现金账户入金",
+    ),
+    _template_example(
+        "现金｜外部出金",
+        "CASH-WITHDRAWAL-001",
+        transaction_type="withdrawal",
+        trade_date="2026-01-03",
+        account_id="USD_CASH_ACCOUNT_ID",
+        gross_amount=5000,
+        note="组合向外部账户出金",
+    ),
+    _template_example(
+        "现金｜存款利息",
+        "CASH-INTEREST-001",
+        transaction_type="interest",
+        trade_date="2026-01-31",
+        account_id="USD_CASH_ACCOUNT_ID",
+        gross_amount=125.50,
+        note="现金账户利息收入",
+    ),
+    _template_example(
+        "现金｜USD 换 CNY",
+        "FX-USD-CNY-001",
+        transaction_type="fx_conversion",
+        trade_date="2026-02-02",
+        settlement_date="2026-02-02",
+        account_id="USD_CASH_ACCOUNT_ID",
+        counterparty_account_id="CNY_CASH_ACCOUNT_ID",
+        gross_amount=10000,
+        counter_amount=72000,
+        fx_rate=7.2,
+        note="卖出 USD、买入 CNY；currency 是转出账户币种",
+    ),
+    _template_example(
+        "运营｜现金账户管理费",
+        "CASH-FEE-001",
+        transaction_type="fee",
+        trade_date="2026-02-28",
+        account_id="USD_CASH_ACCOUNT_ID",
+        gross_amount=50,
+        fee_category="management_fee",
+        note="独立费用事实，金额写 gross_amount，不写 fees",
+    ),
+    _template_example(
+        "运营｜现金账户税费",
+        "CASH-TAX-001",
+        transaction_type="tax",
+        trade_date="2026-02-28",
+        account_id="USD_CASH_ACCOUNT_ID",
+        gross_amount=20,
+        note="独立税费事实，金额写 gross_amount，不写 taxes",
+    ),
+    _template_example(
+        "期初｜现金余额",
+        "OPENING-CASH-001",
+        transaction_type="opening_balance",
+        trade_date="2026-01-01",
+        account_id="USD_CASH_ACCOUNT_ID",
+        gross_amount=250000,
+        note="上线日已存在的现金余额",
+    ),
+    _template_example(
+        "内部转移｜现金",
+        transaction_type="internal_transfer",
+        trade_date="2026-03-01",
+        settlement_date="2026-03-01",
+        transfer_object_type="cash",
+        from_account_id="USD_CASH_ACCOUNT_A_ID",
+        to_account_id="USD_CASH_ACCOUNT_B_ID",
+        gross_amount=25000,
+        note="同币种现金账户之间内部转移",
+    ),
+    _template_example(
+        "期初｜证券持仓",
+        "OPENING-SECURITY-001",
+        transaction_type="opening_balance",
+        trade_date="2026-01-01",
+        acquisition_date="2025-08-15",
+        account_id="SECURITY_ACCOUNT_ID",
+        instrument_id="REGISTRY_INSTRUMENT_ID",
+        quantity=100,
+        price=45,
+        gross_amount=4500,
+        note="上线日前已持有的证券；acquisition_date 是真实取得日期",
+    ),
+    _template_example(
+        "股票｜USD 股票买入",
+        "SECURITY-BUY-001",
+        transaction_type="buy",
+        trade_date="2026-03-02",
+        trade_time="10:30",
+        settlement_date="2026-03-04",
+        position_effective_date="2026-03-02",
+        account_id="USD_SECURITY_ACCOUNT_ID",
+        settlement_cash_account_id="USD_CASH_ACCOUNT_ID",
+        instrument_id="REGISTRY_USD_EQUITY_ID",
+        quantity=100,
+        price=50,
+        gross_amount=5000,
+        fees=5,
+        fee_category="transaction_cost",
+        note="数量 × 单价 = gross_amount；佣金单独写 fees",
+    ),
+    _template_example(
+        "ETF｜HKD ETF 卖出",
+        "ETF-SELL-001",
+        transaction_type="sell",
+        trade_date="2026-03-03",
+        settlement_date="2026-03-05",
+        position_effective_date="2026-03-03",
+        account_id="HKD_SECURITY_ACCOUNT_ID",
+        settlement_cash_account_id="HKD_CASH_ACCOUNT_ID",
+        instrument_id="REGISTRY_HKD_ETF_ID",
+        quantity=500,
+        price=22,
+        gross_amount=11000,
+        fees=25,
+        fee_category="transaction_cost",
+        taxes=11,
+        currency="HKD",
+        note="证券、持仓账户、结算现金账户和交易币种均为 HKD",
+    ),
+    _template_example(
+        "公募基金｜CNY 申购确认",
+        "PUBLIC-FUND-BUY-001",
+        transaction_type="buy",
+        trade_date="2026-03-03",
+        settlement_date="2026-03-05",
+        position_effective_date="2026-03-05",
+        account_id="CNY_SECURITY_ACCOUNT_ID",
+        settlement_cash_account_id="CNY_CASH_ACCOUNT_ID",
+        instrument_id="REGISTRY_CNY_PUBLIC_FUND_ID",
+        quantity=1234.56789,
+        price=1.215,
+        gross_amount=1500,
+        currency="CNY",
+        note="trade_date 写申请日，position_effective_date 写基金确认份额生效日",
+    ),
+    _template_example(
+        "私募基金｜CNY 赎回确认",
+        "PRIVATE-FUND-SELL-001",
+        transaction_type="sell",
+        trade_date="2026-03-06",
+        settlement_date="2026-03-12",
+        position_effective_date="2026-03-10",
+        account_id="CNY_SECURITY_ACCOUNT_ID",
+        settlement_cash_account_id="CNY_CASH_ACCOUNT_ID",
+        instrument_id="REGISTRY_CNY_PRIVATE_FUND_ID",
+        quantity=800.12345678,
+        price=1.25,
+        gross_amount=1000.15432098,
+        currency="CNY",
+        note="分别记录申请日、份额确认日和资金结算日，保留原始份额与金额精度",
+    ),
+    _template_example(
+        "证券｜卖出或基金赎回",
+        "SECURITY-SELL-001",
+        transaction_type="sell",
+        trade_date="2026-03-10",
+        settlement_date="2026-03-12",
+        position_effective_date="2026-03-10",
+        account_id="SECURITY_ACCOUNT_ID",
+        settlement_cash_account_id="USD_CASH_ACCOUNT_ID",
+        instrument_id="REGISTRY_INSTRUMENT_ID",
+        quantity=40,
+        price=55,
+        gross_amount=2200,
+        fees=4,
+        fee_category="transaction_cost",
+        taxes=2,
+        note="所有金额和数量均填非负绝对值，方向由 sell 决定",
+    ),
+    _template_example(
+        "证券｜现金分红",
+        "DIVIDEND-001",
+        transaction_type="dividend",
+        trade_date="2026-03-20",
+        settlement_date="2026-03-22",
+        entitlement_date="2026-03-15",
+        account_id="SECURITY_ACCOUNT_ID",
+        settlement_cash_account_id="USD_CASH_ACCOUNT_ID",
+        instrument_id="REGISTRY_INSTRUMENT_ID",
+        gross_amount=300,
+        taxes=30,
+        note="entitlement_date 是权益确认日；不填写 quantity 或 price",
+    ),
+    _template_example(
+        "基金｜红利再投资",
+        "DIVIDEND-REINVEST-001",
+        transaction_type="dividend_reinvestment",
+        trade_date="2026-03-22",
+        position_effective_date="2026-03-22",
+        entitlement_date="2026-03-15",
+        account_id="SECURITY_ACCOUNT_ID",
+        instrument_id="REGISTRY_FUND_ID",
+        quantity=25,
+        price=12,
+        gross_amount=300,
+        note="形成份额但不经过结算现金账户；fees 和 taxes 必须为 0",
+    ),
+    _template_example(
+        "证券｜返还资本",
+        "RETURN-CAPITAL-001",
+        transaction_type="return_of_capital",
+        trade_date="2026-03-25",
+        settlement_date="2026-03-27",
+        account_id="SECURITY_ACCOUNT_ID",
+        settlement_cash_account_id="USD_CASH_ACCOUNT_ID",
+        instrument_id="REGISTRY_INSTRUMENT_ID",
+        gross_amount=500,
+        note="不填写 quantity、price 或 entitlement_date",
+    ),
+    _template_example(
+        "证券｜HKD 独立交易费用",
+        "SECURITY-FEE-001",
+        transaction_type="fee",
+        trade_date="2026-03-25",
+        entitlement_date="2026-03-24",
+        account_id="HKD_SECURITY_ACCOUNT_ID",
+        settlement_cash_account_id="HKD_CASH_ACCOUNT_ID",
+        instrument_id="REGISTRY_HKD_EQUITY_ID",
+        gross_amount=35,
+        fee_category="transaction_cost",
+        currency="HKD",
+        note="资产关联的独立费用事实；金额写 gross_amount，fees 保持为 0",
+    ),
+    _template_example(
+        "证券｜HKD 独立税费",
+        "SECURITY-TAX-001",
+        transaction_type="tax",
+        trade_date="2026-03-25",
+        entitlement_date="2026-03-24",
+        account_id="HKD_SECURITY_ACCOUNT_ID",
+        settlement_cash_account_id="HKD_CASH_ACCOUNT_ID",
+        instrument_id="REGISTRY_HKD_EQUITY_ID",
+        gross_amount=18,
+        currency="HKD",
+        note="资产关联的独立税费事实；金额写 gross_amount，taxes 保持为 0",
+    ),
+    _template_example(
+        "内部转移｜证券仓位",
+        transaction_type="internal_transfer",
+        trade_date="2026-04-01",
+        settlement_date="2026-04-01",
+        transfer_object_type="position",
+        from_account_id="SECURITY_ACCOUNT_A_ID",
+        to_account_id="SECURITY_ACCOUNT_B_ID",
+        instrument_id="REGISTRY_INSTRUMENT_ID",
+        quantity=30,
+        note="同一证券在两个兼容证券账户之间转仓",
+    ),
+    _template_example(
+        "Option｜新 Call 多头买入开仓",
+        "OPTION-LONG-OPEN-001",
+        transaction_type="buy",
+        trade_date="2026-04-02",
+        settlement_date="2026-04-02",
+        account_id="OPTION_ACCOUNT_ID",
+        settlement_cash_account_id="USD_CASH_ACCOUNT_ID",
+        derivative_contract_id="NEW_LONG_OPTION_ID",
+        derivative_contract_name="Example Dec 110 Call",
+        derivative_contract_type="option",
+        derivative_contract_external_reference="BROKER-OPTION-001",
+        option_underlying_instrument_id="REGISTRY_UNDERLYING_ID",
+        option_type="call",
+        option_expiry_date="2026-12-18",
+        option_strike=110,
+        option_contract_multiplier=100,
+        quantity=2,
+        price=3,
+        gross_amount=600,
+        fees=2,
+        fee_category="transaction_cost",
+        note="首次交易同时定义新合约；2 × 3 × 100 = 600",
+    ),
+    _template_example(
+        "Option｜多头卖出平仓",
+        "OPTION-LONG-CLOSE-001",
+        transaction_type="sell",
+        trade_date="2026-05-02",
+        settlement_date="2026-05-02",
+        account_id="OPTION_ACCOUNT_ID",
+        settlement_cash_account_id="USD_CASH_ACCOUNT_ID",
+        derivative_contract_id="EXISTING_LONG_OPTION_ID",
+        quantity=1,
+        price=5,
+        gross_amount=500,
+        fees=2,
+        fee_category="transaction_cost",
+        note="已有合约只填 derivative_contract_id，不重复合约条款",
+    ),
+    _template_example(
+        "Option｜新 Put 空头卖出开仓",
+        "OPTION-SHORT-OPEN-001",
+        transaction_type="option_write",
+        trade_date="2026-04-05",
+        settlement_date="2026-04-05",
+        account_id="OPTION_ACCOUNT_ID",
+        settlement_cash_account_id="USD_CASH_ACCOUNT_ID",
+        derivative_contract_id="NEW_SHORT_OPTION_ID",
+        derivative_contract_name="Example Dec 90 Put",
+        derivative_contract_type="option",
+        derivative_contract_external_reference="BROKER-OPTION-002",
+        option_underlying_instrument_id="REGISTRY_UNDERLYING_ID",
+        option_type="put",
+        option_expiry_date="2026-12-18",
+        option_strike=90,
+        option_contract_multiplier=100,
+        quantity=3,
+        price=2,
+        gross_amount=600,
+        fees=2,
+        fee_category="transaction_cost",
+        note="卖出开仓必须使用 option_write",
+    ),
+    _template_example(
+        "Option｜空头买入平仓",
+        "OPTION-SHORT-CLOSE-001",
+        transaction_type="option_buy_to_close",
+        trade_date="2026-05-05",
+        settlement_date="2026-05-05",
+        account_id="OPTION_ACCOUNT_ID",
+        settlement_cash_account_id="USD_CASH_ACCOUNT_ID",
+        derivative_contract_id="EXISTING_SHORT_OPTION_ID",
+        quantity=1,
+        price=1,
+        gross_amount=100,
+        fees=2,
+        fee_category="transaction_cost",
+        note="买入平仓必须使用 option_buy_to_close",
+    ),
+    _template_example(
+        "Option｜CNY 合约期初多头",
+        "OPENING-OPTION-001",
+        transaction_type="opening_balance",
+        trade_date="2026-01-01",
+        acquisition_date="2025-12-15",
+        account_id="CNY_OPTION_ACCOUNT_ID",
+        derivative_contract_id="NEW_CNY_OPTION_ID",
+        derivative_contract_name="Example CNY June 4.50 Call",
+        derivative_contract_type="option",
+        derivative_contract_external_reference="BROKER-OPTION-CNY-001",
+        option_underlying_instrument_id="REGISTRY_CNY_UNDERLYING_ID",
+        option_type="call",
+        option_expiry_date="2026-06-19",
+        option_strike=4.5,
+        option_contract_multiplier=10000,
+        quantity=2,
+        price=0.2,
+        gross_amount=4000,
+        currency="CNY",
+        note="上线日前已持有的期权；首次出现时在同一行定义合约条款",
+    ),
+    _template_example(
+        "Option｜HKD 独立费用",
+        "OPTION-FEE-001",
+        transaction_type="fee",
+        trade_date="2026-05-06",
+        entitlement_date="2026-05-05",
+        account_id="HKD_OPTION_ACCOUNT_ID",
+        settlement_cash_account_id="HKD_CASH_ACCOUNT_ID",
+        derivative_contract_id="EXISTING_HKD_OPTION_ID",
+        gross_amount=20,
+        fee_category="transaction_cost",
+        currency="HKD",
+        note="Option 关联的独立费用事实，不填写 quantity 或 price",
+    ),
+    _template_example(
+        "Option｜HKD 独立税费",
+        "OPTION-TAX-001",
+        transaction_type="tax",
+        trade_date="2026-05-06",
+        entitlement_date="2026-05-05",
+        account_id="HKD_OPTION_ACCOUNT_ID",
+        settlement_cash_account_id="HKD_CASH_ACCOUNT_ID",
+        derivative_contract_id="EXISTING_HKD_OPTION_ID",
+        gross_amount=8,
+        currency="HKD",
+        note="Option 关联的独立税费事实，不填写 quantity 或 price",
+    ),
+    _template_example(
+        "Option｜多头到期作废",
+        "OPTION-LONG-EXPIRY-001",
+        transaction_type="maturity_redemption",
+        lifecycle_event_type="option_long_expiry",
+        trade_date="2026-12-18",
+        account_id="OPTION_ACCOUNT_ID",
+        derivative_contract_id="EXISTING_LONG_OPTION_ID",
+        quantity=1,
+        gross_amount=0,
+        note="无现金事件；不填结算现金账户、price、fees 或 taxes",
+    ),
+    _template_example(
+        "Option｜多头现金结算",
+        "OPTION-LONG-CASH-001",
+        transaction_type="maturity_redemption",
+        lifecycle_event_type="option_long_cash_settlement",
+        trade_date="2026-12-18",
+        settlement_date="2026-12-18",
+        account_id="OPTION_ACCOUNT_ID",
+        settlement_cash_account_id="USD_CASH_ACCOUNT_ID",
+        derivative_contract_id="EXISTING_LONG_OPTION_ID",
+        quantity=1,
+        gross_amount=1500,
+        note="现金流入；gross_amount 必须为正，不填 price",
+    ),
+    _template_example(
+        "Option｜空头到期作废",
+        "OPTION-WRITER-EXPIRY-001",
+        transaction_type="lifecycle_event",
+        lifecycle_event_type="option_writer_expiry",
+        trade_date="2026-12-18",
+        account_id="OPTION_ACCOUNT_ID",
+        derivative_contract_id="EXISTING_SHORT_OPTION_ID",
+        quantity=2,
+        gross_amount=0,
+        note="无现金事件；不填结算现金账户、price、fees 或 taxes",
+    ),
+    _template_example(
+        "Option｜空头现金结算",
+        "OPTION-WRITER-CASH-001",
+        transaction_type="lifecycle_event",
+        lifecycle_event_type="option_writer_cash_settlement",
+        trade_date="2026-12-18",
+        settlement_date="2026-12-18",
+        account_id="OPTION_ACCOUNT_ID",
+        settlement_cash_account_id="USD_CASH_ACCOUNT_ID",
+        derivative_contract_id="EXISTING_SHORT_OPTION_ID",
+        quantity=2,
+        gross_amount=13000,
+        note="现金流出；gross_amount 必须为正，不填 price",
+    ),
+    _template_example(
+        "Option 实物行权拆分 1/2｜多头现金结算",
+        "OPTION-PHYSICAL-CASH-001",
+        transaction_type="maturity_redemption",
+        lifecycle_event_type="option_long_cash_settlement",
+        trade_date="2026-12-18",
+        settlement_date="2026-12-18",
+        account_id="OPTION_ACCOUNT_ID",
+        settlement_cash_account_id="USD_CASH_ACCOUNT_ID",
+        derivative_contract_id="EXISTING_PHYSICAL_OPTION_ID",
+        quantity=1,
+        gross_amount=2000,
+        note="独立事实 1：按内在价值记录 Option 现金结算；不设置关联或配对 ID",
+    ),
+    _template_example(
+        "Option 实物行权拆分 2/2｜标的股票买入",
+        "OPTION-PHYSICAL-STOCK-001",
+        transaction_type="buy",
+        trade_date="2026-12-18",
+        settlement_date="2026-12-18",
+        position_effective_date="2026-12-18",
+        account_id="USD_SECURITY_ACCOUNT_ID",
+        settlement_cash_account_id="USD_CASH_ACCOUNT_ID",
+        instrument_id="REGISTRY_OPTION_DELIVERED_EQUITY_ID",
+        quantity=100,
+        price=120,
+        gross_amount=12000,
+        note="独立事实 2：按交付日市场或参考价记录股票买入，不与 Option 行绑定",
+    ),
+    _template_example(
+        "Option 空头 Call 指派拆分 1/2｜空头现金结算",
+        "OPTION-ASSIGNMENT-CASH-001",
+        transaction_type="lifecycle_event",
+        lifecycle_event_type="option_writer_cash_settlement",
+        trade_date="2026-12-18",
+        settlement_date="2026-12-18",
+        account_id="OPTION_ACCOUNT_ID",
+        settlement_cash_account_id="USD_CASH_ACCOUNT_ID",
+        derivative_contract_id="EXISTING_ASSIGNED_CALL_ID",
+        quantity=1,
+        gross_amount=2000,
+        note="独立事实 1：按内在价值记录空头 Call 现金结算；不设置关联或配对 ID",
+    ),
+    _template_example(
+        "Option 空头 Call 指派拆分 2/2｜标的股票卖出",
+        "OPTION-ASSIGNMENT-STOCK-001",
+        transaction_type="sell",
+        trade_date="2026-12-18",
+        settlement_date="2026-12-18",
+        position_effective_date="2026-12-18",
+        account_id="USD_SECURITY_ACCOUNT_ID",
+        settlement_cash_account_id="USD_CASH_ACCOUNT_ID",
+        instrument_id="REGISTRY_OPTION_ASSIGNED_EQUITY_ID",
+        quantity=100,
+        price=120,
+        gross_amount=12000,
+        note="独立事实 2：按交付日市场或参考价记录股票卖出，不与 Option 行绑定",
+    ),
+    _template_example(
+        "FCN｜新合约进入",
+        "FCN-ENTRY-001",
+        transaction_type="buy",
+        trade_date="2026-05-01",
+        settlement_date="2026-05-01",
+        account_id="FCN_ACCOUNT_ID",
+        settlement_cash_account_id="USD_CASH_ACCOUNT_ID",
+        derivative_contract_id="NEW_FCN_ID",
+        derivative_contract_name="Example 4M FCN",
+        derivative_contract_type="fcn",
+        derivative_contract_external_reference="BROKER-FCN-001",
+        fcn_notional=100000,
+        fcn_annual_coupon_rate_pct=12,
+        fcn_issue_date="2026-05-01",
+        fcn_final_observation_date="2026-08-28",
+        fcn_maturity_date="2026-09-01",
+        fcn_issuer="EXAMPLE BANK",
+        fcn_counterparty="EXAMPLE BROKER",
+        fcn_underlyings_json='[{"instrument_id":"REGISTRY_UNDERLYING_A_ID","initial_reference_price":100,"strike_level_pct":100,"knock_in_level_pct":70,"knock_out_level_pct":105,"deliverable":true},{"instrument_id":"REGISTRY_UNDERLYING_B_ID","initial_reference_price":80,"strike_level_pct":100,"knock_in_level_pct":65,"knock_out_level_pct":105,"deliverable":true}]',
+        quantity=1,
+        price=100000,
+        gross_amount=100000,
+        note="首次交易同时定义不可变 FCN 条款；underlyings JSON 可包含多个唯一证券 ID",
+    ),
+    _template_example(
+        "FCN｜HKD 合约期初持仓",
+        "OPENING-FCN-001",
+        transaction_type="opening_balance",
+        trade_date="2026-01-01",
+        acquisition_date="2025-11-03",
+        account_id="HKD_FCN_ACCOUNT_ID",
+        derivative_contract_id="NEW_HKD_FCN_ID",
+        derivative_contract_name="Example HKD 6M FCN",
+        derivative_contract_type="fcn",
+        derivative_contract_external_reference="BROKER-FCN-HKD-001",
+        fcn_notional=500000,
+        fcn_annual_coupon_rate_pct=10,
+        fcn_issue_date="2025-11-03",
+        fcn_final_observation_date="2026-04-29",
+        fcn_maturity_date="2026-05-04",
+        fcn_issuer="EXAMPLE BANK",
+        fcn_counterparty="EXAMPLE BROKER",
+        fcn_underlyings_json='[{"instrument_id":"REGISTRY_HKD_UNDERLYING_ID","initial_reference_price":50,"strike_level_pct":100,"knock_in_level_pct":70,"knock_out_level_pct":103,"deliverable":true}]',
+        quantity=1,
+        price=500000,
+        gross_amount=500000,
+        currency="HKD",
+        note="上线日前已持有的 FCN；acquisition_date 写真实取得日期",
+    ),
+    _template_example(
+        "FCN｜提前退出",
+        "FCN-EARLY-EXIT-001",
+        transaction_type="sell",
+        trade_date="2026-06-10",
+        settlement_date="2026-06-12",
+        account_id="FCN_ACCOUNT_ID",
+        settlement_cash_account_id="USD_CASH_ACCOUNT_ID",
+        derivative_contract_id="EXISTING_FCN_ID",
+        quantity=1,
+        price=102000,
+        gross_amount=102000,
+        fees=100,
+        fee_category="transaction_cost",
+        note="FCN 到期前卖出使用 sell；数量通常为 1，价款写正数",
+    ),
+    _template_example(
+        "FCN｜独立费用",
+        "FCN-FEE-001",
+        transaction_type="fee",
+        trade_date="2026-06-10",
+        entitlement_date="2026-06-10",
+        account_id="FCN_ACCOUNT_ID",
+        settlement_cash_account_id="USD_CASH_ACCOUNT_ID",
+        derivative_contract_id="EXISTING_FCN_ID",
+        gross_amount=100,
+        fee_category="transaction_cost",
+        note="FCN 关联的独立费用事实，不填写 quantity 或 price",
+    ),
+    _template_example(
+        "FCN｜独立税费",
+        "FCN-TAX-001",
+        transaction_type="tax",
+        trade_date="2026-06-10",
+        entitlement_date="2026-06-10",
+        account_id="FCN_ACCOUNT_ID",
+        settlement_cash_account_id="USD_CASH_ACCOUNT_ID",
+        derivative_contract_id="EXISTING_FCN_ID",
+        gross_amount=40,
+        note="FCN 关联的独立税费事实，不填写 quantity 或 price",
+    ),
+    _template_example(
+        "FCN｜票息收入",
+        "FCN-COUPON-001",
+        transaction_type="coupon",
+        trade_date="2026-06-01",
+        settlement_date="2026-06-01",
+        entitlement_date="2026-06-01",
+        account_id="FCN_ACCOUNT_ID",
+        settlement_cash_account_id="USD_CASH_ACCOUNT_ID",
+        derivative_contract_id="EXISTING_FCN_ID",
+        gross_amount=2000,
+        note="已有合约只填 derivative_contract_id；不填 quantity 或 price",
+    ),
+    _template_example(
+        "FCN｜正常到期",
+        "FCN-MATURITY-001",
+        transaction_type="maturity_redemption",
+        lifecycle_event_type="fcn_maturity",
+        trade_date="2026-09-01",
+        settlement_date="2026-09-01",
+        account_id="FCN_ACCOUNT_ID",
+        settlement_cash_account_id="USD_CASH_ACCOUNT_ID",
+        derivative_contract_id="EXISTING_FCN_ID",
+        quantity=1,
+        gross_amount=100000,
+        note="FCN 正常结束；不填 price",
+    ),
+    _template_example(
+        "FCN 敲入交付拆分 1/2｜敲入结束",
+        "FCN-KNOCK-IN-001",
+        transaction_type="maturity_redemption",
+        lifecycle_event_type="fcn_knock_in",
+        trade_date="2026-09-01",
+        settlement_date="2026-09-01",
+        account_id="FCN_ACCOUNT_ID",
+        settlement_cash_account_id="USD_CASH_ACCOUNT_ID",
+        derivative_contract_id="EXISTING_FCN_ID",
+        quantity=1,
+        gross_amount=100000,
+        note="独立事实 1：结束 FCN；若交付证券，另录 buy，不设置关联或配对 ID",
+    ),
+    _template_example(
+        "FCN 敲入交付拆分 2/2｜交付证券买入",
+        "FCN-DELIVERED-SECURITY-001",
+        transaction_type="buy",
+        trade_date="2026-09-01",
+        settlement_date="2026-09-01",
+        position_effective_date="2026-09-01",
+        account_id="USD_SECURITY_ACCOUNT_ID",
+        settlement_cash_account_id="USD_CASH_ACCOUNT_ID",
+        instrument_id="REGISTRY_FCN_DELIVERED_EQUITY_ID",
+        quantity=1538.46153846,
+        price=65,
+        gross_amount=100000,
+        note="独立事实 2：按交付日市场或参考价记录证券买入，不与 FCN 行绑定",
+    ),
+    _template_example(
+        "FCN｜敲出结束",
+        "FCN-KNOCK-OUT-001",
+        transaction_type="maturity_redemption",
+        lifecycle_event_type="fcn_knock_out",
+        trade_date="2026-07-15",
+        settlement_date="2026-07-17",
+        account_id="FCN_ACCOUNT_ID",
+        settlement_cash_account_id="USD_CASH_ACCOUNT_ID",
+        derivative_contract_id="EXISTING_FCN_ID",
+        quantity=1,
+        gross_amount=100000,
+        note="FCN 敲出结束；实际票息另录 coupon",
+    ),
+)
 
 
 def _export_value(column: str, value: object) -> object:
@@ -75,12 +1053,453 @@ def _export_value(column: str, value: object) -> object:
             return Decimal(str(value))
         except (InvalidOperation, ValueError):
             return str(value)
-    return value if isinstance(value, (date, datetime, time, Decimal, int, float)) else str(value)
+    return (
+        value
+        if isinstance(value, (date, datetime, time, Decimal, int, float))
+        else str(value)
+    )
 
 
 def _set_text_cell(cell: Cell, value: str) -> None:
     cell.value = value
     cell.data_type = "s"
+
+
+def _column_letter(column: str) -> str:
+    return get_column_letter(IMPORT_COLUMNS.index(column) + 1)
+
+
+def _style_transaction_header(
+    worksheet,
+    *,
+    include_field_comments: bool,
+) -> None:
+    dropdown_columns = {
+        "transaction_type",
+        "lifecycle_event_type",
+        "transfer_object_type",
+        "derivative_contract_type",
+        "option_type",
+        "fee_category",
+        "currency",
+    }
+    for column_index, column in enumerate(IMPORT_COLUMNS, start=1):
+        cell = worksheet.cell(row=1, column=column_index)
+        _set_text_cell(cell, column)
+        cell.fill = (
+            REQUIRED_HEADER_FILL
+            if column in REQUIRED_COLUMNS
+            else DROPDOWN_HEADER_FILL
+            if column in dropdown_columns
+            else HEADER_FILL
+        )
+        cell.font = HEADER_FONT
+        cell.alignment = Alignment(vertical="center", wrap_text=True)
+        if include_field_comments:
+            label, requiredness, guidance = FIELD_GUIDANCE[column]
+            cell.comment = Comment(
+                f"{label}\n填写要求：{requiredness}\n{guidance}",
+                "Portfolio Operations",
+            )
+    worksheet.row_dimensions[1].height = 34
+    for index, column in enumerate(IMPORT_COLUMNS, start=1):
+        width = max(13, min(34, len(column) + 2))
+        worksheet.column_dimensions[get_column_letter(index)].width = width
+
+
+def _add_validation(
+    worksheet,
+    *,
+    column: str,
+    validation_type: str,
+    formula1: str,
+    formula2: str | None = None,
+    operator: str | None = None,
+    prompt: str,
+    error: str,
+) -> None:
+    validation = DataValidation(
+        type=validation_type,
+        formula1=formula1,
+        formula2=formula2,
+        operator=operator,
+        allow_blank=True,
+    )
+    validation.errorStyle = "stop"
+    validation.errorTitle = "填写值不符合模板规则"
+    validation.error = error
+    validation.promptTitle = FIELD_GUIDANCE[column][0]
+    validation.prompt = prompt
+    validation.showErrorMessage = True
+    validation.showInputMessage = True
+    worksheet.add_data_validation(validation)
+    column_letter = _column_letter(column)
+    validation.add(f"{column_letter}2:{column_letter}{TEMPLATE_INPUT_LAST_ROW}")
+
+
+def _add_template_validations(worksheet) -> None:
+    list_validations = (
+        (
+            "transaction_type",
+            "TransactionTypeValues",
+            "从下拉列表选择交易类型。",
+            "请选择交易类型下拉列表中的值。",
+        ),
+        (
+            "lifecycle_event_type",
+            "LifecycleEventValues",
+            "仅 FCN/Option 生命周期事件使用；其他行留空。",
+            "请选择生命周期事件下拉列表中的值。",
+        ),
+        (
+            "transfer_object_type",
+            "TransferObjectTypeValues",
+            "仅 internal_transfer 使用。",
+            "请选择 cash 或 position。",
+        ),
+        (
+            "derivative_contract_type",
+            "DerivativeContractTypeValues",
+            "仅新建衍生品合约时使用。",
+            "请选择 fcn 或 option。",
+        ),
+        (
+            "option_type",
+            "OptionTypeValues",
+            "仅新建 Option 合约时使用。",
+            "请选择 call 或 put。",
+        ),
+        (
+            "fee_category",
+            "FeeCategoryValues",
+            "留空时系统使用 unknown。",
+            "请选择费用类别下拉列表中的值。",
+        ),
+        (
+            "currency",
+            "CurrencyValues",
+            "交易币种必须是 USD、HKD 或 CNY。",
+            "请选择币种下拉列表中的值。",
+        ),
+    )
+    for column, formula, prompt, error in list_validations:
+        _add_validation(
+            worksheet,
+            column=column,
+            validation_type="list",
+            formula1=formula,
+            prompt=prompt,
+            error=error,
+        )
+
+    for column in DATE_COLUMNS:
+        _add_validation(
+            worksheet,
+            column=column,
+            validation_type="date",
+            operator="between",
+            formula1="DATE(1900,1,1)",
+            formula2="DATE(9999,12,31)",
+            prompt="请输入 yyyy-mm-dd 格式的日期，或留空。",
+            error="请输入有效日期，格式为 yyyy-mm-dd。",
+        )
+    _add_validation(
+        worksheet,
+        column="trade_time",
+        validation_type="time",
+        operator="between",
+        formula1="TIME(0,0,0)",
+        formula2="TIME(23,59,0)",
+        prompt="请输入 HH:MM 格式的时间，或留空。",
+        error="请输入 00:00 至 23:59 之间的时间。",
+    )
+    for column in NUMERIC_COLUMNS:
+        _add_validation(
+            worksheet,
+            column=column,
+            validation_type="decimal",
+            operator="greaterThanOrEqual",
+            formula1="0",
+            prompt="请输入非负数字；金额和数量的方向由交易类型决定。",
+            error="请输入大于或等于 0 的数字。",
+        )
+
+
+def _add_template_required_indicators(worksheet) -> None:
+    full_row = "$A2:$AR2"
+    indicators = (
+        ("transaction_type", f'AND(COUNTA({full_row})>0,$A2="")'),
+        ("trade_date", f'AND(COUNTA({full_row})>0,$C2="")'),
+        ("currency", f'AND(COUNTA({full_row})>0,$AN2="")'),
+        (
+            "account_id",
+            f'AND(COUNTA({full_row})>0,$A2<>"internal_transfer",$L2="")',
+        ),
+        (
+            "gross_amount",
+            f'AND(COUNTA({full_row})>0,OR($A2<>"internal_transfer",$I2="cash"),$AH2="")',
+        ),
+    )
+    for column, formula in indicators:
+        column_letter = _column_letter(column)
+        worksheet.conditional_formatting.add(
+            f"{column_letter}2:{column_letter}{TEMPLATE_INPUT_LAST_ROW}",
+            FormulaRule(formula=[formula], fill=INVALID_FILL),
+        )
+
+
+def _render_template_instructions(worksheet) -> None:
+    worksheet.sheet_view.showGridLines = False
+    worksheet.freeze_panes = "A4"
+    worksheet.merge_cells("A1:D1")
+    title = worksheet["A1"]
+    title.value = "交易记录导入模板"
+    title.fill = TITLE_FILL
+    title.font = Font(color="FFFFFF", bold=True, size=16)
+    title.alignment = Alignment(vertical="center")
+    worksheet.row_dimensions[1].height = 30
+
+    worksheet.merge_cells("A3:D3")
+    section = worksheet["A3"]
+    section.value = "填写流程"
+    section.fill = SECTION_FILL
+    section.font = Font(bold=True, size=12)
+
+    steps = (
+        "1. 只在 Transactions 页录入。该页第一行字段名及工作表名称不可修改；Instructions、Field Guide、Examples、Lists 不会导入。",
+        "2. 每行是一项已确认的经济事实。先在 transaction_type 下拉选择交易类型，再按 Field Guide 和同类示例填写。",
+        "3. 账户、证券和衍生品合约均使用系统已经设置好的精确 ID。模板不会携带任何组合、账户、证券或合约资料。",
+        "4. 金额、数量、单价、费用和税费一律填写非负绝对值；资金或持仓方向由 transaction_type 决定。gross_amount 不含 fees 和 taxes。",
+        "5. 证券 instrument_id 与衍生品 derivative_contract_id 只能填一个。新 Option/FCN 在首次交易行填写合约条款；已有合约只填 derivative_contract_id。Option 期初余额只表达多头，存量空头按实际 option_write 补录。",
+        "6. 填完后保存为 .xlsx，在系统中先 Import 预览。Excel 下拉和格式校验只防常见输入错误；账户归属、币种、持仓历史和跨字段规则以预览校验结果为准。",
+    )
+    for row_index, step in enumerate(steps, start=4):
+        worksheet.merge_cells(
+            start_row=row_index, start_column=1, end_row=row_index, end_column=4
+        )
+        cell = worksheet.cell(row=row_index, column=1)
+        cell.value = step
+        cell.alignment = Alignment(wrap_text=True, vertical="top")
+        cell.border = THIN_GRAY_BORDER
+        worksheet.row_dimensions[row_index].height = 60
+
+    worksheet.merge_cells("A11:D11")
+    warning = worksheet["A11"]
+    warning.value = "重要规则"
+    warning.fill = WARNING_FILL
+    warning.font = Font(bold=True, size=12)
+    rules = (
+        "普通交易：transaction_type、trade_date、account_id、gross_amount、currency 为必填；currency 只能是 USD、HKD 或 CNY，并与账户、资产及结算现金账户匹配。内部转移填写 transfer_object_type、from_account_id、to_account_id、trade_date、currency；现金转移还要填写 gross_amount，仓位转移填写 instrument_id 和 quantity。",
+        "内部转移不填写 account_id、settlement_cash_account_id、source_system 或 external_reference。系统会原子生成 transfer_out 和 transfer_in 两条记录。",
+        "fees、taxes 和 fee_category 可留空，分别按 0、0 和 unknown 处理。外部流水号 external_reference 建议填写；填写它时必须同时填写 source_system。",
+        "不要在 Transactions 页使用公式、宏、合并单元格或负数。上传仅接受 Transactions 页的字面值，最多 5,000 条交易记录。",
+    )
+    for row_index, rule in enumerate(rules, start=12):
+        worksheet.merge_cells(
+            start_row=row_index, start_column=1, end_row=row_index, end_column=4
+        )
+        cell = worksheet.cell(row=row_index, column=1)
+        cell.value = rule
+        cell.alignment = Alignment(wrap_text=True, vertical="top")
+        cell.border = THIN_GRAY_BORDER
+        worksheet.row_dimensions[row_index].height = 82
+
+    for column in "ABCD":
+        worksheet.column_dimensions[column].width = 20
+    worksheet.sheet_properties.pageSetUpPr.fitToPage = True
+    worksheet.page_setup.fitToWidth = 1
+
+
+def _render_field_guide(worksheet) -> None:
+    worksheet.sheet_view.showGridLines = False
+    worksheet.freeze_panes = "A2"
+    headers = ("字段名", "中文含义", "填写要求", "填写规则")
+    for column_index, header in enumerate(headers, start=1):
+        cell = worksheet.cell(row=1, column=column_index)
+        cell.value = header
+        cell.fill = TITLE_FILL
+        cell.font = HEADER_FONT
+        cell.alignment = Alignment(vertical="center")
+    for row_index, column in enumerate(IMPORT_COLUMNS, start=2):
+        label, requiredness, guidance = FIELD_GUIDANCE[column]
+        row_values = (column, label, requiredness, guidance)
+        for column_index, value in enumerate(row_values, start=1):
+            cell = worksheet.cell(row=row_index, column=column_index)
+            _set_text_cell(cell, value)
+            cell.alignment = Alignment(vertical="top", wrap_text=True)
+            cell.border = THIN_GRAY_BORDER
+        if column in REQUIRED_COLUMNS:
+            worksheet.cell(row=row_index, column=1).fill = WARNING_FILL
+    worksheet.auto_filter.ref = f"A1:D{len(IMPORT_COLUMNS) + 1}"
+    worksheet.column_dimensions["A"].width = 35
+    worksheet.column_dimensions["B"].width = 20
+    worksheet.column_dimensions["C"].width = 18
+    worksheet.column_dimensions["D"].width = 82
+
+
+def _render_examples(worksheet) -> None:
+    worksheet.sheet_view.showGridLines = False
+    worksheet.freeze_panes = "B5"
+    headers = ("示例场景", *IMPORT_COLUMNS)
+    last_column_letter = get_column_letter(len(headers))
+    worksheet.merge_cells(f"A1:{last_column_letter}1")
+    title = worksheet["A1"]
+    title.value = "交易类型示例（仅供参考，不会上传）"
+    title.fill = TITLE_FILL
+    title.font = Font(color="FFFFFF", bold=True, size=14)
+    title.alignment = Alignment(vertical="center")
+    worksheet.row_dimensions[1].height = 28
+    worksheet.merge_cells(f"A2:{last_column_letter}2")
+    notice = worksheet["A2"]
+    notice.value = (
+        "复制适用示例的标准字段列到 Transactions，再替换所有 *_ID、日期、金额、币种、"
+        "source_system、external_reference 和备注。不要复制“示例场景”列，也不要直接上传占位值。"
+    )
+    notice.fill = WARNING_FILL
+    notice.alignment = Alignment(vertical="center", wrap_text=True)
+    worksheet.row_dimensions[2].height = 34
+    for column_index, header in enumerate(headers, start=1):
+        cell = worksheet.cell(row=4, column=column_index)
+        _set_text_cell(cell, header)
+        cell.fill = TITLE_FILL if column_index == 1 else HEADER_FILL
+        cell.font = HEADER_FONT
+        cell.alignment = Alignment(vertical="center", wrap_text=True)
+    worksheet.row_dimensions[4].height = 34
+    for row_index, row in enumerate(TEMPLATE_EXAMPLE_ROWS, start=5):
+        for column_index, column in enumerate(IMPORT_COLUMNS, start=2):
+            value = _export_value(column, row.get(column))
+            if value is None:
+                continue
+            cell = worksheet.cell(row=row_index, column=column_index)
+            if isinstance(value, str):
+                _set_text_cell(cell, value)
+            else:
+                cell.value = value
+            if column in DATE_COLUMNS:
+                cell.number_format = "yyyy-mm-dd"
+            elif column == "trade_time":
+                cell.number_format = "hh:mm"
+            elif column in NUMERIC_COLUMNS:
+                cell.number_format = "0.########"
+        scenario_cell = worksheet.cell(row=row_index, column=1)
+        _set_text_cell(scenario_cell, str(row["scenario"]))
+        scenario_cell.font = Font(bold=True)
+        for column_index in range(1, len(headers) + 1):
+            cell = worksheet.cell(row=row_index, column=column_index)
+            cell.alignment = Alignment(vertical="top", wrap_text=True)
+            cell.border = THIN_GRAY_BORDER
+        if row_index % 2 == 1:
+            scenario_cell.fill = EXAMPLE_FILL
+    worksheet.auto_filter.ref = (
+        f"A4:{last_column_letter}{len(TEMPLATE_EXAMPLE_ROWS) + 4}"
+    )
+    worksheet.column_dimensions["A"].width = 28
+    for index, column in enumerate(IMPORT_COLUMNS, start=2):
+        worksheet.column_dimensions[get_column_letter(index)].width = max(
+            13,
+            min(34, len(column) + 2),
+        )
+
+
+def _write_reference_list(
+    worksheet,
+    start_column: int,
+    header: str,
+    values: tuple[str, ...],
+    guidance: dict[str, str],
+) -> None:
+    code_column = get_column_letter(start_column)
+    description_column = get_column_letter(start_column + 1)
+    for column, label in ((code_column, header), (description_column, "说明")):
+        cell = worksheet[f"{column}1"]
+        cell.value = label
+        cell.fill = REFERENCE_FILL
+        cell.font = Font(bold=True)
+    for row_index, value in enumerate(values, start=2):
+        code_cell = worksheet.cell(row=row_index, column=start_column)
+        _set_text_cell(code_cell, value)
+        description_cell = worksheet.cell(row=row_index, column=start_column + 1)
+        _set_text_cell(description_cell, guidance.get(value, ""))
+        for cell in (code_cell, description_cell):
+            cell.alignment = Alignment(vertical="top", wrap_text=True)
+            cell.border = THIN_GRAY_BORDER
+    worksheet.column_dimensions[code_column].width = 34
+    worksheet.column_dimensions[description_column].width = 46
+
+
+def _render_lists(worksheet) -> None:
+    worksheet.sheet_view.showGridLines = False
+    worksheet.freeze_panes = "A2"
+    _write_reference_list(
+        worksheet,
+        1,
+        "transaction_type",
+        TRANSACTION_TYPE_VALUES,
+        TRANSACTION_TYPE_GUIDANCE,
+    )
+    _write_reference_list(
+        worksheet,
+        4,
+        "lifecycle_event_type",
+        LIFECYCLE_EVENT_VALUES,
+        LIFECYCLE_EVENT_GUIDANCE,
+    )
+    _write_reference_list(
+        worksheet,
+        7,
+        "fee_category",
+        FEE_CATEGORY_VALUES,
+        FEE_CATEGORY_GUIDANCE,
+    )
+    _write_reference_list(
+        worksheet,
+        10,
+        "currency",
+        CURRENCY_VALUES,
+        {value: "支持的交易币种" for value in CURRENCY_VALUES},
+    )
+    _write_reference_list(
+        worksheet,
+        13,
+        "transfer_object_type",
+        TRANSFER_OBJECT_TYPE_VALUES,
+        {
+            "cash": "现金账户之间的内部转移",
+            "position": "证券仓位在兼容证券账户之间的内部转移",
+        },
+    )
+    _write_reference_list(
+        worksheet,
+        16,
+        "derivative_contract_type",
+        DERIVATIVE_CONTRACT_TYPE_VALUES,
+        {"fcn": "Fixed Coupon Note", "option": "Call 或 Put 期权"},
+    )
+    _write_reference_list(
+        worksheet,
+        19,
+        "option_type",
+        OPTION_TYPE_VALUES,
+        {"call": "看涨期权", "put": "看跌期权"},
+    )
+    for name, column_letter, values in (
+        ("TransactionTypeValues", "A", TRANSACTION_TYPE_VALUES),
+        ("LifecycleEventValues", "D", LIFECYCLE_EVENT_VALUES),
+        ("FeeCategoryValues", "G", FEE_CATEGORY_VALUES),
+        ("CurrencyValues", "J", CURRENCY_VALUES),
+        ("TransferObjectTypeValues", "M", TRANSFER_OBJECT_TYPE_VALUES),
+        ("DerivativeContractTypeValues", "P", DERIVATIVE_CONTRACT_TYPE_VALUES),
+        ("OptionTypeValues", "S", OPTION_TYPE_VALUES),
+    ):
+        worksheet.parent.defined_names.add(
+            DefinedName(
+                name,
+                attr_text=(
+                    f"'{LISTS_SHEET_NAME}'!${column_letter}$2:"
+                    f"${column_letter}${len(values) + 1}"
+                ),
+            )
+        )
 
 
 def render_transaction_xlsx(records: Iterable[dict[str, object]]) -> bytes:
@@ -116,7 +1535,9 @@ def render_transaction_xlsx(records: Iterable[dict[str, object]]) -> bytes:
             elif column in NUMERIC_COLUMNS:
                 cell.number_format = "0.########"
 
-    worksheet.auto_filter.ref = f"A1:{get_column_letter(len(IMPORT_COLUMNS))}{max(1, len(rows) + 1)}"
+    worksheet.auto_filter.ref = (
+        f"A1:{get_column_letter(len(IMPORT_COLUMNS))}{max(1, len(rows) + 1)}"
+    )
     for index, column in enumerate(IMPORT_COLUMNS, start=1):
         width = max(12, min(34, len(column) + 2))
         worksheet.column_dimensions[get_column_letter(index)].width = width
@@ -128,7 +1549,31 @@ def render_transaction_xlsx(records: Iterable[dict[str, object]]) -> bytes:
 
 
 def render_transaction_xlsx_template() -> bytes:
-    return render_transaction_xlsx(())
+    workbook = Workbook()
+    instructions = workbook.active
+    instructions.title = INSTRUCTIONS_SHEET_NAME
+    transactions = workbook.create_sheet(TRANSACTION_SHEET_NAME)
+    field_guide = workbook.create_sheet(FIELD_GUIDE_SHEET_NAME)
+    examples = workbook.create_sheet(EXAMPLES_SHEET_NAME)
+    lists = workbook.create_sheet(LISTS_SHEET_NAME)
+
+    _render_template_instructions(instructions)
+    transactions.freeze_panes = "A2"
+    transactions.sheet_view.showGridLines = False
+    _style_transaction_header(transactions, include_field_comments=True)
+    transactions.auto_filter.ref = (
+        f"A1:{get_column_letter(len(IMPORT_COLUMNS))}{TEMPLATE_INPUT_LAST_ROW}"
+    )
+    _add_template_validations(transactions)
+    _add_template_required_indicators(transactions)
+    _render_field_guide(field_guide)
+    _render_examples(examples)
+    _render_lists(lists)
+
+    output = BytesIO()
+    workbook.save(output)
+    workbook.close()
+    return output.getvalue()
 
 
 def _cell_text(cell: Cell, column: str) -> str:
@@ -157,7 +1602,7 @@ def _cell_text(cell: Cell, column: str) -> str:
     if isinstance(value, bool):
         return "true" if value else "false"
     if isinstance(value, float):
-        if value != value or value in {float("inf"), float("-inf")}:
+        if not isfinite(value):
             raise ValueError(
                 f"{TRANSACTION_SHEET_NAME}!{cell.coordinate} contains a non-finite number."
             )
@@ -197,7 +1642,9 @@ def transaction_xlsx_to_csv(xlsx_content: bytes) -> str:
                 [
                     _cell_text(
                         cell,
-                        header_names[column_index] if row_index > 1 and column_index < len(header_names) else "",
+                        header_names[column_index]
+                        if row_index > 1 and column_index < len(header_names)
+                        else "",
                     )
                     for column_index, cell in enumerate(cells)
                 ]
