@@ -46,35 +46,35 @@ export function transactionActionGroups(
       {
         label: 'Trades',
         actions: [
-          action('security_buy', fund ? 'Subscription' : 'Buy', 'buy'),
-          action('security_sell', fund ? 'Redemption' : 'Sell', 'sell'),
+          action('buy', fund ? 'Subscription' : 'Buy', 'buy'),
+          action('sell', fund ? 'Redemption' : 'Sell', 'sell'),
         ],
       },
       {
         label: 'Income and capital',
         actions: [
-          action('security_dividend', 'Dividend', 'dividend'),
+          action('dividend', 'Dividend', 'dividend'),
           action(
-            'security_dividend_reinvestment',
+            'dividend_reinvestment',
             'Dividend Reinvestment',
             'dividend_reinvestment',
           ),
-          action('security_return_of_capital', 'Return of Capital', 'return_of_capital'),
+          action('return_of_capital', 'Return of Capital', 'return_of_capital'),
         ],
       },
       {
         label: 'Charges',
         actions: [
-          action('security_fee', 'Fee', 'fee'),
-          action('security_tax', 'Tax', 'tax'),
+          action('fee', 'Fee', 'fee'),
+          action('tax', 'Tax', 'tax'),
         ],
       },
       {
         label: 'Transfers and setup',
         actions: [
-          action('security_transfer_out', 'Transfer Out', 'transfer_out', null, 'position'),
-          action('security_transfer_in', 'Transfer In', 'transfer_in', null, 'position'),
-          action('security_opening_balance', 'Opening Balance', 'opening_balance'),
+          action('transfer_out', 'Transfer Out', 'transfer_out', null, 'position'),
+          action('transfer_in', 'Transfer In', 'transfer_in', null, 'position'),
+          action('opening_balance', 'Opening Balance', 'opening_balance'),
         ],
       },
     ]
@@ -85,25 +85,25 @@ export function transactionActionGroups(
       {
         label: 'Cash movements',
         actions: [
-          action('cash_deposit', 'Deposit', 'deposit'),
-          action('cash_withdrawal', 'Withdrawal', 'withdrawal'),
-          action('cash_interest', 'Interest', 'interest'),
-          action('cash_fx_conversion', 'FX Conversion', 'fx_conversion'),
+          action('deposit', 'Deposit', 'deposit'),
+          action('withdrawal', 'Withdrawal', 'withdrawal'),
+          action('interest', 'Interest', 'interest'),
+          action('fx_conversion', 'FX Conversion', 'fx_conversion'),
         ],
       },
       {
         label: 'Charges',
         actions: [
-          action('cash_fee', 'Fee', 'fee'),
-          action('cash_tax', 'Tax', 'tax'),
+          action('fee', 'Fee', 'fee'),
+          action('tax', 'Tax', 'tax'),
         ],
       },
       {
         label: 'Transfers and setup',
         actions: [
-          action('cash_transfer_out', 'Transfer Out', 'transfer_out', null, 'cash'),
-          action('cash_transfer_in', 'Transfer In', 'transfer_in', null, 'cash'),
-          action('cash_opening_balance', 'Opening Balance', 'opening_balance'),
+          action('transfer_out', 'Transfer Out', 'transfer_out', null, 'cash'),
+          action('transfer_in', 'Transfer In', 'transfer_in', null, 'cash'),
+          action('opening_balance', 'Opening Balance', 'opening_balance'),
         ],
       },
     ]
@@ -115,8 +115,8 @@ export function transactionActionGroups(
         {
           label: 'Create position',
           actions: [
-            action('fcn_entry', 'FCN Entry', 'buy'),
-            action('fcn_opening_balance', 'FCN Opening Balance', 'opening_balance'),
+            action('entry', 'FCN Entry', 'buy'),
+            action('opening_balance', 'FCN Opening Balance', 'opening_balance'),
           ],
         },
       ]
@@ -125,25 +125,25 @@ export function transactionActionGroups(
       {
         label: 'Contract activity',
         actions: [
-          action('fcn_entry', 'FCN Entry', 'buy'),
-          action('fcn_early_exit', 'FCN Early Exit', 'sell'),
-          action('fcn_coupon', 'FCN Coupon', 'coupon'),
+          action('entry', 'FCN Entry', 'buy'),
+          action('early_exit', 'FCN Early Exit', 'sell'),
+          action('coupon', 'FCN Coupon', 'coupon'),
         ],
       },
       {
-        label: 'Lifecycle outcomes',
+        label: 'Contract close outcomes',
         actions: [
-          action('fcn_knock_in', 'FCN Knock-In Close', 'maturity_redemption', 'fcn_knock_in'),
-          action('fcn_knock_out', 'FCN Knock-Out Close', 'maturity_redemption', 'fcn_knock_out'),
-          action('fcn_maturity', 'FCN Maturity Close', 'maturity_redemption', 'fcn_maturity'),
+          action('knock_in_close', 'FCN Knock-In Close', 'maturity_redemption', 'fcn_knock_in'),
+          action('knock_out_close', 'FCN Knock-Out Close', 'maturity_redemption', 'fcn_knock_out'),
+          action('maturity_close', 'FCN Maturity Close', 'maturity_redemption', 'fcn_maturity'),
         ],
       },
       {
         label: 'Charges and setup',
         actions: [
-          action('fcn_fee', 'FCN Fee', 'fee'),
-          action('fcn_tax', 'FCN Tax', 'tax'),
-          action('fcn_opening_balance', 'FCN Opening Balance', 'opening_balance'),
+          action('fee', 'FCN Fee', 'fee'),
+          action('tax', 'FCN Tax', 'tax'),
+          action('opening_balance', 'FCN Opening Balance', 'opening_balance'),
         ],
       },
     ]
@@ -155,9 +155,9 @@ export function transactionActionGroups(
       {
         label: 'Open position',
         actions: [
-          action('option_buy_to_open', `Buy to Open ${name}`, 'buy'),
-          action('option_sell_to_open', `Sell to Open ${name}`, 'option_write'),
-          action('option_opening_balance', 'Option Opening Balance', 'opening_balance'),
+          action('buy_to_open', `Buy to Open ${name}`, 'buy'),
+          action('sell_to_open', `Sell to Open ${name}`, 'option_write'),
+          action('opening_balance', 'Option Opening Balance', 'opening_balance'),
         ],
       },
     ]
@@ -166,23 +166,23 @@ export function transactionActionGroups(
     {
       label: 'Open and close',
       actions: [
-        action('option_buy_to_open', `Buy to Open ${name}`, 'buy'),
-        action('option_sell_to_close', `Sell to Close ${name}`, 'sell'),
-        action('option_sell_to_open', `Sell to Open ${name}`, 'option_write'),
-        action('option_buy_to_close', `Buy to Close ${name}`, 'option_buy_to_close'),
+        action('buy_to_open', `Buy to Open ${name}`, 'buy'),
+        action('sell_to_close', `Sell to Close ${name}`, 'sell'),
+        action('sell_to_open', `Sell to Open ${name}`, 'option_write'),
+        action('buy_to_close', `Buy to Close ${name}`, 'option_buy_to_close'),
       ],
     },
     {
       label: 'Long outcomes',
       actions: [
         action(
-          'option_long_expiry',
+          'expire_long',
           `Expire Long ${name}`,
           'maturity_redemption',
           'option_long_expiry',
         ),
         action(
-          'option_long_cash_settlement',
+          'cash_settle_long',
           `Cash-Settle Long ${name}`,
           'maturity_redemption',
           'option_long_cash_settlement',
@@ -193,13 +193,13 @@ export function transactionActionGroups(
       label: 'Written outcomes',
       actions: [
         action(
-          'option_writer_expiry',
+          'expire_written',
           `Expire Written ${name}`,
           'lifecycle_event',
           'option_writer_expiry',
         ),
         action(
-          'option_writer_cash_settlement',
+          'cash_settle_written',
           `Cash-Settle Written ${name}`,
           'lifecycle_event',
           'option_writer_cash_settlement',
@@ -209,9 +209,9 @@ export function transactionActionGroups(
     {
       label: 'Charges and setup',
       actions: [
-        action('option_fee', 'Option Fee', 'fee'),
-        action('option_tax', 'Option Tax', 'tax'),
-        action('option_opening_balance', 'Option Opening Balance', 'opening_balance'),
+        action('fee', 'Option Fee', 'fee'),
+        action('tax', 'Option Tax', 'tax'),
+        action('opening_balance', 'Option Opening Balance', 'opening_balance'),
       ],
     },
   ]

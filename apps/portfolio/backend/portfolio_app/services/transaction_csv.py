@@ -22,23 +22,20 @@ MAX_CSV_BYTES = 5 * 1024 * 1024
 MAX_CSV_ROWS = 5_000
 
 IMPORT_COLUMNS = (
-    "transaction_type",
-    "lifecycle_event_type",
+    "asset_type",
+    "transaction_action",
     "trade_date",
     "trade_time",
     "settlement_date",
     "position_effective_date",
     "entitlement_date",
     "acquisition_date",
-    "transfer_object_type",
-    "from_account_id",
-    "to_account_id",
     "account_id",
+    "counterparty_account_id",
     "settlement_cash_account_id",
     "instrument_id",
     "derivative_contract_id",
     "derivative_contract_name",
-    "derivative_contract_type",
     "derivative_contract_external_reference",
     "option_underlying_instrument_id",
     "option_type",
@@ -62,16 +59,19 @@ IMPORT_COLUMNS = (
     "fee_category",
     "taxes",
     "currency",
-    "counterparty_account_id",
     "source_system",
     "external_reference",
     "note",
 )
 REQUIRED_COLUMNS = frozenset(
-    {"transaction_type", "trade_date", "account_id", "gross_amount", "currency"}
-)
-TRANSFER_COMMAND_COLUMNS = frozenset(
-    {"transfer_object_type", "from_account_id", "to_account_id"}
+    {
+        "asset_type",
+        "transaction_action",
+        "trade_date",
+        "account_id",
+        "gross_amount",
+        "currency",
+    }
 )
 NUMERIC_SOURCE_FIELDS = {
     "quantity": "source_quantity",
@@ -86,7 +86,6 @@ SPREADSHEET_FORMULA_PREFIXES = ("=", "+", "-", "@")
 DERIVATIVE_DEFINITION_COLUMNS = frozenset(
     {
         "derivative_contract_name",
-        "derivative_contract_type",
         "derivative_contract_external_reference",
         "option_underlying_instrument_id",
         "option_type",
@@ -124,13 +123,116 @@ FCN_TERM_COLUMNS = frozenset(
         "fcn_underlyings_json",
     }
 )
-INTERNAL_TRANSFER_FORBIDDEN_COLUMNS = frozenset(
+ASSET_TYPE_VALUES = ("security", "fcn", "option", "cash")
+TRANSACTION_ACTIONS: dict[str, tuple[str, ...]] = {
+    "security": (
+        "buy",
+        "sell",
+        "dividend",
+        "dividend_reinvestment",
+        "return_of_capital",
+        "fee",
+        "tax",
+        "transfer_out",
+        "transfer_in",
+        "opening_balance",
+    ),
+    "fcn": (
+        "entry",
+        "early_exit",
+        "coupon",
+        "knock_in_close",
+        "knock_out_close",
+        "maturity_close",
+        "fee",
+        "tax",
+        "opening_balance",
+    ),
+    "option": (
+        "buy_to_open",
+        "sell_to_close",
+        "sell_to_open",
+        "buy_to_close",
+        "expire_long",
+        "cash_settle_long",
+        "expire_written",
+        "cash_settle_written",
+        "fee",
+        "tax",
+        "opening_balance",
+    ),
+    "cash": (
+        "deposit",
+        "withdrawal",
+        "interest",
+        "fx_conversion",
+        "fee",
+        "tax",
+        "transfer_out",
+        "transfer_in",
+        "opening_balance",
+    ),
+}
+TRANSACTION_ACTION_MAP: dict[tuple[str, str], tuple[str, str | None]] = {
+    ("security", "buy"): ("buy", None),
+    ("security", "sell"): ("sell", None),
+    ("security", "dividend"): ("dividend", None),
+    ("security", "dividend_reinvestment"): ("dividend_reinvestment", None),
+    ("security", "return_of_capital"): ("return_of_capital", None),
+    ("security", "fee"): ("fee", None),
+    ("security", "tax"): ("tax", None),
+    ("security", "opening_balance"): ("opening_balance", None),
+    ("fcn", "entry"): ("buy", None),
+    ("fcn", "early_exit"): ("sell", None),
+    ("fcn", "coupon"): ("coupon", None),
+    ("fcn", "knock_in_close"): ("maturity_redemption", "fcn_knock_in"),
+    ("fcn", "knock_out_close"): ("maturity_redemption", "fcn_knock_out"),
+    ("fcn", "maturity_close"): ("maturity_redemption", "fcn_maturity"),
+    ("fcn", "fee"): ("fee", None),
+    ("fcn", "tax"): ("tax", None),
+    ("fcn", "opening_balance"): ("opening_balance", None),
+    ("option", "buy_to_open"): ("buy", None),
+    ("option", "sell_to_close"): ("sell", None),
+    ("option", "sell_to_open"): ("option_write", None),
+    ("option", "buy_to_close"): ("option_buy_to_close", None),
+    ("option", "expire_long"): ("maturity_redemption", "option_long_expiry"),
+    ("option", "cash_settle_long"): (
+        "maturity_redemption",
+        "option_long_cash_settlement",
+    ),
+    ("option", "expire_written"): ("lifecycle_event", "option_writer_expiry"),
+    ("option", "cash_settle_written"): (
+        "lifecycle_event",
+        "option_writer_cash_settlement",
+    ),
+    ("option", "fee"): ("fee", None),
+    ("option", "tax"): ("tax", None),
+    ("option", "opening_balance"): ("opening_balance", None),
+    ("cash", "deposit"): ("deposit", None),
+    ("cash", "withdrawal"): ("withdrawal", None),
+    ("cash", "interest"): ("interest", None),
+    ("cash", "fx_conversion"): ("fx_conversion", None),
+    ("cash", "fee"): ("fee", None),
+    ("cash", "tax"): ("tax", None),
+    ("cash", "opening_balance"): ("opening_balance", None),
+}
+TRANSFER_ACTIONS = frozenset(
     {
-        "lifecycle_event_type",
+        ("security", "transfer_out"),
+        ("security", "transfer_in"),
+        ("cash", "transfer_out"),
+        ("cash", "transfer_in"),
+    }
+)
+DERIVATIVE_DEFINITION_ACTIONS: dict[str, frozenset[str]] = {
+    "fcn": frozenset({"entry", "opening_balance"}),
+    "option": frozenset({"buy_to_open", "sell_to_open", "opening_balance"}),
+}
+TRANSFER_FORBIDDEN_COLUMNS = frozenset(
+    {
         "position_effective_date",
         "entitlement_date",
         "acquisition_date",
-        "account_id",
         "settlement_cash_account_id",
         "derivative_contract_id",
         *DERIVATIVE_DEFINITION_COLUMNS,
@@ -140,7 +242,6 @@ INTERNAL_TRANSFER_FORBIDDEN_COLUMNS = frozenset(
         "fees",
         "fee_category",
         "taxes",
-        "counterparty_account_id",
         "source_system",
         "external_reference",
     }
@@ -201,6 +302,8 @@ def _parse_fcn_underlyings(value: object) -> list[object]:
 
 def _build_derivative_contract(
     values: dict[str, object],
+    *,
+    contract_type: str,
 ) -> DerivativeContractCreate | None:
     supplied_definition_columns = {
         column for column in DERIVATIVE_DEFINITION_COLUMNS if values.get(column) is not None
@@ -212,7 +315,6 @@ def _build_derivative_contract(
         raise ValueError(
             "derivative_contract_id is required when defining a derivative contract."
         )
-    contract_type = str(values.get("derivative_contract_type") or "").strip().lower()
     if contract_type == "option":
         unexpected = sorted(
             column for column in FCN_TERM_COLUMNS if values.get(column) is not None
@@ -263,7 +365,7 @@ def _build_derivative_contract(
             }
         )
     else:
-        raise ValueError("derivative_contract_type must be fcn or option.")
+        raise ValueError("asset_type must be fcn or option for derivative terms.")
     return DerivativeContractCreate.model_validate(
         {
             "derivative_contract_id": derivative_contract_id,
@@ -275,6 +377,68 @@ def _build_derivative_contract(
             "terms": terms,
         }
     )
+
+
+def _file_action(values: dict[str, object]) -> tuple[str, str, str | None]:
+    asset_type = str(values.get("asset_type") or "").strip().lower()
+    transaction_action = str(values.get("transaction_action") or "").strip().lower()
+    if asset_type not in ASSET_TYPE_VALUES:
+        raise ValueError("asset_type must be security, fcn, option, or cash.")
+    allowed_actions = TRANSACTION_ACTIONS[asset_type]
+    if transaction_action not in allowed_actions:
+        raise ValueError(
+            f"transaction_action '{transaction_action}' is not supported for "
+            f"asset_type '{asset_type}'; choose one of: "
+            + ", ".join(allowed_actions)
+            + "."
+        )
+    if (asset_type, transaction_action) in TRANSFER_ACTIONS:
+        return asset_type, "internal_transfer", None
+    transaction_type, lifecycle_event_type = TRANSACTION_ACTION_MAP[
+        (asset_type, transaction_action)
+    ]
+    return asset_type, transaction_type, lifecycle_event_type
+
+
+def _validate_file_asset_fields(
+    values: dict[str, object],
+    *,
+    asset_type: str,
+    transaction_action: str,
+) -> None:
+    instrument_id = values.get("instrument_id")
+    derivative_contract_id = values.get("derivative_contract_id")
+    supplied_definition_columns = {
+        column for column in DERIVATIVE_DEFINITION_COLUMNS if values.get(column) is not None
+    }
+    if asset_type == "security":
+        if not instrument_id:
+            raise ValueError("Security actions require instrument_id.")
+        if derivative_contract_id or supplied_definition_columns:
+            raise ValueError(
+                "Security actions must not carry derivative contract fields."
+            )
+        return
+    if asset_type in {"fcn", "option"}:
+        if instrument_id:
+            raise ValueError(
+                f"{asset_type.upper()} actions must not carry instrument_id."
+            )
+        if not derivative_contract_id:
+            raise ValueError(
+                f"{asset_type.upper()} actions require derivative_contract_id."
+            )
+        if supplied_definition_columns:
+            opening_actions = DERIVATIVE_DEFINITION_ACTIONS[asset_type]
+            if transaction_action not in opening_actions:
+                raise ValueError(
+                    f"A new {asset_type.upper()} contract can only be defined on: "
+                    + ", ".join(sorted(opening_actions))
+                    + "."
+                )
+        return
+    if instrument_id or derivative_contract_id or supplied_definition_columns:
+        raise ValueError("Cash actions must not carry security or derivative fields.")
 
 
 def parse_transaction_csv(
@@ -327,32 +491,46 @@ def parse_transaction_csv(
             normalized = _desanitize_cell(str(raw_row.get(column) or "").strip())
             values[column] = normalized if normalized else None
         try:
-            transaction_type = str(values.get("transaction_type") or "").strip()
-            if transaction_type in {"transfer_in", "transfer_out"}:
-                raise ValueError(
-                    "Import internal transfers as one internal_transfer command, not as "
-                    "system-generated transfer_in or transfer_out legs."
-                )
+            asset_type, transaction_type, lifecycle_event_type = _file_action(values)
+            transaction_action = (
+                str(values.get("transaction_action") or "").strip().lower()
+            )
+            _validate_file_asset_fields(
+                values,
+                asset_type=asset_type,
+                transaction_action=transaction_action,
+            )
             if transaction_type == "internal_transfer":
                 unexpected = sorted(
                     column
-                    for column in INTERNAL_TRANSFER_FORBIDDEN_COLUMNS
+                    for column in TRANSFER_FORBIDDEN_COLUMNS
                     if values.get(column) is not None
                 )
                 if unexpected:
                     raise ValueError(
-                        "internal_transfer rows must not carry ordinary transaction columns: "
+                        "Transfer actions must not carry unrelated transaction fields: "
                         + ", ".join(unexpected)
                         + "."
                     )
+                account_id = str(values.get("account_id") or "").strip()
+                counterparty_account_id = str(
+                    values.get("counterparty_account_id") or ""
+                ).strip()
+                transfer_out = transaction_action == "transfer_out"
                 internal_transfer = TransactionCsvInternalTransferRequest.model_validate(
                     {
                         "trade_date": values.get("trade_date"),
                         "trade_time": values.get("trade_time"),
                         "settlement_date": values.get("settlement_date"),
-                        "transfer_object_type": values.get("transfer_object_type"),
-                        "from_account_id": values.get("from_account_id"),
-                        "to_account_id": values.get("to_account_id"),
+                        "transfer_object_type": (
+                            "cash" if asset_type == "cash" else "position"
+                        ),
+                        "from_account_id": (
+                            account_id if transfer_out else counterparty_account_id
+                        ),
+                        "to_account_id": (
+                            counterparty_account_id if transfer_out else account_id
+                        ),
                         "instrument_id": values.get("instrument_id"),
                         "quantity": values.get("quantity"),
                         "gross_amount": values.get("gross_amount"),
@@ -362,15 +540,6 @@ def parse_transaction_csv(
                 )
                 transaction = None
             else:
-                unexpected = sorted(
-                    column for column in TRANSFER_COMMAND_COLUMNS if values.get(column) is not None
-                )
-                if unexpected:
-                    raise ValueError(
-                        "Transfer command columns require transaction_type=internal_transfer: "
-                        + ", ".join(unexpected)
-                        + "."
-                    )
                 if not values.get("source_system") and default_source_system:
                     values["source_system"] = default_source_system.strip() or None
                 if values.get("fees") is None:
@@ -379,13 +548,19 @@ def parse_transaction_csv(
                     values["taxes"] = "0"
                 if values.get("fee_category") is None:
                     values["fee_category"] = "unknown"
-                derivative_contract = _build_derivative_contract(values)
+                derivative_contract = (
+                    _build_derivative_contract(values, contract_type=asset_type)
+                    if asset_type in {"fcn", "option"}
+                    else None
+                )
                 transaction_values = {
                     key: value
                     for key, value in values.items()
                     if key not in DERIVATIVE_DEFINITION_COLUMNS
-                    and key not in TRANSFER_COMMAND_COLUMNS
+                    and key not in {"asset_type", "transaction_action"}
                 }
+                transaction_values["transaction_type"] = transaction_type
+                transaction_values["lifecycle_event_type"] = lifecycle_event_type
                 transaction_values["derivative_contract"] = derivative_contract
                 transaction = TransactionCreateRequest.model_validate(transaction_values)
                 internal_transfer = None
@@ -477,12 +652,10 @@ def _internal_transfer_command(
         **transfer_out,
         "transaction_type": "internal_transfer",
         "transfer_object_type": transfer_out.get("transfer_object_type"),
-        "from_account_id": from_account_id,
-        "to_account_id": to_account_id,
-        "account_id": None,
-        "counterparty_account_id": None,
+        "account_id": from_account_id,
+        "counterparty_account_id": to_account_id,
     }
-    for column in INTERNAL_TRANSFER_FORBIDDEN_COLUMNS:
+    for column in TRANSFER_FORBIDDEN_COLUMNS:
         command[column] = None
         source_field = NUMERIC_SOURCE_FIELDS.get(column)
         if source_field:
@@ -519,6 +692,61 @@ def _canonical_export_records(
     return [item[2] for item in sorted(ordered_commands, key=lambda item: (item[0], item[1]))]
 
 
+def _record_asset_type(
+    record: dict[str, object],
+    derivative_contract: dict[str, object] | None,
+) -> str:
+    explicit_asset_type = str(record.get("asset_type") or "").strip().lower()
+    if explicit_asset_type in ASSET_TYPE_VALUES:
+        return explicit_asset_type
+    if derivative_contract is not None:
+        contract_type = str(derivative_contract.get("contract_type") or "").strip().lower()
+        if contract_type in {"fcn", "option"}:
+            return contract_type
+    instrument_ref = record.get("instrument_ref")
+    if isinstance(instrument_ref, dict):
+        instrument_type = str(instrument_ref.get("instrument_type") or "").strip().lower()
+        if instrument_type in {"fcn", "option"}:
+            return instrument_type
+        if instrument_type:
+            return "security"
+    if record.get("instrument_id"):
+        return "security"
+    transaction_type = str(record.get("transaction_type") or "").strip().lower()
+    if transaction_type in {"deposit", "withdrawal", "interest", "fx_conversion"}:
+        return "cash"
+    if not record.get("derivative_contract_id"):
+        return "cash"
+    raise ValueError("Cannot export a derivative transaction without its contract type.")
+
+
+def _record_transaction_action(
+    record: dict[str, object],
+    *,
+    asset_type: str,
+) -> str:
+    transaction_type = str(record.get("transaction_type") or "").strip().lower()
+    lifecycle_event_type = str(record.get("lifecycle_event_type") or "").strip().lower()
+    if transaction_type == "internal_transfer":
+        return "transfer_out"
+    if transaction_type in {"transfer_out", "transfer_in"}:
+        return "transfer_out" if transaction_type == "transfer_out" else "transfer_in"
+    reverse_map = {
+        (asset, transaction_type, lifecycle_event_type or ""): action
+        for (asset, action), (
+            transaction_type,
+            lifecycle_event_type,
+        ) in TRANSACTION_ACTION_MAP.items()
+    }
+    try:
+        return reverse_map[(asset_type, transaction_type, lifecycle_event_type)]
+    except KeyError as error:
+        raise ValueError(
+            f"Cannot export unsupported transaction combination: {asset_type}/"
+            f"{transaction_type}/{lifecycle_event_type}."
+        ) from error
+
+
 def transaction_export_rows(
     records: Iterable[dict[str, object]],
 ) -> list[dict[str, object]]:
@@ -540,19 +768,21 @@ def transaction_export_rows(
             if derivative_contract is not None
             else ""
         )
-        flattened_derivative: dict[str, object] = {
-            "derivative_contract_name": (
-                derivative_contract.get("contract_name")
-                if derivative_contract is not None
-                else None
-            ),
-            "derivative_contract_type": contract_type or None,
-            "derivative_contract_external_reference": (
-                derivative_contract.get("external_reference")
-                if derivative_contract is not None
-                else None
-            ),
-        }
+        asset_type = _record_asset_type(record, derivative_contract)
+        transaction_action = _record_transaction_action(record, asset_type=asset_type)
+        export_record = dict(record)
+        flattened_derivative: dict[str, object] = {}
+        if transaction_action not in DERIVATIVE_DEFINITION_ACTIONS.get(asset_type, ()):
+            contract_type = ""
+        elif derivative_contract is not None:
+            flattened_derivative.update(
+                {
+                    "derivative_contract_name": derivative_contract.get("contract_name"),
+                    "derivative_contract_external_reference": derivative_contract.get(
+                        "external_reference"
+                    ),
+                }
+            )
         if contract_type == "option":
             flattened_derivative.update(
                 {
@@ -590,9 +820,15 @@ def transaction_export_rows(
             )
         row: dict[str, object] = {}
         for column in IMPORT_COLUMNS:
-            value = flattened_derivative.get(column, record.get(column))
+            if column == "asset_type":
+                row[column] = asset_type
+                continue
+            if column == "transaction_action":
+                row[column] = transaction_action
+                continue
+            value = flattened_derivative.get(column, export_record.get(column))
             if column not in flattened_derivative:
-                value = _source_value(record, column)
+                value = _source_value(export_record, column)
             if value is None:
                 value = ""
             row[column] = value

@@ -236,31 +236,20 @@ Accounts 管理组合内账户。新增账户时直接选择 `Cash`、`Security`
 
 ### 6.3 Transactions
 
-Transactions 是组合事实入口。新增时先选 `Security`、`Derivative` 或 `Cash & Operations`，再从该类别自己的动作列表选择交易；不同资产类别不会共用一张混杂的动作菜单。Derivative 还需先选 Option 或 FCN。确认账户、资产、trade date、settlement date、数量、价格、费用和税费后保存；币种由所选账户确定，结算现金账户必须同币种。系统随后生成 ledger postings，并影响持仓、现金、成本和组合快照。
+Transactions 是组合事实入口。新增时先选 `Security`、`FCN`、`Option` 或 `Cash & Operations`，再从该资产自己的动作列表选择交易；不同资产不会共用一张混杂的动作菜单。确认账户、证券或合约、trade date、settlement date、数量、价格、费用和税费后保存；币种由所选账户确定，结算现金账户必须同币种。系统随后生成 ledger postings，并影响持仓、现金、成本和组合快照。
 
 日期用途不同：证券头寸通常在 trade date 生效，结算现金在 settlement date 生效；dividend / coupon 可在 entitlement date 确认收益；deposit / withdrawal 在实际收付日进入 TWR 外部现金流。页面会分别展示这些日期，不能为了让绩效落到预期日期而改写另一种日期。
 
-支持的交易类型：
+支持的资产与交易动作：
 
-- `buy`：买入证券。需要证券账户、instrument、quantity、price、gross amount，可填写 fee / tax，需要结算现金账户。
-- `sell`：卖出证券。需要有足够持仓，系统会校验 trade date 时点的可卖数量。
-- `dividend`：基金或股票分红。需要 instrument，可填写 entitlement date，进入结算现金账户。
-- `dividend_reinvestment`：分红再投资。需要已有持仓、instrument、quantity，可选 price，不走结算现金账户。
-- `coupon`：FCN 利息收入。需要 FCN 本地合约，可填写 entitlement date。
-- `interest`：现金账户利息。不关联 instrument。
-- `return_of_capital`：资本返还。需要基金或股票 instrument，不能超过对应持仓成本基础。
-- `maturity_redemption`：FCN 正常到期、敲入或敲出关闭；long option 仅可与明确的 `option_long_expiry` 或 `option_long_cash_settlement` 配对使用。所有情形都需要相应本地合约。
-- `fee`：费用。可作为现金账户费用，也可关联证券账户和 instrument。
-- `tax`：税费。规则与 fee 类似。
-- `deposit`：外部入金，只用于现金账户。
-- `withdrawal`：外部出金，只用于现金账户。
-- `fx_conversion`：现金账户之间换汇。需要 counterparty account、counter amount 和 fx rate。
-- `transfer_out` / `transfer_in`：内部账户转账，由 Internal Transfer 表单成对创建。
-- `opening_balance`：期初现金或期初证券持仓。
+- Security：`buy`、`sell`、`dividend`、`dividend_reinvestment`、`return_of_capital`、`fee`、`tax`、`transfer_out`、`transfer_in`、`opening_balance`。买卖需要 Security 账户、instrument、quantity、price、gross amount 和同币种结算现金账户；卖出和转出还会校验可用持仓。
+- FCN：`entry`、`early_exit`、`coupon`、`knock_in_close`、`knock_out_close`、`maturity_close`、`fee`、`tax`、`opening_balance`。所有动作使用 FCN 账户和本地合约；结束结果直接作为 FCN 动作选择，不再填写单独的事件类别。
+- Option：`buy_to_open`、`sell_to_close`、`sell_to_open`、`buy_to_close`、`expire_long`、`cash_settle_long`、`expire_written`、`cash_settle_written`、`fee`、`tax`、`opening_balance`。所有动作使用 Option 账户和本地合约，并明确区分多头与空头方向。
+- Cash & Operations：`deposit`、`withdrawal`、`interest`、`fx_conversion`、`fee`、`tax`、`transfer_out`、`transfer_in`、`opening_balance`。Cash 动作不关联 instrument 或衍生品合约；换汇还需目标现金账户、counter amount 和 fx rate。
 
 FCN 与期权使用 Portfolio 本地合约，不从 Platform instrument 列表中选择一个“衍生品资产”：
 
-- 首笔 FCN/期权交易同时创建不可变合约，记录合约名称、币种、账户和条款；后续交易及生命周期事件只选择同一 `derivative_contract_id`。
+- 首笔 FCN/期权交易同时创建不可变合约，记录合约名称、币种、账户和条款；后续交易动作只选择同一 `derivative_contract_id`。
 - 期权动作明确区分 `Buy to Open`、`Sell to Close`、`Sell to Open`、`Buy to Close`，并在选定合约后标明 Call 或 Put；另外分别提供 long/writer expiry 与 long/writer cash settlement。数量单位是合约张数，premium gross amount 按张数、每单位权利金和 multiplier 计算。合约不预设现金或实物结算方式。
 - FCN 支持买入、coupon，以及 normal maturity、knock-in、knock-out 关闭结果。系统记录事件，不自动验证障碍是否触发，也不把交付资产与关闭事件绑定成一笔复合交易。
 - FCN 合约主条款记录名义本金、年化票息率、发行日、最终观察日、到期日、发行人和对手方；每个 underlying 单独记录 Registry security、初始参考价、strike/knock-in/knock-out 百分比水平和是否可交付。

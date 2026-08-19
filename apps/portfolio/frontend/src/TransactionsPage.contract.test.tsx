@@ -471,7 +471,7 @@ describe('Transactions rendered page contract', () => {
         { row_number: 3, transaction: {}, errors: [] },
       ],
     })
-    const file = new File(['transaction_type,trade_date'], 'candidate.csv', {
+    const file = new File(['asset_type,transaction_action,trade_date'], 'candidate.csv', {
       type: 'text/csv',
     })
     renderPortfolioPage(

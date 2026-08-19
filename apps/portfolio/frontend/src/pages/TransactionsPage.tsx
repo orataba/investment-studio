@@ -101,7 +101,7 @@ const TRANSACTION_FILTER_TYPE_GROUPS = [
     types: ['dividend', 'dividend_reinvestment', 'coupon', 'interest', 'return_of_capital', 'maturity_redemption'],
   },
   {
-    label: 'Lifecycle facts',
+    label: 'Derivative close outcomes',
     types: ['lifecycle_event'],
   },
   {
@@ -145,7 +145,7 @@ const TRANSACTION_ENTRY_KINDS: Array<{
   {
     value: 'fcn',
     label: 'FCN',
-    description: 'Fixed coupon note contract activity and lifecycle',
+    description: 'Fixed coupon note entry, income, exit, and close outcomes',
   },
   {
     value: 'option',
@@ -2590,7 +2590,7 @@ export default function TransactionsPage() {
         form.lifecycle_event_type,
       )
     ) {
-      setFormError('The selected asset does not support this transaction type.')
+      setFormError('The selected asset does not support this transaction action.')
       return
     }
     if (
@@ -2602,7 +2602,7 @@ export default function TransactionsPage() {
     }
 
     if (form.transaction_type === 'lifecycle_event' && !form.lifecycle_event_type) {
-      setFormError('Select the lifecycle event represented by this fact.')
+      setFormError('Select the derivative close outcome represented by this transaction.')
       return
     }
 
@@ -3686,7 +3686,7 @@ export default function TransactionsPage() {
                         </div>
                         {selectedTransaction.lifecycle_event_type ? (
                           <div>
-                            <dt>Lifecycle event</dt>
+                            <dt>Derivative outcome</dt>
                             <dd>{formatLabel(selectedTransaction.lifecycle_event_type)}</dd>
                           </div>
                         ) : null}

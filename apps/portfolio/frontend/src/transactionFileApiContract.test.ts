@@ -34,7 +34,7 @@ describe('transaction file API contract', () => {
       Promise.resolve(new Response(JSON.stringify({ preview_digest: 'a'.repeat(64) }), { status: 200 })),
     )
     vi.stubGlobal('fetch', fetchMock)
-    const file = new File(['transaction_type'], 'transactions.xlsx')
+    const file = new File(['asset_type,transaction_action'], 'transactions.xlsx')
 
     await previewPortfolioTransactionFile('portfolio/ops', file)
 
@@ -52,7 +52,7 @@ describe('transaction file API contract', () => {
       Promise.resolve(new Response(JSON.stringify({ created_count: 1 }), { status: 200 })),
     )
     vi.stubGlobal('fetch', fetchMock)
-    const file = new File(['transaction_type'], 'transactions.csv', { type: 'text/csv' })
+    const file = new File(['asset_type,transaction_action'], 'transactions.csv', { type: 'text/csv' })
 
     await importPortfolioTransactionFile(
       'portfolio/ops',

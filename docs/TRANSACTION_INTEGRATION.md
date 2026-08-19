@@ -53,7 +53,7 @@ Example: sell three Put contracts to open, with a multiplier of 100:
 
 ## One row, one fact
 
-The entry workflow chooses the asset domain first: `Security`, `Derivative`, or `Cash & Operations`. The API derives the same domain on every returned transaction, and filters and exports preserve it. Portfolio does not create or bind multi-leg derivative transactions, and the transaction schema has no derivative relation or event-group field. If two rows are economically related, record both independently and explain the relationship in `note` when useful. Market securities use Registry `instrument_id`; an FCN or option uses a Portfolio-local `derivative_contract_id`.
+The entry workflow chooses the asset first: `Security`, `FCN`, `Option`, or `Cash & Operations`. The API derives the same persisted domain on every returned transaction, and filters and exports preserve it. Portfolio does not create or bind multi-leg derivative transactions, and the transaction schema has no derivative relation or event-group field. If two rows are economically related, record both independently and explain the relationship in `note` when useful. Market securities use Registry `instrument_id`; an FCN or option uses a Portfolio-local `derivative_contract_id`.
 
 Examples:
 
@@ -115,24 +115,29 @@ The Transactions workspace uses one canonical schema in both CSV and Excel. Exce
 | Guided Excel template | blank canonical `Transactions` sheet plus instructions, field guide, examples, and enum lists | starting point for manual entry by collaborators; only `Transactions` is imported |
 | Import | either format after review or editing | atomic preview and batch creation through the same validation path |
 
-The CSV represents transaction commands, not database rows. It therefore excludes transaction IDs,
-row versions, change history, resolved timestamps, and internal pair IDs. Ordinary transactions use
-their normal `transaction_type`. One internal transfer is exported as one
-`transaction_type=internal_transfer` row with `transfer_object_type`, `from_account_id`, and
-`to_account_id`; import regenerates the atomic `transfer_out` / `transfer_in` pair. Persisted legs are
-not accepted as transaction-file input.
+The file represents transaction commands, not database rows. It therefore excludes transaction IDs,
+row versions, change history, resolved timestamps, internal accounting types, and internal pair IDs.
+Every row starts with `asset_type` (`security`, `fcn`, `option`, or `cash`) and a
+`transaction_action` allowed for that asset. FCN and Option close outcomes are selected directly as
+asset actions; file authors never choose lifecycle or maturity accounting types. One internal
+transfer is entered once as `transfer_out` or `transfer_in`, using `account_id` for the selected side
+and `counterparty_account_id` for the other side. Import regenerates the atomic persisted pair.
 
-Required columns are `transaction_type`, `trade_date`, `account_id`, `gross_amount`, and `currency`. The template also contains:
+Required columns are `asset_type`, `transaction_action`, `trade_date`, `account_id`,
+`gross_amount`, and `currency`. The template also contains:
 
-`lifecycle_event_type`, `trade_time`, `settlement_date`, `position_effective_date`, `entitlement_date`, `acquisition_date`, `transfer_object_type`, `from_account_id`, `to_account_id`, `settlement_cash_account_id`, `instrument_id`, `derivative_contract_id`, derivative definition/term columns, `quantity`, `price`, `counter_amount`, `fx_rate`, `fees`, `fee_category`, `taxes`, `counterparty_account_id`, `source_system`, `external_reference`, `note`.
+`trade_time`, `settlement_date`, `position_effective_date`, `entitlement_date`, `acquisition_date`,
+`counterparty_account_id`, `settlement_cash_account_id`, `instrument_id`,
+`derivative_contract_id`, derivative definition/term columns, `quantity`, `price`, `counter_amount`,
+`fx_rate`, `fees`, `fee_category`, `taxes`, `source_system`, `external_reference`, and `note`.
 
 For a new derivative contract, place its definition on the first file row. FCN rows use `fcn_annual_coupon_rate_pct`, `fcn_final_observation_date`, and `fcn_underlyings_json` for the per-underlying term array. Later rows leave the definition columns blank and keep only `derivative_contract_id`. A row may use `instrument_id` or `derivative_contract_id`, never both.
 
-The guided Excel workbook contains five sheets: `Instructions`, blank `Transactions`, `Field Guide`, `Examples`, and `Lists`. Generic dropdowns and structural validation cover transaction/lifecycle types, fee categories, USD/HKD/CNY, transfer objects, derivative types, option types, dates, times, and non-negative numbers. It intentionally contains no portfolio, account, instrument, or existing-contract data. All IDs in `Examples` are placeholders and must be replaced with IDs that already exist in the target portfolio.
+The guided Excel workbook contains five sheets: `Instructions`, blank `Transactions`, `Field Guide`, `Examples`, and `Lists`. Dependent dropdowns first select the asset and then show only that asset's actions. Structural validation also covers fee categories, USD/HKD/CNY, option types, dates, times, and non-negative numbers. It intentionally contains no portfolio, account, instrument, or existing-contract data. All IDs in `Examples` are placeholders and must be replaced with IDs that already exist in the target portfolio.
 
 Supported transaction currencies are exactly `USD`, `HKD`, and `CNY`. A holding account, its security or derivative contract, the settlement cash account, and the transaction must be currency-compatible. Cash internal transfers are same-currency only; position transfers require the instrument and both security accounts to use the same currency. For FX conversion, `currency` is the source cash-account currency, the target currency comes from `counterparty_account_id`, and `counter_amount = gross_amount * fx_rate`.
 
-The examples cover cash operations; equities, ETFs, public funds, and private funds; FCN entry, early exit, coupon, opening balance, fees/taxes, and every lifecycle result; and option long/short open, close, long opening balance, fees/taxes, expiry, and cash settlement. Physical option exercise or assignment remains a cash-settlement fact plus an independent underlying security trade. FCN asset delivery remains an FCN close plus an independent security `buy`; neither workflow creates a pairing or relation ID. `opening_balance` represents an existing long option position. An existing written position must be backfilled as `option_write` using its actual open date, quantity, and premium; it must not be represented as a positive-quantity opening balance.
+The examples cover every action for Cash, Security, FCN, and Option, including both transfer directions. Physical option exercise or assignment remains an Option cash-settlement action plus an independent underlying Security action. FCN asset delivery remains an FCN close action plus an independent Security `buy`; neither workflow creates a pairing or relation ID. `opening_balance` represents an existing long option position. An existing written position must be backfilled with `sell_to_open` using its actual open date, quantity, and premium; it must not be represented as a positive-quantity opening balance.
 
 File preview validates the complete candidate history against the target portfolio's accounts,
 instruments, contracts, currencies, and existing positions. Import is all-or-nothing and requires the

@@ -44,7 +44,7 @@ Option 映射到 `asset_domain=derivative` 并分别使用 `contract_type=fcn/op
 
 ## 3. 金额、份额和价格
 
-所有输入均使用非负 magnitude，方向由 transaction type 决定。
+所有输入均使用非负 magnitude，方向由所选资产的交易动作决定。
 
 - 基金申购 / 赎回：确认金额与确认份额固定，unit price 由二者和 Registry price-scale
   contract 反算并按 source precision 保存。页面展示的 NAV 仅作参考，不自动写入成交价格。
@@ -101,17 +101,17 @@ history、解析后的时间戳或内部配对 ID。导入时仍会按目标 Por
 ### Excel 手工填写模板
 
 提供给其他人手工录入时，优先使用 `Blank Excel Template`。模板的 `Transactions` 工作表仍
-保留标准 CSV 的 44 个字段，第一行字段名不可修改，默认没有示例数据，因此不会把示例误导入。
+保留标准 CSV 的 40 个字段，第一行字段名不可修改，默认没有示例数据，因此不会把示例误导入。
 模板另外提供以下工作表：
 
 - `Instructions`：填写流程、普通交易与内部转移的必填规则、金额方向和上传限制；
 - `Field Guide`：每个字段的中文含义、必填条件和跨字段约束；
 - `Examples`：现金、证券、基金、期权、FCN、费用税费、换汇、内部转移和期初余额的可复制示例；
-- `Lists`：交易类型、生命周期事件、费用类别、币种、转移对象、衍生品类型和期权类型的代码及说明。
+- `Lists`：资产类型、各资产可用交易动作、费用类别、币种和期权类型的代码及说明。
 
 Excel 会对通用枚举、日期、时间和非负数提供下拉或输入限制，并用颜色提示普通交易的条件必填
 列。账户、证券和衍生品合约不会预置在模板中；填写人必须使用提供方已经设置好的精确 ID。
-Excel 端限制只用于减少手工错误，账户归属、币种、资产类别、持仓历史和交易类型组合仍以
+Excel 端限制只用于减少手工错误，账户归属、币种、资产类别、持仓历史和交易动作组合仍以
 Import 预览的后端校验为准。
 
 模板覆盖范围如下。公募基金和私募基金使用相同的证券交易命令，基金类别由 Registry 中的证券
@@ -130,16 +130,16 @@ Import 预览的后端校验为准。
 只能在同币种现金账户间进行。换汇行的 `currency` 是转出现金账户币种，
 `counter_amount = gross_amount × fx_rate`，目标币种由 `counterparty_account_id` 对应账户确定。
 
-FCN 在到期前卖出使用 `transaction_type=sell`。Option 实物行权/指派不使用专门生命周期类型：
-先按多头或空头现金结算记录 Option，再按交付日市场或参考价独立记录标的证券买入/卖出。FCN
+FCN 在到期前退出选择 `early_exit`。Option 实物行权/指派先选择 Option 的多头或空头现金结算
+动作，再按交付日市场或参考价独立记录标的证券买入/卖出。FCN
 敲入交付同理，FCN 结束行与证券 `buy` 行是两个独立事实。模板不含 Portfolio 资料，也不提供
 关联或配对 ID。`opening_balance` 可用于已有 Option 多头；已有空头应按实际开仓日期、数量和
-权利金补录 `option_write`，不能用正数量期初余额代替。
+权利金补录 `sell_to_open`，不能用正数量期初余额代替。
 
 `transfer_group_id` 只表示同一笔内部转账或转仓生成的 `transfer_out / transfer_in` 双腿，
 不用于绑定 Option、FCN、股票交割或其他经济上相关的交易，也不出现在 CSV。导出时一组双腿
-折叠成一行 `transaction_type=internal_transfer`，使用 `transfer_object_type`、
-`from_account_id` 和 `to_account_id`；回导时系统重新原子生成双腿。
+折叠成一行 Security 或 Cash 的 `transfer_out` 动作，`account_id` 为转出账户、
+`counterparty_account_id` 为转入账户；也可按相反视角填写 `transfer_in`。回导时系统重新原子生成双腿。
 
 批量导入证券时使用 Registry `instrument_id`；Option / FCN 使用 Portfolio-local
 `derivative_contract_id`。新衍生品合约的不可变条款写在首次交易行，后续行只保留 contract

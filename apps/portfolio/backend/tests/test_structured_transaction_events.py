@@ -2459,8 +2459,8 @@ def test_transaction_csv_preserves_source_precision_and_formula_safety() -> None
 
     import_text = "\n".join(
         [
-            "transaction_type,trade_date,account_id,gross_amount,fees,taxes,currency,note",
-            "deposit,2026-01-01,cash,1.20000001,0.00000000,0.00000000,USD,'=unsafe formula",
+            "asset_type,transaction_action,trade_date,account_id,gross_amount,fees,taxes,currency,note",
+            "cash,deposit,2026-01-01,cash,1.20000001,0.00000000,0.00000000,USD,'=unsafe formula",
         ]
     )
     _headers, rows = parse_transaction_csv(import_text)
@@ -2525,10 +2525,10 @@ def test_transaction_csv_collapses_internal_transfer_pair_into_importable_comman
     )
     row = next(csv.DictReader(StringIO(rendered.lstrip("\ufeff"))))
 
-    assert row["transaction_type"] == "internal_transfer"
-    assert row["transfer_object_type"] == "cash"
-    assert row["from_account_id"] == "cash-a"
-    assert row["to_account_id"] == "cash-b"
+    assert row["asset_type"] == "cash"
+    assert row["transaction_action"] == "transfer_out"
+    assert row["account_id"] == "cash-a"
+    assert row["counterparty_account_id"] == "cash-b"
     assert "transfer_group_id" not in row
     _headers, parsed_rows = parse_transaction_csv(rendered)
     assert parsed_rows[0].errors == ()
@@ -2539,32 +2539,27 @@ def test_transaction_csv_collapses_internal_transfer_pair_into_importable_comman
     assert parsed_rows[0].internal_transfer.gross_amount == Decimal("100.00000000")
 
 
-def test_transaction_csv_rejects_system_generated_internal_transfer_legs() -> None:
+def test_transaction_csv_rejects_the_removed_internal_transfer_protocol() -> None:
     csv_text = "\n".join(
         [
             "transaction_type,trade_date,account_id,gross_amount,currency",
             "transfer_out,2026-01-02,cash-a,100,USD",
         ]
     )
-    _headers, rows = parse_transaction_csv(csv_text)
-
-    assert rows[0].transaction is None
-    assert rows[0].errors == (
-        "Import internal transfers as one internal_transfer command, not as "
-        "system-generated transfer_in or transfer_out legs.",
-    )
+    with pytest.raises(ValueError, match="Unsupported CSV columns: transaction_type"):
+        parse_transaction_csv(csv_text)
 
 
 def test_csv_api_imports_internal_transfer_command_and_reexports_same_contract(client) -> None:
     csv_text = "\n".join(
         [
             (
-                "transaction_type,trade_date,transfer_object_type,from_account_id,"
-                "to_account_id,account_id,gross_amount,currency,note"
+                "asset_type,transaction_action,trade_date,account_id,"
+                "counterparty_account_id,gross_amount,currency,note"
             ),
             (
-                "internal_transfer,2026-05-20,cash,cash-usd-main,"
-                "cash-usd-reserve,,125.5,USD,CSV sweep"
+                "cash,transfer_out,2026-05-20,cash-usd-main,"
+                "cash-usd-reserve,125.5,USD,CSV sweep"
             ),
         ]
     )
@@ -2645,16 +2640,16 @@ def test_csv_api_imports_position_transfer_after_earlier_row_in_same_batch(clien
     csv_text = "\n".join(
         [
             (
-                "transaction_type,trade_date,transfer_object_type,from_account_id,"
-                "to_account_id,account_id,instrument_id,quantity,price,gross_amount,currency"
+                "asset_type,transaction_action,trade_date,account_id,"
+                "counterparty_account_id,instrument_id,quantity,gross_amount,currency"
             ),
             (
-                f"opening_balance,2026-05-01,,,,{source_account['account_id']},"
-                "equity-us-abbv,10,100,1000,USD"
+                f"security,opening_balance,2026-05-01,{source_account['account_id']},,"
+                "equity-us-abbv,10,1000,USD"
             ),
             (
-                f"internal_transfer,2026-05-02,position,{source_account['account_id']},"
-                f"{destination_account['account_id']},,equity-us-abbv,4,,400,USD"
+                f"security,transfer_out,2026-05-02,{source_account['account_id']},"
+                f"{destination_account['account_id']},equity-us-abbv,4,400,USD"
             ),
         ]
     )
@@ -2696,9 +2691,9 @@ def test_csv_api_imports_short_option_cash_settlement_and_independent_stock_trad
     csv_text = "\n".join(
         [
             (
-                "transaction_type,trade_date,settlement_date,account_id,"
+                "asset_type,transaction_action,trade_date,settlement_date,account_id,"
                 "settlement_cash_account_id,derivative_contract_id,"
-                "derivative_contract_name,derivative_contract_type,"
+                "derivative_contract_name,"
                 "option_underlying_instrument_id,option_type,option_expiry_date,"
                 "option_strike,option_contract_multiplier,"
                 "quantity,price,"
@@ -2706,8 +2701,8 @@ def test_csv_api_imports_short_option_cash_settlement_and_independent_stock_trad
                 "external_reference"
             ),
             (
-                f"option_write,2026-05-01,2026-05-01,{option_account_id},"
-                "cash-usd-main,option-short-call-1,ABBV Dec 220 Call,option,"
+                f"option,sell_to_open,2026-05-01,2026-05-01,{option_account_id},"
+                "cash-usd-main,option-short-call-1,ABBV Dec 220 Call,"
                 "equity-us-abbv,call,2026-12-18,220,100,1,5,"
                 "500,0,0,USD,colleague_project,CALL-001-WRITE"
             ),
@@ -2760,18 +2755,18 @@ def test_csv_api_imports_short_option_cash_settlement_and_independent_stock_trad
     settlement_csv = "\n".join(
         [
             (
-                "transaction_type,lifecycle_event_type,trade_date,settlement_date,"
+                "asset_type,transaction_action,trade_date,settlement_date,"
                 "account_id,settlement_cash_account_id,instrument_id,"
                 "derivative_contract_id,quantity,price,gross_amount,fees,"
                 "taxes,currency,source_system,external_reference"
             ),
             (
-                "lifecycle_event,option_writer_cash_settlement,2026-05-10,2026-05-10,"
+                "option,cash_settle_written,2026-05-10,2026-05-10,"
                 f"{option_account_id},cash-usd-main,,option-short-call-1,1,,1000,0,0,USD,colleague_project,"
                 "CALL-001-CASH-SETTLEMENT"
             ),
             (
-                "sell,,2026-05-10,2026-05-10,broker-us-core,cash-usd-main,"
+                "security,sell,2026-05-10,2026-05-10,broker-us-core,cash-usd-main,"
                 "equity-us-abbv,,100,230,23000,0,0,USD,"
                 "colleague_project,CALL-001-DELIVERY"
             ),
