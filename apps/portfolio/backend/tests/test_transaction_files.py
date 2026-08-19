@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from io import BytesIO
+import csv
+from io import BytesIO, StringIO
 
 import pytest
 from openpyxl import load_workbook
@@ -252,9 +253,42 @@ def test_transaction_file_api_supports_csv_and_xlsx_with_one_validation_path(
         "/api/portfolios/portfolio-ops/transactions/xlsx-template"
     )
     assert template_response.status_code == 200
+    assert template_response.headers["content-disposition"] == (
+        'attachment; filename="transaction-import-template.xlsx"'
+    )
     template_workbook = load_workbook(BytesIO(template_response.content))
-    assert template_workbook[TRANSACTION_SHEET_NAME].max_row == 1
+    assert template_workbook.sheetnames == [
+        INSTRUCTIONS_SHEET_NAME,
+        TRANSACTION_SHEET_NAME,
+        FIELD_GUIDE_SHEET_NAME,
+        EXAMPLES_SHEET_NAME,
+        LISTS_SHEET_NAME,
+    ]
+    transaction_sheet = template_workbook[TRANSACTION_SHEET_NAME]
+    assert transaction_sheet.max_row == 1
+    xlsx_template_headers = tuple(
+        transaction_sheet.cell(1, column_index).value
+        for column_index in range(1, transaction_sheet.max_column + 1)
+    )
+    assert xlsx_template_headers == IMPORT_COLUMNS
     template_workbook.close()
+
+    csv_template_response = client.get(
+        "/api/portfolios/portfolio-ops/transactions/csv-template"
+    )
+    assert csv_template_response.status_code == 200
+    assert csv_template_response.headers["content-disposition"] == (
+        'attachment; filename="transaction-import-template.csv"'
+    )
+    csv_template_rows = list(
+        csv.reader(
+            StringIO(
+                csv_template_response.content.decode("utf-8-sig"),
+                newline="",
+            )
+        )
+    )
+    assert csv_template_rows == [list(xlsx_template_headers)]
 
 
 def test_transaction_file_api_rejects_unsupported_extensions(client) -> None:

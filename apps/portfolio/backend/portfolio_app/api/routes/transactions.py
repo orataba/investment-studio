@@ -1574,7 +1574,7 @@ def download_transaction_csv_template(portfolio_id: str) -> Response:
         media_type="text/csv; charset=utf-8",
         headers={
             "Content-Disposition": (
-                f'attachment; filename="{portfolio_id}-transaction-import-template.csv"'
+                'attachment; filename="transaction-import-template.csv"'
             )
         },
     )
@@ -1604,7 +1604,7 @@ def download_transaction_xlsx_template(portfolio_id: str) -> Response:
         media_type=XLSX_MEDIA_TYPE,
         headers={
             "Content-Disposition": (
-                f'attachment; filename="{portfolio_id}-transaction-import-template.xlsx"'
+                'attachment; filename="transaction-import-template.xlsx"'
             )
         },
     )
