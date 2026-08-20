@@ -1594,6 +1594,8 @@ function PerformancePage() {
   )
   const [calculationTableViewStoreReadyPortfolioId, setCalculationTableViewStoreReadyPortfolioId] =
     useState<string | null>(null)
+  const [calculationTableViewStoreSettledPortfolioId, setCalculationTableViewStoreSettledPortfolioId] =
+    useState<string | null>(null)
   const [calculationTableViewStoreError, setCalculationTableViewStoreError] = useState<string | null>(null)
   const [activeCalculationTableViewId, setActiveCalculationTableViewId] = useState(
     initialCalculationTableViewStore.activeViewId,
@@ -1631,6 +1633,7 @@ function PerformancePage() {
   const [calculationColumnSearch, setCalculationColumnSearch] = useState('')
   const [viewToast, setViewToast] = useState<NoticeToastMessage | null>(null)
   const [taxonomyCatalog, setTaxonomyCatalog] = useState<PortfolioTaxonomyCatalogResponse | null>(null)
+  const [taxonomyCatalogReadyPortfolioId, setTaxonomyCatalogReadyPortfolioId] = useState<string | null>(null)
   const [benchmarkInstruments, setBenchmarkInstruments] = useState<SharedInstrumentRecord[]>([])
   const [benchmarkSearch, setBenchmarkSearch] = useState('')
   const [benchmarkInstrumentId, setBenchmarkInstrumentId] = useState('')
@@ -1647,10 +1650,18 @@ function PerformancePage() {
       ) ?? null,
     [taxonomyCatalog],
   )
+  const taxonomyCatalogReady = taxonomyCatalogReadyPortfolioId === portfolioId
+  const calculationTableViewStoreSettled =
+    calculationTableViewStoreSettledPortfolioId === portfolioId
   const effectiveCalculationGroupBy: CalculationGroupByKey =
-    calculationGroupBy === 'taxonomy' && !defaultPlanningTaxonomy ? 'none' : calculationGroupBy
+    calculationGroupBy === 'taxonomy' && taxonomyCatalogReady && !defaultPlanningTaxonomy
+      ? 'none'
+      : calculationGroupBy
   const resolvedCalculationGroupBy: PortfolioContributionAxis =
     effectiveCalculationGroupBy === 'none' ? 'instrument' : effectiveCalculationGroupBy
+  const calculationGroupsReady =
+    calculationTableViewStoreSettled &&
+    (resolvedCalculationGroupBy !== 'taxonomy' || taxonomyCatalogReady)
   const calculationGroupsFilters = useMemo(
     () => ({
       ...calculationWindowFilters,
@@ -1679,11 +1690,18 @@ function PerformancePage() {
     loading: calculationGroupsLoading,
     error: calculationGroupsError,
   } = usePerformanceResource({
-    enabled: Boolean(portfolioId && workspace && !waitingForDefaultEndDate),
+    enabled: Boolean(
+      portfolioId &&
+        workspace &&
+        !waitingForDefaultEndDate &&
+        calculationGroupsReady,
+    ),
     resourceKey: portfolioId ?? '',
     load: loadCalculationGroupsWorkspace,
     fallbackError: 'Failed to load calculation groups.',
   })
+  const calculationGroupsPending =
+    calculationGroupsLoading || Boolean(workspace && !calculationGroupsReady)
   const calculationGroupByOptions = useMemo<CalculationGroupByOption[]>(
     () => [
       {
@@ -1897,6 +1915,7 @@ function PerformancePage() {
     let cancelled = false
     const defaultStore = normalizeCalculationTableViewStore(null)
     setCalculationTableViewStoreReadyPortfolioId(null)
+    setCalculationTableViewStoreSettledPortfolioId(null)
     setCalculationTableViewStoreError(null)
     setCalculationTableViewStore(defaultStore)
     setActiveCalculationTableViewId(defaultStore.activeViewId)
@@ -1915,6 +1934,7 @@ function PerformancePage() {
         setActiveCalculationTableViewId(nextStore.activeViewId)
         applyCalculationTableViewState(resolveCalculationTableViewState(nextStore, nextStore.activeViewId))
         setCalculationTableViewStoreReadyPortfolioId(portfolioId)
+        setCalculationTableViewStoreSettledPortfolioId(portfolioId)
       })
       .catch((requestError: unknown) => {
         if (!cancelled) {
@@ -1923,6 +1943,7 @@ function PerformancePage() {
               requestError instanceof Error ? requestError.message : 'backend read failed.'
             }`,
           )
+          setCalculationTableViewStoreSettledPortfolioId(portfolioId)
         }
       })
 
@@ -1950,24 +1971,34 @@ function PerformancePage() {
     if (!portfolioId) {
       setBenchmarkInstruments([])
       setTaxonomyCatalog(null)
+      setTaxonomyCatalogReadyPortfolioId(null)
       return
     }
 
     let cancelled = false
-    Promise.allSettled([getPortfolioInstruments(portfolioId), getPortfolioTaxonomyCatalog(portfolioId)])
-      .then(([instrumentResult, taxonomyResult]) => {
-        if (cancelled) {
-          return
+    setTaxonomyCatalogReadyPortfolioId(null)
+    getPortfolioInstruments(portfolioId)
+      .then((response) => {
+        if (!cancelled) {
+          setBenchmarkInstruments(response.instruments)
         }
-        if (instrumentResult.status === 'fulfilled') {
-          setBenchmarkInstruments(instrumentResult.value.instruments)
-        } else {
+      })
+      .catch(() => {
+        if (!cancelled) {
           setBenchmarkInstruments([])
         }
-        if (taxonomyResult.status === 'fulfilled') {
-          setTaxonomyCatalog(taxonomyResult.value)
-        } else {
+      })
+    getPortfolioTaxonomyCatalog(portfolioId)
+      .then((response) => {
+        if (!cancelled) {
+          setTaxonomyCatalog(response)
+          setTaxonomyCatalogReadyPortfolioId(portfolioId)
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
           setTaxonomyCatalog(null)
+          setTaxonomyCatalogReadyPortfolioId(portfolioId)
         }
       })
 
@@ -2776,7 +2807,7 @@ function PerformancePage() {
                       buttonClassName="portfolio-table-toolbar-button"
                       menuClassName="portfolio-download-menu-list"
                       itemClassName="portfolio-download-menu-item"
-                      disabled={!calculationGroupsWorkspace || calculationGroupsLoading}
+                      disabled={!calculationGroupsWorkspace || calculationGroupsPending}
                       onSelect={handleDownloadCalculation}
                     />
                   </div>
@@ -2805,7 +2836,7 @@ function PerformancePage() {
                   preliminary; a negative Realized RC means diversification, not a loss.
                 </div>
               ) : null}
-              {calculationLoading || calculationGroupsLoading ? <CalculationStatus /> : null}
+              {calculationLoading || calculationGroupsPending ? <CalculationStatus /> : null}
               <div className="table-shell">
                 <table className="transactions-table performance-calculation-table">
                   <thead>
@@ -2830,7 +2861,7 @@ function PerformancePage() {
                   <tbody>
                     {calculationTableRows.length ? (
                       calculationTableRows.map((row) => renderCalculationTableRow(row))
-                    ) : calculationGroupsLoading ? (
+                    ) : calculationGroupsPending ? (
                       <TableStatusRow
                         colSpan={visibleCalculationColumns.length}
                         label="Loading"

@@ -1,4 +1,4 @@
-import { screen, waitFor, within } from '@testing-library/react'
+import { act, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -181,6 +181,65 @@ describe('Performance rendered page contract', () => {
     })
 
     expect(screen.queryByText(/publication lineage|rounding audit|internal audit|manifest/i)).not.toBeInTheDocument()
+  })
+
+  it('waits for the default planning taxonomy before loading calculation groups', async () => {
+    let resolveTaxonomyCatalog: ((value: object) => void) | undefined
+    apiMocks.getPortfolioTableViewStore.mockResolvedValueOnce({
+      store: {
+        activeViewId: 'risk-attribution',
+        views: [
+          {
+            id: 'risk-attribution',
+            name: 'Default',
+            state: { groupBy: 'taxonomy' },
+          },
+        ],
+      },
+    })
+    apiMocks.getPortfolioTaxonomyCatalog.mockReturnValueOnce(
+      new Promise((resolve) => {
+        resolveTaxonomyCatalog = resolve
+      }),
+    )
+
+    renderPortfolioPage(
+      <PerformancePage />,
+      '/portfolios/3/performance?start_date=2026-07-06&end_date=2026-07-15',
+      '/portfolios/:portfolioId/performance',
+    )
+
+    await screen.findByRole('row', { name: /Total Portfolio Return/ })
+    expect(apiMocks.getPortfolioPerformanceCalculationGroups).not.toHaveBeenCalled()
+
+    await act(async () => {
+      resolveTaxonomyCatalog?.({
+        portfolio_id: '3',
+        default_planning_taxonomy_id: 'tax-planning',
+        taxonomies: [
+          {
+            taxonomy_id: 'tax-planning',
+            planning_enabled: true,
+            status: 'active',
+          },
+        ],
+        taxonomy_nodes: [],
+        taxonomy_assignments: [],
+        instrument_universe: [],
+        target_sets: [],
+        target_set_lines: [],
+        target_set_integrity_issues: [],
+      })
+    })
+
+    await waitFor(() => {
+      expect(apiMocks.getPortfolioPerformanceCalculationGroups).toHaveBeenCalledTimes(1)
+    })
+    expect(apiMocks.getPortfolioPerformanceCalculationGroups).toHaveBeenCalledWith('3', {
+      ...windowFilters,
+      axis: 'taxonomy',
+      taxonomy_id: 'tax-planning',
+    })
   })
 
   it('shows benchmark differences and relative statistics for a confirmed price index', async () => {
