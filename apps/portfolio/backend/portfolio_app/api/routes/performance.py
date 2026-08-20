@@ -287,12 +287,31 @@ def get_portfolio_period_calculation(
         raise HTTPException(status_code=404, detail="Portfolio not found")
 
     try:
+        materialized_snapshots = list_materialized_daily_snapshots(
+            portfolio_id,
+            start_date=start_date,
+            end_date=end_date,
+        )
+        instrument_contribution_report = (
+            get_cached_materialized_contribution_report(
+                portfolio_id,
+                start_date=start_date,
+                end_date=end_date,
+                axis="instrument",
+            )
+        )
+        if instrument_contribution_report is None:
+            raise HTTPException(status_code=404, detail="Portfolio not found")
         report = build_period_calculation_report(
             portfolio,
             list_accounts(portfolio_id),
             list_transactions(portfolio_id),
             start_date=start_date,
             end_date=end_date,
+            prebuilt_snapshots=materialized_snapshots,
+            prebuilt_instrument_contribution_report=(
+                instrument_contribution_report
+            ),
         )
     except InstrumentRegistryError as error:
         raise HTTPException(status_code=502, detail=str(error)) from error

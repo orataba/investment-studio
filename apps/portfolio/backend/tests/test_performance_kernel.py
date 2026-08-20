@@ -1928,6 +1928,40 @@ def test_period_calculation_clamps_future_end_date_to_portfolio_as_of(client):
     )
 
 
+def test_period_calculation_route_reuses_materialized_daily_inputs(
+    client,
+    monkeypatch,
+):
+    daily_snapshots.ensure_portfolio_daily_snapshots("portfolio-ops")
+
+    def reject_daily_replay(*args, **kwargs):
+        del args, kwargs
+        raise AssertionError("Period calculation must not replay daily snapshots.")
+
+    def reject_contribution_replay(*args, **kwargs):
+        del args, kwargs
+        raise AssertionError("Period calculation must not rebuild contribution slices.")
+
+    monkeypatch.setattr(
+        performance,
+        "build_daily_portfolio_snapshots",
+        reject_daily_replay,
+    )
+    monkeypatch.setattr(
+        performance,
+        "build_contribution_report",
+        reject_contribution_replay,
+    )
+
+    response = client.get(
+        "/api/portfolios/portfolio-ops/performance/calculation"
+        "?start_date=2026-04-12&end_date=2026-04-15"
+    )
+
+    assert response.status_code == 200
+    assert response.json()["summary"]["effective_end_date"] == "2026-04-15"
+
+
 @pytest.mark.parametrize(
     "path",
     [

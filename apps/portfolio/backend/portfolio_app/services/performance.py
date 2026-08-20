@@ -3944,6 +3944,8 @@ def build_period_calculation_report(
     *,
     start_date: date | None = None,
     end_date: date | None = None,
+    prebuilt_snapshots: list[dict[str, object]] | None = None,
+    prebuilt_instrument_contribution_report: dict[str, object] | None = None,
 ) -> dict[str, object]:
     window = _resolve_snapshot_window(
         portfolio,
@@ -3996,12 +3998,16 @@ def build_period_calculation_report(
 
     resolved_start_date, resolved_end_date = window
     requested_resolved_end_date = end_date or resolved_end_date
-    reliability_snapshots = build_daily_portfolio_snapshots(
-        portfolio,
-        accounts,
-        transactions,
-        start_date=resolved_start_date,
-        end_date=resolved_end_date,
+    reliability_snapshots = (
+        prebuilt_snapshots
+        if prebuilt_snapshots is not None
+        else build_daily_portfolio_snapshots(
+            portfolio,
+            accounts,
+            transactions,
+            start_date=resolved_start_date,
+            end_date=resolved_end_date,
+        )
     )
     reliable_window = return_chain.resolve_reliable_snapshot_window(
         reliability_snapshots,
@@ -4180,13 +4186,17 @@ def build_period_calculation_report(
             - instrument_currency_gains
         )
 
-    instrument_contribution_report = build_contribution_report(
-        portfolio,
-        accounts,
-        sorted_transactions,
-        start_date=start_date,
-        end_date=resolved_end_date,
-        axis="instrument",
+    instrument_contribution_report = (
+        prebuilt_instrument_contribution_report
+        if prebuilt_instrument_contribution_report is not None
+        else build_contribution_report(
+            portfolio,
+            accounts,
+            sorted_transactions,
+            start_date=start_date,
+            end_date=resolved_end_date,
+            axis="instrument",
+        )
     )
     capital_gains_by_group = {
         str(line.get("group_key") or ""): _capital_gains_from_components(line)
