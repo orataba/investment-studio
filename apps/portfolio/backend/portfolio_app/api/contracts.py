@@ -916,6 +916,7 @@ class TransactionChangeLogResponse(BaseModel):
 
 class TransactionWorkspaceResponse(BaseModel):
     portfolio_id: str
+    portfolio_inception_date: date
     summary: TransactionListSummary
     derivation_boundary: DerivationBoundaryStatus
     selected_transaction_id: str | None = None
@@ -927,6 +928,7 @@ class TransactionWorkspaceResponse(BaseModel):
     ledger_postings: list[LedgerPostingRecord]
     related_position_lot_summary: PositionLotListSummary
     related_position_lots: list[PositionLotRecord]
+    related_option_obligations: list[dict[str, object]] = Field(default_factory=list)
     change_log_summary: TransactionChangeLogSummary
     change_log: list[TransactionChangeLogRecord] = Field(default_factory=list)
 
@@ -3627,7 +3629,10 @@ class TransactionCreateRequest(BaseModel):
             if self.price is not None:
                 raise ValueError("Return of capital must not carry price.")
             if self.entitlement_date is not None:
-                raise ValueError("Return of capital does not yet support entitlement_date.")
+                raise ValueError(
+                    "Return of capital uses trade_date as its entitlement date; "
+                    "settlement_date records the cash receipt date."
+                )
 
         if self.transaction_type == "dividend_reinvestment":
             if not self.instrument_id:
@@ -3755,6 +3760,20 @@ class TransactionCreateRequest(BaseModel):
         elif self.acquisition_date is not None:
             raise ValueError("acquisition_date is only allowed for security opening balance.")
 
+        zero_gross_allowed = (
+            self.transaction_type == "lifecycle_event"
+            and self.lifecycle_event_type == "option_writer_expiry"
+        ) or (
+            self.transaction_type == "maturity_redemption"
+            and self.lifecycle_event_type == "option_long_expiry"
+        ) or (
+            self.transaction_type == "opening_balance" and has_asset_reference
+        )
+        if self.gross_amount <= 0 and not zero_gross_allowed:
+            raise ValueError(
+                f"{self.transaction_type} requires positive gross_amount."
+            )
+
         return self
 
 
@@ -3774,6 +3793,8 @@ class InternalTransferCreateRequest(BaseModel):
     instrument_id: str | None = None
     quantity: Decimal | None = Field(default=None, ge=0, lt=Decimal("1e16"))
     gross_amount: Decimal | None = Field(default=None, ge=0, lt=Decimal("1e20"))
+    source_system: str | None = Field(default=None, max_length=100)
+    external_reference: str | None = Field(default=None, max_length=200)
     note: str | None = None
 
     @model_validator(mode="after")
@@ -3783,6 +3804,8 @@ class InternalTransferCreateRequest(BaseModel):
             raise ValueError("settlement_date must not be earlier than trade_date.")
         if self.from_account_id == self.to_account_id:
             raise ValueError("Internal transfer requires distinct source and destination accounts.")
+        if self.external_reference is not None and self.source_system is None:
+            raise ValueError("external_reference requires source_system.")
         if self.transfer_object_type == "cash":
             if self.gross_amount is None or self.gross_amount <= 0:
                 raise ValueError("Cash transfer requires positive amount.")
@@ -3794,6 +3817,11 @@ class InternalTransferCreateRequest(BaseModel):
             if self.quantity is None or self.quantity <= 0:
                 raise ValueError("Position transfer requires positive quantity.")
         return self
+
+    @field_validator("source_system", "external_reference", mode="before")
+    @classmethod
+    def normalize_source_identity(cls, value: object) -> object:
+        return _normalize_optional_text(value)
 
     @field_validator("trade_time", mode="before")
     @classmethod

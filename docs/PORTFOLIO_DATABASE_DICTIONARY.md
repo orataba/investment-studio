@@ -1,6 +1,6 @@
 # Portfolio database dictionary
 
-As of 2026-08-18. Verified against SQLAlchemy metadata and migration heads `instrument_registry@20260818_0025` and `portfolio@20260818_0053`.
+As of 2026-08-20. Verified against SQLAlchemy metadata and migration heads `instrument_registry@20260818_0025` and `portfolio@20260820_0054`.
 
 This file is for architecture and integration review. External systems should use the APIs documented in [`TRANSACTION_INTEGRATION.md`](TRANSACTION_INTEGRATION.md), not write these tables directly.
 
@@ -26,7 +26,7 @@ One row per portfolio.
 
 | Columns |
 |---|
-| **PK** `portfolio_id VARCHAR`; `portfolio_name VARCHAR`; `base_currency VARCHAR`; `valuation_timezone VARCHAR`; `valuation_cutoff_policy VARCHAR`; `as_of_date DATE?`; `nav FLOAT?`; `day_change_value FLOAT?`; `day_change_pct FLOAT?`; `securities_count INTEGER`; `sort_order INTEGER`; `default_planning_taxonomy_id VARCHAR?`; `risk_policy_json JSON?` |
+| **PK** `portfolio_id VARCHAR`; `portfolio_name VARCHAR`; `base_currency VARCHAR`; `inception_date DATE`; `valuation_timezone VARCHAR`; `valuation_cutoff_policy VARCHAR`; `as_of_date DATE?`; `nav FLOAT?`; `day_change_value FLOAT?`; `day_change_pct FLOAT?`; `securities_count INTEGER`; `sort_order INTEGER`; `default_planning_taxonomy_id VARCHAR?`; `risk_policy_json JSON?` |
 
 ### `portfolio.account_record`
 
@@ -54,6 +54,8 @@ Important constraints:
 
 - Unique `(portfolio_id, source_system, external_reference)` when a complete source identity is present.
 - `external_reference` requires `source_system`.
+- No transaction may predate its Portfolio `inception_date`; opening balances must use that date for both trade and settlement.
+- A paired internal transfer stores command-level source identity on `transfer_out` only, so the unique source fact survives collapsed export without duplicating the key on `transfer_in`.
 - A transaction may reference a Registry instrument or a Portfolio-local derivative contract, never both. Cash-only facts may reference neither.
 - Derivative facts do not carry relation or event-group fields. Each contract event is recorded independently; `transfer_group_id` is reserved for paired internal transfers.
 - Option lifecycle facts are limited to long/writer expiry or cash settlement. Expiry has zero cash; cash settlement has a positive gross amount whose direction is derived from long versus writer. Physical delivery is normalized into an option cash-settlement fact plus an independent ordinary-security trade.

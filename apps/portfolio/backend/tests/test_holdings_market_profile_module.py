@@ -436,6 +436,32 @@ def test_operational_summary_expiry_boundaries_settlement_net_and_alerts() -> No
     ]
 
 
+def test_negative_settled_cash_is_an_explicit_operational_alert() -> None:
+    result = holdings_market_profile.summarize_holdings_operational_status(
+        [
+            {
+                "line_id": "cash:USD",
+                "holding_kind": "settled_cash",
+                "market_value": -25.0,
+            }
+        ],
+        as_of_date=date(2026, 1, 1),
+    )
+
+    assert result["operational_alerts"] == [
+        {
+            "code": "negative_settled_cash",
+            "severity": "critical",
+            "title": "Negative settled cash",
+            "message": (
+                "1 settled cash line(s) are negative; record the missing funding "
+                "or financing fact."
+            ),
+            "related_line_ids": ["cash:USD"],
+        }
+    ]
+
+
 def test_position_lot_aggregations_golden_contract() -> None:
     lots = [
         {

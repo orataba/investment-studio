@@ -244,7 +244,7 @@ Transactions 是组合事实入口。新增时先选 `Security`、`FCN`、`Optio
 
 - Security：`buy`、`sell`、`dividend`、`dividend_reinvestment`、`return_of_capital`、`fee`、`tax`、`transfer_out`、`transfer_in`、`opening_balance`。买卖需要 Security 账户、instrument、quantity、price、gross amount 和同币种结算现金账户；卖出和转出还会校验可用持仓。
 - FCN：`entry`、`early_exit`、`coupon`、`knock_in_close`、`knock_out_close`、`maturity_close`、`fee`、`tax`、`opening_balance`。所有动作使用 FCN 账户和本地合约；结束结果直接作为 FCN 动作选择，不再填写单独的事件类别。
-- Option：`buy_to_open`、`sell_to_close`、`sell_to_open`、`buy_to_close`、`expire_long`、`cash_settle_long`、`expire_written`、`cash_settle_written`、`fee`、`tax`、`opening_balance`。所有动作使用 Option 账户和本地合约，并明确区分多头与空头方向。
+- Option：`buy_to_open`、`sell_to_close`、`sell_to_open`、`buy_to_close`、`expire_long`、`cash_settle_long`、`expire_written`、`cash_settle_written`、`fee`、`tax`、`opening_balance`。所有动作使用 Option 账户和本地合约，并明确区分多头与空头方向；`Long Option Opening Balance` 只表示多头。
 - Cash & Operations：`deposit`、`withdrawal`、`interest`、`fx_conversion`、`fee`、`tax`、`transfer_out`、`transfer_in`、`opening_balance`。Cash 动作不关联 instrument 或衍生品合约；换汇还需目标现金账户、counter amount 和 fx rate。
 
 FCN 与期权使用 Portfolio 本地合约，不从 Platform instrument 列表中选择一个“衍生品资产”：
@@ -256,13 +256,17 @@ FCN 与期权使用 Portfolio 本地合约，不从 Platform instrument 列表�
 - 一行只记录一个经济事实。若实际发生期权实物交割，按“期权现金结算 + 交割日市场/参考价的独立股票买卖”录入；两者共同还原交割经济结果，但系统不建立关联。FCN 敲入后的资产接收也另录普通证券交易。
 - 合约条款创建后不可修改；录错时应撤销错误交易并创建新的合约身份，不能改写历史条款。
 
-买入、卖出和证券期初持仓以 quantity 与 gross amount 作为份额和成交金额事实，隐含成交价按 `gross amount / quantity / price scale` 计算；输入 price 可以是该隐含价格保留四位小数的展示值。系统接受精确乘积或与隐含价格四位小数一致的价格，但不会用舍入后的 `quantity × price` 反写 gross amount。普通 Registry 证券的 price scale 为 `1`；期权由本地合约 multiplier 决定。卖出、合约关闭和仓位转移会校验可用数量。分红、FCN 利息、费用、税费等若带 entitlement date，日期不能晚于 trade date。settlement date 不能早于 trade date。
+买入、卖出和证券期初持仓以 quantity 与 gross amount 作为份额和成交金额事实，隐含成交价按 `gross amount / quantity / price scale` 计算；输入 price 可以是该隐含价格保留四位小数的展示值。系统接受精确乘积或与隐含价格四位小数一致的价格，但不会用舍入后的 `quantity × price` 反写 gross amount。普通 Registry 证券的 price scale 为 `1`；期权由本地合约 multiplier 决定。卖出、合约关闭和仓位转移会校验可用数量。分红、FCN 利息、费用、税费等若带 entitlement date，日期不能晚于 trade date。settlement date 不能早于 trade date。FCN 的建仓、退出、期初、票息及敲入/敲出必须发生在 issue date 至 maturity date（含）之间，到期事件不得早于 maturity date。
+
+Portfolio 创建时必须确定 inception date。任何交易都不得早于该日期；所有 `opening_balance` 的 trade date 与 settlement date 固定为该日期。已有资产可保留更早的 acquisition date，零成本 opening position 允许 gross amount 为 0；除此之外只有 Option long/writer expiry 允许零 gross amount。运行期新增现金应录为 Deposit，新增持仓应录为实际 Buy 或 Transfer，不能用 opening balance 绕过外部现金流。Cash Fee / Tax 不填写 entitlement date；资产关联费用要求 entitlement date 当日存在 long position 或 written-option obligation。Option 独立 Fee / Tax 是合约级现金费用，不改变 long lot 或 writer obligation。Return of Capital 用 trade date 表示 entitlement/record date、settlement date 表示到账日。
 
 费用应选择可证明的 fee category；来源无法分类时保留 `Unknown`，不要猜测。重复提交会通过 idempotency key 去重；若页面提示记录版本冲突，说明事实已在别处更新，应刷新后重新核对，不能覆盖较新版本。
 
 页面右上角固定为 `Export / Import / Template / Record Transaction` 四个操作。Export 和 Template 都可选 CSV 或 Excel；Export 始终包含组合的全部交易命令，不受当前筛选影响，导出的任一格式都可再次 Import。Excel 文件使用 `Transactions` 工作表。Import 会先显示逐行和整批校验结果，只有全部通过后才能原子写入；CSV 与 Excel 使用同一字段、账户/币种规则、仓位校验和 preview digest。不要把数据库行 ID、内部 transfer legs 或页面筛选结果另做成第二种导入格式。
 
-内部转账用于组合内账户之间移动现金或持仓。现金转账填写金额；持仓转账填写 instrument、quantity，必要时填写 transferred cost basis。内部转账会生成 transfer in/out 配对记录，不应手工分别录入两边。
+内部转账用于组合内账户之间移动现金或持仓。现金转账填写金额；持仓转账填写 instrument、quantity，必要时填写 transferred cost basis。内部转账会生成 transfer in/out 配对记录，不应手工分别录入两边。页面或文件填写的 `source_system + external_reference` 是整笔 Transfer 的来源身份，系统只把它保存在 transfer-out 腿；导出折叠和再次导入仍会保留并查重。
+
+Holdings 若显示 `Negative settled cash` critical alert，表示账本已有负现金但没有明确融资事实。应核对并补录缺失的 Deposit、Transfer 或真实融资记录；当前系统不会自动把负数解释为保证金融资。
 
 删除交易会影响由该交易派生的现金、持仓、成本和绩效。删除内部转账配对时，系统会按 transfer group 处理对应记录。删除前应确认该交易不是后续复盘口径的一部分。
 

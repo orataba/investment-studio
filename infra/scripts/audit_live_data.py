@@ -32,7 +32,7 @@ from portfolio_ops_instrument_core import (  # noqa: E402
 FINAL_FLAT_TABLE_HEADS = {
     "instrument_registry": "20260818_0025",
     "platform": "20260818_0004",
-    "portfolio": "20260818_0053",
+    "portfolio": "20260820_0054",
     "watchlist": "20260818_0042",
 }
 VERSION_TABLES = {
@@ -251,6 +251,7 @@ AUDIT_CHECK_NAMES = (
     "watchlist_saved_view_field_contract",
     "watchlist_taxonomy_history_contract",
     "portfolio_account_category_contract",
+    "portfolio_inception_contract",
     "derivative_registry_boundary",
     "portfolio_derivative_contract_integrity",
     "market_data_invalid_values",
@@ -1297,6 +1298,33 @@ def _run_flat_table_audit(database_url: str) -> list[AuditCheck]:
                         "Every account must be exactly Cash, Security, FCN, or Option; "
                         "holding accounts must map to same-currency Cash, and every "
                         "asset fact must use the matching account category."
+                    ),
+                )
+            )
+            checks.append(
+                _count_check(
+                    cursor,
+                    name="portfolio_inception_contract",
+                    query="""
+                        SELECT count(*)
+                        FROM portfolio.portfolio_record portfolio
+                        LEFT JOIN portfolio.transaction_record transaction
+                          ON transaction.portfolio_id = portfolio.portfolio_id
+                        WHERE portfolio.inception_date IS NULL
+                           OR transaction.trade_date < portfolio.inception_date
+                           OR (
+                                transaction.transaction_type = 'opening_balance'
+                                AND (
+                                    transaction.trade_date <> portfolio.inception_date
+                                    OR transaction.settlement_date
+                                       <> portfolio.inception_date
+                                )
+                              )
+                    """,
+                    detail=(
+                        "Every Portfolio needs an explicit inception date; no transaction "
+                        "may predate it, and opening balances must use it for both trade "
+                        "and settlement dates."
                     ),
                 )
             )

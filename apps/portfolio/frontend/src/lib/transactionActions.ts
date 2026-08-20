@@ -157,7 +157,7 @@ export function transactionActionGroups(
         actions: [
           action('buy_to_open', `Buy to Open ${name}`, 'buy'),
           action('sell_to_open', `Sell to Open ${name}`, 'option_write'),
-          action('opening_balance', 'Option Opening Balance', 'opening_balance'),
+          action('opening_balance', 'Long Option Opening Balance', 'opening_balance'),
         ],
       },
     ]
@@ -211,7 +211,7 @@ export function transactionActionGroups(
       actions: [
         action('fee', 'Option Fee', 'fee'),
         action('tax', 'Option Tax', 'tax'),
-        action('opening_balance', 'Option Opening Balance', 'opening_balance'),
+        action('opening_balance', 'Long Option Opening Balance', 'opening_balance'),
       ],
     },
   ]

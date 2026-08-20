@@ -30,6 +30,7 @@ class PortfolioRecordModel(Base):
     base_currency: Mapped[str] = mapped_column(String, nullable=False)
     valuation_timezone: Mapped[str] = mapped_column(String, nullable=False)
     valuation_cutoff_policy: Mapped[str] = mapped_column(String, nullable=False)
+    inception_date: Mapped[date] = mapped_column(Date, nullable=False)
     as_of_date: Mapped[date | None] = mapped_column(Date)
     nav: Mapped[float | None] = mapped_column(default=0.0)
     day_change_value: Mapped[float | None] = mapped_column(default=0.0)

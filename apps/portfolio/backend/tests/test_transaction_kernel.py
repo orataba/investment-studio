@@ -766,6 +766,19 @@ def test_transaction_fact_can_be_updated_and_deleted(client):
 
 
 def test_deleting_transfer_leg_removes_entire_pair(client):
+    before_inception = client.post(
+        "/api/portfolios/portfolio-ops/transactions/internal-transfer",
+        json={
+            "trade_date": "2026-01-01",
+            "from_account_id": "cash-usd-main",
+            "to_account_id": "cash-usd-reserve",
+            "transfer_object_type": "cash",
+            "gross_amount": 25.0,
+        },
+    )
+    assert before_inception.status_code == 400
+    assert "inception_date 2026-01-02" in before_inception.json()["detail"]
+
     caller_named_group = client.post(
         "/api/portfolios/portfolio-ops/transactions/internal-transfer",
         json={
@@ -778,6 +791,44 @@ def test_deleting_transfer_leg_removes_entire_pair(client):
         },
     )
     assert caller_named_group.status_code == 422
+
+    sourced_transfer = client.post(
+        "/api/portfolios/portfolio-ops/transactions/internal-transfer",
+        headers={"Idempotency-Key": "sourced-transfer-1"},
+        json={
+            "trade_date": "2026-04-15",
+            "from_account_id": "cash-usd-main",
+            "to_account_id": "cash-usd-reserve",
+            "transfer_object_type": "cash",
+            "gross_amount": 25.0,
+            "source_system": "custodian",
+            "external_reference": "DIRECT-TRANSFER-001",
+        },
+    )
+    assert sourced_transfer.status_code == 200
+    sourced_legs = {
+        transaction["transaction_type"]: transaction
+        for transaction in sourced_transfer.json()["transactions"]
+    }
+    assert sourced_legs["transfer_out"]["source_system"] == "custodian"
+    assert sourced_legs["transfer_out"]["external_reference"] == "DIRECT-TRANSFER-001"
+    assert sourced_legs["transfer_in"]["source_system"] is None
+    assert sourced_legs["transfer_in"]["external_reference"] is None
+
+    duplicate_source = client.post(
+        "/api/portfolios/portfolio-ops/transactions/internal-transfer",
+        headers={"Idempotency-Key": "sourced-transfer-2"},
+        json={
+            "trade_date": "2026-04-15",
+            "from_account_id": "cash-usd-main",
+            "to_account_id": "cash-usd-reserve",
+            "transfer_object_type": "cash",
+            "gross_amount": 25.0,
+            "source_system": "custodian",
+            "external_reference": "DIRECT-TRANSFER-001",
+        },
+    )
+    assert duplicate_source.status_code == 409
 
     transfer_response = client.post(
         "/api/portfolios/portfolio-ops/transactions/internal-transfer",
@@ -1275,7 +1326,7 @@ def test_position_transfer_allows_zero_cost_basis_lots(client):
             "institution": "Test Broker",
             "default_settlement_cash_account_id": "cash-usd-main",
             "cost_basis_method": "fifo",
-            "opened_at": "2026-04-01",
+            "opened_at": "2026-01-02",
             "status": "active",
         },
     ).json()
@@ -1288,7 +1339,7 @@ def test_position_transfer_allows_zero_cost_basis_lots(client):
             "institution": "Test Broker",
             "default_settlement_cash_account_id": "cash-usd-main",
             "cost_basis_method": "fifo",
-            "opened_at": "2026-04-01",
+            "opened_at": "2026-01-02",
             "status": "active",
         },
     ).json()
@@ -1297,7 +1348,7 @@ def test_position_transfer_allows_zero_cost_basis_lots(client):
         "/api/portfolios/portfolio-ops/transactions",
         json={
             "transaction_type": "opening_balance",
-            "trade_date": "2026-04-20",
+            "trade_date": "2026-01-02",
             "account_id": source_account["account_id"],
             "instrument_id": "equity-us-abbv",
             "quantity": 10.0,
@@ -1542,7 +1593,7 @@ def test_rejects_inconsistent_opening_balance_and_dividend_reinvestment_amount_c
             "institution": "Test Broker",
             "default_settlement_cash_account_id": "cash-usd-main",
             "cost_basis_method": "fifo",
-            "opened_at": "2026-04-01",
+            "opened_at": "2026-01-02",
             "status": "active",
         },
     ).json()
@@ -1551,7 +1602,7 @@ def test_rejects_inconsistent_opening_balance_and_dividend_reinvestment_amount_c
         "/api/portfolios/portfolio-ops/transactions",
         json={
             "transaction_type": "opening_balance",
-            "trade_date": "2026-04-15",
+            "trade_date": "2026-01-02",
             "account_id": opening_account["account_id"],
             "instrument_id": "equity-us-abbv",
             "quantity": 10.0,
@@ -1599,7 +1650,7 @@ def test_rejects_opening_balance_settlement_account_and_deposit_account_instrume
         "/api/portfolios/portfolio-ops/transactions",
         json={
             "transaction_type": "opening_balance",
-            "trade_date": "2026-04-15",
+            "trade_date": "2026-01-02",
             "account_id": "cash-usd-main",
             "instrument_id": "equity-us-abbv",
             "quantity": 10.0,
@@ -1609,6 +1660,41 @@ def test_rejects_opening_balance_settlement_account_and_deposit_account_instrume
     )
     assert deposit_account_security_opening_balance.status_code == 400
     assert "cash opening balance must not reference an asset" in deposit_account_security_opening_balance.json()["detail"].lower()
+
+
+def test_opening_balance_is_fixed_to_portfolio_inception(client):
+    response = client.post(
+        "/api/portfolios/portfolio-ops/transactions",
+        json={
+            "transaction_type": "opening_balance",
+            "trade_date": "2026-01-03",
+            "settlement_date": "2026-01-03",
+            "account_id": "cash-usd-main",
+            "gross_amount": 1000.0,
+            "currency": "USD",
+        },
+    )
+
+    assert response.status_code == 400
+    assert "inception_date 2026-01-02" in response.json()["detail"]
+
+
+def test_transaction_cannot_predate_portfolio_inception(client):
+    response = client.post(
+        "/api/portfolios/portfolio-ops/transactions",
+        json={
+            "transaction_type": "deposit",
+            "trade_date": "2026-01-01",
+            "account_id": "cash-usd-main",
+            "gross_amount": 1000.0,
+            "currency": "USD",
+        },
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == (
+        "trade_date must not be earlier than portfolio inception_date 2026-01-02."
+    )
 
 
 def test_rejects_deposit_account_fee_with_instrument_reference(client):
@@ -1992,7 +2078,7 @@ def test_rejects_instrument_income_and_expense_without_open_position(client):
         },
     )
     assert dividend_response.status_code == 400
-    assert "requires an account position as of entitlement_date" in dividend_response.json()["detail"]
+    assert "requires an account position or written-option obligation" in dividend_response.json()["detail"]
 
     fee_response = client.post(
         "/api/portfolios/portfolio-ops/transactions",
@@ -2007,7 +2093,7 @@ def test_rejects_instrument_income_and_expense_without_open_position(client):
         },
     )
     assert fee_response.status_code == 400
-    assert "requires an account position as of entitlement_date" in fee_response.json()["detail"]
+    assert "requires an account position or written-option obligation" in fee_response.json()["detail"]
 
 
 def test_rejects_nested_fee_and_tax_fields_on_fee_tax_transactions(client):
@@ -2070,7 +2156,7 @@ def test_rejects_dividend_reinvestment_without_entitled_position(client):
         },
     )
     assert response.status_code == 400
-    assert "requires an account position as of entitlement_date" in response.json()["detail"]
+    assert "requires an account position or written-option obligation" in response.json()["detail"]
 
 
 def test_accepts_entitlement_date_on_dividend_reinvestment(client):
@@ -2465,7 +2551,7 @@ def test_rejects_entitlement_date_on_return_of_capital(client):
         },
     )
     assert response.status_code == 422
-    assert "does not yet support entitlement_date" in response.text
+    assert "uses trade_date as its entitlement date" in response.text
 
 
 def test_ledger_postings_sort_by_trade_time_within_same_day():
@@ -3881,7 +3967,7 @@ def test_security_opening_balance_preserves_acquisition_date_in_position_lots(cl
             "institution": "Test Broker",
             "default_settlement_cash_account_id": "cash-usd-main",
             "cost_basis_method": "fifo",
-            "opened_at": "2026-04-01",
+            "opened_at": "2026-01-02",
             "status": "active",
         },
     ).json()
@@ -3890,8 +3976,8 @@ def test_security_opening_balance_preserves_acquisition_date_in_position_lots(cl
         "/api/portfolios/portfolio-ops/transactions",
         json={
             "transaction_type": "opening_balance",
-            "trade_date": "2026-04-10",
-            "settlement_date": "2026-04-10",
+            "trade_date": "2026-01-02",
+            "settlement_date": "2026-01-02",
             "account_id": account["account_id"],
             "instrument_id": "equity-us-abbv",
             "quantity": 100.0,
@@ -3919,6 +4005,6 @@ def test_security_opening_balance_preserves_acquisition_date_in_position_lots(cl
     assert payload["summary"]["position_lot_count"] == 1
 
     lot = payload["position_lots"][0]
-    assert lot["opened_at"] == "2026-04-10"
+    assert lot["opened_at"] == "2026-01-02"
     assert lot["acquisition_date"] == "2025-03-01"
     assert lot["holding_period_days"] == (date(2026, 4, 15) - date(2025, 3, 1)).days

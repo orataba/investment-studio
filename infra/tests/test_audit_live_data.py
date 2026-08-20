@@ -46,7 +46,7 @@ def test_flat_table_profile_accepts_only_final_heads(
     expected_heads = {
         "instrument_registry": "20260818_0025",
         "platform": "20260818_0004",
-        "portfolio": "20260818_0053",
+        "portfolio": "20260820_0054",
         "watchlist": "20260818_0042",
     }
     monkeypatch.setattr(
@@ -81,7 +81,7 @@ def test_flat_table_profile_accepts_only_final_heads(
 def test_audit_contract_names_cover_registry_0019(
     audit_module: ModuleType,
 ) -> None:
-    assert len(audit_module.AUDIT_CHECK_NAMES) == 40
+    assert len(audit_module.AUDIT_CHECK_NAMES) == 41
     assert "schema_identifier_contract" in audit_module.AUDIT_CHECK_NAMES
     assert (
         "instrument_type_listed_security_identity_contract"
@@ -96,6 +96,7 @@ def test_audit_contract_names_cover_registry_0019(
     assert "watchlist_saved_view_field_contract" in audit_module.AUDIT_CHECK_NAMES
     assert "watchlist_taxonomy_history_contract" in audit_module.AUDIT_CHECK_NAMES
     assert "portfolio_account_category_contract" in audit_module.AUDIT_CHECK_NAMES
+    assert "portfolio_inception_contract" in audit_module.AUDIT_CHECK_NAMES
     assert "derivative_registry_boundary" in audit_module.AUDIT_CHECK_NAMES
     assert (
         "portfolio_derivative_contract_integrity"

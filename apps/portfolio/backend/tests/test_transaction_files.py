@@ -207,7 +207,7 @@ def test_transaction_xlsx_template_guides_manual_entry_without_importing_example
         (asset_type, action)
         for asset_type, actions in TRANSACTION_ACTIONS.items()
         for action in actions
-    }
+    } - {("cash", "transfer_in"), ("security", "transfer_in")}
     assert {
         "股票｜USD 股票买入",
         "ETF｜HKD ETF 卖出",
@@ -476,3 +476,289 @@ def test_transaction_file_api_rejects_unsupported_extensions(client) -> None:
     assert (
         response.json()["detail"] == "Transaction import files must use .csv or .xlsx."
     )
+
+
+def test_transaction_file_preview_enforces_inception_and_accepts_transfer_identity(client) -> None:
+    early_deposit = client.post(
+        "/api/portfolios/portfolio-ops/transactions/csv/preview",
+        json={
+            "csv_text": (
+                "asset_type,transaction_action,trade_date,account_id,gross_amount,currency\n"
+                "cash,deposit,2026-01-01,cash-usd-main,1000,USD\n"
+            )
+        },
+    )
+    assert early_deposit.status_code == 200
+    assert early_deposit.json()["error_count"] == 1
+    assert "earlier than portfolio inception_date 2026-01-02" in (
+        early_deposit.json()["rows"][0]["errors"][0]
+    )
+
+    late_opening = client.post(
+        "/api/portfolios/portfolio-ops/transactions/csv/preview",
+        json={
+            "csv_text": (
+                "asset_type,transaction_action,trade_date,account_id,gross_amount,currency\n"
+                "cash,opening_balance,2026-01-03,cash-usd-main,1000,USD\n"
+            )
+        },
+    )
+    assert late_opening.status_code == 200
+    assert late_opening.json()["error_count"] == 1
+    assert "inception_date 2026-01-02" in late_opening.json()["rows"][0][
+        "errors"
+    ][0]
+
+    transfer = client.post(
+        "/api/portfolios/portfolio-ops/transactions/csv/preview",
+        json={
+            "csv_text": (
+                "asset_type,transaction_action,trade_date,account_id,"
+                "counterparty_account_id,gross_amount,currency,source_system,"
+                "external_reference\n"
+                "cash,transfer_out,2026-04-01,cash-usd-main,"
+                "cash-usd-reserve,10,USD,custodian,TRANSFER-001\n"
+            )
+        },
+    )
+    assert transfer.status_code == 200
+    assert transfer.json()["error_count"] == 0
+    assert transfer.json()["warnings"] == []
+    transfer_request = transfer.json()["rows"][0]["internal_transfer"]
+    assert transfer_request["source_system"] == "custodian"
+    assert transfer_request["external_reference"] == "TRANSFER-001"
+
+
+def test_transfer_file_source_identity_prevents_replay_across_batches(client) -> None:
+    csv_text = (
+        "asset_type,transaction_action,trade_date,account_id,"
+        "counterparty_account_id,gross_amount,currency,source_system,"
+        "external_reference\n"
+        "cash,transfer_out,2026-04-01,cash-usd-main,cash-usd-reserve,"
+        "10,USD,custodian,TRANSFER-REPLAY-001\n"
+    )
+    preview = client.post(
+        "/api/portfolios/portfolio-ops/transactions/csv/preview",
+        json={"csv_text": csv_text},
+    )
+    assert preview.status_code == 200
+    assert preview.json()["error_count"] == 0
+
+    imported = client.post(
+        "/api/portfolios/portfolio-ops/transactions/csv/import",
+        headers={"Idempotency-Key": "transfer-file-batch-1"},
+        json={
+            "csv_text": csv_text,
+            "preview_digest": preview.json()["preview_digest"],
+        },
+    )
+    assert imported.status_code == 200
+    assert imported.json()["created_count"] == 2
+    transfer_out, transfer_in = sorted(
+        imported.json()["transactions"],
+        key=lambda row: row["transaction_type"],
+        reverse=True,
+    )
+    assert transfer_out["transaction_type"] == "transfer_out"
+    assert transfer_out["source_system"] == "custodian"
+    assert transfer_out["external_reference"] == "TRANSFER-REPLAY-001"
+    assert transfer_in["transaction_type"] == "transfer_in"
+    assert transfer_in["source_system"] is None
+    assert transfer_in["external_reference"] is None
+
+    repeated_preview = client.post(
+        "/api/portfolios/portfolio-ops/transactions/csv/preview",
+        json={"csv_text": csv_text},
+    )
+    assert repeated_preview.status_code == 200
+    assert repeated_preview.json()["error_count"] == 1
+    assert repeated_preview.json()["batch_errors"] == [
+        "Source identities already exist in this portfolio: "
+        "custodian/TRANSFER-REPLAY-001."
+    ]
+
+
+def test_csv_and_xlsx_round_trip_preserve_cross_domain_transaction_semantics() -> None:
+    option_terms = {
+        "underlying_instrument_id": "equity-us-abbv",
+        "option_type": "call",
+        "expiry_date": "2026-12-18",
+        "strike": 220,
+        "contract_multiplier": 100,
+    }
+    records = [
+        {
+            **_deposit_record("cross-domain-cash"),
+            "gross_amount": 1000,
+            "source_gross_amount": "1000.00000000",
+        },
+        {
+            "transaction_sequence": 9002,
+            "transaction_type": "buy",
+            "trade_date": "2026-05-25",
+            "account_id": "broker-us-core",
+            "settlement_cash_account_id": "cash-usd-main",
+            "instrument_id": "equity-us-abbv",
+            "instrument_ref": {
+                "instrument_id": "equity-us-abbv",
+                "instrument_name": "AbbVie Inc",
+                "instrument_type": "equity",
+                "exchange_code": "XNYS",
+                "currency": "USD",
+                "identifiers": [],
+                "broker_identifiers": [],
+            },
+            "quantity": 2,
+            "price": 100,
+            "gross_amount": 200,
+            "fees": 1,
+            "taxes": 0,
+            "fee_category": "transaction_cost",
+            "currency": "USD",
+            "source_system": "transaction_file_test",
+            "external_reference": "cross-domain-security",
+        },
+        {
+            "transaction_sequence": 9003,
+            "transaction_type": "coupon",
+            "trade_date": "2026-05-25",
+            "entitlement_date": "2026-05-24",
+            "account_id": "fcn-us",
+            "settlement_cash_account_id": "cash-usd-main",
+            "derivative_contract_id": "fcn-cross-domain",
+            "derivative_contract": {
+                "contract_name": "Cross-domain FCN",
+                "contract_type": "fcn",
+                "external_reference": "FCN-CROSS-DOMAIN",
+                "terms": {
+                    "notional": 100000,
+                    "annual_coupon_rate_pct": 8,
+                    "issue_date": "2026-01-01",
+                    "final_observation_date": "2026-12-29",
+                    "maturity_date": "2026-12-31",
+                    "issuer": "Test Issuer",
+                    "counterparty": "Test Broker",
+                    "underlyings": [
+                        {
+                            "instrument_id": "equity-us-abbv",
+                            "initial_reference_price": 100,
+                            "deliverable": True,
+                        }
+                    ],
+                },
+            },
+            "gross_amount": 2000,
+            "fees": 0,
+            "taxes": 0,
+            "fee_category": "unknown",
+            "currency": "USD",
+            "source_system": "transaction_file_test",
+            "external_reference": "cross-domain-fcn",
+        },
+        {
+            "transaction_sequence": 9004,
+            "transaction_type": "option_write",
+            "trade_date": "2026-05-25",
+            "account_id": "options-us",
+            "settlement_cash_account_id": "cash-usd-main",
+            "derivative_contract_id": "option-cross-domain",
+            "derivative_contract": {
+                "contract_name": "Cross-domain Call",
+                "contract_type": "option",
+                "external_reference": "OPTION-CROSS-DOMAIN",
+                "terms": option_terms,
+            },
+            "quantity": 1,
+            "price": 5,
+            "gross_amount": 500,
+            "fees": 2,
+            "taxes": 1,
+            "fee_category": "transaction_cost",
+            "currency": "USD",
+            "source_system": "transaction_file_test",
+            "external_reference": "cross-domain-option",
+        },
+        {
+            "transaction_sequence": 9005,
+            "transaction_type": "transfer_out",
+            "trade_date": "2026-05-26",
+            "settlement_date": "2026-05-26",
+            "account_id": "cash-usd-main",
+            "counterparty_account_id": "cash-usd-reserve",
+            "gross_amount": 100,
+            "fees": 0,
+            "taxes": 0,
+            "currency": "USD",
+            "transfer_scope": "internal_portfolio",
+            "transfer_object_type": "cash",
+            "transfer_group_id": "cross-domain-transfer",
+            "source_system": "transaction_file_test",
+            "external_reference": "cross-domain-transfer",
+        },
+        {
+            "transaction_sequence": 9006,
+            "transaction_type": "transfer_in",
+            "trade_date": "2026-05-26",
+            "settlement_date": "2026-05-26",
+            "account_id": "cash-usd-reserve",
+            "counterparty_account_id": "cash-usd-main",
+            "gross_amount": 100,
+            "fees": 0,
+            "taxes": 0,
+            "currency": "USD",
+            "transfer_scope": "internal_portfolio",
+            "transfer_object_type": "cash",
+            "transfer_group_id": "cross-domain-transfer",
+        },
+    ]
+
+    parsed_by_format = []
+    for content in (
+        render_transaction_csv(records),
+        transaction_xlsx_to_csv(render_transaction_xlsx(records)),
+    ):
+        _headers, parsed_rows = parse_transaction_csv(content)
+        assert all(row.errors == () for row in parsed_rows)
+        parsed_by_format.append([
+            (
+                "transaction",
+                row.transaction.transaction_type,
+                row.transaction.instrument_id,
+                row.transaction.derivative_contract_id,
+                row.transaction.external_reference,
+            )
+            if row.transaction is not None
+            else (
+                "transfer",
+                row.internal_transfer.transfer_object_type,
+                row.internal_transfer.from_account_id,
+                row.internal_transfer.to_account_id,
+                float(row.internal_transfer.gross_amount or 0),
+                row.internal_transfer.source_system,
+                row.internal_transfer.external_reference,
+            )
+            for row in parsed_rows
+            if row.transaction is not None or row.internal_transfer is not None
+        ])
+
+    assert parsed_by_format[0] == parsed_by_format[1] == [
+        ("transaction", "deposit", None, None, "cross-domain-cash"),
+        ("transaction", "buy", "equity-us-abbv", None, "cross-domain-security"),
+        ("transaction", "coupon", None, "fcn-cross-domain", "cross-domain-fcn"),
+        (
+            "transaction",
+            "option_write",
+            None,
+            "option-cross-domain",
+            "cross-domain-option",
+        ),
+        (
+            "transfer",
+            "cash",
+            "cash-usd-main",
+            "cash-usd-reserve",
+            100.0,
+            "transaction_file_test",
+            "cross-domain-transfer",
+        ),
+    ]

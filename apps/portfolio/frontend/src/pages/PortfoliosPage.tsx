@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { type FormEvent, useEffect, useRef, useState } from 'react'
 import { Link, useNavigate } from 'react-router'
 
 import {
@@ -26,6 +26,21 @@ function formatAsOfDate(value: string | null | undefined) {
   return `${year}-${month}-${day}`
 }
 
+function localTodayIso() {
+  const now = new Date()
+  return new Date(now.getTime() - now.getTimezoneOffset() * 60_000)
+    .toISOString()
+    .slice(0, 10)
+}
+
+function isValidIsoDate(value: string) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+    return false
+  }
+  const parsed = new Date(`${value}T00:00:00Z`)
+  return !Number.isNaN(parsed.getTime()) && parsed.toISOString().slice(0, 10) === value
+}
+
 export default function PortfoliosPage() {
   const navigate = useNavigate()
   const [portfolios, setPortfolios] = useState<PortfolioEntryRecord[]>([])
@@ -37,6 +52,12 @@ export default function PortfoliosPage() {
   const [pendingDelete, setPendingDelete] = useState<PortfolioEntryRecord | null>(null)
   const [deleting, setDeleting] = useState(false)
   const [deleteError, setDeleteError] = useState<string | null>(null)
+  const [createOpen, setCreateOpen] = useState(false)
+  const [createName, setCreateName] = useState('')
+  const [createBaseCurrency, setCreateBaseCurrency] = useState<'USD' | 'HKD' | 'CNY'>('CNY')
+  const [createInceptionDate, setCreateInceptionDate] = useState(localTodayIso)
+  const [creating, setCreating] = useState(false)
+  const [createError, setCreateError] = useState<string | null>(null)
   const menuRef = useRef<HTMLDivElement | null>(null)
 
   useEffect(() => {
@@ -166,31 +187,49 @@ export default function PortfoliosPage() {
     movePortfolio(portfolioId, target.portfolio_id)
   }
 
-  async function handleCreatePortfolio() {
-    const proposedName = window.prompt('Portfolio name')
-    const name = proposedName?.trim()
+  function openCreatePortfolio() {
+    setCreateName('')
+    setCreateBaseCurrency('CNY')
+    setCreateInceptionDate(localTodayIso())
+    setCreateError(null)
+    setCreateOpen(true)
+  }
+
+  async function handleCreatePortfolio(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    if (creating) {
+      return
+    }
+    const name = createName.trim()
     if (!name) {
+      setCreateError('Enter a portfolio name.')
+      return
+    }
+    const inceptionDate = createInceptionDate.trim()
+    if (!isValidIsoDate(inceptionDate)) {
+      setCreateError('Enter a valid portfolio inception date.')
       return
     }
 
-    const proposedBaseCurrency = window.prompt('Base currency (USD, HKD, or CNY)', 'CNY')
-    const baseCurrency = proposedBaseCurrency?.trim().toUpperCase()
-    if (baseCurrency !== 'USD' && baseCurrency !== 'HKD' && baseCurrency !== 'CNY') {
-      setNotice('Base currency must be USD, HKD, or CNY.')
-      return
-    }
-
+    setCreating(true)
+    setCreateError(null)
     try {
-      const created = await createPortfolio({ name, base_currency: baseCurrency })
+      const created = await createPortfolio({
+        name,
+        base_currency: createBaseCurrency,
+        inception_date: inceptionDate,
+      })
       setPortfolios((current) => [...current, created])
-      setNotice(`Created portfolio "${created.portfolio_name}".`)
+      setCreateOpen(false)
       navigate(buildPortfolioSectionPath(created.portfolio_id, '/overview'))
     } catch (requestError) {
-      setNotice(
+      setCreateError(
         requestError instanceof Error
           ? requestError.message
           : 'Failed to create portfolio.',
       )
+    } finally {
+      setCreating(false)
     }
   }
 
@@ -322,7 +361,7 @@ export default function PortfoliosPage() {
               <div className="portfolio-entry-card-title-stack">
                 <strong>{portfolio.portfolio_name}</strong>
                 <span>
-                  {portfolio.securities_count} Securities | As of {formatAsOfDate(portfolio.as_of_date)}
+                  {portfolio.securities_count} Securities | Started {formatAsOfDate(portfolio.inception_date)} | As of {formatAsOfDate(portfolio.as_of_date)}
                 </span>
               </div>
               <div className="portfolio-entry-card-metrics">
@@ -341,14 +380,91 @@ export default function PortfoliosPage() {
           <button
             type="button"
             className="workspace-create-link"
-            onClick={() => {
-              void handleCreatePortfolio()
-            }}
+            onClick={openCreatePortfolio}
           >
             + Create Portfolio
           </button>
         </div>
       </section>
+      {createOpen ? (
+        <div className="portfolio-settings-modal-backdrop">
+          <section
+            className="portfolio-settings-modal portfolio-create-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="create-portfolio-title"
+          >
+            <header className="portfolio-settings-modal-header">
+              <h2 id="create-portfolio-title">Create Portfolio</h2>
+              <button
+                type="button"
+                aria-label="Close create portfolio"
+                disabled={creating}
+                onClick={() => setCreateOpen(false)}
+              >
+                Close
+              </button>
+            </header>
+            <form className="portfolio-settings-form" onSubmit={handleCreatePortfolio}>
+              {createError ? (
+                <div className="portfolio-settings-notice error-state" role="alert">
+                  {createError}
+                </div>
+              ) : null}
+              <div className="portfolio-settings-grid portfolio-create-grid">
+                <label htmlFor="create-portfolio-name">
+                  <span>Portfolio Name</span>
+                  <input
+                    id="create-portfolio-name"
+                    autoFocus
+                    required
+                    value={createName}
+                    onChange={(event) => setCreateName(event.target.value)}
+                  />
+                </label>
+                <label htmlFor="create-portfolio-currency">
+                  <span>Base Currency</span>
+                  <select
+                    id="create-portfolio-currency"
+                    value={createBaseCurrency}
+                    onChange={(event) =>
+                      setCreateBaseCurrency(event.target.value as 'USD' | 'HKD' | 'CNY')
+                    }
+                  >
+                    <option value="CNY">CNY</option>
+                    <option value="USD">USD</option>
+                    <option value="HKD">HKD</option>
+                  </select>
+                </label>
+                <label htmlFor="create-portfolio-inception-date">
+                  <span>Inception Date</span>
+                  <input
+                    id="create-portfolio-inception-date"
+                    type="date"
+                    required
+                    max={localTodayIso()}
+                    value={createInceptionDate}
+                    onChange={(event) => setCreateInceptionDate(event.target.value)}
+                  />
+                  <small>Opening balances, if any, must use this date.</small>
+                </label>
+              </div>
+              <footer className="portfolio-settings-modal-actions">
+                <button
+                  type="button"
+                  disabled={creating}
+                  onClick={() => setCreateOpen(false)}
+                >
+                  Cancel
+                </button>
+                <button type="submit" disabled={creating}>
+                  {creating ? 'Creating…' : 'Create Portfolio'}
+                </button>
+              </footer>
+            </form>
+          </section>
+        </div>
+      ) : null}
       <ConfirmDialog
         open={Boolean(pendingDelete)}
         title="Delete Portfolio"

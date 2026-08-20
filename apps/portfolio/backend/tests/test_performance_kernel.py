@@ -38,6 +38,20 @@ def _write_store(store: dict[str, object]) -> None:
             if not isinstance(transaction, dict):
                 raise TypeError("Performance store transactions must be mappings.")
             transaction["transaction_sequence"] = transaction_sequence
+    portfolios = store.get("portfolios")
+    if isinstance(portfolios, list) and isinstance(transactions, list):
+        for portfolio in portfolios:
+            if not isinstance(portfolio, dict) or portfolio.get("inception_date"):
+                continue
+            portfolio_id = str(portfolio.get("portfolio_id") or "")
+            portfolio_dates = [
+                str(transaction["trade_date"])
+                for transaction in transactions
+                if transaction.get("portfolio_id") == portfolio_id
+            ]
+            if not portfolio_dates:
+                raise TypeError("Performance test portfolios require an inception date.")
+            portfolio["inception_date"] = min(portfolio_dates)
     portfolio_store.reset_store(store)
 
 
@@ -476,6 +490,9 @@ def _minimal_store(
                 "base_currency": "USD",
                 "valuation_timezone": "Asia/Shanghai",
                 "valuation_cutoff_policy": "latest_complete_eod",
+                "inception_date": min(
+                    str(item["trade_date"]) for item in transactions
+                ),
                 "as_of_date": max(str(item["trade_date"]) for item in transactions),
                 "nav": 0.0,
                 "day_change_value": 0.0,
@@ -524,6 +541,9 @@ def test_seed_portfolio_performance_uses_external_boundary_flows(client):
 
     by_date = {item["as_of_date"]: item for item in snapshots_payload["snapshots"]}
     assert by_date["2026-02-03"]["external_cash_in"] == 50000.0
+    assert by_date["2026-02-20"]["external_cash_in"] == pytest.approx(
+        120000.0 / 7.8
+    )
     assert by_date["2026-04-08"]["external_cash_in"] == 0.0
     assert by_date["2026-04-08"]["external_cash_out"] == 0.0
     assert by_date["2026-04-11"]["external_cash_out"] == 12000.0
@@ -543,9 +563,11 @@ def test_seed_portfolio_performance_uses_external_boundary_flows(client):
         "ordinary sleeve TWR is not derived by filtering total portfolio TWR."
     )
     assert summary["derivative_lifecycle_realized_pnl"] == pytest.approx(0.0)
-    assert summary["external_cash_in"] == 50000.0
+    assert summary["external_cash_in"] == pytest.approx(50000.0 + 120000.0 / 7.8)
     assert summary["external_cash_out"] == 12000.0
-    assert summary["net_external_inflow"] == 38000.0
+    assert summary["net_external_inflow"] == pytest.approx(
+        38000.0 + 120000.0 / 7.8
+    )
     assert summary["cumulative_twr"] is not None
     assert summary["annualization_eligible"] is False
     assert summary["annualization_unavailable_reason"] == SHORT_PERIOD_REASON

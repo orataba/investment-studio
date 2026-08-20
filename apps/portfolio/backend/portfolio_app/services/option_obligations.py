@@ -387,6 +387,43 @@ def open_option_obligations(
     ]
 
 
+def estimate_option_obligation_quantity_at_entitlement(
+    transactions: Iterable[dict[str, object]],
+    *,
+    account_id: str,
+    derivative_contract_id: str,
+    entitlement_date: date,
+    exclude_transaction_id: str | None = None,
+) -> float:
+    """Return the writer quantity owned at entitlement-date beginning of day."""
+
+    prior_transactions = [
+        transaction
+        for transaction in transactions
+        if (
+            exclude_transaction_id is None
+            or str(transaction.get("transaction_id") or "")
+            != exclude_transaction_id
+        )
+        and (
+            effective_date := transaction_performance_effective_date(transaction)
+        )
+        is not None
+        and effective_date < entitlement_date
+    ]
+
+    return sum(
+        _float(row.get("remaining_quantity"))
+        for row in open_option_obligations(
+            prior_transactions,
+            as_of_date=entitlement_date,
+        )
+        if str(row.get("account_id") or "") == account_id
+        and str(row.get("derivative_contract_id") or "")
+        == derivative_contract_id
+    )
+
+
 def summarize_option_obligations(rows: Iterable[dict[str, object]]) -> dict[str, object]:
     items = list(rows)
     return {
@@ -419,6 +456,7 @@ def summarize_option_obligations(rows: Iterable[dict[str, object]]) -> dict[str,
 __all__ = [
     "build_option_obligations",
     "derive_option_obligation_events",
+    "estimate_option_obligation_quantity_at_entitlement",
     "open_option_obligations",
     "option_contract_identity",
     "summarize_option_obligations",

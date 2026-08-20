@@ -407,15 +407,15 @@ def _resolve_snapshot_window(
     if not transaction_dates and portfolio_as_of is None:
         return None
 
-    inception_date = min(transaction_dates) if transaction_dates else None
-    resolved_start = start_date or inception_date or portfolio_as_of
+    funded_start_date = min(transaction_dates) if transaction_dates else None
+    resolved_start = start_date or funded_start_date or portfolio_as_of
     if (
         start_date is not None
-        and inception_date is not None
+        and funded_start_date is not None
         and resolved_start is not None
-        and resolved_start < inception_date
+        and resolved_start < funded_start_date
     ):
-        resolved_start = inception_date
+        resolved_start = funded_start_date
     resolved_end = end_date or portfolio_as_of or (max(transaction_dates) if transaction_dates else None)
     if portfolio_as_of is not None and resolved_end is not None and resolved_end > portfolio_as_of:
         resolved_end = portfolio_as_of
@@ -575,8 +575,8 @@ def _starts_on_imported_valuation_anchor(
             effective_transactions.append((effective_date, transaction))
     if not effective_transactions:
         return False
-    inception_date = min(item[0] for item in effective_transactions)
-    if inception_date != resolved_start_date:
+    funded_start_date = min(item[0] for item in effective_transactions)
+    if funded_start_date != resolved_start_date:
         return False
     return any(
         effective_date == resolved_start_date
@@ -614,7 +614,7 @@ def _requested_start_is_close_boundary(
 
     if requested_start_date is None:
         return False
-    inception_date = min(
+    funded_start_date = min(
         (
             effective_date
             for transaction in transactions
@@ -627,7 +627,7 @@ def _requested_start_is_close_boundary(
         ),
         default=None,
     )
-    return inception_date is None or requested_start_date > inception_date
+    return funded_start_date is None or requested_start_date > funded_start_date
 
 
 def _snapshot_starts_funded_segment(
@@ -3087,7 +3087,7 @@ def build_daily_portfolio_snapshots(
     return snapshots
 
 
-def _portfolio_inception_date(
+def _funded_performance_start_date(
     transactions: list[dict[str, object]],
     snapshots: list[dict[str, object]],
 ) -> date | None:
@@ -3298,7 +3298,7 @@ def build_portfolio_performance_report_from_snapshots(
     source_snapshots.sort(
         key=lambda item: cast(date, item["as_of_date"])
     )
-    inception_date = _portfolio_inception_date(
+    funded_start_date = _funded_performance_start_date(
         transactions or [],
         source_snapshots,
     )
@@ -3372,7 +3372,7 @@ def build_portfolio_performance_report_from_snapshots(
         visible_snapshots,
         requested_start_date=start_date,
         effective_end_date=cast(date | None, snapshot_window["effective_end_date"]),
-        inception_date=inception_date,
+        funded_start_date=funded_start_date,
         start_is_close_boundary=start_is_close_boundary,
         start_is_funded_segment=start_is_funded_segment,
     )
@@ -3433,10 +3433,10 @@ def build_portfolio_performance_report_from_snapshots(
     )
     start_anchor_date = start_snapshot.get("as_of_date") if isinstance((start_snapshot or {}).get("as_of_date"), date) else None
     end_anchor_date = end_snapshot.get("as_of_date") if isinstance((end_snapshot or {}).get("as_of_date"), date) else None
-    portfolio_inception_window = bool(
+    funded_inception_window = bool(
         funded_segment_window
         and start_anchor_date is not None
-        and start_anchor_date == inception_date
+        and start_anchor_date == funded_start_date
     )
     starts_on_imported_anchor = bool(
         start_anchor_date is not None
@@ -3473,7 +3473,7 @@ def build_portfolio_performance_report_from_snapshots(
             return None
         if start_snapshot is None:
             return end_value
-        if portfolio_inception_window:
+        if funded_inception_window:
             return end_value
         period_baseline_snapshot = (
             predecessor_snapshot
@@ -3702,7 +3702,7 @@ def build_portfolio_performance_report_from_snapshots(
 
     total_pnl_baseline_snapshot = (
         None
-        if portfolio_inception_window
+        if funded_inception_window
         else (
             predecessor_snapshot
             if funded_segment_window
@@ -3720,7 +3720,7 @@ def build_portfolio_performance_report_from_snapshots(
         snapshot_total_pnl = _safe_float(snapshot.get("total_pnl"))
         if snapshot_total_pnl is None:
             return None
-        if portfolio_inception_window:
+        if funded_inception_window:
             return snapshot_total_pnl
         if start_total_pnl is None:
             return None
@@ -3732,7 +3732,7 @@ def build_portfolio_performance_report_from_snapshots(
         snapshot_value = _safe_float(snapshot.get("risk_scope_excluded_pnl"))
         if snapshot_value is None:
             return None
-        if portfolio_inception_window:
+        if funded_inception_window:
             return snapshot_value
         if start_risk_scope_excluded_pnl is None:
             return None

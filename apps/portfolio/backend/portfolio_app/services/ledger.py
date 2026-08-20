@@ -31,6 +31,7 @@ from portfolio_app.services.option_actions import resolve_option_action
 from portfolio_app.services.option_obligations import (
     build_option_obligations,
     derive_option_obligation_events,
+    estimate_option_obligation_quantity_at_entitlement,
     option_contract_identity,
 )
 
@@ -180,18 +181,34 @@ def validate_derivative_contract_event(transaction: dict[str, object]) -> None:
                 raise ValueError("Long option expiry must not carry cash amounts.")
         return
 
-    if contract_type != "fcn" or transaction_type != "maturity_redemption":
-        return
-    if lifecycle_event_type not in {"", "fcn_maturity"}:
+    if contract_type != "fcn":
         return
     terms = derivative_contract.get("terms")
+    issue_date = _parse_iso_date(
+        terms.get("issue_date") if isinstance(terms, dict) else None
+    )
     maturity_date = _parse_iso_date(
         terms.get("maturity_date") if isinstance(terms, dict) else None
     )
-    if maturity_date is None or event_date is None:
-        raise ValueError("FCN event and contract maturity dates are required.")
-    if event_date < maturity_date:
-        raise ValueError("FCN maturity event must not precede contract maturity.")
+    if issue_date is None or maturity_date is None or event_date is None:
+        raise ValueError("FCN event, issue, and maturity dates are required.")
+
+    if (
+        transaction_type == "maturity_redemption"
+        and lifecycle_event_type in {"", "fcn_maturity"}
+    ):
+        if event_date < maturity_date:
+            raise ValueError("FCN maturity event must not precede contract maturity.")
+        return
+
+    bounded_event = (
+        transaction_type in {"buy", "sell", "opening_balance", "coupon"}
+        or lifecycle_event_type in {"fcn_knock_in", "fcn_knock_out"}
+    )
+    if bounded_event and not issue_date <= event_date <= maturity_date:
+        raise ValueError(
+            "FCN transaction date must fall between contract issue and maturity."
+        )
 
 
 def _resolve_pricing_quote_map(
@@ -1838,9 +1855,26 @@ def validate_transaction_position_history(
             corporate_actions=corporate_actions,
             as_of_date=entitlement_date,
         )
+        derivative_contract = _derivative_contract(transaction)
+        if (
+            available_quantity <= 1e-9
+            and isinstance(derivative_contract, dict)
+            and str(derivative_contract.get("contract_type") or "").lower()
+            == "option"
+        ):
+            available_quantity = estimate_option_obligation_quantity_at_entitlement(
+                ordered_transactions,
+                account_id=str(transaction.get("account_id") or ""),
+                derivative_contract_id=str(
+                    transaction.get("derivative_contract_id") or ""
+                ),
+                entitlement_date=entitlement_date,
+                exclude_transaction_id=transaction_id,
+            )
         if available_quantity <= 1e-9:
             raise ValueError(
-                "Instrument-linked income and expense requires account position as of entitlement_date."
+                "Asset-linked income and expense requires an account position or "
+                "written-option obligation as of entitlement_date."
             )
 
 
@@ -2770,6 +2804,16 @@ def build_position_lots(
         if transaction_type in {"fee", "tax"} and resolved_position_reference_id:
             if entitlement_date is None:
                 raise ValueError("Instrument-linked expense requires entitlement_date.")
+            derivative_contract = _derivative_contract(transaction)
+            if (
+                isinstance(derivative_contract, dict)
+                and str(derivative_contract.get("contract_type") or "").lower()
+                == "option"
+            ):
+                # A standalone option fee/tax is a contract-level cash expense.
+                # It is not part of a long lot's basis and does not rewrite a
+                # writer obligation; cash and performance already recognize it.
+                continue
             allocate_snapshot_cash_flow(
                 transaction_index=transaction_index,
                 target_account_id=account_key,

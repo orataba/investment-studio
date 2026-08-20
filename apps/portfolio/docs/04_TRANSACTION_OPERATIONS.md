@@ -133,13 +133,15 @@ Import 预览的后端校验为准。
 FCN 在到期前退出选择 `early_exit`。Option 实物行权/指派先选择 Option 的多头或空头现金结算
 动作，再按交付日市场或参考价独立记录标的证券买入/卖出。FCN
 敲入交付同理，FCN 结束行与证券 `buy` 行是两个独立事实。模板不含 Portfolio 资料，也不提供
-关联或配对 ID。`opening_balance` 可用于已有 Option 多头；已有空头应按实际开仓日期、数量和
+关联或配对 ID。`opening_balance` 的 trade date 和 settlement date 必须等于 Portfolio inception date，可用于该边界已有的 Option 多头；已有空头应按实际开仓日期、数量和
 权利金补录 `sell_to_open`，不能用正数量期初余额代替。
 
 `transfer_group_id` 只表示同一笔内部转账或转仓生成的 `transfer_out / transfer_in` 双腿，
 不用于绑定 Option、FCN、股票交割或其他经济上相关的交易，也不出现在 CSV。导出时一组双腿
 折叠成一行 Security 或 Cash 的 `transfer_out` 动作，`account_id` 为转出账户、
-`counterparty_account_id` 为转入账户；也可按相反视角填写 `transfer_in`。回导时系统重新原子生成双腿。
+`counterparty_account_id` 为转入账户。手工文件也只填写一个方向；回导时系统重新原子生成双腿。Transfer 可填写 `source_system + external_reference`；系统把这组 command-level 来源身份保存在 `transfer_out` 腿，导出折叠后仍可原样回导并跨批次识别重复。
+
+Cash Fee / Tax 不关联资产，因此不填写 entitlement date；Security、FCN、Option 关联费用可填写 entitlement date，未填时按 trade date 校验当日的 long position 或 written-option obligation。Option 的独立 Fee / Tax 是合约级现金费用：进入现金、NAV 与 Performance，但不改写 long lot cost basis 或 writer obligation。Return of Capital 用 `trade_date` 表示 entitlement/record date，用 `settlement_date` 表示实际到账日，不再重复填写 `entitlement_date`。负的 settled cash 会在 Holdings 作为 critical operational alert 显示；应补录缺失的资金或融资事实，系统不会静默把它解释为融资。
 
 批量导入证券时使用 Registry `instrument_id`；Option / FCN 使用 Portfolio-local
 `derivative_contract_id`。新衍生品合约的不可变条款写在首次交易行，后续行只保留 contract

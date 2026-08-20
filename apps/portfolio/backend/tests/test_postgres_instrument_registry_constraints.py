@@ -70,8 +70,8 @@ def postgres_portfolio_env(monkeypatch: pytest.MonkeyPatch) -> dict[str, str]:
         with admin_engine.connect() as connection:
             connection.execute(text("SELECT 1"))
             connection.execute(text(f'CREATE DATABASE "{database_name}"'))
-    except Exception as exc:  # pragma: no cover - environment-dependent skip
-        pytest.skip(f"PostgreSQL is not available for integration test: {exc}")
+    except Exception as exc:  # pragma: no cover - depends on configured service
+        pytest.fail(f"Configured PostgreSQL integration target is unavailable: {exc}")
     finally:
         admin_engine.dispose()
 
@@ -188,6 +188,7 @@ def test_transaction_record_instrument_registry_fk_is_enforced(
                 base_currency="USD",
                 valuation_timezone="UTC",
                 valuation_cutoff_policy="close",
+                inception_date=date(2026, 1, 1),
             )
         )
         session.add(

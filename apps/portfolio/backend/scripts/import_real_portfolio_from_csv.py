@@ -286,6 +286,7 @@ def main() -> None:
             base_currency="CNY",
             valuation_timezone="Asia/Shanghai",
             valuation_cutoff_policy="latest_complete_eod",
+            inception_date=min(row.trade_date for row in rows),
             as_of_date=args.valuation_date,
             nav=0.0,
             day_change_value=0.0,

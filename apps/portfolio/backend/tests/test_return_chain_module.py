@@ -143,7 +143,7 @@ def test_period_coverage_requires_a_complete_start_boundary() -> None:
     kwargs = {
         "requested_start_date": date(2026, 1, 1),
         "effective_end_date": date(2026, 1, 2),
-        "inception_date": date(2025, 12, 31),
+        "funded_start_date": date(2025, 12, 31),
         "start_is_close_boundary": True,
     }
 
@@ -160,7 +160,7 @@ def test_period_coverage_requires_a_complete_start_boundary() -> None:
     assert extracted_missing == "partial"
 
 
-def test_period_coverage_clamps_a_pre_inception_request_to_inception() -> None:
+def test_period_coverage_clamps_a_prefunding_request_to_funded_start() -> None:
     visible = [
         _snapshot(date(2026, 1, 5), nav=100.0, daily_twr=0.0),
         _snapshot(date(2026, 1, 6), nav=101.0, daily_twr=0.01),
@@ -172,7 +172,7 @@ def test_period_coverage_clamps_a_pre_inception_request_to_inception() -> None:
         visible,
         requested_start_date=date(2026, 1, 1),
         effective_end_date=date(2026, 1, 7),
-        inception_date=date(2026, 1, 5),
+        funded_start_date=date(2026, 1, 5),
     )
 
     assert extracted == "complete"
@@ -195,7 +195,7 @@ def test_initial_valuation_anchor_starts_rebased_twr_without_a_synthetic_return(
         snapshots,
         requested_start_date=None,
         effective_end_date=date(2026, 1, 3),
-        inception_date=date(2026, 1, 1),
+        funded_start_date=date(2026, 1, 1),
     )
     extracted_series = _return_projection(return_chain.rebased_twr_series(snapshots))
 

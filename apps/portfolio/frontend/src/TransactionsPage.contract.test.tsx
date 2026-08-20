@@ -361,6 +361,7 @@ describe('Transactions rendered page contract', () => {
     )
     apiMocks.getPortfolioTransactionsWorkspace.mockResolvedValue({
       portfolio_id: '3',
+      portfolio_inception_date: '2026-01-02',
       summary: {
         total_transactions: 1,
         security_transactions: 1,
@@ -411,6 +412,7 @@ describe('Transactions rendered page contract', () => {
         realized_pnl: 0,
       },
       related_position_lots: [],
+      related_option_obligations: [],
       change_log_summary: {
         change_count: 1,
       },
@@ -758,6 +760,107 @@ describe('Transactions rendered page contract', () => {
     expect(
       within(existingContractAction).queryByRole('option', { name: 'Deposit' }),
     ).not.toBeInTheDocument()
+  })
+
+  it('records cash fees without an asset entitlement date', async () => {
+    apiMocks.createPortfolioTransaction.mockResolvedValue({
+      ...selectedTransaction,
+      transaction_id: 'txn-cash-fee',
+      transaction_type: 'fee',
+      asset_domain: 'cash',
+      asset_subtype: null,
+      account: cashAccount,
+      settlement_cash_account: null,
+      instrument_id: null,
+      instrument_ref: null,
+      gross_amount: 10,
+      entitlement_date: null,
+    })
+    const user = userEvent.setup()
+    renderPortfolioPage(
+      <TransactionsPage />,
+      '/portfolios/3/transactions',
+      '/portfolios/:portfolioId/transactions',
+    )
+
+    await user.click(await screen.findByRole('button', { name: 'Record Transaction' }))
+    const dialog = screen.getByRole('dialog', { name: 'Record transaction' })
+    await user.click(
+      within(dialog).getByRole('button', { name: /^Cash & Operations/ }),
+    )
+    await user.selectOptions(within(dialog).getByRole('combobox', { name: 'Action' }), 'fee')
+
+    expect(within(dialog).queryByLabelText('Entitlement Date')).not.toBeInTheDocument()
+    await user.type(within(dialog).getByRole('spinbutton', { name: 'Amount' }), '10')
+    await user.click(within(dialog).getByRole('button', { name: 'Record Transaction' }))
+
+    await waitFor(() =>
+      expect(apiMocks.createPortfolioTransaction).toHaveBeenCalledWith(
+        '3',
+        expect.objectContaining({
+          transaction_type: 'fee',
+          account_id: cashAccount.account_id,
+          instrument_id: null,
+          derivative_contract_id: null,
+          entitlement_date: null,
+          gross_amount: 10,
+        }),
+        expect.stringMatching(/^transaction-create-/),
+      ),
+    )
+  })
+
+  it('accepts a zero-cost security opening only on portfolio inception', async () => {
+    apiMocks.createPortfolioTransaction.mockResolvedValue({
+      ...selectedTransaction,
+      transaction_id: 'txn-zero-opening',
+      transaction_type: 'opening_balance',
+      trade_date: '2026-01-02',
+      settlement_date: '2026-01-02',
+      gross_amount: 0,
+      quantity: 1,
+    })
+    const user = userEvent.setup()
+    renderPortfolioPage(
+      <TransactionsPage />,
+      '/portfolios/3/transactions',
+      '/portfolios/:portfolioId/transactions',
+    )
+
+    await user.click(await screen.findByRole('button', { name: 'Record Transaction' }))
+    const dialog = screen.getByRole('dialog', { name: 'Record transaction' })
+    await user.selectOptions(
+      within(dialog).getByRole('combobox', { name: 'Action' }),
+      'opening_balance',
+    )
+    expect(
+      within(dialog).getByText('Opening balances are fixed to portfolio inception 2026-01-02.'),
+    ).toBeInTheDocument()
+    expect(within(dialog).getByLabelText('Trade Date')).toBeDisabled()
+    expect(within(dialog).getByLabelText('Settlement Date')).toBeDisabled()
+
+    const securitySearch = within(dialog).getByRole('searchbox', { name: 'Security' })
+    await user.type(securitySearch, 'GETF')
+    await user.click(
+      await within(dialog).findByRole('button', { name: /GETF.*Global Equity ETF.*USD/ }),
+    )
+    await user.type(within(dialog).getByRole('spinbutton', { name: /^Shares/ }), '1')
+    await user.click(within(dialog).getByRole('button', { name: 'Record Transaction' }))
+
+    await waitFor(() =>
+      expect(apiMocks.createPortfolioTransaction).toHaveBeenCalledWith(
+        '3',
+        expect.objectContaining({
+          transaction_type: 'opening_balance',
+          trade_date: '2026-01-02',
+          settlement_date: '2026-01-02',
+          instrument_id: 'etf-1',
+          quantity: 1,
+          gross_amount: 0,
+        }),
+        expect.stringMatching(/^transaction-create-/),
+      ),
+    )
   })
 
   it('carries the selected fact row version into a destructive delete', async () => {

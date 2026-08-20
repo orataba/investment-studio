@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import date
 import os
 from pathlib import Path
 from uuid import uuid4
@@ -18,7 +19,7 @@ pytestmark = pytest.mark.postgresql_integration
 
 RECONCILIATION_REVISION = "20260715_0032r"
 RECONCILIATION_PARENT = "20260711_0032"
-CURRENT_HEAD_REVISION = "20260818_0053"
+CURRENT_HEAD_REVISION = "20260820_0054"
 LEGACY_FOREIGN_KEY = "fk_transaction_record_asset_id_instrument"
 CURRENT_FOREIGN_KEY = "fk_transaction_record_instrument_id_instrument"
 
@@ -62,8 +63,8 @@ def postgres_reconciliation_database(
         with admin_engine.connect() as connection:
             connection.execute(sa.text("SELECT 1"))
             connection.execute(sa.text(f'CREATE DATABASE "{database_name}"'))
-    except Exception as error:  # pragma: no cover - environment-dependent skip
-        pytest.skip(f"PostgreSQL is not available for integration test: {error}")
+    except Exception as error:  # pragma: no cover - depends on configured service
+        pytest.fail(f"Configured PostgreSQL integration target is unavailable: {error}")
     finally:
         admin_engine.dispose()
 
@@ -622,4 +623,19 @@ def test_postgres_holding_kind_identity_rebuilds_read_model_and_reconciles_head(
         assert connection.scalar(
             sa.text("SELECT version_num FROM portfolio.alembic_version")
         ) == CURRENT_HEAD_REVISION
+        assert connection.scalar(
+            sa.text(
+                "SELECT inception_date FROM portfolio.portfolio_record "
+                "WHERE portfolio_id = 'portfolio-holding-kind'"
+            )
+        ) == date(2026, 8, 6)
+    inception_column = next(
+        column
+        for column in sa.inspect(engine).get_columns(
+            "portfolio_record",
+            schema="portfolio",
+        )
+        if column["name"] == "inception_date"
+    )
+    assert inception_column["nullable"] is False
     engine.dispose()

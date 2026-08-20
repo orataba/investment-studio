@@ -249,7 +249,7 @@
 
 ### 2.4.1 opening_balance 处理
 
-- `opening_balance` 只允许出现在组合导入起点或 inception 边界；
+- `opening_balance` 只允许出现在显式 Portfolio inception boundary，且 trade date 与 settlement date 都必须等于该日期；
 - 在 TWR 与 `Delta` 口径中，`opening_balance` 用于建立期初 `MVB` / 起始持仓，不作为区间内 external flow 重复计入；
 - 在 IRR / MWROR 中，若测量窗口从导入起点开始，`opening_balance` 视为期初初始投入；若测量窗口开始于其后日期，则它落在窗口外，不再重复记为现金流。
 - `opening_balance + position` 必须进一步 materialize 成 opening lots；`gross_amount` 解释为 imported remaining cost basis，而不是 bootstrap 日市值。
@@ -390,7 +390,7 @@ $$
 Transaction 是可修改的业务事实，但修改必须保留可追溯性，并与 ledger 派生结果分层：
 
 - `transaction_economic_date` 对 position-changing 事实取 `position_effective_date`（缺省回退 `trade_date`）；dividend / coupon 有合法 `entitlement_date` 时在 entitlement date 确认经济收益；
-- deposit / withdrawal 的 `external_flow_date` 优先使用显式导入值，其次 `settlement_date`，最后才回退 `trade_date`。TWR 必须在该实际收付日中性化 external flow；
+- deposit / withdrawal 的 `external_flow_date` 是响应层派生字段，固定取 `settlement_date`，缺失时回退 `trade_date`。TWR 必须在该实际收付日中性化 external flow；
 - 证券头寸 posting 在 position effective date 生效，结算现金 posting 在 settlement date 生效；当 `position_effective_date <= settlement_date` 时，两者之间的 pending settlement 作为独立 monetary exposure 留在 NAV；
 - `trade_date` 是成交/定价事实，`position_effective_date` 是 EOD 持仓确认事实，`settlement_date` 是现金结算事实，`entitlement_date` 是收入权利事实；四者不得因界面或计算方便互相覆盖；
 - `trade_time` 是可选事实。已知开盘前、盘中或收盘后成交时必须录入真实时间；未知时客户端提交 `null`，服务端用配置的日内默认时点形成确定性排序，并显式保存 `trade_time_is_estimated = true`。客户端不得把默认时点预填成看似精确的用户输入，修改既有 estimated 记录时也不得静默改成精确时间；
@@ -743,7 +743,7 @@ $$
 - 这样可以把 external flows 从业绩中中性化。
 - buy / sell 是组合内部的现金与证券转换，不进入 `CF_in / CF_out`。头寸按实际 `quantity` 和 `gross_amount` 入账，未结算款进入 pending settlement；日末用收盘 fair value 估值，所以区间中买入的 `EOD market value - actual trade cost - attached charges` 只进入当日经济 P&L 一次。不得用收盘价反推成交成本，也不得在 NAV 已扣现金后再次从 TWR 分子减买入金额。
 - 除 funded-segment start 外，显式 `start_date` 当日的 buy / sell 已包含在 start-date EOD anchor；若需要观察该笔成交到当日收盘的收益，应把查询起点设为前一 EOD boundary。中途新增 instrument 不是新的组合 inception；组合保留现金也不是 segment restart。
-- deposit / withdrawal 的绩效生效日使用显式 `external_flow_date`，否则使用 settlement date，再否则使用 trade date。内部证券交易的头寸与经济收益使用 `position_effective_date`（缺省回退 trade date）；现金腿使用 settlement date。两者不同时通过 pending settlement / position-recognition bridge 保持 NAV 连续，不得重新把确认较晚的基金申购压回 trade date。
+- deposit / withdrawal 的绩效生效日使用 settlement date，缺失时使用 trade date；响应中的 `external_flow_date` 仅展示该派生结果，不是可覆写事实。内部证券交易的头寸与经济收益使用 `position_effective_date`（缺省回退 trade date）；现金腿使用 settlement date。两者不同时通过 pending settlement / position-recognition bridge 保持 NAV 连续，不得重新把确认较晚的基金申购压回 trade date。
 - 当前 daily engine 对外部流采用确定性的 BOD contribution / EOD withdrawal convention。`trade_at` 只控制同日事实顺序，不能替代盘中组合估值；若盘中大额外部流需要精确 TWR，必须在流发生前后保存完整组合估值并几何链接子期间，不能用交易时间或单只证券成交价臆造 intraday NAV。
 - 当前 daily snapshot engine 对每个 `as_of_date` 估值，因此外部现金流发生日天然有估值；若未来支持非日频估值，必须引入 large cash flow policy 与子期间收益几何链接，不能静默改用近似 MWR 方法。
 - 对显式区间 `2026-04-01` 到 `2026-04-20`，`initial value` 是 `2026-04-01` 的 `MVE / ending_nav`，`final value` 是 `2026-04-20` 的 `MVE / ending_nav`。区间 TWR 几何链接 `2026-04-02` 至 `2026-04-20` 的 daily returns；`2026-04-01` 当日交易和收益已进入期初状态。

@@ -171,6 +171,7 @@ def test_dynamic_and_materialized_option_asset_and_obligation_are_identical(
     )
 
     store = deepcopy(TEST_PORTFOLIO_STORE)
+    store["portfolios"][0]["inception_date"] = "2026-02-10"
     store["portfolios"][0]["as_of_date"] = "2026-02-11"
     store["accounts"].append(
         {

@@ -99,6 +99,7 @@ export type PortfolioEntryRecord = {
   portfolio_id: string
   portfolio_name: string
   base_currency: string
+  inception_date: string
   as_of_date: string
   nav: number
   day_change_value: number | null
@@ -111,6 +112,7 @@ export type PortfolioEntryRecord = {
 export type PortfolioCreatePayload = {
   name?: string | null
   base_currency: SupportedPortfolioCurrency
+  inception_date: string
 }
 
 export type HoldingsSummaryCard = {
@@ -2194,6 +2196,7 @@ export type PortfolioTransactionListResponse = {
 
 export type PortfolioTransactionWorkspaceResponse = {
   portfolio_id: string
+  portfolio_inception_date: string
   summary: PortfolioTransactionListResponse['summary']
   derivation_boundary: PortfolioTransactionListResponse['derivation_boundary']
   selected_transaction_id: string | null
@@ -2205,6 +2208,7 @@ export type PortfolioTransactionWorkspaceResponse = {
   ledger_postings: PortfolioLedgerPostingRecord[]
   related_position_lot_summary: PortfolioPositionLotListResponse['summary']
   related_position_lots: PortfolioPositionLotRecord[]
+  related_option_obligations: PortfolioOptionObligationRecord[]
   change_log_summary?: {
     change_count: number
   }
@@ -2467,6 +2471,8 @@ export type PortfolioInternalTransferCreatePayload = {
   instrument_id?: string | null
   quantity?: number | null
   gross_amount?: number | null
+  source_system?: string | null
+  external_reference?: string | null
   note?: string | null
 }
 

@@ -68,6 +68,10 @@ from portfolio_app.services.account_categories import (
 )
 from portfolio_app.services.transaction_pricing import transaction_price_scale
 from portfolio_app.services.option_actions import resolve_option_action
+from portfolio_app.services.option_obligations import (
+    build_option_obligations,
+    estimate_option_obligation_quantity_at_entitlement,
+)
 from portfolio_app.services.transaction_csv import (
     MAX_CSV_BYTES,
     parse_transaction_csv,
@@ -322,6 +326,56 @@ def _requires_settlement_cash(
         transaction_type in {"fee", "tax"}
         and account_type == "securities_account"
     )
+
+
+def _portfolio_inception_date(portfolio: dict[str, object]) -> date:
+    raw_inception_date = str(portfolio.get("inception_date") or "").strip()
+    try:
+        return date.fromisoformat(raw_inception_date)
+    except ValueError as error:
+        raise HTTPException(
+            status_code=500,
+            detail="Portfolio inception date is unavailable.",
+        ) from error
+
+
+def _validate_portfolio_trade_date(
+    *,
+    portfolio: dict[str, object],
+    trade_date: date,
+) -> date:
+    inception_date = _portfolio_inception_date(portfolio)
+    if trade_date < inception_date:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"trade_date must not be earlier than portfolio inception_date "
+                f"{inception_date.isoformat()}."
+            ),
+        )
+    return inception_date
+
+
+def _validate_portfolio_fact_boundary(
+    *,
+    portfolio: dict[str, object],
+    payload: TransactionCreateRequest,
+) -> None:
+    inception_date = _validate_portfolio_trade_date(
+        portfolio=portfolio,
+        trade_date=payload.trade_date,
+    )
+    if payload.transaction_type != "opening_balance":
+        return
+    settlement_date = payload.settlement_date or payload.trade_date
+    if payload.trade_date != inception_date or settlement_date != inception_date:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Opening balance trade_date and settlement_date must equal "
+                f"portfolio inception_date {inception_date.isoformat()}."
+            ),
+        )
 
 
 def _validate_asset_amount_contract(
@@ -781,6 +835,10 @@ def _prepare_csv_transaction_values(
     created_at: str,
     batch_derivative_contracts: dict[str, DerivativeContractCreate] | None = None,
 ) -> dict[str, object]:
+    portfolio = get_portfolio(portfolio_id)
+    if portfolio is None:
+        raise HTTPException(status_code=404, detail="Portfolio not found")
+    _validate_portfolio_fact_boundary(portfolio=portfolio, payload=payload)
     account = get_account(portfolio_id, payload.account_id)
     if account is None:
         raise HTTPException(status_code=400, detail="Account not found")
@@ -1047,6 +1105,13 @@ def _prepare_internal_transfer_values(
     expected_currency: str | None = None,
     pending_records: list[dict[str, object]] | None = None,
 ) -> list[dict[str, object]]:
+    portfolio = get_portfolio(portfolio_id)
+    if portfolio is None:
+        raise HTTPException(status_code=404, detail="Portfolio not found.")
+    _validate_portfolio_trade_date(
+        portfolio=portfolio,
+        trade_date=payload.trade_date,
+    )
     from_account = get_account(portfolio_id, payload.from_account_id)
     to_account = get_account(portfolio_id, payload.to_account_id)
     if from_account is None or to_account is None:
@@ -1245,12 +1310,16 @@ def _prepare_internal_transfer_values(
             "transaction_type": "transfer_out",
             "account_id": payload.from_account_id,
             "counterparty_account_id": payload.to_account_id,
+            "source_system": payload.source_system,
+            "external_reference": payload.external_reference,
         },
         {
             **common_values,
             "transaction_type": "transfer_in",
             "account_id": payload.to_account_id,
             "counterparty_account_id": payload.from_account_id,
+            "source_system": None,
+            "external_reference": None,
         },
     ]
 
@@ -1281,6 +1350,7 @@ def _build_transaction_csv_preview(
     response_rows: list[TransactionCsvPreviewRow] = []
     prepared_records: list[dict[str, object]] = []
     valid_payloads: list[TransactionCreateRequest] = []
+    valid_internal_transfers: list[TransactionCsvInternalTransferRequest] = []
     batch_errors: list[str] = []
     batch_derivative_contracts: dict[str, DerivativeContractCreate] = {}
     batch_contract_scopes: dict[str, tuple[str, str]] = {}
@@ -1349,6 +1419,7 @@ def _build_transaction_csv_preview(
                 )
                 continue
             prepared_records.extend(transfer_values)
+            valid_internal_transfers.append(internal_transfer)
             response_rows.append(
                 TransactionCsvPreviewRow(
                     row_number=parsed_row.row_number,
@@ -1421,7 +1492,7 @@ def _build_transaction_csv_preview(
 
     source_identities: set[tuple[str, str]] = set()
     duplicate_source_identities: set[tuple[str, str]] = set()
-    for payload in valid_payloads:
+    for payload in [*valid_payloads, *valid_internal_transfers]:
         if payload.source_system and payload.external_reference:
             identity = (payload.source_system, payload.external_reference)
             if identity in source_identities:
@@ -1458,7 +1529,7 @@ def _build_transaction_csv_preview(
     warnings: list[str] = []
     missing_source_identity_count = sum(
         1
-        for payload in valid_payloads
+        for payload in [*valid_payloads, *valid_internal_transfers]
         if not payload.source_system or not payload.external_reference
     )
     if missing_source_identity_count:
@@ -1466,7 +1537,6 @@ def _build_transaction_csv_preview(
             f"{missing_source_identity_count} row(s) lack a complete source identity; "
             "only the batch Idempotency-Key protects replay."
         )
-
     row_error_count = sum(1 for row in response_rows if row.errors)
     response = TransactionCsvPreviewResponse(
         portfolio_id=portfolio_id,
@@ -1812,7 +1882,8 @@ def get_transaction_workspace(
     end_date: date | None = Query(default=None),
     transaction_id: str | None = None,
 ) -> TransactionWorkspaceResponse:
-    if get_portfolio(portfolio_id) is None:
+    portfolio = get_portfolio(portfolio_id)
+    if portfolio is None:
         raise HTTPException(status_code=404, detail="Portfolio not found")
 
     accounts = list_accounts(portfolio_id)
@@ -1886,7 +1957,10 @@ def get_transaction_workspace(
     )
 
     related_position_lots_raw: list[dict[str, object]] = []
-    if selected_transaction and selected_transaction.instrument_id:
+    if selected_transaction and (
+        selected_transaction.instrument_id
+        or selected_transaction.derivative_contract_id
+    ):
         candidate_position_lots = build_position_lots(
             portfolio_id,
             accounts,
@@ -1909,6 +1983,40 @@ def get_transaction_workspace(
         if not related_position_lots_raw:
             related_position_lots_raw = candidate_position_lots
 
+    related_option_obligations: list[dict[str, object]] = []
+    if selected_transaction and selected_transaction.derivative_contract_id:
+        candidate_option_obligations = [
+            obligation
+            for obligation in build_option_obligations(all_transactions)
+            if obligation.get("account_id") == selected_transaction.account.account_id
+            and obligation.get("derivative_contract_id")
+            == selected_transaction.derivative_contract_id
+        ]
+        related_option_obligations = [
+            obligation
+            for obligation in candidate_option_obligations
+            if (
+                obligation.get("_opened_by_transaction_id")
+                == selected_transaction.transaction_id
+                or any(
+                    realization.get("transaction_id")
+                    == selected_transaction.transaction_id
+                    for realization in obligation.get("realizations", [])
+                    if isinstance(realization, dict)
+                )
+            )
+        ]
+        if not related_option_obligations:
+            related_option_obligations = candidate_option_obligations
+        related_option_obligations = [
+            {
+                key: value
+                for key, value in obligation.items()
+                if not str(key).startswith("_")
+            }
+            for obligation in related_option_obligations
+        ]
+
     change_log = (
         list_transaction_change_logs(
             portfolio_id,
@@ -1920,6 +2028,9 @@ def get_transaction_workspace(
 
     return TransactionWorkspaceResponse(
         portfolio_id=portfolio_id,
+        portfolio_inception_date=date.fromisoformat(
+            str(portfolio["inception_date"])
+        ),
         summary=summarize_transactions(filtered_records),
         derivation_boundary=DerivationBoundaryStatus(
             ledger_postings="next_layer",
@@ -1945,6 +2056,7 @@ def get_transaction_workspace(
             summarize_position_lots(related_position_lots_raw)
         ),
         related_position_lots=related_position_lots_raw,
+        related_option_obligations=related_option_obligations,
         change_log_summary=TransactionChangeLogSummary(change_count=len(change_log)),
         change_log=change_log,
     )
@@ -2068,6 +2180,7 @@ def _persist_transaction_record(
     portfolio = get_portfolio(portfolio_id)
     if portfolio is None:
         raise HTTPException(status_code=404, detail="Portfolio not found")
+    _validate_portfolio_fact_boundary(portfolio=portfolio, payload=payload)
 
     account = get_account(portfolio_id, payload.account_id)
     if account is None:
@@ -2332,12 +2445,24 @@ def _persist_transaction_record(
             position_reference_id=position_reference_id,
             account_cost_methods=account_cost_methods,
         )
+        if (
+            available_quantity <= 1e-9
+            and isinstance(derivative_contract_ref, dict)
+            and str(derivative_contract_ref.get("contract_type") or "").lower()
+            == "option"
+        ):
+            available_quantity = estimate_option_obligation_quantity_at_entitlement(
+                transactions_as_of_entitlement_date or [],
+                account_id=payload.account_id,
+                derivative_contract_id=position_reference_id,
+                entitlement_date=entitlement_date,
+            )
         if available_quantity <= 1e-9:
             raise HTTPException(
                 status_code=400,
                 detail=(
                     "Asset-linked income and expense requires an account position "
-                    "as of entitlement_date."
+                    "or written-option obligation as of entitlement_date."
                 ),
             )
 
@@ -2624,6 +2749,14 @@ def create_internal_transfer_records(
         raise HTTPException(status_code=400, detail=str(error)) from error
     except TransactionIdempotencyConflictError as error:
         raise HTTPException(status_code=409, detail=str(error)) from error
+    except IntegrityError as error:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "A transaction with the same portfolio/source_system/"
+                "external_reference already exists."
+            ),
+        ) from error
     except ValueError as error:
         raise HTTPException(
             status_code=409,

@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+from datetime import date
+
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from portfolio_app.api.contracts import (
     PortfolioRiskPolicyRecord,
@@ -24,6 +26,14 @@ router = APIRouter()
 class PortfolioCreateRequest(BaseModel):
     name: str | None = None
     base_currency: SupportedCurrency
+    inception_date: date
+
+    @field_validator("inception_date")
+    @classmethod
+    def validate_inception_date(cls, value: date) -> date:
+        if value > date.today():
+            raise ValueError("inception_date must not be in the future.")
+        return value
 
 
 class PortfolioReorderRequest(BaseModel):
@@ -37,7 +47,11 @@ def list_portfolio_records() -> list[dict[str, object]]:
 
 @router.post("")
 def create_portfolio_record(payload: PortfolioCreateRequest) -> dict[str, object]:
-    return create_portfolio(payload.name, base_currency=payload.base_currency)
+    return create_portfolio(
+        payload.name,
+        base_currency=payload.base_currency,
+        inception_date=payload.inception_date,
+    )
 
 
 @router.post("/reorder")

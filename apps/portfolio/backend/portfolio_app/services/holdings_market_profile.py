@@ -1090,8 +1090,29 @@ def summarize_holdings_operational_status(
         for row in settlement_rows
         if str(row.get("pending_status") or "") == "overdue"
     ]
+    negative_cash_rows = [
+        row
+        for row in rows
+        if str(row.get("holding_kind") or "") == "settled_cash"
+        and (safe_float(row.get("market_value")) or 0.0) < -1e-9
+    ]
 
     operational_alerts: list[dict[str, object]] = []
+    if negative_cash_rows:
+        operational_alerts.append(
+            {
+                "code": "negative_settled_cash",
+                "severity": "critical",
+                "title": "Negative settled cash",
+                "message": (
+                    f"{len(negative_cash_rows)} settled cash line(s) are negative; "
+                    "record the missing funding or financing fact."
+                ),
+                "related_line_ids": [
+                    str(row.get("line_id") or "") for row in negative_cash_rows
+                ],
+            }
+        )
     due_count = int(
         expiry_buckets_by_key.get("expired_or_due", {}).get("obligation_count") or 0
     )

@@ -110,7 +110,7 @@ describe('asset-first transaction actions', () => {
     expect(actions.map((item) => item.label)).toEqual([
       'Buy to Open Put',
       'Sell to Open Put',
-      'Option Opening Balance',
+      'Long Option Opening Balance',
     ])
     expect(actions.map((item) => item.label)).not.toContain('Buy to Close Put')
   })

@@ -527,6 +527,7 @@ def _load_store_from_db(session) -> dict[str, object]:
                 "base_currency": item.base_currency,
                 "valuation_timezone": item.valuation_timezone,
                 "valuation_cutoff_policy": item.valuation_cutoff_policy,
+                "inception_date": item.inception_date.isoformat(),
                 "as_of_date": item.as_of_date.isoformat() if item.as_of_date is not None else None,
                 "nav": item.nav,
                 "day_change_value": item.day_change_value,
@@ -688,6 +689,38 @@ def _load_store_from_db(session) -> dict[str, object]:
 
 def _save_store_to_db(session, data: dict[str, object]) -> None:
     normalized = _normalize_store(data)
+    inception_dates: dict[str, date] = {}
+    for raw_portfolio in normalized.get("portfolios", []):
+        if not isinstance(raw_portfolio, dict):
+            continue
+        portfolio_id = str(raw_portfolio.get("portfolio_id") or "").strip()
+        inception_date = _safe_date(raw_portfolio.get("inception_date"))
+        if inception_date is None:
+            raise ValueError(
+                f"Portfolio '{portfolio_id}' requires a valid inception_date."
+            )
+        inception_dates[portfolio_id] = inception_date
+    for transaction in normalized.get("transactions", []):
+        if not isinstance(transaction, dict):
+            continue
+        portfolio_id = str(transaction.get("portfolio_id") or "").strip()
+        inception_date = inception_dates.get(portfolio_id)
+        trade_date = _safe_date(transaction.get("trade_date"))
+        settlement_date = _safe_date(transaction.get("settlement_date")) or trade_date
+        if inception_date is not None and (
+            trade_date is None or trade_date < inception_date
+        ):
+            raise ValueError(
+                f"Transaction '{transaction.get('transaction_id')}' must not predate "
+                f"portfolio inception_date {inception_date}."
+            )
+        if transaction.get("transaction_type") != "opening_balance":
+            continue
+        if trade_date != inception_date or settlement_date != inception_date:
+            raise ValueError(
+                f"Opening balance '{transaction.get('transaction_id')}' must use "
+                f"portfolio inception_date {inception_date}."
+            )
     existing_tables = set(inspect(session.get_bind()).get_table_names())
     session.execute(delete(PortfolioDailyContributionSliceModel))
     session.execute(delete(PortfolioDailyHoldingSnapshotModel))
@@ -718,9 +751,10 @@ def _save_store_to_db(session, data: dict[str, object]) -> None:
         if not isinstance(raw_portfolio, dict):
             continue
         as_of_date = raw_portfolio.get("as_of_date")
+        portfolio_id = str(raw_portfolio.get("portfolio_id") or "").strip()
         session.add(
             PortfolioRecordModel(
-                portfolio_id=str(raw_portfolio.get("portfolio_id") or "").strip(),
+                portfolio_id=portfolio_id,
                 portfolio_name=str(raw_portfolio.get("portfolio_name") or "").strip(),
                 base_currency=str(raw_portfolio.get("base_currency") or "USD").strip().upper() or "USD",
                 valuation_timezone=str(raw_portfolio.get("valuation_timezone") or "Asia/Shanghai").strip()
@@ -729,6 +763,7 @@ def _save_store_to_db(session, data: dict[str, object]) -> None:
                     raw_portfolio.get("valuation_cutoff_policy") or "latest_complete_eod"
                 ).strip()
                 or "latest_complete_eod",
+                inception_date=inception_dates[portfolio_id],
                 as_of_date=(
                     date.fromisoformat(str(as_of_date))
                     if as_of_date
@@ -1142,6 +1177,7 @@ def _serialize_portfolio_row(item: PortfolioRecordModel) -> dict[str, object]:
         "base_currency": item.base_currency,
         "valuation_timezone": item.valuation_timezone,
         "valuation_cutoff_policy": item.valuation_cutoff_policy,
+        "inception_date": item.inception_date.isoformat(),
         "as_of_date": item.as_of_date.isoformat() if item.as_of_date is not None else None,
         "nav": item.nav,
         "day_change_value": item.day_change_value,
@@ -3845,6 +3881,7 @@ def create_portfolio(
     name: str | None = None,
     *,
     base_currency: str,
+    inception_date: date,
 ) -> dict[str, object]:
     session_factory = get_session_factory()
     with session_factory() as session:
@@ -3864,6 +3901,7 @@ def create_portfolio(
             base_currency=base_currency,
             valuation_timezone="Asia/Shanghai",
             valuation_cutoff_policy="latest_complete_eod",
+            inception_date=inception_date,
             as_of_date=date.today(),
             nav=0.0,
             day_change_value=0.0,
@@ -3941,6 +3979,7 @@ def copy_portfolio(portfolio_id: str) -> dict[str, object] | None:
             base_currency=source.base_currency,
             valuation_timezone=source.valuation_timezone,
             valuation_cutoff_policy=source.valuation_cutoff_policy,
+            inception_date=source.inception_date,
             as_of_date=source.as_of_date,
             nav=source.nav,
             day_change_value=source.day_change_value,

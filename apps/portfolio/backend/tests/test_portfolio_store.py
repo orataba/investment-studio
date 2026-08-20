@@ -25,18 +25,77 @@ def test_reset_store_without_payload_leaves_store_empty() -> None:
     assert portfolio_store.list_transactions("portfolio-ops") == []
 
 
+def test_reset_store_requires_portfolio_inception_date() -> None:
+    with pytest.raises(ValueError, match="requires a valid inception_date"):
+        portfolio_store.reset_store(
+            {
+                "portfolios": [
+                    {
+                        "portfolio_id": "missing-inception",
+                        "portfolio_name": "Missing Inception",
+                        "base_currency": "USD",
+                    }
+                ]
+            }
+        )
+
+
+def test_reset_store_rejects_transaction_before_portfolio_inception() -> None:
+    with pytest.raises(ValueError, match="must not predate portfolio inception_date"):
+        portfolio_store.reset_store(
+            {
+                "portfolios": [
+                    {
+                        "portfolio_id": "p1",
+                        "portfolio_name": "Portfolio",
+                        "base_currency": "USD",
+                        "inception_date": "2026-01-02",
+                    }
+                ],
+                "transactions": [
+                    {
+                        "transaction_id": "txn-before-inception",
+                        "transaction_sequence": 1,
+                        "portfolio_id": "p1",
+                        "transaction_type": "deposit",
+                        "trade_date": "2026-01-01",
+                        "settlement_date": "2026-01-01",
+                        "account_id": "cash-p1",
+                        "gross_amount": 100,
+                        "currency": "USD",
+                    }
+                ],
+            }
+        )
+
+
 def test_create_portfolio_requires_and_persists_base_currency(client) -> None:
     missing_currency = client.post("/api/portfolios", json={"name": "Missing Currency"})
     assert missing_currency.status_code == 422
 
     response = client.post(
         "/api/portfolios",
-        json={"name": "CNY Portfolio", "base_currency": "CNY"},
+        json={
+            "name": "CNY Portfolio",
+            "base_currency": "CNY",
+            "inception_date": "2026-01-01",
+        },
     )
 
     assert response.status_code == 200
     assert response.json()["base_currency"] == "CNY"
+    assert response.json()["inception_date"] == "2026-01-01"
     assert portfolio_store.get_portfolio("cny-portfolio")["base_currency"] == "CNY"
+
+    future_inception = client.post(
+        "/api/portfolios",
+        json={
+            "name": "Future Portfolio",
+            "base_currency": "USD",
+            "inception_date": "2999-01-01",
+        },
+    )
+    assert future_inception.status_code == 422
 
 
 def test_reset_store_rejects_missing_or_duplicate_transaction_sequence() -> None:
@@ -81,6 +140,7 @@ def test_reset_store_round_trips_manual_instrument_universe() -> None:
                 "base_currency": "USD",
                 "valuation_timezone": "Asia/Shanghai",
                 "valuation_cutoff_policy": "latest_complete_eod",
+                "inception_date": "2026-01-01",
                 "as_of_date": "2026-05-21",
                 "nav": 0.0,
                 "day_change_value": 0.0,
@@ -263,6 +323,7 @@ def test_live_portfolio_as_of_uses_current_holding_market_date(monkeypatch) -> N
         base_currency="CNY",
         valuation_timezone="Asia/Shanghai",
         valuation_cutoff_policy="latest_complete_eod",
+        inception_date=date(2026, 1, 1),
         as_of_date=date(2026, 4, 23),
         nav=0.0,
         day_change_value=0.0,
@@ -376,6 +437,7 @@ def test_live_portfolio_as_of_caps_future_settlement_at_valuation_today(monkeypa
         base_currency="CNY",
         valuation_timezone="Asia/Shanghai",
         valuation_cutoff_policy="latest_complete_eod",
+        inception_date=date(2026, 1, 1),
         as_of_date=date(2026, 5, 21),
         nav=0.0,
         day_change_value=0.0,
@@ -451,6 +513,7 @@ def test_live_portfolio_as_of_ignores_stale_cached_portfolio_date(monkeypatch) -
         base_currency="CNY",
         valuation_timezone="Asia/Shanghai",
         valuation_cutoff_policy="latest_complete_eod",
+        inception_date=date(2026, 1, 1),
         as_of_date=date(2026, 5, 21),
         nav=0.0,
         day_change_value=0.0,

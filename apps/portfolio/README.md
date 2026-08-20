@@ -97,7 +97,7 @@ npm run dev
 
 - `portfolio` schema 只会保留 migration 定义的结构，不再自动注入默认 demo portfolio
 - 历史导入的组合数据不会保留
-- 需要组合时，显式通过前端 `/portfolios` 页面、带必填 `base_currency` 的 `POST /api/portfolios`，或 [backend/scripts/import_real_portfolio_from_csv.py](./backend/scripts/import_real_portfolio_from_csv.py) 创建
+- 需要组合时，显式通过前端 `/portfolios` 页面、带必填 `base_currency` 和 `inception_date` 的 `POST /api/portfolios`，或 [backend/scripts/import_real_portfolio_from_csv.py](./backend/scripts/import_real_portfolio_from_csv.py) 创建
   导入脚本现在要求显式传入 `--csv-path` 与 `--portfolio-id`；`--portfolio-name` 不传时会回退到 `portfolio_id`
 - 新建 `securities_account` 时，如果不显式选择成本法，系统默认使用 `FIFO`
 - 账户成本法支持 `FIFO` 与 `moving_average`；修改成本法会按交易事实重算 holdings、lots、ledger postings 和 snapshots

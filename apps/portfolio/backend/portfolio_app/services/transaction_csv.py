@@ -242,8 +242,6 @@ TRANSFER_FORBIDDEN_COLUMNS = frozenset(
         "fees",
         "fee_category",
         "taxes",
-        "source_system",
-        "external_reference",
     }
 )
 
@@ -501,6 +499,8 @@ def parse_transaction_csv(
                 transaction_action=transaction_action,
             )
             if transaction_type == "internal_transfer":
+                if not values.get("source_system") and default_source_system:
+                    values["source_system"] = default_source_system.strip() or None
                 unexpected = sorted(
                     column
                     for column in TRANSFER_FORBIDDEN_COLUMNS
@@ -535,6 +535,8 @@ def parse_transaction_csv(
                         "quantity": values.get("quantity"),
                         "gross_amount": values.get("gross_amount"),
                         "currency": values.get("currency"),
+                        "source_system": values.get("source_system"),
+                        "external_reference": values.get("external_reference"),
                         "note": values.get("note"),
                     }
                 )
@@ -616,6 +618,11 @@ def _internal_transfer_command(
         )
     transfer_out = by_type["transfer_out"]
     transfer_in = by_type["transfer_in"]
+    if transfer_in.get("source_system") or transfer_in.get("external_reference"):
+        raise ValueError(
+            f"Internal transfer group '{transfer_group_id}' must carry source identity "
+            "on the transfer_out leg only."
+        )
     from_account_id = str(transfer_out.get("account_id") or "")
     to_account_id = str(transfer_in.get("account_id") or "")
     if (

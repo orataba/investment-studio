@@ -336,6 +336,17 @@ def isolated_portfolio_store(request, tmp_path, monkeypatch):
     if migration_base is not None:
         engine = session_module.get_engine()
         with engine.begin() as connection:
+            portfolio_columns = {
+                str(column["name"])
+                for column in sa.inspect(connection).get_columns("portfolio_record")
+            }
+            if "inception_date" not in portfolio_columns:
+                connection.exec_driver_sql(
+                    "ALTER TABLE portfolio_record ADD COLUMN inception_date DATE"
+                )
+                temporary_seed_columns.append(
+                    ("portfolio_record", "inception_date")
+                )
             account_columns = {
                 str(column["name"])
                 for column in sa.inspect(connection).get_columns("account_record")

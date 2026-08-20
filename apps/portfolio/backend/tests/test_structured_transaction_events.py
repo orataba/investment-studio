@@ -12,7 +12,7 @@ import pytest
 from portfolio_app.api.assemblers import serialize_transactions
 from portfolio_app.api.contracts import TransactionCreateRequest
 from portfolio_app.api.routes import transactions as transaction_routes
-from portfolio_app.services import ledger, performance
+from portfolio_app.services import ledger, performance, portfolio_store
 from portfolio_app.services.ledger import (
     build_position_lots,
     derive_ledger_postings,
@@ -2641,15 +2641,16 @@ def test_csv_api_imports_position_transfer_after_earlier_row_in_same_batch(clien
         [
             (
                 "asset_type,transaction_action,trade_date,account_id,"
-                "counterparty_account_id,instrument_id,quantity,gross_amount,currency"
+                "counterparty_account_id,settlement_cash_account_id,"
+                "instrument_id,quantity,price,gross_amount,currency"
             ),
             (
-                f"security,opening_balance,2026-05-01,{source_account['account_id']},,"
-                "equity-us-abbv,10,1000,USD"
+                f"security,buy,2026-05-01,{source_account['account_id']},,cash-usd-main,"
+                "equity-us-abbv,10,100,1000,USD"
             ),
             (
                 f"security,transfer_out,2026-05-02,{source_account['account_id']},"
-                f"{destination_account['account_id']},equity-us-abbv,4,400,USD"
+                f"{destination_account['account_id']},,equity-us-abbv,4,,400,USD"
             ),
         ]
     )
@@ -3071,6 +3072,56 @@ def test_documented_multi_asset_independent_transactions_csv_imports_cleanly(
     created = import_response.json()["transactions"]
     assert len(created) == 12
 
+    accounts = portfolio_store.list_accounts("portfolio-ops")
+    transactions = portfolio_store.list_transactions("portfolio-ops")
+    open_lots = build_position_lots(
+        "portfolio-ops",
+        accounts,
+        transactions,
+        status="open",
+        resolve_pricing=False,
+    )
+    open_quantities = {
+        position_reference_id: sum(
+            float(row["remaining_quantity"])
+            for row in open_lots
+            if row.get("position_reference_id") == position_reference_id
+        )
+        for position_reference_id in {
+            "equity-demo-001",
+            "fund-demo-001",
+            "option-demo-call-001",
+        }
+    }
+    assert open_quantities == {
+        "equity-demo-001": pytest.approx(1300.0),
+        "fund-demo-001": pytest.approx(200.0),
+        "option-demo-call-001": pytest.approx(1.0),
+    }
+    imported_obligation = next(
+        row
+        for row in build_option_obligations(transactions)
+        if row["derivative_contract_id"] == "option-demo-put-001"
+    )
+    assert imported_obligation["status"] == "cash_settled"
+    assert imported_obligation["remaining_quantity"] == pytest.approx(0.0)
+    postings = derive_ledger_postings(
+        "portfolio-ops",
+        transactions,
+        account_cost_methods={
+            str(account["account_id"]): str(account.get("cost_basis_method") or "fifo")
+            for account in accounts
+            if account.get("account_type") == "securities_account"
+        },
+        account_currency_map={
+            str(account["account_id"]): str(account["currency"])
+            for account in accounts
+        },
+    )
+    assert {row["transaction_id"] for row in postings}.issuperset(
+        {row["transaction_id"] for row in created}
+    )
+
     download_response = client.get(
         "/api/portfolios/portfolio-ops/transactions.csv"
     )
@@ -3111,6 +3162,36 @@ def test_transaction_contract_distinguishes_long_and_writer_option_events() -> N
 
 
 @pytest.mark.parametrize(
+    ("transaction_type", "extra"),
+    [
+        ("deposit", {}),
+        ("withdrawal", {}),
+        ("interest", {}),
+        ("fee", {}),
+        ("tax", {}),
+        ("dividend", {"instrument_id": "equity-1"}),
+        ("coupon", {"instrument_id": "fund-1"}),
+        ("return_of_capital", {"instrument_id": "fund-1"}),
+    ],
+)
+def test_cash_economic_facts_require_positive_gross_amount(
+    transaction_type: str,
+    extra: dict[str, object],
+) -> None:
+    with pytest.raises(ValueError, match="requires positive gross_amount"):
+        TransactionCreateRequest.model_validate(
+            {
+                "transaction_type": transaction_type,
+                "trade_date": "2026-06-01",
+                "account_id": "account-1",
+                "gross_amount": 0,
+                "currency": "USD",
+                **extra,
+            }
+        )
+
+
+@pytest.mark.parametrize(
     ("transaction_type", "lifecycle_event_type", "error_pattern"),
     [
         ("maturity_redemption", None, "requires option_long_expiry"),
@@ -3138,6 +3219,255 @@ def test_option_outcome_requires_explicit_matching_transaction_type(
 
     with pytest.raises(ValueError, match=error_pattern):
         ledger.validate_derivative_contract_event(transaction)
+
+
+@pytest.mark.parametrize(
+    ("transaction_type", "event_date", "lifecycle_event_type"),
+    [
+        ("buy", "2025-12-31", None),
+        ("sell", "2027-01-01", None),
+        ("coupon", "2025-12-31", None),
+        ("maturity_redemption", "2025-12-31", "fcn_knock_in"),
+        ("maturity_redemption", "2027-01-01", "fcn_knock_out"),
+    ],
+)
+def test_fcn_transactions_respect_contract_term_window(
+    transaction_type: str,
+    event_date: str,
+    lifecycle_event_type: str | None,
+) -> None:
+    transaction = _transaction(
+        "txn-120",
+        transaction_type,
+        event_date,
+        instrument_id="fcn-window-1",
+        instrument_type="fcn",
+        quantity=1.0,
+        gross_amount=100_000.0,
+        lifecycle_event_type=lifecycle_event_type,
+    )
+    if transaction_type == "coupon":
+        transaction["entitlement_date"] = event_date
+
+    with pytest.raises(ValueError, match="between contract issue and maturity"):
+        ledger.validate_derivative_contract_event(transaction)
+
+
+def test_transaction_workspace_projects_long_lots_and_writer_obligations(client) -> None:
+    long_account_id = _create_holding_account(
+        client,
+        account_name="Inspector Long Options",
+        account_category="option",
+    )
+    long_option_id = "option-inspector-long"
+    long_response = client.post(
+        "/api/portfolios/portfolio-ops/transactions",
+        json={
+            "transaction_type": "buy",
+            "trade_date": "2026-05-01",
+            "account_id": long_account_id,
+            "settlement_cash_account_id": "cash-usd-main",
+            "derivative_contract_id": long_option_id,
+            "derivative_contract": {
+                "derivative_contract_id": long_option_id,
+                "contract_name": "Inspector Long Call",
+                "contract_type": "option",
+                "external_reference": "INSPECTOR-LONG-1",
+                "terms": {
+                    "underlying_instrument_id": "equity-us-abbv",
+                    "option_type": "call",
+                    "expiry_date": "2026-12-18",
+                    "strike": 220,
+                    "contract_multiplier": 100,
+                },
+            },
+            "quantity": 1,
+            "price": 5,
+            "gross_amount": 500,
+            "currency": "USD",
+        },
+    )
+    assert long_response.status_code == 200, long_response.json()
+    long_workspace = client.get(
+        "/api/portfolios/portfolio-ops/transactions/workspace",
+        params={"transaction_id": long_response.json()["transaction_id"]},
+    )
+    assert long_workspace.status_code == 200
+    assert long_workspace.json()["related_position_lot_summary"][
+        "position_lot_count"
+    ] == 1
+    assert long_workspace.json()["related_option_obligations"] == []
+
+    long_fee_response = client.post(
+        "/api/portfolios/portfolio-ops/transactions",
+        json={
+            "transaction_type": "fee",
+            "trade_date": "2026-05-02",
+            "entitlement_date": "2026-05-02",
+            "account_id": long_account_id,
+            "settlement_cash_account_id": "cash-usd-main",
+            "derivative_contract_id": long_option_id,
+            "gross_amount": 10,
+            "currency": "USD",
+        },
+    )
+    assert long_fee_response.status_code == 200, long_fee_response.json()
+    assert long_fee_response.json()["net_cash_effect"] == pytest.approx(-10.0)
+    long_lots_response = client.get(
+        "/api/portfolios/portfolio-ops/position-lots",
+        params={
+            "account_id": long_account_id,
+            "position_reference_id": long_option_id,
+        },
+    )
+    assert long_lots_response.status_code == 200
+    long_lot = long_lots_response.json()["position_lots"][0]
+    assert long_lot["expense_cash_amount"] == pytest.approx(0.0)
+    assert long_lot["remaining_cost_basis"] == pytest.approx(500.0)
+
+    writer_account_id = _create_holding_account(
+        client,
+        account_name="Inspector Written Options",
+        account_category="option",
+    )
+    writer_option_id = "option-inspector-writer"
+    writer_response = client.post(
+        "/api/portfolios/portfolio-ops/transactions",
+        json={
+            "transaction_type": "option_write",
+            "trade_date": "2026-05-01",
+            "account_id": writer_account_id,
+            "settlement_cash_account_id": "cash-usd-main",
+            "derivative_contract_id": writer_option_id,
+            "derivative_contract": {
+                "derivative_contract_id": writer_option_id,
+                "contract_name": "Inspector Written Call",
+                "contract_type": "option",
+                "external_reference": "INSPECTOR-WRITER-1",
+                "terms": {
+                    "underlying_instrument_id": "equity-us-abbv",
+                    "option_type": "call",
+                    "expiry_date": "2026-12-18",
+                    "strike": 220,
+                    "contract_multiplier": 100,
+                },
+            },
+            "quantity": 1,
+            "price": 5,
+            "gross_amount": 500,
+            "currency": "USD",
+        },
+    )
+    assert writer_response.status_code == 200, writer_response.json()
+    writer_workspace = client.get(
+        "/api/portfolios/portfolio-ops/transactions/workspace",
+        params={"transaction_id": writer_response.json()["transaction_id"]},
+    )
+    assert writer_workspace.status_code == 200
+    assert writer_workspace.json()["related_position_lots"] == []
+    assert len(writer_workspace.json()["related_option_obligations"]) == 1
+    assert writer_workspace.json()["related_option_obligations"][0][
+        "derivative_contract_id"
+    ] == writer_option_id
+
+
+def test_written_option_fee_requires_open_obligation(client) -> None:
+    account_id = _create_holding_account(
+        client,
+        account_name="Written Option Fee Review",
+        account_category="option",
+    )
+    option_id = "option-writer-fee"
+    write_response = client.post(
+        "/api/portfolios/portfolio-ops/transactions",
+        json={
+            "transaction_type": "option_write",
+            "trade_date": "2026-05-01",
+            "account_id": account_id,
+            "settlement_cash_account_id": "cash-usd-main",
+            "derivative_contract_id": option_id,
+            "derivative_contract": {
+                "derivative_contract_id": option_id,
+                "contract_name": "Written Fee Call",
+                "contract_type": "option",
+                "external_reference": "WRITER-FEE-1",
+                "terms": {
+                    "underlying_instrument_id": "equity-us-abbv",
+                    "option_type": "call",
+                    "expiry_date": "2026-12-18",
+                    "strike": 220,
+                    "contract_multiplier": 100,
+                },
+            },
+            "quantity": 1,
+            "price": 5,
+            "gross_amount": 500,
+            "currency": "USD",
+        },
+    )
+    assert write_response.status_code == 200, write_response.json()
+
+    fee_payload = {
+        "transaction_type": "fee",
+        "trade_date": "2026-05-02",
+        "entitlement_date": "2026-05-02",
+        "account_id": account_id,
+        "settlement_cash_account_id": "cash-usd-main",
+        "derivative_contract_id": option_id,
+        "gross_amount": 10,
+        "currency": "USD",
+    }
+    fee_response = client.post(
+        "/api/portfolios/portfolio-ops/transactions",
+        json=fee_payload,
+    )
+    assert fee_response.status_code == 200, fee_response.json()
+    fee_workspace = client.get(
+        "/api/portfolios/portfolio-ops/transactions/workspace",
+        params={"transaction_id": fee_response.json()["transaction_id"]},
+    )
+    assert fee_workspace.status_code == 200
+    assert len(fee_workspace.json()["related_option_obligations"]) == 1
+    assert fee_workspace.json()["related_option_obligations"][0][
+        "opening_fee_expense"
+    ] == pytest.approx(0.0)
+
+    close_response = client.post(
+        "/api/portfolios/portfolio-ops/transactions",
+        json={
+            "transaction_type": "option_buy_to_close",
+            "trade_date": "2026-05-03",
+            "account_id": account_id,
+            "settlement_cash_account_id": "cash-usd-main",
+            "derivative_contract_id": option_id,
+            "quantity": 1,
+            "price": 4,
+            "gross_amount": 400,
+            "currency": "USD",
+        },
+    )
+    assert close_response.status_code == 200, close_response.json()
+
+    same_day_fee = client.post(
+        "/api/portfolios/portfolio-ops/transactions",
+        json={
+            **fee_payload,
+            "trade_date": "2026-05-03",
+            "entitlement_date": "2026-05-03",
+        },
+    )
+    assert same_day_fee.status_code == 200, same_day_fee.json()
+
+    rejected_fee = client.post(
+        "/api/portfolios/portfolio-ops/transactions",
+        json={
+            **fee_payload,
+            "trade_date": "2026-05-04",
+            "entitlement_date": "2026-05-04",
+        },
+    )
+    assert rejected_fee.status_code == 400
+    assert "written-option obligation" in rejected_fee.json()["detail"]
 
 
 def test_transaction_contract_rejects_removed_derivative_grouping_fields() -> None:

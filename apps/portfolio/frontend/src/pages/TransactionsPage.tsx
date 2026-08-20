@@ -188,7 +188,7 @@ function assetTypeAccountCategory(assetType: string): TransactionEntryKind | nul
   return null
 }
 
-type TransactionInspectorTab = 'fact' | 'postings' | 'lots' | 'history'
+type TransactionInspectorTab = 'fact' | 'postings' | 'lots' | 'obligations' | 'history'
 
 let fallbackIdempotencySequence = 0
 
@@ -844,13 +844,12 @@ function buildFormStateFromTransaction(transaction: PortfolioTransactionRecord):
   }
 }
 
-function supportsEntitlementDate(transactionType: string) {
+function supportsEntitlementDate(transactionType: string, hasAssetReference: boolean) {
   return (
     transactionType === 'dividend' ||
     transactionType === 'dividend_reinvestment' ||
     transactionType === 'coupon' ||
-    transactionType === 'fee' ||
-    transactionType === 'tax'
+    ((transactionType === 'fee' || transactionType === 'tax') && hasAssetReference)
   )
 }
 
@@ -1305,6 +1304,12 @@ export default function TransactionsPage() {
   })()
   const activeDerivativeContract =
     selectedDerivativeContract ?? draftDerivativeContract
+  const hasAssetReference =
+    form.asset_domain === 'security'
+      ? Boolean(selectedInstrument)
+      : form.asset_domain === 'derivative'
+        ? Boolean(activeDerivativeContract)
+        : false
   const resolvedAssetType =
     form.asset_domain === 'derivative'
       ? activeDerivativeContract?.contract_type ?? derivativeDraft.contract_type
@@ -1875,20 +1880,28 @@ export default function TransactionsPage() {
     autoQuantityKeyRef.current = null
     autoGrossDerivedRef.current = false
     setPricingAnchor('price')
-    setForm((current) => ({
-      ...current,
-      asset_domain: nextAssetDomain,
-      transaction_type: nextTransactionType,
-      lifecycle_event_type: '',
-      account_id: nextAccount?.account_id ?? '',
-      transfer_object_type: 'cash',
-      instrument_id: '',
-      instrument_search: '',
-      derivative_contract_id: '',
-      quantity: '',
-      price: '',
-      gross_amount: '',
-    }))
+    setForm((current) => {
+      const factDate =
+        current.transaction_type === 'opening_balance'
+          ? localTodayIso()
+          : current.trade_date
+      return {
+        ...current,
+        asset_domain: nextAssetDomain,
+        transaction_type: nextTransactionType,
+        lifecycle_event_type: '',
+        account_id: nextAccount?.account_id ?? '',
+        transfer_object_type: 'cash',
+        instrument_id: '',
+        instrument_search: '',
+        derivative_contract_id: '',
+        quantity: '',
+        price: '',
+        gross_amount: '',
+        trade_date: factDate,
+        settlement_date: factDate,
+      }
+    })
     if (nextEntryKind === 'option' || nextEntryKind === 'fcn') {
       setDerivativeDraft(buildInitialDerivativeContractDraft(nextEntryKind))
     }
@@ -1900,6 +1913,11 @@ export default function TransactionsPage() {
       return
     }
     const nextTransactionType = selectedAction.transactionType
+    const portfolioInceptionDate = transactionsWorkspace?.portfolio_inception_date
+    if (nextTransactionType === 'opening_balance' && !portfolioInceptionDate) {
+      setFormError('Portfolio inception date is unavailable. Reload after the database migration completes.')
+      return
+    }
     setPricingAnchor(
       isFundInstrumentType(selectedInstrument?.instrument_type) && usesPrice(nextTransactionType)
         ? 'gross_amount'
@@ -1914,6 +1932,13 @@ export default function TransactionsPage() {
         autoQuantityKeyRef.current = null
         autoGrossDerivedRef.current = false
       }
+      const factDate =
+        nextTransactionType === 'opening_balance'
+          ? portfolioInceptionDate!
+          : current.transaction_type === 'opening_balance' &&
+              nextTransactionType !== 'opening_balance'
+            ? localTodayIso()
+            : current.trade_date
       return {
         ...current,
         transaction_type: nextTransactionType,
@@ -1921,6 +1946,12 @@ export default function TransactionsPage() {
         transfer_object_type:
           selectedAction.transferObjectType ?? current.transfer_object_type,
         quantity: shouldClearAutoSellQuantity ? '' : current.quantity,
+        trade_date: factDate,
+        settlement_date:
+          nextTransactionType === 'opening_balance' ||
+          current.transaction_type === 'opening_balance'
+            ? factDate
+            : current.settlement_date,
         gross_amount:
           selectedAction.lifecycleEventType === 'option_long_expiry' ||
           selectedAction.lifecycleEventType === 'option_writer_expiry'
@@ -2281,13 +2312,16 @@ export default function TransactionsPage() {
   }, [form.taxes, shouldShowTaxes])
 
   useEffect(() => {
-    if (!supportsEntitlementDate(form.transaction_type) && form.entitlement_date) {
+    if (
+      !supportsEntitlementDate(form.transaction_type, hasAssetReference) &&
+      form.entitlement_date
+    ) {
       setForm((current) => ({
         ...current,
         entitlement_date: '',
       }))
     }
-  }, [form.entitlement_date, form.transaction_type])
+  }, [form.entitlement_date, form.transaction_type, hasAssetReference])
 
   useEffect(() => {
     if (!supportsAcquisitionDate(form.transaction_type, selectedAccount?.account_type) && form.acquisition_date) {
@@ -2769,6 +2803,8 @@ export default function TransactionsPage() {
               ? parsedGrossAmount
               : null
             : parsedGrossAmount,
+        source_system: form.source_system.trim() || null,
+        external_reference: form.external_reference.trim() || null,
         note: form.note.trim() || null,
       } as const
 
@@ -2802,9 +2838,22 @@ export default function TransactionsPage() {
         form.lifecycle_event_type === 'option_writer_expiry') ||
       (form.transaction_type === 'maturity_redemption' &&
         form.lifecycle_event_type === 'option_long_expiry')
+    const zeroCostAssetOpening =
+      form.transaction_type === 'opening_balance' &&
+      form.asset_domain !== 'cash' &&
+      hasSelectedAsset
+    const zeroGrossAllowed = zeroCashLifecycle || zeroCostAssetOpening
     const grossAmount = zeroCashLifecycle ? 0 : Number(computedGrossAmount)
-    if (!Number.isFinite(grossAmount) || (!zeroCashLifecycle && grossAmount <= 0)) {
-      setFormError('Enter a positive gross amount.')
+    if (
+      !Number.isFinite(grossAmount) ||
+      grossAmount < 0 ||
+      (!zeroGrossAllowed && grossAmount === 0)
+    ) {
+      setFormError(
+        zeroCostAssetOpening
+          ? 'Enter a non-negative gross amount.'
+          : 'Enter a positive gross amount.',
+      )
       return
     }
 
@@ -2826,7 +2875,10 @@ export default function TransactionsPage() {
       position_effective_date: supportsPositionEffectiveDate(form.transaction_type)
         ? form.position_effective_date || form.trade_date
         : null,
-      entitlement_date: supportsEntitlementDate(form.transaction_type)
+      entitlement_date: supportsEntitlementDate(
+        form.transaction_type,
+        form.asset_domain !== 'cash' && hasSelectedAsset,
+      )
         ? form.entitlement_date || form.trade_date
         : null,
       acquisition_date: supportsAcquisitionDate(form.transaction_type, resolvedAccount.account_type)
@@ -3004,6 +3056,7 @@ export default function TransactionsPage() {
     [accounts],
   )
   const relatedPositionLots = transactionsWorkspace?.related_position_lots ?? []
+  const relatedOptionObligations = transactionsWorkspace?.related_option_obligations ?? []
   const selectedTransactionChangeLog = transactionsWorkspace?.change_log ?? []
   const visibleTransactions = transactionsWorkspace?.transactions ?? []
   const selectedFilterEntryKind = filters.asset_domain
@@ -3600,6 +3653,9 @@ export default function TransactionsPage() {
                       ['fact', 'Fact'],
                       ['postings', `Postings ${transactionsWorkspace.ledger_summary.posting_count}`],
                       ['lots', `Lots ${relatedPositionLots.length}`],
+                      ...(relatedOptionObligations.length
+                        ? ([['obligations', `Obligations ${relatedOptionObligations.length}`]] as const)
+                        : []),
                       [
                         'history',
                         `History ${transactionsWorkspace.change_log_summary?.change_count ?? selectedTransactionChangeLog.length}`,
@@ -3669,10 +3725,13 @@ export default function TransactionsPage() {
                           <dt>Settlement / economic</dt>
                           <dd>{selectedTransaction.settlement_date}<br /><span>{selectedTransaction.economic_date}</span></dd>
                         </div>
-                        <div>
-                          <dt>External flow date</dt>
-                          <dd>{selectedTransaction.external_flow_date ?? '—'}</dd>
-                        </div>
+                        {selectedTransaction.transaction_type === 'deposit' ||
+                        selectedTransaction.transaction_type === 'withdrawal' ? (
+                          <div>
+                            <dt>External flow date</dt>
+                            <dd>{selectedTransaction.external_flow_date ?? '—'}</dd>
+                          </div>
+                        ) : null}
                         <div>
                           <dt>Quantity / price</dt>
                           <dd>{formatQuantity(selectedTransaction.quantity)}<br /><span>{formatUnitPrice(selectedTransaction.price, selectedTransaction.currency)}</span></dd>
@@ -3711,7 +3770,8 @@ export default function TransactionsPage() {
 
                   {inspectorTab === 'lots' ? (
                     <div className="transaction-inspector-list" role="tabpanel">
-                      {!selectedTransaction.instrument_id ? (
+                      {!selectedTransaction.instrument_id &&
+                      !selectedTransaction.derivative_contract_id ? (
                         <div className="empty-state">Cash-only facts do not create position lots.</div>
                       ) : relatedPositionLots.length ? (
                         relatedPositionLots.map((positionLot) => (
@@ -3738,6 +3798,48 @@ export default function TransactionsPage() {
                       ) : (
                         <div className="empty-state">No position lots linked to this fact.</div>
                       )}
+                    </div>
+                  ) : null}
+
+                  {inspectorTab === 'obligations' ? (
+                    <div className="transaction-inspector-list" role="tabpanel">
+                      {relatedOptionObligations.map((obligation) => (
+                        <article key={obligation.obligation_id} className="transaction-inspector-card">
+                          <div className="transaction-inspector-card-head">
+                            <div>
+                              <strong>{obligation.obligation_id}</strong>
+                              <span>Opened {obligation.opened_at ?? '—'}</span>
+                            </div>
+                            <span className="transaction-type-pill">
+                              {formatLabel(obligation.status)}
+                            </span>
+                          </div>
+                          <dl className="transaction-inspector-card-metrics">
+                            <div>
+                              <dt>Remaining</dt>
+                              <dd>{formatQuantity(obligation.remaining_quantity)}</dd>
+                            </div>
+                            <div>
+                              <dt>Premium basis</dt>
+                              <dd>
+                                {formatCurrency(
+                                  obligation.premium_basis_remaining,
+                                  obligation.contract_currency ?? selectedTransaction.currency,
+                                )}
+                              </dd>
+                            </div>
+                            <div>
+                              <dt>Liability</dt>
+                              <dd>
+                                {formatCurrency(
+                                  obligation.carrying_liability,
+                                  obligation.contract_currency ?? selectedTransaction.currency,
+                                )}
+                              </dd>
+                            </div>
+                          </dl>
+                        </article>
+                      ))}
                     </div>
                   ) : null}
 
@@ -4448,6 +4550,7 @@ export default function TransactionsPage() {
                   <input
                     type="date"
                     value={form.trade_date}
+                    disabled={form.transaction_type === 'opening_balance'}
                     onChange={(event) => {
                       const nextTradeDate = event.target.value
                       setForm((current) => {
@@ -4478,6 +4581,7 @@ export default function TransactionsPage() {
                     type="date"
                     min={form.trade_date}
                     value={form.settlement_date}
+                    disabled={form.transaction_type === 'opening_balance'}
                     onChange={(event) =>
                       setForm((current) => ({
                         ...current,
@@ -4486,6 +4590,13 @@ export default function TransactionsPage() {
                     }
                   />
                 </label>
+
+                {form.transaction_type === 'opening_balance' ? (
+                  <span className="transaction-ticket-hint">
+                    Opening balances are fixed to portfolio inception{' '}
+                    {transactionsWorkspace?.portfolio_inception_date}.
+                  </span>
+                ) : null}
 
                 {supportsPositionEffectiveDate(form.transaction_type) ? (
                   <label className="transaction-ticket-field">
@@ -4526,7 +4637,7 @@ export default function TransactionsPage() {
                   />
                 </label>
 
-                {supportsEntitlementDate(form.transaction_type) ? (
+                {supportsEntitlementDate(form.transaction_type, hasAssetReference) ? (
                   <label className="transaction-ticket-field">
                     <span>{transactionDateLabels(form.transaction_type).entitlement}</span>
                     <input

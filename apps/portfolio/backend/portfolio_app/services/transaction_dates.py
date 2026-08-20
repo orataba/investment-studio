@@ -160,17 +160,15 @@ def transaction_external_flow_date(transaction: dict[str, object]) -> date | Non
 
     Deposits and withdrawals enter the cash ledger on their settlement date;
     they must be neutralized in TWR on that same date, not prematurely on the
-    order/trade date.  ``external_flow_date`` remains an additive override for
-    imported facts; records without one derive deterministically.
+    order/trade date. The canonical fact model does not persist a separate
+    override, so the date is derived deterministically.
     """
 
     transaction_type = str(transaction.get("transaction_type") or "").strip()
     if transaction_type not in EXTERNAL_FLOW_TRANSACTION_TYPES:
         return None
-    return (
-        _parse_date(transaction.get("external_flow_date"))
-        or _parse_date(transaction.get("settlement_date"))
-        or _parse_date(transaction.get("trade_date"))
+    return _parse_date(transaction.get("settlement_date")) or _parse_date(
+        transaction.get("trade_date")
     )
 
 

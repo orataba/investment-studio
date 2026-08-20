@@ -170,7 +170,7 @@ def period_return_coverage_state(
     *,
     requested_start_date: date | None,
     effective_end_date: date | None,
-    inception_date: date | None,
+    funded_start_date: date | None,
     start_is_close_boundary: bool = False,
     start_is_funded_segment: bool = False,
 ) -> str:
@@ -233,7 +233,7 @@ def period_return_coverage_state(
         if initial_valuation_anchor
         else (
             (
-                first_date == (inception_date or first_date)
+                first_date == (funded_start_date or first_date)
                 or (
                     start_is_funded_segment
                     and requested_start_date is not None
