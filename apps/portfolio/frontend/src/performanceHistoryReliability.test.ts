@@ -40,7 +40,7 @@ describe('performance short-history reliability policy', () => {
     expect(profile.annualizationMessage).toBeNull()
   })
 
-  it('wires period return, N/A annualization, and the observed-sample banner into Performance', () => {
+  it('wires period return, N/A annualization, and observed-sample metadata into Performance', () => {
     expect(performancePageSource).toContain('metric: summary.performance_label')
     expect(performancePageSource).toContain('const showReturnComparison = showRiskComparison && !operationalReturn')
     expect(performancePageSource).toContain("metric: 'Market Risk Volatility'")
@@ -50,7 +50,8 @@ describe('performance short-history reliability policy', () => {
     expect(performancePageSource).toContain("metric: 'Derivative Lifecycle Realized P&L'")
     expect(performancePageSource).toContain("metric: 'IRR / MWRR'")
     expect(performancePageSource).toContain("annualizedReturnEligible ? signedPercent(summary.annualized_twr) : 'N/A'")
-    expect(performancePageSource).toContain('performance-history-reliability-warning')
+    expect(performancePageSource).toContain("reliabilityNote: annualizedReturnEligible ? undefined : 'Requires ≥ 1 year'")
+    expect(performancePageSource).not.toContain('performance-history-reliability-warning')
     expect(performancePageSource).toContain('performanceMetricsMeta')
   })
 })

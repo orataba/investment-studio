@@ -262,9 +262,10 @@ describe('Overview rendered page contract', () => {
       '/portfolios/:portfolioId/overview',
     )
 
-    const warningText = await screen.findByText(warning)
-    expect(warningText.closest('[role="status"]')).not.toBeNull()
-    expect(screen.getAllByText(warning)).toHaveLength(1)
+    const warningStatus = await screen.findByRole('status', { name: /Data quality warning/ })
+    expect(warningStatus).toHaveTextContent('Data quality warning')
+    expect(warningStatus).toHaveAttribute('title', warning)
+    expect(screen.queryByText(warning)).not.toBeInTheDocument()
   })
 
   it('does not treat a foreign local value as base currency when FX conversion is missing', async () => {

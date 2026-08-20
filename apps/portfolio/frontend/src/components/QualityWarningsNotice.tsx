@@ -13,17 +13,21 @@ export default function QualityWarningsNotice({
     return null
   }
 
+  const warningDetail = visibleWarnings.join(' ')
+  const warningLabel =
+    visibleWarnings.length === 1
+      ? 'Data quality warning'
+      : `Data quality warnings (${visibleWarnings.length})`
+
   return (
-    <div className="inline-notice inline-notice-warning" role="status">
-      {visibleWarnings.length === 1 ? (
-        visibleWarnings[0]
-      ) : (
-        <ul>
-          {visibleWarnings.map((warning) => (
-            <li key={warning}>{warning}</li>
-          ))}
-        </ul>
-      )}
+    <div
+      className="inline-notice inline-notice-warning"
+      role="status"
+      title={warningDetail}
+      aria-label={`${warningLabel}. ${warningDetail}`}
+      tabIndex={0}
+    >
+      {warningLabel} <span aria-hidden="true">ⓘ</span>
     </div>
   )
 }

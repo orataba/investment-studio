@@ -934,16 +934,6 @@ button:disabled {
   font-weight: 400;
 }
 
-.holding-trend-summary,
-.holding-trend-reason {
-  font-size: 10px;
-  line-height: 1.25;
-}
-
-.holding-trend-reason {
-  color: var(--portfolio-faint);
-}
-
 .row-select {
   display: inline-block;
   width: 14px;
@@ -2674,7 +2664,7 @@ input[type='checkbox'] {
 
 .holdings-operational-metrics {
   display: grid;
-  grid-template-columns: repeat(5, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
   margin: 0;
   border-top: 1px solid var(--portfolio-line-strong);
 }
@@ -2721,8 +2711,7 @@ input[type='checkbox'] {
   border-top: 1px solid var(--portfolio-line-strong);
 }
 
-.holdings-operational-alert,
-.holdings-operational-clear {
+.holdings-operational-alert {
   display: flex;
   align-items: baseline;
   gap: 10px;
@@ -2732,8 +2721,7 @@ input[type='checkbox'] {
   line-height: 1.45;
 }
 
-.holdings-operational-alert:first-child,
-.holdings-operational-clear:first-child {
+.holdings-operational-alert:first-child {
   border-top: 0;
 }
 
@@ -2755,36 +2743,8 @@ input[type='checkbox'] {
   color: #1849a9;
 }
 
-.holdings-operational-alert span,
-.holdings-operational-clear {
+.holdings-operational-alert span {
   color: var(--portfolio-muted);
-}
-
-.holdings-operational-clear {
-  padding-left: 0;
-  color: var(--portfolio-positive);
-}
-
-@media (max-width: 900px) {
-  .holdings-operational-metrics {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-
-  .holdings-operational-metrics > div {
-    border-top: 1px solid var(--portfolio-line);
-  }
-
-  .holdings-operational-metrics > div:nth-child(-n + 2) {
-    border-top: 0;
-  }
-
-  .holdings-operational-metrics > div:nth-child(2n) {
-    border-right: 0;
-  }
-
-  .holdings-operational-metrics > div:first-child {
-    padding-left: 12px;
-  }
 }
 
 @media (max-width: 560px) {
@@ -8414,24 +8374,6 @@ input[type='date']::-webkit-calendar-picker-indicator {
 
 .overview-section-toolbar {
   margin-top: 10px;
-}
-
-.performance-history-reliability-warning {
-  display: flex;
-  align-items: baseline;
-  gap: 8px;
-  margin: 0 0 14px;
-  padding: 8px 10px;
-  border-left: 2px solid #b7791f;
-  background: #fff8e8;
-  color: #875b12;
-  font-size: 12px;
-  line-height: 1.45;
-}
-
-.performance-history-reliability-warning strong {
-  flex: 0 0 auto;
-  font-weight: 600;
 }
 
 .performance-benchmark-basis-status {

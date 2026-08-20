@@ -2100,6 +2100,8 @@ function PerformancePage() {
 
   const summary = workspace?.summary ?? null
   const performanceIsOperational = summary?.performance_basis === 'operational_carrying_basis'
+  const operationalPerformanceDetail =
+    'Event-valued assets and obligations use carrying-basis measurements. This is an operational ledger return, not a complete fair-value or GIPS-informed TWR. Market-risk metrics use a separate return chain that models derivatives and base-currency cash at zero return.'
   const baseCurrency = workspace?.base_currency ?? calculationWorkspace?.base_currency ?? calculationGroupsWorkspace?.base_currency ?? 'USD'
   const reportStartDate =
     validIsoDate(summary?.effective_start_date) || validIsoDate(summary?.start_date) || effectiveStartDate
@@ -2241,9 +2243,7 @@ function PerformancePage() {
       ? `${periodLabel} · Loading`
       : `${periodLabel} · ${formatNumber(calculationRows.length, 0)} ${calculationAxisCountLabel(
           resolvedCalculationGroupBy,
-        )}${calculationChildRowCount ? ` · ${formatNumber(calculationChildRowCount, 0)} instruments/cash` : ''}${
-          calculationRiskStatusLabel ? ` · ${calculationRiskStatusLabel}` : ''
-        }`
+        )}${calculationChildRowCount ? ` · ${formatNumber(calculationChildRowCount, 0)} instruments/cash` : ''}`
   const riskMetricsAvailable = realizedRiskMetricsAvailable(
     calculationGroupsSummary?.risk_return_observation_count,
     calculationGroupsSummary?.annualized_volatility,
@@ -2254,6 +2254,10 @@ function PerformancePage() {
   const showsRealizedRiskEstimate =
     visibleCalculationColumns.includes('own_corr') ||
     visibleCalculationColumns.includes('risk_contribution')
+  const realizedRiskEstimateDetail = `Corr to Portfolio and Realized RC use only ${formatNumber(
+    calculationGroupsSummary?.risk_return_observation_count ?? 0,
+    0,
+  )} aligned ${calculationGroupsSummary?.risk_calculation_frequency} observations. Treat the ranking and sign as preliminary; a negative Realized RC means diversification, not a loss.`
   const riskContributionResidual = realizedRiskContributionResidual(
     calculationRows.map((row) => finiteNumber(row.realized_risk_contribution)),
     riskMetricsAvailable,
@@ -2718,17 +2722,14 @@ function PerformancePage() {
           </div>
         ) : null}
         {performanceIsOperational ? (
-          <div className="inline-notice inline-notice-warning" role="status">
-            <strong>{summary?.performance_label ?? 'Total Portfolio Operational Return'}.</strong>{' '}
-            Event-valued assets and obligations use carrying-basis measurements. This is an operational ledger return,
-            not a complete fair-value or GIPS-informed TWR. Market-risk metrics below use the separate return chain that
-            models derivatives and base-currency cash at zero return.
-          </div>
-        ) : null}
-        {summary?.ordinary_sleeve_twr_status === 'unavailable' ? (
-          <div className="inline-notice" role="status">
-            <strong>Ordinary Assets Sleeve TWR unavailable.</strong>{' '}
-            {summary.ordinary_sleeve_twr_reason}
+          <div
+            className="inline-notice inline-notice-warning"
+            role="status"
+            title={operationalPerformanceDetail}
+            aria-label={`Operational carrying-basis return. ${operationalPerformanceDetail}`}
+            tabIndex={0}
+          >
+            <strong>Operational carrying-basis return.</strong> Not a complete fair-value TWR.
           </div>
         ) : null}
         <QualityWarningsNotice warnings={summary?.quality_warnings} />
@@ -2749,12 +2750,6 @@ function PerformancePage() {
                   </div>
                 </div>
               </div>
-              {performanceHistoryReliability?.annualizationMessage ? (
-                <div className="performance-history-reliability-warning" role="status">
-                  <strong>Short observed history.</strong>
-                  <span>{performanceHistoryReliability.annualizationMessage}</span>
-                </div>
-              ) : null}
               <MetricGrid rows={metricRows} />
             </section>
 
@@ -2763,7 +2758,12 @@ function PerformancePage() {
                 <div className="performance-calculation-toolbar-main">
                   <div>
                     <div className="panel-title">Calculation</div>
-                    <div className="portfolio-detail-meta">{calculationMeta}</div>
+                    <div
+                      className="portfolio-detail-meta"
+                      title={calculationRiskStatusLabel ?? undefined}
+                    >
+                      {calculationMeta}
+                    </div>
                   </div>
                   <div className="performance-calculation-actions">
                     {calculationTableViewStoreReadyPortfolioId === portfolioId ? (
@@ -2829,11 +2829,14 @@ function PerformancePage() {
                 </div>
               ) : null}
               {realizedRiskEstimateLowSample && showsRealizedRiskEstimate ? (
-                <div className="inline-notice inline-notice-warning" role="status">
-                  Low-sample realized risk estimate: Corr to Portfolio and Realized RC use only{' '}
-                  {formatNumber(calculationGroupsSummary?.risk_return_observation_count ?? 0, 0)} aligned{' '}
-                  {calculationGroupsSummary?.risk_calculation_frequency} observations. Treat the ranking and sign as
-                  preliminary; a negative Realized RC means diversification, not a loss.
+                <div
+                  className="inline-notice inline-notice-warning"
+                  role="status"
+                  title={realizedRiskEstimateDetail}
+                  aria-label={`Low-sample realized risk estimate. ${realizedRiskEstimateDetail}`}
+                  tabIndex={0}
+                >
+                  Low-sample realized risk estimate.
                 </div>
               ) : null}
               {calculationLoading || calculationGroupsPending ? <CalculationStatus /> : null}

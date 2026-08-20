@@ -101,14 +101,22 @@ function TableStatusRow({
   colSpan,
   label,
   tone = 'neutral',
+  detail,
 }: {
   colSpan: number
   label: string
   tone?: 'neutral' | 'error'
+  detail?: string | null
 }) {
   return (
     <tr className="table-status-row">
-      <td colSpan={colSpan} className={`empty-state-cell ${tone === 'error' ? 'table-status-cell-error' : ''}`}>
+      <td
+        colSpan={colSpan}
+        className={`empty-state-cell ${tone === 'error' ? 'table-status-cell-error' : ''}`}
+        title={detail ?? undefined}
+        aria-label={detail ? `${label}. ${detail}` : undefined}
+        tabIndex={detail ? 0 : undefined}
+      >
         {label}
       </td>
     </tr>
@@ -1556,12 +1564,24 @@ export default function ResearchPage() {
       ? [latestRun.detail.solve_event]
       : []
   const nonExecutionReadySolveEvents = solveEvents.filter((event) => event.execution_ready === false)
-  const manualReviewGaps = (latestRun?.detail?.target_weight_gaps ?? []).filter(
-    (row) => row.execution_status === 'manual_review_required',
-  )
   const rebalanceGaps = (latestRun?.detail?.target_weight_gaps ?? []).filter(
     (row) => Math.abs(row.gap ?? 0) > 0.0001 || row.execution_status === 'manual_review_required',
   )
+  const staleRunDetail = [
+    'Run Research again before using these weights for allocation or orders.',
+    ...(latestRun?.reliability_reasons ?? []),
+  ].join(' ')
+  const constrainedSolveDetail = nonExecutionReadySolveEvents
+    .map(
+      (event) =>
+        `${event.scope_label}: ${
+          event.solver_message ?? 'Review target shares and weight bounds before using these weights.'
+        }`,
+    )
+    .join(' ')
+  const skippedRebalanceDetail = skippedRebalances
+    .map((item) => `${item.date}: ${item.reason}`)
+    .join(' ')
   const storedBenchmark = latestRun?.detail?.backtest_benchmark ?? null
   const selectedBenchmarkId = benchmarkInstrumentId.trim()
   const displayBenchmark = selectedBenchmarkId
@@ -2118,44 +2138,27 @@ export default function ResearchPage() {
             <>
               {staleRun ? (
                 <section className="panel">
-                  <div className="inline-notice inline-notice-warning">
-                    <strong>Historical result — not current or execution-ready.</strong>{' '}
-                    Run Research again before using these weights for allocation or orders.
-                    {(latestRun.reliability_reasons ?? []).length ? (
-                      <ul>
-                        {(latestRun.reliability_reasons ?? []).map((reason) => <li key={reason}>{reason}</li>)}
-                      </ul>
-                    ) : null}
+                  <div
+                    className="inline-notice inline-notice-warning"
+                    role="status"
+                    title={staleRunDetail}
+                    aria-label={`Historical result — not current or execution-ready. ${staleRunDetail}`}
+                    tabIndex={0}
+                  >
+                    <strong>Historical result — not current or execution-ready.</strong>
                   </div>
                 </section>
               ) : null}
               {nonExecutionReadySolveEvents.length ? (
                 <section className="panel">
-                  <div className="inline-notice inline-notice-warning">
-                    <strong>Constrained solve — not execution-ready.</strong>{' '}
-                    One or more risk-budget targets were not achieved within the configured constraints.
-                    <ul>
-                      {nonExecutionReadySolveEvents.map((event) => (
-                        <li key={`${event.scope_node_id ?? 'root'}:${event.as_of_date}`}>
-                          {event.scope_label}: {event.solver_message ?? 'Review target shares and weight bounds before using these weights.'}
-                        </li>
-                      ))}
-                    </ul>
-                  </div>
-                </section>
-              ) : null}
-              {manualReviewGaps.length ? (
-                <section className="panel">
-                  <div className="inline-notice inline-notice-warning">
-                    <strong>Manual PM decision required.</strong>{' '}
-                    Review each flagged target and its execution note before translating the solved result into orders.
-                    <ul>
-                      {manualReviewGaps.map((row) => (
-                        <li key={`${row.member_type}:${row.member_id}`}>
-                          {row.label}: {row.execution_note ?? 'Confirm eligibility, liquidity, and redemption intent before acting.'}
-                        </li>
-                      ))}
-                    </ul>
+                  <div
+                    className="inline-notice inline-notice-warning"
+                    role="status"
+                    title={constrainedSolveDetail}
+                    aria-label={`Constrained solve — not execution-ready. ${constrainedSolveDetail}`}
+                    tabIndex={0}
+                  >
+                    <strong>Constrained solve — not execution-ready.</strong>
                   </div>
                 </section>
               ) : null}
@@ -2317,7 +2320,12 @@ export default function ResearchPage() {
                         </tr>
                         <tr>
                           <th>Status</th>
-                          <td>{pointInTimeCoverage ? formatLabel(pointInTimeCoverage.status) : 'N/A'}</td>
+                          <td
+                            title={pointInTimeCoverage?.unavailable_reason ?? undefined}
+                            tabIndex={pointInTimeCoverage?.unavailable_reason ? 0 : undefined}
+                          >
+                            {pointInTimeCoverage ? formatLabel(pointInTimeCoverage.status) : 'N/A'}
+                          </td>
                         </tr>
                         <tr>
                           <th>Decisions</th>
@@ -2325,7 +2333,12 @@ export default function ResearchPage() {
                         </tr>
                         <tr>
                           <th>Skipped Decisions</th>
-                          <td>{pointInTimeCoverage ? skippedRebalances.length : 'N/A'}</td>
+                          <td
+                            title={skippedRebalanceDetail || undefined}
+                            tabIndex={skippedRebalanceDetail ? 0 : undefined}
+                          >
+                            {pointInTimeCoverage ? skippedRebalances.length : 'N/A'}
+                          </td>
                         </tr>
                         <tr>
                           <th>Configuration Versions</th>
@@ -2356,15 +2369,6 @@ export default function ResearchPage() {
                       </tbody>
                     </table>
                   </div>
-                  {pointInTimeCoverage?.unavailable_reason ? (
-                    <div className="inline-notice">{pointInTimeCoverage.unavailable_reason}</div>
-                  ) : null}
-                  {skippedRebalances.length ? (
-                    <div className="inline-notice">
-                      {skippedRebalances.slice(0, 3).map((item) => `${item.date}: ${item.reason}`).join(' ')}
-                      {skippedRebalances.length > 3 ? ` (+${skippedRebalances.length - 3} more)` : ''}
-                    </div>
-                  ) : null}
                 </div>
                 <div className="portfolio-section-block">
                   <div className="panel-header panel-header-inline">
@@ -2447,11 +2451,16 @@ export default function ResearchPage() {
                 </div>
                 <div className="portfolio-section-block">
                   <div className="panel-header panel-header-inline">
-                    <div><div className="panel-title">Rolling OOS Holdout</div></div>
+                    <div>
+                      <div
+                        className="panel-title"
+                        title={walkForward?.methodology_note ?? undefined}
+                        tabIndex={walkForward?.methodology_note ? 0 : undefined}
+                      >
+                        Rolling OOS Holdout
+                      </div>
+                    </div>
                   </div>
-                  {walkForward?.methodology_note ? (
-                    <div className="inline-notice">{walkForward.methodology_note}</div>
-                  ) : null}
                   <div className="research-oos-summary">
                     <span>OOS Return <strong>{formatMaybePercent(walkForward?.oos_metrics?.period_return)}</strong></span>
                     <span>OOS Volatility <strong>{formatMaybePercent(walkForward?.oos_metrics?.annualized_volatility)}</strong></span>
@@ -2472,7 +2481,8 @@ export default function ResearchPage() {
                         {!walkForward?.windows?.length ? (
                           <TableStatusRow
                             colSpan={5}
-                            label={walkForward?.unavailable_reason ?? 'N/A'}
+                            label={walkForward?.unavailable_reason ? 'Unavailable' : 'N/A'}
+                            detail={walkForward?.unavailable_reason}
                           />
                         ) : walkForward.windows.map((window) => (
                           <tr key={`${window.training_start_date}:${window.test_start_date}`}>

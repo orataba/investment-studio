@@ -171,6 +171,14 @@ describe('Performance rendered page contract', () => {
     expect(
       await screen.findByRole('row', { name: /Portfolio Total/ }),
     ).toBeInTheDocument()
+    const annualizedReturnRow = screen.getByRole('row', { name: /Annualized TWR/ })
+    expect(within(annualizedReturnRow).getByText('Requires ≥ 1 year')).toBeInTheDocument()
+    expect(screen.queryByText('Short observed history.')).not.toBeInTheDocument()
+    expect(screen.queryByText(/Ordinary Assets Sleeve TWR unavailable/)).not.toBeInTheDocument()
+    expect(document.querySelector('.performance-calculation-toolbar .portfolio-detail-meta')).toHaveAttribute(
+      'title',
+      'Daily risk basis',
+    )
 
     expect(apiMocks.getPortfolioPerformance).toHaveBeenCalledWith('3', windowFilters)
     expect(apiMocks.getPortfolioPerformanceCalculation).toHaveBeenCalledWith('3', windowFilters)
@@ -181,6 +189,29 @@ describe('Performance rendered page contract', () => {
     })
 
     expect(screen.queryByText(/publication lineage|rounding audit|internal audit|manifest/i)).not.toBeInTheDocument()
+  })
+
+  it('keeps the carrying-basis warning concise and exposes methodology on hover', async () => {
+    const fixture = performanceFixture()
+    apiMocks.getPortfolioPerformance.mockResolvedValue({
+      ...fixture,
+      summary: {
+        ...fixture.summary,
+        performance_basis: 'operational_carrying_basis',
+        performance_label: 'Total Portfolio Operational Return',
+      },
+    })
+
+    renderPortfolioPage(
+      <PerformancePage />,
+      '/portfolios/3/performance?start_date=2026-07-06&end_date=2026-07-15',
+      '/portfolios/:portfolioId/performance',
+    )
+
+    const warning = await screen.findByRole('status', { name: /Operational carrying-basis return/ })
+    expect(warning).toHaveTextContent('Operational carrying-basis return. Not a complete fair-value TWR.')
+    expect(warning).toHaveAttribute('title', expect.stringContaining('operational ledger return'))
+    expect(warning).not.toHaveTextContent('GIPS-informed')
   })
 
   it('waits for the default planning taxonomy before loading calculation groups', async () => {

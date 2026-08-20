@@ -304,12 +304,8 @@ describe('Research rendered page contract', () => {
       '/portfolios/:portfolioId/research',
     )
 
-    expect(await screen.findByText('Manual PM decision required.')).toBeInTheDocument()
-    expect(
-      screen.getByText(
-        /Former Holding Fund: Status: Former · Research eligibility: manual PM review required/,
-      ),
-    ).toBeInTheDocument()
+    await screen.findByText('Research Eligibility')
+    expect(screen.queryByText('Manual PM decision required.')).not.toBeInTheDocument()
 
     expect(screen.getByRole('row', { name: /Current Holding Fund Held Eligible Not required/ })).toBeInTheDocument()
     expect(screen.getByRole('row', { name: /Observed Fund Observed Eligible Not required/ })).toBeInTheDocument()
@@ -382,8 +378,106 @@ describe('Research rendered page contract', () => {
       '/portfolios/:portfolioId/research',
     )
 
-    expect(await screen.findByText('Constrained solve — not execution-ready.')).toBeInTheDocument()
-    expect(screen.getByText(/Risk Assets: Maximum target-share gap is 12.00%/)).toBeInTheDocument()
+    const warning = await screen.findByRole('status', { name: /Constrained solve — not execution-ready/ })
+    expect(warning).toHaveTextContent('Constrained solve — not execution-ready.')
+    expect(warning).toHaveAttribute(
+      'title',
+      'Risk Assets: Maximum target-share gap is 12.00%.',
+    )
+    expect(screen.queryByText(/Risk Assets: Maximum target-share gap is 12.00%/)).not.toBeInTheDocument()
+  })
+
+  it('keeps stale-run reasons on hover while retaining the execution block', async () => {
+    const staleCompactRun = {
+      ...compactCompletedRun,
+      reliability_state: 'stale',
+      is_current: false,
+      reliability_reasons: [
+        'Planning taxonomy changed after this run.',
+        'Research settings changed after this run.',
+      ],
+    }
+    apiMocks.getPortfolioResearchWorkbench.mockResolvedValue({
+      ...workbenchFixture,
+      runs: [staleCompactRun],
+      selected_run: staleCompactRun,
+    })
+    apiMocks.getPortfolioResearchRun.mockResolvedValue({
+      ...completedRun,
+    })
+
+    renderPortfolioPage(
+      <ResearchPage />,
+      '/portfolios/3/research',
+      '/portfolios/:portfolioId/research',
+    )
+
+    const warning = await screen.findByRole('status', {
+      name: /Historical result — not current or execution-ready/,
+    })
+    expect(warning).toHaveTextContent('Historical result — not current or execution-ready.')
+    expect(warning).toHaveAttribute(
+      'title',
+      expect.stringContaining('Planning taxonomy changed after this run.'),
+    )
+    expect(screen.queryByText('Planning taxonomy changed after this run.')).not.toBeInTheDocument()
+  })
+
+  it('moves validation diagnostics to their related status fields', async () => {
+    const unavailableReason = 'Backtest revision history is shorter than selected risk lookback window.'
+    const methodologyNote =
+      'Training and test dates are temporal diagnostics, not walk-forward optimization.'
+    apiMocks.getPortfolioResearchRun.mockResolvedValue({
+      ...completedRun,
+      detail: {
+        ...completedRun.detail,
+        backtest: {
+          ...completedRun.detail.backtest,
+          methodology: { name: 'Point-in-time backtest' },
+          point_in_time_coverage: {
+            status: 'unavailable',
+            decision_count: 0,
+            skipped_rebalances: [
+              { date: '2026-07-01', reason: 'No eligible revision was available.' },
+            ],
+            configuration_versions_used: [],
+            first_decision_date: null,
+            last_decision_date: null,
+            unavailable_reason: unavailableReason,
+          },
+          walk_forward: {
+            methodology_note: methodologyNote,
+            unavailable_reason: unavailableReason,
+            windows: [],
+            oos_metrics: null,
+          },
+        },
+      },
+    })
+
+    renderPortfolioPage(
+      <ResearchPage />,
+      '/portfolios/3/research',
+      '/portfolios/:portfolioId/research',
+    )
+
+    const coverageSection = (await screen.findByText('Point-in-Time Coverage')).closest('.portfolio-section-block')
+    expect(coverageSection).not.toBeNull()
+    const coverageStatus = within(coverageSection as HTMLElement).getByRole('row', { name: /Status Unavailable/ })
+    expect(within(coverageStatus).getByText('Unavailable')).toHaveAttribute('title', unavailableReason)
+    const skippedStatus = within(coverageSection as HTMLElement).getByRole('row', { name: /Skipped Decisions 1/ })
+    expect(within(skippedStatus).getByText('1')).toHaveAttribute(
+      'title',
+      '2026-07-01: No eligible revision was available.',
+    )
+    expect(within(coverageSection as HTMLElement).queryByText(unavailableReason)).not.toBeInTheDocument()
+
+    const oosHeading = screen.getByText('Rolling OOS Holdout')
+    expect(oosHeading).toHaveAttribute('title', methodologyNote)
+    const oosSection = oosHeading.closest('.portfolio-section-block')
+    expect(oosSection).not.toBeNull()
+    expect(oosSection?.querySelector('.empty-state-cell')).toHaveAttribute('title', unavailableReason)
+    expect(within(oosSection as HTMLElement).queryByText(unavailableReason)).not.toBeInTheDocument()
   })
 
   it('renders current-to-solved rebalance gaps and execution readiness', async () => {

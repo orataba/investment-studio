@@ -99,9 +99,7 @@ describe('Holdings rendered page contract', () => {
     expect(screen.getByText('Securities')).toBeInTheDocument()
     expect(screen.getByRole('columnheader', { name: /Instrument Type/ })).toBeInTheDocument()
     expect(screen.getByRole('columnheader', { name: /Position Value/ })).toBeInTheDocument()
-    const operationalStatus = screen.getByRole('region', { name: 'Holdings operational status' })
-    expect(within(operationalStatus).getByText('Open short option contracts').nextElementSibling).toHaveTextContent('0.00')
-    expect(within(operationalStatus).getByText('No operational exceptions.')).toBeInTheDocument()
+    expect(screen.queryByRole('region', { name: 'Holdings operational status' })).not.toBeInTheDocument()
 
     expect(screen.getByRole('button', { name: 'Sort Quote: ascending' })).toBeInTheDocument()
   })
@@ -465,7 +463,7 @@ describe('Holdings rendered page contract', () => {
     expect(await screen.findByRole('cell', { name: /Beta Fund/ })).toBeInTheDocument()
   })
 
-  it('renders the default trend, explains a legitimate unavailable return, and preserves total-row semantics', async () => {
+  it('keeps trend selection detail on hover and preserves total-row semantics', async () => {
     const user = userEvent.setup()
     renderPortfolioPage(
       <PortfolioHomePage />,
@@ -474,21 +472,22 @@ describe('Holdings rendered page contract', () => {
     )
 
     await waitForHoldingsTable(user)
-    expect(await screen.findByRole('cell', { name: /Alpha Fund/ })).toBeInTheDocument()
+    const alphaCell = await screen.findByRole('cell', { name: /Alpha Fund/ })
     expect(apiMocks.getHoldingsWorkspace).toHaveBeenCalledWith('3', {
       as_of_date: undefined,
     })
-    expect(
-      screen.getByText(
-        'Trend: Dividend-Reinvested Total Return NAV · Complete · 250 observations',
-      ),
-    ).toBeInTheDocument()
-    expect(screen.getByText('Policy-preferred trend basis selected.')).toBeInTheDocument()
+    expect(alphaCell.querySelector('.holding-name-stack')).toHaveAttribute(
+      'title',
+      'Trend: Dividend-Reinvested Total Return NAV · Complete · 250 observations. Policy-preferred trend basis selected.',
+    )
+    expect(screen.queryByText(/Trend: Dividend-Reinvested Total Return NAV/)).not.toBeInTheDocument()
+    expect(screen.queryByText('Policy-preferred trend basis selected.')).not.toBeInTheDocument()
     expect(screen.getByRole('columnheader', { name: /Chart 6M/ })).toBeInTheDocument()
-    const unavailableReason = screen.getByText(
+    const qualityWarning = screen.getByRole('status', { name: /Data quality warning/ })
+    expect(qualityWarning).toHaveAttribute(
+      'title',
       'Alpha Fund YTD return is unavailable because the 2025-12-31 start anchor is missing.',
     )
-    expect(unavailableReason.closest('[role="status"]')).not.toBeNull()
     const totalLabel = screen.getByText('Portfolio Total (USD)')
     const totalRow = totalLabel.closest('tr')
     expect(totalRow).not.toBeNull()
@@ -666,6 +665,11 @@ describe('Holdings rendered page contract', () => {
       'Remaining premium basis $300.00 · Carrying liability $300.00',
     )
     expect(screen.queryByText('Uncovered')).not.toBeInTheDocument()
+    const operationalStatus = screen.getByRole('region', { name: 'Holdings operational status' })
+    expect(within(operationalStatus).getByText('Open short option contracts').nextElementSibling).toHaveTextContent('2.00')
+    expect(within(operationalStatus).getByText('Option strike notional').nextElementSibling).toHaveTextContent('$22,000.00')
+    expect(within(operationalStatus).queryByText('Pending settlement net')).not.toBeInTheDocument()
+    expect(within(operationalStatus).queryByText('Overdue settlements')).not.toBeInTheDocument()
 
     await waitForHoldingsTable(user)
     const advancedObligationCell = await screen.findByRole('cell', {
@@ -1177,9 +1181,11 @@ describe('Holdings rendered page contract', () => {
     )
 
     await waitForHoldingsTable(user)
-    expect(await screen.findByText('Trend: Close · Partial · 40 observations')).toBeInTheDocument()
-    expect(
-      screen.getByText('Using Close because it provides more complete history than the preferred basis.'),
-    ).toBeInTheDocument()
+    const alphaCell = await screen.findByRole('cell', { name: /Alpha Fund/ })
+    expect(alphaCell.querySelector('.holding-name-stack')).toHaveAttribute(
+      'title',
+      'Trend: Close · Partial · 40 observations. Using Close because it provides more complete history than the preferred basis.',
+    )
+    expect(screen.queryByText('Trend: Close · Partial · 40 observations')).not.toBeInTheDocument()
   })
 })

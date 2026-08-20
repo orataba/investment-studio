@@ -1620,16 +1620,27 @@ export default function OverviewPage() {
         {workspaceError ? <div className="inline-notice inline-notice-error">{workspaceError}</div> : null}
         {performanceError ? <div className="inline-notice inline-notice-error">{performanceError}</div> : null}
         {performanceWorkspace?.summary.as_of_clamp_reason ? (
-          <div className="inline-notice" role="status">
-            Performance as of {performanceWorkspace.summary.effective_end_date ?? performanceWorkspace.summary.end_date ?? '—'}: {' '}
-            {performanceWorkspace.summary.as_of_clamp_reason}
+          <div
+            className="inline-notice"
+            role="status"
+            title={performanceWorkspace.summary.as_of_clamp_reason}
+            aria-label={`Performance shown through ${
+              performanceWorkspace.summary.effective_end_date ?? performanceWorkspace.summary.end_date ?? '—'
+            }. ${performanceWorkspace.summary.as_of_clamp_reason}`}
+          >
+            Performance shown through{' '}
+            {performanceWorkspace.summary.effective_end_date ?? performanceWorkspace.summary.end_date ?? '—'}.
           </div>
         ) : null}
         {performanceIsOperational ? (
-          <div className="inline-notice inline-notice-warning" role="status">
-            Operational return is shown for NAV reconciliation. Market Risk Watch uses the separate return chain that
-            models derivatives and base-currency cash at zero return; benchmark return overlays are hidden from the
-            operational TWR chart.
+          <div
+            className="inline-notice inline-notice-warning"
+            role="status"
+            title="Operational return is shown for NAV reconciliation. Market Risk Watch uses the separate return chain that models derivatives and base-currency cash at zero return; benchmark return overlays are hidden from the operational TWR chart."
+            aria-label="Operational carrying-basis return. Operational return is shown for NAV reconciliation. Market Risk Watch uses the separate return chain that models derivatives and base-currency cash at zero return; benchmark return overlays are hidden from the operational TWR chart."
+            tabIndex={0}
+          >
+            Operational carrying-basis return.
           </div>
         ) : null}
         <QualityWarningsNotice

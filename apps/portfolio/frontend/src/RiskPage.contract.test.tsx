@@ -88,6 +88,10 @@ function twoHoldingWorkspace(secondHolding = betaHolding()) {
   })
 }
 
+async function findCorrelationUnavailable() {
+  return screen.findByRole('status', { name: /Correlation matrix unavailable/ })
+}
+
 const accountsWorkspace = {
   portfolio_id: '3',
   base_currency: 'USD',
@@ -431,6 +435,28 @@ describe('Risk rendered page contract', () => {
     expect(result.value.statusLabel).toBe('Daily risk basis')
   })
 
+  it('keeps a blocking risk-basis reason on hover instead of repeating it as an alert', async () => {
+    const workspace = twoHoldingWorkspace()
+    workspace.risk_basis = {
+      ...workspace.risk_basis!,
+      coverage_state: 'partial',
+      gap_count: 2,
+      gap_instrument_ids: ['asset-1', 'asset-2'],
+      status_label: 'Risk basis partial - 2 instrument(s) have observation gaps',
+    }
+    apiMocks.getHoldingsWorkspace.mockResolvedValue(workspace)
+
+    renderRiskPage()
+
+    const riskHealth = await screen.findByRole('region', { name: 'Risk health' })
+    const status = within(riskHealth).getByText(/Risk basis unavailable/)
+    expect(status).toHaveAttribute(
+      'title',
+      expect.stringContaining('Risk basis partial - 2 instrument(s) have observation gaps'),
+    )
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+  })
+
   it('excludes cash-account pending settlement rows from the risk member count', () => {
     const workspace = twoHoldingWorkspace()
     workspace.rows.push(
@@ -499,7 +525,10 @@ describe('Risk rendered page contract', () => {
     const liquidityCard = within(riskHealth).getByText('Cash / Unallocated').closest('article')
     expect(liquidityCard).not.toBeNull()
     expect(within(liquidityCard as HTMLElement).getByText('$200.00')).toBeInTheDocument()
-    expect(within(liquidityCard as HTMLElement).getByText('Disclosed outside covariance risk')).toBeInTheDocument()
+    expect(liquidityCard).toHaveAttribute(
+      'title',
+      'Disclosed exposure outside the covariance model.',
+    )
   })
 
   it('defaults the correlation matrix to active non-cash Current Holdings', async () => {
@@ -541,13 +570,17 @@ describe('Risk rendered page contract', () => {
 
     renderRiskPage()
 
-    const coverageAlert = await screen.findByRole('alert', {
-      name: 'Correlation matrix coverage issues',
-    })
-    expect(coverageAlert).toHaveTextContent('Correlation matrix unavailable')
-    expect(coverageAlert).toHaveTextContent('Beta Fund')
-    expect(coverageAlert).toHaveTextContent('Full-history return series is missing')
-    expect(coverageAlert).toHaveTextContent('no members or dates were dropped')
+    const coverageStatus = await findCorrelationUnavailable()
+    expect(coverageStatus).toHaveTextContent('Correlation matrix unavailable')
+    expect(coverageStatus).toHaveAttribute('title', expect.stringContaining('Beta Fund'))
+    expect(coverageStatus).toHaveAttribute(
+      'title',
+      expect.stringContaining('Full-history return series is missing'),
+    )
+    expect(coverageStatus).toHaveAttribute(
+      'title',
+      expect.stringContaining('no members or dates were dropped'),
+    )
   })
 
   it('fails closed when a non-cash position has quantity but no allocation or base value', async () => {
@@ -566,11 +599,10 @@ describe('Risk rendered page contract', () => {
 
     renderRiskPage()
 
-    const coverageAlert = await screen.findByRole('alert', {
-      name: 'Correlation matrix coverage issues',
-    })
-    expect(coverageAlert).toHaveTextContent(
-      'Alpha Fund: Current holding is missing its current portfolio weight.',
+    const coverageStatus = await findCorrelationUnavailable()
+    expect(coverageStatus).toHaveAttribute(
+      'title',
+      expect.stringContaining('Alpha Fund: Current holding is missing its current portfolio weight.'),
     )
   })
 
@@ -590,12 +622,10 @@ describe('Risk rendered page contract', () => {
 
     const scopeSelect = await screen.findByRole('combobox', { name: 'Matrix scope' })
     await user.selectOptions(scopeSelect, '__full_universe__')
-    const coverageAlert = await screen.findByRole('alert', {
-      name: 'Correlation matrix coverage issues',
-    })
-    expect(coverageAlert).toHaveTextContent('Beta Fund')
-    expect(coverageAlert).toHaveTextContent('active universe payload')
-    expect(coverageAlert).toHaveTextContent('All 2 scope members')
+    const coverageStatus = await findCorrelationUnavailable()
+    expect(coverageStatus).toHaveAttribute('title', expect.stringContaining('Beta Fund'))
+    expect(coverageStatus).toHaveAttribute('title', expect.stringContaining('active universe payload'))
+    expect(coverageStatus).toHaveAttribute('title', expect.stringContaining('All 2 scope members'))
   })
 
   it('fails closed on misaligned member dates and lists the first dates plus total count', async () => {
@@ -608,12 +638,13 @@ describe('Risk rendered page contract', () => {
 
     renderRiskPage()
 
-    const coverageAlert = await screen.findByRole('alert', {
-      name: 'Correlation matrix coverage issues',
-    })
-    expect(coverageAlert).toHaveTextContent('Beta Fund')
-    expect(coverageAlert).toHaveTextContent('Return dates do not match')
-    expect(coverageAlert).toHaveTextContent(`Missing dates (1 total): ${missingDate}`)
+    const coverageStatus = await findCorrelationUnavailable()
+    expect(coverageStatus).toHaveAttribute('title', expect.stringContaining('Beta Fund'))
+    expect(coverageStatus).toHaveAttribute('title', expect.stringContaining('Return dates do not match'))
+    expect(coverageStatus).toHaveAttribute(
+      'title',
+      expect.stringContaining(`Missing dates (1 total): ${missingDate}`),
+    )
   })
 
   it('fails closed when equal end dates represent different return periods', async () => {
@@ -633,11 +664,12 @@ describe('Risk rendered page contract', () => {
 
     renderRiskPage()
 
-    const coverageAlert = await screen.findByRole('alert', {
-      name: 'Correlation matrix coverage issues',
-    })
-    expect(coverageAlert).toHaveTextContent('Beta Fund')
-    expect(coverageAlert).toHaveTextContent('scope members do not share one period identity')
-    expect(coverageAlert).toHaveTextContent(mismatchedDate)
+    const coverageStatus = await findCorrelationUnavailable()
+    expect(coverageStatus).toHaveAttribute('title', expect.stringContaining('Beta Fund'))
+    expect(coverageStatus).toHaveAttribute(
+      'title',
+      expect.stringContaining('scope members do not share one period identity'),
+    )
+    expect(coverageStatus).toHaveAttribute('title', expect.stringContaining(mismatchedDate))
   })
 })

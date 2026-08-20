@@ -589,7 +589,7 @@ function holdingValuationSummary(row: PortfolioHoldingRow) {
       ? `Event-valued · ${formatLabel(row.valuation_basis)}`
       : 'Event-valued'
   }
-  return instrumentTrendCoverageLabel(row)
+  return null
 }
 
 function holdingValuationDetail(row: PortfolioHoldingRow) {
@@ -2016,23 +2016,31 @@ const HOLDINGS_COLUMN_DEFINITIONS: Record<HoldingsColumnKey, HoldingsColumnDefin
   instrument: {
     key: 'instrument',
     label: 'Instrument',
-    render: (row) => (
-      <div className="holding-name-stack">
-        <span>{holdingName(row)}</span>
-        <span className="holding-secondary holding-trend-summary">{holdingValuationSummary(row)}</span>
-        <span
-          className="holding-secondary holding-trend-reason"
-          title={holdingValuationDetail(row)}
-        >
-          {holdingValuationDetail(row)}
-        </span>
-        {optionObligationAmountSummary(row) ? (
-          <span className="holding-secondary holding-trend-reason">
-            {optionObligationAmountSummary(row)}
-          </span>
-        ) : null}
-      </div>
-    ),
+    render: (row) => {
+      const valuationSummary = holdingValuationSummary(row)
+      const valuationDetail = holdingValuationDetail(row)
+      const hoverDetail = valuationSummary
+        ? undefined
+        : `${instrumentTrendCoverageLabel(row)}. ${valuationDetail}`
+      return (
+        <div className="holding-name-stack" title={hoverDetail}>
+          <span>{holdingName(row)}</span>
+          {valuationSummary ? (
+            <span className="holding-secondary">{valuationSummary}</span>
+          ) : null}
+          {valuationSummary ? (
+            <span className="holding-secondary" title={valuationDetail}>
+              {valuationDetail}
+            </span>
+          ) : null}
+          {optionObligationAmountSummary(row) ? (
+            <span className="holding-secondary">
+              {optionObligationAmountSummary(row)}
+            </span>
+          ) : null}
+        </div>
+      )
+    },
     sortValue: (row) => holdingName(row),
   },
   ticker: {
@@ -3224,6 +3232,52 @@ export default function PortfolioHomePage() {
       (total, bucket) => total + bucket.open_contract_quantity,
       0,
     )
+    const operationalMetrics = [
+      openShortOptionContracts !== 0
+        ? {
+            label: 'Open short option contracts',
+            value: formatQuantity(openShortOptionContracts),
+          }
+        : null,
+      dueOrNearExpiryCount !== 0
+        ? {
+            label: 'Expiry actions ≤ 7 days',
+            value: formatNumber(dueOrNearExpiryCount, 0),
+          }
+        : null,
+      summary.option_obligation_exposure.strike_notional_base !== 0
+        ? {
+            label: 'Option strike notional',
+            value: formatCurrency(
+              summary.option_obligation_exposure.strike_notional_base,
+              workspace.base_currency,
+            ),
+          }
+        : null,
+      summary.settlement_exposure.pending_line_count !== 0
+        ? {
+            label: 'Pending settlements',
+            value: formatNumber(summary.settlement_exposure.pending_line_count, 0),
+          }
+        : null,
+      summary.settlement_exposure.net_base !== 0
+        ? {
+            label: 'Pending settlement net',
+            value: formatCurrency(summary.settlement_exposure.net_base, workspace.base_currency),
+          }
+        : null,
+      summary.settlement_exposure.overdue_line_count !== 0
+        ? {
+            label: 'Overdue settlements',
+            value: formatNumber(summary.settlement_exposure.overdue_line_count, 0),
+            critical: true,
+          }
+        : null,
+    ].filter((metric): metric is { label: string; value: string; critical?: boolean } => metric !== null)
+
+    if (!operationalMetrics.length && !workspace.operational_alerts.length) {
+      return null
+    }
 
     return (
       <section className="holdings-operational-status" aria-label="Holdings operational status">
@@ -3231,30 +3285,22 @@ export default function PortfolioHomePage() {
           <h2>Operational Status</h2>
           <span>{workspace.as_of_date}</span>
         </div>
-        <dl className="holdings-operational-metrics">
-          <div>
-            <dt>Open short option contracts</dt>
-            <dd>{formatQuantity(openShortOptionContracts)}</dd>
-          </div>
-          <div>
-            <dt>Expiry actions ≤ 7 days</dt>
-            <dd>{formatNumber(dueOrNearExpiryCount, 0)}</dd>
-          </div>
-          <div>
-            <dt>Option strike notional</dt>
-            <dd>{formatCurrency(summary.option_obligation_exposure.strike_notional_base, workspace.base_currency)}</dd>
-          </div>
-          <div>
-            <dt>Pending settlement net</dt>
-            <dd>{formatCurrency(summary.settlement_exposure.net_base, workspace.base_currency)}</dd>
-          </div>
-          <div className={summary.settlement_exposure.overdue_line_count > 0 ? 'holdings-operational-metric-critical' : undefined}>
-            <dt>Overdue settlements</dt>
-            <dd>{formatNumber(summary.settlement_exposure.overdue_line_count, 0)}</dd>
-          </div>
-        </dl>
-        <div className="holdings-operational-alerts">
-          {workspace.operational_alerts.length ? workspace.operational_alerts.map((alert) => (
+        {operationalMetrics.length ? (
+          <dl className="holdings-operational-metrics">
+            {operationalMetrics.map((metric) => (
+              <div
+                key={metric.label}
+                className={metric.critical ? 'holdings-operational-metric-critical' : undefined}
+              >
+                <dt>{metric.label}</dt>
+                <dd>{metric.value}</dd>
+              </div>
+            ))}
+          </dl>
+        ) : null}
+        {workspace.operational_alerts.length ? (
+          <div className="holdings-operational-alerts">
+            {workspace.operational_alerts.map((alert) => (
             <div
               key={alert.code}
               className={`holdings-operational-alert holdings-operational-alert-${alert.severity}`}
@@ -3263,12 +3309,9 @@ export default function PortfolioHomePage() {
               <strong>{alert.title}</strong>
               <span>{alert.message}</span>
             </div>
-          )) : (
-            <div className="holdings-operational-clear" role="status">
-              No operational exceptions.
-            </div>
-          )}
-        </div>
+            ))}
+          </div>
+        ) : null}
       </section>
     )
   }

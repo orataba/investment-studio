@@ -11,9 +11,7 @@ describe('research result presentation', () => {
 
   it('does not present stale runs or manual-review targets as executable', () => {
     expect(researchPageSource).toContain('Historical result — not current or execution-ready.')
-    expect(researchPageSource).toContain(
-      'Review each flagged target and its execution note before translating the solved result into orders.',
-    )
+    expect(researchPageSource).not.toContain('Manual PM decision required.')
     expect(researchPageSource).toContain('Research Eligibility')
     expect(researchPageSource).toContain('PM review required')
     expect(researchPageSource).toContain("row.execution_status === 'manual_review_required'")

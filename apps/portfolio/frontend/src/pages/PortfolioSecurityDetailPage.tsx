@@ -707,7 +707,7 @@ export default function PortfolioSecurityDetailPage() {
         {workspaceLoading ? <CalculationStatus /> : null}
         {workspaceError ? <div className="error-state">{workspaceError}</div> : null}
         {!workspaceLoading && !workspaceError && workspace && !selectedRows.length ? (
-          <div className="inline-notice inline-notice-warning">Not held as of selected date.</div>
+          <div className="empty-state" role="status">Not held as of selected date.</div>
         ) : null}
 
         <div className="holdings-detail-tabbar portfolio-security-tabs" role="tablist" aria-label="Instrument detail">

@@ -2846,6 +2846,22 @@ export default function RiskPage() {
         analyticsScope.configuration_versions.join(', ') || 'none'
       }; selection ${analyticsScope.taxonomy_selection_versions.join(', ') || 'none'}`
     : 'Analytics scope identity unavailable'
+  const riskHealthDetail = [
+    productionRiskMeta,
+    ...currentRiskInputErrors,
+    ...(holdingsWorkspace?.forward_risk?.errors ?? []),
+    ...(defaultPlanningTaxonomy ? topLevelRiskContributionResult.errors : []),
+    forwardRiskCoverageLabel,
+    analyticsVersionLabel,
+  ]
+    .filter(Boolean)
+    .join(' ')
+  const forwardRiskCoverageSummary = forwardRiskCoverage
+    ? `${formatNumber(forwardRiskCoverage.rows_after, 0)}/${formatNumber(
+        forwardRiskCoverage.rows_before,
+        0,
+      )} complete observations`
+    : null
   function renderRiskErrors(errors: string[]) {
     const uniqueErrors = [...new Set(errors.filter(Boolean))]
     if (!uniqueErrors.length) {
@@ -2864,33 +2880,28 @@ export default function RiskPage() {
     if (!result.issues.length) {
       return null
     }
+    const issueDetails = result.issues
+      .map((issue) => {
+        const visibleMissingDates = issue.missingDates.slice(0, 3)
+        return `${issue.memberLabel}: ${issue.coverageReason}${
+          issue.missingDateCount
+            ? ` Missing dates (${issue.missingDateCount} total): ${visibleMissingDates.join(', ')}${
+                issue.missingDateCount > visibleMissingDates.length ? ', ...' : ''
+              }.`
+            : ''
+        }`
+      })
+      .join(' ')
+    const coverageDetail = `All ${result.scopeMemberCount} scope members must share one complete aligned return window; no members or dates were dropped. ${issueDetails}`
     return (
       <div
-        className="inline-notice inline-notice-error"
-        role="alert"
-        aria-label="Correlation matrix coverage issues"
+        className="risk-chart-empty"
+        role="status"
+        aria-label={`Correlation matrix unavailable. ${coverageDetail}`}
+        title={coverageDetail}
+        tabIndex={0}
       >
-        <div>
-          Correlation matrix unavailable. All {result.scopeMemberCount} scope members must share one
-          complete aligned return window; no members or dates were dropped.
-        </div>
-        <ul>
-          {result.issues.map((issue, index) => {
-            const visibleMissingDates = issue.missingDates.slice(0, 3)
-            return (
-              <li
-                key={`${issue.memberKey}:${issue.reason}:${issue.coverageReason}:${index}`}
-              >
-                <strong>{issue.memberLabel}</strong>: {issue.coverageReason}
-                {issue.missingDateCount
-                  ? ` Missing dates (${issue.missingDateCount} total): ${visibleMissingDates.join(', ')}${
-                      issue.missingDateCount > visibleMissingDates.length ? ', ...' : ''
-                    }.`
-                  : ''}
-              </li>
-            )
-          })}
-        </ul>
+        Correlation matrix unavailable <span aria-hidden="true">ⓘ</span>
       </div>
     )
   }
@@ -2993,7 +3004,6 @@ export default function RiskPage() {
         {workspaceError ? <div className="inline-notice inline-notice-error">{workspaceError}</div> : null}
         {workspaceSupportError ? <div className="inline-notice inline-notice-error">{workspaceSupportError}</div> : null}
         <QualityWarningsNotice warnings={holdingsWorkspace?.quality_warnings} />
-        {holdingsWorkspace ? renderRiskErrors(currentRiskInputErrors) : null}
 
         {workspaceLoading ? (
           <CalculationStatus />
@@ -3009,8 +3019,13 @@ export default function RiskPage() {
               <div className="portfolio-detail-toolbar portfolio-section-toolbar risk-section-toolbar">
                 <div>
                   <div className="panel-title">Risk Health</div>
-                  <div className="portfolio-detail-meta">
-                    {holdingsWorkspace.as_of_date}; {portfolioRiskFrequency.statusLabel}; {productionRiskMeta}
+                  <div
+                    className="portfolio-detail-meta"
+                    title={riskHealthDetail}
+                    aria-label={`${holdingsWorkspace.as_of_date}; ${portfolioRiskFrequency.statusLabel}. ${riskHealthDetail}`}
+                    tabIndex={0}
+                  >
+                    {holdingsWorkspace.as_of_date}; {portfolioRiskFrequency.statusLabel}
                   </div>
                 </div>
               </div>
@@ -3029,26 +3044,29 @@ export default function RiskPage() {
                       ? formatPercent(holdingsWorkspace.forward_risk.portfolio_volatility)
                       : 'Unavailable'}
                   </strong>
-                  <span className="portfolio-detail-meta">{forwardRiskCoverageLabel}</span>
+                  {forwardRiskCoverageSummary ? (
+                    <span className="portfolio-detail-meta" title={forwardRiskCoverageLabel}>
+                      {forwardRiskCoverageSummary}
+                    </span>
+                  ) : null}
                 </article>
-                <article className="summary-card">
+                <article
+                  className="summary-card"
+                  title="Eligible gross exposure divided by total disclosed exposure."
+                >
                   <span className="summary-card-label">Model Coverage</span>
                   <strong className="summary-card-value">
                     {analyticsScope?.coverage_ratio != null
                       ? formatPercent(analyticsScope.coverage_ratio)
                       : 'Unavailable'}
                   </strong>
-                  <span className="portfolio-detail-meta">Eligible gross exposure / disclosed exposure</span>
                 </article>
-                <article className="summary-card">
-                  <span className="summary-card-label">Eligible Risk Budget Gap</span>
-                  <strong className="summary-card-value">
-                    {riskGapSummary || '—'}
-                  </strong>
-                  <span className="portfolio-detail-meta">
-                    {riskGapSummary ? 'Sum of absolute sleeve gaps' : 'Comparator unavailable'}
-                  </span>
-                </article>
+                {riskGapSummary ? (
+                  <article className="summary-card" title="Sum of absolute eligible-sleeve risk budget gaps.">
+                    <span className="summary-card-label">Eligible Risk Budget Gap</span>
+                    <strong className="summary-card-value">{riskGapSummary}</strong>
+                  </article>
+                ) : null}
                 <article className="summary-card">
                   <span className="summary-card-label">Modeled Gross Exposure</span>
                   <strong className="summary-card-value">
@@ -3062,45 +3080,45 @@ export default function RiskPage() {
                       : 'Modeled exposure unavailable'}
                   </span>
                 </article>
-                <article className="summary-card">
-                  <span className="summary-card-label">Excluded Exposure</span>
-                  <strong className="summary-card-value">
-                    {excludedExposure != null
-                      ? formatCurrency(excludedExposure, holdingsWorkspace.base_currency)
-                      : '—'}
-                  </strong>
-                  <span className="portfolio-detail-meta">
-                    {analyticsScope
-                      ? `Assets ${formatCurrency(analyticsScope.excluded_carrying_value, holdingsWorkspace.base_currency)}; liabilities ${formatCurrency(
-                          analyticsScope.excluded_liability,
-                          holdingsWorkspace.base_currency,
-                        )}`
-                      : 'Excluded exposure unavailable'}
-                  </span>
-                </article>
-                <article className="summary-card">
+                {excludedExposure != null && excludedExposure !== 0 ? (
+                  <article
+                    className="summary-card"
+                    title={`Assets ${formatCurrency(
+                      analyticsScope?.excluded_carrying_value,
+                      holdingsWorkspace.base_currency,
+                    )}; liabilities ${formatCurrency(
+                      analyticsScope?.excluded_liability,
+                      holdingsWorkspace.base_currency,
+                    )}`}
+                  >
+                    <span className="summary-card-label">Excluded Exposure</span>
+                    <strong className="summary-card-value">
+                      {formatCurrency(excludedExposure, holdingsWorkspace.base_currency)}
+                    </strong>
+                  </article>
+                ) : null}
+                <article className="summary-card" title="Disclosed exposure outside the covariance model.">
                   <span className="summary-card-label">Cash / Unallocated</span>
                   <strong className="summary-card-value">
                     {analyticsScope
                       ? formatCurrency(analyticsScope.cash_unallocated_exposure, holdingsWorkspace.base_currency)
                       : '—'}
                   </strong>
-                  <span className="portfolio-detail-meta">Disclosed outside covariance risk</span>
                 </article>
-                <article className="summary-card">
+                <article
+                  className="summary-card"
+                  title={
+                    concentrationMetrics.hhi != null
+                      ? `Eligible-sleeve normalized HHI ${formatNumber(concentrationMetrics.hhi, 3)}`
+                      : undefined
+                  }
+                >
                   <span className="summary-card-label">Top 3 Modeled Concentration</span>
                   <strong className="summary-card-value">
                     {concentrationMetrics.topThree != null ? formatPercent(concentrationMetrics.topThree) : '—'}
                   </strong>
-                  <span className="portfolio-detail-meta">
-                    {concentrationMetrics.hhi != null
-                      ? `Eligible-sleeve normalized HHI ${formatNumber(concentrationMetrics.hhi, 3)}`
-                      : 'Eligible exposure unavailable'}
-                  </span>
                 </article>
               </div>
-              {renderRiskErrors(holdingsWorkspace.forward_risk?.errors ?? [])}
-              <div className="portfolio-detail-meta risk-scope-identity">{analyticsVersionLabel}</div>
               {analyticsScope?.excluded_rows.length ? (
                 <div className="table-shell risk-scope-table-shell">
                   <table className="transactions-table risk-scope-table">
@@ -3127,77 +3145,85 @@ export default function RiskPage() {
                   </table>
                 </div>
               ) : null}
-              <div className="portfolio-detail-toolbar portfolio-section-toolbar risk-section-toolbar risk-scoped-contribution-toolbar">
-                <div>
-                  <div className="panel-title">Scoped Risk Contribution</div>
-                  <div className="portfolio-detail-meta">Shares sum to 100% inside the eligible modeled sleeve.</div>
-                </div>
-              </div>
-              {renderRiskErrors(topLevelRiskContributionResult.errors)}
               {topLevelRiskContributionRows.length ? (
-                <div className="table-shell risk-scope-table-shell">
-                  <table className="transactions-table risk-scope-table">
-                    <thead>
-                      <tr>
-                        <th>Sleeve</th>
-                        <th className="performance-cell-number">Eligible Weight</th>
-                        <th className="performance-cell-number">Risk Share</th>
-                        <th className="performance-cell-number">Observations</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {topLevelRiskContributionRows.map((row) => (
-                        <tr key={row.groupKey}>
-                          <td>{row.groupLabel}</td>
-                          <td className="performance-cell-number">{formatPercent(row.weight)}</td>
-                          <td className="performance-cell-number">{formatPercent(row.riskShare)}</td>
-                          <td className="performance-cell-number">{formatNumber(row.observationCount, 0)}</td>
+                <>
+                  <div className="portfolio-detail-toolbar portfolio-section-toolbar risk-section-toolbar risk-scoped-contribution-toolbar">
+                    <div>
+                      <div
+                        className="panel-title"
+                        title="Shares sum to 100% inside the eligible modeled sleeve."
+                      >
+                        Scoped Risk Contribution
+                      </div>
+                    </div>
+                  </div>
+                  <div className="table-shell risk-scope-table-shell">
+                    <table className="transactions-table risk-scope-table">
+                      <thead>
+                        <tr>
+                          <th>Sleeve</th>
+                          <th className="performance-cell-number">Eligible Weight</th>
+                          <th className="performance-cell-number">Risk Share</th>
+                          <th className="performance-cell-number">Observations</th>
                         </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
+                      </thead>
+                      <tbody>
+                        {topLevelRiskContributionRows.map((row) => (
+                          <tr key={row.groupKey}>
+                            <td>{row.groupLabel}</td>
+                            <td className="performance-cell-number">{formatPercent(row.weight)}</td>
+                            <td className="performance-cell-number">{formatPercent(row.riskShare)}</td>
+                            <td className="performance-cell-number">{formatNumber(row.observationCount, 0)}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </>
               ) : null}
             </section>
 
-            <section className="portfolio-section-block">
-              <div className="portfolio-detail-toolbar portfolio-section-toolbar risk-section-toolbar">
-                <div>
-                  <div className="panel-title">Current Drift</div>
-                  <div className="portfolio-detail-meta">
-                    {defaultPlanningTaxonomy
-                      ? `${defaultPlanningTaxonomy.name}; ${holdingsWorkspace.as_of_date}; ${portfolioRiskFrequency.statusLabel}; ${productionRiskMeta}`
-                      : 'No taxonomy'}
+            {defaultPlanningTaxonomy ? (
+              <section className="portfolio-section-block">
+                <div className="portfolio-detail-toolbar portfolio-section-toolbar risk-section-toolbar">
+                  <div>
+                    <div className="panel-title">Current Drift</div>
+                    <div
+                      className="portfolio-detail-meta"
+                      title={`${portfolioRiskFrequency.statusLabel}; ${productionRiskMeta}`}
+                    >
+                      {defaultPlanningTaxonomy.name}; {holdingsWorkspace.as_of_date}
+                    </div>
                   </div>
                 </div>
-              </div>
-              {renderRiskErrors([
-                ...activeRootSaaTargetSetResult.errors,
-                ...activeRootTaaTargetSetResult.errors,
-                ...currentPlanningGroupsResult.errors,
-              ])}
-              <div className="risk-target-grid">
-                <div className="risk-target-panel">
-                  <div className="risk-matrix-panel-title">Weight Target Gap</div>
-                  {renderTargetGapPanel({
-                    rows: weightTargetGapRows,
-                    errors: weightTargetGapErrors,
-                    ariaLabel: 'Weight target drift',
-                    emptyLabel: 'No weight target.',
-                  })}
+                {renderRiskErrors([
+                  ...activeRootSaaTargetSetResult.errors,
+                  ...activeRootTaaTargetSetResult.errors,
+                  ...currentPlanningGroupsResult.errors,
+                ])}
+                <div className="risk-target-grid">
+                  <div className="risk-target-panel">
+                    <div className="risk-matrix-panel-title">Weight Target Gap</div>
+                    {renderTargetGapPanel({
+                      rows: weightTargetGapRows,
+                      errors: weightTargetGapErrors,
+                      ariaLabel: 'Weight target drift',
+                      emptyLabel: 'No weight target.',
+                    })}
+                  </div>
+                  <div className="risk-target-panel">
+                    <div className="risk-matrix-panel-title">Risk Target Gap</div>
+                    {renderTargetGapPanel({
+                      rows: riskTargetGapRows,
+                      errors: riskTargetGapErrors,
+                      ariaLabel: 'Risk budget target gap',
+                      emptyLabel: 'No risk target.',
+                      currentLabel: 'Risk Share',
+                    })}
+                  </div>
                 </div>
-                <div className="risk-target-panel">
-                  <div className="risk-matrix-panel-title">Risk Target Gap</div>
-                  {renderTargetGapPanel({
-                    rows: riskTargetGapRows,
-                    errors: riskTargetGapErrors,
-                    ariaLabel: 'Risk budget target gap',
-                    emptyLabel: 'No risk target.',
-                    currentLabel: 'Risk Share',
-                  })}
-                </div>
-              </div>
-            </section>
+              </section>
+            ) : null}
 
             <section className="portfolio-section-block risk-rolling-section">
               <div className="portfolio-detail-toolbar portfolio-section-toolbar risk-section-toolbar risk-rolling-toolbar">
