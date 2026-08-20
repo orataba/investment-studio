@@ -1,7 +1,7 @@
 # Transaction Record 全面复核与收口
 
 最后更新：2026-08-20
-状态：实现与发布前验证已收口；生产迁移与在线验收完成后补入最终发布证据。
+状态：实现、生产迁移、部署与在线验收均已收口。
 
 ## 1. 结论
 
@@ -147,19 +147,21 @@ CSV 和 Excel 都使用同一组 canonical columns。Excel 只是带说明、字
 
 ## 7. 生产发布验收
 
-发布前证据（2026-08-20）：Portfolio backend 620 项测试通过，其中 PostgreSQL 集成测试
-使用真实临时数据库运行；Portfolio frontend 256 项测试及 production build 通过；infra 17 项
-测试通过。生产四个业务 schema 的隔离副本已从 0053 完整升级到 0054，full audit 为
-42 checks、0 failed、0 warnings，演练临时数据库随后已删除。
+最终发布证据（2026-08-20）：
 
-发布必须同时满足：
-
-1. backend 与 frontend 全量测试通过，frontend production build 通过；
-2. PostgreSQL 从当前生产 head 升级到 `20260820_0054`，并验证 explicit inception backfill；
-3. 在生产备份副本上完成 upgrade + full audit 演练；
-4. 正式迁移前创建可恢复备份；迁移、服务安装和 live audit 必须作为一个受控发布完成；
-5. live audit 包含 schema head、portfolio inception contract、transactions、holdings、
-   performance、risk、snapshot lineage 与负现金例外；
-6. 页面验收至少覆盖 Portfolio 创建、四个交易入口、Transfer 来源身份、CSV/XLSX preview、
-   Holdings/Performance/Risk 读取链；
-7. 发布提交必须在 main，远端 main 与本地一致，工作区和已合并临时分支清理干净。
+- Portfolio backend 621 项测试通过，其中 PostgreSQL 集成测试使用真实临时数据库运行；
+- Portfolio frontend 58 个测试文件、257 项测试及 production build 通过；infra 17 项测试通过；
+- 生产四个业务 schema 的隔离副本先从 0053 完整升级到 0054，full audit 为
+  42 checks、0 failed、0 warnings，演练临时数据库随后删除；
+- 正式生产数据库已升级到 `20260820_0054`。最新一次受控安装前备份为
+  `portfolio-ops-pre-launchd-install-20260820T083133Z-30203.pgdump`；
+- 生产发布刷新 23 个当前相关市场标的，0 失败；刷新后 5 个 Portfolio snapshot 重建，
+  1 个确认已是 current；live audit 再次为 42 checks、0 failed、0 warnings；
+- 生产页面已验收 Portfolio 创建表单、四个交易入口、Import 文件选择、Export、Transactions、
+  Holdings、Performance 与 Risk。验收未写入测试交易；
+- Holdings 显示 `No operational exceptions`。Risk 正常返回模型结果，并明确披露
+  1 个标的 observation gap，而不是把 90.19% coverage 伪报成完整；
+- Performance 区间计算不再按请求重复回放每日账本：此前 60 秒超时的同一 31 日接口现在
+  实测 HTTP 200、2.58 秒。页面从打开到 11 个 Taxonomy groups、19 个 instrument/cash rows
+  和 Portfolio Total 完整可用实测 8.41 秒；访问日志确认只发出一次最终 Taxonomy 分组请求；
+- 生产实现提交为 `cd8e094`、`ea51064`、`aaf44d5`，均已推送至远端 `main`。
