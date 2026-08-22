@@ -105,6 +105,7 @@ REGISTRY_INSTRUMENT_DETAILS = [
         "instrument_name": "iShares Core U.S. Aggregate Bond ETF",
         "instrument_type": "etf",
         "currency": "USD",
+        "exchange_code": "XNAS",
         "identifiers": [{"identifier_type": "ticker", "identifier_value": "AGG", "is_primary": True}],
         "quote_selection_policy": _canonical_quote_policy("etf"),
         "market_data": [
@@ -119,6 +120,7 @@ REGISTRY_INSTRUMENT_DETAILS = [
         "instrument_name": "Tracker Fund of Hong Kong",
         "instrument_type": "etf",
         "currency": "HKD",
+        "exchange_code": "XHKG",
         "identifiers": [{"identifier_type": "ticker", "identifier_value": "2800.HK", "is_primary": True}],
         "quote_selection_policy": _canonical_quote_policy("etf"),
         "market_data": [
@@ -132,6 +134,7 @@ REGISTRY_INSTRUMENT_DETAILS = [
         "instrument_name": "Watchlist Fund",
         "instrument_type": "etf",
         "currency": "USD",
+        "exchange_code": "XNAS",
         "identifiers": [{"identifier_type": "ticker", "identifier_value": "WATCH", "is_primary": True}],
         "quote_selection_policy": _canonical_quote_policy("etf"),
         "market_data": [
@@ -196,8 +199,8 @@ REGISTRY_INSTRUMENTS = [
 
 
 FX_PAYLOAD = {
-    "supported_currencies": ["USD", "HKD", "CNY"],
-    "maintained_pairs": ["USD/HKD", "USD/CNY"],
+    "supported_currencies": ["USD", "HKD", "CNY", "EUR", "GBP", "CHF"],
+    "maintained_pairs": ["USD/HKD", "USD/CNY", "USD/EUR", "USD/GBP", "USD/CHF"],
     "rates": [
         {
             "base_currency": "USD",

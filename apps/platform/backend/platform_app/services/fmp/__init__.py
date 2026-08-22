@@ -2,5 +2,6 @@
 
 from platform_app.services.fmp.client import FmpApiError, FmpClient
 from platform_app.services.fmp.eod import refresh_fmp_eod
+from platform_app.services.fmp.fx import refresh_fmp_fx_eod
 
-__all__ = ["FmpApiError", "FmpClient", "refresh_fmp_eod"]
+__all__ = ["FmpApiError", "FmpClient", "refresh_fmp_eod", "refresh_fmp_fx_eod"]

@@ -153,7 +153,7 @@ def _test_instrument_detail(
         "instrument_id": instrument_id,
         "instrument_name": instrument_name,
         "instrument_type": instrument_type,
-        **({"exchange_code": "XNYS"} if instrument_type == "equity" else {}),
+        **({"exchange_code": "XNYS"} if instrument_type in {"equity", "etf"} else {}),
         "currency": "USD",
         "identifiers": [{"identifier_type": "ticker", "identifier_value": instrument_id.upper(), "is_primary": True}],
         "quote_selection_policy": quote_selection_policy,
@@ -7808,7 +7808,7 @@ def test_period_calculation_groups_support_instrument_type_axis(client, monkeypa
                     "instrument_id": instrument_id,
                     "instrument_name": instrument_name,
                     "instrument_type": instrument_type,
-                    **({"exchange_code": "XNYS"} if instrument_type == "equity" else {}),
+                    **({"exchange_code": "XNYS"} if instrument_type in {"equity", "etf"} else {}),
                     "currency": "USD",
                     "identifiers": [{"identifier_type": "ticker", "identifier_value": instrument_id.upper(), "is_primary": True}],
                 },
@@ -7956,7 +7956,7 @@ def test_period_calculation_groups_use_daily_risk_basis_for_daily_sources(
                     "instrument_id": instrument_id,
                     "instrument_name": instrument_name,
                     "instrument_type": instrument_type,
-                    **({"exchange_code": "XNYS"} if instrument_type == "equity" else {}),
+                    **({"exchange_code": "XNYS"} if instrument_type in {"equity", "etf"} else {}),
                     "currency": "USD",
                     "identifiers": [
                         {

@@ -29,6 +29,21 @@ FX_INSTRUMENT_IDENTITIES: tuple[FxInstrumentIdentity, ...] = (
         base_currency="USD",
         quote_currency="CNY",
     ),
+    FxInstrumentIdentity(
+        instrument_id="fx-usd-eur",
+        base_currency="USD",
+        quote_currency="EUR",
+    ),
+    FxInstrumentIdentity(
+        instrument_id="fx-usd-gbp",
+        base_currency="USD",
+        quote_currency="GBP",
+    ),
+    FxInstrumentIdentity(
+        instrument_id="fx-usd-chf",
+        base_currency="USD",
+        quote_currency="CHF",
+    ),
 )
 SUPPORTED_FX_CURRENCIES: tuple[str, ...] = tuple(
     dict.fromkeys(

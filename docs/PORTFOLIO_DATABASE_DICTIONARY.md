@@ -1,6 +1,6 @@
 # Portfolio database dictionary
 
-As of 2026-08-20. Verified against SQLAlchemy metadata and migration heads `instrument_registry@20260818_0025` and `portfolio@20260820_0054`.
+As of 2026-08-22. Verified against SQLAlchemy metadata and migration heads `instrument_registry@20260822_0026` and `portfolio@20260822_0055`.
 
 This file is for architecture and integration review. External systems should use the APIs documented in [`TRANSACTION_INTEGRATION.md`](TRANSACTION_INTEGRATION.md), not write these tables directly.
 
@@ -257,7 +257,7 @@ Point-in-time snapshot of the selected taxonomy, nodes, assignments, target sets
 
 ### `instrument_registry.instrument`
 
-Canonical reusable market-asset identity. `instrument_type` supports `public_fund`, `private_fund`, `etf`, `index`, `equity`, `cash`, `fx`, and `other`. Equity rows also require a canonical MIC `exchange_code`; non-equity rows must leave it empty. Direct bonds, FCNs, and options are deliberately outside Registry; direct bonds also have no current Portfolio transaction model.
+Canonical reusable market-asset identity. `instrument_type` supports `public_fund`, `private_fund`, `etf`, `index`, `equity`, `cash`, `fx`, and `other`. Equity and ETF rows require a canonical MIC `exchange_code`; non-listed rows must leave it empty. Current listing MICs cover US, Hong Kong, mainland China, London, Xetra, Paris, Amsterdam, Milan, and SIX. Direct bonds, FCNs, and options are deliberately outside Registry; direct bonds also have no current Portfolio transaction model.
 
 | Columns |
 |---|

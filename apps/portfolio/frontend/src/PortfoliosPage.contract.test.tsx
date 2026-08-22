@@ -6,6 +6,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import PortfoliosPage from './pages/PortfoliosPage'
 
 const apiMocks = vi.hoisted(() => ({
+  SUPPORTED_PORTFOLIO_CURRENCIES: ['USD', 'HKD', 'CNY', 'EUR', 'GBP', 'CHF'],
   copyPortfolio: vi.fn(),
   createPortfolio: vi.fn(),
   deletePortfolio: vi.fn(),

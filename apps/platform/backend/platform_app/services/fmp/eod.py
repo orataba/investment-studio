@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import date, timedelta
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 
 from platform_app.services.fmp.client import FmpClient
 from platform_app.services.instrument_store import (
@@ -19,6 +19,22 @@ def _decimal_value(row: dict[str, object], *keys: str) -> Decimal:
         if raw is not None and str(raw).strip():
             return Decimal(str(raw))
     raise ValueError(f"FMP EOD row is missing {keys[0]}.")
+
+
+def _price_multiplier(instrument: dict[str, object]) -> Decimal:
+    source_settings = instrument.get("source_settings")
+    raw_multiplier = (
+        source_settings.get("source_price_multiplier", "1")
+        if isinstance(source_settings, dict)
+        else "1"
+    )
+    try:
+        multiplier = Decimal(str(raw_multiplier).strip())
+    except (InvalidOperation, TypeError, ValueError) as error:
+        raise ValueError("FMP source_price_multiplier is invalid.") from error
+    if not multiplier.is_finite() or multiplier <= 0:
+        raise ValueError("FMP source_price_multiplier is invalid.")
+    return multiplier
 
 
 def refresh_fmp_eod(
@@ -74,19 +90,20 @@ def refresh_fmp_eod(
         if str(row.get("date") or "")
     }
     currency = str(instrument.get("currency") or "").strip().upper()
+    multiplier = _price_multiplier(instrument)
     price_bars: list[dict[str, object]] = []
     market_data: list[dict[str, object]] = []
     for row in sorted(raw_rows, key=lambda item: str(item.get("date") or "")):
         as_of_date = str(row.get("date") or "").strip()
         if not as_of_date:
             continue
-        close = _decimal_value(row, "close", "adjClose")
+        close = _decimal_value(row, "close", "adjClose") * multiplier
         price_bars.append(
             {
                 "as_of_date": as_of_date,
-                "open": _decimal_value(row, "open", "adjOpen"),
-                "high": _decimal_value(row, "high", "adjHigh"),
-                "low": _decimal_value(row, "low", "adjLow"),
+                "open": _decimal_value(row, "open", "adjOpen") * multiplier,
+                "high": _decimal_value(row, "high", "adjHigh") * multiplier,
+                "low": _decimal_value(row, "low", "adjLow") * multiplier,
                 "close": close,
                 "volume": row.get("volume"),
                 "volume_unit": "shares",
@@ -113,7 +130,7 @@ def refresh_fmp_eod(
                     "metric_family": "price",
                     "quote_basis": "adjusted_close",
                     "as_of_date": as_of_date,
-                    "value": _decimal_value(adjusted, "adjClose", "close"),
+                    "value": _decimal_value(adjusted, "adjClose", "close") * multiplier,
                     "currency": currency,
                     "provider": "fmp:historical-price-eod:dividend-adjusted",
                     "status": "complete",

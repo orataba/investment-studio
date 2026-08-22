@@ -19,6 +19,7 @@ from portfolio_app.services.transaction_import import (
     TRANSACTION_ACTIONS,
 )
 from portfolio_app.services.transaction_xlsx import (
+    CURRENCY_VALUES,
     EXAMPLES_SHEET_NAME,
     FIELD_GUIDE_SHEET_NAME,
     INSTRUCTIONS_SHEET_NAME,
@@ -192,6 +193,7 @@ def test_transaction_xlsx_template_guides_manual_entry_without_importing_example
     assert {
         str(row.transaction.currency) for row in rows if row.transaction is not None
     } == {"USD", "HKD", "CNY"}
+    assert set(CURRENCY_VALUES) == {"USD", "HKD", "CNY", "EUR", "GBP", "CHF"}
     assert example_asset_types == set(ASSET_TYPE_VALUES)
     assert {
         "knock_in_close",

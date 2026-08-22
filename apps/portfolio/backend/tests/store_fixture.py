@@ -228,6 +228,7 @@ TEST_PORTFOLIO_STORE: dict[str, list[dict[str, Any]]] = {
                 "instrument_name": "iShares Core U.S. Aggregate Bond ETF",
                 "instrument_type": "etf",
                 "currency": "USD",
+                "exchange_code": "XNAS",
                 "identifiers": [
                     {
                         "identifier_type": "ticker",
@@ -306,6 +307,7 @@ TEST_PORTFOLIO_STORE: dict[str, list[dict[str, Any]]] = {
                 "instrument_name": "iShares Core U.S. Aggregate Bond ETF",
                 "instrument_type": "etf",
                 "currency": "USD",
+                "exchange_code": "XNAS",
                 "identifiers": [
                     {
                         "identifier_type": "ticker",
@@ -480,6 +482,7 @@ TEST_PORTFOLIO_STORE: dict[str, list[dict[str, Any]]] = {
                 "instrument_name": "iShares Core U.S. Aggregate Bond ETF",
                 "instrument_type": "etf",
                 "currency": "USD",
+                "exchange_code": "XNAS",
                 "identifiers": [
                     {
                         "identifier_type": "ticker",
@@ -516,6 +519,7 @@ TEST_PORTFOLIO_STORE: dict[str, list[dict[str, Any]]] = {
                 "instrument_name": "iShares Core U.S. Aggregate Bond ETF",
                 "instrument_type": "etf",
                 "currency": "USD",
+                "exchange_code": "XNAS",
                 "identifiers": [
                     {
                         "identifier_type": "ticker",
@@ -552,6 +556,7 @@ TEST_PORTFOLIO_STORE: dict[str, list[dict[str, Any]]] = {
                 "instrument_name": "iShares Core U.S. Aggregate Bond ETF",
                 "instrument_type": "etf",
                 "currency": "USD",
+                "exchange_code": "XNAS",
                 "identifiers": [
                     {
                         "identifier_type": "ticker",
@@ -636,6 +641,7 @@ TEST_PORTFOLIO_STORE: dict[str, list[dict[str, Any]]] = {
                 "instrument_name": "Tracker Fund of Hong Kong",
                 "instrument_type": "etf",
                 "currency": "HKD",
+                "exchange_code": "XHKG",
                 "identifiers": [
                     {
                         "identifier_type": "ticker",

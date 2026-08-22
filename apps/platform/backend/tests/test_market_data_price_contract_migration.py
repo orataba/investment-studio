@@ -143,16 +143,25 @@ def _insert_contract_test_instrument(
     schema: str,
 ) -> None:
     _set_search_path(connection, schema)
+    has_exchange_code = any(
+        column["name"] == "exchange_code"
+        for column in sa.inspect(connection).get_columns(
+            "instrument",
+            schema=schema or None,
+        )
+    )
+    exchange_column = ", exchange_code" if has_exchange_code else ""
+    exchange_value = ", 'XNAS'" if has_exchange_code else ""
     connection.execute(
         sa.text(
-            """
+            f"""
             INSERT INTO instrument (
                 instrument_id, instrument_name, instrument_type, currency,
-                quote_selection_policy_json, source_settings_json,
+                quote_selection_policy_json{exchange_column}, source_settings_json,
                 refresh_status_json, lifecycle_state_json, market_data_updated_at
             ) VALUES (
                 :instrument_id, :instrument_name, 'equity', 'USD',
-                '{}', '{}', '{}', '{}', NULL
+                '{{}}'{exchange_value}, '{{"market_calendar":"XNAS"}}', '{{}}', '{{}}', NULL
             )
             """
         ),
@@ -1266,7 +1275,7 @@ def test_option_contract_identity_migration_on_postgresql(
     with engine.connect() as connection:
         _set_search_path(connection, schema)
         assert connection.scalar(sa.text("SELECT version_num FROM alembic_version")) == (
-            "20260818_0025"
+            "20260822_0026"
         )
 
 

@@ -22,6 +22,11 @@ from sqlalchemy.engine import Dialect
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 from sqlalchemy.types import TypeDecorator
 
+from portfolio_ops_instrument_core.listing_contract import (
+    LISTED_INSTRUMENT_TYPES,
+    SUPPORTED_LISTING_EXCHANGES,
+)
+
 
 NAMING_CONVENTION = {
     "ix": "ix_%(column_0_label)s",
@@ -85,9 +90,13 @@ class Instrument(InstrumentRegistryBase):
             name="instrument_currency_contract",
         ),
         CheckConstraint(
-            "((instrument_type = 'equity' AND exchange_code IN "
-            "('XNAS', 'XNYS', 'XASE', 'XHKG', 'XSHG', 'XSHE')) OR "
-            "(instrument_type <> 'equity' AND exchange_code IS NULL))",
+            "((instrument_type IN ("
+            + ", ".join(f"'{value}'" for value in sorted(LISTED_INSTRUMENT_TYPES))
+            + ") AND exchange_code IS NOT NULL AND exchange_code IN ("
+            + ", ".join(f"'{value}'" for value in SUPPORTED_LISTING_EXCHANGES)
+            + ")) OR (instrument_type NOT IN ("
+            + ", ".join(f"'{value}'" for value in sorted(LISTED_INSTRUMENT_TYPES))
+            + ") AND exchange_code IS NULL))",
             name="instrument_exchange_contract",
         ),
     )

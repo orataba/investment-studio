@@ -17,6 +17,7 @@ class SecuritySearchResult(BaseModel):
     exchange_label: str
     market: str
     currency: str
+    currency_verified: bool = True
     country: str | None = None
     sector: str | None = None
     industry: str | None = None

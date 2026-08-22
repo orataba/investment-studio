@@ -12,7 +12,7 @@
 - `instrument_name`
 - `instrument_type`
 - `currency`
-- `exchange_code`（仅 `equity` 必填；canonical MIC）
+- `exchange_code`（`equity` 与 `etf` 必填；canonical MIC）
 - `identifiers[]`
 
 ### `InstrumentIdentifier`
@@ -68,9 +68,11 @@ shared market data。`total_return_nav` 不存在时必须为 NA；不得回退�
 - `expected_frequency`: `daily | event_driven`
 - `market_calendar`: 非空 calendar identifier 或 `null`；无法可靠推断 venue 时必须为 `null`
 - `release_lag_days`: 非负整数，表示 observation date 后的预期可用日延迟
+- `source_provider_currency / source_price_multiplier`: 供应商报价单位与写入 canonical price 前的乘数；仅在供应商单位与资产主币种不一致时使用
 
 默认 cadence 按品种确定：`public_fund / private_fund` 为 `daily / lag 1`；equity、ETF、index 与 FX 为
-`daily / lag 0`；cash 与 other 为 `event_driven / lag 0`。只有 `.SH`、`.SZ`、`.HK`
+`daily / lag 0`；cash 与 other 为 `event_driven / lag 0`。只有 `.SH/.SS`、`.SZ`、`.HK`、
+`.L`、`.DE`、`.PA`、`.AS`、`.MI`、`.SW`
 这类能从 canonical identifier 明确推断的 venue 才默认 calendar；其他品种保持 `null` 并由数据运营配置。
 
 Tushare 场内基金 ingestion 的 complete raw `close` 必须有同日 complete
@@ -165,7 +167,7 @@ security-master 事实；基金 NAV 分红再投只用于构造 TWR 指数，不
 共享 store 以 canonical instrument type、`metric_family` 与 `quote_basis` 作为唯一权威确定性派生：
 FX 为 `rate / 1`，其余为 `per_unit / 1`。
 批量写入若携带这两个派生字段会拒绝整批，避免调用方与共享 contract 形成第二套规则。
-Python runtime 只支持 Instrument Registry head `20260818_0025`，不会探测或兼容更早物理 schema。当前 Registry 类型集合是 `public_fund | private_fund | etf | index | equity | cash | fx | other`；股票还必须持有 canonical MIC `exchange_code` 和 FMP `provider_symbol` identity。直接债券、FCN 与期权不进入共享资产表。FCN 与期权合约条款、生命周期和交易事实属于 Portfolio 私域；直接债券当前不在产品交易范围内。直接 SQL 也必须满足 canonical 行情、NAV lineage、基金行为状态机、计算输入与 broker identity 约束。
+Python runtime 只支持 Instrument Registry head `20260822_0026`，不会探测或兼容更早物理 schema。当前 Registry 类型集合是 `public_fund | private_fund | etf | index | equity | cash | fx | other`。股票与 ETF 都必须持有 canonical MIC `exchange_code`；FMP 资产还必须持有 `provider_symbol` identity。支持的 listing MIC 为 `XNAS / XNYS / XASE / BATS / XHKG / XSHG / XSHE / XLON / XETR / XPAR / XAMS / XMIL / XSWX`，其中 `BATS` 只用于 ETF 目录。直接债券、FCN 与期权不进入共享资产表。FCN 与期权合约条款、生命周期和交易事实属于 Portfolio 私域；直接债券当前不在产品交易范围内。直接 SQL 也必须满足 canonical 行情、NAV lineage、基金行为状态机、计算输入与 broker identity 约束。
 
 每条 market-data observation（不只 FX）都必须使用 instrument master currency，`value`
 必须是有限正数，`status` 只能是 `complete | partial | unavailable`。共享 store 的单点、批量、
@@ -174,7 +176,8 @@ NaN/Infinity 和未知 status 都拒绝整次事务，不补 USD、不继承 mas
 status 当成 `complete`。
 
 FX identity 由 instrument-core 唯一维护：`fx-usd-hkd = USD/HKD`、
-`fx-usd-cny = USD/CNY`。FX instrument 只能写入 `fx/spot`，其 instrument master
+`fx-usd-cny = USD/CNY`、`fx-usd-eur = USD/EUR`、`fx-usd-gbp = USD/GBP`、
+`fx-usd-chf = USD/CHF`。FX instrument 只能写入 `fx/spot`，其 instrument master
 currency 与每条 observation currency 都必须等于 pair 的 quote currency，rate 必须是
 有限正数。普通资产不能写 `fx/spot`，未知 FX instrument id 也不能由名称、ticker 或币种
 猜测身份。共享 store 对单点和批量写入执行同一合同；读取到违反该合同的历史数据时必须返回

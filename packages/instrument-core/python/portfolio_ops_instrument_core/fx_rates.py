@@ -262,7 +262,11 @@ def upsert_fx_rate(
 ) -> dict[str, object]:
     identity = fx_instrument_identity_for_pair(base_currency, quote_currency)
     if identity is None:
-        raise ValueError("Only USD/HKD and USD/CNY are maintained directly in this MVP.")
+        raise ValueError(
+            "FX pair is not maintained directly; choose one of "
+            + ", ".join(maintained_fx_pairs())
+            + "."
+        )
     validated = validate_fx_market_data_contract(
         instrument_id=identity.instrument_id,
         instrument_type="fx",

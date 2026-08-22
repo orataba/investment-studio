@@ -141,7 +141,7 @@ Idempotency-Key: screenshot-batch-20260821-001
 | `fees` | decimal string | 否 | 附着于本交易的费用，省略等于 0 |
 | `fee_category` | enum | 否 | 见第 7 节；省略为 `unknown` |
 | `taxes` | decimal string | 否 | 附着于本交易的税费，省略等于 0 |
-| `currency` | enum | 是 | 只允许 `USD`、`HKD`、`CNY`，必须与账户和资产一致 |
+| `currency` | enum | 是 | 只允许 `USD`、`HKD`、`CNY`、`EUR`、`GBP`、`CHF`，必须与账户和资产一致 |
 | `note` | string | 否 | 人工可读备注；不得依赖备注表达必须参与计算的结构化事实 |
 
 JSON 中金额、价格、数量和比例字段必须发送十进制字符串，不要发送经过二进制浮点运算的结果。例如发送 `"1234.50"`，不要在客户端用浮点数计算后发送 `1234.499999999`。

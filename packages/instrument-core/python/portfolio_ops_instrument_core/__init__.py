@@ -64,6 +64,11 @@ from portfolio_ops_instrument_core.return_semantics import (
     confirmed_total_return_quote_bases,
     resolve_quote_return_semantics,
 )
+from portfolio_ops_instrument_core.listing_contract import (
+    LISTED_INSTRUMENT_TYPES,
+    SUPPORTED_LISTING_EXCHANGES,
+    validate_listing_identity,
+)
 
 __all__ = [
     "BrokerIdentifier",
@@ -126,4 +131,7 @@ __all__ = [
     "INDEX_LEVEL_QUOTE_BASES",
     "confirmed_total_return_quote_bases",
     "resolve_quote_return_semantics",
+    "LISTED_INSTRUMENT_TYPES",
+    "SUPPORTED_LISTING_EXCHANGES",
+    "validate_listing_identity",
 ]

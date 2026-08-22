@@ -56,6 +56,22 @@ class FmpClient:
     def active_etfs(self, exchange: str) -> list[dict[str, object]]:
         return self._active_listings(exchange, is_etf=True)
 
+    def profile(self, symbol: str) -> dict[str, object]:
+        normalized_symbol = symbol.strip().upper()
+        if not normalized_symbol:
+            raise ValueError("FMP profile symbol must not be blank.")
+        rows = self._get_list("profile", params={"symbol": normalized_symbol})
+        matches = [
+            row
+            for row in rows
+            if str(row.get("symbol") or "").strip().upper() == normalized_symbol
+        ]
+        if len(matches) != 1:
+            raise FmpApiError(
+                f"FMP profile returned {len(matches)} exact rows for {normalized_symbol}."
+            )
+        return matches[0]
+
     def _active_listings(
         self,
         exchange: str,
@@ -86,6 +102,35 @@ class FmpClient:
             if adjusted
             else "historical-price-eod/non-split-adjusted"
         )
+        return self._historical_eod_endpoint(
+            endpoint,
+            symbol=symbol,
+            start_date=start_date,
+            end_date=end_date,
+        )
+
+    def historical_fx(
+        self,
+        symbol: str,
+        *,
+        start_date: str,
+        end_date: str,
+    ) -> list[dict[str, object]]:
+        return self._historical_eod_endpoint(
+            "historical-price-eod/full",
+            symbol=symbol,
+            start_date=start_date,
+            end_date=end_date,
+        )
+
+    def _historical_eod_endpoint(
+        self,
+        endpoint: str,
+        *,
+        symbol: str,
+        start_date: str,
+        end_date: str,
+    ) -> list[dict[str, object]]:
         requested_start = date.fromisoformat(start_date)
         page_end = date.fromisoformat(end_date)
         rows_by_date: dict[str, dict[str, object]] = {}

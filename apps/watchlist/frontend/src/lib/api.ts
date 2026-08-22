@@ -89,6 +89,7 @@ export type SharedInstrumentRecord = {
   fmp_symbol?: string
   source?: 'registry' | 'fmp_catalog'
   existing_instrument_id?: string | null
+  currency_verified?: boolean
 }
 
 export type SecuritySearchResult = {
@@ -104,6 +105,7 @@ export type SecuritySearchResult = {
   sector: string | null
   industry: string | null
   existing_instrument_id: string | null
+  currency_verified: boolean
 }
 
 export type GroupByOption = {
@@ -1080,10 +1082,11 @@ export async function searchPlatformSecurityCatalog(query: string, limit = 12) {
       instrument_name: item.name,
       instrument_type: item.instrument_type,
       currency: item.currency,
-      exchange_code: item.instrument_type === 'equity' ? item.exchange_code : null,
+      exchange_code: item.exchange_code,
       fmp_symbol: item.fmp_symbol,
       source: 'fmp_catalog',
       existing_instrument_id: item.existing_instrument_id,
+      currency_verified: item.currency_verified,
       coverage_state: item.existing_instrument_id ? 'registry' : 'FMP',
       identifiers: [
         {

@@ -478,6 +478,7 @@ def test_raw_price_bars_are_idempotent_and_validate_ohlc(
         instrument_name="Price Bar ETF",
         instrument_type="etf",
         currency="CNY",
+        exchange_code="XSHG",
         identifiers=[
             {
                 "identifier_type": "ticker",
@@ -879,7 +880,7 @@ def test_listed_security_with_only_adjusted_close_has_no_valuation_quote(
         instrument_name=f"Adjusted-only {instrument_type}",
         instrument_type=instrument_type,
         currency="CNY",
-        exchange_code="XSHG" if instrument_type == "equity" else None,
+        exchange_code="XSHG" if instrument_type in {"equity", "etf"} else None,
         identifiers=[
             {
                 "identifier_type": "ticker",
@@ -2006,6 +2007,7 @@ def test_source_schedule_semantics_default_and_roundtrip_by_instrument_type(
         instrument_name="FMP Schedule ETF",
         instrument_type="etf",
         currency="USD",
+        exchange_code="BATS",
         identifiers=[
             {
                 "identifier_type": "exchange_ticker",

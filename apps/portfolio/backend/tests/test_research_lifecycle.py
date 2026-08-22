@@ -11,6 +11,7 @@ WATCH_INSTRUMENT_REF = {
     "instrument_name": "Watchlist Fund",
     "instrument_type": "etf",
     "currency": "USD",
+    "exchange_code": "XNAS",
     "identifiers": [
         {
             "identifier_type": "ticker",

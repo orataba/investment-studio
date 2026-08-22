@@ -88,7 +88,7 @@ FEE_CATEGORY_VALUES = (
     "performance_fee",
     "other",
 )
-CURRENCY_VALUES = ("USD", "HKD", "CNY")
+CURRENCY_VALUES = ("USD", "HKD", "CNY", "EUR", "GBP", "CHF")
 OPTION_TYPE_VALUES = ("call", "put")
 
 ASSET_TYPE_GUIDANCE = {
@@ -301,7 +301,7 @@ FIELD_GUIDANCE: dict[str, tuple[str, str, str]] = {
     "currency": (
         "交易币种",
         "条件必填",
-        "从下拉选择 USD、HKD 或 CNY；必须与账户和资产的币种规则匹配。",
+        "从下拉选择 USD、HKD、CNY、EUR、GBP 或 CHF；必须与账户和资产的币种规则匹配。",
     ),
     "source_system": (
         "来源系统",
@@ -1162,7 +1162,7 @@ def _add_template_validations(worksheet) -> None:
         (
             "currency",
             "CurrencyValues",
-            "交易币种必须是 USD、HKD 或 CNY。",
+            "交易币种必须是 USD、HKD、CNY、EUR、GBP 或 CHF。",
             "请选择币种下拉列表中的值。",
         ),
     )
@@ -1273,7 +1273,7 @@ def _render_template_instructions(worksheet) -> None:
     warning.fill = WARNING_FILL
     warning.font = Font(bold=True, size=12)
     rules = (
-        "普通交易：asset_type、transaction_action、trade_date、account_id、gross_amount、currency 为必填；currency 只能是 USD、HKD 或 CNY，并与账户、资产及结算现金账户匹配。Transfer 只填一个方向：Transfer Out 的 account_id 是转出方，Transfer In 的 account_id 是转入方；counterparty_account_id 填另一侧账户，转仓还要填写 instrument_id 和 quantity。",
+        "普通交易：asset_type、transaction_action、trade_date、account_id、gross_amount、currency 为必填；currency 只能是 USD、HKD、CNY、EUR、GBP 或 CHF，并与账户、资产及结算现金账户匹配。Transfer 只填一个方向：Transfer Out 的 account_id 是转出方，Transfer In 的 account_id 是转入方；counterparty_account_id 填另一侧账户，转仓还要填写 instrument_id 和 quantity。",
         "交易方向只由 transaction_action 表达。FCN/Option 的到期、敲入、敲出和现金结算都直接选择该资产对应的交易动作，不需要再填写额外的事件分类字段。",
         "fees、taxes 和 fee_category 可留空，分别按 0、0 和 unknown 处理。所有交易（包括 Transfer）都建议填写 source_system + external_reference；Transfer 的来源身份记录在成对交易的 transfer_out 腿。",
         "不要在 Transactions 页使用公式、宏、合并单元格或负数。上传仅接受 Transactions 页的字面值，最多 5,000 条交易记录。",

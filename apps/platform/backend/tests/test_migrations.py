@@ -661,13 +661,13 @@ def test_daily_api_source_metadata_migration_excludes_manual_instruments(
                 (
                     'manual-etf', '手工ETF', 'etf', 'CNY',
                     '{}',
-                    '{"source_mode":"manual","source_location":"CSV import"}',
+                    '{"source_mode":"manual","source_location":"CSV import","market_calendar":"XSHG"}',
                     '{}', '{"status":"active"}', NULL
                 ),
                 (
                     'weekly-api-etf', '显式周频ETF', 'etf', 'CNY',
                     '{}',
-                    '{"source_mode":"api","source_api_profile":"tushare","expected_frequency":"weekly"}',
+                    '{"source_mode":"api","source_api_profile":"tushare","expected_frequency":"weekly","market_calendar":"XSHG"}',
                     '{}', '{"status":"active"}', NULL
                 ),
                 (
@@ -711,11 +711,12 @@ def test_daily_api_source_metadata_migration_excludes_manual_instruments(
 
     manual_source = source_settings("manual-etf")
     assert "expected_frequency" not in manual_source
+    assert manual_source["market_calendar"] == "XSHG"
     assert rows["manual-etf"]["market_data_updated_at"] is None
 
     weekly_source = source_settings("weekly-api-etf")
     assert weekly_source["expected_frequency"] == "daily"
-    assert "market_calendar" not in weekly_source
+    assert weekly_source["market_calendar"] == "XSHG"
     assert rows["weekly-api-etf"]["market_data_updated_at"]
     assert rows["weekly-api-etf"]["calculation_inputs_updated_at"]
 

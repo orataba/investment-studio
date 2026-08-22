@@ -154,6 +154,8 @@ export interface SourceSettings {
   market_calendar: string | null
   release_lag_days: number
   return_semantics?: ReturnSemantics
+  source_provider_currency?: string
+  source_price_multiplier?: string
 }
 
 export interface QuoteSelectionPolicy {

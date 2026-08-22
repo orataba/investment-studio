@@ -7,6 +7,8 @@ from typing import Literal, cast
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from portfolio_ops_instrument_core.listing_contract import validate_listing_identity
+
 
 InstrumentType = Literal[
     "public_fund",
@@ -293,10 +295,10 @@ class InstrumentCore(BaseModel):
 
     @model_validator(mode="after")
     def validate_exchange_identity(self) -> "InstrumentCore":
-        if self.instrument_type == "equity" and self.exchange_code is None:
-            raise ValueError("Equity instruments require an exchange_code")
-        if self.instrument_type != "equity" and self.exchange_code is not None:
-            raise ValueError("exchange_code is reserved for equity instruments")
+        validate_listing_identity(
+            instrument_type=self.instrument_type,
+            exchange_code=self.exchange_code,
+        )
         return self
 
     @model_validator(mode="after")

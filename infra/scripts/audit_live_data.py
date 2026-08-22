@@ -30,10 +30,10 @@ from portfolio_ops_instrument_core import (  # noqa: E402
 
 
 FINAL_FLAT_TABLE_HEADS = {
-    "instrument_registry": "20260818_0025",
-    "platform": "20260822_0005",
-    "portfolio": "20260820_0054",
-    "watchlist": "20260818_0042",
+    "instrument_registry": "20260822_0026",
+    "platform": "20260822_0006",
+    "portfolio": "20260822_0055",
+    "watchlist": "20260822_0043",
 }
 VERSION_TABLES = {
     "instrument_registry": "alembic_version",
@@ -252,6 +252,7 @@ AUDIT_CHECK_NAMES = (
     "watchlist_taxonomy_history_contract",
     "portfolio_account_category_contract",
     "portfolio_inception_contract",
+    "portfolio_instrument_reference_contract",
     "derivative_registry_boundary",
     "portfolio_derivative_contract_integrity",
     "market_data_invalid_values",
@@ -661,7 +662,8 @@ def _run_flat_table_audit(database_url: str) -> list[AuditCheck]:
                                 instrument.instrument_type = 'equity'
                                 AND (
                                     instrument.exchange_code NOT IN (
-                                        'XNAS', 'XNYS', 'XASE', 'XHKG', 'XSHG', 'XSHE'
+                                        'XNAS', 'XNYS', 'XASE', 'XHKG', 'XSHG', 'XSHE',
+                                        'XLON', 'XETR', 'XPAR', 'XAMS', 'XMIL', 'XSWX'
                                     )
                                     OR coalesce(
                                         instrument.source_settings_json ->> 'source_mode',
@@ -689,7 +691,11 @@ def _run_flat_table_audit(database_url: str) -> list[AuditCheck]:
                            OR (
                                 instrument.instrument_type = 'etf'
                                 AND (
-                                    instrument.exchange_code IS NOT NULL
+                                    instrument.exchange_code NOT IN (
+                                        'XNAS', 'XNYS', 'XASE', 'BATS',
+                                        'XHKG', 'XSHG', 'XSHE',
+                                        'XLON', 'XETR', 'XPAR', 'XAMS', 'XMIL', 'XSWX'
+                                    )
                                     OR coalesce(
                                         instrument.source_settings_json ->> 'source_mode',
                                         ''
@@ -698,6 +704,10 @@ def _run_flat_table_audit(database_url: str) -> list[AuditCheck]:
                                         instrument.source_settings_json ->> 'source_api_profile',
                                         ''
                                     ) NOT IN ('fmp', 'tushare', 'tushare_pro', 'tushare-pro')
+                                    OR coalesce(
+                                        instrument.source_settings_json ->> 'market_calendar',
+                                        ''
+                                    ) <> instrument.exchange_code
                                     OR (
                                         coalesce(
                                             instrument.source_settings_json ->> 'source_api_profile',
@@ -709,7 +719,9 @@ def _run_flat_table_audit(database_url: str) -> list[AuditCheck]:
                                                 ''
                                             ) NOT IN (
                                                 'XNAS', 'XNYS', 'XASE', 'BATS',
-                                                'XHKG', 'XSHG', 'XSHE'
+                                                'XHKG', 'XSHG', 'XSHE',
+                                                'XLON', 'XETR', 'XPAR', 'XAMS',
+                                                'XMIL', 'XSWX'
                                             )
                                             OR NOT EXISTS (
                                                 SELECT 1
@@ -736,9 +748,9 @@ def _run_flat_table_audit(database_url: str) -> list[AuditCheck]:
                     """,
                     detail=(
                         "Registry instrument types must use the split public/private fund "
-                        "contract; stocks must use FMP, ETFs must use their configured "
-                        "FMP or Tushare source contract, and non-listed instruments must "
-                        "not carry exchange identity."
+                        "contract; stocks and ETFs must carry canonical listing identity, "
+                        "use their configured FMP or Tushare source contract, and "
+                        "non-listed instruments must not carry exchange identity."
                     ),
                 )
             )
@@ -750,7 +762,9 @@ def _run_flat_table_audit(database_url: str) -> list[AuditCheck]:
                         WITH required_exchange(exchange_code) AS (
                             VALUES
                                 ('XNAS'), ('XNYS'), ('XASE'), ('BATS'),
-                                ('XHKG'), ('XSHG'), ('XSHE')
+                                ('XHKG'), ('XSHG'), ('XSHE'),
+                                ('XLON'), ('XETR'), ('XPAR'), ('XAMS'),
+                                ('XMIL'), ('XSWX')
                         )
                         SELECT
                             (
@@ -770,12 +784,14 @@ def _run_flat_table_audit(database_url: str) -> list[AuditCheck]:
                                    OR trim(catalog.company_name) = ''
                                    OR catalog.exchange_code NOT IN (
                                         'XNAS', 'XNYS', 'XASE', 'BATS',
-                                        'XHKG', 'XSHG', 'XSHE'
+                                        'XHKG', 'XSHG', 'XSHE',
+                                        'XLON', 'XETR', 'XPAR', 'XAMS',
+                                        'XMIL', 'XSWX'
                                    )
                             )
                     """,
                     detail=(
-                        "The local FMP ETF search catalog must cover all seven "
+                        "The local FMP ETF search catalog must cover all thirteen "
                         "supported listing exchanges with complete identities."
                     ),
                 )
@@ -786,7 +802,11 @@ def _run_flat_table_audit(database_url: str) -> list[AuditCheck]:
                     name="fmp_equity_catalog_contract",
                     query="""
                         WITH required_exchange(exchange_code) AS (
-                            VALUES ('XNAS'), ('XNYS'), ('XASE'), ('XHKG'), ('XSHG'), ('XSHE')
+                            VALUES
+                                ('XNAS'), ('XNYS'), ('XASE'),
+                                ('XHKG'), ('XSHG'), ('XSHE'),
+                                ('XLON'), ('XETR'), ('XPAR'), ('XAMS'),
+                                ('XMIL'), ('XSWX')
                         )
                         SELECT
                             (
@@ -805,7 +825,8 @@ def _run_flat_table_audit(database_url: str) -> list[AuditCheck]:
                                    OR trim(catalog.exchange_ticker) = ''
                                    OR trim(catalog.company_name) = ''
                                    OR catalog.exchange_code NOT IN (
-                                        'XNAS', 'XNYS', 'XASE', 'XHKG', 'XSHG', 'XSHE'
+                                        'XNAS', 'XNYS', 'XASE', 'XHKG', 'XSHG', 'XSHE',
+                                        'XLON', 'XETR', 'XPAR', 'XAMS', 'XMIL', 'XSWX'
                                    )
                                    OR (
                                         catalog.exchange_code = 'XSHG'
@@ -818,7 +839,7 @@ def _run_flat_table_audit(database_url: str) -> list[AuditCheck]:
                             )
                     """,
                     detail=(
-                        "The local FMP search catalog must cover all six supported "
+                        "The local FMP search catalog must cover all twelve supported "
                         "exchanges and must not misclassify China B shares as CNY A shares."
                     ),
                 )
@@ -942,7 +963,9 @@ def _run_flat_table_audit(database_url: str) -> list[AuditCheck]:
                                         coalesce(detail.metadata_json ->> 'exchange_code', '')
                                             NOT IN (
                                                 'XNAS', 'XNYS', 'XASE',
-                                                'XHKG', 'XSHG', 'XSHE'
+                                                'XHKG', 'XSHG', 'XSHE',
+                                                'XLON', 'XETR', 'XPAR', 'XAMS',
+                                                'XMIL', 'XSWX'
                                             )
                                         OR assignment.node_id IS DISTINCT FROM CASE
                                             detail.metadata_json ->> 'exchange_code'
@@ -952,6 +975,12 @@ def _run_flat_table_audit(database_url: str) -> list[AuditCheck]:
                                             WHEN 'XHKG' THEN 'equity-exchange-xhkg'
                                             WHEN 'XSHG' THEN 'equity-exchange-xshg'
                                             WHEN 'XSHE' THEN 'equity-exchange-xshe'
+                                            WHEN 'XLON' THEN 'equity-exchange-xlon'
+                                            WHEN 'XETR' THEN 'equity-exchange-xetr'
+                                            WHEN 'XPAR' THEN 'equity-exchange-xpar'
+                                            WHEN 'XAMS' THEN 'equity-exchange-xams'
+                                            WHEN 'XMIL' THEN 'equity-exchange-xmil'
+                                            WHEN 'XSWX' THEN 'equity-exchange-xswx'
                                             ELSE NULL
                                         END
                                     )
@@ -1325,6 +1354,94 @@ def _run_flat_table_audit(database_url: str) -> list[AuditCheck]:
                         "Every Portfolio needs an explicit inception date; no transaction "
                         "may predate it, and opening balances must use it for both trade "
                         "and settlement dates."
+                    ),
+                )
+            )
+            checks.append(
+                _count_check(
+                    cursor,
+                    name="portfolio_instrument_reference_contract",
+                    query="""
+                        WITH transaction_issue AS (
+                            SELECT transaction.transaction_id::text AS record_id
+                            FROM portfolio.transaction_record transaction
+                            JOIN instrument_registry.instrument instrument
+                              ON instrument.instrument_id = transaction.instrument_id
+                            WHERE json_typeof(transaction.instrument_ref_json)
+                                  IS DISTINCT FROM 'object'
+                               OR transaction.instrument_ref_json ->> 'instrument_id'
+                                  IS DISTINCT FROM instrument.instrument_id
+                               OR transaction.instrument_ref_json ->> 'instrument_type'
+                                  IS DISTINCT FROM instrument.instrument_type
+                               OR CASE
+                                    WHEN instrument.instrument_type IN ('equity', 'etf')
+                                    THEN transaction.instrument_ref_json ->> 'exchange_code'
+                                         IS DISTINCT FROM instrument.exchange_code
+                                    ELSE coalesce(
+                                        transaction.instrument_ref_json ->> 'exchange_code',
+                                        ''
+                                    ) <> ''
+                                  END
+                        ), universe_issue AS (
+                            SELECT universe.portfolio_id || ':' || universe.instrument_id
+                                   AS record_id
+                            FROM portfolio.portfolio_instrument_universe_record universe
+                            JOIN instrument_registry.instrument instrument
+                              ON instrument.instrument_id = universe.instrument_id
+                            WHERE json_typeof(universe.instrument_ref_json)
+                                  IS DISTINCT FROM 'object'
+                               OR universe.instrument_ref_json ->> 'instrument_id'
+                                  IS DISTINCT FROM instrument.instrument_id
+                               OR universe.instrument_ref_json ->> 'instrument_type'
+                                  IS DISTINCT FROM instrument.instrument_type
+                               OR CASE
+                                    WHEN instrument.instrument_type IN ('equity', 'etf')
+                                    THEN universe.instrument_ref_json ->> 'exchange_code'
+                                         IS DISTINCT FROM instrument.exchange_code
+                                    ELSE coalesce(
+                                        universe.instrument_ref_json ->> 'exchange_code',
+                                        ''
+                                    ) <> ''
+                                  END
+                        ), holding_issue AS (
+                            SELECT holding.portfolio_id || ':'
+                                   || holding.position_reference_id AS record_id
+                            FROM portfolio.portfolio_daily_holding_snapshot holding
+                            JOIN instrument_registry.instrument instrument
+                              ON instrument.instrument_id = holding.instrument_id
+                            WHERE json_typeof(
+                                      holding.holding_json -> 'instrument_ref'
+                                  ) IS DISTINCT FROM 'object'
+                               OR holding.holding_json -> 'instrument_ref'
+                                      ->> 'instrument_id'
+                                  IS DISTINCT FROM instrument.instrument_id
+                               OR holding.holding_json -> 'instrument_ref'
+                                      ->> 'instrument_type'
+                                  IS DISTINCT FROM instrument.instrument_type
+                               OR CASE
+                                    WHEN instrument.instrument_type IN ('equity', 'etf')
+                                    THEN holding.holding_json -> 'instrument_ref'
+                                             ->> 'exchange_code'
+                                         IS DISTINCT FROM instrument.exchange_code
+                                    ELSE coalesce(
+                                        holding.holding_json -> 'instrument_ref'
+                                            ->> 'exchange_code',
+                                        ''
+                                    ) <> ''
+                                  END
+                        )
+                        SELECT count(*)
+                        FROM (
+                            SELECT record_id FROM transaction_issue
+                            UNION ALL
+                            SELECT record_id FROM universe_issue
+                            UNION ALL
+                            SELECT record_id FROM holding_issue
+                        ) issue
+                    """,
+                    detail=(
+                        "Portfolio transaction, universe, and holding references must "
+                        "match the canonical Registry type and listing exchange."
                     ),
                 )
             )

@@ -68,6 +68,12 @@ _CATALOG_ROWS = {
     "HKSE": {"symbol": "0700.HK", "companyName": "Tencent Holdings"},
     "SHH": {"symbol": "600519.SS", "companyName": "Kweichow Moutai"},
     "SHZ": {"symbol": "000001.SZ", "companyName": "Ping An Bank"},
+    "LSE": {"symbol": "SHEL.L", "companyName": "Shell plc"},
+    "XETRA": {"symbol": "SAP.DE", "companyName": "SAP SE"},
+    "PAR": {"symbol": "MC.PA", "companyName": "LVMH"},
+    "AMS": {"symbol": "ASML.AS", "companyName": "ASML Holding"},
+    "MIL": {"symbol": "ENI.MI", "companyName": "Eni S.p.A."},
+    "SIX": {"symbol": "NESN.SW", "companyName": "Nestlé S.A."},
 }
 
 
@@ -126,6 +132,19 @@ class FakeFmpClient:
             }
         ]
 
+    def profile(self, symbol: str) -> dict[str, object]:
+        exchange = next(
+            exchange
+            for exchange, row in _CATALOG_ROWS.items()
+            if row["symbol"] == symbol
+        )
+        return {
+            "symbol": symbol,
+            "exchangeShortName": exchange,
+            "isEtf": False,
+            "currency": "GBp" if exchange == "LSE" else "EUR" if exchange != "SIX" else "CHF",
+        }
+
 
 def test_catalog_sync_supports_local_search_without_fmp_round_trip(
     isolated_equity_store: None,
@@ -134,7 +153,7 @@ def test_catalog_sync_supports_local_search_without_fmp_round_trip(
     summary = sync_equity_catalog(client=client)
 
     assert client.catalog_calls == list(FMP_EQUITY_CATALOG_EXCHANGES)
-    assert summary["active_count"] == 6
+    assert summary["active_count"] == 12
     assert search_equity_catalog("600519", limit=10)[0]["exchange_ticker"] == "600519.SH"
 
     client.active_equities = lambda exchange: pytest.fail(  # type: ignore[method-assign]
@@ -151,6 +170,7 @@ def test_catalog_sync_supports_local_search_without_fmp_round_trip(
             "exchange_label": "Hong Kong Exchange",
             "market": "HK",
             "currency": "HKD",
+            "currency_verified": True,
             "country": "HK",
             "sector": "Technology",
             "industry": "Software",
@@ -175,7 +195,7 @@ def test_catalog_sync_fetch_failure_preserves_previous_snapshot(
 
     with get_session_factory()() as session:
         count = session.scalar(select(func.count()).select_from(FmpEquityCatalog))
-    assert count == 6
+    assert count == 12
 
 
 def test_catalog_sync_empty_exchange_preserves_previous_snapshot(
@@ -194,7 +214,7 @@ def test_catalog_sync_empty_exchange_preserves_previous_snapshot(
 
     with get_session_factory()() as session:
         count = session.scalar(select(func.count()).select_from(FmpEquityCatalog))
-    assert count == 6
+    assert count == 12
 
 
 def test_catalog_sync_excludes_china_b_shares(
@@ -223,7 +243,7 @@ def test_catalog_sync_excludes_china_b_shares(
 
     summary = sync_equity_catalog(client=MixedChinaShareClient())
 
-    assert summary["active_count"] == 6
+    assert summary["active_count"] == 12
     assert search_equity_catalog("900938", limit=10) == []
     assert search_equity_catalog("200553", limit=10) == []
 
@@ -247,6 +267,30 @@ def test_first_materialization_loads_history_then_refreshes_incrementally(
     expected_incremental_start = (date(2026, 8, 15) - timedelta(days=7)).isoformat()
     assert client.eod_calls[2]["start_date"] == expected_incremental_start
     assert get_price_bar_coverage(instrument_id=str(first["instrument_id"]))["latest_date"] == "2026-08-15"
+
+
+def test_london_equity_verifies_gbp_and_normalizes_pence_prices(
+    isolated_equity_store: None,
+) -> None:
+    client = FakeFmpClient()
+    sync_equity_catalog(client=client)
+
+    search_result = search_equities("SHEL", limit=10)[0]
+    assert search_result["currency"] == "GBP"
+    assert search_result["currency_verified"] is False
+
+    materialized = materialize_equity("SHEL.L", client=client)
+
+    assert materialized["exchange_code"] == "XLON"
+    assert materialized["currency"] == "GBP"
+    assert materialized["source_settings"]["source_provider_currency"] == "GBp"
+    assert materialized["source_settings"]["source_price_multiplier"] == "0.01"
+    close = next(
+        point
+        for point in materialized["market_data"]
+        if point["quote_basis"] == "close"
+    )
+    assert close["value"] == "2.03"
 
 
 def test_fmp_eod_fetch_continues_before_a_full_5000_row_response() -> None:

@@ -6,6 +6,7 @@ from platform_app.services.equities.catalog import (
 )
 from platform_app.services.fmp import FmpClient, refresh_fmp_eod
 from platform_app.services.fmp.exchanges import exchange_by_code
+from platform_app.services.fmp.profile import listing_quote_contract
 from platform_app.services.instrument_store import (
     create_instrument,
     ensure_secondary_identifier,
@@ -72,6 +73,7 @@ def _search_record(
         "exchange_label": exchange.label,
         "market": exchange.market,
         "currency": str(catalog_record["currency"]),
+        "currency_verified": not exchange.requires_profile_currency,
         "country": catalog_record.get("country"),
         "sector": catalog_record.get("sector"),
         "industry": catalog_record.get("industry"),
@@ -93,7 +95,13 @@ def search_equities(
     ]
 
 
-def _source_settings(instrument_id: str, exchange_code: str) -> None:
+def _source_settings(
+    instrument_id: str,
+    exchange_code: str,
+    *,
+    provider_currency: str | None = None,
+    price_multiplier: object = 1,
+) -> None:
     updated = upsert_source_settings(
         instrument_id=instrument_id,
         source_mode="api",
@@ -105,6 +113,8 @@ def _source_settings(instrument_id: str, exchange_code: str) -> None:
         market_calendar=exchange_code,
         release_lag_days=0,
         return_semantics="price_return",
+        source_provider_currency=provider_currency,
+        source_price_multiplier=price_multiplier,
     )
     if updated is None:
         raise RuntimeError(f"Registry equity disappeared during materialization: {instrument_id}")
@@ -131,6 +141,21 @@ def materialize_equity(
             f"Local FMP catalog has unsupported exchange {exchange_code}."
         )
     currency = str(catalog_record["currency"])
+    provider_currency: str | None = None
+    price_multiplier: object = 1
+    if exchange.requires_profile_currency:
+        try:
+            quote_contract = listing_quote_contract(
+                client=fmp,
+                symbol=symbol,
+                exchange=exchange,
+                instrument_type="equity",
+            )
+        except ValueError as error:
+            raise EquityNotSupportedError(str(error)) from error
+        currency = quote_contract.currency
+        provider_currency = quote_contract.provider_currency
+        price_multiplier = quote_contract.price_multiplier
     existing = _existing_equity(
         fmp_symbol=symbol,
         exchange_ticker=exchange_ticker,
@@ -172,7 +197,12 @@ def materialize_equity(
     )
     if ensured is None:
         raise RuntimeError(f"Registry equity disappeared during materialization: {instrument_id}")
-    _source_settings(instrument_id, exchange.exchange_code)
+    _source_settings(
+        instrument_id,
+        exchange.exchange_code,
+        provider_currency=provider_currency,
+        price_multiplier=price_multiplier,
+    )
     if refresh_eod:
         coverage = get_price_bar_coverage(instrument_id=instrument_id)
         refresh_equity_eod(

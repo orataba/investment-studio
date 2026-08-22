@@ -1,6 +1,6 @@
 # Transaction Record 全面复核与收口
 
-最后更新：2026-08-20
+最后更新：2026-08-22
 状态：实现、生产迁移、部署与在线验收均已收口。
 
 ## 1. 结论
@@ -165,3 +165,33 @@ CSV 和 Excel 都使用同一组 canonical columns。Excel 只是带说明、字
   实测 HTTP 200、2.58 秒。页面从打开到 11 个 Taxonomy groups、19 个 instrument/cash rows
   和 Portfolio Total 完整可用实测 8.41 秒；访问日志确认只发出一次最终 Taxonomy 分组请求；
 - 生产实现提交为 `cd8e094`、`ea51064`、`aaf44d5`，均已推送至远端 `main`。
+
+## 8. 2026-08-22 多市场收口验收
+
+本轮把中国内地、香港、美国和 FMP 当前实际支持的欧洲上市证券统一到同一套
+Registry、Watchlist、Portfolio 与市场数据契约：
+
+- 上市股票和 ETF 必须持久化交易所身份；Registry 迁移补齐 114 只存量 ETF 的
+  `exchange_code`，并修正深市 ETF 的交易日历归属；
+- FMP 欧洲范围限定为伦敦、Xetra、巴黎、阿姆斯特丹、米兰和瑞士六个已验证市场，
+  资产首次物化时以 profile 校验交易所、证券类型和报价币种；伦敦 `GBp/GBX` 行情统一换算为
+  GBP，不能把上市地点当作报价币种；
+- 系统币种扩展为 USD、HKD、CNY、EUR、GBP、CHF；新增 USD/EUR、USD/GBP、USD/CHF
+  正式汇率序列，并继续从 USD 维护对生成直接、倒数或交叉汇率；
+- Watchlist 增加欧洲股票分类，ETF 搜索结果携带交易所；Portfolio 的交易、投资范围和持仓
+  快照中的历史 instrument reference 由迁移一次性同步，不保留运行期兼容分支；
+- 非上市欧洲基金不宣称 FMP 自动覆盖，继续走公开/私募基金的稳定身份与 NAV 导入流程。
+
+正式生产数据库 head 已升级为 Platform `20260822_0006`、Portfolio
+`20260822_0055`、Registry `20260822_0026`、Watchlist `20260822_0043`。发布刷新 26 个当前
+FMP 标的，0 失败；重建 6 个 Portfolio snapshots；最终 live audit 为 43 checks、0 failed、
+0 warnings。生产 FMP catalog 共 26,629 条 active instruments，其中股票 17,048、ETF
+9,581。114 只存量 ETF 的交易所缺失和沪深日历错配均归零，Portfolio persisted reference
+错配归零。
+
+三个新增汇率序列已覆盖到 2026-08-21：USD/CHF 14,447 个观测、USD/EUR 12,137 个观测、
+USD/GBP 12,093 个观测。后端普通套件为 Platform 334、Watchlist 154、Portfolio 629 项通过；
+其中跳过的 PostgreSQL 专项分别 5、4、3 项，均已用真实临时库单独通过。三个前端分别 50、
+43、261 项通过，production build、TypeScript 类型检查和 infra 17 项测试均通过。最新受控
+安装前备份为 `portfolio-ops-pre-launchd-install-20260822T103707Z-67141.pgdump`，六个本地服务
+最终健康检查全部通过。

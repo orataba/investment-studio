@@ -3845,6 +3845,13 @@ def refresh_market_data(
             full_history=full_history,
         )
     if requested_source == "fmp":
+        if str(instrument.get("instrument_type") or "") == "fx":
+            from platform_app.services.fmp import refresh_fmp_fx_eod
+
+            return refresh_fmp_fx_eod(
+                instrument_id,
+                full_history=full_history,
+            )
         from platform_app.services.securities import refresh_security_eod
 
         return refresh_security_eod(
@@ -3871,6 +3878,13 @@ def refresh_market_data(
                 full_history=full_history,
             )
         if profile.lower() == "fmp":
+            if str(instrument.get("instrument_type") or "") == "fx":
+                from platform_app.services.fmp import refresh_fmp_fx_eod
+
+                return refresh_fmp_fx_eod(
+                    instrument_id,
+                    full_history=full_history,
+                )
             from platform_app.services.securities import refresh_security_eod
 
             return refresh_security_eod(

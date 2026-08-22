@@ -44,7 +44,7 @@ export function SourceScheduleFields({
           aria-label="Market calendar"
           value={marketCalendar}
           onChange={(event) => onMarketCalendarChange(event.target.value)}
-          placeholder="XSHG / XSHE / XHKG (optional)"
+          placeholder="XSHG / XLON / XETR (optional)"
         />
       </label>
       <label>

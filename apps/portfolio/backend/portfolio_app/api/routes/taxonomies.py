@@ -84,6 +84,7 @@ def _load_registry_instrument_ref(instrument_id: str) -> dict[str, object]:
         "instrument_name": instrument["instrument_name"],
         "instrument_type": instrument["instrument_type"],
         "currency": instrument["currency"],
+        "exchange_code": instrument.get("exchange_code"),
         "identifiers": instrument.get("identifiers", []),
     }
 

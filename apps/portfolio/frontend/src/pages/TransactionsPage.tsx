@@ -491,7 +491,13 @@ function isSelectableInstrument(
   if (isFxConversionTransaction(transactionType)) {
     return false
   }
-  if (accountCurrency && instrument.currency.toUpperCase() !== accountCurrency.toUpperCase()) {
+  const currencyIsVerified =
+    !('fmp_symbol' in instrument) || instrument.currency_verified
+  if (
+    accountCurrency &&
+    currencyIsVerified &&
+    instrument.currency.toUpperCase() !== accountCurrency.toUpperCase()
+  ) {
     return false
   }
 
@@ -1811,11 +1817,20 @@ export default function TransactionsPage() {
       )
       const refreshed = await getPortfolioInstruments(portfolioId)
       setInstruments(refreshed.instruments)
-      commitSelectedInstrument(
-        refreshed.instruments.find(
-          (candidate) => candidate.instrument_id === materialized.instrument_id,
-        ) ?? materialized,
-      )
+      const preparedInstrument = refreshed.instruments.find(
+        (candidate) => candidate.instrument_id === materialized.instrument_id,
+      ) ?? materialized
+      if (
+        selectedAccount &&
+        preparedInstrument.currency.toUpperCase() !== selectedAccount.currency.toUpperCase()
+      ) {
+        setSecurityCatalogError(
+          `FMP verified ${preparedInstrument.currency} as the quote currency. ` +
+          `Select or create a ${preparedInstrument.currency} securities account to use it.`,
+        )
+        return
+      }
+      commitSelectedInstrument(preparedInstrument)
       setSecurityCatalogResults([])
     } catch (error) {
       setSecurityCatalogError(
@@ -4061,7 +4076,11 @@ export default function TransactionsPage() {
                                 <span>{primaryIdentifier(instrument)}</span>
                                 <span className="holding-secondary">{instrument.instrument_name}</span>
                               </div>
-                              <span className="transaction-picker-meta">{instrument.currency}</span>
+                              <span className="transaction-picker-meta">
+                                {'currency_verified' in instrument && !instrument.currency_verified
+                                  ? `${instrument.currency} · verify on add`
+                                  : instrument.currency}
+                              </span>
                             </button>
                           ))}
                           {!filteredInstrumentOptions.length ? (

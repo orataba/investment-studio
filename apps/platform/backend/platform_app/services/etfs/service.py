@@ -3,6 +3,7 @@ from __future__ import annotations
 from platform_app.services.etfs.catalog import get_catalog_etf, search_etf_catalog
 from platform_app.services.fmp import FmpClient, refresh_fmp_eod
 from platform_app.services.fmp.exchanges import exchange_by_code
+from platform_app.services.fmp.profile import listing_quote_contract
 from platform_app.services.instrument_store import (
     create_instrument,
     ensure_secondary_identifier,
@@ -67,6 +68,7 @@ def _search_record(catalog_record: dict[str, object]) -> dict[str, object]:
         "exchange_label": exchange.label,
         "market": exchange.market,
         "currency": str(catalog_record["currency"]),
+        "currency_verified": not exchange.requires_profile_currency,
         "country": catalog_record.get("country"),
         "sector": catalog_record.get("sector"),
         "industry": catalog_record.get("industry"),
@@ -84,7 +86,13 @@ def search_etfs(query: str, *, limit: int = 10) -> list[dict[str, object]]:
     ]
 
 
-def _source_settings(instrument_id: str, exchange_code: str) -> None:
+def _source_settings(
+    instrument_id: str,
+    exchange_code: str,
+    *,
+    provider_currency: str | None = None,
+    price_multiplier: object = 1,
+) -> None:
     updated = upsert_source_settings(
         instrument_id=instrument_id,
         source_mode="api",
@@ -96,6 +104,8 @@ def _source_settings(instrument_id: str, exchange_code: str) -> None:
         market_calendar=exchange_code,
         release_lag_days=0,
         return_semantics="price_return",
+        source_provider_currency=provider_currency,
+        source_price_multiplier=price_multiplier,
     )
     if updated is None:
         raise RuntimeError(f"Registry ETF disappeared during materialization: {instrument_id}")
@@ -120,6 +130,21 @@ def materialize_etf(
             f"Local FMP ETF catalog has unsupported exchange {exchange_code}."
         )
     currency = str(catalog_record["currency"])
+    provider_currency: str | None = None
+    price_multiplier: object = 1
+    if exchange.requires_profile_currency:
+        try:
+            quote_contract = listing_quote_contract(
+                client=fmp,
+                symbol=symbol,
+                exchange=exchange,
+                instrument_type="etf",
+            )
+        except ValueError as error:
+            raise EtfNotSupportedError(str(error)) from error
+        currency = quote_contract.currency
+        provider_currency = quote_contract.provider_currency
+        price_multiplier = quote_contract.price_multiplier
     existing = _existing_etf(
         fmp_symbol=symbol,
         exchange_ticker=exchange_ticker,
@@ -129,6 +154,7 @@ def materialize_etf(
             instrument_name=str(catalog_record["company_name"]),
             instrument_type="etf",
             currency=currency,
+            exchange_code=exchange.exchange_code,
             identifiers=[
                 {
                     "identifier_type": "exchange_ticker",
@@ -142,10 +168,15 @@ def materialize_etf(
                 },
             ],
         )
-    elif str(existing.get("currency") or "").strip().upper() != currency:
-        raise EtfNotSupportedError(
-            "Registry currency conflicts with the local FMP ETF catalog."
-        )
+    else:
+        if str(existing.get("exchange_code") or "") != exchange.exchange_code:
+            raise EtfNotSupportedError(
+                "Registry exchange identity conflicts with the local FMP ETF catalog."
+            )
+        if str(existing.get("currency") or "").strip().upper() != currency:
+            raise EtfNotSupportedError(
+                "Registry currency conflicts with the local FMP ETF catalog."
+            )
 
     instrument_id = str(existing["instrument_id"])
     ensured = ensure_secondary_identifier(
@@ -155,7 +186,12 @@ def materialize_etf(
     )
     if ensured is None:
         raise RuntimeError(f"Registry ETF disappeared during materialization: {instrument_id}")
-    _source_settings(instrument_id, exchange.exchange_code)
+    _source_settings(
+        instrument_id,
+        exchange.exchange_code,
+        provider_currency=provider_currency,
+        price_multiplier=price_multiplier,
+    )
     if refresh_eod:
         coverage = get_price_bar_coverage(instrument_id=instrument_id)
         refresh_etf_eod(

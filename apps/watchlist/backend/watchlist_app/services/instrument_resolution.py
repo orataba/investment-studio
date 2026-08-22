@@ -23,6 +23,12 @@ EQUITY_EXCHANGE_TAXONOMY_NODES = {
     "XHKG": "equity-exchange-xhkg",
     "XSHG": "equity-exchange-xshg",
     "XSHE": "equity-exchange-xshe",
+    "XLON": "equity-exchange-xlon",
+    "XETR": "equity-exchange-xetr",
+    "XPAR": "equity-exchange-xpar",
+    "XAMS": "equity-exchange-xams",
+    "XMIL": "equity-exchange-xmil",
+    "XSWX": "equity-exchange-xswx",
 }
 
 

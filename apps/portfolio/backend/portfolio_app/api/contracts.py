@@ -23,7 +23,7 @@ from portfolio_ops_instrument_core import (
 AccountCategory = Literal["cash", "security", "fcn", "option"]
 AccountType = Literal["deposit_account", "securities_account"]
 CostBasisMethod = Literal["moving_average", "fifo"]
-SupportedCurrency = Literal["USD", "HKD", "CNY"]
+SupportedCurrency = Literal["USD", "HKD", "CNY", "EUR", "GBP", "CHF"]
 TaxonomyAssignmentScope = Literal["instrument"]
 TargetMemberType = Literal[
     "taxonomy_node",
@@ -175,7 +175,14 @@ PortfolioRiskCovarianceModel = Literal["ewma_vol_shrinkage_corr_covariance", "ew
 PortfolioRiskContributionMode = Literal["signed", "abs"]
 TargetSetType = Literal["saa", "taa"]
 
-SUPPORTED_PORTFOLIO_CURRENCIES: tuple[SupportedCurrency, ...] = ("USD", "HKD", "CNY")
+SUPPORTED_PORTFOLIO_CURRENCIES: tuple[SupportedCurrency, ...] = (
+    "USD",
+    "HKD",
+    "CNY",
+    "EUR",
+    "GBP",
+    "CHF",
+)
 MAX_TRANSACTION_IMPORT_RECORDS = 5_000
 SUPPORTED_RISK_WINDOW_DAYS = {30, 90, 180, 366, 730}
 QUANTITY_DISPLAY_QUANTUM = Decimal("0.01")
@@ -400,7 +407,11 @@ class AccountCreateRequest(BaseModel):
         if isinstance(value, str):
             normalized = value.strip().upper()
             if normalized not in SUPPORTED_PORTFOLIO_CURRENCIES:
-                raise ValueError("Account currency must be one of USD, HKD, or CNY.")
+                raise ValueError(
+                    "Account currency must be one of "
+                    + ", ".join(SUPPORTED_PORTFOLIO_CURRENCIES)
+                    + "."
+                )
             return normalized
         return value
 
@@ -3446,7 +3457,11 @@ class TransactionCreateRequest(BaseModel):
         if isinstance(value, str):
             normalized = value.strip().upper()
             if normalized not in SUPPORTED_PORTFOLIO_CURRENCIES:
-                raise ValueError("Transaction currency must be one of USD, HKD, or CNY.")
+                raise ValueError(
+                    "Transaction currency must be one of "
+                    + ", ".join(SUPPORTED_PORTFOLIO_CURRENCIES)
+                    + "."
+                )
             return normalized
         return value
 

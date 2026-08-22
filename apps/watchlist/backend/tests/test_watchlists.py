@@ -1284,6 +1284,18 @@ def test_adding_equity_shared_registry_instrument_uses_listed_detail(
     )
     assert exchange_node["instrument_type"] == "equity"
     assert exchange_node["path_labels"] == ["美股", "NASDAQ"]
+    europe_node = next(
+        node
+        for node in tree_response.json()["nodes"]
+        if node["node_id"] == "equity-market-eu"
+    )
+    assert europe_node["instrument_type"] == "equity"
+    london_node = next(
+        node
+        for node in tree_response.json()["nodes"]
+        if node["node_id"] == "equity-exchange-xlon"
+    )
+    assert london_node["path_labels"] == ["欧洲股市", "London Stock Exchange"]
 
     settings_response = client.put(
         "/api/instrument-attributes/instruments/equity-demo/settings",

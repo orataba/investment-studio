@@ -20,6 +20,7 @@ RECONCILIATION_REVISION = "20260715_0032r"
 RECONCILIATION_PARENT = "20260711_0032"
 CANONICAL_CASH_REVISION = "20260715_0039"
 HOLDING_KIND_IDENTITY_REVISION = "20260806_0043"
+LISTING_REFERENCE_REVISION = "20260822_0055"
 
 
 RECONCILIATION_INDEXES = (
@@ -1489,3 +1490,109 @@ def test_holding_snapshot_migration_uses_holding_kind_as_identity() -> None:
         assert downgraded_pk == before_pk
     finally:
         command.upgrade(config, "head")
+
+
+def test_listing_reference_migration_backfills_etf_exchange_identity() -> None:
+    from portfolio_app.db.session import get_engine
+
+    config = _alembic_config()
+    engine = get_engine()
+    command.upgrade(config, "20260820_0054")
+    legacy_reference = {
+        "instrument_id": "fund-us-agg",
+        "instrument_name": "iShares Core U.S. Aggregate Bond ETF",
+        "instrument_type": "etf",
+        "currency": "USD",
+        "identifiers": [
+            {
+                "identifier_type": "ticker",
+                "identifier_value": "AGG",
+                "is_primary": True,
+            }
+        ],
+    }
+    transaction = sa.table(
+        "transaction_record",
+        sa.column("transaction_id", sa.String()),
+        sa.column("instrument_ref_json", sa.JSON()),
+    )
+    universe = sa.table(
+        "portfolio_instrument_universe_record",
+        sa.column("portfolio_id", sa.String()),
+        sa.column("instrument_id", sa.String()),
+        sa.column("instrument_ref_json", sa.JSON()),
+    )
+    snapshot = sa.table(
+        "portfolio_daily_holding_snapshot",
+        sa.column("portfolio_id", sa.String()),
+        sa.column("as_of_date", sa.Date()),
+        sa.column("account_id", sa.String()),
+        sa.column("instrument_id", sa.String()),
+        sa.column("holding_kind", sa.String()),
+        sa.column("currency", sa.String()),
+        sa.column("quantity", sa.Float()),
+        sa.column("holding_json", sa.JSON()),
+        sa.column("calculated_at", sa.String()),
+        sa.column("position_reference_id", sa.String()),
+    )
+    snapshot_date = date(2099, 3, 1)
+    with engine.begin() as connection:
+        transaction_update = connection.execute(
+            sa.update(transaction)
+            .where(transaction.c.transaction_id == "txn-0004")
+            .values(instrument_ref_json=legacy_reference)
+        )
+        universe_update = connection.execute(
+            sa.update(universe)
+            .where(
+                universe.c.portfolio_id == "portfolio-ops",
+                universe.c.instrument_id == "fund-us-agg",
+            )
+            .values(instrument_ref_json=legacy_reference)
+        )
+        assert transaction_update.rowcount == 1
+        assert universe_update.rowcount == 1
+        connection.execute(
+            sa.insert(snapshot).values(
+                portfolio_id="portfolio-ops",
+                as_of_date=snapshot_date,
+                account_id="broker-us-core",
+                instrument_id="fund-us-agg",
+                holding_kind="position",
+                currency="USD",
+                quantity=1.0,
+                holding_json={
+                    "instrument_id": "fund-us-agg",
+                    "instrument_ref": legacy_reference,
+                },
+                calculated_at="2099-03-01T00:00:00Z",
+                position_reference_id="fund-us-agg",
+            )
+        )
+
+    command.upgrade(config, LISTING_REFERENCE_REVISION)
+    with engine.connect() as connection:
+        transaction_reference = connection.scalar(
+            sa.select(transaction.c.instrument_ref_json).where(
+                transaction.c.transaction_id == "txn-0004"
+            )
+        )
+        universe_reference = connection.scalar(
+            sa.select(universe.c.instrument_ref_json).where(
+                universe.c.portfolio_id == "portfolio-ops",
+                universe.c.instrument_id == "fund-us-agg",
+            )
+        )
+        holding = connection.scalar(
+            sa.select(snapshot.c.holding_json).where(
+                snapshot.c.portfolio_id == "portfolio-ops",
+                snapshot.c.as_of_date == snapshot_date,
+                snapshot.c.account_id == "broker-us-core",
+                snapshot.c.position_reference_id == "fund-us-agg",
+                snapshot.c.holding_kind == "position",
+            )
+        )
+
+    assert transaction_reference["exchange_code"] == "XNAS"
+    assert universe_reference["exchange_code"] == "XNAS"
+    assert holding["instrument_ref"]["exchange_code"] == "XNAS"

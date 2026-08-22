@@ -7,7 +7,9 @@ import {
   deletePortfolio,
   getPortfolios,
   reorderPortfolios,
+  SUPPORTED_PORTFOLIO_CURRENCIES,
   type PortfolioEntryRecord,
+  type SupportedPortfolioCurrency,
 } from '../lib/api'
 import { formatCurrency, formatPercent, formatSignedCurrency } from '../lib/format'
 import { buildPortfolioSectionPath, PLATFORM_HOME_URL } from '../lib/navigation'
@@ -54,7 +56,7 @@ export default function PortfoliosPage() {
   const [deleteError, setDeleteError] = useState<string | null>(null)
   const [createOpen, setCreateOpen] = useState(false)
   const [createName, setCreateName] = useState('')
-  const [createBaseCurrency, setCreateBaseCurrency] = useState<'USD' | 'HKD' | 'CNY'>('CNY')
+  const [createBaseCurrency, setCreateBaseCurrency] = useState<SupportedPortfolioCurrency>('CNY')
   const [createInceptionDate, setCreateInceptionDate] = useState(localTodayIso)
   const [creating, setCreating] = useState(false)
   const [createError, setCreateError] = useState<string | null>(null)
@@ -428,12 +430,12 @@ export default function PortfoliosPage() {
                     id="create-portfolio-currency"
                     value={createBaseCurrency}
                     onChange={(event) =>
-                      setCreateBaseCurrency(event.target.value as 'USD' | 'HKD' | 'CNY')
+                      setCreateBaseCurrency(event.target.value as SupportedPortfolioCurrency)
                     }
                   >
-                    <option value="CNY">CNY</option>
-                    <option value="USD">USD</option>
-                    <option value="HKD">HKD</option>
+                    {SUPPORTED_PORTFOLIO_CURRENCIES.map((currencyCode) => (
+                      <option key={currencyCode} value={currencyCode}>{currencyCode}</option>
+                    ))}
                   </select>
                 </label>
                 <label htmlFor="create-portfolio-inception-date">

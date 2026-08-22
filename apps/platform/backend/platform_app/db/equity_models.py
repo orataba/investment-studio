@@ -5,6 +5,8 @@ from datetime import datetime
 from sqlalchemy import CheckConstraint, DateTime, Index, String, func
 from sqlalchemy.orm import Mapped, mapped_column
 
+from portfolio_ops_instrument_core.listing_contract import SUPPORTED_LISTING_EXCHANGES
+
 from platform_app.db.base import Base
 
 
@@ -12,7 +14,13 @@ class FmpEquityCatalog(Base):
     __tablename__ = "fmp_equity_catalog"
     __table_args__ = (
         CheckConstraint(
-            "exchange_code IN ('XNAS', 'XNYS', 'XASE', 'XHKG', 'XSHG', 'XSHE')",
+            "exchange_code IN ("
+            + ", ".join(
+                f"'{value}'"
+                for value in SUPPORTED_LISTING_EXCHANGES
+                if value != "BATS"
+            )
+            + ")",
             name="exchange_code_contract",
         ),
         CheckConstraint(

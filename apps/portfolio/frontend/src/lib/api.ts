@@ -992,6 +992,7 @@ export type PlatformSecuritySearchResult = {
   sector: string | null
   industry: string | null
   existing_instrument_id: string | null
+  currency_verified: boolean
 }
 
 export type PlatformSecuritySearchCandidate = Omit<InstrumentCore, 'instrument_type'> & {
@@ -999,6 +1000,7 @@ export type PlatformSecuritySearchCandidate = Omit<InstrumentCore, 'instrument_t
   fmp_symbol: string
   source: 'fmp_catalog'
   existing_instrument_id: string | null
+  currency_verified: boolean
 }
 
 export type SecuritySearchOption = SharedInstrumentRecord | PlatformSecuritySearchCandidate
@@ -1020,7 +1022,7 @@ type RawPortfolioSharedInstrumentsResponse = {
   instruments: RawSharedInstrumentRecord[]
 }
 
-export const SUPPORTED_PORTFOLIO_CURRENCIES = ['USD', 'HKD', 'CNY'] as const
+export const SUPPORTED_PORTFOLIO_CURRENCIES = ['USD', 'HKD', 'CNY', 'EUR', 'GBP', 'CHF'] as const
 export type SupportedPortfolioCurrency = (typeof SUPPORTED_PORTFOLIO_CURRENCIES)[number]
 
 export type PortfolioSharedFxRateRecord = {
@@ -3433,7 +3435,7 @@ export async function searchPlatformSecurityCatalog(query: string, limit = 12) {
       instrument_name: item.name,
       instrument_type: item.instrument_type,
       currency: item.currency,
-      exchange_code: item.instrument_type === 'equity' ? item.exchange_code : null,
+      exchange_code: item.exchange_code,
       identifiers: [
         {
           identifier_type: 'exchange_ticker',
@@ -3445,6 +3447,7 @@ export async function searchPlatformSecurityCatalog(query: string, limit = 12) {
       fmp_symbol: item.fmp_symbol,
       source: 'fmp_catalog',
       existing_instrument_id: item.existing_instrument_id,
+      currency_verified: item.currency_verified,
     })),
     catalogErrors: payload.catalog_errors,
   }

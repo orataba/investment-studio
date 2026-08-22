@@ -3208,6 +3208,7 @@ def test_transaction_execution_quote_uses_raw_valuation_basis_not_adjusted_chart
             "instrument_name": "Split ETF",
             "instrument_type": "etf",
             "currency": "CNY",
+            "exchange_code": "XSHG",
             "identifiers": [],
             "quote_selection_policy": {
                 "valuation": ["close", "last"],

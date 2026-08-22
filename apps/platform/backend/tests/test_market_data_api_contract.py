@@ -159,7 +159,7 @@ def test_market_data_contract_rejects_invalid_price_identity(
     [
         ("0", "HKD", "finite positive decimal"),
         ("-7.8", "HKD", "finite positive decimal"),
-        ("7.8", "EUR", "currency must be one of"),
+        ("7.8", "JPY", "currency must be one of"),
     ],
 )
 def test_fx_market_data_request_rejects_invalid_rate_contract(

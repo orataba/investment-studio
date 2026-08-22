@@ -70,7 +70,7 @@ def _instrument_ref(
         "instrument_id": instrument_id,
         "instrument_name": instrument_id,
         "instrument_type": instrument_type,
-        **({"exchange_code": "XNYS"} if instrument_type == "equity" else {}),
+        **({"exchange_code": "XNYS"} if instrument_type in {"equity", "etf"} else {}),
         "currency": currency,
         "identifiers": [],
         "broker_identifiers": [],

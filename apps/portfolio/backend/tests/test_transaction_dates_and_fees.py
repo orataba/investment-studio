@@ -4,7 +4,7 @@ from datetime import date
 
 import pytest
 
-from portfolio_app.api.contracts import TransactionCreateRequest
+from portfolio_app.api.contracts import AccountCreateRequest, TransactionCreateRequest
 from portfolio_app.services import performance
 from portfolio_app.services.transaction_dates import (
     transaction_economic_date,
@@ -27,6 +27,31 @@ def _deposit() -> dict[str, object]:
         "taxes": 0.0,
         "currency": "USD",
     }
+
+
+@pytest.mark.parametrize("currency", ["EUR", "GBP", "CHF"])
+def test_european_currencies_are_valid_account_and_transaction_facts(
+    currency: str,
+) -> None:
+    account = AccountCreateRequest.model_validate(
+        {
+            "account_name": f"{currency} Cash",
+            "account_category": "cash",
+            "currency": currency,
+        }
+    )
+    transaction = TransactionCreateRequest.model_validate(
+        {
+            "transaction_type": "deposit",
+            "trade_date": "2026-08-21",
+            "account_id": f"cash-{currency.lower()}",
+            "gross_amount": "100",
+            "currency": currency,
+        }
+    )
+
+    assert account.currency == currency
+    assert transaction.currency == currency
 
 
 def test_transaction_sort_key_keeps_same_time_transactions_deterministic() -> None:

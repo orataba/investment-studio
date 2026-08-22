@@ -67,6 +67,12 @@ _CATALOG_ROWS = {
     "HKSE": {"symbol": "2800.HK", "companyName": "Tracker Fund of Hong Kong"},
     "SHH": {"symbol": "510300.SS", "companyName": "CSI 300 ETF"},
     "SHZ": {"symbol": "159919.SZ", "companyName": "CSI 300 ETF Shenzhen"},
+    "LSE": {"symbol": "CSPX.L", "companyName": "iShares Core S&P 500 UCITS ETF"},
+    "XETRA": {"symbol": "SXR8.DE", "companyName": "iShares Core S&P 500 UCITS ETF"},
+    "PAR": {"symbol": "CW8.PA", "companyName": "Amundi MSCI World UCITS ETF"},
+    "AMS": {"symbol": "VUSA.AS", "companyName": "Vanguard S&P 500 UCITS ETF"},
+    "MIL": {"symbol": "SWDA.MI", "companyName": "iShares Core MSCI World UCITS ETF"},
+    "SIX": {"symbol": "VWRL.SW", "companyName": "Vanguard FTSE All-World UCITS ETF"},
 }
 
 
@@ -123,6 +129,20 @@ class FakeFmpClient:
             }
         ]
 
+    def profile(self, symbol: str) -> dict[str, object]:
+        exchange = next(
+            exchange
+            for exchange, row in _CATALOG_ROWS.items()
+            if row["symbol"] == symbol
+        )
+        currency = "USD" if exchange == "LSE" else "CHF" if exchange == "SIX" else "EUR"
+        return {
+            "symbol": symbol,
+            "exchangeShortName": exchange,
+            "isEtf": True,
+            "currency": currency,
+        }
+
 
 def test_etf_catalog_search_is_local_and_includes_cboe(
     isolated_etf_store: None,
@@ -131,7 +151,7 @@ def test_etf_catalog_search_is_local_and_includes_cboe(
     summary = sync_etf_catalog(client=client)  # type: ignore[arg-type]
 
     assert client.catalog_calls == list(FMP_ETF_CATALOG_EXCHANGES)
-    assert summary["active_count"] == 7
+    assert summary["active_count"] == 13
     assert search_etf_catalog("MAGS", limit=10)[0]["exchange_code"] == "BATS"
 
     client.active_etfs = lambda exchange: pytest.fail(  # type: ignore[method-assign]
@@ -146,6 +166,7 @@ def test_etf_catalog_search_is_local_and_includes_cboe(
         "exchange_label": "Cboe BZX",
         "market": "US",
         "currency": "USD",
+        "currency_verified": True,
         "country": "US",
         "sector": None,
         "industry": None,
@@ -165,7 +186,7 @@ def test_etf_materialization_loads_history_then_refreshes_incrementally(
 
     assert second["instrument_id"] == first["instrument_id"]
     assert first["instrument_type"] == "etf"
-    assert first["exchange_code"] is None
+    assert first["exchange_code"] == "BATS"
     assert first["source_settings"]["source_api_profile"] == "fmp"
     assert first["source_settings"]["market_calendar"] == "BATS"
     assert len(list_instruments(instrument_type="etf", limit=None)) == 1
@@ -187,6 +208,7 @@ def test_existing_registry_etf_is_reused_and_gains_fmp_identity(
         instrument_name="Legacy MAGS",
         instrument_type="etf",
         currency="USD",
+        exchange_code="BATS",
         identifiers=[
             {
                 "identifier_type": "exchange_ticker",
@@ -211,6 +233,23 @@ def test_existing_registry_etf_is_reused_and_gains_fmp_identity(
     )
     assert materialized["source_settings"]["source_api_profile"] == "fmp"
     assert {str(call["symbol"]) for call in client.eod_calls} == {"MAGS"}
+
+
+def test_xetra_etf_verifies_currency_and_keeps_listing_exchange(
+    isolated_etf_store: None,
+) -> None:
+    client = FakeFmpClient()
+    sync_etf_catalog(client=client)  # type: ignore[arg-type]
+
+    search_result = search_etfs("SXR8", limit=10)[0]
+    assert search_result["currency_verified"] is False
+
+    materialized = materialize_etf("SXR8.DE", client=client)  # type: ignore[arg-type]
+
+    assert materialized["instrument_type"] == "etf"
+    assert materialized["exchange_code"] == "XETR"
+    assert materialized["currency"] == "EUR"
+    assert materialized["source_settings"]["source_provider_currency"] == "EUR"
 
 
 def test_combined_search_keeps_etfs_available_when_stock_catalog_is_empty(

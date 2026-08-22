@@ -28,7 +28,7 @@ Portfolio Operations Workbench 分为三块：
 - Watchlist：基金、ETF、股票和指数观察列表。用于资产池筛选、分组、单资产详情、研究标签、监控和导出。
 - Portfolio：组合管理工作台。用于账户、交易、持仓、绩效、风险、分类体系和研究调仓。
 
-三块系统共用同一套可复用市场资产主档。公募、私募、ETF、指数、现金和汇率等资产先在 Platform 建档，再被 Watchlist 或 Portfolio 引用。股票不走人工注册：Platform 定时维护美股、港股和 A 股的本地 FMP 目录，用户在 Watchlist 或 Portfolio 搜索后，系统才按需建立共享 identity 并加载 EOD。FCN 和期权是组合特定合约，直接在 Portfolio 首笔交易中创建，不在 Platform 建档；它们的 underlying 或 deliverable 证券仍引用共享 instrument。直接债券不进入 Registry 或 Watchlist，当前也没有 Portfolio 债券交易入口。不要在不同模块里重复创建同一市场资产，也不要用临时名称绕过主档管理。
+三块系统共用同一套可复用市场资产主档。公募、私募、ETF、指数、现金和汇率等资产先在 Platform 建档，再被 Watchlist 或 Portfolio 引用。股票不走人工注册：Platform 定时维护美股、港股、A 股，以及 FMP 当前账户已覆盖的伦敦、Xetra、巴黎、阿姆斯特丹、米兰和瑞士主要市场目录；FMP ETF 使用同一覆盖范围并另含 Cboe BZX。用户在 Watchlist 或 Portfolio 搜索后，系统才按需建立共享 identity 并加载 EOD。FCN 和期权是组合特定合约，直接在 Portfolio 首笔交易中创建，不在 Platform 建档；它们的 underlying 或 deliverable 证券仍引用共享 instrument。直接债券不进入 Registry 或 Watchlist，当前也没有 Portfolio 债券交易入口。不要在不同模块里重复创建同一市场资产，也不要用临时名称绕过主档管理。
 
 核心数据分四类：
 
@@ -47,7 +47,7 @@ Portfolio Operations Workbench 分为三块：
 
 日期要按实际业务日期填写。基金 NAV 使用净值日期，指数 close 使用收盘日期，交易使用 trade date 和必要的 settlement date。Portfolio 默认交易时间为 Asia/Shanghai 12:00；同一天多笔交易需要体现先后顺序时，应填写准确 trade time。
 
-币种要与资产、账户和现金流一致。当前 Portfolio 交易币种支持 USD、HKD、CNY。跨币种组合需要维护 FX，否则组合市值、绩效和风险会出现缺口。
+币种要与资产、账户和现金流一致。当前 Portfolio 交易币种支持 USD、HKD、CNY、EUR、GBP、CHF。跨币种组合需要维护 FX，否则组合市值、绩效和风险会出现缺口。
 
 ## 4. Platform 使用
 
@@ -73,6 +73,7 @@ Portfolio Operations Workbench 分为三块：
 - 指数：instrument type 选 `index`，币种按指数点位或报价币种填写，identifier 可填写 ticker 或指数代码。
 - 股票：不在这里手工注册。Watchlist/Portfolio 搜索本地 FMP 目录后，系统按交易所创建 `equity` identity，并按需回补 EOD。
 - ETF：与股票使用同一操作方式，但底层仍保持独立 `etf` 类型和独立目录。FMP 已覆盖的 ETF 在 Watchlist/Portfolio 搜索后按需建档并回补 EOD；现有 A 股 ETF 可继续使用覆盖更完整的 Tushare 行情。
+- 欧洲非上市基金：使用 `public_fund` 或 `private_fund`，以 ISIN/正式产品代码保持唯一 identity，并按现有 NAV 导入流程维护。当前不从 FMP 自动发现或抓取欧洲共同基金；没有具体产品和可验证数据源时不新增另一套基金管线。
 - 现金：instrument type 选 `cash`，用于组合现金账户或现金桶，不作为普通证券交易标的。
 
 不要在 Platform 为直接债券、某一笔 FCN 或期权新建 instrument。FCN/期权的合约条款、到期日、行权价、障碍条件、发行人和对手方属于 Portfolio 本地交易事实；只有其 underlying、deliverable 或实际交付的证券需要先在 Platform 建档。
@@ -98,8 +99,10 @@ Portfolio Operations Workbench 分为三块：
 
 FX 维护 spot：
 
-- 组合中出现 USD、HKD、CNY 跨币种资产时，需要对应 FX。
+- 系统维护 USD/HKD、USD/CNY、USD/EUR、USD/GBP、USD/CHF；其他币种不在当前 Portfolio 范围。
 - Platform 维护 FX 后会触发下游组合刷新。
+
+欧洲证券在目录搜索阶段显示交易所的默认币种，首次选中时会读取 FMP profile 确认该 listing 的实际报价币种。伦敦的 `GBp/GBX` 报价会先按 `0.01` 转为 canonical GBP 再写入价格和估值；伦敦的 USD 报价 ETF 仍保留 USD，不按交易所强行改成 GBP。
 
 行情录入后，下游不会立即“猜算”缺失历史。若需要完整区间分析，应补齐区间内必要日期的数据。
 
@@ -203,7 +206,7 @@ recalc 失败时，不要手工改计算结果。应查看失败资产、失败�
 
 访问 `http://172.188.30.166:3102/`。进入 Portfolio 后选择具体组合。组合页面通常包含 Overview、Holdings、Accounts、Transactions、Performance、Risk、Taxonomies、Research。
 
-创建组合时必须明确选择基础币种（USD、HKD 或 CNY）。基础币种决定组合 NAV、汇总市值、绩效和风险金额的统一表达口径；各账户和交易仍保留自己的事实币种，非基础币种现金与持仓按对应 as-of date 的 Registry FX 换算。应按实际投资汇报口径选择基础币种，不能因为某一笔交易使用港币就改成港币，也不能在缺少 FX 时把不同币种金额直接相加。
+创建组合时必须明确选择基础币种（USD、HKD、CNY、EUR、GBP 或 CHF）。基础币种决定组合 NAV、汇总市值、绩效和风险金额的统一表达口径；各账户和交易仍保留自己的事实币种，非基础币种现金与持仓按对应 as-of date 的 Registry FX 换算。应按实际投资汇报口径选择基础币种，不能因为某一笔交易使用港币就改成港币，也不能在缺少 FX 时把不同币种金额直接相加。
 
 Portfolio 以交易和行情为事实来源。持仓、市值、绩效、风险和研究结果都由这些事实计算得出。不要直接修改结果表来“修正”展示值，应回到交易、账户、行情或 taxonomy 源头处理。
 
@@ -451,7 +454,7 @@ Research 列表默认只取 compact run summary；选择某一 run 后再加载�
 
 1. Portfolio 进入对应组合。
 2. Accounts 确认证券账户和默认结算现金账户存在。
-3. 在 Transactions 直接搜索资产。公募、私募、ETF 和指数来自 Registry；股票直接搜索本地 FMP 目录，不要求先加入 Watchlist，首次选中时系统会建立/确认 identity 并加载 EOD。
+3. 在 Transactions 直接搜索资产。公募、私募和指数来自 Registry；股票与 FMP ETF 直接搜索本地 FMP 目录，不要求先加入 Watchlist，首次选中时系统会核实交易所和报价币种、建立或确认 identity，并加载 EOD。
 4. Transactions 新增 `buy`。
 5. 填写 account、instrument、trade date、settlement date、quantity、price、gross amount、fee、tax、currency。
 6. 保存后查看 ledger posting、Holdings 和 Overview。

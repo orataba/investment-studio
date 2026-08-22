@@ -86,6 +86,7 @@ TEST_SHARED_INSTRUMENTS = {
         "instrument_name": "iShares Core U.S. Aggregate Bond ETF",
         "instrument_type": "etf",
         "currency": "USD",
+        "exchange_code": "XNAS",
         "quote_selection_policy": canonical_quote_policy("etf"),
         "identifiers": [
             {"identifier_type": "ticker", "identifier_value": "AGG", "is_primary": True},

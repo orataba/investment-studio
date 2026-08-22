@@ -142,7 +142,7 @@ def test_current_ledger_rejects_non_complete_fx_rates(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     payload = {
-        "supported_currencies": ["USD", "HKD", "CNY"],
+        "supported_currencies": ["USD", "HKD", "CNY", "EUR", "GBP", "CHF"],
         "rates": [
             {
                 "base_currency": "USD",
@@ -178,6 +178,9 @@ def test_current_ledger_rejects_non_complete_fx_rates(
         ("USD", "USD"): 1.0,
         ("HKD", "HKD"): 1.0,
         ("CNY", "CNY"): 1.0,
+        ("EUR", "EUR"): 1.0,
+        ("GBP", "GBP"): 1.0,
+        ("CHF", "CHF"): 1.0,
     }
 
 

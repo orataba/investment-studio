@@ -75,8 +75,15 @@ SOURCE_SCHEDULE_DEFAULTS: dict[str, tuple[str, int]] = {
 }
 MARKET_CALENDAR_SUFFIXES = {
     ".SH": "XSHG",
+    ".SS": "XSHG",
     ".SZ": "XSHE",
     ".HK": "XHKG",
+    ".L": "XLON",
+    ".DE": "XETR",
+    ".PA": "XPAR",
+    ".AS": "XAMS",
+    ".MI": "XMIL",
+    ".SW": "XSWX",
 }
 
 
@@ -3987,6 +3994,8 @@ def upsert_source_settings(
     market_calendar: object = _SOURCE_SETTING_UNSET,
     release_lag_days: int | None = None,
     return_semantics: str | None = None,
+    source_provider_currency: str | None = None,
+    source_price_multiplier: object = _SOURCE_SETTING_UNSET,
 ) -> dict[str, object] | None:
     with session_factory() as session:
         target = session.get(Instrument, instrument_id)
@@ -4003,6 +4012,8 @@ def upsert_source_settings(
                 "market_calendar",
                 "release_lag_days",
                 "return_semantics",
+                "source_provider_currency",
+                "source_price_multiplier",
             )
         }
         source_settings["source_mode"] = source_mode
@@ -4032,6 +4043,26 @@ def upsert_source_settings(
                     "Explicit return_semantics is only supported for indexes and listed securities."
                 )
             source_settings["return_semantics"] = return_semantics
+        if source_provider_currency is not None:
+            normalized_provider_currency = source_provider_currency.strip()
+            if not normalized_provider_currency:
+                raise ValueError("source_provider_currency must not be blank.")
+            source_settings["source_provider_currency"] = normalized_provider_currency
+        if source_price_multiplier is not _SOURCE_SETTING_UNSET:
+            try:
+                normalized_multiplier = Decimal(str(source_price_multiplier).strip())
+            except (InvalidOperation, TypeError, ValueError) as error:
+                raise ValueError(
+                    "source_price_multiplier must be a finite positive decimal."
+                ) from error
+            if not normalized_multiplier.is_finite() or normalized_multiplier <= 0:
+                raise ValueError(
+                    "source_price_multiplier must be a finite positive decimal."
+                )
+            source_settings["source_price_multiplier"] = format(
+                normalized_multiplier,
+                "f",
+            )
         source_settings = _normalized_source_settings(
             {
                 **store_item,
