@@ -48,7 +48,6 @@ from portfolio_app.services.research_solver import (
     _estimate_covariance,
     _infer_periods_per_year,
     _is_better_risk_budget_solution,
-    _periodic_nav_series,
     _rebalance_schedule,
     _resolve_active_top_sleeve_bound_vectors,
     _selected_price_points,
@@ -1003,14 +1002,6 @@ def test_zero_weight_member_starting_after_early_rebalance_does_not_block_backte
         return solution
 
     monkeypatch.setattr(research_solver_service, "solve_current_target_weights", capture_period_solve)
-    current_solution = {
-        "leaf_targets": [
-            {"member_type": "instrument", "member_id": "active", "target_weight": 1.0},
-            {"member_type": "instrument", "member_id": "late-zero", "target_weight": 0.0},
-        ],
-        "calculation_frequency": {"resolved_frequency": "daily"},
-    }
-
     payload = build_current_target_backtest(
         "portfolio-zero-weight",
         planning_taxonomy_id="taxonomy-zero-weight",
@@ -1025,7 +1016,6 @@ def test_zero_weight_member_starting_after_early_rebalance_does_not_block_backte
         max_gross_exposure=None,
         missing_return_policy="strict",
         rebalance_frequency="1m",
-        current_solution=current_solution,
     )
 
     assert payload["backtest"]["points"]

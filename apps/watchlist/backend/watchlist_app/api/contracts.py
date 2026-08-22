@@ -248,25 +248,3 @@ class NavSettingsUpsertRequest(BaseModel):
     default_benchmark_instrument_id: str | None = None
     peer_baseline_instrument_ids: list[str] | None = None
     updated_by: str | None = None
-
-
-class CopilotMessageInput(BaseModel):
-    role: Literal["user", "assistant"]
-    content: str
-
-
-class WatchlistCopilotChatRequest(BaseModel):
-    question: str
-    view_id: str | None = None
-    selected_fields: list[str] = Field(default_factory=list)
-    filters: dict[str, list[Any]] = Field(default_factory=dict)
-    advanced_filters: AdvancedFilterGroupInput | None = None
-    sort: list[SortRule] = Field(default_factory=list)
-    group_by: WatchlistGroupBy = "none"
-    history: list[CopilotMessageInput] = Field(default_factory=list)
-
-
-class FundCopilotChatRequest(BaseModel):
-    question: str
-    active_tab: str | None = None
-    history: list[CopilotMessageInput] = Field(default_factory=list)

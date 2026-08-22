@@ -12,7 +12,6 @@ import {
   deletePortfolioInstrumentUniverseRecord,
   deletePortfolioTaxonomy,
   deletePortfolioTaxonomyNode,
-  deletePortfolioTargetSet,
   getHoldingsWorkspace,
   getPortfolioInstruments,
   getPortfolioAccountsWorkspace,
@@ -132,14 +131,6 @@ type CoverageEntity = {
 }
 
 type PendingTaxonomyDelete =
-  | {
-      kind: 'target-set'
-      portfolioId: string
-      targetKind: 'saa' | 'taa'
-      taxonomyId: string
-      targetSet: PortfolioTargetSetRecord
-      scopeLabel: string
-    }
   | {
       kind: 'taxonomy'
       portfolioId: string
@@ -734,8 +725,6 @@ export default function TaxonomiesPage() {
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null)
   const [collapsedNodeIds, setCollapsedNodeIds] = useState<Set<string>>(new Set())
   const [selectedEntityIds, setSelectedEntityIds] = useState<Set<string>>(new Set())
-  const [entitySearch, setEntitySearch] = useState('')
-  const [entityFilter, setEntityFilter] = useState<'all' | 'unassigned' | 'selected' | 'other' | 'ambiguous'>('all')
   const [instrumentAddSearch, setInstrumentAddSearch] = useState('')
   const [instrumentAddInstrumentId, setInstrumentAddInstrumentId] = useState('')
 
@@ -1472,22 +1461,6 @@ export default function TaxonomiesPage() {
     return lookup
   }, [nodeById, selectedTaxonomyNodes])
 
-  const filteredEntities = useMemo(() => {
-    const normalizedSearch = entitySearch.trim().toLowerCase()
-    return currentEntities.filter((entity) => {
-      if (entityFilter !== 'all' && entity.coverage_state !== entityFilter) {
-        return false
-      }
-      if (!normalizedSearch) {
-        return true
-      }
-      return (
-        entity.label.toLowerCase().includes(normalizedSearch) ||
-        entity.supporting_label.toLowerCase().includes(normalizedSearch) ||
-        (entity.current_node?.node_name ?? '').toLowerCase().includes(normalizedSearch)
-      )
-    })
-  }, [currentEntities, entityFilter, entitySearch])
   const currentInstrumentEntityIds = useMemo(
     () =>
       new Set(
@@ -2005,11 +1978,6 @@ export default function TaxonomiesPage() {
     setNewNodeName('')
   }
 
-  function resetNodeEditDraft() {
-    setNodeEditId(null)
-    setNodeEditName('')
-  }
-
   function startNodeCreate(mode: NodeCreateMode, anchorNode?: PortfolioTaxonomyNodeRecord | null) {
     resetNodeCreateDraft()
     setShowTaxonomyCreate(false)
@@ -2066,8 +2034,6 @@ export default function TaxonomiesPage() {
     updateSearchParam('taxonomy_id', taxonomyId)
     setCollapsedNodeIds(new Set())
     setSelectedEntityIds(new Set())
-    setEntityFilter('all')
-    setEntitySearch('')
     setTargetEditMode(false)
     closeModalStack()
     setContextMenuState(null)
@@ -2367,26 +2333,6 @@ export default function TaxonomiesPage() {
     } finally {
       setActionPending(null)
     }
-  }
-
-  function handleDeleteTargetSet(kind: 'saa' | 'taa') {
-    if (!portfolioId || !selectedTaxonomy) {
-      return
-    }
-    const existingTargetSet = kind === 'saa' ? activeSaaTargetSet : activeTaaTargetSet
-    if (!existingTargetSet) {
-      return
-    }
-    setActionError(null)
-    setNotice(null)
-    setPendingDelete({
-      kind: 'target-set',
-      portfolioId,
-      targetKind: kind,
-      taxonomyId: selectedTaxonomy.taxonomy_id,
-      targetSet: existingTargetSet,
-      scopeLabel: currentScopeLabel,
-    })
   }
 
   async function handleSaveAnalyticsPolicy(event: FormEvent<HTMLFormElement>) {
@@ -2728,28 +2674,18 @@ export default function TaxonomiesPage() {
     }
 
     const actionKey =
-      target.kind === 'target-set'
-        ? `target-${target.targetKind}-delete`
-        : target.kind === 'taxonomy'
-          ? `taxonomy-delete-${target.taxonomy.taxonomy_id}`
-          : target.kind === 'node'
-            ? `node-delete-${target.node.taxonomy_node_id}`
-            : `instrument-observe-delete-${target.entity.entity_id}`
+      target.kind === 'taxonomy'
+        ? `taxonomy-delete-${target.taxonomy.taxonomy_id}`
+        : target.kind === 'node'
+          ? `node-delete-${target.node.taxonomy_node_id}`
+          : `instrument-observe-delete-${target.entity.entity_id}`
     setActionPending(actionKey)
     setActionError(null)
     setNotice(null)
 
     try {
       let successNotice = ''
-      if (target.kind === 'target-set') {
-        await deletePortfolioTargetSet(
-          target.portfolioId,
-          target.taxonomyId,
-          target.targetSet.target_set_id,
-          effectiveDate,
-        )
-        successNotice = `Deleted ${target.targetKind.toUpperCase()} targets for ${target.scopeLabel}.`
-      } else if (target.kind === 'taxonomy') {
+      if (target.kind === 'taxonomy') {
         await deletePortfolioTaxonomy(
           target.portfolioId,
           target.taxonomy.taxonomy_id,
@@ -3134,14 +3070,7 @@ export default function TaxonomiesPage() {
   }
 
   const pendingDeleteDialog = pendingDelete
-    ? pendingDelete.kind === 'target-set'
-      ? {
-          title: `Delete ${pendingDelete.targetKind.toUpperCase()} Target Set`,
-          description: `This permanently deletes the target set for ${pendingDelete.scopeLabel}. This action cannot be undone.`,
-          label: 'Delete Target Set',
-          confirmationText: pendingDelete.targetSet.name,
-        }
-      : pendingDelete.kind === 'taxonomy'
+    ? pendingDelete.kind === 'taxonomy'
         ? {
             title: 'Delete Taxonomy',
             description: 'This permanently deletes the taxonomy, its nodes, assignments, and target sets. This action cannot be undone.',
@@ -3164,7 +3093,7 @@ export default function TaxonomiesPage() {
     : null
 
     return (
-      <PortfolioWorkspaceLayout activeSection="Taxonomies" toolbarLabel="Page: Taxonomies" busy={loading || refreshing}>
+      <PortfolioWorkspaceLayout activeSection="Taxonomies" busy={loading || refreshing}>
         <div className="taxonomy-page taxonomy-page-table">
         {notice || workspaceError || actionError || supplementalNotice ? (
           <div className="page-toast-stack" role="status" aria-live="polite">

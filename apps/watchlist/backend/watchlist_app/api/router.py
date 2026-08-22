@@ -2,7 +2,6 @@ from fastapi import APIRouter
 
 from watchlist_app.api.routes import (
     attributes,
-    copilot,
     facts,
     field_registry,
     funds,
@@ -26,6 +25,5 @@ api_router.include_router(taxonomies.router, prefix="/taxonomies", tags=["taxono
 api_router.include_router(facts.router, prefix="/facts", tags=["facts"])
 api_router.include_router(field_registry.router, prefix="/field-registry", tags=["field-registry"])
 api_router.include_router(screener.router, prefix="/screener", tags=["screener"])
-api_router.include_router(copilot.router, prefix="/copilot", tags=["copilot"])
 api_router.include_router(recalc.router, prefix="/recalc", tags=["recalc"])
 api_router.include_router(monitoring.router, prefix="/monitoring", tags=["monitoring"])

@@ -45,7 +45,7 @@ def test_flat_table_profile_accepts_only_final_heads(
 ) -> None:
     expected_heads = {
         "instrument_registry": "20260818_0025",
-        "platform": "20260818_0004",
+        "platform": "20260822_0005",
         "portfolio": "20260820_0054",
         "watchlist": "20260818_0042",
     }

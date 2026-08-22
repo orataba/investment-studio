@@ -2,19 +2,23 @@
 
 External projects write transactions through the Portfolio HTTP API, not directly to database tables. The API applies the same validation, audit, idempotency, and snapshot invalidation rules to manual entry, direct API writes, and CSV/Excel imports.
 
+The primary machine-to-machine contract is the JSON preview/commit workflow. The complete field dictionary, action matrix, examples, retry rules, and screenshot-recognition boundary are documented in [Portfolio 标准交易记录 JSON 接口对接说明](TRANSACTION_IMPORT_API_GUIDE.md). FastAPI also publishes the exact live schema at `/openapi.json` and `/docs`.
+
 Accounts are first-class transaction routing facts. Create `Cash`, `Security`, `FCN`, and `Option` accounts separately; each holding account must point to a same-currency Cash account. A Registry security may use only a Security account, an FCN contract only an FCN account, and an option contract only an Option account. The API does not accept the removed instrument-scope field or a mixed holding account.
 
 ## Write paths
 
+- Machine JSON preview: `POST /api/portfolios/{portfolio_id}/transaction-imports/preview`
+- Machine JSON atomic commit: `POST /api/portfolios/{portfolio_id}/transaction-imports/commit`
 - Single fact: `POST /api/portfolios/{portfolio_id}/transactions`
 - CSV or Excel file preview: `POST /api/portfolios/{portfolio_id}/transactions/files/preview`
 - CSV or Excel file import: `POST /api/portfolios/{portfolio_id}/transactions/files/import`
 - Blank templates: `GET /api/portfolios/{portfolio_id}/transactions/csv-template` and `.../xlsx-template`
 - Importable all-transaction exports: `GET /api/portfolios/{portfolio_id}/transactions.csv` and `.../transactions.xlsx`
 
-The original JSON-body CSV preview/import endpoints remain the integration contract for systems that already send CSV text. The workspace itself uses the multipart file endpoints so CSV and Excel go through one file parser and the same portfolio validation path.
+The JSON import API uses business-facing `asset_type` and `transaction_action` commands, then enters the same parsing, portfolio validation, position-history validation, idempotency, and atomic persistence path as CSV/Excel. Screenshot recognition systems should use this workflow instead of the lower-level single-fact endpoint. The original JSON-body CSV preview/import endpoints remain available for systems that already send canonical CSV text. The workspace itself uses the multipart file endpoints so CSV and Excel go through one file parser and the same portfolio validation path.
 
-Send a unique `Idempotency-Key` header with writes. An upstream project should also send `source_system` and a stable `external_reference`; that pair is unique inside a portfolio.
+JSON Commit and file imports require a unique `Idempotency-Key` header. Machine JSON also requires one batch `source_system` and one stable `external_reference` per record; that pair is unique inside a portfolio.
 
 Example: sell three Put contracts to open, with a multiplier of 100:
 

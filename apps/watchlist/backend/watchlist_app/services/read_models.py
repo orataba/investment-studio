@@ -3,7 +3,6 @@ from __future__ import annotations
 from collections.abc import Sequence
 from datetime import date, datetime
 from decimal import Decimal
-from typing import Any
 
 from watchlist_app.db.models.read_models import InstrumentChartReadModel, WatchlistRowReadModel
 from watchlist_app.db.models.watchlists import InstrumentAttributeValue, WatchlistView

@@ -749,24 +749,6 @@ const DRAWDOWN_CHART_GEOMETRY: ChartGeometry = {
 const CHART_HOVER_INSET = 2
 const CHART_CROSSHAIR_INSET = 1
 
-const RISK_SCATTER_GEOMETRY: ChartGeometry = {
-  width: 560,
-  height: 300,
-  paddingLeft: 52,
-  paddingRight: 20,
-  paddingTop: 18,
-  paddingBottom: 34,
-}
-
-const SECONDARY_SERIES_GEOMETRY: ChartGeometry = {
-  width: 900,
-  height: 220,
-  paddingLeft: 58,
-  paddingRight: 18,
-  paddingTop: 18,
-  paddingBottom: 40,
-}
-
 const ROLLING_RISK_CHART_WIDTH = 960
 const ROLLING_RISK_CHART_HEIGHT = 260
 const ROLLING_RISK_CHART_PADDING = { top: 18, right: 70, bottom: 30, left: 12 }
@@ -1366,10 +1348,6 @@ function getPeerMetricKeyForMatrixCell(
   return null
 }
 
-function formatRiskComparisonValue(value: unknown) {
-  return value && typeof value === 'string' ? toTitleCase(value.replace(/_/g, ' ')) : '—'
-}
-
 function getRows(value: unknown) {
   return Array.isArray(value) ? value : []
 }
@@ -1399,28 +1377,6 @@ function formatPriceOverviewValue(key: string, value: unknown) {
       return formatCompactCurrency(value)
     }
     return formatNumber(value)
-  }
-  return String(value)
-}
-
-function formatPeopleOverviewValue(key: string, value: unknown) {
-  if (value == null || value === '') {
-    return '—'
-  }
-  if (key === 'inception_date') {
-    return formatDate(value)
-  }
-  if (typeof value === 'number') {
-    if (key.includes('tenure')) {
-      return `${formatNumber(value, 1)} Years`
-    }
-    if (key === 'number_of_managers') {
-      return formatNumber(value, 0)
-    }
-    return formatNumber(value)
-  }
-  if (typeof value === 'string' && key.includes('tenure')) {
-    return value.toLowerCase().includes('year') ? value : `${value} Years`
   }
   return String(value)
 }
@@ -1518,15 +1474,6 @@ function textareaValueToListRows(prefix: string, value: string) {
     id: makeRowId(prefix),
     value: line,
   }))
-}
-
-function parseOptionalNumber(value: string) {
-  const trimmed = value.trim()
-  if (!trimmed) {
-    return null
-  }
-  const parsed = Number(trimmed)
-  return Number.isFinite(parsed) ? parsed : null
 }
 
 function toEditablePeopleDraft(people: FundPeopleResponse): PeopleDraft {
@@ -2029,47 +1976,6 @@ function buildDateScaledAreaPath(
   return `${topPath} L ${lastX.toFixed(2)} ${baseline.toFixed(2)} L ${firstX.toFixed(2)} ${baseline.toFixed(2)} Z`
 }
 
-function buildChartAreaPath(
-  points: FundChartPoint[],
-  geometry: ChartGeometry = PRIMARY_CHART_GEOMETRY,
-  min?: number,
-  max?: number,
-  baselineValue?: number,
-) {
-  if (points.length < 2) {
-    return ''
-  }
-
-  const { width, height, paddingLeft, paddingRight, paddingTop, paddingBottom } = geometry
-  const values = points.map((point) => point.value)
-  const resolvedMin = min ?? Math.min(...values)
-  const resolvedMax = max ?? Math.max(...values)
-  const range = resolvedMax - resolvedMin || 1
-
-  const topPath = points
-    .map((point, index) => {
-      const x =
-        paddingLeft +
-        (index / Math.max(points.length - 1, 1)) * (width - paddingLeft - paddingRight)
-      const y =
-        height -
-        paddingBottom -
-        ((point.value - resolvedMin) / range) * (height - paddingTop - paddingBottom)
-      return `${index === 0 ? 'M' : 'L'} ${x.toFixed(2)} ${y.toFixed(2)}`
-    })
-    .join(' ')
-
-  const lastX = width - paddingRight
-  const firstX = paddingLeft
-  const resolvedBaselineValue = baselineValue ?? resolvedMin
-  const baseline =
-    height -
-    paddingBottom -
-    ((resolvedBaselineValue - resolvedMin) / range) * (height - paddingTop - paddingBottom)
-
-  return `${topPath} L ${lastX.toFixed(2)} ${baseline.toFixed(2)} L ${firstX.toFixed(2)} ${baseline.toFixed(2)} Z`
-}
-
 function buildBasisSeries(rows: FundNavSeriesResponse['rows'], basis: QuoteBasis) {
   return buildNavQuoteBasisSeries(rows, basis)
 }
@@ -2088,21 +1994,6 @@ function getAvailableQuoteCurrencies(rows: FundNavSeriesResponse['rows']) {
 
 function resolvePreferredQuoteBasis(value: string | null | undefined): QuoteBasis | null {
   return value === 'nav' || value === 'nav_with_dividend' ? value : null
-}
-
-function resolveReturnQuoteBasis(
-  rows: FundNavSeriesResponse['rows'],
-  preferredBasis: string | null | undefined,
-) {
-  const availableBases = getAvailableQuoteBases(rows)
-  const preferred = resolvePreferredQuoteBasis(preferredBasis)
-  if (preferred === 'nav_with_dividend' && availableBases.includes(preferred)) {
-    return preferred
-  }
-  if (availableBases.includes('nav_with_dividend')) {
-    return 'nav_with_dividend'
-  }
-  return null
 }
 
 function buildQuoteSeriesContext(
@@ -2389,30 +2280,6 @@ function getRollingWindowPoints(
   return sortedPoints.slice(startIndex, endIndex + 1)
 }
 
-function buildRollingAnnualizedReturnSeries(points: FundChartPoint[], windowMonths = ROLLING_WINDOW_MONTHS) {
-  const sortedPoints = sortSeriesByDate(points)
-  const rollingReturns: FundChartPoint[] = []
-
-  for (let index = 1; index < sortedPoints.length; index += 1) {
-    const windowPoints = getRollingWindowPoints(sortedPoints, index, windowMonths)
-    if (windowPoints.length < 2) {
-      continue
-    }
-    const basePoint = windowPoints[0]
-    const currentPoint = windowPoints[windowPoints.length - 1]
-    const years = actualYearFraction(basePoint.date, currentPoint.date)
-    if (basePoint.value <= 0 || currentPoint.value <= 0 || years < 1) {
-      continue
-    }
-    rollingReturns.push({
-      date: currentPoint.date,
-      value: (Math.pow(currentPoint.value / basePoint.value, 1 / years) - 1) * 100,
-    })
-  }
-
-  return rollingReturns
-}
-
 function buildRollingAnnualizedVolatilitySeries(points: FundChartPoint[], windowMonths = ROLLING_WINDOW_MONTHS) {
   const sortedPoints = sortSeriesByDate(points)
   const rollingVolatility: FundChartPoint[] = []
@@ -2533,25 +2400,6 @@ function buildRollingBetaSeries(
   return rollingBeta
 }
 
-function buildMonthlyMinimumSeries(points: FundChartPoint[]) {
-  const sortedPoints = [...points].sort((left, right) => left.date.localeCompare(right.date))
-  const monthlyMinimums: FundChartPoint[] = []
-
-  sortedPoints.forEach((point) => {
-    const currentBucket = monthBucket(point.date)
-    const previousPoint = monthlyMinimums[monthlyMinimums.length - 1]
-    if (!previousPoint || monthBucket(previousPoint.date) !== currentBucket) {
-      monthlyMinimums.push(point)
-      return
-    }
-    if (point.value <= previousPoint.value) {
-      monthlyMinimums[monthlyMinimums.length - 1] = point
-    }
-  })
-
-  return monthlyMinimums
-}
-
 function inferAnnualizationPeriodsPerYear(points: FundChartPoint[], returnCount?: number) {
   const sortedPoints = sortSeriesByDate(points)
   const realizedReturnCount = returnCount ?? Math.max(sortedPoints.length - 1, 0)
@@ -2576,37 +2424,6 @@ function getSampleStandardDeviation(values: number[]) {
   const variance =
     values.reduce((sum, value) => sum + ((value - mean) ** 2), 0) / (values.length - 1)
   return Math.sqrt(Math.max(variance, 0))
-}
-
-function buildMonthlyAnnualizedVolatilitySeries(points: FundChartPoint[]) {
-  // Volatility shown on a monthly timeline must be based on the same
-  // close-to-close monthly returns as the Monthly Return Matrix.  Computing a
-  // standard deviation of all daily moves *inside* each month instead creates
-  // a different metric (and is undefined for a monthly NAV series).
-  const monthlyReturns = buildMonthlyReturnSeries(points)
-  const rollingWindow = 12
-  const volatility: FundChartPoint[] = []
-  for (let index = rollingWindow - 1; index < monthlyReturns.length; index += 1) {
-    const window = monthlyReturns.slice(index - rollingWindow + 1, index + 1)
-    if (
-      window.some(
-        (point, pointIndex) =>
-          pointIndex > 0 &&
-          !areAdjacentCalendarMonths(window[pointIndex - 1].date, point.date),
-      )
-    ) {
-      continue
-    }
-    const stdev = getSampleStandardDeviation(window.map((point) => point.value / 100))
-    if (stdev == null) {
-      continue
-    }
-    volatility.push({
-      date: window[window.length - 1].date,
-      value: stdev * Math.sqrt(12) * 100,
-    })
-  }
-  return volatility
 }
 
 function sortSeriesByDate(points: FundChartPoint[]) {
@@ -3087,10 +2904,6 @@ function getHeatmapCellStyle(value: number | null, maxAbsValue: number) {
   }
 }
 
-function resampleSeries(points: FundChartPoint[]) {
-  return points
-}
-
 function buildCalculationPointSeries(series: FundNavSeriesResponse['calculation_series']) {
   return series
     .map((point) => ({ date: point.date, value: point.value }))
@@ -3198,43 +3011,6 @@ function renderChartXAxisTick(
       </text>
     </g>
   )
-}
-
-function getChartTickDates(points: FundChartPoint[], count = 7) {
-  if (!points.length) {
-    return []
-  }
-  const sortedPoints = sortSeriesByDate(points)
-  const datedPoints = sortedPoints
-    .map((point) => {
-      const parsed = parseChartDateParts(point.date)
-      return parsed ? { point, time: parsed.time } : null
-    })
-    .filter((item): item is { point: FundChartPoint; time: number } => item !== null)
-  if (!datedPoints.length) {
-    return sortedPoints.slice(0, count)
-  }
-  const targetCount = Math.min(Math.max(count, 2), datedPoints.length)
-  const first = datedPoints[0]
-  const last = datedPoints[datedPoints.length - 1]
-  const spanDays = Math.max(0, Math.round((last.time - first.time) / 86_400_000))
-  const selected: FundChartPoint[] = []
-  const seenDates = new Set<string>()
-  for (let index = 0; index < targetCount; index += 1) {
-    const targetTime =
-      first.time + ((last.time - first.time) / Math.max(targetCount - 1, 1)) * index
-    const nearest = datedPoints.reduce((best, candidate) =>
-      Math.abs(candidate.time - targetTime) < Math.abs(best.time - targetTime) ? candidate : best,
-    )
-    if (!seenDates.has(nearest.point.date)) {
-      selected.push(nearest.point)
-      seenDates.add(nearest.point.date)
-    }
-  }
-  if (!seenDates.has(last.point.date)) {
-    selected.push(last.point)
-  }
-  return selected
 }
 
 function getChartAxisTicks(points: FundChartPoint[], count = 7): ChartAxisTick[] {
@@ -3586,20 +3362,6 @@ function buildAttributeFrameworkSections(
   })
 }
 
-function EmptyPanel({ title, note }: { title: string; note: string }) {
-  return (
-    <section className="panel">
-      <div className="instrument-section-header">
-        <div>
-          <div className="panel-title">{title}</div>
-          <div className="instrument-section-title">{title}</div>
-        </div>
-      </div>
-      <div className="instrument-placeholder">{note}</div>
-    </section>
-  )
-}
-
 type FundDetailPageProps = {
   fundId?: string
   fundType: FundInstrumentType
@@ -3620,7 +3382,6 @@ export default function FundDetailPage({
   const { fundId: routeFundId = 'fax' } = useParams()
   const [detailSearchParams, setDetailSearchParams] = useSearchParams()
   const fundId = propFundId || routeFundId
-  const databaseDashboardUrl = `${PLATFORM_HOME_URL}/database-dashboard`
   const [bundle, setBundle] = useState<FundDetailBundle | null>(null)
   const [activeTab, setActiveTab] = useState<DetailTab>(() => {
     const requested = detailSearchParams.get('tab')
@@ -4903,9 +4664,7 @@ export default function FundDetailPage({
   const currencyFilteredRows = quoteSeriesContext.rows
   const availableQuoteBases = quoteSeriesContext.availableBases
   const activeQuoteBasis = quoteSeriesContext.activeBasis
-  const returnQuoteBasis = resolveReturnQuoteBasis(currencyFilteredRows, navSeries.nav_basis_type)
   const navBasisSeries = quoteSeriesContext.basisSeries
-  const returnBasisSeries = returnQuoteBasis ? buildBasisSeries(currencyFilteredRows, returnQuoteBasis) : []
   const calculationFrequencyProfile = navSeries.calculation_frequency_profile
   const calculationFrequencyStatus = calculationFrequencyProfile.status_label
   // Metrics use the backend-selected calculation series, never the zoomed or downsampled chart display series.
@@ -5039,12 +4798,6 @@ export default function FundDetailPage({
   const drawdownSeries = buildDrawdownSeries(visibleNavSeries)
   const benchmarkDrawdownSeries = buildDrawdownSeries(benchmarkVisibleNavSeries)
   const latestPoint = visibleNavSeries.length ? visibleNavSeries[visibleNavSeries.length - 1] : undefined
-  const periodLow =
-    visibleNavSeries.length > 0 ? Math.min(...visibleNavSeries.map((point) => point.value)) : null
-  const periodHigh =
-    visibleNavSeries.length > 0 ? Math.max(...visibleNavSeries.map((point) => point.value)) : null
-  const maxDrawdown =
-    drawdownSeries.length > 0 ? Math.min(...drawdownSeries.map((point) => point.value)) : null
   const chartCumulativeReturn = chartNavSeries[chartNavSeries.length - 1]?.value ?? null
   const chartBenchmarkCumulativeReturn =
     chartBenchmarkSeries[chartBenchmarkSeries.length - 1]?.value ?? null
@@ -5638,7 +5391,6 @@ export default function FundDetailPage({
     .filter((row) => row.distribution_amount != null && row.distribution_amount !== 0)
     .filter((row) => (!effectiveStartDate || row.as_of_date >= effectiveStartDate) && (!effectiveEndDate || row.as_of_date <= effectiveEndDate))
     .sort((left, right) => right.as_of_date.localeCompare(left.as_of_date))
-  const latestDistribution = distributionRows[0]
   const hoveredDistribution = activeHoverIndex == null ? null : distributionRows.find((row) => row.as_of_date === hoveredNavPoint?.date)
   const distributionMarkers = !showDividendEvents
     ? []
@@ -5917,48 +5669,6 @@ export default function FundDetailPage({
     ...(navRefreshStatus?.message ? [navRefreshStatus.message] : []),
     ...(summary.freshness.staleness_reason ? [summary.freshness.staleness_reason] : []),
     ...summary.quick_monitoring_items,
-  ]
-  const navSnapshotRows = [
-    { label: 'Selected Basis', value: quoteBasisLabel },
-    { label: 'Research Basis', value: navBasisLabel },
-    { label: 'Calculation Basis', value: calculationFrequencyStatus },
-    {
-      label: 'Calc Observations',
-      value: formatNumber(calculationFrequencyProfile.observation_count, 0),
-    },
-    {
-      label: 'Annualization',
-      value:
-        calculationFrequencyProfile.annualization_periods_per_year == null
-          ? '—'
-          : `${formatNumber(calculationFrequencyProfile.annualization_periods_per_year, 1)} / yr`,
-    },
-    {
-      label: 'Gaps',
-      value: `${formatNumber(calculationFrequencyProfile.gap_count, 0)} gaps`,
-    },
-    { label: 'Basis Source', value: formatNavBasisSource(navSeries.nav_basis_source) },
-    { label: 'Series Count', value: String(navSeries.count) },
-    { label: 'Quote Date', value: formatDate(latestSeriesPoint?.date) },
-    { label: 'Currency', value: effectiveCurrency || '—' },
-  ]
-  const distributionRowsSummary = [
-    {
-      label: 'Latest Distribution',
-      value: latestDistribution ? formatNumber(latestDistribution.distribution_amount, 4) : '—',
-    },
-    {
-      label: 'Latest Distribution Date',
-      value: latestDistribution ? formatDate(latestDistribution.as_of_date) : '—',
-    },
-    {
-      label: 'Cumulative Distribution',
-      value: latestDistribution ? formatNumber(latestDistribution.cumulative_distribution, 4) : '—',
-    },
-    {
-      label: 'Adopted At',
-      value: latestDistribution ? formatDateTime(latestDistribution.adopted_at) : '—',
-    },
   ]
   const performanceReferenceEndDate = calculationBasisSeries[calculationBasisSeries.length - 1]?.date || null
   const comparisonReferenceWindow =
@@ -6282,55 +5992,6 @@ export default function FundDetailPage({
       ),
     }
   })
-  const riskScatterRows = risk.scatter_points
-    .map((row, index) => ({
-      name: getString(row.name),
-      returnValue: getNumber(row.return),
-      volatilityValue: getNumber(row.volatility),
-      tone:
-        index === 0
-          ? 'investment'
-          : String(row.name || '').toLowerCase().includes('category')
-            ? 'category'
-            : 'index',
-    }))
-    .filter((row) => row.returnValue != null && row.volatilityValue != null) as Array<{
-    name: string
-    returnValue: number
-    volatilityValue: number
-    tone: 'investment' | 'category' | 'index'
-  }>
-  const riskVolMin = riskScatterRows.length
-    ? Math.min(...riskScatterRows.map((row) => row.volatilityValue)) - 1
-    : 0
-  const riskVolMax = riskScatterRows.length
-    ? Math.max(...riskScatterRows.map((row) => row.volatilityValue)) + 1
-    : 1
-  const riskReturnMin = riskScatterRows.length
-    ? Math.min(...riskScatterRows.map((row) => row.returnValue)) - 2
-    : 0
-  const riskReturnMax = riskScatterRows.length
-    ? Math.max(...riskScatterRows.map((row) => row.returnValue)) + 2
-    : 1
-  const riskXTickValues = getLinearTickValues(riskVolMin, riskVolMax, 5)
-  const riskYTickValues = getLinearTickValues(riskReturnMin, riskReturnMax, 5)
-  const riskPlotWidth =
-    RISK_SCATTER_GEOMETRY.width - RISK_SCATTER_GEOMETRY.paddingLeft - RISK_SCATTER_GEOMETRY.paddingRight
-  const riskPlotHeight =
-    RISK_SCATTER_GEOMETRY.height - RISK_SCATTER_GEOMETRY.paddingTop - RISK_SCATTER_GEOMETRY.paddingBottom
-  const positionedRiskScatterRows = riskScatterRows.map((row) => ({
-    ...row,
-    x:
-      RISK_SCATTER_GEOMETRY.paddingLeft +
-      ((row.volatilityValue - riskVolMin) / Math.max(riskVolMax - riskVolMin, 1)) * riskPlotWidth,
-    y:
-      RISK_SCATTER_GEOMETRY.height -
-      RISK_SCATTER_GEOMETRY.paddingBottom -
-      ((row.returnValue - riskReturnMin) / Math.max(riskReturnMax - riskReturnMin, 1)) * riskPlotHeight,
-  }))
-  const riskBenchmarkLabel = selectedBenchmark
-    ? selectedBenchmark.ticker_or_isin || selectedBenchmark.fund_name
-    : 'Not selected'
   const riskMatrixSnapshots = performancePeriodSnapshots.filter(({ key }) => RISK_MATRIX_PERIOD_KEYS.has(key))
   const lifetimeRiskSnapshot =
     riskMatrixSnapshots.find(({ key }) => key === 'SI')?.fund ||
@@ -6353,120 +6014,6 @@ export default function FundDetailPage({
       )
     : []
   const returnDrawdownSeries = buildDrawdownSeries(riskCalculationSeries)
-  const formatRecoveryStatus = (snapshot: PerformanceMetricSnapshot | null) => {
-    if (!snapshot || snapshot.maxDrawdown == null) {
-      return '—'
-    }
-    if (snapshot.maxDrawdown === 0) {
-      return 'At high watermark'
-    }
-    return snapshot.recoveryOpen ? 'In drawdown' : 'Recovered'
-  }
-  const riskProfileSeries = resampleSeries(returnDrawdownSeries)
-  const riskProfileBounds = getDrawdownAxisBounds(riskProfileSeries)
-  const riskProfileTickValues = getLinearTickValues(riskProfileBounds.min, riskProfileBounds.max, 4)
-  const riskProfileTickDates = getChartTickDates(riskProfileSeries, 6)
-  const riskProfileAreaPath = buildChartAreaPath(
-    riskProfileSeries,
-    SECONDARY_SERIES_GEOMETRY,
-    riskProfileBounds.min,
-    riskProfileBounds.max,
-    0,
-  )
-  const riskProfileLinePath = buildChartLinePath(
-    riskProfileSeries,
-    SECONDARY_SERIES_GEOMETRY,
-    riskProfileBounds.min,
-    riskProfileBounds.max,
-  )
-  const monthlyDrawdownSeries = buildMonthlyMinimumSeries(returnDrawdownSeries).slice(-36)
-  const monthlyDrawdownBounds = getDrawdownAxisBounds(monthlyDrawdownSeries)
-  const monthlyDrawdownTickValues = getLinearTickValues(monthlyDrawdownBounds.min, monthlyDrawdownBounds.max, 4)
-  const monthlyDrawdownTickDates = getChartTickDates(monthlyDrawdownSeries, 6)
-  const monthlyDrawdownAreaPath = buildChartAreaPath(
-    monthlyDrawdownSeries,
-    SECONDARY_SERIES_GEOMETRY,
-    monthlyDrawdownBounds.min,
-    monthlyDrawdownBounds.max,
-    0,
-  )
-  const monthlyDrawdownLinePath = buildChartLinePath(
-    monthlyDrawdownSeries,
-    SECONDARY_SERIES_GEOMETRY,
-    monthlyDrawdownBounds.min,
-    monthlyDrawdownBounds.max,
-  )
-  const monthlyVolatilitySeries = buildMonthlyAnnualizedVolatilitySeries(riskCalculationSeries).slice(-36)
-  const monthlyVolatilityBounds = monthlyVolatilitySeries.length
-    ? getPaddedAxisBounds(
-        Math.min(0, ...monthlyVolatilitySeries.map((point) => point.value)),
-        Math.max(...monthlyVolatilitySeries.map((point) => point.value)),
-        0.12,
-        0.5,
-      )
-    : { min: 0, max: 1 }
-  const monthlyVolatilityTickValues = getLinearTickValues(
-    monthlyVolatilityBounds.min,
-    monthlyVolatilityBounds.max,
-    4,
-  )
-  const monthlyVolatilityTickDates = getChartTickDates(monthlyVolatilitySeries, 6)
-  const monthlyVolatilityAreaPath = buildChartAreaPath(
-    monthlyVolatilitySeries,
-    SECONDARY_SERIES_GEOMETRY,
-    monthlyVolatilityBounds.min,
-    monthlyVolatilityBounds.max,
-    0,
-  )
-  const monthlyVolatilityLinePath = buildChartLinePath(
-    monthlyVolatilitySeries,
-    SECONDARY_SERIES_GEOMETRY,
-    monthlyVolatilityBounds.min,
-    monthlyVolatilityBounds.max,
-  )
-  const riskSummaryRows = [
-    {
-      label: 'As Of',
-      value: formatDate(risk.snapshot_metadata?.as_of_date || latestNavRecord?.as_of_date || null),
-    },
-    {
-      label: 'Benchmark',
-      value: riskBenchmarkLabel,
-    },
-    {
-      label: 'Risk Basis',
-      value: calculationFrequencyStatus,
-    },
-    {
-      label: 'Ann. Factor',
-      value:
-        calculationFrequencyProfile.annualization_periods_per_year == null
-          ? '—'
-          : `${formatNumber(calculationFrequencyProfile.annualization_periods_per_year, 1)} / yr`,
-    },
-    {
-      label: 'Current DD',
-      value:
-        returnDrawdownSeries.length > 0
-          ? formatPercent(returnDrawdownSeries[returnDrawdownSeries.length - 1].value)
-          : '—',
-    },
-    {
-      label: 'Max DD',
-      value:
-        lifetimeRiskSnapshot.maxDrawdown == null
-          ? '—'
-          : formatPercent(lifetimeRiskSnapshot.maxDrawdown),
-    },
-    {
-      label: 'Recovery Status',
-      value: formatRecoveryStatus(lifetimeRiskSnapshot),
-    },
-    {
-      label: 'Recovery Days',
-      value: formatRecoveryValue(lifetimeRiskSnapshot) || '—',
-    },
-  ]
   const rollingRiskWindowLabel =
     ROLLING_RISK_WINDOW_OPTIONS.find((option) => option.months === rollingRiskWindowMonths)?.label ||
     `${rollingRiskWindowMonths}M`
@@ -6496,44 +6043,10 @@ export default function FundDetailPage({
     commonBenchmarkRiskSeries.length > 0
       ? buildRollingBetaSeries(commonFundRiskSeries, commonBenchmarkRiskSeries).slice(-60)
       : []
-  const rollingRiskFactRows = [
-    {
-      label: 'Latest Rolling Ann. Vol',
-      value:
-        rollingVolatilitySeries.length > 0
-          ? formatPercent(rollingVolatilitySeries[rollingVolatilitySeries.length - 1].value)
-          : '—',
-    },
-    {
-      label: 'Peak Rolling Ann. Vol',
-      value:
-        rollingVolatilitySeries.length > 0
-          ? formatPercent(Math.max(...rollingVolatilitySeries.map((point) => point.value)))
-          : '—',
-    },
-    {
-      label: 'Latest Rolling Beta',
-      value:
-        rollingBetaSeries.length > 0
-          ? formatNumber(rollingBetaSeries[rollingBetaSeries.length - 1].value, 2)
-          : selectedBenchmark
-            ? 'Insufficient overlap'
-            : 'No benchmark selected',
-    },
-    {
-      label: 'Beta Benchmark',
-      value: riskBenchmarkLabel,
-    },
-  ]
   const monthlyReturnSeries = buildMonthlyReturnSeries(calculationBasisSeries)
   const latestMonthlyReturnValue =
     monthlyReturnSeries.length > 0 ? monthlyReturnSeries[monthlyReturnSeries.length - 1].value : null
-  const medianMonthlyReturnValue = getMedianValue(monthlyReturnSeries.map((point) => point.value))
   const trailingNegativeMonthCount = getTrailingNegativeMonthCount(monthlyReturnSeries)
-  const latestMonthlyDrawdownValue =
-    monthlyDrawdownSeries.length > 0 ? monthlyDrawdownSeries[monthlyDrawdownSeries.length - 1].value : null
-  const worstMonthlyDrawdownValue =
-    monthlyDrawdownSeries.length > 0 ? Math.min(...monthlyDrawdownSeries.map((point) => point.value)) : null
   const currentDrawdownValue =
     returnDrawdownSeries.length > 0 ? returnDrawdownSeries[returnDrawdownSeries.length - 1].value : null
   const latestRollingVolValue =
@@ -6558,13 +6071,6 @@ export default function FundDetailPage({
         )
   const latest1WReturn = performancePeriodSnapshots.find(({ key }) => key === '1W')?.fund.periodReturn ?? null
   const latestMtdReturn = performancePeriodSnapshots.find(({ key }) => key === 'MTD')?.fund.periodReturn ?? null
-  const structuralRiskSnapshot =
-    riskMatrixSnapshots.find(({ key }) => key === '3Y') ??
-    riskMatrixSnapshots.find(({ key }) => key === 'SI') ??
-    null
-  const structuralRiskLabel = structuralRiskSnapshot?.label || 'SI'
-  const structuralFundSnapshot = structuralRiskSnapshot?.fund ?? null
-  const structuralRelativeSnapshot = structuralRiskSnapshot?.relative ?? null
   const buildWatchReading = (level: string, detail: string) => `${level} · ${detail}`
   const scoreWatchLevel = (level: string) => (level === 'High' ? 2 : level === 'Elevated' ? 1 : 0)
   const volatilityWatch = (() => {
@@ -6817,372 +6323,9 @@ export default function FundDetailPage({
 
     return selectors
   })()
-  const localCurrentRiskWatchRows = [
-    {
-      label: 'Overall Watch',
-      value: buildWatchReading(overallWatchLevel, `${String(watchScore)} signal point(s)`),
-    },
-    {
-      label: 'Volatility Regime',
-      value: volatilityWatch.reading,
-    },
-    {
-      label: 'Drawdown Pressure',
-      value: drawdownPressureWatch.reading,
-    },
-    {
-      label: 'Recent Loss Pressure',
-      value: recentLossPressureWatch.reading,
-    },
-    {
-      label: 'Benchmark Sensitivity',
-      value: betaDriftWatch.reading,
-    },
-    {
-      label: 'Methodology',
-      value: 'Heuristic watch flags based on current drawdown, rolling vol, recent losses, and beta drift.',
-    },
-  ]
-  const localRiskFallbackFacts = localCurrentRiskWatchRows.filter((row) => row.value !== '—').slice(0, 4)
-  const localRiskStructureRows = [
-    {
-      characteristic: 'Risk Style',
-      reading:
-        structuralFundSnapshot?.annualizedVolatility == null && structuralFundSnapshot?.maxDrawdown == null
-          ? '—'
-          : `${structuralRiskLabel} vol ${structuralFundSnapshot?.annualizedVolatility == null ? '—' : formatPercent(structuralFundSnapshot.annualizedVolatility)} · max DD ${structuralFundSnapshot?.maxDrawdown == null ? '—' : formatPercent(structuralFundSnapshot.maxDrawdown)}`,
-      interpretation:
-        structuralFundSnapshot?.annualizedVolatility == null || structuralFundSnapshot?.maxDrawdown == null
-          ? 'Insufficient history to classify the long-run risk amplitude.'
-          : structuralFundSnapshot.annualizedVolatility < 8 && Math.abs(structuralFundSnapshot.maxDrawdown) < 10
-            ? 'Low-amplitude path. Capital preservation matters more than benchmark capture.'
-            : structuralFundSnapshot.annualizedVolatility < 15 && Math.abs(structuralFundSnapshot.maxDrawdown) < 20
-              ? 'Balanced amplitude. Drawdowns matter, but the path is still broadly manageable.'
-              : 'High-amplitude path. Position sizing and liquidity discipline matter.'
-    },
-    {
-      characteristic: 'Benchmark Dependence',
-      reading:
-        structuralRelativeSnapshot?.beta == null && structuralRelativeSnapshot?.trackingError == null
-          ? '—'
-          : `${structuralRiskLabel} beta ${structuralRelativeSnapshot?.beta == null ? '—' : formatNumber(structuralRelativeSnapshot.beta, 2)} · TE ${structuralRelativeSnapshot?.trackingError == null ? '—' : formatPercent(structuralRelativeSnapshot.trackingError)}`,
-      interpretation:
-        !selectedBenchmark
-          ? 'No benchmark selected, so benchmark dependence is not fully specified.'
-          : structuralRelativeSnapshot?.beta == null || structuralRelativeSnapshot?.trackingError == null
-            ? 'Need more overlap with the current benchmark to characterize sensitivity.'
-            : structuralRelativeSnapshot.beta < 0.35 && structuralRelativeSnapshot.trackingError < 5
-              ? 'Low benchmark dependence. Risk is driven more by manager path than market beta.'
-              : structuralRelativeSnapshot.beta < 0.8 && structuralRelativeSnapshot.trackingError < 10
-                ? 'Moderate benchmark dependence. Market moves matter, but are not the whole story.'
-                : 'High benchmark dependence. Benchmark direction and factor conditions matter a lot.'
-    },
-    {
-      characteristic: 'Downside Shape',
-      reading:
-        structuralRelativeSnapshot?.upsideCapture == null && structuralRelativeSnapshot?.downsideCapture == null
-          ? '—'
-          : `${structuralRiskLabel} up ${structuralRelativeSnapshot?.upsideCapture == null ? '—' : formatPercent(structuralRelativeSnapshot.upsideCapture, 0)} · down ${structuralRelativeSnapshot?.downsideCapture == null ? '—' : formatPercent(structuralRelativeSnapshot.downsideCapture, 0)}`,
-      interpretation:
-        !selectedBenchmark
-          ? '—'
-          : structuralRelativeSnapshot?.upsideCapture == null || structuralRelativeSnapshot?.downsideCapture == null
-            ? 'Capture profile needs a longer overlapping benchmark history.'
-            : structuralRelativeSnapshot.downsideCapture < structuralRelativeSnapshot.upsideCapture - 15
-              ? 'Downside participation is meaningfully lighter than upside participation.'
-              : structuralRelativeSnapshot.downsideCapture > structuralRelativeSnapshot.upsideCapture + 15
-                ? 'Downside participation is heavy relative to upside capture.'
-                : 'Upside and downside participation are broadly balanced.'
-    },
-    {
-      characteristic: 'Recovery Profile',
-      reading:
-        lifetimeRiskSnapshot.maxDrawdown == null
-          ? '—'
-          : `SI max DD ${formatPercent(lifetimeRiskSnapshot.maxDrawdown)} · recovery ${formatRecoveryValue(lifetimeRiskSnapshot) || '—'}`,
-      interpretation:
-        lifetimeRiskSnapshot.maxDrawdown == null
-          ? 'Insufficient history to classify recovery behavior.'
-          : lifetimeRiskSnapshot.recoveryOpen
-            ? 'The fund is still below its prior high watermark.'
-            : lifetimeRiskSnapshot.recoveryDays != null && lifetimeRiskSnapshot.recoveryDays <= 120
-              ? 'Historically, major drawdowns have healed relatively quickly.'
-              : lifetimeRiskSnapshot.recoveryDays != null && lifetimeRiskSnapshot.recoveryDays > 365
-                ? 'Drawdowns can take a long time to repair.'
-                : 'Recovery profile is moderate rather than fast.'
-    },
-  ]
-  const drawdownSummaryRows = [
-    {
-      label: 'Peak Date',
-      value: formatDate(risk.drawdown_summary?.peak_date),
-    },
-    {
-      label: 'Valley Date',
-      value: formatDate(risk.drawdown_summary?.valley_date),
-    },
-    {
-      label: 'Max Duration',
-      value:
-        risk.drawdown_summary?.max_duration_months == null
-          ? '—'
-          : `${String(risk.drawdown_summary.max_duration_months)} mo`,
-    },
-    {
-      label: 'Worst Monthly Drawdown',
-      value:
-        monthlyDrawdownSeries.length > 0
-          ? formatPercent(Math.min(...monthlyDrawdownSeries.map((point) => point.value)))
-          : '—',
-    },
-  ]
-  const localRiskChangeRows = [
-    {
-      signal: 'Rolling Ann. Vol',
-      current: latestRollingVolValue == null ? '—' : formatPercent(latestRollingVolValue),
-      baseline: rollingVolMedianValue == null ? '—' : `Median ${formatPercent(rollingVolMedianValue)}`,
-      change:
-        latestRollingVolValue == null || rollingVolMedianValue == null
-          ? '—'
-          : `${latestRollingVolValue >= rollingVolMedianValue ? '+' : ''}${formatPercent(latestRollingVolValue - rollingVolMedianValue)}`,
-      watch: volatilityWatch.level,
-    },
-    {
-      signal: 'Rolling Beta',
-      current:
-        latestRollingBetaValue == null
-          ? (selectedBenchmark ? '—' : 'No benchmark selected')
-          : formatNumber(latestRollingBetaValue, 2),
-      baseline:
-        rollingBetaMedianValue == null
-          ? '—'
-          : `Median ${formatNumber(rollingBetaMedianValue, 2)}`,
-      change:
-        latestRollingBetaValue == null || rollingBetaMedianValue == null
-          ? '—'
-          : `${latestRollingBetaValue >= rollingBetaMedianValue ? '+' : ''}${formatNumber(latestRollingBetaValue - rollingBetaMedianValue, 2)}`,
-      watch: betaDriftWatch.level,
-    },
-    {
-      signal: 'Current DD',
-      current: currentDrawdownValue == null ? '—' : formatPercent(currentDrawdownValue),
-      baseline:
-        lifetimeRiskSnapshot.maxDrawdown == null
-          ? '—'
-          : `Worst ${formatPercent(lifetimeRiskSnapshot.maxDrawdown)}`,
-      change:
-        currentDrawdownValue == null || lifetimeRiskSnapshot.maxDrawdown == null || lifetimeRiskSnapshot.maxDrawdown === 0
-          ? '—'
-          : `${formatNumber((Math.abs(currentDrawdownValue) / Math.abs(lifetimeRiskSnapshot.maxDrawdown)) * 100, 0)}% of worst`,
-      watch: drawdownPressureWatch.level,
-    },
-    {
-      signal: 'Latest Monthly Drawdown',
-      current: latestMonthlyDrawdownValue == null ? '—' : formatPercent(latestMonthlyDrawdownValue),
-      baseline:
-        worstMonthlyDrawdownValue == null
-          ? '—'
-          : `Worst ${formatPercent(worstMonthlyDrawdownValue)}`,
-      change:
-        latestMonthlyDrawdownValue == null || worstMonthlyDrawdownValue == null || worstMonthlyDrawdownValue === 0
-          ? '—'
-          : `${formatNumber((Math.abs(latestMonthlyDrawdownValue) / Math.abs(worstMonthlyDrawdownValue)) * 100, 0)}% of worst`,
-      watch: recentLossPressureWatch.level,
-    },
-    {
-      signal: 'Recent Return Pressure',
-      current: `1W ${latest1WReturn == null ? '—' : formatPercent(latest1WReturn)} · MTD ${latestMtdReturn == null ? '—' : formatPercent(latestMtdReturn)}`,
-      baseline:
-        medianMonthlyReturnValue == null
-          ? '—'
-          : `Median month ${formatPercent(medianMonthlyReturnValue)}`,
-      change: `${String(trailingNegativeMonthCount)} trailing down month(s)`,
-      watch: recentLossPressureWatch.level,
-    },
-  ]
-  const payloadCurrentWatchRows = Array.isArray(risk.current_watch?.rows)
-    ? risk.current_watch.rows
-      .map((row) => {
-        const label = getString(row.signal)
-        const reading = getString(row.reading)
-        if (label === '—' || reading === '—') {
-          return null
-        }
-        return {
-          label,
-          value: reading,
-        }
-      })
-      .filter((row): row is { label: string; value: string } => row !== null)
-    : []
-  const payloadRiskStructureRows = Array.isArray(risk.risk_structure?.rows)
-    ? risk.risk_structure.rows
-      .map((row) => {
-        const characteristic = getString(row.characteristic)
-        const reading = getString(row.reading)
-        const interpretation = getString(row.interpretation)
-        if (characteristic === '—') {
-          return null
-        }
-        return {
-          characteristic,
-          reading,
-          interpretation,
-        }
-      })
-      .filter(
-        (
-          row,
-        ): row is {
-          characteristic: string
-          reading: string
-          interpretation: string
-        } => row !== null,
-      )
-    : []
-  const payloadRiskChangeRows = Array.isArray(risk.change_monitor?.rows)
-    ? risk.change_monitor.rows
-      .map((row) => {
-        const signal = getString(row.signal)
-        if (signal === '—') {
-          return null
-        }
-        return {
-          signal,
-          current: getString(row.current),
-          baseline: getString(row.baseline),
-          change: getString(row.change),
-          watch: getString(row.watch),
-        }
-      })
-      .filter(
-        (
-          row,
-        ): row is {
-          signal: string
-          current: string
-          baseline: string
-          change: string
-          watch: string
-        } => row !== null,
-      )
-    : []
   const riskPathMetricsWithheld =
     !fundPathRiskAvailable ||
     risk.data_quality?.status === 'withheld_missing_observations'
-  const currentRiskWatchRows = riskPathMetricsWithheld
-    ? payloadCurrentWatchRows
-    : payloadCurrentWatchRows.length
-      ? payloadCurrentWatchRows
-      : localCurrentRiskWatchRows
-  const riskFallbackFacts = riskPathMetricsWithheld
-    ? []
-    : currentRiskWatchRows.length
-      ? currentRiskWatchRows.slice(0, 4)
-      : localRiskFallbackFacts
-  const riskStructureRows = riskPathMetricsWithheld
-    ? payloadRiskStructureRows
-    : payloadRiskStructureRows.length
-      ? payloadRiskStructureRows
-      : localRiskStructureRows
-  const riskChangeRows = riskPathMetricsWithheld
-    ? payloadRiskChangeRows
-    : payloadRiskChangeRows.length
-      ? payloadRiskChangeRows
-      : localRiskChangeRows
-  const riskMatrixRows = [
-    {
-      label: 'Ann. Volatility',
-      supportsBenchmark: true,
-      cells: riskMatrixSnapshots.map((period) => {
-        const fund = displayedFundSnapshot(period)
-        const { benchmark } = period
-        return {
-          primary: fund.annualizedVolatility == null ? '—' : formatPercent(fund.annualizedVolatility),
-          secondary:
-            benchmark?.annualizedVolatility == null
-              ? null
-              : buildBenchmarkNote(formatPercent(benchmark.annualizedVolatility)),
-        }
-      }),
-    },
-    {
-      label: 'Downside Deviation',
-      supportsBenchmark: true,
-      cells: riskMatrixSnapshots.map((period) => {
-        const fund = displayedFundSnapshot(period)
-        const { benchmark } = period
-        return {
-          primary:
-            fund.annualizedDownsideDeviation == null
-              ? '—'
-              : formatPercent(fund.annualizedDownsideDeviation),
-          secondary:
-            benchmark?.annualizedDownsideDeviation == null
-              ? null
-              : buildBenchmarkNote(formatPercent(benchmark.annualizedDownsideDeviation)),
-        }
-      }),
-    },
-    {
-      label: 'Tracking Error',
-      supportsBenchmark: false,
-      cells: riskMatrixSnapshots.map(({ relative }) => ({
-        primary: relative?.trackingError == null ? '—' : formatPercent(relative.trackingError),
-        secondary: null,
-      })),
-    },
-    {
-      label: 'Beta',
-      supportsBenchmark: false,
-      cells: riskMatrixSnapshots.map(({ relative }) => ({
-        primary: relative?.beta == null ? '—' : formatNumber(relative.beta, 2),
-        secondary: null,
-      })),
-    },
-    {
-      label: 'Max DD',
-      supportsBenchmark: true,
-      cells: riskMatrixSnapshots.map((period) => {
-        const fund = displayedFundSnapshot(period)
-        const { benchmark } = period
-        return {
-          primary: fund.maxDrawdown == null ? '—' : formatPercent(fund.maxDrawdown),
-          secondary:
-            benchmark?.maxDrawdown == null
-              ? null
-              : buildBenchmarkNote(formatPercent(benchmark.maxDrawdown)),
-        }
-      }),
-    },
-    {
-      label: 'Recovery Days',
-      supportsBenchmark: true,
-      cells: riskMatrixSnapshots.map((period) => {
-        const fund = displayedFundSnapshot(period)
-        return {
-          primary: formatRecoveryValue(fund) || '—',
-          secondary: buildBenchmarkNote(formatRecoveryValue(period.benchmark)),
-        }
-      }),
-    },
-    {
-      label: 'Upside Capture',
-      supportsBenchmark: false,
-      cells: riskMatrixSnapshots.map(({ relative }) => ({
-        primary: relative?.upsideCapture == null ? '—' : formatPercent(relative.upsideCapture, 0),
-        secondary: null,
-      })),
-    },
-    {
-      label: 'Downside Capture',
-      supportsBenchmark: false,
-      cells: riskMatrixSnapshots.map(({ relative }) => ({
-        primary: relative?.downsideCapture == null ? '—' : formatPercent(relative.downsideCapture, 0),
-        secondary: null,
-      })),
-    },
-  ]
   const renderBenchmarkSearch = (ariaLabel: string, extraClassName = '') => {
     const className = ['instrument-chart-compare', extraClassName].filter(Boolean).join(' ')
     return (

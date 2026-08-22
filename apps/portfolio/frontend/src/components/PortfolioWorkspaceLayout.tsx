@@ -33,7 +33,6 @@ type WorkspaceTab = {
 type PortfolioWorkspaceLayoutProps = {
   activeSection: string
   children: React.ReactNode
-  toolbarLabel?: string
   controls?: React.ReactNode
   busy?: boolean
 }
@@ -74,7 +73,6 @@ function extractErrorMessage(error: unknown) {
 export default function PortfolioWorkspaceLayout({
   activeSection,
   children,
-  toolbarLabel,
   controls,
   busy = false,
 }: PortfolioWorkspaceLayoutProps) {

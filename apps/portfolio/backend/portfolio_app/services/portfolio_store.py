@@ -1268,7 +1268,6 @@ def _resolve_live_portfolio_as_of_date(
     valuation_today = _portfolio_valuation_today(item)
     transaction_rows = [_serialize_transaction_row(transaction) for transaction in transactions]
     portfolio_as_of_date = item.as_of_date
-    latest_trade_date = _max_transaction_trade_date(transactions)
     latest_activity_date = _max_transaction_activity_date(transactions)
     transacted_instrument_ids = {
         str(transaction.instrument_id or "")

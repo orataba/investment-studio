@@ -68,11 +68,6 @@ def instrument_detail_page(instrument_path: str) -> RedirectResponse:
     )
 
 
-@app.get("/documents")
-def documents_page() -> RedirectResponse:
-    return RedirectResponse(url=f"{settings.frontend_url}/documents", status_code=307)
-
-
 @app.get("/monitoring")
 def monitoring_page() -> RedirectResponse:
     return RedirectResponse(url=f"{settings.frontend_url}/monitoring", status_code=307)

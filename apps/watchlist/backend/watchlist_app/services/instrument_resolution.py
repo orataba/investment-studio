@@ -115,7 +115,7 @@ def _build_supported_detail_response(
     }
 
 
-def _build_stub_detail_response(
+def _build_unsupported_detail_response(
     *,
     requested_instrument_id: str,
     canonical_instrument_id: str,
@@ -161,7 +161,7 @@ def resolve_watchlist_instrument(
         else []
     )
     if detail_view_type is None:
-        return _build_stub_detail_response(
+        return _build_unsupported_detail_response(
             requested_instrument_id=requested_instrument_id,
             canonical_instrument_id=canonical_instrument_id,
             instrument_name=str(shared_record.get("instrument_name") or requested_instrument_id),

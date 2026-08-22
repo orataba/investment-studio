@@ -4504,16 +4504,6 @@ def test_cost_basis_method_changes_book_split_not_economic_contribution(client, 
         },
     )
     monkeypatch.setattr(
-        workspace_routes,
-        "build_instrument_holdings_market_profile",
-        lambda *_args, **_kwargs: {
-            "price_chart_1m": [],
-            "price_chart_3m": [],
-            "price_chart_6m": [],
-            "price_chart_1y": [],
-        },
-    )
-    monkeypatch.setattr(
         performance,
         "get_platform_fx_rates",
         lambda: {"supported_currencies": ["USD"], "maintained_pairs": [], "rates": []},

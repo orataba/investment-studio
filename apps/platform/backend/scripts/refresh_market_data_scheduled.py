@@ -22,7 +22,6 @@ PROJECT_ROOT = BACKEND_ROOT.parents[2]
 sys.path.insert(0, str(BACKEND_ROOT))
 
 from platform_app.services.downstream_notifications import (  # noqa: E402
-    DownstreamRequestFailure,
     DownstreamRefreshError,
     DownstreamRefreshResult,
     notify_market_data_downstream_refresh,

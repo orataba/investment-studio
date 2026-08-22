@@ -8,10 +8,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 from portfolio_ops_instrument_core import (
     CorporateActionEvent as CorporateActionEventContract,
     DataStatus as CoverageState,
-    IdentifierType,
     InstrumentCore as InstrumentCoreContract,
-    InstrumentIdentifier as InstrumentIdentifierContract,
-    InstrumentType,
     MetricFamily,
     PriceUnit,
     QuoteBasis,
@@ -57,6 +54,37 @@ TransactionCommandType = Literal[
 TransactionType = TransactionCommandType | Literal["transfer_in", "transfer_out"]
 TransactionAssetDomain = Literal["security", "derivative", "cash"]
 TransactionAssetSubtype = Literal["fcn", "option"]
+TransactionImportAssetType = Literal["security", "fcn", "option", "cash"]
+TransactionImportAction = Literal[
+    "buy",
+    "sell",
+    "dividend",
+    "dividend_reinvestment",
+    "return_of_capital",
+    "transfer_out",
+    "transfer_in",
+    "opening_balance",
+    "entry",
+    "early_exit",
+    "coupon",
+    "knock_in_close",
+    "knock_out_close",
+    "maturity_close",
+    "buy_to_open",
+    "sell_to_close",
+    "sell_to_open",
+    "buy_to_close",
+    "expire_long",
+    "cash_settle_long",
+    "expire_written",
+    "cash_settle_written",
+    "deposit",
+    "withdrawal",
+    "interest",
+    "fx_conversion",
+    "fee",
+    "tax",
+]
 OptionAction = Literal[
     "buy_to_open",
     "sell_to_close",
@@ -148,6 +176,7 @@ PortfolioRiskContributionMode = Literal["signed", "abs"]
 TargetSetType = Literal["saa", "taa"]
 
 SUPPORTED_PORTFOLIO_CURRENCIES: tuple[SupportedCurrency, ...] = ("USD", "HKD", "CNY")
+MAX_TRANSACTION_IMPORT_RECORDS = 5_000
 SUPPORTED_RISK_WINDOW_DAYS = {30, 90, 180, 366, 730}
 QUANTITY_DISPLAY_QUANTUM = Decimal("0.01")
 AMOUNT_DISPLAY_QUANTUM = Decimal("0.01")
@@ -3850,7 +3879,7 @@ class InternalTransferCreateRequest(BaseModel):
         return _quantize_numeric_input(value, quantum=AMOUNT_SOURCE_QUANTUM)
 
 
-class TransactionCsvInternalTransferRequest(InternalTransferCreateRequest):
+class TransactionImportInternalTransferRequest(InternalTransferCreateRequest):
     currency: SupportedCurrency
 
     @field_validator("currency", mode="before")
@@ -3859,6 +3888,152 @@ class TransactionCsvInternalTransferRequest(InternalTransferCreateRequest):
         if isinstance(value, str):
             return value.strip().upper()
         return value
+
+
+class TransactionImportCommand(BaseModel):
+    """Public business command shared by machine JSON and transaction files."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    external_reference: str = Field(min_length=1, max_length=200)
+    asset_type: TransactionImportAssetType
+    transaction_action: TransactionImportAction
+    trade_date: date
+    trade_time: str | None = None
+    settlement_date: date | None = None
+    position_effective_date: date | None = None
+    entitlement_date: date | None = None
+    acquisition_date: date | None = None
+    account_id: str = Field(min_length=1)
+    counterparty_account_id: str | None = None
+    settlement_cash_account_id: str | None = None
+    instrument_id: str | None = None
+    derivative_contract_id: str | None = None
+    derivative_contract: DerivativeContractCreate | None = None
+    quantity: Decimal | None = Field(default=None, ge=0, lt=Decimal("1e16"))
+    price: Decimal | None = Field(default=None, ge=0, lt=Decimal("1e16"))
+    gross_amount: Decimal | None = Field(default=None, ge=0, lt=Decimal("1e20"))
+    counter_amount: Decimal | None = Field(default=None, ge=0, lt=Decimal("1e20"))
+    fx_rate: Decimal | None = Field(default=None, gt=0, lt=Decimal("1e16"))
+    fees: Decimal | None = Field(default=None, ge=0, lt=Decimal("1e20"))
+    fee_category: FeeCategory | None = None
+    taxes: Decimal | None = Field(default=None, ge=0, lt=Decimal("1e20"))
+    currency: SupportedCurrency
+    note: str | None = None
+
+    @field_validator("asset_type", "transaction_action", mode="before")
+    @classmethod
+    def normalize_command_names(cls, value: object) -> object:
+        if isinstance(value, str):
+            return value.strip().lower()
+        return value
+
+    @field_validator("currency", mode="before")
+    @classmethod
+    def normalize_currency(cls, value: object) -> object:
+        if isinstance(value, str):
+            return value.strip().upper()
+        return value
+
+    @field_validator("external_reference", "account_id", mode="before")
+    @classmethod
+    def normalize_required_fields(cls, value: object) -> object:
+        return _normalize_required_text(value)
+
+    @field_validator(
+        "counterparty_account_id",
+        "settlement_cash_account_id",
+        "instrument_id",
+        "derivative_contract_id",
+        "note",
+        mode="before",
+    )
+    @classmethod
+    def normalize_optional_fields(cls, value: object) -> object:
+        return _normalize_optional_text(value)
+
+    @field_validator("trade_time", mode="before")
+    @classmethod
+    def normalize_trade_time(cls, value: object) -> object:
+        if value is None:
+            return None
+        if isinstance(value, str):
+            normalized = value.strip()
+            if not normalized:
+                return None
+            try:
+                parsed = time.fromisoformat(normalized)
+            except ValueError as exc:
+                raise ValueError("trade_time must use HH:MM format.") from exc
+            return f"{parsed.hour:02d}:{parsed.minute:02d}"
+        return value
+
+    @field_validator("quantity", mode="before")
+    @classmethod
+    def normalize_quantity_precision(cls, value: object) -> object:
+        return _quantize_numeric_input(value, quantum=QUANTITY_SOURCE_QUANTUM)
+
+    @field_validator("price", "fx_rate", mode="before")
+    @classmethod
+    def normalize_price_precision(cls, value: object) -> object:
+        return _quantize_numeric_input(value, quantum=PRICE_SOURCE_QUANTUM)
+
+    @field_validator(
+        "gross_amount",
+        "counter_amount",
+        "fees",
+        "taxes",
+        mode="before",
+    )
+    @classmethod
+    def normalize_amount_precision(cls, value: object) -> object:
+        return _quantize_numeric_input(value, quantum=AMOUNT_SOURCE_QUANTUM)
+
+
+class TransactionImportPreviewRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    source_system: str = Field(min_length=1, max_length=100)
+    records: list[TransactionImportCommand] = Field(
+        min_length=1,
+        max_length=MAX_TRANSACTION_IMPORT_RECORDS,
+    )
+
+    @field_validator("source_system", mode="before")
+    @classmethod
+    def normalize_source_system(cls, value: object) -> object:
+        return _normalize_required_text(value)
+
+
+class TransactionImportCommitRequest(TransactionImportPreviewRequest):
+    preview_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
+class TransactionImportPreviewRow(BaseModel):
+    record_index: int = Field(ge=1)
+    external_reference: str
+    command: TransactionImportCommand
+    transaction: TransactionCreateRequest | None = None
+    internal_transfer: TransactionImportInternalTransferRequest | None = None
+    errors: list[str] = Field(default_factory=list)
+
+
+class TransactionImportPreviewResponse(BaseModel):
+    portfolio_id: str
+    preview_digest: str
+    row_count: int
+    valid_count: int
+    error_count: int
+    warnings: list[str] = Field(default_factory=list)
+    batch_errors: list[str] = Field(default_factory=list)
+    rows: list[TransactionImportPreviewRow]
+
+
+class TransactionImportCommitResponse(BaseModel):
+    portfolio_id: str
+    preview_digest: str
+    created_count: int
+    transactions: list[TransactionRecord]
 
 
 class TransactionBatchResponse(BaseModel):
@@ -3887,7 +4062,7 @@ class TransactionCsvImportRequest(TransactionCsvPreviewRequest):
 class TransactionCsvPreviewRow(BaseModel):
     row_number: int = Field(ge=2)
     transaction: TransactionCreateRequest | None = None
-    internal_transfer: TransactionCsvInternalTransferRequest | None = None
+    internal_transfer: TransactionImportInternalTransferRequest | None = None
     errors: list[str] = Field(default_factory=list)
 
 

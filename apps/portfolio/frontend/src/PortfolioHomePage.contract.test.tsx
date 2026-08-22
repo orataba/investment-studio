@@ -672,7 +672,7 @@ describe('Holdings rendered page contract', () => {
     expect(within(operationalStatus).queryByText('Overdue settlements')).not.toBeInTheDocument()
 
     await waitForHoldingsTable(user)
-    const advancedObligationCell = await screen.findByRole('cell', {
+    await screen.findByRole('cell', {
       name: /Alpha 110 Call/,
     })
     await user.click(screen.getByRole('button', { name: /View\s*: Default/ }))

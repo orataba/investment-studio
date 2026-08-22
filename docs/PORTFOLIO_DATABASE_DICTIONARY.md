@@ -358,7 +358,7 @@ For a colleague implementing transaction ingestion, the relevant read sequence i
 
 1. List accounts through `GET /api/portfolios/{portfolio_id}/accounts`.
 2. List canonical instruments through `GET /api/portfolios/{portfolio_id}/instruments`.
-3. Preview and import the transaction batch through the endpoints in `TRANSACTION_INTEGRATION.md`.
+3. Preview and atomically commit machine JSON through `transaction-imports/preview` and `transaction-imports/commit`, or use the canonical file workflow documented in `TRANSACTION_INTEGRATION.md`.
 4. Read created facts through `GET /api/portfolios/{portfolio_id}/transactions`.
 
 Do not treat daily snapshots, holdings, lots, postings, or instrument-universe rows as input tables. They are deterministic projections of facts plus Registry data and may be rebuilt.

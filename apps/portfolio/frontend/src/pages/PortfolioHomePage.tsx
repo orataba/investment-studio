@@ -502,22 +502,6 @@ const SYSTEM_HOLDINGS_VIEWS: HoldingsTableView[] = [
   },
 ]
 
-const TEXT_HOLDINGS_SORT_FIELDS = new Set<HoldingsColumnKey>([
-  'instrument',
-  'ticker',
-  'instrument_type',
-  'taxonomy_top',
-  'taxonomy_leaf',
-  'currency',
-  'holding_date',
-  'cost_method',
-  'quote_date',
-  'quote_basis',
-  'quote_provider',
-  'quote_status',
-  'coverage',
-])
-
 const HOLDINGS_GROUP_BY_OPTIONS: Array<{
   value: HoldingsGroupByKey
   label: string
@@ -1684,7 +1668,7 @@ function normalizeHoldingsViewState(value: unknown): HoldingsViewState {
     columnWidths: normalizeHoldingsColumnWidths(record.columnWidths),
     groupBy: parseHoldingsGroupBy(typeof record.groupBy === 'string' ? record.groupBy : null),
     sortField,
-    sortDirection: parseHoldingsSortDirection(typeof record.sortDirection === 'string' ? record.sortDirection : null, sortField),
+    sortDirection: parseHoldingsSortDirection(typeof record.sortDirection === 'string' ? record.sortDirection : null),
   }
 }
 
@@ -1772,7 +1756,7 @@ function parseHoldingsSortField(value: string | null): HoldingsColumnKey | null 
     : null
 }
 
-function parseHoldingsSortDirection(value: string | null, field: HoldingsColumnKey | null): HoldingsSortDirection {
+function parseHoldingsSortDirection(value: string | null): HoldingsSortDirection {
   if (value === 'asc' || value === 'desc') {
     return value
   }
@@ -2651,7 +2635,6 @@ export default function PortfolioHomePage() {
     initialHoldingsUrlSortField
       ? parseHoldingsSortDirection(
           searchParams.get('holdings_sort_direction') ?? searchParams.get('holdings_sort')?.match(/_(asc|desc)$/)?.[1] ?? null,
-          initialHoldingsUrlSortField,
         )
       : initialHoldingsViewState.sortDirection,
   )
@@ -3522,7 +3505,6 @@ export default function PortfolioHomePage() {
       <NoticeToast notice={viewToast} onDismiss={() => setViewToast(null)} />
       <PortfolioWorkspaceLayout
         activeSection="Holdings"
-        toolbarLabel={workspace?.view_label ?? 'View: Holdings'}
         busy={loading}
       >
       <section className="portfolio-detail-surface holdings-surface">

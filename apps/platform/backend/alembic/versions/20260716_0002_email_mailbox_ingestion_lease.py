@@ -34,7 +34,7 @@ def upgrade() -> None:
         sa.CheckConstraint(
             "(lease_token IS NULL AND lease_expires_at IS NULL) OR "
             "(lease_token IS NOT NULL AND lease_expires_at IS NOT NULL)",
-            name="ck_email_mailbox_ingestion_lease_lease_state_contract",
+            name=op.f("ck_email_mailbox_ingestion_lease_lease_state_contract"),
         ),
         sa.PrimaryKeyConstraint(
             "mailbox_key",

@@ -762,7 +762,6 @@ def position_buckets_by_account_reference_from_lots(
 def build_option_obligation_holding_rows(
     option_obligations: list[dict[str, object]] | None,
     *,
-    underlying_positions: list[dict[str, object]],
     as_of_date: date,
     base_currency: str,
     nav: float | None,
@@ -1474,7 +1473,6 @@ def build_materialized_holding_rows(
     rows.extend(
         build_option_obligation_holding_rows(
             option_obligations,
-            underlying_positions=account_instrument_buckets,
             as_of_date=as_of_date,
             base_currency=base_currency,
             nav=nav,

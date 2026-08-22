@@ -574,7 +574,6 @@ export default function PortfolioSecurityDetailPage() {
   return (
     <PortfolioWorkspaceLayout
       activeSection="Holdings"
-      toolbarLabel={workspace?.view_label ?? 'View: Holdings'}
       busy={workspaceLoading || positionLotsPending || transactionsPending || instrumentChartPending}
     >
       <section

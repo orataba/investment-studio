@@ -38,11 +38,11 @@ def upgrade() -> None:
         ),
         sa.CheckConstraint(
             "exchange_code IN ('XNAS', 'XNYS', 'XASE', 'BATS', 'XHKG', 'XSHG', 'XSHE')",
-            name="ck_fmp_etf_catalog_exchange_code_contract",
+            name=op.f("ck_fmp_etf_catalog_exchange_code_contract"),
         ),
         sa.CheckConstraint(
             "currency = upper(trim(currency)) AND length(currency) BETWEEN 1 AND 8",
-            name="ck_fmp_etf_catalog_currency_contract",
+            name=op.f("ck_fmp_etf_catalog_currency_contract"),
         ),
         sa.PrimaryKeyConstraint("fmp_symbol", name="pk_fmp_etf_catalog"),
         sa.UniqueConstraint(

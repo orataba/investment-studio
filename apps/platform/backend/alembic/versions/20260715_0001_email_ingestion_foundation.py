@@ -202,24 +202,24 @@ def upgrade() -> None:
         sa.CheckConstraint(
             "total_return_semantics IN "
             "('absent', 'provider_explicit', 'legacy_unverified')",
-            name="ck_fund_nav_raw_observation_total_return_semantics",
+            name=op.f("ck_fund_nav_raw_observation_total_return_semantics"),
         ),
         sa.CheckConstraint(
             "unit_nav_value IS NOT NULL OR cash_cumulative_nav_value IS NOT NULL "
             "OR observed_total_return_nav_value IS NOT NULL",
-            name="ck_fund_nav_raw_observation_has_value",
+            name=op.f("ck_fund_nav_raw_observation_has_value"),
         ),
         sa.CheckConstraint(
             "(unit_nav_value IS NULL AND unit_nav_status IS NULL) OR "
             "(unit_nav_value IS NOT NULL AND unit_nav_status IN "
             "('complete', 'partial', 'unavailable'))",
-            name="ck_fund_nav_raw_observation_unit_nav_status",
+            name=op.f("ck_fund_nav_raw_observation_unit_nav_status"),
         ),
         sa.CheckConstraint(
             "(cash_cumulative_nav_value IS NULL AND cash_cumulative_nav_status IS NULL) OR "
             "(cash_cumulative_nav_value IS NOT NULL AND cash_cumulative_nav_status IN "
             "('complete', 'partial', 'unavailable'))",
-            name="ck_fund_nav_raw_observation_cash_cumulative_nav_status",
+            name=op.f("ck_fund_nav_raw_observation_cash_cumulative_nav_status"),
         ),
         sa.CheckConstraint(
             "(observed_total_return_nav_value IS NULL "
@@ -227,7 +227,7 @@ def upgrade() -> None:
             "(observed_total_return_nav_value IS NOT NULL "
             "AND observed_total_return_nav_status IN "
             "('complete', 'partial', 'unavailable'))",
-            name="ck_fund_nav_raw_observation_total_return_nav_status",
+            name=op.f("ck_fund_nav_raw_observation_total_return_nav_status"),
         ),
         sa.PrimaryKeyConstraint(
             "fund_nav_raw_observation_id",
@@ -326,29 +326,29 @@ def upgrade() -> None:
         sa.CheckConstraint(
             "candidate_type IN "
             "('cash_distribution_signal', 'cash_balance_discontinuity')",
-            name="ck_fund_nav_action_candidate_candidate_type_contract",
+            name=op.f("ck_fund_nav_action_candidate_candidate_type_contract"),
         ),
         sa.CheckConstraint(
             "interval_start_date < interval_end_date",
-            name="ck_fund_nav_action_candidate_ordered_interval",
+            name=op.f("ck_fund_nav_action_candidate_ordered_interval"),
         ),
         sa.CheckConstraint(
             "(candidate_type = 'cash_distribution_signal' "
             "AND CAST(observed_cash_delta AS NUMERIC) > 0) OR "
             "(candidate_type = 'cash_balance_discontinuity' "
             "AND CAST(observed_cash_delta AS NUMERIC) <= 0)",
-            name="ck_fund_nav_action_candidate_candidate_delta_contract",
+            name=op.f("ck_fund_nav_action_candidate_candidate_delta_contract"),
         ),
         sa.CheckConstraint(
             "CAST(measurement_uncertainty AS NUMERIC) > 0",
-            name=(
+            name=op.f(
                 "ck_fund_nav_action_candidate_positive_measurement_uncertainty"
             ),
         ),
         sa.CheckConstraint(
             "status IN "
             "('open', 'confirming', 'superseded', 'resolved', 'rejected')",
-            name="ck_fund_nav_action_candidate_status_contract",
+            name=op.f("ck_fund_nav_action_candidate_status_contract"),
         ),
         sa.CheckConstraint(
             "(status IN ('confirming', 'resolved') "
@@ -356,13 +356,13 @@ def upgrade() -> None:
             "AND length(trim(resolved_fund_nav_event_id)) > 0) OR "
             "(status NOT IN ('confirming', 'resolved') "
             "AND resolved_fund_nav_event_id IS NULL)",
-            name="ck_fund_nav_action_candidate_resolution_contract",
+            name=op.f("ck_fund_nav_action_candidate_resolution_contract"),
         ),
         sa.CheckConstraint(
             "(status = 'rejected' AND rejection_reason IS NOT NULL "
             "AND length(trim(rejection_reason)) > 0) OR "
             "(status <> 'rejected' AND rejection_reason IS NULL)",
-            name="ck_fund_nav_action_candidate_rejection_contract",
+            name=op.f("ck_fund_nav_action_candidate_rejection_contract"),
         ),
         sa.CheckConstraint(
             "(status IN ('confirming', 'resolved', 'rejected') "
@@ -370,7 +370,7 @@ def upgrade() -> None:
             "AND length(trim(decision_by)) > 0) OR "
             "(status NOT IN ('confirming', 'resolved', 'rejected') "
             "AND decision_by IS NULL)",
-            name="ck_fund_nav_action_candidate_decision_audit_contract",
+            name=op.f("ck_fund_nav_action_candidate_decision_audit_contract"),
         ),
         sa.CheckConstraint(
             "(status IN ('confirming', 'resolved') "
@@ -386,7 +386,7 @@ def upgrade() -> None:
             "AND confirmation_client_mutation_id IS NULL "
             "AND confirmation_request_fingerprint IS NULL "
             "AND confirmation_request_json IS NULL)",
-            name=(
+            name=op.f(
                 "ck_fund_nav_action_candidate_confirmation_intent_contract"
             ),
         ),
@@ -395,13 +395,13 @@ def upgrade() -> None:
             "AND length(trim(instrument_id)) > 0 "
             "AND length(trim(source_provider)) > 0 "
             "AND length(source_revision) = 64",
-            name="ck_fund_nav_action_candidate_identity_contract",
+            name=op.f("ck_fund_nav_action_candidate_identity_contract"),
         ),
         sa.CheckConstraint(
             "length(trim(CAST(source_evidence_json AS TEXT))) > 2 "
             "AND lower(trim(CAST(source_evidence_json AS TEXT))) "
             "NOT IN ('{}', 'null')",
-            name="ck_fund_nav_action_candidate_evidence_contract",
+            name=op.f("ck_fund_nav_action_candidate_evidence_contract"),
         ),
         sa.PrimaryKeyConstraint(
             "fund_nav_action_candidate_id",

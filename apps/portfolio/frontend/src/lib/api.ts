@@ -1,6 +1,5 @@
 import type {
   InstrumentCore,
-  InstrumentIdentifier,
   DataStatus,
   MetricFamily,
   PriceUnit,

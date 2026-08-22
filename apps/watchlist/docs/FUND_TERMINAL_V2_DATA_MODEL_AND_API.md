@@ -299,16 +299,6 @@ Monitoring 页面不再硬编码一张“所有资产或所有基金必填 tags�
 - `GET /api/recalc/jobs`
 - `GET /api/recalc/jobs/{job_id}`
 
-### 6.11 Copilot Backend Extension
-
-- `POST /api/copilot/watchlists/{watchlist_id}/chat`
-- `POST /api/copilot/instruments/{instrument_id}/chat`
-
-说明：
-
-- 这两个接口当前作为 backend-only extension 保留
-- watchlist 前端 UI 默认关闭，不把 Copilot 当成已发布能力
-
 ## 7. 当前前端路由
 
 当前主路由是：
@@ -316,8 +306,6 @@ Monitoring 页面不再硬编码一张“所有资产或所有基金必填 tags�
 - `/watchlists`
 - `/watchlists/:watchlistId`
 - `/instruments/:instrumentId`
-- `/research`
-- `/documents`
 - `/monitoring`
 
 说明：

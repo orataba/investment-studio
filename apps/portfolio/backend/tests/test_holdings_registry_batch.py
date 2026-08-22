@@ -309,7 +309,6 @@ def test_materialized_holdings_uses_one_bulk_detail_map(client, monkeypatch) -> 
 
     monkeypatch.setattr(workspace_routes, "get_registry_instrument_details", recording_bulk_loader)
     monkeypatch.setattr(instrument_charts, "get_registry_instrument_detail", fail_single_chart_load)
-    monkeypatch.setattr(workspace_routes, "build_instrument_holdings_market_profile", fail_single_chart_load)
 
     response = client.get(
         "/api/workspace/holdings",
@@ -890,7 +889,6 @@ def test_fallback_holdings_reuses_bulk_details_for_frequency_valuation_and_chart
     monkeypatch.setattr(workspace_routes, "get_registry_instrument_details", recording_bulk_loader)
     monkeypatch.setattr(performance, "get_registry_instrument_detail", recording_performance_loader)
     monkeypatch.setattr(instrument_charts, "get_registry_instrument_detail", fail_single_chart_load)
-    monkeypatch.setattr(workspace_routes, "build_instrument_holdings_market_profile", fail_single_chart_load)
 
     response = client.get(
         "/api/workspace/holdings",

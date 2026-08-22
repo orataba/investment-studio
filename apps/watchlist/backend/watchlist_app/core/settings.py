@@ -27,9 +27,6 @@ class Settings(BaseSettings):
     recalc_worker_reconcile_batch_size: int = 500
     document_storage_root: Path = WORKSPACE_ROOT / "var" / "watchlist-documents"
     document_upload_max_bytes: int = 25 * 1024 * 1024
-    copilot_provider: str = "stub"
-    copilot_openai_model: str = "gpt-5.4"
-    copilot_openai_api_key: str | None = None
 
     model_config = SettingsConfigDict(
         env_prefix="PORTFOLIO_OPS_WATCHLIST_",

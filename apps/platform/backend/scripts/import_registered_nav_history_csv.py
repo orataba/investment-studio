@@ -9,7 +9,6 @@ import sys
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import date
-from decimal import Decimal
 from pathlib import Path
 from typing import Iterable
 

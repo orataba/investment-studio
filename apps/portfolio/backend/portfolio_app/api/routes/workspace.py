@@ -19,7 +19,6 @@ from portfolio_app.services.analytics_scope import (
 )
 from portfolio_app.services.instrument_charts import (
     HOLDINGS_PRICE_CHART_RANGE_KEYS,
-    build_instrument_holdings_market_profile,
     build_instrument_holdings_market_profile_from_detail,
     empty_instrument_holdings_market_profile,
 )
@@ -335,7 +334,6 @@ def _enrich_holdings_analytics_scope(
         if isinstance(taxonomy_selection_version, int):
             taxonomy_selection_versions.add(taxonomy_selection_version)
 
-        holding_kind = str(row.get("holding_kind") or "position")
         if is_cash_or_settlement:
             holding_category = "cash_and_settlement"
         elif is_derivative:

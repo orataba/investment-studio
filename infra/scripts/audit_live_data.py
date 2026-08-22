@@ -31,7 +31,7 @@ from portfolio_ops_instrument_core import (  # noqa: E402
 
 FINAL_FLAT_TABLE_HEADS = {
     "instrument_registry": "20260818_0025",
-    "platform": "20260818_0004",
+    "platform": "20260822_0005",
     "portfolio": "20260820_0054",
     "watchlist": "20260818_0042",
 }
@@ -1907,7 +1907,7 @@ def _run_flat_table_audit(database_url: str) -> list[AuditCheck]:
                 _count_check(
                     cursor,
                     name="market_data_invalid_values",
-                    query=f"""
+                    query="""
                         SELECT count(*)
                         FROM instrument_registry.instrument_market_data
                         WHERE status NOT IN ('complete', 'partial', 'unavailable')

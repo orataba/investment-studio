@@ -19,11 +19,10 @@ from portfolio_app.services import (
     valuation_fx,
 )
 from portfolio_app.services.annualization import annualization_eligibility
-from portfolio_app.services.calculation_frequency import CalculationFrequency, period_end_date
+from portfolio_app.services.calculation_frequency import CalculationFrequency
 from portfolio_app.core.settings import get_settings
 from portfolio_app.db.session import get_session_factory
 from portfolio_app.services.instrument_registry import (
-    InstrumentRegistryError,
     get_platform_fx_rates,
     get_registry_instrument_detail,
     get_registry_instrument_details,
@@ -4455,11 +4454,6 @@ def _build_boundary_holding_records(
         instrument_detail_cache=instrument_detail_cache,
     )
     position_buckets = holdings_market_profile.position_buckets_from_lots(position_lots)
-    account_instrument_buckets = (
-        holdings_market_profile.position_buckets_by_account_reference_from_lots(
-            position_lots
-        )
-    )
     rendered_positions: list[dict[str, object]] = []
     total_market_value_base = 0.0
     total_market_value_complete = True
@@ -4686,7 +4680,6 @@ def _build_boundary_holding_records(
     resolved_total_market_value_base = total_market_value_base if total_market_value_complete else None
     obligation_rows = holdings_market_profile.build_option_obligation_holding_rows(
         option_obligations,
-        underlying_positions=account_instrument_buckets,
         as_of_date=as_of_date,
         base_currency=base_currency,
         nav=boundary_nav,
@@ -6559,14 +6552,6 @@ def _build_contribution_daily_events(
         account_id = str(transaction.get("account_id") or "")
         currency = valuation_fx.required_currency(
             transaction.get("currency"), field_name="transaction currency"
-        )
-        instrument_name = str(
-            (
-                (transaction.get("instrument_ref") or {})
-                if isinstance(transaction.get("instrument_ref"), dict)
-                else {}
-            ).get("instrument_name")
-            or instrument_id
         )
         group_key, group_label = attribution.transaction_group_for_axis(
             axis=axis,

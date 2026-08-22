@@ -296,12 +296,6 @@ def test_taxonomy_reducers_keep_cash_and_derivatives_as_system_groups() -> None:
 
 
 def test_contribution_report_core_and_filter_golden_contract() -> None:
-    portfolio = {
-        "portfolio_id": "portfolio-1",
-        "base_currency": "hkd",
-        "valuation_timezone": "Asia/Hong_Kong",
-        "valuation_cutoff_policy": "latest_complete_eod",
-    }
     snapshots = [
         {
             "as_of_date": "2026-01-02",

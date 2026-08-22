@@ -3285,11 +3285,6 @@ def _current_scope_actuals(
             instrument_id = str(position.get("instrument_id") or "")
             if not instrument_id:
                 continue
-            instrument_ref = (
-                position.get("instrument_ref")
-                if isinstance(position.get("instrument_ref"), dict)
-                else _instrument_detail(state, instrument_id)
-            )
             market_value_base = _safe_float(position.get("market_value_base"))
             if market_value_base is None:
                 raise ValueError(
@@ -5201,7 +5196,6 @@ def build_current_target_backtest(
     robustness_scenarios: list[dict[str, object]] | None = None,
     walk_forward_training_months: int = 24,
     walk_forward_test_months: int = 6,
-    current_solution: dict[str, object] | None = None,
     _instrument_detail_cache: dict[str, dict[str, object] | None] | None = None,
     _direct_fx_instruments: dict[tuple[str, str], str] | None = None,
 ) -> dict[str, object]:
@@ -5305,26 +5299,6 @@ def build_current_target_backtest(
         instrument_detail_cache=shared_detail_cache,
         direct_fx_instruments=shared_fx_instruments,
     )
-    solution = current_solution or solve_current_target_weights(
-        portfolio_id,
-        planning_taxonomy_id=planning_taxonomy_id,
-        comparator_taxonomy_node_id=comparator_taxonomy_node_id,
-        as_of_date=as_of_date,
-        lookback_days=lookback_days,
-        calculation_frequency=calculation_frequency,
-        target_dimension=target_dimension,
-        capital_mode=capital_mode,
-        gross_exposure=gross_exposure,
-        target_volatility=target_volatility,
-        max_gross_exposure=max_gross_exposure,
-        missing_return_policy=missing_return_policy,
-        frozen_taxonomy_node_ids=frozen_taxonomy_node_ids,
-        top_sleeve_weight_bounds=top_sleeve_weight_bounds,
-        risk_model_config=risk_model_config,
-        _instrument_detail_cache=shared_detail_cache,
-        _direct_fx_instruments=shared_fx_instruments,
-    )
-
     nav_by_instrument: dict[str, pd.Series] = {}
     first_observation_by_instrument: dict[str, str] = {}
     for instrument_id in historical_instrument_ids:

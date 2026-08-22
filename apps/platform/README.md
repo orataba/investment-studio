@@ -7,7 +7,7 @@
 - `frontend/` 与 `backend/` 都已可运行
 - `Platform` 只负责平台首页、app switcher 和 `Database Dashboard`
 - `Platform` 直接维护 `instrument_registry` 中的 canonical 市场事实，在私有 `platform` schema 保存数据摄取运行状态，并在共享市场数据更新后通知 downstream app 刷新物化读模型
-- `Platform` 对 `Watchlist` 的入口和 app registry 文案应反映当前真实发布范围：公募 / 私募 / ETF / 股票 / 指数，Copilot 仅保留 backend extension boundary
+- `Platform` 对 `Watchlist` 的入口和 app registry 文案应反映当前真实发布范围：公募 / 私募 / ETF / 股票 / 指数
 
 ## 当前职责
 

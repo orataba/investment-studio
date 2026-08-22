@@ -307,13 +307,6 @@ def test_short_option_rows_do_not_allocate_or_require_underlying_holdings() -> N
 
     rows = holdings_market_profile.build_option_obligation_holding_rows(
         obligations,
-        underlying_positions=[
-            {
-                "account_id": "broker",
-                "instrument_id": "equity-a",
-                "quantity": 150.0,
-            }
-        ],
         as_of_date=date(2026, 1, 1),
         base_currency="USD",
         nav=10_000.0,

@@ -13,7 +13,6 @@ import {
   type PortfolioAccountCreatePayload,
   type PortfolioAccountUpdatePayload,
   type PortfolioAccountPositionRecord,
-  type PortfolioAccountWorkspaceAccount,
   type PortfolioAccountsWorkspaceResponse,
   type PortfolioLedgerPostingRecord,
   type PortfolioTransactionRecord,
@@ -540,7 +539,6 @@ export default function AccountsPage() {
   return (
     <PortfolioWorkspaceLayout
       activeSection="Accounts"
-      toolbarLabel="View: Account Ledger"
       busy={loading}
     >
       <section className="portfolio-detail-surface account-page">

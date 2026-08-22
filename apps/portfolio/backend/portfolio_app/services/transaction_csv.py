@@ -12,14 +12,25 @@ from pydantic import ValidationError
 from portfolio_app.api.contracts import (
     DerivativeContractCreate,
     FCNContractTerms,
+    MAX_TRANSACTION_IMPORT_RECORDS,
     OptionContractTerms,
     TransactionCreateRequest,
-    TransactionCsvInternalTransferRequest,
+    TransactionImportInternalTransferRequest,
+)
+from portfolio_app.services.transaction_import import (
+    ASSET_TYPE_VALUES,
+    DERIVATIVE_DEFINITION_ACTIONS,
+    TRANSACTION_ACTION_MAP,
+    TRANSFER_FORBIDDEN_FIELDS,
+    parse_transaction_import_command,
+    render_transaction_validation_errors,
+    resolve_transaction_import_action,
+    validate_transaction_import_asset_fields,
 )
 
 
 MAX_CSV_BYTES = 5 * 1024 * 1024
-MAX_CSV_ROWS = 5_000
+MAX_CSV_ROWS = MAX_TRANSACTION_IMPORT_RECORDS
 
 IMPORT_COLUMNS = (
     "asset_type",
@@ -123,134 +134,16 @@ FCN_TERM_COLUMNS = frozenset(
         "fcn_underlyings_json",
     }
 )
-ASSET_TYPE_VALUES = ("security", "fcn", "option", "cash")
-TRANSACTION_ACTIONS: dict[str, tuple[str, ...]] = {
-    "security": (
-        "buy",
-        "sell",
-        "dividend",
-        "dividend_reinvestment",
-        "return_of_capital",
-        "fee",
-        "tax",
-        "transfer_out",
-        "transfer_in",
-        "opening_balance",
-    ),
-    "fcn": (
-        "entry",
-        "early_exit",
-        "coupon",
-        "knock_in_close",
-        "knock_out_close",
-        "maturity_close",
-        "fee",
-        "tax",
-        "opening_balance",
-    ),
-    "option": (
-        "buy_to_open",
-        "sell_to_close",
-        "sell_to_open",
-        "buy_to_close",
-        "expire_long",
-        "cash_settle_long",
-        "expire_written",
-        "cash_settle_written",
-        "fee",
-        "tax",
-        "opening_balance",
-    ),
-    "cash": (
-        "deposit",
-        "withdrawal",
-        "interest",
-        "fx_conversion",
-        "fee",
-        "tax",
-        "transfer_out",
-        "transfer_in",
-        "opening_balance",
-    ),
-}
-TRANSACTION_ACTION_MAP: dict[tuple[str, str], tuple[str, str | None]] = {
-    ("security", "buy"): ("buy", None),
-    ("security", "sell"): ("sell", None),
-    ("security", "dividend"): ("dividend", None),
-    ("security", "dividend_reinvestment"): ("dividend_reinvestment", None),
-    ("security", "return_of_capital"): ("return_of_capital", None),
-    ("security", "fee"): ("fee", None),
-    ("security", "tax"): ("tax", None),
-    ("security", "opening_balance"): ("opening_balance", None),
-    ("fcn", "entry"): ("buy", None),
-    ("fcn", "early_exit"): ("sell", None),
-    ("fcn", "coupon"): ("coupon", None),
-    ("fcn", "knock_in_close"): ("maturity_redemption", "fcn_knock_in"),
-    ("fcn", "knock_out_close"): ("maturity_redemption", "fcn_knock_out"),
-    ("fcn", "maturity_close"): ("maturity_redemption", "fcn_maturity"),
-    ("fcn", "fee"): ("fee", None),
-    ("fcn", "tax"): ("tax", None),
-    ("fcn", "opening_balance"): ("opening_balance", None),
-    ("option", "buy_to_open"): ("buy", None),
-    ("option", "sell_to_close"): ("sell", None),
-    ("option", "sell_to_open"): ("option_write", None),
-    ("option", "buy_to_close"): ("option_buy_to_close", None),
-    ("option", "expire_long"): ("maturity_redemption", "option_long_expiry"),
-    ("option", "cash_settle_long"): (
-        "maturity_redemption",
-        "option_long_cash_settlement",
-    ),
-    ("option", "expire_written"): ("lifecycle_event", "option_writer_expiry"),
-    ("option", "cash_settle_written"): (
-        "lifecycle_event",
-        "option_writer_cash_settlement",
-    ),
-    ("option", "fee"): ("fee", None),
-    ("option", "tax"): ("tax", None),
-    ("option", "opening_balance"): ("opening_balance", None),
-    ("cash", "deposit"): ("deposit", None),
-    ("cash", "withdrawal"): ("withdrawal", None),
-    ("cash", "interest"): ("interest", None),
-    ("cash", "fx_conversion"): ("fx_conversion", None),
-    ("cash", "fee"): ("fee", None),
-    ("cash", "tax"): ("tax", None),
-    ("cash", "opening_balance"): ("opening_balance", None),
-}
-TRANSFER_ACTIONS = frozenset(
-    {
-        ("security", "transfer_out"),
-        ("security", "transfer_in"),
-        ("cash", "transfer_out"),
-        ("cash", "transfer_in"),
-    }
-)
-DERIVATIVE_DEFINITION_ACTIONS: dict[str, frozenset[str]] = {
-    "fcn": frozenset({"entry", "opening_balance"}),
-    "option": frozenset({"buy_to_open", "sell_to_open", "opening_balance"}),
-}
-TRANSFER_FORBIDDEN_COLUMNS = frozenset(
-    {
-        "position_effective_date",
-        "entitlement_date",
-        "acquisition_date",
-        "settlement_cash_account_id",
-        "derivative_contract_id",
-        *DERIVATIVE_DEFINITION_COLUMNS,
-        "price",
-        "counter_amount",
-        "fx_rate",
-        "fees",
-        "fee_category",
-        "taxes",
-    }
-)
+TRANSFER_FORBIDDEN_COLUMNS = (
+    TRANSFER_FORBIDDEN_FIELDS - {"derivative_contract"}
+) | DERIVATIVE_DEFINITION_COLUMNS
 
 
 @dataclass(frozen=True)
 class ParsedTransactionCsvRow:
     row_number: int
     transaction: TransactionCreateRequest | None
-    internal_transfer: TransactionCsvInternalTransferRequest | None
+    internal_transfer: TransactionImportInternalTransferRequest | None
     errors: tuple[str, ...]
 
 
@@ -275,15 +168,6 @@ def _sanitize_cell(value: object) -> object:
     if value[0] in SPREADSHEET_FORMULA_PREFIXES:
         return "'" + value
     return value
-
-
-def _validation_errors(error: ValidationError) -> tuple[str, ...]:
-    rendered: list[str] = []
-    for item in error.errors(include_url=False):
-        location = ".".join(str(part) for part in item.get("loc") or ())
-        message = str(item.get("msg") or "Invalid value")
-        rendered.append(f"{location}: {message}" if location else message)
-    return tuple(rendered)
 
 
 def _parse_fcn_underlyings(value: object) -> list[object]:
@@ -377,68 +261,6 @@ def _build_derivative_contract(
     )
 
 
-def _file_action(values: dict[str, object]) -> tuple[str, str, str | None]:
-    asset_type = str(values.get("asset_type") or "").strip().lower()
-    transaction_action = str(values.get("transaction_action") or "").strip().lower()
-    if asset_type not in ASSET_TYPE_VALUES:
-        raise ValueError("asset_type must be security, fcn, option, or cash.")
-    allowed_actions = TRANSACTION_ACTIONS[asset_type]
-    if transaction_action not in allowed_actions:
-        raise ValueError(
-            f"transaction_action '{transaction_action}' is not supported for "
-            f"asset_type '{asset_type}'; choose one of: "
-            + ", ".join(allowed_actions)
-            + "."
-        )
-    if (asset_type, transaction_action) in TRANSFER_ACTIONS:
-        return asset_type, "internal_transfer", None
-    transaction_type, lifecycle_event_type = TRANSACTION_ACTION_MAP[
-        (asset_type, transaction_action)
-    ]
-    return asset_type, transaction_type, lifecycle_event_type
-
-
-def _validate_file_asset_fields(
-    values: dict[str, object],
-    *,
-    asset_type: str,
-    transaction_action: str,
-) -> None:
-    instrument_id = values.get("instrument_id")
-    derivative_contract_id = values.get("derivative_contract_id")
-    supplied_definition_columns = {
-        column for column in DERIVATIVE_DEFINITION_COLUMNS if values.get(column) is not None
-    }
-    if asset_type == "security":
-        if not instrument_id:
-            raise ValueError("Security actions require instrument_id.")
-        if derivative_contract_id or supplied_definition_columns:
-            raise ValueError(
-                "Security actions must not carry derivative contract fields."
-            )
-        return
-    if asset_type in {"fcn", "option"}:
-        if instrument_id:
-            raise ValueError(
-                f"{asset_type.upper()} actions must not carry instrument_id."
-            )
-        if not derivative_contract_id:
-            raise ValueError(
-                f"{asset_type.upper()} actions require derivative_contract_id."
-            )
-        if supplied_definition_columns:
-            opening_actions = DERIVATIVE_DEFINITION_ACTIONS[asset_type]
-            if transaction_action not in opening_actions:
-                raise ValueError(
-                    f"A new {asset_type.upper()} contract can only be defined on: "
-                    + ", ".join(sorted(opening_actions))
-                    + "."
-                )
-        return
-    if instrument_id or derivative_contract_id or supplied_definition_columns:
-        raise ValueError("Cash actions must not carry security or derivative fields.")
-
-
 def parse_transaction_csv(
     csv_text: str,
     *,
@@ -489,86 +311,31 @@ def parse_transaction_csv(
             normalized = _desanitize_cell(str(raw_row.get(column) or "").strip())
             values[column] = normalized if normalized else None
         try:
-            asset_type, transaction_type, lifecycle_event_type = _file_action(values)
-            transaction_action = (
-                str(values.get("transaction_action") or "").strip().lower()
+            asset_type, _transaction_type, _lifecycle_event_type = (
+                resolve_transaction_import_action(values)
             )
-            _validate_file_asset_fields(
+            transaction_action = str(
+                values.get("transaction_action") or ""
+            ).strip().lower()
+            definition_supplied = any(
+                values.get(field) is not None
+                for field in DERIVATIVE_DEFINITION_COLUMNS
+            )
+            validate_transaction_import_asset_fields(
                 values,
                 asset_type=asset_type,
                 transaction_action=transaction_action,
+                derivative_contract=None,
+                derivative_definition_supplied=definition_supplied,
             )
-            if transaction_type == "internal_transfer":
-                if not values.get("source_system") and default_source_system:
-                    values["source_system"] = default_source_system.strip() or None
-                unexpected = sorted(
-                    column
-                    for column in TRANSFER_FORBIDDEN_COLUMNS
-                    if values.get(column) is not None
-                )
-                if unexpected:
-                    raise ValueError(
-                        "Transfer actions must not carry unrelated transaction fields: "
-                        + ", ".join(unexpected)
-                        + "."
-                    )
-                account_id = str(values.get("account_id") or "").strip()
-                counterparty_account_id = str(
-                    values.get("counterparty_account_id") or ""
-                ).strip()
-                transfer_out = transaction_action == "transfer_out"
-                internal_transfer = TransactionCsvInternalTransferRequest.model_validate(
-                    {
-                        "trade_date": values.get("trade_date"),
-                        "trade_time": values.get("trade_time"),
-                        "settlement_date": values.get("settlement_date"),
-                        "transfer_object_type": (
-                            "cash" if asset_type == "cash" else "position"
-                        ),
-                        "from_account_id": (
-                            account_id if transfer_out else counterparty_account_id
-                        ),
-                        "to_account_id": (
-                            counterparty_account_id if transfer_out else account_id
-                        ),
-                        "instrument_id": values.get("instrument_id"),
-                        "quantity": values.get("quantity"),
-                        "gross_amount": values.get("gross_amount"),
-                        "currency": values.get("currency"),
-                        "source_system": values.get("source_system"),
-                        "external_reference": values.get("external_reference"),
-                        "note": values.get("note"),
-                    }
-                )
-                transaction = None
-            else:
-                if not values.get("source_system") and default_source_system:
-                    values["source_system"] = default_source_system.strip() or None
-                if values.get("fees") is None:
-                    values["fees"] = "0"
-                if values.get("taxes") is None:
-                    values["taxes"] = "0"
-                if values.get("fee_category") is None:
-                    values["fee_category"] = "unknown"
-                derivative_contract = (
-                    _build_derivative_contract(values, contract_type=asset_type)
-                    if asset_type in {"fcn", "option"}
-                    else None
-                )
-                transaction_values = {
-                    key: value
-                    for key, value in values.items()
-                    if key not in DERIVATIVE_DEFINITION_COLUMNS
-                    and key not in {"asset_type", "transaction_action"}
-                }
-                transaction_values["transaction_type"] = transaction_type
-                transaction_values["lifecycle_event_type"] = lifecycle_event_type
-                transaction_values["derivative_contract"] = derivative_contract
-                transaction = TransactionCreateRequest.model_validate(transaction_values)
-                internal_transfer = None
+            derivative_contract = (
+                _build_derivative_contract(values, contract_type=asset_type)
+                if asset_type in {"fcn", "option"}
+                else None
+            )
         except (ValidationError, ValueError) as error:
             errors = (
-                _validation_errors(error)
+                render_transaction_validation_errors(error)
                 if isinstance(error, ValidationError)
                 else (str(error),)
             )
@@ -581,12 +348,18 @@ def parse_transaction_csv(
                 )
             )
             continue
+        parsed_command = parse_transaction_import_command(
+            values,
+            default_source_system=default_source_system,
+            derivative_contract=derivative_contract,
+            adapter_only_fields=DERIVATIVE_DEFINITION_COLUMNS,
+        )
         parsed_rows.append(
             ParsedTransactionCsvRow(
                 row_number=row_number,
-                transaction=transaction,
-                internal_transfer=internal_transfer,
-                errors=(),
+                transaction=parsed_command.transaction,
+                internal_transfer=parsed_command.internal_transfer,
+                errors=parsed_command.errors,
             )
         )
 

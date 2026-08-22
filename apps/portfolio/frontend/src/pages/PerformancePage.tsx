@@ -29,7 +29,6 @@ import {
   type PortfolioWorkspaceSummary,
   type SharedInstrumentRecord,
   type PortfolioTaxonomyCatalogResponse,
-  type PortfolioTaxonomyRecord,
 } from '../lib/api'
 import {
   formatCurrency,
@@ -518,22 +517,6 @@ function calculationDisplayLabel(row: CalculationDisplayRow) {
   return isCalculationChildRow(row) ? row.item_label : row.group_label
 }
 
-function calculationAxisLabel(axis: PortfolioContributionAxis) {
-  if (axis === 'account') {
-    return 'Account'
-  }
-  if (axis === 'instrument_type') {
-    return 'Instrument Type'
-  }
-  if (axis === 'currency') {
-    return 'Currency'
-  }
-  if (axis === 'taxonomy') {
-    return 'Taxonomy'
-  }
-  return 'Instrument'
-}
-
 function calculationAxisCountLabel(axis: PortfolioContributionAxis) {
   if (axis === 'account') {
     return 'accounts'
@@ -787,30 +770,6 @@ function sampleStddev(values: number[]) {
   const variance =
     values.reduce((total, value) => total + (value - mean) * (value - mean), 0) / (values.length - 1)
   return Math.sqrt(Math.max(variance, 0))
-}
-
-function sampleCovariance(leftValues: number[], rightValues: number[]) {
-  if (leftValues.length < 2 || leftValues.length !== rightValues.length) {
-    return null
-  }
-  const leftMean = leftValues.reduce((total, value) => total + value, 0) / leftValues.length
-  const rightMean = rightValues.reduce((total, value) => total + value, 0) / rightValues.length
-  return (
-    leftValues.reduce(
-      (total, leftValue, index) => total + (leftValue - leftMean) * (rightValues[index] - rightMean),
-      0,
-    ) /
-    (leftValues.length - 1)
-  )
-}
-
-function sampleCorrelation(leftValues: number[], rightValues: number[]) {
-  const covariance = sampleCovariance(leftValues, rightValues)
-  const leftStddev = sampleStddev(leftValues)
-  const rightStddev = sampleStddev(rightValues)
-  return covariance != null && leftStddev != null && rightStddev != null && leftStddev > 0 && rightStddev > 0
-    ? covariance / (leftStddev * rightStddev)
-    : null
 }
 
 function dayDiff(left: string, right: string) {
@@ -1502,7 +1461,6 @@ function PerformancePage() {
     portfolioSummary && portfolioSummary.portfolio_id === portfolioId ? validIsoDate(portfolioSummary.as_of_date) : ''
   const {
     appliedSinceInception,
-    appliedStartDate,
     appliedEndDate,
     waitingForDefaultEndDate: unresolvedDefaultEndDate,
     effectiveEndDate,
@@ -2235,7 +2193,6 @@ function PerformancePage() {
   const portfolioContribution = calculationGroupsSummary?.total_period_contribution ?? summary?.cumulative_twr ?? null
   const contributionResidual = calculationGroupsSummary?.contribution_residual ?? null
   const showContributionResidual = contributionResidual != null && Math.abs(contributionResidual) > 0.0000005
-  const calculationGroupLabel = calculationAxisLabel(resolvedCalculationGroupBy)
   const calculationChildRowCount = calculationRows.reduce((total, row) => total + (row.children?.length ?? 0), 0)
   const calculationRiskStatusLabel = calculationGroupsSummary?.risk_frequency_status_label ?? null
   const calculationMeta =
@@ -2578,7 +2535,6 @@ function PerformancePage() {
       <NoticeToast notice={viewToast} onDismiss={() => setViewToast(null)} />
       <PortfolioWorkspaceLayout
         activeSection="Performance"
-        toolbarLabel="View: Performance"
         busy={loading || waitingForDefaultEndDate}
       >
       <section className="portfolio-detail-surface performance-surface">

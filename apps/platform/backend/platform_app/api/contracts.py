@@ -27,13 +27,11 @@ from portfolio_ops_instrument_core.models import (
 from portfolio_ops_instrument_core.models import (
     DataStatus,
     ExpectedFrequency,
-    IdentifierType,
     InstrumentType,
     MetricFamily,
     NavLineage,
     PriceUnit,
     QuoteBasis,
-    QuoteRole,
     ReturnSemantics,
     SourceSettings as SharedSourceSettings,
     canonical_price_contract,

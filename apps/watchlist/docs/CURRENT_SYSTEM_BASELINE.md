@@ -24,13 +24,6 @@
 - `/monitoring`
   当前可用工作面，覆盖 freshness、缺失 label、open recalc job。
 
-### 2.2 仍是轻量页的一级路由
-
-- `/research`
-- `/documents` 轻量入口保留；公募/私募详情已接入 instrument-level documents profile，后端支持手工文件上传与下载
-
-它们现在只是轻量入口，不是假装完整 workspace 的壳页。
-
 ## 3. 当前产品框架边界
 
 watchlist 和公募/私募详情已经不再使用“平铺 fund tags”模型，而是三层框架：
@@ -89,7 +82,6 @@ watchlist 和公募/私募详情已经不再使用“平铺 fund tags”模型�
 - `facts`
 - `monitoring`
 - `recalc`
-- `copilot`
 
 ### 5.2 已落地的数据能力
 
@@ -104,7 +96,6 @@ watchlist 和公募/私募详情已经不再使用“平铺 fund tags”模型�
 - instrument product framework definition / assignment
 - recalc job persistence
 - queued recalc worker
-- copilot context assembly（后端保留，UI 默认隐藏）
 
 ## 6. 当前默认存储
 
@@ -121,7 +112,6 @@ watchlist 和公募/私募详情已经不再使用“平铺 fund tags”模型�
 - cash / FX / other 的 instrument detail overlay
 - Documents workspace 的完整工作面
 - Database Dashboard 侧 Email sync / OCR / extraction pipeline 的完整闭环
-- 真实 OpenAI provider 已启用且对用户开放的 Copilot
 
 ## 8. 继续推进时建议按什么顺序做
 
@@ -129,7 +119,6 @@ watchlist 和公募/私募详情已经不再使用“平铺 fund tags”模型�
 2. 继续补强 monitoring 和 recalc worker 的观测/告警
 3. 分别扩展公募、私募及其他资产类型的 taxonomy 与 taxonomy-aware research packs
 4. 把导入链路从“手工写入 facts”补到更完整的 source / document 流
-5. 把 Copilot 从 stub 切到真实 provider，并在具备真实能力后重新开放 UI
 
 ## 9. 文档维护规则
 

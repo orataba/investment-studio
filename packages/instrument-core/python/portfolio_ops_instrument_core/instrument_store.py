@@ -7,7 +7,6 @@ from collections.abc import Callable, Iterable
 from copy import deepcopy
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
-from typing import Any
 
 from sqlalchemy import delete, func, or_, select, text
 from sqlalchemy.exc import IntegrityError

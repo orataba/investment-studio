@@ -250,7 +250,7 @@ def test_cancellation_never_mutates_linked_transaction_and_requires_review(clien
     assert attention[0]["status"] == "needs_review"
     assert attention[0]["source_event_state"] == "cancelled"
     persisted_transaction = client.get(
-        f"/api/portfolios/portfolio-ops/transactions?instrument_id=fund-us-agg"
+        "/api/portfolios/portfolio-ops/transactions?instrument_id=fund-us-agg"
     ).json()["transactions"]
     assert any(item["transaction_id"] == transaction_id for item in persisted_transaction)
 

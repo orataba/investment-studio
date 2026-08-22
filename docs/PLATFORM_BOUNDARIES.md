@@ -7,7 +7,7 @@
 - `apps/platform`
   平台入口和 Database Dashboard。
 - `apps/watchlist`
-  公募 / 私募 / ETF / 股票 / 指数 Watchlist、local detail、monitoring 与 recalc；Copilot 当前只保留后端扩展接口，不作为已发布 UI。
+  公募 / 私募 / ETF / 股票 / 指数 Watchlist、local detail、monitoring 与 recalc。
 - `apps/portfolio`
   Portfolio / account / transaction / performance / risk / research / taxonomy。
 
@@ -38,7 +38,7 @@
 - 直接读写 `watchlist`
 - 直接读取 `instrument_registry`
 - 当前已发布范围是 `public_fund / private_fund / etf / equity / index`；其他共享资产可以存在于 registry，但不进入 Watchlist 主工作面
-- 在本地维护自己的 read models、recalc jobs、manual profile 和产品框架；Copilot 仅保留 backend extension boundary
+- 在本地维护自己的 read models、recalc jobs、manual profile 和产品框架
 
 ### Portfolio
 
@@ -79,9 +79,12 @@ Watchlist 与 Portfolio 会使用相同的投资术语，但这些页面不是�
 
 - language context
 - language selector
-- shared frontend styles
+- confirm dialog and modal focus management
+- notice toast and download-format menu
+- Sparkline and table export
+- request identity and serial task helpers
 
-后续如果沉淀 layout、基础组件或设计系统，也优先放在这里，而不是复制到各 app。
+只沉淀已经在多个 app 中稳定复用的基础能力；业务布局、业务表格和领域组件仍留在各自 app。
 
 ### `instrument_registry` schema
 

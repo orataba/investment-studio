@@ -1,7 +1,7 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import UTC, date, datetime
-from decimal import Decimal
 from uuid import NAMESPACE_URL, uuid4, uuid5
 
 from fastapi import APIRouter, File, Form, Header, HTTPException, Query, Response, UploadFile
@@ -13,11 +13,9 @@ from portfolio_app.api.assemblers import (
 )
 from portfolio_app.api.contracts import (
     _amount_contract_matches_display_price,
-    AccountRecord,
     DerivativeContractCreate,
     DerivativeContractListResponse,
     DerivativeContractRecord,
-    InstrumentCoreContract,
     OptionContractTerms,
     DerivationBoundaryStatus,
     InternalTransferCreateRequest,
@@ -37,6 +35,12 @@ from portfolio_app.api.contracts import (
     TransactionDeleteRequest,
     TransactionDeleteResponse,
     TransactionExecutionQuoteResponse,
+    TransactionImportCommitRequest,
+    TransactionImportCommitResponse,
+    TransactionImportInternalTransferRequest,
+    TransactionImportPreviewRequest,
+    TransactionImportPreviewResponse,
+    TransactionImportPreviewRow,
     TransactionAssetDomain,
     TransactionAssetSubtype,
     TransactionListResponse,
@@ -78,6 +82,11 @@ from portfolio_app.services.transaction_csv import (
     render_transaction_csv,
     render_transaction_csv_template,
     transaction_csv_digest,
+)
+from portfolio_app.services.transaction_import import (
+    ParsedTransactionCommand,
+    parse_transaction_import_command,
+    transaction_import_digest,
 )
 from portfolio_app.services.transaction_files import transaction_upload_to_csv
 from portfolio_app.services.transaction_xlsx import (
@@ -132,6 +141,7 @@ LIFECYCLE_EVENT_INSTRUMENT_TYPES: dict[str, set[str]] = {
 TRANSACTION_CREATE_IDEMPOTENCY_OPERATION = "create_transaction"
 INTERNAL_TRANSFER_IDEMPOTENCY_OPERATION = "create_internal_transfer"
 TRANSACTION_CSV_IMPORT_IDEMPOTENCY_OPERATION = "import_transactions_csv"
+TRANSACTION_JSON_IMPORT_IDEMPOTENCY_OPERATION = "import_transactions_json"
 
 
 def _request_payload_for_idempotency(
@@ -828,7 +838,7 @@ def _validate_fx_conversion(
     return counterparty_account
 
 
-def _prepare_csv_transaction_values(
+def _prepare_import_transaction_values(
     *,
     portfolio_id: str,
     payload: TransactionCreateRequest,
@@ -1218,7 +1228,7 @@ def _prepare_internal_transfer_values(
             pending_candidates = [
                 {
                     **record,
-                    "transaction_id": f"csv-pending-{index:06d}",
+                    "transaction_id": f"import-pending-{index:06d}",
                     "transaction_sequence": next_sequence + index - 1,
                     "portfolio_id": portfolio_id,
                 }
@@ -1324,38 +1334,49 @@ def _prepare_internal_transfer_values(
     ]
 
 
-def _build_transaction_csv_preview(
+@dataclass(frozen=True)
+class _TransactionBatchInputRow:
+    record_index: int
+    parsed: ParsedTransactionCommand
+
+
+@dataclass(frozen=True)
+class _TransactionBatchPreviewRow:
+    record_index: int
+    transaction: TransactionCreateRequest | None
+    internal_transfer: TransactionImportInternalTransferRequest | None
+    errors: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class _TransactionBatchPreview:
+    rows: tuple[_TransactionBatchPreviewRow, ...]
+    prepared_records: tuple[dict[str, object], ...]
+    batch_errors: tuple[str, ...]
+    warnings: tuple[str, ...]
+
+
+def _prepare_transaction_import_batch(
     *,
     portfolio_id: str,
-    request: TransactionCsvPreviewRequest,
-) -> tuple[TransactionCsvPreviewResponse, list[dict[str, object]]]:
+    preview_digest: str,
+    input_rows: list[_TransactionBatchInputRow],
+) -> _TransactionBatchPreview:
     if get_portfolio(portfolio_id) is None:
         raise HTTPException(status_code=404, detail="Portfolio not found")
-    try:
-        headers, parsed_rows = parse_transaction_csv(
-            request.csv_text,
-            default_source_system=request.default_source_system,
-        )
-    except ValueError as error:
-        raise HTTPException(status_code=422, detail=str(error)) from error
-
-    preview_digest = transaction_csv_digest(
-        request.csv_text,
-        default_source_system=request.default_source_system,
-    )
     created_at = datetime.now(UTC).replace(microsecond=0).isoformat().replace(
         "+00:00",
         "Z",
     )
-    response_rows: list[TransactionCsvPreviewRow] = []
+    response_rows: list[_TransactionBatchPreviewRow] = []
     prepared_records: list[dict[str, object]] = []
     valid_payloads: list[TransactionCreateRequest] = []
-    valid_internal_transfers: list[TransactionCsvInternalTransferRequest] = []
+    valid_internal_transfers: list[TransactionImportInternalTransferRequest] = []
     batch_errors: list[str] = []
     batch_derivative_contracts: dict[str, DerivativeContractCreate] = {}
     batch_contract_scopes: dict[str, tuple[str, str]] = {}
-    for parsed_row in parsed_rows:
-        transaction = parsed_row.transaction
+    for input_row in input_rows:
+        transaction = input_row.parsed.transaction
         if transaction is None or not transaction.derivative_contract_id:
             continue
         contract_id = transaction.derivative_contract_id
@@ -1364,7 +1385,7 @@ def _build_transaction_csv_preview(
         if previous_scope != scope:
             batch_errors.append(
                 f"Derivative contract '{contract_id}' is used across multiple "
-                "accounts or currencies in one import file."
+                "accounts or currencies in one import batch."
             )
         if transaction.derivative_contract is None:
             continue
@@ -1375,24 +1396,30 @@ def _build_transaction_csv_preview(
         if previous_contract != transaction.derivative_contract:
             batch_errors.append(
                 f"Derivative contract '{contract_id}' has conflicting immutable terms "
-                "in the import file."
+                "in the import batch."
             )
-    for parsed_row in parsed_rows:
-        if parsed_row.transaction is None and parsed_row.internal_transfer is None:
+    for input_row in input_rows:
+        parsed = input_row.parsed
+        if parsed.transaction is None and parsed.internal_transfer is None:
             response_rows.append(
-                TransactionCsvPreviewRow(
-                    row_number=parsed_row.row_number,
-                    errors=list(parsed_row.errors),
+                _TransactionBatchPreviewRow(
+                    record_index=input_row.record_index,
+                    transaction=None,
+                    internal_transfer=None,
+                    errors=parsed.errors,
                 )
             )
             continue
-        if parsed_row.internal_transfer is not None:
-            internal_transfer = parsed_row.internal_transfer
+        if parsed.internal_transfer is not None:
+            internal_transfer = parsed.internal_transfer
             transfer_group_id = (
                 "trf-"
                 + uuid5(
                     NAMESPACE_URL,
-                    f"{portfolio_id}:csv:{preview_digest}:{parsed_row.row_number}",
+                    (
+                        f"{portfolio_id}:transaction-import:{preview_digest}:"
+                        f"{input_row.record_index}"
+                    ),
                 ).hex[:12]
             )
             try:
@@ -1411,27 +1438,30 @@ def _build_transaction_csv_preview(
                     else str(error)
                 )
                 response_rows.append(
-                    TransactionCsvPreviewRow(
-                        row_number=parsed_row.row_number,
+                    _TransactionBatchPreviewRow(
+                        record_index=input_row.record_index,
+                        transaction=None,
                         internal_transfer=internal_transfer,
-                        errors=[detail],
+                        errors=(detail,),
                     )
                 )
                 continue
             prepared_records.extend(transfer_values)
             valid_internal_transfers.append(internal_transfer)
             response_rows.append(
-                TransactionCsvPreviewRow(
-                    row_number=parsed_row.row_number,
+                _TransactionBatchPreviewRow(
+                    record_index=input_row.record_index,
+                    transaction=None,
                     internal_transfer=internal_transfer,
+                    errors=(),
                 )
             )
             continue
-        assert parsed_row.transaction is not None
+        assert parsed.transaction is not None
         try:
-            values = _prepare_csv_transaction_values(
+            values = _prepare_import_transaction_values(
                 portfolio_id=portfolio_id,
-                payload=parsed_row.transaction,
+                payload=parsed.transaction,
                 created_at=created_at,
                 batch_derivative_contracts=batch_derivative_contracts,
             )
@@ -1442,25 +1472,28 @@ def _build_transaction_csv_preview(
                 else str(error)
             )
             response_rows.append(
-                TransactionCsvPreviewRow(
-                    row_number=parsed_row.row_number,
-                    transaction=parsed_row.transaction,
-                    errors=[detail],
+                _TransactionBatchPreviewRow(
+                    record_index=input_row.record_index,
+                    transaction=parsed.transaction,
+                    internal_transfer=None,
+                    errors=(detail,),
                 )
             )
             continue
         prepared_records.append(values)
-        valid_payloads.append(parsed_row.transaction)
+        valid_payloads.append(parsed.transaction)
         response_rows.append(
-            TransactionCsvPreviewRow(
-                row_number=parsed_row.row_number,
-                transaction=parsed_row.transaction,
+            _TransactionBatchPreviewRow(
+                record_index=input_row.record_index,
+                transaction=parsed.transaction,
+                internal_transfer=None,
+                errors=(),
             )
         )
 
     existing_records = list_transactions(portfolio_id)
     if (
-        len(response_rows) == len(parsed_rows)
+        len(response_rows) == len(input_rows)
         and not any(row.errors for row in response_rows)
         and not batch_errors
     ):
@@ -1500,7 +1533,7 @@ def _build_transaction_csv_preview(
             source_identities.add(identity)
     if duplicate_source_identities:
         batch_errors.append(
-            "Import file repeats source_system/external_reference identities: "
+            "Import batch repeats source_system/external_reference identities: "
             + ", ".join(
                 f"{source}/{reference}"
                 for source, reference in sorted(duplicate_source_identities)
@@ -1534,9 +1567,58 @@ def _build_transaction_csv_preview(
     )
     if missing_source_identity_count:
         warnings.append(
-            f"{missing_source_identity_count} row(s) lack a complete source identity; "
+            f"{missing_source_identity_count} record(s) lack a complete source identity; "
             "only the batch Idempotency-Key protects replay."
         )
+    return _TransactionBatchPreview(
+        rows=tuple(response_rows),
+        prepared_records=tuple(prepared_records),
+        batch_errors=tuple(batch_errors),
+        warnings=tuple(warnings),
+    )
+
+
+def _build_transaction_csv_preview(
+    *,
+    portfolio_id: str,
+    request: TransactionCsvPreviewRequest,
+) -> tuple[TransactionCsvPreviewResponse, list[dict[str, object]]]:
+    try:
+        headers, parsed_rows = parse_transaction_csv(
+            request.csv_text,
+            default_source_system=request.default_source_system,
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+
+    preview_digest = transaction_csv_digest(
+        request.csv_text,
+        default_source_system=request.default_source_system,
+    )
+    batch_preview = _prepare_transaction_import_batch(
+        portfolio_id=portfolio_id,
+        preview_digest=preview_digest,
+        input_rows=[
+            _TransactionBatchInputRow(
+                record_index=row.row_number,
+                parsed=ParsedTransactionCommand(
+                    transaction=row.transaction,
+                    internal_transfer=row.internal_transfer,
+                    errors=row.errors,
+                ),
+            )
+            for row in parsed_rows
+        ],
+    )
+    response_rows = [
+        TransactionCsvPreviewRow(
+            row_number=row.record_index,
+            transaction=row.transaction,
+            internal_transfer=row.internal_transfer,
+            errors=list(row.errors),
+        )
+        for row in batch_preview.rows
+    ]
     row_error_count = sum(1 for row in response_rows if row.errors)
     response = TransactionCsvPreviewResponse(
         portfolio_id=portfolio_id,
@@ -1544,12 +1626,62 @@ def _build_transaction_csv_preview(
         headers=list(headers),
         row_count=len(response_rows),
         valid_count=sum(1 for row in response_rows if not row.errors),
-        error_count=row_error_count + len(batch_errors),
-        warnings=warnings,
-        batch_errors=batch_errors,
+        error_count=row_error_count + len(batch_preview.batch_errors),
+        warnings=list(batch_preview.warnings),
+        batch_errors=list(batch_preview.batch_errors),
         rows=response_rows,
     )
-    return response, prepared_records
+    return response, list(batch_preview.prepared_records)
+
+
+def _build_transaction_json_preview(
+    *,
+    portfolio_id: str,
+    request: TransactionImportPreviewRequest,
+) -> tuple[TransactionImportPreviewResponse, list[dict[str, object]]]:
+    preview_digest = transaction_import_digest(request)
+    parsed_commands = [
+        parse_transaction_import_command(
+            command.model_dump(mode="python", exclude_none=False),
+            default_source_system=request.source_system,
+            derivative_contract=command.derivative_contract,
+        )
+        for command in request.records
+    ]
+    batch_preview = _prepare_transaction_import_batch(
+        portfolio_id=portfolio_id,
+        preview_digest=preview_digest,
+        input_rows=[
+            _TransactionBatchInputRow(record_index=index, parsed=parsed)
+            for index, parsed in enumerate(parsed_commands, start=1)
+        ],
+    )
+    response_rows = [
+        TransactionImportPreviewRow(
+            record_index=index,
+            external_reference=command.external_reference,
+            command=command,
+            transaction=validated.transaction,
+            internal_transfer=validated.internal_transfer,
+            errors=list(validated.errors),
+        )
+        for index, (command, validated) in enumerate(
+            zip(request.records, batch_preview.rows, strict=True),
+            start=1,
+        )
+    ]
+    row_error_count = sum(1 for row in response_rows if row.errors)
+    response = TransactionImportPreviewResponse(
+        portfolio_id=portfolio_id,
+        preview_digest=preview_digest,
+        row_count=len(response_rows),
+        valid_count=sum(1 for row in response_rows if not row.errors),
+        error_count=row_error_count + len(batch_preview.batch_errors),
+        warnings=list(batch_preview.warnings),
+        batch_errors=list(batch_preview.batch_errors),
+        rows=response_rows,
+    )
+    return response, list(batch_preview.prepared_records)
 
 
 @router.get("/{portfolio_id}/instruments", response_model=SharedInstrumentListResponse)
@@ -1680,6 +1812,128 @@ def download_transaction_xlsx_template(portfolio_id: str) -> Response:
     )
 
 
+def _create_imported_transaction_batch(
+    *,
+    portfolio_id: str,
+    prepared_records: list[dict[str, object]],
+    idempotency_key: str,
+    idempotency_payload: dict[str, object],
+    idempotency_operation: str,
+) -> list[dict[str, object]]:
+    try:
+        return create_transactions(
+            portfolio_id=portfolio_id,
+            records=prepared_records,
+            idempotency_key=idempotency_key,
+            idempotency_payload=idempotency_payload,
+            idempotency_operation=idempotency_operation,
+        )
+    except TransactionIdempotencyKeyError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    except TransactionIdempotencyConflictError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    except IntegrityError as error:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "A transaction with the same portfolio/source_system/"
+                "external_reference already exists."
+            ),
+        ) from error
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+
+
+@router.post(
+    "/{portfolio_id}/transaction-imports/preview",
+    response_model=TransactionImportPreviewResponse,
+)
+def preview_transaction_import(
+    portfolio_id: str,
+    payload: TransactionImportPreviewRequest,
+) -> TransactionImportPreviewResponse:
+    """Validate a machine-generated batch without writing transaction facts."""
+
+    preview, _prepared_records = _build_transaction_json_preview(
+        portfolio_id=portfolio_id,
+        request=payload,
+    )
+    return preview
+
+
+@router.post(
+    "/{portfolio_id}/transaction-imports/commit",
+    response_model=TransactionImportCommitResponse,
+)
+def commit_transaction_import(
+    portfolio_id: str,
+    payload: TransactionImportCommitRequest,
+    idempotency_key: str = Header(..., alias="Idempotency-Key"),
+) -> TransactionImportCommitResponse:
+    """Atomically persist the unchanged, successfully previewed batch."""
+
+    expected_digest = transaction_import_digest(payload)
+    if payload.preview_digest != expected_digest:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Transaction import content changed after preview; preview the batch again."
+            ),
+        )
+
+    idempotency_payload = {"preview_digest": expected_digest}
+    replayed = _idempotency_replay_or_error(
+        portfolio_id,
+        idempotency_key=idempotency_key,
+        operation=TRANSACTION_JSON_IMPORT_IDEMPOTENCY_OPERATION,
+        request_payload=idempotency_payload,
+    )
+    if replayed is not None:
+        account_lookup = {
+            item["account_id"]: item for item in list_accounts(portfolio_id)
+        }
+        return TransactionImportCommitResponse(
+            portfolio_id=portfolio_id,
+            preview_digest=expected_digest,
+            created_count=len(replayed),
+            transactions=serialize_transactions(
+                portfolio_id,
+                replayed,
+                account_lookup,
+            ),
+        )
+
+    preview, prepared_records = _build_transaction_json_preview(
+        portfolio_id=portfolio_id,
+        request=payload,
+    )
+    if preview.error_count:
+        raise HTTPException(
+            status_code=422,
+            detail=preview.model_dump(mode="json"),
+        )
+    created = _create_imported_transaction_batch(
+        portfolio_id=portfolio_id,
+        prepared_records=prepared_records,
+        idempotency_key=idempotency_key,
+        idempotency_payload=idempotency_payload,
+        idempotency_operation=TRANSACTION_JSON_IMPORT_IDEMPOTENCY_OPERATION,
+    )
+    account_lookup = {
+        item["account_id"]: item for item in list_accounts(portfolio_id)
+    }
+    return TransactionImportCommitResponse(
+        portfolio_id=portfolio_id,
+        preview_digest=preview.preview_digest,
+        created_count=len(created),
+        transactions=serialize_transactions(
+            portfolio_id,
+            created,
+            account_lookup,
+        ),
+    )
+
+
 @router.post(
     "/{portfolio_id}/transactions/csv/preview",
     response_model=TransactionCsvPreviewResponse,
@@ -1752,28 +2006,13 @@ def import_transaction_csv(
             detail=preview.model_dump(mode="json"),
         )
 
-    try:
-        created = create_transactions(
-            portfolio_id=portfolio_id,
-            records=prepared_records,
-            idempotency_key=idempotency_key,
-            idempotency_payload=idempotency_payload,
-            idempotency_operation=TRANSACTION_CSV_IMPORT_IDEMPOTENCY_OPERATION,
-        )
-    except TransactionIdempotencyKeyError as error:
-        raise HTTPException(status_code=400, detail=str(error)) from error
-    except TransactionIdempotencyConflictError as error:
-        raise HTTPException(status_code=409, detail=str(error)) from error
-    except IntegrityError as error:
-        raise HTTPException(
-            status_code=409,
-            detail=(
-                "A transaction with the same portfolio/source_system/"
-                "external_reference already exists."
-            ),
-        ) from error
-    except ValueError as error:
-        raise HTTPException(status_code=422, detail=str(error)) from error
+    created = _create_imported_transaction_batch(
+        portfolio_id=portfolio_id,
+        prepared_records=prepared_records,
+        idempotency_key=idempotency_key,
+        idempotency_payload=idempotency_payload,
+        idempotency_operation=TRANSACTION_CSV_IMPORT_IDEMPOTENCY_OPERATION,
+    )
 
     account_lookup = {
         item["account_id"]: item for item in list_accounts(portfolio_id)
@@ -2297,10 +2536,6 @@ def _persist_transaction_record(
 
     has_asset_reference = instrument_ref is not None or derivative_contract_ref is not None
     position_reference_id = derivative_contract_id or instrument_id
-    option_action = resolve_option_action(
-        transaction_type,
-        derivative_contract=derivative_contract_ref,
-    )
 
     asset_required_transaction_types = {
         "buy",

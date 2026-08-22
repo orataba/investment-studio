@@ -81,7 +81,7 @@ select {
   box-shadow: none;
 }
 
-.stub-body {
+.instrument-detail-body {
   padding: 20px 18px;
   max-width: 820px;
 }
@@ -2625,7 +2625,7 @@ td:last-child {
   color: #111827;
 }
 
-.stub-breadcrumbs {
+.instrument-detail-breadcrumbs {
   display: flex;
   align-items: center;
   gap: 8px;

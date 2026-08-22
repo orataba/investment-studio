@@ -7,7 +7,7 @@
 - `apps/platform`
   平台入口与 `Database Dashboard`，维护 `instrument_registry` 中的 `Instruments / FX / NAV` 主数据，并在私有 `platform` schema 保存邮件抓取、原始证据、解析与重试状态；不是其他 app 的运行时依赖。
 - `apps/watchlist`
-  已有可运行的前后端、数据库迁移、测试与文档，承载公募 / 私募 / ETF / 股票 / 指数 watchlist、local detail、facts、recalc 与 read model；Copilot 当前只保留后端扩展接口，默认 UI 不对外开放。
+  已有可运行的前后端、数据库迁移、测试与文档，承载公募 / 私募 / ETF / 股票 / 指数 watchlist、local detail、facts、recalc 与 read model。
 - `apps/portfolio`
   已有可运行的前后端、数据库迁移、交易、绩效、持仓、风险与研究工作台，以及成体系的领域文档。
 
@@ -28,7 +28,6 @@ portfolio-operations-workbench/
   packages/
     instrument-core/
     ui/
-    copilot/
   data/
     migration/
   docs/
@@ -61,7 +60,7 @@ portfolio-operations-workbench/
 ## 当前边界
 
 - `apps/watchlist`
-  承载公募 / 私募 / ETF / 股票 / 指数 watchlist、local detail、facts、read model 与 recalc；Copilot 仅保留后端接口边界，不作为当前已发布 UI 能力。
+  承载公募 / 私募 / ETF / 股票 / 指数 watchlist、local detail、facts、read model 与 recalc。
 - `apps/portfolio`
   承载 portfolio / account / transaction / performance / risk / research 语境。
 - `apps/platform`
@@ -69,9 +68,7 @@ portfolio-operations-workbench/
 - `packages/instrument-core`
   当前承载共享资产 contract、持久化 model 与 shared store helper：`instrument_id`、`name`、identifiers、`instrument_type`、`currency`、typed `market_data` 与最小 `quote_selection_policy`。
 - `packages/ui`
-  当前承载跨 app 的前端共享能力：语言上下文、语言选择器和通用样式；后续再扩展统一设计系统和 UI primitives。
-- `packages/copilot`
-  预留的平台级 copilot plumbing 目录；当前主路径不依赖它。
+  当前承载已经稳定复用的跨 app 前端基础能力，包括语言、确认弹窗、通知、下载格式菜单、表格导出、迷你图与请求/任务工具；业务布局和业务组件仍由各 app 自己维护。
 
 ## 当前原则
 

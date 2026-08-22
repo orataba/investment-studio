@@ -1598,7 +1598,6 @@ export default function ResearchPage() {
   return (
     <PortfolioWorkspaceLayout
       activeSection="Research"
-      toolbarLabel="View: Research Workbench"
       busy={loading || runDetailLoading}
     >
       {notice ? <div className="inline-notice inline-notice-success">{notice}</div> : null}

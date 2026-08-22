@@ -83,8 +83,8 @@
 
 ## Shared UI Boundary
 
-- `packages/ui` 当前只承载语言上下文、语言选择器和通用语言样式。
-- 还没有抽出跨 app component library；新增 UI 先遵守本文档，再考虑是否沉淀到 `packages/ui`。
+- `packages/ui` 只承载已经在多个 app 中稳定复用的基础能力：语言、确认弹窗与焦点管理、通知、下载格式菜单、表格导出、Sparkline 以及请求/串行任务工具。
+- 业务布局、业务表格和领域组件继续留在各自 app；只有形成稳定跨 app contract 后才沉淀到共享包。
 - 不为单次视觉修复创建新的全局 override 层；优先修改现有变量和已有模块样式。
 - Portfolio 和 Watchlist 代码边界保持分离，不通过复制业务组件或跨 app import 来“统一”。两边的 toolbar controls 采用一致视觉 contract：30px 高度、0 radius、透明背景、细边框、regular 字重、蓝色 hover/focus、disabled 透明度；各 app 用自己的局部 class 落地。
 

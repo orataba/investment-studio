@@ -128,7 +128,7 @@ export default function InstrumentDetailPage() {
 
   return (
     <section className="panel">
-      <div className="stub-breadcrumbs">
+      <div className="instrument-detail-breadcrumbs">
         <a href={PLATFORM_HOME_URL} className="watchlist-breadcrumb-link">
           Home
         </a>
@@ -153,7 +153,7 @@ export default function InstrumentDetailPage() {
           <h1 className="page-title">{instrument.instrument_name}</h1>
         </div>
       </div>
-      <div className="stub-body">
+      <div className="instrument-detail-body">
         <p>
           Watchlist supports public fund, private fund, ETF, equity, and index detail workspaces.{' '}
           <strong>{instrument.instrument_type}</strong> instruments can exist in the shared registry, but they do not

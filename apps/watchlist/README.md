@@ -29,8 +29,7 @@
 - Watchlist 里的公募、私募、ETF 和指数只从共享 Registry 搜索并引用；股票从 Platform 维护的本地 FMP 目录搜索，首次选用时才建立共享身份并加载 EOD
 - 当前 watchlist 可用范围是 `public_fund / private_fund / etf / equity / index`；shared registry 可以管理更广的资产类型，但其他类型不会进入 watchlist detail 主链路
 - `public_fund / private_fund` 分别进入各自的详情入口，并共享稳定的基金页基础结构；`etf / equity / index` 使用轻量详情工作面，聚焦 `Overview / Performance / Risk / Price`，不强行复用基金特有的 exposure、people、strategy、documents 或 research 录入面
-- `Monitoring` 已经是可用工作面；`Research / Documents` 一级路由仍以轻量页为主
-- Copilot 后端接口仍保留为后续扩展入口，但当前 UI 默认隐藏，不作为已发布能力
+- `Monitoring` 已经是可用工作面；`Research / Documents` 保留在支持它们的基金详情语境中，不提供无真实能力的独立一级占位路由
 
 ## 目录结构
 
@@ -134,7 +133,6 @@ npm --prefix apps/watchlist/frontend run build
 - [docs/CURRENT_SYSTEM_BASELINE.md](./docs/CURRENT_SYSTEM_BASELINE.md)
 - [docs/FUND_PRODUCT_FRAMEWORK.md](./docs/FUND_PRODUCT_FRAMEWORK.md)
 - [docs/FUND_TERMINAL_V2_DATA_MODEL_AND_API.md](./docs/FUND_TERMINAL_V2_DATA_MODEL_AND_API.md)
-- [docs/FUND_TERMINAL_V2_AI_COPILOT.md](./docs/FUND_TERMINAL_V2_AI_COPILOT.md)
 
 ## 继续推进时的原则
 

@@ -639,7 +639,7 @@ export default function ListedInstrumentDetailPage({ instrument, watchlistContex
   return (
     <div className="instrument-detail-page listed-detail-page">
       <div className="instrument-detail-topbar">
-        <div className="stub-breadcrumbs">
+        <div className="instrument-detail-breadcrumbs">
           <a href={PLATFORM_HOME_URL} className="watchlist-breadcrumb-link">Home</a>
           <span className="watchlist-breadcrumb-separator">/</span>
           <Link to="/watchlists" className="watchlist-breadcrumb-link">Watchlist</Link>

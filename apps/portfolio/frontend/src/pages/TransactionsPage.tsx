@@ -898,18 +898,6 @@ function transactionAccountHref(portfolioId: string, accountId: string) {
   return `/portfolios/${portfolioId}/accounts?account_id=${encodeURIComponent(accountId)}`
 }
 
-function transactionInspectorHref(
-  portfolioId: string,
-  accountId: string,
-  transactionId: string,
-) {
-  const params = new URLSearchParams({
-    account_id: accountId,
-    transaction_id: transactionId,
-  })
-  return `/portfolios/${portfolioId}/transactions?${params.toString()}`
-}
-
 function resolvePositionLotImpactKinds(
   positionLot: PortfolioPositionLotRecord,
   transactionId: string,
@@ -3188,7 +3176,6 @@ export default function TransactionsPage() {
   return (
     <PortfolioWorkspaceLayout
       activeSection="Transactions"
-      toolbarLabel="Transactions"
       busy={metaLoading || loadingTransactions}
     >
       <section className="portfolio-detail-surface">

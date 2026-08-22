@@ -1613,7 +1613,6 @@ export default function OverviewPage() {
   return (
     <PortfolioWorkspaceLayout
       activeSection="Overview"
-      toolbarLabel="View: Portfolio Overview"
       busy={workspaceLoading || performanceLoading || benchmarkLoading}
     >
       <section className="portfolio-detail-surface portfolio-overview-surface">

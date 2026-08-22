@@ -264,6 +264,8 @@ Portfolio 创建时必须确定 inception date。任何交易都不得早于该�
 
 页面右上角固定为 `Export / Import / Template / Record Transaction` 四个操作。Export 和 Template 都可选 CSV 或 Excel；Export 始终包含组合的全部交易命令，不受当前筛选影响，导出的任一格式都可再次 Import。Excel 文件使用 `Transactions` 工作表。Import 会先显示逐行和整批校验结果，只有全部通过后才能原子写入；CSV 与 Excel 使用同一字段、账户/币种规则、仓位校验和 preview digest。不要把数据库行 ID、内部 transfer legs 或页面筛选结果另做成第二种导入格式。
 
+交易截图识别等外部系统使用 JSON Preview/Commit 接口，同样先校验、后确认并原子入账；它与 CSV/Excel 共用交易动作、账户/币种、持仓历史和来源去重规则。具体对接合同见 [Portfolio 标准交易记录 JSON 接口对接说明](TRANSACTION_IMPORT_API_GUIDE.md)。
+
 内部转账用于组合内账户之间移动现金或持仓。现金转账填写金额；持仓转账填写 instrument、quantity，必要时填写 transferred cost basis。内部转账会生成 transfer in/out 配对记录，不应手工分别录入两边。页面或文件填写的 `source_system + external_reference` 是整笔 Transfer 的来源身份，系统只把它保存在 transfer-out 腿；导出折叠和再次导入仍会保留并查重。
 
 Holdings 若显示 `Negative settled cash` critical alert，表示账本已有负现金但没有明确融资事实。应核对并补录缺失的 Deposit、Transfer 或真实融资记录；当前系统不会自动把负数解释为保证金融资。

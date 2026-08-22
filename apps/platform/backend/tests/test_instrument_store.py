@@ -12,7 +12,6 @@ import pytest
 
 from portfolio_ops_instrument_core import (
     MarketDataPoint,
-    QuoteSelectionPolicy,
 )
 
 from platform_app.services import instrument_store
@@ -21,7 +20,6 @@ from platform_app.services.instrument_store import (
     _normalize_store,
     archive_instrument,
     create_instrument,
-    find_instrument_by_broker_identifier,
     find_instrument_by_identifier,
     get_instrument,
     instrument_registry_name,

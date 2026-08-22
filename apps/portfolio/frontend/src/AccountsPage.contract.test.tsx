@@ -298,7 +298,6 @@ describe('Accounts rendered page contract', () => {
       },
     ]
     apiMocks.getPortfolioAccountsWorkspace.mockResolvedValue(workspace)
-    const user = userEvent.setup()
 
     renderPortfolioPage(
       <AccountsPage />,

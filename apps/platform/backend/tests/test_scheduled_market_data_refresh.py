@@ -10,6 +10,8 @@ from pathlib import Path
 import pytest
 import psycopg
 
+from platform_app.services.downstream_notifications import DownstreamRequestFailure
+
 
 SCRIPT_PATH = Path(__file__).resolve().parents[1] / "scripts" / "refresh_market_data_scheduled.py"
 SPEC = importlib.util.spec_from_file_location("refresh_market_data_scheduled", SCRIPT_PATH)
@@ -231,7 +233,7 @@ def test_strict_downstream_failure_sets_failed_summary(monkeypatch, tmp_path: Pa
     result = scheduled_refresh.DownstreamRefreshResult(
         request_count=2,
         failures=(
-            scheduled_refresh.DownstreamRequestFailure(
+            DownstreamRequestFailure(
                 url="http://portfolio.local/refresh",
                 message="timed out",
             ),

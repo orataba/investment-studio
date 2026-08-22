@@ -19,9 +19,6 @@ from portfolio_app.db.models import (
     PortfolioRecordModel,
     ResearchRunRecordModel,
     ResearchSettingsRecordModel,
-    TargetSetLineRecordModel,
-    TargetSetRecordModel,
-    TaxonomyAssignmentRecordModel,
     TaxonomyNodeRecordModel,
     TaxonomyRecordModel,
     TransactionRecordModel,
@@ -1766,7 +1763,6 @@ def get_research_workbench(
         )
 
     risk_lookback_days = int(production_risk_model.get("lookback_days") or settings_payload.get("lookback_days") or 90)
-    risk_calculation_frequency = "daily"
     instrument_detail_cache: dict[str, dict[str, object] | None] = {}
     context = _build_research_context(
         portfolio_id,
@@ -2200,7 +2196,6 @@ def run_portfolio_research(
                 walk_forward_test_months=int(
                     settings_row.backtest_walk_forward_test_months
                 ),
-                current_solution=solution,
                 _instrument_detail_cache=instrument_detail_cache,
             )
             solution.update(backtest_payload)

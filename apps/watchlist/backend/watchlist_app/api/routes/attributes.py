@@ -172,7 +172,7 @@ def get_instrument_attribute_values(
     instrument_id: str,
     session: Session = Depends(get_db_session),
 ) -> dict[str, object]:
-    instrument = _require_asset(session, instrument_id)
+    _require_asset(session, instrument_id)
     payload = present_attribute_values(
         instrument_id,
         attribute_repository.list_definitions(session),

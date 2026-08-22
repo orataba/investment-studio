@@ -2997,7 +2997,6 @@ export default function RiskPage() {
   return (
     <PortfolioWorkspaceLayout
       activeSection="Risk"
-      toolbarLabel="View: Risk Analytics"
       busy={workspaceLoading || benchmarkLoading}
     >
       <section className="portfolio-detail-surface risk-page-surface">
