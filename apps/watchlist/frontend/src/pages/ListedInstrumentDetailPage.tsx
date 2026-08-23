@@ -2,25 +2,35 @@ import { useEffect, useMemo, useState, type MouseEvent as ReactMouseEvent } from
 import { Link } from 'react-router'
 
 import LoadingOverlay from '../components/LoadingOverlay'
+import InvestmentResearchWorkspace from '../components/InvestmentResearchWorkspace'
+import InstrumentResearchAttributes from '../components/InstrumentResearchAttributes'
 import { useModalDialog } from '../../../../../packages/ui/src/useModalDialog'
+import { useLanguage } from '../../../../../packages/ui/src/i18n'
 import {
+  emptyInstrumentResearchResponse,
   getInstrumentAttributes,
   getInstrumentPerformance,
   getInstrumentPriceBars,
   getInstrumentRisk,
+  getInstrumentResearch,
+  getInstrumentMonitoring,
   getInstrumentSummary,
   getInstrumentChart,
   getInstrumentTaxonomyTree,
+  getPlatformInstrumentReferenceData,
   updateInstrumentSettings,
-  type FundChartResponse,
-  type FundPerformanceResponse,
-  type FundRiskResponse,
-  type FundSummaryResponse,
+  type InstrumentChartResponse,
+  type InstrumentPerformanceResponse,
+  type InstrumentRiskResponse,
+  type InstrumentSummaryResponse,
   type InstrumentTaxonomyTreeResponse,
   type InstrumentAttributeValuesResponse,
   type InstrumentResolveResponse,
+  type InstrumentReferenceData,
+  type InstrumentResearchResponse,
+  type InstrumentMonitoringResponse,
 } from '../lib/api'
-import { formatDate, formatLabel, formatNumber, formatPercent, signedValueClass } from '../lib/format'
+import { formatDate, formatDateTime, formatLabel, formatNumber, formatPercent, signedValueClass } from '../lib/format'
 import {
   adjustPriceBars,
   hasCompleteAdjustmentFactors,
@@ -32,8 +42,10 @@ import {
   type PriceRange,
 } from '../lib/priceBars'
 import { buildWatchlistPath, PLATFORM_HOME_URL } from '../lib/navigation'
-
-type ListedTab = 'overview' | 'performance' | 'risk' | 'price'
+import {
+  listedDetailTabs,
+  type ListedDetailTab,
+} from '../lib/instrumentDetailArchitecture'
 
 type WatchlistBreadcrumbContext = {
   watchlistId: string
@@ -72,7 +84,7 @@ type StandardizedMetric = {
 }
 
 function standardizedReturn(
-  performance: FundPerformanceResponse | null,
+  performance: InstrumentPerformanceResponse | null,
   window: string,
 ): StandardizedMetric {
   const row = performance?.trailing_returns.find(
@@ -90,7 +102,7 @@ function standardizedReturn(
 }
 
 function standardizedRiskMetric(
-  risk: FundRiskResponse | null,
+  risk: InstrumentRiskResponse | null,
   metric: string,
 ): StandardizedMetric {
   const row = risk?.risk_metrics.find(
@@ -303,27 +315,84 @@ function GrowthChart({ bars }: { bars: DisplayPriceBar[] }) {
   )
 }
 
-function displayObjectValue(value: unknown): string {
+type ReferenceValueFormat = 'compact' | 'date' | 'integer' | 'percent_points' | 'ratio_percent'
+
+function displayReferenceDate(value: unknown): string {
+  const raw = String(value ?? '').trim()
+  const compactDate = /^(\d{4})(\d{2})(\d{2})$/.exec(raw)
+  if (compactDate) return `${compactDate[1]}-${compactDate[2]}-${compactDate[3]}`
+  return formatDate(raw)
+}
+
+function displayObjectValue(value: unknown, format?: ReferenceValueFormat): string {
   if (value === null || value === undefined || value === '') return '—'
+  if (format === 'date') return displayReferenceDate(value)
+  const numericValue = typeof value === 'number' ? value : Number(value)
+  if (format && Number.isFinite(numericValue)) {
+    if (format === 'compact') return compactValue(numericValue, 3)
+    if (format === 'integer') return String(Math.trunc(numericValue))
+    if (format === 'percent_points') return formatPercent(numericValue, 3)
+    return formatPercent(numericValue * 100, 2)
+  }
   if (typeof value === 'number') return compactValue(value, 3)
   if (typeof value === 'boolean') return value ? 'Yes' : 'No'
-  if (Array.isArray(value)) return value.map(displayObjectValue).join(', ')
+  if (Array.isArray(value)) return value.map((item) => displayObjectValue(item)).join(', ')
   if (typeof value === 'object') return JSON.stringify(value)
   return String(value)
 }
 
-function DataTable({ title, rows }: { title: string; rows: Array<Record<string, unknown>> }) {
-  if (!rows.length) return null
-  const columns = Array.from(new Set(rows.flatMap((row) => Object.keys(row)))).slice(0, 8)
+type DataTableColumn = {
+  key: string
+  label?: string
+  format?: ReferenceValueFormat
+}
+
+function DataTable({
+  title,
+  rows,
+  columns,
+  emptyMessage,
+}: {
+  title: string
+  rows: Array<Record<string, unknown>>
+  columns?: readonly DataTableColumn[]
+  emptyMessage?: string
+}) {
+  if (!rows.length) {
+    return (
+      <section className="panel listed-data-panel">
+        <div className="panel-header"><div className="panel-title">{title}</div></div>
+        <div className="instrument-placeholder">
+          {emptyMessage || 'No source data is available for this instrument.'}
+        </div>
+      </section>
+    )
+  }
+  const candidateColumns: readonly DataTableColumn[] = columns || Array.from(
+    new Set(rows.flatMap((row) => Object.keys(row))),
+  ).map((key) => ({ key }))
+  const visibleColumns = candidateColumns
+    .filter(({ key }) => rows.some((row) => row[key] !== null && row[key] !== undefined && row[key] !== ''))
+    .slice(0, 8)
+  if (!visibleColumns.length) {
+    return (
+      <section className="panel listed-data-panel">
+        <div className="panel-header"><div className="panel-title">{title}</div></div>
+        <div className="instrument-placeholder">
+          {emptyMessage || 'The source returned no displayable values.'}
+        </div>
+      </section>
+    )
+  }
   return (
     <section className="panel listed-data-panel">
       <div className="panel-header"><div className="panel-title">{title}</div></div>
       <div className="table-shell">
         <table className="listed-data-table">
-          <thead><tr>{columns.map((column) => <th key={column}>{formatLabel(column)}</th>)}</tr></thead>
+          <thead><tr>{visibleColumns.map((column) => <th key={column.key}>{column.label || formatLabel(column.key)}</th>)}</tr></thead>
           <tbody>
             {rows.map((row, rowIndex) => (
-              <tr key={rowIndex}>{columns.map((column) => <td key={column}>{displayObjectValue(row[column])}</td>)}</tr>
+              <tr key={rowIndex}>{visibleColumns.map((column) => <td key={column.key}>{displayObjectValue(row[column.key], column.format)}</td>)}</tr>
             ))}
           </tbody>
         </table>
@@ -346,16 +415,213 @@ function RiskOverview({ overview }: { overview: Record<string, unknown> | null |
   )
 }
 
+function referenceRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : {}
+}
+
+function referenceRows(value: unknown): Array<Record<string, unknown>> {
+  return Array.isArray(value)
+    ? value.filter(
+        (item): item is Record<string, unknown> =>
+          Boolean(item) && typeof item === 'object' && !Array.isArray(item),
+      )
+    : []
+}
+
+function referenceCoverageMessage(message: string) {
+  const normalized = message.toLowerCase()
+  if (
+    normalized.includes('entitlement') ||
+    normalized.includes('subscription') ||
+    normalized.includes('plan') ||
+    normalized.includes('403')
+  ) {
+    return 'Not included in the current provider entitlement.'
+  }
+  if (
+    normalized.includes('not found') ||
+    normalized.includes('no data') ||
+    normalized.includes('empty') ||
+    normalized.includes('404')
+  ) {
+    return 'The primary provider returned no data for this instrument.'
+  }
+  return 'The primary provider could not load this section. Canonical price history is unaffected.'
+}
+
+function ReferenceFacts({
+  title,
+  record,
+  fields,
+}: {
+  title: string
+  record: Record<string, unknown>
+  fields: Array<{ key: string; label: string; format?: ReferenceValueFormat }>
+}) {
+  const visible = fields.filter(({ key }) => record[key] !== null && record[key] !== undefined && record[key] !== '')
+  if (!visible.length) return null
+  return (
+    <section className="panel listed-data-panel">
+      <div className="panel-header"><div className="panel-title">{title}</div></div>
+      <div className="listed-key-value-grid">
+        {visible.map(({ key, label, format }) => (
+          <div key={key}><span>{label}</span><strong>{displayObjectValue(record[key], format)}</strong></div>
+        ))}
+      </div>
+    </section>
+  )
+}
+
+const EQUITY_PROFILE_FIELDS = [
+  { key: 'companyName', label: 'Company' },
+  { key: 'sector', label: 'Sector' },
+  { key: 'industry', label: 'Industry' },
+  { key: 'country', label: 'Country' },
+  { key: 'exchange', label: 'Exchange' },
+  { key: 'marketCap', label: 'Market Cap', format: 'compact' as const },
+  { key: 'ipoDate', label: 'IPO Date', format: 'date' as const },
+  { key: 'ceo', label: 'CEO' },
+  { key: 'fullTimeEmployees', label: 'Employees', format: 'compact' as const },
+  { key: 'website', label: 'Website' },
+]
+
+const FUND_INFO_FIELDS = [
+  { key: 'name', label: 'Name' },
+  { key: 'assetClass', label: 'Asset Class' },
+  { key: 'fund_type', label: 'Fund Type' },
+  { key: 'invest_type', label: 'Investment Type' },
+  { key: 'etfCompany', label: 'Fund Company' },
+  { key: 'management', label: 'Manager' },
+  { key: 'custodian', label: 'Custodian' },
+  { key: 'assetsUnderManagement', label: 'AUM', format: 'compact' as const },
+  { key: 'expenseRatio', label: 'Expense Ratio', format: 'percent_points' as const },
+  { key: 'm_fee', label: 'Management Fee', format: 'percent_points' as const },
+  { key: 'c_fee', label: 'Custodian Fee', format: 'percent_points' as const },
+  { key: 'holdingsCount', label: 'Holdings' },
+  { key: 'inceptionDate', label: 'Inception', format: 'date' as const },
+  { key: 'found_date', label: 'Inception', format: 'date' as const },
+  { key: 'benchmark', label: 'Benchmark' },
+  { key: 'avgVolume', label: 'Average Volume', format: 'compact' as const },
+]
+
+const INDEX_INFO_FIELDS = [
+  { key: 'name', label: 'Name' },
+  { key: 'fullname', label: 'Full Name' },
+  { key: 'publisher', label: 'Publisher' },
+  { key: 'market', label: 'Market' },
+  { key: 'index_type', label: 'Index Type' },
+  { key: 'category', label: 'Category' },
+  { key: 'base_date', label: 'Base Date', format: 'date' as const },
+  { key: 'base_point', label: 'Base Point', format: 'compact' as const },
+  { key: 'list_date', label: 'Launch Date', format: 'date' as const },
+  { key: 'weight_rule', label: 'Weighting Rule' },
+]
+
+const HOLDING_COLUMNS = [
+  { key: 'asset', label: 'Symbol' },
+  { key: 'symbol', label: 'Symbol' },
+  { key: 'name', label: 'Name' },
+  { key: 'weightPercentage', label: 'Weight', format: 'percent_points' },
+  { key: 'stk_mkv_ratio', label: 'Weight', format: 'percent_points' },
+  { key: 'sharesNumber', label: 'Shares', format: 'compact' },
+  { key: 'amount', label: 'Shares', format: 'compact' },
+  { key: 'marketValue', label: 'Market Value', format: 'compact' },
+  { key: 'mkv', label: 'Market Value', format: 'compact' },
+] as const
+
+const INCOME_STATEMENT_COLUMNS = [
+  { key: 'date' },
+  { key: 'fiscalYear', label: 'Fiscal Year', format: 'integer' },
+  { key: 'period' },
+  { key: 'reportedCurrency', label: 'Currency' },
+  { key: 'revenue', format: 'compact' },
+  { key: 'grossProfit', label: 'Gross Profit', format: 'compact' },
+  { key: 'operatingIncome', label: 'Operating Income', format: 'compact' },
+  { key: 'netIncome', label: 'Net Income', format: 'compact' },
+  { key: 'eps', label: 'EPS' },
+] as const
+
+const KEY_METRIC_COLUMNS = [
+  { key: 'date' },
+  { key: 'marketCap', label: 'Market Cap', format: 'compact' },
+  { key: 'enterpriseValue', label: 'Enterprise Value', format: 'compact' },
+  { key: 'evToSales', label: 'EV / Sales' },
+  { key: 'evToOperatingCashFlow', label: 'EV / Operating CF' },
+  { key: 'evToFreeCashFlow', label: 'EV / Free CF' },
+  { key: 'earningsYield', label: 'Earnings Yield', format: 'ratio_percent' },
+  { key: 'freeCashFlowYield', label: 'FCF Yield', format: 'ratio_percent' },
+] as const
+
+const RATIO_COLUMNS = [
+  { key: 'date' },
+  { key: 'priceToEarningsRatio', label: 'P / E' },
+  { key: 'priceToBookRatio', label: 'P / B' },
+  { key: 'priceToSalesRatio', label: 'P / Sales' },
+  { key: 'grossProfitMargin', label: 'Gross Margin', format: 'ratio_percent' },
+  { key: 'operatingProfitMargin', label: 'Operating Margin', format: 'ratio_percent' },
+  { key: 'netProfitMargin', label: 'Net Margin', format: 'ratio_percent' },
+  { key: 'returnOnEquity', label: 'ROE', format: 'ratio_percent' },
+] as const
+
+const DIVIDEND_COLUMNS = [
+  { key: 'date', format: 'date' },
+  { key: 'declarationDate', label: 'Declared', format: 'date' },
+  { key: 'recordDate', label: 'Record Date', format: 'date' },
+  { key: 'paymentDate', label: 'Payment Date', format: 'date' },
+  { key: 'dividend' },
+  { key: 'adjDividend', label: 'Adjusted Dividend' },
+  { key: 'yield', format: 'percent_points' },
+] as const
+
+const TRAILING_RETURN_COLUMNS = [
+  { key: 'window' },
+  { key: 'investment_nav', label: 'Investment Return', format: 'percent_points' },
+  { key: 'category_nav', label: 'Peer Median', format: 'percent_points' },
+  { key: 'anchor_date', label: 'Anchor', format: 'date' },
+  { key: 'end_date', label: 'End', format: 'date' },
+] as const
+
+const ANNUAL_RETURN_COLUMNS = [
+  { key: 'year', format: 'integer' },
+  { key: 'investment_nav', label: 'Investment Return', format: 'percent_points' },
+  { key: 'category_nav', label: 'Peer Median', format: 'percent_points' },
+  { key: 'anchor_date', label: 'Anchor', format: 'date' },
+  { key: 'end_date', label: 'End', format: 'date' },
+] as const
+
+const SPLIT_COLUMNS = [
+  { key: 'date', format: 'date' },
+  { key: 'numerator' },
+  { key: 'denominator' },
+] as const
+
+const INDEX_CONSTITUENT_COLUMNS = [
+  { key: 'trade_date', label: 'As Of', format: 'date' },
+  { key: 'con_code', label: 'Constituent' },
+  { key: 'weight', label: 'Weight', format: 'percent_points' },
+] as const
+
 export default function ListedInstrumentDetailPage({ instrument, watchlistContext }: Props) {
+  const { language } = useLanguage()
   const instrumentId = instrument.detail_subject_id || instrument.canonical_instrument_id || instrument.requested_instrument_id
-  const [tab, setTab] = useState<ListedTab>('overview')
+  const listedInstrumentType = instrument.instrument_type as 'etf' | 'equity' | 'index'
+  const tabs = listedDetailTabs(listedInstrumentType)
+  const [tab, setTab] = useState<ListedDetailTab>('overview')
   const [range, setRange] = useState<PriceRange>('6M')
   const [mode, setMode] = useState<PriceAdjustmentMode>('raw')
   const [barsResponse, setBarsResponse] = useState<Awaited<ReturnType<typeof getInstrumentPriceBars>> | null>(null)
-  const [summary, setSummary] = useState<FundSummaryResponse | null>(null)
-  const [chart, setChart] = useState<FundChartResponse | null>(null)
-  const [performance, setPerformance] = useState<FundPerformanceResponse | null>(null)
-  const [risk, setRisk] = useState<FundRiskResponse | null>(null)
+  const [summary, setSummary] = useState<InstrumentSummaryResponse | null>(null)
+  const [chart, setChart] = useState<InstrumentChartResponse | null>(null)
+  const [performance, setPerformance] = useState<InstrumentPerformanceResponse | null>(null)
+  const [risk, setRisk] = useState<InstrumentRiskResponse | null>(null)
+  const [research, setResearch] = useState<InstrumentResearchResponse>(() => emptyInstrumentResearchResponse())
+  const [researchError, setResearchError] = useState<string | null>(null)
+  const [monitoring, setMonitoring] = useState<InstrumentMonitoringResponse | null>(null)
+  const [monitoringError, setMonitoringError] = useState<string | null>(null)
+  const [reference, setReference] = useState<InstrumentReferenceData | null>(null)
+  const [referenceError, setReferenceError] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [standardizedError, setStandardizedError] = useState<string | null>(null)
@@ -364,6 +630,8 @@ export default function ListedInstrumentDetailPage({ instrument, watchlistContex
   const [settingsSaving, setSettingsSaving] = useState(false)
   const [settingsError, setSettingsError] = useState<string | null>(null)
   const [attributeValues, setAttributeValues] = useState<InstrumentAttributeValuesResponse | null>(null)
+  const [attributeError, setAttributeError] = useState<string | null>(null)
+  const [attributeRetryToken, setAttributeRetryToken] = useState(0)
   const [taxonomyTree, setTaxonomyTree] = useState<InstrumentTaxonomyTreeResponse | null>(null)
   const [taxonomyDraftNodeId, setTaxonomyDraftNodeId] = useState('')
   const [coverageStatusDraft, setCoverageStatusDraft] = useState('')
@@ -380,12 +648,19 @@ export default function ListedInstrumentDetailPage({ instrument, watchlistContex
       setLoading(true)
       setError(null)
       setStandardizedError(null)
-      const [barsResult, summaryResult, chartResult, performanceResult, riskResult] = await Promise.allSettled([
+      setResearchError(null)
+      setMonitoringError(null)
+      setAttributeError(null)
+      const [barsResult, summaryResult, chartResult, performanceResult, riskResult, referenceResult, researchResult, monitoringResult, attributesResult] = await Promise.allSettled([
         getInstrumentPriceBars(instrumentId, { limit: 1250 }),
         getInstrumentSummary(instrumentId),
         getInstrumentChart(instrumentId),
         getInstrumentPerformance(instrumentId),
         getInstrumentRisk(instrumentId),
+        getPlatformInstrumentReferenceData(instrumentId),
+        getInstrumentResearch(instrumentId),
+        getInstrumentMonitoring(instrumentId),
+        getInstrumentAttributes(instrumentId),
       ])
       if (cancelled) return
       if (barsResult.status === 'rejected') {
@@ -401,6 +676,40 @@ export default function ListedInstrumentDetailPage({ instrument, watchlistContex
       setChart(chartResult.status === 'fulfilled' ? chartResult.value : null)
       setPerformance(performanceResult.status === 'fulfilled' ? performanceResult.value : null)
       setRisk(riskResult.status === 'fulfilled' ? riskResult.value : null)
+      setReference(referenceResult.status === 'fulfilled' ? referenceResult.value : null)
+      setResearch(
+        researchResult.status === 'fulfilled'
+          ? researchResult.value
+          : emptyInstrumentResearchResponse(),
+      )
+      setResearchError(
+        researchResult.status === 'rejected'
+          ? researchResult.reason instanceof Error
+            ? researchResult.reason.message
+            : 'Investment research is unavailable.'
+          : null,
+      )
+      setMonitoring(monitoringResult.status === 'fulfilled' ? monitoringResult.value : null)
+      setMonitoringError(
+        monitoringResult.status === 'rejected'
+          ? 'Monitoring is available after the instrument is added to a Watchlist.'
+          : null,
+      )
+      setReferenceError(
+        referenceResult.status === 'rejected'
+          ? referenceResult.reason instanceof Error
+            ? referenceResult.reason.message
+            : 'Reference data is unavailable.'
+          : null,
+      )
+      setAttributeValues(attributesResult.status === 'fulfilled' ? attributesResult.value : null)
+      setAttributeError(
+        attributesResult.status === 'rejected'
+          ? attributesResult.reason instanceof Error
+            ? attributesResult.reason.message
+            : 'Research fields are unavailable.'
+          : null,
+      )
       const failedStandardizedSurfaces = [
         performanceResult.status === 'rejected' ? 'performance' : null,
         riskResult.status === 'rejected' ? 'risk' : null,
@@ -414,7 +723,11 @@ export default function ListedInstrumentDetailPage({ instrument, watchlistContex
     }
     void load()
     return () => { cancelled = true }
-  }, [instrument.instrument_type, instrumentId])
+  }, [attributeRetryToken, instrument.instrument_type, instrumentId])
+
+  useEffect(() => {
+    if (!tabs.includes(tab)) setTab('overview')
+  }, [tab, tabs])
 
   useEffect(() => {
     if (!settingsOpen) return
@@ -493,7 +806,7 @@ export default function ListedInstrumentDetailPage({ instrument, watchlistContex
     () => adjustPriceBars(barsResponse?.bars ?? [], mode),
     [barsResponse, mode],
   )
-  const fallbackCloseBars = useMemo<DisplayPriceBar[]>(() => {
+  const canonicalCloseAnalysisBars = useMemo<DisplayPriceBar[]>(() => {
     const points = chart?.series[0]?.points ?? []
     return points.flatMap((point) => {
       if (!Number.isFinite(point.value) || point.value <= 0) return []
@@ -515,10 +828,12 @@ export default function ListedInstrumentDetailPage({ instrument, watchlistContex
       }]
     })
   }, [barsResponse?.currency, chart])
-  const analysisBars = allBars.length ? allBars : fallbackCloseBars
+  const analysisBars = canonicalCloseAnalysisBars.length
+    ? canonicalCloseAnalysisBars
+    : allBars
   const visibleBars = useMemo(() => slicePriceBars(allBars, range), [allBars, range])
-  const visibleAnalysisBars = useMemo(() => slicePriceBars(analysisBars, range), [analysisBars, range])
   const returns = useMemo(() => priceReturnStats(analysisBars), [analysisBars])
+  const quoteReturns = useMemo(() => priceReturnStats(allBars), [allBars])
   const standardizedReturns = useMemo(
     () => ({
       oneMonth: standardizedReturn(performance, '1M'),
@@ -531,6 +846,7 @@ export default function ListedInstrumentDetailPage({ instrument, watchlistContex
   )
   const displayReturns = useMemo(() => ({
     ...returns,
+    dailyChange: quoteReturns.dailyChange ?? returns.dailyChange,
     oneMonth: standardizedReturns.oneMonth.present
       ? standardizedReturns.oneMonth.value
       : null,
@@ -546,7 +862,7 @@ export default function ListedInstrumentDetailPage({ instrument, watchlistContex
     oneYear: standardizedReturns.oneYear.present
       ? standardizedReturns.oneYear.value
       : null,
-  }), [returns, standardizedReturns])
+  }), [quoteReturns.dailyChange, returns, standardizedReturns])
   const riskStats = useMemo(() => priceRiskStats(analysisBars), [analysisBars])
   const standardizedRisk = useMemo(
     () => ({
@@ -555,8 +871,6 @@ export default function ListedInstrumentDetailPage({ instrument, watchlistContex
     }),
     [risk],
   )
-  const riskPathMetricsWithheld =
-    risk?.data_quality?.status === 'withheld_missing_observations'
   const displayRiskStats = useMemo(() => ({
     ...riskStats,
     annualizedVolatility: standardizedRisk.annualizedVolatility.present
@@ -566,36 +880,40 @@ export default function ListedInstrumentDetailPage({ instrument, watchlistContex
       ? standardizedRisk.maximumDrawdown.value
       : null,
     currentDrawdown:
-      riskPathMetricsWithheld || !risk || typeof risk.current_drawdown !== 'number'
+      !risk || typeof risk.current_drawdown !== 'number'
         ? null
         : risk.current_drawdown,
-  }), [riskPathMetricsWithheld, riskStats, standardizedRisk])
-  const latest = analysisBars[analysisBars.length - 1]
+    observationCount:
+      risk?.calculation_frequency_profile?.observation_count ?? riskStats.observationCount,
+  }), [risk, riskStats, standardizedRisk])
+  const latest = allBars[allBars.length - 1] || analysisBars[analysisBars.length - 1]
   const latestPriceBar = allBars[allBars.length - 1]
-  const visibleHigh = visibleAnalysisBars.length ? Math.max(...visibleAnalysisBars.map((bar) => bar.high)) : null
-  const visibleLow = visibleAnalysisBars.length ? Math.min(...visibleAnalysisBars.map((bar) => bar.low)) : null
+  const visibleHigh = visibleBars.length ? Math.max(...visibleBars.map((bar) => bar.high)) : null
+  const visibleLow = visibleBars.length ? Math.min(...visibleBars.map((bar) => bar.low)) : null
   const sourceRefreshFailed = ['failed', 'blocked'].includes(barsResponse?.source_refresh_status || '')
-  const analysisBasisLabel = allBars.length
-    ? mode === 'qfq' ? 'QFQ price' : 'raw price'
-    : chart?.selected_series?.label || chart?.base_series_type || 'canonical close series'
+  const analysisBasisLabel = canonicalCloseAnalysisBars.length
+    ? chart?.selected_series?.label || chart?.base_series_type || 'canonical return series'
+    : mode === 'qfq' ? 'QFQ price' : 'raw price'
   const performanceAsOfNote = performance?.snapshot_metadata?.as_of_date
     ? `Standardized · as of ${formatDate(performance.snapshot_metadata.as_of_date)}`
     : 'Standardized performance unavailable'
-  const riskAsOfNote = riskPathMetricsWithheld
-    ? `Withheld · ${risk?.data_quality?.gap_count ?? 0} missing observation(s)`
-    : risk?.snapshot_metadata?.as_of_date
-      ? `Standardized · as of ${formatDate(risk.snapshot_metadata.as_of_date)}`
-      : 'Standardized risk unavailable'
+  const riskAsOfNote = risk?.snapshot_metadata?.as_of_date
+    ? `${risk.data_quality?.gap_count ? 'Available observations' : 'Standardized'} · as of ${formatDate(risk.snapshot_metadata.as_of_date)}`
+    : 'Standardized risk unavailable'
   const coverageStatusDefinition = attributeValues?.definitions.find(
     (definition) => definition.attribute_key === 'coverage_status',
   )
   const compatibleTaxonomyNodes = (taxonomyTree?.nodes || [])
-    .filter((node) => node.instrument_type === instrument.instrument_type)
+    .filter((node) => node.instrument_type === instrument.instrument_type && node.is_leaf)
     .sort((left, right) =>
       left.path_labels.join(' / ').localeCompare(right.path_labels.join(' / '), 'zh-Hans-CN'),
     )
   const currentTaxonomyPath = attributeValues?.taxonomy.path_labels.join(' / ') || 'Unclassified'
   const displayedCoverageStatus = summary?.instrument_attributes.coverage_status
+  const referenceSections = reference?.sections || {}
+  const referenceProfile = referenceRecord(referenceSections.profile)
+  const referenceFundInfo = referenceRecord(referenceSections.fund_info)
+  const referenceIndexInfo = referenceRecord(referenceSections.index_info)
 
   if (loading) return <LoadingOverlay label="Loading market detail" />
 
@@ -782,9 +1100,15 @@ export default function ListedInstrumentDetailPage({ instrument, watchlistContex
         <div className="listed-source-alert" role="alert">{standardizedError}</div>
       ) : null}
 
+      {referenceError ? (
+        <div className="listed-source-alert" role="alert">
+          Some provider reference sections are unavailable. Canonical market history is unaffected.
+        </div>
+      ) : null}
+
       <div className="instrument-detail-tabs-row">
         <div className="instrument-detail-tabs">
-          {(['overview', 'performance', 'risk', 'price'] as ListedTab[]).map((item) => (
+          {tabs.map((item) => (
             <button
               type="button"
               key={item}
@@ -814,6 +1138,39 @@ export default function ListedInstrumentDetailPage({ instrument, watchlistContex
             <MetricCard label="YTD" value={percentValue(displayReturns.ytd)} tone={signedValueClass(displayReturns.ytd)} note={performanceAsOfNote} />
             <MetricCard label="1 Year" value={percentValue(displayReturns.oneYear)} tone={signedValueClass(displayReturns.oneYear)} note={performanceAsOfNote} />
           </section>
+          {listedInstrumentType === 'equity' ? (
+            <ReferenceFacts title="Company Profile" record={referenceProfile} fields={EQUITY_PROFILE_FIELDS} />
+          ) : null}
+          {listedInstrumentType === 'etf' ? (
+            <ReferenceFacts title="Fund Profile" record={referenceFundInfo} fields={FUND_INFO_FIELDS} />
+          ) : null}
+        </div>
+      ) : null}
+
+      {tab === 'research' ? (
+        <div className="listed-tab-stack listed-research-tab">
+          {researchError ? (
+            <div className="listed-source-alert" role="alert">
+              Investment research unavailable: {researchError}
+            </div>
+          ) : null}
+          <InvestmentResearchWorkspace
+            instrumentId={instrumentId}
+            instrumentType={listedInstrumentType}
+            research={research}
+            language={language}
+            defaultNoteDate={latest?.date || ''}
+            onChange={setResearch}
+          >
+            <InstrumentResearchAttributes
+              instrumentId={instrumentId}
+              attributeValues={attributeValues}
+              loadError={attributeError}
+              language={language}
+              onRetry={() => setAttributeRetryToken((current) => current + 1)}
+              onChange={setAttributeValues}
+            />
+          </InvestmentResearchWorkspace>
         </div>
       ) : null}
 
@@ -831,8 +1188,8 @@ export default function ListedInstrumentDetailPage({ instrument, watchlistContex
             <div className="listed-chart-toolbar"><div><div className="panel-title">Growth of Price</div><div className="listed-chart-caption">Cumulative return from {analysisBasisLabel}</div></div></div>
             <GrowthChart bars={analysisBars} />
           </section>
-          <DataTable title="Trailing Returns · Standardized Engine" rows={performance?.trailing_returns ?? []} />
-          <DataTable title="Annual Returns · Standardized Engine" rows={performance?.annual_returns ?? []} />
+          <DataTable title="Trailing Returns · Standardized Engine" rows={performance?.trailing_returns ?? []} columns={TRAILING_RETURN_COLUMNS} />
+          <DataTable title="Annual Returns · Standardized Engine" rows={performance?.annual_returns ?? []} columns={ANNUAL_RETURN_COLUMNS} />
         </div>
       ) : null}
 
@@ -874,6 +1231,199 @@ export default function ListedInstrumentDetailPage({ instrument, watchlistContex
             </div>
           </section>
         </div>
+      ) : null}
+
+      {tab === 'portfolio' ? (
+        <div className="listed-tab-stack">
+          <ReferenceFacts title="Fund Profile" record={referenceFundInfo} fields={FUND_INFO_FIELDS} />
+          <DataTable
+            title="Sector Allocation"
+            rows={referenceRows(referenceSections.sector_weights)}
+            columns={[
+              { key: 'sector' },
+              { key: 'weightPercentage', label: 'Weight', format: 'percent_points' },
+            ]}
+          />
+          <DataTable
+            title="Country Allocation"
+            rows={referenceRows(referenceSections.country_weights)}
+            columns={[
+              { key: 'country' },
+              { key: 'weightPercentage', label: 'Weight', format: 'percent_points' },
+            ]}
+          />
+          <DataTable title="Latest Holdings" rows={referenceRows(referenceSections.holdings)} columns={HOLDING_COLUMNS} />
+        </div>
+      ) : null}
+
+      {tab === 'fundamentals' ? (
+        <div className="listed-tab-stack">
+          <ReferenceFacts title="Company Profile" record={referenceProfile} fields={EQUITY_PROFILE_FIELDS} />
+          <DataTable title="Income Statements · FMP" rows={referenceRows(referenceSections.financials)} columns={INCOME_STATEMENT_COLUMNS} />
+          <DataTable title="Key Metrics · FMP" rows={referenceRows(referenceSections.key_metrics)} columns={KEY_METRIC_COLUMNS} />
+          <DataTable title="Valuation & Financial Ratios · FMP" rows={referenceRows(referenceSections.ratios)} columns={RATIO_COLUMNS} />
+        </div>
+      ) : null}
+
+      {tab === 'events' ? (
+        <div className="listed-tab-stack">
+          <DataTable title="Dividends" rows={referenceRows(referenceSections.dividends)} columns={DIVIDEND_COLUMNS} />
+          <DataTable title="Share Splits" rows={referenceRows(referenceSections.splits)} columns={SPLIT_COLUMNS} />
+        </div>
+      ) : null}
+
+      {tab === 'methodology' ? (
+        <div className="listed-tab-stack">
+          <ReferenceFacts title="Index Profile" record={referenceIndexInfo} fields={INDEX_INFO_FIELDS} />
+          <ReferenceFacts
+            title="Index Source Contract"
+            record={{
+              provider: reference?.provider,
+              provider_symbol: reference?.provider_symbol,
+              ...reference?.source,
+            }}
+            fields={[
+              { key: 'provider', label: 'Provider' },
+              { key: 'provider_symbol', label: 'Provider Symbol' },
+              { key: 'source_location', label: 'Source' },
+              { key: 'expected_frequency', label: 'Frequency' },
+              { key: 'market_calendar', label: 'Market Calendar' },
+              { key: 'market_data_updated_at', label: 'Last Data Update' },
+            ]}
+          />
+          <DataTable
+            title="Latest Constituents · Top 100"
+            rows={referenceRows(referenceSections.constituents)}
+            columns={INDEX_CONSTITUENT_COLUMNS}
+          />
+          <section className="panel listed-data-panel">
+            <div className="panel-header"><div className="panel-title">Methodology Coverage</div></div>
+            <div className="listed-source-note">
+              Constituent weights are shown only when the configured primary source publishes them. Rebalance rules and methodology documents remain unavailable until an official document source is configured; the page does not infer them from price history.
+            </div>
+          </section>
+        </div>
+      ) : null}
+
+      {tab === 'monitoring' ? (
+        <div className="listed-tab-stack">
+          <InstrumentResearchAttributes
+            instrumentId={instrumentId}
+            attributeValues={attributeValues}
+            loadError={attributeError}
+            language={language}
+            domains={['monitoring']}
+            onRetry={() => setAttributeRetryToken((current) => current + 1)}
+            onChange={setAttributeValues}
+          />
+          {monitoringError || !monitoring ? (
+            <section className="panel listed-data-panel">
+              <div className="panel-header"><div className="panel-title">Monitoring</div></div>
+              <div className="instrument-placeholder">
+                {monitoringError || 'Monitoring is not available for this instrument.'}
+              </div>
+            </section>
+          ) : (
+            <>
+              <section className="listed-metric-grid">
+                <MetricCard
+                  label="Freshness"
+                  value={formatLabel(monitoring.instrument.data_freshness_status)}
+                  note={monitoring.instrument.staleness_reason || undefined}
+                />
+                <MetricCard
+                  label="Latest Quote Date"
+                  value={formatDate(monitoring.instrument.latest_quote_date)}
+                />
+                <MetricCard
+                  label="Required Fields Missing"
+                  value={String(monitoring.instrument.missing_attribute_count)}
+                  note={monitoring.instrument.missing_attribute_labels.join(' / ') || 'Complete'}
+                />
+                <MetricCard
+                  label="Research Records"
+                  value={String(monitoring.instrument.research.active_note_count)}
+                />
+                <MetricCard
+                  label="Next Review"
+                  value={formatDate(monitoring.instrument.research.next_review_date)}
+                />
+                <MetricCard
+                  label="Next Follow-up"
+                  value={formatDate(monitoring.instrument.research.next_follow_up_date)}
+                />
+              </section>
+              <section className="panel listed-data-panel">
+                <div className="panel-header">
+                  <div>
+                    <div className="panel-title">Investment Follow-up</div>
+                    <div className="listed-chart-caption">
+                      {monitoring.instrument.research.primary_analyst || 'No primary analyst assigned'}
+                    </div>
+                  </div>
+                  <Link className="table-action" to="/monitoring">Open Monitoring Dashboard</Link>
+                </div>
+                <div className="listed-key-value-grid">
+                  <div>
+                    <span>Current View</span>
+                    <strong>{monitoring.instrument.research.current_view || '—'}</strong>
+                  </div>
+                  <div>
+                    <span>Manual Rating</span>
+                    <strong>
+                      {monitoring.instrument.research.manual_rating == null
+                        ? '—'
+                        : `${'★'.repeat(monitoring.instrument.research.manual_rating)}${'☆'.repeat(
+                            Math.max(0, 5 - monitoring.instrument.research.manual_rating),
+                          )}`}
+                    </strong>
+                  </div>
+                  <div>
+                    <span>Research Updated</span>
+                    <strong>{formatDateTime(monitoring.instrument.research.last_updated_at)}</strong>
+                  </div>
+                </div>
+                {monitoring.instrument.issue_flags.length ? (
+                  <div className="listed-source-alert">
+                    {monitoring.instrument.issue_flags.map(formatLabel).join(' / ')}
+                  </div>
+                ) : (
+                  <div className="listed-source-note">No open monitoring issues.</div>
+                )}
+              </section>
+              {monitoring.open_recalc_jobs.length ? (
+                <DataTable
+                  title="Open Recalculation Jobs"
+                  rows={monitoring.open_recalc_jobs.map((job) => ({
+                    job_type: job.job_type,
+                    job_status: job.job_status,
+                    enqueued_at: job.enqueued_at,
+                    error_message: job.error_message,
+                  }))}
+                  columns={[
+                    { key: 'job_type', label: 'Job' },
+                    { key: 'job_status', label: 'Status' },
+                    { key: 'enqueued_at', label: 'Enqueued', format: 'date' },
+                    { key: 'error_message', label: 'Error' },
+                  ]}
+                />
+              ) : null}
+            </>
+          )}
+        </div>
+      ) : null}
+
+      {reference && Object.keys(reference.section_errors).length ? (
+        <section className="panel listed-data-panel">
+          <div className="panel-header"><div className="panel-title">Reference Data Coverage</div></div>
+          <div className="listed-source-note">
+            {Object.entries(reference.section_errors).map(([section, message]) => (
+              <div key={section}>
+                <strong>{formatLabel(section)}:</strong> {referenceCoverageMessage(message)}
+              </div>
+            ))}
+          </div>
+        </section>
       ) : null}
     </div>
   )

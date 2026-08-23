@@ -174,8 +174,8 @@ unavailable，不读取 Watchlist 旧 `nav_fact` 作为行情 fallback。
 下面这些仍然不属于共享层：
 
 - watchlist rows
-- fund detail read models
-- monitoring labels / research tags / manual profiles
+- instrument detail read models
+- monitoring assessments / investment research / manual profiles
 - portfolios
 - accounts
 - transactions

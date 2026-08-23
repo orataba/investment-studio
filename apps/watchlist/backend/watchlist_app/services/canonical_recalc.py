@@ -78,9 +78,8 @@ from watchlist_app.services.shared_instrument_registry import (
 )
 
 
-DEFAULT_TABS = [
+FUND_DETAIL_TABS = [
     "overview",
-    "quote",
     "performance",
     "risk",
     "price",
@@ -92,9 +91,24 @@ DEFAULT_TABS = [
     "monitoring",
 ]
 
-PERFORMANCE_METHODOLOGY_VERSION = "canonical-performance/v7"
-RISK_METHODOLOGY_VERSION = "canonical-risk/v6"
-PEER_COMPARISON_POLICY_VERSION = "peer-comparison/v2"
+LISTED_DETAIL_TABS = {
+    "etf": ["overview", "research", "performance", "risk", "price", "portfolio", "monitoring"],
+    "equity": [
+        "overview",
+        "research",
+        "performance",
+        "risk",
+        "price",
+        "fundamentals",
+        "events",
+        "monitoring",
+    ],
+    "index": ["overview", "research", "performance", "risk", "price", "methodology", "monitoring"],
+}
+
+PERFORMANCE_METHODOLOGY_VERSION = "canonical-performance/v8"
+RISK_METHODOLOGY_VERSION = "canonical-risk/v7"
+PEER_COMPARISON_POLICY_VERSION = "peer-comparison/v4"
 
 
 class RecalcJobLeaseLostError(RuntimeError):
@@ -121,7 +135,10 @@ QUOTE_BASIS_LABELS = {
     "total_return_nav": "Dividend-Reinvested Total Return NAV",
     "adjusted_close": "Adjusted Close",
 }
-PEER_METRIC_MIN_SAMPLE = 2
+# Percentile/rank output needs at least four independent peers. Smaller
+# cohorts still expose their median and sample size, but are labelled limited
+# rather than presenting a statistically brittle rank.
+PEER_PERCENTILE_MIN_PEERS = 4
 PEER_COMPARISON_METRICS = [
     {
         "metric_key": "return_1w",
@@ -434,6 +451,35 @@ def _node_path_labels(node: object | None) -> list[str]:
     return _string_list(getattr(node, "path_labels_json", None))
 
 
+def _peer_taxonomy_is_comparable(node: object | None) -> bool:
+    node_id = str(getattr(node, "node_id", "") or "").strip()
+    return bool(node_id) and bool(getattr(node, "is_leaf", False)) and not (
+        node_id.endswith("-unclassified")
+        or node_id.endswith("-other")
+        or node_id.startswith("equity-market-")
+    )
+
+
+def _peer_geographic_exposure(
+    node: object | None,
+    attributes: dict[str, object] | None,
+) -> str | None:
+    instrument_type = str(getattr(node, "instrument_type", "") or "").strip().lower()
+    if instrument_type == "equity":
+        root_node_id = next(
+            (
+                value
+                for value in _node_path_node_ids(node)
+                if value.startswith("equity-market-")
+            ),
+            "",
+        )
+        return root_node_id.removeprefix("equity-market-") or None
+    value = (attributes or {}).get("primary_geographic_exposure")
+    normalized = str(value or "").strip()
+    return normalized or None
+
+
 def _active_peer_instrument_ids(session: Session) -> set[str]:
     supported_types = tuple(sorted(LOCAL_DETAIL_INSTRUMENT_TYPES))
     local_active_instrument_ids = {
@@ -508,11 +554,6 @@ def _rank_metric_value(
     }
 
 
-def _mean_optional(values: list[float | None]) -> float | None:
-    valid = [value for value in values if value is not None]
-    return statistics.mean(valid) if valid else None
-
-
 def _primary_peer_ranking(peer_comparison: dict[str, object] | None) -> dict[str, object] | None:
     if not isinstance(peer_comparison, dict) or peer_comparison.get("status") != "ready":
         return None
@@ -524,25 +565,23 @@ def _primary_peer_ranking(peer_comparison: dict[str, object] | None) -> dict[str
         for row in metric_rows
         if isinstance(row, dict)
     }
-    for metric_key in ("return_1y", "return_ytd", "return_1m", "annualized_return"):
-        row = by_key.get(metric_key)
-        if not row:
-            continue
-        return {
-            "metric_key": metric_key,
-            "metric_label": row.get("label"),
-            "quartile": row.get("quartile"),
-            "percentile": row.get("percentile"),
-            "rank": row.get("rank"),
-            "sample_count": row.get("sample_count"),
-            "peer_group": " / ".join(
-                str(item)
-                for item in (peer_comparison.get("peer_path") or [])
-                if str(item).strip()
-            )
-            or None,
-        }
-    return None
+    row = by_key.get("return_1y")
+    if not row or row.get("percentile") is None:
+        return None
+    return {
+        "metric_key": "return_1y",
+        "metric_label": row.get("label"),
+        "quartile": row.get("quartile"),
+        "percentile": row.get("percentile"),
+        "rank": row.get("rank"),
+        "sample_count": row.get("sample_count"),
+        "peer_group": " / ".join(
+            str(item)
+            for item in (peer_comparison.get("peer_path") or [])
+            if str(item).strip()
+        )
+        or None,
+    }
 
 
 def _performance_payload_with_peer_comparison(
@@ -599,21 +638,12 @@ def _risk_payload_with_peer_comparison(
         metric = peer_metrics.get(str(row.get("metric") or ""), {})
         row["category"] = _safe_float(metric.get("peer_median"))
         risk_metrics.append(row)
-    peer_summary = peer_comparison.get("summary")
     risk_overview = payload.get("risk_overview")
     if isinstance(risk_overview, dict):
         risk_overview = {
             **risk_overview,
-            "risk_vs_category": (
-                _safe_float(peer_summary.get("risk_percentile"))
-                if isinstance(peer_summary, dict)
-                else None
-            ),
-            "return_vs_category": (
-                _safe_float(peer_summary.get("return_percentile"))
-                if isinstance(peer_summary, dict)
-                else None
-            ),
+            "risk_vs_category": None,
+            "return_vs_category": None,
         }
     return {
         **payload,
@@ -639,7 +669,10 @@ PEER_WATCHLIST_PERCENTILE_ATTRIBUTE_KEYS = {
 
 
 def _peer_watchlist_attributes(peer_comparison: dict[str, object] | None) -> dict[str, object]:
-    if not isinstance(peer_comparison, dict) or peer_comparison.get("status") != "ready":
+    if not isinstance(peer_comparison, dict) or peer_comparison.get("status") not in {
+        "ready",
+        "limited_sample",
+    }:
         return {}
 
     attributes: dict[str, object] = {}
@@ -653,18 +686,6 @@ def _peer_watchlist_attributes(peer_comparison: dict[str, object] | None) -> dic
             if attribute_key is None:
                 continue
             percentile = _safe_float(row.get("percentile"))
-            if percentile is not None:
-                attributes[attribute_key] = percentile
-
-    summary = peer_comparison.get("summary")
-    if isinstance(summary, dict):
-        for source_key, attribute_key in (
-            ("overall_percentile", "peer_overall_percentile"),
-            ("return_percentile", "peer_return_percentile"),
-            ("risk_percentile", "peer_risk_percentile"),
-            ("risk_adjusted_percentile", "peer_risk_adjusted_percentile"),
-        ):
-            percentile = _safe_float(summary.get(source_key))
             if percentile is not None:
                 attributes[attribute_key] = percentile
 
@@ -1041,113 +1062,61 @@ def _build_current_risk_watch(nav_points: list[dict[str, Any]], drawdown_summary
     rolling_vol_pct = _percentile_rank([row["value"] for row in rolling_vol], latest_rolling_vol) if latest_rolling_vol is not None else None
     max_drawdown = drawdown_summary.get("maximum") if isinstance(drawdown_summary, dict) else None
     trailing_negative_months = _trailing_negative_month_count(monthly_returns)
-    overall_score = 0
-
-    def _level_score(level: str) -> int:
-        return 2 if level == "High" else 1 if level == "Elevated" else 0
-
-    if latest_rolling_vol is None or rolling_vol_median is None or rolling_vol_pct is None:
-        volatility_signal = {
-            "signal": "Volatility Regime",
-            "level": "N/A",
-            "reading": "N/A · Need more 12M rolling history",
-        }
-    else:
-        multiple = latest_rolling_vol / rolling_vol_median if rolling_vol_median not in {None, 0} else None
-        level = (
-            "High"
-            if rolling_vol_pct >= 90 or (multiple is not None and multiple >= 1.4)
-            else "Elevated"
-            if rolling_vol_pct >= 75 or (multiple is not None and multiple >= 1.2)
-            else "Normal"
-        )
-        overall_score += _level_score(level)
-        volatility_signal = {
-            "signal": "Volatility Regime",
-            "level": level,
-            "reading": f"{level} · {_format_percent(latest_rolling_vol)} vs median {_format_percent(rolling_vol_median)} ({_format_number(rolling_vol_pct, 0)}th pct)",
-        }
-
-    if current_drawdown is None:
-        drawdown_signal = {
-            "signal": "Drawdown Pressure",
-            "level": "N/A",
-            "reading": "N/A · No drawdown history",
-        }
-    else:
-        worst_abs = abs(max_drawdown) if isinstance(max_drawdown, (int, float)) and max_drawdown not in {None, 0} else None
-        ratio = abs(current_drawdown) / worst_abs if worst_abs else 0
-        level = (
-            "High"
-            if current_drawdown <= -8 or ratio >= 0.6
-            else "Elevated"
-            if current_drawdown <= -4 or ratio >= 0.35
-            else "Normal"
-        )
-        overall_score += _level_score(level)
-        ratio_text = f", {_format_number(ratio * 100, 0)}% of worst" if worst_abs else ""
-        drawdown_signal = {
-            "signal": "Drawdown Pressure",
-            "level": level,
-            "reading": f"{level} · {_format_percent(current_drawdown)} current{ratio_text}",
-        }
-
-    if latest_monthly_return is None and latest_monthly_drawdown is None:
-        loss_signal = {
-            "signal": "Recent Loss Pressure",
-            "level": "N/A",
-            "reading": "N/A · Need recent monthly history",
-        }
-    else:
-        level = (
-            "High"
-            if trailing_negative_months >= 3 or (latest_monthly_return is not None and latest_monthly_return <= -3)
-            else "Elevated"
-            if trailing_negative_months >= 2 or (latest_monthly_return is not None and latest_monthly_return <= -1.5)
-            else "Normal"
-        )
-        overall_score += _level_score(level)
-        loss_signal = {
-            "signal": "Recent Loss Pressure",
-            "level": level,
-            "reading": f"{level} · latest month {_format_percent(latest_monthly_return)}; latest monthly drawdown {_format_percent(latest_monthly_drawdown)}; {trailing_negative_months} down month(s)",
-        }
-
-    recovery_signal = {
-        "signal": "Recovery State",
-        "level": "Elevated" if current_drawdown is not None and current_drawdown <= -2 else "Normal",
-        "reading": (
-            f"Elevated · Currently {_format_percent(current_drawdown)} below prior high watermark"
-            if current_drawdown is not None and current_drawdown <= -2
-            else "Normal · At or back near high watermark"
-        ),
-    }
-    overall_score += _level_score(recovery_signal["level"])
-
-    overall_level = "High" if overall_score >= 5 else "Elevated" if overall_score >= 2 else "Normal"
+    worst_abs = (
+        abs(max_drawdown)
+        if isinstance(max_drawdown, (int, float)) and max_drawdown not in {None, 0}
+        else None
+    )
+    drawdown_ratio = (
+        abs(current_drawdown) / worst_abs
+        if current_drawdown is not None and worst_abs
+        else None
+    )
     return {
-        "overall_level": overall_level,
+        "overall_level": None,
         "rows": [
             {
-                "signal": "Overall Watch",
-                "level": overall_level,
-                "reading": f"{overall_level} · {overall_score} signal point(s)",
+                "signal": "Rolling Annualized Volatility",
+                "level": None,
+                "reading": (
+                    f"{_format_percent(latest_rolling_vol)} · own-history median "
+                    f"{_format_percent(rolling_vol_median)} · "
+                    f"{_format_number(rolling_vol_pct, 0)}th percentile"
+                    if latest_rolling_vol is not None
+                    and rolling_vol_median is not None
+                    and rolling_vol_pct is not None
+                    else "Need more contiguous monthly history"
+                ),
             },
-            volatility_signal,
-            drawdown_signal,
-            loss_signal,
-            recovery_signal,
+            {
+                "signal": "Current Drawdown",
+                "level": None,
+                "reading": (
+                    f"{_format_percent(current_drawdown)} · "
+                    f"{_format_number(drawdown_ratio * 100, 0)}% of observed maximum"
+                    if current_drawdown is not None and drawdown_ratio is not None
+                    else _format_percent(current_drawdown)
+                ),
+            },
+            {
+                "signal": "Latest Month",
+                "level": None,
+                "reading": (
+                    f"Return {_format_percent(latest_monthly_return)} · "
+                    f"drawdown {_format_percent(latest_monthly_drawdown)} · "
+                    f"{trailing_negative_months} consecutive down month(s)"
+                ),
+            },
         ],
-        "note": "Heuristic watch flags surface current risk pressure from drawdown, rolling volatility, recent losses, and recovery state. They do not forecast returns.",
+        "note": "Observed path statistics only. No cross-asset High/Normal label or investment recommendation is inferred.",
     }
 
 
-def _build_risk_structure(nav_points: list[dict[str, Any]], drawdown_summary: dict[str, Any] | None, current_watch: dict[str, Any] | None) -> dict[str, Any]:
+def _build_risk_structure(nav_points: list[dict[str, Any]], drawdown_summary: dict[str, Any] | None) -> dict[str, Any]:
     volatility = _compute_volatility(nav_points)
     downside_deviation = _compute_downside_deviation(nav_points)
     max_drawdown = drawdown_summary.get("maximum") if isinstance(drawdown_summary, dict) else None
     recovery_months = drawdown_summary.get("max_duration_months") if isinstance(drawdown_summary, dict) else None
-    current_watch_level = current_watch.get("overall_level") if isinstance(current_watch, dict) else None
 
     if volatility is None and downside_deviation is None and max_drawdown is None:
         return {"rows": []}
@@ -1159,63 +1128,25 @@ def _build_risk_structure(nav_points: list[dict[str, Any]], drawdown_summary: di
     )
     rows = [
         {
-            "characteristic": "Risk Style",
+            "characteristic": "Observed Path",
             "reading": f"Vol {_format_percent(volatility)} · Max DD {_format_percent(max_drawdown)}",
-            "interpretation": (
-                "Insufficient history to classify the long-run risk amplitude."
-                if volatility is None or max_drawdown is None
-                else
-                "Low-amplitude path. Capital preservation matters more than benchmark capture."
-                if volatility < 8 and abs(max_drawdown) < 10
-                else "Balanced amplitude. Drawdowns matter, but the path is still broadly manageable."
-                if volatility < 15 and abs(max_drawdown) < 20
-                else "High-amplitude path. Position sizing and liquidity discipline matter."
-            ),
+            "interpretation": "Annualized volatility and maximum drawdown from the selected canonical series.",
         },
         {
             "characteristic": "Downside Shape",
             "reading": f"Downside Dev {_format_percent(downside_deviation)} · Ratio {_format_number(downside_ratio, 2)}",
-            "interpretation": (
-                "Insufficient history to characterize downside concentration."
-                if downside_ratio is None
-                else
-                "Downside volatility runs materially below total volatility."
-                if downside_ratio < 0.7
-                else "Downside moves account for a large share of total volatility."
-                if downside_ratio > 0.9
-                else "Downside contribution is meaningful but not dominant."
-            ),
+            "interpretation": "Downside deviation divided by total volatility; no qualitative threshold is applied.",
         },
         {
             "characteristic": "Recovery Profile",
             "reading": f"Max DD {_format_percent(max_drawdown)} · Duration {recovery_months if recovery_months is not None else '—'} mo",
-            "interpretation": (
-                "Insufficient history to classify recovery behavior."
-                if recovery_months is None or max_drawdown is None
-                else
-                "Drawdowns have historically taken time to repair."
-                if recovery_months > 12
-                else "Recovery profile is moderate."
-                if recovery_months > 4
-                else "Historically, major setbacks healed relatively quickly."
-            ),
-        },
-        {
-            "characteristic": "Current Regime",
-            "reading": f"Watch {current_watch_level or '—'}",
-            "interpretation": (
-                "Current pressure indicators are elevated; recent path deserves closer monitoring."
-                if current_watch_level == "High"
-                else "Some pressure indicators are above baseline; position sizing and timing matter."
-                if current_watch_level == "Elevated"
-                else "Current pressure indicators look contained relative to history."
-            ),
+            "interpretation": "Longest observed peak-to-underwater duration; an open drawdown remains open rather than being labelled recovered.",
         },
     ]
     return {"rows": rows}
 
 
-def _build_risk_change_monitor(nav_points: list[dict[str, Any]], drawdown_summary: dict[str, Any] | None, current_watch: dict[str, Any] | None) -> dict[str, Any]:
+def _build_risk_change_monitor(nav_points: list[dict[str, Any]], drawdown_summary: dict[str, Any] | None) -> dict[str, Any]:
     monthly_returns = _monthly_return_series(nav_points)
     monthly_drawdowns = _monthly_drawdown_series(nav_points)
     rolling_vol = _rolling_annualized_volatility(monthly_returns)
@@ -1228,11 +1159,6 @@ def _build_risk_change_monitor(nav_points: list[dict[str, Any]], drawdown_summar
     latest_monthly_return = monthly_returns[-1]["value"] if monthly_returns else None
     median_monthly_return = _median_value([row["value"] for row in monthly_returns])
     trailing_negative_months = _trailing_negative_month_count(monthly_returns)
-    watch_map = {
-        row.get("signal"): row.get("level")
-        for row in (current_watch.get("rows") if isinstance(current_watch, dict) else [])
-        if isinstance(row, dict)
-    }
     rows = [
         {
             "signal": "Rolling Ann. Vol",
@@ -1243,7 +1169,7 @@ def _build_risk_change_monitor(nav_points: list[dict[str, Any]], drawdown_summar
                 if latest_rolling_vol is not None and rolling_vol_median is not None
                 else "—"
             ),
-            "watch": watch_map.get("Volatility Regime") or "N/A",
+            "watch": None,
         },
         {
             "signal": "Current Drawdown",
@@ -1254,7 +1180,7 @@ def _build_risk_change_monitor(nav_points: list[dict[str, Any]], drawdown_summar
                 if current_drawdown is not None and worst_drawdown not in {None, 0}
                 else "—"
             ),
-            "watch": watch_map.get("Drawdown Pressure") or "N/A",
+            "watch": None,
         },
         {
             "signal": "Latest Monthly Drawdown",
@@ -1265,19 +1191,19 @@ def _build_risk_change_monitor(nav_points: list[dict[str, Any]], drawdown_summar
                 if latest_monthly_drawdown is not None and worst_monthly_drawdown not in {None, 0}
                 else "—"
             ),
-            "watch": watch_map.get("Recent Loss Pressure") or "N/A",
+            "watch": None,
         },
         {
             "signal": "Recent Return Pressure",
             "current": _format_percent(latest_monthly_return),
             "baseline": f"Median month {_format_percent(median_monthly_return)}" if median_monthly_return is not None else "—",
             "change": f"{trailing_negative_months} trailing down month(s)",
-            "watch": watch_map.get("Recent Loss Pressure") or "N/A",
+            "watch": None,
         },
     ]
     return {
         "rows": rows,
-        "note": "Change monitor highlights where current risk conditions sit relative to the fund's own recent history.",
+        "note": "Current observations compared with the instrument's own history; no alert threshold is inferred.",
     }
 
 
@@ -1364,16 +1290,6 @@ def _growth_of_100(nav_points: list[dict[str, Any]]) -> float | None:
     if len(nav_points) < 2 or nav_points[0]["value"] <= 0:
         return None
     return nav_points[-1]["value"] / nav_points[0]["value"] * 100
-
-
-def _risk_level_label(volatility: float | None) -> str | None:
-    if volatility is None:
-        return None
-    if volatility < 8:
-        return "low"
-    if volatility < 15:
-        return "moderate"
-    return "high"
 
 
 def _validated_shared_quote_point(
@@ -2308,10 +2224,7 @@ class CanonicalRecalcService:
             instrument_attributes=raw_attributes,
         )
         current_drawdown = _current_drawdown(calculation_nav_points)
-        if (
-            current_drawdown is not None
-            and int(calculation_frequency_profile.get("gap_count") or 0) == 0
-        ):
+        if current_drawdown is not None:
             watchlist_attributes["current_drawdown"] = current_drawdown
         else:
             watchlist_attributes.pop("current_drawdown", None)
@@ -2529,12 +2442,7 @@ class CanonicalRecalcService:
                 if window is not None
                 else None
             )
-        has_unresolved_gaps = int(
-            calculation_frequency_profile.get("gap_count") or 0
-        ) > 0
-        max_drawdown = (
-            None if has_unresolved_gaps else _compute_drawdown(nav_points)
-        )
+        max_drawdown = _compute_drawdown(nav_points)
         calmar = annualized_return / abs(max_drawdown) if annualized_return is not None and max_drawdown not in {None, 0} else None
         return self.snapshot_repository.replace_performance(
             session,
@@ -2581,15 +2489,10 @@ class CanonicalRecalcService:
         now: datetime,
     ):
         latest = nav_points[-1]
-        has_unresolved_gaps = int(
-            calculation_frequency_profile.get("gap_count") or 0
-        ) > 0
-        volatility = None if has_unresolved_gaps else _compute_volatility(nav_points)
-        downside_volatility = (
-            None if has_unresolved_gaps else _compute_downside_deviation(nav_points)
-        )
-        sharpe_ratio = None if has_unresolved_gaps else _compute_sharpe(nav_points)
-        sortino_ratio = None if has_unresolved_gaps else _compute_sortino(nav_points)
+        volatility = _compute_volatility(nav_points)
+        downside_volatility = _compute_downside_deviation(nav_points)
+        sharpe_ratio = _compute_sharpe(nav_points)
+        sortino_ratio = _compute_sortino(nav_points)
         return self.snapshot_repository.replace_risk(
             session,
             snapshot_id=f"risk:{instrument_id}:{latest['as_of_date'].isoformat()}:{make_recalc_job_id()}",
@@ -2718,7 +2621,7 @@ class CanonicalRecalcService:
             if nav_selection["points"]
             else None
         )
-        last_nav_date = (
+        latest_observation_date_text = (
             latest_observation_date.isoformat()
             if isinstance(latest_observation_date, date)
             else None
@@ -2762,7 +2665,7 @@ class CanonicalRecalcService:
         staleness_reason = (
             "No canonical series available."
             if not nav_selection["points"]
-            else "Canonical total-return series stops at an unconfirmed fund event."
+            else "Canonical total-return series stops at an unconfirmed return-series event."
             if has_unconfirmed_return_break
             else observation_freshness.get("reason")
             if observation_freshness["status"] == "stale"
@@ -2770,13 +2673,13 @@ class CanonicalRecalcService:
         )
         return {
             "instrument_id": instrument.instrument_id,
-            "fund_name": instrument.instrument_name,
+            "instrument_name": instrument.instrument_name,
             "ticker_or_isin": instrument.primary_identifier_value or instrument.instrument_id.upper(),
             "management_firm_name": str(instrument.metadata_json.get("management_firm_name") or "") or None,
             "instrument_attributes": attributes,
             "taxonomy": taxonomy_context,
             "selected_series": selected_series,
-            "nav_snapshot": {
+            "series_snapshot": {
                 "nav_basis_type": nav_selection.get("nav_basis_type"),
                 "nav_basis_source": nav_selection.get("nav_basis_source"),
                 "selected_role": nav_selection.get("selected_role"),
@@ -2803,7 +2706,10 @@ class CanonicalRecalcService:
                 ),
             },
             "key_stats": [
-                {"label": date_label, "value": last_nav_date or "—"},
+                {
+                    "label": date_label,
+                    "value": latest_observation_date_text or "—",
+                },
                 {
                     "label": "MTD Return",
                     "value": (
@@ -2839,14 +2745,18 @@ class CanonicalRecalcService:
                 "last_recalculated_at": now.isoformat().replace("+00:00", "Z"),
                 "last_successful_snapshot_at": now.isoformat().replace("+00:00", "Z"),
                 "staleness_reason": staleness_reason,
-                "latest_observation_date": last_nav_date,
+                "latest_observation_date": latest_observation_date_text,
                 "expected_latest_date": observation_freshness.get(
                     "expected_latest_date"
                 ),
                 "observation_lag_days": observation_freshness.get("lag_days"),
             },
             "quick_monitoring_items": [],
-            "tabs": DEFAULT_TABS,
+            "tabs": (
+                FUND_DETAIL_TABS
+                if str(instrument.instrument_type) in {"public_fund", "private_fund"}
+                else LISTED_DETAIL_TABS[str(instrument.instrument_type)]
+            ),
         }
 
     def _peer_comparison_context(self, session: Session) -> dict[str, object]:
@@ -2866,6 +2776,13 @@ class CanonicalRecalcService:
             if assignment.node_id
             and str(assignment.instrument_id) in active_peer_instrument_ids
         }
+        attributes_by_asset: dict[str, dict[str, object]] = {}
+        for value in self.attribute_repository.get_values_for_assets(
+            session,
+            sorted(active_peer_instrument_ids),
+        ):
+            attributes = attributes_by_asset.setdefault(str(value.instrument_id), {})
+            attributes.setdefault(str(value.attribute_key), value.value_json)
         performance_by_asset: dict[str, object] = {}
         for snapshot in self.snapshot_repository.list_current_performance(
             session,
@@ -2883,6 +2800,7 @@ class CanonicalRecalcService:
         return {
             "node_by_id": node_by_id,
             "assigned_node_by_asset": assigned_node_by_asset,
+            "attributes_by_asset": attributes_by_asset,
             "active_peer_instrument_ids": active_peer_instrument_ids,
             "performance_by_asset": performance_by_asset,
             "risk_by_asset": risk_by_asset,
@@ -2916,6 +2834,32 @@ class CanonicalRecalcService:
                 "fallback_levels": 0,
                 "candidate_count": 0,
                 "sample_count": 0,
+                "peer_dimensions": {},
+                "excluded_dimension_mismatch_count": 0,
+                "excluded_mismatched_as_of_count": 0,
+                "metrics": [],
+                "summary": {},
+            }
+
+        if not _peer_taxonomy_is_comparable(taxonomy_node):
+            return {
+                "status": "taxonomy_not_comparable",
+                "comparison_policy_version": PEER_COMPARISON_POLICY_VERSION,
+                "as_of_date": (
+                    performance_snapshot.as_of_date.isoformat()
+                    if performance_snapshot is not None
+                    else None
+                ),
+                "taxonomy_code": INSTRUMENT_TAXONOMY_CODE,
+                "assigned_node_id": getattr(taxonomy_node, "node_id", None),
+                "assigned_path": _node_path_labels(taxonomy_node),
+                "peer_node_id": None,
+                "peer_path": [],
+                "fallback_levels": 0,
+                "candidate_count": 0,
+                "sample_count": 0,
+                "peer_dimensions": {},
+                "excluded_dimension_mismatch_count": 0,
                 "excluded_mismatched_as_of_count": 0,
                 "metrics": [],
                 "summary": {},
@@ -2924,6 +2868,7 @@ class CanonicalRecalcService:
         context = context or self._peer_comparison_context(session)
         node_by_id = dict(context["node_by_id"])
         assigned_node_by_asset = dict(context["assigned_node_by_asset"])
+        attributes_by_asset = dict(context.get("attributes_by_asset") or {})
         active_peer_instrument_ids = set(context["active_peer_instrument_ids"])
         performance_by_asset = dict(context["performance_by_asset"])
         if performance_snapshot is not None and instrument_id in active_peer_instrument_ids:
@@ -2931,6 +2876,36 @@ class CanonicalRecalcService:
         risk_by_asset = dict(context["risk_by_asset"])
         if risk_snapshot is not None and instrument_id in active_peer_instrument_ids:
             risk_by_asset[str(instrument_id)] = risk_snapshot
+
+        target_geographic_exposure = _peer_geographic_exposure(
+            taxonomy_node,
+            attributes_by_asset.get(instrument_id),
+        )
+        if target_geographic_exposure is None:
+            return {
+                "status": "missing_peer_dimension",
+                "comparison_policy_version": PEER_COMPARISON_POLICY_VERSION,
+                "as_of_date": (
+                    performance_snapshot.as_of_date.isoformat()
+                    if performance_snapshot is not None
+                    else None
+                ),
+                "taxonomy_code": INSTRUMENT_TAXONOMY_CODE,
+                "assigned_node_id": getattr(taxonomy_node, "node_id", None),
+                "assigned_path": _node_path_labels(taxonomy_node),
+                "peer_node_id": None,
+                "peer_path": [],
+                "fallback_levels": 0,
+                "candidate_count": 0,
+                "sample_count": 0,
+                "peer_dimensions": {},
+                "excluded_dimension_mismatch_count": 0,
+                "excluded_mismatched_as_of_count": 0,
+                "metrics": [],
+                "summary": {
+                    "missing_dimensions": ["primary_geographic_exposure"],
+                },
+            }
 
         performance_as_of_date = getattr(
             performance_snapshot, "as_of_date", None
@@ -2943,35 +2918,30 @@ class CanonicalRecalcService:
         }
 
         selected_peer_node_id = assigned_path_node_ids[-1]
-        selected_instrument_ids: list[str] = []
-        for candidate_node_id in reversed(assigned_path_node_ids):
-            candidate_instrument_ids = [
-                candidate_instrument_id
-                for candidate_instrument_id, assigned_node in assigned_node_by_asset.items()
-                if candidate_node_id in _node_path_node_ids(assigned_node)
-                and candidate_instrument_id in comparable_performance_ids
-            ]
-            selected_peer_node_id = candidate_node_id
-            selected_instrument_ids = sorted(candidate_instrument_ids)
-            if len(selected_instrument_ids) >= PEER_METRIC_MIN_SAMPLE:
-                break
-
-        if (
-            instrument_id not in selected_instrument_ids
-            and performance_snapshot is not None
-            and instrument_id in active_peer_instrument_ids
-        ):
-            selected_instrument_ids = sorted([*selected_instrument_ids, instrument_id])
-
         peer_node = node_by_id.get(selected_peer_node_id) or taxonomy_node
-        selected_taxonomy_instrument_ids = sorted(
+        taxonomy_peer_instrument_ids = sorted(
             candidate_instrument_id
             for candidate_instrument_id, assigned_node in assigned_node_by_asset.items()
-            if selected_peer_node_id in _node_path_node_ids(assigned_node)
+            if candidate_instrument_id != instrument_id
+            and str(getattr(assigned_node, "node_id", "") or "") == selected_peer_node_id
+        )
+        eligible_peer_instrument_ids = sorted(
+            candidate_instrument_id
+            for candidate_instrument_id in taxonomy_peer_instrument_ids
+            if _peer_geographic_exposure(
+                assigned_node_by_asset.get(candidate_instrument_id),
+                attributes_by_asset.get(candidate_instrument_id),
+            )
+            == target_geographic_exposure
+        )
+        selected_peer_instrument_ids = sorted(
+            candidate_instrument_id
+            for candidate_instrument_id in eligible_peer_instrument_ids
+            if candidate_instrument_id in comparable_performance_ids
         )
         excluded_mismatched_as_of_count = sum(
             1
-            for candidate_instrument_id in selected_taxonomy_instrument_ids
+            for candidate_instrument_id in eligible_peer_instrument_ids
             if (
                 performance_by_asset.get(candidate_instrument_id) is not None
                 and getattr(
@@ -2982,10 +2952,7 @@ class CanonicalRecalcService:
                 != performance_as_of_date
             )
         )
-        fallback_levels = max(
-            0,
-            len(assigned_path_node_ids) - 1 - assigned_path_node_ids.index(selected_peer_node_id),
-        )
+        comparison_instrument_ids = [instrument_id, *eligible_peer_instrument_ids]
         metric_rows: list[dict[str, object]] = []
         for definition in PEER_COMPARISON_METRICS:
             metric_key = str(definition["metric_key"])
@@ -3000,7 +2967,7 @@ class CanonicalRecalcService:
             samples: list[tuple[str, float]] = []
             mismatched_as_of_count = 0
             target_as_of_date = getattr(target_snapshot, "as_of_date", None)
-            for candidate_instrument_id in selected_taxonomy_instrument_ids:
+            for candidate_instrument_id in comparison_instrument_ids:
                 candidate_snapshot = (
                     performance_by_asset.get(candidate_instrument_id)
                     if source == "performance"
@@ -3011,24 +2978,36 @@ class CanonicalRecalcService:
                     and getattr(candidate_snapshot, "as_of_date", None)
                     != target_as_of_date
                 ):
-                    mismatched_as_of_count += 1
+                    if candidate_instrument_id != instrument_id:
+                        mismatched_as_of_count += 1
                     continue
                 candidate_value = _safe_float(getattr(candidate_snapshot, attr, None))
                 if candidate_value is not None:
                     samples.append((candidate_instrument_id, candidate_value))
-            if len(samples) < PEER_METRIC_MIN_SAMPLE:
-                continue
-
-            ranking = _rank_metric_value(
-                value=target_value,
-                samples=samples,
-                direction=direction,
-            )
             peer_values = [
                 value
                 for candidate_instrument_id, value in samples
                 if candidate_instrument_id != instrument_id
-            ] or [value for _, value in samples]
+            ]
+            if not peer_values:
+                continue
+            ranking_samples = list(samples)
+            if instrument_id not in {sample_id for sample_id, _ in ranking_samples}:
+                ranking_samples.append((instrument_id, target_value))
+            ranking = (
+                _rank_metric_value(
+                    value=target_value,
+                    samples=ranking_samples,
+                    direction=direction,
+                )
+                if len(peer_values) >= PEER_PERCENTILE_MIN_PEERS
+                else {
+                    "rank": None,
+                    "percentile": None,
+                    "quartile": None,
+                    "sample_count": len(peer_values) + 1,
+                }
+            )
             metric_rows.append(
                 {
                     "metric_key": metric_key,
@@ -3051,17 +3030,15 @@ class CanonicalRecalcService:
                 }
             )
 
-        status = "ready" if metric_rows else "insufficient_data"
-        percentile_by_domain: dict[str, list[float | None]] = {}
-        for row in metric_rows:
-            domain = str(row.get("domain") or "")
-            percentile_by_domain.setdefault(domain, []).append(
-                _safe_float(row.get("percentile"))
-            )
-        return_percentile = _mean_optional(percentile_by_domain.get("return", []))
-        risk_percentile = _mean_optional(percentile_by_domain.get("risk", []))
-        risk_adjusted_percentile = _mean_optional(
-            percentile_by_domain.get("risk_adjusted", [])
+        ranked_metric_count = sum(
+            1 for row in metric_rows if row.get("percentile") is not None
+        )
+        status = (
+            "ready"
+            if ranked_metric_count
+            else "limited_sample"
+            if metric_rows
+            else "insufficient_data"
         )
         return {
             "status": status,
@@ -3076,18 +3053,21 @@ class CanonicalRecalcService:
             "assigned_path": _node_path_labels(taxonomy_node),
             "peer_node_id": selected_peer_node_id,
             "peer_path": _node_path_labels(peer_node),
-            "fallback_levels": fallback_levels,
-            "candidate_count": len(selected_taxonomy_instrument_ids),
-            "sample_count": len(selected_instrument_ids),
+            "fallback_levels": 0,
+            "candidate_count": len(eligible_peer_instrument_ids),
+            "sample_count": len(selected_peer_instrument_ids),
+            "peer_dimensions": {
+                "primary_geographic_exposure": target_geographic_exposure,
+            },
+            "excluded_dimension_mismatch_count": (
+                len(taxonomy_peer_instrument_ids) - len(eligible_peer_instrument_ids)
+            ),
             "excluded_mismatched_as_of_count": excluded_mismatched_as_of_count,
             "metrics": metric_rows,
             "summary": {
-                "return_percentile": return_percentile,
-                "risk_percentile": risk_percentile,
-                "risk_adjusted_percentile": risk_adjusted_percentile,
-                "overall_percentile": _mean_optional(
-                    [return_percentile, risk_percentile, risk_adjusted_percentile]
-                ),
+                "available_metric_count": len(metric_rows),
+                "ranked_metric_count": ranked_metric_count,
+                "minimum_peers_for_percentile": PEER_PERCENTILE_MIN_PEERS,
             },
         }
 
@@ -3240,52 +3220,22 @@ class CanonicalRecalcService:
         ) > 0
         volatility = _safe_float(getattr(risk_snapshot, "volatility", None))
         annualized_return = _safe_float(getattr(performance_snapshot, "annualized_return", None))
-        drawdown_summary = (
-            None if has_unresolved_gaps else _compute_drawdown_summary(nav_points)
-        )
-        current_drawdown = (
-            None if has_unresolved_gaps else _current_drawdown(nav_points)
-        )
-        current_watch = (
-            {
-                "overall_level": None,
-                "rows": [],
-                "note": "Path-dependent risk metrics are withheld because expected observations are missing.",
-            }
-            if has_unresolved_gaps
-            else _build_current_risk_watch(nav_points, drawdown_summary)
-        )
-        risk_structure = (
-            {"rows": []}
-            if has_unresolved_gaps
-            else _build_risk_structure(nav_points, drawdown_summary, current_watch)
-        )
-        change_monitor = (
-            {
-                "rows": [],
-                "note": "Change monitoring is withheld because expected observations are missing.",
-            }
-            if has_unresolved_gaps
-            else _build_risk_change_monitor(nav_points, drawdown_summary, current_watch)
-        )
+        drawdown_summary = _compute_drawdown_summary(nav_points)
+        current_drawdown = _current_drawdown(nav_points)
+        current_watch = _build_current_risk_watch(nav_points, drawdown_summary)
+        risk_structure = _build_risk_structure(nav_points, drawdown_summary)
+        change_monitor = _build_risk_change_monitor(nav_points, drawdown_summary)
         peer_metrics_by_key = {
             str(row.get("metric_key")): row
             for row in (peer_comparison or {}).get("metrics", [])
             if isinstance(row, dict)
         }
-        peer_summary = peer_comparison.get("summary") if isinstance(peer_comparison, dict) else {}
-        risk_percentile = (
-            _safe_float(peer_summary.get("risk_percentile")) if isinstance(peer_summary, dict) else None
-        )
-        return_percentile = (
-            _safe_float(peer_summary.get("return_percentile")) if isinstance(peer_summary, dict) else None
-        )
         return {
             "risk_overview": {
                 "exposure_risk_score": None,
-                "risk_level": _risk_level_label(volatility),
-                "risk_vs_category": risk_percentile,
-                "return_vs_category": return_percentile,
+                "risk_level": None,
+                "risk_vs_category": None,
+                "return_vs_category": None,
             }
             if risk_snapshot is not None or performance_snapshot is not None
             else None,
@@ -3314,7 +3264,7 @@ class CanonicalRecalcService:
             "change_monitor": change_monitor,
             "data_quality": {
                 "status": (
-                    "withheld_missing_observations"
+                    "partial_missing_observations"
                     if has_unresolved_gaps
                     else "ready"
                 ),
@@ -3323,6 +3273,11 @@ class CanonicalRecalcService:
                 ),
                 "gap_detection_basis": calculation_frequency_profile.get(
                     "gap_detection_basis"
+                ),
+                "note": (
+                    "Metrics use the available canonical observations; missing sessions may understate intragap path variation."
+                    if has_unresolved_gaps
+                    else None
                 ),
             },
             "calculation_frequency_profile": calculation_frequency_profile,

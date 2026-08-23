@@ -197,6 +197,23 @@ class PlatformLifecycleState(BaseModel):
     canonical_instrument_id: str | None = None
 
 
+class PlatformInstrumentReferenceData(BaseModel):
+    instrument_id: str
+    instrument_type: Literal[
+        "public_fund",
+        "private_fund",
+        "etf",
+        "equity",
+        "index",
+    ]
+    provider: str
+    provider_symbol: str | None = None
+    fetched_at: str
+    source: dict[str, object] = Field(default_factory=dict)
+    sections: dict[str, object] = Field(default_factory=dict)
+    section_errors: dict[str, str] = Field(default_factory=dict)
+
+
 class PlatformInstrumentRecord(BaseModel):
     instrument_id: str
     instrument_name: str

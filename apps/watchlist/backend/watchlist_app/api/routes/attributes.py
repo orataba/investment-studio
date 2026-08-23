@@ -8,8 +8,8 @@ from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
 from watchlist_app.api.contracts import (
-    FundAttributesUpsertRequest,
     InstrumentAttributeDefinitionCreateRequest,
+    InstrumentAttributesUpsertRequest,
     InstrumentSettingsUpsertRequest,
 )
 from watchlist_app.api.presenters import present_attribute_definition, present_attribute_values
@@ -28,7 +28,6 @@ from watchlist_app.services.instrument_taxonomy import (
     build_taxonomy_context,
     taxonomy_node_supports_instrument,
 )
-from watchlist_app.services.instrument_resolution import equity_exchange_taxonomy_node
 
 
 router = APIRouter()
@@ -58,6 +57,20 @@ def _taxonomy_context_for_asset(
         else None
     )
     return build_taxonomy_context(node)
+
+
+def _definitions_for_instrument(definitions, *, instrument_type: str):
+    normalized_type = str(instrument_type or "").strip().lower()
+    return [
+        definition
+        for definition in definitions
+        if not definition.instrument_scope_json
+        or normalized_type
+        in {
+            str(value).strip().lower()
+            for value in definition.instrument_scope_json
+        }
+    ]
 
 
 def _validated_attribute_value(definition, value: object) -> object:
@@ -172,10 +185,14 @@ def get_instrument_attribute_values(
     instrument_id: str,
     session: Session = Depends(get_db_session),
 ) -> dict[str, object]:
-    _require_asset(session, instrument_id)
+    instrument = _require_asset(session, instrument_id)
+    definitions = _definitions_for_instrument(
+        attribute_repository.list_definitions(session),
+        instrument_type=instrument.instrument_type,
+    )
     payload = present_attribute_values(
         instrument_id,
-        attribute_repository.list_definitions(session),
+        definitions,
         attribute_repository.get_values_for_asset(session, instrument_id),
     )
     payload["taxonomy"] = _taxonomy_context_for_asset(
@@ -188,7 +205,7 @@ def get_instrument_attribute_values(
 @router.post("/instruments/{instrument_id}")
 def upsert_instrument_attribute_values(
     instrument_id: str,
-    payload: FundAttributesUpsertRequest,
+    payload: InstrumentAttributesUpsertRequest,
     session: Session = Depends(get_db_session),
 ) -> dict[str, object]:
     instrument = _require_asset(session, instrument_id)
@@ -232,7 +249,10 @@ def upsert_instrument_attribute_values(
         )
     current_values = present_attribute_values(
         instrument_id,
-        list(definitions.values()),
+        _definitions_for_instrument(
+            list(definitions.values()),
+            instrument_type=instrument.instrument_type,
+        ),
         attribute_repository.get_values_for_asset(session, instrument_id),
     )
     taxonomy_context = _taxonomy_context_for_asset(
@@ -271,11 +291,6 @@ def update_instrument_settings(
         )
 
     node_id = str(payload.taxonomy_node_id or "").strip() or None
-    if instrument_type == "equity" and node_id != equity_exchange_taxonomy_node(instrument):
-        raise HTTPException(
-            status_code=422,
-            detail="Equity taxonomy is maintained from the Registry exchange identity.",
-        )
     node = taxonomy_repository.get_node(session, node_id=node_id) if node_id else None
     if node_id and node is None:
         raise HTTPException(status_code=404, detail="Instrument taxonomy node not found")
@@ -289,8 +304,8 @@ def update_instrument_settings(
             raise HTTPException(
                 status_code=422,
                 detail=(
-                    f"{instrument_type} instruments cannot be assigned to a "
-                    f"{node.instrument_type} taxonomy node"
+                    f"{instrument_type} instruments require a leaf category from the "
+                    f"{instrument_type} taxonomy; node {node_id!r} is not assignable."
                 ),
             )
 
@@ -326,7 +341,10 @@ def update_instrument_settings(
     )
     current_values = present_attribute_values(
         instrument_id,
-        list(definitions.values()),
+        _definitions_for_instrument(
+            list(definitions.values()),
+            instrument_type=instrument_type,
+        ),
         attribute_repository.get_values_for_asset(session, instrument_id),
     )
     taxonomy_changed = (current_assignment.node_id if current_assignment else None) != node_id
@@ -364,7 +382,10 @@ def update_instrument_settings(
 
     next_values = present_attribute_values(
         instrument_id,
-        list(definitions.values()),
+        _definitions_for_instrument(
+            list(definitions.values()),
+            instrument_type=instrument_type,
+        ),
         attribute_repository.get_values_for_asset(session, instrument_id),
     )
     taxonomy_context = _taxonomy_context_for_asset(

@@ -103,7 +103,7 @@ def test_fetch_tushare_rows_follows_offset_pagination() -> None:
 
     rows = datahub_client.fetch_tushare_rows(
         api_key="secret-key",
-        api_name="stock_basic",
+        api_name="fund_basic",
         session=session,
     )
 
@@ -113,6 +113,41 @@ def test_fetch_tushare_rows_follows_offset_pagination() -> None:
         "000004.SZ",
     ]
     assert [call["params"]["offset"] for call in session.calls] == [0, 2]
+
+
+@pytest.mark.parametrize(
+    ("api_name", "endpoint_path"),
+    [
+        ("fund_basic", "fund-basic"),
+        ("fund_portfolio", "fund-portfolio"),
+        ("fund_daily", "fund-daily"),
+        ("fund_adj", "fund-adj"),
+        ("fund_nav", "fund-nav"),
+        ("index_basic", "index-basic"),
+        ("index_weight", "index-weight"),
+    ],
+)
+def test_reference_endpoints_map_to_datahub_paths(
+    api_name: str,
+    endpoint_path: str,
+) -> None:
+    session = FakeSession(
+        [
+            FakeResponse(
+                {
+                    "code": 0,
+                    "data": {"fields": [], "items": [], "has_more": False},
+                }
+            )
+        ]
+    )
+
+    assert datahub_client.fetch_tushare_rows(
+        api_key="secret-key",
+        api_name=api_name,
+        session=session,
+    ) == []
+    assert session.calls[0]["url"].endswith(f"/{endpoint_path}")
 
 
 def test_fetch_tushare_rows_rejects_provider_error() -> None:
@@ -131,7 +166,7 @@ def test_fetch_tushare_rows_rejects_provider_error() -> None:
     ):
         datahub_client.fetch_tushare_rows(
             api_key="secret-key",
-            api_name="daily",
+            api_name="index_daily",
             session=session,
         )
 
@@ -163,7 +198,7 @@ def test_fetch_tushare_rows_retries_transient_provider_error(
 
     rows = datahub_client.fetch_tushare_rows(
         api_key="secret-key",
-        api_name="fund_daily",
+        api_name="fund_nav",
         session=session,
     )
 
@@ -178,7 +213,7 @@ def test_fetch_tushare_rows_requires_api_key() -> None:
     ):
         datahub_client.fetch_tushare_rows(
             api_key="   ",
-            api_name="daily",
+            api_name="index_daily",
             session=FakeSession([]),
         )
 

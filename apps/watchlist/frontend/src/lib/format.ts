@@ -42,6 +42,10 @@ export function formatDate(value: unknown) {
   if (typeof value !== 'string' || !value) {
     return '—'
   }
+  const compactDate = /^(\d{4})(\d{2})(\d{2})$/.exec(value)
+  if (compactDate) {
+    return `${compactDate[1]}-${compactDate[2]}-${compactDate[3]}`
+  }
   return value.slice(0, 10)
 }
 

@@ -129,9 +129,10 @@ def present_attribute_values(
     definitions: Sequence[InstrumentAttributeDefinition],
     values: Sequence[InstrumentAttributeValue],
 ) -> dict[str, object]:
+    definition_keys = {definition.attribute_key for definition in definitions}
     latest: dict[str, InstrumentAttributeValue] = {}
     for value in values:
-        if value.attribute_key not in latest:
+        if value.attribute_key in definition_keys and value.attribute_key not in latest:
             latest[value.attribute_key] = value
     return {
         "instrument_id": instrument_id,
@@ -159,21 +160,40 @@ def present_recalc_job(record: RecalcJob) -> dict[str, object]:
     }
 
 
-def present_group_by_options(fields: Sequence[FieldRegistry]) -> list[dict[str, str]]:
+def present_group_by_options(
+    fields: Sequence[FieldRegistry],
+    *,
+    include_instrument_type: bool,
+) -> list[dict[str, str]]:
     options = [{"code": "none", "label": "None"}]
     fields_by_key = {field.field_key: field for field in fields}
+    included = {"none"}
     has_taxonomy_fields = any(
         field.field_key == "attr.instrument_taxonomy_level_1"
         for field in fields
     )
     for field_key in GROUP_BY_OPTION_ORDER:
+        if field_key == "instrument_type" and not include_instrument_type:
+            continue
         if field_key == TAXONOMY_GROUP_BY_CODE:
             if has_taxonomy_fields:
                 options.append({"code": field_key, "label": "Taxonomy"})
+                included.add(field_key)
             continue
         field = fields_by_key.get(field_key)
         if field is not None and field.group_mode != "none":
             options.append({"code": field.field_key, "label": field.label})
+            included.add(field.field_key)
+    for field in sorted(fields, key=lambda item: (item.label, item.field_key)):
+        if (
+            field.field_key not in included
+            and (include_instrument_type or field.field_key != "instrument_type")
+            and field.group_mode == "discrete"
+            and field.data_type != "multi_select"
+            and not field.field_key.startswith("attr.instrument_taxonomy_")
+        ):
+            options.append({"code": field.field_key, "label": field.label})
+            included.add(field.field_key)
     return options
 
 

@@ -55,7 +55,7 @@ from platform_app.services.nav_raw_store import (
     list_raw_nav_observations,
     record_raw_nav_observations,
 )
-from platform_app.services import csindex_client, datahub_client
+from platform_app.services import datahub_client
 
 try:
     from openpyxl import load_workbook
@@ -198,11 +198,6 @@ TUSHARE_PRICE_SUFFIXES = {"SH", "SZ"}
 TUSHARE_INDEX_SUFFIXES = {"SH", "SZ", "CSI", "CNI"}
 TUSHARE_HISTORY_START_DATE = date(2024, 1, 1)
 DATAHUB_TUSHARE_PROVIDER = "datahub:tushare"
-CSINDEX_FALLBACK_PROFILE = "csindex"
-CSINDEX_FALLBACK_INDEX_CODES = {
-    "H11001.CSI": "H11001",
-}
-CSINDEX_PROVIDER = "csindex:index-perf"
 TUSHARE_LISTED_SECURITY_QUOTE_SELECTION_POLICY: dict[str, list[str]] = {
     "trading": ["last", "close"],
     "valuation": ["close", "last"],
@@ -3180,27 +3175,6 @@ def _tushare_profile_enabled(source_settings: dict[str, object]) -> bool:
     return profile in TUSHARE_PROFILE_ALIASES
 
 
-def _csindex_fallback_code(
-    instrument: dict[str, object],
-    *,
-    ts_code: str,
-) -> str | None:
-    source_settings = dict(instrument.get("source_settings", {}))
-    fallback_profile = str(
-        source_settings.get("source_api_fallback_profile") or ""
-    ).strip().lower()
-    mapped_code = CSINDEX_FALLBACK_INDEX_CODES.get(ts_code)
-    if fallback_profile != CSINDEX_FALLBACK_PROFILE or mapped_code is None:
-        return None
-    configured_code = str(
-        source_settings.get("source_api_fallback_code") or mapped_code
-    ).strip().upper()
-    # The fallback is intentionally allow-listed. Registry configuration
-    # cannot silently redirect an unrelated Tushare instrument to a different
-    # CSI series.
-    return mapped_code if configured_code == mapped_code else None
-
-
 def _tushare_identifier_code(instrument: dict[str, object]) -> str | None:
     identifiers = [
         item for item in list(instrument.get("identifiers", [])) if isinstance(item, dict)
@@ -3394,36 +3368,6 @@ def _tushare_price_rows(
                 "previous_close": _parse_nav_decimal(row.get("pre_close")),
                 "volume": _parse_nonnegative_decimal(row.get("vol")),
                 "turnover": _parse_nonnegative_decimal(row.get("amount")),
-            }
-        )
-    return sorted(prepared_rows, key=lambda item: item["as_of_date"])
-
-
-def _csindex_price_rows(
-    rows: list[dict[str, object]],
-    *,
-    index_code: str,
-    latest_date: date | None,
-) -> list[dict[str, object]]:
-    prepared_rows: list[dict[str, object]] = []
-    for row in rows:
-        provider_code = str(row.get("indexCode") or "").strip().upper()
-        if provider_code != index_code:
-            continue
-        point_date = _parse_nav_date(row.get("tradeDate"))
-        close_value = _parse_nav_decimal(row.get("close"))
-        if (
-            point_date is None
-            or point_date < TUSHARE_HISTORY_START_DATE
-            or (latest_date is not None and point_date <= latest_date)
-            or close_value is None
-            or close_value <= 0
-        ):
-            continue
-        prepared_rows.append(
-            {
-                "as_of_date": point_date,
-                "value": close_value,
             }
         )
     return sorted(prepared_rows, key=lambda item: item["as_of_date"])
@@ -4281,101 +4225,6 @@ def _refresh_tushare_listed_security(
     )
 
 
-def _refresh_from_csindex_fallback(
-    *,
-    instrument_id: str,
-    ts_code: str,
-    index_code: str,
-    latest_date: date | None,
-    updated_by: str | None,
-    full_history: bool,
-) -> dict[str, object] | None:
-    query_start = _tushare_query_start_date(
-        latest_date=latest_date,
-        full_history=full_history,
-    )
-    query_end = date.today()
-    if query_start > query_end:
-        return update_refresh_status(
-            instrument_id=instrument_id,
-            status="no_new_data",
-            message=(
-                f"CSI official index-performance fallback has no date after "
-                f"{latest_date.isoformat() if latest_date else 'the current history'} "
-                f"to request for {ts_code}."
-            ),
-            updated_by=updated_by,
-            mode="api",
-        )
-
-    settings = get_settings()
-    raw_rows = csindex_client.fetch_index_performance(
-        index_code=index_code,
-        start_date=query_start,
-        end_date=query_end,
-        api_url=settings.csindex_api_url,
-        timeout_seconds=settings.csindex_timeout_seconds,
-    )
-    rows = _csindex_price_rows(
-        raw_rows,
-        index_code=index_code,
-        latest_date=None if full_history else latest_date,
-    )
-    if not rows:
-        since_text = f" after {latest_date.isoformat()}" if latest_date else ""
-        return update_refresh_status(
-            instrument_id=instrument_id,
-            status="no_new_data",
-            message=(
-                f"DataHub Tushare index_daily returned no new close rows for {ts_code}; "
-                f"CSI official index-performance fallback also returned no new "
-                f"{index_code} rows{since_text}."
-            ),
-            updated_by=updated_by,
-            mode="api",
-        )
-
-    changed_count = upsert_market_data_points(
-        instrument_id=instrument_id,
-        rows=[
-            {
-                "metric_family": "price",
-                "quote_basis": "close",
-                "as_of_date": row["as_of_date"],
-                "value": row["value"],
-                "currency": "CNY",
-                "provider": CSINDEX_PROVIDER,
-                "status": "complete",
-            }
-            for row in rows
-        ],
-    )
-    if changed_count is None:
-        return None
-    if changed_count == 0:
-        return update_refresh_status(
-            instrument_id=instrument_id,
-            status="no_new_data",
-            message=(
-                f"CSI official index-performance fallback returned no changed "
-                f"close rows for {index_code}."
-            ),
-            updated_by=updated_by,
-            mode="api",
-        )
-    return update_refresh_status(
-        instrument_id=instrument_id,
-        status="refreshed",
-        message=(
-            f"Imported {changed_count} official CSI close rows for {index_code} "
-            f"after DataHub Tushare index_daily returned no new rows for {ts_code}. "
-            "The CSI endpoint publishes close-only data, so no OHLCV bars were invented."
-        ),
-        updated_by=updated_by,
-        mode="api",
-    )
-
-
 def _refresh_from_tushare(
     *,
     instrument_id: str,
@@ -4468,13 +4317,9 @@ def _refresh_from_tushare(
                 metric_family="price",
                 quote_bases={"close"},
             )
-            fallback_code = _csindex_fallback_code(
-                instrument,
-                ts_code=ts_code,
-            )
             repair_start = (
                 None
-                if full_history or fallback_code is not None
+                if full_history
                 else _price_bar_repair_start_date(
                     instrument_id=instrument_id,
                     instrument=instrument,
@@ -4503,15 +4348,6 @@ def _refresh_from_tushare(
                 rows,
                 latest_date=None if repair_start is not None else latest_date,
             )
-            if not prepared_rows and fallback_code is not None:
-                return _refresh_from_csindex_fallback(
-                    instrument_id=instrument_id,
-                    ts_code=ts_code,
-                    index_code=fallback_code,
-                    latest_date=latest_date,
-                    updated_by=updated_by,
-                    full_history=full_history,
-                )
             return _upsert_tushare_price_rows(
                 instrument_id=instrument_id,
                 ts_code=ts_code,
@@ -4519,14 +4355,6 @@ def _refresh_from_tushare(
                 rows=prepared_rows,
                 updated_by=updated_by,
             )
-    except csindex_client.CsindexClientError as exc:
-        return update_refresh_status(
-            instrument_id=instrument_id,
-            status="failed",
-            message=f"CSI official fallback refresh failed for {ts_code}: {exc}",
-            updated_by=updated_by,
-            mode="api",
-        )
     except DataHubTushareRefreshError as exc:
         return update_refresh_status(
             instrument_id=instrument_id,

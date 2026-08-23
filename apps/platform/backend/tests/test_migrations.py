@@ -117,7 +117,6 @@ def test_bond_registry_removal_is_guarded_and_enforced(
                 """
             )
         )
-
     with pytest.raises(RuntimeError, match="zero bond instruments"):
         command.upgrade(config, "20260810_0023")
 
@@ -698,7 +697,6 @@ def test_daily_api_source_metadata_migration_excludes_manual_instruments(
                 )
             ).mappings()
         }
-
     def source_settings(instrument_id: str) -> dict[str, object]:
         value = rows[instrument_id]["source_settings_json"]
         return json.loads(value) if isinstance(value, str) else dict(value)
@@ -721,10 +719,133 @@ def test_daily_api_source_metadata_migration_excludes_manual_instruments(
     assert rows["weekly-api-etf"]["calculation_inputs_updated_at"]
 
     h11001_source = source_settings("h11001-csi")
-    assert h11001_source["source_api_fallback_profile"] == "csindex"
-    assert h11001_source["source_api_fallback_code"] == "H11001"
-    assert h11001_source["source_api_fallback_location"] == (
-        "https://www.csindex.com.cn/csindex-home"
+    assert not any(key.startswith("source_api_fallback_") for key in h11001_source)
+
+
+def test_single_primary_source_migration_routes_only_mainland_etfs(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    database_url = f"sqlite+pysqlite:///{tmp_path / 'single-primary-source.db'}"
+    monkeypatch.setenv("PORTFOLIO_OPS_INSTRUMENT_REGISTRY_DATABASE_URL", database_url)
+    monkeypatch.setenv("PORTFOLIO_OPS_INSTRUMENT_REGISTRY_SCHEMA", "")
+    config = Config(str(MIGRATIONS_ROOT / "alembic.ini"))
+    config.set_main_option("script_location", str(MIGRATIONS_ROOT / "alembic"))
+    command.upgrade(config, "20260822_0026")
+
+    engine = create_engine(database_url)
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                """
+                INSERT INTO instrument (
+                    instrument_id, instrument_name, instrument_type, currency,
+                    exchange_code, quote_selection_policy_json, source_settings_json,
+                    refresh_status_json, lifecycle_state_json
+                ) VALUES
+                (
+                    'mainland-etf', 'Mainland ETF', 'etf', 'CNY', 'XSHG', '{}',
+                    '{"source_mode":"api","source_api_profile":"fmp","source_location":"FMP API"}',
+                    '{}', '{"status":"active"}'
+                ),
+                (
+                    'mainland-equity', 'Mainland Equity', 'equity', 'CNY', 'XSHG', '{}',
+                    '{"source_mode":"api","source_api_profile":"fmp","source_location":"FMP API"}',
+                    '{}', '{"status":"active"}'
+                ),
+                (
+                    'a-share-index', 'A-share Index', 'index', 'CNY', NULL, '{}',
+                    '{"source_mode":"api","source_api_profile":"tushare","source_api_fallback_profile":"csindex","source_api_fallback_code":"H11001"}',
+                    '{}', '{"status":"active"}'
+                )
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO instrument_identifier (
+                    instrument_id, identifier_type, identifier_value, is_primary
+                ) VALUES
+                ('mainland-etf', 'exchange_ticker', '510300.SH', true),
+                ('mainland-etf', 'provider_symbol', 'fmp:510300.SS', false)
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO instrument_market_data (
+                    instrument_id, metric_family, quote_basis, as_of_date, value,
+                    currency, price_unit, price_scale, provider, status
+                ) VALUES
+                (
+                    'mainland-etf', 'price', 'close', '2026-08-22', '4.20',
+                    'CNY', 'per_unit', 1, 'fmp:historical-price-eod:non-split-adjusted',
+                    'complete'
+                ),
+                (
+                    'a-share-index', 'price', 'close', '2026-08-22', '267.16',
+                    'CNY', 'per_unit', 1, 'csindex:index-perf', 'complete'
+                )
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO instrument_price_bar (
+                    instrument_id, as_of_date, open_price, high_price, low_price,
+                    close_price, currency, provider, status
+                ) VALUES (
+                    'mainland-etf', '2026-08-22', '4.10', '4.30', '4.00',
+                    '4.20', 'CNY', 'fmp:historical-price-eod:non-split-adjusted',
+                    'complete'
+                )
+                """
+            )
+        )
+
+    command.upgrade(config, "head")
+
+    with engine.connect() as connection:
+        rows = {
+            row["instrument_id"]: json.loads(row["source_settings_json"])
+            for row in connection.execute(
+                text(
+                    "SELECT instrument_id, source_settings_json FROM instrument "
+                    "WHERE instrument_id IN ('mainland-etf', 'mainland-equity', 'a-share-index')"
+                )
+            ).mappings()
+        }
+        remaining_market_data = connection.execute(
+            text(
+                "SELECT instrument_id, provider FROM instrument_market_data "
+                "WHERE instrument_id IN ('mainland-etf', 'a-share-index')"
+            )
+        ).mappings().all()
+        remaining_price_bars = connection.execute(
+            text(
+                "SELECT instrument_id, provider FROM instrument_price_bar "
+                "WHERE instrument_id = 'mainland-etf'"
+            )
+        ).mappings().all()
+        tushare_identifier = connection.execute(
+            text(
+                "SELECT instrument_id FROM instrument_identifier "
+                "WHERE identifier_type = 'provider_symbol' "
+                "AND identifier_value = 'tushare:510300.SH'"
+            )
+        ).scalar_one_or_none()
+
+    assert rows["mainland-etf"]["source_api_profile"] == "tushare"
+    assert rows["mainland-etf"]["source_location"] == "DataHub Tushare"
+    assert tushare_identifier == "mainland-etf"
+    assert remaining_market_data == []
+    assert remaining_price_bars == []
+    assert rows["mainland-equity"]["source_api_profile"] == "fmp"
+    assert not any(
+        key.startswith("source_api_fallback_") for key in rows["a-share-index"]
     )
 
 

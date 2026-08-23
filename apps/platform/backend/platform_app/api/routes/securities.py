@@ -48,7 +48,8 @@ def materialize_security_record(
     try:
         record = materialize_security(
             payload.instrument_type,
-            payload.fmp_symbol,
+            payload.catalog_provider,
+            payload.catalog_symbol,
             refresh_eod=payload.refresh_eod,
         )
     except FmpApiError as error:

@@ -17,13 +17,14 @@ DATAHUB_PAGE_SIZE = 5000
 DATAHUB_TRANSIENT_RETRY_DELAYS = (0.25, 0.5, 1.0, 2.0)
 DATAHUB_TRANSIENT_PROVIDER_CODES = {40203, 40204}
 TUSHARE_ENDPOINT_PATHS = {
-    "stock_basic": "stock-basic",
-    "daily": "daily",
-    "adj_factor": "adj-factor",
+    "fund_basic": "fund-basic",
+    "fund_portfolio": "fund-portfolio",
     "fund_daily": "fund-daily",
     "fund_adj": "fund-adj",
-    "index_daily": "index-daily",
     "fund_nav": "fund-nav",
+    "index_basic": "index-basic",
+    "index_daily": "index-daily",
+    "index_weight": "index-weight",
 }
 
 

@@ -14,6 +14,12 @@ _EXPECTED_MAX_GAP_DAYS: dict[CalculationFrequency, int] = {
     "daily": 4,
 }
 
+_MARKET_CALENDAR_ALIASES = {
+    # Shenzhen and Shanghai share the mainland trading-session calendar.  The
+    # exchange_calendars package currently exposes XSHG but not XSHE.
+    "XSHE": "XSHG",
+}
+
 
 @lru_cache(maxsize=64)
 def _market_calendar_sessions(
@@ -22,12 +28,18 @@ def _market_calendar_sessions(
     end_date: date,
 ) -> tuple[date, ...] | None:
     try:
-        calendar = exchange_calendars.get_calendar(calendar_name)
+        calendar = exchange_calendars.get_calendar(
+            _MARKET_CALENDAR_ALIASES.get(calendar_name, calendar_name)
+        )
+        covered_start = max(start_date, calendar.first_session.date())
+        covered_end = min(end_date, calendar.last_session.date())
+        if covered_start > covered_end:
+            return ()
         return tuple(
             session.date()
             for session in calendar.sessions_in_range(
-                start_date.isoformat(),
-                end_date.isoformat(),
+                covered_start.isoformat(),
+                covered_end.isoformat(),
             )
         )
     except (CalendarError, ValueError):

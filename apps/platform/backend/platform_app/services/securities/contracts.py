@@ -6,12 +6,14 @@ from pydantic import BaseModel, Field, field_validator
 
 
 MaterializableSecurityType = Literal["equity", "etf"]
+SecurityCatalogProvider = Literal["fmp"]
 
 
 class SecuritySearchResult(BaseModel):
     instrument_type: MaterializableSecurityType
     symbol: str
-    fmp_symbol: str
+    catalog_provider: SecurityCatalogProvider
+    catalog_symbol: str
     name: str
     exchange_code: str = Field(pattern=r"^[A-Z]{4}$")
     exchange_label: str
@@ -31,15 +33,16 @@ class SecuritySearchResponse(BaseModel):
 
 class SecurityMaterializeRequest(BaseModel):
     instrument_type: MaterializableSecurityType
-    fmp_symbol: str = Field(min_length=1)
+    catalog_provider: SecurityCatalogProvider
+    catalog_symbol: str = Field(min_length=1)
     refresh_eod: bool = True
 
-    @field_validator("fmp_symbol", mode="before")
+    @field_validator("catalog_symbol", mode="before")
     @classmethod
     def normalize_symbol(cls, value: object) -> object:
         if isinstance(value, str):
             normalized = value.strip().upper()
             if not normalized:
-                raise ValueError("fmp_symbol must not be blank.")
+                raise ValueError("catalog_symbol must not be blank.")
             return normalized
         return value

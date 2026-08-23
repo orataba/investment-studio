@@ -33,7 +33,13 @@ def get_field_registry(
                 item
                 for item in fields
                 if not item["instrument_scope_json"]
-                or bool(normalized_instrument_types.intersection(item["instrument_scope_json"]))
+                or normalized_instrument_types.issubset(
+                    {
+                        str(value).strip().lower()
+                        for value in item["instrument_scope_json"]
+                        if str(value).strip()
+                    }
+                )
             ]
     if product_type:
         fields = [

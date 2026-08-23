@@ -51,8 +51,6 @@ class Settings(BaseSettings):
     )
     datahub_timeout_seconds: int = 30
     datahub_tushare_batch_timeout_seconds: int = 3600
-    csindex_api_url: str = "https://www.csindex.com.cn/csindex-home"
-    csindex_timeout_seconds: int = 30
     fmp_api_key: str | None = None
     fmp_api_key_file: Path | None = None
     fmp_api_url: str = "https://financialmodelingprep.com/stable"
@@ -198,14 +196,6 @@ class Settings(BaseSettings):
             raise ValueError(
                 "datahub_tushare_batch_timeout_seconds must be between 60 and 21600."
             )
-        return timeout
-
-    @field_validator("csindex_timeout_seconds", mode="before")
-    @classmethod
-    def _coerce_csindex_timeout(cls, value: object) -> int:
-        timeout = int(value)
-        if timeout < 1 or timeout > 300:
-            raise ValueError("csindex_timeout_seconds must be between 1 and 300.")
         return timeout
 
     @field_validator("fmp_timeout_seconds", mode="before")

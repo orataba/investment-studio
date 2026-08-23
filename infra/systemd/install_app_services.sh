@@ -69,6 +69,10 @@ if [[ "$RUN_MIGRATIONS" == "true" && ! -f "$PROJECT_ROOT/apps/portfolio/backend/
   echo "Cannot find Portfolio release snapshot refresh under PROJECT_ROOT: $PROJECT_ROOT" >&2
   exit 1
 fi
+if [[ "$RUN_MIGRATIONS" == "true" && ! -f "$PROJECT_ROOT/apps/platform/backend/scripts/refresh_release_catalogs.py" ]]; then
+  echo "Cannot find Platform release catalog refresh under PROJECT_ROOT: $PROJECT_ROOT" >&2
+  exit 1
+fi
 
 if [[ -z "$ENV_ROOT" ]]; then
   echo "ENV_ROOT must explicitly name the external runtime environment directory." >&2
@@ -499,6 +503,9 @@ if [[ "$RUN_MIGRATIONS" == "true" ]]; then
   echo "Applying release migrations."
   PROJECT_ROOT="$PROJECT_ROOT" PYTHON_BIN="$PYTHON_BIN" ENV_ROOT="$ENV_ROOT" \
     "$PROJECT_ROOT/infra/scripts/migrate_all.sh"
+  echo "Refreshing release-required FMP security catalogs."
+  PYTHONPATH="$PROJECT_ROOT/apps/platform/backend:$PROJECT_ROOT/packages/instrument-core/python${PYTHONPATH:+:$PYTHONPATH}" \
+    "$PYTHON_BIN" "$PROJECT_ROOT/apps/platform/backend/scripts/refresh_release_catalogs.py"
   echo "Refreshing release-invalidated Portfolio snapshots."
   PYTHONPATH="$PROJECT_ROOT/apps/portfolio/backend:$PROJECT_ROOT/packages/instrument-core/python${PYTHONPATH:+:$PYTHONPATH}" \
     "$PYTHON_BIN" "$PROJECT_ROOT/apps/portfolio/backend/scripts/refresh_release_snapshots.py"

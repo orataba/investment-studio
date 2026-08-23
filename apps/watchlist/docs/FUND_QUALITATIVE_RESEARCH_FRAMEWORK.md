@@ -1,10 +1,10 @@
 # Fund 定性研究框架
 
-- 适用范围：watchlist fund detail 的 `Research` 页、watchlist research label columns、后续研究复盘
+- 适用范围：watchlist fund detail 的 `Research` 页、仅基金名单可见的研究判断列与筛选、后续研究复盘；不适用于 ETF、股票或指数，也不进入多资产 `Group By`
 
 ## 1. 设计原则
 
-定性研究标签是机构研究结论，不是自由备注。
+基金定性研究判断是机构研究结论，不是自由备注或资产分类。
 
 本框架借鉴主权基金、捐赠基金、养老金和大型 FOF 在外部管理人研究中的常见尽调结构：先确认资产与策略身份，再判断可持续优势、流程可复制性、团队稳定性、组合构建、风险管理、容量、条款、治理和组合角色。标签只表达可被证据支持的当前结论，不能替代研究笔记。
 
@@ -20,12 +20,12 @@
 
 Research 页分为四块：
 
-1. `Qualitative Research Tags`
-   受控标签框架，按本文件定义的维度、项目和选项选择。
-2. `Research View`
-   当前研究观点文字，例如 `High Conviction / Constructive / Neutral / Cautious / Avoid / Under Review`。不要命名为 `Research Status`，避免和投资生命周期状态混淆。
-3. `Research Notes`
-   统一笔记时间线，与 Overview chart 上的 notes 使用同一份 `timeline_notes` 数据。
+1. `Fund Qualitative Assessment`
+   受控判断框架，按本文件定义的维度、项目和选项选择。
+2. `Current Investment View`
+   当前投资论点、判断、为什么是现在、优势、估值框架、风险/反证、人物分析、组合角色和下一步跟踪计划。它不是投资生命周期状态。
+3. `Research Record`
+   逐条保存 evidence / meeting / event / risk / decision / review。每条记录有独立作者、人物、证据来源、跟进日期和审计时间；Overview chart 使用同一组记录作为时间标记。
 4. `Rating`
    人工星级，表达研究员当前 conviction / 优先级。系统不根据收益率、Sharpe 或收益率等异质量纲自动生成投资评级。
 
@@ -46,9 +46,9 @@ Research 页分为四块：
 | 2 | 低优先级。存在明确短板，只有在特定市场环境或组合缺口下才继续跟踪。 |
 | 1 | 回避或归档。核心假设不成立、风险不可接受、透明度不足或条款/治理不匹配。 |
 
-星级必须能在 `timeline_notes` 中找到原因。
+星级必须能在 `Research Record` 中找到原因。
 
-## 4. 标签维度
+## 4. 定性判断维度
 
 ### 4.1 Research Governance
 
@@ -304,13 +304,16 @@ Research 页分为四块：
 
 ## 5. Notes 规则
 
-Research notes 使用 `timeline_notes`：
+Research records 使用 `instrument_research_note`：
 
 - 每条 note 必须有 `note_date`。
 - Overview chart 添加的 note 和 Research 页添加的 note 是同一份数据。
-- `importance = high` 只用于会影响 rating、Research View 或标签选择的观察。
-- `tags` 是 note 层面的临时主题，不等于 qualitative research tags。
-- Research View、星级或标签发生变化时，必须新增一条 note 说明变化原因。
+- 每条 note 独立新增、修改和删除，不通过覆盖整个数组保存。
+- `note_type` 明确区分 research update、thesis update、evidence、meeting、event、risk、decision 和 review。
+- `author / people / source_refs / follow_up_date` 分别记录分析人、涉及人物、证据来源和后续动作。
+- `importance = high` 只用于会影响 rating、Current Investment View 或定性判断的观察。
+- `tags` 是 note 层面的临时主题，不等于当前结构化定性判断。
+- Current Investment View、星级或定性判断发生变化时，必须新增一条 note 说明变化原因。
 
 ## 6. 变更触发器
 

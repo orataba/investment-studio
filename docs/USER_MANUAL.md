@@ -25,17 +25,19 @@ Platform 是系统总入口，首页会展示可进入的业务应用。Watchlis
 Portfolio Operations Workbench 分为三块：
 
 - Platform：共享资产库和行情主数据。维护 instrument、identifier、NAV、close price、FX 等基础事实。
-- Watchlist：基金、ETF、股票和指数观察列表。用于资产池筛选、分组、单资产详情、研究标签、监控和导出。
+- Watchlist：基金、ETF、股票和指数观察列表。用于资产池筛选、分组、单资产详情、投资研究、监控和导出。
 - Portfolio：组合管理工作台。用于账户、交易、持仓、绩效、风险、分类体系和研究调仓。
 
-三块系统共用同一套可复用市场资产主档。公募、私募、ETF、指数、现金和汇率等资产先在 Platform 建档，再被 Watchlist 或 Portfolio 引用。股票不走人工注册：Platform 定时维护美股、港股、A 股，以及 FMP 当前账户已覆盖的伦敦、Xetra、巴黎、阿姆斯特丹、米兰和瑞士主要市场目录；FMP ETF 使用同一覆盖范围并另含 Cboe BZX。用户在 Watchlist 或 Portfolio 搜索后，系统才按需建立共享 identity 并加载 EOD。FCN 和期权是组合特定合约，直接在 Portfolio 首笔交易中创建，不在 Platform 建档；它们的 underlying 或 deliverable 证券仍引用共享 instrument。直接债券不进入 Registry 或 Watchlist，当前也没有 Portfolio 债券交易入口。不要在不同模块里重复创建同一市场资产，也不要用临时名称绕过主档管理。
+三块系统共用同一套可复用市场资产主档。公募、私募、ETF、指数、现金和汇率等资产先在 Platform 建档，再被 Watchlist 或 Portfolio 引用。股票不走人工注册：Platform 定时维护美股、港股、A 股，以及 FMP 当前账户已覆盖的伦敦、Xetra、巴黎、阿姆斯特丹、米兰和瑞士主要市场目录；ETF 使用独立目录。用户在 Watchlist 或 Portfolio 搜索后，系统才按需建立共享 identity 并加载主源数据。FCN 和期权是组合特定合约，直接在 Portfolio 首笔交易中创建，不在 Platform 建档；它们的 underlying 或 deliverable 证券仍引用共享 instrument。直接债券不进入 Registry 或 Watchlist，当前也没有 Portfolio 债券交易入口。不要在不同模块里重复创建同一市场资产，也不要用临时名称绕过主档管理。
+
+市场数据按 instrument 固定一个 primary source：股票包括 A 股统一使用 FMP；A 股公募和 A 股 ETF 使用 DataHub Tushare，港股/美股 ETF 使用 FMP；A 股指数先核验 FMP 的精确代码和历史覆盖，核验成功才用 FMP，否则固定使用 Tushare。刷新时不会因空响应或错误切到第二 provider，也不双写同一序列。
 
 核心数据分四类：
 
 - 资产主档：名称、资产类型、币种、ticker、ISIN、内部 ID、生命周期状态。
 - 市场行情：基金单位净值、分红再投资复权累计净值、指数 close、股票价格、FX spot。
 - 组合事实：账户、交易、现金流、持仓、成本、费用、税费、内部转账。
-- 分类体系：Watchlist instrument taxonomy、研究标签、Portfolio planning taxonomy、sleeve tree、TargetSet。
+- 分类与研究：Watchlist instrument taxonomy、按资产类型定义的投资研究判断、Portfolio planning taxonomy、sleeve tree、TargetSet。
 
 系统不会用示例数据补空，也不会自动猜业务分类。字段为空通常代表数据确实缺失、口径不适用、日期不重叠或刷新尚未完成。
 
@@ -59,7 +61,7 @@ Portfolio Operations Workbench 分为三块：
 
 1. 在搜索框输入资产名称、ticker、ISIN 或内部编号。
 2. 检查搜索结果中是否已有同一资产。
-3. 公募、私募、指数等不存在时按运营流程新建 instrument；股票和 FMP 已覆盖的 ETF 不要手工建档，直接在 Watchlist 或 Portfolio 搜索本地 FMP 目录。
+3. 公募、私募、指数等不存在时按运营流程新建 instrument；股票和目录已覆盖的 ETF 不要手工建档，直接在 Watchlist 或 Portfolio 搜索本地证券目录。
 4. 填写 instrument type、名称、币种和 identifier。
 5. 录入或导入市场数据。
 6. 回到 Watchlist 或 Portfolio 引用该 instrument。
@@ -70,9 +72,9 @@ Portfolio Operations Workbench 分为三块：
 
 - 公募：instrument type 选 `public_fund`；Tushare `.OF` 净值属于这一类。
 - 私募：instrument type 选 `private_fund`；邮件净值来源属于这一类。
-- 指数：instrument type 选 `index`，币种按指数点位或报价币种填写，identifier 可填写 ticker 或指数代码。
+- 指数：instrument type 选 `index`，币种按指数点位或报价币种填写，identifier 可填写 ticker 或指数代码；先验证 FMP 精确覆盖，再一次性选择 FMP 或 Tushare 主源。
 - 股票：不在这里手工注册。Watchlist/Portfolio 搜索本地 FMP 目录后，系统按交易所创建 `equity` identity，并按需回补 EOD。
-- ETF：与股票使用同一操作方式，但底层仍保持独立 `etf` 类型和独立目录。FMP 已覆盖的 ETF 在 Watchlist/Portfolio 搜索后按需建档并回补 EOD；现有 A 股 ETF 可继续使用覆盖更完整的 Tushare 行情。
+- ETF：与股票使用同一搜索操作，但底层保持独立 `etf` 类型。港股和美股 ETF 从本地 FMP 目录建档并按需回补 FMP EOD；A 股 ETF 固定使用 Tushare 行情、复权、档案和持仓，不在刷新时切换到 FMP。
 - 欧洲非上市基金：使用 `public_fund` 或 `private_fund`，以 ISIN/正式产品代码保持唯一 identity，并按现有 NAV 导入流程维护。当前不从 FMP 自动发现或抓取欧洲共同基金；没有具体产品和可验证数据源时不新增另一套基金管线。
 - 现金：instrument type 选 `cash`，用于组合现金账户或现金桶，不作为普通证券交易标的。
 
@@ -122,13 +124,13 @@ FX 维护 spot：
 
 访问 `http://172.188.30.166:3101/`。默认入口会进入 watchlist 选择或默认列表。每个 watchlist 是一个资产池，可用于基金池、ETF/股票候选池、指数池或专项研究池。
 
-Watchlist 管理“哪些资产进入观察范围”和“如何展示这些资产”。系统列表固定为 `Index`、`All 公募`、`All 私募`，分别自动同步所有 active 指数、公募和私募；股票、ETF 以及其他自定义列表只按人工添加维护。公募、私募、ETF 和指数来自 Registry；股票搜索本地 FMP 目录，首次添加时由 Platform API 按需准备共享 identity 与 EOD。
+Watchlist 管理“哪些资产进入观察范围”和“如何展示这些资产”。系统列表固定为 `Index`、`All 公募`、`All 私募`，分别自动同步所有 active 指数、公募和私募；股票、ETF 以及其他自定义列表只按人工添加维护。公募、私募和指数来自 Registry；股票和 ETF 也可搜索本地证券目录，首次添加时由 Platform API 按需准备共享 identity 与主源行情。
 
 ### 5.2 添加资产
 
-在列表页面搜索资产并加入当前 watchlist。公募、私募、ETF 和指数搜索不到时，回到 Platform 检查 instrument 是否存在、是否 active、identifier 是否正确；股票搜索不到时，检查 FMP 本地目录最近一次刷新是否成功。不要用相似名称新建重复资产。
+在列表页面搜索资产并加入当前 watchlist。公募、私募和指数搜索不到时，回到 Platform 检查 instrument 是否存在、是否 active、identifier 是否正确；股票或 ETF 搜索不到时，检查本地证券目录最近一次刷新是否成功。不要用相似名称新建重复资产。
 
-加入后，资产会出现在主表中。若指标为空，先看资产详情页的数据状态，再看 Monitoring 是否提示缺失行情、缺失标签或 recalc 失败。
+加入后，资产会出现在主表中。若指标为空，先看资产详情页的数据状态，再看 Monitoring 是否提示缺失行情、缺失必填研究信息或 recalc 失败。
 
 `Add From File` 支持 CSV、TSV、文本和 XLSX，读取 `Identifier`、`Ticker`、`ISIN`、`Ticker / ISIN` 或 `Instrument ID` 列；没有表头时读取第一列。文件中的 identifier 会先去重并全部到共享 Registry 解析，存在未找到或不支持的类型时整批不添加，避免得到半截 watchlist。Excel 单元格必须是字面值，不能用公式生成 identifier。
 
@@ -140,7 +142,7 @@ Watchlist 管理“哪些资产进入观察范围”和“如何展示这些资�
 - 排序：点击列头或使用当前 view 的默认排序。
 - 筛选：按字段值缩小结果范围。
 - Data & Columns：选择展示字段和列顺序，`Name` 固定为第一列。
-- Group By：所有 watchlist 使用同一组通用分组，可按资产类别、taxonomy 或数据新鲜度查看分布；基金风格、研究标签和投资状态不进入 Group By。
+- Group By：只提供对当前名单全部资产都成立、且适合聚合的结构化维度；混合名单可按资产类型和通用工作流字段查看，基金专属或其他定性研究判断不会进入 Group By。
 - Download：导出当前筛选和排序后的全量结果，不只导出当前页。
 
 导出前应确认当前筛选、排序、分组和日期区间符合沟通口径。CSV/Excel 都导出当前 view 的可见字段和筛选、排序后的全量结果；涉及端点敏感指标时会同时带出 metric as-of、return kind、quote basis 和 series type。导出首列固定包含 `instrument_id`，因此可通过 `Add From File` 把这些成员加入另一 watchlist；导入只读取 identifier 列，其他分析字段不会回灌或覆盖 Registry 事实。
@@ -149,38 +151,38 @@ Watchlist 允许不同 instrument 的最新数据日期不同。`1M / 3M / YTD` 
 
 ### 5.4 视图和字段
 
-Watchlist 的字段来自 field registry 和 instrument attributes。字段可能只适用于特定 instrument type。例如基金字段不一定适用于指数；指数 performance/risk 字段依赖 Registry 允许的行情序列；基金收益风险字段只依赖可信的分红再投资复权累计净值，缺失时为 NA，不回退单位净值。常用标的收益窗口包括 `1W / 1M / 3M / 6M / MTD / YTD / 1Y`。
+Watchlist 的字段来自 field registry 和 instrument attributes。字段可能只适用于特定 instrument type；混合资产名单只允许选择对名单内全部类型都有效的字段。例如基金字段不会出现在同时含有股票或 ETF 的名单中；指数 performance/risk 字段依赖 Registry 允许的行情序列；基金收益风险字段只依赖可信的分红再投资复权累计净值，缺失时为 NA，不回退单位净值。常用标的收益窗口包括 `1W / 1M / 3M / 6M / MTD / YTD / 1Y`。
 
 列配置用于当前分析任务，不改变底层数据。若某个字段长期需要在团队视图中出现，应创建或调整 view，而不是让每个人临时改列。
 
 ### 5.5 分组和 taxonomy
 
-`Group By` 支持可写 taxonomy 或只读字段分组。可写 taxonomy 分组支持拖拽资产到目标分组，并把分类结果写回后端。只读指标分组只用于查看，不能拖拽修改。
+`Group By` 只改变当前视图的组织方式，不写 taxonomy 或研究属性，也不支持通过拖拽改变资产分类。需要修改 taxonomy、投资状态或研究判断时，应进入资产详情页的对应编辑区。
 
-Watchlist 在自己的 schema 内维护多资产 `instrument_taxonomy`，Registry 不保存 taxonomy。公募与私募已经是不同的 `instrument_type`，各自在类型内使用产品/策略分类；ETF 使用 ETF 分类，股票按市场/交易所分类，指数使用指数分类。股票交易所分类由 Registry 的 canonical `exchange_code` 映射，其余产品分类仍由研究或业务负责人在 Watchlist 内人工设置。
+Watchlist 在自己的 schema 内维护多资产 `instrument_taxonomy`，Registry 不保存 taxonomy。公募与私募已经是不同的 `instrument_type`，各自在类型内使用基金/策略分类；ETF 使用 ETF 分类，股票按市场/交易所分类，指数使用指数分类。股票交易所分类由 Registry 的 canonical `exchange_code` 映射，其余资产分类仍由研究或业务负责人在 Watchlist 内人工设置。
 
 ### 5.6 基金详情页
 
-基金详情页包含 Overview、Quote、Performance、Risk、Price、Exposure、People、Strategy、Documents、Research、Monitoring 等信息区。自动 Ratings 已移除；人工评级只在 Research 中维护。实际可见 tab 会根据数据覆盖情况变化。
+基金详情页共享 Overview、Performance、Risk、Strategy、Documents、Research、Monitoring 基础结构。Overview 同时承载报价/NAV 主图；公募另外使用 Fees、Portfolio、Management，私募使用 Terms、Exposure、Organization。自动 Ratings 已移除；人工评级只在 Research 中维护，并应在 timeline notes 记录证据与变更原因。
 
 基金、ETF、股票和指数详情页右上角的 `Settings` 同时维护投资状态和适用于该资产类型的 taxonomy。投资状态可选择未设置、观察、拟投、在投、暂停或退出；这些设置在 Watchlist 内按 instrument 共享，并不写回 Registry。
 
 常用区域：
 
 - Overview：查看基金名称、identifier、核心状态、taxonomy、关键指标和数据 freshness。
-- Quote：查看单位净值、分红再投资复权累计净值、分红、默认 benchmark 和图表。
+- Overview 主图：查看单位净值、分红再投资复权累计净值、分红、默认 benchmark 和图表。
 - Performance：查看增长曲线、年度收益、trailing returns、peer comparison 和区间表现。
 - Risk：查看波动率、回撤、风险结构、rolling volatility / Sharpe 和 benchmark 对比。
-- Research：维护人工评级、研究结论、research overview 和时间线 notes。
-- Monitoring：查看需要关注的缺失数据、标签、刷新任务和监控判断。
+- Research：维护当前投资论点、风险与反证、人物分析、组合角色、人工评级，以及带作者、来源和跟进日期的逐条研究记录。
+- Monitoring：查看需要关注的缺失数据、缺失必填研究信息、刷新任务和监控判断。
 
-在 Quote / Performance / Risk 中选择 benchmark 后，图表会展示基金与 benchmark 的相对表现。benchmark 本身必须有可用行情，且双方收益语义必须明确并一致；否则只保留可验证的独立展示，不计算相对统计。
+在 Overview / Performance / Risk 中选择 benchmark 后，图表会展示基金与 benchmark 的相对表现。benchmark 本身必须有可用行情，且双方收益语义必须明确并一致；否则只保留可验证的独立展示，不计算相对统计。
 
 基金自身指标默认截至自己的最新观测日。选择 benchmark 后，比较矩阵只使用双方日期完全相同的共同观测收盘点：双方都截到最晚共同观测日，SI 从最早共同观测日开始，中间收益也按同一对起止收盘计算。少于一个完整日历年的历史不显示年化收益。若 daily 序列缺少应有交易日，端点收益仍可用，但回撤、波动率、Sharpe 等路径风险指标会显示不可用；周末和交易所休市日不会被当成缺点。
 
 ### 5.7 ETF、股票和指数详情页
 
-ETF、股票和指数使用轻量工作面，重点是 Overview、Performance、Risk、Price，不使用基金专属的 people、strategy、fee 等字段。它们可基于 Registry quote selection policy 选中的序列计算：
+ETF、股票和指数共用 Overview、Research、Performance、Risk、Price 外壳，但内容不相同：ETF 增加 Portfolio（档案、费用、行业/国家配置和持仓），股票增加 Fundamentals 与 Events，指数增加 Methodology（指数档案、成分权重和来源合同）。三类资产与基金共用投研记录能力，但研究问题按资产特征变化；它们不使用基金专属的 people 或 strategy profile。行情分析可基于 Registry quote selection policy 选中的序列计算：
 
 - `1W / 1M / 3M / 6M / MTD / YTD / 1Y` 和年化收益。
 - 最大回撤、当前回撤。
@@ -191,7 +193,7 @@ ETF、股票和指数使用轻量工作面，重点是 Overview、Performance、
 
 ### 5.8 Monitoring 和 recalc
 
-Monitoring 页面用于发现需要处理的问题，包括缺失报价、缺失标签、需要刷新、正在运行或失败的 recalc job。处理顺序：
+Monitoring 页面用于发现需要处理的问题，包括缺失报价、缺失必填研究信息、需要刷新、正在运行或失败的 recalc job。处理顺序：
 
 1. 先补 Platform 主档或行情。
 2. 再补 Watchlist taxonomy / attributes。
@@ -438,14 +440,14 @@ Research 列表默认只取 compact run summary；选择某一 run 后再加载�
 2. 不存在时按产品性质新建 `public_fund` 或 `private_fund`；Tushare 来源属于公募，邮件来源属于私募。
 3. 维护基金币种、primary identifier 和 `official_nav / total_return_nav`。
 4. 系统会自动把 active 公募或私募同步到对应的 `All 公募 / All 私募`；需要进入其他名单时再人工添加。
-5. 在基金详情页维护 taxonomy、research overview、manual rating 或 notes。
+5. 在基金详情页维护 taxonomy、Current Investment View、manual rating 和逐条 Research Record。
 6. 触发或等待 recalc。
 7. 在主表配置字段、排序和筛选，导出或保存 view。
 
 ### 7.2 新指数用于比较
 
-1. Platform 新建或确认 index instrument。
-2. 维护 close 序列。
+1. Platform 新建或确认 index instrument，并验证 FMP 是否有精确 symbol 与历史 EOD。
+2. 验证成功则固定 FMP；否则固定 Tushare。维护 close、return semantics，并在 Tushare 可用时读取 index profile 与最新成分权重。
 3. Watchlist 加入指数池，检查 Performance / Risk。
 4. Portfolio Overview、Performance、Risk 或 Research 中搜索并选择该指数作为 benchmark。
 5. 若 benchmark 没有曲线，检查 close 日期是否覆盖组合或回测区间。
@@ -454,7 +456,7 @@ Research 列表默认只取 compact run summary；选择某一 run 后再加载�
 
 1. Portfolio 进入对应组合。
 2. Accounts 确认证券账户和默认结算现金账户存在。
-3. 在 Transactions 直接搜索资产。公募、私募和指数来自 Registry；股票与 FMP ETF 直接搜索本地 FMP 目录，不要求先加入 Watchlist，首次选中时系统会核实交易所和报价币种、建立或确认 identity，并加载 EOD。
+3. 在 Transactions 直接搜索资产。公募、私募和指数来自 Registry；股票与目录覆盖的 ETF 直接搜索本地证券目录，不要求先加入 Watchlist。首次选中时系统会核实交易所和报价币种、建立或确认 identity，并按资产/市场既定主源加载数据。
 4. Transactions 新增 `buy`。
 5. 填写 account、instrument、trade date、settlement date、quantity、price、gross amount、fee、tax、currency。
 6. 保存后查看 ledger posting、Holdings 和 Overview。

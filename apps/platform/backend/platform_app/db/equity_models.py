@@ -18,7 +18,7 @@ class FmpEquityCatalog(Base):
             + ", ".join(
                 f"'{value}'"
                 for value in SUPPORTED_LISTING_EXCHANGES
-                if value != "BATS"
+                if value not in {"ARCX", "BATS"}
             )
             + ")",
             name="exchange_code_contract",

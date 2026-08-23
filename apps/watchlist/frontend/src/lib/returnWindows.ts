@@ -1,4 +1,4 @@
-import type { FundChartPoint } from './api'
+import type { InstrumentChartPoint } from './api'
 
 export const RETURN_WINDOW_POLICY_VERSION = 'return-window/v2'
 
@@ -10,7 +10,7 @@ export type ReturnWindow = {
   anchorMode: ReturnAnchorMode
   anchorDate: string
   endDate: string
-  points: FundChartPoint[]
+  points: InstrumentChartPoint[]
 }
 
 export type AlignedReturnWindows = {
@@ -71,8 +71,8 @@ export function namedReturnWindowSpec(window: ReturnWindowName, asOfDate: string
   return { start: start || '', end, anchorMode: 'on_or_before' as const }
 }
 
-function normalizedReturnPoints(points: FundChartPoint[]) {
-  const byDate = new Map<string, FundChartPoint>()
+function normalizedReturnPoints(points: InstrumentChartPoint[]) {
+  const byDate = new Map<string, InstrumentChartPoint>()
   points.forEach((point) => {
     const value = Number(point.value)
     const pointDate = point.date.slice(0, 10)
@@ -84,7 +84,7 @@ function normalizedReturnPoints(points: FundChartPoint[]) {
 }
 
 export function resolveReturnWindow(
-  points: FundChartPoint[],
+  points: InstrumentChartPoint[],
   requestedStartDate: string,
   requestedEndDate: string,
   anchorMode: ReturnAnchorMode = 'on_or_before',
@@ -129,8 +129,8 @@ export function resolveReturnWindow(
 }
 
 export function resolveAlignedReturnWindows(
-  leftPoints: FundChartPoint[],
-  rightPoints: FundChartPoint[],
+  leftPoints: InstrumentChartPoint[],
+  rightPoints: InstrumentChartPoint[],
   requestedStartDate: string | null,
   requestedEndDate: string,
   anchorMode: ReturnAnchorMode = 'on_or_before',
@@ -180,7 +180,7 @@ export function resolveAlignedReturnWindows(
   }
   const resolvedRequestedStartDate = requestedStartDate ?? anchorDate
   const buildWindow = (
-    pointsByDate: Map<string, FundChartPoint>,
+    pointsByDate: Map<string, InstrumentChartPoint>,
   ): ReturnWindow => ({
     requestedStartDate: resolvedRequestedStartDate,
     requestedEndDate,
@@ -206,7 +206,7 @@ export function normalizeCumulativeReturn(window: ReturnWindow) {
   }))
 }
 
-export function cumulativeReturnPercentToGrowthIndex100(points: FundChartPoint[]) {
+export function cumulativeReturnPercentToGrowthIndex100(points: InstrumentChartPoint[]) {
   return points.map((point) => ({
     date: point.date,
     value: 100 + point.value,
@@ -214,8 +214,8 @@ export function cumulativeReturnPercentToGrowthIndex100(points: FundChartPoint[]
 }
 
 export function commonObservationDateWindow(
-  leftPoints: FundChartPoint[],
-  rightPoints: FundChartPoint[],
+  leftPoints: InstrumentChartPoint[],
+  rightPoints: InstrumentChartPoint[],
 ) {
   const rightDates = new Set(
     normalizedReturnPoints(rightPoints).map((point) => point.date),

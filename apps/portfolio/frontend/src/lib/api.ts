@@ -982,7 +982,8 @@ export type SharedInstrumentRecord = InstrumentCore & {
 export type PlatformSecuritySearchResult = {
   instrument_type: 'equity' | 'etf'
   symbol: string
-  fmp_symbol: string
+  catalog_provider: 'fmp'
+  catalog_symbol: string
   name: string
   exchange_code: string
   exchange_label: string
@@ -997,8 +998,9 @@ export type PlatformSecuritySearchResult = {
 
 export type PlatformSecuritySearchCandidate = Omit<InstrumentCore, 'instrument_type'> & {
   instrument_type: 'equity' | 'etf'
-  fmp_symbol: string
-  source: 'fmp_catalog'
+  catalog_provider: 'fmp'
+  catalog_symbol: string
+  source: 'security_catalog'
   existing_instrument_id: string | null
   currency_verified: boolean
 }
@@ -3431,7 +3433,7 @@ export async function searchPlatformSecurityCatalog(query: string, limit = 12) {
   return {
     results: payload.results.map<PlatformSecuritySearchCandidate>((item) => ({
       instrument_id:
-        item.existing_instrument_id || `fmp:${item.instrument_type}:${item.fmp_symbol}`,
+        item.existing_instrument_id || `${item.catalog_provider}:${item.instrument_type}:${item.catalog_symbol}`,
       instrument_name: item.name,
       instrument_type: item.instrument_type,
       currency: item.currency,
@@ -3444,8 +3446,9 @@ export async function searchPlatformSecurityCatalog(query: string, limit = 12) {
         },
       ],
       broker_identifiers: [],
-      fmp_symbol: item.fmp_symbol,
-      source: 'fmp_catalog',
+      catalog_provider: item.catalog_provider,
+      catalog_symbol: item.catalog_symbol,
+      source: 'security_catalog',
       existing_instrument_id: item.existing_instrument_id,
       currency_verified: item.currency_verified,
     })),
@@ -3455,13 +3458,15 @@ export async function searchPlatformSecurityCatalog(query: string, limit = 12) {
 
 export function materializePlatformSecurity(
   instrumentType: 'equity' | 'etf',
-  fmpSymbol: string,
+  catalogProvider: 'fmp',
+  catalogSymbol: string,
 ) {
   return fetchJson<SharedInstrumentRecord>(PLATFORM_API_URL, '/api/securities/materialize', {
     method: 'POST',
     body: JSON.stringify({
       instrument_type: instrumentType,
-      fmp_symbol: fmpSymbol,
+      catalog_provider: catalogProvider,
+      catalog_symbol: catalogSymbol,
       refresh_eod: true,
     }),
   })

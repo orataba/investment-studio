@@ -20,7 +20,6 @@ class SQLAlchemyInstrumentManualProfileRepository:
         strategy_payload_json: dict[str, object] | None = None,
         price_payload_json: dict[str, object] | None = None,
         documents_payload_json: dict[str, object] | None = None,
-        research_payload_json: dict[str, object] | None = None,
         nav_settings_json: dict[str, object] | None = None,
         updated_by: str | None = None,
     ) -> InstrumentManualProfile:
@@ -33,7 +32,6 @@ class SQLAlchemyInstrumentManualProfileRepository:
                 strategy_payload_json=strategy_payload_json or {},
                 price_payload_json=price_payload_json or {},
                 documents_payload_json=documents_payload_json or {},
-                research_payload_json=research_payload_json or {},
                 nav_settings_json=nav_settings_json or {},
                 updated_at=now,
                 updated_by=updated_by,
@@ -50,8 +48,6 @@ class SQLAlchemyInstrumentManualProfileRepository:
             record.price_payload_json = price_payload_json
         if documents_payload_json is not None:
             record.documents_payload_json = documents_payload_json
-        if research_payload_json is not None:
-            record.research_payload_json = research_payload_json
         if nav_settings_json is not None:
             record.nav_settings_json = nav_settings_json
         record.updated_at = now

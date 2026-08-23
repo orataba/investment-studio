@@ -111,15 +111,23 @@ facts 路由已经统一到 instrument 主语：
 
 ### 4.4 Manual Profiles
 
-详情页里那些“可编辑但不是 canonical fact”的内容，走 manual profiles：
+详情页里那些“可编辑但不是 canonical fact”的运营资料，走 manual profiles：
 
 - `people`
 - `strategy`
 - `price`
 - `documents`
-- `research`
 
 这些内容服务于 detail overlay，不等价于原始事实。
+
+投资研究已经成为独立领域：
+
+- `instrument_research_profile` 保存当前投资论点、风险/反证、人物分析、组合角色、复核日期与人工 rating；
+- `instrument_research_note` 逐条保存证据、访谈、事件、决策与复盘，并记录作者、来源、人物、跟进日期和审计时间；
+- `GET / PUT /api/instruments/{instrument_id}/research` 读取或更新当前判断；
+- `POST / PUT / DELETE /api/instruments/{instrument_id}/research/notes[...]` 操作单条研究记录。
+
+研究记录不再经过 `instrument_manual_profile`，也没有 JSON 双写或旧接口兼容层。
 
 ### 4.5 Read Models
 
@@ -163,11 +171,11 @@ attribute domain 只分三层：
 
 field registry 对应的 category 现在是：
 
-- `product_taxonomy`
+- `instrument_taxonomy`
 - `research_framework`
 - `monitoring_assessment`
 
-这保证了 watchlist 的列选择、filter、group by 都能直接围绕产品框架工作。
+这保证了 watchlist 的列选择和 filter 能按当前名单全部资产都适用的字段工作；`Group By` 只使用结构化分类与工作流字段，不暴露基金专属定性判断。
 
 ### 5.3 Monitoring 缺失项检查
 
@@ -228,17 +236,12 @@ Monitoring 页面不再硬编码一张“所有资产或所有基金必填 tags�
 - `GET /api/instruments/{instrument_id}/research`
 - `PUT /api/instruments/{instrument_id}/research`
 - `GET /api/instruments/{instrument_id}/nav-series`
-- `PUT /api/instruments/{instrument_id}/nav-series`
 - `GET /api/instruments/{instrument_id}/nav-settings`
 - `PUT /api/instruments/{instrument_id}/nav-settings`
-- `POST /api/instruments/{instrument_id}/nav-refresh`
-- `POST /api/instruments/manual`
 
 注意：
 
-- `POST /api/instruments/manual` 已废弃，固定返回 `410`
-- `PUT /api/instruments/{instrument_id}/nav-series` 固定返回 `409`
-- `POST /api/instruments/{instrument_id}/nav-refresh` 固定返回 `409`
+- Watchlist 不提供 instrument 创建、canonical NAV 写入或行情刷新接口；这些操作只属于 Database Dashboard
 
 也就是说，watchlist detail 里 canonical quote/NAV history 是只读视图；派生 payload 需要保留实际 `metric_family / quote_basis / role`，避免场内 ETF 或指数的 `close` 被误标成 NAV。
 
@@ -287,7 +290,7 @@ Monitoring 页面不再硬编码一张“所有资产或所有基金必填 tags�
 - `overview`
 - `watchlists`
 - `needs_attention_instruments`
-- `missing_label_instruments`
+- `missing_required_metadata_instruments`
 - `open_recalc_jobs`
 
 ### 6.10 Recalc

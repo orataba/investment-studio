@@ -89,9 +89,10 @@ systemd state. It snapshots the previous unit files, enablement, and active set,
 including the market-data refresh service/timer. Before migration it stops every
 database writer and creates a verified backup of the four project schemas with
 the shared archive/manifest/checksum primitive, then runs
-`infra/scripts/migrate_all.sh`. After migration it rebuilds only Portfolio
-snapshots whose calculation version or source lineage is stale, then runs the
-read-only live-data audit. The backup covers `instrument_registry`,
+`infra/scripts/migrate_all.sh`. After migration it refreshes the FMP stock and
+ETF search catalogs required by the current exchange contract, rebuilds only
+Portfolio snapshots whose calculation version or source lineage is stale, then
+runs the read-only live-data audit. The backup covers `instrument_registry`,
 `platform`, `portfolio`, and `watchlist`; migration order is dependency-aware so
 Platform raw-evidence storage exists before destructive Registry NAV cleanup.
 

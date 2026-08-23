@@ -61,8 +61,9 @@ describe('Watchlist instrument search', () => {
       results: [
         {
           ...registryEquity,
-          fmp_symbol: 'AAPL',
-          source: 'fmp_catalog',
+          catalog_provider: 'fmp',
+          catalog_symbol: 'AAPL',
+          source: 'security_catalog',
           existing_instrument_id: 'equity-aapl',
         },
       ],
@@ -81,8 +82,9 @@ describe('Watchlist instrument search', () => {
       results: [
         {
           ...instrument('fmp:etf:MAGS', 'etf'),
-          fmp_symbol: 'MAGS',
-          source: 'fmp_catalog',
+          catalog_provider: 'fmp',
+          catalog_symbol: 'MAGS',
+          source: 'security_catalog',
           existing_instrument_id: null,
         },
       ],

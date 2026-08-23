@@ -67,7 +67,8 @@ def _search_record(
     return {
         "instrument_type": "equity",
         "symbol": exchange_ticker,
-        "fmp_symbol": symbol,
+        "catalog_provider": "fmp",
+        "catalog_symbol": symbol,
         "name": str(catalog_record["company_name"]),
         "exchange_code": exchange.exchange_code,
         "exchange_label": exchange.label,

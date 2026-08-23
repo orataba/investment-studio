@@ -48,7 +48,6 @@ from watchlist_app.services.read_models import (
     collapse_latest_attribute_values,
 )
 from watchlist_app.services.instrument_resolution import (
-    LOCAL_DETAIL_INSTRUMENT_TYPES,
     local_detail_view_type,
     resolve_watchlist_instrument,
     sync_local_instrument,
@@ -461,7 +460,7 @@ def _materialize_watchlist_rows(
         display_name = (
             instrument.instrument_name
             if instrument is not None
-            else summary_payload.get("fund_name")
+            else summary_payload.get("instrument_name")
             or (
                 str(instrument.get("instrument_name") or canonical_instrument_id)
                 if isinstance(instrument, dict)
@@ -758,7 +757,7 @@ def get_watchlist(
         str(row.instrument_type or "").strip().lower()
         for row in watchlist_rows
         if str(row.instrument_type or "").strip()
-    } or set(LOCAL_DETAIL_INSTRUMENT_TYPES)
+    }
     scoped_fields = [
         field
         for field in fields
@@ -770,8 +769,12 @@ def get_watchlist(
     ]
     return {
         **present_watchlist(record),
+        "instrument_types": sorted(active_instrument_types),
         "views": [present_watchlist_view(item) for item in watchlist_repository.list_views(session, watchlist_id)],
-        "available_group_bys": present_group_by_options(fields),
+        "available_group_bys": present_group_by_options(
+            scoped_fields,
+            include_instrument_type=len(active_instrument_types) > 1,
+        ),
         "default_filters_summary": present_default_filter_summary(scoped_fields),
     }
 

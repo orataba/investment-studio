@@ -183,8 +183,9 @@ const fmpEquityCandidate = {
     },
   ],
   broker_identifiers: [],
-  fmp_symbol: 'AAPL',
-  source: 'fmp_catalog' as const,
+  catalog_provider: 'fmp' as const,
+  catalog_symbol: 'AAPL',
+  source: 'security_catalog' as const,
   existing_instrument_id: null,
 }
 
@@ -221,8 +222,9 @@ const fmpEtfCandidate = {
     },
   ],
   broker_identifiers: [],
-  fmp_symbol: 'MAGS',
-  source: 'fmp_catalog' as const,
+  catalog_provider: 'fmp' as const,
+  catalog_symbol: 'MAGS',
+  source: 'security_catalog' as const,
   existing_instrument_id: null,
 }
 
@@ -631,7 +633,7 @@ describe('Transactions rendered page contract', () => {
     )
 
     await waitFor(() =>
-      expect(apiMocks.materializePlatformSecurity).toHaveBeenCalledWith('equity', 'AAPL'),
+      expect(apiMocks.materializePlatformSecurity).toHaveBeenCalledWith('equity', 'fmp', 'AAPL'),
     )
     expect(apiMocks.getPortfolioInstruments).toHaveBeenCalledTimes(2)
   })
@@ -677,7 +679,7 @@ describe('Transactions rendered page contract', () => {
     )
 
     await waitFor(() =>
-      expect(apiMocks.materializePlatformSecurity).toHaveBeenCalledWith('etf', 'MAGS'),
+      expect(apiMocks.materializePlatformSecurity).toHaveBeenCalledWith('etf', 'fmp', 'MAGS'),
     )
     expect(apiMocks.getPortfolioInstruments).toHaveBeenCalledTimes(2)
   })

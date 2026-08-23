@@ -30,10 +30,10 @@ from portfolio_ops_instrument_core import (  # noqa: E402
 
 
 FINAL_FLAT_TABLE_HEADS = {
-    "instrument_registry": "20260822_0026",
-    "platform": "20260822_0006",
+    "instrument_registry": "20260823_0028",
+    "platform": "20260823_0007",
     "portfolio": "20260822_0055",
-    "watchlist": "20260822_0043",
+    "watchlist": "20260824_0049",
 }
 VERSION_TABLES = {
     "instrument_registry": "alembic_version",
@@ -692,7 +692,7 @@ def _run_flat_table_audit(database_url: str) -> list[AuditCheck]:
                                 instrument.instrument_type = 'etf'
                                 AND (
                                     instrument.exchange_code NOT IN (
-                                        'XNAS', 'XNYS', 'XASE', 'BATS',
+                                        'XNAS', 'XNYS', 'XASE', 'ARCX', 'BATS',
                                         'XHKG', 'XSHG', 'XSHE',
                                         'XLON', 'XETR', 'XPAR', 'XAMS', 'XMIL', 'XSWX'
                                     )
@@ -718,7 +718,7 @@ def _run_flat_table_audit(database_url: str) -> list[AuditCheck]:
                                                 instrument.source_settings_json ->> 'market_calendar',
                                                 ''
                                             ) NOT IN (
-                                                'XNAS', 'XNYS', 'XASE', 'BATS',
+                                                'XNAS', 'XNYS', 'XASE', 'ARCX', 'BATS',
                                                 'XHKG', 'XSHG', 'XSHE',
                                                 'XLON', 'XETR', 'XPAR', 'XAMS',
                                                 'XMIL', 'XSWX'
@@ -761,7 +761,7 @@ def _run_flat_table_audit(database_url: str) -> list[AuditCheck]:
                     query="""
                         WITH required_exchange(exchange_code) AS (
                             VALUES
-                                ('XNAS'), ('XNYS'), ('XASE'), ('BATS'),
+                                ('XNAS'), ('XNYS'), ('BATS'),
                                 ('XHKG'), ('XSHG'), ('XSHE'),
                                 ('XLON'), ('XETR'), ('XPAR'), ('XAMS'),
                                 ('XMIL'), ('XSWX')
@@ -776,6 +776,14 @@ def _run_flat_table_audit(database_url: str) -> list[AuditCheck]:
                                     WHERE catalog.exchange_code = required.exchange_code
                                 )
                             )
+                            + CASE
+                                WHEN NOT EXISTS (
+                                    SELECT 1
+                                    FROM platform.fmp_etf_catalog catalog
+                                    WHERE catalog.exchange_code IN ('XASE', 'ARCX')
+                                ) THEN 1
+                                ELSE 0
+                              END
                             + (
                                 SELECT count(*)
                                 FROM platform.fmp_etf_catalog catalog
@@ -783,7 +791,7 @@ def _run_flat_table_audit(database_url: str) -> list[AuditCheck]:
                                    OR trim(catalog.exchange_ticker) = ''
                                    OR trim(catalog.company_name) = ''
                                    OR catalog.exchange_code NOT IN (
-                                        'XNAS', 'XNYS', 'XASE', 'BATS',
+                                        'XNAS', 'XNYS', 'XASE', 'ARCX', 'BATS',
                                         'XHKG', 'XSHG', 'XSHE',
                                         'XLON', 'XETR', 'XPAR', 'XAMS',
                                         'XMIL', 'XSWX'
@@ -792,7 +800,8 @@ def _run_flat_table_audit(database_url: str) -> list[AuditCheck]:
                     """,
                     detail=(
                         "The local FMP ETF search catalog must cover all thirteen "
-                        "supported listing exchanges with complete identities."
+                        "supported FMP query exchanges with complete canonical "
+                        "listing identities."
                     ),
                 )
             )
@@ -942,6 +951,7 @@ def _run_flat_table_audit(database_url: str) -> list[AuditCheck]:
                                     'fund-public', 'fund-private', 'equity', 'index'
                                   )
                                OR node.node_id LIKE 'equity-sector-%'
+                               OR node.node_id LIKE 'equity-exchange-%'
                         ), invalid_assignments AS (
                             SELECT detail.instrument_id
                             FROM watchlist.instrument_detail detail
@@ -962,25 +972,28 @@ def _run_flat_table_audit(database_url: str) -> list[AuditCheck]:
                                     AND (
                                         coalesce(detail.metadata_json ->> 'exchange_code', '')
                                             NOT IN (
-                                                'XNAS', 'XNYS', 'XASE',
+                                                'XNAS', 'XNYS', 'XASE', 'ARCX', 'BATS',
                                                 'XHKG', 'XSHG', 'XSHE',
                                                 'XLON', 'XETR', 'XPAR', 'XAMS',
                                                 'XMIL', 'XSWX'
                                             )
-                                        OR assignment.node_id IS DISTINCT FROM CASE
+                                        OR node.is_leaf IS DISTINCT FROM true
+                                        OR node.path_node_ids_json ->> 0 IS DISTINCT FROM CASE
                                             detail.metadata_json ->> 'exchange_code'
-                                            WHEN 'XNAS' THEN 'equity-exchange-xnas'
-                                            WHEN 'XNYS' THEN 'equity-exchange-xnys'
-                                            WHEN 'XASE' THEN 'equity-exchange-xase'
-                                            WHEN 'XHKG' THEN 'equity-exchange-xhkg'
-                                            WHEN 'XSHG' THEN 'equity-exchange-xshg'
-                                            WHEN 'XSHE' THEN 'equity-exchange-xshe'
-                                            WHEN 'XLON' THEN 'equity-exchange-xlon'
-                                            WHEN 'XETR' THEN 'equity-exchange-xetr'
-                                            WHEN 'XPAR' THEN 'equity-exchange-xpar'
-                                            WHEN 'XAMS' THEN 'equity-exchange-xams'
-                                            WHEN 'XMIL' THEN 'equity-exchange-xmil'
-                                            WHEN 'XSWX' THEN 'equity-exchange-xswx'
+                                            WHEN 'XNAS' THEN 'equity-market-us'
+                                            WHEN 'XNYS' THEN 'equity-market-us'
+                                            WHEN 'XASE' THEN 'equity-market-us'
+                                            WHEN 'ARCX' THEN 'equity-market-us'
+                                            WHEN 'BATS' THEN 'equity-market-us'
+                                            WHEN 'XHKG' THEN 'equity-market-hk'
+                                            WHEN 'XSHG' THEN 'equity-market-cn-a'
+                                            WHEN 'XSHE' THEN 'equity-market-cn-a'
+                                            WHEN 'XLON' THEN 'equity-market-eu'
+                                            WHEN 'XETR' THEN 'equity-market-eu'
+                                            WHEN 'XPAR' THEN 'equity-market-eu'
+                                            WHEN 'XAMS' THEN 'equity-market-eu'
+                                            WHEN 'XMIL' THEN 'equity-market-eu'
+                                            WHEN 'XSWX' THEN 'equity-market-eu'
                                             ELSE NULL
                                         END
                                     )
@@ -992,7 +1005,8 @@ def _run_flat_table_audit(database_url: str) -> list[AuditCheck]:
                     """,
                     detail=(
                         "Watchlist taxonomy remains Watchlist-local and type-specific; "
-                        "stock taxonomy must match the Registry exchange identity."
+                        "the equity taxonomy market branch must match the Registry "
+                        "exchange identity."
                     ),
                 )
             )

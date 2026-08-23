@@ -44,10 +44,10 @@ def test_flat_table_profile_accepts_only_final_heads(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     expected_heads = {
-        "instrument_registry": "20260822_0026",
-        "platform": "20260822_0006",
+        "instrument_registry": "20260823_0028",
+        "platform": "20260823_0007",
         "portfolio": "20260822_0055",
-        "watchlist": "20260822_0043",
+        "watchlist": "20260824_0049",
     }
     monkeypatch.setattr(
         audit_module,
@@ -382,6 +382,30 @@ def test_twr_audit_cte_projects_daily_twr(
     assert "instrument_class" in saved_view_query
     assert "field.filter_mode" in saved_view_query
     assert "field.sort_mode" in saved_view_query
+    taxonomy_type_query = next(
+        query for query in queries if "invalid_nodes AS" in query
+    )
+    assert "node.path_node_ids_json ->> 0" in taxonomy_type_query
+    assert "WHEN 'XNAS' THEN 'equity-market-us'" in taxonomy_type_query
+    assert "WHEN 'XHKG' THEN 'equity-market-hk'" in taxonomy_type_query
+    assert "WHEN 'XSHG' THEN 'equity-market-cn-a'" in taxonomy_type_query
+    assert "WHEN 'XLON' THEN 'equity-market-eu'" in taxonomy_type_query
+    assert "equity-exchange-xnas" not in taxonomy_type_query
+    listed_identity_query = next(
+        query
+        for query in queries
+        if "instrument.instrument_type = 'etf'" in query
+        and "identifier.identifier_type = 'provider_symbol'" in query
+    )
+    assert "'XASE', 'ARCX', 'BATS'" in listed_identity_query
+    etf_catalog_query = next(
+        query
+        for query in queries
+        if "platform.fmp_etf_catalog catalog" in query
+        and "required_exchange" in query
+    )
+    assert "catalog.exchange_code IN ('XASE', 'ARCX')" in etf_catalog_query
+    assert "'XASE', 'ARCX', 'BATS'" in etf_catalog_query
     missing_selection_query = next(
         query
         for query in queries

@@ -16,6 +16,7 @@ from platform_app.api.contracts import (
     PlatformFundNavReinvestmentEvidenceRevisionRequest,
     PlatformInstrumentCreateRequest,
     PlatformInstrumentDetail,
+    PlatformInstrumentReferenceData,
     PlatformLifecycleTransitionRequest,
     PlatformInstrumentRecord,
     PlatformInstrumentsResponse,
@@ -64,6 +65,7 @@ from platform_app.services.instrument_store import (
     upsert_quote_selection_policy,
     upsert_source_settings,
 )
+from platform_app.services.instrument_reference import get_instrument_reference_data
 from platform_app.services.downstream_notifications import queue_market_data_downstream_refresh
 
 
@@ -211,6 +213,22 @@ def get_instrument_record(instrument_id: str) -> PlatformInstrumentDetail:
     if record is None:
         raise HTTPException(status_code=404, detail="Instrument not found")
     return PlatformInstrumentDetail.model_validate(record)
+
+
+@router.get(
+    "/{instrument_id}/reference-data",
+    response_model=PlatformInstrumentReferenceData,
+)
+def get_instrument_reference_data_record(
+    instrument_id: str,
+) -> PlatformInstrumentReferenceData:
+    try:
+        record = get_instrument_reference_data(instrument_id)
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+    if record is None:
+        raise HTTPException(status_code=404, detail="Instrument not found")
+    return PlatformInstrumentReferenceData.model_validate(record)
 
 
 @router.get(

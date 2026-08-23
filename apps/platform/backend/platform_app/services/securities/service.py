@@ -16,7 +16,7 @@ from platform_app.services.etfs import (
     search_etfs,
     sync_etf_catalog,
 )
-from platform_app.services.fmp import FmpClient
+from platform_app.services.fmp import FmpClient, refresh_fmp_eod
 from platform_app.services.instrument_store import get_instrument
 
 
@@ -26,11 +26,11 @@ MaterializableSecurityType = Literal["equity", "etf"]
 def _search_rank(item: dict[str, object], query: str) -> tuple[object, ...]:
     normalized = query.casefold()
     symbol = str(item.get("symbol") or "").casefold()
-    fmp_symbol = str(item.get("fmp_symbol") or "").casefold()
+    catalog_symbol = str(item.get("catalog_symbol") or "").casefold()
     name = str(item.get("name") or "").casefold()
     return (
-        0 if normalized in {symbol, fmp_symbol} else 1,
-        0 if symbol.startswith(normalized) or fmp_symbol.startswith(normalized) else 1,
+        0 if normalized in {symbol, catalog_symbol} else 1,
+        0 if symbol.startswith(normalized) or catalog_symbol.startswith(normalized) else 1,
         0 if normalized in name else 1,
         name,
         str(item.get("instrument_type") or ""),
@@ -64,19 +64,22 @@ def search_securities(
 
 def materialize_security(
     instrument_type: MaterializableSecurityType,
-    fmp_symbol: str,
+    catalog_provider: str,
+    catalog_symbol: str,
     *,
     refresh_eod: bool = True,
     client: FmpClient | None = None,
 ) -> dict[str, object]:
+    if catalog_provider != "fmp":
+        raise ValueError(f"Unsupported security catalog provider: {catalog_provider}")
     if instrument_type == "equity":
         return materialize_equity(
-            fmp_symbol,
+            catalog_symbol,
             refresh_eod=refresh_eod,
             client=client,
         )
     return materialize_etf(
-        fmp_symbol,
+        catalog_symbol,
         refresh_eod=refresh_eod,
         client=client,
     )
@@ -104,7 +107,31 @@ def refresh_security_eod(
             full_history=full_history,
             client=client,
         )
-    raise ValueError("FMP security refresh only supports equity and ETF instruments.")
+    if instrument_type == "index":
+        source_profile = str(
+            dict(instrument.get("source_settings") or {}).get("source_api_profile") or ""
+        ).strip().lower()
+        if source_profile == "fmp":
+            return refresh_fmp_eod(
+                instrument_id,
+                instrument_type="index",
+                full_history=full_history,
+                client=client,
+            )
+        if source_profile in {"tushare", "tushare_pro", "tushare-pro"}:
+            from platform_app.services.market_data_ops import refresh_market_data
+
+            refreshed = refresh_market_data(
+                instrument_id=instrument_id,
+                updated_by="tushare_index_sync",
+                full_history=full_history,
+                source="tushare",
+            )
+            if refreshed is None:
+                raise RuntimeError(f"Registry index disappeared during refresh: {instrument_id}")
+            return refreshed
+        raise ValueError(f"Index {instrument_id} has no supported primary API source.")
+    raise ValueError("Security refresh only supports equity, ETF, and index instruments.")
 
 
 def sync_security_catalogs(*, client: FmpClient | None = None) -> dict[str, object]:

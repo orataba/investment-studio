@@ -21,43 +21,49 @@ INSTRUMENT_TAXONOMY_DERIVED_KEYS = {
 _PUBLIC_FUND_TAXONOMY = [
     {
         "node_id": "fund-public-equity",
-        "label": "股票型",
+        "label": "权益基金",
         "children": [
-            {"node_id": "fund-public-equity-standard", "label": "标准股票型"},
-            {"node_id": "fund-public-equity-indexed", "label": "指数股票型"},
+            {"node_id": "fund-public-equity-active", "label": "主动权益"},
+            {"node_id": "fund-public-equity-index", "label": "指数权益"},
+            {"node_id": "fund-public-equity-sector", "label": "行业权益"},
+            {"node_id": "fund-public-equity-theme", "label": "主题权益"},
+            {"node_id": "fund-public-equity-long-short", "label": "权益多空"},
         ],
     },
     {
-        "node_id": "fund-public-hybrid",
-        "label": "混合型",
+        "node_id": "fund-public-fixed-income",
+        "label": "固定收益基金",
         "children": [
-            {"node_id": "fund-public-hybrid-equity-biased", "label": "偏股型"},
-            {"node_id": "fund-public-hybrid-flexible", "label": "灵活配置型"},
-            {"node_id": "fund-public-hybrid-balanced", "label": "股债平衡型"},
-            {"node_id": "fund-public-hybrid-bond-biased", "label": "偏债型"},
-            {"node_id": "fund-public-hybrid-strategy", "label": "策略型"},
+            {"node_id": "fund-public-fixed-income-government", "label": "政府债"},
+            {"node_id": "fund-public-fixed-income-investment-grade", "label": "投资级信用"},
+            {"node_id": "fund-public-fixed-income-high-yield", "label": "高收益债"},
+            {"node_id": "fund-public-fixed-income-aggregate", "label": "综合债券"},
+            {"node_id": "fund-public-fixed-income-short-duration", "label": "短久期"},
+            {"node_id": "fund-public-fixed-income-convertible", "label": "可转债"},
+            {"node_id": "fund-public-fixed-income-index", "label": "债券指数"},
         ],
     },
     {
-        "node_id": "fund-public-bond",
-        "label": "债券型",
+        "node_id": "fund-public-allocation",
+        "label": "配置基金",
         "children": [
-            {"node_id": "fund-public-bond-pure", "label": "纯债型"},
-            {"node_id": "fund-public-bond-ordinary", "label": "普通债券型"},
-            {"node_id": "fund-public-bond-convertible", "label": "可转债型"},
-            {"node_id": "fund-public-bond-indexed", "label": "指数债券型"},
-            {"node_id": "fund-public-bond-cd", "label": "同业存单型"},
+            {"node_id": "fund-public-allocation-equity-biased", "label": "偏股配置"},
+            {"node_id": "fund-public-allocation-balanced", "label": "均衡配置"},
+            {"node_id": "fund-public-allocation-bond-biased", "label": "偏债配置"},
+            {"node_id": "fund-public-allocation-flexible", "label": "灵活配置"},
+            {"node_id": "fund-public-allocation-target", "label": "目标日期 / 目标风险"},
         ],
     },
     {
-        "node_id": "fund-public-qdii",
-        "label": "QDII",
+        "node_id": "fund-public-alternative",
+        "label": "另类策略基金",
         "children": [
-            {"node_id": "fund-public-qdii-reit", "label": "QDII房地产信托"},
-            {"node_id": "fund-public-qdii-equity", "label": "QDII股票型"},
-            {"node_id": "fund-public-qdii-hybrid", "label": "QDII混合型"},
-            {"node_id": "fund-public-qdii-commodity", "label": "QDII商品型"},
-            {"node_id": "fund-public-qdii-bond", "label": "QDII债券型"},
+            {"node_id": "fund-public-alternative-market-neutral", "label": "市场中性"},
+            {"node_id": "fund-public-alternative-managed-futures", "label": "管理期货"},
+            {"node_id": "fund-public-alternative-macro", "label": "宏观策略"},
+            {"node_id": "fund-public-alternative-event-driven", "label": "事件驱动"},
+            {"node_id": "fund-public-alternative-relative-value", "label": "相对价值"},
+            {"node_id": "fund-public-alternative-multi-strategy", "label": "另类多策略"},
         ],
     },
     {
@@ -65,18 +71,26 @@ _PUBLIC_FUND_TAXONOMY = [
         "label": "商品型",
         "children": [
             {"node_id": "fund-public-commodity-precious-metals", "label": "贵金属基金"},
-            {"node_id": "fund-public-commodity-other", "label": "其他商品基金"},
+            {"node_id": "fund-public-commodity-broad", "label": "综合 / 其他商品"},
         ],
     },
-    {"node_id": "fund-public-reits", "label": "REITS"},
+    {
+        "node_id": "fund-public-real-assets",
+        "label": "实物资产基金",
+        "children": [
+            {"node_id": "fund-public-real-assets-real-estate", "label": "房地产 / REITs"},
+            {"node_id": "fund-public-real-assets-infrastructure", "label": "基础设施"},
+        ],
+    },
+    {"node_id": "fund-public-money-market", "label": "货币市场"},
     {
         "node_id": "fund-public-fof",
-        "label": "FOF",
+        "label": "基金中基金",
         "children": [
-            {"node_id": "fund-public-fof-equity", "label": "股票型FOF"},
-            {"node_id": "fund-public-fof-bond", "label": "债券型FOF"},
-            {"node_id": "fund-public-fof-hybrid", "label": "混合型FOF"},
-            {"node_id": "fund-public-fof-pension", "label": "养老目标FOF"},
+            {"node_id": "fund-public-fof-equity", "label": "权益 FOF"},
+            {"node_id": "fund-public-fof-fixed-income", "label": "固定收益 FOF"},
+            {"node_id": "fund-public-fof-allocation", "label": "配置 FOF"},
+            {"node_id": "fund-public-fof-alternative", "label": "另类 FOF"},
         ],
     },
     {"node_id": "fund-public-other", "label": "其他"},
@@ -91,33 +105,18 @@ _PRIVATE_FUND_TAXONOMY = [
             {
                 "node_id": "fund-private-equity-discretionary-long",
                 "label": "主观多头",
-                "children": [
-                    {
-                        "node_id": "fund-private-equity-discretionary-stock-picking",
-                        "label": "主观选股",
-                    },
-                    {
-                        "node_id": "fund-private-equity-discretionary-private-placement",
-                        "label": "定增打新",
-                    },
-                ],
             },
             {
                 "node_id": "fund-private-equity-quant-long",
                 "label": "量化多头",
                 "children": [
-                    {"node_id": "fund-private-equity-quant-long-300", "label": "300指增"},
-                    {"node_id": "fund-private-equity-quant-long-500", "label": "500指增"},
-                    {"node_id": "fund-private-equity-quant-long-1000", "label": "1000指增"},
-                    {"node_id": "fund-private-equity-quant-long-2000", "label": "2000指增"},
-                    {"node_id": "fund-private-equity-quant-long-dividend", "label": "红利指增"},
                     {
-                        "node_id": "fund-private-equity-quant-long-stock-selection",
-                        "label": "量化选股",
+                        "node_id": "fund-private-equity-quant-index-enhanced",
+                        "label": "指数增强",
                     },
                     {
-                        "node_id": "fund-private-equity-quant-long-other-enhanced",
-                        "label": "其他指增",
+                        "node_id": "fund-private-equity-quant-stock-selection",
+                        "label": "量化选股",
                     },
                 ],
             },
@@ -126,68 +125,51 @@ _PRIVATE_FUND_TAXONOMY = [
         ],
     },
     {
-        "node_id": "fund-private-bond",
-        "label": "债券策略",
+        "node_id": "fund-private-credit",
+        "label": "信用策略",
         "children": [
-            {"node_id": "fund-private-bond-pure", "label": "纯债策略"},
-            {"node_id": "fund-private-bond-enhanced", "label": "债券增强"},
-            {"node_id": "fund-private-bond-composite", "label": "债券复合"},
-            {"node_id": "fund-private-bond-convertible-trading", "label": "转债交易"},
+            {"node_id": "fund-private-credit-long-only", "label": "信用多头"},
+            {"node_id": "fund-private-credit-long-short", "label": "信用多空"},
+            {"node_id": "fund-private-credit-distressed", "label": "困境债 / 特殊机会"},
+            {"node_id": "fund-private-credit-structured", "label": "结构化信用"},
         ],
     },
     {
-        "node_id": "fund-private-futures-derivatives",
-        "label": "期货及衍生品策略",
+        "node_id": "fund-private-macro",
+        "label": "宏观策略",
         "children": [
-            {
-                "node_id": "fund-private-futures-derivatives-cta-discretionary",
-                "label": "主观CTA",
-                "children": [
-                    {
-                        "node_id": "fund-private-futures-derivatives-cta-discretionary-trend",
-                        "label": "主观趋势",
-                    },
-                    {
-                        "node_id": "fund-private-futures-derivatives-cta-discretionary-arbitrage",
-                        "label": "主观套利",
-                    },
-                    {
-                        "node_id": "fund-private-futures-derivatives-cta-discretionary-multi",
-                        "label": "主观多策略",
-                    },
-                ],
-            },
-            {
-                "node_id": "fund-private-futures-derivatives-cta-quant",
-                "label": "量化CTA",
-                "children": [
-                    {
-                        "node_id": "fund-private-futures-derivatives-cta-quant-trend",
-                        "label": "量化趋势",
-                    },
-                    {
-                        "node_id": "fund-private-futures-derivatives-cta-quant-arbitrage",
-                        "label": "量化套利",
-                    },
-                    {
-                        "node_id": "fund-private-futures-derivatives-cta-quant-multi",
-                        "label": "量化多策略",
-                    },
-                ],
-            },
-            {"node_id": "fund-private-futures-derivatives-options", "label": "期权策略"},
-            {"node_id": "fund-private-futures-derivatives-other", "label": "其他衍生品策略"},
+            {"node_id": "fund-private-macro-discretionary", "label": "主观宏观"},
+            {"node_id": "fund-private-macro-systematic", "label": "系统化宏观"},
         ],
     },
     {
-        "node_id": "fund-private-multi-asset",
-        "label": "多资产策略",
+        "node_id": "fund-private-managed-futures",
+        "label": "管理期货",
         "children": [
-            {"node_id": "fund-private-multi-asset-macro", "label": "宏观策略"},
-            {"node_id": "fund-private-multi-asset-arbitrage", "label": "套利策略"},
-            {"node_id": "fund-private-multi-asset-composite", "label": "复合策略"},
+            {"node_id": "fund-private-managed-futures-trend", "label": "趋势跟踪"},
+            {"node_id": "fund-private-managed-futures-relative-value", "label": "期货相对价值"},
+            {"node_id": "fund-private-managed-futures-multi", "label": "CTA 多策略"},
         ],
     },
+    {
+        "node_id": "fund-private-event-driven",
+        "label": "事件驱动",
+        "children": [
+            {"node_id": "fund-private-event-driven-merger-arbitrage", "label": "并购套利"},
+            {"node_id": "fund-private-event-driven-special-situations", "label": "特殊事件"},
+        ],
+    },
+    {
+        "node_id": "fund-private-relative-value",
+        "label": "相对价值",
+        "children": [
+            {"node_id": "fund-private-relative-value-fixed-income", "label": "固定收益相对价值"},
+            {"node_id": "fund-private-relative-value-convertible", "label": "可转债套利"},
+            {"node_id": "fund-private-relative-value-volatility", "label": "波动率 / 期权"},
+            {"node_id": "fund-private-relative-value-multi-asset", "label": "跨资产相对价值"},
+        ],
+    },
+    {"node_id": "fund-private-multi-strategy", "label": "多策略"},
     {
         "node_id": "fund-private-fund-of-funds",
         "label": "组合基金",
@@ -198,6 +180,42 @@ _PRIVATE_FUND_TAXONOMY = [
     },
     {"node_id": "fund-private-other", "label": "其他"},
 ]
+
+
+_EQUITY_SECTORS = (
+    ("energy", "能源"),
+    ("materials", "原材料"),
+    ("industrials", "工业"),
+    ("consumer-discretionary", "可选消费"),
+    ("consumer-staples", "日常消费"),
+    ("health-care", "医疗保健"),
+    ("financials", "金融"),
+    ("information-technology", "信息技术"),
+    ("communication-services", "通信服务"),
+    ("utilities", "公用事业"),
+    ("real-estate", "房地产"),
+)
+
+
+def _equity_market_branch(market_code: str, label: str) -> dict[str, Any]:
+    return {
+        "node_id": f"equity-market-{market_code}",
+        "label": label,
+        "instrument_type": "equity",
+        "children": [
+            *[
+                {
+                    "node_id": f"equity-{market_code}-{sector_code}",
+                    "label": sector_label,
+                }
+                for sector_code, sector_label in _EQUITY_SECTORS
+            ],
+            {
+                "node_id": f"equity-{market_code}-unclassified",
+                "label": "待分类",
+            },
+        ],
+    }
 
 
 def _typed_roots(
@@ -218,10 +236,11 @@ INSTRUMENT_TAXONOMY_TREE = [
         "label": "权益",
         "instrument_type": "etf",
         "children": [
-            {"node_id": "etf-equity-index", "label": "宽基"},
-            {"node_id": "etf-equity-sector-theme", "label": "行业主题"},
-            {"node_id": "etf-equity-strategy", "label": "策略 / Smart Beta"},
-            {"node_id": "etf-equity-cross-border", "label": "跨境"},
+            {"node_id": "etf-equity-broad-market", "label": "宽基"},
+            {"node_id": "etf-equity-size-style", "label": "规模 / 风格"},
+            {"node_id": "etf-equity-sector", "label": "行业"},
+            {"node_id": "etf-equity-theme", "label": "主题"},
+            {"node_id": "etf-equity-factor", "label": "因子 / 股息"},
         ],
     },
     {
@@ -230,9 +249,13 @@ INSTRUMENT_TAXONOMY_TREE = [
         "instrument_type": "etf",
         "children": [
             {"node_id": "etf-fixed-income-government", "label": "利率债"},
-            {"node_id": "etf-fixed-income-credit", "label": "信用债"},
+            {"node_id": "etf-fixed-income-investment-grade", "label": "投资级信用"},
+            {"node_id": "etf-fixed-income-high-yield", "label": "高收益债"},
+            {"node_id": "etf-fixed-income-aggregate", "label": "综合债券"},
+            {"node_id": "etf-fixed-income-short-duration", "label": "短久期"},
+            {"node_id": "etf-fixed-income-inflation-linked", "label": "通胀挂钩"},
+            {"node_id": "etf-fixed-income-municipal", "label": "市政债"},
             {"node_id": "etf-fixed-income-convertible", "label": "可转债"},
-            {"node_id": "etf-fixed-income-cash", "label": "现金管理"},
         ],
     },
     {
@@ -241,57 +264,90 @@ INSTRUMENT_TAXONOMY_TREE = [
         "instrument_type": "etf",
         "children": [
             {"node_id": "etf-commodity-precious-metals", "label": "贵金属"},
-            {"node_id": "etf-commodity-other", "label": "其他商品"},
+            {"node_id": "etf-commodity-broad", "label": "综合商品"},
+            {"node_id": "etf-commodity-single", "label": "单一商品"},
         ],
     },
-    {"node_id": "etf-multi-asset", "label": "多资产", "instrument_type": "etf"},
+    {
+        "node_id": "etf-real-assets",
+        "label": "实物资产",
+        "instrument_type": "etf",
+        "children": [
+            {"node_id": "etf-real-assets-real-estate", "label": "房地产 / REITs"},
+            {"node_id": "etf-real-assets-infrastructure", "label": "基础设施"},
+        ],
+    },
+    {
+        "node_id": "etf-multi-asset",
+        "label": "多资产",
+        "instrument_type": "etf",
+        "children": [
+            {"node_id": "etf-multi-asset-allocation", "label": "资产配置"},
+            {"node_id": "etf-multi-asset-alternative", "label": "另类多资产"},
+        ],
+    },
+    {
+        "node_id": "etf-tactical",
+        "label": "战术工具",
+        "instrument_type": "etf",
+        "children": [
+            {"node_id": "etf-tactical-leveraged", "label": "杠杆"},
+            {"node_id": "etf-tactical-inverse", "label": "反向"},
+            {"node_id": "etf-tactical-volatility", "label": "波动率"},
+        ],
+    },
+    {"node_id": "etf-cash", "label": "现金管理", "instrument_type": "etf"},
     {"node_id": "etf-other", "label": "其他", "instrument_type": "etf"},
+    _equity_market_branch("us", "美股"),
+    _equity_market_branch("hk", "港股"),
+    _equity_market_branch("cn-a", "A股"),
+    _equity_market_branch("eu", "欧洲股市"),
     {
-        "node_id": "equity-market-us",
-        "label": "美股",
-        "instrument_type": "equity",
+        "node_id": "index-equity",
+        "label": "权益指数",
+        "instrument_type": "index",
         "children": [
-            {"node_id": "equity-exchange-xnas", "label": "NASDAQ"},
-            {"node_id": "equity-exchange-xnys", "label": "NYSE"},
-            {"node_id": "equity-exchange-xase", "label": "NYSE American"},
+            {"node_id": "index-equity-broad-market", "label": "宽基"},
+            {"node_id": "index-equity-size-style", "label": "规模 / 风格"},
+            {"node_id": "index-equity-sector", "label": "行业"},
+            {"node_id": "index-equity-theme", "label": "主题"},
+            {"node_id": "index-equity-factor", "label": "因子 / 股息"},
         ],
     },
     {
-        "node_id": "equity-market-hk",
-        "label": "港股",
-        "instrument_type": "equity",
+        "node_id": "index-fixed-income",
+        "label": "固定收益指数",
+        "instrument_type": "index",
         "children": [
-            {"node_id": "equity-exchange-xhkg", "label": "HKEX"},
+            {"node_id": "index-fixed-income-government", "label": "政府债"},
+            {"node_id": "index-fixed-income-investment-grade", "label": "投资级信用"},
+            {"node_id": "index-fixed-income-high-yield", "label": "高收益债"},
+            {"node_id": "index-fixed-income-aggregate", "label": "综合债券"},
+            {"node_id": "index-fixed-income-inflation-linked", "label": "通胀挂钩"},
+            {"node_id": "index-fixed-income-convertible", "label": "可转债"},
         ],
     },
     {
-        "node_id": "equity-market-cn-a",
-        "label": "A股",
-        "instrument_type": "equity",
+        "node_id": "index-commodity",
+        "label": "商品指数",
+        "instrument_type": "index",
         "children": [
-            {"node_id": "equity-exchange-xshg", "label": "上交所"},
-            {"node_id": "equity-exchange-xshe", "label": "深交所"},
+            {"node_id": "index-commodity-broad", "label": "综合商品"},
+            {"node_id": "index-commodity-precious-metals", "label": "贵金属"},
+            {"node_id": "index-commodity-single", "label": "单一商品"},
         ],
     },
     {
-        "node_id": "equity-market-eu",
-        "label": "欧洲股市",
-        "instrument_type": "equity",
+        "node_id": "index-real-assets",
+        "label": "实物资产指数",
+        "instrument_type": "index",
         "children": [
-            {"node_id": "equity-exchange-xlon", "label": "London Stock Exchange"},
-            {"node_id": "equity-exchange-xetr", "label": "Xetra"},
-            {"node_id": "equity-exchange-xpar", "label": "Euronext Paris"},
-            {"node_id": "equity-exchange-xams", "label": "Euronext Amsterdam"},
-            {"node_id": "equity-exchange-xmil", "label": "Borsa Italiana"},
-            {"node_id": "equity-exchange-xswx", "label": "SIX Swiss Exchange"},
+            {"node_id": "index-real-assets-real-estate", "label": "房地产 / REITs"},
+            {"node_id": "index-real-assets-infrastructure", "label": "基础设施"},
         ],
     },
-    {"node_id": "index-broad-market", "label": "宽基", "instrument_type": "index"},
-    {"node_id": "index-sector-theme", "label": "行业主题", "instrument_type": "index"},
-    {"node_id": "index-strategy", "label": "策略", "instrument_type": "index"},
-    {"node_id": "index-fixed-income", "label": "固定收益", "instrument_type": "index"},
-    {"node_id": "index-commodity", "label": "商品", "instrument_type": "index"},
-    {"node_id": "index-multi-asset", "label": "多资产", "instrument_type": "index"},
+    {"node_id": "index-multi-asset-allocation", "label": "多资产配置", "instrument_type": "index"},
+    {"node_id": "index-alternative", "label": "另类策略", "instrument_type": "index"},
     {"node_id": "index-other", "label": "其他", "instrument_type": "index"},
 ]
 

@@ -1,6 +1,6 @@
 # 公募 / 私募产品框架
 
-适用范围：当前 Watchlist app 里 `public_fund` 与 `private_fund` 的分类、研究标签和监控评估框架。公募/私募身份来自共享 Registry 的 `instrument_type`；本文件中的 taxonomy 完全属于 Watchlist 私域。
+适用范围：当前 Watchlist app 里 `public_fund` 与 `private_fund` 的分类、投资研究判断和监控评估框架。公募/私募身份来自共享 Registry 的 `instrument_type`；本文件中的 taxonomy 完全属于 Watchlist 私域。
 
 ## 1. 目标
 
@@ -8,12 +8,12 @@ watchlist 的未来使用场景不是“在一堆平铺标签里找产品”，�
 
 1. 先按分类定义产品池
 2. 再用定量数据横向筛选
-3. 最后用定性标签和监控结论做判断
+3. 最后用有证据的定性研究判断和监控结论做决策
 
 因此当前基金框架明确拆成三层：
 
 - `Instrument Taxonomy`
-- `Research Tags`
+- `Investment Research`
 - `Monitoring Assessment`
 
 这三层不会再混成一套“通用 fund tags”，也不会把 Watchlist 分类写回底层 Registry。
@@ -35,7 +35,7 @@ watchlist 的未来使用场景不是“在一堆平铺标签里找产品”，�
 其中：
 
 - `fund_vehicle`
-  仍然是“产品形态”，比如 ETF、场外开放式、契约型私募基金
+  只描述公募/私募的法律或交易载体，比如场外开放式、LOF、契约型私募基金；ETF 是独立 `instrument_type`，不会作为该字段的选项
 - instrument type
   `public_fund / private_fund` 在 Registry 层已经分开，决定详情页、数据源和可用分类树
 - taxonomy path
@@ -43,43 +43,36 @@ watchlist 的未来使用场景不是“在一堆平铺标签里找产品”，�
 - taxonomy assignment
   默认允许为空，不做自动推断；正式分类必须由研究人员在详情页 `Overview -> Fund Taxonomy` 手动确认
 
-当前两棵基金分类树先覆盖核心研究范围：
+当前两棵基金分类树覆盖核心研究范围：
 
 - 公募：
-  `股票型 / 混合型 / 债券型 / QDII / 商品型 / REITS / FOF / 其他`
+  `权益基金 / 固定收益基金 / 配置基金 / 另类策略基金 / 商品型 / 实物资产基金 / 货币市场 / 基金中基金 / 其他`
 - 私募：
-  `股票策略 / 债券策略 / 期货及衍生品策略 / 多资产策略 / 组合基金 / 其他`
+  `股票策略 / 信用策略 / 宏观策略 / 管理期货 / 事件驱动 / 相对价值 / 多策略 / 组合基金 / 其他`
 
-最近重点覆盖的叶子已经内置：
+代表性叶子包括：
 
-- `300指增 / 500指增 / 1000指增 / 2000指增 / 红利指增 / 量化选股 / 其他指增`
-- `主观CTA / 量化CTA / 主观趋势 / 主观套利 / 主观多策略 / 量化趋势 / 量化套利 / 量化多策略`
-- `纯债策略 / 债券增强 / 债券复合 / 转债交易`
-- `宏观策略 / 套利策略 / 复合策略`
-- `FOF / MOM`
-- `标准股票型 / 指数股票型 / 偏股型 / 灵活配置型 / 股债平衡型 / 偏债型 / 策略型`
-- `纯债型 / 普通债券型 / 可转债型 / 指数债券型 / 同业存单型`
-- `QDII房地产信托 / QDII股票型 / QDII混合型 / QDII商品型 / QDII债券型`
-- `贵金属基金 / 其他商品基金 / 股票型FOF / 债券型FOF / 混合型FOF / 养老目标FOF`
+- 公募：`主动权益 / 指数权益 / 投资级信用 / 高收益债 / 偏股配置 / 市场中性 / 贵金属基金 / 权益 FOF`
+- 私募：`主观多头 / 指数增强 / 量化选股 / 股票市场中性 / 困境债 / 系统化宏观 / 趋势跟踪 / 并购套利 / 波动率与期权 / FOF / MOM`
 
 示例（instrument type → Watchlist taxonomy path）：
 
-- `private_fund → 股票策略 / 量化多头 / 500指增`
-- `private_fund → 期货及衍生品策略 / 量化CTA / 量化趋势`
-- `private_fund → 债券策略 / 转债交易`
-- `public_fund → 债券型 / 可转债型`
-- `public_fund → FOF / 养老目标FOF`
+- `private_fund → 股票策略 / 量化多头 / 指数增强`
+- `private_fund → 管理期货 / 趋势跟踪`
+- `private_fund → 相对价值 / 可转债套利`
+- `public_fund → 固定收益基金 / 可转债`
+- `public_fund → 基金中基金 / 配置 FOF`
 
 分类是入口层，不是标签层；Overview 页先定池子，Research 页再看定性标签。
 
-### 2.2 Research Tags
+### 2.2 Investment Research Assessments
 
 回答的问题是：`这类产品在研究上有什么特征`
 
 它承载 FOF 研究里需要标准化的定性结论，但不是产品身份字段。
-当前受控词表和判定口径以 [FUND_QUALITATIVE_RESEARCH_FRAMEWORK.md](./FUND_QUALITATIVE_RESEARCH_FRAMEWORK.md) 为准。
+当前受控词表和判定口径以 [FUND_QUALITATIVE_RESEARCH_FRAMEWORK.md](./FUND_QUALITATIVE_RESEARCH_FRAMEWORK.md) 为准。这些字段可用于详情、列和筛选；除研究优先级、生命周期、论点状态和负责人等工作流字段外，定性结论不进入 `Group By`。
 
-当前主要分组包括：
+基金专属研究维度包括：
 
 - `research_coverage`
   `focus_bucket`、`research_evidence_level`
@@ -102,7 +95,7 @@ watchlist 的未来使用场景不是“在一堆平铺标签里找产品”，�
 - `research_role`
   `portfolio_role`
 
-`coverage_status` 代表 watchlist / portfolio 生命周期状态，例如 `Watch / Proposed / Invested / Paused / Exited`，可以作为 watchlist 列和筛选字段使用，但不再被解释为 `Research Status`。Research 页里的当前研究观点字段使用 `Research View`，避免和生命周期状态混淆。
+`coverage_status` 代表 watchlist / portfolio 生命周期状态，例如 `Watch / Proposed / Invested / Paused / Exited`，可以作为 watchlist 列和筛选字段使用，但不再被解释为 `Research Status`。Research 页使用 `Current Investment View` 描述研究判断，避免和生命周期状态混淆。
 
 这里允许按分类做适用范围控制：
 
@@ -110,7 +103,7 @@ watchlist 的未来使用场景不是“在一堆平铺标签里找产品”，�
 - 某些标签只适用于 `私募`
 - 某些标签只适用于特定 `instrument_taxonomy_level_*`
 
-因此它不是“所有基金共用同一张标签表”，而是同一套定义机制下按 instrument type 和 taxonomy 分开的 label packs。
+因此它不是“所有资产共用同一张标签表”，而是同一套定义机制下按 instrument type 和 taxonomy 裁剪的研究问题；ETF、股票和指数使用各自独立的评估维度。
 
 ### 2.3 Monitoring Assessment
 
@@ -121,11 +114,11 @@ watchlist 的未来使用场景不是“在一堆平铺标签里找产品”，�
 当前主要分组包括：
 
 - `monitoring_risk`
-  `volatility_bucket`、`drawdown_control`、`equity_correlation_bucket`
+  `equity_correlation_bucket`
 - `monitoring_regime`
   `preferred_regime`、`weak_regime`
 - `monitoring_operations`
-  `style_stability`、`transparency_quality`
+  `transparency_quality`
 
 Monitoring 页面不会再静态要求所有基金补同一套字段；它只检查：
 
@@ -141,7 +134,7 @@ Monitoring 页面不会再静态要求所有基金补同一套字段；它只检
    先定义 universe
 2. `Screening`
    看收益、回撤、波动、容量、规模、tracking error 等定量指标
-3. `Research Tags`
+3. `Investment Research`
    看风格、团队、过程、容量、兑现度
 4. `Monitoring`
    持续跟 freshness、缺失 label、open recalc 和关键观察结论
@@ -185,7 +178,7 @@ Fund Detail 的第一页现在是 `Overview`，它承载两类内容：
 - `Overview`
   产品身份和分类
 - `Research`
-  `Qualitative Research Tags`、与 Overview chart 打通的 `Research Notes`、`Rating` 和 `Research View`
+  基金定性研究判断、与 Overview chart 打通的逐条 `Research Record`、`Rating` 和 `Current Investment View`
 - `Monitoring`
   `Monitoring Assessment` 和 freshness / open items
 
@@ -195,11 +188,11 @@ Research / Monitoring 字段会按当前分类自动裁剪展示范围；分类�
 
 watchlist field registry 也已经按三层产品框架分类：
 
-- `product_taxonomy`
+- `instrument_taxonomy`
 - `research_framework`
 - `monitoring_assessment`
 
-这意味着 watchlist 的 filter / group by / column selection 可以直接围绕产品框架工作，而不是依赖旧的平铺 tag 语义。
+这意味着 watchlist 的 filter 和 column selection 可按当前名单的资产类型范围使用研究字段；`Group By` 只暴露结构化维度与工作流字段，不把基金专属定性判断当成多资产分组。
 
 ## 5. 当前明确不再采用的做法
 
@@ -214,7 +207,7 @@ watchlist field registry 也已经按三层产品框架分类：
 
 继续扩框架时，遵守下面几点：
 
-- 先扩 `Fund Taxonomy`，再扩 `Research Tags`
+- 先明确 `Fund Taxonomy`，再扩基金专属投资研究判断
 - 各 instrument type 的分类树彼此独立，而且允许不同分支不同深度
 - 每个标签都应有适用范围和判定口径，不接受只给 option 不给规则
 - “管理人评价”和“产品风格标签”不要混在一个字段组里

@@ -15,7 +15,6 @@ from watchlist_app.services.instrument_taxonomy import (
     taxonomy_node_supports_instrument,
     taxonomy_tree_payload,
 )
-from watchlist_app.services.instrument_resolution import equity_exchange_taxonomy_node
 
 
 router = APIRouter()
@@ -80,13 +79,6 @@ def update_instrument_taxonomy_assignment(
     instrument = _require_taxonomy_asset(session, instrument_id)
     node_id = str(payload.node_id or "").strip() or None
     instrument_type = str(instrument.instrument_type).strip().lower()
-    if instrument_type == "equity":
-        expected_node_id = equity_exchange_taxonomy_node(instrument)
-        if node_id != expected_node_id:
-            raise HTTPException(
-                status_code=422,
-                detail="Equity taxonomy is maintained from the Registry exchange identity.",
-            )
     if node_id is not None:
         node = taxonomy_repository.get_node(session, node_id=node_id)
         if node is None:
@@ -101,8 +93,8 @@ def update_instrument_taxonomy_assignment(
             raise HTTPException(
                 status_code=422,
                 detail=(
-                    f'{instrument_type} instruments cannot be assigned to a '
-                    f'{node_type} taxonomy node'
+                    f'{instrument_type} instruments require a leaf category from the '
+                    f'{instrument_type} taxonomy; {node_type} node {node_id!r} is not assignable.'
                 ),
             )
     taxonomy_repository.upsert_assignment(

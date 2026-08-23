@@ -86,8 +86,9 @@ export type SharedInstrumentRecord = {
   }>
   coverage_state?: string
   exchange_code?: string | null
-  fmp_symbol?: string
-  source?: 'registry' | 'fmp_catalog'
+  catalog_provider?: 'fmp'
+  catalog_symbol?: string
+  source?: 'registry' | 'security_catalog'
   existing_instrument_id?: string | null
   currency_verified?: boolean
 }
@@ -95,7 +96,8 @@ export type SharedInstrumentRecord = {
 export type SecuritySearchResult = {
   instrument_type: 'equity' | 'etf'
   symbol: string
-  fmp_symbol: string
+  catalog_provider: 'fmp'
+  catalog_symbol: string
   name: string
   exchange_code: string
   exchange_label: string
@@ -114,6 +116,7 @@ export type GroupByOption = {
 }
 
 export type WatchlistDetail = WatchlistRecord & {
+  instrument_types: string[]
   views: WatchlistView[]
   available_group_bys: GroupByOption[]
   default_filters_summary: Record<string, unknown[]>
@@ -217,6 +220,27 @@ export type InstrumentResolveResponse = {
   detail_supported: boolean
   support_reason: string
   corporate_actions: CorporateActionEvent[]
+}
+
+export type InstrumentReferenceData = {
+  instrument_id: string
+  instrument_type: 'public_fund' | 'private_fund' | 'etf' | 'equity' | 'index'
+  provider: string
+  provider_symbol: string | null
+  fetched_at: string
+  source: {
+    source_mode?: string | null
+    source_location?: string | null
+    source_api_profile?: string | null
+    expected_frequency?: string | null
+    market_calendar?: string | null
+    release_lag_days?: number | null
+    refresh_status?: string | null
+    refresh_message?: string | null
+    market_data_updated_at?: string | null
+  }
+  sections: Record<string, unknown>
+  section_errors: Record<string, string>
 }
 
 export type InstrumentPriceBar = {
@@ -336,7 +360,8 @@ export type MonitoringWatchlistSummary = {
   item_count: number
   needs_refresh_count: number
   missing_quote_count: number
-  missing_label_count: number
+  missing_required_metadata_count: number
+  research_issue_count: number
   open_recalc_job_count: number
   last_activity_at: string | null
 }
@@ -360,6 +385,16 @@ export type MonitoringInstrumentRecord = {
   missing_attribute_labels: string[]
   missing_attribute_count: number
   issue_flags: string[]
+  research: {
+    current_view: string
+    manual_rating: number | null
+    primary_analyst: string
+    next_review_date: string | null
+    last_updated_at: string | null
+    active_note_count: number
+    next_follow_up_date: string | null
+    issue_flags: string[]
+  }
 }
 
 export type MonitoringRecalcJobRecord = {
@@ -385,13 +420,24 @@ export type MonitoringDashboardResponse = {
     unique_instrument_count: number
     needs_refresh_count: number
     missing_quote_count: number
-    missing_label_count: number
+    missing_required_metadata_count: number
+    research_review_due_count: number
+    research_follow_up_due_count: number
+    missing_investment_view_count: number
     open_recalc_job_count: number
     failed_recalc_job_count: number
   }
   watchlists: MonitoringWatchlistSummary[]
+  instruments: MonitoringInstrumentRecord[]
   needs_attention_instruments: MonitoringInstrumentRecord[]
-  missing_label_instruments: MonitoringInstrumentRecord[]
+  missing_required_metadata_instruments: MonitoringInstrumentRecord[]
+  research_queue: MonitoringInstrumentRecord[]
+  open_recalc_jobs: MonitoringRecalcJobRecord[]
+}
+
+export type InstrumentMonitoringResponse = {
+  generated_at: string | null
+  instrument: MonitoringInstrumentRecord
   open_recalc_jobs: MonitoringRecalcJobRecord[]
 }
 
@@ -401,9 +447,9 @@ export type RecalcExecuteResponse = {
   result: Record<string, unknown>
 }
 
-export type FundSummaryResponse = {
+export type InstrumentSummaryResponse = {
   instrument_id: string
-  fund_name: string
+  instrument_name: string
   ticker_or_isin: string
   management_firm_name: string | null
   instrument_attributes: Record<string, unknown>
@@ -418,7 +464,7 @@ export type FundSummaryResponse = {
   }
   quick_monitoring_items: string[]
   tabs: string[]
-  nav_snapshot?: {
+  series_snapshot?: {
     nav_basis_type?: string | null
     nav_basis_source?: string | null
     selected_role?: string | null
@@ -437,14 +483,14 @@ export type FundSummaryResponse = {
   selected_series?: SelectedQuoteSeriesMetadata
 }
 
-export type FundLibraryItem = {
-  fund_id: string
-  fund_name: string
-  ticker_or_isin: string | null
-  product_type: string
+export type InstrumentLibraryItem = {
+  instrument_id: string
+  instrument_name: string
+  primary_identifier: string | null
+  instrument_type: string
 }
 
-type RawFundLibraryItem = {
+type RawInstrumentLibraryItem = {
   instrument_id: string
   instrument_name: string
   instrument_type: string
@@ -452,12 +498,12 @@ type RawFundLibraryItem = {
   primary_identifier: string | null
 }
 
-export type FundChartPoint = { date: string; value: number }
+export type InstrumentChartPoint = { date: string; value: number }
 
 export type ReturnKind = 'total_return' | 'price_return' | 'unit_nav_return'
 
 export type ReturnSparklineSeries = {
-  points: FundChartPoint[]
+  points: InstrumentChartPoint[]
   return_kind: ReturnKind
   label: string
   status: 'ready' | 'partial' | 'unavailable'
@@ -491,13 +537,13 @@ export type CalculationFrequencyProfile = {
   status_label: string
 }
 
-export type FundChartResponse = {
-  fund_id: string
+export type InstrumentChartResponse = {
+  instrument_id: string
   base_series_type: string
   selected_series?: SelectedQuoteSeriesMetadata
   currency: string
   date_range: { start: string; end: string } | null
-  series: Array<{ name: string; points: FundChartPoint[] }>
+  series: Array<{ name: string; points: InstrumentChartPoint[] }>
   available_compare_targets: string[]
 }
 
@@ -523,7 +569,7 @@ export type SelectedQuotePoint = {
   series_type?: string | null
 }
 
-export type FundPerformanceResponse = {
+export type InstrumentPerformanceResponse = {
   growth_chart_series: Array<{ name: string; value: number | null }>
   annual_returns: Array<Record<string, unknown>>
   trailing_returns: Array<Record<string, unknown>>
@@ -583,7 +629,7 @@ export type FundPerformanceResponse = {
   } | null
 }
 
-export type FundRiskResponse = {
+export type InstrumentRiskResponse = {
   risk_overview: Record<string, unknown> | null
   scatter_points: Array<Record<string, unknown>>
   risk_metrics: Array<Record<string, unknown>>
@@ -681,10 +727,136 @@ export type InstrumentDocumentUploadPayload = {
   updated_by?: string
 }
 
-export type FundResearchResponse = {
-  overview: Record<string, unknown>
+export type InstrumentResearchProfile = {
+  thesis: string
+  current_view: string
+  why_now: string
+  edge_assessment: string
+  valuation_framework: string
+  catalysts: string
+  key_risks: string
+  disconfirming_evidence: string
+  open_questions: string
+  monitoring_plan: string
+  people_assessment: string
+  portfolio_role: string
+  time_horizon: string
+  decision_rationale: string
+  primary_analyst: string
+  next_review_date: string | null
+  dd_status: string
+  odd_status: string
+  ic_status: string
   manual_rating: number | null
-  timeline_notes: Array<Record<string, unknown>>
+  created_at: string | null
+  updated_at: string | null
+  updated_by: string | null
+  revision_number: number
+}
+
+export type InstrumentResearchNoteType =
+  | 'research_update'
+  | 'thesis_update'
+  | 'evidence'
+  | 'meeting'
+  | 'event'
+  | 'risk'
+  | 'decision'
+  | 'review'
+
+export type InstrumentResearchNote = {
+  note_id: string
+  note_date: string
+  note_type: InstrumentResearchNoteType
+  title: string
+  summary: string
+  body: string
+  importance: 'low' | 'medium' | 'high'
+  tags: string[]
+  source_refs: string
+  people: string
+  author: string
+  follow_up_date: string | null
+  created_at: string
+  updated_at: string
+  updated_by: string | null
+  revision_number: number
+}
+
+export type InstrumentResearchResponse = {
+  profile: InstrumentResearchProfile
+  notes: InstrumentResearchNote[]
+}
+
+export type InstrumentResearchProfileInput = Omit<
+  InstrumentResearchProfile,
+  'created_at' | 'updated_at' | 'updated_by' | 'revision_number'
+>
+
+export type InstrumentResearchNoteInput = Omit<
+  InstrumentResearchNote,
+  'note_id' | 'created_at' | 'updated_at' | 'updated_by' | 'revision_number'
+>
+
+export type InstrumentResearchProfileRevision = InstrumentResearchProfileInput & {
+  revision_number: number
+  recorded_at: string
+  recorded_by: string | null
+}
+
+export type InstrumentResearchNoteRevision = InstrumentResearchNoteInput & {
+  note_id: string
+  revision_number: number
+  change_type: 'create' | 'update' | 'delete'
+  recorded_at: string
+  recorded_by: string | null
+}
+
+export type InstrumentResearchHistoryResponse = {
+  profile_revisions: InstrumentResearchProfileRevision[]
+  note_revisions: InstrumentResearchNoteRevision[]
+}
+
+export type InstrumentResearchProfileUpdatePayload = {
+  profile: InstrumentResearchProfileInput
+  updated_by?: string
+}
+
+export type InstrumentResearchNoteUpdatePayload = {
+  note: InstrumentResearchNoteInput
+  updated_by?: string
+}
+
+export function emptyInstrumentResearchResponse(): InstrumentResearchResponse {
+  return {
+    profile: {
+      thesis: '',
+      current_view: '',
+      why_now: '',
+      edge_assessment: '',
+      valuation_framework: '',
+      catalysts: '',
+      key_risks: '',
+      disconfirming_evidence: '',
+      open_questions: '',
+      monitoring_plan: '',
+      people_assessment: '',
+      portfolio_role: '',
+      time_horizon: '',
+      decision_rationale: '',
+      primary_analyst: '',
+      next_review_date: null,
+      dd_status: '',
+      odd_status: '',
+      ic_status: '',
+      manual_rating: null,
+      created_at: null,
+      updated_at: null,
+      updated_by: null,
+      revision_number: 0,
+    },
+    notes: [],
+  }
 }
 
 export type FundNavSeriesResponse = {
@@ -888,12 +1060,12 @@ async function fetchForm<T>(
   return (await response.json()) as T
 }
 
-function normalizeFundLibraryItem(item: RawFundLibraryItem): FundLibraryItem {
+function normalizeInstrumentLibraryItem(item: RawInstrumentLibraryItem): InstrumentLibraryItem {
   return {
-    fund_id: item.instrument_id,
-    fund_name: item.instrument_name,
-    ticker_or_isin: item.primary_identifier,
-    product_type: item.instrument_type || item.detail_view_type || 'unknown',
+    instrument_id: item.instrument_id,
+    instrument_name: item.instrument_name,
+    primary_identifier: item.primary_identifier,
+    instrument_type: item.instrument_type || item.detail_view_type || 'unknown',
   }
 }
 
@@ -967,6 +1139,12 @@ export function getMonitoringDashboard() {
   return fetchJson<MonitoringDashboardResponse>('/api/monitoring/dashboard')
 }
 
+export function getInstrumentMonitoring(instrumentId: string) {
+  return fetchJson<InstrumentMonitoringResponse>(
+    `/api/monitoring/instruments/${encodeURIComponent(instrumentId)}`,
+  )
+}
+
 export function executeInstrumentRecalc(
   instrumentId: string,
   payload?: {
@@ -1024,6 +1202,12 @@ export function resolveInstrumentDetail(instrumentId: string) {
   )
 }
 
+export function getPlatformInstrumentReferenceData(instrumentId: string) {
+  return fetchPlatformJson<InstrumentReferenceData>(
+    `/api/instruments/${encodeURIComponent(instrumentId)}/reference-data`,
+  )
+}
+
 export function getInstrumentPriceBars(
   instrumentId: string,
   options?: { start_date?: string; end_date?: string; limit?: number },
@@ -1078,16 +1262,17 @@ export async function searchPlatformSecurityCatalog(query: string, limit = 12) {
   return {
     results: payload.results.map<SharedInstrumentRecord>((item) => ({
       instrument_id:
-        item.existing_instrument_id || `fmp:${item.instrument_type}:${item.fmp_symbol}`,
+        item.existing_instrument_id || `${item.catalog_provider}:${item.instrument_type}:${item.catalog_symbol}`,
       instrument_name: item.name,
       instrument_type: item.instrument_type,
       currency: item.currency,
       exchange_code: item.exchange_code,
-      fmp_symbol: item.fmp_symbol,
-      source: 'fmp_catalog',
+      catalog_provider: item.catalog_provider,
+      catalog_symbol: item.catalog_symbol,
+      source: 'security_catalog',
       existing_instrument_id: item.existing_instrument_id,
       currency_verified: item.currency_verified,
-      coverage_state: item.existing_instrument_id ? 'registry' : 'FMP',
+      coverage_state: item.existing_instrument_id ? 'registry' : `${item.catalog_provider.toUpperCase()} catalog`,
       identifiers: [
         {
           identifier_type: 'exchange_ticker',
@@ -1102,13 +1287,15 @@ export async function searchPlatformSecurityCatalog(query: string, limit = 12) {
 
 export async function materializePlatformSecurity(
   instrumentType: 'equity' | 'etf',
-  fmpSymbol: string,
+  catalogProvider: 'fmp',
+  catalogSymbol: string,
 ) {
   return fetchPlatformJson<SharedInstrumentRecord>('/api/securities/materialize', {
     method: 'POST',
     body: JSON.stringify({
       instrument_type: instrumentType,
-      fmp_symbol: fmpSymbol,
+      catalog_provider: catalogProvider,
+      catalog_symbol: catalogSymbol,
       refresh_eod: true,
     }),
   })
@@ -1331,25 +1518,25 @@ function buildInstrumentDetailApiPath(instrumentId: string, suffix: string) {
 }
 
 export function getInstrumentSummary(instrumentId: string) {
-  return fetchJson<FundSummaryResponse>(buildInstrumentDetailApiPath(instrumentId, 'summary'))
+  return fetchJson<InstrumentSummaryResponse>(buildInstrumentDetailApiPath(instrumentId, 'summary'))
 }
 
 export function getInstrumentLibrary() {
-  return fetchReferenceJson<RawFundLibraryItem[]>('/api/instruments/library').then((items) =>
-    items.map(normalizeFundLibraryItem),
+  return fetchReferenceJson<RawInstrumentLibraryItem[]>('/api/instruments/library').then((items) =>
+    items.map(normalizeInstrumentLibraryItem),
   )
 }
 
 export function getInstrumentChart(instrumentId: string) {
-  return fetchJson<FundChartResponse>(buildInstrumentDetailApiPath(instrumentId, 'chart'))
+  return fetchJson<InstrumentChartResponse>(buildInstrumentDetailApiPath(instrumentId, 'chart'))
 }
 
 export function getInstrumentPerformance(instrumentId: string) {
-  return fetchJson<FundPerformanceResponse>(buildInstrumentDetailApiPath(instrumentId, 'performance'))
+  return fetchJson<InstrumentPerformanceResponse>(buildInstrumentDetailApiPath(instrumentId, 'performance'))
 }
 
 export function getInstrumentRisk(instrumentId: string) {
-  return fetchJson<FundRiskResponse>(buildInstrumentDetailApiPath(instrumentId, 'risk'))
+  return fetchJson<InstrumentRiskResponse>(buildInstrumentDetailApiPath(instrumentId, 'risk'))
 }
 
 export function getInstrumentExposureSummary(instrumentId: string) {
@@ -1381,7 +1568,13 @@ export function getInstrumentDocuments(instrumentId: string) {
 }
 
 export function getInstrumentResearch(instrumentId: string) {
-  return fetchJson<FundResearchResponse>(buildInstrumentDetailApiPath(instrumentId, 'research'))
+  return fetchJson<InstrumentResearchResponse>(buildInstrumentDetailApiPath(instrumentId, 'research'))
+}
+
+export function getInstrumentResearchHistory(instrumentId: string) {
+  return fetchJson<InstrumentResearchHistoryResponse>(
+    buildInstrumentDetailApiPath(instrumentId, 'research/history'),
+  )
 }
 
 export function getInstrumentNavSeries(instrumentId: string) {
@@ -1461,12 +1654,46 @@ export function uploadInstrumentDocument(
   })
 }
 
-export function updateInstrumentResearch(
+export function updateInstrumentResearchProfile(
   instrumentId: string,
-  payload: ManualProfileUpdatePayload,
+  payload: InstrumentResearchProfileUpdatePayload,
 ) {
-  return fetchJson<FundResearchResponse>(buildInstrumentDetailApiPath(instrumentId, 'research'), {
+  return fetchJson<InstrumentResearchResponse>(buildInstrumentDetailApiPath(instrumentId, 'research'), {
     method: 'PUT',
     body: JSON.stringify(payload),
   })
+}
+
+export function createInstrumentResearchNote(
+  instrumentId: string,
+  payload: InstrumentResearchNoteUpdatePayload,
+) {
+  return fetchJson<InstrumentResearchResponse>(
+    buildInstrumentDetailApiPath(instrumentId, 'research/notes'),
+    { method: 'POST', body: JSON.stringify(payload) },
+  )
+}
+
+export function updateInstrumentResearchNote(
+  instrumentId: string,
+  noteId: string,
+  payload: InstrumentResearchNoteUpdatePayload,
+) {
+  return fetchJson<InstrumentResearchResponse>(
+    buildInstrumentDetailApiPath(
+      instrumentId,
+      `research/notes/${encodeURIComponent(noteId)}`,
+    ),
+    { method: 'PUT', body: JSON.stringify(payload) },
+  )
+}
+
+export function deleteInstrumentResearchNote(instrumentId: string, noteId: string) {
+  return fetchJson<InstrumentResearchResponse>(
+    `${buildInstrumentDetailApiPath(
+      instrumentId,
+      `research/notes/${encodeURIComponent(noteId)}`,
+    )}?deleted_by=terminal_ui`,
+    { method: 'DELETE' },
+  )
 }

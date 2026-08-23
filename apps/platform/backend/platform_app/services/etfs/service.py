@@ -18,6 +18,9 @@ class EtfNotSupportedError(ValueError):
     pass
 
 
+A_SHARE_EXCHANGES = {"XSHG", "XSHE"}
+
+
 def _existing_etf(
     *,
     fmp_symbol: str,
@@ -62,7 +65,8 @@ def _search_record(catalog_record: dict[str, object]) -> dict[str, object]:
     return {
         "instrument_type": "etf",
         "symbol": exchange_ticker,
-        "fmp_symbol": symbol,
+        "catalog_provider": "fmp",
+        "catalog_symbol": symbol,
         "name": str(catalog_record["company_name"]),
         "exchange_code": exchange.exchange_code,
         "exchange_label": exchange.label,
@@ -93,19 +97,20 @@ def _source_settings(
     provider_currency: str | None = None,
     price_multiplier: object = 1,
 ) -> None:
+    is_a_share = exchange_code in A_SHARE_EXCHANGES
     updated = upsert_source_settings(
         instrument_id=instrument_id,
         source_mode="api",
         source_email="",
-        source_location="FMP API",
-        source_api_profile="fmp",
+        source_location="DataHub Tushare" if is_a_share else "FMP API",
+        source_api_profile="tushare" if is_a_share else "fmp",
         source_email_rules=[],
         expected_frequency="daily",
         market_calendar=exchange_code,
         release_lag_days=0,
-        return_semantics="price_return",
-        source_provider_currency=provider_currency,
-        source_price_multiplier=price_multiplier,
+        return_semantics="unknown" if is_a_share else "price_return",
+        source_provider_currency=None if is_a_share else provider_currency,
+        source_price_multiplier=1 if is_a_share else price_multiplier,
     )
     if updated is None:
         raise RuntimeError(f"Registry ETF disappeared during materialization: {instrument_id}")
@@ -186,6 +191,16 @@ def materialize_etf(
     )
     if ensured is None:
         raise RuntimeError(f"Registry ETF disappeared during materialization: {instrument_id}")
+    if exchange.exchange_code in A_SHARE_EXCHANGES:
+        ensured = ensure_secondary_identifier(
+            instrument_id=instrument_id,
+            identifier_type="provider_symbol",
+            identifier_value=f"tushare:{exchange_ticker}",
+        )
+        if ensured is None:
+            raise RuntimeError(
+                f"Registry ETF disappeared during materialization: {instrument_id}"
+            )
     _source_settings(
         instrument_id,
         exchange.exchange_code,
@@ -211,6 +226,21 @@ def refresh_etf_eod(
     full_history: bool = False,
     client: FmpClient | None = None,
 ) -> dict[str, object]:
+    instrument = get_instrument(instrument_id)
+    if instrument is None:
+        raise ValueError(f"Registry instrument not found: {instrument_id}")
+    if str(instrument.get("exchange_code") or "") in A_SHARE_EXCHANGES:
+        from platform_app.services.market_data_ops import refresh_market_data
+
+        refreshed = refresh_market_data(
+            instrument_id=instrument_id,
+            updated_by="tushare_etf_sync",
+            full_history=full_history,
+            source="tushare",
+        )
+        if refreshed is None:
+            raise RuntimeError(f"Registry ETF disappeared during refresh: {instrument_id}")
+        return refreshed
     return refresh_fmp_eod(
         instrument_id=instrument_id,
         instrument_type="etf",

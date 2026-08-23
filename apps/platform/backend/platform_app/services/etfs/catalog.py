@@ -28,14 +28,20 @@ def _catalog_row(
     *,
     fmp_exchange_code: str,
 ) -> dict[str, object] | None:
-    exchange = FMP_ETF_CATALOG_EXCHANGES[fmp_exchange_code]
+    query_exchange = FMP_ETF_CATALOG_EXCHANGES[fmp_exchange_code]
     resolved = resolve_exchange(
-        raw.get("exchangeShortName"),
         raw.get("exchange"),
+        raw.get("exchangeShortName"),
         fmp_exchange_code,
     )
-    if resolved != exchange:
+    if resolved is None:
         return None
+    if fmp_exchange_code == "AMEX":
+        if resolved.exchange_code not in {"XASE", "ARCX"}:
+            return None
+    elif resolved != query_exchange:
+        return None
+    exchange = resolved
     if raw.get("isEtf") is not True or raw.get("isFund") is True:
         return None
     if raw.get("isActivelyTrading") is False:

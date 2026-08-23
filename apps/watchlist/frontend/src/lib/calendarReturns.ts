@@ -1,4 +1,4 @@
-import type { FundChartPoint } from './api'
+import type { InstrumentChartPoint } from './api'
 
 /**
  * Calendar-period return helpers used by the Watchlist detail risk/performance
@@ -11,8 +11,8 @@ import type { FundChartPoint } from './api'
  * is missing from the source series.
  */
 
-function normalizePoints(points: FundChartPoint[]) {
-  const byDate = new Map<string, FundChartPoint>()
+function normalizePoints(points: InstrumentChartPoint[]) {
+  const byDate = new Map<string, InstrumentChartPoint>()
   points.forEach((point) => {
     const date = String(point.date || '').slice(0, 10)
     const value = Number(point.value)
@@ -54,8 +54,8 @@ export function areAdjacentCalendarYears(leftDate: string, rightDate: string) {
 }
 
 /** Return the last valid observation in each calendar month. */
-export function buildMonthlyCloseSeries(points: FundChartPoint[]) {
-  const closes = new Map<string, FundChartPoint>()
+export function buildMonthlyCloseSeries(points: InstrumentChartPoint[]) {
+  const closes = new Map<string, InstrumentChartPoint>()
   normalizePoints(points).forEach((point) => {
     closes.set(monthBucket(point.date), point)
   })
@@ -63,8 +63,8 @@ export function buildMonthlyCloseSeries(points: FundChartPoint[]) {
 }
 
 /** Return the last valid observation in each calendar year. */
-export function buildAnnualCloseSeries(points: FundChartPoint[]) {
-  const closes = new Map<string, FundChartPoint>()
+export function buildAnnualCloseSeries(points: InstrumentChartPoint[]) {
+  const closes = new Map<string, InstrumentChartPoint>()
   normalizePoints(points).forEach((point) => {
     closes.set(yearBucket(point.date), point)
   })
@@ -81,10 +81,10 @@ export type CalendarReturnWindow = {
 }
 
 export function buildMonthlyReturnWindows(
-  points: FundChartPoint[],
-): Array<FundChartPoint & CalendarReturnWindow> {
+  points: InstrumentChartPoint[],
+): Array<InstrumentChartPoint & CalendarReturnWindow> {
   const closes = buildMonthlyCloseSeries(points)
-  const returns: Array<FundChartPoint & CalendarReturnWindow> = []
+  const returns: Array<InstrumentChartPoint & CalendarReturnWindow> = []
   for (let index = 1; index < closes.length; index += 1) {
     const previous = closes[index - 1]
     const current = closes[index]
@@ -101,7 +101,7 @@ export function buildMonthlyReturnWindows(
   return returns
 }
 
-export function buildMonthlyReturnSeries(points: FundChartPoint[]) {
+export function buildMonthlyReturnSeries(points: InstrumentChartPoint[]) {
   return buildMonthlyReturnWindows(points).map(({ date, value }) => ({ date, value }))
 }
 
@@ -110,9 +110,9 @@ export function buildMonthlyReturnSeries(points: FundChartPoint[]) {
  * an older observation from being silently reused as a missing prior-year
  * close.
  */
-export function buildAnnualReturnSeries(points: FundChartPoint[]) {
+export function buildAnnualReturnSeries(points: InstrumentChartPoint[]) {
   const closes = buildAnnualCloseSeries(points)
-  const returns: Array<FundChartPoint & { year: string; anchorDate: string }> = []
+  const returns: Array<InstrumentChartPoint & { year: string; anchorDate: string }> = []
   for (let index = 1; index < closes.length; index += 1) {
     const previous = closes[index - 1]
     const current = closes[index]
@@ -145,7 +145,7 @@ export type MonthlyReturnMatrixRow = {
  * when there are no adjacent calendar-month closes to populate the month
  * cells.
  */
-export function buildMonthlyReturnMatrix(points: FundChartPoint[]): MonthlyReturnMatrixRow[] {
+export function buildMonthlyReturnMatrix(points: InstrumentChartPoint[]): MonthlyReturnMatrixRow[] {
   const monthlyReturns = buildMonthlyReturnWindows(points)
   const annualReturns = buildAnnualReturnSeries(points)
   const annualReturnByYear = new Map(

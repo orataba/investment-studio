@@ -16,28 +16,30 @@ LOCAL_DETAIL_INSTRUMENT_TYPES = {
     "equity",
     "index",
 }
-EQUITY_EXCHANGE_TAXONOMY_NODES = {
-    "XNAS": "equity-exchange-xnas",
-    "XNYS": "equity-exchange-xnys",
-    "XASE": "equity-exchange-xase",
-    "XHKG": "equity-exchange-xhkg",
-    "XSHG": "equity-exchange-xshg",
-    "XSHE": "equity-exchange-xshe",
-    "XLON": "equity-exchange-xlon",
-    "XETR": "equity-exchange-xetr",
-    "XPAR": "equity-exchange-xpar",
-    "XAMS": "equity-exchange-xams",
-    "XMIL": "equity-exchange-xmil",
-    "XSWX": "equity-exchange-xswx",
+EQUITY_MARKET_DEFAULT_TAXONOMY_NODES = {
+    "XNAS": "equity-us-unclassified",
+    "XNYS": "equity-us-unclassified",
+    "XASE": "equity-us-unclassified",
+    "ARCX": "equity-us-unclassified",
+    "BATS": "equity-us-unclassified",
+    "XHKG": "equity-hk-unclassified",
+    "XSHG": "equity-cn-a-unclassified",
+    "XSHE": "equity-cn-a-unclassified",
+    "XLON": "equity-eu-unclassified",
+    "XETR": "equity-eu-unclassified",
+    "XPAR": "equity-eu-unclassified",
+    "XAMS": "equity-eu-unclassified",
+    "XMIL": "equity-eu-unclassified",
+    "XSWX": "equity-eu-unclassified",
 }
 
 
-def equity_exchange_taxonomy_node(instrument: object) -> str | None:
+def equity_default_taxonomy_node(instrument: object) -> str | None:
     metadata = getattr(instrument, "metadata_json", None)
     if not isinstance(metadata, dict):
         return None
     exchange_code = str(metadata.get("exchange_code") or "").strip().upper()
-    return EQUITY_EXCHANGE_TAXONOMY_NODES.get(exchange_code)
+    return EQUITY_MARKET_DEFAULT_TAXONOMY_NODES.get(exchange_code)
 
 
 def local_detail_view_type(instrument_type: str) -> str | None:
@@ -60,17 +62,21 @@ def sync_local_instrument(
     )
     if instrument_type == "equity":
         exchange_code = str(shared_record.get("exchange_code") or "").strip().upper()
-        node_id = EQUITY_EXCHANGE_TAXONOMY_NODES.get(exchange_code)
+        node_id = EQUITY_MARKET_DEFAULT_TAXONOMY_NODES.get(exchange_code)
         if node_id is None:
             raise ValueError(f"Unsupported Registry equity exchange_code: {exchange_code or 'missing'}")
         if taxonomy_repository.get_node(session, node_id=node_id) is None:
-            raise ValueError(f"Watchlist exchange taxonomy node is missing: {node_id}")
-        taxonomy_repository.upsert_assignment(
+            raise ValueError(f"Watchlist equity taxonomy node is missing: {node_id}")
+        if taxonomy_repository.get_assignment(
             session,
             instrument_id=local_instrument.instrument_id,
-            node_id=node_id,
-            source_record_id=f"registry_exchange:{exchange_code}",
-        )
+        ) is None:
+            taxonomy_repository.upsert_assignment(
+                session,
+                instrument_id=local_instrument.instrument_id,
+                node_id=node_id,
+                source_record_id=f"registry_market:{exchange_code}",
+            )
     return local_instrument
 
 

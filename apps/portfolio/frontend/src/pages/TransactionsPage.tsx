@@ -492,7 +492,7 @@ function isSelectableInstrument(
     return false
   }
   const currencyIsVerified =
-    !('fmp_symbol' in instrument) || instrument.currency_verified
+    !('catalog_symbol' in instrument) || instrument.currency_verified
   if (
     accountCurrency &&
     currencyIsVerified &&
@@ -1801,7 +1801,7 @@ export default function TransactionsPage() {
   }
 
   async function selectInstrument(instrument: SecuritySearchOption) {
-    if (!('fmp_symbol' in instrument)) {
+    if (!('catalog_symbol' in instrument)) {
       commitSelectedInstrument(instrument)
       return
     }
@@ -1813,7 +1813,8 @@ export default function TransactionsPage() {
     try {
       const materialized = await materializePlatformSecurity(
         instrument.instrument_type,
-        instrument.fmp_symbol,
+        instrument.catalog_provider,
+        instrument.catalog_symbol,
       )
       const refreshed = await getPortfolioInstruments(portfolioId)
       setInstruments(refreshed.instruments)

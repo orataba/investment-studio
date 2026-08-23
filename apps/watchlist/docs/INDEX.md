@@ -11,12 +11,14 @@
 3. [CURRENT_SYSTEM_BASELINE.md](./CURRENT_SYSTEM_BASELINE.md)
    当前 watchlist app 已经实现到哪里、哪些页面和接口是真实可用的。
 4. [FUND_PRODUCT_FRAMEWORK.md](./FUND_PRODUCT_FRAMEWORK.md)
-   公募/私募产品框架的三层模型：`Instrument Taxonomy / Research Tags / Monitoring Assessment`；instrument type 属于 Registry，分类树属于 Watchlist。
-5. [FUND_QUALITATIVE_RESEARCH_FRAMEWORK.md](./FUND_QUALITATIVE_RESEARCH_FRAMEWORK.md)
-   fund detail `Research` 页的定性研究标签、`timeline_notes` 和人工 rating 规则。
-6. [FUND_TERMINAL_V2_DATA_MODEL_AND_API.md](./FUND_TERMINAL_V2_DATA_MODEL_AND_API.md)
+   公募/私募产品框架的三层模型：`Instrument Taxonomy / Investment Research / Monitoring Assessment`；instrument type 属于 Registry，分类树属于 Watchlist。
+5. [ASSET_DETAIL_ARCHITECTURE_REVIEW.md](./ASSET_DETAIL_ARCHITECTURE_REVIEW.md)
+   五类资产的详情页信息架构、单一主源矩阵、FMP/Tushare 能力边界和本次清理结论。
+6. [FUND_QUALITATIVE_RESEARCH_FRAMEWORK.md](./FUND_QUALITATIVE_RESEARCH_FRAMEWORK.md)
+   fund detail `Research` 页的基金专属定性判断、逐条 `Research Record` 和人工 rating 规则。
+7. [FUND_TERMINAL_V2_DATA_MODEL_AND_API.md](./FUND_TERMINAL_V2_DATA_MODEL_AND_API.md)
    当前后端数据分层、关键表、API 分组与路由边界。
-7. [RETURN_SERIES_CONTRACT.md](./RETURN_SERIES_CONTRACT.md)
+8. [RETURN_SERIES_CONTRACT.md](./RETURN_SERIES_CONTRACT.md)
    主图、Sparkline、1W/1M/3M/6M/MTD/YTD/1Y、自定义区间和私募复权收益的统一边界契约。
 
 后续如果需要新文档，默认只补三类内容：

@@ -9,6 +9,7 @@ SUPPORTED_LISTING_EXCHANGES: tuple[str, ...] = (
     "XNAS",
     "XNYS",
     "XASE",
+    "ARCX",
     "BATS",
     "XHKG",
     "XSHG",

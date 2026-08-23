@@ -10,6 +10,7 @@ ENV_ROOT="$TEST_ROOT/secure-env"
 MOCK_BIN="$TEST_ROOT/bin"
 mkdir -p \
   "$PROJECT_ROOT/apps/platform/backend" \
+  "$PROJECT_ROOT/apps/platform/backend/scripts" \
   "$PROJECT_ROOT/apps/watchlist/backend" \
   "$PROJECT_ROOT/apps/portfolio/backend" \
   "$PROJECT_ROOT/apps/portfolio/backend/scripts" \
@@ -48,6 +49,15 @@ printf '%s\n' \
   'raise SystemExit(1 if environ.get("AUDIT_FAIL") == "true" else 0)' \
   > "$PROJECT_ROOT/infra/scripts/audit_live_data.py"
 chmod +x "$PROJECT_ROOT/infra/scripts/audit_live_data.py"
+
+printf '%s\n' \
+  '#!/usr/bin/env python3' \
+  'from os import environ' \
+  'from pathlib import Path' \
+  'with Path(environ["EVENT_LOG"]).open("a", encoding="utf-8") as event_log:' \
+  '    event_log.write("catalog-refresh\n")' \
+  'raise SystemExit(1 if environ.get("CATALOG_REFRESH_FAIL") == "true" else 0)' \
+  > "$PROJECT_ROOT/apps/platform/backend/scripts/refresh_release_catalogs.py"
 
 printf '%s\n' \
   '#!/usr/bin/env python3' \
@@ -238,15 +248,17 @@ test -f "$SUCCESS_CASE/backups/portfolio-ops-pre-systemd-install-test.pgdump"
 grep -q 'Safety backup retained at:' "$SUCCESS_CASE/output"
 backup_line="$(grep -n '^backup$' "$SUCCESS_CASE/events" | head -n 1 | cut -d: -f1)"
 migration_line="$(grep -n '^migrate$' "$SUCCESS_CASE/events" | head -n 1 | cut -d: -f1)"
+catalog_refresh_line="$(grep -n '^catalog-refresh$' "$SUCCESS_CASE/events" | head -n 1 | cut -d: -f1)"
 snapshot_refresh_line="$(grep -n '^snapshot-refresh$' "$SUCCESS_CASE/events" | head -n 1 | cut -d: -f1)"
 audit_line="$(grep -n '^audit$' "$SUCCESS_CASE/events" | head -n 1 | cut -d: -f1)"
 restart_line="$(grep -n 'systemctl:restart' "$SUCCESS_CASE/events" | head -n 1 | cut -d: -f1)"
-if [[ -z "$backup_line" || -z "$migration_line" || -z "$snapshot_refresh_line" || -z "$audit_line" || -z "$restart_line" \
+if [[ -z "$backup_line" || -z "$migration_line" || -z "$catalog_refresh_line" || -z "$snapshot_refresh_line" || -z "$audit_line" || -z "$restart_line" \
   || "$backup_line" -ge "$migration_line" \
-  || "$migration_line" -ge "$snapshot_refresh_line" \
+  || "$migration_line" -ge "$catalog_refresh_line" \
+  || "$catalog_refresh_line" -ge "$snapshot_refresh_line" \
   || "$snapshot_refresh_line" -ge "$audit_line" \
   || "$audit_line" -ge "$restart_line" ]]; then
-  echo "Systemd install ordering was not backup, migration, snapshot refresh, audit, then restart." >&2
+  echo "Systemd install ordering was not backup, migration, catalog refresh, snapshot refresh, audit, then restart." >&2
   exit 1
 fi
 
@@ -264,6 +276,26 @@ assert_original_state_restored "$MIGRATION_CASE"
 grep -q '^backup$' "$MIGRATION_CASE/events"
 grep -q '^migrate$' "$MIGRATION_CASE/events"
 grep -q '^database-restore$' "$MIGRATION_CASE/events"
+
+CATALOG_REFRESH_CASE="$TEST_ROOT/catalog-refresh-failure"
+prepare_case "$CATALOG_REFRESH_CASE"
+set +e
+CATALOG_REFRESH_FAIL=true run_case "$CATALOG_REFRESH_CASE" > "$CATALOG_REFRESH_CASE/output" 2>&1
+catalog_refresh_status=$?
+set -e
+if [[ $catalog_refresh_status -eq 0 ]]; then
+  echo "The systemd installer accepted an injected catalog refresh failure." >&2
+  exit 1
+fi
+assert_original_state_restored "$CATALOG_REFRESH_CASE"
+grep -q '^backup$' "$CATALOG_REFRESH_CASE/events"
+grep -q '^migrate$' "$CATALOG_REFRESH_CASE/events"
+grep -q '^catalog-refresh$' "$CATALOG_REFRESH_CASE/events"
+if grep -q '^snapshot-refresh$\|^audit$' "$CATALOG_REFRESH_CASE/events"; then
+  echo "The systemd installer continued after a failed catalog refresh." >&2
+  exit 1
+fi
+grep -q '^database-restore$' "$CATALOG_REFRESH_CASE/events"
 
 SNAPSHOT_REFRESH_CASE="$TEST_ROOT/snapshot-refresh-failure"
 prepare_case "$SNAPSHOT_REFRESH_CASE"

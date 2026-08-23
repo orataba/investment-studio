@@ -66,19 +66,13 @@ Database Dashboard 的邮件刷新使用显式产品规则匹配发件人、主�
 
 邮件或文件中解析出的值先作为 Platform 私有原始证据保存。Registry 对基金只接受 `official_nav`（单位净值）和 `total_return_nav`（分红再投资复权累计净值）。单位净值加历史现金分红的普通累计净值不得写成 `total_return_nav`；缺少可信供应商复权序列，或缺少完整分红/再投资信息时，累计净值保持 unavailable/NA。系统不以单位净值、现金累计值或交易价格兜底制造回报曲线。
 
-Database Dashboard 通过 DataHub REST 接口刷新 Tushare 数据集。将 instrument 的 `Source Mode` 设为 `API`、`API Profile` 设为 `tushare` 后，所有请求都由 [datahub_client.py](./backend/platform_app/services/datahub_client.py) 发送到 `PORTFOLIO_OPS_PLATFORM_DATAHUB_TUSHARE_API_URL`，并以 `X-API-Key` 携带仓库外配置的 `PORTFOLIO_OPS_PLATFORM_DATAHUB_API_KEY`。客户端按 DataHub 的 `fields + items + has_more` 合约解码并使用 `offset` 读取全部分页。公募 `.OF` 代码通过 `fund-nav` 写入 `official_nav / total_return_nav`，场内基金 `.SH/.SZ` 通过 `fund-daily` 与 `fund-adj` 写入原始收盘价、OHLCV 和前复权序列，指数 `.SH/.SZ/.CSI/.CNI` 使用 `index-daily`。股票不再走 Tushare：美股、港股、A 股以及伦敦、Xetra、巴黎、阿姆斯特丹、米兰、瑞士主要市场的本地目录和已使用股票 EOD 都由 FMP API 直接维护，FMP ETF 使用同一市场范围并另含 Cboe BZX。欧洲 listing 在首次 materialize 时以 profile 核实实际报价币种；`GBp/GBX` 按 `0.01` 归一为 GBP。批量刷新默认串行请求 DataHub，并对实际观察到的临时 40203/40204 响应做有限退避重试；其他提供方错误立即失败。真实 API key 只存放在仓库外的 `platform.env` 或 token 文件中；backend 目录中的 `.env.example` 仅说明键名。
+Database Dashboard 通过 DataHub REST 接口刷新 Tushare 数据集。将 instrument 的 `Source Mode` 设为 `API`、`API Profile` 设为 `tushare` 后，所有请求都由 [datahub_client.py](./backend/platform_app/services/datahub_client.py) 发送到 `PORTFOLIO_OPS_PLATFORM_DATAHUB_TUSHARE_API_URL`，并以 `X-API-Key` 携带仓库外配置的 `PORTFOLIO_OPS_PLATFORM_DATAHUB_API_KEY`。客户端按 DataHub 的 `fields + items + has_more` 合约解码并使用 `offset` 读取全部分页。A 股公募 `.OF` 代码通过 `fund-nav` 写入 `official_nav / total_return_nav`，A 股 ETF `.SH/.SZ` 通过 `fund-daily` 与 `fund-adj` 写入原始收盘价、OHLCV 和前复权序列，尚未由 FMP 精确覆盖的 A 股指数使用 `index-daily`。股票不再走 Tushare：美股、港股、A 股以及伦敦、Xetra、巴黎、阿姆斯特丹、米兰、瑞士主要市场的本地目录和已使用股票 EOD 都由 FMP API 直接维护；港股、美股等海外 ETF 使用 FMP，ETF 目录另含 Cboe BZX。欧洲 listing 在首次 materialize 时以 profile 核实实际报价币种；`GBp/GBX` 按 `0.01` 归一为 GBP。批量刷新默认串行请求 DataHub，并对实际观察到的临时 40203/40204 响应做有限退避重试；其他提供方错误立即失败。真实 API key 只存放在仓库外的 `platform.env` 或 token 文件中；backend 目录中的 `.env.example` 仅说明键名。
 
-`H11001.CSI` 是显式例外：Registry 必须同时配置
-`source_api_fallback_profile=csindex` 与 `source_api_fallback_code=H11001`，
-系统才会在 Tushare `index_daily` 没有新行时调用中证指数官网的
-`/perf/index-perf` 公共接口。备用源只写官方 `close`，provider 记为
-`csindex:index-perf`；接口没有 OHLCV 时保持缺失，不根据收盘值合成 K 线。
-端点与超时可分别通过 `PORTFOLIO_OPS_PLATFORM_CSINDEX_API_URL` 和
-`PORTFOLIO_OPS_PLATFORM_CSINDEX_TIMEOUT_SECONDS` 覆盖。
+市场数据采用单一主源，不在刷新时切换 provider，也不双写同一序列。股票（包括 A 股、港股和美股）固定使用 FMP；A 股公募与 A 股 ETF 固定使用 DataHub Tushare，港股/美股 ETF 使用 FMP。指数在建档时逐只验证 FMP 的精确代码和历史覆盖：验证通过才配置为 FMP，否则固定配置为 Tushare。当前 Registry 的 A 股核心指数没有验证到 FMP 精确覆盖，因此继续使用 Tushare；空响应会如实记为 `no_new_data`，不会转向第二数据源。
 
 指数的 provider 字段名与收益口径分开管理。`close` 只说明行情字段，不能自动等同于全收益；Database Dashboard 的 `Index Return Semantics` 必须按指数公司代码说明标记为 `Price return`、`Total return` 或 `Unknown`。例如普通沪深300代码与其全收益衍生代码是两条不同指数。该标记进入共享 Registry，Portfolio 再据此决定基准比较口径。
 
-后台定时刷新使用 [backend/scripts/refresh_market_data_scheduled.py](./backend/scripts/refresh_market_data_scheduled.py)。默认先从 FMP API 分别刷新本地轻量股票目录和 ETF 目录，再依次刷新 Tushare、公募/私募邮件、Registry 中已经使用的 FMP 股票/ETF EOD，以及 USD/EUR、USD/GBP、USD/CHF 的 FMP FX EOD，最后只重建方法版本落后的当前基金净值投影。股票和 FMP 已覆盖的 ETF 都只查本地目录；首次加入 Watchlist 或 Portfolio 时回补完整 EOD，后续按已使用资产增量更新，不维护全市场完整日线。现有 A 股 ETF 继续使用覆盖更完整的 Tushare 链路。投影协调不访问行情源或邮箱，也可用 `--channel projection` 单独执行。
+后台定时刷新使用 [backend/scripts/refresh_market_data_scheduled.py](./backend/scripts/refresh_market_data_scheduled.py)。默认先从 FMP API 分别刷新本地轻量股票目录和 ETF 目录，再依次刷新 Tushare 公募/A 股 ETF/指数、私募邮件、Registry 中已经使用的 FMP 股票与海外 ETF EOD，以及 USD/EUR、USD/GBP、USD/CHF 的 FMP FX EOD，最后只重建方法版本落后的当前基金净值投影。股票和海外 ETF 只查本地 FMP 目录；首次加入 Watchlist 或 Portfolio 时回补完整 EOD，后续按已使用资产增量更新，不维护全市场完整日线。投影协调不访问行情源或邮箱，也可用 `--channel projection` 单独执行。
 
 ```bash
 PYTHON_BIN=/home/shaw/miniconda3/envs/us_sector_rotation/bin/python \

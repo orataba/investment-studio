@@ -87,6 +87,11 @@ class FakeFmpClient:
             {
                 **deepcopy(_CATALOG_ROWS[exchange]),
                 "exchangeShortName": "BATS" if exchange == "CBOE" else exchange,
+                "exchange": (
+                    "New York Stock Exchange Arca"
+                    if exchange == "AMEX"
+                    else None
+                ),
                 "isEtf": True,
                 "isFund": False,
                 "isActivelyTrading": True,
@@ -153,6 +158,7 @@ def test_etf_catalog_search_is_local_and_includes_cboe(
     assert client.catalog_calls == list(FMP_ETF_CATALOG_EXCHANGES)
     assert summary["active_count"] == 13
     assert search_etf_catalog("MAGS", limit=10)[0]["exchange_code"] == "BATS"
+    assert search_etf_catalog("GLDM", limit=10)[0]["exchange_code"] == "ARCX"
 
     client.active_etfs = lambda exchange: pytest.fail(  # type: ignore[method-assign]
         f"local search unexpectedly called FMP for {exchange}"
@@ -160,7 +166,8 @@ def test_etf_catalog_search_is_local_and_includes_cboe(
     assert search_etfs("MAGS", limit=10)[0] == {
         "instrument_type": "etf",
         "symbol": "MAGS",
-        "fmp_symbol": "MAGS",
+        "catalog_provider": "fmp",
+        "catalog_symbol": "MAGS",
         "name": "Roundhill Magnificent Seven ETF",
         "exchange_code": "BATS",
         "exchange_label": "Cboe BZX",
@@ -194,9 +201,44 @@ def test_etf_materialization_loads_history_then_refreshes_incrementally(
     assert client.eod_calls[0]["start_date"] == "1900-01-01"
     expected_incremental_start = (date(2026, 8, 15) - timedelta(days=7)).isoformat()
     assert client.eod_calls[2]["start_date"] == expected_incremental_start
-    assert get_price_bar_coverage(instrument_id=str(first["instrument_id"]))[
-        "latest_date"
-    ] == "2026-08-15"
+    coverage = get_price_bar_coverage(instrument_id=str(first["instrument_id"]))
+    assert coverage["latest_date"] == "2026-08-15"
+    assert coverage["adjustment_factor_count"] == 1
+
+
+def test_nyse_arca_etf_keeps_its_canonical_listing_identity(
+    isolated_etf_store: None,
+) -> None:
+    client = FakeFmpClient()
+    sync_etf_catalog(client=client)  # type: ignore[arg-type]
+
+    materialized = materialize_etf("GLDM", refresh_eod=False, client=client)  # type: ignore[arg-type]
+
+    assert materialized["exchange_code"] == "ARCX"
+    assert materialized["source_settings"]["market_calendar"] == "ARCX"
+    assert search_etfs("GLDM", limit=10)[0]["exchange_label"] == "NYSE Arca"
+
+
+def test_mainland_etf_materialization_uses_tushare_source_contract(
+    isolated_etf_store: None,
+) -> None:
+    client = FakeFmpClient()
+    sync_etf_catalog(client=client)  # type: ignore[arg-type]
+
+    materialized = materialize_etf(
+        "510300.SS",
+        refresh_eod=False,
+        client=client,  # type: ignore[arg-type]
+    )
+
+    assert materialized["exchange_code"] == "XSHG"
+    assert materialized["source_settings"]["source_location"] == "DataHub Tushare"
+    assert materialized["source_settings"]["source_api_profile"] == "tushare"
+    assert any(
+        identifier["identifier_value"] == "tushare:510300.SH"
+        for identifier in materialized["identifiers"]
+    )
+    assert client.eod_calls == []
 
 
 def test_existing_registry_etf_is_reused_and_gains_fmp_identity(
@@ -214,11 +256,6 @@ def test_existing_registry_etf_is_reused_and_gains_fmp_identity(
                 "identifier_type": "exchange_ticker",
                 "identifier_value": "MAGS",
                 "is_primary": True,
-            },
-            {
-                "identifier_type": "provider_symbol",
-                "identifier_value": "tushare:MAGS",
-                "is_primary": False,
             },
         ],
     )

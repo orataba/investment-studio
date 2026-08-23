@@ -42,7 +42,7 @@ export async function searchWatchlistInstrumentCandidates(
       error:
         error instanceof Error
           ? error.message
-          : 'The local FMP stock and ETF catalogs are unavailable.',
+          : 'The local security catalogs are unavailable.',
     }))
 
   const [registryGroups, securityCatalog] = await Promise.all([

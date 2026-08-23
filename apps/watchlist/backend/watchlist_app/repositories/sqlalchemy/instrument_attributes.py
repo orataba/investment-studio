@@ -79,6 +79,25 @@ class SQLAlchemyInstrumentAttributeRepository:
         )
         return session.scalars(stmt).all()
 
+    def get_values_for_assets(
+        self,
+        session: Session,
+        instrument_ids: Sequence[str],
+    ) -> Sequence[InstrumentAttributeValue]:
+        if not instrument_ids:
+            return []
+        stmt = (
+            select(InstrumentAttributeValue)
+            .where(InstrumentAttributeValue.instrument_id.in_(tuple(instrument_ids)))
+            .order_by(
+                InstrumentAttributeValue.instrument_id,
+                InstrumentAttributeValue.attribute_key,
+                InstrumentAttributeValue.adopted_at.desc(),
+                InstrumentAttributeValue.instrument_attribute_value_id.desc(),
+            )
+        )
+        return session.scalars(stmt).all()
+
     def add_value(
         self,
         session: Session,

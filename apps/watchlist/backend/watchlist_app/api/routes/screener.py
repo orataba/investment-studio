@@ -2,12 +2,17 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from watchlist_app.api.contracts import ScreenerQueryRequest
+from watchlist_app.api.presenters import present_group_by_options
 from watchlist_app.db.session import get_db_session
 from watchlist_app.repositories.sqlalchemy.read_models import SQLAlchemyReadModelRepository
 from watchlist_app.repositories.sqlalchemy.field_registry import SQLAlchemyFieldRegistryRepository
 from watchlist_app.repositories.sqlalchemy.watchlists import SQLAlchemyWatchlistRepository
 from watchlist_app.services.canonical_recalc import CanonicalRecalcService
 from watchlist_app.services.read_models import execute_watchlist_query
+from watchlist_app.services.research_projection import (
+    RESEARCH_WATCHLIST_FIELD_KEYS,
+    build_research_watchlist_attribute_overrides,
+)
 from watchlist_app.services.read_model_freshness import (
     latest_local_market_data_date,
     local_materialization_source_cutoff,
@@ -27,8 +32,27 @@ watchlist_repository = SQLAlchemyWatchlistRepository()
 canonical_recalc_service = CanonicalRecalcService()
 field_registry_repository = SQLAlchemyFieldRegistryRepository()
 
-def _validate_query_contract(session: Session, payload_data: dict[str, object], view) -> None:
-    fields = {item.field_key: item for item in field_registry_repository.list_fields(session)}
+
+def _field_supports_all_instrument_types(field, instrument_types: set[str]) -> bool:
+    scope = {
+        str(value).strip().lower()
+        for value in field.instrument_scope_json or []
+        if str(value).strip()
+    }
+    if not instrument_types:
+        return not scope
+    return not scope or instrument_types.issubset(scope)
+
+
+def _validate_query_contract(
+    session: Session,
+    payload_data: dict[str, object],
+    view,
+    *,
+    rows,
+) -> None:
+    field_records = list(field_registry_repository.list_fields(session))
+    fields = {item.field_key: item for item in field_records}
     selected = (
         payload_data.get("selected_fields")
         if "selected_fields" in payload_data
@@ -49,6 +73,55 @@ def _validate_query_contract(session: Session, payload_data: dict[str, object], 
         if "group_by" in payload_data
         else view.default_group_by if view else "none"
     )
+    active_instrument_types = {
+        str(row.instrument_type or "").strip().lower()
+        for row in rows
+        if str(row.instrument_type or "").strip()
+    }
+    unavailable_fields = sorted(
+        field_key
+        for field_key in _requested_query_fields(payload_data, view)
+        if field_key
+        and field_key not in {
+            "none",
+            "taxonomy",
+            "instrument_id",
+            "metric_as_of_date",
+            "metric_return_kind",
+            "metric_quote_basis",
+            "metric_series_type",
+        }
+        and field_key in fields
+        and not _field_supports_all_instrument_types(
+            fields[field_key],
+            active_instrument_types,
+        )
+    )
+    if unavailable_fields:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "Fields are not available for every instrument type in this Watchlist: "
+                f"{', '.join(unavailable_fields)}."
+            ),
+        )
+    scoped_group_fields = [
+        field
+        for field in field_records
+        if _field_supports_all_instrument_types(field, active_instrument_types)
+    ]
+    available_group_by_codes = {
+        item["code"]
+        for item in present_group_by_options(
+            scoped_group_fields,
+            include_instrument_type=len(active_instrument_types) > 1,
+        )
+    }
+    if str(group_by or "none") not in available_group_by_codes:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Group by field {group_by!r} is not available for this Watchlist.",
+        )
     advanced = (
         payload_data.get("advanced_filters")
         if "advanced_filters" in payload_data
@@ -76,10 +149,10 @@ def _advanced_filter_fields(node: object) -> set[str]:
     return fields
 
 
-def _requests_peer_fields(
+def _requested_query_fields(
     payload_data: dict[str, object],
     view,
-) -> bool:
+) -> set[str]:
     fields = {str(value) for value in payload_data.get("selected_fields") or []}
     fields.update(str(value) for value in (payload_data.get("filters") or {}).keys())
     fields.update(
@@ -104,7 +177,17 @@ def _requests_peer_fields(
             fields.add(str(view.default_group_by or ""))
         if "advanced_filters" not in payload_data:
             fields.update(_advanced_filter_fields(view.default_advanced_filter_json))
-    return any(field.startswith("attr.peer_") for field in fields)
+    return fields
+
+
+def _merge_attribute_overrides(
+    *overrides: dict[str, dict[str, object]],
+) -> dict[str, dict[str, object]]:
+    merged: dict[str, dict[str, object]] = {}
+    for override in overrides:
+        for instrument_id, values in override.items():
+            merged.setdefault(instrument_id, {}).update(values)
+    return merged
 
 
 @router.post("/query")
@@ -125,30 +208,43 @@ def run_screener_query(
         )
         if view is None:
             raise HTTPException(status_code=404, detail="Watchlist view not found")
-    _validate_query_contract(session, payload_data, view)
     rows = read_model_repository.list_watchlist_rows(session, payload.watchlist_id)
+    _validate_query_contract(session, payload_data, view, rows=rows)
     charts = read_model_repository.list_charts(
         session,
         [row.instrument_id for row in rows],
     )
+    requested_fields = _requested_query_fields(payload_data, view)
     try:
-        attribute_overrides = (
+        peer_attribute_overrides = (
             canonical_recalc_service.peer_watchlist_attribute_overrides(
                 session,
                 instrument_ids=[row.instrument_id for row in rows],
             )
-            if _requests_peer_fields(payload_data, view)
-            else None
+            if any(field.startswith("attr.peer_") for field in requested_fields)
+            else {}
         )
     except SharedInstrumentRegistryError as error:
         raise HTTPException(
             status_code=502,
             detail=f"Live peer comparison is unavailable: {error}",
         ) from error
+    research_attribute_overrides = (
+        build_research_watchlist_attribute_overrides(
+            session,
+            instrument_ids=[row.instrument_id for row in rows],
+        )
+        if requested_fields.intersection(RESEARCH_WATCHLIST_FIELD_KEYS)
+        else {}
+    )
+    attribute_overrides = _merge_attribute_overrides(
+        peer_attribute_overrides,
+        research_attribute_overrides,
+    )
     response = execute_watchlist_query(
         rows=rows,
         charts=charts,
-        attribute_overrides=attribute_overrides,
+        attribute_overrides=attribute_overrides or None,
         payload=payload_data,
         view=view,
     )
@@ -169,7 +265,7 @@ def run_screener_query(
                     fallback_values=(
                         getattr(row_record, "last_nav_date", None),
                         item.get("latest_quote_date"),
-                        item.get("last_nav_date"),
+                        item.get("metric_as_of_date"),
                     ),
                 ),
                 "local_source_cutoff_at": local_materialization_source_cutoff(

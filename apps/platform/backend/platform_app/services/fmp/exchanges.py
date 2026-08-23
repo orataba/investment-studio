@@ -35,6 +35,8 @@ FMP_EQUITY_CATALOG_EXCHANGES = {
     "SIX": FmpExchange("XSWX", "EU", "SIX Swiss Exchange", "CHF", True),
 }
 
+NYSE_ARCA = FmpExchange("ARCX", "US", "NYSE Arca", "USD")
+
 FMP_ETF_CATALOG_EXCHANGES = {
     **FMP_EQUITY_CATALOG_EXCHANGES,
     "CBOE": FmpExchange("BATS", "US", "Cboe BZX", "USD"),
@@ -46,6 +48,9 @@ _EXCHANGES_BY_FMP_CODE = {
     "NASDAQGM": FMP_EQUITY_CATALOG_EXCHANGES["NASDAQ"],
     "NASDAQCM": FMP_EQUITY_CATALOG_EXCHANGES["NASDAQ"],
     "NYSEAMERICAN": FMP_EQUITY_CATALOG_EXCHANGES["AMEX"],
+    "NYSEARCA": NYSE_ARCA,
+    "NEWYORKSTOCKEXCHANGEARCA": NYSE_ARCA,
+    "ARCA": NYSE_ARCA,
     "HKG": FMP_EQUITY_CATALOG_EXCHANGES["HKSE"],
     "SSE": FMP_EQUITY_CATALOG_EXCHANGES["SHH"],
     "SZSE": FMP_EQUITY_CATALOG_EXCHANGES["SHZ"],
@@ -56,6 +61,7 @@ _EXCHANGES_BY_MIC = {
     exchange.exchange_code: exchange
     for exchange in FMP_ETF_CATALOG_EXCHANGES.values()
 }
+_EXCHANGES_BY_MIC[NYSE_ARCA.exchange_code] = NYSE_ARCA
 
 
 def resolve_exchange(*values: object) -> FmpExchange | None:

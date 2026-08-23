@@ -1,5 +1,4 @@
 import {
-  Fragment,
   startTransition,
   useDeferredValue,
   useEffect,
@@ -11,27 +10,32 @@ import {
 import { Link, useParams, useSearchParams } from 'react-router'
 
 import LoadingOverlay from '../components/LoadingOverlay'
+import InvestmentResearchWorkspace from '../components/InvestmentResearchWorkspace'
+import InstrumentResearchAttributes from '../components/InstrumentResearchAttributes'
 import {
   type CalculationFrequencyProfile,
   type CorporateActionEvent,
-  type FundChartPoint,
+  type InstrumentChartPoint as FundChartPoint,
   type FundDocumentsResponse,
-  type FundLibraryItem,
+  type InstrumentLibraryItem,
   type FundNavSeriesResponse,
   type FundPeopleResponse,
-  type FundPerformanceResponse,
+  type InstrumentPerformanceResponse as FundPerformanceResponse,
   type FundPriceResponse,
-  type FundResearchResponse,
-  type FundRiskResponse,
+  type InstrumentResearchNote,
+  type InstrumentResearchResponse,
+  type InstrumentMonitoringResponse,
+  type InstrumentRiskResponse as FundRiskResponse,
   type FundStrategyResponse,
-  type FundSummaryResponse,
+  type InstrumentSummaryResponse,
   type InstrumentTaxonomyTreeNode,
   type InstrumentTaxonomyTreeResponse,
   type SharedInstrumentRecord,
   type FundExposureHoldingsResponse as FundPortfolioHoldingsResponse,
   type FundExposureResponse as FundPortfolioResponse,
   type InstrumentAttributeValuesResponse,
-  type InstrumentAttributeDefinition,
+  type InstrumentReferenceData,
+  emptyInstrumentResearchResponse,
   getInstrumentTaxonomyTree,
   getInstrumentAttributes,
   getInstrumentDocuments,
@@ -43,18 +47,17 @@ import {
   getInstrumentPerformance,
   getInstrumentPrice,
   getInstrumentResearch,
+  getInstrumentMonitoring,
   getInstrumentRisk,
   getInstrumentSummary,
+  getPlatformInstrumentReferenceData,
   getInstrumentStrategy,
   getSharedInstruments,
   resolveInstrumentDetail,
   uploadInstrumentDocument,
-  updateInstrumentAttributes,
   updateInstrumentSettings,
-  updateInstrumentDocuments,
   updateInstrumentPeople,
   updateInstrumentPrice,
-  updateInstrumentResearch,
   updateInstrumentStrategy,
   updateInstrumentNavSettings,
 } from '../lib/api'
@@ -68,6 +71,7 @@ import {
   formatPercent,
 } from '../lib/format'
 import { buildWatchlistPath, PLATFORM_HOME_URL } from '../lib/navigation'
+import { fundDetailTabLabel } from '../lib/instrumentDetailArchitecture'
 import { useLanguage } from '../../../../../packages/ui/src/i18n'
 import { useModalDialog } from '../../../../../packages/ui/src/useModalDialog'
 import {
@@ -94,16 +98,11 @@ import {
   resolveReturnWindow,
   shiftIsoDate,
 } from '../lib/returnWindows'
-import {
-  areAdjacentCalendarMonths,
-  buildMonthlyReturnMatrix,
-  buildMonthlyReturnSeries,
-  monthBucket,
-} from '../lib/calendarReturns'
+import { buildMonthlyReturnMatrix } from '../lib/calendarReturns'
 
 type FundDetailBundle = {
-  summary: FundSummaryResponse
-  library: FundLibraryItem[]
+  summary: InstrumentSummaryResponse
+  library: InstrumentLibraryItem[]
   performance: FundPerformanceResponse
   risk: FundRiskResponse
   portfolio: FundPortfolioResponse
@@ -112,8 +111,10 @@ type FundDetailBundle = {
   strategy: FundStrategyResponse
   price: FundPriceResponse
   documents: FundDocumentsResponse
-  research: FundResearchResponse
+  research: InstrumentResearchResponse
+  monitoring: InstrumentMonitoringResponse | null
   navSeries: FundNavSeriesResponse
+  reference: InstrumentReferenceData | null
 }
 
 type PeerComparisonMetric = NonNullable<
@@ -152,63 +153,6 @@ type EditableTeamRow = {
   start_date: string
 }
 
-type EditableDocumentRow = {
-  id: string
-  title: string
-  document_type: string
-  as_of_date: string
-  source: string
-  status: string
-  version_label: string
-  file_name: string
-  download_url: string
-  file_size: string
-  content_type: string
-  uploaded_at: string
-  notes: string
-  stored_file_name: string
-}
-
-type EditableImportRow = {
-  id: string
-  import_type: string
-  received_at: string
-  source: string
-  status: string
-  file_name: string
-}
-
-type EditableExtractionRow = {
-  id: string
-  document_title: string
-  extract_type: string
-  status: string
-  adopted_version: string
-  updated_at: string
-}
-
-type TimelineNoteImportance = 'low' | 'medium' | 'high'
-
-type ResearchTimelineNote = {
-  note_id: string
-  note_date: string
-  title: string
-  summary: string
-  body: string
-  importance: TimelineNoteImportance
-  tags: string[]
-}
-
-type TimelineNoteDraft = {
-  note_id: string
-  note_date: string
-  title: string
-  summary: string
-  body: string
-  importance: TimelineNoteImportance
-  tagsText: string
-}
-
 type PeopleDraft = {
   overviewRows: EditableKeyValueRow[]
   teamRows: EditableTeamRow[]
@@ -229,17 +173,6 @@ type PriceDraft = {
   policy_text: string
   feeNoteRows: EditableListRow[]
   noteRows: EditableListRow[]
-}
-
-type DocumentsDraft = {
-  currentDocumentRows: EditableDocumentRow[]
-  importRows: EditableImportRow[]
-  extractionRows: EditableExtractionRow[]
-  noteRows: EditableListRow[]
-}
-
-type ResearchDraft = {
-  overviewRows: EditableKeyValueRow[]
 }
 
 type ChartTimelineNoteContextMenu = {
@@ -490,11 +423,13 @@ const NAV_BASIS_SOURCE_LABELS: Record<string, string> = {
   local: 'Local Facts',
 }
 
-const PEOPLE_PRIMARY_OVERVIEW_FIELDS: Array<{
+type PeopleOverviewField = {
   key: string
   label: string
   type: 'date' | 'number' | 'text'
-}> = [
+}
+
+const PUBLIC_FUND_PEOPLE_FIELDS: PeopleOverviewField[] = [
   { key: 'inception_date', label: 'Inception Date', type: 'date' },
   { key: 'number_of_managers', label: 'Number of Managers', type: 'number' },
   { key: 'average_tenure_years', label: 'Average Tenure', type: 'number' },
@@ -503,23 +438,17 @@ const PEOPLE_PRIMARY_OVERVIEW_FIELDS: Array<{
   { key: 'sub_advisor', label: 'Sub-Advisor', type: 'text' },
 ]
 
-const PEOPLE_PRIMARY_OVERVIEW_FIELD_KEYS = new Set(
-  PEOPLE_PRIMARY_OVERVIEW_FIELDS.map((field) => field.key),
-)
-
-const RESEARCH_OVERVIEW_FIELDS: Array<{
-  key: string
-  label: string
-  type: 'date' | 'text'
-}> = [
-  { key: 'current_view', label: 'Current View', type: 'text' },
-  { key: 'research_view', label: 'Research View', type: 'text' },
-  { key: 'dd_status', label: 'DD Status', type: 'text' },
-  { key: 'odd_status', label: 'ODD Status', type: 'text' },
-  { key: 'ic_status', label: 'IC Status', type: 'text' },
-  { key: 'decision', label: 'Decision', type: 'text' },
-  { key: 'next_review_date', label: 'Next Review Date', type: 'date' },
-  { key: 'primary_analyst', label: 'Primary Analyst', type: 'text' },
+const PRIVATE_FUND_PEOPLE_FIELDS: PeopleOverviewField[] = [
+  { key: 'inception_date', label: 'Inception Date', type: 'date' },
+  { key: 'number_of_managers', label: 'Number of Key Persons', type: 'number' },
+  { key: 'average_tenure_years', label: 'Average Tenure', type: 'number' },
+  { key: 'longest_tenure_years', label: 'Longest Tenure', type: 'number' },
+  { key: 'investment_manager', label: 'Investment Manager', type: 'text' },
+  { key: 'general_partner', label: 'General Partner / Trustee', type: 'text' },
+  { key: 'fund_administrator', label: 'Fund Administrator', type: 'text' },
+  { key: 'custodian', label: 'Custodian', type: 'text' },
+  { key: 'auditor', label: 'Auditor', type: 'text' },
+  { key: 'prime_broker', label: 'Prime Broker', type: 'text' },
 ]
 
 const QUOTE_BASIS_LABELS: Record<QuoteBasis, LocalizedText> = {
@@ -1072,20 +1001,22 @@ function makeRowId(prefix: string) {
   return `${prefix}-${Math.random().toString(36).slice(2, 10)}`
 }
 
-function benchmarkLibraryLabel(item: FundLibraryItem) {
-  return item.ticker_or_isin ? `${item.ticker_or_isin} · ${item.fund_name}` : item.fund_name
+function benchmarkLibraryLabel(item: InstrumentLibraryItem) {
+  return item.primary_identifier
+    ? `${item.primary_identifier} · ${item.instrument_name}`
+    : item.instrument_name
 }
 
-function registryBenchmarkOption(item: SharedInstrumentRecord): FundLibraryItem {
+function registryBenchmarkOption(item: SharedInstrumentRecord): InstrumentLibraryItem {
   const primaryIdentifier =
     item.identifiers.find((identifier) => identifier.is_primary)?.identifier_value ||
     item.identifiers[0]?.identifier_value ||
     null
   return {
-    fund_id: item.instrument_id,
-    fund_name: item.instrument_name,
-    ticker_or_isin: primaryIdentifier,
-    product_type: item.instrument_type,
+    instrument_id: item.instrument_id,
+    instrument_name: item.instrument_name,
+    primary_identifier: primaryIdentifier,
+    instrument_type: item.instrument_type,
   }
 }
 
@@ -1103,18 +1034,18 @@ function benchmarkTypeRank(type: string) {
             : 5
 }
 
-function filterBenchmarkOptions(options: FundLibraryItem[], search: string) {
+function filterBenchmarkOptions(options: InstrumentLibraryItem[], search: string) {
   const normalizedSearch = search.trim().toLowerCase()
   if (!normalizedSearch) {
     return options
       .slice()
       .sort((left, right) => {
-        const leftIdentifier = left.ticker_or_isin || left.fund_id
-        const rightIdentifier = right.ticker_or_isin || right.fund_id
+        const leftIdentifier = left.primary_identifier || left.instrument_id
+        const rightIdentifier = right.primary_identifier || right.instrument_id
         return (
-          benchmarkTypeRank(left.product_type) - benchmarkTypeRank(right.product_type) ||
+          benchmarkTypeRank(left.instrument_type) - benchmarkTypeRank(right.instrument_type) ||
           leftIdentifier.localeCompare(rightIdentifier) ||
-          left.fund_name.localeCompare(right.fund_name)
+          left.instrument_name.localeCompare(right.instrument_name)
         )
       })
       .slice(0, 12)
@@ -1122,7 +1053,7 @@ function filterBenchmarkOptions(options: FundLibraryItem[], search: string) {
 
   return options
     .filter((item) =>
-      [item.fund_name, item.ticker_or_isin, item.product_type, item.fund_id, benchmarkLibraryLabel(item)]
+      [item.instrument_name, item.primary_identifier, item.instrument_type, item.instrument_id, benchmarkLibraryLabel(item)]
         .join(' ')
         .toLowerCase()
         .includes(normalizedSearch),
@@ -1130,77 +1061,7 @@ function filterBenchmarkOptions(options: FundLibraryItem[], search: string) {
     .slice(0, 10)
 }
 
-function parseTimelineNoteImportance(value: unknown): TimelineNoteImportance {
-  return value === 'high' || value === 'medium' || value === 'low' ? value : 'medium'
-}
-
-function normalizeResearchTimelineNotes(notes: Array<Record<string, unknown>> | undefined) {
-  return (notes || [])
-    .map((row) => {
-      const noteDate = typeof row.note_date === 'string' ? row.note_date.slice(0, 10) : ''
-      if (!noteDate) {
-        return null
-      }
-      return {
-        note_id:
-          typeof row.note_id === 'string' && row.note_id.trim()
-            ? row.note_id
-            : makeRowId('timeline-note'),
-        note_date: noteDate,
-        title: typeof row.title === 'string' ? row.title : '',
-        summary: typeof row.summary === 'string' ? row.summary : '',
-        body: typeof row.body === 'string' ? row.body : '',
-        importance: parseTimelineNoteImportance(row.importance),
-        tags: Array.isArray(row.tags)
-          ? row.tags
-              .map((value) => (typeof value === 'string' ? value.trim() : ''))
-              .filter(Boolean)
-          : [],
-      } satisfies ResearchTimelineNote
-    })
-    .filter((row): row is ResearchTimelineNote => row !== null)
-    .sort(sortResearchTimelineNotes)
-}
-
-function sortResearchTimelineNotes(left: ResearchTimelineNote, right: ResearchTimelineNote) {
-  const dateCompare = right.note_date.localeCompare(left.note_date)
-  if (dateCompare !== 0) {
-    return dateCompare
-  }
-  return left.title.localeCompare(right.title)
-}
-
-function createTimelineNoteDraft(
-  noteDate: string,
-  note?: ResearchTimelineNote | null,
-): TimelineNoteDraft {
-  return {
-    note_id: note?.note_id || makeRowId('timeline-note'),
-    note_date: note?.note_date || noteDate,
-    title: note?.title || '',
-    summary: note?.summary || '',
-    body: note?.body || '',
-    importance: note?.importance || 'medium',
-    tagsText: note?.tags.join(', ') || '',
-  }
-}
-
-function serializeTimelineNoteDraft(draft: TimelineNoteDraft): ResearchTimelineNote {
-  return {
-    note_id: draft.note_id,
-    note_date: draft.note_date,
-    title: draft.title.trim(),
-    summary: draft.summary.trim(),
-    body: draft.body.trim(),
-    importance: draft.importance,
-    tags: draft.tagsText
-      .split(',')
-      .map((value) => value.trim())
-      .filter(Boolean),
-  }
-}
-
-function formatTimelineNoteImportance(importance: TimelineNoteImportance) {
+function formatTimelineNoteImportance(importance: InstrumentResearchNote['importance']) {
   if (importance === 'high') {
     return 'High'
   }
@@ -1362,6 +1223,47 @@ function getDisplayValue(value: unknown) {
   return getString(value)
 }
 
+function getRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : {}
+}
+
+function ReferenceDataTable({
+  title,
+  rows,
+}: {
+  title: string
+  rows: Array<Record<string, unknown>>
+}) {
+  if (!rows.length) return null
+  const columns = Array.from(new Set(rows.flatMap((row) => Object.keys(row)))).slice(0, 8)
+  return (
+    <section className="panel instrument-edit-surface">
+      <div className="instrument-section-header">
+        <div>
+          <div className="panel-title">Provider Reference</div>
+          <div className="instrument-section-title">{title}</div>
+        </div>
+      </div>
+      <div className="table-shell">
+        <table className="instrument-data-table">
+          <thead>
+            <tr>{columns.map((column) => <th key={column}>{formatLabel(column)}</th>)}</tr>
+          </thead>
+          <tbody>
+            {rows.slice(0, 50).map((row, rowIndex) => (
+              <tr key={rowIndex}>
+                {columns.map((column) => <td key={column}>{getDisplayValue(row[column])}</td>)}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  )
+}
+
 function formatPriceOverviewValue(key: string, value: unknown) {
   if (value == null || value === '') {
     return '—'
@@ -1381,7 +1283,7 @@ function formatPriceOverviewValue(key: string, value: unknown) {
   return String(value)
 }
 
-function formatResearchOverviewValue(key: string, value: unknown) {
+function formatManualOverviewValue(key: string, value: unknown) {
   if (value == null || value === '') {
     return '—'
   }
@@ -1535,70 +1437,11 @@ function toEditablePriceDraft(price: FundPriceResponse): PriceDraft {
   }
 }
 
-function toEditableDocumentsDraft(documents: FundDocumentsResponse): DocumentsDraft {
-  return {
-    currentDocumentRows: (documents.current_documents || []).map((row) => ({
-      id: makeRowId('document'),
-      title: typeof row.title === 'string' ? row.title : '',
-      document_type: typeof row.document_type === 'string' ? row.document_type : '',
-      as_of_date: typeof row.as_of_date === 'string' ? row.as_of_date.slice(0, 10) : '',
-      source: typeof row.source === 'string' ? row.source : '',
-      status: typeof row.status === 'string' ? row.status : '',
-      version_label: typeof row.version_label === 'string' ? row.version_label : '',
-      file_name: typeof row.file_name === 'string' ? row.file_name : '',
-      download_url: typeof row.download_url === 'string' ? row.download_url : '',
-      file_size: row.file_size == null ? '' : String(row.file_size),
-      content_type: typeof row.content_type === 'string' ? row.content_type : '',
-      uploaded_at: typeof row.uploaded_at === 'string' ? row.uploaded_at.slice(0, 16) : '',
-      notes: typeof row.notes === 'string' ? row.notes : '',
-      stored_file_name: typeof row.stored_file_name === 'string' ? row.stored_file_name : '',
-    })),
-    importRows: (documents.recent_imports || []).map((row) => ({
-      id: makeRowId('document-import'),
-      import_type: typeof row.import_type === 'string' ? row.import_type : '',
-      received_at: typeof row.received_at === 'string' ? row.received_at.slice(0, 16) : '',
-      source: typeof row.source === 'string' ? row.source : '',
-      status: typeof row.status === 'string' ? row.status : '',
-      file_name: typeof row.file_name === 'string' ? row.file_name : '',
-    })),
-    extractionRows: (documents.extraction_reviews || []).map((row) => ({
-      id: makeRowId('document-extraction'),
-      document_title: typeof row.document_title === 'string' ? row.document_title : '',
-      extract_type: typeof row.extract_type === 'string' ? row.extract_type : '',
-      status: typeof row.status === 'string' ? row.status : '',
-      adopted_version: typeof row.adopted_version === 'string' ? row.adopted_version : '',
-      updated_at: typeof row.updated_at === 'string' ? row.updated_at.slice(0, 16) : '',
-    })),
-    noteRows: (documents.notes || []).map((value) => ({
-      id: makeRowId('document-note'),
-      value,
-    })),
-  }
-}
-
-function toEditableResearchDraft(research: FundResearchResponse): ResearchDraft {
-  const overview = research.overview || {}
-  return {
-    overviewRows: RESEARCH_OVERVIEW_FIELDS.map((field) => {
-      const value = overview[field.key]
-      return {
-        id: makeRowId('research-overview'),
-        key: field.key,
-        value: value == null ? '' : String(value),
-      }
-    }),
-  }
-}
-
 function getOverviewDraftValue(draft: PriceDraft | null, key: string) {
   return draft?.overviewRows.find((row) => row.key === key)?.value ?? ''
 }
 
 function getPeopleOverviewDraftValue(draft: PeopleDraft | null, key: string) {
-  return draft?.overviewRows.find((row) => row.key === key)?.value ?? ''
-}
-
-function getResearchOverviewDraftValue(draft: ResearchDraft | null, key: string) {
   return draft?.overviewRows.find((row) => row.key === key)?.value ?? ''
 }
 
@@ -1614,7 +1457,7 @@ function normalizeTabs(sourceTabs: string[]): DetailTab[] {
   const set = new Set<DetailTab>(CORE_TABS)
 
   sourceTabs.forEach((tab) => {
-    const normalizedTab = tab === 'quote' || tab === 'summary' ? 'overview' : tab === 'portfolio' ? 'exposure' : tab
+    const normalizedTab = tab === 'portfolio' ? 'exposure' : tab
     if (TAB_ORDER.includes(normalizedTab as DetailTab)) {
       set.add(normalizedTab as DetailTab)
     }
@@ -1652,10 +1495,6 @@ function defaultFundPriceResponse(): FundPriceResponse {
 
 function defaultFundDocumentsResponse(): FundDocumentsResponse {
   return { current_documents: [], recent_imports: [], extraction_reviews: [], notes: [] }
-}
-
-function defaultFundResearchResponse(): FundResearchResponse {
-  return { overview: {}, manual_rating: null, timeline_notes: [] }
 }
 
 function defaultCalculationFrequencyProfile(): CalculationFrequencyProfile {
@@ -2329,31 +2168,6 @@ function buildRollingSharpeSeries(points: FundChartPoint[], windowMonths = ROLLI
   return rollingSharpe
 }
 
-function alignMonthlyReturnPairs(leftPoints: FundChartPoint[], rightPoints: FundChartPoint[]) {
-  const leftMonthlyReturns = buildMonthlyReturnSeries(leftPoints)
-  const rightMonthlyReturns = buildMonthlyReturnSeries(rightPoints)
-  const rightMap = new Map(
-    rightMonthlyReturns.map((point) => [monthBucket(point.date), { date: point.date, value: point.value / 100 }] as const),
-  )
-
-  return leftMonthlyReturns
-    .map((point) => {
-      const bucket = monthBucket(point.date)
-      const rightPoint = rightMap.get(bucket)
-      if (!rightPoint) {
-        return null
-      }
-      return {
-        date: point.date,
-        left: point.value / 100,
-        right: rightPoint.value,
-      }
-    })
-    .filter(
-      (point): point is { date: string; left: number; right: number } => point !== null,
-    )
-}
-
 function getSampleCovariance(left: number[], right: number[]) {
   if (left.length < 2 || right.length < 2 || left.length !== right.length) {
     return null
@@ -2364,40 +2178,6 @@ function getSampleCovariance(left: number[], right: number[]) {
     left.reduce((sum, value, index) => sum + ((value - leftMean) * (right[index] - rightMean)), 0) /
     (left.length - 1)
   return covariance
-}
-
-function buildRollingBetaSeries(
-  points: FundChartPoint[],
-  benchmarkPoints: FundChartPoint[],
-  windowMonths = ROLLING_WINDOW_MONTHS,
-) {
-  const alignedPairs = alignMonthlyReturnPairs(points, benchmarkPoints)
-  const rollingBeta: FundChartPoint[] = []
-
-  for (let index = windowMonths - 1; index < alignedPairs.length; index += 1) {
-    const windowPairs = alignedPairs.slice(index - windowMonths + 1, index + 1)
-    const hasCalendarGap = windowPairs.some(
-      (pair, pairIndex) =>
-        pairIndex > 0 &&
-        !areAdjacentCalendarMonths(windowPairs[pairIndex - 1].date, pair.date),
-    )
-    if (hasCalendarGap) {
-      continue
-    }
-    const leftReturns = windowPairs.map((point) => point.left)
-    const rightReturns = windowPairs.map((point) => point.right)
-    const covariance = getSampleCovariance(leftReturns, rightReturns)
-    const variance = getSampleStandardDeviation(rightReturns)
-    if (covariance == null || variance == null || variance === 0) {
-      continue
-    }
-    rollingBeta.push({
-      date: windowPairs[windowPairs.length - 1].date,
-      value: covariance / (variance ** 2),
-    })
-  }
-
-  return rollingBeta
 }
 
 function inferAnnualizationPeriodsPerYear(points: FundChartPoint[], returnCount?: number) {
@@ -2639,43 +2419,6 @@ function getAnnualizedReturnFromPeriodicValues(values: number[], periodsPerYear:
     return null
   }
   return (Math.pow(cumulative, periodsPerYear / values.length) - 1) * 100
-}
-
-function getMedianValue(values: number[]) {
-  if (!values.length) {
-    return null
-  }
-  const sortedValues = [...values].sort((left, right) => left - right)
-  const middleIndex = Math.floor(sortedValues.length / 2)
-  if (sortedValues.length % 2 === 0) {
-    return (sortedValues[middleIndex - 1] + sortedValues[middleIndex]) / 2
-  }
-  return sortedValues[middleIndex]
-}
-
-function getPercentileRank(values: number[], targetValue: number) {
-  if (!values.length) {
-    return null
-  }
-  const belowOrEqualCount = values.filter((value) => value <= targetValue).length
-  return (belowOrEqualCount / values.length) * 100
-}
-
-function getTrailingNegativeMonthCount(points: FundChartPoint[]) {
-  let count = 0
-  for (let index = points.length - 1; index >= 0; index -= 1) {
-    if (
-      index < points.length - 1 &&
-      !areAdjacentCalendarMonths(points[index].date, points[index + 1].date)
-    ) {
-      break
-    }
-    if (points[index].value >= 0) {
-      break
-    }
-    count += 1
-  }
-  return count
 }
 
 function buildPerformanceRelativeSnapshot(
@@ -3141,227 +2884,6 @@ function renderStackRows(items: Record<string, unknown>) {
   ))
 }
 
-function getFrameworkValueList(values: Record<string, unknown>, key: string) {
-  const value = values[key]
-  if (Array.isArray(value)) {
-    return value.map((item) => String(item).trim()).filter(Boolean)
-  }
-  if (value == null) {
-    return []
-  }
-  const text = String(value).trim()
-  return text ? [text] : []
-}
-
-function formatFrameworkValue(value: unknown) {
-  if (Array.isArray(value)) {
-    const items = value.map((item) => String(item).trim()).filter(Boolean)
-    return items.length ? items.join(', ') : '—'
-  }
-  if (value == null) {
-    return '—'
-  }
-  if (typeof value === 'boolean') {
-    return value ? 'Yes' : 'No'
-  }
-  const text = String(value).trim()
-  return text || '—'
-}
-
-function getDefinitionRubricText(definition: InstrumentAttributeDefinition) {
-  const rubric = definition.rubric_json || {}
-  const parts = [
-    definition.description,
-    typeof rubric.summary === 'string' ? rubric.summary : '',
-    typeof rubric.standard === 'string' ? rubric.standard : '',
-  ]
-    .map((value) => String(value || '').trim())
-    .filter(Boolean)
-  return parts.length ? parts.join(' ') : definition.attribute_key
-}
-
-function isFrameworkOptionSelected(
-  attributeValues: InstrumentAttributeValuesResponse | null,
-  definition: InstrumentAttributeDefinition,
-  option: string,
-) {
-  if (!attributeValues) {
-    return false
-  }
-  const values = getFrameworkValueList(attributeValues.values, definition.attribute_key)
-  return values.includes(option)
-}
-
-function buildNextFrameworkValue(
-  attributeValues: InstrumentAttributeValuesResponse | null,
-  definition: InstrumentAttributeDefinition,
-  option: string,
-) {
-  const currentValues = attributeValues
-    ? getFrameworkValueList(attributeValues.values, definition.attribute_key)
-    : []
-  if (definition.data_type === 'multi_select') {
-    return currentValues.includes(option)
-      ? currentValues.filter((value) => value !== option)
-      : [...currentValues, option]
-  }
-  return option
-}
-
-type AttributeFrameworkDomain = Extract<
-  InstrumentAttributeDefinition['domain_code'],
-  'research' | 'monitoring'
->
-
-const ATTRIBUTE_DOMAIN_ORDER: AttributeFrameworkDomain[] = [
-  'research',
-]
-
-const ATTRIBUTE_DOMAIN_META: Record<
-  AttributeFrameworkDomain,
-  {
-    title: string
-    note: string
-    emptyState: string
-  }
-> = {
-  research: {
-    title: 'Qualitative Research Tags',
-    note: '',
-    emptyState: 'Complete instrument taxonomy first to unlock category-specific research tags.',
-  },
-  monitoring: {
-    title: 'Monitoring Assessment',
-    note: '',
-    emptyState: 'Complete instrument taxonomy first to unlock category-specific monitoring labels.',
-  },
-}
-
-const ATTRIBUTE_GROUP_LABELS: Record<string, string> = {
-  overview_identity: 'Identity',
-  research_coverage: 'Research Governance',
-  research_edge: 'Edge & Philosophy',
-  research_process: 'Process Repeatability',
-  research_style: 'Style Tags',
-  research_manager: 'People & Organization',
-  research_risk: 'Risk Management',
-  research_terms: 'Capacity, Liquidity & Terms',
-  research_governance: 'Governance & Alignment',
-  research_delivery: 'Historical Delivery',
-  research_role: 'Portfolio Role',
-  monitoring_risk: 'Risk Profile',
-  monitoring_regime: 'Regime Fit',
-  monitoring_operational: 'Operational Coverage',
-  custom: 'Custom',
-}
-
-function hasAttributeValue(value: unknown) {
-  if (Array.isArray(value)) {
-    return value.some((item) => String(item ?? '').trim())
-  }
-  if (typeof value === 'boolean') {
-    return true
-  }
-  if (value == null) {
-    return false
-  }
-  return String(value).trim().length > 0
-}
-
-function definitionHasAssignedValue(
-  values: Record<string, unknown>,
-  definition: InstrumentAttributeDefinition,
-) {
-  return hasAttributeValue(values[definition.attribute_key])
-}
-
-function definitionMatchesApplicability(
-  definition: InstrumentAttributeDefinition,
-  values: Record<string, unknown>,
-) {
-  const applicabilityEntries = Object.entries(definition.applicability_json || {})
-  if (!applicabilityEntries.length) {
-    return true
-  }
-  return applicabilityEntries.every(([attributeKey, expectedValues]) => {
-    if (!expectedValues.length) {
-      return true
-    }
-    const currentValues = getFrameworkValueList(values, attributeKey)
-    if (!currentValues.length) {
-      return false
-    }
-    return expectedValues.some((candidate) => currentValues.includes(candidate))
-  })
-}
-
-function isTaxonomyComplete(attributeValues: InstrumentAttributeValuesResponse | null) {
-  return Boolean(
-    hasAttributeValue(attributeValues?.taxonomy?.derived_values?.instrument_taxonomy_level_1) &&
-      hasAttributeValue(attributeValues?.taxonomy?.derived_values?.instrument_taxonomy_leaf),
-  )
-}
-
-function buildAttributeFrameworkSections(
-  attributeValues: InstrumentAttributeValuesResponse | null,
-) {
-  if (!attributeValues) {
-    return []
-  }
-
-  const values = {
-    ...(attributeValues.taxonomy?.derived_values || {}),
-    ...(attributeValues.values || {}),
-  }
-  const classificationReady = isTaxonomyComplete(attributeValues)
-
-  return ATTRIBUTE_DOMAIN_ORDER.map((domain) => {
-    const definitions = [...attributeValues.definitions]
-      .filter((definition) => definition.domain_code === domain)
-      .filter((definition) => definition.attribute_key !== 'coverage_status')
-      .filter(
-        (definition) =>
-          definitionMatchesApplicability(definition, values) ||
-          definitionHasAssignedValue(values, definition),
-      )
-      .sort((left, right) => left.display_order - right.display_order || left.label.localeCompare(right.label))
-
-    const groups = definitions.reduce<
-      Array<{ groupCode: string; label: string; definitions: InstrumentAttributeDefinition[] }>
-    >((items, definition) => {
-      const groupCode = definition.group_code || 'custom'
-      const current = items.find((item) => item.groupCode === groupCode)
-      if (current) {
-        current.definitions.push(definition)
-        return items
-      }
-      return [
-        ...items,
-        {
-          groupCode,
-          label: ATTRIBUTE_GROUP_LABELS[groupCode] || formatLabel(groupCode),
-          definitions: [definition],
-        },
-      ]
-    }, [])
-
-    const emptyState =
-      classificationReady
-        ? ATTRIBUTE_DOMAIN_META[domain].emptyState
-        : domain === 'research'
-          ? 'Complete instrument taxonomy first to unlock category-specific research tags.'
-          : 'Complete instrument taxonomy first to unlock category-specific monitoring labels.'
-
-    return {
-      domain,
-      title: ATTRIBUTE_DOMAIN_META[domain].title,
-      note: ATTRIBUTE_DOMAIN_META[domain].note,
-      emptyState,
-      groups,
-    }
-  })
-}
-
 type FundDetailPageProps = {
   fundId?: string
   fundType: FundInstrumentType
@@ -3404,7 +2926,7 @@ export default function FundDetailPage({
   const [benchmarkSearch, setBenchmarkSearch] = useState('')
   const [benchmarkSearchFocused, setBenchmarkSearchFocused] = useState(false)
   const [benchmarkNavSeries, setBenchmarkNavSeries] = useState<FundNavSeriesResponse | null>(null)
-  const [registryBenchmarkOptions, setRegistryBenchmarkOptions] = useState<FundLibraryItem[]>([])
+  const [registryBenchmarkOptions, setRegistryBenchmarkOptions] = useState<InstrumentLibraryItem[]>([])
   const [benchmarkSearchError, setBenchmarkSearchError] = useState<string | null>(null)
   const [benchmarkLoadError, setBenchmarkLoadError] = useState<string | null>(null)
   const [benchmarkLoading, setBenchmarkLoading] = useState(false)
@@ -3433,8 +2955,8 @@ export default function FundDetailPage({
   const [showTimelineNoteEvents, setShowTimelineNoteEvents] = useState(true)
   const [showDrawdownPanel, setShowDrawdownPanel] = useState(true)
   const [openQuoteChartMenu, setOpenQuoteChartMenu] = useState<QuoteChartMenu | null>(null)
-  const [timelineNoteDraft, setTimelineNoteDraft] = useState<TimelineNoteDraft | null>(null)
   const [timelineNoteCaptureMode, setTimelineNoteCaptureMode] = useState(false)
+  const [requestedResearchNoteDate, setRequestedResearchNoteDate] = useState<string | null>(null)
   const [timelineNoteViewAnchorDate, setTimelineNoteViewAnchorDate] = useState<string | null>(null)
   const [chartTimelineNoteContextMenu, setChartTimelineNoteContextMenu] =
     useState<ChartTimelineNoteContextMenu | null>(null)
@@ -3449,21 +2971,15 @@ export default function FundDetailPage({
   const [editingPeople, setEditingPeople] = useState(false)
   const [editingStrategy, setEditingStrategy] = useState(false)
   const [editingPriceSection, setEditingPriceSection] = useState<PriceEditSection | null>(null)
-  const [editingDocuments, setEditingDocuments] = useState(false)
-  const [editingResearchOverview, setEditingResearchOverview] = useState(false)
   const [peopleDraft, setPeopleDraft] = useState<PeopleDraft | null>(null)
   const [strategyDraft, setStrategyDraft] = useState<StrategyDraft | null>(null)
   const [priceDraft, setPriceDraft] = useState<PriceDraft | null>(null)
-  const [documentsDraft, setDocumentsDraft] = useState<DocumentsDraft | null>(null)
   const [documentUploadFile, setDocumentUploadFile] = useState<File | null>(null)
   const [documentUploadTitle, setDocumentUploadTitle] = useState('')
   const [documentUploadType, setDocumentUploadType] = useState('')
   const [documentUploadAsOfDate, setDocumentUploadAsOfDate] = useState('')
   const [documentUploadNotes, setDocumentUploadNotes] = useState('')
   const [uploadingDocument, setUploadingDocument] = useState(false)
-  const [researchDraft, setResearchDraft] = useState<ResearchDraft | null>(null)
-  const [manualRatingDraft, setManualRatingDraft] = useState<number | null>(null)
-  const [manualRatingDirty, setManualRatingDirty] = useState(false)
   const [savingSection, setSavingSection] = useState<string | null>(null)
   const [sectionNotice, setSectionNotice] = useState<string | null>(null)
   const [sectionError, setSectionError] = useState<string | null>(null)
@@ -3473,7 +2989,6 @@ export default function FundDetailPage({
   const [coverageStatusDraft, setCoverageStatusDraft] = useState('')
   const quoteChartMenuRef = useRef<HTMLDivElement | null>(null)
   const riskSettingsMenuRef = useRef<HTMLDivElement | null>(null)
-  const productFrameworkPickerRef = useRef<HTMLDivElement | null>(null)
   const timelineNoteContextMenuRef = useRef<HTMLDivElement | null>(null)
   const detailBundleKeyRef = useRef('')
   const detailRequestCoordinatorRef = useRef(createDetailRequestCoordinator(''))
@@ -3486,21 +3001,11 @@ export default function FundDetailPage({
     }
   }
 
-  function closeTimelineNoteDialog() {
-    if (savingSection !== 'timeline_note') {
-      setTimelineNoteDraft(null)
-    }
-  }
-
   const settingsDialogRef = useModalDialog(settingsModalOpen, closeSettingsDialog)
-  const timelineNoteDialogRef = useModalDialog(Boolean(timelineNoteDraft), closeTimelineNoteDialog)
   const [productFrameworkAttributes, setProductFrameworkAttributes] =
     useState<InstrumentAttributeValuesResponse | null>(null)
   const [productFrameworkLoadError, setProductFrameworkLoadError] = useState<string | null>(null)
   const [productFrameworkRetryToken, setProductFrameworkRetryToken] = useState(0)
-  const [productFrameworkSavingKey, setProductFrameworkSavingKey] = useState<string | null>(null)
-  const [openProductFrameworkPickerKey, setOpenProductFrameworkPickerKey] =
-    useState<string | null>(null)
   const deferredBenchmarkSearch = useDeferredValue(benchmarkSearch)
   const detailSearchKey = detailSearchParams.toString()
 
@@ -3577,9 +3082,6 @@ export default function FundDetailPage({
       if (!riskSettingsMenuRef.current?.contains(event.target as Node)) {
         setRiskSettingsOpen(false)
       }
-      if (!productFrameworkPickerRef.current?.contains(event.target as Node)) {
-        setOpenProductFrameworkPickerKey(null)
-      }
       if (!timelineNoteContextMenuRef.current?.contains(event.target as Node)) {
         setChartTimelineNoteContextMenu(null)
       }
@@ -3618,12 +3120,14 @@ export default function FundDetailPage({
           getInstrumentLibrary(),
           getInstrumentNavSeries(fundId),
           getInstrumentResearch(fundId),
+          getPlatformInstrumentReferenceData(fundId),
         ] as const)
         const [
           summaryResult,
           libraryResult,
           navSeriesResult,
           researchResult,
+          referenceResult,
         ] = results
 
         if (cancelled) {
@@ -3642,7 +3146,8 @@ export default function FundDetailPage({
           'summary',
           'library',
           'NAV series',
-          'research timeline',
+          'investment research',
+          'provider reference',
         ])
 
         const nextTabs = normalizeTabs(summary.tabs || [])
@@ -3661,11 +3166,16 @@ export default function FundDetailPage({
           documents: previousBundle?.documents ?? defaultFundDocumentsResponse(),
           research: settledValue(
             researchResult,
-            previousBundle?.research ?? defaultFundResearchResponse(),
+            previousBundle?.research ?? emptyInstrumentResearchResponse(),
           ),
+          monitoring: previousBundle?.monitoring ?? null,
           navSeries: settledValue(
             navSeriesResult,
             previousBundle?.navSeries ?? defaultFundNavSeriesResponse(fundId),
+          ),
+          reference: settledValue(
+            referenceResult,
+            previousBundle?.reference ?? null,
           ),
         })
         setDetailBundleKey(bundleKey)
@@ -3744,6 +3254,7 @@ export default function FundDetailPage({
         { key: 'performance', label: 'performance', load: () => getInstrumentPerformance(fundId) },
         { key: 'risk', label: 'risk', load: () => getInstrumentRisk(fundId) },
         { key: 'portfolio', label: 'exposure summary', load: () => getInstrumentPortfolioSummary(fundId) },
+        { key: 'monitoring', label: 'investment monitoring', load: () => getInstrumentMonitoring(fundId) },
       ]
     }
     if (!requests.length) {
@@ -3818,8 +3329,8 @@ export default function FundDetailPage({
   }, [activeTab, detailBundleKey, fundId, fundType, refreshToken, sectionRetryToken])
 
   useEffect(() => {
-    setTimelineNoteDraft(null)
     setTimelineNoteCaptureMode(false)
+    setRequestedResearchNoteDate(null)
     setTimelineNoteViewAnchorDate(null)
     setChartTimelineNoteContextMenu(null)
   }, [fundId])
@@ -3828,7 +3339,6 @@ export default function FundDetailPage({
     let cancelled = false
     setProductFrameworkAttributes(null)
     setProductFrameworkLoadError(null)
-    setOpenProductFrameworkPickerKey(null)
 
     async function loadProductFramework() {
       try {
@@ -3905,14 +3415,7 @@ export default function FundDetailPage({
     setPeopleDraft(toEditablePeopleDraft(bundle.people))
     setStrategyDraft(toEditableStrategyDraft(bundle.strategy))
     setPriceDraft(toEditablePriceDraft(bundle.price))
-    setDocumentsDraft(toEditableDocumentsDraft(bundle.documents))
-    setResearchDraft((current) =>
-      editingResearchOverview && current ? current : toEditableResearchDraft(bundle.research),
-    )
-    if (!manualRatingDirty) {
-      setManualRatingDraft(parseManualRating(bundle.research.manual_rating))
-    }
-  }, [bundle, editingResearchOverview, manualRatingDirty])
+  }, [bundle])
 
   useEffect(() => {
     setDocumentUploadFile(null)
@@ -3920,7 +3423,6 @@ export default function FundDetailPage({
     setDocumentUploadType('')
     setDocumentUploadAsOfDate('')
     setDocumentUploadNotes('')
-    setManualRatingDirty(false)
   }, [fundId])
 
   useEffect(() => {
@@ -3981,16 +3483,16 @@ export default function FundDetailPage({
         if (!resolved.detail_supported || !resolved.canonical_instrument_id) {
           throw new Error(resolved.support_reason || 'The selected benchmark is not supported.')
         }
-        const option: FundLibraryItem = {
-          fund_id: resolved.canonical_instrument_id,
-          fund_name: resolved.instrument_name,
-          ticker_or_isin: resolved.primary_identifier,
-          product_type: resolved.instrument_type,
+        const option: InstrumentLibraryItem = {
+          instrument_id: resolved.canonical_instrument_id,
+          instrument_name: resolved.instrument_name,
+          primary_identifier: resolved.primary_identifier,
+          instrument_type: resolved.instrument_type,
         }
         if (!cancelled) {
           setRegistryBenchmarkOptions((current) => [
             option,
-            ...current.filter((item) => item.fund_id !== option.fund_id),
+            ...current.filter((item) => item.instrument_id !== option.instrument_id),
           ])
         }
         if (resolved.canonical_instrument_id !== benchmarkFundId) {
@@ -4187,86 +3689,6 @@ export default function FundDetailPage({
     }
   }
 
-  async function handleSaveDocuments() {
-    if (!documentsDraft) {
-      return
-    }
-    setSavingSection('documents')
-    setSectionError(null)
-    setSectionNotice(null)
-    try {
-      await updateInstrumentDocuments(fundId, {
-        payload: {
-          current_documents: documentsDraft.currentDocumentRows
-            .filter((row) =>
-              row.title.trim() ||
-              row.document_type.trim() ||
-              row.as_of_date.trim() ||
-              row.source.trim() ||
-              row.status.trim() ||
-              row.version_label.trim() ||
-              row.file_name.trim() ||
-              row.notes.trim(),
-            )
-            .map((row) => ({
-              title: row.title.trim(),
-              document_type: row.document_type.trim(),
-              as_of_date: row.as_of_date.trim() || null,
-              source: row.source.trim(),
-              status: row.status.trim(),
-              version_label: row.version_label.trim(),
-              file_name: row.file_name.trim(),
-              download_url: row.download_url.trim(),
-              file_size: row.file_size.trim() || null,
-              content_type: row.content_type.trim(),
-              uploaded_at: row.uploaded_at.trim() || null,
-              notes: row.notes.trim(),
-              stored_file_name: row.stored_file_name.trim(),
-            })),
-          recent_imports: documentsDraft.importRows
-            .filter((row) =>
-              row.import_type.trim() ||
-              row.received_at.trim() ||
-              row.source.trim() ||
-              row.status.trim() ||
-              row.file_name.trim(),
-            )
-            .map((row) => ({
-              import_type: row.import_type.trim(),
-              received_at: row.received_at.trim() || null,
-              source: row.source.trim(),
-              status: row.status.trim(),
-              file_name: row.file_name.trim(),
-            })),
-          extraction_reviews: documentsDraft.extractionRows
-            .filter((row) =>
-              row.document_title.trim() ||
-              row.extract_type.trim() ||
-              row.status.trim() ||
-              row.adopted_version.trim() ||
-              row.updated_at.trim(),
-            )
-            .map((row) => ({
-              document_title: row.document_title.trim(),
-              extract_type: row.extract_type.trim(),
-              status: row.status.trim(),
-              adopted_version: row.adopted_version.trim(),
-              updated_at: row.updated_at.trim() || null,
-            })),
-          notes: cleanListRows(documentsDraft.noteRows),
-        },
-        updated_by: 'terminal_ui',
-      })
-      setEditingDocuments(false)
-      setSectionNotice('Documents profile saved.')
-      setRefreshToken((value) => value + 1)
-    } catch (saveError) {
-      setSectionError(saveError instanceof Error ? saveError.message : 'Failed to save documents profile.')
-    } finally {
-      setSavingSection(null)
-    }
-  }
-
   async function handleUploadDocument() {
     if (!documentUploadFile) {
       setSectionError(localize(language, SYSTEM_LABELS.pickFile))
@@ -4287,7 +3709,6 @@ export default function FundDetailPage({
         updated_by: 'terminal_ui',
       })
       setBundle((current) => (current ? { ...current, documents: uploadedDocuments } : current))
-      setDocumentsDraft(toEditableDocumentsDraft(uploadedDocuments))
       setDocumentUploadFile(null)
       setDocumentUploadTitle('')
       setDocumentUploadType('')
@@ -4301,78 +3722,9 @@ export default function FundDetailPage({
     }
   }
 
-  async function handleSaveResearchOverview() {
-    if (!bundle || !researchDraft) {
-      return
-    }
-    setSavingSection('research_overview')
-    setSectionError(null)
-    setSectionNotice(null)
-    try {
-      const response = await updateInstrumentResearch(fundId, {
-        payload: {
-          overview: Object.fromEntries(
-            researchDraft.overviewRows
-              .map((row) => [row.key.trim(), row.value.trim()] as const)
-              .filter(([key, value]) => key && value),
-          ),
-          manual_rating: parseManualRating(bundle.research.manual_rating),
-          timeline_notes: normalizeResearchTimelineNotes(bundle.research.timeline_notes),
-        },
-        updated_by: 'terminal_ui',
-      })
-      setBundle((current) => (current ? { ...current, research: response } : current))
-      setResearchDraft(toEditableResearchDraft(response))
-      setEditingResearchOverview(false)
-      setSectionNotice('Research view saved.')
-    } catch (saveError) {
-      setSectionError(saveError instanceof Error ? saveError.message : 'Failed to save research view.')
-    } finally {
-      setSavingSection(null)
-    }
-  }
-
-  async function handleSaveManualRating() {
-    if (!bundle) {
-      return
-    }
-    setSavingSection('manual_rating')
-    setSectionError(null)
-    setSectionNotice(null)
-    try {
-      const response = await updateInstrumentResearch(fundId, {
-        payload: {
-          overview: bundle.research.overview || {},
-          manual_rating: manualRatingDraft,
-          timeline_notes: normalizeResearchTimelineNotes(bundle.research.timeline_notes),
-        },
-        updated_by: 'terminal_ui',
-      })
-      const normalizedRating = parseManualRating(response.manual_rating)
-      setBundle((current) => (current ? { ...current, research: response } : current))
-      setManualRatingDraft(normalizedRating)
-      setManualRatingDirty(false)
-      if (!editingResearchOverview) {
-        setResearchDraft(toEditableResearchDraft(response))
-      }
-      setSectionNotice('Rating saved.')
-    } catch (saveError) {
-      setSectionError(saveError instanceof Error ? saveError.message : 'Failed to save rating.')
-    } finally {
-      setSavingSection(null)
-    }
-  }
-
-  function buildResearchPayloadWithTimelineNotes(nextTimelineNotes: ResearchTimelineNote[]) {
-    return {
-      overview: bundle?.research.overview || {},
-      manual_rating: bundle?.research.manual_rating ?? null,
-      timeline_notes: nextTimelineNotes,
-    }
-  }
-
-  function openTimelineNoteEditor(noteDate: string, note?: ResearchTimelineNote | null) {
-    setTimelineNoteDraft(createTimelineNoteDraft(noteDate, note))
+  function openNewResearchRecord(noteDate: string) {
+    setRequestedResearchNoteDate(noteDate)
+    setActiveTab('research')
     setTimelineNoteViewAnchorDate(null)
     setChartTimelineNoteContextMenu(null)
     setTimelineNoteCaptureMode(false)
@@ -4389,135 +3741,6 @@ export default function FundDetailPage({
     setChartTimelineNoteContextMenu(null)
     setSectionError(null)
     setQuoteActionNotice(`Research note anchored to ${formatDate(noteDate)}.`)
-  }
-
-  async function handleSaveTimelineNote() {
-    if (!bundle || !timelineNoteDraft) {
-      return
-    }
-    const serializedNote = serializeTimelineNoteDraft(timelineNoteDraft)
-    if (!serializedNote.note_date) {
-      setSectionError('Timeline notes require a valid note date.')
-      return
-    }
-    if (!serializedNote.title && !serializedNote.summary && !serializedNote.body) {
-      setSectionError('Add at least a title, summary, or note body before saving.')
-      return
-    }
-
-    setSavingSection('timeline_note')
-    setSectionError(null)
-    setSectionNotice(null)
-    try {
-      const nextNotes = [...timelineNotes.filter((note) => note.note_id !== serializedNote.note_id), serializedNote]
-        .sort(sortResearchTimelineNotes)
-      const response = await updateInstrumentResearch(fundId, {
-        payload: buildResearchPayloadWithTimelineNotes(nextNotes),
-        updated_by: 'terminal_ui',
-      })
-      const normalizedNotes = normalizeResearchTimelineNotes(response.timeline_notes)
-      setBundle((current) => (current ? { ...current, research: response } : current))
-      setResearchDraft((current) =>
-        current
-          ? {
-              ...current,
-              timelineNotes: normalizedNotes,
-            }
-          : current,
-      )
-      setTimelineNoteDraft(null)
-      setTimelineNoteViewAnchorDate(
-        findNearestChartPoint(visibleNavSeries, serializedNote.note_date)?.date || serializedNote.note_date,
-      )
-      setSectionNotice(`Saved note for ${formatDate(serializedNote.note_date)}.`)
-    } catch (saveError) {
-      setSectionError(saveError instanceof Error ? saveError.message : 'Failed to save timeline note.')
-    } finally {
-      setSavingSection(null)
-    }
-  }
-
-  async function handleDeleteTimelineNote(noteId: string) {
-    if (!bundle) {
-      return
-    }
-    setSavingSection('timeline_note')
-    setSectionError(null)
-    setSectionNotice(null)
-    try {
-      const nextNotes = timelineNotes.filter((note) => note.note_id !== noteId)
-      const response = await updateInstrumentResearch(fundId, {
-        payload: buildResearchPayloadWithTimelineNotes(nextNotes),
-        updated_by: 'terminal_ui',
-      })
-      const normalizedNotes = normalizeResearchTimelineNotes(response.timeline_notes)
-      setBundle((current) => (current ? { ...current, research: response } : current))
-      setResearchDraft((current) =>
-        current
-          ? {
-              ...current,
-              timelineNotes: normalizedNotes,
-            }
-          : current,
-      )
-      setTimelineNoteDraft((current) => (current?.note_id === noteId ? null : current))
-      setTimelineNoteViewAnchorDate((current) => {
-        if (!current) {
-          return current
-        }
-        const hasRemaining = normalizedNotes.some((note) => note.note_date === current)
-        return hasRemaining ? current : null
-      })
-      setSectionNotice('Timeline note removed.')
-    } catch (saveError) {
-      setSectionError(saveError instanceof Error ? saveError.message : 'Failed to delete timeline note.')
-    } finally {
-      setSavingSection(null)
-    }
-  }
-
-  async function handleSaveProductFrameworkValue(
-    definition: InstrumentAttributeDefinition,
-    value: unknown,
-    options?: { closePicker?: boolean },
-  ) {
-    setProductFrameworkSavingKey(definition.attribute_key)
-    setSectionError(null)
-    setSectionNotice(null)
-    try {
-      const response = await updateInstrumentAttributes(fundId, {
-        values: [
-          {
-            attribute_key: definition.attribute_key,
-            value,
-          },
-        ],
-      })
-      setProductFrameworkAttributes(response)
-      setBundle((current) =>
-        current
-          ? {
-              ...current,
-              summary: {
-                ...current.summary,
-                instrument_attributes: {
-                  ...current.summary.instrument_attributes,
-                  ...response.values,
-                },
-              },
-            }
-          : current,
-      )
-      if (options?.closePicker !== false) {
-        setOpenProductFrameworkPickerKey(null)
-      }
-    } catch (saveError) {
-      setSectionError(
-        saveError instanceof Error ? saveError.message : 'Failed to update product framework labels.',
-      )
-    } finally {
-      setProductFrameworkSavingKey(null)
-    }
   }
 
   async function handleSaveFundSettings() {
@@ -4603,10 +3826,10 @@ export default function FundDetailPage({
 
   const benchmarkOptions = useMemo(
     () => {
-      const merged = new Map<string, FundLibraryItem>()
+      const merged = new Map<string, InstrumentLibraryItem>()
       for (const item of [...(bundle?.library ?? []), ...registryBenchmarkOptions]) {
-        if (item.fund_id !== fundId) {
-          merged.set(item.fund_id, item)
+        if (item.instrument_id !== fundId) {
+          merged.set(item.instrument_id, item)
         }
       }
       return [...merged.values()]
@@ -4614,13 +3837,13 @@ export default function FundDetailPage({
     [bundle?.library, fundId, registryBenchmarkOptions],
   )
   const selectedBenchmark =
-    benchmarkOptions.find((item) => item.fund_id === benchmarkFundId) ||
+    benchmarkOptions.find((item) => item.instrument_id === benchmarkFundId) ||
     (benchmarkFundId
       ? {
-          fund_id: benchmarkFundId,
-          fund_name: benchmarkFundId,
-          ticker_or_isin: null,
-          product_type: 'instrument',
+          instrument_id: benchmarkFundId,
+          instrument_name: benchmarkFundId,
+          primary_identifier: null,
+          instrument_type: 'instrument',
         }
       : null)
   const savedDefaultBenchmarkId =
@@ -4651,8 +3874,8 @@ export default function FundDetailPage({
     )
   }
 
-  const { summary, performance, risk, portfolio, holdings, people, strategy, price, documents, research, navSeries } = bundle
-  const timelineNotes = normalizeResearchTimelineNotes(research.timeline_notes)
+  const { summary, performance, risk, portfolio, holdings, people, strategy, price, documents, research, monitoring, navSeries } = bundle
+  const timelineNotes = research.notes
   const availableCurrencies = getAvailableQuoteCurrencies(navSeries.rows)
   const effectiveCurrency = availableCurrencies.includes(selectedCurrency)
     ? selectedCurrency
@@ -4812,15 +4035,15 @@ export default function FundDetailPage({
       ? SYSTEM_LABELS.publicFundDetail
       : SYSTEM_LABELS.privateFundDetail,
   )
-  const navBasisType = navSeries.nav_basis_type || summary.nav_snapshot?.nav_basis_type || 'auto'
+  const navBasisType = navSeries.nav_basis_type || summary.series_snapshot?.nav_basis_type || 'auto'
   const selectedSeriesLabel =
     navSeries.selected_series_label ||
-    summary.nav_snapshot?.selected_series_label ||
+    summary.series_snapshot?.selected_series_label ||
     summary.selected_series?.label ||
     null
   const selectedDateLabel =
     navSeries.selected_date_label ||
-    summary.nav_snapshot?.selected_date_label ||
+    summary.series_snapshot?.selected_date_label ||
     summary.selected_series?.date_label ||
     'Last Quote Date'
   const navBasisLabel = selectedSeriesLabel || (NAV_BASIS_LABELS[navBasisType]
@@ -4863,17 +4086,23 @@ export default function FundDetailPage({
         ? 'instrument-quote-change instrument-quote-change-negative'
         : 'instrument-quote-change instrument-quote-change-neutral'
   const managementStats = people.overview || {}
-  const peoplePrimaryOverviewFacts = PEOPLE_PRIMARY_OVERVIEW_FIELDS.map((field) => ({
-    ...field,
-    value: managementStats[field.key],
-  }))
-  const peoplePrimaryOverviewRows = peoplePrimaryOverviewFacts.map((field) => ({
-    key: field.key,
-    label: field.label,
-    value: formatResearchOverviewValue(field.key, field.value),
-  }))
+  const peoplePrimaryOverviewFields = fundType === 'private_fund'
+    ? PRIVATE_FUND_PEOPLE_FIELDS
+    : PUBLIC_FUND_PEOPLE_FIELDS
+  const peopleHeaderFields = fundType === 'private_fund'
+    ? [
+        { key: 'investment_manager', label: 'Investment Manager' },
+        { key: 'general_partner', label: 'General Partner / Trustee' },
+      ]
+    : [
+        { key: 'advisor', label: 'Management Company' },
+        { key: 'sub_advisor', label: 'Sub-Advisor' },
+      ]
+  const peoplePrimaryOverviewFieldKeys = new Set(
+    peoplePrimaryOverviewFields.map((field) => field.key),
+  )
   const peopleAdditionalOverviewEntries = Object.entries(managementStats).filter(
-    ([key]) => !PEOPLE_PRIMARY_OVERVIEW_FIELD_KEYS.has(key),
+    ([key]) => !peoplePrimaryOverviewFieldKeys.has(key),
   )
   const peopleAdditionalOverviewRows = peopleAdditionalOverviewEntries.map(([key, value]) => ({
     key,
@@ -4881,14 +4110,15 @@ export default function FundDetailPage({
     value: getDisplayValue(value),
   }))
   const peopleAdditionalDraftRows =
-    peopleDraft?.overviewRows.filter((row) => !PEOPLE_PRIMARY_OVERVIEW_FIELD_KEYS.has(row.key.trim())) ?? []
-  const peopleManagementProfileFields = PEOPLE_PRIMARY_OVERVIEW_FIELDS.filter(
-    (field) => field.key !== 'advisor' && field.key !== 'sub_advisor',
+    peopleDraft?.overviewRows.filter((row) => !peoplePrimaryOverviewFieldKeys.has(row.key.trim())) ?? []
+  const peopleHeaderFieldKeys = new Set(peopleHeaderFields.map((field) => field.key))
+  const peopleManagementProfileFields = peoplePrimaryOverviewFields.filter(
+    (field) => !peopleHeaderFieldKeys.has(field.key),
   )
   const peopleManagementProfileRows = peopleManagementProfileFields.map((field) => ({
     key: field.key,
     label: field.label,
-    value: formatResearchOverviewValue(field.key, managementStats[field.key]),
+    value: formatManualOverviewValue(field.key, managementStats[field.key]),
   }))
   const formatProfileListValue = (items: string[]) =>
     items.length ? (
@@ -4917,17 +4147,20 @@ export default function FundDetailPage({
   }
   const formatPeopleTeamValue = (rows: Array<Record<string, unknown>>) => {
     const visibleRows = rows.filter(
-      (row) => getString(row.name) || getString(row.role) || getString(row.start_date),
+      (row) => [row.name, row.role, row.start_date].some(
+        (value) => value != null && String(value).trim(),
+      ),
     )
     return visibleRows.length ? (
       <div className="instrument-profile-line-list instrument-profile-team-list">
         {visibleRows.map((row, index) => {
-          const role = getString(row.role)
+          const name = row.name == null ? '' : String(row.name).trim()
+          const role = row.role == null ? '' : String(row.role).trim()
           const startDate = formatDate(row.start_date)
           const details = [role, startDate !== '—' ? `Start ${startDate}` : ''].filter(Boolean)
           return (
-            <div key={`${getString(row.name) || 'team'}-${index}`}>
-              <strong>{getString(row.name) || '—'}</strong>
+            <div key={`${name || 'team'}-${index}`}>
+              <strong>{name || '—'}</strong>
               {details.length ? <span>{details.join(' · ')}</span> : null}
             </div>
           )
@@ -5444,7 +4677,7 @@ export default function FundDetailPage({
           })
           return groups
         },
-        new Map<string, { anchorDate: string; x: number; notes: ResearchTimelineNote[] }>(),
+        new Map<string, { anchorDate: string; x: number; notes: InstrumentResearchNote[] }>(),
       ).values(),
     ).sort((left, right) => left.anchorDate.localeCompare(right.anchorDate))
   const hoveredTimelineNoteGroup =
@@ -5520,27 +4753,80 @@ export default function FundDetailPage({
     isDrawdownHoverActive ? chartHoverCursor : null,
     DRAWDOWN_CHART_GEOMETRY,
   )
+  const referenceSections = bundle.reference?.sections || {}
+  const fundReferenceInfo = getRecord(referenceSections.fund_info)
+  const providerReferenceHoldings = getRows(referenceSections.holdings).filter(
+    (row): row is Record<string, unknown> =>
+      Boolean(row) && typeof row === 'object' && !Array.isArray(row),
+  )
+  const fundSourceFacts = fundType === 'private_fund'
+    ? [
+        { label: 'NAV source', value: bundle.reference?.source.source_location || '—' },
+        { label: 'Ingestion mode', value: bundle.reference?.source.source_mode || '—' },
+        { label: 'Expected cadence', value: bundle.reference?.source.expected_frequency || '—' },
+        {
+          label: 'Release lag',
+          value: bundle.reference?.source.release_lag_days == null
+            ? '—'
+            : `${bundle.reference.source.release_lag_days} day(s)`,
+        },
+        { label: 'Latest source status', value: bundle.reference?.source.refresh_status || '—' },
+        { label: 'Last data update', value: formatDateTime(bundle.reference?.source.market_data_updated_at) },
+      ]
+    : [
+        { label: 'Reference provider', value: bundle.reference?.provider || '—' },
+        { label: 'Fund company', value: getString(fundReferenceInfo.etfCompany || fundReferenceInfo.management) || '—' },
+        { label: 'Custodian', value: getString(fundReferenceInfo.custodian) || '—' },
+        { label: 'Asset / fund type', value: getString(fundReferenceInfo.assetClass || fundReferenceInfo.fund_type) || '—' },
+        { label: 'Benchmark', value: getString(fundReferenceInfo.benchmark) || '—' },
+        { label: 'Inception', value: formatDate(fundReferenceInfo.inceptionDate || fundReferenceInfo.found_date) },
+      ]
   const priceOverviewMap = price.overview || {}
-  const adjustedExpenseRatio = formatPriceOverviewValue(
-    'adjusted_expense_ratio',
-    priceOverviewMap.adjusted_expense_ratio,
-  )
-  const reportedExpenseRatio = formatPriceOverviewValue(
-    'total_expense_ratio',
-    priceOverviewMap.total_expense_ratio,
-  )
-  const feesAndTermsRows = [
-    { label: 'Management Fee', value: formatPriceOverviewValue('management_fee', priceOverviewMap.management_fee) },
-    {
-      label: 'Interest Expense Fees',
-      value: formatPriceOverviewValue('interest_expense_fees', priceOverviewMap.interest_expense_fees),
-    },
-    { label: 'Redemption Fee', value: formatPriceOverviewValue('redemption_fee', priceOverviewMap.redemption_fee) },
-    {
-      label: 'Minimum Initial Investment',
-      value: formatPriceOverviewValue('minimum_initial_investment', priceOverviewMap.minimum_initial_investment),
-    },
-  ]
+  const providerFeeFacts = fundType === 'public_fund'
+    ? [
+        { key: 'expenseRatio', label: 'Expense Ratio' },
+        { key: 'assetsUnderManagement', label: 'Assets Under Management' },
+        { key: 'm_fee', label: 'Management Fee' },
+        { key: 'c_fee', label: 'Custodian Fee' },
+        { key: 'min_amount', label: 'Minimum Initial Investment' },
+      ].flatMap(({ key, label }) => {
+        const value = fundReferenceInfo[key]
+        if (value == null || value === '') return []
+        const numericValue = typeof value === 'number' ? value : Number(value)
+        const formatted = Number.isFinite(numericValue)
+          ? key === 'expenseRatio' || key === 'm_fee' || key === 'c_fee'
+            ? `${formatNumber(numericValue, 4)} %`
+            : key === 'min_amount' && bundle.reference?.provider === 'datahub:tushare'
+              ? `${numericValue.toLocaleString('zh-CN', { maximumFractionDigits: 4 })} 万元`
+              : key === 'assetsUnderManagement' || key === 'min_amount'
+              ? formatCompactCurrency(numericValue)
+              : formatNumber(numericValue)
+          : String(value)
+        return [{ key, label, value: formatted }]
+      })
+    : []
+  const feeTermFields = fundType === 'private_fund'
+    ? [
+        { key: 'management_fee', label: 'Management Fee' },
+        { key: 'performance_fee', label: 'Performance Fee' },
+        { key: 'hurdle_rate', label: 'Hurdle Rate' },
+        { key: 'high_water_mark', label: 'High-Water Mark' },
+        { key: 'lockup_period', label: 'Lock-up Period' },
+        { key: 'redemption_notice_days', label: 'Redemption Notice Days' },
+        { key: 'dealing_frequency', label: 'Subscription / Redemption Frequency' },
+        { key: 'gate_terms', label: 'Gate Terms' },
+        { key: 'minimum_initial_investment', label: 'Minimum Initial Investment' },
+      ]
+    : [
+        { key: 'adjusted_expense_ratio', label: 'Adjusted Expense Ratio' },
+        { key: 'total_expense_ratio', label: 'Reported Expense Ratio' },
+        { key: 'management_fee', label: 'Management Fee' },
+        { key: 'custodian_fee', label: 'Custodian Fee' },
+        { key: 'sales_service_fee', label: 'Sales Service Fee' },
+        { key: 'subscription_fee', label: 'Subscription Fee' },
+        { key: 'redemption_fee', label: 'Redemption Fee' },
+        { key: 'minimum_initial_investment', label: 'Minimum Initial Investment' },
+      ]
   const pricePolicyRows = [
     { label: 'Distribution Policy', value: getString(price.distribution_policy) },
     { label: 'Policy Text', value: getString(price.policy_text) },
@@ -5556,9 +4842,7 @@ export default function FundDetailPage({
             current
               ? {
                   ...current,
-                  overviewRows: current.overviewRows.map((row) =>
-                    row.key === key ? { ...row, value: event.target.value } : row,
-                  ),
+                  overviewRows: upsertKeyValueRows(current.overviewRows, key, event.target.value),
                 }
               : current,
           )
@@ -5595,6 +4879,7 @@ export default function FundDetailPage({
     )
   const latestNavRecord = navSeries.rows[navSeries.rows.length - 1]
   const navRefreshStatus = navSeries.refresh_status || null
+  const monitoredInstrument = monitoring?.instrument || null
   const monitoringOverviewRows = [
     {
       label: 'Freshness Status',
@@ -5626,6 +4911,30 @@ export default function FundDetailPage({
     {
       label: 'Last Update Trigger',
       value: formatDateTime(navRefreshStatus?.requested_at || null),
+      tone: null,
+    },
+    {
+      label: 'Required Fields Missing',
+      value: monitoredInstrument ? String(monitoredInstrument.missing_attribute_count) : '—',
+      tone: monitoredInstrument
+        ? monitoredInstrument.missing_attribute_count
+          ? 'status-pending'
+          : 'status-fresh'
+        : null,
+    },
+    {
+      label: 'Research Records',
+      value: monitoredInstrument ? String(monitoredInstrument.research.active_note_count) : '—',
+      tone: null,
+    },
+    {
+      label: 'Next Review',
+      value: formatDate(monitoredInstrument?.research.next_review_date || null),
+      tone: null,
+    },
+    {
+      label: 'Next Follow-up',
+      value: formatDate(monitoredInstrument?.research.next_follow_up_date || null),
       tone: null,
     },
   ]
@@ -5663,12 +4972,14 @@ export default function FundDetailPage({
       tone: portfolio.snapshot_metadata?.as_of_date ? 'status-fresh' : 'status-pending',
     },
   ]
-  const productFrameworkSections = buildAttributeFrameworkSections(productFrameworkAttributes)
-
   const monitoringAlertRows = [
     ...(navRefreshStatus?.message ? [navRefreshStatus.message] : []),
     ...(summary.freshness.staleness_reason ? [summary.freshness.staleness_reason] : []),
     ...summary.quick_monitoring_items,
+    ...(monitoredInstrument?.missing_attribute_labels.length
+      ? [`Missing required fields: ${monitoredInstrument.missing_attribute_labels.join(' / ')}`]
+      : []),
+    ...(monitoredInstrument?.issue_flags || []).map(formatLabel),
   ]
   const performanceReferenceEndDate = calculationBasisSeries[calculationBasisSeries.length - 1]?.date || null
   const comparisonReferenceWindow =
@@ -5676,9 +4987,8 @@ export default function FundDetailPage({
       ? commonObservationDateWindow(calculationBasisSeries, benchmarkCalculationSeries)
       : null
   const comparisonReferenceEndDate = comparisonReferenceWindow?.end || null
-  const fundPathRiskAvailable = calculationFrequencyProfile.gap_count === 0
-  const benchmarkPathRiskAvailable =
-    (benchmarkNavSeries?.calculation_frequency_profile.gap_count ?? 0) === 0
+  const fundPathRiskAvailable = calculationBasisSeries.length >= 2
+  const benchmarkPathRiskAvailable = benchmarkCalculationSeries.length >= 2
   const performancePeriodSnapshots = PERFORMANCE_METRIC_PERIODS.map((period) => {
     const fundWindow = getAnchoredWindow(calculationBasisSeries, period.key, performanceReferenceEndDate)
     const comparisonWindowSpec =
@@ -5728,7 +5038,12 @@ export default function FundDetailPage({
     )
     return Math.max(maxAbs, rowMax)
   }, 0)
-  const peerComparison = performance.peer_comparison?.status === 'ready' ? performance.peer_comparison : null
+  const peerComparison =
+    performance.peer_comparison?.status === 'ready' ||
+    performance.peer_comparison?.status === 'limited_sample'
+      ? performance.peer_comparison
+      : null
+  const peerRankingAvailable = peerComparison?.status === 'ready'
   const peerComparisonPathLabel =
     peerComparison?.peer_path?.filter(Boolean).join(' / ') ||
     performance.ranking?.peer_group ||
@@ -5736,7 +5051,7 @@ export default function FundDetailPage({
   const peerComparisonMetricByKey = new Map(
     (peerComparison?.metrics || []).map((metric) => [metric.metric_key, metric]),
   )
-  const activePerformanceMatrixMode = peerComparison ? performanceMatrixMode : 'values'
+  const activePerformanceMatrixMode = peerRankingAvailable ? performanceMatrixMode : 'values'
   const formatRecoveryValue = (snapshot: PerformanceMetricSnapshot | null) => {
     if (!snapshot || snapshot.maxDrawdown == null) {
       return null
@@ -5745,7 +5060,7 @@ export default function FundDetailPage({
       return '0 d'
     }
     if (snapshot.recoveryOpen) {
-      return 'Open'
+      return language === 'zh-Hans' ? '尚未修复' : 'Unrecovered'
     }
     if (snapshot.recoveryDays == null) {
       return '—'
@@ -5999,20 +5314,6 @@ export default function FundDetailPage({
   const riskCalculationSeries = fundPathRiskAvailable ? calculationBasisSeries : []
   const benchmarkRiskCalculationSeries =
     benchmarkPathRiskAvailable ? benchmarkCalculationSeries : []
-  const commonFundRiskSeries = comparisonReferenceEndDate
-    ? riskCalculationSeries.filter(
-        (point) =>
-          point.date <= comparisonReferenceEndDate &&
-          (!comparisonReferenceWindow || point.date >= comparisonReferenceWindow.start),
-      )
-    : []
-  const commonBenchmarkRiskSeries = comparisonReferenceEndDate
-    ? benchmarkRiskCalculationSeries.filter(
-        (point) =>
-          point.date <= comparisonReferenceEndDate &&
-          (!comparisonReferenceWindow || point.date >= comparisonReferenceWindow.start),
-      )
-    : []
   const returnDrawdownSeries = buildDrawdownSeries(riskCalculationSeries)
   const rollingRiskWindowLabel =
     ROLLING_RISK_WINDOW_OPTIONS.find((option) => option.months === rollingRiskWindowMonths)?.label ||
@@ -6037,161 +5338,17 @@ export default function FundDetailPage({
           -ROLLING_CHART_MAX_POINTS,
         )
       : []
-  const rollingBetaSeries =
-    selectedBenchmark &&
-    commonFundRiskSeries.length > 0 &&
-    commonBenchmarkRiskSeries.length > 0
-      ? buildRollingBetaSeries(commonFundRiskSeries, commonBenchmarkRiskSeries).slice(-60)
-      : []
-  const monthlyReturnSeries = buildMonthlyReturnSeries(calculationBasisSeries)
-  const latestMonthlyReturnValue =
-    monthlyReturnSeries.length > 0 ? monthlyReturnSeries[monthlyReturnSeries.length - 1].value : null
-  const trailingNegativeMonthCount = getTrailingNegativeMonthCount(monthlyReturnSeries)
   const currentDrawdownValue =
     returnDrawdownSeries.length > 0 ? returnDrawdownSeries[returnDrawdownSeries.length - 1].value : null
-  const latestRollingVolValue =
-    rollingVolatilitySeries.length > 0 ? rollingVolatilitySeries[rollingVolatilitySeries.length - 1].value : null
-  const rollingVolMedianValue = getMedianValue(rollingVolatilitySeries.map((point) => point.value))
-  const rollingVolPercentile =
-    latestRollingVolValue == null
-      ? null
-      : getPercentileRank(
-          rollingVolatilitySeries.map((point) => point.value),
-          latestRollingVolValue,
-        )
-  const latestRollingBetaValue =
-    rollingBetaSeries.length > 0 ? rollingBetaSeries[rollingBetaSeries.length - 1].value : null
-  const rollingBetaMedianValue = getMedianValue(rollingBetaSeries.map((point) => point.value))
-  const rollingBetaPercentile =
-    latestRollingBetaValue == null
-      ? null
-      : getPercentileRank(
-          rollingBetaSeries.map((point) => point.value),
-          latestRollingBetaValue,
-        )
   const latest1WReturn = performancePeriodSnapshots.find(({ key }) => key === '1W')?.fund.periodReturn ?? null
   const latestMtdReturn = performancePeriodSnapshots.find(({ key }) => key === 'MTD')?.fund.periodReturn ?? null
-  const buildWatchReading = (level: string, detail: string) => `${level} · ${detail}`
-  const scoreWatchLevel = (level: string) => (level === 'High' ? 2 : level === 'Elevated' ? 1 : 0)
-  const volatilityWatch = (() => {
-    if (latestRollingVolValue == null || rollingVolMedianValue == null || rollingVolPercentile == null) {
-      return {
-        level: 'N/A',
-        reading: 'N/A · Need more 12M rolling history',
-      }
-    }
-    const multiple =
-      rollingVolMedianValue === 0 ? null : latestRollingVolValue / rollingVolMedianValue
-    const level =
-      rollingVolPercentile >= 90 || (multiple != null && multiple >= 1.4)
-        ? 'High'
-        : rollingVolPercentile >= 75 || (multiple != null && multiple >= 1.2)
-          ? 'Elevated'
-          : 'Normal'
-    return {
-      level,
-      reading: buildWatchReading(
-        level,
-        `${formatPercent(latestRollingVolValue)} vs median ${formatPercent(rollingVolMedianValue)} (${formatNumber(rollingVolPercentile, 0)}th pct)`,
-      ),
-    }
-  })()
-  const drawdownPressureWatch = (() => {
-    if (currentDrawdownValue == null) {
-      return {
-        level: 'N/A',
-        reading: 'N/A · No drawdown history',
-      }
-    }
-    const worstAbs = lifetimeRiskSnapshot.maxDrawdown == null ? null : Math.abs(lifetimeRiskSnapshot.maxDrawdown)
-    const ratio = worstAbs && worstAbs > 0 ? Math.abs(currentDrawdownValue) / worstAbs : 0
-    const level =
-      currentDrawdownValue <= -8 || ratio >= 0.6
-        ? 'High'
-        : currentDrawdownValue <= -4 || ratio >= 0.35
-          ? 'Elevated'
-          : 'Normal'
-    return {
-      level,
-      reading: buildWatchReading(
-        level,
-        `${formatPercent(currentDrawdownValue)} current${worstAbs ? `, ${formatNumber(ratio * 100, 0)}% of worst` : ''}`,
-      ),
-    }
-  })()
-  const recentLossPressureWatch = (() => {
-    if (latestMonthlyReturnValue == null && latest1WReturn == null && latestMtdReturn == null) {
-      return {
-        level: 'N/A',
-        reading: 'N/A · Need recent return history',
-      }
-    }
-    const level =
-      trailingNegativeMonthCount >= 3 ||
-      (latestMonthlyReturnValue != null && latestMonthlyReturnValue <= -3) ||
-      (latest1WReturn != null && latest1WReturn <= -2)
-        ? 'High'
-        : trailingNegativeMonthCount >= 2 ||
-            (latestMonthlyReturnValue != null && latestMonthlyReturnValue <= -1.5) ||
-            (latestMtdReturn != null && latestMtdReturn <= -3)
-          ? 'Elevated'
-          : 'Normal'
-    const recentMonthlyLabel =
-      latestMonthlyReturnValue == null ? '—' : formatPercent(latestMonthlyReturnValue)
-    return {
-      level,
-      reading: buildWatchReading(
-        level,
-        `1W ${latest1WReturn == null ? '—' : formatPercent(latest1WReturn)}, MTD ${latestMtdReturn == null ? '—' : formatPercent(latestMtdReturn)}, latest month ${recentMonthlyLabel}, ${String(trailingNegativeMonthCount)} down month(s)`,
-      ),
-    }
-  })()
-  const betaDriftWatch = (() => {
-    if (!selectedBenchmark) {
-      return {
-        level: 'N/A',
-        reading: 'N/A · Select a benchmark',
-      }
-    }
-    if (latestRollingBetaValue == null || rollingBetaMedianValue == null || rollingBetaPercentile == null) {
-      return {
-        level: 'N/A',
-        reading: 'N/A · Need enough overlapping 12M windows',
-      }
-    }
-    const absoluteDelta = Math.abs(latestRollingBetaValue - rollingBetaMedianValue)
-    const level =
-      absoluteDelta >= 0.35 || rollingBetaPercentile >= 90
-        ? 'High'
-        : absoluteDelta >= 0.2 || rollingBetaPercentile >= 75
-          ? 'Elevated'
-          : 'Normal'
-    return {
-      level,
-      reading: buildWatchReading(
-        level,
-        `${formatNumber(latestRollingBetaValue, 2)} vs median ${formatNumber(rollingBetaMedianValue, 2)} (${formatNumber(rollingBetaPercentile, 0)}th pct)`,
-      ),
-    }
-  })()
-  const watchScore =
-    scoreWatchLevel(volatilityWatch.level) +
-    scoreWatchLevel(drawdownPressureWatch.level) +
-    scoreWatchLevel(recentLossPressureWatch.level) +
-    scoreWatchLevel(betaDriftWatch.level)
-  const overallWatchLevel =
-    watchScore >= 5 ? 'High' : watchScore >= 2 ? 'Elevated' : watchScore >= 0 ? 'Normal' : 'N/A'
   const latestYtdReturn = performancePeriodSnapshots.find(({ key }) => key === 'YTD')?.fund.periodReturn ?? null
   const lifetimePerformanceSnapshot =
     performancePeriodSnapshots.find(({ key }) => key === 'SI')?.fund ||
     buildPerformanceMetricSnapshot(calculationBasisSeries, fundPathRiskAvailable)
-  const researchManualRating = parseManualRating(research.manual_rating)
-  const displayedManualRating = manualRatingDirty ? manualRatingDraft : researchManualRating
-  const manualRatingHasChanges = manualRatingDirty && displayedManualRating !== researchManualRating
-  const overviewRatingValue = formatStarRating(displayedManualRating)
-  const overviewRatingNote = manualRatingDirty
-    ? 'Unsaved manual research rating'
-    : displayedManualRating == null
+  const researchManualRating = parseManualRating(research.profile.manual_rating)
+  const overviewRatingValue = formatStarRating(researchManualRating)
+  const overviewRatingNote = researchManualRating == null
       ? 'No manual research rating'
       : 'Manual research rating'
   const overviewRankingValue =
@@ -6249,7 +5406,7 @@ export default function FundDetailPage({
     {
       label: 'Current DD',
       value: currentDrawdownValue == null ? '—' : formatPercent(currentDrawdownValue),
-      note: drawdownPressureWatch.level,
+      note: 'From peak',
     },
     {
       label: 'SI Sharpe',
@@ -6260,11 +5417,6 @@ export default function FundDetailPage({
       label: 'Peer Rank',
       value: overviewRankingValue,
       note: peerComparisonPathLabel,
-    },
-    {
-      label: 'Watch Level',
-      value: overallWatchLevel,
-      note: `${String(watchScore)} signal point(s)`,
     },
   ]
   const rawTaxonomyPathLabel =
@@ -6323,9 +5475,7 @@ export default function FundDetailPage({
 
     return selectors
   })()
-  const riskPathMetricsWithheld =
-    !fundPathRiskAvailable ||
-    risk.data_quality?.status === 'withheld_missing_observations'
+  const riskPathMetricsUnavailable = !fundPathRiskAvailable
   const renderBenchmarkSearch = (ariaLabel: string, extraClassName = '') => {
     const className = ['instrument-chart-compare', extraClassName].filter(Boolean).join(' ')
     return (
@@ -6379,18 +5529,18 @@ export default function FundDetailPage({
                   filteredBenchmarkOptions.map((item) => (
                     <button
                       type="button"
-                      key={item.fund_id}
+                      key={item.instrument_id}
                       onMouseDown={(event) => event.preventDefault()}
                       onClick={() => {
-                        setBenchmarkFundId(item.fund_id)
+                        setBenchmarkFundId(item.instrument_id)
                         setBenchmarkSearch(benchmarkLibraryLabel(item))
                         setBenchmarkSearchFocused(false)
                         setBenchmarkNavSeries(null)
                       }}
                     >
-                      <strong>{item.fund_name}</strong>
+                      <strong>{item.instrument_name}</strong>
                       <span>
-                        {item.ticker_or_isin || item.fund_id} · {formatLabel(item.product_type)}
+                        {item.primary_identifier || item.instrument_id} · {formatLabel(item.instrument_type)}
                       </span>
                     </button>
                   ))
@@ -6491,7 +5641,7 @@ export default function FundDetailPage({
     setChartHoverPanel('primary')
     setChartHoverCursor(selection.cursor)
     setChartHoverIndex(selection.index)
-    openTimelineNoteEditor(selection.point.date)
+    openNewResearchRecord(selection.point.date)
   }
 
   function handlePrimaryChartContextMenu(event: ReactMouseEvent<SVGSVGElement>) {
@@ -6756,7 +5906,7 @@ export default function FundDetailPage({
           <div className="instrument-detail-headline">
             <div className="instrument-detail-eyebrow">{detailPageLabel}</div>
             <h1 className="instrument-detail-title">
-              {summary.fund_name} <span>{summary.ticker_or_isin}</span>
+              {summary.instrument_name} <span>{summary.ticker_or_isin}</span>
             </h1>
             <div className="instrument-detail-badges">
               {detailClassificationLabel ? (
@@ -6783,7 +5933,12 @@ export default function FundDetailPage({
                 className={tab === activeTab ? 'instrument-detail-tab instrument-detail-tab-active' : 'instrument-detail-tab'}
                 onClick={() => setActiveTab(tab)}
               >
-                {localize(language, TAB_LABELS[tab])}
+                {fundDetailTabLabel(
+                  fundType,
+                  tab,
+                  language,
+                  localize(language, TAB_LABELS[tab]),
+                )}
               </button>
             ))}
           </div>
@@ -6840,7 +5995,10 @@ export default function FundDetailPage({
                   type="button"
                   className="button-primary"
                   onClick={() => void handleSaveFundSettings()}
-                  disabled={savingSection === 'fund_settings'}
+                  disabled={
+                    savingSection === 'fund_settings' ||
+                    Boolean(taxonomyDraftNodeId && !taxonomyDraftNode?.is_leaf)
+                  }
                 >
                   {savingSection === 'fund_settings'
                     ? localize(language, SYSTEM_LABELS.saving)
@@ -6941,6 +6099,11 @@ export default function FundDetailPage({
                   ) : (
                     <div className="instrument-settings-loading">Loading taxonomy...</div>
                   )}
+                  {taxonomyDraftNodeId && !taxonomyDraftNode?.is_leaf ? (
+                    <div className="instrument-settings-loading">
+                      {language === 'zh-Hans' ? '请选择一个末级分类后保存。' : 'Select a leaf category before saving.'}
+                    </div>
+                  ) : null}
                 </div>
               </section>
             </div>
@@ -6950,6 +6113,34 @@ export default function FundDetailPage({
 
       {activeTab === 'overview' ? (
         <>
+          <section className="panel instrument-edit-surface">
+            <div className="instrument-section-header">
+              <div>
+                <div className="panel-title">
+                  {fundType === 'private_fund' ? 'Operational Data Contract' : 'Fund Reference Profile'}
+                </div>
+                <div className="instrument-section-title">
+                  {fundType === 'private_fund'
+                    ? 'NAV delivery, cadence and source status'
+                    : 'Provider facts separated from internal research conclusions'}
+                </div>
+              </div>
+              <span className="muted">Provider: {bundle.reference?.provider || 'unconfigured'}</span>
+            </div>
+            <div className="instrument-quote-facts-grid instrument-reference-facts-grid">
+              {fundSourceFacts.map((fact) => (
+                <div key={fact.label} className="instrument-quote-fact">
+                  <span>{fact.label}</span>
+                  <strong>{String(fact.value || '—')}</strong>
+                </div>
+              ))}
+            </div>
+            {bundle.reference && Object.keys(bundle.reference.section_errors).length ? (
+              <div className="instrument-corporate-action-warning">
+                {Object.values(bundle.reference.section_errors).join(' ')}
+              </div>
+            ) : null}
+          </section>
           {corporateActions.length ? (
             <section className="panel instrument-corporate-actions-panel">
               <div className="instrument-section-header">
@@ -7096,7 +6287,7 @@ export default function FundDetailPage({
                         </div>
                         {selectedBenchmark ? (
                           <div className="instrument-series-label instrument-series-label-benchmark-row">
-                            <strong>{selectedBenchmark.ticker_or_isin || selectedBenchmark.fund_name}</strong>
+                            <strong>{selectedBenchmark.primary_identifier || selectedBenchmark.instrument_name}</strong>
                             <span>{chartSeriesBasisLabel}</span>
                             <em className={`instrument-series-change-${getSignedMetricTone(chartBenchmarkCumulativeReturn)}`}>
                               {formatPercent(chartBenchmarkCumulativeReturn)}
@@ -7374,7 +6565,7 @@ export default function FundDetailPage({
                             <div className="instrument-chart-tooltip-row instrument-chart-tooltip-row-benchmark">
                               <span className="instrument-chart-tooltip-series-label">
                                 <i className="instrument-chart-tooltip-swatch" />
-                                {selectedBenchmark.ticker_or_isin || selectedBenchmark.fund_name}
+                                {selectedBenchmark.primary_identifier || selectedBenchmark.instrument_name}
                               </span>
                               <strong>{formatPercent(hoverBenchmarkValue)}</strong>
                             </div>
@@ -7392,7 +6583,7 @@ export default function FundDetailPage({
                             <div className="instrument-chart-tooltip-row instrument-chart-tooltip-row-benchmark">
                               <span className="instrument-chart-tooltip-series-label">
                                 <i className="instrument-chart-tooltip-swatch" />
-                                {selectedBenchmark.ticker_or_isin || selectedBenchmark.fund_name} Drawdown
+                                {selectedBenchmark.primary_identifier || selectedBenchmark.instrument_name} Drawdown
                               </span>
                               <strong>{formatPercent(hoverBenchmarkDrawdownValue)}</strong>
                             </div>
@@ -7441,7 +6632,7 @@ export default function FundDetailPage({
                         <button
                           type="button"
                           className="instrument-chart-context-menu-item"
-                          onClick={() => openTimelineNoteEditor(chartTimelineNoteContextMenu.anchorDate)}
+                          onClick={() => openNewResearchRecord(chartTimelineNoteContextMenu.anchorDate)}
                         >
                           Add note at {formatDate(chartTimelineNoteContextMenu.anchorDate)}
                         </button>
@@ -7472,7 +6663,7 @@ export default function FundDetailPage({
                           <div className="toolbar">
                             <button
                               type="button"
-                              onClick={() => openTimelineNoteEditor(selectedTimelineNoteGroup.anchorDate)}
+                              onClick={() => openNewResearchRecord(selectedTimelineNoteGroup.anchorDate)}
                             >
                               Add Note
                             </button>
@@ -7507,17 +6698,9 @@ export default function FundDetailPage({
                                       <button
                                         type="button"
                                         className="table-action"
-                                        onClick={() => openTimelineNoteEditor(note.note_date, note)}
+                                        onClick={() => setActiveTab('research')}
                                       >
-                                        Edit
-                                      </button>
-                                      <button
-                                        type="button"
-                                        className="table-action"
-                                        onClick={() => void handleDeleteTimelineNote(note.note_id)}
-                                        disabled={savingSection === 'timeline_note'}
-                                      >
-                                        Delete
+                                        Open Research
                                       </button>
                                     </div>
                                   </td>
@@ -7711,7 +6894,7 @@ export default function FundDetailPage({
                                 <div className="instrument-chart-tooltip-row instrument-chart-tooltip-row-benchmark">
                                   <span className="instrument-chart-tooltip-series-label">
                                     <i className="instrument-chart-tooltip-swatch" />
-                                    {selectedBenchmark.ticker_or_isin || selectedBenchmark.fund_name}
+                                    {selectedBenchmark.primary_identifier || selectedBenchmark.instrument_name}
                                   </span>
                                   <strong>{formatPercent(hoverBenchmarkValue)}</strong>
                                 </div>
@@ -7729,7 +6912,7 @@ export default function FundDetailPage({
                                 <div className="instrument-chart-tooltip-row instrument-chart-tooltip-row-benchmark">
                                   <span className="instrument-chart-tooltip-series-label">
                                     <i className="instrument-chart-tooltip-swatch" />
-                                    {selectedBenchmark.ticker_or_isin || selectedBenchmark.fund_name} Drawdown
+                                    {selectedBenchmark.primary_identifier || selectedBenchmark.instrument_name} Drawdown
                                   </span>
                                   <strong>{formatPercent(hoverBenchmarkDrawdownValue)}</strong>
                                 </div>
@@ -7810,167 +6993,6 @@ export default function FundDetailPage({
             </div>
           </section>
 
-          {timelineNoteDraft ? (
-            <div
-              className="instrument-modal-backdrop"
-              onClick={closeTimelineNoteDialog}
-            >
-              <div
-                ref={timelineNoteDialogRef}
-                className="instrument-modal instrument-timeline-note-modal"
-                role="dialog"
-                aria-modal="true"
-                aria-label="Timeline Note"
-                tabIndex={-1}
-                onClick={(event) => event.stopPropagation()}
-              >
-                <div className="instrument-modal-header">
-                  <div>
-                    <div className="panel-title">Research Note</div>
-                    <div className="instrument-quote-source-title">
-                      Anchored to {formatDate(timelineNoteDraft.note_date)}
-                    </div>
-                  </div>
-                  <div className="toolbar">
-                    {timelineNotes.some((note) => note.note_id === timelineNoteDraft.note_id) ? (
-                      <button
-                        type="button"
-                        onClick={() => void handleDeleteTimelineNote(timelineNoteDraft.note_id)}
-                        disabled={savingSection === 'timeline_note'}
-                      >
-                        Delete
-                      </button>
-                    ) : null}
-                    <button
-                      type="button"
-                      disabled={savingSection === 'timeline_note'}
-                      onClick={closeTimelineNoteDialog}
-                    >
-                      Cancel
-                    </button>
-                    <button
-                      type="button"
-                      className="button-primary"
-                      onClick={() => void handleSaveTimelineNote()}
-                      disabled={savingSection === 'timeline_note'}
-                    >
-                      {savingSection === 'timeline_note' ? 'Saving...' : 'Save Note'}
-                    </button>
-                  </div>
-                </div>
-                <div className="form-grid form-grid-2 instrument-quote-source-grid">
-                  <label className="form-field">
-                    <span>Date</span>
-                    <input
-                      type="date"
-                      value={timelineNoteDraft.note_date}
-                      onChange={(event) =>
-                        setTimelineNoteDraft((current) =>
-                          current
-                            ? {
-                                ...current,
-                                note_date: event.target.value,
-                              }
-                            : current,
-                        )
-                      }
-                    />
-                  </label>
-                  <label className="form-field">
-                    <span>Importance</span>
-                    <select
-                      value={timelineNoteDraft.importance}
-                      onChange={(event) =>
-                        setTimelineNoteDraft((current) =>
-                          current
-                            ? {
-                                ...current,
-                                importance: parseTimelineNoteImportance(event.target.value),
-                              }
-                            : current,
-                        )
-                      }
-                    >
-                      <option value="low">Low</option>
-                      <option value="medium">Medium</option>
-                      <option value="high">High</option>
-                    </select>
-                  </label>
-                  <label className="form-field detail-span-2">
-                    <span>Title</span>
-                    <input
-                      value={timelineNoteDraft.title}
-                      onChange={(event) =>
-                        setTimelineNoteDraft((current) =>
-                          current
-                            ? {
-                                ...current,
-                                title: event.target.value,
-                              }
-                            : current,
-                        )
-                      }
-                      placeholder="Brief headline for what mattered on this date"
-                    />
-                  </label>
-                  <label className="form-field detail-span-2">
-                    <span>Summary</span>
-                    <textarea
-                      rows={3}
-                      value={timelineNoteDraft.summary}
-                      onChange={(event) =>
-                        setTimelineNoteDraft((current) =>
-                          current
-                            ? {
-                                ...current,
-                                summary: event.target.value,
-                              }
-                            : current,
-                        )
-                      }
-                      placeholder="Short takeaway shown in the chart tooltip."
-                    />
-                  </label>
-                  <label className="form-field detail-span-2">
-                    <span>Body</span>
-                    <textarea
-                      rows={6}
-                      value={timelineNoteDraft.body}
-                      onChange={(event) =>
-                        setTimelineNoteDraft((current) =>
-                          current
-                            ? {
-                                ...current,
-                                body: event.target.value,
-                              }
-                            : current,
-                        )
-                      }
-                      placeholder="Longer context, supporting evidence, or follow-up items."
-                    />
-                  </label>
-                  <label className="form-field detail-span-2">
-                    <span>Tags</span>
-                    <input
-                      value={timelineNoteDraft.tagsText}
-                      onChange={(event) =>
-                        setTimelineNoteDraft((current) =>
-                          current
-                            ? {
-                                ...current,
-                                tagsText: event.target.value,
-                              }
-                            : current,
-                        )
-                      }
-                      placeholder="event, manager change, liquidity, drawdown"
-                    />
-                  </label>
-                </div>
-              </div>
-            </div>
-          ) : null}
-
         </>
       ) : null}
 
@@ -7993,6 +7015,14 @@ export default function FundDetailPage({
                       Common as of {formatDate(comparisonReferenceEndDate)}
                     </span>
                   ) : null}
+                  {peerComparison?.status === 'limited_sample' ? (
+                    <span
+                      className="context-chip"
+                      title="Peer medians are shown, but the exact taxonomy leaf has too few same-date peers for a stable percentile or rank."
+                    >
+                      Peer median only · {formatNumber(peerComparison.sample_count, 0)} peers
+                    </span>
+                  ) : null}
                 </div>
               </div>
               <div className="instrument-performance-matrix-controls">
@@ -8002,7 +7032,7 @@ export default function FundDetailPage({
                       key={option.value}
                       type="button"
                       className={option.value === activePerformanceMatrixMode ? 'instrument-performance-toggle-active' : undefined}
-                      disabled={option.value !== 'values' && !peerComparison}
+                      disabled={option.value !== 'values' && !peerRankingAvailable}
                       onClick={() => setPerformanceMatrixMode(option.value)}
                     >
                       {option.label}
@@ -8138,13 +7168,16 @@ export default function FundDetailPage({
               </div>
             </div>
             <div className="instrument-risk-section-body">
-              {riskPathMetricsWithheld ? (
+              {riskPathMetricsUnavailable ? (
                 <div className="instrument-placeholder">
-                  {risk.current_watch?.note ||
-                    `Path-dependent risk metrics are withheld because ${formatNumber(
-                      calculationFrequencyProfile.gap_count,
-                      0,
-                    )} expected observation(s) are missing.`}
+                  Path-dependent risk metrics require at least two canonical observations.
+                </div>
+              ) : null}
+              {!riskPathMetricsUnavailable && calculationFrequencyProfile.gap_count > 0 ? (
+                <div className="instrument-placeholder">
+                  {formatNumber(calculationFrequencyProfile.gap_count, 0)} expected observation(s) are
+                  missing. Metrics below use the available canonical observations; review data quality
+                  before making a decision.
                 </div>
               ) : null}
               <div className="instrument-risk-visual-grid instrument-risk-rolling-grid">
@@ -8152,7 +7185,7 @@ export default function FundDetailPage({
                   title="Annualized Volatility"
                   points={rollingVolatilitySeries}
                   benchmarkPoints={benchmarkRollingVolatilitySeries}
-                  benchmarkLabel={selectedBenchmark ? selectedBenchmark.ticker_or_isin || selectedBenchmark.fund_name : null}
+                  benchmarkLabel={selectedBenchmark ? selectedBenchmark.primary_identifier || selectedBenchmark.instrument_name : null}
                   displayStyle={rollingRiskChartDisplayStyle}
                   formatValue={(value) => formatPercent(value)}
                   emptyLabel={`Insufficient ${rollingRiskWindowLabel} total-return NAV history.`}
@@ -8161,7 +7194,7 @@ export default function FundDetailPage({
                   title="Sharpe Ratio"
                   points={rollingSharpeSeries}
                   benchmarkPoints={benchmarkRollingSharpeSeries}
-                  benchmarkLabel={selectedBenchmark ? selectedBenchmark.ticker_or_isin || selectedBenchmark.fund_name : null}
+                  benchmarkLabel={selectedBenchmark ? selectedBenchmark.primary_identifier || selectedBenchmark.instrument_name : null}
                   displayStyle={rollingRiskChartDisplayStyle}
                   formatValue={(value) => formatNumber(value, 2)}
                   emptyLabel={`Insufficient ${rollingRiskWindowLabel} total-return NAV history.`}
@@ -8173,13 +7206,37 @@ export default function FundDetailPage({
       ) : null}
 
       {activeTab === 'price' ? (
+        <>
+        {providerFeeFacts.length ? (
+          <section className="panel instrument-edit-surface">
+            <div className="instrument-section-header">
+              <div>
+                <div className="panel-title">Provider Fee Facts</div>
+                <div className="instrument-section-title">
+                  Source-reported values kept separate from the internal research record
+                </div>
+              </div>
+              <span className="muted">Provider: {bundle.reference?.provider || 'unconfigured'}</span>
+            </div>
+            <div className="instrument-quote-facts-grid">
+              {providerFeeFacts.map((fact) => (
+                <div key={fact.key} className="instrument-quote-fact">
+                  <span>{fact.label}</span>
+                  <strong>{fact.value}</strong>
+                </div>
+              ))}
+            </div>
+          </section>
+        ) : null}
         <section className="panel instrument-price-shell instrument-edit-surface">
           <div className="instrument-price-topline" />
 
           <section className="instrument-price-section">
             <div className="instrument-price-section-header">
               <div>
-                <div className="instrument-section-title">Expense Ratios &amp; Fees</div>
+                <div className="instrument-section-title">
+                  {fundType === 'private_fund' ? 'Fees, Liquidity & Dealing Terms' : 'Expense Ratios & Fees'}
+                </div>
               </div>
               <div className="toolbar">
                 {isEditingPrice ? (
@@ -8223,42 +7280,17 @@ export default function FundDetailPage({
               <div className="table-shell instrument-price-table-shell">
                 <table className="terminal-table terminal-table-compact instrument-data-table instrument-price-schedule-table">
                   <tbody>
-                    <tr>
-                      <td className="instrument-price-schedule-label">Adjusted Expense Ratio</td>
-                      <td className="instrument-price-schedule-value">
-                        {renderPriceOverviewValue('adjusted_expense_ratio', adjustedExpenseRatio)}
-                      </td>
-                    </tr>
-                    <tr>
-                      <td className="instrument-price-schedule-label">Reported Expense Ratio</td>
-                      <td className="instrument-price-schedule-value">
-                        {renderPriceOverviewValue('total_expense_ratio', reportedExpenseRatio)}
-                      </td>
-                    </tr>
-                    <tr>
-                      <td className="instrument-price-schedule-label">Management Fee</td>
-                      <td className="instrument-price-schedule-value">
-                        {renderPriceOverviewValue('management_fee', feesAndTermsRows[0]?.value || '—')}
-                      </td>
-                    </tr>
-                    <tr>
-                      <td className="instrument-price-schedule-label">Interest Expense Fees</td>
-                      <td className="instrument-price-schedule-value">
-                        {renderPriceOverviewValue('interest_expense_fees', feesAndTermsRows[1]?.value || '—')}
-                      </td>
-                    </tr>
-                    <tr>
-                      <td className="instrument-price-schedule-label">Redemption Fee</td>
-                      <td className="instrument-price-schedule-value">
-                        {renderPriceOverviewValue('redemption_fee', feesAndTermsRows[2]?.value || '—')}
-                      </td>
-                    </tr>
-                    <tr>
-                      <td className="instrument-price-schedule-label">Minimum Initial Investment</td>
-                      <td className="instrument-price-schedule-value">
-                        {renderPriceOverviewValue('minimum_initial_investment', feesAndTermsRows[3]?.value || '—')}
-                      </td>
-                    </tr>
+                    {feeTermFields.map((field) => (
+                      <tr key={field.key}>
+                        <td className="instrument-price-schedule-label">{field.label}</td>
+                        <td className="instrument-price-schedule-value">
+                          {renderPriceOverviewValue(
+                            field.key,
+                            formatPriceOverviewValue(field.key, priceOverviewMap[field.key]),
+                          )}
+                        </td>
+                      </tr>
+                    ))}
                     <tr>
                       <td className="instrument-price-schedule-label">Distribution Policy</td>
                       <td
@@ -8348,9 +7380,17 @@ export default function FundDetailPage({
             </div>
           </section>
         </section>
+        </>
       ) : null}
 
       {activeTab === 'exposure' ? (
+        <>
+        {providerReferenceHoldings.length ? (
+          <ReferenceDataTable
+            title="Latest disclosed holdings"
+            rows={providerReferenceHoldings}
+          />
+        ) : null}
         <section className="detail-grid">
           <section className="panel">
             <div className="instrument-section-header">
@@ -8369,7 +7409,7 @@ export default function FundDetailPage({
                 ))
               ) : (
                 <div className="instrument-placeholder">
-                  Exposure analytics will be rebuilt by product type later.
+                  No allocation data is available from the configured primary source.
                 </div>
               )}
             </div>
@@ -8442,6 +7482,7 @@ export default function FundDetailPage({
             </div>
           </section>
         </section>
+        </>
       ) : null}
 
       {activeTab === 'people' ? (
@@ -8451,7 +7492,9 @@ export default function FundDetailPage({
           <section className="instrument-people-section">
             <div className="instrument-people-section-header">
               <div>
-                <div className="instrument-section-title">People</div>
+                <div className="instrument-section-title">
+                  {fundType === 'private_fund' ? 'Organization & Key Persons' : 'Management Team'}
+                </div>
               </div>
               <div className="toolbar">
                 {editingPeople ? (
@@ -8495,32 +7538,29 @@ export default function FundDetailPage({
               <div className="table-shell instrument-profile-table-shell">
                 <table className="terminal-table terminal-table-compact instrument-data-table instrument-profile-table">
                   <tbody>
+                    {peopleHeaderFields.map((field) => (
+                      <tr key={field.key}>
+                        <td className="instrument-profile-label">{field.label}</td>
+                        <td className="instrument-profile-value">
+                          {renderPeopleOverviewValue(
+                            field.key,
+                            formatManualOverviewValue(field.key, managementStats[field.key]),
+                          )}
+                        </td>
+                      </tr>
+                    ))}
                     <tr>
-                      <td className="instrument-profile-label">Management Company</td>
-                      <td className="instrument-profile-value">
-                        {renderPeopleOverviewValue(
-                          'advisor',
-                          formatResearchOverviewValue('advisor', managementStats.advisor),
-                        )}
+                      <td className="instrument-profile-label">
+                        {fundType === 'private_fund' ? 'Organization Profile' : 'Management Profile'}
                       </td>
-                    </tr>
-                    <tr>
-                      <td className="instrument-profile-label">Sub-Advisor</td>
-                      <td className="instrument-profile-value">
-                        {renderPeopleOverviewValue(
-                          'sub_advisor',
-                          formatResearchOverviewValue('sub_advisor', managementStats.sub_advisor),
-                        )}
-                      </td>
-                    </tr>
-                    <tr>
-                      <td className="instrument-profile-label">Management Profile</td>
                       <td className="instrument-profile-value instrument-profile-prose">
                         {renderPeopleManagementProfileValue()}
                       </td>
                     </tr>
                     <tr>
-                      <td className="instrument-profile-label">Fund Managers / Research Team</td>
+                      <td className="instrument-profile-label">
+                        {fundType === 'private_fund' ? 'Key Persons / Investment Team' : 'Fund Managers / Research Team'}
+                      </td>
                       <td className="instrument-profile-value instrument-profile-prose">{renderPeopleTeamValue()}</td>
                     </tr>
                     {editingPeople || peopleAdditionalOverviewRows.length ? (
@@ -8555,498 +7595,6 @@ export default function FundDetailPage({
                   </tbody>
                 </table>
               </div>
-            </div>
-          </section>
-        </section>
-      ) : null}
-
-      {false && activeTab === 'people' ? (
-        <section className="instrument-people-shell instrument-edit-surface">
-          <div className="instrument-price-topline" />
-          <div className="instrument-people-page-header">
-            <div>
-              <div className="panel-title">People</div>
-              <div className="instrument-section-title">People</div>
-            </div>
-            <div className="toolbar">
-              {editingPeople ? (
-                <>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setPeopleDraft(toEditablePeopleDraft(bundle!.people))
-                      setEditingPeople(false)
-                      setSectionError(null)
-                      setSectionNotice(null)
-                    }}
-                  >
-                    Cancel
-                  </button>
-                  <button
-                    type="button"
-                    className="button-primary"
-                    onClick={() => void handleSavePeople()}
-                    disabled={savingSection === 'people'}
-                  >
-                    {savingSection === 'people' ? 'Saving...' : 'Save People'}
-                  </button>
-                </>
-              ) : (
-                <button
-                  type="button"
-                  onClick={() => {
-                    setPeopleDraft(toEditablePeopleDraft(bundle!.people))
-                    setEditingPeople(true)
-                    setSectionError(null)
-                    setSectionNotice(null)
-                  }}
-                >
-                  Edit People
-                </button>
-              )}
-            </div>
-          </div>
-
-          <section className="instrument-people-section">
-            <div className="instrument-people-section-header">
-              <div>
-                <div className="panel-title">People</div>
-                <div className="instrument-section-title">Overview</div>
-              </div>
-              {editingPeople ? (
-                <div className="toolbar">
-                  <button
-                    type="button"
-                    onClick={() =>
-                      setPeopleDraft((current) =>
-                        current
-                          ? {
-                              ...current,
-                              overviewRows: [...current.overviewRows, { id: makeRowId('overview'), key: '', value: '' }],
-                            }
-                          : current,
-                      )
-                    }
-                  >
-                    Add Field
-                  </button>
-                </div>
-              ) : null}
-            </div>
-
-            <div className="instrument-people-section-body">
-              <div className="detail-grid detail-grid-tight instrument-people-columns">
-                <div>
-                  <div className="table-shell instrument-people-table-shell">
-                    <table className="terminal-table terminal-table-compact instrument-data-table">
-                      <thead>
-                        <tr>
-                          <th>Field</th>
-                          <th>Value</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {editingPeople && peopleDraft
-                          ? PEOPLE_PRIMARY_OVERVIEW_FIELDS.map((field) => (
-                              <tr key={field.key}>
-                                <td>{field.label}</td>
-                                <td className="instrument-data-table-value">
-                                  <input
-                                    className="table-input"
-                                    type={field.type === 'date' ? 'date' : field.type === 'number' ? 'number' : 'text'}
-                                    step={
-                                      field.key === 'number_of_managers' ? '1' : field.type === 'number' ? '0.1' : undefined
-                                    }
-                                    value={getPeopleOverviewDraftValue(peopleDraft, field.key)}
-                                    onChange={(event) =>
-                                      setPeopleDraft((current) =>
-                                        current
-                                          ? {
-                                              ...current,
-                                              overviewRows: upsertKeyValueRows(
-                                                current.overviewRows,
-                                                field.key,
-                                                event.target.value,
-                                              ),
-                                            }
-                                          : current,
-                                      )
-                                    }
-                                  />
-                                </td>
-                              </tr>
-                            ))
-                          : peoplePrimaryOverviewRows.map((row) => (
-                              <tr key={row.key}>
-                                <td>{row.label}</td>
-                                <td className="instrument-data-table-value">{row.value}</td>
-                              </tr>
-                            ))}
-                      </tbody>
-                    </table>
-                  </div>
-                </div>
-                <div>
-                  <div className="table-shell instrument-people-table-shell">
-                    {editingPeople && peopleDraft ? (
-                      <table className="terminal-table terminal-table-compact instrument-data-table">
-                        <thead>
-                          <tr>
-                            <th>Field Key</th>
-                            <th>Value</th>
-                            <th className="instrument-table-action-col">Action</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {peopleAdditionalDraftRows.length ? (
-                            peopleAdditionalDraftRows.map((row) => (
-                              <tr key={row.id}>
-                                <td>
-                                  <input
-                                    className="table-input"
-                                    value={row.key}
-                                    placeholder="field_key"
-                                    onChange={(event) =>
-                                      setPeopleDraft((current) =>
-                                        current
-                                          ? {
-                                              ...current,
-                                              overviewRows: current.overviewRows.map((item) =>
-                                                item.id === row.id ? { ...item, key: event.target.value } : item,
-                                              ),
-                                            }
-                                          : current,
-                                      )
-                                    }
-                                  />
-                                </td>
-                                <td>
-                                  <input
-                                    className="table-input"
-                                    value={row.value}
-                                    placeholder="value"
-                                    onChange={(event) =>
-                                      setPeopleDraft((current) =>
-                                        current
-                                          ? {
-                                              ...current,
-                                              overviewRows: current.overviewRows.map((item) =>
-                                                item.id === row.id ? { ...item, value: event.target.value } : item,
-                                              ),
-                                            }
-                                          : current,
-                                      )
-                                    }
-                                  />
-                                </td>
-                                <td className="instrument-table-row-action-cell">
-                                  <button
-                                    type="button"
-                                    className="table-action"
-                                    onClick={() =>
-                                      setPeopleDraft((current) =>
-                                        current
-                                          ? {
-                                              ...current,
-                                              overviewRows: current.overviewRows.filter((item) => item.id !== row.id),
-                                            }
-                                          : current,
-                                      )
-                                    }
-                                  >
-                                    Remove
-                                  </button>
-                                </td>
-                              </tr>
-                            ))
-                          ) : (
-                            <tr>
-                              <td colSpan={3} className="empty-state">
-                                No additional people fields.
-                              </td>
-                            </tr>
-                          )}
-                        </tbody>
-                      </table>
-                    ) : peopleAdditionalOverviewRows.length ? (
-                      <table className="terminal-table terminal-table-compact instrument-data-table">
-                        <thead>
-                          <tr>
-                            <th>Field</th>
-                            <th>Value</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {peopleAdditionalOverviewRows.map((row) => (
-                            <tr key={row.key}>
-                              <td>{row.label}</td>
-                              <td className="instrument-data-table-value">{row.value}</td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    ) : (
-                      <div className="instrument-placeholder instrument-people-placeholder">
-                        No additional people fields.
-                      </div>
-                    )}
-                  </div>
-                </div>
-              </div>
-            </div>
-          </section>
-
-          <section className="instrument-people-section">
-            <div className="instrument-people-section-header">
-              <div>
-                <div className="panel-title">People</div>
-                <div className="instrument-section-title">Management Team</div>
-              </div>
-              {editingPeople ? (
-                <div className="toolbar">
-                  <button
-                    type="button"
-                    onClick={() =>
-                      setPeopleDraft((current) =>
-                        current
-                          ? {
-                              ...current,
-                              teamRows: [
-                                ...current.teamRows,
-                                { id: makeRowId('team'), name: '', role: '', start_date: '' },
-                              ],
-                            }
-                          : current,
-                      )
-                    }
-                  >
-                    Add Team Member
-                  </button>
-                </div>
-              ) : null}
-            </div>
-            <div className="table-shell instrument-people-table-shell">
-              <table className="terminal-table terminal-table-compact instrument-data-table">
-                <thead>
-                  <tr>
-                    <th>Name</th>
-                    <th>Role</th>
-                    <th>Start Date</th>
-                    {editingPeople ? <th className="instrument-table-action-col">Action</th> : null}
-                  </tr>
-                </thead>
-                <tbody>
-                  {editingPeople && peopleDraft ? (
-                    peopleDraft!.teamRows.length ? (
-                      peopleDraft!.teamRows.map((row) => (
-                        <tr key={row.id}>
-                          <td>
-                            <input
-                              className="table-input"
-                              value={row.name}
-                              onChange={(event) =>
-                                setPeopleDraft((current) =>
-                                  current
-                                    ? {
-                                        ...current,
-                                        teamRows: current.teamRows.map((item) =>
-                                          item.id === row.id ? { ...item, name: event.target.value } : item,
-                                        ),
-                                      }
-                                    : current,
-                                )
-                              }
-                            />
-                          </td>
-                          <td>
-                            <input
-                              className="table-input"
-                              value={row.role}
-                              onChange={(event) =>
-                                setPeopleDraft((current) =>
-                                  current
-                                    ? {
-                                        ...current,
-                                        teamRows: current.teamRows.map((item) =>
-                                          item.id === row.id ? { ...item, role: event.target.value } : item,
-                                        ),
-                                      }
-                                    : current,
-                                )
-                              }
-                            />
-                          </td>
-                          <td>
-                            <input
-                              className="table-input"
-                              type="date"
-                              value={row.start_date}
-                              onChange={(event) =>
-                                setPeopleDraft((current) =>
-                                  current
-                                    ? {
-                                        ...current,
-                                        teamRows: current.teamRows.map((item) =>
-                                          item.id === row.id ? { ...item, start_date: event.target.value } : item,
-                                        ),
-                                      }
-                                    : current,
-                                )
-                              }
-                            />
-                          </td>
-                          <td className="instrument-table-row-action-cell">
-                            <button
-                              type="button"
-                              className="table-action"
-                              onClick={() =>
-                                setPeopleDraft((current) =>
-                                  current
-                                    ? {
-                                        ...current,
-                                        teamRows: current.teamRows.filter((item) => item.id !== row.id),
-                                      }
-                                    : current,
-                                )
-                              }
-                            >
-                              Remove
-                            </button>
-                          </td>
-                        </tr>
-                      ))
-                    ) : (
-                      <tr>
-                        <td colSpan={4} className="empty-state">
-                          No management team rows yet.
-                        </td>
-                      </tr>
-                    )
-                  ) : people.team.length ? (
-                    people.team.map((row, index) => (
-                      <tr key={`${String(row.name)}-${index}`}>
-                        <td>{getString(row.name)}</td>
-                        <td>{getString(row.role)}</td>
-                        <td>{formatDate(row.start_date)}</td>
-                      </tr>
-                    ))
-                  ) : (
-                    <tr>
-                      <td colSpan={3} className="empty-state">
-                        No management team recorded yet.
-                      </td>
-                    </tr>
-                  )}
-                </tbody>
-              </table>
-            </div>
-          </section>
-
-          <section className="instrument-people-section">
-            <div className="instrument-people-section-header">
-              <div>
-                <div className="panel-title">People</div>
-                <div className="instrument-section-title">Notes</div>
-              </div>
-              {editingPeople ? (
-                <div className="toolbar">
-                  <button
-                    type="button"
-                    onClick={() =>
-                      setPeopleDraft((current) =>
-                        current
-                          ? {
-                              ...current,
-                              noteRows: [...current.noteRows, { id: makeRowId('people-note'), value: '' }],
-                            }
-                          : current,
-                      )
-                    }
-                  >
-                    Add Note
-                  </button>
-                </div>
-              ) : null}
-            </div>
-            <div className="table-shell instrument-people-table-shell">
-              {editingPeople && peopleDraft ? (
-                <table className="terminal-table terminal-table-compact instrument-data-table">
-                  <thead>
-                    <tr>
-                      <th>Note</th>
-                      <th className="instrument-table-action-col">Action</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {peopleDraft!.noteRows.length ? (
-                      peopleDraft!.noteRows.map((row) => (
-                        <tr key={row.id}>
-                          <td>
-                            <textarea
-                              className="table-input instrument-data-table-textarea"
-                              value={row.value}
-                              rows={2}
-                              onChange={(event) =>
-                                setPeopleDraft((current) =>
-                                  current
-                                    ? {
-                                        ...current,
-                                        noteRows: current.noteRows.map((item) =>
-                                          item.id === row.id ? { ...item, value: event.target.value } : item,
-                                        ),
-                                      }
-                                    : current,
-                                )
-                              }
-                            />
-                          </td>
-                          <td className="instrument-table-row-action-cell">
-                            <button
-                              type="button"
-                              className="table-action"
-                              onClick={() =>
-                                setPeopleDraft((current) =>
-                                  current
-                                    ? {
-                                        ...current,
-                                        noteRows: current.noteRows.filter((item) => item.id !== row.id),
-                                      }
-                                    : current,
-                                )
-                              }
-                            >
-                              Remove
-                            </button>
-                          </td>
-                        </tr>
-                      ))
-                    ) : (
-                      <tr>
-                        <td colSpan={2} className="empty-state">
-                          No notes yet.
-                        </td>
-                      </tr>
-                    )}
-                  </tbody>
-                </table>
-              ) : people.notes.length ? (
-                <table className="terminal-table terminal-table-compact instrument-data-table">
-                  <thead>
-                    <tr>
-                      <th>Note</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {people.notes.map((item) => (
-                      <tr key={item}>
-                        <td className="instrument-data-table-prose">{item}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              ) : (
-                <div className="instrument-placeholder instrument-people-placeholder">No people notes yet.</div>
-              )}
             </div>
           </section>
         </section>
@@ -9104,7 +7652,11 @@ export default function FundDetailPage({
                 <table className="terminal-table terminal-table-compact instrument-data-table instrument-profile-table">
                   <tbody>
                     <tr>
-                      <td className="instrument-profile-label">Investment Scope / Objective</td>
+                      <td className="instrument-profile-label">
+                        {fundType === 'private_fund'
+                          ? 'Investment Mandate / Eligible Assets'
+                          : 'Investment Objective / Benchmark Mandate'}
+                      </td>
                       <td className="instrument-profile-value instrument-profile-prose">
                         {renderStrategyTextValue(
                           strategyDraft?.investment_objective ?? '',
@@ -9118,7 +7670,9 @@ export default function FundDetailPage({
                       </td>
                     </tr>
                     <tr>
-                      <td className="instrument-profile-label">Investment Strategy</td>
+                      <td className="instrument-profile-label">
+                        {fundType === 'private_fund' ? 'Strategy & Sources of Return' : 'Investment Strategy'}
+                      </td>
                       <td className="instrument-profile-value instrument-profile-prose">
                         {renderStrategyTextValue(
                           strategyDraft?.summary ?? '',
@@ -9200,449 +7754,6 @@ export default function FundDetailPage({
                     </tr>
                   </tbody>
                 </table>
-              </div>
-            </div>
-          </section>
-        </section>
-      ) : null}
-
-      {false && activeTab === 'strategy' ? (
-        <section className="instrument-strategy-shell instrument-edit-surface">
-          <div className="instrument-price-topline" />
-          <div className="instrument-strategy-page-header">
-            <div>
-              <div className="panel-title">Strategy</div>
-              <div className="instrument-section-title">Strategy</div>
-            </div>
-            <div className="toolbar">
-              {editingStrategy ? (
-                <>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setStrategyDraft(toEditableStrategyDraft(bundle!.strategy))
-                      setEditingStrategy(false)
-                      setSectionError(null)
-                      setSectionNotice(null)
-                    }}
-                  >
-                    Cancel
-                  </button>
-                  <button
-                    type="button"
-                    className="button-primary"
-                    onClick={() => void handleSaveStrategy()}
-                    disabled={savingSection === 'strategy'}
-                  >
-                    {savingSection === 'strategy' ? 'Saving...' : 'Save Strategy'}
-                  </button>
-                </>
-              ) : (
-                <button
-                  type="button"
-                  onClick={() => {
-                    setStrategyDraft(toEditableStrategyDraft(bundle!.strategy))
-                    setEditingStrategy(true)
-                    setSectionError(null)
-                    setSectionNotice(null)
-                  }}
-                >
-                  Edit Strategy
-                </button>
-              )}
-            </div>
-          </div>
-
-          <section className="instrument-strategy-section">
-            <div className="instrument-strategy-section-header">
-              <div>
-                <div className="panel-title">Strategy</div>
-                <div className="instrument-section-title">Core Statements</div>
-              </div>
-            </div>
-            <div className="instrument-strategy-section-body">
-              <div className="table-shell instrument-strategy-table-shell">
-                <table className="terminal-table terminal-table-compact instrument-data-table">
-                  <thead>
-                    <tr>
-                      <th>Field</th>
-                      <th>Value</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    <tr>
-                      <td>Investment Thesis</td>
-                      <td className={editingStrategy ? '' : 'instrument-data-table-prose'}>
-                        {editingStrategy && strategyDraft ? (
-                          <textarea
-                            className="table-input instrument-data-table-textarea"
-                            rows={6}
-                            value={strategyDraft!.summary}
-                            onChange={(event) =>
-                              setStrategyDraft((current) =>
-                                current ? { ...current, summary: event.target.value } : current,
-                              )
-                            }
-                          />
-                        ) : (
-                          strategy.summary || 'No strategy summary yet.'
-                        )}
-                      </td>
-                    </tr>
-                    <tr>
-                      <td>Investment Objective</td>
-                      <td className={editingStrategy ? '' : 'instrument-data-table-prose'}>
-                        {editingStrategy && strategyDraft ? (
-                          <textarea
-                            className="table-input instrument-data-table-textarea"
-                            rows={5}
-                            value={strategyDraft!.investment_objective}
-                            onChange={(event) =>
-                              setStrategyDraft((current) =>
-                                current ? { ...current, investment_objective: event.target.value } : current,
-                              )
-                            }
-                          />
-                        ) : (
-                          strategy.investment_objective || 'No investment objective yet.'
-                        )}
-                      </td>
-                    </tr>
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          </section>
-
-          <section className="instrument-strategy-section">
-            <div className="instrument-strategy-section-header">
-              <div>
-                <div className="panel-title">Strategy</div>
-                <div className="instrument-section-title">Process</div>
-              </div>
-              {editingStrategy ? (
-                <div className="toolbar">
-                  <button
-                    type="button"
-                    onClick={() =>
-                      setStrategyDraft((current) =>
-                        current
-                          ? {
-                              ...current,
-                              processRows: [...current.processRows, { id: makeRowId('process'), value: '' }],
-                            }
-                          : current,
-                      )
-                    }
-                  >
-                    Add Bullet
-                  </button>
-                </div>
-              ) : null}
-            </div>
-            <div className="instrument-strategy-section-body">
-              <div className="table-shell instrument-strategy-table-shell">
-                {editingStrategy && strategyDraft ? (
-                  <table className="terminal-table terminal-table-compact instrument-data-table">
-                    <thead>
-                      <tr>
-                        <th>Process Item</th>
-                        <th className="instrument-table-action-col">Action</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {strategyDraft!.processRows.length ? (
-                        strategyDraft!.processRows.map((row) => (
-                          <tr key={row.id}>
-                            <td>
-                              <textarea
-                                className="table-input instrument-data-table-textarea"
-                                rows={2}
-                                value={row.value}
-                                onChange={(event) =>
-                                  setStrategyDraft((current) =>
-                                    current
-                                      ? {
-                                          ...current,
-                                          processRows: current.processRows.map((item) =>
-                                            item.id === row.id ? { ...item, value: event.target.value } : item,
-                                          ),
-                                        }
-                                      : current,
-                                  )
-                                }
-                              />
-                            </td>
-                            <td className="instrument-table-row-action-cell">
-                              <button
-                                type="button"
-                                className="table-action"
-                                onClick={() =>
-                                  setStrategyDraft((current) =>
-                                    current
-                                      ? {
-                                          ...current,
-                                          processRows: current.processRows.filter((item) => item.id !== row.id),
-                                        }
-                                      : current,
-                                  )
-                                }
-                              >
-                                Remove
-                              </button>
-                            </td>
-                          </tr>
-                        ))
-                      ) : (
-                        <tr>
-                          <td colSpan={2} className="empty-state">
-                            No process bullets yet.
-                          </td>
-                        </tr>
-                      )}
-                    </tbody>
-                  </table>
-                ) : strategy.process_bullets.length ? (
-                  <table className="terminal-table terminal-table-compact instrument-data-table">
-                    <thead>
-                      <tr>
-                        <th>Process Item</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {strategy.process_bullets.map((item) => (
-                        <tr key={item}>
-                          <td className="instrument-data-table-prose">{item}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                ) : (
-                  <div className="instrument-placeholder instrument-strategy-placeholder">No process bullets yet.</div>
-                )}
-              </div>
-            </div>
-          </section>
-
-          <section className="instrument-strategy-section">
-            <div className="instrument-strategy-section-header">
-              <div>
-                <div className="panel-title">Strategy</div>
-                <div className="instrument-section-title">Risk Controls</div>
-              </div>
-              {editingStrategy ? (
-                <div className="toolbar">
-                  <button
-                    type="button"
-                    onClick={() =>
-                      setStrategyDraft((current) =>
-                        current
-                          ? {
-                              ...current,
-                              riskControlRows: [
-                                ...current.riskControlRows,
-                                { id: makeRowId('risk-control'), value: '' },
-                              ],
-                            }
-                          : current,
-                      )
-                    }
-                  >
-                    Add Control
-                  </button>
-                </div>
-              ) : null}
-            </div>
-            <div className="instrument-strategy-section-body">
-              <div className="table-shell instrument-strategy-table-shell">
-                {editingStrategy && strategyDraft ? (
-                  <table className="terminal-table terminal-table-compact instrument-data-table">
-                    <thead>
-                      <tr>
-                        <th>Risk Control</th>
-                        <th className="instrument-table-action-col">Action</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {strategyDraft!.riskControlRows.length ? (
-                        strategyDraft!.riskControlRows.map((row) => (
-                          <tr key={row.id}>
-                            <td>
-                              <textarea
-                                className="table-input instrument-data-table-textarea"
-                                rows={2}
-                                value={row.value}
-                                onChange={(event) =>
-                                  setStrategyDraft((current) =>
-                                    current
-                                      ? {
-                                          ...current,
-                                          riskControlRows: current.riskControlRows.map((item) =>
-                                            item.id === row.id ? { ...item, value: event.target.value } : item,
-                                          ),
-                                        }
-                                      : current,
-                                  )
-                                }
-                              />
-                            </td>
-                            <td className="instrument-table-row-action-cell">
-                              <button
-                                type="button"
-                                className="table-action"
-                                onClick={() =>
-                                  setStrategyDraft((current) =>
-                                    current
-                                      ? {
-                                          ...current,
-                                          riskControlRows: current.riskControlRows.filter((item) => item.id !== row.id),
-                                        }
-                                      : current,
-                                  )
-                                }
-                              >
-                                Remove
-                              </button>
-                            </td>
-                          </tr>
-                        ))
-                      ) : (
-                        <tr>
-                          <td colSpan={2} className="empty-state">
-                            No risk controls yet.
-                          </td>
-                        </tr>
-                      )}
-                    </tbody>
-                  </table>
-                ) : strategy.risk_controls.length ? (
-                  <table className="terminal-table terminal-table-compact instrument-data-table">
-                    <thead>
-                      <tr>
-                        <th>Risk Control</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {strategy.risk_controls.map((item) => (
-                        <tr key={item}>
-                          <td className="instrument-data-table-prose">{item}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                ) : (
-                  <div className="instrument-placeholder instrument-strategy-placeholder">No risk controls yet.</div>
-                )}
-              </div>
-            </div>
-          </section>
-
-          <section className="instrument-strategy-section">
-            <div className="instrument-strategy-section-header">
-              <div>
-                <div className="panel-title">Strategy</div>
-                <div className="instrument-section-title">Notes</div>
-              </div>
-              {editingStrategy ? (
-                <div className="toolbar">
-                  <button
-                    type="button"
-                    onClick={() =>
-                      setStrategyDraft((current) =>
-                        current
-                          ? {
-                              ...current,
-                              noteRows: [...current.noteRows, { id: makeRowId('strategy-note'), value: '' }],
-                            }
-                          : current,
-                      )
-                    }
-                  >
-                    Add Note
-                  </button>
-                </div>
-              ) : null}
-            </div>
-            <div className="instrument-strategy-section-body">
-              <div className="table-shell instrument-strategy-table-shell">
-                {editingStrategy && strategyDraft ? (
-                  <table className="terminal-table terminal-table-compact instrument-data-table">
-                    <thead>
-                      <tr>
-                        <th>Note</th>
-                        <th className="instrument-table-action-col">Action</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {strategyDraft!.noteRows.length ? (
-                        strategyDraft!.noteRows.map((row) => (
-                          <tr key={row.id}>
-                            <td>
-                              <textarea
-                                className="table-input instrument-data-table-textarea"
-                                rows={2}
-                                value={row.value}
-                                onChange={(event) =>
-                                  setStrategyDraft((current) =>
-                                    current
-                                      ? {
-                                          ...current,
-                                          noteRows: current.noteRows.map((item) =>
-                                            item.id === row.id ? { ...item, value: event.target.value } : item,
-                                          ),
-                                        }
-                                      : current,
-                                  )
-                                }
-                              />
-                            </td>
-                            <td className="instrument-table-row-action-cell">
-                              <button
-                                type="button"
-                                className="table-action"
-                                onClick={() =>
-                                  setStrategyDraft((current) =>
-                                    current
-                                      ? {
-                                          ...current,
-                                          noteRows: current.noteRows.filter((item) => item.id !== row.id),
-                                        }
-                                      : current,
-                                  )
-                                }
-                              >
-                                Remove
-                              </button>
-                            </td>
-                          </tr>
-                        ))
-                      ) : (
-                        <tr>
-                          <td colSpan={2} className="empty-state">
-                            No notes yet.
-                          </td>
-                        </tr>
-                      )}
-                    </tbody>
-                  </table>
-                ) : strategy.notes.length ? (
-                  <table className="terminal-table terminal-table-compact instrument-data-table">
-                    <thead>
-                      <tr>
-                        <th>Note</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {strategy.notes.map((item) => (
-                        <tr key={item}>
-                          <td className="instrument-data-table-prose">{item}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                ) : (
-                  <div className="instrument-placeholder instrument-strategy-placeholder">No strategy notes yet.</div>
-                )}
               </div>
             </div>
           </section>
@@ -9787,458 +7898,6 @@ export default function FundDetailPage({
         </section>
       ) : null}
 
-      {false && activeTab === 'documents' ? (
-        <section className="instrument-documents-shell instrument-edit-surface">
-          <div className="instrument-price-topline" />
-          <div className="instrument-section-header instrument-documents-page-header">
-            <div>
-              <div className="panel-title">Documents</div>
-            </div>
-            <div className="toolbar">
-              {editingDocuments ? (
-                <>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setDocumentsDraft(toEditableDocumentsDraft(bundle!.documents))
-                      setEditingDocuments(false)
-                      setSectionError(null)
-                      setSectionNotice(null)
-                    }}
-                  >
-                    Cancel
-                  </button>
-                  <button
-                    type="button"
-                    className="button-primary"
-                    onClick={() => void handleSaveDocuments()}
-                    disabled={savingSection === 'documents'}
-                  >
-                    {savingSection === 'documents' ? 'Saving...' : 'Save Documents'}
-                  </button>
-                </>
-              ) : (
-                <button
-                  type="button"
-                  onClick={() => {
-                    setDocumentsDraft(toEditableDocumentsDraft(bundle!.documents))
-                    setEditingDocuments(true)
-                    setSectionError(null)
-                    setSectionNotice(null)
-                  }}
-                >
-                  Edit Documents
-                </button>
-              )}
-            </div>
-          </div>
-
-          <section className="instrument-documents-section">
-            <div className="instrument-documents-section-header">
-              <div>
-                <div className="panel-title">Documents</div>
-                <div className="instrument-section-title">Current Adopted Documents</div>
-              </div>
-            </div>
-            <div className="table-shell instrument-documents-table-shell">
-              <table className="terminal-table terminal-table-compact instrument-documents-table">
-                <thead>
-                  <tr>
-                    <th>Title</th>
-                    <th>Type</th>
-                    <th>As Of</th>
-                    <th>Source</th>
-                    <th>Status</th>
-                    <th>Version</th>
-                    {editingDocuments ? <th className="instrument-table-action-col" aria-label="Row actions" /> : null}
-                  </tr>
-                </thead>
-                <tbody>
-                  {editingDocuments && documentsDraft ? (
-                    documentsDraft!.currentDocumentRows.length ? (
-                      documentsDraft!.currentDocumentRows.map((row) => (
-                        <tr key={row.id}>
-                          <td><input className="table-input" value={row.title} onChange={(event) => setDocumentsDraft((current) => current ? { ...current, currentDocumentRows: current.currentDocumentRows.map((item) => item.id === row.id ? { ...item, title: event.target.value } : item) } : current)} /></td>
-                          <td><input className="table-input" value={row.document_type} onChange={(event) => setDocumentsDraft((current) => current ? { ...current, currentDocumentRows: current.currentDocumentRows.map((item) => item.id === row.id ? { ...item, document_type: event.target.value } : item) } : current)} /></td>
-                          <td><input className="table-input" type="date" value={row.as_of_date} onChange={(event) => setDocumentsDraft((current) => current ? { ...current, currentDocumentRows: current.currentDocumentRows.map((item) => item.id === row.id ? { ...item, as_of_date: event.target.value } : item) } : current)} /></td>
-                          <td><input className="table-input" value={row.source} onChange={(event) => setDocumentsDraft((current) => current ? { ...current, currentDocumentRows: current.currentDocumentRows.map((item) => item.id === row.id ? { ...item, source: event.target.value } : item) } : current)} /></td>
-                          <td><input className="table-input" value={row.status} onChange={(event) => setDocumentsDraft((current) => current ? { ...current, currentDocumentRows: current.currentDocumentRows.map((item) => item.id === row.id ? { ...item, status: event.target.value } : item) } : current)} /></td>
-                          <td><input className="table-input" value={row.version_label} onChange={(event) => setDocumentsDraft((current) => current ? { ...current, currentDocumentRows: current.currentDocumentRows.map((item) => item.id === row.id ? { ...item, version_label: event.target.value } : item) } : current)} /></td>
-                          <td className="instrument-table-row-action-cell">
-                            <button
-                              type="button"
-                              className="instrument-row-remove"
-                              aria-label="Remove document row"
-                              title="Remove row"
-                              onClick={() =>
-                                setDocumentsDraft((current) =>
-                                  current
-                                    ? {
-                                        ...current,
-                                        currentDocumentRows: current.currentDocumentRows.filter((item) => item.id !== row.id),
-                                      }
-                                    : current,
-                                )
-                              }
-                            >
-                              ×
-                            </button>
-                          </td>
-                        </tr>
-                      ))
-                    ) : (
-                      <tr><td colSpan={7} className="empty-state">No adopted documents yet.</td></tr>
-                    )
-                  ) : documents.current_documents.length ? (
-                    documents.current_documents.map((row, index) => (
-                      <tr key={`${String(row.title)}-${index}`}>
-                        <td>{getString(row.title)}</td>
-                        <td>{getString(row.document_type)}</td>
-                        <td>{formatDate(row.as_of_date)}</td>
-                        <td>{getString(row.source)}</td>
-                        <td><span className={`status-badge ${getDocumentStatusTone(row.status)}`}>{getString(row.status)}</span></td>
-                        <td>{getString(row.version_label)}</td>
-                      </tr>
-                    ))
-                  ) : (
-                    <tr><td colSpan={6} className="empty-state">No adopted documents yet.</td></tr>
-                  )}
-                </tbody>
-              </table>
-            </div>
-            {editingDocuments ? (
-              <div className="instrument-table-inline-actions">
-                <button
-                  type="button"
-                  className="table-action"
-                  onClick={() =>
-                    setDocumentsDraft((current) =>
-                      current
-                        ? {
-                            ...current,
-                            currentDocumentRows: [
-                              ...current.currentDocumentRows,
-                              {
-                                id: makeRowId('document'),
-                                title: '',
-                                document_type: '',
-                                as_of_date: '',
-                                source: '',
-                                status: '',
-                                version_label: '',
-                                file_name: '',
-                                download_url: '',
-                                file_size: '',
-                                content_type: '',
-                                uploaded_at: '',
-                                notes: '',
-                                stored_file_name: '',
-                              },
-                            ],
-                          }
-                        : current,
-                    )
-                  }
-                >
-                  + Add document row
-                </button>
-              </div>
-            ) : null}
-          </section>
-
-          <div className="instrument-documents-columns">
-            <section className="instrument-documents-section">
-              <div className="instrument-documents-section-header">
-                <div>
-                  <div className="panel-title">Documents</div>
-                  <div className="instrument-section-title">Recent Imports</div>
-                </div>
-              </div>
-              <div className="table-shell instrument-documents-table-shell">
-                <table className="terminal-table terminal-table-compact instrument-documents-table">
-                  <thead>
-                    <tr>
-                      <th>Import Type</th>
-                      <th>Received At</th>
-                      <th>Source</th>
-                      <th>Status</th>
-                      <th>File</th>
-                      {editingDocuments ? <th className="instrument-table-action-col" aria-label="Row actions" /> : null}
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {editingDocuments && documentsDraft ? (
-                      documentsDraft!.importRows.length ? (
-                        documentsDraft!.importRows.map((row) => (
-                          <tr key={row.id}>
-                            <td><input className="table-input" value={row.import_type} onChange={(event) => setDocumentsDraft((current) => current ? { ...current, importRows: current.importRows.map((item) => item.id === row.id ? { ...item, import_type: event.target.value } : item) } : current)} /></td>
-                            <td><input className="table-input" type="datetime-local" value={row.received_at} onChange={(event) => setDocumentsDraft((current) => current ? { ...current, importRows: current.importRows.map((item) => item.id === row.id ? { ...item, received_at: event.target.value } : item) } : current)} /></td>
-                            <td><input className="table-input" value={row.source} onChange={(event) => setDocumentsDraft((current) => current ? { ...current, importRows: current.importRows.map((item) => item.id === row.id ? { ...item, source: event.target.value } : item) } : current)} /></td>
-                            <td><input className="table-input" value={row.status} onChange={(event) => setDocumentsDraft((current) => current ? { ...current, importRows: current.importRows.map((item) => item.id === row.id ? { ...item, status: event.target.value } : item) } : current)} /></td>
-                            <td><input className="table-input" value={row.file_name} onChange={(event) => setDocumentsDraft((current) => current ? { ...current, importRows: current.importRows.map((item) => item.id === row.id ? { ...item, file_name: event.target.value } : item) } : current)} /></td>
-                            <td className="instrument-table-row-action-cell">
-                              <button
-                                type="button"
-                                className="instrument-row-remove"
-                                aria-label="Remove import row"
-                                title="Remove row"
-                                onClick={() =>
-                                  setDocumentsDraft((current) =>
-                                    current
-                                      ? {
-                                          ...current,
-                                          importRows: current.importRows.filter((item) => item.id !== row.id),
-                                        }
-                                      : current,
-                                  )
-                                }
-                              >
-                                ×
-                              </button>
-                            </td>
-                          </tr>
-                        ))
-                      ) : (
-                        <tr><td colSpan={6} className="empty-state">No import records yet.</td></tr>
-                      )
-                    ) : documents.recent_imports.length ? (
-                      documents.recent_imports.map((row, index) => (
-                        <tr key={`${String(row.file_name)}-${index}`}>
-                          <td>{getString(row.import_type)}</td>
-                          <td>{formatDateTime(row.received_at)}</td>
-                          <td>{getString(row.source)}</td>
-                          <td><span className={`status-badge ${getDocumentStatusTone(row.status)}`}>{getString(row.status)}</span></td>
-                          <td>{getString(row.file_name)}</td>
-                        </tr>
-                      ))
-                    ) : (
-                      <tr><td colSpan={5} className="empty-state">No import records yet.</td></tr>
-                    )}
-                  </tbody>
-                </table>
-              </div>
-              {editingDocuments ? (
-                <div className="instrument-table-inline-actions">
-                  <button
-                    type="button"
-                    className="table-action"
-                    onClick={() =>
-                      setDocumentsDraft((current) =>
-                        current
-                          ? {
-                              ...current,
-                              importRows: [
-                                ...current.importRows,
-                                {
-                                  id: makeRowId('document-import'),
-                                  import_type: '',
-                                  received_at: '',
-                                  source: '',
-                                  status: '',
-                                  file_name: '',
-                                },
-                              ],
-                            }
-                          : current,
-                      )
-                    }
-                  >
-                    + Add import row
-                  </button>
-                </div>
-              ) : null}
-            </section>
-
-            <section className="instrument-documents-section">
-              <div className="instrument-documents-section-header">
-                <div>
-                  <div className="panel-title">Documents</div>
-                  <div className="instrument-section-title">Extraction Review</div>
-                </div>
-              </div>
-              <div className="table-shell instrument-documents-table-shell">
-                <table className="terminal-table terminal-table-compact instrument-documents-table">
-                  <thead>
-                    <tr>
-                      <th>Document</th>
-                      <th>Extract Type</th>
-                      <th>Status</th>
-                      <th>Adopted Version</th>
-                      <th>Updated At</th>
-                      {editingDocuments ? <th className="instrument-table-action-col" aria-label="Row actions" /> : null}
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {editingDocuments && documentsDraft ? (
-                      documentsDraft!.extractionRows.length ? (
-                        documentsDraft!.extractionRows.map((row) => (
-                          <tr key={row.id}>
-                            <td><input className="table-input" value={row.document_title} onChange={(event) => setDocumentsDraft((current) => current ? { ...current, extractionRows: current.extractionRows.map((item) => item.id === row.id ? { ...item, document_title: event.target.value } : item) } : current)} /></td>
-                            <td><input className="table-input" value={row.extract_type} onChange={(event) => setDocumentsDraft((current) => current ? { ...current, extractionRows: current.extractionRows.map((item) => item.id === row.id ? { ...item, extract_type: event.target.value } : item) } : current)} /></td>
-                            <td><input className="table-input" value={row.status} onChange={(event) => setDocumentsDraft((current) => current ? { ...current, extractionRows: current.extractionRows.map((item) => item.id === row.id ? { ...item, status: event.target.value } : item) } : current)} /></td>
-                            <td><input className="table-input" value={row.adopted_version} onChange={(event) => setDocumentsDraft((current) => current ? { ...current, extractionRows: current.extractionRows.map((item) => item.id === row.id ? { ...item, adopted_version: event.target.value } : item) } : current)} /></td>
-                            <td><input className="table-input" type="datetime-local" value={row.updated_at} onChange={(event) => setDocumentsDraft((current) => current ? { ...current, extractionRows: current.extractionRows.map((item) => item.id === row.id ? { ...item, updated_at: event.target.value } : item) } : current)} /></td>
-                            <td className="instrument-table-row-action-cell">
-                              <button
-                                type="button"
-                                className="instrument-row-remove"
-                                aria-label="Remove extraction review row"
-                                title="Remove row"
-                                onClick={() =>
-                                  setDocumentsDraft((current) =>
-                                    current
-                                      ? {
-                                          ...current,
-                                          extractionRows: current.extractionRows.filter((item) => item.id !== row.id),
-                                        }
-                                      : current,
-                                  )
-                                }
-                              >
-                                ×
-                              </button>
-                            </td>
-                          </tr>
-                        ))
-                      ) : (
-                        <tr><td colSpan={6} className="empty-state">No extraction reviews yet.</td></tr>
-                      )
-                    ) : documents.extraction_reviews.length ? (
-                      documents.extraction_reviews.map((row, index) => (
-                        <tr key={`${String(row.document_title)}-${index}`}>
-                          <td>{getString(row.document_title)}</td>
-                          <td>{getString(row.extract_type)}</td>
-                          <td><span className={`status-badge ${getDocumentStatusTone(row.status)}`}>{getString(row.status)}</span></td>
-                          <td>{getString(row.adopted_version)}</td>
-                          <td>{formatDateTime(row.updated_at)}</td>
-                        </tr>
-                      ))
-                    ) : (
-                      <tr><td colSpan={5} className="empty-state">No extraction reviews yet.</td></tr>
-                    )}
-                  </tbody>
-                </table>
-              </div>
-              {editingDocuments ? (
-                <div className="instrument-table-inline-actions">
-                  <button
-                    type="button"
-                    className="table-action"
-                    onClick={() =>
-                      setDocumentsDraft((current) =>
-                        current
-                          ? {
-                              ...current,
-                              extractionRows: [
-                                ...current.extractionRows,
-                                {
-                                  id: makeRowId('document-extraction'),
-                                  document_title: '',
-                                  extract_type: '',
-                                  status: '',
-                                  adopted_version: '',
-                                  updated_at: '',
-                                },
-                              ],
-                            }
-                          : current,
-                      )
-                    }
-                  >
-                    + Add review row
-                  </button>
-                </div>
-              ) : null}
-            </section>
-          </div>
-
-          <section className="instrument-documents-section">
-            <div className="instrument-documents-section-header">
-              <div>
-                <div className="panel-title">Documents</div>
-                <div className="instrument-section-title">Notes</div>
-              </div>
-              {editingDocuments ? (
-                <div className="toolbar">
-                  <button
-                    type="button"
-                    onClick={() =>
-                      setDocumentsDraft((current) =>
-                        current
-                          ? {
-                              ...current,
-                              noteRows: [...current.noteRows, { id: makeRowId('document-note'), value: '' }],
-                            }
-                          : current,
-                      )
-                    }
-                  >
-                    Add Note
-                  </button>
-                </div>
-              ) : null}
-            </div>
-            {editingDocuments && documentsDraft ? (
-              <div className="instrument-documents-notes-editor">
-                {documentsDraft!.noteRows.length ? (
-                  <div className="instrument-documents-notes instrument-inline-list">
-                    {documentsDraft!.noteRows.map((row) => (
-                      <div key={row.id} className="instrument-inline-list-row">
-                        <textarea
-                          className="form-textarea instrument-inline-list-textarea"
-                          value={row.value}
-                          rows={2}
-                          onChange={(event) =>
-                            setDocumentsDraft((current) =>
-                              current
-                                ? {
-                                    ...current,
-                                    noteRows: current.noteRows.map((item) =>
-                                      item.id === row.id ? { ...item, value: event.target.value } : item,
-                                    ),
-                                  }
-                                : current,
-                            )
-                          }
-                        />
-                        <button
-                          type="button"
-                          className="table-action"
-                          onClick={() =>
-                            setDocumentsDraft((current) =>
-                              current
-                                ? {
-                                    ...current,
-                                    noteRows: current.noteRows.filter((item) => item.id !== row.id),
-                                  }
-                                : current,
-                            )
-                          }
-                        >
-                          Remove
-                        </button>
-                      </div>
-                    ))}
-                  </div>
-                ) : (
-                  <div className="instrument-placeholder instrument-documents-placeholder">No notes yet.</div>
-                )}
-              </div>
-            ) : documents.notes.length ? (
-              <div className="instrument-documents-notes">
-                <ul className="bullet-list">
-                  {documents.notes.map((item) => (
-                    <li key={item}>{item}</li>
-                  ))}
-                </ul>
-              </div>
-            ) : (
-              <div className="instrument-placeholder instrument-documents-placeholder">No document notes yet.</div>
-            )}
-          </section>
-        </section>
-      ) : null}
-
       {activeTab === 'research' ? (
         <section className="instrument-research-shell instrument-edit-surface">
           <div className="instrument-price-topline" />
@@ -10248,420 +7907,48 @@ export default function FundDetailPage({
             </div>
           </div>
 
-          <section className="instrument-research-section">
-            <div className="instrument-research-section-header">
-              <div>
-                <div className="instrument-section-title">Rating</div>
-              </div>
-              {manualRatingHasChanges ? (
-                <div className="toolbar">
-                  <button
-                    type="button"
-                    className="button-primary"
-                    onClick={() => void handleSaveManualRating()}
-                    disabled={savingSection === 'manual_rating'}
-                  >
-                    {savingSection === 'manual_rating' ? 'Saving...' : 'Save'}
-                  </button>
-                </div>
-              ) : null}
-            </div>
-            <div className="instrument-manual-rating-row">
-              <div className="instrument-manual-rating-picker" role="radiogroup" aria-label="Manual rating">
-                {[1, 2, 3, 4, 5].map((value) => {
-                  const selected = displayedManualRating === value
-                  const active = displayedManualRating != null && value <= displayedManualRating
-                  return (
-                    <button
-                      key={value}
-                      type="button"
-                      className={
-                        active
-                          ? 'instrument-manual-rating-star instrument-manual-rating-star-active'
-                          : 'instrument-manual-rating-star'
-                      }
-                      aria-checked={selected}
-                      role="radio"
-                      onClick={() => {
-                        const nextRating = selected ? null : value
-                        setManualRatingDraft(nextRating)
-                        setManualRatingDirty(nextRating !== researchManualRating)
-                        setSectionError(null)
-                        setSectionNotice(null)
-                      }}
-                    >
-                      {active ? '★' : '☆'}
-                    </button>
-                  )
-                })}
-              </div>
-            </div>
-          </section>
+          <InvestmentResearchWorkspace
+            instrumentId={fundId}
+            instrumentType={fundType}
+            research={research}
+            language={language}
+            defaultNoteDate={latestPoint?.date || latestNavRecord?.as_of_date || ''}
+            requestedNoteDate={requestedResearchNoteDate}
+            onRequestedNoteHandled={() => setRequestedResearchNoteDate(null)}
+            onOpenNote={focusTimelineNoteInQuote}
+            onChange={(nextResearch) =>
+              setBundle((current) =>
+                current ? { ...current, research: nextResearch } : current,
+              )
+            }
+          >
 
-          {productFrameworkAttributes === null ? (
-            <section className="instrument-research-section">
-              <div className="instrument-research-section-header">
-                <div>
-                  <div className="panel-title">Research Framework</div>
-                  <div className="instrument-section-title">Classification</div>
-                </div>
-              </div>
-              {productFrameworkLoadError ? (
-                <div
-                  className="instrument-placeholder instrument-research-placeholder instrument-framework-load-error"
-                  role="alert"
-                >
-                  <div>
-                    <strong>
-                      {language === 'zh-Hans'
-                        ? '研究框架加载失败'
-                        : 'Research framework unavailable'}
-                    </strong>
-                    <span>
-                      {language === 'zh-Hans'
-                        ? `属性服务未返回数据：${productFrameworkLoadError}`
-                        : `The attribute service did not return data: ${productFrameworkLoadError}`}
-                    </span>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => setProductFrameworkRetryToken((current) => current + 1)}
-                  >
-                    {language === 'zh-Hans' ? '重试' : 'Retry'}
-                  </button>
-                </div>
-              ) : (
-                <div className="instrument-placeholder instrument-research-placeholder">
-                  Loading product framework...
-                </div>
-              )}
-            </section>
-          ) : (
-            productFrameworkSections.map((section) => (
-              <section key={section.domain} className="instrument-research-section">
-                <div className="instrument-research-section-header">
-                  <div>
-                    <div className="panel-title">Research Framework</div>
-                    <div className="instrument-section-title">{section.title}</div>
-                  </div>
-                </div>
-                {section.groups.length ? (
-                  <div className="table-shell instrument-research-table-shell instrument-product-tags-table-shell">
-                    <table className="terminal-table terminal-table-compact instrument-research-table instrument-product-tags-table">
-                      <thead>
-                        <tr>
-                          <th>Field</th>
-                          <th>Value</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {section.groups.map((group) => (
-                          <Fragment key={`${section.domain}-${group.groupCode}`}>
-                            <tr className="instrument-product-tags-group-row">
-                              <td colSpan={2}>
-                                <div className="instrument-product-tags-group-label">
-                                  {group.label}
-                                </div>
-                              </td>
-                            </tr>
-                            {group.definitions.map((definition) => {
-                              const rubricText = getDefinitionRubricText(definition)
-                              return (
-                                <tr key={definition.attribute_key}>
-                                  <td className="instrument-product-tags-table-label-cell">
-                                    <div className="instrument-product-tags-field">
-                                      <span>{definition.label}</span>
-                                      {rubricText ? (
-                                        <span className="instrument-product-tags-help" tabIndex={0}>
-                                          ?
-                                          <span className="instrument-product-tags-tooltip">
-                                            {rubricText}
-                                          </span>
-                                        </span>
-                                      ) : null}
-                                    </div>
-                                  </td>
-                                  <td className="instrument-product-tags-table-value-cell">
-                                    <div
-                                      className="instrument-product-tags-picker"
-                                      ref={
-                                        openProductFrameworkPickerKey === definition.attribute_key
-                                          ? productFrameworkPickerRef
-                                          : undefined
-                                      }
-                                    >
-                                      <button
-                                        type="button"
-                                        className={`instrument-product-tags-picker-trigger${
-                                          openProductFrameworkPickerKey === definition.attribute_key
-                                            ? ' instrument-product-tags-picker-trigger-active'
-                                            : ''
-                                        }`}
-                                        disabled={productFrameworkSavingKey === definition.attribute_key}
-                                        onClick={() =>
-                                          setOpenProductFrameworkPickerKey((current) =>
-                                            current === definition.attribute_key
-                                              ? null
-                                              : definition.attribute_key,
-                                          )
-                                        }
-                                      >
-                                        <span>
-                                          {productFrameworkSavingKey === definition.attribute_key
-                                            ? 'Saving...'
-                                            : formatFrameworkValue(
-                                                productFrameworkAttributes.values[definition.attribute_key],
-                                              )}
-                                        </span>
-                                      </button>
-                                      {openProductFrameworkPickerKey === definition.attribute_key ? (
-                                        <div className="instrument-product-tags-picker-panel">
-                                          <div className="instrument-product-tags-picker-meta">
-                                            {definition.data_type === 'multi_select'
-                                              ? 'Select one or more'
-                                              : 'Select one'}
-                                          </div>
-                                          <div className="instrument-product-tags-picker-options">
-                                            <button
-                                              type="button"
-                                              className="instrument-product-tags-picker-option"
-                                              disabled={productFrameworkSavingKey === definition.attribute_key}
-                                              onClick={() =>
-                                                void handleSaveProductFrameworkValue(
-                                                  definition,
-                                                  definition.data_type === 'multi_select' ? [] : null,
-                                                  {
-                                                    closePicker:
-                                                      definition.data_type !== 'multi_select',
-                                                  },
-                                                )
-                                              }
-                                            >
-                                              <span className="instrument-product-tags-picker-check" />
-                                              <span className="instrument-product-tags-picker-label">
-                                                Clear
-                                              </span>
-                                            </button>
-                                            {definition.options.map((option) => {
-                                              const selected = isFrameworkOptionSelected(
-                                                productFrameworkAttributes,
-                                                definition,
-                                                option,
-                                              )
-                                              return (
-                                                <button
-                                                  key={option}
-                                                  type="button"
-                                                  className={`instrument-product-tags-picker-option${
-                                                    selected
-                                                      ? ' instrument-product-tags-picker-option-selected'
-                                                      : ''
-                                                  }`}
-                                                  disabled={productFrameworkSavingKey === definition.attribute_key}
-                                                  onClick={() =>
-                                                    void handleSaveProductFrameworkValue(
-                                                      definition,
-                                                      buildNextFrameworkValue(
-                                                        productFrameworkAttributes,
-                                                        definition,
-                                                        option,
-                                                      ),
-                                                      {
-                                                        closePicker:
-                                                          definition.data_type !== 'multi_select',
-                                                      },
-                                                    )
-                                                  }
-                                                >
-                                                  <span className="instrument-product-tags-picker-check">
-                                                    {selected ? '✓' : ''}
-                                                  </span>
-                                                  <span className="instrument-product-tags-picker-label">
-                                                    {option}
-                                                  </span>
-                                                </button>
-                                              )
-                                            })}
-                                          </div>
-                                        </div>
-                                      ) : null}
-                                    </div>
-                                  </td>
-                                </tr>
-                              )
-                            })}
-                          </Fragment>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                ) : (
-                  <div className="instrument-placeholder instrument-research-placeholder">
-                    {section.emptyState}
-                  </div>
-                )}
-              </section>
-            ))
-          )}
+          <InstrumentResearchAttributes
+            instrumentId={fundId}
+            attributeValues={productFrameworkAttributes}
+            loadError={productFrameworkLoadError}
+            language={language}
+            onRetry={() => setProductFrameworkRetryToken((current) => current + 1)}
+            onChange={(nextAttributes) => {
+              setProductFrameworkAttributes(nextAttributes)
+              setBundle((current) =>
+                current
+                  ? {
+                      ...current,
+                      summary: {
+                        ...current.summary,
+                        instrument_attributes: {
+                          ...current.summary.instrument_attributes,
+                          ...nextAttributes.values,
+                        },
+                      },
+                    }
+                  : current,
+              )
+            }}
+          />
 
-          <section className="instrument-research-section">
-            <div className="instrument-research-section-header">
-              <div>
-                <div className="panel-title">Research</div>
-                <div className="instrument-section-title">Current Research View</div>
-              </div>
-              <div className="toolbar">
-                {editingResearchOverview ? (
-                  <>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setResearchDraft(toEditableResearchDraft(bundle.research))
-                        setEditingResearchOverview(false)
-                        setSectionError(null)
-                        setSectionNotice(null)
-                      }}
-                    >
-                      Cancel
-                    </button>
-                    <button
-                      type="button"
-                      className="button-primary"
-                      onClick={() => void handleSaveResearchOverview()}
-                      disabled={savingSection === 'research_overview'}
-                    >
-                      {savingSection === 'research_overview' ? 'Saving...' : 'Save'}
-                    </button>
-                  </>
-                ) : (
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setResearchDraft(toEditableResearchDraft(bundle.research))
-                      setEditingResearchOverview(true)
-                      setSectionError(null)
-                      setSectionNotice(null)
-                    }}
-                  >
-                    Edit
-                  </button>
-                )}
-              </div>
-            </div>
-            {editingResearchOverview && researchDraft ? (
-              <div className="instrument-research-section-body">
-                <div className="instrument-research-facts-grid instrument-research-facts-grid-edit">
-                  {RESEARCH_OVERVIEW_FIELDS.map((field) => (
-                    <label key={field.key} className="instrument-research-fact instrument-research-fact-edit">
-                      <span>{field.label}</span>
-                      <input
-                        className="form-input instrument-inline-value-input"
-                        type={field.type === 'date' ? 'date' : 'text'}
-                        value={getResearchOverviewDraftValue(researchDraft, field.key)}
-                        onChange={(event) =>
-                          setResearchDraft((current) =>
-                            current
-                              ? {
-                                  ...current,
-                                  overviewRows: upsertKeyValueRows(
-                                    current.overviewRows,
-                                    field.key,
-                                    event.target.value,
-                                  ),
-                                }
-                              : current,
-                          )
-                        }
-                      />
-                    </label>
-                  ))}
-                </div>
-              </div>
-            ) : (
-              <div className="instrument-research-facts-grid">
-                {RESEARCH_OVERVIEW_FIELDS.map((field) => (
-                  <div key={field.key} className="instrument-research-fact">
-                    <span>{field.label}</span>
-                    <strong>{formatResearchOverviewValue(field.key, bundle.research.overview?.[field.key])}</strong>
-                  </div>
-                ))}
-              </div>
-            )}
-          </section>
-
-          <section className="instrument-research-section">
-            <div className="instrument-research-section-header">
-              <div>
-                <div className="panel-title">Research</div>
-                <div className="instrument-section-title">Research Notes</div>
-              </div>
-              <div className="toolbar">
-                <button
-                  type="button"
-                  onClick={() => openTimelineNoteEditor(latestPoint?.date || latestNavRecord?.as_of_date || '')}
-                >
-                  Add Note
-                </button>
-              </div>
-            </div>
-            {timelineNotes.length ? (
-              <div className="table-shell instrument-research-table-shell">
-                <table className="terminal-table terminal-table-compact instrument-research-table">
-                  <thead>
-                    <tr>
-                      <th>Date</th>
-                      <th>Importance</th>
-                      <th>Title</th>
-                      <th>Summary</th>
-                      <th>Tags</th>
-                      <th className="instrument-table-action-col" aria-label="Timeline note actions" />
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {timelineNotes.map((note) => (
-                      <tr key={note.note_id}>
-                        <td>{formatDate(note.note_date)}</td>
-                        <td>{formatTimelineNoteImportance(note.importance)}</td>
-                        <td>{note.title || 'Untitled'}</td>
-                        <td>{note.summary || note.body || '—'}</td>
-                        <td>{note.tags.length ? note.tags.join(', ') : '—'}</td>
-                        <td className="instrument-table-row-action-cell">
-                          <div className="instrument-table-inline-actions instrument-table-inline-actions-compact">
-                            <button
-                              type="button"
-                              className="table-action"
-                              onClick={() => focusTimelineNoteInQuote(note.note_date)}
-                            >
-                              Open in Overview
-                            </button>
-                            <button
-                              type="button"
-                              className="table-action"
-                              onClick={() => openTimelineNoteEditor(note.note_date, note)}
-                            >
-                              Edit
-                            </button>
-                            <button
-                              type="button"
-                              className="table-action"
-                              onClick={() => void handleDeleteTimelineNote(note.note_id)}
-                              disabled={savingSection === 'timeline_note'}
-                            >
-                              Delete
-                            </button>
-                          </div>
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            ) : (
-              <div className="instrument-placeholder instrument-research-placeholder">
-                No research notes yet.
-              </div>
-            )}
-          </section>
+          </InvestmentResearchWorkspace>
         </section>
       ) : null}
 
@@ -10673,6 +7960,16 @@ export default function FundDetailPage({
               <div className="panel-title">Monitoring</div>
             </div>
           </div>
+
+          <InstrumentResearchAttributes
+            instrumentId={fundId}
+            attributeValues={productFrameworkAttributes}
+            loadError={productFrameworkLoadError}
+            language={language}
+            domains={['monitoring']}
+            onRetry={() => setProductFrameworkRetryToken((current) => current + 1)}
+            onChange={setProductFrameworkAttributes}
+          />
 
           <section className="instrument-monitoring-section">
             <div className="instrument-monitoring-section-header">
@@ -10694,6 +7991,38 @@ export default function FundDetailPage({
                   )}
                 </div>
               ))}
+            </div>
+          </section>
+
+          <section className="instrument-monitoring-section">
+            <div className="instrument-monitoring-section-header">
+              <div>
+                <div className="panel-title">Investment Follow-up</div>
+                <div className="instrument-section-title">
+                  {monitoredInstrument?.research.primary_analyst || 'No primary analyst assigned'}
+                </div>
+              </div>
+              <Link className="table-action" to="/monitoring">Open Monitoring Dashboard</Link>
+            </div>
+            <div className="instrument-monitoring-facts-grid">
+              <div className="instrument-monitoring-fact">
+                <span>Current View</span>
+                <strong>{monitoredInstrument?.research.current_view || '—'}</strong>
+              </div>
+              <div className="instrument-monitoring-fact">
+                <span>Manual Rating</span>
+                <strong>
+                  {monitoredInstrument?.research.manual_rating == null
+                    ? '—'
+                    : `${'★'.repeat(monitoredInstrument.research.manual_rating)}${'☆'.repeat(
+                        Math.max(0, 5 - monitoredInstrument.research.manual_rating),
+                      )}`}
+                </strong>
+              </div>
+              <div className="instrument-monitoring-fact">
+                <span>Research Updated</span>
+                <strong>{formatDateTime(monitoredInstrument?.research.last_updated_at || null)}</strong>
+              </div>
             </div>
           </section>
 
@@ -10731,6 +8060,34 @@ export default function FundDetailPage({
               </table>
             </div>
           </section>
+
+          {monitoring?.open_recalc_jobs.length ? (
+            <section className="instrument-monitoring-section">
+              <div className="instrument-monitoring-section-header">
+                <div>
+                  <div className="panel-title">Monitoring</div>
+                  <div className="instrument-section-title">Open Recalculation Jobs</div>
+                </div>
+              </div>
+              <div className="table-shell instrument-monitoring-table-shell">
+                <table className="terminal-table terminal-table-compact instrument-monitoring-table">
+                  <thead>
+                    <tr><th>Job</th><th>Status</th><th>Enqueued</th><th>Error</th></tr>
+                  </thead>
+                  <tbody>
+                    {monitoring.open_recalc_jobs.map((job) => (
+                      <tr key={job.recalc_job_id}>
+                        <td>{formatLabel(job.job_type)}</td>
+                        <td>{formatLabel(job.job_status)}</td>
+                        <td>{formatDateTime(job.enqueued_at)}</td>
+                        <td>{job.error_message || '—'}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </section>
+          ) : null}
 
           <section className="instrument-monitoring-section">
             <div className="instrument-monitoring-section-header">

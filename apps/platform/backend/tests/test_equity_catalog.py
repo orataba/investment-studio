@@ -164,7 +164,8 @@ def test_catalog_sync_supports_local_search_without_fmp_round_trip(
         {
             "instrument_type": "equity",
             "symbol": "0700.HK",
-            "fmp_symbol": "0700.HK",
+            "catalog_provider": "fmp",
+            "catalog_symbol": "0700.HK",
             "name": "Tencent Holdings",
             "exchange_code": "XHKG",
             "exchange_label": "Hong Kong Exchange",
@@ -266,7 +267,32 @@ def test_first_materialization_loads_history_then_refreshes_incrementally(
     assert client.eod_calls[0]["start_date"] == "1900-01-01"
     expected_incremental_start = (date(2026, 8, 15) - timedelta(days=7)).isoformat()
     assert client.eod_calls[2]["start_date"] == expected_incremental_start
-    assert get_price_bar_coverage(instrument_id=str(first["instrument_id"]))["latest_date"] == "2026-08-15"
+    coverage = get_price_bar_coverage(instrument_id=str(first["instrument_id"]))
+    assert coverage["latest_date"] == "2026-08-15"
+    assert coverage["adjustment_factor_count"] == 1
+
+
+def test_mainland_equity_materialization_uses_fmp_source_contract(
+    isolated_equity_store: None,
+) -> None:
+    client = FakeFmpClient()
+    sync_equity_catalog(client=client)
+
+    materialized = materialize_equity(
+        "600519.SS",
+        refresh_eod=False,
+        client=client,
+    )
+
+    assert materialized["exchange_code"] == "XSHG"
+    assert materialized["source_settings"]["source_location"] == "FMP API"
+    assert materialized["source_settings"]["source_api_profile"] == "fmp"
+    assert materialized["source_settings"]["return_semantics"] == "price_return"
+    assert not any(
+        str(identifier["identifier_value"]).startswith("tushare:")
+        for identifier in materialized["identifiers"]
+    )
+    assert client.eod_calls == []
 
 
 def test_london_equity_verifies_gbp_and_normalizes_pence_prices(

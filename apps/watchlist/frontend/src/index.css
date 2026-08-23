@@ -1637,32 +1637,6 @@ th {
   padding: 0;
 }
 
-.watchlists-group-row-droppable td {
-  transition: background-color 0.12s ease, box-shadow 0.12s ease;
-}
-
-.watchlists-table tbody .watchlists-group-row-drop-target td {
-  background: #edf6ff;
-  box-shadow: inset 0 2px 0 var(--accent), inset 0 -2px 0 var(--accent);
-}
-
-.watchlists-row-draggable {
-  cursor: grab;
-}
-
-.watchlists-row-draggable:active,
-.watchlists-row-dragging {
-  cursor: grabbing;
-}
-
-.watchlists-row-dragging td {
-  opacity: 0.55;
-}
-
-.watchlists-row-updating td {
-  opacity: 0.7;
-}
-
 .watchlists-group-header {
   display: inline-flex;
   align-items: center;
@@ -4016,6 +3990,10 @@ td:last-child {
   border-bottom: 1px solid #cbd5e1;
 }
 
+.instrument-reference-facts-grid {
+  height: auto;
+}
+
 .instrument-quote-fact {
   display: grid;
   grid-template-columns: minmax(112px, 1fr) minmax(76px, auto) minmax(70px, 0.85fr);
@@ -6164,6 +6142,317 @@ td:last-child {
 
 .instrument-research-placeholder {
   padding: 0;
+}
+
+.investment-research-workspace {
+  display: grid;
+  gap: 0;
+}
+
+.listed-research-tab .investment-research-workspace {
+  gap: 18px;
+}
+
+.listed-research-tab .instrument-research-section {
+  padding: 18px 22px 22px;
+  border: 1px solid #d7dde5;
+  background: #ffffff;
+}
+
+.listed-research-tab .instrument-research-section-header {
+  padding-top: 0;
+  border-top: none;
+}
+
+.investment-research-rating-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 14px 0;
+  border-top: 1px solid #e5e7eb;
+  border-bottom: 1px solid #e5e7eb;
+}
+
+.investment-research-rating-row > div:first-child {
+  display: grid;
+  gap: 3px;
+}
+
+.investment-research-rating-row span,
+.investment-research-owner-field > span,
+.investment-research-case-field > span,
+.investment-research-note-form-grid label > span {
+  color: #4b5563;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.045em;
+  line-height: 1.3;
+  text-transform: uppercase;
+}
+
+.investment-research-rating-row small,
+.investment-research-case-field small {
+  color: #667085;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.investment-research-rating-row .instrument-manual-rating-star:disabled {
+  cursor: default;
+  opacity: 1;
+}
+
+.investment-research-owner-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 18px 28px;
+}
+
+.investment-research-owner-field {
+  display: grid;
+  gap: 7px;
+  min-width: 0;
+}
+
+.investment-research-owner-field strong {
+  color: #111827;
+  font-size: 14px;
+  font-weight: 500;
+  overflow-wrap: anywhere;
+}
+
+.investment-research-owner-field input,
+.investment-research-case-field textarea,
+.investment-research-note-form-grid input,
+.investment-research-note-form-grid select,
+.investment-research-note-form-grid textarea {
+  width: 100%;
+  border: 1px solid #cbd5e1;
+  border-radius: 2px;
+  background: #ffffff;
+  color: #111827;
+  font: inherit;
+  outline: none;
+}
+
+.investment-research-owner-field input,
+.investment-research-note-form-grid input,
+.investment-research-note-form-grid select {
+  min-height: 36px;
+  padding: 7px 9px;
+}
+
+.investment-research-case-field textarea,
+.investment-research-note-form-grid textarea {
+  padding: 9px 10px;
+  line-height: 1.55;
+  resize: vertical;
+}
+
+.investment-research-owner-field input:focus,
+.investment-research-case-field textarea:focus,
+.investment-research-note-form-grid input:focus,
+.investment-research-note-form-grid select:focus,
+.investment-research-note-form-grid textarea:focus {
+  border-color: #2563eb;
+  box-shadow: 0 0 0 2px rgb(37 99 235 / 10%);
+}
+
+.investment-research-case-section {
+  display: grid;
+  gap: 14px;
+  padding-top: 18px;
+  border-top: 1px solid #e5e7eb;
+}
+
+.investment-research-case-section h3 {
+  margin: 0;
+  color: #111827;
+  font-size: 14px;
+  font-weight: 650;
+}
+
+.investment-research-case-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 18px 28px;
+}
+
+.investment-research-case-field {
+  display: grid;
+  align-content: start;
+  gap: 7px;
+  min-width: 0;
+}
+
+.investment-research-case-field-wide {
+  grid-column: 1 / -1;
+}
+
+.investment-research-case-field p {
+  margin: 0;
+  color: #111827;
+  font-size: 14px;
+  line-height: 1.65;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.investment-research-case-field p.investment-research-empty-value {
+  color: #8a94a3;
+  font-style: italic;
+}
+
+.investment-research-note-editor {
+  display: grid;
+  gap: 16px;
+  padding: 16px;
+  border: 1px solid #cbd5e1;
+  background: #f8fafc;
+}
+
+.investment-research-note-editor-header,
+.investment-research-note-card-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.investment-research-note-form-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px 18px;
+}
+
+.investment-research-note-form-grid label {
+  display: grid;
+  gap: 6px;
+}
+
+.investment-research-note-field-wide {
+  grid-column: 1 / -1;
+}
+
+.investment-research-note-list {
+  display: grid;
+  gap: 12px;
+}
+
+.investment-research-note-card {
+  display: grid;
+  gap: 10px;
+  padding: 16px 0 18px;
+  border-top: 1px solid #d7dde5;
+}
+
+.investment-research-note-card:first-child {
+  border-top-color: #aeb8c5;
+}
+
+.investment-research-note-card h3 {
+  margin: 5px 0 0;
+  color: #111827;
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.investment-research-note-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  color: #667085;
+  font-size: 11px;
+  letter-spacing: 0.035em;
+  text-transform: uppercase;
+}
+
+.investment-research-importance {
+  padding: 2px 6px;
+  border: 1px solid #cbd5e1;
+  border-radius: 999px;
+}
+
+.investment-research-importance-high {
+  border-color: #ef9a9a;
+  color: #a61b1b;
+}
+
+.investment-research-importance-low {
+  color: #667085;
+}
+
+.investment-research-note-summary,
+.investment-research-note-body {
+  margin: 0;
+  color: #111827;
+  line-height: 1.65;
+  white-space: pre-wrap;
+}
+
+.investment-research-note-summary {
+  font-weight: 550;
+}
+
+.investment-research-note-details {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 5px 12px;
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.investment-research-note-details dt {
+  color: #667085;
+}
+
+.investment-research-note-details dd {
+  margin: 0;
+  color: #374151;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.investment-research-note-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.investment-research-note-tags span {
+  padding: 2px 7px;
+  border: 1px solid #d7dde5;
+  border-radius: 999px;
+  color: #4b5563;
+  font-size: 11px;
+}
+
+.investment-research-note-audit {
+  color: #8a94a3;
+  font-size: 11px;
+}
+
+@media (max-width: 960px) {
+  .investment-research-owner-grid,
+  .investment-research-case-grid,
+  .investment-research-note-form-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .investment-research-case-field-wide,
+  .investment-research-note-field-wide {
+    grid-column: auto;
+  }
+
+  .investment-research-rating-row,
+  .investment-research-note-editor-header,
+  .investment-research-note-card-header {
+    align-items: flex-start;
+    flex-direction: column;
+  }
 }
 
 .instrument-framework-load-error {

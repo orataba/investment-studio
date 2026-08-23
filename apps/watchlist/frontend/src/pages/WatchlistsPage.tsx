@@ -26,8 +26,6 @@ import {
   moveWatchlistItems,
   materializePlatformSecurity,
   resolveSharedInstrumentsFile,
-  updateInstrumentTaxonomy,
-  updateInstrumentAttributes,
   updateWatchlistView,
   runScreenerQuery,
 } from '../lib/api'
@@ -42,6 +40,7 @@ import {
   isMetricAsOfSensitiveField,
   summarizeMetricAsOfDates,
 } from '../lib/watchlistMetricSemantics'
+import { fieldSupportsAllInstrumentTypes } from '../lib/watchlistFieldScope'
 import LoadingOverlay from '../components/LoadingOverlay'
 import DownloadFormatMenu from '../../../../../packages/ui/src/DownloadFormatMenu'
 import NoticeToast, { type NoticeToastMessage } from '../../../../../packages/ui/src/NoticeToast'
@@ -79,13 +78,6 @@ type WatchlistRowGroup = {
   depth: number
   taxonomyPath?: string[]
 }
-type GroupDropTarget = {
-  groupKey: string
-  fieldKey: string
-  value: unknown
-  taxonomyNodeId?: string | null
-  rowPatch: Record<string, unknown>
-}
 type GroupAverageCell = {
   value: number | null
   count: number
@@ -105,12 +97,6 @@ type PendingDeleteItems = {
   watchlistName: string
   instrumentIds: string[]
 }
-type PendingGroupAssignment = {
-  instrumentId: string
-  instrumentName: string
-  target: GroupDropTarget
-  attributeKey: string
-}
 const WATCHLIST_INITIAL_RENDER_ROWS = 80
 const WATCHLIST_SUPPORTED_INSTRUMENT_TYPES = [
   'public_fund',
@@ -119,6 +105,7 @@ const WATCHLIST_SUPPORTED_INSTRUMENT_TYPES = [
   'equity',
   'index',
 ] as const
+const EMPTY_INSTRUMENT_TYPES: string[] = []
 const TAXONOMY_FILTER_FIELD_KEY = 'taxonomy'
 const TAXONOMY_GROUP_BY_CODE = 'taxonomy'
 const TAXONOMY_GROUP_FIELD_KEYS = [
@@ -143,7 +130,7 @@ const TAXONOMY_FILTER_FIELD: FieldRegistryRecord = {
   field_key: TAXONOMY_FILTER_FIELD_KEY,
   label: 'Taxonomy',
   description: 'Choose one taxonomy node; descendants under that node remain included.',
-  category_code: 'product_taxonomy',
+  category_code: 'instrument_taxonomy',
   data_type: 'string',
   formatter_code: 'text',
   sort_mode: 'none',
@@ -277,28 +264,6 @@ function taxonomyPathFromRow(row: Record<string, unknown>) {
     path.push(String(value))
   }
   return path
-}
-
-function taxonomyRowPatch(path: string[]) {
-  const patch: Record<string, unknown> = {}
-  TAXONOMY_GROUP_FIELD_KEYS.forEach((fieldKey, index) => {
-    patch[fieldKey] = path[index] || null
-  })
-  patch['attr.instrument_taxonomy_path'] = path.length ? taxonomyPathKey(path) : null
-  patch['attr.instrument_taxonomy_leaf'] = path[path.length - 1] || null
-  return patch
-}
-
-function rowHasPatchValues(row: Record<string, unknown>, patch: Record<string, unknown>) {
-  let compared = false
-  const matchesLoadedValues = Object.entries(patch).every(([fieldKey, value]) => {
-    if (!Object.prototype.hasOwnProperty.call(row, fieldKey)) {
-      return true
-    }
-    compared = true
-    return row[fieldKey] === value
-  })
-  return compared && matchesLoadedValues
 }
 
 function removeTaxonomyFilters(filters: FilterState) {
@@ -785,10 +750,6 @@ export default function WatchlistsPage() {
     Record<string, Record<string, ReturnSparklineSeries>>
   >({})
   const [collapsedGroupKeys, setCollapsedGroupKeys] = useState<Set<string>>(new Set())
-  const [draggingInstrumentId, setDraggingInstrumentId] = useState<string | null>(null)
-  const [groupDropTargetKey, setGroupDropTargetKey] = useState<string | null>(null)
-  const [updatingGroupInstrumentId, setUpdatingGroupInstrumentId] = useState<string | null>(null)
-  const [pendingGroupAssignment, setPendingGroupAssignment] = useState<PendingGroupAssignment | null>(null)
   const [reloadToken, setReloadToken] = useState(0)
   const filterMenuRef = useRef<HTMLDivElement | null>(null)
   const groupMenuRef = useRef<HTMLDivElement | null>(null)
@@ -816,6 +777,22 @@ export default function WatchlistsPage() {
   }
 
   const modalDialogRef = useModalDialog(Boolean(modalKind), closeActiveModal)
+  const activeInstrumentTypes = watchlistDetail?.instrument_types || EMPTY_INSTRUMENT_TYPES
+  const scopedFieldRegistry = useMemo(
+    () =>
+      fieldRegistry.filter((field) =>
+        fieldSupportsAllInstrumentTypes(field, activeInstrumentTypes),
+      ),
+    [fieldRegistry, activeInstrumentTypes],
+  )
+  const scopedFieldKeys = useMemo(
+    () => new Set(scopedFieldRegistry.map((field) => field.field_key)),
+    [scopedFieldRegistry],
+  )
+  const availableGroupByCodes = useMemo(
+    () => new Set((watchlistDetail?.available_group_bys || []).map((item) => item.code)),
+    [watchlistDetail?.available_group_bys],
+  )
 
   useEffect(() => {
     if (!notice) {
@@ -830,26 +807,35 @@ export default function WatchlistsPage() {
       return null
     }
 
-    const requestedFields = workingColumns.length ? [...workingColumns] : [primaryDisplayColumn]
-    if (workingGroupBy === TAXONOMY_GROUP_BY_CODE) {
+    const requestedFields = (workingColumns.length ? [...workingColumns] : [primaryDisplayColumn])
+      .filter((fieldKey) => scopedFieldKeys.has(fieldKey))
+    const effectiveGroupBy = availableGroupByCodes.has(workingGroupBy) ? workingGroupBy : 'none'
+    if (effectiveGroupBy === TAXONOMY_GROUP_BY_CODE) {
       TAXONOMY_ASSIGNMENT_FIELD_KEYS.forEach((fieldKey) => {
-        if (!requestedFields.includes(fieldKey)) {
+        if (scopedFieldKeys.has(fieldKey) && !requestedFields.includes(fieldKey)) {
           requestedFields.push(fieldKey)
         }
       })
-    } else if (workingGroupBy && workingGroupBy !== 'none' && !requestedFields.includes(workingGroupBy)) {
-      requestedFields.push(workingGroupBy)
+    } else if (effectiveGroupBy !== 'none' && !requestedFields.includes(effectiveGroupBy)) {
+      requestedFields.push(effectiveGroupBy)
     }
+
+    const effectiveFilters = Object.fromEntries(
+      Object.entries(workingFilters).filter(
+        ([fieldKey]) => fieldKey === TAXONOMY_FILTER_FIELD_KEY || scopedFieldKeys.has(fieldKey),
+      ),
+    )
+    const effectiveSortRules = sortRules.filter((rule) => scopedFieldKeys.has(rule.field))
 
     return {
       watchlist_id: watchlistId,
       view_id: activeViewId || null,
       selected_fields: requestedFields,
-      filters: workingFilters,
-      sort: sortRules,
-      group_by: workingGroupBy,
+      filters: effectiveFilters,
+      sort: effectiveSortRules,
+      group_by: effectiveGroupBy,
     }
-  }, [activeViewId, primaryDisplayColumn, sortRules, watchlistDetailOwnerId, watchlistId, workingColumns, workingFilters, workingGroupBy])
+  }, [activeViewId, availableGroupByCodes, primaryDisplayColumn, scopedFieldKeys, sortRules, watchlistDetailOwnerId, watchlistId, workingColumns, workingFilters, workingGroupBy])
   const screenerCriteriaKey = useMemo(
     () => JSON.stringify(baseScreenerPayload || {}),
     [baseScreenerPayload],
@@ -949,7 +935,6 @@ export default function WatchlistsPage() {
     setModalError(null)
     setConfirmError(null)
     setPendingDeleteItems(null)
-    setPendingGroupAssignment(null)
 
     async function loadWatchlistDetail() {
       setError(null)
@@ -1326,28 +1311,6 @@ export default function WatchlistsPage() {
   const selectedSharedInstrument =
     sharedInstrumentResults.find((item) => item.instrument_id === selectedInstrumentId) || null
   const mergedFieldRegistry = fieldRegistry
-  const activeInstrumentTypes = useMemo(() => {
-    const types = new Set<string>()
-    ;(screenerResult?.rows || []).forEach((row) => {
-      const instrumentType = String(row.instrument_type || '').trim().toLowerCase()
-      if (instrumentType) {
-        types.add(instrumentType)
-      }
-    })
-    return types.size ? [...types] : [...WATCHLIST_SUPPORTED_INSTRUMENT_TYPES]
-  }, [screenerResult])
-  const supportsAnyInstrumentScope = (field: FieldRegistryRecord) => {
-    if (!field.instrument_scope_json.length) {
-      return true
-    }
-    return field.instrument_scope_json.some((instrumentType) =>
-      activeInstrumentTypes.includes(String(instrumentType).trim().toLowerCase()),
-    )
-  }
-  const scopedFieldRegistry = useMemo(
-    () => mergedFieldRegistry.filter((field) => supportsAnyInstrumentScope(field)),
-    [mergedFieldRegistry, activeInstrumentTypes],
-  )
   const applicableTaxonomyNodes = useMemo(
     () =>
       (instrumentTaxonomy?.nodes || []).filter(
@@ -1436,8 +1399,14 @@ export default function WatchlistsPage() {
     })
     return map
   }, [mergedFieldRegistry])
-  const visibleColumns = ensureRequiredColumns(workingColumns.length ? workingColumns : [primaryDisplayColumn])
-  const baseColumns = ensureRequiredColumns(activeView?.columns || [])
+  const visibleColumns = ensureRequiredColumns(
+    (workingColumns.length ? workingColumns : [primaryDisplayColumn]).filter((fieldKey) =>
+      scopedFieldKeys.has(fieldKey),
+    ),
+  )
+  const baseColumns = ensureRequiredColumns(
+    (activeView?.columns || []).filter((fieldKey) => scopedFieldKeys.has(fieldKey)),
+  )
   const baseGroupBy = activeView?.default_group_by || 'none'
   const baseSort = activeView?.default_sort || []
   const baseFilters = useMemo(
@@ -1529,18 +1498,6 @@ export default function WatchlistsPage() {
   const displayColumnWidths = compactWatchlistColumns.widths
   const watchlistTableMinWidth = compactWatchlistColumns.totalWidth
   const activeGroupBy = workingGroupBy && workingGroupBy !== 'none' ? workingGroupBy : null
-  const activeGroupField = activeGroupBy ? fieldByKey.get(activeGroupBy) || null : null
-  const activeAttributeGroupDefinition = activeGroupBy?.startsWith('attr.')
-    ? activeGroupField?.source_domain === 'custom_attribute'
-      ? activeGroupBy.slice(5)
-      : ''
-    : ''
-  const activeGroupIsWritableAttribute =
-    Boolean(activeAttributeGroupDefinition) &&
-    activeGroupField?.group_mode === 'discrete' &&
-    ['single_select', 'text', 'string'].includes(activeGroupField?.data_type || '')
-  const activeGroupIsWritableTaxonomy = activeGroupBy === TAXONOMY_GROUP_BY_CODE
-  const activeGroupSupportsDrop = activeGroupIsWritableAttribute || activeGroupIsWritableTaxonomy
   const sortField = sortRules[0]?.field || null
   const sortDirection = sortRules[0]?.direction || 'asc'
 
@@ -1600,190 +1557,6 @@ export default function WatchlistsPage() {
     setColumnDropTarget('')
   }
 
-  function buildGroupDropTarget(group: WatchlistRowGroup): GroupDropTarget | null {
-    if (!activeGroupBy || !activeGroupSupportsDrop) {
-      return null
-    }
-
-    if (activeGroupIsWritableTaxonomy) {
-      const path =
-        group.taxonomyPath ||
-        (group.key && group.key !== 'Unspecified'
-          ? group.key.replace(/::direct$/, '').split(' / ').filter(Boolean)
-          : [])
-      if (!path.length) {
-        return {
-          groupKey: group.key,
-          fieldKey: TAXONOMY_GROUP_BY_CODE,
-          value: null,
-          taxonomyNodeId: null,
-          rowPatch: taxonomyRowPatch([]),
-        }
-      }
-      const node = taxonomyNodeByPath.get(taxonomyPathKey(path))
-      if (!node) {
-        return null
-      }
-      return {
-        groupKey: group.key,
-        fieldKey: TAXONOMY_GROUP_BY_CODE,
-        value: node.label,
-        taxonomyNodeId: node.node_id,
-        rowPatch: taxonomyRowPatch(node.path_labels),
-      }
-    }
-
-    if (!activeGroupIsWritableAttribute || !activeGroupBy || !activeAttributeGroupDefinition) {
-      return null
-    }
-
-    const value = group.key === 'Unspecified' ? null : group.key
-    return {
-      groupKey: group.key,
-      fieldKey: activeGroupBy,
-      value,
-      rowPatch: { [activeGroupBy]: value },
-    }
-  }
-
-  function patchScreenerRow(instrumentId: string, patch: Record<string, unknown>) {
-    setScreenerResult((current) =>
-      current
-        ? {
-            ...current,
-            rows: current.rows.map((row) =>
-              String(row.instrument_id) === instrumentId
-                ? { ...row, ...patch }
-                : row,
-            ),
-          }
-        : current,
-    )
-  }
-
-  function handleInstrumentDragStart(
-    event: React.DragEvent<HTMLTableRowElement>,
-    instrumentId: string,
-  ) {
-    const target = event.target as HTMLElement | null
-    if (target?.closest('a, button, input, select, textarea')) {
-      event.preventDefault()
-      return
-    }
-    if (!rowsAreCurrent || !activeGroupSupportsDrop || updatingGroupInstrumentId) {
-      event.preventDefault()
-      return
-    }
-    event.dataTransfer.setData('text/plain', instrumentId)
-    event.dataTransfer.setData('application/x-portfolio-ops-instrument-id', instrumentId)
-    event.dataTransfer.effectAllowed = 'move'
-    setDraggingInstrumentId(instrumentId)
-  }
-
-  function handleInstrumentDragEnd() {
-    setDraggingInstrumentId(null)
-    setGroupDropTargetKey(null)
-  }
-
-  function handleGroupDragOver(
-    event: React.DragEvent<HTMLTableRowElement>,
-    target: GroupDropTarget | null,
-  ) {
-    if (!target || updatingGroupInstrumentId) {
-      return
-    }
-    event.preventDefault()
-    event.dataTransfer.dropEffect = 'move'
-    setGroupDropTargetKey(target.groupKey)
-  }
-
-  function handleGroupDrop(
-    event: React.DragEvent<HTMLTableRowElement>,
-    target: GroupDropTarget | null,
-  ) {
-    event.preventDefault()
-    setGroupDropTargetKey(null)
-    const instrumentId =
-      event.dataTransfer.getData('application/x-portfolio-ops-instrument-id') ||
-      event.dataTransfer.getData('text/plain') ||
-      draggingInstrumentId ||
-      ''
-    if (!rowsAreCurrent || !target || !instrumentId || updatingGroupInstrumentId) {
-      return
-    }
-
-    const currentRow = screenerResult?.rows.find((row) => String(row.instrument_id) === instrumentId)
-    if (!currentRow) {
-      return
-    }
-    if (rowHasPatchValues(currentRow, target.rowPatch)) {
-      setDraggingInstrumentId(null)
-      return
-    }
-
-    setPendingGroupAssignment({
-      instrumentId,
-      instrumentName: String(currentRow.instrument_name || instrumentId),
-      target,
-      attributeKey: activeAttributeGroupDefinition,
-    })
-    setConfirmError(null)
-    setDraggingInstrumentId(null)
-  }
-
-  async function confirmGroupAssignment() {
-    const pending = pendingGroupAssignment
-    if (!pending || updatingGroupInstrumentId) {
-      return
-    }
-    const { instrumentId, instrumentName, target, attributeKey } = pending
-    const currentRow = screenerResult?.rows.find(
-      (row) => String(row.instrument_id) === instrumentId,
-    )
-    if (!currentRow) {
-      setPendingGroupAssignment(null)
-      return
-    }
-    const previousPatch = Object.fromEntries(
-      Object.keys(target.rowPatch).map((fieldKey) => [fieldKey, currentRow[fieldKey]]),
-    )
-    setUpdatingGroupInstrumentId(instrumentId)
-    setConfirmError(null)
-    setNotice(null)
-    patchScreenerRow(instrumentId, target.rowPatch)
-
-    try {
-      if (target.fieldKey === TAXONOMY_GROUP_BY_CODE) {
-        await updateInstrumentTaxonomy(instrumentId, {
-          node_id: target.taxonomyNodeId || null,
-          updated_by: 'watchlist_group_drag',
-        })
-      } else {
-        await updateInstrumentAttributes(instrumentId, {
-          values: [
-            {
-              attribute_key: attributeKey,
-              value: target.value,
-            },
-          ],
-        })
-      }
-      setReloadToken(Date.now())
-      setViewToast({
-        id: Date.now(),
-        message: `Moved ${instrumentName} to ${target.value || 'Unspecified'}.`,
-        tone: 'success',
-      })
-      setPendingGroupAssignment(null)
-    } catch (dropError) {
-      patchScreenerRow(instrumentId, previousPatch)
-      setConfirmError(dropError instanceof Error ? dropError.message : 'Failed to update group assignment.')
-    } finally {
-      setUpdatingGroupInstrumentId(null)
-      setDraggingInstrumentId(null)
-    }
-  }
-
   useEffect(() => {
     setCollapsedGroupKeys(new Set())
   }, [activeGroupBy, screenerCriteriaKey])
@@ -1836,14 +1609,47 @@ export default function WatchlistsPage() {
   })
   const availableGroupByOptions = watchlistDetail?.available_group_bys || []
 
+  useEffect(() => {
+    if (!detailIsCurrent || !watchlistDetail) {
+      return
+    }
+    const scopeColumns = (columns: string[]) =>
+      ensureRequiredColumns(columns.filter((fieldKey) => scopedFieldKeys.has(fieldKey)))
+    setWorkingColumns((current) => {
+      const next = scopeColumns(current)
+      return JSON.stringify(next) === JSON.stringify(current) ? current : next
+    })
+    setColumnDraft((current) => {
+      const next = scopeColumns(current)
+      return JSON.stringify(next) === JSON.stringify(current) ? current : next
+    })
+    setWorkingFilters((current) => {
+      const next = Object.fromEntries(
+        Object.entries(current).filter(
+          ([fieldKey]) =>
+            scopedFieldKeys.has(fieldKey) ||
+            (fieldKey === TAXONOMY_FILTER_FIELD_KEY && activeInstrumentTypes.length > 0),
+        ),
+      )
+      return JSON.stringify(next) === JSON.stringify(current) ? current : next
+    })
+    setSortRules((current) => {
+      const next = current.filter((rule) => scopedFieldKeys.has(rule.field))
+      return JSON.stringify(next) === JSON.stringify(current) ? current : next
+    })
+    setWorkingGroupBy((current) => (availableGroupByCodes.has(current) ? current : 'none'))
+  }, [activeInstrumentTypes.length, availableGroupByCodes, detailIsCurrent, scopedFieldKeys, watchlistDetail])
+
   const filterableFields = useMemo(
     () => {
-      const fields = mergedFieldRegistry
+      const fields = scopedFieldRegistry
         .filter((field) => field.filter_mode === 'multi_select' && !isTaxonomyFieldKey(field.field_key))
         .sort((left, right) => left.label.localeCompare(right.label, 'zh-Hans-CN'))
-      return supportsAnyInstrumentScope(TAXONOMY_FILTER_FIELD) ? [TAXONOMY_FILTER_FIELD, ...fields] : fields
+      return fieldSupportsAllInstrumentTypes(TAXONOMY_FILTER_FIELD, activeInstrumentTypes)
+        ? [TAXONOMY_FILTER_FIELD, ...fields]
+        : fields
     },
-    [mergedFieldRegistry, activeInstrumentTypes],
+    [scopedFieldRegistry, activeInstrumentTypes],
   )
   const optionFilterFields = useMemo(
     () => filterableFields.filter((field) => field.field_key !== TAXONOMY_FILTER_FIELD_KEY),
@@ -2748,8 +2554,8 @@ export default function WatchlistsPage() {
                     <div>
                       <div className="watchlists-filter-title">Filters</div>
                       <div className="watchlists-filter-subtitle">
-                        Filter the current product pool by taxonomy, research labels, and
-                        monitoring labels.
+                        Filter the current assets by taxonomy, workflow state, and
+                        asset-appropriate research fields.
                       </div>
                     </div>
                     <button
@@ -3104,25 +2910,10 @@ export default function WatchlistsPage() {
               {searchedRows.length ? (
                 renderedGroupedRows.map((group, groupIndex) => {
                   const collapsed = collapsedGroupKeys.has(group.key)
-                  const groupDropTarget = buildGroupDropTarget(group)
-                  const groupCanDrop = Boolean(groupDropTarget)
                   return (
                     <React.Fragment key={group.key || `group-${groupIndex}`}>
                       {activeGroupBy ? (
-                        <tr
-                          className={[
-                            'watchlists-group-row',
-                            groupCanDrop ? 'watchlists-group-row-droppable' : '',
-                            groupDropTargetKey === group.key ? 'watchlists-group-row-drop-target' : '',
-                          ]
-                            .filter(Boolean)
-                            .join(' ')}
-                          onDragOver={(event) => handleGroupDragOver(event, groupDropTarget)}
-                          onDragLeave={() =>
-                            setGroupDropTargetKey((current) => (current === group.key ? null : current))
-                          }
-                          onDrop={(event) => void handleGroupDrop(event, groupDropTarget)}
-                        >
+                        <tr className="watchlists-group-row">
                           <td className="watchlists-select-col watchlists-group-spacer" aria-hidden="true" />
                           {visibleColumns.map((column, columnIndex) => {
                             if (columnIndex === 0) {
@@ -3204,19 +2995,7 @@ export default function WatchlistsPage() {
                         const instrumentId = String(row.instrument_id || `row-${index}`)
                         const checked = selectedRows.includes(instrumentId)
                         return (
-                          <tr
-                            key={instrumentId}
-                            className={[
-                              activeGroupSupportsDrop ? 'watchlists-row-draggable' : '',
-                              draggingInstrumentId === instrumentId ? 'watchlists-row-dragging' : '',
-                              updatingGroupInstrumentId === instrumentId ? 'watchlists-row-updating' : '',
-                            ]
-                              .filter(Boolean)
-                              .join(' ')}
-                            draggable={activeGroupSupportsDrop && !updatingGroupInstrumentId}
-                            onDragStart={(event) => handleInstrumentDragStart(event, instrumentId)}
-                            onDragEnd={handleInstrumentDragEnd}
-                          >
+                          <tr key={instrumentId}>
                             <td className="watchlists-select-col">
                               <input
                                 type="checkbox"
@@ -3862,9 +3641,9 @@ export default function WatchlistsPage() {
                 />
               </label>
               <p className="watchlists-registry-note">
-                Public funds, private funds, indexes, and existing Tushare ETFs come from the shared Registry. FMP
-                stock and ETF searches use independently synchronized catalogs; choosing a new listing prepares its
-                local identity and loads its EOD history before it is added here. Taxonomy remains inside Watchlist.
+                Public funds, private funds, indexes, and existing A-share ETFs come from the shared Registry. FMP
+                catalogs discover stocks and ETFs; new stocks and overseas ETFs load FMP EOD, while A-share ETFs keep
+                a fixed Tushare market-data source. Taxonomy remains inside Watchlist.
               </p>
               {selectedSharedInstrument ? (
                 <div className="watchlists-registry-selected">
@@ -3939,11 +3718,12 @@ export default function WatchlistsPage() {
                   setModalError(null)
                   try {
                     const registryInstrument =
-                      selectedSharedInstrument.source === 'fmp_catalog' &&
+                      selectedSharedInstrument.source === 'security_catalog' &&
                       !selectedSharedInstrument.existing_instrument_id
                         ? await materializePlatformSecurity(
                             selectedSharedInstrument.instrument_type as 'equity' | 'etf',
-                            selectedSharedInstrument.fmp_symbol || '',
+                            selectedSharedInstrument.catalog_provider!,
+                            selectedSharedInstrument.catalog_symbol!,
                           )
                         : selectedSharedInstrument
                     const instrumentId =
@@ -3976,24 +3756,6 @@ export default function WatchlistsPage() {
       ) : null}
 
       </div>
-      <ConfirmDialog
-        open={Boolean(pendingGroupAssignment)}
-        title="Change Canonical Classification"
-        description={
-          pendingGroupAssignment
-            ? `Move "${pendingGroupAssignment.instrumentName}" to "${String(pendingGroupAssignment.target.value || 'Unspecified')}"? This changes the instrument's canonical ${pendingGroupAssignment.target.fieldKey === TAXONOMY_GROUP_BY_CODE ? 'taxonomy' : 'research attribute'} everywhere it appears, not only in this watchlist.`
-            : ''
-        }
-        confirmLabel="Apply Classification"
-        busy={Boolean(updatingGroupInstrumentId)}
-        busyLabel="Applying…"
-        error={confirmError}
-        onCancel={() => {
-          setConfirmError(null)
-          setPendingGroupAssignment(null)
-        }}
-        onConfirm={confirmGroupAssignment}
-      />
       <ConfirmDialog
         open={Boolean(pendingDeleteItems)}
         title="Delete Instruments"

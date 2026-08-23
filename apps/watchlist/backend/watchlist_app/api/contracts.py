@@ -4,7 +4,7 @@ from datetime import date, datetime
 from decimal import Decimal
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 class WatchlistCreateRequest(BaseModel):
@@ -41,13 +41,6 @@ class InstrumentBulkResolveRequest(BaseModel):
     identifiers: list[str] = Field(min_length=1, max_length=2000)
 
 
-class ManualFundCreateRequest(BaseModel):
-    ticker: str
-    name: str
-    product_type: str = "instrument"
-    fund_type: str = "generic"
-
-
 class AdvancedFilterRuleInput(BaseModel):
     type: Literal["rule"] = "rule"
     field: str
@@ -77,12 +70,7 @@ class AdvancedFilterGroupInput(BaseModel):
 AdvancedFilterGroupInput.model_rebuild()
 
 
-WatchlistGroupBy = Literal[
-    "none",
-    "instrument_type",
-    "taxonomy",
-    "data_freshness_status",
-]
+WatchlistGroupBy = str
 
 
 class SortRule(BaseModel):
@@ -145,20 +133,20 @@ class InstrumentAttributeDefinitionCreateRequest(BaseModel):
     )
     applicability_json: dict[str, list[str]] = Field(default_factory=dict)
     rubric_json: dict[str, Any] = Field(default_factory=dict)
-    is_groupable: bool = True
+    is_groupable: bool = False
     is_filterable: bool = True
     is_view_column: bool = True
     default_visible: bool = False
     required_for_monitoring: bool = False
 
 
-class FundAttributeValueInput(BaseModel):
+class InstrumentAttributeValueInput(BaseModel):
     attribute_key: str
     value: Any
 
 
-class FundAttributesUpsertRequest(BaseModel):
-    values: list[FundAttributeValueInput] = Field(default_factory=list)
+class InstrumentAttributesUpsertRequest(BaseModel):
+    values: list[InstrumentAttributeValueInput] = Field(default_factory=list)
     effective_from: date | None = None
     source_record_id: str | None = None
 
@@ -240,6 +228,70 @@ class RecalcBulkRequest(BaseModel):
 
 class ManualProfileUpsertRequest(BaseModel):
     payload: dict[str, Any] = Field(default_factory=dict)
+    updated_by: str | None = None
+
+
+class InstrumentResearchProfileInput(BaseModel):
+    thesis: str = ""
+    current_view: str = ""
+    why_now: str = ""
+    edge_assessment: str = ""
+    valuation_framework: str = ""
+    catalysts: str = ""
+    key_risks: str = ""
+    disconfirming_evidence: str = ""
+    open_questions: str = ""
+    monitoring_plan: str = ""
+    people_assessment: str = ""
+    portfolio_role: str = ""
+    time_horizon: str = ""
+    decision_rationale: str = ""
+    primary_analyst: str = ""
+    next_review_date: date | None = None
+    dd_status: str = ""
+    odd_status: str = ""
+    ic_status: str = ""
+    manual_rating: int | None = Field(default=None, ge=1, le=5)
+
+
+class InstrumentResearchProfileUpsertRequest(BaseModel):
+    profile: InstrumentResearchProfileInput
+    updated_by: str | None = None
+
+
+class InstrumentResearchNoteInput(BaseModel):
+    note_date: date
+    note_type: Literal[
+        "research_update",
+        "thesis_update",
+        "evidence",
+        "meeting",
+        "event",
+        "risk",
+        "decision",
+        "review",
+    ] = "research_update"
+    title: str = Field(min_length=1)
+    summary: str = ""
+    body: str = ""
+    importance: Literal["low", "medium", "high"] = "medium"
+    tags: list[str] = Field(default_factory=list)
+    source_refs: str = ""
+    people: str = ""
+    author: str = ""
+    follow_up_date: date | None = None
+
+    @field_validator("title")
+    @classmethod
+    def validate_title(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("title cannot be empty")
+        return normalized
+
+
+class InstrumentResearchNoteUpsertRequest(BaseModel):
+    note: InstrumentResearchNoteInput
     updated_by: str | None = None
 
 

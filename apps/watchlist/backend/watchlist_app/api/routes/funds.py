@@ -10,7 +10,6 @@ from sqlalchemy.orm import Session
 
 from watchlist_app.api.contracts import (
     ManualProfileUpsertRequest,
-    ManualFundCreateRequest,
     NavSettingsUpsertRequest,
 )
 from watchlist_app.core.settings import get_settings
@@ -31,12 +30,12 @@ from watchlist_app.services.instrument_taxonomy import (
 )
 from watchlist_app.services.read_models import (
     collapse_latest_attribute_values,
-    default_fund_chart_payload,
-    default_fund_performance_payload,
-    default_fund_exposure_holdings_payload,
-    default_fund_exposure_summary_payload,
-    default_fund_risk_payload,
-    default_fund_summary_payload,
+    default_instrument_chart_payload,
+    default_instrument_exposure_holdings_payload,
+    default_instrument_exposure_summary_payload,
+    default_instrument_performance_payload,
+    default_instrument_risk_payload,
+    default_instrument_summary_payload,
     merge_summary_attributes,
     serialize_payload,
 )
@@ -56,6 +55,9 @@ attribute_repository = SQLAlchemyInstrumentAttributeRepository()
 manual_profile_repository = SQLAlchemyInstrumentManualProfileRepository()
 instrument_repository = SQLAlchemyInstrumentRepository()
 canonical_recalc_service = CanonicalRecalcService()
+
+FUND_INSTRUMENT_TYPES = frozenset({"public_fund", "private_fund"})
+LOOK_THROUGH_INSTRUMENT_TYPES = frozenset({*FUND_INSTRUMENT_TYPES, "etf"})
 
 
 def _safe_file_segment(value: str | None, fallback: str = "file") -> str:
@@ -151,14 +153,41 @@ def _default_price_payload() -> dict[str, object]:
             "total_expense_ratio": None,
             "adjusted_expense_ratio": None,
             "management_fee": None,
+            "custodian_fee": None,
+            "sales_service_fee": None,
+            "subscription_fee": None,
             "interest_expense_fees": None,
             "redemption_fee": None,
             "minimum_initial_investment": None,
+            "performance_fee": None,
+            "hurdle_rate": None,
+            "high_water_mark": None,
+            "lockup_period": None,
+            "redemption_notice_days": None,
+            "dealing_frequency": None,
+            "gate_terms": None,
         },
         "distribution_policy": "",
         "policy_text": "",
         "fee_notes": [],
         "notes": ["Price profile is manually maintained."],
+    }
+
+
+def _normalize_price_payload(payload: dict[str, Any] | None) -> dict[str, object]:
+    defaults = _default_price_payload()
+    source = payload or {}
+    source_overview = source.get("overview")
+    overview = {
+        **dict(defaults["overview"]),
+        **(source_overview if isinstance(source_overview, dict) else {}),
+    }
+    return {
+        "overview": overview,
+        "distribution_policy": str(source.get("distribution_policy") or ""),
+        "policy_text": str(source.get("policy_text") or ""),
+        "fee_notes": list(source.get("fee_notes") or []),
+        "notes": list(source.get("notes") or []),
     }
 
 
@@ -168,51 +197,6 @@ def _default_documents_payload() -> dict[str, object]:
         "recent_imports": [],
         "extraction_reviews": [],
         "notes": ["Documents are maintained at the instrument level."],
-    }
-
-
-def _default_research_payload() -> dict[str, object]:
-    return {
-        "overview": {
-            "current_view": "",
-            "research_view": "",
-            "dd_status": "",
-            "odd_status": "",
-            "ic_status": "",
-            "decision": "",
-            "next_review_date": None,
-            "primary_analyst": "",
-        },
-        "manual_rating": None,
-        "timeline_notes": [],
-    }
-
-
-def _normalize_manual_rating(value: Any) -> int | None:
-    if value is None:
-        return None
-    if not isinstance(value, int) or isinstance(value, bool):
-        return None
-    return max(1, min(5, value))
-
-
-def _normalize_research_payload(payload: dict[str, Any] | None) -> dict[str, object]:
-    defaults = _default_research_payload()
-    source = payload or {}
-    overview_source = source.get("overview")
-    default_overview = defaults["overview"]
-    overview_values = overview_source if isinstance(overview_source, dict) else {}
-    overview = {
-        key: overview_values.get(key, value)
-        for key, value in default_overview.items()
-    }
-
-    timeline_notes = source.get("timeline_notes")
-
-    return {
-        "overview": overview,
-        "manual_rating": _normalize_manual_rating(source.get("manual_rating")),
-        "timeline_notes": timeline_notes if isinstance(timeline_notes, list) else [],
     }
 
 
@@ -269,30 +253,48 @@ def _validate_compare_instrument_ids(
     return benchmark_instrument_id, validated_peer_ids
 
 
-def _ensure_instrument_exists(session: Session, instrument_id: str) -> None:
-    if instrument_repository.get(session, instrument_id) is None:
+def _require_instrument(
+    session: Session,
+    instrument_id: str,
+    *,
+    allowed_types: frozenset[str] | None = None,
+):
+    instrument = instrument_repository.get(session, instrument_id)
+    if instrument is None:
         raise HTTPException(status_code=404, detail="Instrument not found")
+    if allowed_types is not None and instrument.instrument_type not in allowed_types:
+        supported_types = ", ".join(sorted(allowed_types))
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"This section does not apply to {instrument.instrument_type} instruments. "
+                f"Supported instrument types: {supported_types}."
+            ),
+        )
+    return instrument
 
 
 @router.get("/{instrument_id}/summary")
-def get_fund_summary(
+def get_instrument_summary(
     instrument_id: str,
     session: Session = Depends(get_db_session),
 ) -> dict[str, object]:
-    _ensure_instrument_exists(session, instrument_id)
+    instrument = _require_instrument(session, instrument_id)
     _schedule_instrument_refresh(session, instrument_id=instrument_id, trigger_ref_type="instrument_summary_read")
     record = read_model_repository.get_summary(session, instrument_id)
     attributes = collapse_latest_attribute_values(
         attribute_repository.get_values_for_asset(session, instrument_id)
     )
-    instrument = instrument_repository.get(session, instrument_id)
     payload = (
         serialize_payload(record.payload_json)
         if record is not None
-        else default_fund_summary_payload(instrument_id, instrument_attributes=attributes)
+        else default_instrument_summary_payload(
+            instrument_id,
+            instrument_attributes=attributes,
+        )
     )
-    if record is None and instrument is not None:
-        payload["fund_name"] = instrument.instrument_name
+    if record is None:
+        payload["instrument_name"] = instrument.instrument_name
         payload["ticker_or_isin"] = instrument.primary_identifier_value or instrument.instrument_id
     assignment = taxonomy_repository.get_assignment(session, instrument_id=instrument_id)
     node = (
@@ -302,106 +304,92 @@ def get_fund_summary(
     )
     taxonomy_context = build_taxonomy_context(node)
     merged = merge_summary_attributes(payload, attributes)
-    if merged.get("management_firm_name") is None and instrument is not None:
+    if merged.get("management_firm_name") is None:
         merged["management_firm_name"] = (
             str(instrument.metadata_json.get("management_firm_name") or "").strip() or None
         )
     return merge_taxonomy_into_summary(merged, taxonomy_context)
 
 
-@router.post("/manual")
-def create_manual_fund(
-    payload: ManualFundCreateRequest,
-) -> dict[str, object]:
-    _ = payload
-    raise HTTPException(
-        status_code=410,
-        detail=(
-            "Manual fund creation is no longer supported in Watchlist. "
-            "Create the instrument in Database Dashboard, then add it from the shared registry."
-        ),
-    )
-
-
 @router.get("/library")
-def list_fund_library(
+def list_instrument_library(
     session: Session = Depends(get_db_session),
 ) -> list[dict[str, object]]:
     return instrument_repository.list_library(session)
 
 
 @router.get("/{instrument_id}/chart")
-def get_fund_chart_data(
+def get_instrument_chart_data(
     instrument_id: str,
     session: Session = Depends(get_db_session),
 ) -> dict[str, object]:
-    _ensure_instrument_exists(session, instrument_id)
+    _require_instrument(session, instrument_id)
     _schedule_instrument_refresh(session, instrument_id=instrument_id, trigger_ref_type="instrument_chart_read")
     record = read_model_repository.get_chart(session, instrument_id)
     if record is None:
-        return default_fund_chart_payload(instrument_id)
+        return default_instrument_chart_payload(instrument_id)
     return serialize_payload(record.payload_json)
 
 
 @router.get("/{instrument_id}/performance")
-def get_fund_performance_data(
+def get_instrument_performance_data(
     instrument_id: str,
     session: Session = Depends(get_db_session),
 ) -> dict[str, object]:
-    _ensure_instrument_exists(session, instrument_id)
+    _require_instrument(session, instrument_id)
     _schedule_instrument_refresh(session, instrument_id=instrument_id, trigger_ref_type="instrument_performance_read")
     record = read_model_repository.get_performance(session, instrument_id)
     if record is None:
-        return default_fund_performance_payload()
+        return default_instrument_performance_payload()
     payload, _ = canonical_recalc_service.apply_current_peer_comparison(
         session,
         instrument_id=instrument_id,
         performance_payload=dict(record.payload_json),
     )
-    return serialize_payload(payload or default_fund_performance_payload())
+    return serialize_payload(payload or default_instrument_performance_payload())
 
 
 @router.get("/{instrument_id}/risk")
-def get_fund_risk_data(
+def get_instrument_risk_data(
     instrument_id: str,
     session: Session = Depends(get_db_session),
 ) -> dict[str, object]:
-    _ensure_instrument_exists(session, instrument_id)
+    _require_instrument(session, instrument_id)
     _schedule_instrument_refresh(session, instrument_id=instrument_id, trigger_ref_type="instrument_risk_read")
     record = read_model_repository.get_risk(session, instrument_id)
     if record is None:
-        return default_fund_risk_payload()
+        return default_instrument_risk_payload()
     _, payload = canonical_recalc_service.apply_current_peer_comparison(
         session,
         instrument_id=instrument_id,
         risk_payload=dict(record.payload_json),
     )
-    return serialize_payload(payload or default_fund_risk_payload())
+    return serialize_payload(payload or default_instrument_risk_payload())
 
 
 @router.get("/{instrument_id}/exposure/summary")
-def get_fund_exposure_summary_data(
+def get_instrument_exposure_summary_data(
     instrument_id: str,
     session: Session = Depends(get_db_session),
 ) -> dict[str, object]:
-    _ensure_instrument_exists(session, instrument_id)
+    _require_instrument(session, instrument_id, allowed_types=LOOK_THROUGH_INSTRUMENT_TYPES)
     _schedule_instrument_refresh(session, instrument_id=instrument_id, trigger_ref_type="instrument_exposure_summary_read")
     record = read_model_repository.get_exposure_summary(session, instrument_id)
     if record is None:
-        return default_fund_exposure_summary_payload()
+        return default_instrument_exposure_summary_payload()
     return serialize_payload(record.payload_json)
 
 
 @router.get("/{instrument_id}/exposure/holdings")
-def get_fund_exposure_holdings_data(
+def get_instrument_exposure_holdings_data(
     instrument_id: str,
     session: Session = Depends(get_db_session),
 ) -> dict[str, object]:
-    _ensure_instrument_exists(session, instrument_id)
+    _require_instrument(session, instrument_id, allowed_types=LOOK_THROUGH_INSTRUMENT_TYPES)
     _schedule_instrument_refresh(session, instrument_id=instrument_id, trigger_ref_type="instrument_exposure_holdings_read")
     record = read_model_repository.get_exposure_holdings(session, instrument_id)
     if record is None:
-        return default_fund_exposure_holdings_payload()
+        return default_instrument_exposure_holdings_payload()
     return serialize_payload(record.payload_json)
 
 
@@ -410,7 +398,7 @@ def get_fund_people_profile(
     instrument_id: str,
     session: Session = Depends(get_db_session),
 ) -> dict[str, object]:
-    _ensure_instrument_exists(session, instrument_id)
+    _require_instrument(session, instrument_id, allowed_types=FUND_INSTRUMENT_TYPES)
     record = manual_profile_repository.get(session, instrument_id)
     payload = record.people_payload_json if record is not None else _default_people_payload()
     return serialize_payload(payload)
@@ -422,7 +410,7 @@ def upsert_fund_people_profile(
     payload: ManualProfileUpsertRequest,
     session: Session = Depends(get_db_session),
 ) -> dict[str, object]:
-    _ensure_instrument_exists(session, instrument_id)
+    _require_instrument(session, instrument_id, allowed_types=FUND_INSTRUMENT_TYPES)
     record = manual_profile_repository.upsert(
         session,
         instrument_id=instrument_id,
@@ -438,7 +426,7 @@ def get_fund_strategy_profile(
     instrument_id: str,
     session: Session = Depends(get_db_session),
 ) -> dict[str, object]:
-    _ensure_instrument_exists(session, instrument_id)
+    _require_instrument(session, instrument_id, allowed_types=FUND_INSTRUMENT_TYPES)
     record = manual_profile_repository.get(session, instrument_id)
     payload = record.strategy_payload_json if record is not None else _default_strategy_payload()
     return serialize_payload(payload)
@@ -450,7 +438,7 @@ def upsert_fund_strategy_profile(
     payload: ManualProfileUpsertRequest,
     session: Session = Depends(get_db_session),
 ) -> dict[str, object]:
-    _ensure_instrument_exists(session, instrument_id)
+    _require_instrument(session, instrument_id, allowed_types=FUND_INSTRUMENT_TYPES)
     record = manual_profile_repository.upsert(
         session,
         instrument_id=instrument_id,
@@ -466,10 +454,10 @@ def get_fund_price_profile(
     instrument_id: str,
     session: Session = Depends(get_db_session),
 ) -> dict[str, object]:
-    _ensure_instrument_exists(session, instrument_id)
+    _require_instrument(session, instrument_id, allowed_types=FUND_INSTRUMENT_TYPES)
     record = manual_profile_repository.get(session, instrument_id)
-    payload = record.price_payload_json if record is not None else _default_price_payload()
-    return serialize_payload(payload)
+    payload = record.price_payload_json if record is not None else None
+    return serialize_payload(_normalize_price_payload(payload))
 
 
 @router.put("/{instrument_id}/price")
@@ -478,11 +466,11 @@ def upsert_fund_price_profile(
     payload: ManualProfileUpsertRequest,
     session: Session = Depends(get_db_session),
 ) -> dict[str, object]:
-    _ensure_instrument_exists(session, instrument_id)
+    _require_instrument(session, instrument_id, allowed_types=FUND_INSTRUMENT_TYPES)
     record = manual_profile_repository.upsert(
         session,
         instrument_id=instrument_id,
-        price_payload_json=payload.payload,
+        price_payload_json=_normalize_price_payload(payload.payload),
         updated_by=payload.updated_by,
     )
     session.commit()
@@ -494,7 +482,7 @@ def get_fund_documents_profile(
     instrument_id: str,
     session: Session = Depends(get_db_session),
 ) -> dict[str, object]:
-    _ensure_instrument_exists(session, instrument_id)
+    _require_instrument(session, instrument_id)
     record = manual_profile_repository.get(session, instrument_id)
     payload = record.documents_payload_json if record is not None else _default_documents_payload()
     return serialize_payload(payload)
@@ -506,7 +494,7 @@ def upsert_fund_documents_profile(
     payload: ManualProfileUpsertRequest,
     session: Session = Depends(get_db_session),
 ) -> dict[str, object]:
-    _ensure_instrument_exists(session, instrument_id)
+    _require_instrument(session, instrument_id)
     record = manual_profile_repository.upsert(
         session,
         instrument_id=instrument_id,
@@ -531,7 +519,7 @@ async def upload_fund_document(
     updated_by: str | None = Form(None),
     session: Session = Depends(get_db_session),
 ) -> dict[str, object]:
-    _ensure_instrument_exists(session, instrument_id)
+    _require_instrument(session, instrument_id)
     original_file_name = _safe_file_segment(file.filename, fallback="uploaded-document")
     instrument_dir = _instrument_document_dir(instrument_id)
     instrument_dir.mkdir(parents=True, exist_ok=True)
@@ -603,7 +591,7 @@ def download_fund_document(
     stored_file_name: str,
     session: Session = Depends(get_db_session),
 ) -> FileResponse:
-    _ensure_instrument_exists(session, instrument_id)
+    _require_instrument(session, instrument_id)
     safe_stored_file_name = _safe_file_segment(stored_file_name)
     stored_path = _instrument_document_dir(instrument_id) / safe_stored_file_name
     if not stored_path.is_file():
@@ -612,57 +600,13 @@ def download_fund_document(
     return FileResponse(path=stored_path, filename=download_name)
 
 
-@router.get("/{instrument_id}/research")
-def get_fund_research_profile(
-    instrument_id: str,
-    session: Session = Depends(get_db_session),
-) -> dict[str, object]:
-    _ensure_instrument_exists(session, instrument_id)
-    record = manual_profile_repository.get(session, instrument_id)
-    payload = record.research_payload_json if record is not None else _default_research_payload()
-    return serialize_payload(_normalize_research_payload(payload))
-
-
-@router.put("/{instrument_id}/research")
-def upsert_fund_research_profile(
-    instrument_id: str,
-    payload: ManualProfileUpsertRequest,
-    session: Session = Depends(get_db_session),
-) -> dict[str, object]:
-    _ensure_instrument_exists(session, instrument_id)
-    normalized_payload = _normalize_research_payload(payload.payload)
-    record = manual_profile_repository.upsert(
-        session,
-        instrument_id=instrument_id,
-        research_payload_json=normalized_payload,
-        updated_by=payload.updated_by,
-    )
-    session.commit()
-    return serialize_payload(record.research_payload_json)
-
-
 @router.get("/{instrument_id}/nav-series")
 def get_fund_nav_series(
     instrument_id: str,
     session: Session = Depends(get_db_session),
 ) -> dict[str, object]:
-    _ensure_instrument_exists(session, instrument_id)
+    _require_instrument(session, instrument_id)
     return canonical_recalc_service.build_nav_series_payload(session, instrument_id=instrument_id)
-
-
-@router.put("/{instrument_id}/nav-series")
-def upsert_fund_nav_series(
-    instrument_id: str,
-    session: Session = Depends(get_db_session),
-) -> dict[str, object]:
-    _ensure_instrument_exists(session, instrument_id)
-    raise HTTPException(
-        status_code=409,
-        detail=(
-            "Canonical NAV series is now owned by Database Dashboard. "
-            "Use Database Dashboard to import or edit shared market data."
-        ),
-    )
 
 
 @router.get("/{instrument_id}/nav-settings")
@@ -670,7 +614,7 @@ def get_fund_nav_settings(
     instrument_id: str,
     session: Session = Depends(get_db_session),
 ) -> dict[str, object]:
-    _ensure_instrument_exists(session, instrument_id)
+    _require_instrument(session, instrument_id, allowed_types=FUND_INSTRUMENT_TYPES)
     record = manual_profile_repository.get(session, instrument_id)
     return serialize_payload(
         _normalize_nav_settings_payload(record.nav_settings_json if record is not None else None)
@@ -683,7 +627,7 @@ def upsert_fund_nav_settings(
     payload: NavSettingsUpsertRequest,
     session: Session = Depends(get_db_session),
 ) -> dict[str, object]:
-    _ensure_instrument_exists(session, instrument_id)
+    _require_instrument(session, instrument_id, allowed_types=FUND_INSTRUMENT_TYPES)
     record = manual_profile_repository.get(session, instrument_id)
     current_payload = _normalize_nav_settings_payload(
         record.nav_settings_json if record is not None else None
@@ -732,18 +676,3 @@ def upsert_fund_nav_settings(
         )
     session.commit()
     return serialize_payload(_normalize_nav_settings_payload(updated_record.nav_settings_json))
-
-
-@router.post("/{instrument_id}/nav-refresh")
-def trigger_fund_nav_refresh(
-    instrument_id: str,
-    session: Session = Depends(get_db_session),
-) -> dict[str, object]:
-    _ensure_instrument_exists(session, instrument_id)
-    raise HTTPException(
-        status_code=409,
-        detail=(
-            "NAV refresh now runs from Database Dashboard. "
-            "Use Database Dashboard to trigger the shared market data refresh."
-        ),
-    )

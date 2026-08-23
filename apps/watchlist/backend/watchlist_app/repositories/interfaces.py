@@ -128,6 +128,12 @@ class InstrumentAttributeRepository(Protocol):
         instrument_id: str,
     ) -> Sequence[InstrumentAttributeValue]: ...
 
+    def get_values_for_assets(
+        self,
+        session: Session,
+        instrument_ids: Sequence[str],
+    ) -> Sequence[InstrumentAttributeValue]: ...
+
     def add_value(
         self,
         session: Session,

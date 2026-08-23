@@ -21,7 +21,7 @@ SUPPORTED_TAXONOMY_INSTRUMENT_TYPES = (
 def taxonomy_node_supports_instrument(*, instrument_type: str, node: object) -> bool:
     normalized_instrument_type = str(instrument_type or "").strip().lower()
     node_type = str(_node_value(node, "instrument_type") or "").strip().lower()
-    return node_type == normalized_instrument_type
+    return node_type == normalized_instrument_type and bool(_node_value(node, "is_leaf"))
 
 
 def _node_value(node: object, key: str) -> object:

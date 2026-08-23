@@ -2,11 +2,12 @@ from __future__ import annotations
 
 from datetime import UTC, date, datetime
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from watchlist_app.db.models.read_models import WatchlistRowReadModel
+from watchlist_app.db.models.research import InstrumentResearchNote
 from watchlist_app.db.models.watchlists import InstrumentAttributeDefinition, Watchlist
 from watchlist_app.db.session import get_db_session
 from watchlist_app.repositories.sqlalchemy.instrument_attributes import (
@@ -14,6 +15,9 @@ from watchlist_app.repositories.sqlalchemy.instrument_attributes import (
 )
 from watchlist_app.repositories.sqlalchemy.read_models import SQLAlchemyReadModelRepository
 from watchlist_app.repositories.sqlalchemy.recalc_jobs import SQLAlchemyRecalcJobRepository
+from watchlist_app.repositories.sqlalchemy.research import (
+    SQLAlchemyInstrumentResearchRepository,
+)
 from watchlist_app.services.read_models import build_latest_quote_overrides
 
 
@@ -21,6 +25,7 @@ router = APIRouter()
 attribute_repository = SQLAlchemyInstrumentAttributeRepository()
 read_model_repository = SQLAlchemyReadModelRepository()
 recalc_repository = SQLAlchemyRecalcJobRepository()
+research_repository = SQLAlchemyInstrumentResearchRepository()
 
 FRESHNESS_PRIORITY = {
     "unavailable": 0,
@@ -34,6 +39,7 @@ REQUIRED_TAXONOMY_KEYS = (
     ("instrument_taxonomy_level_1", "分类根"),
     ("instrument_taxonomy_leaf", "分类叶子"),
 )
+REQUIRED_TAXONOMY_LABELS = dict(REQUIRED_TAXONOMY_KEYS)
 
 
 def _serialize_datetime(value: datetime | None) -> str | None:
@@ -118,10 +124,7 @@ def _row_latest_activity(record: WatchlistRowReadModel) -> datetime | None:
     return max(valid) if valid else None
 
 
-@router.get("/dashboard")
-def get_monitoring_dashboard(
-    session: Session = Depends(get_db_session),
-) -> dict[str, object]:
+def _build_monitoring_dashboard(session: Session) -> dict[str, object]:
     watchlists = session.scalars(
         select(Watchlist).order_by(Watchlist.sort_order, Watchlist.name)
     ).all()
@@ -139,6 +142,22 @@ def get_monitoring_dashboard(
     attribute_labels = {
         record.attribute_key: record.label for record in attribute_definitions
     }
+    current_attributes_by_instrument: dict[str, dict[str, object]] = {}
+    for value in attribute_repository.get_values_for_assets(session, instrument_ids):
+        current = current_attributes_by_instrument.setdefault(value.instrument_id, {})
+        current.setdefault(value.attribute_key, value.value_json)
+    research_profiles = {
+        record.instrument_id: record
+        for record in research_repository.list_profiles(session, instrument_ids)
+    }
+    research_notes_by_instrument: dict[str, list[InstrumentResearchNote]] = {
+        instrument_id: [] for instrument_id in instrument_ids
+    }
+    for record in research_repository.list_notes_for_instruments(
+        session,
+        instrument_ids,
+    ):
+        research_notes_by_instrument.setdefault(record.instrument_id, []).append(record)
 
     watchlist_summaries: dict[str, dict[str, object]] = {
         record.watchlist_id: {
@@ -147,7 +166,8 @@ def get_monitoring_dashboard(
             "item_count": 0,
             "needs_refresh_count": 0,
             "missing_quote_count": 0,
-            "missing_label_count": 0,
+            "missing_required_metadata_count": 0,
+            "research_issue_count": 0,
             "open_recalc_job_count": 0,
             "last_activity_at": None,
         }
@@ -187,7 +207,10 @@ def get_monitoring_dashboard(
                 "last_recalculated_at": row_record.last_recalculated_at,
                 "last_activity_at": row_activity,
                 "staleness_reason": row_record.staleness_reason,
-                "attributes": row_record.attributes_json or {},
+                "attributes": {
+                    **(row_record.attributes_json or {}),
+                    **current_attributes_by_instrument.get(row_record.instrument_id, {}),
+                },
                 "primary_watchlist_id": row_record.watchlist_id,
                 "primary_watchlist_name": watchlist_name,
                 "watchlists": [],
@@ -227,7 +250,9 @@ def get_monitoring_dashboard(
             )
 
     needs_attention_instruments: list[dict[str, object]] = []
-    missing_label_instruments: list[dict[str, object]] = []
+    missing_required_metadata_instruments: list[dict[str, object]] = []
+    research_queue: list[dict[str, object]] = []
+    today = date.today()
 
     for instrument_summary in instrument_summaries.values():
         memberships = sorted(
@@ -239,36 +264,71 @@ def get_monitoring_dashboard(
         needs_refresh = str(instrument_summary["data_freshness_status"]) != "fresh"
         missing_quote = instrument_summary["latest_quote_date"] is None
 
-        missing_attribute_keys: list[str] = []
-        if str(instrument_summary["instrument_type"]) in {"public_fund", "private_fund"}:
-            attributes = (
-                instrument_summary["attributes"]
-                if isinstance(instrument_summary["attributes"], dict)
-                else {}
+        attributes = (
+            instrument_summary["attributes"]
+            if isinstance(instrument_summary["attributes"], dict)
+            else {}
+        )
+        missing_attribute_keys = [
+            definition.attribute_key
+            for definition in attribute_definitions
+            if definition.required_for_monitoring
+            and _definition_applies_to_asset(
+                definition,
+                instrument_type=str(instrument_summary["instrument_type"]),
+                attributes=attributes,
             )
-            missing_attribute_keys = [
-                definition.attribute_key
-                for definition in attribute_definitions
-                if definition.required_for_monitoring
-                and _definition_applies_to_asset(
-                    definition,
-                    instrument_type=str(instrument_summary["instrument_type"]),
-                    attributes=attributes,
-                )
-                and _value_missing(attributes.get(definition.attribute_key))
-            ]
-            missing_attribute_keys.extend(
-                key
-                for key, _ in REQUIRED_TAXONOMY_KEYS
-                if _value_missing(attributes.get(key))
-            )
-
-        missing_attribute_labels = [
-            attribute_labels.get(key, key) for key in missing_attribute_keys
+            and _value_missing(attributes.get(definition.attribute_key))
         ]
-        for key, label in REQUIRED_TAXONOMY_KEYS:
-            if key in missing_attribute_keys and label not in missing_attribute_labels:
-                missing_attribute_labels.append(label)
+        missing_attribute_keys.extend(
+            key
+            for key, _ in REQUIRED_TAXONOMY_KEYS
+            if _value_missing(attributes.get(key))
+        )
+        missing_attribute_keys = list(dict.fromkeys(missing_attribute_keys))
+        missing_attribute_labels = list(
+            dict.fromkeys(
+                attribute_labels.get(
+                    key,
+                    REQUIRED_TAXONOMY_LABELS.get(key, key),
+                )
+                for key in missing_attribute_keys
+            )
+        )
+
+        instrument_id = str(instrument_summary["instrument_id"])
+        profile = research_profiles.get(instrument_id)
+        notes = research_notes_by_instrument.get(instrument_id, [])
+        follow_up_dates = [
+            note.follow_up_date for note in notes if note.follow_up_date is not None
+        ]
+        next_follow_up_date = min(follow_up_dates) if follow_up_dates else None
+        next_review_date = profile.next_review_date if profile is not None else None
+        coverage_status = str(attributes.get("coverage_status") or "").strip().lower()
+        active_research_required = coverage_status in {"proposed", "invested", "paused"}
+        research_issue_flags: list[str] = []
+        if active_research_required and (
+            profile is None or not profile.current_view.strip()
+        ):
+            research_issue_flags.append("missing_investment_view")
+        if active_research_required and next_review_date is None:
+            research_issue_flags.append("missing_next_review")
+        if next_review_date is not None and next_review_date <= today:
+            research_issue_flags.append("research_review_due")
+        if next_follow_up_date is not None and next_follow_up_date <= today:
+            research_issue_flags.append("research_follow_up_due")
+        instrument_summary["research"] = {
+            "current_view": profile.current_view if profile is not None else "",
+            "manual_rating": profile.manual_rating if profile is not None else None,
+            "primary_analyst": profile.primary_analyst if profile is not None else "",
+            "next_review_date": _serialize_date(next_review_date),
+            "last_updated_at": _serialize_datetime(
+                profile.updated_at if profile is not None else None
+            ),
+            "active_note_count": len(notes),
+            "next_follow_up_date": _serialize_date(next_follow_up_date),
+            "issue_flags": research_issue_flags,
+        }
         instrument_summary["missing_attribute_keys"] = missing_attribute_keys
         instrument_summary["missing_attribute_labels"] = missing_attribute_labels
         instrument_summary["missing_attribute_count"] = len(missing_attribute_keys)
@@ -284,6 +344,9 @@ def get_monitoring_dashboard(
             issue_flags.append("needs_refresh")
         if missing_quote:
             issue_flags.append("missing_quote")
+        if missing_attribute_keys:
+            issue_flags.append("missing_required_metadata")
+        issue_flags.extend(research_issue_flags)
         instrument_summary["issue_flags"] = issue_flags
         instrument_summary.pop("attributes", None)
 
@@ -298,14 +361,24 @@ def get_monitoring_dashboard(
                     int(watchlist_summary["missing_quote_count"]) + 1
                 )
             if missing_attribute_keys:
-                watchlist_summary["missing_label_count"] = (
-                    int(watchlist_summary["missing_label_count"]) + 1
+                watchlist_summary["missing_required_metadata_count"] = (
+                    int(watchlist_summary["missing_required_metadata_count"]) + 1
+                )
+            if research_issue_flags:
+                watchlist_summary["research_issue_count"] = (
+                    int(watchlist_summary["research_issue_count"]) + 1
                 )
 
         if issue_flags:
             needs_attention_instruments.append(instrument_summary)
         if missing_attribute_keys:
-            missing_label_instruments.append(instrument_summary)
+            missing_required_metadata_instruments.append(instrument_summary)
+        if (
+            next_review_date is not None
+            or next_follow_up_date is not None
+            or research_issue_flags
+        ):
+            research_queue.append(instrument_summary)
 
     recent_jobs = recalc_repository.list_recent(session, limit=200)
     open_recalc_jobs: list[dict[str, object]] = []
@@ -347,9 +420,25 @@ def get_monitoring_dashboard(
             str(item["instrument_name"]).lower(),
         )
     )
-    missing_label_instruments.sort(
+    missing_required_metadata_instruments.sort(
         key=lambda item: (
             -int(item["missing_attribute_count"]),
+            str(item["instrument_name"]).lower(),
+        )
+    )
+    research_queue.sort(
+        key=lambda item: (
+            min(
+                [
+                    value
+                    for value in (
+                        item["research"].get("next_review_date"),
+                        item["research"].get("next_follow_up_date"),
+                    )
+                    if value
+                ]
+                or ["9999-12-31"]
+            ),
             str(item["instrument_name"]).lower(),
         )
     )
@@ -378,6 +467,10 @@ def get_monitoring_dashboard(
             }
         )
 
+    all_instruments = sorted(
+        instrument_summaries.values(),
+        key=lambda item: str(item["instrument_name"]).lower(),
+    )
     return {
         "generated_at": _serialize_datetime(datetime.now(UTC).replace(microsecond=0)),
         "overview": {
@@ -397,14 +490,73 @@ def get_monitoring_dashboard(
                     if "missing_quote" in item["issue_flags"]
                 ]
             ),
-            "missing_label_count": len(missing_label_instruments),
+            "missing_required_metadata_count": len(
+                missing_required_metadata_instruments
+            ),
+            "research_review_due_count": len(
+                [
+                    item
+                    for item in all_instruments
+                    if "research_review_due" in item["issue_flags"]
+                ]
+            ),
+            "research_follow_up_due_count": len(
+                [
+                    item
+                    for item in all_instruments
+                    if "research_follow_up_due" in item["issue_flags"]
+                ]
+            ),
+            "missing_investment_view_count": len(
+                [
+                    item
+                    for item in all_instruments
+                    if "missing_investment_view" in item["issue_flags"]
+                ]
+            ),
             "open_recalc_job_count": len(open_recalc_jobs),
             "failed_recalc_job_count": len(
                 [item for item in open_recalc_jobs if item["job_status"] == "failed"]
             ),
         },
         "watchlists": ordered_watchlists,
+        "instruments": all_instruments,
         "needs_attention_instruments": needs_attention_instruments,
-        "missing_label_instruments": missing_label_instruments,
+        "missing_required_metadata_instruments": missing_required_metadata_instruments,
+        "research_queue": research_queue,
         "open_recalc_jobs": open_recalc_jobs,
+    }
+
+
+@router.get("/dashboard")
+def get_monitoring_dashboard(
+    session: Session = Depends(get_db_session),
+) -> dict[str, object]:
+    return _build_monitoring_dashboard(session)
+
+
+@router.get("/instruments/{instrument_id}")
+def get_instrument_monitoring(
+    instrument_id: str,
+    session: Session = Depends(get_db_session),
+) -> dict[str, object]:
+    dashboard = _build_monitoring_dashboard(session)
+    instrument = next(
+        (
+            item
+            for item in dashboard["instruments"]
+            if item["instrument_id"] == instrument_id
+        ),
+        None,
+    )
+    if instrument is None:
+        raise HTTPException(status_code=404, detail="Instrument is not in a Watchlist")
+    return {
+        "generated_at": dashboard["generated_at"],
+        "instrument": instrument,
+        "open_recalc_jobs": [
+            item
+            for item in dashboard["open_recalc_jobs"]
+            if item["instrument_id"] == instrument_id
+        ],
     }

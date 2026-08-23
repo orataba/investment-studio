@@ -31,8 +31,6 @@ def test_settings_define_a_private_operations_schema_and_migration_target() -> N
         "http://datahubco.com/app-api/openapi/v1/tushare"
     )
     assert settings.datahub_timeout_seconds == 30
-    assert settings.csindex_api_url == "https://www.csindex.com.cn/csindex-home"
-    assert settings.csindex_timeout_seconds == 30
 
 
 def test_platform_search_path_precedes_the_shared_registry() -> None:

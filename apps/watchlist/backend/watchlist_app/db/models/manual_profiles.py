@@ -22,7 +22,6 @@ class InstrumentManualProfile(Base):
     )
     price_payload_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
     documents_payload_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
-    research_payload_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
     nav_settings_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     updated_by: Mapped[str | None]

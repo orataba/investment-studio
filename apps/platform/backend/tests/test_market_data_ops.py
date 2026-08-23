@@ -2128,38 +2128,12 @@ def test_tushare_refresh_imports_index_close(monkeypatch) -> None:
     assert captured["refresh_status"]["mode"] == "api"
 
 
-def test_h11001_uses_explicit_csindex_fallback_when_tushare_is_empty(
-    monkeypatch,
-) -> None:
+def test_tushare_index_empty_response_stays_on_tushare(monkeypatch) -> None:
     captured: dict[str, object] = {}
 
     def fake_call_datahub_tushare_api(**kwargs: object) -> list[dict[str, object]]:
-        captured["tushare_call"] = kwargs
+        captured["api_call"] = kwargs
         return []
-
-    def fake_fetch_index_performance(**kwargs: object) -> list[dict[str, object]]:
-        captured["csindex_call"] = kwargs
-        return [
-            {
-                "tradeDate": "20260612",
-                "indexCode": "H11001",
-                "close": "265.10",
-            },
-            {
-                "tradeDate": "20260615",
-                "indexCode": "H11001",
-                "close": "265.22",
-            },
-            {
-                "tradeDate": "20260616",
-                "indexCode": "OTHER",
-                "close": "999",
-            },
-        ]
-
-    def fake_upsert_market_data_points(**kwargs: object) -> int:
-        captured["upsert"] = kwargs
-        return len(kwargs["rows"])
 
     def fake_update_refresh_status(**kwargs: object) -> dict[str, object]:
         captured["refresh_status"] = kwargs
@@ -2171,39 +2145,14 @@ def test_h11001_uses_explicit_csindex_fallback_when_tushare_is_empty(
         fake_call_datahub_tushare_api,
     )
     monkeypatch.setattr(
-        market_data_ops.csindex_client,
-        "fetch_index_performance",
-        fake_fetch_index_performance,
-    )
-    monkeypatch.setattr(
-        market_data_ops,
-        "get_settings",
-        lambda: SimpleNamespace(
-            csindex_api_url="https://www.csindex.com.cn/csindex-home",
-            csindex_timeout_seconds=17,
-        ),
-    )
-    monkeypatch.setattr(
         market_data_ops,
         "get_price_bar_coverage",
         lambda **_kwargs: {
-            "row_count": 0,
-            "first_date": None,
-            "latest_date": None,
+            "row_count": 1,
+            "first_date": "2024-01-02",
+            "latest_date": "2026-06-12",
             "adjustment_factor_count": 0,
         },
-    )
-    monkeypatch.setattr(
-        market_data_ops,
-        "upsert_market_data_points",
-        fake_upsert_market_data_points,
-    )
-    monkeypatch.setattr(
-        market_data_ops,
-        "upsert_price_bars",
-        lambda **_kwargs: (_ for _ in ()).throw(
-            AssertionError("CSI close-only fallback must not invent OHLCV bars.")
-        ),
     )
     monkeypatch.setattr(
         market_data_ops,
@@ -2227,17 +2176,8 @@ def test_h11001_uses_explicit_csindex_fallback_when_tushare_is_empty(
             "source_settings": {
                 "source_mode": "api",
                 "source_api_profile": "tushare",
-                "source_api_fallback_profile": "csindex",
-                "source_api_fallback_code": "H11001",
             },
             "market_data": [
-                {
-                    "metric_family": "price",
-                    "quote_basis": "close",
-                    "as_of_date": "2024-01-02",
-                    "value": "200",
-                    "status": "complete",
-                },
                 {
                     "metric_family": "price",
                     "quote_basis": "close",
@@ -2252,32 +2192,9 @@ def test_h11001_uses_explicit_csindex_fallback_when_tushare_is_empty(
     )
 
     assert result == {"instrument_id": "h11001-csi"}
-    assert captured["tushare_call"]["params"]["start_date"] == "20260613"
-    assert captured["csindex_call"] == {
-        "index_code": "H11001",
-        "start_date": market_data_ops.date(2026, 6, 13),
-        "end_date": market_data_ops.date.today(),
-        "api_url": "https://www.csindex.com.cn/csindex-home",
-        "timeout_seconds": 17,
-    }
-    assert captured["upsert"] == {
-        "instrument_id": "h11001-csi",
-        "rows": [
-            {
-                "metric_family": "price",
-                "quote_basis": "close",
-                "as_of_date": market_data_ops.date(2026, 6, 15),
-                "value": market_data_ops.Decimal("265.22"),
-                "currency": "CNY",
-                "provider": "csindex:index-perf",
-                "status": "complete",
-            }
-        ],
-    }
-    assert captured["refresh_status"]["status"] == "refreshed"
-    assert "no OHLCV bars were invented" in captured["refresh_status"]["message"]
-
-
+    assert captured["api_call"]["api_name"] == "index_daily"
+    assert captured["refresh_status"]["status"] == "no_new_data"
+    assert "DataHub Tushare" in captured["refresh_status"]["message"]
 def test_tushare_index_refresh_repairs_ohlcv_history_behind_existing_closes(
     monkeypatch,
 ) -> None:

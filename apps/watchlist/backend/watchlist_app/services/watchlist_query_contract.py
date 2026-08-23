@@ -11,7 +11,7 @@ SYSTEM_QUERY_FIELDS = {
     "metric_quote_basis",
     "metric_series_type",
 }
-ALLOWED_GROUP_BY_FIELDS = {
+SPECIAL_GROUP_BY_FIELDS = {
     "none",
     "instrument_type",
     "taxonomy",
@@ -139,8 +139,15 @@ def validate_watchlist_query_contract(
         field = _require_query_field(fields, field_key, operation="sort")
         if field is None or str(field.sort_mode) == "none":
             raise WatchlistQueryContractError(f"Field {field_key!r} is not sortable.")
-    if str(group_by or "none") not in ALLOWED_GROUP_BY_FIELDS:
-        raise WatchlistQueryContractError(
-            "Group By only supports instrument type, taxonomy, and data freshness."
+    group_field_key = str(group_by or "none")
+    if group_field_key not in SPECIAL_GROUP_BY_FIELDS:
+        group_field = _require_query_field(
+            fields,
+            group_field_key,
+            operation="group by",
         )
+        if group_field is None or str(group_field.group_mode) != "discrete":
+            raise WatchlistQueryContractError(
+                f"Field {group_field_key!r} is not available for discrete grouping."
+            )
     _validate_advanced_filter(fields, advanced_filters)

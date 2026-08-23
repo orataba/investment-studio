@@ -72,6 +72,83 @@ class FmpClient:
             )
         return matches[0]
 
+    def index_info(self, symbol: str) -> dict[str, object]:
+        normalized_symbol = symbol.strip().upper()
+        if not normalized_symbol:
+            raise ValueError("FMP index symbol must not be blank.")
+        matches = [
+            row
+            for row in self._get_list("index-list", params={})
+            if str(row.get("symbol") or "").strip().upper() == normalized_symbol
+        ]
+        if len(matches) != 1:
+            raise FmpApiError(
+                f"FMP index list returned {len(matches)} exact rows for {normalized_symbol}."
+            )
+        return matches[0]
+
+    def fund_info(self, symbol: str) -> dict[str, object]:
+        normalized_symbol = symbol.strip().upper()
+        rows = self._get_list("etf/info", params={"symbol": normalized_symbol})
+        matches = [
+            row
+            for row in rows
+            if str(row.get("symbol") or "").strip().upper() == normalized_symbol
+        ]
+        if len(matches) != 1:
+            raise FmpApiError(
+                f"FMP fund info returned {len(matches)} exact rows for {normalized_symbol}."
+            )
+        return matches[0]
+
+    def fund_holdings(self, symbol: str) -> list[dict[str, object]]:
+        return self._get_list(
+            "etf/holdings",
+            params={"symbol": symbol.strip().upper()},
+        )
+
+    def fund_sector_weights(self, symbol: str) -> list[dict[str, object]]:
+        return self._get_list(
+            "etf/sector-weightings",
+            params={"symbol": symbol.strip().upper()},
+        )
+
+    def fund_country_weights(self, symbol: str) -> list[dict[str, object]]:
+        return self._get_list(
+            "etf/country-weightings",
+            params={"symbol": symbol.strip().upper()},
+        )
+
+    def income_statements(self, symbol: str, *, limit: int = 5) -> list[dict[str, object]]:
+        return self._get_list(
+            "income-statement",
+            params={"symbol": symbol.strip().upper(), "limit": max(1, min(limit, 20))},
+        )
+
+    def key_metrics(self, symbol: str, *, limit: int = 5) -> list[dict[str, object]]:
+        return self._get_list(
+            "key-metrics",
+            params={"symbol": symbol.strip().upper(), "limit": max(1, min(limit, 20))},
+        )
+
+    def financial_ratios(self, symbol: str, *, limit: int = 5) -> list[dict[str, object]]:
+        return self._get_list(
+            "ratios",
+            params={"symbol": symbol.strip().upper(), "limit": max(1, min(limit, 20))},
+        )
+
+    def dividends(self, symbol: str, *, limit: int = 20) -> list[dict[str, object]]:
+        return self._get_list(
+            "dividends",
+            params={"symbol": symbol.strip().upper(), "limit": max(1, min(limit, 100))},
+        )
+
+    def splits(self, symbol: str, *, limit: int = 20) -> list[dict[str, object]]:
+        return self._get_list(
+            "splits",
+            params={"symbol": symbol.strip().upper(), "limit": max(1, min(limit, 100))},
+        )
+
     def _active_listings(
         self,
         exchange: str,

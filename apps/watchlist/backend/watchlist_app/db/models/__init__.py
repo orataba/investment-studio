@@ -17,6 +17,12 @@ from watchlist_app.db.models.read_models import (
     WatchlistRowReadModel,
 )
 from watchlist_app.db.models.recalc import RecalcJob
+from watchlist_app.db.models.research import (
+    InstrumentResearchNote,
+    InstrumentResearchNoteRevision,
+    InstrumentResearchProfile,
+    InstrumentResearchProfileRevision,
+)
 from watchlist_app.db.models.watchlists import (
     FieldCategory,
     FieldRegistry,
@@ -39,6 +45,10 @@ __all__ = [
     "InstrumentManualProfile",
     "InstrumentPerformanceReadModel",
     "InstrumentRiskReadModel",
+    "InstrumentResearchNote",
+    "InstrumentResearchNoteRevision",
+    "InstrumentResearchProfile",
+    "InstrumentResearchProfileRevision",
     "InstrumentSummaryReadModel",
     "FieldCategory",
     "FieldRegistry",

@@ -98,6 +98,11 @@ def refresh_fmp_eod(
         if not as_of_date:
             continue
         close = _decimal_value(row, "close", "adjClose") * multiplier
+        adjusted = adjusted_by_date.get(as_of_date)
+        adjustment_factor: Decimal | None = None
+        if adjusted is not None:
+            adjusted_close = _decimal_value(adjusted, "adjClose", "close") * multiplier
+            adjustment_factor = adjusted_close / close
         price_bars.append(
             {
                 "as_of_date": as_of_date,
@@ -107,8 +112,13 @@ def refresh_fmp_eod(
                 "close": close,
                 "volume": row.get("volume"),
                 "volume_unit": "shares",
+                "adjustment_factor": adjustment_factor,
                 "currency": currency,
-                "provider": "fmp:historical-price-eod:non-split-adjusted",
+                "provider": (
+                    "fmp:historical-price-eod:non-split-adjusted+dividend-adjustment-factor"
+                    if adjustment_factor is not None
+                    else "fmp:historical-price-eod:non-split-adjusted"
+                ),
                 "status": "complete",
             }
         )
@@ -123,14 +133,13 @@ def refresh_fmp_eod(
                 "status": "complete",
             }
         )
-        adjusted = adjusted_by_date.get(as_of_date)
         if adjusted is not None:
             market_data.append(
                 {
                     "metric_family": "price",
                     "quote_basis": "adjusted_close",
                     "as_of_date": as_of_date,
-                    "value": _decimal_value(adjusted, "adjClose", "close") * multiplier,
+                    "value": adjusted_close,
                     "currency": currency,
                     "provider": "fmp:historical-price-eod:dividend-adjusted",
                     "status": "complete",

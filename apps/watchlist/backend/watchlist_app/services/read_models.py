@@ -372,6 +372,8 @@ def build_watchlist_row_materialization(
 def _resolve_field_value(row: dict[str, object], field: str) -> object:
     if field.startswith("attr."):
         return row.get("attributes", {}).get(field.split(".", 1)[1])
+    if field == "metric_as_of_date":
+        return row.get("last_nav_date")
     return row.get(field)
 
 
@@ -661,7 +663,11 @@ def execute_watchlist_query(
             if column.is_visible
         ]
     if not selected_fields:
-        selected_fields = ["instrument_name", "last_nav_date", "attr.instrument_taxonomy_path"]
+        selected_fields = [
+            "instrument_name",
+            "metric_as_of_date",
+            "attr.instrument_taxonomy_path",
+        ]
     if group_by == TAXONOMY_GROUP_BY_CODE:
         for field in TAXONOMY_GROUP_FIELDS:
             if field not in selected_fields:
@@ -743,13 +749,13 @@ def execute_watchlist_query(
     }
 
 
-def default_fund_summary_payload(
+def default_instrument_summary_payload(
     instrument_id: str,
     instrument_attributes: dict[str, object] | None = None,
 ) -> dict[str, object]:
     return {
         "instrument_id": instrument_id,
-        "fund_name": "Sample Fund",
+        "instrument_name": "Unnamed Instrument",
         "ticker_or_isin": instrument_id.upper(),
         "management_firm_name": None,
         "instrument_attributes": instrument_attributes or {},
@@ -775,7 +781,7 @@ def default_fund_summary_payload(
     }
 
 
-def default_fund_chart_payload(instrument_id: str) -> dict[str, object]:
+def default_instrument_chart_payload(instrument_id: str) -> dict[str, object]:
     return {
         "instrument_id": instrument_id,
         "base_series_type": "quote",
@@ -795,7 +801,7 @@ def default_fund_chart_payload(instrument_id: str) -> dict[str, object]:
     }
 
 
-def default_fund_performance_payload() -> dict[str, object]:
+def default_instrument_performance_payload() -> dict[str, object]:
     return {
         "growth_chart_series": [],
         "annual_returns": [],
@@ -807,7 +813,7 @@ def default_fund_performance_payload() -> dict[str, object]:
     }
 
 
-def default_fund_risk_payload() -> dict[str, object]:
+def default_instrument_risk_payload() -> dict[str, object]:
     return {
         "risk_overview": None,
         "scatter_points": [],
@@ -822,7 +828,7 @@ def default_fund_risk_payload() -> dict[str, object]:
     }
 
 
-def default_fund_exposure_summary_payload() -> dict[str, object]:
+def default_instrument_exposure_summary_payload() -> dict[str, object]:
     return {
         "allocation_blocks": {},
         "style_box": None,
@@ -833,7 +839,7 @@ def default_fund_exposure_summary_payload() -> dict[str, object]:
     }
 
 
-def default_fund_exposure_holdings_payload() -> dict[str, object]:
+def default_instrument_exposure_holdings_payload() -> dict[str, object]:
     return {
         "rows": [],
         "page": 1,

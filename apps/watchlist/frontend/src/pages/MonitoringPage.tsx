@@ -246,16 +246,27 @@ export default function MonitoringPage() {
     if (!dashboard) {
       return []
     }
-    return dashboard.needs_attention_instruments.filter((item) =>
+    return dashboard.needs_attention_instruments.filter(
+      (item) =>
+        matchesSelectedWatchlist(item.watchlists, selectedWatchlistId) &&
+        item.issue_flags.some((flag) => flag === 'needs_refresh' || flag === 'missing_quote'),
+    )
+  }, [dashboard, selectedWatchlistId])
+
+  const visibleResearchQueue = useMemo(() => {
+    if (!dashboard) {
+      return []
+    }
+    return dashboard.research_queue.filter((item) =>
       matchesSelectedWatchlist(item.watchlists, selectedWatchlistId),
     )
   }, [dashboard, selectedWatchlistId])
 
-  const visibleMissingLabelInstruments = useMemo(() => {
+  const visibleMissingMetadataInstruments = useMemo(() => {
     if (!dashboard) {
       return []
     }
-    return dashboard.missing_label_instruments.filter((item) =>
+    return dashboard.missing_required_metadata_instruments.filter((item) =>
       matchesSelectedWatchlist(item.watchlists, selectedWatchlistId),
     )
   }, [dashboard, selectedWatchlistId])
@@ -306,14 +317,24 @@ export default function MonitoringPage() {
           unique_instrument_count: selectedWatchlist.item_count,
           needs_refresh_count: selectedWatchlist.needs_refresh_count,
           missing_quote_count: selectedWatchlist.missing_quote_count,
-          missing_label_count: selectedWatchlist.missing_label_count,
+          missing_required_metadata_count:
+            selectedWatchlist.missing_required_metadata_count,
+          research_review_due_count: visibleResearchQueue.filter((item) =>
+            item.issue_flags.includes('research_review_due'),
+          ).length,
+          research_follow_up_due_count: visibleResearchQueue.filter((item) =>
+            item.issue_flags.includes('research_follow_up_due'),
+          ).length,
+          missing_investment_view_count: visibleResearchQueue.filter((item) =>
+            item.issue_flags.includes('missing_investment_view'),
+          ).length,
           open_recalc_job_count: selectedWatchlist.open_recalc_job_count,
         }
       : dashboard.overview
 
     return [
       { label: 'Watchlists', value: summary.watchlist_count },
-      { label: 'Unique Products', value: summary.unique_instrument_count },
+      { label: 'Unique Instruments', value: summary.unique_instrument_count },
       {
         label: 'Needs Refresh',
         value: summary.needs_refresh_count,
@@ -324,14 +345,39 @@ export default function MonitoringPage() {
         value: summary.missing_quote_count,
         tone: 'unavailable',
       },
-      { label: 'Missing Labels', value: summary.missing_label_count, tone: 'partial' },
+      {
+        label: 'Missing Required Metadata',
+        value: summary.missing_required_metadata_count,
+        tone: 'partial',
+      },
+      {
+        label: 'Research Reviews Due',
+        value: summary.research_review_due_count,
+        tone: 'partial',
+      },
+      {
+        label: 'Follow-ups Due',
+        value: summary.research_follow_up_due_count,
+        tone: 'partial',
+      },
+      {
+        label: 'Missing Investment View',
+        value: summary.missing_investment_view_count,
+        tone: 'partial',
+      },
       {
         label: 'Open Recalc',
         value: summary.open_recalc_job_count,
         tone: failedRecalcCount ? 'failed' : 'queued',
       },
     ]
-  }, [dashboard, selectedWatchlist, selectedWatchlistId, visibleOpenRecalcJobs])
+  }, [
+    dashboard,
+    selectedWatchlist,
+    selectedWatchlistId,
+    visibleOpenRecalcJobs,
+    visibleResearchQueue,
+  ])
 
   async function handleRecalcNow(instrumentId: string) {
     setNotice(null)
@@ -380,10 +426,10 @@ export default function MonitoringPage() {
         <div className="panel-header">
           <div>
             <div className="panel-title">Monitoring</div>
-            <h1 className="page-title">Product Pool Monitoring</h1>
+            <h1 className="page-title">Investment Monitoring</h1>
             <div className="monitoring-page-note">
-              Focused on data freshness, missing quote coverage, missing taxonomy or
-              required research labels, and open recalc work.
+              Data freshness, required taxonomy and research fields, thesis reviews,
+              analyst follow-ups, and open recalculation work across all covered assets.
             </div>
           </div>
           <div className="toolbar">
@@ -461,7 +507,8 @@ export default function MonitoringPage() {
                       <th>Items</th>
                       <th>Needs Refresh</th>
                       <th>Missing Quote</th>
-                      <th>Missing Labels</th>
+                      <th>Required Metadata</th>
+                      <th>Research Issues</th>
                       <th>Open Recalc</th>
                       <th>Last Activity</th>
                       <th>Actions</th>
@@ -478,7 +525,8 @@ export default function MonitoringPage() {
                         <td>{item.item_count}</td>
                         <td>{item.needs_refresh_count}</td>
                         <td>{item.missing_quote_count}</td>
-                        <td>{item.missing_label_count}</td>
+                        <td>{item.missing_required_metadata_count}</td>
+                        <td>{item.research_issue_count}</td>
                         <td>{item.open_recalc_job_count}</td>
                         <td>{formatDateTime(item.last_activity_at)}</td>
                         <td>
@@ -495,6 +543,74 @@ export default function MonitoringPage() {
               </div>
             ) : (
               <div className="empty-state">No watchlists available yet.</div>
+            )}
+          </section>
+
+          <section className="panel">
+            <div className="panel-header">
+              <div>
+                <div className="panel-title">Investment Service</div>
+                <div className="watchlists-title">Research Reviews & Follow-ups</div>
+              </div>
+            </div>
+            {visibleResearchQueue.length ? (
+              <div className="table-shell">
+                <table className="monitoring-table">
+                  <thead>
+                    <tr>
+                      <th>Name</th>
+                      <th>Watchlists</th>
+                      <th>Current View</th>
+                      <th>Rating</th>
+                      <th>Analyst</th>
+                      <th>Next Review</th>
+                      <th>Next Follow-up</th>
+                      <th>Issues</th>
+                      <th>Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {visibleResearchQueue.map((item) => (
+                      <tr key={`${item.instrument_id}-research-queue`}>
+                        <td>
+                          <div className="monitoring-primary-cell">
+                            <InstrumentLink instrument={item} />
+                            <span className="monitoring-secondary-text">
+                              {item.ticker_or_isin || item.instrument_id}
+                            </span>
+                          </div>
+                        </td>
+                        <td><MembershipCell watchlists={item.watchlists} /></td>
+                        <td className="monitoring-reason-cell">
+                          {item.research.current_view || '—'}
+                        </td>
+                        <td>
+                          {item.research.manual_rating == null
+                            ? '—'
+                            : `${'★'.repeat(item.research.manual_rating)}${'☆'.repeat(
+                                Math.max(0, 5 - item.research.manual_rating),
+                              )}`}
+                        </td>
+                        <td>{item.research.primary_analyst || '—'}</td>
+                        <td>{formatDate(item.research.next_review_date)}</td>
+                        <td>{formatDate(item.research.next_follow_up_date)}</td>
+                        <td className="monitoring-missing-tags-cell">
+                          {item.research.issue_flags.length ? (
+                            <span>{item.research.issue_flags.map(formatLabel).join(' / ')}</span>
+                          ) : (
+                            <span>Scheduled</span>
+                          )}
+                        </td>
+                        <td>
+                          <OpenDetailAction detailPath={resolveDetailPath(item)} />
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            ) : (
+              <div className="empty-state">No scheduled research reviews or follow-ups.</div>
             )}
           </section>
 
@@ -587,25 +703,25 @@ export default function MonitoringPage() {
             <div className="panel-header">
               <div>
                 <div className="panel-title">Monitoring</div>
-                <div className="watchlists-title">Missing Taxonomy / Research Labels</div>
+                <div className="watchlists-title">Missing Required Metadata</div>
               </div>
             </div>
-            {visibleMissingLabelInstruments.length ? (
+            {visibleMissingMetadataInstruments.length ? (
               <div className="table-shell">
                 <table className="monitoring-table">
                   <thead>
                     <tr>
                       <th>Name</th>
                       <th>Watchlists</th>
-                      <th>Missing Labels</th>
+                      <th>Missing Fields</th>
                       <th>Freshness</th>
                       <th>Latest Quote Date</th>
                       <th>Actions</th>
                     </tr>
                   </thead>
                   <tbody>
-                    {visibleMissingLabelInstruments.map((item: MonitoringInstrumentRecord) => (
-                      <tr key={`${item.instrument_id}-missing-labels`}>
+                    {visibleMissingMetadataInstruments.map((item: MonitoringInstrumentRecord) => (
+                      <tr key={`${item.instrument_id}-missing-metadata`}>
                         <td>
                           <div className="monitoring-primary-cell">
                             <InstrumentLink instrument={item} />
@@ -639,7 +755,7 @@ export default function MonitoringPage() {
               </div>
             ) : (
               <div className="empty-state">
-                No key taxonomy or research labels missing right now.
+                No required classification or investment-research metadata is missing right now.
               </div>
             )}
           </section>
