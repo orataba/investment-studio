@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from threading import Event, Lock, Thread
 
 from portfolio_app.services.daily_snapshots import (
     _next_daily_snapshot_recalculation_candidate,
     _reconcile_materialized_source_generation_batch,
     _run_portfolio_daily_snapshot_recalculation_synchronously,
+    abandon_portfolio_daily_snapshot_refresh,
 )
 
 
@@ -52,6 +54,8 @@ class DailySnapshotRecalculationWorker:
         self._reconciliation_cursor: str | None = None
         self._stop_requested = Event()
         self._wake_requested = Event()
+        self._active_claim_guard = Lock()
+        self._active_claim: tuple[str, str] | None = None
         self._thread = Thread(
             target=self._run,
             name="portfolio-daily-snapshot-worker",
@@ -72,7 +76,28 @@ class DailySnapshotRecalculationWorker:
         self._stop_requested.set()
         self._wake_requested.set()
         self._thread.join(timeout=max(timeout_seconds, 0.0))
+        if self._thread.is_alive():
+            with self._active_claim_guard:
+                active_claim = self._active_claim
+            if active_claim is not None:
+                portfolio_id, request_id = active_claim
+                abandon_portfolio_daily_snapshot_refresh(
+                    portfolio_id,
+                    request_id=request_id,
+                )
         return not self._thread.is_alive()
+
+    def _record_active_claim(
+        self,
+        portfolio_id: str,
+        request_id: str | None,
+    ) -> None:
+        with self._active_claim_guard:
+            self._active_claim = (
+                (portfolio_id, request_id)
+                if request_id is not None
+                else None
+            )
 
     def _run(self) -> None:
         consecutive_failures = 0
@@ -86,6 +111,8 @@ class DailySnapshotRecalculationWorker:
                         reconciliation_batch_size=(
                             self._reconciliation_batch_size
                         ),
+                        claim_observer=self._record_active_claim,
+                        stop_requested=self._stop_requested.is_set,
                     )
                 )
             except Exception:
@@ -122,6 +149,8 @@ def _run_daily_snapshot_recalculation_worker_once(
     *,
     reconciliation_after_portfolio_id: str | None,
     reconciliation_batch_size: int,
+    claim_observer: Callable[[str, str | None], None] | None = None,
+    stop_requested: Callable[[], bool] | None = None,
 ) -> tuple[bool, str | None]:
     portfolio_id = _next_daily_snapshot_recalculation_candidate()
     if portfolio_id is None:
@@ -133,7 +162,15 @@ def _run_daily_snapshot_recalculation_worker_once(
         )
     if portfolio_id is None:
         return False, reconciliation_after_portfolio_id
-    _run_portfolio_daily_snapshot_recalculation_synchronously(portfolio_id)
+    _run_portfolio_daily_snapshot_recalculation_synchronously(
+        portfolio_id,
+        claim_observer=(
+            (lambda request_id: claim_observer(portfolio_id, request_id))
+            if claim_observer is not None
+            else None
+        ),
+        stop_requested=stop_requested,
+    )
     return True, reconciliation_after_portfolio_id
 
 

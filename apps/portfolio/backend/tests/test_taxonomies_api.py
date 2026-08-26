@@ -5,6 +5,7 @@ from datetime import date
 import pytest
 from sqlalchemy import select
 
+from portfolio_app.api.routes import taxonomies as taxonomies_routes
 from portfolio_app.db.models import (
     AnalyticsScopePolicyRecordModel,
     TaxonomyAssignmentRecordModel,
@@ -18,6 +19,75 @@ from portfolio_app.services.analytics_scope import (
 )
 
 EFFECTIVE_FROM = "2026-01-01"
+
+
+def test_market_profile_enrichment_reuses_one_registry_batch(monkeypatch):
+    records = [
+        {
+            "instrument_id": "fund-a",
+            "status": "active",
+            "instrument_ref": {"instrument_type": "private_fund"},
+        },
+        {
+            "instrument_id": "fund-b",
+            "status": "active",
+            "instrument_ref": {"instrument_type": "public_fund"},
+        },
+        {
+            "instrument_id": "cash:cny",
+            "status": "active",
+            "instrument_ref": {"instrument_type": "cash"},
+        },
+    ]
+    details = {
+        "fund-a": {"instrument_id": "fund-a", "series": []},
+        "fund-b": {"instrument_id": "fund-b", "series": []},
+    }
+    batch_calls: list[list[str]] = []
+    profile_details: list[dict[str, object]] = []
+
+    def load_details(instrument_ids):
+        batch_calls.append(list(instrument_ids))
+        return details
+
+    def frequency_profile(instrument_ids, *, end_date, detail_loader):
+        assert end_date == date(2026, 8, 25)
+        assert [detail_loader(instrument_id) for instrument_id in instrument_ids] == [
+            details["fund-a"],
+            details["fund-b"],
+        ]
+        return {"resolved_frequency": "daily", "coverage_state": "complete"}
+
+    def market_profile(detail, **_kwargs):
+        profile_details.append(detail)
+        return {
+            "instrument_trend_basis": "daily",
+            "instrument_risk_frequency": "daily",
+            "instrument_return_series_all": {"points": []},
+        }
+
+    monkeypatch.setattr(taxonomies_routes, "get_registry_instrument_details", load_details)
+    monkeypatch.setattr(
+        taxonomies_routes,
+        "calculation_frequency_profile_for_instruments",
+        frequency_profile,
+    )
+    monkeypatch.setattr(
+        taxonomies_routes,
+        "build_instrument_holdings_market_profile_from_detail",
+        market_profile,
+    )
+
+    enriched, risk_basis = taxonomies_routes._enrich_universe_market_profiles(
+        records,
+        as_of_date=date(2026, 8, 25),
+    )
+
+    assert batch_calls == [["fund-a", "fund-b"]]
+    assert profile_details == [details["fund-a"], details["fund-b"]]
+    assert risk_basis["coverage_state"] == "complete"
+    assert enriched[0]["instrument_risk_frequency"] == "daily"
+    assert "instrument_return_series_all" not in enriched[2]
 
 
 def test_taxonomy_create_node_assignment_round_trip(client):

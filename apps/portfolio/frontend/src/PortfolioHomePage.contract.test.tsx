@@ -102,6 +102,7 @@ describe('Holdings rendered page contract', () => {
     expect(screen.queryByRole('region', { name: 'Holdings operational status' })).not.toBeInTheDocument()
 
     expect(screen.getByRole('button', { name: 'Sort Quote: ascending' })).toBeInTheDocument()
+    expect(apiMocks.savePortfolioTableViewStore).not.toHaveBeenCalled()
   })
 
   it('exports the unified grouped table using the active view columns', async () => {

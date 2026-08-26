@@ -139,6 +139,7 @@ describe('Performance rendered page contract', () => {
     expect(
       window.localStorage.getItem('portfolio_ops.portfolio.performance.calculation.views.v1'),
     ).toBe(legacyStore)
+    expect(apiMocks.savePortfolioTableViewStore).not.toHaveBeenCalled()
   })
 
   it('marks table views unavailable when the backend view store cannot be loaded', async () => {

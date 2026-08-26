@@ -36,8 +36,15 @@ from portfolio_app.services.analytics_scope import (
     list_analytics_scope_policies,
     replace_analytics_scope_policy,
 )
-from portfolio_app.services.instrument_charts import build_instrument_holdings_market_profile
-from portfolio_app.services.instrument_registry import InstrumentRegistryError, get_registry_instrument
+from portfolio_app.services.instrument_charts import (
+    build_instrument_holdings_market_profile_from_detail,
+    empty_instrument_holdings_market_profile,
+)
+from portfolio_app.services.instrument_registry import (
+    InstrumentRegistryError,
+    get_registry_instrument,
+    get_registry_instrument_details,
+)
 from portfolio_app.services.portfolio_store import (
     create_taxonomy,
     create_taxonomy_assignment,
@@ -108,9 +115,11 @@ def _enrich_universe_market_profiles(
         and str(record.get("instrument_id") or "").strip()
         and not _universe_record_is_cash(record)
     ]
+    instrument_details = get_registry_instrument_details(instrument_ids)
     risk_basis_profile = calculation_frequency_profile_for_instruments(
         instrument_ids,
         end_date=as_of_date,
+        detail_loader=instrument_details.get,
     )
     calculation_frequency = cast(CalculationFrequency, str(risk_basis_profile.get("resolved_frequency") or "daily"))
     enriched_records: list[dict[str, object]] = []
@@ -118,10 +127,18 @@ def _enrich_universe_market_profiles(
         enriched = dict(record)
         instrument_id = str(enriched.get("instrument_id") or "").strip()
         if instrument_id and instrument_id in instrument_ids:
-            profile = build_instrument_holdings_market_profile(
-                instrument_id,
-                as_of_date=as_of_date,
-                calculation_frequency=calculation_frequency,
+            detail = instrument_details.get(instrument_id)
+            profile = (
+                build_instrument_holdings_market_profile_from_detail(
+                    detail,
+                    instrument_id=instrument_id,
+                    as_of_date=as_of_date,
+                    calculation_frequency=calculation_frequency,
+                )
+                if isinstance(detail, dict)
+                else empty_instrument_holdings_market_profile(
+                    calculation_frequency=calculation_frequency,
+                )
             )
             enriched["instrument_trend_basis"] = profile.get("instrument_trend_basis")
             enriched["instrument_risk_frequency"] = profile.get("instrument_risk_frequency")

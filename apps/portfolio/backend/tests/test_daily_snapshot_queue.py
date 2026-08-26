@@ -118,6 +118,71 @@ def test_worker_wake_interrupts_a_long_idle_poll(
         assert worker.stop(timeout_seconds=1)
 
 
+def test_worker_shutdown_releases_its_exact_running_claim(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    build_started = Event()
+    release_build = Event()
+    abandoned: list[tuple[str, str]] = []
+
+    def blocked_poll(*, claim_observer, **_kwargs):
+        claim_observer(PORTFOLIO_ID, "worker-claim")
+        build_started.set()
+        release_build.wait(timeout=2)
+        claim_observer(PORTFOLIO_ID, None)
+        return False, None
+
+    monkeypatch.setattr(
+        daily_snapshot_worker,
+        "_run_daily_snapshot_recalculation_worker_once",
+        blocked_poll,
+    )
+    monkeypatch.setattr(
+        daily_snapshot_worker,
+        "abandon_portfolio_daily_snapshot_refresh",
+        lambda portfolio_id, *, request_id: abandoned.append(
+            (portfolio_id, request_id)
+        ) or True,
+    )
+
+    worker = daily_snapshot_worker.DailySnapshotRecalculationWorker(
+        poll_seconds=60.0,
+        reconciliation_batch_size=1,
+    )
+    worker.start()
+    try:
+        assert build_started.wait(timeout=1)
+        assert not worker.stop(timeout_seconds=0.01)
+        assert abandoned == [(PORTFOLIO_ID, "worker-claim")]
+    finally:
+        release_build.set()
+        assert worker.stop(timeout_seconds=1)
+
+
+def test_abandon_refresh_only_releases_the_matching_claim() -> None:
+    session_factory = get_session_factory()
+    with session_factory() as session:
+        state = daily_snapshots._state_for_portfolio(session, PORTFOLIO_ID)
+        state.daily_snapshot_status = "running"
+        state.refresh_request_id = "owned-request"
+        state.refresh_started_at = datetime.now(UTC).isoformat()
+        session.commit()
+
+    assert not daily_snapshots.abandon_portfolio_daily_snapshot_refresh(
+        PORTFOLIO_ID,
+        request_id="different-request",
+    )
+    assert daily_snapshots.abandon_portfolio_daily_snapshot_refresh(
+        PORTFOLIO_ID,
+        request_id="owned-request",
+    )
+
+    state = _calculation_state()
+    assert state["daily_snapshot_status"] == "stale"
+    assert state["refresh_request_id"] not in {None, "owned-request"}
+    assert state["refresh_started_at"] is None
+
+
 def _calculation_state() -> dict[str, object]:
     session_factory = get_session_factory()
     with session_factory() as session:

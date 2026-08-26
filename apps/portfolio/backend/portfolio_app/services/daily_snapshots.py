@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from copy import deepcopy
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
@@ -802,6 +803,34 @@ def _claim_daily_snapshot_refresh(portfolio_id: str) -> dict[str, object]:
         return {"status": "claimed", "request_id": request_id}
 
 
+def abandon_portfolio_daily_snapshot_refresh(
+    portfolio_id: str,
+    *,
+    request_id: str,
+) -> bool:
+    """Release an exact in-process claim when its worker cannot finish shutdown."""
+
+    replacement_request_id = _new_refresh_request_id()
+    completed_at = _current_utc_timestamp()
+    session_factory = get_session_factory()
+    with session_factory() as session:
+        result = session.execute(
+            update(PortfolioCalculationStateModel)
+            .where(PortfolioCalculationStateModel.portfolio_id == portfolio_id)
+            .where(PortfolioCalculationStateModel.daily_snapshot_status == "running")
+            .where(PortfolioCalculationStateModel.refresh_request_id == request_id)
+            .values(
+                daily_snapshot_status="stale",
+                refresh_request_id=replacement_request_id,
+                refresh_started_at=None,
+                refresh_completed_at=completed_at,
+                error_message="snapshot_worker_shutdown_interrupted_refresh",
+            )
+        )
+        session.commit()
+        return int(result.rowcount or 0) == 1
+
+
 def _recalculate_portfolio_daily_snapshots_once(
     portfolio_id: str,
     *,
@@ -1149,6 +1178,9 @@ def _recalculate_portfolio_daily_snapshots_once(
 def _run_portfolio_daily_snapshot_recalculation_synchronously(
     portfolio_id: str,
     end_date: date | None = None,
+    *,
+    claim_observer: Callable[[str | None], None] | None = None,
+    stop_requested: Callable[[], bool] | None = None,
 ) -> dict[str, object] | None:
     """Run one claimed recalculation job for the queue worker.
 
@@ -1162,6 +1194,8 @@ def _run_portfolio_daily_snapshot_recalculation_synchronously(
         discarded_attempt_count = 0
         last_discarded_result: dict[str, object] | None = None
         while True:
+            if stop_requested is not None and stop_requested():
+                return None
             claim = _claim_daily_snapshot_refresh(portfolio_id)
             claim_status = str(claim.get("status") or "")
             if claim_status == "missing":
@@ -1189,11 +1223,17 @@ def _run_portfolio_daily_snapshot_recalculation_synchronously(
             request_id = str(claim.get("request_id") or "")
             if not request_id:
                 continue
-            result, request_superseded = _recalculate_portfolio_daily_snapshots_once(
-                portfolio_id,
-                request_id=request_id,
-                end_date=end_date,
-            )
+            if claim_observer is not None:
+                claim_observer(request_id)
+            try:
+                result, request_superseded = _recalculate_portfolio_daily_snapshots_once(
+                    portfolio_id,
+                    request_id=request_id,
+                    end_date=end_date,
+                )
+            finally:
+                if claim_observer is not None:
+                    claim_observer(None)
             if request_superseded:
                 if (
                     isinstance(result, dict)
@@ -1204,6 +1244,8 @@ def _run_portfolio_daily_snapshot_recalculation_synchronously(
                     last_discarded_result = result
                     if discarded_attempt_count >= _SOURCE_GENERATION_MAX_DISCARDS:
                         return result
+                if stop_requested is not None and stop_requested():
+                    return None
                 continue
             if isinstance(result, dict) and last_discarded_result is not None:
                 result["source_generation_status"] = "stable_after_retry"

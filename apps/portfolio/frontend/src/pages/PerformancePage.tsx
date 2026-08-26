@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { useParams, useSearchParams } from 'react-router'
 
 import BenchmarkSearchBox, { benchmarkInstrumentLabel } from '../components/BenchmarkSearchBox'
@@ -1560,6 +1560,10 @@ function PerformancePage() {
   const [calculationTableViewStore, setCalculationTableViewStore] = useState<CalculationTableViewStore>(
     () => initialCalculationTableViewStore,
   )
+  const persistedCalculationTableViewStoreRef = useRef<{
+    portfolioId: string
+    serializedStore: string
+  } | null>(null)
   const [calculationTableViewStoreReadyPortfolioId, setCalculationTableViewStoreReadyPortfolioId] =
     useState<string | null>(null)
   const [calculationTableViewStoreSettledPortfolioId, setCalculationTableViewStoreSettledPortfolioId] =
@@ -1880,6 +1884,7 @@ function PerformancePage() {
 
   useEffect(() => {
     if (!portfolioId) {
+      persistedCalculationTableViewStoreRef.current = null
       setCalculationTableViewStoreReadyPortfolioId(null)
       setCalculationTableViewStoreError(null)
       return
@@ -1887,6 +1892,7 @@ function PerformancePage() {
 
     let cancelled = false
     const defaultStore = normalizeCalculationTableViewStore(null)
+    persistedCalculationTableViewStoreRef.current = null
     setCalculationTableViewStoreReadyPortfolioId(null)
     setCalculationTableViewStoreSettledPortfolioId(null)
     setCalculationTableViewStoreError(null)
@@ -1903,6 +1909,10 @@ function PerformancePage() {
         const nextStore = response.store
           ? normalizeCalculationTableViewStore(response.store)
           : defaultStore
+        persistedCalculationTableViewStoreRef.current = {
+          portfolioId,
+          serializedStore: JSON.stringify(nextStore),
+        }
         setCalculationTableViewStore(nextStore)
         setActiveCalculationTableViewId(nextStore.activeViewId)
         applyCalculationTableViewState(resolveCalculationTableViewState(nextStore, nextStore.activeViewId))
@@ -1929,6 +1939,14 @@ function PerformancePage() {
     if (!portfolioId || calculationTableViewStoreReadyPortfolioId !== portfolioId) {
       return
     }
+    const serializedStore = JSON.stringify(calculationTableViewStore)
+    if (
+      persistedCalculationTableViewStoreRef.current?.portfolioId === portfolioId
+      && persistedCalculationTableViewStoreRef.current.serializedStore === serializedStore
+    ) {
+      return
+    }
+    persistedCalculationTableViewStoreRef.current = { portfolioId, serializedStore }
     savePortfolioTableViewStore(portfolioId, 'performance_calculation', calculationTableViewStore).catch(
       (requestError: unknown) => {
         setCalculationTableViewStoreError(

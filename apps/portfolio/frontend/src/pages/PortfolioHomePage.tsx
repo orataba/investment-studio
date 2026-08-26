@@ -2602,6 +2602,10 @@ export default function PortfolioHomePage() {
     [searchParams],
   )
   const [holdingsViewStore, setHoldingsViewStore] = useState<HoldingsViewStore>(() => initialHoldingsViewStore)
+  const persistedHoldingsViewStoreRef = useRef<{
+    portfolioId: string
+    serializedStore: string
+  } | null>(null)
   const [holdingsViewStoreReadyPortfolioId, setHoldingsViewStoreReadyPortfolioId] =
     useState<string | null>(null)
   const [holdingsViewStoreError, setHoldingsViewStoreError] = useState<string | null>(null)
@@ -3301,6 +3305,7 @@ export default function PortfolioHomePage() {
 
   useEffect(() => {
     if (!portfolioId) {
+      persistedHoldingsViewStoreRef.current = null
       setHoldingsViewStoreReadyPortfolioId(null)
       setHoldingsViewStoreError(null)
       return
@@ -3308,6 +3313,7 @@ export default function PortfolioHomePage() {
 
     let cancelled = false
     const defaultStore = normalizeHoldingsViewStore(null)
+    persistedHoldingsViewStoreRef.current = null
     setHoldingsViewStoreReadyPortfolioId(null)
     setHoldingsViewStoreError(null)
     setHoldingsViewStore(defaultStore)
@@ -3321,6 +3327,10 @@ export default function PortfolioHomePage() {
         const nextStore = response.store
           ? normalizeHoldingsViewStore(response.store)
           : defaultStore
+        persistedHoldingsViewStoreRef.current = {
+          portfolioId,
+          serializedStore: JSON.stringify(nextStore),
+        }
         setHoldingsViewStore(nextStore)
         setActiveHoldingsViewId(nextStore.activeViewId)
         applyHoldingsViewState(resolveHoldingsViewState(nextStore, nextStore.activeViewId))
@@ -3345,6 +3355,14 @@ export default function PortfolioHomePage() {
     if (!portfolioId || holdingsViewStoreReadyPortfolioId !== portfolioId) {
       return
     }
+    const serializedStore = JSON.stringify(holdingsViewStore)
+    if (
+      persistedHoldingsViewStoreRef.current?.portfolioId === portfolioId
+      && persistedHoldingsViewStoreRef.current.serializedStore === serializedStore
+    ) {
+      return
+    }
+    persistedHoldingsViewStoreRef.current = { portfolioId, serializedStore }
     savePortfolioTableViewStore(portfolioId, 'holdings', holdingsViewStore).catch((requestError: unknown) => {
       setHoldingsViewStoreError(
         `Failed to save holdings table views: ${
