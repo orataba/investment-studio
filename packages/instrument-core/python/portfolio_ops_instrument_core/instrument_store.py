@@ -1742,12 +1742,15 @@ def get_instrument(session_factory: SessionFactory, instrument_id: str) -> dict[
 def get_instrument_details(
     session_factory: SessionFactory,
     instrument_ids: list[str] | set[str] | tuple[str, ...],
+    *,
+    include_fund_nav_ledger: bool = True,
 ) -> dict[str, dict[str, object] | None]:
-    """Load full instrument records for a set of ids in one registry session.
+    """Load instrument market histories for a set of ids in one registry session.
 
     The returned mapping includes missing ids with a ``None`` value so callers
     can use it as a complete request-scoped cache without falling back to an
-    accidental per-instrument query loop.
+    accidental per-instrument query loop. Fund NAV audit ledgers can be omitted
+    for calculation paths that only consume instrument identity and market data.
     """
     normalized_ids: list[str] = []
     for raw_instrument_id in instrument_ids:
@@ -1759,10 +1762,17 @@ def get_instrument_details(
 
     with session_factory() as session:
         targets = session.scalars(
-            _instrument_query().where(Instrument.instrument_id.in_(normalized_ids))
+            _instrument_query(
+                include_fund_nav_ledger=include_fund_nav_ledger,
+            ).where(Instrument.instrument_id.in_(normalized_ids))
         ).all()
         details_by_id = {
-            target.instrument_id: _serialize_detail_record(_instrument_to_store_dict(target))
+            target.instrument_id: _serialize_detail_record(
+                _instrument_to_store_dict(
+                    target,
+                    include_fund_nav_ledger=include_fund_nav_ledger,
+                )
+            )
             for target in targets
         }
     return {

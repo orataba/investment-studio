@@ -51,7 +51,9 @@ def test_cross_rate_status_is_worst_leg_status(
     monkeypatch.setattr(
         fx_rates,
         "_direct_rate_record",
-        lambda _session_factory, _base_currency, quote_currency: records[quote_currency],
+        lambda _session_factory, _base_currency, quote_currency, **_kwargs: records[
+            quote_currency
+        ],
     )
 
     record = fx_rates._cross_rate_record(object(), "HKD", "CNY")
@@ -155,3 +157,37 @@ def test_fx_rate_read_does_not_fall_back_past_corrupt_history(
     )
 
     assert fx_rates._direct_rate_record(object(), "USD", "HKD") is None
+
+
+def test_list_fx_rates_loads_spot_history_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    spot_points = {
+        identity.instrument_id: {
+            "as_of_date": date(2026, 7, 15),
+            "value": Decimal("7.8"),
+            "provider": "pytest",
+            "status": "complete",
+        }
+        for identity in fx_rates.FX_INSTRUMENT_IDENTITIES
+    }
+    load_calls = 0
+
+    def load_spot_points(_session_factory: object) -> dict[str, dict[str, object]]:
+        nonlocal load_calls
+        load_calls += 1
+        return spot_points
+
+    monkeypatch.setattr(fx_rates, "_load_latest_spot_points", load_spot_points)
+    monkeypatch.setattr(
+        fx_rates,
+        "get_instrument",
+        lambda *_args, **_kwargs: pytest.fail("list_fx_rates must not reload each FX instrument"),
+    )
+
+    rates = fx_rates.list_fx_rates(object())
+
+    assert load_calls == 1
+    assert len(rates) == len(fx_rates.SUPPORTED_FX_CURRENCIES) * (
+        len(fx_rates.SUPPORTED_FX_CURRENCIES) - 1
+    )

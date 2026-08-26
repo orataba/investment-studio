@@ -4335,8 +4335,20 @@ def _refresh_from_tushare(
                     full_history=full_history,
                 )
             )
+            today = date.today()
+            if query_start > today:
+                return update_refresh_status(
+                    instrument_id=instrument_id,
+                    status="no_new_data",
+                    message=(
+                        f"DataHub Tushare index history for {ts_code} is already current "
+                        f"through {latest_date.isoformat() if latest_date else today.isoformat()}."
+                    ),
+                    updated_by=updated_by,
+                    mode="api",
+                )
             params["start_date"] = _format_tushare_date(query_start)
-            params["end_date"] = _format_tushare_date(date.today())
+            params["end_date"] = _format_tushare_date(today)
             rows = _call_datahub_tushare_api(
                 api_name="index_daily",
                 params=params,

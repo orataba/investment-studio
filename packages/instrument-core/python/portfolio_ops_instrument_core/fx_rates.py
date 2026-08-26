@@ -3,6 +3,9 @@ from __future__ import annotations
 from datetime import date
 from decimal import Decimal
 
+from sqlalchemy import select
+
+from portfolio_ops_instrument_core.db_models import Instrument, InstrumentMarketData
 from portfolio_ops_instrument_core.fx_contract import (
     FX_INSTRUMENT_IDENTITIES,
     PIVOT_CURRENCY,
@@ -38,18 +41,10 @@ def _positive_decimal(value: object) -> Decimal | None:
         return None
 
 
-def _latest_spot_point(session_factory: SessionFactory, instrument_id: str) -> dict[str, object] | None:
-    identity = fx_instrument_identity(instrument_id)
-    if identity is None:
-        return None
-    try:
-        instrument = get_instrument(session_factory, identity.instrument_id)
-    except ValueError:
-        return None
-    if instrument is None:
-        return None
-
-    market_data = instrument.get("market_data", [])
+def _latest_spot_point_from_instrument(
+    instrument: dict[str, object],
+    market_data: object,
+) -> dict[str, object] | None:
     if not isinstance(market_data, list):
         return None
 
@@ -99,16 +94,105 @@ def _latest_spot_point(session_factory: SessionFactory, instrument_id: str) -> d
     return latest_points[0]
 
 
+def _latest_spot_point(session_factory: SessionFactory, instrument_id: str) -> dict[str, object] | None:
+    identity = fx_instrument_identity(instrument_id)
+    if identity is None:
+        return None
+    try:
+        instrument = get_instrument(session_factory, identity.instrument_id)
+    except ValueError:
+        return None
+    if instrument is None:
+        return None
+    return _latest_spot_point_from_instrument(
+        instrument,
+        instrument.get("market_data", []),
+    )
+
+
+def _load_latest_spot_points(
+    session_factory: SessionFactory,
+) -> dict[str, dict[str, object] | None]:
+    instrument_ids = [identity.instrument_id for identity in FX_INSTRUMENT_IDENTITIES]
+    with session_factory() as session:
+        instruments = {
+            str(row.instrument_id): {
+                "instrument_id": str(row.instrument_id),
+                "instrument_type": str(row.instrument_type),
+                "currency": str(row.currency),
+            }
+            for row in session.execute(
+                select(
+                    Instrument.instrument_id,
+                    Instrument.instrument_type,
+                    Instrument.currency,
+                ).where(Instrument.instrument_id.in_(instrument_ids))
+            )
+        }
+        market_data_by_instrument: dict[str, list[dict[str, object]]] = {
+            instrument_id: [] for instrument_id in instrument_ids
+        }
+        for row in session.execute(
+            select(
+                InstrumentMarketData.instrument_id,
+                InstrumentMarketData.metric_family,
+                InstrumentMarketData.quote_basis,
+                InstrumentMarketData.as_of_date,
+                InstrumentMarketData.value,
+                InstrumentMarketData.currency,
+                InstrumentMarketData.price_unit,
+                InstrumentMarketData.price_scale,
+                InstrumentMarketData.provider,
+                InstrumentMarketData.status,
+            ).where(
+                InstrumentMarketData.instrument_id.in_(instrument_ids),
+                InstrumentMarketData.metric_family == "fx",
+                InstrumentMarketData.quote_basis == "spot",
+            )
+        ):
+            market_data_by_instrument[str(row.instrument_id)].append(
+                {
+                    "metric_family": row.metric_family,
+                    "quote_basis": row.quote_basis,
+                    "as_of_date": row.as_of_date,
+                    "value": row.value,
+                    "currency": row.currency,
+                    "price_unit": row.price_unit,
+                    "price_scale": row.price_scale,
+                    "provider": row.provider,
+                    "status": row.status,
+                }
+            )
+
+    return {
+        instrument_id: (
+            _latest_spot_point_from_instrument(
+                instruments[instrument_id],
+                market_data_by_instrument[instrument_id],
+            )
+            if instrument_id in instruments
+            else None
+        )
+        for instrument_id in instrument_ids
+    }
+
+
 def _direct_rate_record(
     session_factory: SessionFactory,
     base_currency: str,
     quote_currency: str,
+    *,
+    spot_points: dict[str, dict[str, object] | None] | None = None,
 ) -> dict[str, object] | None:
     identity = fx_instrument_identity_for_pair(base_currency, quote_currency)
     if identity is None:
         return None
 
-    point = _latest_spot_point(session_factory, identity.instrument_id)
+    point = (
+        spot_points.get(identity.instrument_id)
+        if spot_points is not None
+        else _latest_spot_point(session_factory, identity.instrument_id)
+    )
     if point is None:
         return None
 
@@ -129,8 +213,15 @@ def _inverse_rate_record(
     session_factory: SessionFactory,
     base_currency: str,
     quote_currency: str,
+    *,
+    spot_points: dict[str, dict[str, object] | None] | None = None,
 ) -> dict[str, object] | None:
-    direct_record = _direct_rate_record(session_factory, quote_currency, base_currency)
+    direct_record = _direct_rate_record(
+        session_factory,
+        quote_currency,
+        base_currency,
+        spot_points=spot_points,
+    )
     if direct_record is None:
         return None
 
@@ -155,12 +246,24 @@ def _cross_rate_record(
     session_factory: SessionFactory,
     base_currency: str,
     quote_currency: str,
+    *,
+    spot_points: dict[str, dict[str, object] | None] | None = None,
 ) -> dict[str, object] | None:
     if base_currency == PIVOT_CURRENCY or quote_currency == PIVOT_CURRENCY:
         return None
 
-    usd_to_base = _direct_rate_record(session_factory, PIVOT_CURRENCY, base_currency)
-    usd_to_quote = _direct_rate_record(session_factory, PIVOT_CURRENCY, quote_currency)
+    usd_to_base = _direct_rate_record(
+        session_factory,
+        PIVOT_CURRENCY,
+        base_currency,
+        spot_points=spot_points,
+    )
+    usd_to_quote = _direct_rate_record(
+        session_factory,
+        PIVOT_CURRENCY,
+        quote_currency,
+        spot_points=spot_points,
+    )
     if usd_to_base is None or usd_to_quote is None:
         return None
 
@@ -196,10 +299,12 @@ def _cross_rate_record(
     }
 
 
-def get_fx_rate(
+def _get_fx_rate(
     session_factory: SessionFactory,
     base_currency: str,
     quote_currency: str,
+    *,
+    spot_points: dict[str, dict[str, object] | None] | None = None,
 ) -> dict[str, object] | None:
     normalized_base = normalize_fx_currency(base_currency)
     normalized_quote = normalize_fx_currency(quote_currency)
@@ -218,24 +323,53 @@ def get_fx_rate(
             "status": "complete",
         }
 
-    direct_record = _direct_rate_record(session_factory, normalized_base, normalized_quote)
+    direct_record = _direct_rate_record(
+        session_factory,
+        normalized_base,
+        normalized_quote,
+        spot_points=spot_points,
+    )
     if direct_record is not None:
         return direct_record
 
-    inverse_record = _inverse_rate_record(session_factory, normalized_base, normalized_quote)
+    inverse_record = _inverse_rate_record(
+        session_factory,
+        normalized_base,
+        normalized_quote,
+        spot_points=spot_points,
+    )
     if inverse_record is not None:
         return inverse_record
 
-    return _cross_rate_record(session_factory, normalized_base, normalized_quote)
+    return _cross_rate_record(
+        session_factory,
+        normalized_base,
+        normalized_quote,
+        spot_points=spot_points,
+    )
+
+
+def get_fx_rate(
+    session_factory: SessionFactory,
+    base_currency: str,
+    quote_currency: str,
+) -> dict[str, object] | None:
+    return _get_fx_rate(session_factory, base_currency, quote_currency)
 
 
 def list_fx_rates(session_factory: SessionFactory) -> list[dict[str, object]]:
+    spot_points = _load_latest_spot_points(session_factory)
     rates: list[dict[str, object]] = []
     for base_currency in SUPPORTED_FX_CURRENCIES:
         for quote_currency in SUPPORTED_FX_CURRENCIES:
             if base_currency == quote_currency:
                 continue
-            record = get_fx_rate(session_factory, base_currency, quote_currency)
+            record = _get_fx_rate(
+                session_factory,
+                base_currency,
+                quote_currency,
+                spot_points=spot_points,
+            )
             if record is not None:
                 rates.append(record)
     rates.sort(key=lambda item: (str(item.get("base_currency") or ""), str(item.get("quote_currency") or "")))

@@ -1120,7 +1120,7 @@ export default function WatchlistsPage() {
     return () => {
       cancelled = true
     }
-  }, [baseScreenerPayload, reloadToken, watchlistDetail, watchlistDetailOwnerId, watchlistId])
+  }, [reloadToken, screenerCriteriaKey, watchlistDetailOwnerId, watchlistId])
 
   const detailIsCurrent = watchlistDetailOwnerId === watchlistId
   const rowsAreCurrent = detailIsCurrent && screenerResultOwnerId === watchlistId

@@ -12,7 +12,13 @@ from portfolio_app.db.models import (
     PortfolioDailySnapshotModel,
 )
 from portfolio_app.db.session import get_session_factory
-from portfolio_app.services import daily_snapshots, instrument_charts, performance
+from portfolio_app.services import (
+    daily_snapshots,
+    instrument_charts,
+    instrument_registry,
+    ledger,
+    performance,
+)
 from portfolio_app.services.instrument_registry import get_registry_instrument_details
 
 
@@ -134,6 +140,32 @@ def test_registry_batch_loads_full_details_and_marks_missing() -> None:
     assert len(details["equity-us-abbv"]["market_data"]) == 8
     assert details["fund-us-agg"] is not None
     assert len(details["fund-us-agg"]["market_data"]) == 4
+
+
+def test_registry_batch_skips_fund_nav_audit_ledger(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    def load_details(session_factory, instrument_ids, *, include_fund_nav_ledger):
+        captured.update(
+            {
+                "session_factory": session_factory,
+                "instrument_ids": list(instrument_ids),
+                "include_fund_nav_ledger": include_fund_nav_ledger,
+            }
+        )
+        return {"fund-us-agg": {"instrument_id": "fund-us-agg"}}
+
+    monkeypatch.setattr(instrument_registry, "get_session_factory", lambda: "session-factory")
+    monkeypatch.setattr(instrument_registry.shared_store, "get_instrument_details", load_details)
+
+    result = instrument_registry.get_registry_instrument_details(["fund-us-agg"])
+
+    assert result == {"fund-us-agg": {"instrument_id": "fund-us-agg"}}
+    assert captured == {
+        "session_factory": "session-factory",
+        "instrument_ids": ["fund-us-agg"],
+        "include_fund_nav_ledger": False,
+    }
 
 
 def test_public_holdings_response_uses_canonical_instrument_core_ids(
@@ -307,8 +339,17 @@ def test_materialized_holdings_uses_one_bulk_detail_map(client, monkeypatch) -> 
     def fail_single_chart_load(*_args, **_kwargs):
         raise AssertionError("holdings chart enrichment must reuse the bulk detail map")
 
+    def fail_duplicate_ledger_load(*_args, **_kwargs):
+        raise AssertionError("position pricing must reuse the holdings detail map")
+
     monkeypatch.setattr(workspace_routes, "get_registry_instrument_details", recording_bulk_loader)
     monkeypatch.setattr(instrument_charts, "get_registry_instrument_detail", fail_single_chart_load)
+    monkeypatch.setattr(ledger, "get_registry_instrument_details", fail_duplicate_ledger_load)
+    monkeypatch.setattr(
+        workspace_routes,
+        "_holdings_workspace_has_market_profile",
+        lambda *_args, **_kwargs: False,
+    )
 
     response = client.get(
         "/api/workspace/holdings",
@@ -324,6 +365,37 @@ def test_materialized_holdings_uses_one_bulk_detail_map(client, monkeypatch) -> 
     assert len(bulk_calls) == 1
     assert set(bulk_calls[0]) == _noncash_instrument_ids(payload)
     assert all(row.get("price_chart_6m") is not None for row in payload["rows"])
+
+
+def test_workspace_summary_uses_one_bulk_detail_map(client, monkeypatch) -> None:
+    snapshot_response = client.get("/api/portfolios/portfolio-ops/snapshots/daily")
+    assert snapshot_response.status_code == 200
+
+    original_bulk_loader = workspace_routes.get_registry_instrument_details
+    bulk_calls: list[tuple[str, ...]] = []
+
+    def recording_bulk_loader(instrument_ids):
+        bulk_calls.append(tuple(instrument_ids))
+        return original_bulk_loader(instrument_ids)
+
+    monkeypatch.setattr(
+        workspace_routes,
+        "get_registry_instrument_details",
+        recording_bulk_loader,
+    )
+
+    response = client.get(
+        "/api/workspace/summary",
+        params={"portfolio_id": "portfolio-ops"},
+    )
+
+    assert response.status_code == 200
+    assert len(bulk_calls) == 1
+    assert set(bulk_calls[0]) == {
+        "equity-us-abbv",
+        "fund-hk-2800",
+        "fund-us-agg",
+    }
 
 
 def test_position_holding_projection_skips_portfolio_wide_analytics(client, monkeypatch) -> None:

@@ -31,8 +31,13 @@ def get_registry_instrument_detail(instrument_id: str) -> dict[str, object] | No
 def get_registry_instrument_details(
     instrument_ids: list[str] | set[str] | tuple[str, ...],
 ) -> dict[str, dict[str, object] | None]:
+    """Load market-data details without hydrating the fund NAV audit ledger."""
     try:
-        return shared_store.get_instrument_details(get_session_factory(), instrument_ids)
+        return shared_store.get_instrument_details(
+            get_session_factory(),
+            instrument_ids,
+            include_fund_nav_ledger=False,
+        )
     except Exception as error:  # pragma: no cover - defensive wrapper
         raise InstrumentRegistryError("Failed to query shared instrument registry.") from error
 

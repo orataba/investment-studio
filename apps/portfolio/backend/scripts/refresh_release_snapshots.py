@@ -3,7 +3,9 @@
 
 from __future__ import annotations
 
-from sqlalchemy import or_, select
+import argparse
+
+from sqlalchemy import or_, select, update
 
 from portfolio_app.db.models import (
     PortfolioCalculationStateModel,
@@ -16,7 +18,31 @@ from portfolio_app.services.daily_snapshots import (
 )
 
 
-def main() -> int:
+def _recover_interrupted_refreshes() -> int:
+    session_factory = get_session_factory()
+    with session_factory() as session:
+        result = session.execute(
+            update(PortfolioCalculationStateModel)
+            .where(
+                PortfolioCalculationStateModel.daily_snapshot_status
+                == "running"
+            )
+            .values(
+                daily_snapshot_status="stale",
+                refresh_request_id=None,
+                refresh_started_at=None,
+                refresh_completed_at=None,
+                error_message=None,
+            )
+        )
+        session.commit()
+        return int(result.rowcount or 0)
+
+
+def main(*, recover_interrupted: bool = False) -> int:
+    recovered_count = (
+        _recover_interrupted_refreshes() if recover_interrupted else 0
+    )
     session_factory = get_session_factory()
     with session_factory() as session:
         portfolio_ids = list(
@@ -71,10 +97,20 @@ def main() -> int:
 
     print(
         "Release snapshot refresh completed: "
-        f"{len(refreshed)} refreshed, {len(portfolio_ids) - len(refreshed)} current."
+        f"{len(refreshed)} refreshed, {len(portfolio_ids) - len(refreshed)} current, "
+        f"{recovered_count} interrupted recovered."
     )
     return 0
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--recover-interrupted",
+        action="store_true",
+        help="Reclaim running snapshot jobs after managed database writers have stopped.",
+    )
+    arguments = parser.parse_args()
+    raise SystemExit(
+        main(recover_interrupted=arguments.recover_interrupted)
+    )

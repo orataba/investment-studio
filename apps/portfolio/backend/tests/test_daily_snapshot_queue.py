@@ -87,6 +87,37 @@ def test_worker_error_backoff_is_bounded_and_logs_at_sparse_intervals() -> None:
     ] == [1, 2, 4, 8, 16]
 
 
+def test_worker_wake_interrupts_a_long_idle_poll(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    first_poll = Event()
+    woken_poll = Event()
+    poll_count = 0
+
+    def idle_poll(**_kwargs) -> tuple[bool, None]:
+        nonlocal poll_count
+        poll_count += 1
+        (first_poll if poll_count == 1 else woken_poll).set()
+        return False, None
+
+    monkeypatch.setattr(
+        daily_snapshot_worker,
+        "_run_daily_snapshot_recalculation_worker_once",
+        idle_poll,
+    )
+    worker = daily_snapshot_worker.DailySnapshotRecalculationWorker(
+        poll_seconds=60.0,
+        reconciliation_batch_size=1,
+    )
+    worker.start()
+    try:
+        assert first_poll.wait(timeout=1)
+        worker.wake()
+        assert woken_poll.wait(timeout=1)
+    finally:
+        assert worker.stop(timeout_seconds=1)
+
+
 def _calculation_state() -> dict[str, object]:
     session_factory = get_session_factory()
     with session_factory() as session:

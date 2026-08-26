@@ -508,7 +508,8 @@ if [[ "$RUN_MIGRATIONS" == "true" ]]; then
     "$PYTHON_BIN" "$PROJECT_ROOT/apps/platform/backend/scripts/refresh_release_catalogs.py"
   echo "Refreshing release-invalidated Portfolio snapshots."
   PYTHONPATH="$PROJECT_ROOT/apps/portfolio/backend:$PROJECT_ROOT/packages/instrument-core/python${PYTHONPATH:+:$PYTHONPATH}" \
-    "$PYTHON_BIN" "$PROJECT_ROOT/apps/portfolio/backend/scripts/refresh_release_snapshots.py"
+    "$PYTHON_BIN" "$PROJECT_ROOT/apps/portfolio/backend/scripts/refresh_release_snapshots.py" \
+      --recover-interrupted
   echo "Running the read-only live-data integrity gate."
   PORTFOLIO_OPS_LOCAL_DATABASE_URL="$DATABASE_URL" \
     "$PYTHON_BIN" "$PROJECT_ROOT/infra/scripts/audit_live_data.py" --fail-on-warning

@@ -287,7 +287,7 @@ PYTHONPATH="$PROJECT_ROOT/apps/platform/backend:$PROJECT_ROOT/packages/instrumen
     --no-downstream-refresh \
     --fail-on-item-failure
 PYTHONPATH="$PROJECT_ROOT/apps/portfolio/backend:$PROJECT_ROOT/packages/instrument-core/python${PYTHONPATH:+:$PYTHONPATH}" \
-  "$PYTHON_BIN" "$SNAPSHOT_REFRESH_RUNNER"
+  "$PYTHON_BIN" "$SNAPSHOT_REFRESH_RUNNER" --recover-interrupted
 PORTFOLIO_OPS_LOCAL_DATABASE_URL="$DATABASE_URL" \
   "$PYTHON_BIN" "$AUDIT_RUNNER" --fail-on-warning
 

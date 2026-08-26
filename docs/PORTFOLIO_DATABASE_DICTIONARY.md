@@ -1,6 +1,6 @@
 # Portfolio database dictionary
 
-As of 2026-08-22. Verified against SQLAlchemy metadata and migration heads `instrument_registry@20260822_0026` and `portfolio@20260822_0055`.
+As of 2026-08-26. Verified against SQLAlchemy metadata and migration heads `instrument_registry@20260823_0028` and `portfolio@20260824_0056`.
 
 This file is for architecture and integration review. External systems should use the APIs documented in [`TRANSACTION_INTEGRATION.md`](TRANSACTION_INTEGRATION.md), not write these tables directly.
 
@@ -12,6 +12,7 @@ Notation: **PK** = primary key, **FK** = foreign key, `?` = nullable, JSON field
 |---|---|---|
 | Canonical portfolio facts | `portfolio_record`, `account_record`, `derivative_contract_record`, `transaction_record` | Portfolio command API |
 | Audit/idempotency controls | `transaction_change_log`, `transaction_idempotency_record`, `transaction_id_allocator` | Portfolio transaction store |
+| Screenshot evidence and agent drafts | `transaction_capture_record`, `transaction_capture_batch`, `transaction_capture_batch_item`, `transaction_capture_analysis_revision` | Portfolio transaction-capture API and analysis worker |
 | Derived accounting/read models | daily snapshots, holding snapshots, contribution slices, calculation state, instrument universe | Portfolio calculation services; never edited by integrations |
 | Planning/research | taxonomy, targets, effective-dated analytics scope/configuration, research settings/runs | Portfolio planning and research APIs |
 | Registry identity/market facts | `instrument_registry.*` | Registry API and ingestion jobs |
@@ -96,6 +97,36 @@ Database-coordinated externally visible transaction-id sequence.
 | Columns |
 |---|
 | **PK** `allocator_key VARCHAR`; `next_value INTEGER` |
+
+### `portfolio.transaction_capture_record`
+
+Immutable screenshot evidence stored inside its selected Portfolio. Duplicate image content is rejected per Portfolio while the original filename and binary remain available for audit and later re-analysis.
+
+| Columns |
+|---|
+| **PK** `capture_id VARCHAR`; **FK** `portfolio_id → portfolio_record.portfolio_id`; `original_filename VARCHAR(255)`; `media_type VARCHAR(50)`; `byte_size INTEGER`; `content_sha256 VARCHAR(64)`; `content BYTEA`; `created_at VARCHAR`; unique `(portfolio_id, content_sha256)` |
+
+### `portfolio.transaction_capture_batch`
+
+One ordered group of screenshots submitted for transaction import, Portfolio initialization, position reconciliation, or automatic classification. Agent execution state is coordination metadata; no transaction is committed from this table.
+
+| Columns |
+|---|
+| **PK** `batch_id VARCHAR`; **FK** `portfolio_id → portfolio_record.portfolio_id`; `purpose VARCHAR`; `status VARCHAR`; `content_key VARCHAR(64)`; `capture_count INTEGER`; `latest_analysis_revision INTEGER`; `analysis_run_status VARCHAR`; `analysis_run_attempt INTEGER`; `analysis_run_started_at VARCHAR?`; `analysis_run_completed_at VARCHAR?`; `analysis_run_error VARCHAR(1000)?`; `created_at VARCHAR`; `updated_at VARCHAR`; unique `(portfolio_id, content_key)` |
+
+### `portfolio.transaction_capture_batch_item`
+
+| Columns |
+|---|
+| **PK/FK** `batch_id → transaction_capture_batch.batch_id`; **PK/FK** `capture_id → transaction_capture_record.capture_id`; `ordinal INTEGER`; unique `(batch_id, ordinal)` |
+
+### `portfolio.transaction_capture_analysis_revision`
+
+Append-only model or human interpretation of a screenshot batch. `analysis_json` retains the structured evidence and uncertainty; the optional preview bundle records validation against the normal transaction-import contract. Committing still requires the separate preview/confirmation path.
+
+| Columns |
+|---|
+| **PK/FK** `batch_id → transaction_capture_batch.batch_id`; **PK** `revision INTEGER`; `source VARCHAR`; `harness VARCHAR(80)?`; `provider VARCHAR(50)?`; `model VARCHAR(120)?`; `harness_session_id VARCHAR(255)?`; `finish_reason VARCHAR(80)?`; `schema_version VARCHAR(80)`; `analysis_json JSON`; `transaction_import_json JSON?`; `preview_digest VARCHAR(64)?`; `preview_error_count INTEGER?`; `preview_json JSON?`; `created_at VARCHAR` |
 
 ### `portfolio.portfolio_daily_snapshot`
 

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from copy import deepcopy
 
+import pytest
+
 from portfolio_ops_instrument_core.db_models import Instrument
 
 from portfolio_app.db.models import PortfolioCalculationStateModel, PortfolioDailySnapshotModel
@@ -146,6 +148,39 @@ def test_release_refresh_rebuilds_stale_source_lineage() -> None:
             state.source_calculation_inputs_updated_at
             == "2099-01-01T00:00:00.000001Z"
         )
+
+
+def test_release_refresh_only_recovers_running_job_when_explicit() -> None:
+    assert (
+        daily_snapshots._run_portfolio_daily_snapshot_recalculation_synchronously(
+            "portfolio-ops"
+        )
+        is not None
+    )
+    session_factory = get_session_factory()
+    with session_factory() as session:
+        state = session.get(PortfolioCalculationStateModel, "portfolio-ops")
+        assert state is not None
+        state.daily_snapshot_status = "running"
+        state.refresh_request_id = "interrupted-release-worker"
+        state.refresh_started_at = "2099-01-01T00:00:00.000001Z"
+        state.refresh_completed_at = None
+        session.commit()
+
+    with pytest.raises(
+        RuntimeError,
+        match="portfolio-ops:running",
+    ):
+        refresh_release_snapshots.main()
+
+    assert refresh_release_snapshots.main(recover_interrupted=True) == 0
+
+    with session_factory() as session:
+        state = session.get(PortfolioCalculationStateModel, "portfolio-ops")
+        assert state is not None
+        assert state.daily_snapshot_status == "current"
+        assert state.refresh_request_id is None
+        assert state.refresh_completed_at is not None
 
 
 def test_source_generation_change_discards_first_output_then_replays(monkeypatch) -> None:

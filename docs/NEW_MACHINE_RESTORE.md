@@ -236,7 +236,8 @@ PYTHONPATH="$PROJECT_ROOT/apps/platform/backend:$PROJECT_ROOT/packages/instrumen
 ## 11. 重建后台服务与定时任务
 
 macOS 在仓库根目录执行统一安装器。它会安装六个常驻 LaunchAgent，并注册每天
-本地时间 `21:00` 的独立行情刷新/自动重算任务；安装过程不会立即触发定时任务：
+本地时间 `21:00` 的独立行情刷新/自动重算任务。该任务使用 `RunAtLoad`：安装完成或
+登录后会检查最近应执行日期，并仅在存在欠缺运行时执行一次追赶刷新：
 
 ```bash
 PORTFOLIO_OPS_LOCAL_DATABASE_URL='postgresql+psycopg://portfolio_ops@127.0.0.1:5432/portfolio_ops' \

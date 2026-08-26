@@ -2195,6 +2195,73 @@ def test_tushare_index_empty_response_stays_on_tushare(monkeypatch) -> None:
     assert captured["api_call"]["api_name"] == "index_daily"
     assert captured["refresh_status"]["status"] == "no_new_data"
     assert "DataHub Tushare" in captured["refresh_status"]["message"]
+
+
+def test_tushare_index_does_not_request_a_future_incremental_window(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+    today = market_data_ops.date.today()
+
+    monkeypatch.setattr(
+        market_data_ops,
+        "_call_datahub_tushare_api",
+        lambda **_kwargs: pytest.fail("current index history must not call DataHub"),
+    )
+    monkeypatch.setattr(
+        market_data_ops,
+        "get_price_bar_coverage",
+        lambda **_kwargs: {
+            "row_count": 1,
+            "first_date": today.isoformat(),
+            "latest_date": today.isoformat(),
+            "adjustment_factor_count": 0,
+        },
+    )
+
+    def fake_update_refresh_status(**kwargs):
+        captured["refresh_status"] = kwargs
+        return {
+            "instrument_id": kwargs["instrument_id"],
+            "status": kwargs["status"],
+        }
+
+    monkeypatch.setattr(
+        market_data_ops,
+        "update_refresh_status",
+        fake_update_refresh_status,
+    )
+
+    result = market_data_ops._refresh_from_tushare(
+        instrument_id="000300-sh",
+        instrument={
+            "instrument_id": "000300-sh",
+            "instrument_type": "index",
+            "currency": "CNY",
+            "identifiers": [
+                {
+                    "identifier_type": "ticker",
+                    "identifier_value": "000300.SH",
+                    "is_primary": True,
+                }
+            ],
+            "market_data": [
+                {
+                    "metric_family": "price",
+                    "quote_basis": "close",
+                    "as_of_date": today.isoformat(),
+                    "value": "4200.00",
+                    "status": "complete",
+                }
+            ],
+        },
+        updated_by="test",
+        full_history=False,
+    )
+
+    assert result["status"] == "no_new_data"
+    assert captured["refresh_status"]["status"] == "no_new_data"
+    assert today.isoformat() in captured["refresh_status"]["message"]
+
+
 def test_tushare_index_refresh_repairs_ohlcv_history_behind_existing_closes(
     monkeypatch,
 ) -> None:

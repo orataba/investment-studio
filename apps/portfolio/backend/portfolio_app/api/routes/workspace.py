@@ -791,6 +791,7 @@ def _portfolio_calculation_frequency_profile(portfolio: dict[str, object], *, as
         portfolio_id,
         as_of_date=as_of_date,
     )
+    instrument_details: dict[str, dict[str, object] | None] = {}
     if isinstance(materialized_workspace, dict):
         instrument_ids = _instrument_ids_from_holdings_workspace(materialized_workspace)
     else:
@@ -801,6 +802,7 @@ def _portfolio_calculation_frequency_profile(portfolio: dict[str, object], *, as
             accounts,
             list_transactions(portfolio_id, end_date=as_of_date),
             as_of_date=as_of_date,
+            instrument_detail_cache=instrument_details,
         )
         for position_lot in position_lots:
             if str(position_lot.get("status") or "") != "open":
@@ -808,7 +810,20 @@ def _portfolio_calculation_frequency_profile(portfolio: dict[str, object], *, as
             instrument_id = str(position_lot.get("instrument_id") or "").strip()
             if instrument_id and instrument_id not in instrument_ids:
                 instrument_ids.append(instrument_id)
-    return calculation_frequency_profile_for_instruments(instrument_ids, end_date=as_of_date)
+    missing_instrument_ids = [
+        instrument_id
+        for instrument_id in instrument_ids
+        if instrument_id not in instrument_details
+    ]
+    if missing_instrument_ids:
+        instrument_details.update(
+            get_registry_instrument_details(missing_instrument_ids)
+        )
+    return calculation_frequency_profile_for_instruments(
+        instrument_ids,
+        end_date=as_of_date,
+        detail_loader=instrument_details.get,
+    )
 
 
 @router.get("/summary")
@@ -928,6 +943,7 @@ def holdings_workspace(
                     end_date=resolved_as_of_date,
                 ),
                 as_of_date=resolved_as_of_date,
+                instrument_detail_cache=instrument_details,
             )
             response = _enrich_holdings_workspace_market_data(
                 materialized_workspace,

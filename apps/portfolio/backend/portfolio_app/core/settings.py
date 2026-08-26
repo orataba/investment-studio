@@ -23,7 +23,9 @@ class Settings(BaseSettings):
     default_trade_timezone: str = "Asia/Shanghai"
     default_trade_time: str = "12:00"
     daily_snapshot_worker_enabled: bool = True
-    daily_snapshot_worker_poll_seconds: float = 0.25
+    # API enqueues wake the worker immediately. Polling is the durable fallback
+    # for missed cross-process notifications and does not need subsecond scans.
+    daily_snapshot_worker_poll_seconds: float = 5.0
     daily_snapshot_worker_reconciliation_batch_size: int = 32
     daily_snapshot_worker_shutdown_seconds: float = 5.0
     copilot_analysis_timeout_seconds: float = 900.0

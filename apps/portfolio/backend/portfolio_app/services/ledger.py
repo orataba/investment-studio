@@ -2406,6 +2406,7 @@ def build_position_lots(
                     position_reference_id=target_position_reference_id,
                     as_of_date=entitlement_date,
                     corporate_actions=resolved_actions,
+                    resolve_pricing=False,
                 )
                 if (_safe_float(position_lot.get("remaining_quantity")) or 0.0) > 1e-9
             ]

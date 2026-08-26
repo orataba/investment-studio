@@ -24,6 +24,7 @@ from portfolio_app.services import holdings_market_profile, valuation_fx
 from portfolio_app.services.instrument_registry import (
     get_platform_fx_rates,
     get_registry_instrument_detail,
+    get_registry_instrument_details,
 )
 from portfolio_app.services.market_data import (
     analytical_return_quote_bases,
@@ -3716,6 +3717,33 @@ def build_research_calculation_frequency_profile(
     )
     if comparator_taxonomy_node_id and comparator_taxonomy_node_id not in state.node_by_id:
         raise ValueError("Selected research scope was not found in the planning taxonomy.")
+    scope_node_ids = (
+        set(state.node_by_id)
+        if comparator_taxonomy_node_id is None
+        else state.node_subtree_by_id.get(
+            comparator_taxonomy_node_id,
+            {comparator_taxonomy_node_id},
+        )
+    )
+    scope_instrument_ids = sorted(
+        {
+            str(assignment.get("target_entity_id") or "").strip()
+            for node_id in scope_node_ids
+            for assignment in state.direct_assignments_by_node.get(node_id, [])
+            if str(assignment.get("target_scope") or "")
+            == TARGET_MEMBER_INSTRUMENT
+            and str(assignment.get("target_entity_id") or "").strip()
+        }
+    )
+    missing_instrument_ids = [
+        instrument_id
+        for instrument_id in scope_instrument_ids
+        if instrument_id not in state.instrument_detail_cache
+    ]
+    if missing_instrument_ids:
+        state.instrument_detail_cache.update(
+            get_registry_instrument_details(missing_instrument_ids)
+        )
     start_day = research_window_start_date(as_of_date, lookback_days)
     instrument_count = _scope_instrument_count(
         state,
