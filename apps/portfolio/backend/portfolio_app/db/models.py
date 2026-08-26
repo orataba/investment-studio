@@ -13,6 +13,7 @@ from sqlalchemy import (
     Index,
     Integer,
     JSON,
+    LargeBinary,
     Numeric,
     String,
     UniqueConstraint,
@@ -45,6 +46,14 @@ class PortfolioRecordModel(Base):
         cascade="all, delete-orphan",
     )
     transactions: Mapped[list["TransactionRecordModel"]] = relationship(
+        back_populates="portfolio",
+        cascade="all, delete-orphan",
+    )
+    transaction_captures: Mapped[list["TransactionCaptureRecordModel"]] = relationship(
+        back_populates="portfolio",
+        cascade="all, delete-orphan",
+    )
+    transaction_capture_batches: Mapped[list["TransactionCaptureBatchModel"]] = relationship(
         back_populates="portfolio",
         cascade="all, delete-orphan",
     )
@@ -624,6 +633,209 @@ class TransactionIdempotencyRecordModel(Base):
     request_hash: Mapped[str] = mapped_column(String, nullable=False)
     transaction_ids_json: Mapped[list[str]] = mapped_column(JSON, nullable=False)
     created_at: Mapped[str] = mapped_column(String, nullable=False)
+
+
+class TransactionCaptureRecordModel(Base):
+    """Original screenshot evidence kept outside the transaction ledger."""
+
+    __tablename__ = "transaction_capture_record"
+    __table_args__ = (
+        CheckConstraint(
+            "byte_size > 0",
+            name="size",
+        ),
+        UniqueConstraint(
+            "portfolio_id",
+            "content_sha256",
+            name="uq_transaction_capture_portfolio_content",
+        ),
+        Index(
+            "ix_transaction_capture_portfolio_created",
+            "portfolio_id",
+            "created_at",
+            "capture_id",
+        ),
+    )
+
+    capture_id: Mapped[str] = mapped_column(String, primary_key=True)
+    portfolio_id: Mapped[str] = mapped_column(
+        ForeignKey("portfolio_record.portfolio_id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    original_filename: Mapped[str] = mapped_column(String(255), nullable=False)
+    media_type: Mapped[str] = mapped_column(String(50), nullable=False)
+    byte_size: Mapped[int] = mapped_column(Integer, nullable=False)
+    content_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    content: Mapped[bytes] = mapped_column(
+        LargeBinary,
+        nullable=False,
+        deferred=True,
+    )
+    created_at: Mapped[str] = mapped_column(String, nullable=False)
+
+    portfolio: Mapped[PortfolioRecordModel] = relationship(
+        back_populates="transaction_captures"
+    )
+    batch_links: Mapped[list["TransactionCaptureBatchItemModel"]] = relationship(
+        back_populates="capture",
+        cascade="all, delete-orphan",
+    )
+
+
+class TransactionCaptureBatchModel(Base):
+    """A reusable, ordered group of screenshots interpreted as one agent task."""
+
+    __tablename__ = "transaction_capture_batch"
+    __table_args__ = (
+        CheckConstraint(
+            "purpose IN ('auto', 'transaction_import', 'portfolio_initialization', "
+            "'position_reconciliation')",
+            name="purpose",
+        ),
+        CheckConstraint(
+            "status IN ('ready', 'review_required')",
+            name="status",
+        ),
+        CheckConstraint(
+            "analysis_run_status IN ('idle', 'queued', 'running', 'succeeded', 'failed')",
+            name="analysis_run_status",
+        ),
+        CheckConstraint(
+            "capture_count > 0 AND latest_analysis_revision >= 0 "
+            "AND analysis_run_attempt >= 0",
+            name="count_and_revision",
+        ),
+        UniqueConstraint(
+            "portfolio_id",
+            "content_key",
+            name="uq_transaction_capture_batch_portfolio_content",
+        ),
+        Index(
+            "ix_transaction_capture_batch_portfolio_created",
+            "portfolio_id",
+            "created_at",
+            "batch_id",
+        ),
+    )
+
+    batch_id: Mapped[str] = mapped_column(String, primary_key=True)
+    portfolio_id: Mapped[str] = mapped_column(
+        ForeignKey("portfolio_record.portfolio_id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    purpose: Mapped[str] = mapped_column(String, nullable=False)
+    status: Mapped[str] = mapped_column(
+        String,
+        nullable=False,
+        default="ready",
+        server_default="ready",
+    )
+    content_key: Mapped[str] = mapped_column(String(64), nullable=False)
+    capture_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    latest_analysis_revision: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        default=0,
+        server_default="0",
+    )
+    analysis_run_status: Mapped[str] = mapped_column(
+        String,
+        nullable=False,
+        default="idle",
+        server_default="idle",
+    )
+    analysis_run_attempt: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        default=0,
+        server_default="0",
+    )
+    analysis_run_started_at: Mapped[str | None] = mapped_column(String)
+    analysis_run_completed_at: Mapped[str | None] = mapped_column(String)
+    analysis_run_error: Mapped[str | None] = mapped_column(String(1_000))
+    created_at: Mapped[str] = mapped_column(String, nullable=False)
+    updated_at: Mapped[str] = mapped_column(String, nullable=False)
+
+    portfolio: Mapped[PortfolioRecordModel] = relationship(
+        back_populates="transaction_capture_batches"
+    )
+    items: Mapped[list["TransactionCaptureBatchItemModel"]] = relationship(
+        back_populates="batch",
+        cascade="all, delete-orphan",
+        order_by="TransactionCaptureBatchItemModel.ordinal",
+    )
+    analysis_revisions: Mapped[list["TransactionCaptureAnalysisRevisionModel"]] = relationship(
+        back_populates="batch",
+        cascade="all, delete-orphan",
+    )
+
+
+class TransactionCaptureBatchItemModel(Base):
+    """Ordered evidence membership; one screenshot may support several analyses."""
+
+    __tablename__ = "transaction_capture_batch_item"
+    __table_args__ = (
+        CheckConstraint("ordinal >= 1", name="ordinal"),
+        UniqueConstraint(
+            "batch_id",
+            "ordinal",
+            name="uq_transaction_capture_batch_item_ordinal",
+        ),
+    )
+
+    batch_id: Mapped[str] = mapped_column(
+        ForeignKey("transaction_capture_batch.batch_id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    capture_id: Mapped[str] = mapped_column(
+        ForeignKey("transaction_capture_record.capture_id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    ordinal: Mapped[int] = mapped_column(Integer, nullable=False)
+
+    batch: Mapped[TransactionCaptureBatchModel] = relationship(back_populates="items")
+    capture: Mapped[TransactionCaptureRecordModel] = relationship(back_populates="batch_links")
+
+
+class TransactionCaptureAnalysisRevisionModel(Base):
+    """Immutable structured results produced by a harness or a human reviewer."""
+
+    __tablename__ = "transaction_capture_analysis_revision"
+    __table_args__ = (
+        CheckConstraint("revision >= 1", name="revision"),
+        CheckConstraint("source IN ('assistant', 'human')", name="source"),
+        CheckConstraint(
+            "(preview_digest IS NULL AND preview_error_count IS NULL AND preview_json IS NULL) "
+            "OR (preview_digest IS NOT NULL AND preview_error_count IS NOT NULL "
+            "AND preview_json IS NOT NULL)",
+            name="preview_bundle",
+        ),
+    )
+
+    batch_id: Mapped[str] = mapped_column(
+        ForeignKey("transaction_capture_batch.batch_id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    revision: Mapped[int] = mapped_column(Integer, primary_key=True)
+    source: Mapped[str] = mapped_column(String, nullable=False)
+    harness: Mapped[str | None] = mapped_column(String(80))
+    provider: Mapped[str | None] = mapped_column(String(50))
+    model: Mapped[str | None] = mapped_column(String(120))
+    harness_session_id: Mapped[str | None] = mapped_column(String(255))
+    finish_reason: Mapped[str | None] = mapped_column(String(80))
+    schema_version: Mapped[str] = mapped_column(String(80), nullable=False)
+    analysis_json: Mapped[dict[str, object]] = mapped_column(JSON, nullable=False)
+    transaction_import_json: Mapped[dict[str, object] | None] = mapped_column(
+        JSON(none_as_null=True)
+    )
+    preview_digest: Mapped[str | None] = mapped_column(String(64))
+    preview_error_count: Mapped[int | None] = mapped_column(Integer)
+    preview_json: Mapped[dict[str, object] | None] = mapped_column(JSON(none_as_null=True))
+    created_at: Mapped[str] = mapped_column(String, nullable=False)
+
+    batch: Mapped[TransactionCaptureBatchModel] = relationship(
+        back_populates="analysis_revisions"
+    )
 
 
 class PortfolioInstrumentEventTaskModel(Base):

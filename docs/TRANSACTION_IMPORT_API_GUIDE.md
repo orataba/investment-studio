@@ -1,6 +1,6 @@
 # Portfolio 标准交易记录 JSON 接口对接说明
 
-本文档面向“交易截图转标准化交易记录”系统的开发者。接口只接收已经标准化、准备进入人工确认的交易事实，不接收截图文件、OCR 原文、委托单或数据库行。
+本文档面向“交易截图转标准化交易记录”系统的开发者。`transaction-imports` 接口只接收已经标准化、准备进入人工确认的交易事实，不接收截图文件、OCR 原文、委托单或数据库行。内部截图助手使用下文单独的证据采集接口；截图不会绕过 Preview/Commit 直接进入账本。
 
 接口的 OpenAPI 定义由当前服务自动生成：
 
@@ -37,6 +37,13 @@ Portfolio 负责：
 | 查询账户 | `GET /api/portfolios/{portfolio_id}/accounts` |
 | 查询可用证券 | `GET /api/portfolios/{portfolio_id}/instruments` |
 | 查询已有 FCN/Option 合约 | `GET /api/portfolios/{portfolio_id}/derivative-contracts` |
+| 保存截图证据 | `POST /api/portfolios/{portfolio_id}/transaction-captures` |
+| 查询截图证据 | `GET /api/portfolios/{portfolio_id}/transaction-captures` |
+| 建立多截图分析批次 | `POST /api/portfolios/{portfolio_id}/transaction-capture-batches` |
+| 查询分析批次 | `GET /api/portfolios/{portfolio_id}/transaction-capture-batches` |
+| 启动受限 Agent 分析 | `POST /api/portfolios/{portfolio_id}/transaction-capture-batches/{batch_id}/analysis-runs` |
+| 获取 Agent 任务上下文 | `GET /api/portfolios/{portfolio_id}/transaction-capture-batches/{batch_id}/agent-context` |
+| 保存分析修订 | `POST /api/portfolios/{portfolio_id}/transaction-capture-batches/{batch_id}/analysis-revisions` |
 | 预览 JSON 批次 | `POST /api/portfolios/{portfolio_id}/transaction-imports/preview` |
 | 确认并原子入账 | `POST /api/portfolios/{portfolio_id}/transaction-imports/commit` |
 | 查询已入账交易 | `GET /api/portfolios/{portfolio_id}/transactions` |
@@ -50,6 +57,25 @@ Content-Type: application/json
 单批最少 1 条、最多 5,000 条。截图识别批次通常应远小于此上限。
 
 应用接口本身不新增第二套身份系统。部署时只能通过项目现有的受控内网或已鉴权反向代理开放，不得把 Portfolio 后端端口直接暴露到公网。
+
+### 2.1 内部截图助手的第一阶段边界
+
+截图助手使用“证据批次 → Agent 分析 → Preview → 人工确认 → Commit”边界：
+
+- 上传 PNG、JPEG 或 WebP，单张不超过 12 MB；
+- 原图按 Portfolio 和内容指纹去重保存，可通过 capture image 接口回看；
+- 一次分析可包含 1–10 张截图；同一张证据可被不同用途的批次复用；
+- Agent 必须把整批截图一起理解，并逐张分类为成交、委托、持仓快照、现金快照、账户摘要、混合或未知；
+- Agent 输出字段级证据、重复关系和待确认问题，可选地提出 `transaction_import`，不依赖固定券商模板；
+- 持仓或现金快照可以只形成初始化/对账候选，不会被机械地反推成历史交易；
+- 模型或人工产生的分析每次保存为一条不可变修订，并记录 harness、模型、会话和证据引用；
+- `analysis-runs` 异步返回，批次通过 `analysis_run_status` 暴露 `queued`、`running`、`succeeded` 或 `failed`；同一批次不能同时启动两次；
+- 包含 `transaction_import` 的修订会自动运行现有 Portfolio Preview，并保留当时的 digest 和 Preview 结果；
+- 批次查询会从正式账本反查来源引用，并通过 `ledger_status` 返回 `no_proposal`、`unrecorded`、`partially_recorded` 或 `recorded`；`recorded_transaction_ids` 返回已经写入的交易 ID，因此刷新页面后仍能阻止同一截图提案被再次入账；
+- 保存截图或分析都不会创建交易。正式入账仍只能使用第 3 节的人工确认和 Commit 流程。
+
+模型供应商、提示词和图像解析运行时不进入账本合同。DeepSeek Harness、Codex 或其他 MCP host 只负责读取证据、生成分析、运行 Preview 和保存修订；提供给 Agent 的工具集中没有 Commit。
+内部受限 MCP 运行时会在进程启动时绑定当前 `portfolio_id` 和 `batch_id`，模型工具参数不能改选组合或批次；完整 Registry 也不会进入模型上下文，标的只通过紧凑搜索结果返回。
 
 ## 3. 标准流程
 
@@ -416,11 +442,14 @@ Commit 请求体必须是原 Preview 请求体增加 `preview_digest`：
 
 FastAPI 的请求结构错误会返回标准 `detail[]`，其中 `loc` 指向类似 `body.records.0.trade_date` 的字段路径。Portfolio 业务错误位于 Preview 的 `rows[].errors` 或 `batch_errors`。
 
-## 12. 截图识别系统必须执行的检查
+## 12. 截图 Agent 必须执行的检查
 
 调用 Preview 前，上游至少要确认：
 
+- 已经读取同一批次的全部截图，而不是逐图独立转换；
+- 重叠区域和重复行已建立证据关系；不能确定是否重复时保留候选并要求人工确认；
 - 截图表示已成交或已经发生的现金/生命周期事实，不是委托、撤单、未成交或预测；
+- 持仓、现金或账户快照没有被当作可以证明成交过程的交易流水；
 - 部分成交按券商真实成交明细分别记录，不把未成交数量计入；
 - 买卖方向、期权开平仓方向和 Call/Put 已确认；
 - 数量、单价、成交总额、费用、税费和净扣款没有混用；
@@ -431,7 +460,7 @@ FastAPI 的请求结构错误会返回标准 `detail[]`，其中 `loc` 指向类
 - 每条 `external_reference` 稳定且在批次内不重复；
 - 人工审核未通过的记录没有进入 Commit 请求。
 
-OCR 置信度、框选坐标和原始截图由上游系统保留。Portfolio 交易接口只接收审核后的结构化业务事实，防止识别元数据进入正式账本合同。
+原始截图、可见文字、框选坐标、字段状态和重复判断保存在截图证据链中。正式 `transaction-imports` 合同仍只接收审核后的结构化业务事实，识别元数据不会进入账本事实。
 
 ## 13. 上线前联调验收
 

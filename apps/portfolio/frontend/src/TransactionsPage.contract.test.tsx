@@ -3,12 +3,20 @@ import userEvent from '@testing-library/user-event'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import TransactionsPage from './pages/TransactionsPage'
-import type { PortfolioTransactionRecord } from './lib/api'
+import type {
+  PortfolioTransactionCaptureAnalysisRevision,
+  PortfolioTransactionCaptureBatchRecord,
+  PortfolioTransactionImportCommand,
+  PortfolioTransactionRecord,
+} from './lib/api'
 import { instrumentFixture } from './test/portfolioFixtures'
 import { renderPortfolioPage } from './test/renderPortfolioPage'
 
 const apiMocks = vi.hoisted(() => ({
+  commitPortfolioTransactionImport: vi.fn(),
   createPortfolioInternalTransfer: vi.fn(),
+  createPortfolioTransactionCaptureAnalysisRevision: vi.fn(),
+  createPortfolioTransactionCaptureBatch: vi.fn(),
   createPortfolioTransaction: vi.fn(),
   deletePortfolioTransaction: vi.fn(),
   getPortfolioAccounts: vi.fn(),
@@ -18,14 +26,18 @@ const apiMocks = vi.hoisted(() => ({
   getPortfolioInstruments: vi.fn(),
   getPortfolioTransactionExecutionQuote: vi.fn(),
   getPortfolioTransactionPositionPreview: vi.fn(),
+  getPortfolioTransactionCaptureBatches: vi.fn(),
   getPortfolioTransactionsWorkspace: vi.fn(),
   importPortfolioTransactionFile: vi.fn(),
   materializePlatformSecurity: vi.fn(),
   portfolioTransactionDownloadUrl: vi.fn((_portfolioId: string, format: string) => `/transactions.${format}`),
+  portfolioTransactionCaptureImageUrl: vi.fn((_portfolioId: string, captureId: string) => `/captures/${captureId}/image`),
   portfolioTransactionTemplateUrl: vi.fn((_portfolioId: string, format: string) => `/transactions/${format}-template`),
   previewPortfolioTransactionFile: vi.fn(),
   reviewPortfolioInstrumentEventTask: vi.fn(),
   searchPlatformSecurityCatalog: vi.fn(),
+  startPortfolioTransactionCaptureAnalysis: vi.fn(),
+  uploadPortfolioTransactionCapture: vi.fn(),
   updatePortfolioTransaction: vi.fn(),
 }))
 vi.mock('./lib/api', () => apiMocks)
@@ -302,6 +314,74 @@ const selectedTransaction = {
   row_version: 3,
 } satisfies PortfolioTransactionRecord
 
+function screenshotBatchFixture({
+  batchId,
+  records,
+  candidates,
+  source = 'assistant',
+  ledgerStatus = 'unrecorded',
+  recordedTransactionIds = [],
+}: {
+  batchId: string
+  records: PortfolioTransactionImportCommand[]
+  candidates: PortfolioTransactionCaptureAnalysisRevision['analysis']['candidates']
+  source?: 'assistant' | 'human'
+  ledgerStatus?: PortfolioTransactionCaptureBatchRecord['ledger_status']
+  recordedTransactionIds?: string[]
+}): PortfolioTransactionCaptureBatchRecord {
+  const capture = {
+    capture_id: `${batchId}-capture`,
+    portfolio_id: '3',
+    original_filename: 'broker-activity.png',
+    media_type: 'image/png' as const,
+    byte_size: 4096,
+    content_sha256: '9'.repeat(64),
+    created_at: '2026-08-25T03:00:00Z',
+  }
+  const revision: PortfolioTransactionCaptureAnalysisRevision = {
+    batch_id: batchId,
+    revision: source === 'human' ? 2 : 1,
+    source,
+    harness: source === 'assistant' ? 'deepseek-harness' : null,
+    provider: source === 'assistant' ? 'deepseek' : null,
+    model_name: source === 'assistant' ? 'deepseek-v4-flash-vision-exp' : null,
+    finish_reason: source === 'human' ? 'human_review_confirmed' : 'completed',
+    schema_version: 'portfolio.transaction-capture-analysis.v2',
+    analysis: {
+      summary: 'Broker activity contains reviewable transaction candidates.',
+      documents: [{ capture_id: capture.capture_id, document_kind: 'trade_activity' }],
+      candidates,
+      questions: [],
+    },
+    transaction_import: {
+      source_system: 'portfolio_screenshot_assistant',
+      records,
+    },
+    preview_digest: '8'.repeat(64),
+    preview_error_count: 0,
+    created_at: '2026-08-25T03:02:00Z',
+  }
+  return {
+    batch_id: batchId,
+    portfolio_id: '3',
+    purpose: 'transaction_import',
+    status: 'review_required',
+    capture_count: 1,
+    latest_analysis_revision: revision.revision,
+    analysis_run_status: 'succeeded',
+    analysis_run_attempt: 1,
+    analysis_run_started_at: '2026-08-25T03:00:10Z',
+    analysis_run_completed_at: '2026-08-25T03:02:00Z',
+    analysis_run_error: null,
+    captures: [capture],
+    latest_analysis: revision,
+    ledger_status: ledgerStatus,
+    recorded_transaction_ids: recordedTransactionIds,
+    created_at: '2026-08-25T03:00:00Z',
+    updated_at: '2026-08-25T03:02:00Z',
+  }
+}
+
 describe('Transactions rendered page contract', () => {
   beforeEach(() => {
     vi.clearAllMocks()
@@ -324,6 +404,7 @@ describe('Transactions rendered page contract', () => {
       derivative_contracts: [],
     })
     apiMocks.getPortfolioFxRates.mockResolvedValue({ portfolio_id: '3', rates: [] })
+    apiMocks.getPortfolioTransactionCaptureBatches.mockResolvedValue({ portfolio_id: '3', batches: [] })
     apiMocks.searchPlatformSecurityCatalog.mockResolvedValue({ results: [], catalogErrors: {} })
     apiMocks.materializePlatformSecurity.mockResolvedValue(materializedEquityInstrument)
     apiMocks.getPortfolioTransactionExecutionQuote.mockResolvedValue({
@@ -448,6 +529,7 @@ describe('Transactions rendered page contract', () => {
 
     const exportButton = await screen.findByRole('button', { name: 'Export' })
     expect(screen.getByRole('button', { name: 'Import' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Screenshot Assistant' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Template' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Record Transaction' })).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Transaction CSV' })).not.toBeInTheDocument()
@@ -458,6 +540,693 @@ describe('Transactions rendered page contract', () => {
     expect(screen.getByRole('menuitem', { name: 'CSV' })).toBeInTheDocument()
     expect(screen.getByRole('menuitem', { name: 'Excel' })).toBeInTheDocument()
     expect(document.querySelector<HTMLInputElement>('input[type="file"]')?.accept).toContain('.xlsx')
+  })
+
+  it('groups multiple screenshots for one agent analysis without creating a transaction fact', async () => {
+    const user = userEvent.setup()
+    const contentSha = 'c'.repeat(64)
+    const overlapSha = 'd'.repeat(64)
+    const firstCapture = {
+      capture_id: 'capture-1',
+      portfolio_id: '3',
+      original_filename: 'broker-fill.png',
+      media_type: 'image/png' as const,
+      byte_size: 2048,
+      content_sha256: contentSha,
+      created_at: '2026-08-25T00:00:00Z',
+    }
+    const secondCapture = {
+      ...firstCapture,
+      capture_id: 'capture-2',
+      original_filename: 'broker-fill-overlap.png',
+      content_sha256: overlapSha,
+    }
+    apiMocks.uploadPortfolioTransactionCapture
+      .mockResolvedValueOnce(firstCapture)
+      .mockResolvedValueOnce(secondCapture)
+    const readyBatch = {
+      batch_id: 'capture-batch-1',
+      portfolio_id: '3',
+      purpose: 'transaction_import',
+      status: 'ready',
+      capture_count: 2,
+      latest_analysis_revision: 0,
+      analysis_run_status: 'idle',
+      analysis_run_attempt: 0,
+      analysis_run_started_at: null,
+      analysis_run_completed_at: null,
+      analysis_run_error: null,
+      captures: [firstCapture, secondCapture],
+      latest_analysis: null,
+      ledger_status: 'no_proposal',
+      recorded_transaction_ids: [],
+      created_at: '2026-08-25T00:00:00Z',
+      updated_at: '2026-08-25T00:00:00Z',
+    } as const
+    apiMocks.createPortfolioTransactionCaptureBatch.mockResolvedValue(readyBatch)
+    apiMocks.startPortfolioTransactionCaptureAnalysis.mockResolvedValue({
+      ...readyBatch,
+      analysis_run_status: 'queued',
+      analysis_run_attempt: 1,
+    })
+    const firstFile = new File(['screenshot-bytes'], 'broker-fill.png', {
+      type: 'image/png',
+    })
+    const secondFile = new File(['overlap-bytes'], 'broker-fill-overlap.png', {
+      type: 'image/png',
+    })
+    renderPortfolioPage(
+      <TransactionsPage />,
+      '/portfolios/3/transactions',
+      '/portfolios/:portfolioId/transactions',
+    )
+
+    await user.click(await screen.findByRole('button', { name: 'Screenshot Assistant' }))
+    const assistant = screen.getByRole('dialog', { name: 'Screenshot assistant' })
+    expect(within(assistant).getByRole('radio', { name: /Let agent decide/ })).toHaveAttribute(
+      'aria-checked',
+      'true',
+    )
+
+    const screenshotInput = document.querySelector<HTMLInputElement>(
+      'input[type="file"][accept*="image/png"]',
+    )
+    expect(screenshotInput).not.toBeNull()
+    expect(screenshotInput).toHaveAttribute('multiple')
+    fireEvent.change(screenshotInput!, { target: { files: [firstFile, secondFile] } })
+
+    expect(within(assistant).getByText('broker-fill.png')).toBeInTheDocument()
+    expect(within(assistant).getByText('broker-fill-overlap.png')).toBeInTheDocument()
+    expect(apiMocks.uploadPortfolioTransactionCapture).not.toHaveBeenCalled()
+
+    await user.click(within(assistant).getByRole('radio', { name: /Record transactions/ }))
+    await user.click(within(assistant).getByRole('button', { name: 'Prepare evidence' }))
+
+    await waitFor(() =>
+      expect(apiMocks.createPortfolioTransactionCaptureBatch).toHaveBeenCalledWith(
+        '3',
+        ['capture-1', 'capture-2'],
+        'transaction_import',
+      ),
+    )
+    expect(within(assistant).getByText('Evidence ready')).toBeInTheDocument()
+    const batchDetail = within(assistant).getByRole('region', { name: 'Selected screenshot batch' })
+    expect(within(batchDetail).getByText('Record transactions')).toBeInTheDocument()
+    expect(within(batchDetail).getByText('2 KB · cccccccc')).toBeInTheDocument()
+    expect(within(batchDetail).getByText('2 KB · dddddddd')).toBeInTheDocument()
+    expect(within(batchDetail).getByText(/partial overlap and broker-specific layouts/)).toBeInTheDocument()
+    await user.click(within(batchDetail).getByRole('button', { name: 'Analyze with DeepSeek' }))
+    await waitFor(() => expect(apiMocks.startPortfolioTransactionCaptureAnalysis).toHaveBeenCalledWith(
+      '3',
+      'capture-batch-1',
+    ))
+    expect(within(batchDetail).getByText('Waiting for the restricted DeepSeek runner.')).toBeInTheDocument()
+    expect(within(batchDetail).queryByRole('button', { name: /analyze/i })).not.toBeInTheDocument()
+    const status = screen.getByRole('region', { name: 'Screenshot assistant status' })
+    expect(within(status).getByText(/2 screenshots · Record transactions · No ledger changes/)).toBeInTheDocument()
+    expect(apiMocks.importPortfolioTransactionFile).not.toHaveBeenCalled()
+    expect(apiMocks.createPortfolioTransaction).not.toHaveBeenCalled()
+  })
+
+  it('shows agent findings as a review surface without exposing a direct commit action', async () => {
+    const user = userEvent.setup()
+    apiMocks.getPortfolioAccounts.mockResolvedValue({
+      portfolio_id: '3',
+      accounts: [securitiesAccount, cashAccount, optionAccount],
+    })
+    const capture = {
+      capture_id: 'capture-review-1',
+      portfolio_id: '3',
+      original_filename: 'broker-position.png',
+      media_type: 'image/png' as const,
+      byte_size: 4096,
+      content_sha256: 'e'.repeat(64),
+      created_at: '2026-08-25T01:00:00Z',
+    }
+    apiMocks.getPortfolioTransactionCaptureBatches.mockResolvedValue({
+      portfolio_id: '3',
+      batches: [{
+        batch_id: 'capture-batch-review-1',
+        portfolio_id: '3',
+        purpose: 'position_reconciliation',
+        status: 'review_required',
+        capture_count: 1,
+        latest_analysis_revision: 2,
+        analysis_run_status: 'succeeded',
+        analysis_run_attempt: 1,
+        analysis_run_started_at: '2026-08-25T01:00:10Z',
+        analysis_run_completed_at: '2026-08-25T01:02:00Z',
+        analysis_run_error: null,
+        captures: [capture],
+        latest_analysis: {
+          batch_id: 'capture-batch-review-1',
+          revision: 2,
+          source: 'assistant',
+          harness: 'deepseek-harness',
+          provider: 'deepseek',
+          model_name: 'deepseek-chat',
+          schema_version: 'portfolio.transaction-capture-analysis.v2',
+          analysis: {
+            summary: 'One ETF position is visible; the settlement date still needs confirmation.',
+            documents: [{ capture_id: capture.capture_id, document_kind: 'position_snapshot' }],
+            candidates: [{
+              candidate_id: 'position-1',
+              candidate_kind: 'position_snapshot',
+              account_resolution: {
+                status: 'resolved',
+                account_id: 'brokerage-1',
+                candidate_account_ids: ['brokerage-1'],
+                observed_account_hint: 'ETF brokerage account',
+              },
+              fields: [],
+            }, {
+              candidate_id: 'trade-possible-duplicate',
+              candidate_kind: 'transaction',
+              account_resolution: {
+                status: 'resolved',
+                account_id: 'options-1',
+                candidate_account_ids: ['options-1'],
+              },
+              fields: [],
+              possible_existing_transaction_ids: ['txn-0278'],
+              duplicate_assessment: 'same_record',
+            }],
+            questions: ['Is this position as of trade date or settlement date?'],
+          },
+          transaction_import: {},
+          preview_digest: 'f'.repeat(64),
+          preview_error_count: 1,
+          created_at: '2026-08-25T01:02:00Z',
+        },
+        ledger_status: 'unrecorded',
+        recorded_transaction_ids: [],
+        created_at: '2026-08-25T01:00:00Z',
+        updated_at: '2026-08-25T01:02:00Z',
+      }],
+    })
+    renderPortfolioPage(
+      <TransactionsPage />,
+      '/portfolios/3/transactions',
+      '/portfolios/:portfolioId/transactions',
+    )
+
+    const status = await screen.findByRole('region', { name: 'Screenshot assistant status' })
+    expect(within(status).getByText('Review revision 2')).toBeInTheDocument()
+    await user.click(within(status).getByRole('button', { name: 'Open' }))
+
+    const assistant = screen.getByRole('dialog', { name: 'Screenshot assistant' })
+    const detail = within(assistant).getByRole('region', { name: 'Selected screenshot batch' })
+    expect(within(detail).getByText(/One ETF position is visible/)).toBeInTheDocument()
+    expect(within(detail).getByText('1 issue')).toBeInTheDocument()
+    expect(within(detail).getByText('Position Snapshot')).toBeInTheDocument()
+    expect(within(detail).getByText('ETF Brokerage')).toBeInTheDocument()
+    expect(within(detail).getByText('Options Account')).toBeInTheDocument()
+    expect(within(detail).getByText('txn-0278')).toBeInTheDocument()
+    expect(within(detail).getByText('Likely already recorded')).toBeInTheDocument()
+    expect(within(detail).getByText('Is this position as of trade date or settlement date?')).toBeInTheDocument()
+    expect(within(detail).getByText('Human confirmation required')).toBeInTheDocument()
+    expect(within(assistant).queryByRole('button', { name: /commit/i })).not.toBeInTheDocument()
+  })
+
+  it('records a screenshot proposal only after human revision, clean Preview, and final confirmation', async () => {
+    const user = userEvent.setup()
+    const usdFcnAccount = {
+      ...fcnAccount,
+      account_id: 'fcn-usd-1',
+      account_name: 'USD FCN Account',
+      currency: 'USD',
+      default_settlement_cash_account_id: 'cash-1',
+    }
+    apiMocks.getPortfolioAccounts.mockResolvedValue({
+      portfolio_id: '3',
+      accounts: [usdFcnAccount, cashAccount],
+    })
+    const capture = {
+      capture_id: 'capture-fcn-1',
+      portfolio_id: '3',
+      original_filename: 'fcn-confirmation.png',
+      media_type: 'image/png' as const,
+      byte_size: 4096,
+      content_sha256: 'a'.repeat(64),
+      created_at: '2026-08-25T02:00:00Z',
+    }
+    const transactionImport = {
+      source_system: 'portfolio_screenshot_assistant',
+      records: [{
+        external_reference: 'capture-batch-fcn-1#1',
+        asset_type: 'fcn' as const,
+        transaction_action: 'entry' as const,
+        trade_date: '2026-08-11',
+        trade_time: null,
+        settlement_date: null,
+        position_effective_date: null,
+        entitlement_date: null,
+        acquisition_date: null,
+        account_id: 'fcn-usd-1',
+        counterparty_account_id: null,
+        settlement_cash_account_id: 'cash-1',
+        instrument_id: null,
+        derivative_contract_id: 'fcn-pdd-1',
+        derivative_contract: {
+          derivative_contract_id: 'fcn-pdd-1',
+          contract_name: 'PDD FCN',
+          contract_type: 'fcn' as const,
+          external_reference: 'XS-PDD-1',
+          terms: {
+            notional: '600000',
+            annual_coupon_rate_pct: '11.45',
+            issue_date: '2026-08-11',
+            final_observation_date: null,
+            maturity_date: '2027-02-25',
+            issuer: 'Goldman Sachs',
+            counterparty: 'Goldman Sachs',
+            underlyings: [{
+              instrument_id: 'etf-1',
+              initial_reference_price: '91.4',
+              strike_level_pct: '80',
+              knock_in_level_pct: null,
+              knock_out_level_pct: '100',
+              deliverable: false,
+            }],
+          },
+        },
+        quantity: '1',
+        price: '600000',
+        gross_amount: '600000',
+        counter_amount: null,
+        fx_rate: null,
+        fees: null,
+        fee_category: null,
+        taxes: null,
+        currency: 'USD',
+        note: null,
+      }],
+    }
+    const assistantAnalysis = {
+      batch_id: 'capture-batch-fcn-1',
+      revision: 1,
+      source: 'assistant' as const,
+      harness: 'deepseek-harness',
+      provider: 'deepseek',
+      model_name: 'deepseek-v4-flash-vision-exp',
+      schema_version: 'portfolio.transaction-capture-analysis.v2',
+      analysis: {
+        summary: 'One PDD FCN entry was identified. Notional and barrier terms require review.',
+        documents: [{ capture_id: capture.capture_id, document_kind: 'structured_product_confirmation' }],
+        candidates: [{
+          candidate_id: 'txn-fcn-1',
+          candidate_kind: 'transaction' as const,
+          account_resolution: {
+            status: 'resolved' as const,
+            account_id: 'fcn-usd-1',
+            candidate_account_ids: ['fcn-usd-1'],
+          },
+          fields: [{ name: 'notional', value: '600000', status: 'ambiguous' }],
+          proposed_transaction_record_index: 1,
+          possible_duplicate_of: [],
+          possible_existing_transaction_ids: [],
+          duplicate_assessment: 'not_assessed' as const,
+        }],
+        questions: [
+          'Confirm the FCN notional shown as 600.000.',
+          'Confirm the strike and knock-out percentages.',
+        ],
+      },
+      transaction_import: transactionImport,
+      preview_digest: 'b'.repeat(64),
+      preview_error_count: 0,
+      created_at: '2026-08-25T02:02:00Z',
+    }
+    const readyBatch = {
+      batch_id: 'capture-batch-fcn-1',
+      portfolio_id: '3',
+      purpose: 'transaction_import' as const,
+      status: 'review_required' as const,
+      capture_count: 1,
+      latest_analysis_revision: 1,
+      analysis_run_status: 'succeeded' as const,
+      analysis_run_attempt: 1,
+      analysis_run_started_at: '2026-08-25T02:00:10Z',
+      analysis_run_completed_at: '2026-08-25T02:02:00Z',
+      analysis_run_error: null,
+      captures: [capture],
+      latest_analysis: assistantAnalysis,
+      ledger_status: 'unrecorded' as const,
+      recorded_transaction_ids: [],
+      created_at: '2026-08-25T02:00:00Z',
+      updated_at: '2026-08-25T02:02:00Z',
+    }
+    apiMocks.getPortfolioTransactionCaptureBatches.mockResolvedValue({
+      portfolio_id: '3',
+      batches: [readyBatch],
+    })
+
+    const reviewedImport = {
+      ...transactionImport,
+      records: [{
+        ...transactionImport.records[0],
+        price: '650000',
+        gross_amount: '650000',
+        derivative_contract: {
+          ...transactionImport.records[0].derivative_contract,
+          terms: {
+            ...transactionImport.records[0].derivative_contract.terms,
+            notional: '650000',
+          },
+        },
+      }],
+    }
+    const humanAnalysis = {
+      ...assistantAnalysis,
+      revision: 2,
+      source: 'human' as const,
+      harness: null,
+      provider: null,
+      model_name: null,
+      finish_reason: 'human_review_confirmed',
+      analysis: {
+        ...assistantAnalysis.analysis,
+        questions: [],
+      },
+      transaction_import: reviewedImport,
+      preview_digest: 'c'.repeat(64),
+      preview_error_count: 0,
+      created_at: '2026-08-25T02:05:00Z',
+    }
+    const humanBatch = {
+      ...readyBatch,
+      latest_analysis_revision: 2,
+      latest_analysis: humanAnalysis,
+      updated_at: '2026-08-25T02:05:00Z',
+    }
+    apiMocks.createPortfolioTransactionCaptureAnalysisRevision.mockResolvedValue({
+      batch: humanBatch,
+      analysis_revision: humanAnalysis,
+      preview: {
+        portfolio_id: '3',
+        preview_digest: 'c'.repeat(64),
+        row_count: 1,
+        valid_count: 1,
+        error_count: 0,
+        warnings: [],
+        batch_errors: [],
+        rows: [],
+      },
+    })
+    apiMocks.commitPortfolioTransactionImport.mockResolvedValue({
+      portfolio_id: '3',
+      preview_digest: 'c'.repeat(64),
+      created_count: 1,
+      transactions: [selectedTransaction],
+    })
+
+    renderPortfolioPage(
+      <TransactionsPage />,
+      '/portfolios/3/transactions',
+      '/portfolios/:portfolioId/transactions',
+    )
+
+    const status = await screen.findByRole('region', { name: 'Screenshot assistant status' })
+    await user.click(within(status).getByRole('button', { name: 'Open' }))
+    const assistant = screen.getByRole('dialog', { name: 'Screenshot assistant' })
+    const detail = within(assistant).getByRole('region', { name: 'Selected screenshot batch' })
+    expect(within(detail).queryByRole('button', { name: /Record 1 transaction/i })).not.toBeInTheDocument()
+
+    await user.click(within(detail).getByRole('button', { name: 'Review details' }))
+    const review = within(detail).getByRole('region', { name: 'Human transaction review' })
+    const saveReview = within(review).getByRole('button', { name: 'Save review & run Preview' })
+    expect(saveReview).toBeDisabled()
+
+    const notionalInput = within(review).getByLabelText('Record 1 FCN notional')
+    const priceInput = within(review).getByLabelText('Record 1 price')
+    const grossInput = within(review).getByLabelText('Record 1 gross amount')
+    await user.clear(notionalInput)
+    await user.type(notionalInput, '650000')
+    await user.clear(priceInput)
+    await user.type(priceInput, '650000')
+    await user.clear(grossInput)
+    await user.type(grossInput, '650000')
+    await user.click(within(review).getByRole('checkbox', { name: /Confirm the FCN notional/ }))
+    await user.click(within(review).getByRole('checkbox', { name: /Confirm the strike/ }))
+    expect(saveReview).toBeEnabled()
+
+    await user.click(saveReview)
+    await waitFor(() => expect(
+      apiMocks.createPortfolioTransactionCaptureAnalysisRevision,
+    ).toHaveBeenCalledTimes(1))
+    const reviewPayload = apiMocks.createPortfolioTransactionCaptureAnalysisRevision.mock.calls[0][2]
+    expect(reviewPayload).toMatchObject({
+      source: 'human',
+      finish_reason: 'human_review_confirmed',
+      analysis: {
+        questions: [],
+        candidates: [{
+          account_resolution: {
+            status: 'resolved',
+            account_id: 'fcn-usd-1',
+          },
+        }],
+      },
+      transaction_import: reviewedImport,
+    })
+
+    const recordButton = await within(detail).findByRole('button', { name: 'Record 1 transaction' })
+    expect(apiMocks.commitPortfolioTransactionImport).not.toHaveBeenCalled()
+    await user.click(recordButton)
+    const confirmation = screen.getByRole('alertdialog', { name: 'Record Reviewed Transactions' })
+    expect(within(confirmation).getByText(/portfolio/)).toHaveTextContent('3')
+    expect(within(confirmation).getByText(/only step that writes ledger facts/)).toBeInTheDocument()
+    expect(apiMocks.commitPortfolioTransactionImport).not.toHaveBeenCalled()
+
+    await user.click(within(confirmation).getByRole('button', { name: 'Record 1 Transaction' }))
+    await waitFor(() => expect(apiMocks.commitPortfolioTransactionImport).toHaveBeenCalledWith(
+      '3',
+      reviewedImport,
+      'c'.repeat(64),
+      expect.stringContaining('transaction-capture-import-'),
+    ))
+    expect(await screen.findByText('Recorded 1 reviewed transaction fact from screenshots.')).toBeInTheDocument()
+    expect(apiMocks.createPortfolioTransaction).not.toHaveBeenCalled()
+  })
+
+  it('uses server-derived ledger status after reload and never offers a second commit', async () => {
+    const batchId = 'capture-batch-recorded-1'
+    const batch = screenshotBatchFixture({
+      batchId,
+      source: 'human',
+      ledgerStatus: 'recorded',
+      recordedTransactionIds: ['txn-from-capture-1'],
+      records: [{
+        external_reference: `${batchId}#1`,
+        asset_type: 'cash',
+        transaction_action: 'deposit',
+        trade_date: '2026-08-20',
+        account_id: 'cash-1',
+        gross_amount: '1000',
+        currency: 'USD',
+      }],
+      candidates: [{
+        candidate_id: 'cash-recorded-1',
+        candidate_kind: 'transaction',
+        account_resolution: {
+          status: 'resolved',
+          account_id: 'cash-1',
+          candidate_account_ids: ['cash-1'],
+        },
+        fields: [{ name: 'gross_amount', value: '1000', status: 'observed' }],
+        proposed_transaction_record_index: 1,
+      }],
+    })
+    apiMocks.getPortfolioTransactionCaptureBatches.mockResolvedValue({
+      portfolio_id: '3',
+      batches: [batch],
+    })
+    const user = userEvent.setup()
+    renderPortfolioPage(
+      <TransactionsPage />,
+      '/portfolios/3/transactions',
+      '/portfolios/:portfolioId/transactions',
+    )
+
+    const status = await screen.findByRole('region', { name: 'Screenshot assistant status' })
+    expect(within(status).getByText('Recorded')).toBeInTheDocument()
+    expect(within(status).getByText(/Recorded in ledger/)).toBeInTheDocument()
+    await user.click(within(status).getByRole('button', { name: 'Open' }))
+
+    const detail = within(screen.getByRole('dialog', { name: 'Screenshot assistant' }))
+      .getByRole('region', { name: 'Selected screenshot batch' })
+    expect(within(detail).getByText('This reviewed proposal is already in the ledger.')).toBeInTheDocument()
+    expect(within(detail).getByText(/txn-from-capture-1/)).toBeInTheDocument()
+    expect(within(detail).queryByRole('button', { name: /record 1 transaction/i })).not.toBeInTheDocument()
+    expect(within(detail).queryByRole('button', { name: /review details/i })).not.toBeInTheDocument()
+    expect(apiMocks.commitPortfolioTransactionImport).not.toHaveBeenCalled()
+  })
+
+  it('reviews a multi-record FX and option batch and excludes a confirmed duplicate', async () => {
+    const user = userEvent.setup()
+    const hkdCashAccount = {
+      ...cashAccount,
+      account_id: 'cash-hkd-1',
+      account_name: 'HKD Cash',
+      currency: 'HKD',
+    }
+    apiMocks.getPortfolioAccounts.mockResolvedValue({
+      portfolio_id: '3',
+      accounts: [optionAccount, cashAccount, hkdCashAccount],
+    })
+    apiMocks.getPortfolioDerivativeContracts.mockResolvedValue({
+      portfolio_id: '3',
+      derivative_contracts: [optionContract],
+    })
+    const batchId = 'capture-batch-mixed-review-1'
+    const records: PortfolioTransactionImportCommand[] = [{
+      external_reference: `${batchId}#1`,
+      asset_type: 'option',
+      transaction_action: 'sell_to_close',
+      trade_date: '2026-08-20',
+      settlement_date: '2026-08-20',
+      account_id: 'options-1',
+      settlement_cash_account_id: 'cash-1',
+      derivative_contract_id: 'option-call-1',
+      derivative_contract: null,
+      quantity: '1',
+      price: '2',
+      gross_amount: '200',
+      currency: 'USD',
+    }, {
+      external_reference: `${batchId}#2`,
+      asset_type: 'cash',
+      transaction_action: 'fx_conversion',
+      trade_date: '2026-08-20',
+      account_id: 'cash-1',
+      counterparty_account_id: 'cash-hkd-1',
+      gross_amount: '100',
+      counter_amount: '780',
+      fx_rate: '7.8',
+      currency: 'USD',
+    }]
+    const batch = screenshotBatchFixture({
+      batchId,
+      records,
+      candidates: [{
+        candidate_id: 'option-possible-duplicate',
+        candidate_kind: 'transaction',
+        account_resolution: {
+          status: 'resolved',
+          account_id: 'options-1',
+          candidate_account_ids: ['options-1'],
+        },
+        fields: [{ name: 'contract', value: 'GETF Dec 30 Call', status: 'observed' }],
+        proposed_transaction_record_index: 1,
+        possible_existing_transaction_ids: ['txn-1'],
+        duplicate_assessment: 'distinct_records',
+      }, {
+        candidate_id: 'fx-conversion-1',
+        candidate_kind: 'transaction',
+        account_resolution: {
+          status: 'resolved',
+          account_id: 'cash-1',
+          candidate_account_ids: ['cash-1'],
+        },
+        fields: [{ name: 'fx_rate', value: '7.8', status: 'observed' }],
+        proposed_transaction_record_index: 2,
+      }],
+    })
+    apiMocks.getPortfolioTransactionCaptureBatches.mockResolvedValue({
+      portfolio_id: '3',
+      batches: [batch],
+    })
+    apiMocks.createPortfolioTransactionCaptureAnalysisRevision.mockImplementation(
+      async (_portfolioId, _batchId, payload) => {
+        const analysisRevision = {
+          ...batch.latest_analysis!,
+          revision: 2,
+          source: 'human' as const,
+          harness: null,
+          provider: null,
+          model_name: null,
+          finish_reason: 'human_review_confirmed',
+          analysis: payload.analysis,
+          transaction_import: payload.transaction_import,
+          preview_digest: '7'.repeat(64),
+          preview_error_count: 0,
+        }
+        return {
+          batch: {
+            ...batch,
+            latest_analysis_revision: 2,
+            latest_analysis: analysisRevision,
+          },
+          analysis_revision: analysisRevision,
+          preview: {
+            portfolio_id: '3',
+            preview_digest: '7'.repeat(64),
+            row_count: 1,
+            valid_count: 1,
+            error_count: 0,
+            warnings: [],
+            batch_errors: [],
+            rows: [],
+          },
+        }
+      },
+    )
+    renderPortfolioPage(
+      <TransactionsPage />,
+      '/portfolios/3/transactions',
+      '/portfolios/:portfolioId/transactions',
+    )
+
+    const status = await screen.findByRole('region', { name: 'Screenshot assistant status' })
+    await user.click(within(status).getByRole('button', { name: 'Open' }))
+    const detail = within(screen.getByRole('dialog', { name: 'Screenshot assistant' }))
+      .getByRole('region', { name: 'Selected screenshot batch' })
+    await user.click(within(detail).getByRole('button', { name: 'Review details' }))
+    const review = within(detail).getByRole('region', { name: 'Human transaction review' })
+
+    const optionAction = within(review).getByLabelText('Record 1 action')
+    expect(within(optionAction).getByRole('option', { name: 'Fee' })).toBeInTheDocument()
+    expect(within(optionAction).getByRole('option', { name: 'Tax' })).toBeInTheDocument()
+    expect(within(optionAction).queryByRole('option', { name: 'Transfer in' })).not.toBeInTheDocument()
+    expect(within(review).getByLabelText('Record 1 contract source')).toHaveValue('option-call-1')
+    expect(within(review).getByText(/GETF Dec 30 Call · options-1/)).toBeInTheDocument()
+
+    await user.selectOptions(
+      within(review).getByLabelText('Record 1 duplicate resolution'),
+      'same_record',
+    )
+    expect(within(review).getByLabelText('Record 2 counterparty account')).toHaveValue('cash-hkd-1')
+    const targetAmount = within(review).getByLabelText('Record 2 target amount')
+    const fxRate = within(review).getByLabelText('Record 2 FX rate')
+    await user.clear(targetAmount)
+    await user.type(targetAmount, '781')
+    await user.clear(fxRate)
+    await user.type(fxRate, '7.81')
+    await user.click(within(review).getByRole('button', { name: 'Save review & run Preview' }))
+
+    await waitFor(() => expect(
+      apiMocks.createPortfolioTransactionCaptureAnalysisRevision,
+    ).toHaveBeenCalledTimes(1))
+    const submitted = apiMocks.createPortfolioTransactionCaptureAnalysisRevision.mock.calls[0][2]
+    expect(submitted.transaction_import.records).toEqual([{
+      ...records[1],
+      external_reference: `${batchId}#1`,
+      counter_amount: '781',
+      fx_rate: '7.81',
+    }])
+    expect(submitted.analysis.candidates).toMatchObject([{
+      candidate_id: 'option-possible-duplicate',
+      proposed_transaction_record_index: null,
+      duplicate_assessment: 'same_record',
+    }, {
+      candidate_id: 'fx-conversion-1',
+      proposed_transaction_record_index: 1,
+      account_resolution: {
+        status: 'resolved',
+        account_id: 'cash-1',
+      },
+    }])
+    expect(apiMocks.commitPortfolioTransactionImport).not.toHaveBeenCalled()
   })
 
   it('shows file row and batch errors before allowing any import', async () => {

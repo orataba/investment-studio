@@ -267,9 +267,11 @@ Portfolio 创建时必须确定 inception date。任何交易都不得早于该�
 
 费用应选择可证明的 fee category；来源无法分类时保留 `Unknown`，不要猜测。重复提交会通过 idempotency key 去重；若页面提示记录版本冲突，说明事实已在别处更新，应刷新后重新核对，不能覆盖较新版本。
 
-页面右上角固定为 `Export / Import / Template / Record Transaction` 四个操作。Export 和 Template 都可选 CSV 或 Excel；Export 始终包含组合的全部交易命令，不受当前筛选影响，导出的任一格式都可再次 Import。Excel 文件使用 `Transactions` 工作表。Import 会先显示逐行和整批校验结果，只有全部通过后才能原子写入；CSV 与 Excel 使用同一字段、账户/币种规则、仓位校验和 preview digest。不要把数据库行 ID、内部 transfer legs 或页面筛选结果另做成第二种导入格式。
+页面右上角固定为 `Export / Import / Screenshot Assistant / Template / Record Transaction` 五个操作。Export 和 Template 都可选 CSV 或 Excel；Export 始终包含组合的全部交易命令，不受当前筛选影响，导出的任一格式都可再次 Import。Excel 文件使用 `Transactions` 工作表。Import 会先显示逐行和整批校验结果，只有全部通过后才能原子写入；CSV 与 Excel 使用同一字段、账户/币种规则、仓位校验和 preview digest。不要把数据库行 ID、内部 transfer legs 或页面筛选结果另做成第二种导入格式。
 
-交易截图识别等外部系统使用 JSON Preview/Commit 接口，同样先校验、后确认并原子入账；它与 CSV/Excel 共用交易动作、账户/币种、持仓历史和来源去重规则。具体对接合同见 [Portfolio 标准交易记录 JSON 接口对接说明](TRANSACTION_IMPORT_API_GUIDE.md)。
+`Screenshot Assistant` 只处理当前打开的 Portfolio。一次可上传 1–10 张 PNG、JPEG 或 WebP；重叠截图应放在同一批次，由受限 Agent 结合当前组合账户、持仓、合约、Registry 标的和既有交易一起理解。Agent 结果先保存为待复核修订，不会创建交易；用户需逐项确认问题、账户、日期、数量、价格、金额、重复关系及衍生品条款，再保存人工修订并重新运行 Preview。只有最新人工修订的 Preview 全部通过后才显示最终登记确认框。持仓或现金快照可以只形成初始化/对账候选，不会被自动伪造成历史成交。
+
+交易截图识别等外部系统使用同一 JSON Preview/Commit 接口，同样先校验、后确认并原子入账；页面、CSV/Excel、截图助手和外部接口共用交易动作、账户/币种、持仓历史、来源去重和幂等规则。具体对接合同见 [Portfolio 标准交易记录 JSON 接口对接说明](TRANSACTION_IMPORT_API_GUIDE.md)，Agent 运行边界见 [Portfolio Copilot Harness 设计](PORTFOLIO_COPILOT_HARNESS.md)。
 
 内部转账用于组合内账户之间移动现金或持仓。现金转账填写金额；持仓转账填写 instrument、quantity，必要时填写 transferred cost basis。内部转账会生成 transfer in/out 配对记录，不应手工分别录入两边。页面或文件填写的 `source_system + external_reference` 是整笔 Transfer 的来源身份，系统只把它保存在 transfer-out 腿；导出折叠和再次导入仍会保留并查重。
 

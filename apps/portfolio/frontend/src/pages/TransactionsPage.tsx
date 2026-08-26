@@ -6,6 +6,9 @@ import FundDistributionTasksPanel from '../components/FundDistributionTasksPanel
 import PortfolioWorkspaceLayout from '../components/PortfolioWorkspaceLayout'
 import {
   createPortfolioInternalTransfer,
+  commitPortfolioTransactionImport,
+  createPortfolioTransactionCaptureAnalysisRevision,
+  createPortfolioTransactionCaptureBatch,
   createPortfolioTransaction,
   deletePortfolioTransaction,
   getPortfolioAccounts,
@@ -14,14 +17,18 @@ import {
   getPortfolioInstruments,
   getPortfolioTransactionExecutionQuote,
   getPortfolioTransactionPositionPreview,
+  getPortfolioTransactionCaptureBatches,
   getPortfolioTransactionsWorkspace,
   importPortfolioTransactionFile,
   materializePlatformSecurity,
   portfolioTransactionDownloadUrl,
+  portfolioTransactionCaptureImageUrl,
   portfolioTransactionTemplateUrl,
   previewPortfolioTransactionFile,
   reviewPortfolioInstrumentEventTask,
   searchPlatformSecurityCatalog,
+  startPortfolioTransactionCaptureAnalysis,
+  uploadPortfolioTransactionCapture,
   type PortfolioAccountRecord,
   type PortfolioFeeCategory,
   type PortfolioDerivativeContractCreate,
@@ -32,9 +39,14 @@ import {
   type SharedInstrumentRecord,
   type SecuritySearchOption,
   type PortfolioTransactionCreatePayload,
+  type PortfolioTransactionCaptureBatchRecord,
+  type PortfolioTransactionCaptureBatchPurpose,
   type PortfolioTransactionFileFormat,
   type PortfolioTransactionFilePreviewResponse,
   type PortfolioTransactionFilters,
+  type PortfolioTransactionImportAction,
+  type PortfolioTransactionImportCommand,
+  type PortfolioTransactionImportRequest,
   type PortfolioTransactionRecord,
   type PortfolioTransactionUpdatePayload,
   type PortfolioTransactionWorkspaceResponse,
@@ -75,6 +87,14 @@ import {
   type TransactionPriceContract,
 } from '../lib/transactionPricing'
 import { executionQuoteUnavailableMessage } from '../lib/executionQuotePresentation'
+import {
+  buildHumanReviewedCaptureProposal,
+  cloneTransactionImport,
+  hasTransactionCaptureImport,
+  transactionCaptureProposalReady,
+  type TransactionCaptureDuplicateAssessment,
+  type TransactionCaptureReviewDraft,
+} from '../lib/transactionCaptureReview'
 import {
   buildInitialDerivativeContractDraft,
   buildInitialFcnUnderlyingDraft,
@@ -190,15 +210,129 @@ function assetTypeAccountCategory(assetType: string): TransactionEntryKind | nul
 
 type TransactionInspectorTab = 'fact' | 'postings' | 'lots' | 'obligations' | 'history'
 
+type TransactionCaptureAssistantView = 'new' | 'history'
+
+type TransactionCaptureDraftFile = {
+  id: string
+  file: File
+  previewUrl: string
+}
+
+type PendingTransactionCaptureCommit = {
+  batchId: string
+  revision: number
+  previewDigest: string
+  transactionImport: PortfolioTransactionImportRequest
+}
+
+const TRANSACTION_CAPTURE_PURPOSES: Array<{
+  value: PortfolioTransactionCaptureBatchPurpose
+  label: string
+  description: string
+}> = [
+  {
+    value: 'auto',
+    label: 'Let agent decide',
+    description: 'Mixed or uncertain broker screenshots',
+  },
+  {
+    value: 'transaction_import',
+    label: 'Record transactions',
+    description: 'Trades, cash movements, fees, and income',
+  },
+  {
+    value: 'portfolio_initialization',
+    label: 'Initialize portfolio',
+    description: 'Historical holdings and opening balances',
+  },
+  {
+    value: 'position_reconciliation',
+    label: 'Reconcile positions',
+    description: 'Compare broker positions with the ledger',
+  },
+]
+
+const TRANSACTION_CAPTURE_MEDIA_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp'])
+const TRANSACTION_CAPTURE_MAX_FILES = 10
+const TRANSACTION_CAPTURE_MAX_BYTES = 12 * 1024 * 1024
+
+const TRANSACTION_CAPTURE_ACTIONS: Record<
+  PortfolioTransactionImportCommand['asset_type'],
+  Array<{ value: PortfolioTransactionImportAction; label: string }>
+> = {
+  security: [
+    { value: 'buy', label: 'Buy' },
+    { value: 'sell', label: 'Sell' },
+    { value: 'dividend', label: 'Dividend' },
+    { value: 'dividend_reinvestment', label: 'Dividend reinvestment' },
+    { value: 'return_of_capital', label: 'Return of capital' },
+    { value: 'fee', label: 'Fee' },
+    { value: 'tax', label: 'Tax' },
+    { value: 'opening_balance', label: 'Opening balance' },
+    { value: 'transfer_in', label: 'Transfer in' },
+    { value: 'transfer_out', label: 'Transfer out' },
+  ],
+  fcn: [
+    { value: 'entry', label: 'Entry' },
+    { value: 'early_exit', label: 'Early exit' },
+    { value: 'coupon', label: 'Coupon' },
+    { value: 'knock_in_close', label: 'Knock-in close' },
+    { value: 'knock_out_close', label: 'Knock-out close' },
+    { value: 'maturity_close', label: 'Maturity close' },
+    { value: 'fee', label: 'Fee' },
+    { value: 'tax', label: 'Tax' },
+    { value: 'opening_balance', label: 'Opening balance' },
+  ],
+  option: [
+    { value: 'buy_to_open', label: 'Buy to open' },
+    { value: 'sell_to_close', label: 'Sell to close' },
+    { value: 'sell_to_open', label: 'Sell to open' },
+    { value: 'buy_to_close', label: 'Buy to close' },
+    { value: 'expire_long', label: 'Expire long' },
+    { value: 'cash_settle_long', label: 'Cash settle long' },
+    { value: 'expire_written', label: 'Expire written' },
+    { value: 'cash_settle_written', label: 'Cash settle written' },
+    { value: 'fee', label: 'Fee' },
+    { value: 'tax', label: 'Tax' },
+    { value: 'opening_balance', label: 'Opening balance' },
+  ],
+  cash: [
+    { value: 'deposit', label: 'Deposit' },
+    { value: 'withdrawal', label: 'Withdrawal' },
+    { value: 'interest', label: 'Interest' },
+    { value: 'fx_conversion', label: 'FX conversion' },
+    { value: 'fee', label: 'Fee' },
+    { value: 'tax', label: 'Tax' },
+    { value: 'opening_balance', label: 'Opening balance' },
+    { value: 'transfer_in', label: 'Transfer in' },
+    { value: 'transfer_out', label: 'Transfer out' },
+  ],
+}
+
 let fallbackIdempotencySequence = 0
 
-function transactionIdempotencyKey(operation: 'create' | 'transfer' | 'file-import') {
+function transactionIdempotencyKey(operation: 'create' | 'transfer' | 'file-import' | 'capture-import') {
   const randomId = globalThis.crypto?.randomUUID?.()
   if (randomId) {
     return `transaction-${operation}-${randomId}`
   }
   fallbackIdempotencySequence += 1
   return `transaction-${operation}-${Date.now()}-${fallbackIdempotencySequence}`
+}
+
+function transactionCaptureRecordTitle(
+  record: PortfolioTransactionImportCommand,
+  recordIndex: number,
+) {
+  const assetReference = record.instrument_id
+    ?? record.derivative_contract?.contract_name
+    ?? record.derivative_contract_id
+    ?? record.currency
+  return `Record ${recordIndex + 1} · ${formatLabel(record.asset_type)} · ${assetReference}`
+}
+
+function captureInputValue(value: string | number | null | undefined) {
+  return value == null ? '' : String(value)
 }
 
 function primaryIdentifier(
@@ -350,6 +484,65 @@ function formatCalculatedFormNumber(value: number, decimals: number) {
     return ''
   }
   return value.toFixed(decimals).replace(/\.?0+$/, '')
+}
+
+function formatCaptureByteSize(byteSize: number) {
+  if (byteSize < 1024) return `${byteSize} B`
+  if (byteSize < 1024 * 1024) return `${Math.ceil(byteSize / 1024)} KB`
+  return `${(byteSize / (1024 * 1024)).toFixed(1)} MB`
+}
+
+let transactionCaptureDraftSequence = 0
+
+function transactionCaptureDraftId(file: File) {
+  transactionCaptureDraftSequence += 1
+  return `${file.name}:${file.size}:${file.lastModified}:${transactionCaptureDraftSequence}`
+}
+
+function transactionCapturePreviewUrl(file: File) {
+  return typeof URL.createObjectURL === 'function' ? URL.createObjectURL(file) : ''
+}
+
+function revokeTransactionCapturePreview(previewUrl: string) {
+  if (previewUrl && typeof URL.revokeObjectURL === 'function') {
+    URL.revokeObjectURL(previewUrl)
+  }
+}
+
+function transactionCapturePurposeLabel(purpose: PortfolioTransactionCaptureBatchPurpose) {
+  return TRANSACTION_CAPTURE_PURPOSES.find((item) => item.value === purpose)?.label ?? formatLabel(purpose)
+}
+
+function transactionCaptureDisplayStatus(
+  batch: PortfolioTransactionCaptureBatchRecord,
+) {
+  if (batch.ledger_status === 'recorded') {
+    return 'recorded'
+  }
+  if (batch.ledger_status === 'partially_recorded') {
+    return 'partially_recorded'
+  }
+  if (batch.analysis_run_status === 'queued' || batch.analysis_run_status === 'running') {
+    return batch.analysis_run_status
+  }
+  if (batch.analysis_run_status === 'failed') {
+    return 'failed'
+  }
+  return batch.status
+}
+
+function transactionCaptureStatusLabel(
+  batch: PortfolioTransactionCaptureBatchRecord,
+) {
+  if (batch.ledger_status === 'recorded') return 'Recorded'
+  if (batch.ledger_status === 'partially_recorded') return 'Partially recorded'
+  if (batch.analysis_run_status === 'queued') return 'Queued'
+  if (batch.analysis_run_status === 'running') return 'Analyzing'
+  if (batch.analysis_run_status === 'failed') return 'Analysis failed'
+  if (batch.status === 'review_required') {
+    return `Review revision ${batch.latest_analysis_revision}`
+  }
+  return 'Evidence ready'
 }
 
 function accountAllowsAssetType(
@@ -929,6 +1122,8 @@ export default function TransactionsPage() {
   const securitySearchRef = useRef<HTMLInputElement | null>(null)
   const accountSelectRef = useRef<HTMLSelectElement | null>(null)
   const transactionFileInputRef = useRef<HTMLInputElement | null>(null)
+  const transactionCaptureInputRef = useRef<HTMLInputElement | null>(null)
+  const transactionCaptureDraftFilesRef = useRef<TransactionCaptureDraftFile[]>([])
   const autoQuoteKeyRef = useRef<string | null>(null)
   const autoQuantityKeyRef = useRef<string | null>(null)
   const autoGrossDerivedRef = useRef(false)
@@ -952,6 +1147,27 @@ export default function TransactionsPage() {
   const [editingTransactionId, setEditingTransactionId] = useState<string | null>(null)
   const [submittingTransaction, setSubmittingTransaction] = useState(false)
   const [importingFile, setImportingFile] = useState(false)
+  const [uploadingCapture, setUploadingCapture] = useState(false)
+  const [startingCaptureBatchId, setStartingCaptureBatchId] = useState<string | null>(null)
+  const [captureAssistantOpen, setCaptureAssistantOpen] = useState(false)
+  const [captureAssistantView, setCaptureAssistantView] =
+    useState<TransactionCaptureAssistantView>('new')
+  const [capturePurpose, setCapturePurpose] =
+    useState<PortfolioTransactionCaptureBatchPurpose>('auto')
+  const [captureDraftFiles, setCaptureDraftFiles] = useState<TransactionCaptureDraftFile[]>([])
+  const [captureDragActive, setCaptureDragActive] = useState(false)
+  const [selectedCaptureBatchId, setSelectedCaptureBatchId] = useState<string | null>(null)
+  const [transactionCaptureBatches, setTransactionCaptureBatches] = useState<
+    PortfolioTransactionCaptureBatchRecord[]
+  >([])
+  const [captureError, setCaptureError] = useState<string | null>(null)
+  const [captureReviewDraft, setCaptureReviewDraft] =
+    useState<TransactionCaptureReviewDraft | null>(null)
+  const [savingCaptureReview, setSavingCaptureReview] = useState(false)
+  const [pendingCaptureCommit, setPendingCaptureCommit] =
+    useState<PendingTransactionCaptureCommit | null>(null)
+  const [committingCapture, setCommittingCapture] = useState(false)
+  const [captureCommitError, setCaptureCommitError] = useState<string | null>(null)
   const [pendingFileImport, setPendingFileImport] = useState<{
     fileName: string
     file: File
@@ -997,6 +1213,14 @@ export default function TransactionsPage() {
     setActiveEventTask(null)
     setActiveEventTaskReviewer('')
   })
+  const captureAssistantDialogRef = useModalDialog(captureAssistantOpen, () => {
+    if (uploadingCapture || savingCaptureReview || committingCapture) {
+      return
+    }
+    setCaptureAssistantOpen(false)
+    setCaptureDragActive(false)
+    setCaptureReviewDraft(null)
+  })
 
   currentPortfolioIdRef.current = portfolioId
 
@@ -1034,6 +1258,16 @@ export default function TransactionsPage() {
     const timeoutId = window.setTimeout(() => setNotice(null), 2800)
     return () => window.clearTimeout(timeoutId)
   }, [notice])
+
+  useEffect(() => {
+    transactionCaptureDraftFilesRef.current = captureDraftFiles
+  }, [captureDraftFiles])
+
+  useEffect(() => () => {
+    transactionCaptureDraftFilesRef.current.forEach((draft) => {
+      revokeTransactionCapturePreview(draft.previewUrl)
+    })
+  }, [])
 
   useEffect(() => {
     let cancelled = false
@@ -1096,6 +1330,110 @@ export default function TransactionsPage() {
       cancelled = true
     }
   }, [portfolioId])
+
+  useEffect(() => {
+    let cancelled = false
+    setCaptureAssistantOpen(false)
+    setCaptureAssistantView('new')
+    setCapturePurpose('auto')
+    setSelectedCaptureBatchId(null)
+    setCaptureDragActive(false)
+    setCaptureReviewDraft(null)
+    setSavingCaptureReview(false)
+    setPendingCaptureCommit(null)
+    setCommittingCapture(false)
+    setCaptureCommitError(null)
+    setCaptureDraftFiles((current) => {
+      current.forEach((draft) => revokeTransactionCapturePreview(draft.previewUrl))
+      return []
+    })
+    if (!portfolioId) {
+      setTransactionCaptureBatches([])
+      setCaptureError(null)
+      return () => {
+        cancelled = true
+      }
+    }
+
+    setTransactionCaptureBatches([])
+    setStartingCaptureBatchId(null)
+    setCaptureError(null)
+    getPortfolioTransactionCaptureBatches(portfolioId)
+      .then((response) => {
+        if (!cancelled) {
+          setTransactionCaptureBatches(response.batches)
+        }
+      })
+      .catch((error) => {
+        if (!cancelled) {
+          setCaptureError(
+            error instanceof Error ? error.message : 'Failed to load screenshot evidence.',
+          )
+        }
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [portfolioId])
+
+  const captureAnalysisActiveKey = transactionCaptureBatches
+    .filter(
+      (batch) => batch.analysis_run_status === 'queued' || batch.analysis_run_status === 'running',
+    )
+    .map((batch) => batch.batch_id)
+    .sort()
+    .join('|')
+
+  useEffect(() => {
+    if (!portfolioId || !captureAnalysisActiveKey) {
+      return undefined
+    }
+    let cancelled = false
+    let timeoutId: number | undefined
+    const activeBatchIds = new Set(captureAnalysisActiveKey.split('|'))
+
+    const pollAnalysis = async () => {
+      try {
+        const response = await getPortfolioTransactionCaptureBatches(portfolioId)
+        if (cancelled || currentPortfolioIdRef.current !== portfolioId) {
+          return
+        }
+        setTransactionCaptureBatches(response.batches)
+        const stillActive = response.batches.some(
+          (batch) => batch.analysis_run_status === 'queued' || batch.analysis_run_status === 'running',
+        )
+        if (!stillActive) {
+          const failedBatch = response.batches.find(
+            (batch) => activeBatchIds.has(batch.batch_id) && batch.analysis_run_status === 'failed',
+          )
+          setCaptureError(
+            failedBatch
+              ? failedBatch.analysis_run_error ?? 'Screenshot analysis did not finish.'
+              : null,
+          )
+          return
+        }
+      } catch (error) {
+        if (!cancelled) {
+          setCaptureError(
+            error instanceof Error ? error.message : 'Failed to refresh screenshot analysis.',
+          )
+        }
+      }
+      if (!cancelled) {
+        timeoutId = window.setTimeout(() => void pollAnalysis(), 2000)
+      }
+    }
+
+    timeoutId = window.setTimeout(() => void pollAnalysis(), 1000)
+    return () => {
+      cancelled = true
+      if (timeoutId !== undefined) {
+        window.clearTimeout(timeoutId)
+      }
+    }
+  }, [captureAnalysisActiveKey, portfolioId])
 
   useEffect(() => {
     const query = deferredInstrumentSearch.trim()
@@ -2375,6 +2713,396 @@ export default function TransactionsPage() {
     link.remove()
   }
 
+  function openCaptureAssistant(view: TransactionCaptureAssistantView, batchId?: string) {
+    setCaptureAssistantView(view)
+    setSelectedCaptureBatchId(batchId ?? null)
+    setCaptureError(null)
+    setCaptureReviewDraft(null)
+    setCaptureCommitError(null)
+    setCaptureAssistantOpen(true)
+  }
+
+  function addTransactionCaptureFiles(fileList: FileList | File[]) {
+    const files = Array.from(fileList)
+    if (!files.length || uploadingCapture) {
+      return
+    }
+
+    const unsupported = files.filter((file) => !TRANSACTION_CAPTURE_MEDIA_TYPES.has(file.type))
+    if (unsupported.length) {
+      setCaptureError('Use PNG, JPEG, or WebP screenshots only.')
+      return
+    }
+
+    const oversized = files.filter((file) => file.size > TRANSACTION_CAPTURE_MAX_BYTES)
+    if (oversized.length) {
+      setCaptureError('Each screenshot must be 12 MB or smaller.')
+      return
+    }
+
+    if (captureDraftFiles.length + files.length > TRANSACTION_CAPTURE_MAX_FILES) {
+      setCaptureError('Select at most 10 screenshots for one assistant analysis batch.')
+      return
+    }
+
+    setCaptureDraftFiles((current) => [
+      ...current,
+      ...files.map((file) => ({
+        id: transactionCaptureDraftId(file),
+        file,
+        previewUrl: transactionCapturePreviewUrl(file),
+      })),
+    ])
+    setCaptureError(null)
+  }
+
+  function removeTransactionCaptureFile(id: string) {
+    setCaptureDraftFiles((current) => current.filter((draft) => {
+      if (draft.id !== id) {
+        return true
+      }
+      revokeTransactionCapturePreview(draft.previewUrl)
+      return false
+    }))
+    setCaptureError(null)
+  }
+
+  function clearTransactionCaptureDraft() {
+    setCaptureDraftFiles((current) => {
+      current.forEach((draft) => revokeTransactionCapturePreview(draft.previewUrl))
+      return []
+    })
+    if (transactionCaptureInputRef.current) {
+      transactionCaptureInputRef.current.value = ''
+    }
+  }
+
+  async function handleTransactionCaptures() {
+    const files = captureDraftFiles.map((draft) => draft.file)
+    if (!files.length || uploadingCapture || !portfolioId) {
+      return
+    }
+    const targetPortfolioId = portfolioId
+    setUploadingCapture(true)
+    setCaptureError(null)
+    setNotice(null)
+    try {
+      const captures = await Promise.all(
+        files.map((file) => uploadPortfolioTransactionCapture(targetPortfolioId, file)),
+      )
+      const batch = await createPortfolioTransactionCaptureBatch(
+        targetPortfolioId,
+        captures.map((capture) => capture.capture_id),
+        capturePurpose,
+      )
+      if (currentPortfolioIdRef.current !== targetPortfolioId) {
+        return
+      }
+      setTransactionCaptureBatches((current) => [
+        batch,
+        ...current.filter((item) => item.batch_id !== batch.batch_id),
+      ].slice(0, 10))
+      setSelectedCaptureBatchId(batch.batch_id)
+      setCaptureAssistantView('history')
+      clearTransactionCaptureDraft()
+      setNotice(
+        `Saved ${batch.capture_count} screenshot${batch.capture_count === 1 ? '' : 's'} as agent evidence. No transaction facts were recorded.`,
+      )
+    } catch (error) {
+      if (currentPortfolioIdRef.current === targetPortfolioId) {
+        setCaptureError(
+          error instanceof Error ? error.message : 'Failed to prepare screenshot analysis.',
+        )
+      }
+    } finally {
+      setUploadingCapture(false)
+      if (transactionCaptureInputRef.current) {
+        transactionCaptureInputRef.current.value = ''
+      }
+    }
+  }
+
+  async function handleScreenshotAnalysis(batch: PortfolioTransactionCaptureBatchRecord) {
+    if (
+      !portfolioId
+      || startingCaptureBatchId
+      || batch.analysis_run_status === 'queued'
+      || batch.analysis_run_status === 'running'
+    ) {
+      return
+    }
+    const targetPortfolioId = portfolioId
+    setStartingCaptureBatchId(batch.batch_id)
+    setCaptureError(null)
+    setNotice(null)
+    try {
+      const queued = await startPortfolioTransactionCaptureAnalysis(
+        targetPortfolioId,
+        batch.batch_id,
+      )
+      if (currentPortfolioIdRef.current !== targetPortfolioId) {
+        return
+      }
+      setTransactionCaptureBatches((current) => current.map((item) => (
+        item.batch_id === queued.batch_id ? queued : item
+      )))
+      setNotice('DeepSeek is analyzing the screenshot evidence. No ledger facts will be written.')
+    } catch (error) {
+      if (currentPortfolioIdRef.current === targetPortfolioId) {
+        setCaptureError(
+          error instanceof Error ? error.message : 'Failed to start screenshot analysis.',
+        )
+      }
+    } finally {
+      setStartingCaptureBatchId(null)
+    }
+  }
+
+  function beginTransactionCaptureReview(batch: PortfolioTransactionCaptureBatchRecord) {
+    if (batch.ledger_status === 'recorded' || batch.ledger_status === 'partially_recorded') {
+      setCaptureError('This screenshot batch already has ledger facts. Review those records before creating another revision.')
+      return
+    }
+    if (metaLoading) {
+      setCaptureError('Wait for portfolio accounts and instruments to finish loading.')
+      return
+    }
+    const latestAnalysis = batch.latest_analysis
+    if (!hasTransactionCaptureImport(latestAnalysis)) {
+      setCaptureError('This analysis does not contain a transaction proposal to review.')
+      return
+    }
+    setCaptureReviewDraft({
+      batchId: batch.batch_id,
+      sourceRevision: latestAnalysis.revision,
+      transactionImport: cloneTransactionImport(latestAnalysis.transaction_import),
+      confirmedQuestions: latestAnalysis.analysis.questions.map(() => false),
+      duplicateAssessments: Object.fromEntries(
+        latestAnalysis.analysis.candidates
+          .filter((candidate) => (
+            candidate.possible_duplicate_of?.length
+            || candidate.possible_existing_transaction_ids?.length
+          ))
+          .map((candidate) => [
+            candidate.candidate_id,
+            candidate.duplicate_assessment === 'same_record'
+              || candidate.duplicate_assessment === 'uncertain'
+              ? candidate.duplicate_assessment
+              : 'distinct_records',
+          ]),
+      ),
+    })
+    setCaptureError(null)
+    setCaptureCommitError(null)
+  }
+
+  function updateTransactionCaptureReviewRecord(
+    recordIndex: number,
+    update: (record: PortfolioTransactionImportCommand) => PortfolioTransactionImportCommand,
+  ) {
+    setCaptureReviewDraft((current) => {
+      if (!current) {
+        return current
+      }
+      return {
+        ...current,
+        transactionImport: {
+          ...current.transactionImport,
+          records: current.transactionImport.records.map((record, index) => (
+            index === recordIndex ? update(record) : record
+          )),
+        },
+      }
+    })
+    setCaptureError(null)
+  }
+
+  function confirmTransactionCaptureQuestion(questionIndex: number, confirmed: boolean) {
+    setCaptureReviewDraft((current) => {
+      if (!current) {
+        return current
+      }
+      return {
+        ...current,
+        confirmedQuestions: current.confirmedQuestions.map((value, index) => (
+          index === questionIndex ? confirmed : value
+        )),
+      }
+    })
+  }
+
+  function updateTransactionCaptureDuplicateAssessment(
+    candidateId: string,
+    assessment: TransactionCaptureDuplicateAssessment,
+  ) {
+    setCaptureReviewDraft((current) => current
+      ? {
+          ...current,
+          duplicateAssessments: {
+            ...current.duplicateAssessments,
+            [candidateId]: assessment,
+          },
+        }
+      : current)
+    setCaptureError(null)
+  }
+
+  async function saveTransactionCaptureReview() {
+    const draft = captureReviewDraft
+    const batch = transactionCaptureBatches.find((item) => item.batch_id === draft?.batchId)
+    const latestAnalysis = batch?.latest_analysis
+    if (
+      !draft
+      || !batch
+      || !latestAnalysis
+      || draft.sourceRevision !== latestAnalysis.revision
+      || savingCaptureReview
+    ) {
+      setCaptureError('The agent proposal changed. Reopen the latest revision before reviewing it.')
+      return
+    }
+    if (!draft.confirmedQuestions.every(Boolean)) {
+      setCaptureError('Verify every open question before saving the human review.')
+      return
+    }
+
+    const reviewed = buildHumanReviewedCaptureProposal(
+      batch.batch_id,
+      latestAnalysis,
+      draft,
+    )
+
+    const targetPortfolioId = portfolioId
+    setSavingCaptureReview(true)
+    setCaptureError(null)
+    setNotice(null)
+    try {
+      const response = await createPortfolioTransactionCaptureAnalysisRevision(
+        targetPortfolioId,
+        batch.batch_id,
+        {
+          source: 'human',
+          finish_reason: 'human_review_confirmed',
+          schema_version: 'portfolio.transaction-capture-analysis.v2',
+          analysis: {
+            ...reviewed.analysis,
+          },
+          transaction_import: reviewed.transactionImport,
+        },
+      )
+      if (currentPortfolioIdRef.current !== targetPortfolioId) {
+        return
+      }
+      setTransactionCaptureBatches((current) => current.map((item) => (
+        item.batch_id === response.batch.batch_id ? response.batch : item
+      )))
+      setCaptureReviewDraft(null)
+      const preview = response.preview
+      if (preview?.error_count) {
+        const issues = [
+          ...preview.batch_errors,
+          ...preview.rows.flatMap((row) => row.errors.map((error) => `Record ${row.record_index}: ${error}`)),
+        ]
+        setCaptureError(
+          `Preview found ${preview.error_count} issue${preview.error_count === 1 ? '' : 's'}${issues.length ? `: ${issues.slice(0, 4).join(' ')}` : '.'}`,
+        )
+      } else if (reviewed.transactionImport) {
+        setNotice('Human review saved and Preview passed. Nothing has been recorded yet.')
+      } else {
+        setNotice('Human duplicate review saved. No transaction proposal remains to record.')
+      }
+    } catch (error) {
+      if (currentPortfolioIdRef.current === targetPortfolioId) {
+        setCaptureError(
+          error instanceof Error ? error.message : 'Failed to save the human review.',
+        )
+      }
+    } finally {
+      if (currentPortfolioIdRef.current === targetPortfolioId) {
+        setSavingCaptureReview(false)
+      }
+    }
+  }
+
+  function requestTransactionCaptureCommit(batch: PortfolioTransactionCaptureBatchRecord) {
+    const latestAnalysis = batch.latest_analysis
+    if (
+      batch.ledger_status !== 'unrecorded'
+      || !hasTransactionCaptureImport(latestAnalysis)
+      || !transactionCaptureProposalReady(latestAnalysis)
+      || !latestAnalysis.preview_digest
+    ) {
+      setCaptureError('Save a clean human-reviewed Preview before recording transactions.')
+      return
+    }
+    setPendingCaptureCommit({
+      batchId: batch.batch_id,
+      revision: latestAnalysis.revision,
+      previewDigest: latestAnalysis.preview_digest,
+      transactionImport: cloneTransactionImport(latestAnalysis.transaction_import),
+    })
+    setCaptureCommitError(null)
+  }
+
+  async function confirmTransactionCaptureCommit() {
+    const pending = pendingCaptureCommit
+    if (!pending || committingCapture) {
+      return
+    }
+    const targetPortfolioId = portfolioId
+    setCommittingCapture(true)
+    setCaptureCommitError(null)
+    setNotice(null)
+    try {
+      const committed = await commitPortfolioTransactionImport(
+        targetPortfolioId,
+        pending.transactionImport,
+        pending.previewDigest,
+        transactionIdempotencyKey('capture-import'),
+      )
+      if (currentPortfolioIdRef.current !== targetPortfolioId) {
+        return
+      }
+      const recordedReferences = new Set(
+        pending.transactionImport.records.map((record) => record.external_reference),
+      )
+      setTransactionCaptureBatches((current) => current.map((batch) => (
+        batch.batch_id === pending.batchId
+          ? {
+              ...batch,
+              ledger_status: 'recorded',
+              recorded_transaction_ids: committed.transactions
+                .filter((transaction) => (
+                  transaction.source_system === pending.transactionImport.source_system
+                  && recordedReferences.has(transaction.external_reference ?? '')
+                ))
+                .map((transaction) => transaction.transaction_id),
+            }
+          : batch
+      )))
+      setPendingCaptureCommit(null)
+      setCaptureAssistantOpen(false)
+      setCaptureReviewDraft(null)
+      setNotice(
+        `Recorded ${committed.created_count} reviewed transaction fact${committed.created_count === 1 ? '' : 's'} from screenshots.`,
+      )
+      await refreshTransactions(
+        filters,
+        committed.transactions[0]?.transaction_id ?? null,
+      )
+    } catch (error) {
+      if (currentPortfolioIdRef.current === targetPortfolioId) {
+        setCaptureCommitError(
+          error instanceof Error ? error.message : 'Failed to record the reviewed transactions.',
+        )
+      }
+    } finally {
+      if (currentPortfolioIdRef.current === targetPortfolioId) {
+        setCommittingCapture(false)
+      }
+    }
+  }
+
   async function handleTransactionFile(file: File | null) {
     if (!file || importingFile) {
       return
@@ -2443,6 +3171,13 @@ export default function TransactionsPage() {
     (message, index, messages): message is string => Boolean(message) && messages.indexOf(message) === index,
   )
   const pageError = pageErrors.length ? pageErrors.join(' ') : null
+  const latestCaptureBatch = transactionCaptureBatches[0] ?? null
+  const selectedCaptureBatch =
+    transactionCaptureBatches.find((batch) => batch.batch_id === selectedCaptureBatchId)
+    ?? latestCaptureBatch
+  const captureAssistantStep = captureAssistantView === 'new'
+    ? 1
+    : selectedCaptureBatch?.status === 'review_required' ? 3 : 2
 
   function openCreateDrawer() {
     setEditingTransactionId(null)
@@ -3232,6 +3967,15 @@ export default function TransactionsPage() {
             >
               {importingFile ? 'Validating…' : 'Import'}
             </button>
+            <button
+              type="button"
+              className="toolbar-link transaction-toolbar-button"
+              disabled={metaLoading}
+              title="Prepare broker screenshots for agent analysis and review"
+              onClick={() => openCaptureAssistant('new')}
+            >
+              Screenshot Assistant
+            </button>
             <DownloadFormatMenu
               buttonLabel="Template"
               wrapperClassName="portfolio-download-menu"
@@ -3249,6 +3993,17 @@ export default function TransactionsPage() {
                 void handleTransactionFile(event.target.files?.[0] ?? null)
               }
             />
+            <input
+              ref={transactionCaptureInputRef}
+              type="file"
+              accept=".png,.jpg,.jpeg,.webp,image/png,image/jpeg,image/webp"
+              multiple
+              hidden
+              onChange={(event) => {
+                addTransactionCaptureFiles(event.target.files ?? [])
+                event.target.value = ''
+              }}
+            />
             <button
               type="button"
               className="toolbar-link button-primary"
@@ -3259,6 +4014,38 @@ export default function TransactionsPage() {
             </button>
           </div>
         </div>
+
+        {latestCaptureBatch ? (
+          <section className="transaction-capture-summary" aria-label="Screenshot assistant status">
+            <div className="transaction-capture-summary-mark" aria-hidden="true" />
+            <div className="transaction-capture-summary-copy">
+              <div>
+                <strong>Screenshot assistant</strong>
+                <span
+                  className={`transaction-capture-status transaction-capture-status-${transactionCaptureDisplayStatus(latestCaptureBatch)}`}
+                >
+                  {transactionCaptureStatusLabel(latestCaptureBatch)}
+                </span>
+              </div>
+              <span>
+                {latestCaptureBatch.capture_count} screenshot{latestCaptureBatch.capture_count === 1 ? '' : 's'} ·{' '}
+                {transactionCapturePurposeLabel(latestCaptureBatch.purpose)} ·{' '}
+                {latestCaptureBatch.ledger_status === 'recorded'
+                  ? 'Recorded in ledger'
+                  : latestCaptureBatch.ledger_status === 'partially_recorded'
+                    ? 'Ledger reconciliation needed'
+                    : 'No ledger changes'}
+              </span>
+            </div>
+            <button
+              type="button"
+              className="toolbar-link transaction-capture-summary-open"
+              onClick={() => openCaptureAssistant('history', latestCaptureBatch.batch_id)}
+            >
+              Open
+            </button>
+          </section>
+        ) : null}
 
         <section className="transaction-filter-bar">
           <div className="transaction-filter-group">
@@ -3458,6 +4245,7 @@ export default function TransactionsPage() {
         ) : null}
 
         {notice ? <div className="inline-notice inline-notice-success">{notice}</div> : null}
+        {captureError && !captureAssistantOpen ? <div className="error-state">{captureError}</div> : null}
         {pageError ? <div className="error-state">{pageError}</div> : null}
         {deleteError ? <div className="error-state">{deleteError}</div> : null}
         {metaLoading || loadingTransactions ? (
@@ -3917,6 +4705,1634 @@ export default function TransactionsPage() {
           </div>
         ) : null}
       </section>
+
+      {captureAssistantOpen ? (
+        <div
+          className="transaction-drawer-backdrop"
+          role="presentation"
+          onClick={() => {
+            if (!uploadingCapture && !savingCaptureReview && !committingCapture) {
+              setCaptureAssistantOpen(false)
+              setCaptureDragActive(false)
+              setCaptureReviewDraft(null)
+            }
+          }}
+        >
+          <aside
+            ref={captureAssistantDialogRef}
+            className="transaction-drawer transaction-capture-assistant-drawer"
+            role="dialog"
+            aria-modal="true"
+            aria-label="Screenshot assistant"
+            tabIndex={-1}
+            onClick={(event) => event.stopPropagation()}
+          >
+            <header className="transaction-capture-assistant-header">
+              <div>
+                <span>Portfolio copilot</span>
+                <div className="panel-title">Screenshot Assistant</div>
+                <p>Turn mixed broker screenshots into reviewable portfolio evidence.</p>
+              </div>
+              <button
+                type="button"
+                className="toolbar-link"
+                disabled={uploadingCapture || savingCaptureReview || committingCapture}
+                onClick={() => {
+                  setCaptureAssistantOpen(false)
+                  setCaptureDragActive(false)
+                  setCaptureReviewDraft(null)
+                }}
+              >
+                Close
+              </button>
+            </header>
+
+            <div className="transaction-capture-assistant-tabs" role="tablist" aria-label="Assistant workspace">
+              <button
+                type="button"
+                role="tab"
+                aria-selected={captureAssistantView === 'new'}
+                className={captureAssistantView === 'new' ? 'active' : ''}
+                onClick={() => {
+                  setCaptureAssistantView('new')
+                  setCaptureError(null)
+                  setCaptureReviewDraft(null)
+                }}
+              >
+                New evidence
+              </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={captureAssistantView === 'history'}
+                className={captureAssistantView === 'history' ? 'active' : ''}
+                onClick={() => {
+                  setCaptureAssistantView('history')
+                  setCaptureError(null)
+                  setCaptureReviewDraft(null)
+                }}
+              >
+                History <span>{transactionCaptureBatches.length}</span>
+              </button>
+            </div>
+
+            <div className="transaction-capture-assistant-body">
+              <ol className="transaction-capture-step-rail" aria-label="Screenshot workflow">
+                {[
+                  { step: 1, label: 'Evidence' },
+                  { step: 2, label: 'Agent analysis' },
+                  { step: 3, label: 'Human review' },
+                ].map((item) => (
+                  <li
+                    key={item.step}
+                    className={
+                      item.step === captureAssistantStep
+                        ? 'active'
+                        : item.step < captureAssistantStep ? 'complete' : ''
+                    }
+                  >
+                    <span>{item.step}</span>
+                    <strong>{item.label}</strong>
+                  </li>
+                ))}
+              </ol>
+
+              {captureAssistantView === 'new' ? (
+                <div className="transaction-capture-new" role="tabpanel">
+                  <section className="transaction-capture-section">
+                    <div className="transaction-capture-section-heading">
+                      <div>
+                        <strong>What should the agent help with?</strong>
+                        <span>This guides the analysis; the evidence still decides the facts.</span>
+                      </div>
+                    </div>
+                    <div
+                      className="transaction-capture-purpose-grid"
+                      role="radiogroup"
+                      aria-label="Analysis purpose"
+                    >
+                      {TRANSACTION_CAPTURE_PURPOSES.map((purpose) => (
+                        <button
+                          key={purpose.value}
+                          type="button"
+                          role="radio"
+                          aria-checked={capturePurpose === purpose.value}
+                          className={capturePurpose === purpose.value ? 'active' : ''}
+                          onClick={() => setCapturePurpose(purpose.value)}
+                        >
+                          <strong>{purpose.label}</strong>
+                          <span>{purpose.description}</span>
+                        </button>
+                      ))}
+                    </div>
+                  </section>
+
+                  <section className="transaction-capture-section">
+                    <div className="transaction-capture-section-heading">
+                      <div>
+                        <strong>Add screenshot evidence</strong>
+                        <span>PNG, JPEG, or WebP · up to 10 files · 12 MB each</span>
+                      </div>
+                      {captureDraftFiles.length ? (
+                        <button
+                          type="button"
+                          className="toolbar-link"
+                          disabled={uploadingCapture}
+                          onClick={clearTransactionCaptureDraft}
+                        >
+                          Clear
+                        </button>
+                      ) : null}
+                    </div>
+                    <div
+                      className={`transaction-capture-dropzone${captureDragActive ? ' active' : ''}`}
+                      onDragEnter={(event) => {
+                        event.preventDefault()
+                        setCaptureDragActive(true)
+                      }}
+                      onDragOver={(event) => {
+                        event.preventDefault()
+                        setCaptureDragActive(true)
+                      }}
+                      onDragLeave={(event) => {
+                        if (event.currentTarget === event.target) {
+                          setCaptureDragActive(false)
+                        }
+                      }}
+                      onDrop={(event) => {
+                        event.preventDefault()
+                        setCaptureDragActive(false)
+                        addTransactionCaptureFiles(event.dataTransfer.files)
+                      }}
+                    >
+                      <span aria-hidden="true">+</span>
+                      <strong>Drop broker screenshots here</strong>
+                      <p>Overlapping pages and different broker layouts can stay in one evidence set.</p>
+                      <button
+                        type="button"
+                        className="toolbar-link"
+                        disabled={uploadingCapture || captureDraftFiles.length >= TRANSACTION_CAPTURE_MAX_FILES}
+                        onClick={() => transactionCaptureInputRef.current?.click()}
+                      >
+                        Choose screenshots
+                      </button>
+                    </div>
+
+                    {captureDraftFiles.length ? (
+                      <div className="transaction-capture-draft-grid" aria-label="Selected screenshot evidence">
+                        {captureDraftFiles.map((draft, index) => (
+                          <article key={draft.id}>
+                            {draft.previewUrl ? (
+                              <img src={draft.previewUrl} alt="" />
+                            ) : (
+                              <div className="transaction-capture-file-placeholder">Image</div>
+                            )}
+                            <div>
+                              <strong>{draft.file.name}</strong>
+                              <span>{index + 1} of {captureDraftFiles.length} · {formatCaptureByteSize(draft.file.size)}</span>
+                            </div>
+                            <button
+                              type="button"
+                              aria-label={`Remove ${draft.file.name}`}
+                              disabled={uploadingCapture}
+                              onClick={() => removeTransactionCaptureFile(draft.id)}
+                            >
+                              ×
+                            </button>
+                          </article>
+                        ))}
+                      </div>
+                    ) : null}
+                  </section>
+
+                  {captureError ? <div className="error-state transaction-capture-error">{captureError}</div> : null}
+
+                  <footer className="transaction-capture-prepare-footer">
+                    <div>
+                      <strong>Evidence first</strong>
+                      <span>Preparing this batch does not create or change ledger facts.</span>
+                    </div>
+                    <button
+                      type="button"
+                      className="button-primary"
+                      disabled={!captureDraftFiles.length || uploadingCapture}
+                      onClick={() => void handleTransactionCaptures()}
+                    >
+                      {uploadingCapture ? 'Preparing…' : 'Prepare evidence'}
+                    </button>
+                  </footer>
+                </div>
+              ) : (
+                <div className="transaction-capture-history" role="tabpanel">
+                  {captureError ? <div className="error-state transaction-capture-error">{captureError}</div> : null}
+                  {transactionCaptureBatches.length ? (
+                    <div className="transaction-capture-history-layout">
+                      <nav aria-label="Recent screenshot batches">
+                        <div className="transaction-capture-section-heading">
+                          <div>
+                            <strong>Recent batches</strong>
+                            <span>Newest first</span>
+                          </div>
+                        </div>
+                        <div className="transaction-capture-batch-list">
+                          {transactionCaptureBatches.map((batch) => (
+                            <button
+                              key={batch.batch_id}
+                              type="button"
+                              className={selectedCaptureBatch?.batch_id === batch.batch_id ? 'active' : ''}
+                              onClick={() => {
+                                setSelectedCaptureBatchId(batch.batch_id)
+                                setCaptureReviewDraft(null)
+                                setCaptureError(null)
+                              }}
+                            >
+                              <span
+                                className={`transaction-capture-batch-dot transaction-capture-batch-dot-${transactionCaptureDisplayStatus(batch)}`}
+                              />
+                              <span>
+                                <strong>{transactionCapturePurposeLabel(batch.purpose)}</strong>
+                                <small>
+                                  {batch.capture_count} image{batch.capture_count === 1 ? '' : 's'} ·{' '}
+                                  {new Date(batch.created_at).toLocaleDateString()}
+                                </small>
+                              </span>
+                            </button>
+                          ))}
+                        </div>
+                      </nav>
+
+                      {selectedCaptureBatch ? (
+                        <section className="transaction-capture-batch-detail" aria-label="Selected screenshot batch">
+                          <div className="transaction-capture-batch-title">
+                            <div>
+                              <span>Evidence batch</span>
+                              <strong>{transactionCapturePurposeLabel(selectedCaptureBatch.purpose)}</strong>
+                            </div>
+                            <span
+                              className={`transaction-capture-status transaction-capture-status-${transactionCaptureDisplayStatus(selectedCaptureBatch)}`}
+                            >
+                              {transactionCaptureStatusLabel(selectedCaptureBatch)}
+                            </span>
+                          </div>
+
+                          <div className="transaction-capture-evidence-grid">
+                            {selectedCaptureBatch.captures.map((capture) => (
+                              <figure key={capture.capture_id}>
+                                <img
+                                  src={portfolioTransactionCaptureImageUrl(portfolioId, capture.capture_id)}
+                                  alt={`Screenshot evidence ${capture.original_filename}`}
+                                />
+                                <figcaption>
+                                  <strong>{capture.original_filename}</strong>
+                                  <span>{formatCaptureByteSize(capture.byte_size)} · {capture.content_sha256.slice(0, 8)}</span>
+                                </figcaption>
+                              </figure>
+                            ))}
+                          </div>
+
+                          {selectedCaptureBatch.latest_analysis ? (
+                            <div className="transaction-capture-analysis">
+                              <div className="transaction-capture-analysis-summary">
+                                <span>
+                                  {selectedCaptureBatch.latest_analysis.source === 'human'
+                                    ? 'Human-reviewed revision'
+                                    : 'Agent summary'}
+                                </span>
+                                <p>{selectedCaptureBatch.latest_analysis.analysis.summary}</p>
+                              </div>
+                              <dl className="transaction-capture-analysis-metrics">
+                                <div>
+                                  <dt>Documents</dt>
+                                  <dd>{selectedCaptureBatch.latest_analysis.analysis.documents.length}</dd>
+                                </div>
+                                <div>
+                                  <dt>Candidate facts</dt>
+                                  <dd>{selectedCaptureBatch.latest_analysis.analysis.candidates.length}</dd>
+                                </div>
+                                <div>
+                                  <dt>Preview</dt>
+                                  <dd>
+                                    {selectedCaptureBatch.latest_analysis.preview_digest
+                                      ? selectedCaptureBatch.latest_analysis.preview_error_count
+                                        ? `${selectedCaptureBatch.latest_analysis.preview_error_count} issue${selectedCaptureBatch.latest_analysis.preview_error_count === 1 ? '' : 's'}`
+                                        : 'Ready'
+                                      : 'Not created'}
+                                  </dd>
+                                </div>
+                              </dl>
+
+                              {selectedCaptureBatch.latest_analysis.analysis.documents.length ? (
+                                <div className="transaction-capture-analysis-block">
+                                  <strong>Document classification</strong>
+                                  <ul>
+                                    {selectedCaptureBatch.latest_analysis.analysis.documents.map((document) => (
+                                      <li key={document.capture_id}>
+                                        <span>
+                                          {selectedCaptureBatch.captures.find((capture) => capture.capture_id === document.capture_id)?.original_filename
+                                            ?? document.capture_id}
+                                        </span>
+                                        <em>{formatLabel(document.document_kind)}</em>
+                                      </li>
+                                    ))}
+                                  </ul>
+                                </div>
+                              ) : null}
+
+                              {selectedCaptureBatch.latest_analysis.analysis.candidates.length ? (
+                                <div className="transaction-capture-analysis-block transaction-capture-account-allocation">
+                                  <strong>Account allocation</strong>
+                                  <ul>
+                                    {selectedCaptureBatch.latest_analysis.analysis.candidates.map((candidate) => {
+                                      const resolution = candidate.account_resolution
+                                      const resolvedAccountId = resolution?.account_id ?? ''
+                                      const candidateAccountNames = resolution?.candidate_account_ids
+                                        .map((accountId) => accountNameById[accountId] || accountId)
+                                        .join(' · ')
+                                      const resolutionLabel = !resolution
+                                        ? 'Not assessed'
+                                        : resolution.status === 'resolved'
+                                          ? accountNameById[resolvedAccountId] || resolvedAccountId
+                                          : resolution.status === 'ambiguous'
+                                            ? `Needs selection${candidateAccountNames ? ` · ${candidateAccountNames}` : ''}`
+                                            : resolution.status === 'unavailable'
+                                              ? 'No eligible account'
+                                              : 'Not applicable'
+                                      return (
+                                        <li key={candidate.candidate_id}>
+                                          <span>
+                                            {candidate.candidate_id} · {formatLabel(candidate.candidate_kind)}
+                                          </span>
+                                          <em className={`transaction-capture-account-status-${resolution?.status ?? 'unassessed'}`}>
+                                            {resolutionLabel}
+                                          </em>
+                                        </li>
+                                      )
+                                    })}
+                                  </ul>
+                                </div>
+                              ) : null}
+
+                              {selectedCaptureBatch.latest_analysis.analysis.candidates.some(
+                                (candidate) => candidate.possible_existing_transaction_ids?.length,
+                              ) ? (
+                                <div className="transaction-capture-analysis-block transaction-capture-duplicate-check">
+                                  <strong>Existing transaction check</strong>
+                                  <ul>
+                                    {selectedCaptureBatch.latest_analysis.analysis.candidates
+                                      .filter((candidate) => candidate.possible_existing_transaction_ids?.length)
+                                      .map((candidate) => {
+                                        const assessment = candidate.duplicate_assessment ?? 'not_assessed'
+                                        const assessmentLabel = assessment === 'same_record'
+                                          ? 'Likely already recorded'
+                                          : assessment === 'distinct_records'
+                                            ? 'Confirmed distinct'
+                                            : assessment === 'uncertain'
+                                              ? 'Needs review'
+                                              : 'Not assessed'
+                                        return (
+                                          <li key={candidate.candidate_id}>
+                                            <span>{candidate.possible_existing_transaction_ids?.join(' · ')}</span>
+                                            <em className={`transaction-capture-duplicate-status-${assessment}`}>
+                                              {assessmentLabel}
+                                            </em>
+                                          </li>
+                                        )
+                                      })}
+                                  </ul>
+                                </div>
+                              ) : null}
+
+                              {selectedCaptureBatch.latest_analysis.analysis.questions.length
+                              && captureReviewDraft?.batchId !== selectedCaptureBatch.batch_id ? (
+                                <div className="transaction-capture-analysis-block transaction-capture-questions">
+                                  <strong>Questions before commit</strong>
+                                  <ol>
+                                    {selectedCaptureBatch.latest_analysis.analysis.questions.map((question, index) => (
+                                      <li key={`${index}-${question}`}>{question}</li>
+                                    ))}
+                                  </ol>
+                                </div>
+                              ) : null}
+
+                              {captureReviewDraft?.batchId === selectedCaptureBatch.batch_id ? (
+                                <section className="transaction-capture-review" aria-label="Human transaction review">
+                                  <div className="transaction-capture-review-heading">
+                                    <div>
+                                      <span>Human review</span>
+                                      <strong>Verify the agent proposal</strong>
+                                    </div>
+                                    <span>Based on revision {captureReviewDraft.sourceRevision}</span>
+                                  </div>
+
+                                  <div className="transaction-capture-review-records">
+                                    {captureReviewDraft.transactionImport.records.map((record, recordIndex) => {
+                                      const recordNumber = recordIndex + 1
+                                      const eligibleHoldingAccounts = accounts.filter(
+                                        (account) => (
+                                          account.account_category === record.asset_type
+                                          && (
+                                            account.currency === record.currency
+                                            || account.account_id === record.account_id
+                                          )
+                                        ),
+                                      )
+                                      const eligibleCashAccounts = accounts.filter(
+                                        (account) => (
+                                          account.account_category === 'cash'
+                                          && (
+                                            account.currency === record.currency
+                                            || account.account_id === record.settlement_cash_account_id
+                                          )
+                                        ),
+                                      )
+                                      const fcnContract = record.derivative_contract?.contract_type === 'fcn'
+                                        ? record.derivative_contract
+                                        : null
+                                      const optionContractDraft = record.derivative_contract?.contract_type === 'option'
+                                        ? record.derivative_contract
+                                        : null
+                                      const isTransfer = record.transaction_action === 'transfer_in'
+                                        || record.transaction_action === 'transfer_out'
+                                      const isFxConversion = record.transaction_action === 'fx_conversion'
+                                      const reviewCandidate = selectedCaptureBatch.latest_analysis?.analysis.candidates.find(
+                                        (candidate) => candidate.proposed_transaction_record_index === recordNumber,
+                                      )
+                                      const hasDuplicateReferences = Boolean(
+                                        reviewCandidate?.possible_duplicate_of?.length
+                                        || reviewCandidate?.possible_existing_transaction_ids?.length,
+                                      )
+                                      const eligibleCounterpartyAccounts = accounts.filter((account) => {
+                                        if (account.account_id === record.account_id) return false
+                                        if (isFxConversion) {
+                                          return account.account_category === 'cash'
+                                            && (
+                                              account.currency !== record.currency
+                                              || account.account_id === record.counterparty_account_id
+                                            )
+                                        }
+                                        return account.account_category === record.asset_type
+                                          && (
+                                            account.currency === record.currency
+                                            || account.account_id === record.counterparty_account_id
+                                          )
+                                      })
+                                      const eligibleDerivativeContracts = derivativeContracts.filter((contract) => (
+                                        contract.contract_type === record.asset_type
+                                        && (
+                                          (
+                                            contract.account_id === record.account_id
+                                            && contract.currency === record.currency
+                                          )
+                                          || contract.derivative_contract_id === record.derivative_contract_id
+                                        )
+                                      ))
+                                      const selectedDerivativeContract = derivativeContracts.find(
+                                        (contract) => contract.derivative_contract_id === record.derivative_contract_id,
+                                      )
+                                      const accountRoleLabel = record.transaction_action === 'transfer_out'
+                                        ? 'Source account'
+                                        : record.transaction_action === 'transfer_in'
+                                          ? 'Destination account'
+                                          : isFxConversion
+                                            ? 'Source cash account'
+                                            : record.asset_type === 'cash'
+                                              ? 'Cash account'
+                                              : 'Holding account'
+                                      return (
+                                        <article key={record.external_reference || recordNumber}>
+                                          <header>
+                                            <div>
+                                              <strong>{transactionCaptureRecordTitle(record, recordIndex)}</strong>
+                                              <span>{record.external_reference}</span>
+                                            </div>
+                                            <em>{formatLabel(record.asset_type)}</em>
+                                          </header>
+
+                                          {reviewCandidate && hasDuplicateReferences ? (
+                                            <div className="transaction-capture-review-duplicate">
+                                              <div>
+                                                <strong>Duplicate decision</strong>
+                                                <span>
+                                                  {[...(reviewCandidate.possible_existing_transaction_ids ?? []),
+                                                    ...(reviewCandidate.possible_duplicate_of ?? [])].join(' · ')}
+                                                </span>
+                                              </div>
+                                              <label>
+                                                <span>Resolution</span>
+                                                <select
+                                                  aria-label={`Record ${recordNumber} duplicate resolution`}
+                                                  value={captureReviewDraft.duplicateAssessments[reviewCandidate.candidate_id]}
+                                                  onChange={(event) => updateTransactionCaptureDuplicateAssessment(
+                                                    reviewCandidate.candidate_id,
+                                                    event.target.value as 'same_record' | 'distinct_records' | 'uncertain',
+                                                  )}
+                                                >
+                                                  <option value="distinct_records">Distinct — keep proposal</option>
+                                                  <option value="same_record">Same fact — exclude proposal</option>
+                                                  <option value="uncertain">Uncertain — exclude proposal</option>
+                                                </select>
+                                              </label>
+                                            </div>
+                                          ) : null}
+
+                                          <div className="transaction-capture-review-grid">
+                                            <label>
+                                              <span>Action</span>
+                                              <select
+                                                aria-label={`Record ${recordNumber} action`}
+                                                value={record.transaction_action}
+                                                onChange={(event) => updateTransactionCaptureReviewRecord(
+                                                  recordIndex,
+                                                  (current) => ({
+                                                    ...current,
+                                                    transaction_action: event.target.value as PortfolioTransactionImportAction,
+                                                  }),
+                                                )}
+                                              >
+                                                {TRANSACTION_CAPTURE_ACTIONS[record.asset_type].map((action) => (
+                                                  <option key={action.value} value={action.value}>{action.label}</option>
+                                                ))}
+                                              </select>
+                                            </label>
+                                            <label>
+                                              <span>{accountRoleLabel}</span>
+                                              <select
+                                                aria-label={`Record ${recordNumber} ${accountRoleLabel.toLowerCase()}`}
+                                                value={record.account_id}
+                                                onChange={(event) => updateTransactionCaptureReviewRecord(
+                                                  recordIndex,
+                                                  (current) => ({ ...current, account_id: event.target.value }),
+                                                )}
+                                              >
+                                                {eligibleHoldingAccounts.map((account) => (
+                                                  <option key={account.account_id} value={account.account_id}>
+                                                    {account.account_name} · {account.currency}
+                                                  </option>
+                                                ))}
+                                              </select>
+                                            </label>
+                                            {isTransfer || isFxConversion ? (
+                                              <label>
+                                                <span>
+                                                  {record.transaction_action === 'transfer_out'
+                                                    ? 'Destination account'
+                                                    : record.transaction_action === 'transfer_in'
+                                                      ? 'Source account'
+                                                      : 'Target cash account'}
+                                                </span>
+                                                <select
+                                                  aria-label={`Record ${recordNumber} counterparty account`}
+                                                  value={record.counterparty_account_id ?? ''}
+                                                  onChange={(event) => updateTransactionCaptureReviewRecord(
+                                                    recordIndex,
+                                                    (current) => ({
+                                                      ...current,
+                                                      counterparty_account_id: event.target.value || null,
+                                                    }),
+                                                  )}
+                                                >
+                                                  <option value="">Select account</option>
+                                                  {eligibleCounterpartyAccounts.map((account) => (
+                                                    <option key={account.account_id} value={account.account_id}>
+                                                      {account.account_name} · {account.currency}
+                                                    </option>
+                                                  ))}
+                                                </select>
+                                              </label>
+                                            ) : null}
+                                            {record.asset_type !== 'cash' && !isTransfer ? (
+                                              <label>
+                                                <span>Settlement cash</span>
+                                                <select
+                                                  aria-label={`Record ${recordNumber} settlement cash account`}
+                                                  value={record.settlement_cash_account_id ?? ''}
+                                                  onChange={(event) => updateTransactionCaptureReviewRecord(
+                                                    recordIndex,
+                                                    (current) => ({
+                                                      ...current,
+                                                      settlement_cash_account_id: event.target.value || null,
+                                                    }),
+                                                  )}
+                                                >
+                                                  <option value="">None</option>
+                                                  {eligibleCashAccounts.map((account) => (
+                                                    <option key={account.account_id} value={account.account_id}>
+                                                      {account.account_name} · {account.currency}
+                                                    </option>
+                                                  ))}
+                                                </select>
+                                              </label>
+                                            ) : null}
+                                            <label>
+                                              <span>Currency</span>
+                                              <input
+                                                aria-label={`Record ${recordNumber} currency`}
+                                                value={record.currency}
+                                                maxLength={3}
+                                                onChange={(event) => updateTransactionCaptureReviewRecord(
+                                                  recordIndex,
+                                                  (current) => ({ ...current, currency: event.target.value.toUpperCase() }),
+                                                )}
+                                              />
+                                            </label>
+                                            <label>
+                                              <span>Trade date</span>
+                                              <input
+                                                type="date"
+                                                aria-label={`Record ${recordNumber} trade date`}
+                                                value={record.trade_date}
+                                                onChange={(event) => updateTransactionCaptureReviewRecord(
+                                                  recordIndex,
+                                                  (current) => ({ ...current, trade_date: event.target.value }),
+                                                )}
+                                              />
+                                            </label>
+                                            <label>
+                                              <span>Trade time</span>
+                                              <input
+                                                type="time"
+                                                step={60}
+                                                aria-label={`Record ${recordNumber} trade time`}
+                                                value={record.trade_time ?? ''}
+                                                onChange={(event) => updateTransactionCaptureReviewRecord(
+                                                  recordIndex,
+                                                  (current) => ({ ...current, trade_time: event.target.value || null }),
+                                                )}
+                                              />
+                                            </label>
+                                            <label>
+                                              <span>Settlement date</span>
+                                              <input
+                                                type="date"
+                                                aria-label={`Record ${recordNumber} settlement date`}
+                                                value={record.settlement_date ?? ''}
+                                                onChange={(event) => updateTransactionCaptureReviewRecord(
+                                                  recordIndex,
+                                                  (current) => ({ ...current, settlement_date: event.target.value || null }),
+                                                )}
+                                              />
+                                            </label>
+                                            <label>
+                                              <span>Position effective</span>
+                                              <input
+                                                type="date"
+                                                aria-label={`Record ${recordNumber} position effective date`}
+                                                value={record.position_effective_date ?? ''}
+                                                onChange={(event) => updateTransactionCaptureReviewRecord(
+                                                  recordIndex,
+                                                  (current) => ({
+                                                    ...current,
+                                                    position_effective_date: event.target.value || null,
+                                                  }),
+                                                )}
+                                              />
+                                            </label>
+                                            {[
+                                              'dividend',
+                                              'dividend_reinvestment',
+                                              'coupon',
+                                              'fee',
+                                              'tax',
+                                            ].includes(record.transaction_action) ? (
+                                              <label>
+                                                <span>Entitlement date</span>
+                                                <input
+                                                  type="date"
+                                                  aria-label={`Record ${recordNumber} entitlement date`}
+                                                  value={record.entitlement_date ?? ''}
+                                                  onChange={(event) => updateTransactionCaptureReviewRecord(
+                                                    recordIndex,
+                                                    (current) => ({
+                                                      ...current,
+                                                      entitlement_date: event.target.value || null,
+                                                    }),
+                                                  )}
+                                                />
+                                              </label>
+                                            ) : null}
+                                            {record.transaction_action === 'opening_balance'
+                                            && record.asset_type !== 'cash' ? (
+                                              <label>
+                                                <span>Acquisition date</span>
+                                                <input
+                                                  type="date"
+                                                  aria-label={`Record ${recordNumber} acquisition date`}
+                                                  value={record.acquisition_date ?? ''}
+                                                  onChange={(event) => updateTransactionCaptureReviewRecord(
+                                                    recordIndex,
+                                                    (current) => ({
+                                                      ...current,
+                                                      acquisition_date: event.target.value || null,
+                                                    }),
+                                                  )}
+                                                />
+                                              </label>
+                                            ) : null}
+                                          </div>
+
+                                          {record.asset_type === 'security' ? (
+                                            <div className="transaction-capture-review-grid transaction-capture-review-asset-grid">
+                                              <label className="transaction-capture-review-wide">
+                                                <span>Registry security</span>
+                                                <input
+                                                  list={`capture-review-security-${recordNumber}`}
+                                                  aria-label={`Record ${recordNumber} registry security`}
+                                                  value={record.instrument_id ?? ''}
+                                                  onChange={(event) => updateTransactionCaptureReviewRecord(
+                                                    recordIndex,
+                                                    (current) => ({ ...current, instrument_id: event.target.value || null }),
+                                                  )}
+                                                />
+                                                <datalist id={`capture-review-security-${recordNumber}`}>
+                                                  {instruments.map((instrument) => (
+                                                    <option
+                                                      key={instrument.instrument_id}
+                                                      value={instrument.instrument_id}
+                                                      label={instrumentSearchLabel(instrument)}
+                                                    />
+                                                  ))}
+                                                </datalist>
+                                              </label>
+                                            </div>
+                                          ) : null}
+
+                                          {record.asset_type === 'fcn' || record.asset_type === 'option' ? (
+                                            <div className="transaction-capture-review-contract-source">
+                                              <label>
+                                                <span>Contract source</span>
+                                                <select
+                                                  aria-label={`Record ${recordNumber} contract source`}
+                                                  value={record.derivative_contract
+                                                    ? '__new_from_screenshot__'
+                                                    : record.derivative_contract_id ?? ''}
+                                                  onChange={(event) => {
+                                                    if (event.target.value === '__new_from_screenshot__') return
+                                                    updateTransactionCaptureReviewRecord(
+                                                      recordIndex,
+                                                      (current) => ({
+                                                        ...current,
+                                                        derivative_contract_id: event.target.value || null,
+                                                        derivative_contract: null,
+                                                      }),
+                                                    )
+                                                  }}
+                                                >
+                                                  <option value="">Select existing contract</option>
+                                                  {record.derivative_contract ? (
+                                                    <option value="__new_from_screenshot__">
+                                                      New contract from screenshot
+                                                    </option>
+                                                  ) : null}
+                                                  {eligibleDerivativeContracts.map((contract) => (
+                                                    <option
+                                                      key={contract.derivative_contract_id}
+                                                      value={contract.derivative_contract_id}
+                                                    >
+                                                      {contract.contract_name} · {contract.currency}
+                                                    </option>
+                                                  ))}
+                                                </select>
+                                              </label>
+                                              <span>
+                                                {record.derivative_contract
+                                                  ? 'The contract below will be created only with the reviewed transaction.'
+                                                  : selectedDerivativeContract
+                                                    ? `${selectedDerivativeContract.contract_name} · ${selectedDerivativeContract.account_id}`
+                                                    : 'Choose a contract already assigned to this portfolio account.'}
+                                              </span>
+                                            </div>
+                                          ) : null}
+
+                                          {fcnContract ? (
+                                            <div className="transaction-capture-review-terms">
+                                              <div className="transaction-capture-review-subheading">
+                                                <strong>FCN contract terms</strong>
+                                                <span>Confirm economic terms against the source document.</span>
+                                              </div>
+                                              <div className="transaction-capture-review-grid">
+                                                <label>
+                                                  <span>Contract ID</span>
+                                                  <input
+                                                    aria-label={`Record ${recordNumber} FCN contract ID`}
+                                                    value={fcnContract.derivative_contract_id}
+                                                    onChange={(event) => updateTransactionCaptureReviewRecord(
+                                                      recordIndex,
+                                                      (current) => current.derivative_contract?.contract_type === 'fcn'
+                                                        ? {
+                                                            ...current,
+                                                            derivative_contract_id: event.target.value,
+                                                            derivative_contract: {
+                                                              ...current.derivative_contract,
+                                                              derivative_contract_id: event.target.value,
+                                                            },
+                                                          }
+                                                        : current,
+                                                    )}
+                                                  />
+                                                </label>
+                                                <label>
+                                                  <span>Contract name</span>
+                                                  <input
+                                                    aria-label={`Record ${recordNumber} FCN contract name`}
+                                                    value={fcnContract.contract_name}
+                                                    onChange={(event) => updateTransactionCaptureReviewRecord(
+                                                      recordIndex,
+                                                      (current) => current.derivative_contract?.contract_type === 'fcn'
+                                                        ? {
+                                                            ...current,
+                                                            derivative_contract: {
+                                                              ...current.derivative_contract,
+                                                              contract_name: event.target.value,
+                                                            },
+                                                          }
+                                                        : current,
+                                                    )}
+                                                  />
+                                                </label>
+                                                <label>
+                                                  <span>ISIN / external reference</span>
+                                                  <input
+                                                    aria-label={`Record ${recordNumber} FCN external reference`}
+                                                    value={fcnContract.external_reference ?? ''}
+                                                    onChange={(event) => updateTransactionCaptureReviewRecord(
+                                                      recordIndex,
+                                                      (current) => current.derivative_contract?.contract_type === 'fcn'
+                                                        ? {
+                                                            ...current,
+                                                            derivative_contract: {
+                                                              ...current.derivative_contract,
+                                                              external_reference: event.target.value || null,
+                                                            },
+                                                          }
+                                                        : current,
+                                                    )}
+                                                  />
+                                                </label>
+                                                <label>
+                                                  <span>FCN notional</span>
+                                                  <input
+                                                    type="number"
+                                                    min="0"
+                                                    step="0.01"
+                                                    aria-label={`Record ${recordNumber} FCN notional`}
+                                                    value={captureInputValue(fcnContract.terms.notional)}
+                                                    onChange={(event) => updateTransactionCaptureReviewRecord(
+                                                      recordIndex,
+                                                      (current) => current.derivative_contract?.contract_type === 'fcn'
+                                                        ? {
+                                                            ...current,
+                                                            derivative_contract: {
+                                                              ...current.derivative_contract,
+                                                              terms: {
+                                                                ...current.derivative_contract.terms,
+                                                                notional: event.target.value,
+                                                              },
+                                                            },
+                                                          }
+                                                        : current,
+                                                    )}
+                                                  />
+                                                </label>
+                                                <label>
+                                                  <span>Annual coupon (%)</span>
+                                                  <input
+                                                    type="number"
+                                                    min="0"
+                                                    step="0.0001"
+                                                    aria-label={`Record ${recordNumber} annual coupon`}
+                                                    value={captureInputValue(fcnContract.terms.annual_coupon_rate_pct)}
+                                                    onChange={(event) => updateTransactionCaptureReviewRecord(
+                                                      recordIndex,
+                                                      (current) => current.derivative_contract?.contract_type === 'fcn'
+                                                        ? {
+                                                            ...current,
+                                                            derivative_contract: {
+                                                              ...current.derivative_contract,
+                                                              terms: {
+                                                                ...current.derivative_contract.terms,
+                                                                annual_coupon_rate_pct: event.target.value || null,
+                                                              },
+                                                            },
+                                                          }
+                                                        : current,
+                                                    )}
+                                                  />
+                                                </label>
+                                                <label>
+                                                  <span>Issue date</span>
+                                                  <input
+                                                    type="date"
+                                                    aria-label={`Record ${recordNumber} FCN issue date`}
+                                                    value={fcnContract.terms.issue_date}
+                                                    onChange={(event) => updateTransactionCaptureReviewRecord(
+                                                      recordIndex,
+                                                      (current) => current.derivative_contract?.contract_type === 'fcn'
+                                                        ? {
+                                                            ...current,
+                                                            derivative_contract: {
+                                                              ...current.derivative_contract,
+                                                              terms: {
+                                                                ...current.derivative_contract.terms,
+                                                                issue_date: event.target.value,
+                                                              },
+                                                            },
+                                                          }
+                                                        : current,
+                                                    )}
+                                                  />
+                                                </label>
+                                                <label>
+                                                  <span>Final observation</span>
+                                                  <input
+                                                    type="date"
+                                                    aria-label={`Record ${recordNumber} FCN final observation date`}
+                                                    value={fcnContract.terms.final_observation_date ?? ''}
+                                                    onChange={(event) => updateTransactionCaptureReviewRecord(
+                                                      recordIndex,
+                                                      (current) => current.derivative_contract?.contract_type === 'fcn'
+                                                        ? {
+                                                            ...current,
+                                                            derivative_contract: {
+                                                              ...current.derivative_contract,
+                                                              terms: {
+                                                                ...current.derivative_contract.terms,
+                                                                final_observation_date: event.target.value || null,
+                                                              },
+                                                            },
+                                                          }
+                                                        : current,
+                                                    )}
+                                                  />
+                                                </label>
+                                                <label>
+                                                  <span>Maturity date</span>
+                                                  <input
+                                                    type="date"
+                                                    aria-label={`Record ${recordNumber} FCN maturity date`}
+                                                    value={fcnContract.terms.maturity_date}
+                                                    onChange={(event) => updateTransactionCaptureReviewRecord(
+                                                      recordIndex,
+                                                      (current) => current.derivative_contract?.contract_type === 'fcn'
+                                                        ? {
+                                                            ...current,
+                                                            derivative_contract: {
+                                                              ...current.derivative_contract,
+                                                              terms: {
+                                                                ...current.derivative_contract.terms,
+                                                                maturity_date: event.target.value,
+                                                              },
+                                                            },
+                                                          }
+                                                        : current,
+                                                    )}
+                                                  />
+                                                </label>
+                                                <label>
+                                                  <span>Issuer</span>
+                                                  <input
+                                                    aria-label={`Record ${recordNumber} FCN issuer`}
+                                                    value={fcnContract.terms.issuer}
+                                                    onChange={(event) => updateTransactionCaptureReviewRecord(
+                                                      recordIndex,
+                                                      (current) => current.derivative_contract?.contract_type === 'fcn'
+                                                        ? {
+                                                            ...current,
+                                                            derivative_contract: {
+                                                              ...current.derivative_contract,
+                                                              terms: {
+                                                                ...current.derivative_contract.terms,
+                                                                issuer: event.target.value,
+                                                              },
+                                                            },
+                                                          }
+                                                        : current,
+                                                    )}
+                                                  />
+                                                </label>
+                                                <label>
+                                                  <span>Counterparty</span>
+                                                  <input
+                                                    aria-label={`Record ${recordNumber} FCN counterparty`}
+                                                    value={fcnContract.terms.counterparty}
+                                                    onChange={(event) => updateTransactionCaptureReviewRecord(
+                                                      recordIndex,
+                                                      (current) => current.derivative_contract?.contract_type === 'fcn'
+                                                        ? {
+                                                            ...current,
+                                                            derivative_contract: {
+                                                              ...current.derivative_contract,
+                                                              terms: {
+                                                                ...current.derivative_contract.terms,
+                                                                counterparty: event.target.value,
+                                                              },
+                                                            },
+                                                          }
+                                                        : current,
+                                                    )}
+                                                  />
+                                                </label>
+                                              </div>
+                                              {fcnContract.terms.underlyings.map((underlying, underlyingIndex) => (
+                                                <div className="transaction-capture-review-underlying" key={`${underlying.instrument_id}-${underlyingIndex}`}>
+                                                  <strong>Underlying {underlyingIndex + 1}</strong>
+                                                  <div className="transaction-capture-review-grid">
+                                                    <label>
+                                                      <span>Instrument</span>
+                                                      <input
+                                                        list={`capture-review-fcn-${recordNumber}-${underlyingIndex + 1}`}
+                                                        aria-label={`Record ${recordNumber} underlying ${underlyingIndex + 1} instrument`}
+                                                        value={underlying.instrument_id}
+                                                        onChange={(event) => updateTransactionCaptureReviewRecord(
+                                                          recordIndex,
+                                                          (current) => {
+                                                            if (current.derivative_contract?.contract_type !== 'fcn') return current
+                                                            return {
+                                                              ...current,
+                                                              derivative_contract: {
+                                                                ...current.derivative_contract,
+                                                                terms: {
+                                                                  ...current.derivative_contract.terms,
+                                                                  underlyings: current.derivative_contract.terms.underlyings.map(
+                                                                    (item, index) => index === underlyingIndex
+                                                                      ? { ...item, instrument_id: event.target.value }
+                                                                      : item,
+                                                                  ),
+                                                                },
+                                                              },
+                                                            }
+                                                          },
+                                                        )}
+                                                      />
+                                                      <datalist id={`capture-review-fcn-${recordNumber}-${underlyingIndex + 1}`}>
+                                                        {instruments.map((instrument) => (
+                                                          <option
+                                                            key={instrument.instrument_id}
+                                                            value={instrument.instrument_id}
+                                                            label={instrumentSearchLabel(instrument)}
+                                                          />
+                                                        ))}
+                                                      </datalist>
+                                                    </label>
+                                                    {[
+                                                      ['initial_reference_price', 'Initial reference price'],
+                                                      ['strike_level_pct', 'Strike level (%)'],
+                                                      ['knock_in_level_pct', 'Knock-in level (%)'],
+                                                      ['knock_out_level_pct', 'Knock-out level (%)'],
+                                                    ].map(([fieldName, fieldLabel]) => (
+                                                      <label key={fieldName}>
+                                                        <span>{fieldLabel}</span>
+                                                        <input
+                                                          type="number"
+                                                          min="0"
+                                                          step="0.0001"
+                                                          aria-label={`Record ${recordNumber} underlying ${underlyingIndex + 1} ${fieldLabel}`}
+                                                          value={captureInputValue(
+                                                            underlying[fieldName as keyof typeof underlying] as string | number | null,
+                                                          )}
+                                                          onChange={(event) => updateTransactionCaptureReviewRecord(
+                                                            recordIndex,
+                                                            (current) => {
+                                                              if (current.derivative_contract?.contract_type !== 'fcn') return current
+                                                              return {
+                                                                ...current,
+                                                                derivative_contract: {
+                                                                  ...current.derivative_contract,
+                                                                  terms: {
+                                                                    ...current.derivative_contract.terms,
+                                                                    underlyings: current.derivative_contract.terms.underlyings.map(
+                                                                      (item, index) => index === underlyingIndex
+                                                                        ? { ...item, [fieldName]: event.target.value || null }
+                                                                        : item,
+                                                                    ),
+                                                                  },
+                                                                },
+                                                              }
+                                                            },
+                                                          )}
+                                                        />
+                                                      </label>
+                                                    ))}
+                                                    <label className="transaction-capture-review-checkbox">
+                                                      <input
+                                                        type="checkbox"
+                                                        checked={underlying.deliverable}
+                                                        onChange={(event) => updateTransactionCaptureReviewRecord(
+                                                          recordIndex,
+                                                          (current) => {
+                                                            if (current.derivative_contract?.contract_type !== 'fcn') return current
+                                                            return {
+                                                              ...current,
+                                                              derivative_contract: {
+                                                                ...current.derivative_contract,
+                                                                terms: {
+                                                                  ...current.derivative_contract.terms,
+                                                                  underlyings: current.derivative_contract.terms.underlyings.map(
+                                                                    (item, index) => index === underlyingIndex
+                                                                      ? { ...item, deliverable: event.target.checked }
+                                                                      : item,
+                                                                  ),
+                                                                },
+                                                              },
+                                                            }
+                                                          },
+                                                        )}
+                                                      />
+                                                      <span>Physical delivery applies</span>
+                                                    </label>
+                                                  </div>
+                                                </div>
+                                              ))}
+                                            </div>
+                                          ) : null}
+
+                                          {optionContractDraft ? (
+                                            <div className="transaction-capture-review-terms">
+                                              <div className="transaction-capture-review-subheading">
+                                                <strong>Option contract terms</strong>
+                                                <span>Confirm the contract identity and multiplier.</span>
+                                              </div>
+                                              <div className="transaction-capture-review-grid">
+                                                <label>
+                                                  <span>Contract ID</span>
+                                                  <input
+                                                    aria-label={`Record ${recordNumber} option contract ID`}
+                                                    value={optionContractDraft.derivative_contract_id}
+                                                    onChange={(event) => updateTransactionCaptureReviewRecord(
+                                                      recordIndex,
+                                                      (current) => current.derivative_contract?.contract_type === 'option'
+                                                        ? {
+                                                            ...current,
+                                                            derivative_contract_id: event.target.value,
+                                                            derivative_contract: {
+                                                              ...current.derivative_contract,
+                                                              derivative_contract_id: event.target.value,
+                                                            },
+                                                          }
+                                                        : current,
+                                                    )}
+                                                  />
+                                                </label>
+                                                <label>
+                                                  <span>Contract name</span>
+                                                  <input
+                                                    aria-label={`Record ${recordNumber} option contract name`}
+                                                    value={optionContractDraft.contract_name}
+                                                    onChange={(event) => updateTransactionCaptureReviewRecord(
+                                                      recordIndex,
+                                                      (current) => current.derivative_contract?.contract_type === 'option'
+                                                        ? {
+                                                            ...current,
+                                                            derivative_contract: {
+                                                              ...current.derivative_contract,
+                                                              contract_name: event.target.value,
+                                                            },
+                                                          }
+                                                        : current,
+                                                    )}
+                                                  />
+                                                </label>
+                                                <label>
+                                                  <span>Broker / external reference</span>
+                                                  <input
+                                                    aria-label={`Record ${recordNumber} option external reference`}
+                                                    value={optionContractDraft.external_reference ?? ''}
+                                                    onChange={(event) => updateTransactionCaptureReviewRecord(
+                                                      recordIndex,
+                                                      (current) => current.derivative_contract?.contract_type === 'option'
+                                                        ? {
+                                                            ...current,
+                                                            derivative_contract: {
+                                                              ...current.derivative_contract,
+                                                              external_reference: event.target.value || null,
+                                                            },
+                                                          }
+                                                        : current,
+                                                    )}
+                                                  />
+                                                </label>
+                                                <label>
+                                                  <span>Underlying</span>
+                                                  <input
+                                                    list={`capture-review-option-${recordNumber}`}
+                                                    aria-label={`Record ${recordNumber} option underlying`}
+                                                    value={optionContractDraft.terms.underlying_instrument_id}
+                                                    onChange={(event) => updateTransactionCaptureReviewRecord(
+                                                      recordIndex,
+                                                      (current) => current.derivative_contract?.contract_type === 'option'
+                                                        ? {
+                                                            ...current,
+                                                            derivative_contract: {
+                                                              ...current.derivative_contract,
+                                                              terms: {
+                                                                ...current.derivative_contract.terms,
+                                                                underlying_instrument_id: event.target.value,
+                                                              },
+                                                            },
+                                                          }
+                                                        : current,
+                                                    )}
+                                                  />
+                                                  <datalist id={`capture-review-option-${recordNumber}`}>
+                                                    {instruments.map((instrument) => (
+                                                      <option
+                                                        key={instrument.instrument_id}
+                                                        value={instrument.instrument_id}
+                                                        label={instrumentSearchLabel(instrument)}
+                                                      />
+                                                    ))}
+                                                  </datalist>
+                                                </label>
+                                                <label>
+                                                  <span>Call / put</span>
+                                                  <select
+                                                    aria-label={`Record ${recordNumber} option type`}
+                                                    value={optionContractDraft.terms.option_type}
+                                                    onChange={(event) => updateTransactionCaptureReviewRecord(
+                                                      recordIndex,
+                                                      (current) => current.derivative_contract?.contract_type === 'option'
+                                                        ? {
+                                                            ...current,
+                                                            derivative_contract: {
+                                                              ...current.derivative_contract,
+                                                              terms: {
+                                                                ...current.derivative_contract.terms,
+                                                                option_type: event.target.value as 'call' | 'put',
+                                                              },
+                                                            },
+                                                          }
+                                                        : current,
+                                                    )}
+                                                  >
+                                                    <option value="call">Call</option>
+                                                    <option value="put">Put</option>
+                                                  </select>
+                                                </label>
+                                                <label>
+                                                  <span>Expiry date</span>
+                                                  <input
+                                                    type="date"
+                                                    aria-label={`Record ${recordNumber} option expiry date`}
+                                                    value={optionContractDraft.terms.expiry_date}
+                                                    onChange={(event) => updateTransactionCaptureReviewRecord(
+                                                      recordIndex,
+                                                      (current) => current.derivative_contract?.contract_type === 'option'
+                                                        ? {
+                                                            ...current,
+                                                            derivative_contract: {
+                                                              ...current.derivative_contract,
+                                                              terms: {
+                                                                ...current.derivative_contract.terms,
+                                                                expiry_date: event.target.value,
+                                                              },
+                                                            },
+                                                          }
+                                                        : current,
+                                                    )}
+                                                  />
+                                                </label>
+                                                <label>
+                                                  <span>Strike</span>
+                                                  <input
+                                                    type="number"
+                                                    min="0"
+                                                    step="0.0001"
+                                                    aria-label={`Record ${recordNumber} option strike`}
+                                                    value={captureInputValue(optionContractDraft.terms.strike)}
+                                                    onChange={(event) => updateTransactionCaptureReviewRecord(
+                                                      recordIndex,
+                                                      (current) => current.derivative_contract?.contract_type === 'option'
+                                                        ? {
+                                                            ...current,
+                                                            derivative_contract: {
+                                                              ...current.derivative_contract,
+                                                              terms: {
+                                                                ...current.derivative_contract.terms,
+                                                                strike: event.target.value,
+                                                              },
+                                                            },
+                                                          }
+                                                        : current,
+                                                    )}
+                                                  />
+                                                </label>
+                                                <label>
+                                                  <span>Contract multiplier</span>
+                                                  <input
+                                                    type="number"
+                                                    min="0"
+                                                    step="1"
+                                                    aria-label={`Record ${recordNumber} option multiplier`}
+                                                    value={captureInputValue(optionContractDraft.terms.contract_multiplier)}
+                                                    onChange={(event) => updateTransactionCaptureReviewRecord(
+                                                      recordIndex,
+                                                      (current) => current.derivative_contract?.contract_type === 'option'
+                                                        ? {
+                                                            ...current,
+                                                            derivative_contract: {
+                                                              ...current.derivative_contract,
+                                                              terms: {
+                                                                ...current.derivative_contract.terms,
+                                                                contract_multiplier: event.target.value,
+                                                              },
+                                                            },
+                                                          }
+                                                        : current,
+                                                    )}
+                                                  />
+                                                </label>
+                                              </div>
+                                            </div>
+                                          ) : null}
+
+                                          <div className="transaction-capture-review-grid transaction-capture-review-amounts">
+                                            {[
+                                              ['quantity', 'Quantity'],
+                                              ['price', 'Price'],
+                                              ['gross_amount', 'Gross amount'],
+                                              ['fees', 'Fees'],
+                                              ['taxes', 'Taxes'],
+                                            ].map(([fieldName, fieldLabel]) => (
+                                              <label key={fieldName}>
+                                                <span>{fieldLabel}</span>
+                                                <input
+                                                  type="number"
+                                                  min="0"
+                                                  step="any"
+                                                  aria-label={`Record ${recordNumber} ${fieldLabel.toLowerCase()}`}
+                                                  value={captureInputValue(
+                                                    record[fieldName as keyof PortfolioTransactionImportCommand] as string | number | null,
+                                                  )}
+                                                  onChange={(event) => updateTransactionCaptureReviewRecord(
+                                                    recordIndex,
+                                                    (current) => ({
+                                                      ...current,
+                                                      [fieldName]: event.target.value || null,
+                                                    }),
+                                                  )}
+                                                />
+                                              </label>
+                                            ))}
+                                            {isFxConversion ? (
+                                              <>
+                                                <label>
+                                                  <span>Target amount</span>
+                                                  <input
+                                                    type="number"
+                                                    min="0"
+                                                    step="any"
+                                                    aria-label={`Record ${recordNumber} target amount`}
+                                                    value={captureInputValue(record.counter_amount)}
+                                                    onChange={(event) => updateTransactionCaptureReviewRecord(
+                                                      recordIndex,
+                                                      (current) => ({
+                                                        ...current,
+                                                        counter_amount: event.target.value || null,
+                                                      }),
+                                                    )}
+                                                  />
+                                                </label>
+                                                <label>
+                                                  <span>FX rate</span>
+                                                  <input
+                                                    type="number"
+                                                    min="0"
+                                                    step="any"
+                                                    aria-label={`Record ${recordNumber} FX rate`}
+                                                    value={captureInputValue(record.fx_rate)}
+                                                    onChange={(event) => updateTransactionCaptureReviewRecord(
+                                                      recordIndex,
+                                                      (current) => ({
+                                                        ...current,
+                                                        fx_rate: event.target.value || null,
+                                                      }),
+                                                    )}
+                                                  />
+                                                </label>
+                                              </>
+                                            ) : null}
+                                            {record.transaction_action === 'fee'
+                                            || Number(record.fees ?? 0) > 0 ? (
+                                              <label>
+                                                <span>Fee category</span>
+                                                <select
+                                                  aria-label={`Record ${recordNumber} fee category`}
+                                                  value={record.fee_category ?? 'unknown'}
+                                                  onChange={(event) => updateTransactionCaptureReviewRecord(
+                                                    recordIndex,
+                                                    (current) => ({
+                                                      ...current,
+                                                      fee_category: event.target.value as PortfolioFeeCategory,
+                                                    }),
+                                                  )}
+                                                >
+                                                  {FEE_CATEGORIES.map((option) => (
+                                                    <option key={option.value} value={option.value}>
+                                                      {option.label}
+                                                    </option>
+                                                  ))}
+                                                </select>
+                                              </label>
+                                            ) : null}
+                                            <label className="transaction-capture-review-wide">
+                                              <span>Review note</span>
+                                              <textarea
+                                                aria-label={`Record ${recordNumber} review note`}
+                                                rows={2}
+                                                value={record.note ?? ''}
+                                                onChange={(event) => updateTransactionCaptureReviewRecord(
+                                                  recordIndex,
+                                                  (current) => ({ ...current, note: event.target.value || null }),
+                                                )}
+                                              />
+                                            </label>
+                                          </div>
+                                        </article>
+                                      )
+                                    })}
+                                  </div>
+
+                                  {selectedCaptureBatch.latest_analysis.analysis.questions.length ? (
+                                    <div className="transaction-capture-review-checklist">
+                                      <strong>Resolve before saving</strong>
+                                      {selectedCaptureBatch.latest_analysis.analysis.questions.map((question, index) => (
+                                        <label key={`${index}-${question}`}>
+                                          <input
+                                            type="checkbox"
+                                            checked={captureReviewDraft.confirmedQuestions[index] ?? false}
+                                            onChange={(event) => confirmTransactionCaptureQuestion(index, event.target.checked)}
+                                          />
+                                          <span>
+                                            {question}
+                                            <em>I verified this item against the screenshot or source document.</em>
+                                          </span>
+                                        </label>
+                                      ))}
+                                    </div>
+                                  ) : null}
+
+                                  <footer className="transaction-capture-review-footer">
+                                    <span>Saving creates a human revision and re-runs Preview. The ledger stays unchanged.</span>
+                                    <div>
+                                      <button
+                                        type="button"
+                                        className="toolbar-link"
+                                        disabled={savingCaptureReview}
+                                        onClick={() => {
+                                          setCaptureReviewDraft(null)
+                                          setCaptureError(null)
+                                        }}
+                                      >
+                                        Cancel review
+                                      </button>
+                                      <button
+                                        type="button"
+                                        className="button-primary"
+                                        disabled={
+                                          savingCaptureReview
+                                          || !captureReviewDraft.confirmedQuestions.every(Boolean)
+                                        }
+                                        onClick={() => void saveTransactionCaptureReview()}
+                                      >
+                                        {savingCaptureReview ? 'Checking…' : 'Save review & run Preview'}
+                                      </button>
+                                    </div>
+                                  </footer>
+                                </section>
+                              ) : selectedCaptureBatch.ledger_status === 'recorded' ? (
+                                <div className="transaction-capture-recorded">
+                                  <div>
+                                    <span>Recorded</span>
+                                    <strong>This reviewed proposal is already in the ledger.</strong>
+                                  </div>
+                                  <span>
+                                    {selectedCaptureBatch.recorded_transaction_ids.length
+                                      ? `Ledger facts: ${selectedCaptureBatch.recorded_transaction_ids.join(' · ')}`
+                                      : 'The screenshot source references match recorded transaction facts.'}
+                                  </span>
+                                </div>
+                              ) : selectedCaptureBatch.ledger_status === 'partially_recorded' ? (
+                                <div className="transaction-capture-partial">
+                                  <div>
+                                    <span>Partially recorded</span>
+                                    <strong>Some source references from this batch are already in the ledger.</strong>
+                                  </div>
+                                  <span>
+                                    {selectedCaptureBatch.recorded_transaction_ids.length
+                                      ? `Ledger facts: ${selectedCaptureBatch.recorded_transaction_ids.join(' · ')}`
+                                      : 'Review the recorded transaction IDs before creating another human revision.'}
+                                  </span>
+                                </div>
+                              ) : hasTransactionCaptureImport(selectedCaptureBatch.latest_analysis) ? (
+                                <div className="transaction-capture-review-action">
+                                  <div>
+                                    <span>
+                                      {transactionCaptureProposalReady(selectedCaptureBatch.latest_analysis)
+                                        ? 'Preview passed'
+                                        : selectedCaptureBatch.latest_analysis.source === 'human'
+                                          ? 'Preview needs attention'
+                                          : 'Agent proposal'}
+                                    </span>
+                                    <strong>
+                                      {transactionCaptureProposalReady(selectedCaptureBatch.latest_analysis)
+                                        ? `${selectedCaptureBatch.latest_analysis.transaction_import.records.length} human-reviewed transaction${selectedCaptureBatch.latest_analysis.transaction_import.records.length === 1 ? '' : 's'} ready to record.`
+                                        : selectedCaptureBatch.latest_analysis.source === 'human'
+                                          ? 'Revise the reviewed values and run Preview again.'
+                                          : 'Check accounts, dates, amounts, and product terms before recording.'}
+                                    </strong>
+                                    <small>Source identity is locked to this screenshot batch.</small>
+                                  </div>
+                                  {transactionCaptureProposalReady(selectedCaptureBatch.latest_analysis) ? (
+                                    <button
+                                      type="button"
+                                      className="button-primary"
+                                      onClick={() => requestTransactionCaptureCommit(selectedCaptureBatch)}
+                                    >
+                                      Record {selectedCaptureBatch.latest_analysis.transaction_import.records.length}{' '}
+                                      transaction{selectedCaptureBatch.latest_analysis.transaction_import.records.length === 1 ? '' : 's'}
+                                    </button>
+                                  ) : (
+                                    <button
+                                      type="button"
+                                      className="toolbar-link"
+                                      disabled={metaLoading || savingCaptureReview}
+                                      onClick={() => beginTransactionCaptureReview(selectedCaptureBatch)}
+                                    >
+                                      {selectedCaptureBatch.latest_analysis.source === 'human'
+                                        ? 'Edit review'
+                                        : 'Review details'}
+                                    </button>
+                                  )}
+                                </div>
+                              ) : (
+                                <div className="transaction-capture-review-boundary">
+                                  <strong>No transaction proposal</strong>
+                                  <span>The agent kept this batch as evidence only; no ledger action is available.</span>
+                                </div>
+                              )}
+
+                              <div className="transaction-capture-review-boundary">
+                                <strong>Human confirmation required</strong>
+                                <span>Candidate facts must pass Preview and explicit review before Commit.</span>
+                              </div>
+                            </div>
+                          ) : (
+                            <div className="transaction-capture-agent-ready">
+                              <span>Agent analysis</span>
+                              <strong>
+                                {selectedCaptureBatch.analysis_run_status === 'queued'
+                                  ? 'Waiting for the restricted DeepSeek runner.'
+                                  : selectedCaptureBatch.analysis_run_status === 'running'
+                                    ? 'DeepSeek is reading and reconciling the full evidence batch.'
+                                    : selectedCaptureBatch.analysis_run_status === 'failed'
+                                      ? 'The last analysis did not produce a review revision.'
+                                      : 'Evidence saved and ready for the restricted agent runner.'}
+                              </strong>
+                              <p>
+                                {selectedCaptureBatch.analysis_run_status === 'failed'
+                                  ? selectedCaptureBatch.analysis_run_error
+                                    ?? 'Retry when the model service and local runner are available.'
+                                  : 'The agent reasons across the whole batch, including partial overlap and broker-specific layouts. It cannot Commit ledger facts.'}
+                              </p>
+                              <div className="transaction-capture-agent-ready-footer">
+                                {selectedCaptureBatch.analysis_run_status === 'queued'
+                                  || selectedCaptureBatch.analysis_run_status === 'running' ? (
+                                    <span>Usually takes a few minutes. You can close this panel.</span>
+                                  ) : (
+                                    <button
+                                      type="button"
+                                      className="button-primary"
+                                      disabled={startingCaptureBatchId === selectedCaptureBatch.batch_id}
+                                      onClick={() => void handleScreenshotAnalysis(selectedCaptureBatch)}
+                                    >
+                                      {startingCaptureBatchId === selectedCaptureBatch.batch_id
+                                        ? 'Starting…'
+                                        : selectedCaptureBatch.analysis_run_status === 'failed'
+                                          ? 'Retry analysis'
+                                          : 'Analyze with DeepSeek'}
+                                    </button>
+                                  )}
+                              </div>
+                            </div>
+                          )}
+                        </section>
+                      ) : null}
+                    </div>
+                  ) : (
+                    <div className="transaction-capture-empty-history">
+                      <span>0</span>
+                      <strong>No screenshot batches yet</strong>
+                      <p>Prepare evidence first; every analysis revision will remain attached to its source screenshots.</p>
+                      <button type="button" className="toolbar-link" onClick={() => setCaptureAssistantView('new')}>
+                        Add evidence
+                      </button>
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          </aside>
+        </div>
+      ) : null}
 
       {drawerOpen ? (
         <div
@@ -5065,6 +7481,43 @@ export default function TransactionsPage() {
           </aside>
         </div>
       ) : null}
+      <ConfirmDialog
+        open={Boolean(pendingCaptureCommit)}
+        title="Record Reviewed Transactions"
+        description={
+          pendingCaptureCommit ? (
+            <div className="transaction-capture-commit-summary">
+              <p>
+                Record {pendingCaptureCommit.transactionImport.records.length} reviewed transaction
+                {pendingCaptureCommit.transactionImport.records.length === 1 ? '' : 's'} in portfolio{' '}
+                <strong>{portfolioId}</strong>?
+              </p>
+              <ul>
+                {pendingCaptureCommit.transactionImport.records.map((record, index) => (
+                  <li key={record.external_reference}>
+                    <strong>{transactionCaptureRecordTitle(record, index)}</strong>
+                    <span>
+                      {record.transaction_action} · {record.trade_date} ·{' '}
+                      {captureInputValue(record.gross_amount) || 'Amount not supplied'} {record.currency}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+              <p>This is the only step that writes ledger facts. The reviewed Preview content will be committed unchanged.</p>
+            </div>
+          ) : null
+        }
+        confirmLabel={`Record ${pendingCaptureCommit?.transactionImport.records.length ?? 0} Transaction${pendingCaptureCommit?.transactionImport.records.length === 1 ? '' : 's'}`}
+        busyLabel="Recording…"
+        error={captureCommitError}
+        busy={committingCapture}
+        confirmTone="primary"
+        onCancel={() => {
+          setPendingCaptureCommit(null)
+          setCaptureCommitError(null)
+        }}
+        onConfirm={confirmTransactionCaptureCommit}
+      />
       <ConfirmDialog
         open={Boolean(pendingFileImport)}
         title="Review Transaction File"

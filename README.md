@@ -9,7 +9,7 @@
 - `apps/watchlist`
   已有可运行的前后端、数据库迁移、测试与文档，承载公募 / 私募 / ETF / 股票 / 指数 watchlist、local detail、facts、recalc 与 read model。
 - `apps/portfolio`
-  已有可运行的前后端、数据库迁移、交易、绩效、持仓、风险与研究工作台，以及成体系的领域文档。
+  已有可运行的前后端、数据库迁移、交易、绩效、持仓、风险与研究工作台；Transactions 内置受限截图助手，使用 Agent 分析、Preview、人工复核和最终 Commit 的同一交易合同。
 
 当前架构约束：
 
@@ -54,6 +54,8 @@ portfolio-operations-workbench/
   Watchlist app 的当前实现基线、启动方式和行为边界。
 - [apps/portfolio/README.md](./apps/portfolio/README.md)
   Portfolio app 的领域范围、启动方式和导入/校验说明。
+- [docs/PORTFOLIO_COPILOT_HARNESS.md](./docs/PORTFOLIO_COPILOT_HARNESS.md)
+  内部截图助手的 Harness 选择、MCP 工具边界、人工复核和运行方式。
 - [apps/portfolio/docs/archive/2026-07-15_OPTIMIZATION_HANDOFF_COMPLETED.md](./apps/portfolio/docs/archive/2026-07-15_OPTIMIZATION_HANDOFF_COMPLETED.md)
   已完成的 2026-07-15 Portfolio 优化轮次历史记录；当前口径以 canonical 计算、GIPS、设计和用户文档为准。
 

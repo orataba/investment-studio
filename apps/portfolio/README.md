@@ -10,7 +10,9 @@
 - 持仓、lots、ledger、performance 由内核服务按需推导
 - `Holdings / Accounts / Transactions / Performance` 已有真实 API 与页面支撑。
   `Transactions` 支持带幂等保护的 create、强制 row-version 的 update / delete、成对内部转仓、
-  交易变更历史，以及 trade / position-effective / settlement / entitlement 日期的独立录入。
+  交易变更历史，以及 trade / position-effective / settlement / entitlement 日期的独立录入；
+  Screenshot Assistant 将异构券商截图交给受限 Agent 整批分析，只有人工修订通过同一 Preview
+  合同后才开放最终 Commit，不把模型输出直接写入账本。
 - `Risk` 已有真实工作台，包含 rolling annualized volatility / Sharpe、sample 相关性矩阵和 Current Drift；Production Risk Model 的风险窗口固定为 `1M / 3M / 6M / 12M / 24M`，协方差方法和风险贡献模式与 Research 使用同一组严格口径，相关性矩阵只暴露窗口和 scope，不混入协方差模型选择
 - `Taxonomies` 已有真实配置工作台，支持 Securities 层级 sleeve tree、instrument assignment、`TargetSet` 与 `default planning taxonomy`。Cash 与 Derivatives 是不可分类、不可移动的系统成员：可以参与 capital / weight target，但不得建立 `target_risk_share`，也不进入 `risk_budget` target completeness。
 - `Research` 已有真实工作台，支持基于 planning taxonomy / TargetSet / 当前持仓的递归 target-weight solve、top sleeve bounds、vol target/cap、1W/1M/3M point-in-time target-policy simulation、benchmark 动态比较、风险预算诊断、回撤指标和调仓缺口。资产状态区分 Held / Observed / Former；former instrument 的正目标在未经 PM approval 时标记为人工复核。新 run 只有成功完成后才替换上一轮成功结果；失败 run 会保留上一轮 completed run 供继续查看。
@@ -30,6 +32,10 @@
   Holdings 全字段的行级公式、分组类型、缺失条件与跨 Watchlist 数值一致性合同。
 - [docs/04_TRANSACTION_OPERATIONS.md](./docs/04_TRANSACTION_OPERATIONS.md)
   Transactions 工作台、录入事实、日期、基金金额份额、幂等与修改审计的操作合同。
+- [../../docs/TRANSACTION_IMPORT_API_GUIDE.md](../../docs/TRANSACTION_IMPORT_API_GUIDE.md)
+  页面、文件导入、外部系统和截图助手共用的 JSON Preview/Commit 交易合同。
+- [../../docs/PORTFOLIO_COPILOT_HARNESS.md](../../docs/PORTFOLIO_COPILOT_HARNESS.md)
+  截图 Agent 的 Harness、MCP 作用域、权限和人工复核边界。
 - [docs/archive/2026-07-15_OPTIMIZATION_HANDOFF_COMPLETED.md](./docs/archive/2026-07-15_OPTIMIZATION_HANDOFF_COMPLETED.md)
   2026-07-15 优化轮次的历史执行记录；仅用于追溯，不定义当前产品合同。
 

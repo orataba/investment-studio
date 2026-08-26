@@ -12,6 +12,7 @@ from portfolio_app.api.routes import (
     research,
     table_views,
     taxonomies,
+    transaction_captures,
     transactions,
     workspace,
 )
@@ -28,6 +29,11 @@ api_router.include_router(
     tags=["instrument-events"],
 )
 api_router.include_router(transactions.router, prefix="/portfolios", tags=["transactions"])
+api_router.include_router(
+    transaction_captures.router,
+    prefix="/portfolios",
+    tags=["transaction-captures"],
+)
 api_router.include_router(ledger_postings.router, prefix="/portfolios", tags=["ledger-postings"])
 api_router.include_router(positions.router, prefix="/portfolios", tags=["positions"])
 api_router.include_router(performance.router, prefix="/portfolios", tags=["performance"])

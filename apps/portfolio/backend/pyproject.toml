@@ -11,6 +11,7 @@ dependencies = [
   "alembic>=1.16,<2.0",
   "exchange-calendars>=4.13,<5.0",
   "fastapi>=0.115,<1.0",
+  "mcp>=2.0,<3.0",
   "numpy>=1.26,<3.0",
   "openpyxl>=3.1,<4.0",
   "pandas>=2.2,<3.0",
@@ -21,6 +22,9 @@ dependencies = [
   "sqlalchemy>=2.0,<3.0",
   "uvicorn[standard]>=0.34,<1.0",
 ]
+
+[project.scripts]
+portfolio-copilot-mcp = "portfolio_app.assistant_mcp:main"
 
 [project.optional-dependencies]
 test = [

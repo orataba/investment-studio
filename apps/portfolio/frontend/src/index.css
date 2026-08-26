@@ -4619,6 +4619,1326 @@ input[type='checkbox'] {
   opacity: 0.48;
 }
 
+.transaction-capture-summary {
+  display: grid;
+  grid-template-columns: 3px minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: center;
+  margin: 10px 0 0;
+  padding: 9px 10px 9px 0;
+  border-top: 1px solid var(--portfolio-line);
+  border-bottom: 1px solid var(--portfolio-line);
+  background: var(--portfolio-band);
+}
+
+.transaction-capture-summary-mark {
+  align-self: stretch;
+  background: var(--portfolio-accent);
+}
+
+.transaction-capture-summary-copy {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.transaction-capture-summary-copy > div {
+  display: flex;
+  gap: 9px;
+  align-items: center;
+}
+
+.transaction-capture-summary-copy strong {
+  color: var(--portfolio-ink);
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.transaction-capture-summary-copy > span {
+  overflow: hidden;
+  color: var(--portfolio-muted);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.transaction-capture-summary-open {
+  min-width: 54px;
+}
+
+.transaction-capture-status {
+  padding: 3px 7px;
+  border-radius: 999px;
+  background: #fef3c7;
+  color: #92400e;
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.transaction-capture-status-review_required {
+  background: #dcfce7;
+  color: #166534;
+}
+
+.transaction-capture-status-recorded {
+  background: #dcfce7;
+  color: #166534;
+}
+
+.transaction-capture-status-partially_recorded {
+  background: #ffedd5;
+  color: #9a3412;
+}
+
+.transaction-capture-status-queued,
+.transaction-capture-status-running {
+  background: #dbeafe;
+  color: #1d4ed8;
+}
+
+.transaction-capture-status-failed {
+  background: #fee2e2;
+  color: #b91c1c;
+}
+
+.transaction-drawer.transaction-capture-assistant-drawer {
+  width: min(760px, 100vw);
+  display: grid;
+  grid-template-rows: auto auto minmax(0, 1fr);
+  overflow: hidden;
+}
+
+.transaction-capture-assistant-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 18px 20px 16px;
+  border-top: 2px solid var(--portfolio-ink);
+  border-bottom: 1px solid var(--portfolio-line);
+  background: #ffffff;
+}
+
+.transaction-capture-assistant-header > div {
+  display: grid;
+  gap: 3px;
+}
+
+.transaction-capture-assistant-header > div > span {
+  color: var(--portfolio-accent);
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.transaction-capture-assistant-header p {
+  margin: 0;
+  color: var(--portfolio-muted);
+  font-size: 12px;
+}
+
+.transaction-capture-assistant-tabs {
+  display: flex;
+  gap: 0;
+  padding: 0 20px;
+  border-bottom: 1px solid var(--portfolio-line-strong);
+  background: #ffffff;
+}
+
+.transaction-capture-assistant-tabs button {
+  min-height: 39px;
+  padding: 0 14px;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  background: transparent;
+  color: var(--portfolio-muted);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.transaction-capture-assistant-tabs button:first-child {
+  padding-left: 0;
+}
+
+.transaction-capture-assistant-tabs button.active {
+  border-bottom-color: var(--portfolio-accent);
+  color: var(--portfolio-ink);
+}
+
+.transaction-capture-assistant-tabs button span {
+  display: inline-flex;
+  min-width: 17px;
+  min-height: 17px;
+  align-items: center;
+  justify-content: center;
+  margin-left: 4px;
+  padding: 0 4px;
+  background: var(--portfolio-band);
+  color: var(--portfolio-muted);
+  font-size: 10px;
+}
+
+.transaction-capture-assistant-body {
+  min-height: 0;
+  overflow-y: auto;
+  background: #ffffff;
+}
+
+.transaction-capture-step-rail {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  margin: 0;
+  padding: 14px 20px;
+  border-bottom: 1px solid var(--portfolio-line);
+  list-style: none;
+}
+
+.transaction-capture-step-rail li {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  color: var(--portfolio-muted);
+}
+
+.transaction-capture-step-rail li::after {
+  position: absolute;
+  top: 50%;
+  right: 10px;
+  left: 86px;
+  height: 1px;
+  background: var(--portfolio-line);
+  content: '';
+}
+
+.transaction-capture-step-rail li:last-child::after {
+  display: none;
+}
+
+.transaction-capture-step-rail li > span {
+  display: inline-flex;
+  width: 20px;
+  height: 20px;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--portfolio-line-strong);
+  background: #ffffff;
+  font-size: 10px;
+}
+
+.transaction-capture-step-rail li strong {
+  overflow: hidden;
+  font-size: 11px;
+  font-weight: 400;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.transaction-capture-step-rail li.active,
+.transaction-capture-step-rail li.complete {
+  color: var(--portfolio-ink);
+}
+
+.transaction-capture-step-rail li.active > span {
+  border-color: var(--portfolio-accent);
+  background: var(--portfolio-accent);
+  color: #ffffff;
+}
+
+.transaction-capture-step-rail li.complete > span {
+  border-color: var(--portfolio-accent);
+  color: var(--portfolio-accent);
+}
+
+.transaction-capture-new {
+  display: grid;
+  gap: 0;
+}
+
+.transaction-capture-section {
+  display: grid;
+  gap: 12px;
+  padding: 18px 20px;
+  border-bottom: 1px solid var(--portfolio-line);
+}
+
+.transaction-capture-section-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.transaction-capture-section-heading > div {
+  display: grid;
+  gap: 2px;
+}
+
+.transaction-capture-section-heading strong {
+  color: var(--portfolio-ink);
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.transaction-capture-section-heading span {
+  color: var(--portfolio-muted);
+  font-size: 11px;
+}
+
+.transaction-capture-purpose-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  border-top: 1px solid var(--portfolio-line);
+  border-left: 1px solid var(--portfolio-line);
+}
+
+.transaction-capture-purpose-grid button {
+  display: grid;
+  gap: 4px;
+  min-height: 66px;
+  padding: 11px 12px;
+  border: 0;
+  border-right: 1px solid var(--portfolio-line);
+  border-bottom: 1px solid var(--portfolio-line);
+  background: #ffffff;
+  color: var(--portfolio-ink);
+  text-align: left;
+  cursor: pointer;
+}
+
+.transaction-capture-purpose-grid button:hover {
+  background: var(--portfolio-band);
+}
+
+.transaction-capture-purpose-grid button.active {
+  box-shadow: 3px 0 0 var(--portfolio-accent) inset;
+  background: var(--portfolio-accent-soft);
+}
+
+.transaction-capture-purpose-grid button strong {
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.transaction-capture-purpose-grid button span {
+  color: var(--portfolio-muted);
+  font-size: 10px;
+  line-height: 1.4;
+}
+
+.transaction-capture-dropzone {
+  display: grid;
+  justify-items: center;
+  gap: 5px;
+  min-height: 150px;
+  align-content: center;
+  padding: 20px;
+  border: 1px dashed var(--portfolio-line-strong);
+  background: var(--portfolio-band);
+  text-align: center;
+}
+
+.transaction-capture-dropzone.active {
+  border-color: var(--portfolio-accent);
+  background: var(--portfolio-accent-soft);
+  box-shadow: 0 0 0 1px var(--portfolio-accent) inset;
+}
+
+.transaction-capture-dropzone > span {
+  display: inline-flex;
+  width: 24px;
+  height: 24px;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--portfolio-line-strong);
+  background: #ffffff;
+  color: var(--portfolio-accent);
+  font-size: 18px;
+  line-height: 1;
+}
+
+.transaction-capture-dropzone strong {
+  color: var(--portfolio-ink);
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.transaction-capture-dropzone p {
+  margin: 0 0 5px;
+  color: var(--portfolio-muted);
+  font-size: 11px;
+}
+
+.transaction-capture-draft-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.transaction-capture-draft-grid article {
+  display: grid;
+  grid-template-columns: 58px minmax(0, 1fr) 26px;
+  gap: 9px;
+  align-items: center;
+  min-width: 0;
+  padding: 7px;
+  border: 1px solid var(--portfolio-line);
+  background: #ffffff;
+}
+
+.transaction-capture-draft-grid img,
+.transaction-capture-file-placeholder {
+  width: 58px;
+  height: 46px;
+  object-fit: cover;
+  border: 1px solid var(--portfolio-line);
+  background: var(--portfolio-band);
+}
+
+.transaction-capture-file-placeholder {
+  display: grid;
+  place-items: center;
+  color: var(--portfolio-muted);
+  font-size: 9px;
+  text-transform: uppercase;
+}
+
+.transaction-capture-draft-grid article > div:not(.transaction-capture-file-placeholder) {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.transaction-capture-draft-grid article strong {
+  overflow: hidden;
+  color: var(--portfolio-ink);
+  font-size: 11px;
+  font-weight: 500;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.transaction-capture-draft-grid article span {
+  color: var(--portfolio-muted);
+  font-size: 10px;
+}
+
+.transaction-capture-draft-grid article > button {
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--portfolio-muted);
+  font-size: 17px;
+  cursor: pointer;
+}
+
+.transaction-capture-draft-grid article > button:hover {
+  color: var(--portfolio-negative);
+}
+
+.transaction-capture-error {
+  margin: 14px 20px 0;
+}
+
+.transaction-capture-prepare-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 16px 20px;
+  background: var(--portfolio-band);
+}
+
+.transaction-capture-prepare-footer > div {
+  display: grid;
+  gap: 2px;
+}
+
+.transaction-capture-prepare-footer strong {
+  color: var(--portfolio-ink);
+  font-size: 11px;
+  font-weight: 500;
+}
+
+.transaction-capture-prepare-footer span {
+  color: var(--portfolio-muted);
+  font-size: 10px;
+}
+
+.transaction-capture-prepare-footer button {
+  flex: 0 0 auto;
+}
+
+.transaction-capture-history-layout {
+  display: grid;
+  grid-template-columns: 190px minmax(0, 1fr);
+  min-height: calc(100vh - 174px);
+}
+
+.transaction-capture-history-layout > nav {
+  padding: 16px 0;
+  border-right: 1px solid var(--portfolio-line);
+  background: var(--portfolio-band);
+}
+
+.transaction-capture-history-layout > nav > .transaction-capture-section-heading {
+  padding: 0 12px 10px;
+}
+
+.transaction-capture-batch-list {
+  display: grid;
+}
+
+.transaction-capture-batch-list > button {
+  display: grid;
+  grid-template-columns: 8px minmax(0, 1fr);
+  gap: 8px;
+  align-items: start;
+  padding: 10px 12px;
+  border: 0;
+  border-top: 1px solid transparent;
+  border-bottom: 1px solid transparent;
+  background: transparent;
+  color: var(--portfolio-ink);
+  text-align: left;
+  cursor: pointer;
+}
+
+.transaction-capture-batch-list > button.active {
+  border-color: var(--portfolio-line);
+  background: #ffffff;
+}
+
+.transaction-capture-batch-list > button > span:last-child {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.transaction-capture-batch-list strong {
+  overflow: hidden;
+  font-size: 11px;
+  font-weight: 500;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.transaction-capture-batch-list small {
+  color: var(--portfolio-muted);
+  font-size: 9px;
+}
+
+.transaction-capture-batch-dot {
+  width: 7px;
+  height: 7px;
+  margin-top: 3px;
+  border: 1px solid #d97706;
+  background: #fef3c7;
+  border-radius: 50%;
+}
+
+.transaction-capture-batch-dot-review_required {
+  border-color: #16a34a;
+  background: #dcfce7;
+}
+
+.transaction-capture-batch-dot-recorded {
+  border-color: #15803d;
+  background: #86efac;
+}
+
+.transaction-capture-batch-dot-partially_recorded {
+  border-color: #ea580c;
+  background: #fed7aa;
+}
+
+.transaction-capture-batch-dot-queued,
+.transaction-capture-batch-dot-running {
+  border-color: #2563eb;
+  background: #dbeafe;
+}
+
+.transaction-capture-batch-dot-failed {
+  border-color: #dc2626;
+  background: #fee2e2;
+}
+
+.transaction-capture-batch-detail {
+  display: grid;
+  align-content: start;
+  gap: 16px;
+  min-width: 0;
+  padding: 18px 20px 28px;
+}
+
+.transaction-capture-batch-title {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--portfolio-line-strong);
+}
+
+.transaction-capture-batch-title > div {
+  display: grid;
+  gap: 2px;
+}
+
+.transaction-capture-batch-title > div > span,
+.transaction-capture-analysis-summary > span,
+.transaction-capture-agent-ready > span {
+  color: var(--portfolio-muted);
+  font-size: 9px;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+}
+
+.transaction-capture-batch-title > div > strong {
+  color: var(--portfolio-ink);
+  font-size: 15px;
+  font-weight: 500;
+}
+
+.transaction-capture-evidence-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.transaction-capture-evidence-grid figure {
+  min-width: 0;
+  margin: 0;
+  border: 1px solid var(--portfolio-line);
+  background: #ffffff;
+}
+
+.transaction-capture-evidence-grid img {
+  width: 100%;
+  height: 118px;
+  object-fit: cover;
+  border-bottom: 1px solid var(--portfolio-line);
+  background: var(--portfolio-band);
+}
+
+.transaction-capture-evidence-grid figcaption {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+  padding: 7px 8px;
+}
+
+.transaction-capture-evidence-grid figcaption strong {
+  overflow: hidden;
+  color: var(--portfolio-ink);
+  font-size: 10px;
+  font-weight: 500;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.transaction-capture-evidence-grid figcaption span {
+  color: var(--portfolio-muted);
+  font-size: 9px;
+}
+
+.transaction-capture-analysis {
+  display: grid;
+  gap: 14px;
+}
+
+.transaction-capture-analysis-summary {
+  display: grid;
+  gap: 5px;
+  padding: 12px;
+  border-left: 3px solid var(--portfolio-accent);
+  background: var(--portfolio-accent-soft);
+}
+
+.transaction-capture-analysis-summary p,
+.transaction-capture-agent-ready p {
+  margin: 0;
+  color: var(--portfolio-ink);
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.transaction-capture-analysis-metrics {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  margin: 0;
+  border-top: 1px solid var(--portfolio-line);
+  border-left: 1px solid var(--portfolio-line);
+}
+
+.transaction-capture-analysis-metrics > div {
+  display: grid;
+  gap: 3px;
+  padding: 9px 10px;
+  border-right: 1px solid var(--portfolio-line);
+  border-bottom: 1px solid var(--portfolio-line);
+}
+
+.transaction-capture-analysis-metrics dt {
+  color: var(--portfolio-muted);
+  font-size: 9px;
+}
+
+.transaction-capture-analysis-metrics dd {
+  margin: 0;
+  color: var(--portfolio-ink);
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.transaction-capture-analysis-block {
+  display: grid;
+  gap: 8px;
+}
+
+.transaction-capture-analysis-block > strong {
+  color: var(--portfolio-ink);
+  font-size: 11px;
+  font-weight: 500;
+}
+
+.transaction-capture-analysis-block ul,
+.transaction-capture-analysis-block ol {
+  display: grid;
+  gap: 0;
+  margin: 0;
+  padding: 0;
+  border-top: 1px solid var(--portfolio-line);
+  list-style: none;
+}
+
+.transaction-capture-analysis-block li {
+  padding: 8px 0;
+  border-bottom: 1px solid var(--portfolio-line);
+  color: var(--portfolio-ink);
+  font-size: 11px;
+}
+
+.transaction-capture-analysis-block ul li {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.transaction-capture-analysis-block li span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.transaction-capture-analysis-block li em {
+  flex: 0 0 auto;
+  color: var(--portfolio-muted);
+  font-style: normal;
+}
+
+.transaction-capture-account-allocation li em {
+  max-width: 58%;
+  overflow: hidden;
+  text-align: right;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.transaction-capture-account-allocation li em.transaction-capture-account-status-resolved {
+  color: var(--portfolio-positive);
+}
+
+.transaction-capture-account-allocation li em.transaction-capture-account-status-ambiguous,
+.transaction-capture-account-allocation li em.transaction-capture-account-status-unavailable {
+  color: #92400e;
+}
+
+.transaction-capture-duplicate-check li em.transaction-capture-duplicate-status-same_record,
+.transaction-capture-duplicate-check li em.transaction-capture-duplicate-status-uncertain {
+  color: #92400e;
+}
+
+.transaction-capture-duplicate-check li em.transaction-capture-duplicate-status-distinct_records {
+  color: var(--portfolio-positive);
+}
+
+.transaction-capture-questions ol {
+  counter-reset: capture-question;
+}
+
+.transaction-capture-questions li {
+  display: grid;
+  grid-template-columns: 20px minmax(0, 1fr);
+  gap: 7px;
+  counter-increment: capture-question;
+}
+
+.transaction-capture-questions li::before {
+  color: var(--portfolio-accent);
+  content: counter(capture-question, decimal-leading-zero);
+  font-size: 9px;
+}
+
+.transaction-capture-review-boundary {
+  display: grid;
+  gap: 3px;
+  padding: 10px 12px;
+  border: 1px solid var(--portfolio-line-strong);
+  background: var(--portfolio-band);
+}
+
+.transaction-capture-review-boundary strong {
+  color: var(--portfolio-ink);
+  font-size: 11px;
+  font-weight: 500;
+}
+
+.transaction-capture-review-boundary span {
+  color: var(--portfolio-muted);
+  font-size: 10px;
+}
+
+.transaction-capture-agent-ready {
+  display: grid;
+  gap: 5px;
+  padding: 14px;
+  border: 1px solid var(--portfolio-line);
+  background: var(--portfolio-band);
+}
+
+.transaction-capture-agent-ready strong {
+  color: var(--portfolio-ink);
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.transaction-capture-agent-ready p {
+  color: var(--portfolio-muted);
+  font-size: 11px;
+}
+
+.transaction-capture-agent-ready-footer {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  min-height: 30px;
+  padding-top: 5px;
+}
+
+.transaction-capture-agent-ready-footer > span {
+  color: var(--portfolio-muted);
+  font-size: 10px;
+}
+
+.transaction-capture-review {
+  display: grid;
+  gap: 14px;
+  border: 1px solid var(--portfolio-line-strong);
+  background: #ffffff;
+}
+
+.transaction-capture-review-heading,
+.transaction-capture-review-subheading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+}
+
+.transaction-capture-review-heading {
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--portfolio-line);
+  background: var(--portfolio-band);
+}
+
+.transaction-capture-review-heading > div,
+.transaction-capture-review-subheading {
+  display: grid;
+  gap: 2px;
+}
+
+.transaction-capture-review-heading span,
+.transaction-capture-review-subheading span {
+  color: var(--portfolio-muted);
+  font-size: 9px;
+}
+
+.transaction-capture-review-heading > div > span {
+  color: var(--portfolio-accent);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.transaction-capture-review-heading strong,
+.transaction-capture-review-subheading strong {
+  color: var(--portfolio-ink);
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.transaction-capture-review-records {
+  display: grid;
+  gap: 12px;
+  padding: 0 14px;
+}
+
+.transaction-capture-review-records > article {
+  display: grid;
+  gap: 12px;
+  padding: 12px;
+  border: 1px solid var(--portfolio-line);
+  background: #ffffff;
+}
+
+.transaction-capture-review-records > article > header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding-bottom: 9px;
+  border-bottom: 1px solid var(--portfolio-line);
+}
+
+.transaction-capture-review-records > article > header > div {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.transaction-capture-review-records > article > header strong {
+  color: var(--portfolio-ink);
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.transaction-capture-review-records > article > header span {
+  overflow: hidden;
+  color: var(--portfolio-muted);
+  font-size: 9px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.transaction-capture-review-records > article > header em {
+  flex: 0 0 auto;
+  padding: 3px 6px;
+  background: var(--portfolio-band);
+  color: var(--portfolio-muted);
+  font-size: 9px;
+  font-style: normal;
+}
+
+.transaction-capture-review-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 9px 10px;
+}
+
+.transaction-capture-review-grid > label {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.transaction-capture-review-grid > label > span {
+  color: var(--portfolio-muted);
+  font-size: 9px;
+}
+
+.transaction-capture-review-grid input:not([type='checkbox']),
+.transaction-capture-review-grid select,
+.transaction-capture-review-grid textarea {
+  width: 100%;
+  min-width: 0;
+  padding: 7px 8px;
+  border: 1px solid var(--portfolio-line-strong);
+  border-radius: 0;
+  background: #ffffff;
+  color: var(--portfolio-ink);
+  font: inherit;
+  font-size: 11px;
+}
+
+.transaction-capture-review-grid input:focus,
+.transaction-capture-review-grid select:focus,
+.transaction-capture-review-grid textarea:focus {
+  border-color: var(--portfolio-accent);
+  outline: 1px solid var(--portfolio-accent);
+}
+
+.transaction-capture-review-wide {
+  grid-column: 1 / -1;
+}
+
+.transaction-capture-review-asset-grid,
+.transaction-capture-review-amounts {
+  padding-top: 2px;
+}
+
+.transaction-capture-review-duplicate,
+.transaction-capture-review-contract-source {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(180px, 0.7fr);
+  align-items: end;
+  gap: 12px;
+  padding: 9px 10px;
+  border: 1px solid var(--portfolio-line);
+  background: var(--portfolio-band);
+}
+
+.transaction-capture-review-duplicate > div,
+.transaction-capture-review-duplicate > label,
+.transaction-capture-review-contract-source > label {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.transaction-capture-review-duplicate strong,
+.transaction-capture-review-duplicate label > span,
+.transaction-capture-review-contract-source label > span {
+  color: var(--portfolio-ink);
+  font-size: 9px;
+  font-weight: 500;
+}
+
+.transaction-capture-review-duplicate div > span,
+.transaction-capture-review-contract-source > span {
+  overflow: hidden;
+  color: var(--portfolio-muted);
+  font-size: 9px;
+  line-height: 1.4;
+  text-overflow: ellipsis;
+}
+
+.transaction-capture-review-duplicate select,
+.transaction-capture-review-contract-source select {
+  width: 100%;
+  min-width: 0;
+  padding: 7px 8px;
+  border: 1px solid var(--portfolio-line-strong);
+  border-radius: 0;
+  background: #ffffff;
+  color: var(--portfolio-ink);
+  font: inherit;
+  font-size: 11px;
+}
+
+.transaction-capture-review-terms {
+  display: grid;
+  gap: 10px;
+  padding: 11px;
+  border-left: 3px solid var(--portfolio-accent);
+  background: var(--portfolio-accent-soft);
+}
+
+.transaction-capture-review-underlying {
+  display: grid;
+  gap: 7px;
+  padding-top: 9px;
+  border-top: 1px solid var(--portfolio-line-strong);
+}
+
+.transaction-capture-review-underlying > strong {
+  color: var(--portfolio-ink);
+  font-size: 10px;
+  font-weight: 500;
+}
+
+.transaction-capture-review-checkbox {
+  grid-template-columns: 15px minmax(0, 1fr) !important;
+  align-items: center;
+  align-self: end;
+  min-height: 31px;
+}
+
+.transaction-capture-review-checkbox input {
+  margin: 0;
+}
+
+.transaction-capture-review-checklist {
+  display: grid;
+  gap: 0;
+  padding: 0 14px;
+}
+
+.transaction-capture-review-checklist > strong {
+  padding-bottom: 7px;
+  color: var(--portfolio-ink);
+  font-size: 11px;
+  font-weight: 500;
+}
+
+.transaction-capture-review-checklist > label {
+  display: grid;
+  grid-template-columns: 16px minmax(0, 1fr);
+  gap: 8px;
+  padding: 9px 0;
+  border-top: 1px solid var(--portfolio-line);
+  color: var(--portfolio-ink);
+  cursor: pointer;
+  font-size: 10px;
+  line-height: 1.45;
+}
+
+.transaction-capture-review-checklist input {
+  margin: 2px 0 0;
+}
+
+.transaction-capture-review-checklist label > span {
+  display: grid;
+  gap: 3px;
+}
+
+.transaction-capture-review-checklist em {
+  color: var(--portfolio-muted);
+  font-size: 9px;
+  font-style: normal;
+}
+
+.transaction-capture-review-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 11px 14px;
+  border-top: 1px solid var(--portfolio-line);
+  background: var(--portfolio-band);
+}
+
+.transaction-capture-review-footer > span {
+  max-width: 330px;
+  color: var(--portfolio-muted);
+  font-size: 9px;
+  line-height: 1.4;
+}
+
+.transaction-capture-review-footer > div {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 8px;
+}
+
+.transaction-capture-review-action,
+.transaction-capture-recorded,
+.transaction-capture-partial {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 11px 12px;
+  border: 1px solid var(--portfolio-line-strong);
+  background: var(--portfolio-band);
+}
+
+.transaction-capture-review-action > div,
+.transaction-capture-recorded > div,
+.transaction-capture-partial > div {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.transaction-capture-review-action span,
+.transaction-capture-recorded span,
+.transaction-capture-partial span {
+  color: var(--portfolio-accent);
+  font-size: 9px;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.transaction-capture-review-action strong,
+.transaction-capture-recorded strong,
+.transaction-capture-partial strong {
+  color: var(--portfolio-ink);
+  font-size: 11px;
+  font-weight: 500;
+}
+
+.transaction-capture-review-action small,
+.transaction-capture-recorded > span,
+.transaction-capture-partial > span {
+  color: var(--portfolio-muted);
+  font-size: 9px;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+.transaction-capture-recorded {
+  border-color: #86efac;
+  background: #f0fdf4;
+}
+
+.transaction-capture-partial {
+  border-color: #fdba74;
+  background: #fff7ed;
+}
+
+.transaction-capture-partial span {
+  color: #9a3412;
+}
+
+.transaction-capture-commit-summary {
+  display: grid;
+  gap: 11px;
+}
+
+.transaction-capture-commit-summary p,
+.transaction-capture-commit-summary ul {
+  margin: 0;
+}
+
+.transaction-capture-commit-summary ul {
+  display: grid;
+  gap: 0;
+  padding: 0;
+  border-top: 1px solid var(--portfolio-line);
+  list-style: none;
+}
+
+.transaction-capture-commit-summary li {
+  display: grid;
+  gap: 2px;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--portfolio-line);
+}
+
+.transaction-capture-commit-summary li strong {
+  color: var(--portfolio-ink);
+  font-size: 11px;
+  font-weight: 500;
+}
+
+.transaction-capture-commit-summary li span {
+  color: var(--portfolio-muted);
+  font-size: 10px;
+}
+
+.transaction-capture-empty-history {
+  display: grid;
+  justify-items: start;
+  gap: 6px;
+  padding: 48px 20px;
+}
+
+.transaction-capture-empty-history > span {
+  color: var(--portfolio-line-strong);
+  font-size: 42px;
+  font-weight: 300;
+  line-height: 1;
+}
+
+.transaction-capture-empty-history > strong {
+  color: var(--portfolio-ink);
+  font-size: 14px;
+  font-weight: 500;
+}
+
+.transaction-capture-empty-history p {
+  max-width: 390px;
+  margin: 0 0 6px;
+  color: var(--portfolio-muted);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+@media (max-width: 720px) {
+  .transaction-capture-summary {
+    grid-template-columns: 3px minmax(0, 1fr);
+  }
+
+  .transaction-capture-summary-open {
+    grid-column: 2;
+    justify-self: start;
+  }
+
+  .transaction-capture-assistant-header,
+  .transaction-capture-section,
+  .transaction-capture-batch-detail {
+    padding-right: 14px;
+    padding-left: 14px;
+  }
+
+  .transaction-capture-assistant-tabs,
+  .transaction-capture-step-rail {
+    padding-right: 14px;
+    padding-left: 14px;
+  }
+
+  .transaction-capture-step-rail li::after {
+    right: 6px;
+    left: 28px;
+  }
+
+  .transaction-capture-step-rail li strong {
+    display: none;
+  }
+
+  .transaction-capture-purpose-grid,
+  .transaction-capture-draft-grid,
+  .transaction-capture-evidence-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .transaction-capture-prepare-footer {
+    align-items: stretch;
+    flex-direction: column;
+    padding-right: 14px;
+    padding-left: 14px;
+  }
+
+  .transaction-capture-history-layout {
+    grid-template-columns: 1fr;
+    min-height: 0;
+  }
+
+  .transaction-capture-history-layout > nav {
+    border-right: 0;
+    border-bottom: 1px solid var(--portfolio-line);
+  }
+
+  .transaction-capture-batch-list {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .transaction-capture-analysis-metrics {
+    grid-template-columns: 1fr;
+  }
+
+  .transaction-capture-review-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .transaction-capture-review-duplicate,
+  .transaction-capture-review-contract-source {
+    grid-template-columns: 1fr;
+  }
+
+  .transaction-capture-review-wide {
+    grid-column: auto;
+  }
+
+  .transaction-capture-review-footer,
+  .transaction-capture-review-action,
+  .transaction-capture-recorded,
+  .transaction-capture-partial {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .transaction-capture-review-footer > div {
+    justify-content: flex-end;
+  }
+}
+
 .transaction-file-preview {
   display: grid;
   gap: 12px;

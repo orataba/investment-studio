@@ -26,6 +26,7 @@ class Settings(BaseSettings):
     daily_snapshot_worker_poll_seconds: float = 0.25
     daily_snapshot_worker_reconciliation_batch_size: int = 32
     daily_snapshot_worker_shutdown_seconds: float = 5.0
+    copilot_analysis_timeout_seconds: float = 900.0
     cors_origins: list[str] = ["http://127.0.0.1:5174", "http://localhost:5174"]
 
     model_config = SettingsConfigDict(
@@ -90,11 +91,12 @@ class Settings(BaseSettings):
     @field_validator(
         "daily_snapshot_worker_poll_seconds",
         "daily_snapshot_worker_shutdown_seconds",
+        "copilot_analysis_timeout_seconds",
     )
     @classmethod
-    def _validate_positive_worker_interval(cls, value: float) -> float:
+    def _validate_positive_duration(cls, value: float) -> float:
         if value <= 0:
-            raise ValueError("daily snapshot worker intervals must be positive.")
+            raise ValueError("Worker and copilot durations must be positive.")
         return value
 
     @field_validator("daily_snapshot_worker_reconciliation_batch_size")

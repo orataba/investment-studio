@@ -2512,6 +2512,243 @@ export type PortfolioTransactionFileImportResponse = {
   transactions: PortfolioTransactionRecord[]
 }
 
+export type PortfolioTransactionImportAssetType = 'security' | 'fcn' | 'option' | 'cash'
+
+export type PortfolioTransactionImportAction =
+  | 'buy'
+  | 'sell'
+  | 'dividend'
+  | 'dividend_reinvestment'
+  | 'return_of_capital'
+  | 'transfer_out'
+  | 'transfer_in'
+  | 'opening_balance'
+  | 'entry'
+  | 'early_exit'
+  | 'coupon'
+  | 'knock_in_close'
+  | 'knock_out_close'
+  | 'maturity_close'
+  | 'buy_to_open'
+  | 'sell_to_close'
+  | 'sell_to_open'
+  | 'buy_to_close'
+  | 'expire_long'
+  | 'cash_settle_long'
+  | 'expire_written'
+  | 'cash_settle_written'
+  | 'deposit'
+  | 'withdrawal'
+  | 'interest'
+  | 'fx_conversion'
+  | 'fee'
+  | 'tax'
+
+export type PortfolioTransactionImportNumeric = number | string
+
+export type PortfolioTransactionImportFcnUnderlyingTerms = {
+  instrument_id: string
+  initial_reference_price?: PortfolioTransactionImportNumeric | null
+  strike_level_pct?: PortfolioTransactionImportNumeric | null
+  knock_in_level_pct?: PortfolioTransactionImportNumeric | null
+  knock_out_level_pct?: PortfolioTransactionImportNumeric | null
+  deliverable: boolean
+}
+
+export type PortfolioTransactionImportDerivativeContract =
+  | {
+      derivative_contract_id: string
+      contract_name: string
+      contract_type: 'option'
+      external_reference?: string | null
+      terms: {
+        underlying_instrument_id: string
+        option_type: 'call' | 'put'
+        expiry_date: string
+        strike: PortfolioTransactionImportNumeric
+        contract_multiplier: PortfolioTransactionImportNumeric
+      }
+    }
+  | {
+      derivative_contract_id: string
+      contract_name: string
+      contract_type: 'fcn'
+      external_reference?: string | null
+      terms: {
+        notional: PortfolioTransactionImportNumeric
+        annual_coupon_rate_pct?: PortfolioTransactionImportNumeric | null
+        issue_date: string
+        final_observation_date?: string | null
+        maturity_date: string
+        issuer: string
+        counterparty: string
+        underlyings: PortfolioTransactionImportFcnUnderlyingTerms[]
+      }
+    }
+
+export type PortfolioTransactionImportCommand = {
+  external_reference: string
+  asset_type: PortfolioTransactionImportAssetType
+  transaction_action: PortfolioTransactionImportAction
+  trade_date: string
+  trade_time?: string | null
+  settlement_date?: string | null
+  position_effective_date?: string | null
+  entitlement_date?: string | null
+  acquisition_date?: string | null
+  account_id: string
+  counterparty_account_id?: string | null
+  settlement_cash_account_id?: string | null
+  instrument_id?: string | null
+  derivative_contract_id?: string | null
+  derivative_contract?: PortfolioTransactionImportDerivativeContract | null
+  quantity?: PortfolioTransactionImportNumeric | null
+  price?: PortfolioTransactionImportNumeric | null
+  gross_amount?: PortfolioTransactionImportNumeric | null
+  counter_amount?: PortfolioTransactionImportNumeric | null
+  fx_rate?: PortfolioTransactionImportNumeric | null
+  fees?: PortfolioTransactionImportNumeric | null
+  fee_category?: PortfolioFeeCategory | null
+  taxes?: PortfolioTransactionImportNumeric | null
+  currency: string
+  note?: string | null
+}
+
+export type PortfolioTransactionImportRequest = {
+  source_system: string
+  records: PortfolioTransactionImportCommand[]
+}
+
+export type PortfolioTransactionImportPreviewResponse = {
+  portfolio_id: string
+  preview_digest: string
+  row_count: number
+  valid_count: number
+  error_count: number
+  warnings: string[]
+  batch_errors: string[]
+  rows: Array<{
+    record_index: number
+    external_reference: string
+    command: PortfolioTransactionImportCommand
+    transaction?: PortfolioTransactionCreatePayload | null
+    internal_transfer?: (PortfolioInternalTransferCreatePayload & { currency: string }) | null
+    errors: string[]
+  }>
+}
+
+export type PortfolioTransactionImportCommitResponse = {
+  portfolio_id: string
+  preview_digest: string
+  created_count: number
+  transactions: PortfolioTransactionRecord[]
+}
+
+export type PortfolioTransactionCaptureRecord = {
+  capture_id: string
+  portfolio_id: string
+  original_filename: string
+  media_type: 'image/png' | 'image/jpeg' | 'image/webp'
+  byte_size: number
+  content_sha256: string
+  created_at: string
+}
+
+export type PortfolioTransactionCaptureListResponse = {
+  portfolio_id: string
+  captures: PortfolioTransactionCaptureRecord[]
+}
+
+export type PortfolioTransactionCaptureAnalysisRevision = {
+  batch_id: string
+  revision: number
+  source: 'assistant' | 'human'
+  harness?: string | null
+  provider?: string | null
+  model_name?: string | null
+  harness_session_id?: string | null
+  finish_reason?: string | null
+  schema_version: string
+  analysis: {
+    summary: string
+    documents: Array<{
+      capture_id: string
+      document_kind: string
+    }>
+    candidates: Array<{
+      candidate_id: string
+      candidate_kind: 'transaction' | 'position_snapshot' | 'cash_snapshot' | 'account_metadata' | 'unknown'
+      account_resolution?: {
+        status: 'resolved' | 'ambiguous' | 'unavailable' | 'not_applicable'
+        account_id?: string | null
+        candidate_account_ids: string[]
+        observed_account_hint?: string | null
+        note?: string | null
+      } | null
+      fields: Array<unknown>
+      proposed_transaction_record_index?: number | null
+      possible_duplicate_of?: string[]
+      possible_existing_transaction_ids?: string[]
+      duplicate_assessment?: 'not_assessed' | 'same_record' | 'distinct_records' | 'uncertain'
+      note?: string | null
+    }>
+    questions: string[]
+  }
+  transaction_import?: PortfolioTransactionImportRequest | null
+  preview_digest?: string | null
+  preview_error_count?: number | null
+  created_at: string
+}
+
+export type PortfolioTransactionCaptureAnalysisCreatePayload = {
+  source: 'assistant' | 'human'
+  harness?: string | null
+  provider?: string | null
+  model_name?: string | null
+  harness_session_id?: string | null
+  finish_reason?: string | null
+  schema_version: 'portfolio.transaction-capture-analysis.v2'
+  analysis: PortfolioTransactionCaptureAnalysisRevision['analysis']
+  transaction_import?: PortfolioTransactionImportRequest | null
+}
+
+export type PortfolioTransactionCaptureAnalysisResponse = {
+  batch: PortfolioTransactionCaptureBatchRecord
+  analysis_revision: PortfolioTransactionCaptureAnalysisRevision
+  preview?: PortfolioTransactionImportPreviewResponse | null
+}
+
+export type PortfolioTransactionCaptureBatchPurpose =
+  | 'auto'
+  | 'transaction_import'
+  | 'portfolio_initialization'
+  | 'position_reconciliation'
+
+export type PortfolioTransactionCaptureBatchRecord = {
+  batch_id: string
+  portfolio_id: string
+  purpose: PortfolioTransactionCaptureBatchPurpose
+  status: 'ready' | 'review_required'
+  capture_count: number
+  latest_analysis_revision: number
+  analysis_run_status: 'idle' | 'queued' | 'running' | 'succeeded' | 'failed'
+  analysis_run_attempt: number
+  analysis_run_started_at?: string | null
+  analysis_run_completed_at?: string | null
+  analysis_run_error?: string | null
+  captures: PortfolioTransactionCaptureRecord[]
+  latest_analysis?: PortfolioTransactionCaptureAnalysisRevision | null
+  ledger_status: 'no_proposal' | 'unrecorded' | 'partially_recorded' | 'recorded'
+  recorded_transaction_ids: string[]
+  created_at: string
+  updated_at: string
+}
+
+export type PortfolioTransactionCaptureBatchListResponse = {
+  portfolio_id: string
+  batches: PortfolioTransactionCaptureBatchRecord[]
+}
+
 export type PortfolioTransactionDeleteResponse = {
   portfolio_id: string
   deleted_count: number
@@ -3326,6 +3563,116 @@ export function importPortfolioTransactionFile(
       },
       body: form,
     },
+  )
+}
+
+export function getPortfolioTransactionCaptures(
+  portfolioId: string,
+  limit = 10,
+) {
+  return fetchJson<PortfolioTransactionCaptureListResponse>(
+    API_BASE_URL,
+    `/api/portfolios/${encodeURIComponent(portfolioId)}/transaction-captures?limit=${limit}`,
+  )
+}
+
+export function uploadPortfolioTransactionCapture(
+  portfolioId: string,
+  file: File,
+) {
+  const form = new FormData()
+  form.append('file', file)
+  return fetchJson<PortfolioTransactionCaptureRecord>(
+    API_BASE_URL,
+    `/api/portfolios/${encodeURIComponent(portfolioId)}/transaction-captures`,
+    {
+      method: 'POST',
+      body: form,
+    },
+  )
+}
+
+export function getPortfolioTransactionCaptureBatches(
+  portfolioId: string,
+  limit = 10,
+) {
+  return fetchJson<PortfolioTransactionCaptureBatchListResponse>(
+    API_BASE_URL,
+    `/api/portfolios/${encodeURIComponent(portfolioId)}/transaction-capture-batches?limit=${limit}`,
+  )
+}
+
+export function createPortfolioTransactionCaptureBatch(
+  portfolioId: string,
+  captureIds: string[],
+  purpose: PortfolioTransactionCaptureBatchPurpose = 'auto',
+) {
+  return fetchJson<PortfolioTransactionCaptureBatchRecord>(
+    API_BASE_URL,
+    `/api/portfolios/${encodeURIComponent(portfolioId)}/transaction-capture-batches`,
+    {
+      method: 'POST',
+      body: JSON.stringify({ capture_ids: captureIds, purpose }),
+    },
+  )
+}
+
+export function startPortfolioTransactionCaptureAnalysis(
+  portfolioId: string,
+  batchId: string,
+) {
+  return fetchJson<PortfolioTransactionCaptureBatchRecord>(
+    API_BASE_URL,
+    `/api/portfolios/${encodeURIComponent(portfolioId)}`
+      + `/transaction-capture-batches/${encodeURIComponent(batchId)}/analysis-runs`,
+    {
+      method: 'POST',
+    },
+  )
+}
+
+export function createPortfolioTransactionCaptureAnalysisRevision(
+  portfolioId: string,
+  batchId: string,
+  payload: PortfolioTransactionCaptureAnalysisCreatePayload,
+) {
+  return fetchJson<PortfolioTransactionCaptureAnalysisResponse>(
+    API_BASE_URL,
+    `/api/portfolios/${encodeURIComponent(portfolioId)}`
+      + `/transaction-capture-batches/${encodeURIComponent(batchId)}/analysis-revisions`,
+    {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    },
+  )
+}
+
+export function commitPortfolioTransactionImport(
+  portfolioId: string,
+  payload: PortfolioTransactionImportRequest,
+  previewDigest: string,
+  idempotencyKey: string,
+) {
+  return fetchJson<PortfolioTransactionImportCommitResponse>(
+    API_BASE_URL,
+    `/api/portfolios/${encodeURIComponent(portfolioId)}/transaction-imports/commit`,
+    {
+      method: 'POST',
+      headers: {
+        'Idempotency-Key': idempotencyKey,
+      },
+      body: JSON.stringify({ ...payload, preview_digest: previewDigest }),
+    },
+  )
+}
+
+export function portfolioTransactionCaptureImageUrl(
+  portfolioId: string,
+  captureId: string,
+) {
+  return (
+    `${API_BASE_URL}/api/portfolios/${encodeURIComponent(portfolioId)}`
+    + `/transaction-captures/${encodeURIComponent(captureId)}/image`
   )
 }
 

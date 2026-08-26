@@ -4,7 +4,16 @@ from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from uuid import NAMESPACE_URL, uuid4, uuid5
 
-from fastapi import APIRouter, File, Form, Header, HTTPException, Query, Response, UploadFile
+from fastapi import (
+    APIRouter,
+    File,
+    Form,
+    Header,
+    HTTPException,
+    Query,
+    Response,
+    UploadFile,
+)
 from sqlalchemy.exc import IntegrityError
 
 from portfolio_app.api.assemblers import (
@@ -1634,7 +1643,7 @@ def _build_transaction_csv_preview(
     return response, list(batch_preview.prepared_records)
 
 
-def _build_transaction_json_preview(
+def build_transaction_import_preview(
     *,
     portfolio_id: str,
     request: TransactionImportPreviewRequest,
@@ -1854,7 +1863,7 @@ def preview_transaction_import(
 ) -> TransactionImportPreviewResponse:
     """Validate a machine-generated batch without writing transaction facts."""
 
-    preview, _prepared_records = _build_transaction_json_preview(
+    preview, _prepared_records = build_transaction_import_preview(
         portfolio_id=portfolio_id,
         request=payload,
     )
@@ -1903,7 +1912,7 @@ def commit_transaction_import(
             ),
         )
 
-    preview, prepared_records = _build_transaction_json_preview(
+    preview, prepared_records = build_transaction_import_preview(
         portfolio_id=portfolio_id,
         request=payload,
     )

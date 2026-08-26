@@ -16,15 +16,17 @@
    当前前端设计基线：白底数据终端、tab-to-content 节奏、字体层级和跨 app UI 边界。
 6. [TRANSACTION_IMPORT_API_GUIDE.md](./TRANSACTION_IMPORT_API_GUIDE.md)
    面向交易截图识别等外部系统的 JSON Preview/Commit 对接合同、字段标准、动作矩阵、示例和联调验收清单。
-7. [apps/portfolio/docs/01_CALCULATION_SPEC.md](../apps/portfolio/docs/01_CALCULATION_SPEC.md)
+7. [PORTFOLIO_COPILOT_HARNESS.md](./PORTFOLIO_COPILOT_HARNESS.md)
+   内部 Screenshot Assistant 的 Harness 选择、受限 MCP 工具、模型作用域和人工复核流程。
+8. [apps/portfolio/docs/01_CALCULATION_SPEC.md](../apps/portfolio/docs/01_CALCULATION_SPEC.md)
    Portfolio canonical 计算合同；Holdings 的逐字段映射另见 [03_HOLDINGS_FIELD_REFERENCE.md](../apps/portfolio/docs/03_HOLDINGS_FIELD_REFERENCE.md)。
-8. [FUND_NAV_EVENT_AND_RECALCULATION_MODEL.md](./FUND_NAV_EVENT_AND_RECALCULATION_MODEL.md)
+9. [FUND_NAV_EVENT_AND_RECALCULATION_MODEL.md](./FUND_NAV_EVENT_AND_RECALCULATION_MODEL.md)
    私募基金单位净值、不可变行为/复投证据、复权因子、人工修订和下游重算的当前合同。
-9. [SERVER_DEPLOYMENT.md](./SERVER_DEPLOYMENT.md)
+10. [SERVER_DEPLOYMENT.md](./SERVER_DEPLOYMENT.md)
    当前 Linux/systemd 服务部署、迁移、健康检查和运维边界。
-10. [NEW_MACHINE_RESTORE.md](./NEW_MACHINE_RESTORE.md)
+11. [NEW_MACHINE_RESTORE.md](./NEW_MACHINE_RESTORE.md)
    新电脑从私有 GitHub 仓库恢复项目、数据库、运行环境和定时任务的步骤参考。
-11. [LOCAL_MACOS_SERVICE.md](./LOCAL_MACOS_SERVICE.md)
+12. [LOCAL_MACOS_SERVICE.md](./LOCAL_MACOS_SERVICE.md)
    在 macOS 上安装、检查和移除本地 `launchd` 常驻服务与每日 21:00 刷新/重算任务。
 
 按 app 深入时：

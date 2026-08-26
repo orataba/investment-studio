@@ -19,7 +19,7 @@ pytestmark = pytest.mark.postgresql_integration
 
 RECONCILIATION_REVISION = "20260715_0032r"
 RECONCILIATION_PARENT = "20260711_0032"
-CURRENT_HEAD_REVISION = "20260822_0055"
+CURRENT_HEAD_REVISION = "20260824_0056"
 LEGACY_FOREIGN_KEY = "fk_transaction_record_asset_id_instrument"
 CURRENT_FOREIGN_KEY = "fk_transaction_record_instrument_id_instrument"
 
@@ -415,6 +415,70 @@ def test_postgres_schema_reconciliation_is_lossless_and_fail_closed(
                             f"UPDATE portfolio.{table_name} SET {column_name} = NULL"
                         )
         command.upgrade(config, "head")
+        engine.dispose()
+
+
+def test_postgres_screenshot_evidence_cascades_with_portfolio_deletion(
+    postgres_reconciliation_database: str,
+) -> None:
+    database_url = postgres_reconciliation_database
+    command.upgrade(_portfolio_config(database_url), "head")
+
+    from portfolio_app.services.portfolio_store import create_portfolio, delete_portfolio
+    from portfolio_app.services.transaction_captures import (
+        create_transaction_capture,
+        create_transaction_capture_batch,
+        get_transaction_capture,
+    )
+
+    create_portfolio(
+        "Keep PostgreSQL fixture",
+        base_currency="USD",
+        inception_date=date(2026, 1, 1),
+    )
+    target = create_portfolio(
+        "Delete PostgreSQL screenshot fixture",
+        base_currency="USD",
+        inception_date=date(2026, 1, 1),
+    )
+    portfolio_id = str(target["portfolio_id"])
+    capture = create_transaction_capture(
+        portfolio_id=portfolio_id,
+        filename="fixture.png",
+        content=b"\x89PNG\r\n\x1a\npostgres-delete-fixture",
+    )
+    create_transaction_capture_batch(
+        portfolio_id=portfolio_id,
+        capture_ids=[str(capture["capture_id"])],
+        purpose="auto",
+    )
+
+    assert delete_portfolio(portfolio_id)
+    assert get_transaction_capture(
+        portfolio_id=portfolio_id,
+        capture_id=str(capture["capture_id"]),
+    ) is None
+
+    engine = sa.create_engine(database_url)
+    try:
+        with engine.connect() as connection:
+            definition = connection.scalar(
+                sa.text(
+                    """
+                    SELECT pg_get_constraintdef(con.oid)
+                    FROM pg_constraint AS con
+                    JOIN pg_class AS cls ON cls.oid = con.conrelid
+                    JOIN pg_namespace AS ns ON ns.oid = cls.relnamespace
+                    WHERE ns.nspname = 'portfolio'
+                      AND cls.relname = 'transaction_capture_batch_item'
+                      AND con.contype = 'f'
+                      AND pg_get_constraintdef(con.oid) LIKE '%capture_id%'
+                    """
+                )
+            )
+        assert definition is not None
+        assert "ON DELETE CASCADE" in str(definition)
+    finally:
         engine.dispose()
 
 

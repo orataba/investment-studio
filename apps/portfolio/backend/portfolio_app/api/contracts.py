@@ -4,7 +4,7 @@ from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from datetime import date, time
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, JsonValue, field_validator, model_validator
 from portfolio_ops_instrument_core import (
     CorporateActionEvent as CorporateActionEventContract,
     DataStatus as CoverageState,
@@ -4049,6 +4049,504 @@ class TransactionImportCommitResponse(BaseModel):
     preview_digest: str
     created_count: int
     transactions: list[TransactionRecord]
+
+
+class TransactionCaptureRecord(BaseModel):
+    capture_id: str
+    portfolio_id: str
+    original_filename: str
+    media_type: Literal["image/png", "image/jpeg", "image/webp"]
+    byte_size: int = Field(gt=0)
+    content_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    created_at: str
+
+
+class TransactionCaptureEvidenceRegion(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    x: float = Field(ge=0, le=1)
+    y: float = Field(ge=0, le=1)
+    width: float = Field(gt=0, le=1)
+    height: float = Field(gt=0, le=1)
+
+    @model_validator(mode="after")
+    def validate_bounds(self) -> "TransactionCaptureEvidenceRegion":
+        if self.x + self.width > 1 or self.y + self.height > 1:
+            raise ValueError("Evidence region must stay within normalized image bounds.")
+        return self
+
+
+class TransactionCaptureEvidenceReference(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    capture_id: str = Field(min_length=1, max_length=120)
+    visible_text: str | None = Field(default=None, max_length=1_000)
+    region: TransactionCaptureEvidenceRegion | None = None
+
+    @field_validator("capture_id", "visible_text", mode="before")
+    @classmethod
+    def normalize_text(cls, value: object) -> object:
+        return _normalize_optional_text(value)
+
+
+class TransactionCaptureObservedField(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(min_length=1, max_length=100)
+    value: JsonValue = None
+    status: Literal["observed", "inferred", "ambiguous", "missing"]
+    evidence: list[TransactionCaptureEvidenceReference] = Field(default_factory=list)
+    note: str | None = Field(default=None, max_length=1_000)
+
+    @field_validator("name", mode="before")
+    @classmethod
+    def normalize_name(cls, value: object) -> object:
+        return _normalize_required_text(value)
+
+    @field_validator("note", mode="before")
+    @classmethod
+    def normalize_note(cls, value: object) -> object:
+        return _normalize_optional_text(value)
+
+    @model_validator(mode="after")
+    def validate_observation(self) -> "TransactionCaptureObservedField":
+        if self.status == "observed" and not self.evidence:
+            raise ValueError("Observed fields require screenshot evidence.")
+        if self.status == "missing" and self.value is not None:
+            raise ValueError("Missing fields must use a null value.")
+        return self
+
+
+class TransactionCaptureAccountResolution(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    status: Literal[
+        "resolved",
+        "ambiguous",
+        "unavailable",
+        "not_applicable",
+    ] = Field(
+        description=(
+            "Use resolved for one supported current-portfolio account; ambiguous when "
+            "two or more supplied accounts remain plausible; unavailable only when no "
+            "supplied account is eligible; not_applicable when the candidate needs no account."
+        )
+    )
+    account_id: str | None = Field(default=None, min_length=1, max_length=120)
+    candidate_account_ids: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Plausible current-portfolio account IDs. Required as choices for ambiguous "
+            "assignments; empty for unavailable and not_applicable."
+        ),
+    )
+    observed_account_hint: str | None = Field(default=None, max_length=200)
+    evidence: list[TransactionCaptureEvidenceReference] = Field(default_factory=list)
+    note: str | None = Field(default=None, max_length=1_000)
+
+    @field_validator("account_id", "observed_account_hint", "note", mode="before")
+    @classmethod
+    def normalize_optional_text(cls, value: object) -> object:
+        return _normalize_optional_text(value)
+
+    @field_validator("candidate_account_ids", mode="before")
+    @classmethod
+    def normalize_candidate_account_ids(cls, value: object) -> object:
+        return _normalize_optional_text_list(value)
+
+    @model_validator(mode="after")
+    def validate_resolution(self) -> "TransactionCaptureAccountResolution":
+        if len(self.candidate_account_ids) != len(set(self.candidate_account_ids)):
+            raise ValueError("Account candidate IDs must be unique.")
+        if self.status == "resolved":
+            if self.account_id is None:
+                raise ValueError("Resolved account assignments require account_id.")
+            if self.candidate_account_ids and self.account_id not in self.candidate_account_ids:
+                raise ValueError(
+                    "Resolved account_id must be included in candidate_account_ids."
+                )
+        elif self.account_id is not None:
+            raise ValueError(
+                "Only resolved account assignments may carry account_id."
+            )
+        if self.status == "ambiguous" and len(self.candidate_account_ids) < 2:
+            raise ValueError(
+                "Ambiguous account assignments require at least two candidates."
+            )
+        if self.status in {"unavailable", "not_applicable"} and self.candidate_account_ids:
+            raise ValueError(
+                f"{self.status} account assignments must not carry candidates."
+            )
+        return self
+
+
+class TransactionCaptureDocumentAssessment(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    capture_id: str = Field(min_length=1, max_length=120)
+    document_kind: Literal[
+        "trade_activity",
+        "trade_confirmation",
+        "order_activity",
+        "structured_product_confirmation",
+        "structured_product_terms",
+        "fund_transaction_confirmation",
+        "position_snapshot",
+        "cash_snapshot",
+        "account_summary",
+        "mixed",
+        "unknown",
+    ]
+    broker_name: str | None = Field(default=None, max_length=200)
+    account_hint: str | None = Field(default=None, max_length=200)
+    observed_as_of: str | None = Field(default=None, max_length=100)
+    note: str | None = Field(default=None, max_length=1_000)
+
+    @field_validator(
+        "capture_id",
+        "broker_name",
+        "account_hint",
+        "observed_as_of",
+        "note",
+        mode="before",
+    )
+    @classmethod
+    def normalize_text(cls, value: object) -> object:
+        return _normalize_optional_text(value)
+
+
+class TransactionCaptureCandidate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    candidate_id: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,119}$")
+    candidate_kind: Literal[
+        "transaction",
+        "position_snapshot",
+        "cash_snapshot",
+        "account_metadata",
+        "unknown",
+    ]
+    account_resolution: TransactionCaptureAccountResolution | None = None
+    fields: list[TransactionCaptureObservedField] = Field(min_length=1)
+    evidence: list[TransactionCaptureEvidenceReference] = Field(default_factory=list)
+    proposed_transaction_record_index: int | None = Field(default=None, ge=1)
+    possible_duplicate_of: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Candidate IDs from this analysis that may represent the same record. "
+            "Leave empty when no possible duplicate was found."
+        ),
+    )
+    possible_existing_transaction_ids: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Existing ledger transaction IDs returned by a portfolio transaction search "
+            "that may represent this candidate. Leave empty when the search found no match."
+        ),
+    )
+    duplicate_assessment: Literal[
+        "not_assessed",
+        "same_record",
+        "distinct_records",
+        "uncertain",
+    ] = Field(
+        default="not_assessed",
+        description=(
+            "Use not_assessed when both duplicate-reference lists are empty, including "
+            "after a search found no match. Use same_record, distinct_records, or uncertain "
+            "only when at least one duplicate-reference list is non-empty."
+        ),
+    )
+    note: str | None = Field(default=None, max_length=2_000)
+
+    @field_validator(
+        "possible_duplicate_of",
+        "possible_existing_transaction_ids",
+        mode="before",
+    )
+    @classmethod
+    def normalize_duplicate_ids(cls, value: object) -> object:
+        return _normalize_optional_text_list(value)
+
+    @field_validator("note", mode="before")
+    @classmethod
+    def normalize_note(cls, value: object) -> object:
+        return _normalize_optional_text(value)
+
+    @model_validator(mode="after")
+    def validate_duplicate_assessment(self) -> "TransactionCaptureCandidate":
+        has_duplicate_reference = bool(
+            self.possible_duplicate_of or self.possible_existing_transaction_ids
+        )
+        if has_duplicate_reference and self.duplicate_assessment == "not_assessed":
+            raise ValueError("Possible duplicates require an explicit assessment.")
+        if not has_duplicate_reference and self.duplicate_assessment != "not_assessed":
+            raise ValueError("A duplicate assessment requires duplicate references.")
+        if self.candidate_id in self.possible_duplicate_of:
+            raise ValueError("A candidate cannot duplicate itself.")
+        if (
+            has_duplicate_reference
+            and self.duplicate_assessment in {"same_record", "uncertain"}
+            and self.proposed_transaction_record_index is not None
+        ):
+            raise ValueError(
+                "A possible duplicate must be resolved as distinct before Preview."
+            )
+        account_scoped_kinds = {"transaction", "position_snapshot", "cash_snapshot"}
+        if self.candidate_kind in account_scoped_kinds and self.account_resolution is None:
+            raise ValueError(
+                f"{self.candidate_kind} candidates require account_resolution."
+            )
+        if (
+            self.candidate_kind not in account_scoped_kinds
+            and self.account_resolution is not None
+            and self.account_resolution.status != "not_applicable"
+        ):
+            raise ValueError(
+                f"{self.candidate_kind} candidates may only use a not_applicable account resolution."
+            )
+        return self
+
+
+class TransactionCaptureAnalysis(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    summary: str = Field(min_length=1, max_length=4_000)
+    documents: list[TransactionCaptureDocumentAssessment] = Field(min_length=1)
+    candidates: list[TransactionCaptureCandidate] = Field(default_factory=list)
+    questions: list[str] = Field(default_factory=list)
+
+    @field_validator("summary", mode="before")
+    @classmethod
+    def normalize_summary(cls, value: object) -> object:
+        return _normalize_required_text(value)
+
+    @field_validator("questions", mode="before")
+    @classmethod
+    def normalize_questions(cls, value: object) -> object:
+        return _normalize_optional_text_list(value)
+
+    @model_validator(mode="after")
+    def validate_candidate_graph(self) -> "TransactionCaptureAnalysis":
+        candidate_ids = [candidate.candidate_id for candidate in self.candidates]
+        if len(candidate_ids) != len(set(candidate_ids)):
+            raise ValueError("Analysis candidate_id values must be unique.")
+        known_ids = set(candidate_ids)
+        unknown_duplicates = sorted(
+            {
+                duplicate_id
+                for candidate in self.candidates
+                for duplicate_id in candidate.possible_duplicate_of
+                if duplicate_id not in known_ids
+            }
+        )
+        if unknown_duplicates:
+            raise ValueError(
+                "Duplicate references must identify candidates in the same analysis: "
+                + ", ".join(unknown_duplicates)
+            )
+        document_capture_ids = [document.capture_id for document in self.documents]
+        if len(document_capture_ids) != len(set(document_capture_ids)):
+            raise ValueError("Each screenshot must have at most one document assessment.")
+        return self
+
+
+class TransactionCaptureAnalysisCreateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    source: Literal["assistant", "human"] = Field(
+        default="assistant",
+        description="Harness submissions must use assistant.",
+    )
+    harness: str | None = Field(
+        default=None,
+        max_length=80,
+        description="Required for assistant submissions; use deepseek-harness here.",
+    )
+    provider: str | None = Field(
+        default=None,
+        max_length=50,
+        description="Required for assistant submissions; use deepseek here.",
+    )
+    model_name: str | None = Field(
+        default=None,
+        max_length=120,
+        description=(
+            "Required for assistant submissions; use the exact active model name, "
+            "for example deepseek-v4-flash-vision-exp."
+        ),
+    )
+    harness_session_id: str | None = Field(default=None, max_length=255)
+    finish_reason: str | None = Field(default=None, max_length=80)
+    schema_version: Literal["portfolio.transaction-capture-analysis.v2"] = Field(
+        default="portfolio.transaction-capture-analysis.v2",
+    )
+    analysis: TransactionCaptureAnalysis
+    transaction_import: TransactionImportPreviewRequest | None = None
+
+    @field_validator(
+        "harness",
+        "provider",
+        "model_name",
+        "harness_session_id",
+        "finish_reason",
+        mode="before",
+    )
+    @classmethod
+    def normalize_optional_metadata(cls, value: object) -> object:
+        return _normalize_optional_text(value)
+
+    @model_validator(mode="after")
+    def validate_submission(self) -> "TransactionCaptureAnalysisCreateRequest":
+        if self.source == "assistant" and (
+            not self.harness or not self.provider or not self.model_name
+        ):
+            raise ValueError(
+                "Assistant analysis requires harness, provider, and model_name."
+            )
+
+        mapped_candidates = [
+            candidate
+            for candidate in self.analysis.candidates
+            if candidate.proposed_transaction_record_index is not None
+        ]
+        if self.transaction_import is None:
+            if mapped_candidates:
+                raise ValueError(
+                    "Transaction record mappings require a transaction_import proposal."
+                )
+            return self
+
+        record_count = len(self.transaction_import.records)
+        mapped_indexes = [
+            int(candidate.proposed_transaction_record_index)
+            for candidate in mapped_candidates
+            if candidate.proposed_transaction_record_index is not None
+        ]
+        if any(candidate.candidate_kind != "transaction" for candidate in mapped_candidates):
+            raise ValueError("Only transaction candidates may map to transaction import rows.")
+        if sorted(mapped_indexes) != list(range(1, record_count + 1)):
+            raise ValueError(
+                "Every proposed transaction import row must map to exactly one candidate."
+            )
+        for candidate in mapped_candidates:
+            record_index = int(candidate.proposed_transaction_record_index or 0)
+            resolution = candidate.account_resolution
+            if resolution is None or resolution.status != "resolved":
+                raise ValueError(
+                    "Proposed transaction import rows require a resolved account assignment."
+                )
+            command = self.transaction_import.records[record_index - 1]
+            if resolution.account_id != command.account_id:
+                raise ValueError(
+                    "Candidate account resolution must match its transaction import account_id."
+                )
+        return self
+
+
+class TransactionCaptureAnalysisRevision(BaseModel):
+    batch_id: str
+    revision: int = Field(ge=1)
+    source: Literal["assistant", "human"]
+    harness: str | None = None
+    provider: str | None = None
+    model_name: str | None = None
+    harness_session_id: str | None = None
+    finish_reason: str | None = None
+    schema_version: str
+    analysis: TransactionCaptureAnalysis
+    transaction_import: TransactionImportPreviewRequest | None = None
+    preview_digest: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    preview_error_count: int | None = Field(default=None, ge=0)
+    created_at: str
+
+
+class TransactionCaptureBatchCreateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    capture_ids: list[str] = Field(min_length=1, max_length=10)
+    purpose: Literal[
+        "auto",
+        "transaction_import",
+        "portfolio_initialization",
+        "position_reconciliation",
+    ] = "auto"
+
+    @field_validator("capture_ids", mode="before")
+    @classmethod
+    def normalize_capture_ids(cls, value: object) -> object:
+        return _normalize_optional_text_list(value)
+
+
+class TransactionCaptureBatchRecord(BaseModel):
+    batch_id: str
+    portfolio_id: str
+    purpose: Literal[
+        "auto",
+        "transaction_import",
+        "portfolio_initialization",
+        "position_reconciliation",
+    ]
+    status: Literal["ready", "review_required"]
+    capture_count: int = Field(gt=0, le=10)
+    latest_analysis_revision: int = Field(ge=0)
+    analysis_run_status: Literal[
+        "idle",
+        "queued",
+        "running",
+        "succeeded",
+        "failed",
+    ] = "idle"
+    analysis_run_attempt: int = Field(default=0, ge=0)
+    analysis_run_started_at: str | None = None
+    analysis_run_completed_at: str | None = None
+    analysis_run_error: str | None = None
+    captures: list[TransactionCaptureRecord]
+    latest_analysis: TransactionCaptureAnalysisRevision | None = None
+    ledger_status: Literal[
+        "no_proposal",
+        "unrecorded",
+        "partially_recorded",
+        "recorded",
+    ] = "no_proposal"
+    recorded_transaction_ids: list[str] = Field(default_factory=list)
+    created_at: str
+    updated_at: str
+
+
+class TransactionCaptureBatchListResponse(BaseModel):
+    portfolio_id: str
+    batches: list[TransactionCaptureBatchRecord]
+
+
+class TransactionCaptureSourceIdentityContext(BaseModel):
+    source_system: Literal["portfolio_screenshot_assistant"]
+    required_external_reference_format: str
+    required_external_reference_example: str
+
+
+class TransactionCaptureAgentContextResponse(BaseModel):
+    schema_version: Literal["portfolio.transaction-capture-analysis.v2"]
+    portfolio_scope_fixed: Literal[True] = True
+    batch: TransactionCaptureBatchRecord
+    source_identity: TransactionCaptureSourceIdentityContext
+    portfolio: dict[str, object]
+    accounts: list[dict[str, object]]
+    derivative_contracts: list[dict[str, object]]
+    instructions: list[str]
+    submission_schema: dict[str, object]
+    commit_tool_exposed: Literal[False] = False
+
+
+class TransactionCaptureAnalysisResponse(BaseModel):
+    batch: TransactionCaptureBatchRecord
+    analysis_revision: TransactionCaptureAnalysisRevision
+    preview: TransactionImportPreviewResponse | None = None
+
+
+class TransactionCaptureListResponse(BaseModel):
+    portfolio_id: str
+    captures: list[TransactionCaptureRecord]
 
 
 class TransactionBatchResponse(BaseModel):
