@@ -1493,6 +1493,11 @@ function PerformancePage() {
     () => buildPerformanceWindowFilters(effectiveStartDate, effectiveEndDate),
     [effectiveEndDate, effectiveStartDate],
   )
+  const performanceWindowResourceKey = [
+    portfolioId ?? '',
+    performanceWindowFilters.start_date ?? '',
+    performanceWindowFilters.end_date ?? '',
+  ].join(':')
   const loadPerformanceWorkspace = useCallback(
     () => getPortfolioPerformance(portfolioId ?? '', performanceWindowFilters),
     [performanceWindowFilters, portfolioId],
@@ -1503,7 +1508,7 @@ function PerformancePage() {
     error,
   } = usePerformanceResource({
     enabled: Boolean(portfolioId && !waitingForDefaultEndDate && !windowError),
-    resourceKey: portfolioId ?? '',
+    resourceKey: performanceWindowResourceKey,
     load: loadPerformanceWorkspace,
     fallbackError: 'Failed to load performance workspace.',
   })
@@ -1520,6 +1525,11 @@ function PerformancePage() {
       workspace?.summary.effective_start_date,
     ],
   )
+  const calculationWindowResourceKey = [
+    portfolioId ?? '',
+    calculationWindowFilters.start_date ?? '',
+    calculationWindowFilters.end_date ?? '',
+  ].join(':')
   const loadCalculationWorkspace = useCallback(
     () => getPortfolioPerformanceCalculation(portfolioId ?? '', calculationWindowFilters),
     [calculationWindowFilters, portfolioId],
@@ -1530,7 +1540,7 @@ function PerformancePage() {
     error: calculationError,
   } = usePerformanceResource({
     enabled: Boolean(portfolioId && workspace && !waitingForDefaultEndDate),
-    resourceKey: portfolioId ?? '',
+    resourceKey: calculationWindowResourceKey,
     load: loadCalculationWorkspace,
     fallbackError: 'Failed to load period calculation.',
   })
@@ -1635,6 +1645,11 @@ function PerformancePage() {
       resolvedCalculationGroupBy,
     ],
   )
+  const calculationGroupsResourceKey = [
+    calculationWindowResourceKey,
+    calculationGroupsFilters.axis,
+    calculationGroupsFilters.taxonomy_id ?? '',
+  ].join(':')
   const loadCalculationGroupsWorkspace = useCallback(
     () =>
       getPortfolioPerformanceCalculationGroups(
@@ -1654,7 +1669,7 @@ function PerformancePage() {
         !waitingForDefaultEndDate &&
         calculationGroupsReady,
     ),
-    resourceKey: portfolioId ?? '',
+    resourceKey: calculationGroupsResourceKey,
     load: loadCalculationGroupsWorkspace,
     fallbackError: 'Failed to load calculation groups.',
   })

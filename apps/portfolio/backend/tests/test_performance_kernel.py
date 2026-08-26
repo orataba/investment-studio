@@ -7750,6 +7750,22 @@ def test_period_calculation_groups_support_instrument_type_axis(client, monkeypa
         "equity-us-test": equity_detail,
         "fund-us-test": fund_detail,
     }
+    singleton_detail_calls: list[str] = []
+
+    def fail_singleton_detail_load(instrument_id: str):
+        singleton_detail_calls.append(instrument_id)
+        raise AssertionError(
+            "group and child calculations must reuse the bulk instrument detail map"
+        )
+
+    monkeypatch.setattr(
+        performance,
+        "get_registry_instrument_details",
+        lambda instrument_ids: {
+            instrument_id: deepcopy(instrument_details.get(instrument_id))
+            for instrument_id in instrument_ids
+        },
+    )
     monkeypatch.setattr(
         performance,
         "get_registry_instrument_detail",
@@ -7831,6 +7847,17 @@ def test_period_calculation_groups_support_instrument_type_axis(client, monkeypa
     store["portfolios"][0]["as_of_date"] = "2026-01-02"
     _write_store(store)
 
+    materialization_response = client.get(
+        f"/api/portfolios/{portfolio_id}/performance"
+    )
+    assert materialization_response.status_code == 200
+    monkeypatch.setattr(
+        performance,
+        "get_registry_instrument_detail",
+        fail_singleton_detail_load,
+    )
+    performance._clear_calculation_instrument_detail_cache()
+
     response = client.get(f"/api/portfolios/{portfolio_id}/performance/calculation/groups?axis=instrument_type")
     assert response.status_code == 200
     payload = response.json()
@@ -7851,6 +7878,7 @@ def test_period_calculation_groups_support_instrument_type_axis(client, monkeypa
     fund_children = {item["item_key"]: item for item in groups["public_fund"]["children"]}
     assert fund_children["fund-us-test"]["item_label"] == "Test Fund"
     assert isclose(fund_children["fund-us-test"]["final_value"], 190.0, rel_tol=0.0, abs_tol=1e-12)
+    assert singleton_detail_calls == []
 
 
 def test_period_calculation_groups_use_daily_risk_basis_for_daily_sources(

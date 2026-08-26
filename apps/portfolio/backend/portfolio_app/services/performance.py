@@ -8514,6 +8514,8 @@ def _build_period_calculation_child_records(
     portfolio_daily_series: list[dict[str, object]],
     risk_final_date: date | None,
     portfolio_start_weight_denominator: float | None,
+    instrument_detail_cache: dict[str, dict[str, object] | None],
+    direct_fx_instruments: dict[tuple[str, str], str],
     detail_contribution_report: dict[str, object] | None = None,
 ) -> dict[str, list[dict[str, object]]]:
     parent_labels = {
@@ -8611,9 +8613,6 @@ def _build_period_calculation_child_records(
                 start_snapshot=raw_start_snapshot,
             )
         )
-        fx_payload = get_platform_fx_rates()
-        direct_fx_instruments = valuation_fx.fx_direct_instrument_map(fx_payload)
-        instrument_detail_cache: dict[str, dict[str, object] | None] = {}
         unrealized_capital_summary = (
             _period_unrealized_capital_gains_by_group(
                 portfolio,
@@ -9330,6 +9329,8 @@ def build_period_calculation_groups_report(
         portfolio_daily_series=portfolio_daily_series,
         risk_final_date=resolved_end_date,
         portfolio_start_weight_denominator=full_period_start_weight_denominator,
+        instrument_detail_cache=instrument_detail_cache,
+        direct_fx_instruments=direct_fx_instruments,
         detail_contribution_report=detail_contribution_report,
     )
     for item in groups:

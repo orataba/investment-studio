@@ -391,6 +391,68 @@ describe('Performance rendered page contract', () => {
     )
   })
 
+  it('waits for the selected performance window before starting its lower calculations', async () => {
+    const user = userEvent.setup()
+    renderPortfolioPage(
+      <PerformancePage />,
+      '/portfolios/3/performance?start_date=2026-07-06&end_date=2026-07-15',
+      '/portfolios/:portfolioId/performance',
+    )
+
+    await screen.findByRole('row', { name: /Portfolio Total/ })
+    apiMocks.getPortfolioPerformanceCalculation.mockClear()
+    apiMocks.getPortfolioPerformanceCalculationGroups.mockClear()
+
+    let resolvePerformanceRefresh: ((value: ReturnType<typeof performanceFixture>) => void) | undefined
+    apiMocks.getPortfolioPerformance.mockReturnValueOnce(
+      new Promise((resolve) => {
+        resolvePerformanceRefresh = resolve
+      }),
+    )
+
+    const controls = screen.getByLabelText('Performance period controls')
+    await user.click(within(controls).getByRole('button', { name: 'MTD' }))
+    await waitFor(() =>
+      expect(apiMocks.getPortfolioPerformance).toHaveBeenLastCalledWith('3', {
+        start_date: '2026-06-30',
+        end_date: '2026-07-15',
+      }),
+    )
+    expect(apiMocks.getPortfolioPerformanceCalculation).not.toHaveBeenCalled()
+    expect(apiMocks.getPortfolioPerformanceCalculationGroups).not.toHaveBeenCalled()
+
+    const refreshedPerformance = performanceFixture()
+    await act(async () => {
+      resolvePerformanceRefresh?.({
+        ...refreshedPerformance,
+        summary: {
+          ...refreshedPerformance.summary,
+          start_date: '2026-06-30',
+          end_date: '2026-07-15',
+          requested_start_date: '2026-06-30',
+          requested_end_date: '2026-07-15',
+          effective_start_date: '2026-06-30',
+          effective_end_date: '2026-07-15',
+        },
+      })
+    })
+
+    await waitFor(() => {
+      expect(apiMocks.getPortfolioPerformanceCalculation).toHaveBeenCalledTimes(1)
+      expect(apiMocks.getPortfolioPerformanceCalculationGroups).toHaveBeenCalledTimes(1)
+    })
+    expect(apiMocks.getPortfolioPerformanceCalculation).toHaveBeenCalledWith('3', {
+      start_date: '2026-06-30',
+      end_date: '2026-07-15',
+    })
+    expect(apiMocks.getPortfolioPerformanceCalculationGroups).toHaveBeenCalledWith('3', {
+      start_date: '2026-06-30',
+      end_date: '2026-07-15',
+      axis: 'instrument',
+      taxonomy_id: undefined,
+    })
+  })
+
   it('lets the backend resolve SI inception and keeps one unguessed window across all reports', async () => {
     const user = userEvent.setup()
     apiMocks.getWorkspaceSummaryForPortfolio.mockResolvedValue(
