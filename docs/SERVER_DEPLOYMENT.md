@@ -84,6 +84,30 @@ The installer binds both API and web services to `127.0.0.1` by default. Set
 `API_HOST` or `WEB_HOST` explicitly only when a reverse proxy or network policy
 requires another bind address.
 
+## Network and access-control boundary
+
+The six application services do not implement user login, identity, or RBAC.
+They are safe deployment primitives only while kept on loopback or behind a
+separately reviewed access layer. A production ingress must:
+
+- keep PostgreSQL and the three `810x` API ports private;
+- terminate TLS;
+- enforce authentication for both pages and `/api` requests;
+- forward only to loopback web services, which already proxy their matching API;
+- avoid publishing health endpoints as a substitute for access control.
+
+Cloud-console login, a hard-to-guess IP, or an unrestricted company-network bind
+does not provide page-level access control. Until an authentication design is
+chosen and operated, use server-local checks or a controlled SSH tunnel. Do not
+set `HOST=0.0.0.0` merely to make the current apps reachable.
+
+The repository default for the DataHub Tushare provider is an external HTTP URL,
+so its API key crosses a plaintext transport unless the deployment overrides it
+with a provider-supported HTTPS endpoint. Keep this source on a trusted network,
+verify the configured URL during deployment, and rotate the key if transport
+exposure is suspected. Do not hide the limitation with certificate bypasses or
+an automatic provider fallback.
+
 The installer generates all six replacement units privately before changing
 systemd state. It snapshots the previous unit files, enablement, and active set,
 including the market-data refresh service/timer. Before migration it stops every

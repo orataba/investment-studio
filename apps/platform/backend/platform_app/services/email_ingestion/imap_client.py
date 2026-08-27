@@ -198,14 +198,19 @@ class ImapClient:
                 wire_name,
                 readonly=not self.settings.email_imap_mark_seen,
             )
-        except (imaplib.IMAP4.abort, imaplib.IMAP4.error, OSError, EOFError):
+        except (
+            imaplib.IMAP4.abort,
+            imaplib.IMAP4.error,
+            OSError,
+            EOFError,
+        ) as reconnect_error:
             self._discard_connection()
             self.connect()
             folders = self.list_folders()
             if folder_name not in folders:
                 raise ImapFolderError(
                     f'Configured IMAP folder "{folder_name}" disappeared after reconnect.'
-                )
+                ) from reconnect_error
             assert self._mailbox is not None
             status, _ = self._mailbox.select(
                 folders[folder_name],
@@ -384,7 +389,12 @@ class ImapClient:
             raise ImapClientError("IMAP is not connected.")
         try:
             return self._mailbox.uid(command, *args)
-        except (imaplib.IMAP4.abort, imaplib.IMAP4.error, OSError, EOFError):
+        except (
+            imaplib.IMAP4.abort,
+            imaplib.IMAP4.error,
+            OSError,
+            EOFError,
+        ) as retry_error:
             expected_identity = self._selected_identity
             if expected_identity is None:
                 raise
@@ -393,7 +403,7 @@ class ImapClient:
             if recovered_identity.uid_validity != expected_identity.uid_validity:
                 raise ImapClientError(
                     "IMAP UIDVALIDITY changed during retry; the folder scan must restart."
-                )
+                ) from retry_error
             assert self._mailbox is not None
             return self._mailbox.uid(command, *args)
 

@@ -141,6 +141,7 @@ def main() -> int:
             rows=rows,
         )
         source_files = sorted(matched_files_by_instrument[instrument_id])
+        row_count = len(merged_rows)
         source_revision = hashlib.sha256(
             json.dumps(
                 {"files": source_files, "rows": merged_rows},
@@ -169,8 +170,8 @@ def main() -> int:
             source_provider="nav_folder_import",
             refresh_status="imported",
             updated_by="codex_nav_import",
-            message_factory=lambda publication, files=source_files: (
-                f"Imported {len(merged_rows)} NAV rows from nav folder: "
+            message_factory=lambda publication, files=source_files, row_count=row_count: (
+                f"Imported {row_count} NAV rows from nav folder: "
                 + ", ".join(files)
                 + f"; rebuilt {len(publication.rows)} canonical dates and found "
                 + f"{len(publication.action_candidates)} action signal(s)."

@@ -11,16 +11,16 @@
 3. facts / manual profile / read model / recalc 怎样串起来
 4. 后端当前到底暴露了哪些 API
 
-它不是旧系统兼容说明，也不再描述 `/api/funds/...` 别名。
+本文只定义当前 `instrument` API 和数据合同。
 
 ## 2. 当前代码入口
 
-- 后端包：`backend/watchlist_app`
-- API router：`backend/watchlist_app/api/router.py`
-- 数据模型：`backend/watchlist_app/db/models`
-- 迁移目录：`backend/alembic`
+- 后端包：`apps/watchlist/backend/watchlist_app`
+- API router：`apps/watchlist/backend/watchlist_app/api/router.py`
+- 数据模型：`apps/watchlist/backend/watchlist_app/db/models`
+- 迁移目录：`apps/watchlist/backend/alembic`
 
-后端 API 现在统一以 `instrument` 为主语；旧 `funds-compat` router 已删除。
+后端 API 统一以 `instrument` 为主语。
 
 ## 3. 当前数据分层
 
@@ -29,7 +29,7 @@
 1. `Shared Instruments`
 2. `Watchlist Ownership`
 3. `Instrument Product Framework`
-4. `Canonical Facts`
+4. `Local Evidence and Holdings`
 5. `Manual Profiles`
 6. `Read Models`
 7. `Application API / backend extensions`
@@ -37,8 +37,8 @@
 主链路如下：
 
 ```text
-shared instruments / manual ingest / facts ingest
-  -> canonical facts + manual profiles
+shared instruments / local evidence / holdings ingest
+  -> Registry facts + Watchlist-local profiles and holdings
   -> recalc
   -> read models
   -> watchlists / instrument detail / monitoring / optional backend extensions
@@ -79,7 +79,7 @@ shared instruments / manual ingest / facts ingest
 - attribute tables
   管 `fund_vehicle`、研究标签、监控评估等非树形字段
 - 基金 peer 口径
-  由 taxonomy assignment / peer path 推导，不再通过 legacy category 字段维护
+  由 taxonomy assignment / peer path 推导，不作为独立 category 事实维护
 
 `instrument_attribute_definition` 当前关键字段：
 
@@ -93,19 +93,18 @@ shared instruments / manual ingest / facts ingest
 - `rubric_json`
 - `required_for_monitoring`
 
-它已经不再只是“tag options 表”，而是完整的产品框架定义表。
+它是完整的产品框架定义表，不是普通 tag options 表。
 
-### 4.3 Canonical Facts
+### 4.3 Local Evidence and Holdings
 
-当前 watchlist app 内仍然直接维护的 canonical facts 主要包括：
+Watchlist 只直接维护自己的持仓快照。历史 `nav_fact` 只保留为只读审计证据，不再参与行情、收益、风险或图表计算；canonical NAV 的写入和修订属于 Platform/Registry。
 
-- NAV facts
+- historical NAV audit rows
 - holdings snapshots / positions
 
-facts 路由已经统一到 instrument 主语：
+相关路由统一到 instrument 主语：
 
 - `GET /api/facts/instruments/{instrument_id}/nav`
-- `POST /api/facts/instruments/{instrument_id}/nav`
 - `GET /api/facts/instruments/{instrument_id}/holdings/current`
 - `POST /api/facts/instruments/{instrument_id}/holdings`
 
@@ -127,7 +126,7 @@ facts 路由已经统一到 instrument 主语：
 - `GET / PUT /api/instruments/{instrument_id}/research` 读取或更新当前判断；
 - `POST / PUT / DELETE /api/instruments/{instrument_id}/research/notes[...]` 操作单条研究记录。
 
-研究记录不再经过 `instrument_manual_profile`，也没有 JSON 双写或旧接口兼容层。
+研究记录只通过独立的 research profile、note 与 revision 合同读写。
 
 ### 4.5 Read Models
 
@@ -215,7 +214,7 @@ Monitoring 页面不再硬编码一张“所有资产或所有基金必填 tags�
 
 - `GET /api/instruments`
 - `GET /api/instruments/resolve`
-- `GET /api/instruments/{instrument_id}/resolve`
+- `POST /api/instruments/{instrument_id}/resolve`
 - `GET /api/instruments/library`
 - `GET /api/instruments/{instrument_id}/summary`
 - `GET /api/instruments/{instrument_id}/chart`
@@ -277,7 +276,6 @@ Monitoring 页面不再硬编码一张“所有资产或所有基金必填 tags�
 ### 6.8 Facts
 
 - `GET /api/facts/instruments/{instrument_id}/nav`
-- `POST /api/facts/instruments/{instrument_id}/nav`
 - `GET /api/facts/instruments/{instrument_id}/holdings/current`
 - `POST /api/facts/instruments/{instrument_id}/holdings`
 
@@ -314,20 +312,10 @@ Monitoring 页面不再硬编码一张“所有资产或所有基金必填 tags�
 说明：
 
 - 详情页 canonical 路由已经收口到 `/instruments/:instrumentId`
-- `watchlist` 来源只作为 query context 透传，不再进入主路径
-- watchlist 不再提供独立的 shared registry 页面；公募、私募、ETF 和指数的共享资产浏览与维护统一放在 `Database Dashboard`，股票从添加弹窗搜索本地 FMP 目录并按需 materialize
-- 旧 `/funds/*` 前端路由已删除
+- `watchlist` 来源只作为 query context 透传；canonical 详情路径不依赖来源名单
+- 共享资产浏览与维护统一放在 `Database Dashboard`；股票从添加弹窗搜索本地 FMP 目录并按需 materialize
 
-## 8. 当前明确不再维护的东西
-
-下面这些都不再是基线：
-
-- `/api/funds/...` 兼容接口
-- `strategy_family / strategy_subtype` 作为 fund 主分类
-- Fund Detail 里的 canonical NAV 写入口
-- 旧 `backend/app` 代码树
-
-## 9. 开发时的默认判断
+## 8. 开发时的默认判断
 
 如果后续要继续扩这个 app，默认按下面原则判断：
 

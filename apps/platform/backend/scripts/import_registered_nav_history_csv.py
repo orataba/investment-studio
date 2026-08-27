@@ -406,6 +406,7 @@ def _apply_import(
                 "manager": profile.manager_by_instrument[instrument_id],
             },
         )
+        row_count = len(rows)
         record, publication = market_data_ops._publish_fund_nav_projection(
             instrument_id=instrument_id,
             load_source_rows=lambda current_instrument, current_id=instrument_id: (
@@ -417,7 +418,7 @@ def _apply_import(
             source_provider=provider,
             refresh_status="imported",
             updated_by=updated_by,
-            message_factory=lambda current_publication, row_count=len(rows), code=product_code: (
+            message_factory=lambda current_publication, row_count=row_count, code=product_code: (
                 f"Imported {row_count} registered NAV CSV rows for {code}; rebuilt "
                 f"{len(current_publication.rows)} canonical dates and found "
                 f"{len(current_publication.action_candidates)} action signal(s)."

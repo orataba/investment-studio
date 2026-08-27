@@ -53,21 +53,6 @@ def list_nav_facts(
     }
 
 
-@router.post("/instruments/{instrument_id}/nav")
-def ingest_nav_facts(
-    instrument_id: str,
-    session: Session = Depends(get_db_session),
-) -> dict[str, object]:
-    _ensure_instrument_exists(session, instrument_id)
-    raise HTTPException(
-        status_code=409,
-        detail=(
-            "Canonical NAV ingest is now owned by Database Dashboard. "
-            "Use Database Dashboard to import or update shared market data."
-        ),
-    )
-
-
 @router.get("/instruments/{instrument_id}/holdings/current")
 def get_current_instrument_holding_snapshot(
     instrument_id: str,

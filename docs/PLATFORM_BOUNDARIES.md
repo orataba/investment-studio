@@ -147,9 +147,8 @@ master currency，value 必须有限且大于零，status 必须 canonical；FX 
 pair id、`fx/spot` identity 与 pair quote currency。消费者不得用 USD/base currency、另一币种
 序列或本地旧行情替代不合格的 canonical observation。
 
-Registry 的 `quote_selection_policy` 必须显式持久化五个非空 role。0011 只在迁移时一次性
-物化历史缺口；迁移后 shared store 读取、更新和各消费者都不得动态补默认 role。类型默认
-policy 仅是新建 instrument 时完整写入的领域规则。
+Registry 的 `quote_selection_policy` 必须显式持久化五个非空 role；shared store 读取、更新和
+各消费者都不得动态补默认 role。类型默认 policy 仅是新建 instrument 时完整写入的领域规则。
 
 ### Watchlist Read Models
 
@@ -160,7 +159,7 @@ policy 仅是新建 instrument 时完整写入的领域规则。
 
 Watchlist 的历史价格/NAV 计算只接受 Registry 中符合 master currency 且 status=complete 的
 序列，并严格按持久化 `quote_selection_policy` 选取；Registry 无序列或无 policy 时结果为
-unavailable，不读取 Watchlist 旧 `nav_fact` 作为行情 fallback。
+unavailable。Watchlist-local `nav_fact` 只用于审计，不是行情计算输入。
 
 ### Portfolio Facts
 

@@ -63,11 +63,10 @@ instead. It stops all managed writers, creates and retains a verified backup of
 all four schemas, runs the ordered migration, restores the backup automatically
 if migration, release snapshot refresh, the read-only integrity audit, or deployment fails, and
 only resumes service after health checks.
-Migration `portfolio@20260809_0045` rewrites derivative lifecycle facts and is
-data-irreversible; it now refuses Alembic downgrade because schema shape alone
-would falsely imply that the original facts were restored. The following clean-cut
-derivative migrations also refuse downgrade. Recovery must use the retained
-pre-migration four-schema backup.
+Clean-cut derivative migrations may reject Alembic downgrade because restoring
+schema shape cannot reconstruct the original business facts. Recovery for such
+migrations uses the retained pre-migration four-schema backup, not a forced
+downgrade.
 
 The destructive dump restore wrapper performs a checksum/archive/target
 preflight, stops managed local services, retains a pre-restore schema backup,
@@ -138,27 +137,33 @@ contracts rather than deployment customization points.
 
 ## Testing
 
-Tests override the database URL to temporary SQLite databases. That path exists only for fast isolated tests; the repository default runtime target is PostgreSQL.
+普通 backend 测试使用临时 SQLite，只覆盖快速、隔离的逻辑；统一入口见根目录 README。SQLite 不会覆盖
+PostgreSQL 专属的 migration、cross-schema FK、search path、constraint、并发和事务行为。
 
-Each backend should run tests from its own `backend/` directory:
-
-```bash
-(cd apps/platform/backend && pytest)
-(cd apps/portfolio/backend && pytest)
-(cd apps/watchlist/backend && pytest)
-```
-
-SQLite fast tests 不会覆盖 PostgreSQL 专属的 cross-schema FK / search_path 行为。
-共享资产存储边界的回归验证需要额外跑这两条 PostgreSQL integration tests：
+`migration-heads` 会先调用 `migrate_all.sh`，然后对四条 Alembic chain 执行 `current --check-heads`。
+它不是只读源码检查，必须指向明确创建的可丢弃测试数据库：
 
 ```bash
-(cd apps/portfolio/backend && pytest tests/test_postgres_instrument_registry_constraints.py -q)
-(cd apps/watchlist/backend && pytest tests/test_postgres_instrument_registry_constraints.py -q)
+MIGRATION_TEST_URL='postgresql+psycopg://migration_test_role@127.0.0.1:5432/portfolio_ops_migration_test'
+PORTFOLIO_OPS_INSTRUMENT_REGISTRY_DATABASE_URL="$MIGRATION_TEST_URL" \
+PORTFOLIO_OPS_PLATFORM_DATABASE_URL="$MIGRATION_TEST_URL" \
+PORTFOLIO_OPS_PORTFOLIO_DATABASE_URL="$MIGRATION_TEST_URL" \
+PORTFOLIO_OPS_WATCHLIST_DATABASE_URL="$MIGRATION_TEST_URL" \
+  infra/scripts/verify_repository.sh migration-heads
 ```
 
-这些测试默认读取 `PORTFOLIO_OPS_TEST_POSTGRES_URL`。
-如果测试数据库地址不同，只在当前进程环境或仓库外的测试 secrets 中显式设置 `PORTFOLIO_OPS_TEST_POSTGRES_URL`；backend 目录不读取也不保存 `.env`。
-Portfolio / Watchlist suites 会在同一个 PostgreSQL 实例里临时创建并删除独立数据库，所以运行用户需要具备 `CREATE DATABASE / DROP DATABASE` 权限。Platform suite 会在 URL 指向的数据库内创建并清理隔离 schema，因此该角色还必须对该数据库拥有 `CREATE` 权限。推荐预先创建一个由测试角色拥有的空控制数据库（例如 `portfolio_ops_test_control`），并让 URL 指向它；不要使用低权限生产角色或承载业务数据的数据库来满足集成测试权限。
+密码只放在测试用户的 `0600` `.pgpass`。该数据库不能承载业务数据，并且不能有运行中的业务 writer。
+
+完整 PostgreSQL integration gate 使用另一项显式变量：
+
+```bash
+PORTFOLIO_OPS_TEST_POSTGRES_URL='postgresql+psycopg://test_role@127.0.0.1:5432/portfolio_ops_test_control' \
+  infra/scripts/verify_repository.sh postgres-integration all
+```
+
+Portfolio / Watchlist suites 会在同一个 PostgreSQL 实例里临时创建并删除独立数据库，因此测试角色需要
+`CREATE DATABASE / DROP DATABASE`；Platform suite 会在控制库内创建并清理隔离 schema，因此还需要该库的
+`CREATE` 权限。控制库必须由测试角色拥有且不含业务数据；backend 目录不读取或保存测试 `.env`。
 
 ## Repository Hygiene
 

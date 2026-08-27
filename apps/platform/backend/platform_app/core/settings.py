@@ -3,6 +3,7 @@ from functools import lru_cache
 import json
 from pathlib import Path
 from typing import Annotated
+from urllib.parse import urlsplit
 
 from pydantic import field_validator, model_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
@@ -81,6 +82,26 @@ class Settings(BaseSettings):
                 if item.strip().strip("'\"")
             ]
         return value
+
+    @field_validator("watchlist_api_url", "portfolio_api_url", mode="before")
+    @classmethod
+    def _validate_downstream_api_url(cls, value: object) -> object:
+        if not isinstance(value, str):
+            return value
+        normalized = value.strip().rstrip("/")
+        if not normalized:
+            return normalized
+        try:
+            parsed = urlsplit(normalized)
+        except ValueError as error:
+            raise ValueError(
+                "downstream API URLs must be absolute HTTP or HTTPS URLs."
+            ) from error
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            raise ValueError(
+                "downstream API URLs must be absolute HTTP or HTTPS URLs."
+            )
+        return normalized
 
     @field_validator("email_imap_folders", mode="before")
     @classmethod

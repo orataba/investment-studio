@@ -855,7 +855,7 @@ def _compute_sharpe(nav_points: list[dict[str, Any]]) -> float | None:
 def _periodic_returns(nav_points: list[dict[str, Any]]) -> list[float]:
     nav_points = _numeric_nav_points(nav_points)
     returns: list[float] = []
-    for previous, current in zip(nav_points, nav_points[1:]):
+    for previous, current in zip(nav_points, nav_points[1:], strict=False):
         if previous["value"] <= 0:
             continue
         returns.append(current["value"] / previous["value"] - 1)
@@ -924,7 +924,7 @@ def _is_next_calendar_month(previous: date, current: date) -> bool:
 def _monthly_return_series(nav_points: list[dict[str, Any]]) -> list[dict[str, Any]]:
     closes = _monthly_close_points(nav_points)
     returns: list[dict[str, Any]] = []
-    for previous, current in zip(closes, closes[1:]):
+    for previous, current in zip(closes, closes[1:], strict=False):
         if (
             not _is_next_calendar_month(
                 previous["as_of_date"],
@@ -988,7 +988,11 @@ def _rolling_annualized_volatility(monthly_returns: list[dict[str, Any]], window
                 previous["as_of_date"],
                 current["as_of_date"],
             )
-            for previous, current in zip(window_rows, window_rows[1:])
+            for previous, current in zip(
+                window_rows,
+                window_rows[1:],
+                strict=False,
+            )
         ):
             continue
         window_values = [float(row["value"]) / 100 for row in window_rows]

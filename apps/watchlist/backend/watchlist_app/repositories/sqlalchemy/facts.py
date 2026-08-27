@@ -3,7 +3,6 @@ from __future__ import annotations
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from decimal import Decimal
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
@@ -40,72 +39,6 @@ class SQLAlchemyFactsRepository:
             stmt = stmt.where(NavFact.is_primary.is_(True))
         stmt = stmt.order_by(NavFact.as_of_date, NavFact.nav_fact_id)
         return session.scalars(stmt).all()
-
-    def upsert_nav_fact(
-        self,
-        session: Session,
-        *,
-        instrument_id: str,
-        as_of_date,
-        nav_type: str,
-        value: Decimal,
-        currency: str,
-        frequency: str | None,
-        is_primary: bool,
-        source_record_id: str | None,
-        observation_id: str | None,
-    ) -> NavFact:
-        stmt = select(NavFact).where(
-            NavFact.instrument_id == instrument_id,
-            NavFact.as_of_date == as_of_date,
-            NavFact.nav_type == nav_type,
-            NavFact.currency == currency,
-        )
-        record = session.scalars(stmt).first()
-        if record is None:
-            record = NavFact(
-                instrument_id=instrument_id,
-                as_of_date=as_of_date,
-                nav_type=nav_type,
-                value=value,
-                currency=currency,
-                frequency=frequency,
-                is_primary=is_primary,
-                source_record_id=source_record_id,
-                observation_id=observation_id,
-                adopted_at=datetime.now(UTC).replace(microsecond=0),
-            )
-            session.add(record)
-            session.flush()
-            return record
-        record.value = value
-        record.frequency = frequency
-        record.is_primary = is_primary
-        record.source_record_id = source_record_id
-        record.observation_id = observation_id
-        record.adopted_at = datetime.now(UTC).replace(microsecond=0)
-        session.flush()
-        return record
-
-    def delete_nav_facts_for_date(
-        self,
-        session: Session,
-        *,
-        instrument_id: str,
-        as_of_date,
-        primary_only: bool = True,
-    ) -> int:
-        stmt = select(NavFact).where(
-            NavFact.instrument_id == instrument_id,
-            NavFact.as_of_date == as_of_date,
-        )
-        if primary_only:
-            stmt = stmt.where(NavFact.is_primary.is_(True))
-        records = list(session.scalars(stmt).all())
-        for record in records:
-            session.delete(record)
-        session.flush()
-        return len(records)
 
     def get_current_holding_snapshot(
         self,

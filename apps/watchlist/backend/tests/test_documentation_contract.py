@@ -20,7 +20,7 @@ DATA_MODEL_CONTRACT = (
     / "apps"
     / "watchlist"
     / "docs"
-    / "FUND_TERMINAL_V2_DATA_MODEL_AND_API.md"
+    / "DATA_MODEL_AND_API.md"
 )
 
 SCALAR_RETURN_FIELDS = (
@@ -41,11 +41,12 @@ def test_active_docs_cover_every_materialized_scalar_return_window() -> None:
     data_model = DATA_MODEL_CONTRACT.read_text(encoding="utf-8")
 
     for field_key in SCALAR_RETURN_FIELDS:
-        assert field_key in readme
         assert field_key in data_model
     for label in SCALAR_RETURN_LABELS:
         assert label in return_contract
 
+    assert "./docs/DATA_MODEL_AND_API.md" in readme
+    assert "./docs/RETURN_SERIES_CONTRACT.md" in readme
     assert "请求的** `as_of_date`" in return_contract
     assert "不共享业务 helper、read model 或运行时 API" in return_contract
 
@@ -60,6 +61,33 @@ def test_generic_return_field_descriptions_do_not_mislabel_price_return_series()
         assert "total return" not in description.lower()
 
 
+def test_documented_watchlist_api_routes_exist(client) -> None:
+    schema = client.get("/openapi.json").json()
+    actual_routes = {
+        (method.upper(), path)
+        for path, operations in schema["paths"].items()
+        for method in operations
+    }
+    documented_routes: set[tuple[str, str]] = set()
+    for code_span in re.findall(
+        r"`([^`]*?/api/[^`]*)`",
+        DATA_MODEL_CONTRACT.read_text(encoding="utf-8"),
+    ):
+        if "[...]" in code_span:
+            continue
+        path_match = re.search(r"(/api/[^ ]+)", code_span)
+        assert path_match is not None
+        path = path_match.group(1).rstrip(".,;；。")
+        methods = re.findall(
+            r"\b(GET|POST|PUT|PATCH|DELETE)\b",
+            code_span[: path_match.start()],
+        )
+        documented_routes.update((method, path) for method in methods)
+
+    assert documented_routes
+    assert documented_routes <= actual_routes, sorted(documented_routes - actual_routes)
+
+
 def test_watchlist_metric_docs_have_no_broken_local_links() -> None:
     active_docs = [
         WATCHLIST_README,
@@ -69,8 +97,17 @@ def test_watchlist_metric_docs_have_no_broken_local_links() -> None:
         / "apps"
         / "watchlist"
         / "docs"
-        / "CURRENT_SYSTEM_BASELINE.md",
-        REPOSITORY_ROOT / "apps" / "watchlist" / "docs" / "INDEX.md",
+        / "ASSET_DETAIL_ARCHITECTURE.md",
+        REPOSITORY_ROOT
+        / "apps"
+        / "watchlist"
+        / "docs"
+        / "FUND_PRODUCT_FRAMEWORK.md",
+        REPOSITORY_ROOT
+        / "apps"
+        / "watchlist"
+        / "docs"
+        / "FUND_QUALITATIVE_RESEARCH_FRAMEWORK.md",
     ]
     for document in active_docs:
         for raw_target in re.findall(

@@ -70,7 +70,8 @@ def _post_json(
         method="POST",
     )
     try:
-        with urlopen(request, timeout=timeout) as response:
+        # Settings accept only absolute HTTP(S) downstream API URLs.
+        with urlopen(request, timeout=timeout) as response:  # nosec B310
             response_body = response.read()
     except (HTTPError, URLError, TimeoutError, OSError) as error:
         return DownstreamRequestFailure(url=url, message=str(error))

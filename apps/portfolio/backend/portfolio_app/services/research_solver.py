@@ -1379,7 +1379,13 @@ def _solve_regularized_risk_budget_slsqp(
         )
 
     constraints = [{"type": "eq", "fun": lambda weights: float(np.sum(weights) - 1.0)}]
-    bounds = list(zip(problem.lower_bounds.tolist(), problem.upper_bounds.tolist()))
+    bounds = list(
+        zip(
+            problem.lower_bounds.tolist(),
+            problem.upper_bounds.tolist(),
+            strict=True,
+        )
+    )
     best_solution: tuple[np.ndarray, np.ndarray, float, float, int, str] | None = None
     failures: list[str] = []
     for x0 in initial_guesses:
@@ -1470,7 +1476,13 @@ def _solve_minimax_risk_budget_slsqp(
             }
         )
 
-    bounds = list(zip(problem.lower_bounds.tolist(), problem.upper_bounds.tolist())) + [(0.0, None)]
+    bounds = list(
+        zip(
+            problem.lower_bounds.tolist(),
+            problem.upper_bounds.tolist(),
+            strict=True,
+        )
+    ) + [(0.0, None)]
     best_solution: tuple[np.ndarray, np.ndarray, float, float, float, int, str] | None = None
     for guess in initial_guesses:
         initial_gap = float(np.max(np.abs(normalized_share_gap(guess))))
@@ -1575,7 +1587,13 @@ def _refine_balanced_risk_budget_solution(
                 ),
             }
         )
-    bounds = list(zip(problem.lower_bounds.tolist(), problem.upper_bounds.tolist()))
+    bounds = list(
+        zip(
+            problem.lower_bounds.tolist(),
+            problem.upper_bounds.tolist(),
+            strict=True,
+        )
+    )
     best_solution: tuple[np.ndarray, np.ndarray, float, float, float, int, str] | None = None
     for guess in initial_guesses:
         result = minimize(

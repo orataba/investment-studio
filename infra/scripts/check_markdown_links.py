@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate repository-local Markdown links without network access."""
+"""Validate repository-local Markdown links and documentation structure."""
 
 from __future__ import annotations
 
@@ -11,6 +11,28 @@ from urllib.parse import unquote
 
 LINK_PATTERN = re.compile(r"!?\[[^\]]*]\(([^)\n]+)\)")
 FENCE_PATTERN = re.compile(r"```.*?```", re.DOTALL)
+DATE_PREFIX_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}[_-]")
+PROCESS_RECORD_PATTERN = re.compile(
+    r"(?:^|[._ -])(?:review|handoff|evidence)(?:[._ -]|$)", re.IGNORECASE
+)
+IGNORED_PARTS = {
+    ".git",
+    ".local-pg",
+    ".mypy_cache",
+    ".pytest_cache",
+    ".ruff_cache",
+    ".venv",
+    "backups",
+    "build",
+    "coverage",
+    "dist",
+    "htmlcov",
+    "node_modules",
+    "outputs",
+    "ref",
+    "research_outputs",
+    "var",
+}
 
 
 def _target_path(document: Path, raw_target: str) -> Path | None:
@@ -31,24 +53,63 @@ def _target_path(document: Path, raw_target: str) -> Path | None:
 def main(arguments: list[str]) -> int:
     repository_root = Path(arguments[0] if arguments else ".").resolve()
     failures: list[str] = []
-    for document in sorted(repository_root.rglob("*.md")):
-        if any(
-            part in {".git", ".venv", "node_modules", "dist", ".pytest_cache"}
-            for part in document.parts
-        ):
-            continue
+    documents = [
+        document
+        for document in sorted(repository_root.rglob("*.md"))
+        if not any(
+            part in IGNORED_PARTS
+            for part in document.relative_to(repository_root).parts
+        )
+    ]
+    document_set = {document.resolve() for document in documents}
+    inbound_links: dict[Path, set[Path]] = {
+        document.resolve(): set() for document in documents
+    }
+
+    for document in documents:
+        relative_document = document.relative_to(repository_root)
+        if "archive" in relative_document.parts:
+            failures.append(
+                f"documentation policy: {relative_document} is under an archive directory"
+            )
+        if DATE_PREFIX_PATTERN.match(document.name):
+            failures.append(
+                f"documentation policy: {relative_document} is a dated snapshot"
+            )
+        if PROCESS_RECORD_PATTERN.search(document.name):
+            failures.append(
+                f"documentation policy: {relative_document} is a process record"
+            )
+
         content = FENCE_PATTERN.sub("", document.read_text(encoding="utf-8"))
         for raw_target in LINK_PATTERN.findall(content):
             target_path = _target_path(document, raw_target)
             if target_path is not None and not target_path.exists():
-                relative_document = document.relative_to(repository_root)
-                failures.append(f"{relative_document}: {raw_target}")
+                failures.append(
+                    f"broken link: {relative_document}: {raw_target}"
+                )
+            elif (
+                target_path is not None
+                and target_path in document_set
+                and target_path != document.resolve()
+            ):
+                inbound_links[target_path].add(document.resolve())
+
+    for document in documents:
+        if document.resolve() == (repository_root / "README.md").resolve():
+            continue
+        if not inbound_links[document.resolve()]:
+            failures.append(
+                "undiscoverable document: "
+                f"{document.relative_to(repository_root)} has no inbound Markdown link"
+            )
+
     if failures:
-        print("Broken repository-local Markdown links:", file=sys.stderr)
+        print("Markdown documentation checks failed:", file=sys.stderr)
         for failure in failures:
             print(f"- {failure}", file=sys.stderr)
         return 1
-    print("Repository-local Markdown links are valid.")
+    print("Repository Markdown links and documentation structure are valid.")
     return 0
 
 

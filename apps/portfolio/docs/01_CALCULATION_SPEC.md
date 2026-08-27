@@ -1351,7 +1351,7 @@ Research current target solve 使用 planning taxonomy 的层级 scope 做递归
 
 Research 的历史模拟合同是 `Point-in-time target-policy simulation`，不是用今天 taxonomy/targets 回放历史的 current-policy replay：
 
-`PUT /api/portfolios/{portfolio_id}/research/settings` 的既有 core run-setup 字段保持全量 PUT 语义，调用方应提交完整 core settings；`frozen_taxonomy_node_ids` 和 `top_sleeve_weight_bounds` 省略时保留、空列表时清空。为兼容尚未认识新增字段的旧客户端，所有 `backtest_*` control 省略时保留当前值；nullable benchmark 显式 `null` 时清空，robustness scenarios 显式 `null` 时恢复系统默认 scenarios。API 不得把省略的 backtest control 静默重置为 schema default。
+`PUT /api/portfolios/{portfolio_id}/research/settings` 的 core run-setup 字段使用全量 PUT 语义，调用方应提交完整 core settings；`frozen_taxonomy_node_ids` 和 `top_sleeve_weight_bounds` 省略时保留、空列表时清空。`backtest_*` control 省略时保留当前值；nullable benchmark 显式 `null` 时清空，robustness scenarios 显式 `null` 时恢复系统默认 scenarios。API 不得把省略的 backtest control 静默重置为 schema default。
 
 - universe 来自截至 run as-of date 的 taxonomy configuration revision 历史中所有曾经 active 的 instrument assignments；不能只用当前成员，也不能让当前已清退成员从历史样本消失；
 - 每个计划 rebalance date 都按该日生效的 taxonomy configuration、assignment、TargetSet、frozen sleeves、top sleeve bounds 和 capital overlay 重新执行同一 Production Risk Model / target solve，只读取决策日及以前的市场观察；输出每次决策使用的 `taxonomy_configuration_version`、effective date、point-in-time coverage 和 skipped rebalance reason；

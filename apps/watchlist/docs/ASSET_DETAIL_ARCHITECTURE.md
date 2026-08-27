@@ -1,6 +1,4 @@
-# Watchlist 与资产详情架构复核
-
-复核日期：2026-08-24
+# Watchlist 与资产详情架构
 
 ## 1. 结论
 
@@ -41,7 +39,7 @@ Watchlist 只拥有：
 | --- | --- | --- |
 | A 股股票 | FMP | 目录、profile、EOD、财务报表、key metrics、ratios、分红、拆股 |
 | A 股公募 | DataHub Tushare | `fund_basic / fund_nav / fund_portfolio` |
-| A 股 ETF | DataHub Tushare | `fund_basic / fund_daily / fund_adj / fund_portfolio`；当前 FMP 账户对本地 A 股 ETF universe 的精确 symbol/EOD 覆盖不足，不写入 canonical 行情 |
+| A 股 ETF | DataHub Tushare | `fund_basic / fund_daily / fund_adj / fund_portfolio`；provider contract 不从 FMP 写入 canonical 行情 |
 | A 股指数 | 逐只决定；当前核心指数为 DataHub Tushare | `index_basic / index_daily / index_weight` |
 | 港股 / 美股股票 | FMP | profile、EOD、财务、估值指标、分红、拆股 |
 | 港股 / 美股 ETF 与共同基金 | FMP，前提是具体 symbol 有覆盖 | fund info、EOD、holdings、sector/country allocation、disclosures；共同基金的 EOD→NAV/total-return 语义未核验前不自动写入基金主链路 |
@@ -49,14 +47,17 @@ Watchlist 只拥有：
 
 FMP 13F 数据描述机构披露持仓，不是私募/对冲基金 NAV，也不代表完整组合、空头、衍生品或实时敞口，因此不能接入私募 NAV 主链路。
 
-### A 股指数验证结果
+### A 股指数与 ETF 建档规则
 
-本次用当前 FMP 账户核验了 Registry 中常用指数的候选代码，包括 `000300.SS / 000300.SH`、`000905.SS / 000905.SH`、`000852.SS / 000852.SH`、`932000.CSI` 与 `H11001.CSI`。FMP EOD 和 symbol search 均未得到精确覆盖，因此这些现有指数继续固定使用 Tushare。
+当前核心 A 股指数固定使用 Tushare。新增指数时，只有精确 symbol 可解析且历史 EOD 确有数据，
+才可在建档时配置为 FMP；验证失败就直接配置为 Tushare。该判断发生在建档阶段，不是运行时
+fallback。
+已配置 FMP 的 `^GSPC`、`^IXIC`、`^HSI` 等港股/美股指数可展示 provider 返回的 name、
+exchange、currency 与 EOD，但通用成分权重接口不可假定存在。
 
-以后新增指数时，只有“精确 symbol 可解析且历史 EOD 有数据”才可配置为 FMP；验证失败就直接配置为 Tushare。该判断发生在建档阶段，不是运行时 fallback。
-FMP 已核验可返回 `^GSPC`、`^IXIC`、`^HSI` 等指数目录档案；此类已配置 FMP 的港股/美股指数可展示 name、exchange、currency 与 EOD，但通用成分权重接口不可假定存在。
-
-本次也复核了 A 股 ETF：当前本地 Registry 的 100 只 A 股 ETF 中，FMP ETF 目录只精确命中 2 只；对 `510300.SS`、`513050.SS`、`518880.SS`、`159819.SZ`、`159516.SZ` 的 profile、原始 EOD 与复权 EOD 抽样均为空。为避免同一市场被拆成低覆盖双管线，A 股 ETF 继续固定使用 Tushare；港股、美股 ETF 固定使用 FMP。
+A 股 ETF 固定使用 Tushare；港股、美股 ETF 固定使用 FMP。新建市场或修改 provider 合同时，
+必须用当前账户重新核验 entitlement、精确 symbol、历史 EOD、币种和字段语义，并把结果落实为
+建档配置；不能把旧抽样结果变成运行时 fallback。
 
 ### 跨市场分类与同类比较
 
@@ -87,7 +88,10 @@ Research 是所有五类资产的核心工作面，不是基金页的附属展�
 3. `People & Decision`：人物与治理分析、组合角色、投资期限和决策依据。人物字段记录研究员的判断，不重复 provider profile 或简历事实。
 4. `Research Record`：独立、带日期和作者的 evidence / meeting / event / risk / decision / review 记录，保存正文、人物、证据来源、标签、跟进日期以及创建/修改时间。
 
-当前判断与研究记录不再保存在 `instrument_manual_profile` 的整包 JSON 中。它们分别使用 `instrument_research_profile` 和 `instrument_research_note`：更新当前判断不会覆盖历史记录，单条记录有独立新增、修改和删除接口。profile 与 note 每次实际变化都写入不可变 revision；相同内容的重复保存不制造新版本，删除 note 只做可审计软删除。旧 JSON 中仅有的两条人工评分已迁移，空的重复字段已删除，不保留双轨读写。
+当前判断与研究记录不保存在 `instrument_manual_profile` 的整包 JSON 中。它们分别使用
+`instrument_research_profile` 和 `instrument_research_note`：更新当前判断不会覆盖历史记录，单条记录
+有独立新增、修改和删除接口。profile 与 note 每次实际变化都写入不可变 revision；相同内容的重复
+保存不制造新版本，删除 note 只做可审计软删除。
 
 资产专属模板只改变问题和标签，不拆出五套存储：
 
@@ -99,7 +103,7 @@ Research 是所有五类资产的核心工作面，不是基金页的附属展�
 
 ### 5.1 基金判断与评分
 
-基金研究继续使用四层结构，不恢复已删除的自动综合评分表：
+基金研究使用四层结构，不计算自动综合评分：
 
 1. `Instrument Taxonomy`：回答“它是什么”，用于定义可比 universe。
 2. 定量 read model：收益、回撤、波动、Sharpe、peer rank，只描述可验证结果。
@@ -108,25 +112,20 @@ Research 是所有五类资产的核心工作面，不是基金页的附属展�
 
 收益率、Sharpe、规模和定性标签不能直接相加成一个自动投资评级。若未来需要 model score，必须先定义同类 universe、字段方向、缺失值含义、权重版本、as-of 和适用范围，并与人工 conviction 分开展示。
 
-## 6. 本次清理
+## 6. 当前实现决策
 
-- 将证券目录公共契约从 `fmp_symbol` 改为 provider-neutral 的 `catalog_provider / catalog_symbol`。
-- A 股股票固定到 FMP；A 股公募和 A 股 ETF 固定到 Tushare，港股/美股 ETF 固定到 FMP。
-- 删除 CSI 官网 fallback 客户端、配置、刷新分支和测试；迁移移除旧 fallback metadata 与历史 fallback observations，避免主序列继续混源。
-- 为 FMP 指数增加直接 EOD 刷新通道；不支持的 A 股指数仍固定 Tushare。
-- 增加 FMP 股票财务/事件、FMP 海外 ETF 持仓/配置、Tushare 公募/A 股 ETF 档案与持仓、Tushare 指数档案/权重 reference sections。
-- 按资产类型拆分 listed detail tabs，并为公募/私募使用不同的 Fees/Terms、Portfolio/Exposure、Management/Organization 文案与字段。
-- 私募 Organization 明确记录管理人、GP/受托人、行政管理人、托管人、审计师和 prime broker；公募继续使用管理公司、基金经理和任期字段。
-- 删除 Fund Detail 中三套永久不可达的 People、Strategy、Documents 旧实现及其状态/保存逻辑。
-- 删除基金总览中重复计算、未经校准的自动风险积分；风险指标、同类排名与人工 conviction 分开呈现。
-- 补齐现有稀疏基金 profile JSON 的默认字段合并，使新增费用与条款字段可直接编辑。
-- 将投资研究从 `instrument_manual_profile.research_payload_json` 拆为显式 profile 与逐条 note；迁移评分和有效笔记后删除旧列。
-- 股票、ETF、指数详情增加 `Research`，并与公募、私募共用同一投研记录契约和各自的问题模板。
-- 研究记录增加类型、作者、人物、证据来源、跟进日期与服务端审计时间；图表上的基金研究标记继续读取同一组记录。
-- 将资产 taxonomy 改为跨市场投资分类：基金/ETF/指数不再把 QDII 或跨境当作资产类别，股票不再按交易所作为行业分类；历史赋值通过一次性显式映射迁移，不保留运行时兼容。
-- 新增主要地域敞口维度，并将 peer policy 收紧为“同一叶子 + 同一地域 + 同一计算日”；删除父级回退和 1Y 缺失时改用其他期限排名的做法。
-- Watchlist 的研究字段直接投影自当前 research profile / note，支持显示和筛选；Group By 只使用适合聚合且对当前名单全部资产成立的结构化维度。Monitoring 同时暴露缺失研究判断、到期复核和到期跟进。
-- 公募、私募、ETF、股票和指数共用研究评估编辑器与监控检查，listed detail 不再把 Research / Monitoring 降级为基金专属能力；各类型只显示自己的研究问题。
+- 证券目录公共契约使用 provider-neutral 的 `catalog_provider / catalog_symbol`。
+- A 股股票固定使用 FMP；A 股公募和 A 股 ETF 固定使用 Tushare，港股/美股 ETF 固定使用 FMP。
+- 系统没有 CSI 官网 fallback、运行时 provider fallback 或双源主序列。
+- FMP 股票、海外 ETF 和指数，以及 Tushare 公募、A 股 ETF 和指数，只展示各自真实可得的 reference sections。
+- Listed detail 按 ETF、股票、指数拆分 tabs；公募与私募分别使用适合其运营模型的条款、敞口和组织字段。
+- 私募 Organization 记录管理人、GP/受托人、行政管理人、托管人、审计师和 prime broker；公募记录管理公司、基金经理和任期。
+- Fund Detail 没有第二套 People、Strategy、Documents 状态；基金风险指标、同类排名与人工 conviction 分开展示，不计算未经校准的自动风险积分。
+- 投资研究只使用显式 profile、逐条 note 和不可变 revision。
+- 五类资产共用研究记录合同和编辑器，但各自使用 type-specific 问题模板。
+- 基金/ETF/指数 taxonomy 使用跨市场投资分类，股票使用市场与行业分类。
+- Peer policy 固定为同一叶子、同一地域和同一计算日，不向父级回退，也不用其他期限替代 1Y 主排名。
+- Watchlist 研究字段直接投影自当前 profile/note；Group By 只使用对当前名单全部资产成立的聚合维度。Monitoring 同时暴露缺失判断、到期复核和到期跟进。
 
 ## 7. 数据能力边界
 

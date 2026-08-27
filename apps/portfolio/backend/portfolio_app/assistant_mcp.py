@@ -98,7 +98,8 @@ def _api_request(path: str, *, method: str = "GET", payload: object | None = Non
         method=method,
     )
     try:
-        return urlopen(request, timeout=API_TIMEOUT_SECONDS)
+        # _api_base_url rejects non-HTTP(S) schemes before the request is built.
+        return urlopen(request, timeout=API_TIMEOUT_SECONDS)  # nosec B310
     except HTTPError as error:
         raw_detail = error.read().decode("utf-8", errors="replace")
         try:

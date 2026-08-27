@@ -151,8 +151,8 @@ fail closed. Unsupported, empty, or oversized attachments remain visible in
 the operations inventory; PDFs are not silently OCR-guessed into canonical
 NAV. A first cutover can run an explicit full-history scan, newest first, but
 both that scan and a fresh cursor are bounded by the configured inclusive
-email history start date (`2025-12-26` locally, so weekly funds retain a
-year-end baseline for YTD). IMAP applies `SINCE` before
+`PORTFOLIO_OPS_PLATFORM_EMAIL_HISTORY_START_DATE`. The deployment value must
+preserve the prior year-end observation required for YTD reporting. IMAP applies `SINCE` before
 header transfer and the ingestion layer rejects older durable headers before
 body acquisition. NAV observations embedded in a newer attachment but dated
 before the same boundary remain rejected raw evidence and never enter the

@@ -1549,7 +1549,7 @@ def _current_fund_nav_heads(
         event_date = _parse_nav_date(event["effective_date"])
         assert event_date is not None
         events_by_date.setdefault(event_date, []).append(event)
-    for event_date, same_day_events in events_by_date.items():
+    for same_day_events in events_by_date.values():
         if len(same_day_events) == 1:
             same_day_events.sort(
                 key=lambda item: str(item["fund_nav_event_id"]),
@@ -3048,9 +3048,9 @@ def rebuild_stale_fund_nav_projections(
             with market_data_item_timeout(instrument_id):
                 record, publication = _publish_fund_nav_projection(
                     instrument_id=instrument_id,
-                    load_source_rows=lambda current_instrument: (
+                    load_source_rows=lambda current_instrument, current_id=instrument_id: (
                         _load_all_durable_nav_source_rows(
-                            instrument_id=instrument_id,
+                            instrument_id=current_id,
                             instrument=current_instrument,
                         )
                     ),
@@ -4743,6 +4743,7 @@ def _run_email_ingestion_batch(
             continue
         try:
             source_names = list(dict.fromkeys(batch.attachment_names if batch else []))
+            source_count = len(source_names)
             if instrument_id in boundary_rebuild_ids:
                 message_factory = lambda publication: (
                     f"Rebuilt {len(publication.rows)} canonical NAV dates within "
@@ -4750,16 +4751,16 @@ def _run_email_ingestion_batch(
                     f"{len(publication.action_candidates)} NAV action signal(s) require review."
                 )
             else:
-                message_factory = lambda publication: (
+                message_factory = lambda publication, current_source_count=source_count: (
                     f"Rebuilt {len(publication.rows)} canonical NAV dates from "
-                    f"{len(source_names)} durable email attachments; "
+                    f"{current_source_count} durable email attachments; "
                     f"{len(publication.action_candidates)} NAV action signal(s) require review."
                 )
             record, publication = _publish_fund_nav_projection(
                 instrument_id=instrument_id,
-                load_source_rows=lambda current_instrument: (
+                load_source_rows=lambda current_instrument, current_id=instrument_id: (
                     _load_all_durable_nav_source_rows(
-                        instrument_id=instrument_id,
+                        instrument_id=current_id,
                         instrument=current_instrument,
                     )
                 ),

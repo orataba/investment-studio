@@ -44,6 +44,15 @@ def test_platform_search_path_precedes_the_shared_registry() -> None:
     ) == ["instrument_registry", "public"]
 
 
+@pytest.mark.parametrize("field_name", ["watchlist_api_url", "portfolio_api_url"])
+def test_downstream_api_urls_reject_non_http_schemes(field_name: str) -> None:
+    with pytest.raises(ValidationError, match="absolute HTTP or HTTPS"):
+        Settings(
+            database_url="sqlite+pysqlite:///:memory:",
+            **{field_name: "file:///tmp/downstream"},
+        )
+
+
 def test_cors_origins_accept_local_env_list_syntax(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import re
 from typing import get_args
 
 from portfolio_app.api.contracts import (
@@ -322,6 +323,47 @@ def test_json_import_contract_is_published_in_openapi(client) -> None:
         parameter["name"] == "Idempotency-Key" and parameter["required"] is True
         for parameter in commit["parameters"]
     )
+
+
+def test_documented_transaction_api_routes_exist_in_openapi(client) -> None:
+    workspace_root = Path(__file__).resolve().parents[4]
+    sources = [
+        workspace_root / "docs" / "TRANSACTION_IMPORT_API_GUIDE.md",
+        workspace_root / "docs" / "PORTFOLIO_COPILOT_HARNESS.md",
+    ]
+    schema = client.get("/openapi.json").json()
+    actual_routes = {
+        (method.upper(), path)
+        for path, operations in schema["paths"].items()
+        for method in operations
+    }
+    documented_routes: set[tuple[str, str]] = set()
+    for source in sources:
+        content = source.read_text(encoding="utf-8")
+        for code_span in re.findall(r"`([^`]*?/api/[^`]*)`", content):
+            if "$" in code_span:
+                continue
+            path_match = re.search(
+                r"(/api/[A-Za-z0-9_/{}/.\-]+)",
+                code_span,
+            )
+            assert path_match is not None
+            path = path_match.group(1).rstrip(".,;；。")
+            methods = re.findall(
+                r"\b(GET|POST|PUT|PATCH|DELETE)\b",
+                code_span[: path_match.start()],
+            )
+            documented_routes.update((method, path) for method in methods)
+        documented_routes.update(
+            (method, path.rstrip(".,;；。"))
+            for method, path in re.findall(
+                r"\b(GET|POST|PUT|PATCH|DELETE) (/api/[A-Za-z0-9_/{}/.\-]+)",
+                content,
+            )
+        )
+
+    assert documented_routes
+    assert documented_routes <= actual_routes, sorted(documented_routes - actual_routes)
 
 
 def test_documented_json_example_and_action_enum_match_the_live_contract() -> None:

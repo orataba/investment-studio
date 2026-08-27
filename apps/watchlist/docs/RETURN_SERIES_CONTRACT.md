@@ -49,7 +49,7 @@ Performance 页的自然期矩阵另有一条闭合规则：月度收益使用�
 ## 3. Watchlist 的逐 instrument as-of
 
 - Watchlist 没有一个强制所有行共用的业务 `as_of_date`。每个 instrument 都以自己所选 calculation series 的最新有效观测日为终点，再独立回看 1W / 1M / 3M / 6M / MTD / YTD / 1Y。
-- Screener 每行始终返回 `metric_as_of_date`。页级 `snapshot_metadata.as_of_date` 只为兼容保留，含义是当前结果中的最晚行终点，不得当成所有行的共同终点；同时返回 `as_of_date_min / as_of_date_max / has_mixed_as_of_dates / as_of_date_missing_count`。
+- Screener 每行始终返回 `metric_as_of_date`。页级 `snapshot_metadata.as_of_date` 定义为当前结果中的最晚行终点，仅用于摘要，不得当成所有行的共同终点；同时返回 `as_of_date_min / as_of_date_max / has_mixed_as_of_dates / as_of_date_missing_count`。
 - 分组中的收益、波动率、回撤、Sharpe 和 peer 指标只有在所有有值行的 `metric_as_of_date` 相同时才展示等权横截面平均；终点混合或缺失时必须显示不可用。
 - taxonomy peer 排名只纳入与目标 instrument **同一 snapshot as-of** 的候选；不同终点的候选被排除并记录数量，不能拿 24 日结果与 27 日结果直接排名。
 - benchmark 比较只使用双方日期完全相同的共同观测收盘点。基金自身独立指标仍用自己的 as-of；一旦展示 benchmark，矩阵中的基金值要重算到最晚共同观测终点，SI 从最早共同观测起点开始，所有相对风险统计也只能链接连续的共同 `(start_date, end_date)`。不得把基金目标日前的周五收盘与 benchmark 的周四收盘当作同一期相减。
@@ -72,7 +72,10 @@ Performance 页的自然期矩阵另有一条闭合规则：月度收益使用�
 
 - 后端区间策略：`watchlist_app.services.return_windows`。
 - 前端交互图策略：`src/lib/returnWindows.ts`，与后端使用同一组黄金边界测试。
-- Watchlist performance/risk snapshot 使用 `canonical-performance/v7`、`canonical-risk/v6` 和 `return-window/v2`；Watchlist row 使用 `watchlist-materialization/v5`。
+- performance、risk、return-window 和 row materialization 的当前版本标识由
+  [`canonical_recalc.py`](../backend/watchlist_app/services/canonical_recalc.py)、
+  [`return_windows.py`](../backend/watchlist_app/services/return_windows.py) 与
+  [`materialization_policy.py`](../backend/watchlist_app/services/materialization_policy.py) 中的常量唯一维护，文档不复制易漂移的版本号。方法或 payload 改变时必须提升对应版本并重建旧结果。
 - `return_3m / return_6m` 与其他标量 performance 字段一样，从 canonical performance snapshot 投影到 watchlist row read model；迁移、repository、serializer、field registry 和导出不得缺少其中任一层。
-- Sparkline 字段为 `return_chart_1d / 1w / 1m / 1y`；旧 `price_chart_*` 字段已迁移并删除。
+- Sparkline 字段为 `return_chart_1d / 1w / 1m / 1y`。
 - Portfolio 与 Watchlist 不共享业务 helper、read model 或运行时 API。两边以本文边界、Registry series identity 和黄金用例保持一致：同一 instrument、请求日期、已确认 total-return basis 和窗口下，Watchlist 标量收益与 Portfolio Holdings instrument row 必须相同；Portfolio group / total 的当前权重篮子计算仍只属于 Portfolio。

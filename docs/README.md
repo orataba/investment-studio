@@ -1,59 +1,55 @@
-# Portfolio Operations Workbench Docs
+# Documentation Index
 
-活动文档只保留当前工程边界、数据库工作流、运行手册和设计基线。完成使命但仍有溯源价值的记录放在 [`archive/`](./archive/)，不参与当前合同。
+这里是仓库文档的唯一总入口。文档只描述当前合同、当前支持边界和可执行 runbook；Git 历史、PR 或任务记录承担过程与发布证据的追溯职责。
 
-建议阅读顺序：
+## 按问题找文档
 
-1. [README.md](../README.md)
-   仓库概览、目录、当前边界、启动方式和常用校验命令。
-2. [USER_MANUAL.md](./USER_MANUAL.md)
-   面向公司同事的使用手册，说明 Platform / Watchlist / Portfolio 的日常使用方式。
-3. [DATABASE_WORKFLOW.md](./DATABASE_WORKFLOW.md)
-   单库四 schema 的数据库拓扑、依赖顺序迁移、重建脚本和 PostgreSQL integration test 路径。
-4. [PLATFORM_BOUNDARIES.md](./PLATFORM_BOUNDARIES.md)
-   `Platform / Watchlist / Portfolio / instrument-core / instrument_registry / platform schema` 之间的当前职责和数据边界。
-5. [FRONTEND_DESIGN_BASELINE.md](./FRONTEND_DESIGN_BASELINE.md)
-   当前前端设计基线：白底数据终端、tab-to-content 节奏、字体层级和跨 app UI 边界。
-6. [TRANSACTION_IMPORT_API_GUIDE.md](./TRANSACTION_IMPORT_API_GUIDE.md)
-   面向交易截图识别等外部系统的 JSON Preview/Commit 对接合同、字段标准、动作矩阵、示例和联调验收清单。
-7. [PORTFOLIO_COPILOT_HARNESS.md](./PORTFOLIO_COPILOT_HARNESS.md)
-   内部 Screenshot Assistant 的 Harness 选择、受限 MCP 工具、模型作用域和人工复核流程。
-8. [apps/portfolio/docs/01_CALCULATION_SPEC.md](../apps/portfolio/docs/01_CALCULATION_SPEC.md)
-   Portfolio canonical 计算合同；Holdings 的逐字段映射另见 [03_HOLDINGS_FIELD_REFERENCE.md](../apps/portfolio/docs/03_HOLDINGS_FIELD_REFERENCE.md)。
-9. [FUND_NAV_EVENT_AND_RECALCULATION_MODEL.md](./FUND_NAV_EVENT_AND_RECALCULATION_MODEL.md)
-   私募基金单位净值、不可变行为/复投证据、复权因子、人工修订和下游重算的当前合同。
-10. [SERVER_DEPLOYMENT.md](./SERVER_DEPLOYMENT.md)
-   当前 Linux/systemd 服务部署、迁移、健康检查和运维边界。
-11. [NEW_MACHINE_RESTORE.md](./NEW_MACHINE_RESTORE.md)
-   新电脑从私有 GitHub 仓库恢复项目、数据库、运行环境和定时任务的步骤参考。
-12. [LOCAL_MACOS_SERVICE.md](./LOCAL_MACOS_SERVICE.md)
-   在 macOS 上安装、检查和移除本地 `launchd` 常驻服务与每日 21:00 刷新/重算任务。
+| 需要解决的问题 | 权威文档 |
+| --- | --- |
+| 第一次接手项目、定位代码和评估修改影响 | [Developer Guide](./DEVELOPER_GUIDE.md) |
+| Platform、Registry、Watchlist、Portfolio 的职责和数据流 | [Platform Boundaries](./PLATFORM_BOUNDARIES.md) |
+| 同事如何使用三个应用 | [User Manual](./USER_MANUAL.md) |
+| 数据库拓扑、迁移、重建、恢复与 PostgreSQL 测试 | [Database Workflow](./DATABASE_WORKFLOW.md) |
+| macOS 常驻服务、定时刷新、日志和卸载 | [macOS Local Service](./LOCAL_MACOS_SERVICE.md) |
+| Linux/systemd 部署、网络和访问控制 | [Server Deployment](./SERVER_DEPLOYMENT.md) |
+| 新机器恢复代码、secrets、数据库和托管服务 | [New Machine Restore](./NEW_MACHINE_RESTORE.md) |
+| Portfolio 数据表、字段和写入所有权 | [Portfolio Database Dictionary](./PORTFOLIO_DATABASE_DICTIONARY.md) |
+| 基金 NAV 事件、复投证据、投影和重算 | [Fund NAV Event Model](./FUND_NAV_EVENT_AND_RECALCULATION_MODEL.md) |
+| 外部系统通过 JSON Preview/Commit 写入交易 | [Transaction Import API Guide](./TRANSACTION_IMPORT_API_GUIDE.md) |
+| 截图助手的 Harness、工具权限和人工确认边界 | [Portfolio Copilot Harness](./PORTFOLIO_COPILOT_HARNESS.md) |
+| 前端视觉、交互和跨应用 UI 约束 | [Frontend Design Baseline](./FRONTEND_DESIGN_BASELINE.md) |
 
-按 app 深入时：
+## 按模块深入
 
-- [apps/platform/README.md](../apps/platform/README.md)
-- [apps/watchlist/README.md](../apps/watchlist/README.md)
-- [apps/portfolio/README.md](../apps/portfolio/README.md)
-- [apps/portfolio/docs/archive/2026-07-15_OPTIMIZATION_HANDOFF_COMPLETED.md](../apps/portfolio/docs/archive/2026-07-15_OPTIMIZATION_HANDOFF_COMPLETED.md)
-  已完成的 Portfolio 优化轮次历史记录；不作为当前实现入口或第二份永久规格。
+| 模块 | 入口 |
+| --- | --- |
+| Platform | [apps/platform/README.md](../apps/platform/README.md) |
+| Watchlist | [apps/watchlist/README.md](../apps/watchlist/README.md) |
+| Portfolio | [apps/portfolio/README.md](../apps/portfolio/README.md) 与 [Portfolio 文档索引](../apps/portfolio/docs/README.md) |
+| Instrument Core | [packages/instrument-core/README.md](../packages/instrument-core/README.md) 与 [Instrument Core Contract](../packages/instrument-core/INSTRUMENT_CORE_CONTRACT.md) |
+| Shared UI | [packages/ui/README.md](../packages/ui/README.md) |
+| Instrument Registry migrations | [infra/instrument_registry/README.md](../infra/instrument_registry/README.md) |
 
-历史归档：
+Watchlist 的详细产品与计算文档由其 app README 直接索引；Portfolio 指标、Holdings 字段、交易操作和 GIPS 方法由 Portfolio 文档索引管理。根目录 README 和 app README 只负责导航、范围和启动方式，不重复完整公式或字段字典。
 
-- [archive/README.md](./archive/README.md)
+## 文档生命周期
 
-当前约束：
+1. 一个概念只能有一份 canonical 文档。其他文档只保留一句边界和链接。
+2. 新需求优先修改现有文档。只有面对稳定、独立受众且无法合理归入现有文档时，才新增文件。
+3. 新文档必须在本索引或对应 app README 中登记，并在同一改动中删除被替代的文档。
+4. 仓库不保存日期化 Review、发布验收、handoff、排查日志或测试数量快照，也不建立 `docs/archive`。这些记录由 Git、PR、issue 或任务系统保存。
+5. 会随 checkout 变化的 migration head、测试数量、数据规模、服务状态和供应商实测结果，不写成长期“当前值”；文档提供取得当前值的命令或代码位置。
+6. 公式、账务语义、日期边界和数据血缘必须进入对应领域合同；不能只存在于 README、页面文案或一次性报告中。
+7. 代码和合同变化必须在同一改动中更新。移除能力时删除旧说明，不保留假想兼容分支。
 
-- 描述“当前已实现”时以仓库实现为证据，不维护不存在的兼容路径；canonical 目标合同不能因当前错误实现而被反向改写。
-- 描述当前真实运行方式，不保留过程复盘、临时排查记录或旧架构兼容说明。
-- 不把归档记录或 Git 历史中的失败蓝图恢复成活动规格；新的跨轮次工作需要单独、限时的执行计划，完成后归档或删除。
-- `packages/ui` 已经进入当前路径，先承载语言选择与跨 app 前端共享上下文；不是纯占位目录。
-- 前端视觉调整以 [FRONTEND_DESIGN_BASELINE.md](./FRONTEND_DESIGN_BASELINE.md) 为准；不要再引入米黄、沙色或暖灰页面背景。
-- `nav/` 和 `.env.example` 是仓库恢复资产；`data/migration/` 只记录恢复制品政策。真实数据库 dump、backend `.env`、runtime DB、构建产物、依赖目录和缓存均不得进入 Git。
+## 提交前检查
 
-提交前统一检查：
+```bash
+infra/scripts/verify_repository.sh static
+```
+
+该检查验证仓库内 Markdown 链接、文档发现路径以及不允许重新引入的日期化归档。完整应用验证使用：
 
 ```bash
 infra/scripts/verify_repository.sh all-local
 ```
-
-该入口覆盖静态仓库卫生、活动文档本地链接、三个 backend suite、三个 frontend test/build 和全部便携 infra tests。涉及数据库迁移或 PostgreSQL 专属行为时，再执行 `infra/scripts/verify_repository.sh migration-heads` 与 `postgres-integration all`；完整环境要求见 [DATABASE_WORKFLOW.md](./DATABASE_WORKFLOW.md)。

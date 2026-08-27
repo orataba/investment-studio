@@ -2,21 +2,27 @@
 
 ## 1. 系统入口
 
-在公司网络环境内使用浏览器访问以下地址：
+系统地址由维护人按环境提供，仓库文档不固定服务器 IP 或域名：
 
-- 总入口 / Platform：`http://172.188.30.166:3100/`
-- Watchlist：`http://172.188.30.166:3101/`
-- Portfolio：`http://172.188.30.166:3102/`
+| 环境 | Platform | Watchlist | Portfolio |
+| --- | --- | --- | --- |
+| 本机 | `http://127.0.0.1:5172/` | `http://127.0.0.1:5173/` | `http://127.0.0.1:5174/` |
+| 托管服务器 | 维护人提供的受控 HTTPS 入口 | 由 Platform 入口进入或使用受控直达地址 | 由 Platform 入口进入或使用受控直达地址 |
 
-推荐使用最新版 Chrome 或 Edge。三个入口可以分别加入浏览器收藏夹。日常使用只打开 `3100 / 3101 / 3102` 这三个前端地址；`8100 / 8101 / 8102` 是后端 API 端口，除维护排查外不直接访问。
+推荐使用最新版 Chrome 或 Edge。三个入口可以分别加入浏览器收藏夹。日常只打开维护人提供的三个
+前端入口；`8100 / 8101 / 8102` 是服务器内部 API 端口，除服务器本机维护排查外不直接访问。
+
+项目当前没有内建用户登录或 RBAC。托管入口必须由维护人通过反向代理同时提供 TLS、页面认证和
+API 认证；不能直接把 `310x / 810x` 端口暴露到公网或普通办公网络，也不能把云控制台登录当成
+页面访问控制。在受控入口尚未配置时，只允许本机使用或通过受控 SSH tunnel 维护验收。
 
 Platform 是系统总入口，首页会展示可进入的业务应用。Watchlist 和 Portfolio 也可以通过各自地址直接打开。页面打不开时，先确认电脑已连接公司网络，再刷新浏览器；仍不可用时记录访问地址、发生时间、浏览器、页面截图或错误提示，交给维护人排查。
 
-维护人可用以下健康检查地址判断服务是否存活：
+维护人登录服务器后，可在 loopback 上用以下地址判断服务是否存活：
 
-- Platform API：`http://172.188.30.166:8102/api/health`
-- Watchlist API：`http://172.188.30.166:8100/api/health`
-- Portfolio API：`http://172.188.30.166:8101/api/health`
+- Platform API：`http://127.0.0.1:8102/api/health`
+- Watchlist API：`http://127.0.0.1:8100/api/health`
+- Portfolio API：`http://127.0.0.1:8101/api/health`
 
 健康检查只用于判断服务状态，不用于业务操作。
 
@@ -55,7 +61,7 @@ Portfolio Operations Workbench 分为三块：
 
 ### 4.1 进入共享资产库
 
-打开 `http://172.188.30.166:3100/`，进入 `Database Dashboard`。这里管理所有模块共用的 instrument 和市场数据。
+打开维护人提供的 Platform 地址，进入 `Database Dashboard`。这里管理所有模块共用的 instrument 和市场数据。
 
 常用操作顺序：
 
@@ -122,7 +128,7 @@ FX 维护 spot：
 
 ### 5.1 打开观察列表
 
-访问 `http://172.188.30.166:3101/`。默认入口会进入 watchlist 选择或默认列表。每个 watchlist 是一个资产池，可用于基金池、ETF/股票候选池、指数池或专项研究池。
+从 Platform 进入 Watchlist，或访问维护人提供的 Watchlist 地址。默认入口会进入 watchlist 选择或默认列表。每个 watchlist 是一个资产池，可用于基金池、ETF/股票候选池、指数池或专项研究池。
 
 Watchlist 管理“哪些资产进入观察范围”和“如何展示这些资产”。系统列表固定为 `Index`、`All 公募`、`All 私募`，分别自动同步所有 active 指数、公募和私募；股票、ETF 以及其他自定义列表只按人工添加维护。公募、私募和指数来自 Registry；股票和 ETF 也可搜索本地证券目录，首次添加时由 Platform API 按需准备共享 identity 与主源行情。
 
@@ -163,7 +169,7 @@ Watchlist 在自己的 schema 内维护多资产 `instrument_taxonomy`，Registr
 
 ### 5.6 基金详情页
 
-基金详情页共享 Overview、Performance、Risk、Strategy、Documents、Research、Monitoring 基础结构。Overview 同时承载报价/NAV 主图；公募另外使用 Fees、Portfolio、Management，私募使用 Terms、Exposure、Organization。自动 Ratings 已移除；人工评级只在 Research 中维护，并应在 timeline notes 记录证据与变更原因。
+基金详情页共享 Overview、Performance、Risk、Strategy、Documents、Research、Monitoring 基础结构。Overview 同时承载报价/NAV 主图；公募另外使用 Fees、Portfolio、Management，私募使用 Terms、Exposure、Organization。评级只在 Research 中由人工维护，并应在 timeline notes 记录证据与变更原因。
 
 基金、ETF、股票和指数详情页右上角的 `Settings` 同时维护投资状态和适用于该资产类型的 taxonomy。投资状态可选择未设置、观察、拟投、在投、暂停或退出；这些设置在 Watchlist 内按 instrument 共享，并不写回 Registry。
 
@@ -206,7 +212,7 @@ recalc 失败时，不要手工改计算结果。应查看失败资产、失败�
 
 ### 6.1 创建与打开组合
 
-访问 `http://172.188.30.166:3102/`。进入 Portfolio 后选择具体组合。组合页面通常包含 Overview、Holdings、Accounts、Transactions、Performance、Risk、Taxonomies、Research。
+从 Platform 进入 Portfolio，或访问维护人提供的 Portfolio 地址。进入后选择具体组合。组合页面通常包含 Overview、Holdings、Accounts、Transactions、Performance、Risk、Taxonomies、Research。
 
 创建组合时必须明确选择基础币种（USD、HKD、CNY、EUR、GBP 或 CHF）。基础币种决定组合 NAV、汇总市值、绩效和风险金额的统一表达口径；各账户和交易仍保留自己的事实币种，非基础币种现金与持仓按对应 as-of date 的 Registry FX 换算。应按实际投资汇报口径选择基础币种，不能因为某一笔交易使用港币就改成港币，也不能在缺少 FX 时把不同币种金额直接相加。
 

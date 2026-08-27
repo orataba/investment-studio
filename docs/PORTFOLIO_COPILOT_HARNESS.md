@@ -12,7 +12,7 @@
 
 这不是固定 OCR 模板方案。券商截图的版式、重叠、裁剪、语言和类型由视觉模型在整批上下文中理解；确定性的代码只负责证据保存、结构校验、账本业务规则和人工审批边界。
 
-当前不把 Portfolio 后端直接依赖在 DeepSeek Harness 的 Python SDK 上：官方仓库虽然已有 SDK 源码，但尚未形成可从 PyPI 安装的稳定发布，而且 Developer Preview 明确允许兼容性破坏。MCP 把这部分版本变化隔离在 harness 配置侧。
+Portfolio 后端不直接依赖 Harness SDK。运行时通过受限子进程和 MCP 连接，账本只接受现有 Preview/Commit 合同；因此更换 Harness 或模型 adapter 不需要改写交易事实与审批边界。
 
 ## 已实现的前端入口
 
@@ -33,7 +33,6 @@ Transactions 页工具栏已加入原生 `Screenshot Assistant` 入口，沿用�
 | 可追溯性 | append-only session log，支持 resume、fork、search、replay | thread/turn/item 事件和审批协议完整 | 都可用；Portfolio 仍单独保存财务证据修订 |
 | MCP | 官方 MCP client 插件支持 stdio/Streamable HTTP，并可把 image content 投给明确支持图像的模型路由 | Codex 可连接 MCP server | 采用 MCP 可同时兼容二者 |
 | 内嵌 UI | 自带 Web UI，插件组合自由度高 | App Server 更适合深度定制产品客户端 | 长期若要做高完成度内嵌 Copilot，Codex App Server 值得复评 |
-| 当前成熟度 | Developer Preview，官方明确提示会有兼容性破坏 | App Server 命令与 WebSocket 仍标为 experimental/unsupported for production | 当前都不宜成为不可替换的账本依赖 |
 | 权限收敛 | 插件组合适合建立只含财务 MCP 工具的专用 preset | Codex 是编码 Agent，shell/file 能力更自然，需额外隔离 | 财务生产运行时优先 DeepSeek Harness；Codex 先用于评测和开发 |
 | DeepSeek 模型 | 原生、成本和用户偏好匹配 | 可配置 DeepSeek 文本模型，但 Codex 自身更偏 OpenAI 运行时 | 试验阶段优先 DeepSeek Harness |
 
@@ -44,23 +43,15 @@ Transactions 页工具栏已加入原生 `Screenshot Assistant` 入口，沿用�
 - [Codex App Server](https://developers.openai.com/codex/app-server)
 - [MCP Python SDK](https://py.sdk.modelcontextprotocol.io/)
 
-## DeepSeek 视觉接口现状
+## DeepSeek 视觉路由边界
 
 “使用 DeepSeek Harness”与“DeepSeek 模型能直接读图”不是同一件事。
 
-DeepSeek Harness 能接收 MCP image content，但只会把图片投给声明并实际支持 image input 的模型路由。DeepSeek 当前公开的 [Responses API 文档](https://api-docs.deepseek.com/api/create-response/) 仍明确写明不支持 image/file input；本项目不能通过 Responses API 发送截图。
+Harness 能接收 MCP image content，但只有声明并实际支持 image input 的模型路由才能处理截图。仓库的模型和 adapter 版本由下文的受限 preset 与启动脚本唯一确定，不在文档复制某次 `/models` 查询结果。
 
-2026-08-25 实时查询 DeepSeek `/models` 返回了实验视觉模型
-`deepseek-v4-flash-vision-exp`，当前 [DeepSeek Harness DeepSeek adapter](https://github.com/deepseek-ai/deepseek-harness/blob/master/packages/llm/llm-deepseek/src/index.ts)
-也把该模型声明为 text + image 输入。受限 Harness 已通过 MCP image content 在真实券商截图上完成 shadow 运行。这条路径使用 Harness 的 DeepSeek provider adapter，不是 Responses API。
+启用或升级这条路径时必须重新核对 provider 当前模型列表、已安装 adapter 的输入声明，并用同一人工金标准做 shadow 验收。若任一条件不成立，截图分析应明确不可用；不能把图片改投文本接口、静默更换模型或绕过 Preview。一次性模型可用性和样本结果留在任务记录。
 
-当前选择：
-
-1. 第一阶段运行时使用 `deepseek-v4-flash-vision-exp`，并固定为实验视觉路线；
-2. MCP 与 v2 输出合同保持 provider-neutral，后续仍可用 OpenAI 视觉模型跑同一验收集；
-3. DeepSeek 实验模型如果下线或行为改变，可替换模型 adapter，而不改截图证据、Preview、人工确认或 Commit 合同。
-
-真实样本当前只证明选定场景可运行，不能证明所有券商截图准确率或实验模型的长期可用性。
+MCP 与 v2 输出合同保持 provider-neutral。更换视觉模型只影响受限运行时配置，不改变截图证据、Preview、人工确认或 Commit 合同。
 
 ## 已实现的系统边界
 
@@ -133,12 +124,10 @@ Transaction Import Proposal → Portfolio Preview
 
 运行配置位于：
 
-- `apps/portfolio/backend/config/portfolio_copilot_deepseek_harness.patch.yml`
-- `apps/portfolio/backend/scripts/run_portfolio_copilot_harness.sh`
+- [portfolio_copilot_deepseek_harness.patch.yml](../apps/portfolio/backend/config/portfolio_copilot_deepseek_harness.patch.yml)
+- [run_portfolio_copilot_harness.sh](../apps/portfolio/backend/scripts/run_portfolio_copilot_harness.sh)
 
-配置固定 `@deepseek-ai/dsh@0.1.1-rc.2` 和
-`deepseek-v4-flash-vision-exp`，关闭 shell、文件系统、Web、代码执行、skills、子 Agent
-等无关能力，只插入 Portfolio MCP server。Harness 会话保存在仓库外的
+package、版本和模型只在上述配置与启动脚本中固定；本文不复制易漂移的当前值。preset 关闭 shell、文件系统、Web、代码执行、skills、子 Agent 等无关能力，只插入 Portfolio MCP server。Harness 会话保存在仓库外的
 `~/.local/share/portfolio-operations-workbench/deepseek-harness`。
 
 DeepSeek key 保存在项目既有的仓库外 secret 目录：
@@ -171,11 +160,12 @@ Harness 的 append-only session 中，不复制到批次状态。
 Portfolio 后端运行在本机 `127.0.0.1:8001` 时，调试 MCP server 也必须显式绑定任务作用域和运行时模型身份：
 
 ```bash
-cd /Users/shaw/Projects/portfolio-operations-workbench/apps/portfolio/backend
+PROJECT_ROOT="$PWD"
+cd "$PROJECT_ROOT/apps/portfolio/backend"
 PORTFOLIO_OPS_PORTFOLIO_COPILOT_PORTFOLIO_ID='<portfolio-id>' \
 PORTFOLIO_OPS_PORTFOLIO_COPILOT_BATCH_ID='<batch-id>' \
-PORTFOLIO_OPS_PORTFOLIO_COPILOT_MODEL_NAME='deepseek-v4-flash-vision-exp' \
-  /Users/shaw/Projects/portfolio-operations-workbench/.venv/bin/python \
+PORTFOLIO_OPS_PORTFOLIO_COPILOT_MODEL_NAME='<configured-vision-model>' \
+  "$PROJECT_ROOT/.venv/bin/python" \
   -m portfolio_app.assistant_mcp
 ```
 
@@ -188,14 +178,14 @@ DeepSeek Harness 的 MCP transport patch 可使用其官方 stdio 插件结构�
       config:
         serverName: portfolio
         transport: stdio
-        command: /Users/shaw/Projects/portfolio-operations-workbench/.venv/bin/python
+        command: <repository-root>/.venv/bin/python
         args: ['-m', 'portfolio_app.assistant_mcp']
-        cwd: /Users/shaw/Projects/portfolio-operations-workbench/apps/portfolio/backend
+        cwd: <repository-root>/apps/portfolio/backend
         env:
           PORTFOLIO_OPS_PORTFOLIO_COPILOT_API_BASE_URL: http://127.0.0.1:8001/api
           PORTFOLIO_OPS_PORTFOLIO_COPILOT_PORTFOLIO_ID: <portfolio-id>
           PORTFOLIO_OPS_PORTFOLIO_COPILOT_BATCH_ID: <batch-id>
-          PORTFOLIO_OPS_PORTFOLIO_COPILOT_MODEL_NAME: deepseek-v4-flash-vision-exp
+          PORTFOLIO_OPS_PORTFOLIO_COPILOT_MODEL_NAME: <configured-vision-model>
         toolCallTimeoutMs: 60000
         failOnStartupError: true
 ```
@@ -215,19 +205,16 @@ Transactions 页的 Screenshot Assistant 已复用现有 JSON Preview/Commit 合
 5. 最终确认框明确显示当前 Portfolio 和将写入的记录，Commit 使用与 Preview 完全相同的 payload 及独立 Idempotency-Key；
 6. Commit 成功后刷新交易工作区；批次的 `recorded / partially_recorded / unrecorded` 状态由后端按持久化账本中的截图 source reference 推导，页面刷新、交易筛选或重新打开后都不会仅依赖前端临时状态，也不会对已登记批次再次开放 Commit。
 
-真实 S01 仍因隔离组合缺少历史持仓而被 Preview 阻止；S02、S03、S04 和 S09 形成了
-可人工复核的期权、FCN 和基金提案；S05、S08 在 canonical 标的或交易日期缺失时停在候选层。
-本轮没有创建 `human` revision，也没有执行 Commit，测试组合交易数仍为 0。
+## 验收合同
 
-## 下一步验收
+模型、provider、prompt、Harness 或分析 schema 发生实质变化时，使用同一组人工金标准做 shadow 验收；一次性结果留在任务记录，不复制进长期文档。验收至少覆盖：
 
-已完成的首轮真实截图场景、结果和交易数不变证据归档于
-[2026-08-26_PORTFOLIO_COPILOT_SCREENSHOT_SHADOW_EVAL.md](./archive/2026-08-26_PORTFOLIO_COPILOT_SCREENSHOT_SHADOW_EVAL.md)。后续新增样本仍先保持 shadow：
+1. 单图分类，以及多图应合并或拆分的边界；
+2. 账户和 canonical instrument/contract 的 `resolved / ambiguous / unavailable` 结果；
+3. 数量、价格、金额、日期、方向和衍生品条款的字段级证据；
+4. 既有交易重复识别，以及持仓/现金快照不得被反推成历史交易；
+5. 缺少关键事实时停在问题或候选层，不制造完整提案；
+6. Portfolio Preview 的逐行、批次、持仓历史和来源幂等校验；
+7. shadow 前后正式交易事实不变。
 
-1. 补完人工金标准字段和每个场景对应的目标 Portfolio；
-2. 对 DeepSeek 视觉试验路线与 OpenAI 视觉基线运行相同 MCP 工具和 v2 结构合同；
-3. 比较字段准确率、漏单、跨图合并、既有交易重复识别、账户分配、快照误转交易、Preview 通过率和待确认问题质量；
-4. 在正确的目标 Portfolio 上补齐账户、标的和既有交易的人工金标准，再评估是否允许从分析修订进入既有 Preview/Commit 复核流；
-5. 再扩展到新建 Portfolio 和初始化 Portfolio，但仍复用同一套提案、Preview 和人工确认模式。
-
-在真实样本通过前，不根据模型自报置信度自动入账，也不为某一家券商固化模板分支。
+不同模型路线必须使用相同工具边界、结构合同和金标准比较。模型自报置信度不能直接触发 Commit，也不为单一券商版式固化绕过通用证据与 Preview 的模板分支。

@@ -4,7 +4,7 @@
 
 ## 1. 目标
 
-watchlist 的未来使用场景不是“在一堆平铺标签里找产品”，而是：
+watchlist 的当前产品模型不是“在一堆平铺标签里找产品”，而是：
 
 1. 先按分类定义产品池
 2. 再用定量数据横向筛选
@@ -194,16 +194,7 @@ watchlist field registry 也已经按三层产品框架分类：
 
 这意味着 watchlist 的 filter 和 column selection 可按当前名单的资产类型范围使用研究字段；`Group By` 只暴露结构化维度与工作流字段，不把基金专属定性判断当成多资产分组。
 
-## 5. 当前明确不再采用的做法
-
-下面这些已经被移除，不再作为基线：
-
-- `strategy_family / strategy_subtype` 作为主分类
-- 把分类、研究标签、监控结论混在一张 fund tag 表里
-- 旧 `/api/funds/...` 兼容路由
-- Fund Detail 中“Import NAV / Save NAV / Update Now”这类已经退役的写入口
-
-## 6. 下一步扩展原则
+## 5. 扩展原则
 
 继续扩框架时，遵守下面几点：
 

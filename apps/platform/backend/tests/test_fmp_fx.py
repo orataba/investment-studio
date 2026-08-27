@@ -77,6 +77,7 @@ def test_european_fx_masters_refresh_from_fmp(isolated_fx_store: None) -> None:
         assert instrument is not None
         assert instrument["currency"] == quote_currency
         point = instrument["market_data"][0]
+        assert client.calls[-1] == symbol
         assert point["metric_family"] == "fx"
         assert point["quote_basis"] == "spot"
         assert point["currency"] == quote_currency

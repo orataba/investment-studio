@@ -148,7 +148,7 @@ projection ledger payload，也拒绝擦除已经存在的账本；需要重新�
 security-master 事实；基金 NAV 分红再投只用于构造 TWR 指数，不代表投资者真实获得或再投资份额。
 即使同一基金拆分最终也需要影响持仓，仍必须单独确认并发布为 `CorporateActionEvent`。
 
-当前共享层不再暴露一个粗粒度 `metric_code`，而是拆成：
+共享层使用下面两级 typed identity，不暴露粗粒度 `metric_code`：
 
 - `metric_family`
   - `price`
@@ -167,7 +167,7 @@ security-master 事实；基金 NAV 分红再投只用于构造 TWR 指数，不
 共享 store 以 canonical instrument type、`metric_family` 与 `quote_basis` 作为唯一权威确定性派生：
 FX 为 `rate / 1`，其余为 `per_unit / 1`。
 批量写入若携带这两个派生字段会拒绝整批，避免调用方与共享 contract 形成第二套规则。
-Python runtime 只支持 Instrument Registry head `20260822_0026`，不会探测或兼容更早物理 schema。当前 Registry 类型集合是 `public_fund | private_fund | etf | index | equity | cash | fx | other`。股票与 ETF 都必须持有 canonical MIC `exchange_code`；FMP 资产还必须持有 `provider_symbol` identity。支持的 listing MIC 为 `XNAS / XNYS / XASE / BATS / XHKG / XSHG / XSHE / XLON / XETR / XPAR / XAMS / XMIL / XSWX`，其中 `BATS` 只用于 ETF 目录。直接债券、FCN 与期权不进入共享资产表。FCN 与期权合约条款、生命周期和交易事实属于 Portfolio 私域；直接债券当前不在产品交易范围内。直接 SQL 也必须满足 canonical 行情、NAV lineage、基金行为状态机、计算输入与 broker identity 约束。
+Python runtime 只支持当前仓库 migration head 所定义的 Instrument Registry schema，不会探测或兼容更早物理 schema；当前 revision 由 Alembic source 和 `migration-heads` gate 确定，不在合同里复制易漂移的编号。Registry 类型集合是 `public_fund | private_fund | etf | index | equity | cash | fx | other`。股票与 ETF 都必须持有 canonical MIC `exchange_code`；FMP 资产还必须持有 `provider_symbol` identity。支持的 listing MIC 为 `XNAS / XNYS / XASE / BATS / XHKG / XSHG / XSHE / XLON / XETR / XPAR / XAMS / XMIL / XSWX`，其中 `BATS` 只用于 ETF 目录。直接债券、FCN 与期权不进入共享资产表。FCN 与期权合约条款、生命周期和交易事实属于 Portfolio 私域；直接债券当前不在产品交易范围内。直接 SQL 也必须满足 canonical 行情、NAV lineage、基金行为状态机、计算输入与 broker identity 约束。
 
 每条 market-data observation（不只 FX）都必须使用 instrument master currency，`value`
 必须是有限正数，`status` 只能是 `complete | partial | unavailable`。共享 store 的单点、批量、
@@ -183,14 +183,12 @@ currency 与每条 observation currency 都必须等于 pair 的 quote currency�
 猜测身份。共享 store 对单点和批量写入执行同一合同；读取到违反该合同的历史数据时必须返回
 不可用结果，不得重标币种、补零、补日期、补 complete status 或回退到更旧数据。
 
-`refresh_status.last_successful_requested_at` 是显式持久化 cursor。0011 会在表锁内一次性把旧
-email success 的 `requested_at` 提升为该 cursor；运行时不再从当前 status/mode/requested_at
-反推旧 cursor。
+`refresh_status.last_successful_requested_at` 是显式持久化 cursor；运行时不得从当前
+status、mode 或 requested timestamp 反推、补写 cursor。
 
-`QuoteSelectionPolicy` 的五个 role 都是非空必填持久化事实。0011 会一次性物化旧记录中缺失
-或空的 role，并在前置检查中拒绝未知 role、未知/重复 basis 以及违反 role 语义的 policy；
-运行时读取和更新不再按 instrument type 补 role 或替换空数组。只有创建新 instrument 时，
-才把类型默认 policy 作为显式创建规则完整写入。
+`QuoteSelectionPolicy` 的五个 role 都是非空必填持久化事实。未知 role、未知/重复 basis 以及
+违反 role 语义的 policy 必须被拒绝；运行时读取和更新不按 instrument type 补 role 或替换空数组。
+只有创建新 instrument 时，才把类型默认 policy 作为显式创建规则完整写入。
 
 NAV history 的批量预览、导入与替换只支持 `public_fund` 和 `private_fund`。非基金资产必须在解析上传内容前拒绝，shared store 也必须在删除或写入前执行同一条断言；其他资产的行情通过 typed market-data 写入路径维护。
 

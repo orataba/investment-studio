@@ -33,8 +33,13 @@ def _configure_search_path(engine: Engine, *schemas: str | None) -> Engine:
 
     def _apply_search_path(dbapi_connection) -> None:  # type: ignore[no-untyped-def]
         cursor = dbapi_connection.cursor()
-        cursor.execute(f"SET search_path TO {search_path}")
-        cursor.close()
+        try:
+            cursor.execute(f"SET search_path TO {search_path}")
+        finally:
+            cursor.close()
+        # psycopg starts a transaction for SET.  Handing that transaction to
+        # SQLAlchemy leaves an otherwise idle checkout in INTRANS state.
+        dbapi_connection.commit()
 
     @event.listens_for(engine, "connect")
     def _set_search_path(dbapi_connection, connection_record) -> None:  # type: ignore[no-untyped-def]

@@ -40,7 +40,7 @@ class DailySnapshotRecalculationWorker:
     def __init__(
         self,
         *,
-        poll_seconds: float = 0.25,
+        poll_seconds: float = 5.0,
         reconciliation_batch_size: int = 32,
     ) -> None:
         if poll_seconds <= 0:

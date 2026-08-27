@@ -2332,6 +2332,7 @@ def test_instrument_detail_payload_uses_daily_calculation_frequency(
                 for as_of_date, value in zip(
                     ["2026-01-02", "2026-01-09", "2026-01-16", "2026-01-23"],
                     ["100.000000", "101.000000", "99.500000", "102.000000"],
+                    strict=True,
                 )
             ],
             "lifecycle_state": {"status": "active"},
@@ -2443,6 +2444,7 @@ def test_instrument_performance_payload_includes_taxonomy_peer_ranking(
                     for as_of_date, value in zip(
                         ["2025-12-31", "2026-03-14", "2026-04-07", "2026-04-14"],
                         values,
+                        strict=True,
                     )
                 ],
                 "lifecycle_state": {"status": "active"},
@@ -2481,6 +2483,7 @@ def test_instrument_performance_payload_includes_taxonomy_peer_ranking(
                 for as_of_date, value in zip(
                     ["2025-12-31", "2026-03-13", "2026-04-06", "2026-04-13"],
                     ["99.000000", "100.000000", "101.000000", "102.000000"],
+                    strict=True,
                 )
             ],
             "lifecycle_state": {"status": "active"},

@@ -1,8 +1,8 @@
 # Portfolio database dictionary
 
-As of 2026-08-26. Verified against SQLAlchemy metadata and migration heads `instrument_registry@20260823_0028` and `portfolio@20260824_0056`.
+This living dictionary explains table purpose, ownership and relationships. SQLAlchemy models and Alembic migrations remain the executable schema source; do not copy revision numbers into this document. Applying and checking current heads requires the explicit disposable-database workflow in [DATABASE_WORKFLOW.md](./DATABASE_WORKFLOW.md). A schema change must update this dictionary in the same change when table meaning or external integration guidance changes.
 
-This file is for architecture and integration review. External systems should use the APIs documented in [`TRANSACTION_INTEGRATION.md`](TRANSACTION_INTEGRATION.md), not write these tables directly.
+External systems must use the APIs documented in [Transaction Import API Guide](./TRANSACTION_IMPORT_API_GUIDE.md), not write these tables directly.
 
 Notation: **PK** = primary key, **FK** = foreign key, `?` = nullable, JSON fields are named with `_json` or `_json`-equivalent suffixes. PostgreSQL logical schemas are shown even though local SQLite tests use flat table names.
 
@@ -37,7 +37,7 @@ Cash and holding accounts owned by a portfolio. `account_category` is the canoni
 |---|
 | **PK** `account_id VARCHAR`; **FK** `portfolio_id → portfolio_record.portfolio_id`; `account_name VARCHAR`; `account_type VARCHAR`; `account_category VARCHAR`; `currency VARCHAR`; `institution VARCHAR?`; `default_settlement_cash_account_id VARCHAR?`; `cost_basis_method VARCHAR?`; `opened_at DATE?`; `closed_at DATE?`; `status VARCHAR` |
 
-`cash` requires the internal `deposit_account` type and carries neither a settlement mapping nor a cost method. `security`, `fcn`, and `option` require the internal `securities_account` type, one cost method, and a default Cash account in the same Portfolio and currency. A holding account cannot mix the three holding categories. Security transactions, FCN contracts/events, and option contracts/events must each use their matching category. Revision `20260817_0052` split mixed legacy accounts, moved derivative contracts and their transaction facts to the matching accounts, invalidated affected derived snapshots, and removed the former instrument-scope JSON field.
+`cash` requires the internal `deposit_account` type and carries neither a settlement mapping nor a cost method. `security`, `fcn`, and `option` require the internal `securities_account` type, one cost method, and a default Cash account in the same Portfolio and currency. A holding account cannot mix the three holding categories. Security transactions, FCN contracts/events, and option contracts/events must each use their matching category; the removed mixed-account and instrument-scope models are not runtime compatibility paths.
 
 ### `portfolio.transaction_record`
 
@@ -389,7 +389,7 @@ For a colleague implementing transaction ingestion, the relevant read sequence i
 
 1. List accounts through `GET /api/portfolios/{portfolio_id}/accounts`.
 2. List canonical instruments through `GET /api/portfolios/{portfolio_id}/instruments`.
-3. Preview and atomically commit machine JSON through `transaction-imports/preview` and `transaction-imports/commit`, or use the canonical file workflow documented in `TRANSACTION_INTEGRATION.md`.
+3. Preview and atomically commit machine JSON through `transaction-imports/preview` and `transaction-imports/commit` as documented in [Transaction Import API Guide](./TRANSACTION_IMPORT_API_GUIDE.md), or use the canonical CSV/Excel workflow in [Transaction Operations](../apps/portfolio/docs/04_TRANSACTION_OPERATIONS.md).
 4. Read created facts through `GET /api/portfolios/{portfolio_id}/transactions`.
 
 Do not treat daily snapshots, holdings, lots, postings, or instrument-universe rows as input tables. They are deterministic projections of facts plus Registry data and may be rebuilt.
