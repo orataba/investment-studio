@@ -134,6 +134,7 @@ def create_attribute_definition(
     session: Session = Depends(get_db_session),
 ) -> dict[str, object]:
     payload_data = payload.model_dump()
+    payload_data["is_groupable"] = payload_data["attribute_key"] == "coverage_status"
     record = attribute_repository.create_definition(
         session,
         attribute_key=payload_data["attribute_key"],

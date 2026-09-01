@@ -84,8 +84,10 @@ def _local_detail_view_filters() -> dict[str, list[str]]:
     return {"instrument_type": list(LOCAL_DETAIL_VIEW_FILTERS["instrument_type"])}
 
 
-def _overview_view_columns() -> list[dict[str, object]]:
-    return [
+def _overview_view_columns(
+    instrument_type_filter: str | None = None,
+) -> list[dict[str, object]]:
+    columns = [
         {"field_key": "instrument_name", "display_order": 1, "width": 320},
         {"field_key": "attr.coverage_status", "display_order": 2, "width": 110},
         {"field_key": "return_chart_1m", "display_order": 3, "width": 140},
@@ -96,6 +98,15 @@ def _overview_view_columns() -> list[dict[str, object]]:
         {"field_key": "return_ytd", "display_order": 8, "width": 150},
         {"field_key": "attr.current_drawdown", "display_order": 9, "width": 120},
     ]
+    if instrument_type_filter not in {"public_fund", "private_fund"}:
+        return columns
+    for column in columns:
+        if int(column["display_order"]) >= 5:
+            column["display_order"] = int(column["display_order"]) + 1
+    columns.append(
+        {"field_key": "latest_cumulative_nav", "display_order": 5, "width": 140}
+    )
+    return sorted(columns, key=lambda column: int(column["display_order"]))
 
 
 def _classification_view_columns() -> list[dict[str, object]]:
@@ -187,7 +198,7 @@ class SQLAlchemyWatchlistRepository:
             default_sort=[],
             default_filters={},
             default_advanced_filter={},
-            columns=_overview_view_columns(),
+            columns=_overview_view_columns(instrument_type_filter),
             is_default=True,
         )
         self.create_view(
@@ -267,7 +278,7 @@ class SQLAlchemyWatchlistRepository:
                 default_sort=[],
                 default_filters={},
                 default_advanced_filter={},
-                columns=_overview_view_columns(),
+                columns=_overview_view_columns(spec.instrument_type),
                 is_default=True,
             )
         else:

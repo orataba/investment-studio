@@ -454,6 +454,7 @@ def test_return_nav_basis_does_not_fallback_to_ordinary_nav() -> None:
 
     shared_instrument = {
         "quote_selection_policy": {
+            "valuation": ["official_nav"],
             "total_return": ["total_return_nav"],
             "chart": ["official_nav"],
         }
@@ -479,6 +480,13 @@ def test_return_nav_basis_does_not_fallback_to_ordinary_nav() -> None:
         preference="auto",
         instrument_type="public_fund",
     )
+    valuation_selection = _select_quote_series(
+        points_by_basis,
+        shared_instrument=shared_instrument,
+        role="valuation",
+        preference="auto",
+        instrument_type="public_fund",
+    )
 
     assert auto_selection["nav_basis_type"] is None
     assert auto_selection["points"] == []
@@ -486,6 +494,99 @@ def test_return_nav_basis_does_not_fallback_to_ordinary_nav() -> None:
     assert explicit_nav_selection["points"] == []
     assert quote_selection["nav_basis_type"] is None
     assert quote_selection["points"] == []
+    assert valuation_selection["nav_basis_type"] == "nav"
+    assert valuation_selection["selected_quote_basis"] == "official_nav"
+    assert valuation_selection["points"][-1]["value"] == pytest.approx(1.01)
+
+
+def test_latest_watchlist_value_uses_valuation_role_and_keeps_cumulative_nav() -> None:
+    from watchlist_app.services.read_models import build_latest_quote_overrides
+
+    chart = SimpleNamespace(
+        instrument_id="avf63b",
+        payload_json={
+            "latest_values": {
+                "valuation": {
+                    "quote_basis": "official_nav",
+                    "date": "2026-08-28",
+                    "value": 1.0177,
+                },
+                "total_return": {
+                    "quote_basis": "total_return_nav",
+                    "date": "2026-08-28",
+                    "value": 1.0538,
+                },
+            },
+            "series": [
+                {
+                    "quote_basis": "total_return_nav",
+                    "points": [{"date": "2026-08-28", "value": 1.0538}],
+                }
+            ],
+        },
+    )
+    old_chart_without_role_snapshots = SimpleNamespace(
+        instrument_id="legacy-fund",
+        payload_json={
+            "series": [
+                {
+                    "quote_basis": "total_return_nav",
+                    "points": [{"date": "2026-08-28", "value": 9.9999}],
+                }
+            ],
+        },
+    )
+
+    assert build_latest_quote_overrides([chart, old_chart_without_role_snapshots]) == {
+        "avf63b": {
+            "latest_quote": 1.0177,
+            "latest_quote_date": "2026-08-28",
+            "latest_cumulative_nav": 1.0538,
+            "latest_cumulative_nav_date": "2026-08-28",
+        }
+    }
+
+
+def test_fund_summary_exposes_unit_and_cumulative_nav_independently() -> None:
+    from watchlist_app.services.canonical_recalc import CanonicalRecalcService
+
+    now = datetime(2026, 8, 28, 8, tzinfo=UTC)
+    payload = CanonicalRecalcService()._summary_payload(
+        instrument=SimpleNamespace(
+            instrument_id="avf63b",
+            instrument_name="云谷3号B",
+            instrument_type="private_fund",
+            primary_identifier_value="AVF63B",
+            metadata_json={},
+        ),
+        nav_selection={
+            "points": [{"as_of_date": date(2026, 8, 28), "value": 1.0538}],
+            "nav_basis_type": "nav_with_dividend",
+            "nav_basis_source": "shared",
+            "nav_basis_status": "ready",
+            "selected_quote_basis": "total_return_nav",
+            "return_series_status": "ready",
+        },
+        valuation_selection={
+            "points": [{"as_of_date": date(2026, 8, 28), "value": 1.0177}],
+            "nav_basis_type": "nav",
+            "nav_basis_source": "shared",
+            "nav_basis_status": "ready",
+            "selected_quote_basis": "official_nav",
+        },
+        performance_snapshot=None,
+        risk_snapshot=None,
+        exposure_snapshot=None,
+        attributes={},
+        taxonomy_context={},
+        source_cutoff_at=now,
+        now=now,
+    )
+
+    assert payload["series_snapshot"]["latest_nav"] == pytest.approx(1.0177)
+    assert payload["series_snapshot"]["latest_nav_date"] == "2026-08-28"
+    assert payload["series_snapshot"]["latest_nav_with_dividend"] == pytest.approx(1.0538)
+    assert payload["series_snapshot"]["latest_nav_with_dividend_date"] == "2026-08-28"
 
 
 def test_completed_recalc_marks_missing_canonical_series_unavailable() -> None:
@@ -997,7 +1098,10 @@ def test_empty_watchlist_does_not_claim_an_asset_specific_field_scope(
     assert payload["instrument_types"] == []
     assert [item["code"] for item in payload["available_group_bys"]] == [
         "none",
-        "data_freshness_status",
+        "taxonomy",
+        "currency",
+        "attr.coverage_status",
+        "attr.manual_rating",
     ]
     assert "attr.coverage_status" not in payload["default_filters_summary"]
 
@@ -1757,6 +1861,8 @@ def test_adding_shared_nav_instrument_recalculates_last_nav_fields(
                 "instrument_name",
                 "latest_quote",
                 "latest_quote_date",
+                "latest_cumulative_nav",
+                "latest_cumulative_nav_date",
                 "metric_as_of_date",
                 "data_freshness_status",
                 "return_1w",
@@ -1776,6 +1882,8 @@ def test_adding_shared_nav_instrument_recalculates_last_nav_fields(
     assert payload["rows"][0]["ticker_or_isin"] == "SXV264"
     assert payload["rows"][0]["latest_quote"] == pytest.approx(101.2365, abs=1e-6)
     assert payload["rows"][0]["latest_quote_date"] == "2026-04-14"
+    assert payload["rows"][0]["latest_cumulative_nav"] == pytest.approx(101.2365, abs=1e-6)
+    assert payload["rows"][0]["latest_cumulative_nav_date"] == "2026-04-14"
     assert payload["rows"][0]["metric_as_of_date"] == "2026-04-14"
     assert payload["rows"][0]["data_freshness_status"] == "stale"
     assert payload["rows"][0]["return_1w"] == pytest.approx(1.236476, abs=1e-6)
@@ -3991,23 +4099,19 @@ def test_default_all_public_funds_watchlist_syncs_active_shared_funds(
     public_group_by_codes = [
         item["code"] for item in detail_payload["available_group_bys"]
     ]
-    assert public_group_by_codes[:3] == [
+    assert public_group_by_codes == [
         "none",
         "taxonomy",
-        "data_freshness_status",
+        "currency",
+        "attr.coverage_status",
+        "attr.manual_rating",
     ]
     assert "instrument_type" not in public_group_by_codes
-    assert "attr.coverage_status" in public_group_by_codes
-    assert "attr.thesis_status" in public_group_by_codes
-    assert "attr.primary_analyst" in public_group_by_codes
-    assert "instrument_name" not in public_group_by_codes
-    assert "attr.portfolio_role" not in public_group_by_codes
-    assert "attr.investment_edge_quality" not in public_group_by_codes
-    assert "attr.research_evidence_level" not in public_group_by_codes
     overview_view = next(
         item for item in detail_payload["views"] if item["view_id"] == "overview"
     )
     assert overview_view["default_group_by"] == "none"
+    assert "latest_cumulative_nav" in overview_view["columns"]
 
     screener = client.post(
         "/api/screener/query",
@@ -4282,13 +4386,16 @@ def test_default_index_watchlist_syncs_active_shared_indexes(
     detail_payload = detail.json()
     assert detail_payload["item_count"] == 1
     assert detail_payload["instrument_types"] == ["index"]
-    index_group_bys = {
+    index_group_bys = [
         item["code"] for item in detail_payload["available_group_bys"]
-    }
-    assert "instrument_type" not in index_group_bys
-    assert "attr.investment_edge_quality" not in index_group_bys
-    assert "attr.historical_delivery" not in index_group_bys
-    assert "attr.transparency_quality" not in index_group_bys
+    ]
+    assert index_group_bys == [
+        "none",
+        "taxonomy",
+        "currency",
+        "attr.coverage_status",
+        "attr.manual_rating",
+    ]
 
     screener = client.post(
         "/api/screener/query",
@@ -5113,13 +5220,19 @@ def test_seeded_private_fund_watchlist_tags_are_available(client: TestClient) ->
     assert fields_by_key["attr.instrument_taxonomy_level_1"]["filter_mode"] == "multi_select"
     assert "attr.instrument_taxonomy_level_2" in fields_by_key
     assert fields_by_key["attr.instrument_taxonomy_level_2"]["filter_mode"] == "multi_select"
-    assert fields_by_key["attr.instrument_taxonomy_level_2"]["group_mode"] == "discrete"
+    assert fields_by_key["attr.instrument_taxonomy_level_2"]["group_mode"] == "none"
     assert (
         fields_by_key["attr.instrument_taxonomy_level_2"]["category_code"]
         == "instrument_taxonomy"
     )
     assert fields_by_key["attr.coverage_status"]["product_scope_json"] == []
     assert fields_by_key["attr.coverage_status"]["label"] == "Investment Status"
+    assert fields_by_key["attr.coverage_status"]["group_mode"] == "discrete"
+    assert fields_by_key["currency"]["label"] == "Currency"
+    assert fields_by_key["currency"]["source_metric_code"] == "instrument.currency"
+    assert fields_by_key["currency"]["group_mode"] == "discrete"
+    assert fields_by_key["attr.manual_rating"]["label"] == "Research Rating"
+    assert fields_by_key["attr.manual_rating"]["group_mode"] == "discrete"
     assert fields_by_key["attr.investment_edge_quality"]["category_code"] == "research_framework"
     assert fields_by_key["attr.investment_edge_quality"]["group_mode"] == "none"
     assert fields_by_key["attr.investment_edge_quality"]["instrument_scope_json"] == [
@@ -5127,8 +5240,14 @@ def test_seeded_private_fund_watchlist_tags_are_available(client: TestClient) ->
         "private_fund",
     ]
     assert fields_by_key["latest_quote"]["instrument_scope_json"] == []
-    assert fields_by_key["latest_quote"]["source_metric_code"] == "instrument_chart_read_model.series.latest_quote"
+    assert fields_by_key["latest_quote"]["label"] == "Latest Value"
+    assert fields_by_key["latest_quote"]["source_metric_code"] == (
+        "instrument_chart_read_model.latest_values.valuation.value"
+    )
     assert fields_by_key["latest_quote_date"]["data_type"] == "date"
+    assert fields_by_key["latest_cumulative_nav"]["label"] == "Cumulative NAV"
+    assert fields_by_key["latest_cumulative_nav"]["instrument_scope_json"] == []
+    assert fields_by_key["latest_cumulative_nav_date"]["data_type"] == "date"
     assert fields_by_key["return_chart_1m"]["label"] == "Return 1M"
     assert "one-month boundary" in fields_by_key["return_chart_1m"]["description"]
     assert "price_chart_1m" not in fields_by_key
@@ -5148,7 +5267,7 @@ def test_seeded_private_fund_watchlist_tags_are_available(client: TestClient) ->
     assert fields_by_key["attr.peer_annualized_return_percentile"]["label"] == "Ann. Pctl"
 
 
-def test_discrete_attribute_group_by_is_exposed_and_executable(client: TestClient) -> None:
+def test_universal_watchlist_grouping_contract_is_exposed_and_executable(client: TestClient) -> None:
     created_watchlist = client.post(
         "/api/watchlists",
         json={"name": "Attribute Grouping", "description": None},
@@ -5169,18 +5288,13 @@ def test_discrete_attribute_group_by_is_exposed_and_executable(client: TestClien
     detail_response = client.get(f"/api/watchlists/{watchlist_id}")
     assert detail_response.status_code == 200
     group_by_codes = [item["code"] for item in detail_response.json()["available_group_bys"]]
-    assert group_by_codes[:4] == [
+    assert group_by_codes == [
         "none",
-        "instrument_type",
         "taxonomy",
-        "data_freshness_status",
+        "currency",
+        "attr.coverage_status",
+        "attr.manual_rating",
     ]
-    assert "attr.coverage_status" in group_by_codes
-    assert "attr.thesis_status" in group_by_codes
-    assert "attr.primary_analyst" in group_by_codes
-    assert "instrument_name" not in group_by_codes
-    assert "attr.portfolio_role" not in group_by_codes
-    assert "attr.investment_edge_quality" not in group_by_codes
 
     screener_response = client.post(
         "/api/screener/query",
@@ -5195,6 +5309,32 @@ def test_discrete_attribute_group_by_is_exposed_and_executable(client: TestClien
     assert {
         item["group_value"] for item in screener_response.json()["groups"]
     } == {"Invested", "Unspecified"}
+
+    currency_response = client.post(
+        "/api/screener/query",
+        json={
+            "watchlist_id": watchlist_id,
+            "selected_fields": ["instrument_name", "currency"],
+            "group_by": "currency",
+            "pagination": {"page": 1, "page_size": 20},
+        },
+    )
+    assert currency_response.status_code == 200
+    assert {row["currency"] for row in currency_response.json()["rows"]} == {"USD"}
+    assert currency_response.json()["groups"] == [
+        {"group_value": "USD", "row_count": 2}
+    ]
+
+    removed_group_response = client.post(
+        "/api/screener/query",
+        json={
+            "watchlist_id": watchlist_id,
+            "selected_fields": ["instrument_name", "attr.thesis_status"],
+            "group_by": "attr.thesis_status",
+        },
+    )
+    assert removed_group_response.status_code == 422
+    assert "not available" in removed_group_response.json()["detail"].lower()
 
     invalid_fund_field = client.post(
         "/api/screener/query",
@@ -5422,7 +5562,7 @@ def test_instrument_research_profile_and_notes_are_first_class_records(client: T
                 "attr.research_updated_at",
             ],
             "sort": [],
-            "group_by": "attr.primary_analyst",
+            "group_by": "attr.manual_rating",
             "pagination": {"page": 1, "page_size": 20},
         },
     )
@@ -5441,7 +5581,7 @@ def test_instrument_research_profile_and_notes_are_first_class_records(client: T
     assert research_row["attr.research_updated_at"]
     assert {
         group["group_value"] for group in screener_response.json()["groups"]
-    } == {"Researcher A", "Unspecified"}
+    } == {"4", "Unspecified"}
 
     update_note_response = client.put(
         f"/api/instruments/sxv264/research/notes/{note_id}",
@@ -5685,16 +5825,13 @@ def test_instrument_taxonomy_assignment_updates_summary_attribute_context_and_wa
     detail_response = client.get(f"/api/watchlists/{watchlist_id}")
     assert detail_response.status_code == 200
     group_by_codes = [item["code"] for item in detail_response.json()["available_group_bys"]]
-    assert group_by_codes[:3] == [
+    assert group_by_codes == [
         "none",
         "taxonomy",
-        "data_freshness_status",
+        "currency",
+        "attr.coverage_status",
+        "attr.manual_rating",
     ]
-    assert "instrument_type" not in group_by_codes
-    assert "attr.coverage_status" in group_by_codes
-    assert "attr.focus_bucket" in group_by_codes
-    assert "instrument_name" not in group_by_codes
-    assert "attr.portfolio_role" not in group_by_codes
 
     screener_response = client.post(
         "/api/screener/query",

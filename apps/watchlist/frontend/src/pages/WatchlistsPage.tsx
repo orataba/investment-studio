@@ -77,6 +77,7 @@ type WatchlistRowGroup = {
   rowCount: number
   depth: number
   taxonomyPath?: string[]
+  isInstrumentTypeSection?: boolean
 }
 type GroupAverageCell = {
   value: number | null
@@ -105,6 +106,13 @@ const WATCHLIST_SUPPORTED_INSTRUMENT_TYPES = [
   'equity',
   'index',
 ] as const
+const INSTRUMENT_TYPE_LABELS: Record<string, string> = {
+  public_fund: 'Public Fund',
+  private_fund: 'Private Fund',
+  etf: 'ETF',
+  equity: 'Equity',
+  index: 'Index',
+}
 const EMPTY_INSTRUMENT_TYPES: string[] = []
 const TAXONOMY_FILTER_FIELD_KEY = 'taxonomy'
 const TAXONOMY_GROUP_BY_CODE = 'taxonomy'
@@ -143,6 +151,29 @@ const TAXONOMY_FILTER_FIELD: FieldRegistryRecord = {
   source_metric_code: 'instrument_taxonomy.tree',
   default_width: null,
   default_visible: false,
+}
+
+function watchlistFieldDisplayLabel(
+  field: FieldRegistryRecord,
+  instrumentTypes: string[],
+) {
+  if (field.field_key !== 'latest_quote' && field.field_key !== 'latest_quote_date') {
+    return field.label
+  }
+  const types = new Set(instrumentTypes.map((value) => value.trim().toLowerCase()).filter(Boolean))
+  const allTypesMatch = (allowed: Set<string>) =>
+    types.size > 0 && [...types].every((instrumentType) => allowed.has(instrumentType))
+  const isDate = field.field_key === 'latest_quote_date'
+  if (allTypesMatch(new Set(['public_fund', 'private_fund']))) {
+    return isDate ? 'NAV Date' : 'Unit NAV'
+  }
+  if (allTypesMatch(new Set(['equity', 'etf']))) {
+    return isDate ? 'Price Date' : 'Latest Price'
+  }
+  if (allTypesMatch(new Set(['index']))) {
+    return isDate ? 'Index Date' : 'Index Level'
+  }
+  return field.label
 }
 
 function compactTableColumnWidths<T extends string>(
@@ -242,6 +273,10 @@ function taxonomyPathKey(pathLabels: string[]) {
   return pathLabels.join(' / ')
 }
 
+function instrumentTypeLabel(instrumentType: string) {
+  return INSTRUMENT_TYPE_LABELS[instrumentType] || formatLabel(instrumentType)
+}
+
 function taxonomyPathFromFilters(filters: FilterState) {
   const path: string[] = []
   for (let index = 0; index < TAXONOMY_GROUP_FIELD_KEYS.length; index += 1) {
@@ -268,6 +303,7 @@ function taxonomyPathFromRow(row: Record<string, unknown>) {
 
 function removeTaxonomyFilters(filters: FilterState) {
   const next = { ...filters }
+  delete next.instrument_type
   TAXONOMY_GROUP_FIELD_KEYS.forEach((fieldKey) => {
     delete next[fieldKey]
   })
@@ -417,6 +453,7 @@ function isAverageSummaryField(fieldKey: string, field: FieldRegistryRecord | un
   if (
     fieldKey === 'aum' ||
     fieldKey === 'latest_quote' ||
+    fieldKey === 'latest_cumulative_nav' ||
     fieldKey === 'attr.peer_sample_count' ||
     field.formatter_code === 'currency_compact'
   ) {
@@ -519,7 +556,7 @@ function renderCell(
     return formatCompactCurrency(asNumber(value))
   }
 
-  if (fieldKey === 'latest_quote') {
+  if (fieldKey === 'latest_quote' || fieldKey === 'latest_cumulative_nav') {
     return formatNumber(asNumber(value), 4)
   }
 
@@ -778,12 +815,20 @@ export default function WatchlistsPage() {
 
   const modalDialogRef = useModalDialog(Boolean(modalKind), closeActiveModal)
   const activeInstrumentTypes = watchlistDetail?.instrument_types || EMPTY_INSTRUMENT_TYPES
+  const displayFieldRegistry = useMemo(
+    () =>
+      fieldRegistry.map((field) => ({
+        ...field,
+        label: watchlistFieldDisplayLabel(field, activeInstrumentTypes),
+      })),
+    [fieldRegistry, activeInstrumentTypes],
+  )
   const scopedFieldRegistry = useMemo(
     () =>
-      fieldRegistry.filter((field) =>
+      displayFieldRegistry.filter((field) =>
         fieldSupportsAllInstrumentTypes(field, activeInstrumentTypes),
       ),
-    [fieldRegistry, activeInstrumentTypes],
+    [displayFieldRegistry, activeInstrumentTypes],
   )
   const scopedFieldKeys = useMemo(
     () => new Set(scopedFieldRegistry.map((field) => field.field_key)),
@@ -1177,7 +1222,7 @@ export default function WatchlistsPage() {
       )
     }
     setWatchlistSearch(watchlistSearchParams.get('q') || '')
-  }, [detailIsCurrent, watchlistDetail, watchlistSearchKey])
+  }, [detailIsCurrent, fieldRegistry.length, watchlistDetail, watchlistSearchKey])
 
   async function handleBatchAddFileChange(event: React.ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0]
@@ -1310,13 +1355,16 @@ export default function WatchlistsPage() {
     moveTargetOptions.find((item) => item.watchlist_id === moveTargetWatchlistId) || moveTargetOptions[0] || null
   const selectedSharedInstrument =
     sharedInstrumentResults.find((item) => item.instrument_id === selectedInstrumentId) || null
-  const mergedFieldRegistry = fieldRegistry
+  const mergedFieldRegistry = displayFieldRegistry
   const applicableTaxonomyNodes = useMemo(
     () =>
       (instrumentTaxonomy?.nodes || []).filter(
         (node) => activeInstrumentTypes.includes(node.instrument_type),
       ),
     [activeInstrumentTypes, instrumentTaxonomy],
+  )
+  const taxonomyInstrumentTypes = WATCHLIST_SUPPORTED_INSTRUMENT_TYPES.filter((instrumentType) =>
+    applicableTaxonomyNodes.some((node) => node.instrument_type === instrumentType),
   )
   const taxonomyNodesByParent = useMemo(() => {
     const map = new Map<string | null, InstrumentTaxonomyTreeNode[]>()
@@ -1332,16 +1380,16 @@ export default function WatchlistsPage() {
   const taxonomyNodeByPath = useMemo(() => {
     const map = new Map<string, InstrumentTaxonomyTreeNode>()
     applicableTaxonomyNodes.forEach((node) => {
-      map.set(taxonomyPathKey(node.path_labels), node)
+      map.set(`${node.instrument_type}::${taxonomyPathKey(node.path_labels)}`, node)
     })
     return map
   }, [applicableTaxonomyNodes])
-  const taxonomyDisplayOrderByPath = useMemo(() => {
+  const taxonomyDisplayOrderByTypeAndPath = useMemo(() => {
     const map = new Map<string, number>()
     let index = 0
     const visit = (parentId: string | null) => {
       ;(taxonomyNodesByParent.get(parentId) || []).forEach((node) => {
-        map.set(taxonomyPathKey(node.path_labels), index)
+        map.set(`${node.instrument_type}::${taxonomyPathKey(node.path_labels)}`, index)
         index += 1
         visit(node.node_id)
       })
@@ -1498,6 +1546,9 @@ export default function WatchlistsPage() {
   const displayColumnWidths = compactWatchlistColumns.widths
   const watchlistTableMinWidth = compactWatchlistColumns.totalWidth
   const activeGroupBy = workingGroupBy && workingGroupBy !== 'none' ? workingGroupBy : null
+  const usesFixedInstrumentTypeSections =
+    watchlistDetail?.owner_type !== 'system' && activeInstrumentTypes.length > 1
+  const showGroupHeaders = Boolean(activeGroupBy) || usesFixedInstrumentTypeSections
   const sortField = sortRules[0]?.field || null
   const sortDirection = sortRules[0]?.direction || 'asc'
 
@@ -1719,15 +1770,25 @@ export default function WatchlistsPage() {
     () => taxonomyPathFromFilters(workingFilters),
     [workingFilters],
   )
-  const activeTaxonomyFilterNode = activeTaxonomyFilterPath.length
-    ? taxonomyNodeByPath.get(taxonomyPathKey(activeTaxonomyFilterPath)) || null
+  const activeTaxonomyFilterInstrumentType =
+    workingFilters.instrument_type?.length === 1 &&
+    typeof workingFilters.instrument_type[0] === 'string'
+      ? String(workingFilters.instrument_type[0])
+      : null
+  const activeTaxonomyFilterNode = activeTaxonomyFilterPath.length && activeTaxonomyFilterInstrumentType
+    ? taxonomyNodeByPath.get(
+        `${activeTaxonomyFilterInstrumentType}::${taxonomyPathKey(activeTaxonomyFilterPath)}`,
+      ) || null
     : null
   const activeTaxonomyFilterLabel = activeTaxonomyFilterPath.length
     ? taxonomyPathKey(activeTaxonomyFilterPath)
     : null
   const activeFilterCount = useMemo(() => {
     const nonTaxonomyCount = Object.entries(workingFilters).filter(
-      ([fieldKey, values]) => !isTaxonomyFieldKey(fieldKey) && values.length,
+      ([fieldKey, values]) =>
+        !isTaxonomyFieldKey(fieldKey) &&
+        !(activeTaxonomyFilterPath.length && fieldKey === 'instrument_type') &&
+        values.length,
     ).length
     return nonTaxonomyCount + (activeTaxonomyFilterPath.length ? 1 : 0)
   }, [workingFilters, activeTaxonomyFilterPath])
@@ -1735,7 +1796,10 @@ export default function WatchlistsPage() {
   const activeFilterEntries = useMemo(
     () => {
       const entries: ActiveFilterEntry[] = Object.entries(workingFilters).flatMap(([fieldKey, values]) => {
-        if (isTaxonomyFieldKey(fieldKey)) {
+        if (
+          isTaxonomyFieldKey(fieldKey) ||
+          (activeTaxonomyFilterPath.length && fieldKey === 'instrument_type')
+        ) {
           return []
         }
         return values.map((value) => ({
@@ -1763,8 +1827,9 @@ export default function WatchlistsPage() {
     const counts = new Map<string, number>()
     filterOptionRows.forEach((row) => {
       const path = taxonomyPathFromRow(row)
+      const instrumentType = String(row.instrument_type || '')
       path.forEach((_, index) => {
-        const key = taxonomyPathKey(path.slice(0, index + 1))
+        const key = `${instrumentType}::${taxonomyPathKey(path.slice(0, index + 1))}`
         counts.set(key, (counts.get(key) || 0) + 1)
       })
     })
@@ -1799,10 +1864,48 @@ export default function WatchlistsPage() {
 
   const groupedRows = useMemo(() => {
     const rows = searchedRows
-    if (!activeGroupBy) {
-      return [{ key: 'all', label: null, rows, summaryRows: rows, rowCount: rows.length, depth: 0 }]
-    }
-    if (activeGroupBy === TAXONOMY_GROUP_BY_CODE) {
+    const buildInnerGroups = (
+      innerRows: Array<Record<string, unknown>>,
+      instrumentType: string,
+    ): WatchlistRowGroup[] => {
+      if (!activeGroupBy) {
+        return [{ key: 'all', label: null, rows: innerRows, summaryRows: innerRows, rowCount: innerRows.length, depth: 0 }]
+      }
+      if (activeGroupBy !== TAXONOMY_GROUP_BY_CODE) {
+        const bucketMap = new Map<string, Array<Record<string, unknown>>>()
+        innerRows.forEach((row) => {
+          const rawValue = row[activeGroupBy]
+          const key = rawValue == null || rawValue === '' ? 'Unspecified' : String(rawValue)
+          bucketMap.set(key, [...(bucketMap.get(key) || []), row])
+        })
+        const orderedKeys = screenerResult?.groups.length
+          ? screenerResult.groups.map((group) => group.group_value || 'Unspecified')
+          : Array.from(bucketMap.keys())
+        const seen = new Set<string>()
+        const groups = orderedKeys
+          .filter((key) => {
+            if (!bucketMap.has(key) || seen.has(key)) {
+              return false
+            }
+            seen.add(key)
+            return true
+          })
+          .map((key) => ({
+            key,
+            label: key,
+            rows: bucketMap.get(key) || [],
+            summaryRows: bucketMap.get(key) || [],
+            rowCount: bucketMap.get(key)?.length || 0,
+            depth: 0,
+          }))
+        bucketMap.forEach((value, key) => {
+          if (!seen.has(key)) {
+            groups.push({ key, label: key, rows: value, summaryRows: value, rowCount: value.length, depth: 0 })
+          }
+        })
+        return groups
+      }
+
       type TreeNode = {
         key: string
         label: string
@@ -1837,7 +1940,7 @@ export default function WatchlistsPage() {
         return node
       }
 
-      rows.forEach((row) => {
+      innerRows.forEach((row) => {
         const path = taxonomyPathFromRow(row)
         if (!path.length) {
           const node = getOrCreate(root, ['Unspecified'], 'Unspecified', 0)
@@ -1859,8 +1962,8 @@ export default function WatchlistsPage() {
 
       const sortNodes = (nodes: TreeNode[]) =>
         nodes.sort((left, right) => {
-          const leftOrder = taxonomyDisplayOrderByPath.get(left.key) ?? Number.MAX_SAFE_INTEGER
-          const rightOrder = taxonomyDisplayOrderByPath.get(right.key) ?? Number.MAX_SAFE_INTEGER
+          const leftOrder = taxonomyDisplayOrderByTypeAndPath.get(`${instrumentType}::${left.key}`) ?? Number.MAX_SAFE_INTEGER
+          const rightOrder = taxonomyDisplayOrderByTypeAndPath.get(`${instrumentType}::${right.key}`) ?? Number.MAX_SAFE_INTEGER
           return leftOrder - rightOrder || left.label.localeCompare(right.label, 'zh-Hans-CN')
         })
       const flattened: WatchlistRowGroup[] = []
@@ -1892,43 +1995,53 @@ export default function WatchlistsPage() {
       visit([...root.values()])
       return flattened.length
         ? flattened
-        : [{ key: 'all', label: null, rows, summaryRows: rows, rowCount: rows.length, depth: 0 }]
+        : [{ key: 'all', label: null, rows: innerRows, summaryRows: innerRows, rowCount: innerRows.length, depth: 0 }]
     }
-    const bucketMap = new Map<string, Array<Record<string, unknown>>>()
+
+    if (!usesFixedInstrumentTypeSections) {
+      const instrumentType = String(rows[0]?.instrument_type || activeInstrumentTypes[0] || '')
+      return buildInnerGroups(rows, instrumentType)
+    }
+
+    const rowsByInstrumentType = new Map<string, Array<Record<string, unknown>>>()
     rows.forEach((row) => {
-      const rawValue = row[activeGroupBy]
-      const key = rawValue == null || rawValue === '' ? 'Unspecified' : String(rawValue)
-      const current = bucketMap.get(key) || []
-      current.push(row)
-      bucketMap.set(key, current)
+      const instrumentType = String(row.instrument_type || 'other')
+      rowsByInstrumentType.set(instrumentType, [
+        ...(rowsByInstrumentType.get(instrumentType) || []),
+        row,
+      ])
     })
-    const orderedKeys = screenerResult?.groups.length
-      ? screenerResult.groups.map((group) => group.group_value || 'Unspecified')
-      : Array.from(bucketMap.keys())
-    const seen = new Set<string>()
-    const groups = orderedKeys
-      .filter((key) => {
-        if (seen.has(key)) {
-          return false
-        }
-        seen.add(key)
-        return true
-      })
-      .map((key) => ({
-        key,
-        label: key,
-        rows: bucketMap.get(key) || [],
-        summaryRows: bucketMap.get(key) || [],
-        rowCount: bucketMap.get(key)?.length || 0,
+    const orderedTypes = [
+      ...WATCHLIST_SUPPORTED_INSTRUMENT_TYPES.filter((instrumentType) => rowsByInstrumentType.has(instrumentType)),
+      ...Array.from(rowsByInstrumentType.keys())
+        .filter((instrumentType) => !WATCHLIST_SUPPORTED_INSTRUMENT_TYPES.includes(instrumentType as typeof WATCHLIST_SUPPORTED_INSTRUMENT_TYPES[number]))
+        .sort(),
+    ]
+    return orderedTypes.flatMap((instrumentType) => {
+      const typeRows = rowsByInstrumentType.get(instrumentType) || []
+      const sectionKey = `instrument-type:${instrumentType}`
+      const section: WatchlistRowGroup = {
+        key: sectionKey,
+        label: instrumentTypeLabel(instrumentType),
+        rows: activeGroupBy ? [] : typeRows,
+        summaryRows: typeRows,
+        rowCount: typeRows.length,
         depth: 0,
-      }))
-    bucketMap.forEach((value, key) => {
-      if (!seen.has(key)) {
-        groups.push({ key, label: key, rows: value, summaryRows: value, rowCount: value.length, depth: 0 })
+        isInstrumentTypeSection: true,
       }
+      if (!activeGroupBy) {
+        return [section]
+      }
+      return [
+        section,
+        ...buildInnerGroups(typeRows, instrumentType).map((group) => ({
+          ...group,
+          key: `${sectionKey}/${group.key}`,
+          depth: group.depth + 1,
+        })),
+      ]
     })
-    return groups
-  }, [activeGroupBy, screenerResult?.groups, searchedRows, taxonomyDisplayOrderByPath])
+  }, [activeGroupBy, activeInstrumentTypes, screenerResult?.groups, searchedRows, taxonomyDisplayOrderByTypeAndPath, usesFixedInstrumentTypeSections])
 
   const visibleGroupedRows = useMemo(() => {
     let collapsedDepth: number | null = null
@@ -2142,6 +2255,7 @@ export default function WatchlistsPage() {
   function setTaxonomyFilter(node: InstrumentTaxonomyTreeNode) {
     setWorkingFilters((current) => {
       const next = removeTaxonomyFilters(current)
+      next.instrument_type = [node.instrument_type]
       node.path_labels.forEach((label, index) => {
         next[taxonomyFieldKeyForPathIndex(index)] = [label]
       })
@@ -2168,13 +2282,18 @@ export default function WatchlistsPage() {
     })
   }
 
-  function renderTaxonomyFilterNodes(parentNodeId: string | null = null): React.ReactNode {
-    const nodes = taxonomyNodesByParent.get(parentNodeId) || []
+  function renderTaxonomyFilterNodes(
+    parentNodeId: string | null = null,
+    rootInstrumentType?: string,
+  ): React.ReactNode {
+    const nodes = (taxonomyNodesByParent.get(parentNodeId) || []).filter(
+      (node) => parentNodeId !== null || !rootInstrumentType || node.instrument_type === rootInstrumentType,
+    )
     if (!nodes.length) {
       return null
     }
     return nodes.map((node) => {
-      const pathKey = taxonomyPathKey(node.path_labels)
+      const pathKey = `${node.instrument_type}::${taxonomyPathKey(node.path_labels)}`
       const selected = activeTaxonomyFilterNode?.node_id === node.node_id
       const ancestor =
         !!activeTaxonomyFilterNode &&
@@ -2501,7 +2620,7 @@ export default function WatchlistsPage() {
                   setModalKind(null)
                 }}
               >
-                Group By{'\u00A0: '}
+                {usesFixedInstrumentTypeSections ? 'Group Within Type' : 'Group By'}{'\u00A0: '}
                 {workingGroupBy && workingGroupBy !== 'none'
                   ? fieldLabelByKey.get(workingGroupBy) || formatLabel(workingGroupBy)
                   : 'None'}
@@ -2634,7 +2753,14 @@ export default function WatchlistsPage() {
                                   <span className="watchlists-taxonomy-node-count">{filterOptionRows.length}</span>
                                 </button>
                                 {applicableTaxonomyNodes.length ? (
-                                  renderTaxonomyFilterNodes()
+                                  taxonomyInstrumentTypes.map((instrumentType) => (
+                                    <div key={instrumentType} className="watchlists-taxonomy-type-section">
+                                      <div className="watchlists-taxonomy-type-heading">
+                                        {instrumentTypeLabel(instrumentType)}
+                                      </div>
+                                      {renderTaxonomyFilterNodes(null, instrumentType)}
+                                    </div>
+                                  ))
                                 ) : (
                                   <div className="watchlists-filter-empty">No taxonomy tree is available.</div>
                                 )}
@@ -2912,8 +3038,14 @@ export default function WatchlistsPage() {
                   const collapsed = collapsedGroupKeys.has(group.key)
                   return (
                     <React.Fragment key={group.key || `group-${groupIndex}`}>
-                      {activeGroupBy ? (
-                        <tr className="watchlists-group-row">
+                      {showGroupHeaders ? (
+                        <tr
+                          className={
+                            group.isInstrumentTypeSection
+                              ? 'watchlists-group-row watchlists-instrument-type-group-row'
+                              : 'watchlists-group-row'
+                          }
+                        >
                           <td className="watchlists-select-col watchlists-group-spacer" aria-hidden="true" />
                           {visibleColumns.map((column, columnIndex) => {
                             if (columnIndex === 0) {

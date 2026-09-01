@@ -187,6 +187,11 @@ export function holdingFixture(overrides: Partial<PortfolioHoldingRow> = {}): Po
 export function holdingsWorkspaceFixture(
   overrides: Partial<HoldingsWorkspaceResponse> = {},
 ): HoldingsWorkspaceResponse {
+  const rows = overrides.rows ?? [holdingFixture()]
+  const inferredNav = rows.reduce(
+    (sum, row) => sum + (row.market_value_base ?? row.market_value ?? 0),
+    0,
+  )
   return {
     portfolio_id: '3',
     portfolio_name: 'Contract Portfolio',
@@ -285,8 +290,9 @@ export function holdingsWorkspaceFixture(
     },
     operational_alerts: [],
     summary_cards: [],
-    rows: [holdingFixture()],
+    rows,
     totals: {
+      nav: inferredNav,
       market_value: 800,
       day_change_pct: 0.01,
       day_change_value: 8,

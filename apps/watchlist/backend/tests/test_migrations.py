@@ -108,6 +108,26 @@ def test_watchlist_migrations_upgrade_an_empty_database(tmp_path, monkeypatch) -
                 "WHERE field_key IN ('asset_type', 'asset_class', 'instrument_class')"
             )
         ) == 0
+        groupable_fields = {
+            row[0]
+            for row in connection.execute(
+                text(
+                    "SELECT field_key FROM field_registry "
+                    "WHERE group_mode = 'discrete'"
+                )
+            )
+        }
+        assert groupable_fields == {
+            "currency",
+            "attr.coverage_status",
+            "attr.manual_rating",
+        }
+        assert connection.scalar(
+            text(
+                "SELECT label FROM field_registry "
+                "WHERE field_key = 'attr.manual_rating'"
+            )
+        ) == "Research Rating"
 
 
 def test_investment_research_migration_preserves_profile_rating_and_notes(

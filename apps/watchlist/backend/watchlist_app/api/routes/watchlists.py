@@ -771,10 +771,7 @@ def get_watchlist(
         **present_watchlist(record),
         "instrument_types": sorted(active_instrument_types),
         "views": [present_watchlist_view(item) for item in watchlist_repository.list_views(session, watchlist_id)],
-        "available_group_bys": present_group_by_options(
-            scoped_fields,
-            include_instrument_type=len(active_instrument_types) > 1,
-        ),
+        "available_group_bys": present_group_by_options(fields),
         "default_filters_summary": present_default_filter_summary(scoped_fields),
     }
 

@@ -298,11 +298,13 @@ Holdings 的指标分成两种主要口径：
 
 FCN 和 long option 在已记录事件之间按 transaction cost carrying；short option 以剩余 premium liability 进入 NAV。它们不接收实时行情，不计算日常未实现盈亏、协方差、Risk Budget 或 Research 序列；相关现金、费用、coupon 和已实现盈亏仍完整进入组合 NAV 与经营绩效。市场风险收益链会把衍生品现金结果、FCN coupon 和衍生品费用从风险收益分子中剔除，并把衍生品资本与本币现金一样保留在总 NAV 分母中，作为 0-return capital。
 
-主表始终分为 `Securities`、`Derivatives`、`Cash & Settlement` 三个固定区段。`Group By` 由底层限定为只对 Securities 做 taxonomy、instrument type、currency 等二级分组；衍生品与现金不分类，Taxonomy 列显示 `N/A`。CSV/Excel 导出始终包含当前筛选和排序后的全量结果、`Category`、各级 subtotal 与 `Portfolio Total`；启用证券分组时才增加 `Group`。这是当前持仓分析文件，不是交易导入文件。
+页面使用五个直接表面：`Securities`、`FCN`、`Options`、`Cash & Settlement`，以及只有一条全组合记录的 `Portfolio Total`，不再额外套一层 Derivatives。每张表都可以独立切换视图和可见字段，按钮位于对应表标题右侧；`Group By` 只对 Securities 做当前 taxonomy、instrument type、currency 等二级分组，taxonomy 是当前管理分类，不随 Holdings 日期回放。衍生品条款在自己的字段中展开，现金字段目录不提供成本或未实现收益。五表共用同一 as-of workspace 和组合 NAV，拆开展示不会把各表权重重新归一。
 
-Group、Non-cash subtotal 和 `Portfolio Total` 仍然是**当前持仓篮子**：金额加总、比例用组级分子分母重算；Return 用当前 base-market-value 权重合成；Vol / Drawdown 用内部连续、起止完全一致且尾部仍新鲜的共同历史区间先生成当前权重篮子路径再算。Group 与 subtotal 使用各自篮子净市值分母，`Portfolio Total` 使用 total NAV；衍生品与本币现金在所在 scope 内按 0 return 保留。Forward RC 统一使用 total-NAV 权重，并加总相对于同一组合方差的贡献。非本币现金仍需要兑本币 FX 收益。当前成员收益或市值覆盖不足、return currency 无法统一、共同路径中间缺段或整条路径已经陈旧时显示 `—`，不剔除缺失成员后重新归一。Holding Since、Quantity、Avg Cost、Quote、Accounts、Chart、Coverage 和 Held Max DD 等没有稳定分组含义的字段只在 instrument row 展示。
+CSV/Excel 同样按 `Securities`、`FCN`、`Options`、`Cash & Settlement`、`Portfolio Total` 输出独立表头；五张表都跟随各自当前视图的可见字段，Securities 额外跟随当前筛选、排序和可选 Group。这是当前持仓分析文件，不是交易导入文件。
 
-`Portfolio Total` 的上述 Return 不是组合实际 TWR；组合真实历史表现仍到 Performance 查看。相同 instrument、相同 as-of 和 total-return basis 下，Holdings 行级窗口收益应与 Watchlist 相同，但两个 app 各自计算、互不调用。完整字段标准见 [Holdings 字段计算与分组标准](../apps/portfolio/docs/03_HOLDINGS_FIELD_REFERENCE.md)。
+Security Group/subtotal 和 `Portfolio Total` 仍然是**当前持仓篮子**：金额加总、比例用组级分子分母重算；Return 用当前 signed base value 合成；Vol / Drawdown 用内部连续、起止完全一致且尾部仍新鲜的共同历史区间先生成当前权重篮子路径再算。Security Group 与 subtotal 使用各自 base value 分母；`Portfolio Total` 使用完整 total NAV，settled cash 和 pending monetary rows 都保留，本币 monetary rows 的篮子收益为 0。非本币资产必须有可共同解释的 base-currency return/FX overlay，否则显示 `—`。衍生品未知经济收益不会被假设为 0；存在 material event-carried derivative 时 Portfolio Total 的 Day/Unrealized/Current Basket Return 为 `N/A`，但 forward risk 可以按披露的 0-return capital 建模约定计算普通证券市场风险。Forward RC 统一使用 total-NAV 权重，并加总相对于同一组合方差的贡献。当前成员覆盖不足、共同路径缺段或尾部陈旧时显示 `—`，不剔除缺失成员后重新归一。
+
+`Portfolio Total` 的 `Current Basket` Return/Risk 是按 as-of 当日持仓与权重做的假设回看，不是组合实际 TWR，也不能和实际 TWR 串联。组合真实历史表现仍到 Performance 查看。`Open Position Basis @ As-of FX` 是本币 remaining open cost 按 as-of FX 的换算，不是 acquisition-date FX cost；Cash & Settlement 没有 Cost Basis。组合 `Unrealized Return on Current Capital` 使用 `Open Position Basis + signed Cash & Settlement` 作分母，所以现金和待结算金额会稀释组合未实现收益率，但不会被伪装成证券成本。相同 instrument、相同 as-of 和 total-return basis 下，Holdings 行级窗口收益应与 Watchlist 相同，但两个 app 各自计算、互不调用。完整字段标准见 [Holdings 字段计算与分组标准](../apps/portfolio/docs/03_HOLDINGS_FIELD_REFERENCE.md)。
 
 默认列表使用 compact payload；sparkline 是有界采样，打开 Security Detail 后再加载 lots、交易和完整图表。子资源尚未返回时显示 Loading/skeleton，不把 `$0.00` 当成真实数据；真正缺失或不适用的指标显示 `—`。
 
@@ -310,13 +312,16 @@ Security Detail 分成三个互不混杂的视图：`Overview` 展示标的行�
 
 ### 6.5 Overview
 
-Overview 是组合默认首页，展示组合市值、TWR index、回撤、sleeve 结构、top holdings 和 benchmark 对比。页面只在数据完整时展示计算结果；缺少 fresh snapshot、关键行情或 FX 时，不会用部分数据硬算。
+Overview 是组合默认首页，展示组合市值、TWR index、回撤、Asset Mix、sleeve 结构、top holdings 和 benchmark 对比。页面只在数据完整时展示计算结果；缺少 fresh snapshot、关键行情或 FX 时，不会用部分数据硬算。
+
+`Asset Mix` 使用与 Holdings 相同的 as-of workspace，把当前组合汇总为 `Securities`、`FCN`、`Options`、`Cash & Settlement` 四类，并以 `Portfolio Total` 作为表尾。金额和权重保留资产负债表符号，负的 FCN 或 option liability 因而显示负金额与负权重；各分类权重、Day Change 和 Forward RC 都使用完整组合 NAV / 风险模型作为共同分母，不把分类各自重新归一成 100%。若某类缺少 base-currency valuation，或存在无法识别为 FCN / Option 的 derivative row，图形整体不可用，表格保留逐类 coverage 状态，不用已覆盖部分拼出伪完整结构。
 
 Overview 的质量提示只在检测到实际问题时出现，并给出受影响的资产/日期和处理方向。没有检测到 corporate action 问题时不会显示通用警告。若请求日期晚于最后一个可靠估值日，页面会使用后端返回的 effective as-of，并解释 clamp 原因。
 
 常见使用方式：
 
 - 查看组合总市值和近期变化。
+- 查看 Securities、FCN、Options、Cash & Settlement 的 signed NAV 构成及总和是否与组合 NAV 对上。
 - 检查 top holdings 权重是否异常。
 - 选择 benchmark 对比 1W、MTD、YTD、since inception、当前回撤和最大回撤。
 - 查看 sleeve 结构是否偏离规划。

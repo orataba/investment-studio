@@ -6,7 +6,14 @@ from portfolio_app.db.models import PortfolioRecordModel, PortfolioTableViewStor
 from portfolio_app.db.session import get_session_factory
 
 
-SUPPORTED_TABLE_VIEW_SCOPES = {"holdings", "performance_calculation"}
+SUPPORTED_TABLE_VIEW_SCOPES = {
+    "holdings",
+    "holdings_fcn",
+    "holdings_options",
+    "holdings_cash",
+    "holdings_total",
+    "performance_calculation",
+}
 
 
 def _current_utc_timestamp() -> str:

@@ -478,7 +478,9 @@ export type InstrumentSummaryResponse = {
     return_anchor_date?: string | null
     return_segment_breaks?: Array<Record<string, unknown>>
     latest_nav?: number | null
+    latest_nav_date?: string | null
     latest_nav_with_dividend?: number | null
+    latest_nav_with_dividend_date?: string | null
   }
   selected_series?: SelectedQuoteSeriesMetadata
 }
@@ -541,10 +543,20 @@ export type InstrumentChartResponse = {
   instrument_id: string
   base_series_type: string
   selected_series?: SelectedQuoteSeriesMetadata
+  latest_values?: {
+    valuation?: LatestQuoteValueSnapshot | null
+    total_return?: LatestQuoteValueSnapshot | null
+  }
   currency: string
   date_range: { start: string; end: string } | null
   series: Array<{ name: string; points: InstrumentChartPoint[] }>
   available_compare_targets: string[]
+}
+
+export type LatestQuoteValueSnapshot = SelectedQuoteSeriesMetadata & {
+  date: string
+  value: number
+  currency?: string | null
 }
 
 export type SelectedQuoteSeriesMetadata = {

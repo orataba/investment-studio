@@ -19,7 +19,10 @@ from watchlist_app.services.read_model_freshness import (
     local_materialization_version,
     schedule_instrument_refreshes_if_stale,
 )
-from watchlist_app.services.shared_instrument_registry import SharedInstrumentRegistryError
+from watchlist_app.services.shared_instrument_registry import (
+    SharedInstrumentRegistryError,
+    get_shared_instrument_summaries,
+)
 from watchlist_app.services.watchlist_query_contract import (
     WatchlistQueryContractError,
     validate_watchlist_query_contract,
@@ -105,17 +108,9 @@ def _validate_query_contract(
                 f"{', '.join(unavailable_fields)}."
             ),
         )
-    scoped_group_fields = [
-        field
-        for field in field_records
-        if _field_supports_all_instrument_types(field, active_instrument_types)
-    ]
     available_group_by_codes = {
         item["code"]
-        for item in present_group_by_options(
-            scoped_group_fields,
-            include_instrument_type=len(active_instrument_types) > 1,
-        )
+        for item in present_group_by_options(field_records)
     }
     if str(group_by or "none") not in available_group_by_codes:
         raise HTTPException(
@@ -215,6 +210,35 @@ def run_screener_query(
         [row.instrument_id for row in rows],
     )
     requested_fields = _requested_query_fields(payload_data, view)
+    identity_overrides: dict[str, dict[str, object]] = {}
+    if "currency" in requested_fields:
+        instrument_ids = [row.instrument_id for row in rows]
+        try:
+            shared_instruments = get_shared_instrument_summaries(instrument_ids)
+        except SharedInstrumentRegistryError as error:
+            raise HTTPException(
+                status_code=502,
+                detail=f"Instrument currency is unavailable: {error}",
+            ) from error
+        missing_currency_ids = [
+            instrument_id
+            for instrument_id in instrument_ids
+            if not str((shared_instruments.get(instrument_id) or {}).get("currency") or "").strip()
+        ]
+        if missing_currency_ids:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "Canonical currency is missing for Watchlist instruments: "
+                    f"{', '.join(missing_currency_ids)}."
+                ),
+            )
+        identity_overrides = {
+            instrument_id: {
+                "currency": str(shared_instruments[instrument_id]["currency"]).strip().upper()
+            }
+            for instrument_id in instrument_ids
+        }
     try:
         peer_attribute_overrides = (
             canonical_recalc_service.peer_watchlist_attribute_overrides(
@@ -244,6 +268,7 @@ def run_screener_query(
     response = execute_watchlist_query(
         rows=rows,
         charts=charts,
+        row_overrides=identity_overrides or None,
         attribute_overrides=attribute_overrides or None,
         payload=payload_data,
         view=view,

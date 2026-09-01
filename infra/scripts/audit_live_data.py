@@ -33,7 +33,7 @@ FINAL_FLAT_TABLE_HEADS = {
     "instrument_registry": "20260823_0028",
     "platform": "20260823_0007",
     "portfolio": "20260824_0056",
-    "watchlist": "20260824_0049",
+    "watchlist": "20260901_0052",
 }
 VERSION_TABLES = {
     "instrument_registry": "alembic_version",
@@ -1015,33 +1015,81 @@ def _run_flat_table_audit(database_url: str) -> list[AuditCheck]:
                     cursor,
                     name="watchlist_group_by_contract",
                     query="""
+                        WITH expected_discrete(field_key) AS (
+                            VALUES
+                                ('currency'),
+                                ('attr.coverage_status'),
+                                ('attr.manual_rating')
+                        ),
+                        actual_discrete AS (
+                            SELECT field_key
+                            FROM watchlist.field_registry
+                            WHERE group_mode = 'discrete'
+                        ),
+                        field_difference AS (
+                            (SELECT field_key FROM expected_discrete
+                             EXCEPT
+                             SELECT field_key FROM actual_discrete)
+                            UNION ALL
+                            (SELECT field_key FROM actual_discrete
+                             EXCEPT
+                             SELECT field_key FROM expected_discrete)
+                        )
                         SELECT
-                            CASE
+                            (SELECT count(*) FROM field_difference)
+                            + CASE
+                                WHEN (
+                                    SELECT count(*)
+                                    FROM watchlist.field_registry
+                                    WHERE field_key = 'currency'
+                                      AND source_domain = 'instrument_registry'
+                                      AND source_metric_code = 'instrument.currency'
+                                ) = 1
+                                THEN 0
+                                ELSE 1
+                              END
+                            + CASE
                                 WHEN (
                                     SELECT count(*)
                                     FROM watchlist.field_registry
                                     WHERE field_key = 'instrument_type'
-                                      AND group_mode = 'discrete'
-                                      AND source_metric_code =
-                                          'watchlist_row_read_model.instrument_type'
+                                      AND group_mode = 'none'
                                 ) = 1
                                 THEN 0
                                 ELSE 1
-                            END
+                              END
                             + (
                                 SELECT count(*)
                                 FROM watchlist.watchlist_view
                                 WHERE coalesce(default_group_by, 'none') NOT IN (
                                     'none',
-                                    'instrument_type',
                                     'taxonomy',
-                                    'data_freshness_status'
+                                    'currency',
+                                    'attr.coverage_status',
+                                    'attr.manual_rating'
                                 )
-                            )
+                              )
+                            + (
+                                SELECT count(*)
+                                FROM watchlist.instrument_attribute_definition
+                                WHERE is_groupable IS TRUE
+                                  AND attribute_key <> 'coverage_status'
+                              )
+                            + CASE
+                                WHEN (
+                                    SELECT count(*)
+                                    FROM watchlist.instrument_attribute_definition
+                                    WHERE attribute_key = 'coverage_status'
+                                      AND is_groupable IS TRUE
+                                ) = 1
+                                THEN 0
+                                ELSE 1
+                              END
                     """,
                     detail=(
-                        "Every saved Watchlist view must use one of the four "
-                        "supported universal Group By values."
+                        "Watchlist Group By is limited to None, Taxonomy, canonical "
+                        "Currency, Investment Status, and Research Rating; Instrument "
+                        "Type remains the fixed outer section."
                     ),
                 )
             )

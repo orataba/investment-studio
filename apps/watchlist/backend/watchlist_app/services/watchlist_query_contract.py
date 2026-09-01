@@ -11,12 +11,15 @@ SYSTEM_QUERY_FIELDS = {
     "metric_quote_basis",
     "metric_series_type",
 }
-SPECIAL_GROUP_BY_FIELDS = {
-    "none",
-    "instrument_type",
-    "taxonomy",
-    "data_freshness_status",
-}
+WATCHLIST_GROUP_BY_OPTIONS = (
+    ("none", "None"),
+    ("taxonomy", "Taxonomy"),
+    ("currency", "Currency"),
+    ("attr.coverage_status", "Investment Status"),
+    ("attr.manual_rating", "Research Rating"),
+)
+WATCHLIST_GROUP_BY_CODES = frozenset(code for code, _label in WATCHLIST_GROUP_BY_OPTIONS)
+SYNTHETIC_GROUP_BY_FIELDS = {"none", "taxonomy"}
 COMPARISON_OPERATORS = {"gte", "lte", "gt", "lt"}
 
 
@@ -140,7 +143,11 @@ def validate_watchlist_query_contract(
         if field is None or str(field.sort_mode) == "none":
             raise WatchlistQueryContractError(f"Field {field_key!r} is not sortable.")
     group_field_key = str(group_by or "none")
-    if group_field_key not in SPECIAL_GROUP_BY_FIELDS:
+    if group_field_key not in WATCHLIST_GROUP_BY_CODES:
+        raise WatchlistQueryContractError(
+            f"Group by field {group_field_key!r} is not part of the Watchlist grouping contract."
+        )
+    if group_field_key not in SYNTHETIC_GROUP_BY_FIELDS:
         group_field = _require_query_field(
             fields,
             group_field_key,

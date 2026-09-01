@@ -19,6 +19,7 @@ type PortfolioTableViewControlsProps = {
   onSave: () => void | Promise<void>
   onSaveAs: (name: string, description: string | null) => void | Promise<void>
   onDelete?: (viewId: string) => void | Promise<void>
+  labelPrefix?: string
 }
 
 export default function PortfolioTableViewControls({
@@ -31,6 +32,7 @@ export default function PortfolioTableViewControls({
   onSave,
   onSaveAs,
   onDelete,
+  labelPrefix = 'View',
 }: PortfolioTableViewControlsProps) {
   const activeView = views.find((view) => view.id === activeViewId) ?? views[0] ?? null
   const controlsRef = useRef<HTMLDivElement | null>(null)
@@ -52,7 +54,7 @@ export default function PortfolioTableViewControls({
   const saveDialogRef = useModalDialog(saveAsOpen, closeSaveAsDialog, draftNameRef)
   const deleteEnabled = canDelete && Boolean(onDelete)
   const busy = saving || deleting
-  const activeViewLabel = `View\u00A0: ${activeView?.name ?? 'Default'}${edited ? ' (Edited)' : ''}`
+  const activeViewLabel = `${labelPrefix}\u00A0: ${activeView?.name ?? 'Default'}${edited ? ' (Edited)' : ''}`
   const quickActionLabel = edited ? (canSave ? 'Save view' : 'Save as view') : 'Create view'
 
   useEffect(() => {

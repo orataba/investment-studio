@@ -88,30 +88,53 @@ def watchlist_row_to_dict(record: WatchlistRowReadModel) -> dict[str, object]:
     }
 
 
-def _extract_latest_quote(payload: object) -> dict[str, object] | None:
+def _extract_latest_role_value(
+    payload: object,
+    *,
+    role: str,
+) -> dict[str, object] | None:
     if not isinstance(payload, dict):
         return None
-    series = payload.get("series")
-    if not isinstance(series, list):
+    latest_values = payload.get("latest_values")
+    if not isinstance(latest_values, dict):
         return None
-    for candidate in series:
-        if not isinstance(candidate, dict):
-            continue
-        points = candidate.get("points")
-        if not isinstance(points, list) or not points:
-            continue
-        latest_point = points[-1]
-        if not isinstance(latest_point, dict):
-            continue
-        value = latest_point.get("value")
-        quote_date = latest_point.get("date")
-        if isinstance(value, bool) or not isinstance(value, (int, float)):
-            continue
-        return {
-            "latest_quote": float(value),
-            "latest_quote_date": quote_date[:10] if isinstance(quote_date, str) and quote_date else None,
-        }
-    return None
+    snapshot = latest_values.get(role)
+    if not isinstance(snapshot, dict):
+        return None
+    value = snapshot.get("value")
+    value_date = snapshot.get("date")
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return {
+        "value": float(value),
+        "date": (
+            value_date[:10]
+            if isinstance(value_date, str) and value_date
+            else None
+        ),
+        "quote_basis": snapshot.get("quote_basis"),
+        "metric_family": snapshot.get("metric_family"),
+    }
+
+
+def _extract_latest_quote(payload: object) -> dict[str, object] | None:
+    valuation = _extract_latest_role_value(payload, role="valuation")
+    if valuation is None:
+        return None
+    return {
+        "latest_quote": valuation["value"],
+        "latest_quote_date": valuation["date"],
+    }
+
+
+def _extract_latest_cumulative_nav(payload: object) -> dict[str, object] | None:
+    total_return = _extract_latest_role_value(payload, role="total_return")
+    if total_return is None or total_return.get("quote_basis") != "total_return_nav":
+        return None
+    return {
+        "latest_cumulative_nav": total_return["value"],
+        "latest_cumulative_nav_date": total_return["date"],
+    }
 
 
 def build_latest_quote_overrides(
@@ -120,8 +143,12 @@ def build_latest_quote_overrides(
     overrides: dict[str, dict[str, object]] = {}
     for chart in charts or []:
         latest_quote = _extract_latest_quote(chart.payload_json)
-        if latest_quote is not None:
-            overrides[chart.instrument_id] = latest_quote
+        latest_cumulative_nav = _extract_latest_cumulative_nav(chart.payload_json)
+        if latest_quote is not None or latest_cumulative_nav is not None:
+            overrides[chart.instrument_id] = {
+                **(latest_quote or {}),
+                **(latest_cumulative_nav or {}),
+            }
     return overrides
 
 
@@ -592,11 +619,19 @@ def execute_watchlist_query(
     *,
     rows: Sequence[WatchlistRowReadModel],
     charts: Sequence[InstrumentChartReadModel] | None = None,
+    row_overrides: dict[str, dict[str, object]] | None = None,
     attribute_overrides: dict[str, dict[str, object]] | None = None,
     payload: dict[str, object],
     view: WatchlistView | None,
 ) -> dict[str, object]:
     serialized_rows = [watchlist_row_to_dict(item) for item in rows]
+    serialized_rows = [
+        {
+            **row,
+            **(row_overrides or {}).get(str(row.get("instrument_id")), {}),
+        }
+        for row in serialized_rows
+    ]
     serialized_rows = [
         {
             **row,

@@ -132,7 +132,7 @@ QUOTE_BASIS_LABELS = {
     "official_nav": "Unit NAV",
     "close": "Close",
     "last": "Last Price",
-    "total_return_nav": "Dividend-Reinvested Total Return NAV",
+    "total_return_nav": "Cumulative NAV",
     "adjusted_close": "Adjusted Close",
 }
 # Percentile/rank output needs at least four independent peers. Smaller
@@ -1456,6 +1456,8 @@ def _selection_candidates(
         return []
     normalized_instrument_type = str(instrument_type or "").strip().lower()
     if normalized_instrument_type in FUND_INSTRUMENT_TYPES:
+        if role in {"trading", "valuation", "reference"}:
+            return [basis for basis in candidates if basis == "official_nav"]
         if normalized_preference == "nav":
             return []
         return [basis for basis in candidates if basis in FUND_TOTAL_RETURN_QUOTE_BASES]
@@ -1691,12 +1693,40 @@ def _selection_metadata(selection: dict[str, object]) -> dict[str, object]:
     }
 
 
+def _latest_selection_snapshot(
+    selection: dict[str, object] | None,
+) -> dict[str, object] | None:
+    if not isinstance(selection, dict):
+        return None
+    points = selection.get("points")
+    if not isinstance(points, list) or not points:
+        return None
+    latest_point = points[-1]
+    if not isinstance(latest_point, dict):
+        return None
+    as_of_date = latest_point.get("as_of_date")
+    value = latest_point.get("value")
+    if not isinstance(as_of_date, date) or isinstance(value, bool) or not isinstance(
+        value,
+        (int, float),
+    ):
+        return None
+    return {
+        **_selection_metadata(selection),
+        "date": as_of_date.isoformat(),
+        "value": round(float(value), 4),
+        "currency": str(latest_point.get("currency") or "") or None,
+    }
+
+
 def _build_chart_payload(
     instrument_id: str,
     nav_points: list[dict[str, Any]],
     currency: str,
     *,
     selection: dict[str, object] | None = None,
+    valuation_selection: dict[str, object] | None = None,
+    total_return_selection: dict[str, object] | None = None,
 ) -> dict[str, object]:
     metadata = _selection_metadata(selection or {})
     series_label = str(metadata.get("label") or "Quote")
@@ -1704,6 +1734,10 @@ def _build_chart_payload(
         "instrument_id": instrument_id,
         "base_series_type": str(metadata.get("series_type") or "quote"),
         "selected_series": metadata,
+        "latest_values": {
+            "valuation": _latest_selection_snapshot(valuation_selection),
+            "total_return": _latest_selection_snapshot(total_return_selection),
+        },
         "currency": currency,
         "date_range": (
             {
@@ -2204,6 +2238,13 @@ class CanonicalRecalcService:
             preference=nav_basis_preference,
             instrument_type=instrument.instrument_type,
         )
+        valuation_selection = _select_quote_series(
+            quote_points_by_basis,
+            shared_instrument=shared_instrument,
+            role="valuation",
+            preference=nav_basis_preference,
+            instrument_type=instrument.instrument_type,
+        )
         market_data_source_cutoff = (
             source_watermark_at_start
             if uses_shared_market_data and source_watermark_at_start is not None
@@ -2278,6 +2319,7 @@ class CanonicalRecalcService:
         summary_payload = self._summary_payload(
             instrument=instrument,
             nav_selection=nav_selection,
+            valuation_selection=valuation_selection,
             performance_snapshot=performance_snapshot,
             risk_snapshot=risk_snapshot,
             exposure_snapshot=exposure_snapshot,
@@ -2297,6 +2339,8 @@ class CanonicalRecalcService:
                 else shared_currency
             ),
             selection=quote_selection,
+            valuation_selection=valuation_selection,
+            total_return_selection=nav_selection,
         )
         peer_comparison = self._peer_comparison_payload(
             session,
@@ -2608,6 +2652,7 @@ class CanonicalRecalcService:
         *,
         instrument,
         nav_selection: dict[str, object],
+        valuation_selection: dict[str, object] | None = None,
         performance_snapshot,
         risk_snapshot,
         exposure_snapshot,
@@ -2620,6 +2665,25 @@ class CanonicalRecalcService:
     ) -> dict[str, object]:
         calculation_frequency_profile = calculation_frequency_profile or {}
         source_settings = source_settings or {}
+        valuation_selection = valuation_selection or {}
+        valuation_points = valuation_selection.get("points")
+        if not isinstance(valuation_points, list):
+            valuation_points = []
+        total_return_points = nav_selection.get("points")
+        if not isinstance(total_return_points, list):
+            total_return_points = []
+        latest_unit_nav_point = (
+            valuation_points[-1]
+            if valuation_points
+            and valuation_selection.get("selected_quote_basis") == "official_nav"
+            else None
+        )
+        latest_cumulative_nav_point = (
+            total_return_points[-1]
+            if total_return_points
+            and nav_selection.get("selected_quote_basis") == "total_return_nav"
+            else None
+        )
         latest_observation_date = (
             nav_selection["points"][-1]["as_of_date"]
             if nav_selection["points"]
@@ -2699,13 +2763,23 @@ class CanonicalRecalcService:
                     nav_selection.get("return_segment_breaks") or []
                 ),
                 "latest_nav": (
-                    nav_selection["points"][-1]["value"]
-                    if nav_selection.get("nav_basis_type") == "nav" and nav_selection["points"]
+                    latest_unit_nav_point["value"]
+                    if latest_unit_nav_point is not None
+                    else None
+                ),
+                "latest_nav_date": (
+                    latest_unit_nav_point["as_of_date"].isoformat()
+                    if latest_unit_nav_point is not None
                     else None
                 ),
                 "latest_nav_with_dividend": (
-                    nav_selection["points"][-1]["value"]
-                    if nav_selection.get("nav_basis_type") == "nav_with_dividend" and nav_selection["points"]
+                    latest_cumulative_nav_point["value"]
+                    if latest_cumulative_nav_point is not None
+                    else None
+                ),
+                "latest_nav_with_dividend_date": (
+                    latest_cumulative_nav_point["as_of_date"].isoformat()
+                    if latest_cumulative_nav_point is not None
                     else None
                 ),
             },

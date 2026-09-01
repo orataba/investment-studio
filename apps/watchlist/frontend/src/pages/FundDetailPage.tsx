@@ -409,14 +409,14 @@ const TAB_LABELS: Record<DetailTab, LocalizedText> = {
 const NAV_BASIS_LABELS: Record<string, LocalizedText> = {
   auto: { en: 'Auto', zh: '自动' },
   nav_with_dividend: {
-    en: 'Dividend-Reinvested Total Return NAV',
-    zh: '分红再投资复权累计净值',
+    en: 'Cumulative NAV',
+    zh: '复权累计净值',
   },
   nav: { en: 'Unit NAV', zh: '单位净值' },
 }
 
 const NAV_BASIS_SOURCE_LABELS: Record<string, string> = {
-  nav_with_dividend_series: 'Dividend-Reinvested Total Return NAV Series',
+  nav_with_dividend_series: 'Cumulative NAV Series',
   nav_series: 'Unit NAV Series',
   manual_nav_editor: 'Manual Editor',
   shared: 'Shared Registry',
@@ -454,8 +454,8 @@ const PRIVATE_FUND_PEOPLE_FIELDS: PeopleOverviewField[] = [
 const QUOTE_BASIS_LABELS: Record<QuoteBasis, LocalizedText> = {
   nav: { en: 'Unit NAV', zh: '单位净值' },
   nav_with_dividend: {
-    en: 'Dividend-Reinvested Total Return NAV',
-    zh: '分红再投资复权累计净值',
+    en: 'Cumulative NAV',
+    zh: '复权累计净值',
   },
 }
 
@@ -4024,8 +4024,17 @@ export default function FundDetailPage({
   const chartCumulativeReturn = chartNavSeries[chartNavSeries.length - 1]?.value ?? null
   const chartBenchmarkCumulativeReturn =
     chartBenchmarkSeries[chartBenchmarkSeries.length - 1]?.value ?? null
-  const latestSeriesPoint = navBasisSeries[navBasisSeries.length - 1]
-  const quoteLatestStats = getLatestPointChangeStats(navBasisSeries)
+  const unitNavSeries = buildBasisSeries(currencyFilteredRows, 'nav')
+  const cumulativeNavSeries = buildBasisSeries(currencyFilteredRows, 'nav_with_dividend')
+  const latestUnitNavPoint = unitNavSeries[unitNavSeries.length - 1]
+  const latestCumulativeNavPoint = cumulativeNavSeries[cumulativeNavSeries.length - 1]
+  const unitNavValue = latestUnitNavPoint?.value ?? summary.series_snapshot?.latest_nav ?? null
+  const unitNavDate = latestUnitNavPoint?.date ?? summary.series_snapshot?.latest_nav_date ?? null
+  const cumulativeNavValue =
+    latestCumulativeNavPoint?.value ?? summary.series_snapshot?.latest_nav_with_dividend ?? null
+  const cumulativeNavDate =
+    latestCumulativeNavPoint?.date ?? summary.series_snapshot?.latest_nav_with_dividend_date ?? null
+  const quoteLatestStats = getLatestPointChangeStats(unitNavSeries)
   const quoteChange = quoteLatestStats.change
   const quoteChangePct = quoteLatestStats.changePct
   const availableTabs = normalizeTabs(summary.tabs || [])
@@ -4046,13 +4055,13 @@ export default function FundDetailPage({
     summary.series_snapshot?.selected_date_label ||
     summary.selected_series?.date_label ||
     'Last Quote Date'
-  const navBasisLabel = selectedSeriesLabel || (NAV_BASIS_LABELS[navBasisType]
+  const navBasisLabel = NAV_BASIS_LABELS[navBasisType]
     ? localize(language, NAV_BASIS_LABELS[navBasisType])
-    : toTitleCase(navBasisType))
+    : selectedSeriesLabel || toTitleCase(navBasisType)
   const selectedNavBasis = resolvePreferredQuoteBasis(navSeries.nav_basis_type)
   const quoteBasisLabel =
     activeQuoteBasis === selectedNavBasis && selectedSeriesLabel
-      ? selectedSeriesLabel
+      ? navBasisLabel
       : localize(language, QUOTE_BASIS_LABELS[activeQuoteBasis])
   const activeReturnKind =
     activeQuoteBasis === selectedNavBasis
@@ -4076,7 +4085,6 @@ export default function FundDetailPage({
     activeQuoteBasis,
     ...availableQuoteBases.filter((basis) => basis !== activeQuoteBasis),
   ]
-  const basisValue = latestSeriesPoint?.value ?? null
   const quoteToneClass =
     quoteChange == null
       ? ''
@@ -6113,34 +6121,6 @@ export default function FundDetailPage({
 
       {activeTab === 'overview' ? (
         <>
-          <section className="panel instrument-edit-surface">
-            <div className="instrument-section-header">
-              <div>
-                <div className="panel-title">
-                  {fundType === 'private_fund' ? 'Operational Data Contract' : 'Fund Reference Profile'}
-                </div>
-                <div className="instrument-section-title">
-                  {fundType === 'private_fund'
-                    ? 'NAV delivery, cadence and source status'
-                    : 'Provider facts separated from internal research conclusions'}
-                </div>
-              </div>
-              <span className="muted">Provider: {bundle.reference?.provider || 'unconfigured'}</span>
-            </div>
-            <div className="instrument-quote-facts-grid instrument-reference-facts-grid">
-              {fundSourceFacts.map((fact) => (
-                <div key={fact.label} className="instrument-quote-fact">
-                  <span>{fact.label}</span>
-                  <strong>{String(fact.value || '—')}</strong>
-                </div>
-              ))}
-            </div>
-            {bundle.reference && Object.keys(bundle.reference.section_errors).length ? (
-              <div className="instrument-corporate-action-warning">
-                {Object.values(bundle.reference.section_errors).join(' ')}
-              </div>
-            ) : null}
-          </section>
           {corporateActions.length ? (
             <section className="panel instrument-corporate-actions-panel">
               <div className="instrument-section-header">
@@ -6192,8 +6172,20 @@ export default function FundDetailPage({
                 <div className="instrument-quote-summary-main instrument-quote-summary-main-compact">
                   <div className="instrument-quote-summary-topline">
                     <div className="instrument-quote-primary-block">
+                      <div className="instrument-quote-primary-label">
+                        {localize(language, QUOTE_BASIS_LABELS.nav)}
+                      </div>
                       <div className="instrument-quote-value">
-                        {basisValue != null ? formatNumber(basisValue, 4) : '—'}
+                        {unitNavValue != null ? formatNumber(unitNavValue, 4) : '—'}
+                      </div>
+                      <div className="instrument-quote-secondary-value">
+                        <span>{localize(language, QUOTE_BASIS_LABELS.nav_with_dividend)}</span>
+                        <strong>
+                          {cumulativeNavValue != null ? formatNumber(cumulativeNavValue, 4) : '—'}
+                        </strong>
+                        <em>
+                          {language === 'zh-Hans' ? '日期' : 'As of'} {formatDate(cumulativeNavDate)}
+                        </em>
                       </div>
                       <div className={quoteToneClass}>
                         {formatChangeSummary(quoteChange, quoteChangePct)}
@@ -6207,7 +6199,7 @@ export default function FundDetailPage({
                   </div>
                   <div className="instrument-quote-meta">
                     <div className="instrument-quote-asof">
-                      As of {formatDate(latestSeriesPoint?.date)}
+                      {language === 'zh-Hans' ? '单位净值日期' : 'Unit NAV as of'} {formatDate(unitNavDate)}
                     </div>
                   </div>
                 </div>
@@ -8010,7 +8002,7 @@ export default function FundDetailPage({
                 <strong>{monitoredInstrument?.research.current_view || '—'}</strong>
               </div>
               <div className="instrument-monitoring-fact">
-                <span>Manual Rating</span>
+                <span>Research Rating</span>
                 <strong>
                   {monitoredInstrument?.research.manual_rating == null
                     ? '—'
@@ -8107,6 +8099,31 @@ export default function FundDetailPage({
             ) : (
               <div className="instrument-placeholder instrument-monitoring-placeholder">No monitoring items yet.</div>
             )}
+          </section>
+
+          <section className="instrument-monitoring-section">
+            <div className="instrument-monitoring-section-header">
+              <div>
+                <div className="panel-title">Monitoring</div>
+                <div className="instrument-section-title">
+                  {fundType === 'private_fund' ? 'Operational Data Contract' : 'Fund Reference Profile'}
+                </div>
+              </div>
+              <span className="muted">Provider: {bundle.reference?.provider || 'unconfigured'}</span>
+            </div>
+            <div className="instrument-monitoring-facts-grid">
+              {fundSourceFacts.map((fact) => (
+                <div key={fact.label} className="instrument-monitoring-fact">
+                  <span>{fact.label}</span>
+                  <strong>{String(fact.value || '—')}</strong>
+                </div>
+              ))}
+            </div>
+            {bundle.reference && Object.keys(bundle.reference.section_errors).length ? (
+              <div className="instrument-corporate-action-warning">
+                {Object.values(bundle.reference.section_errors).join(' ')}
+              </div>
+            ) : null}
           </section>
         </section>
       ) : null}

@@ -230,7 +230,7 @@ describe('holdings current-basket period identity', () => {
     ).toBeNull()
   })
 
-  it('uses derivative carrying value as zero-return capital without changing return-currency compatibility', () => {
+  it('withholds a non-base current-basket path until a base-currency return overlay exists', () => {
     const security = holdingFixture({
       market_value: 600,
       market_value_base: 600,
@@ -263,10 +263,6 @@ describe('holdings current-basket period identity', () => {
       true,
     )
 
-    expect(result).toEqual({
-      dates: ['2026-07-02', '2026-07-03'],
-      returns: [0.06, -0.03],
-      firstReturnStartDate: '2026-07-01',
-    })
+    expect(result).toBeNull()
   })
 })

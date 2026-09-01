@@ -45,6 +45,18 @@ def test_table_view_store_round_trip_persists_by_portfolio_and_scope(client) -> 
     assert holdings_response.status_code == 200
     assert holdings_response.json()["store"] == store
 
+    for section_scope in (
+        "holdings_fcn",
+        "holdings_options",
+        "holdings_cash",
+        "holdings_total",
+    ):
+        section_response = client.get(
+            f"/api/portfolios/portfolio-ops/table-views/{section_scope}"
+        )
+        assert section_response.status_code == 200
+        assert section_response.json()["store"] is None
+
     updated_store = {**store, "activeViewId": "system:default"}
     update_response = client.put("/api/portfolios/portfolio-ops/table-views/holdings", json={"store": updated_store})
     assert update_response.status_code == 200

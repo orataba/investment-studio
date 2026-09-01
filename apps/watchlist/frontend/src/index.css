@@ -1637,6 +1637,15 @@ th {
   padding: 0;
 }
 
+.watchlists-group-row.watchlists-instrument-type-group-row td {
+  border-top-color: #94a3b8;
+  background: #eef2f6;
+}
+
+.watchlists-instrument-type-group-row .watchlists-group-title {
+  font-weight: 600;
+}
+
 .watchlists-group-header {
   display: inline-flex;
   align-items: center;
@@ -1712,6 +1721,19 @@ th {
 
 .watchlists-group-summary-empty {
   color: #cbd5e1;
+}
+
+.watchlists-taxonomy-type-section + .watchlists-taxonomy-type-section {
+  margin-top: 8px;
+}
+
+.watchlists-taxonomy-type-heading {
+  padding: 8px 10px 5px;
+  color: #475569;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
 }
 
 .watchlists-modal-backdrop {
@@ -3902,6 +3924,36 @@ td:last-child {
   gap: 8px;
 }
 
+.instrument-quote-primary-label {
+  color: #4b5563;
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.06em;
+  line-height: 1.2;
+  text-transform: uppercase;
+}
+
+.instrument-quote-secondary-value {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 4px 8px;
+  color: #4b5563;
+  font-size: 12px;
+}
+
+.instrument-quote-secondary-value strong {
+  color: #111827;
+  font-size: 16px;
+  font-weight: 500;
+}
+
+.instrument-quote-secondary-value em {
+  color: #6b7280;
+  font-size: 11px;
+  font-style: normal;
+}
+
 .instrument-quote-summary-topline {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
@@ -4355,7 +4407,8 @@ td:last-child {
 }
 
 .listed-candlestick-chart,
-.listed-growth-chart {
+.listed-growth-chart,
+.listed-index-level-chart {
   display: block;
   width: 100%;
   min-width: 640px;
@@ -4407,6 +4460,19 @@ td:last-child {
   stroke-dasharray: 3 3;
   stroke-width: 1;
   pointer-events: none;
+}
+
+.listed-index-level-area {
+  fill: url(#listed-index-level-gradient);
+  stroke: none;
+}
+
+.listed-index-level-line {
+  fill: none;
+  stroke: #425d7a;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 2;
 }
 
 .listed-source-note {
@@ -4563,7 +4629,8 @@ td:last-child {
   }
 
   .listed-candlestick-chart,
-  .listed-growth-chart {
+  .listed-growth-chart,
+  .listed-index-level-chart {
     width: 760px;
   }
 

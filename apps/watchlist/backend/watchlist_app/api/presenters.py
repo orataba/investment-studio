@@ -12,14 +12,7 @@ from watchlist_app.db.models.watchlists import (
     Watchlist,
     WatchlistView,
 )
-
-
-TAXONOMY_GROUP_BY_CODE = "taxonomy"
-GROUP_BY_OPTION_ORDER = (
-    "instrument_type",
-    TAXONOMY_GROUP_BY_CODE,
-    "data_freshness_status",
-)
+from watchlist_app.services.watchlist_query_contract import WATCHLIST_GROUP_BY_OPTIONS
 
 
 def _local_view_id(record: WatchlistView) -> str:
@@ -162,38 +155,20 @@ def present_recalc_job(record: RecalcJob) -> dict[str, object]:
 
 def present_group_by_options(
     fields: Sequence[FieldRegistry],
-    *,
-    include_instrument_type: bool,
 ) -> list[dict[str, str]]:
-    options = [{"code": "none", "label": "None"}]
     fields_by_key = {field.field_key: field for field in fields}
-    included = {"none"}
-    has_taxonomy_fields = any(
-        field.field_key == "attr.instrument_taxonomy_level_1"
-        for field in fields
-    )
-    for field_key in GROUP_BY_OPTION_ORDER:
-        if field_key == "instrument_type" and not include_instrument_type:
-            continue
-        if field_key == TAXONOMY_GROUP_BY_CODE:
-            if has_taxonomy_fields:
-                options.append({"code": field_key, "label": "Taxonomy"})
-                included.add(field_key)
-            continue
-        field = fields_by_key.get(field_key)
-        if field is not None and field.group_mode != "none":
-            options.append({"code": field.field_key, "label": field.label})
-            included.add(field.field_key)
-    for field in sorted(fields, key=lambda item: (item.label, item.field_key)):
-        if (
-            field.field_key not in included
-            and (include_instrument_type or field.field_key != "instrument_type")
-            and field.group_mode == "discrete"
-            and field.data_type != "multi_select"
-            and not field.field_key.startswith("attr.instrument_taxonomy_")
-        ):
-            options.append({"code": field.field_key, "label": field.label})
-            included.add(field.field_key)
+    has_taxonomy = "attr.instrument_taxonomy_level_1" in fields_by_key
+    options: list[dict[str, str]] = []
+    for code, label in WATCHLIST_GROUP_BY_OPTIONS:
+        if code == "none":
+            options.append({"code": code, "label": label})
+        elif code == "taxonomy":
+            if has_taxonomy:
+                options.append({"code": code, "label": label})
+        else:
+            field = fields_by_key.get(code)
+            if field is not None and field.group_mode == "discrete":
+                options.append({"code": code, "label": label})
     return options
 
 

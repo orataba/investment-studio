@@ -47,7 +47,7 @@ def test_flat_table_profile_accepts_only_final_heads(
         "instrument_registry": "20260823_0028",
         "platform": "20260823_0007",
         "portfolio": "20260824_0056",
-        "watchlist": "20260824_0049",
+        "watchlist": "20260901_0052",
     }
     monkeypatch.setattr(
         audit_module,

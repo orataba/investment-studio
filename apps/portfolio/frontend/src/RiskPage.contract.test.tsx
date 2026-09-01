@@ -72,6 +72,7 @@ function twoHoldingWorkspace(secondHolding = betaHolding()) {
   return holdingsWorkspaceFixture({
     rows: [riskHolding, secondHolding],
     totals: {
+      nav: 1000,
       market_value: 1000,
       day_change_pct: 0.01,
       day_change_value: 10,
@@ -367,7 +368,7 @@ describe('Risk rendered page contract', () => {
             risk_budget_eligible: false,
           }),
         ],
-        totals: { market_value: 800, day_change_pct: null, day_change_value: null, cost_basis: null, allocation: 0.8 },
+        totals: { nav: 1000, market_value: 800, day_change_pct: null, day_change_value: null, cost_basis: null, allocation: 0.8 },
       }),
     )
     apiMocks.getPortfolioAccountsWorkspace.mockResolvedValue(accountsWorkspace)

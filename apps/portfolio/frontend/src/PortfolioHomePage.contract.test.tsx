@@ -11,7 +11,10 @@ import {
   instrumentFixture,
   optionContractFixture,
 } from './test/portfolioFixtures'
-import { renderPortfolioPage } from './test/renderPortfolioPage'
+import type {
+  PortfolioHoldingRow,
+  PortfolioTaxonomyCatalogResponse,
+} from './lib/api'
 
 const apiMocks = vi.hoisted(() => ({
   getHoldingsWorkspace: vi.fn(),
@@ -28,6 +31,45 @@ vi.mock('../../../../packages/ui/src/tableExport', () => tableExportMocks)
 vi.mock('./components/PortfolioWorkspaceLayout', () => ({
   default: ({ children }: { children: unknown }) => children,
 }))
+
+function taxonomyCatalogFixture(
+  overrides: Partial<PortfolioTaxonomyCatalogResponse> = {},
+): PortfolioTaxonomyCatalogResponse {
+  return {
+    portfolio_id: '3',
+    default_planning_taxonomy_id: null,
+    taxonomies: [],
+    taxonomy_nodes: [],
+    taxonomy_assignments: [],
+    analytics_scope_policy_version: 0,
+    analytics_scope_policies: [],
+    analytics_taxonomy_selections: [],
+    instrument_universe: [],
+    target_sets: [],
+    target_set_lines: [],
+    target_set_integrity_issues: [],
+    ...overrides,
+  }
+}
+
+function renderHoldings(
+  workspace = holdingsWorkspaceFixture(),
+  taxonomyCatalog = taxonomyCatalogFixture(),
+) {
+  apiMocks.getHoldingsWorkspace.mockResolvedValue(workspace)
+  apiMocks.getPortfolioTaxonomyCatalog.mockResolvedValue(taxonomyCatalog)
+  return render(
+    <MemoryRouter initialEntries={['/portfolios/3/holdings']}>
+      <Routes>
+        <Route path="/portfolios/:portfolioId/holdings" element={<PortfolioHomePage />} />
+      </Routes>
+    </MemoryRouter>,
+  )
+}
+
+async function waitForHoldings() {
+  return screen.findByRole('table', { name: 'Security holdings' })
+}
 
 function deferred<T>() {
   let resolve!: (value: T) => void
@@ -51,387 +93,279 @@ function HoldingsRouteHarness() {
   )
 }
 
-async function waitForHoldingsTable(_user: ReturnType<typeof userEvent.setup>) {
-  await screen.findByRole('button', { name: /View\s*:/ })
+function cashHolding(overrides: Partial<PortfolioHoldingRow> = {}) {
+  return holdingFixture({
+    line_id: 'cash:USD',
+    holding_kind: 'settled_cash',
+    holding_category: 'cash_and_settlement',
+    instrument_core: instrumentFixture({
+      instrument_id: 'cash:USD',
+      instrument_name: 'USD Cash',
+      instrument_type: 'cash',
+      currency: 'USD',
+      identifiers: [],
+    }),
+    quantity: 200,
+    last_price: 1,
+    market_value: 200,
+    market_value_base: 200,
+    cost_basis: null,
+    cost_basis_base: null,
+    allocation: 0.2,
+    day_change_pct: 0,
+    day_change_value: 0,
+    day_change_value_base: 0,
+    price_chart_1m: [],
+    price_chart_3m: [],
+    price_chart_6m: [],
+    price_chart_1y: [],
+    instrument_return_1w: null,
+    instrument_return_1m: null,
+    instrument_return_mtd: null,
+    instrument_return_ytd: null,
+    coverage_status: 'cash',
+    available_for_trading: true,
+    risk_eligible: false,
+    forward_risk_status: 'modeled_zero',
+    forward_risk_share: 0,
+    forward_contribution_to_variance: 0,
+    forward_annualized_volatility: 0,
+    account_ids: ['cash-account'],
+    account_count: 1,
+    open_position_lot_count: 0,
+    ...overrides,
+  })
+}
+
+function fcnHolding() {
+  return holdingFixture({
+    line_id: 'holding:fcn-1',
+    position_reference_id: 'fcn-1',
+    derivative_contract_id: 'fcn-1',
+    holding_kind: 'derivative_contract',
+    holding_category: 'derivatives',
+    instrument_core: null,
+    derivative_contract: fcnContractFixture(),
+    quantity: 1,
+    market_value: 500,
+    market_value_base: 500,
+    carrying_value: 500,
+    carrying_value_base: 500,
+    cost_basis: 500,
+    cost_basis_base: 500,
+    allocation: 0.5,
+    coverage_status: 'event-cost',
+    valuation_basis: 'carried_cost',
+    fair_value: null,
+    fair_value_coverage_status: 'unavailable',
+    performance_eligible: false,
+    risk_eligible: false,
+    forward_risk_status: 'excluded',
+    forward_risk_share: null,
+    forward_contribution_to_variance: null,
+    forward_annualized_volatility: null,
+  })
+}
+
+function writtenOptionHolding() {
+  return holdingFixture({
+    line_id: 'broker:option-1:obligation',
+    position_reference_id: 'option-1',
+    derivative_contract_id: 'option-1',
+    holding_kind: 'option_obligation',
+    holding_category: 'derivatives',
+    instrument_core: null,
+    derivative_contract: optionContractFixture(),
+    quantity: -2,
+    market_value: -300,
+    market_value_base: -300,
+    cost_basis: null,
+    cost_basis_base: null,
+    allocation: -0.3,
+    open_contract_quantity: 2,
+    required_underlying_quantity: 200,
+    obligation_status: 'open',
+    related_underlying_id: 'equity-1',
+    expiry_date: '2026-12-18',
+    days_to_expiry: 156,
+    strike: 110,
+    option_type: 'call',
+    contract_multiplier: 100,
+    strike_notional: 22_000,
+    strike_notional_base: 22_000,
+    premium_basis_remaining: 300,
+    liability_value: 300,
+    liability_value_base: 300,
+    carrying_value: 300,
+    carrying_value_base: 300,
+    coverage_status: 'event-liability',
+    valuation_basis: 'premium_liability',
+    fair_value: null,
+    fair_value_coverage_status: 'unavailable',
+    performance_eligible: false,
+    risk_eligible: false,
+    is_liability: true,
+    forward_risk_status: 'excluded',
+    forward_risk_share: null,
+    forward_contribution_to_variance: null,
+    forward_annualized_volatility: null,
+  })
 }
 
 describe('Holdings rendered page contract', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     window.localStorage.clear()
-    apiMocks.getHoldingsWorkspace.mockResolvedValue(
-      holdingsWorkspaceFixture({
-        quality_warnings: [
-          'Alpha Fund YTD return is unavailable because the 2025-12-31 start anchor is missing.',
-        ],
-        rows: [holdingFixture({ instrument_return_ytd: null })],
-      }),
-    )
-    apiMocks.getPortfolioTaxonomyCatalog.mockResolvedValue({
-      portfolio_id: '3',
-      default_planning_taxonomy_id: null,
-      taxonomies: [],
-      taxonomy_nodes: [],
-      taxonomy_assignments: [],
-      instrument_universe: [],
-      target_sets: [],
-      target_set_lines: [],
-      target_set_integrity_issues: [],
-    })
-    apiMocks.getPortfolioTableViewStore.mockResolvedValue({ store: null })
+    apiMocks.getPortfolioTaxonomyCatalog.mockResolvedValue(taxonomyCatalogFixture())
+    apiMocks.getPortfolioTableViewStore.mockImplementation(async () => ({ store: null }))
     apiMocks.savePortfolioTableViewStore.mockResolvedValue({})
   })
 
-  it('uses canonical defaults for an empty backend store', async () => {
-    renderPortfolioPage(
-      <PortfolioHomePage />,
-      '/portfolios/3/holdings',
-      '/portfolios/:portfolioId/holdings',
-    )
+  it('renders five direct tables with independent views and fields', async () => {
+    renderHoldings()
+    await waitForHoldings()
 
-    expect(await screen.findByRole('button', { name: /View\s*: Default/ })).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: /Group By\s*: None/ })).toBeInTheDocument()
-    const holdingsToolbar = screen.getByLabelText('As Of Date').closest('.holdings-filter-bar')
-    expect(holdingsToolbar).not.toBeNull()
-    expect(holdingsToolbar).not.toHaveClass('transaction-filter-bar')
-    expect(within(holdingsToolbar as HTMLElement).getByRole('button', { name: /Data & Columns/ })).toBeInTheDocument()
-    expect(holdingsToolbar?.querySelector('.performance-window-actions')).toBeNull()
-    expect(screen.getByText('Securities')).toBeInTheDocument()
-    expect(screen.getByRole('columnheader', { name: /Instrument Type/ })).toBeInTheDocument()
-    expect(screen.getByRole('columnheader', { name: /Position Value/ })).toBeInTheDocument()
-    expect(screen.queryByRole('region', { name: 'Holdings operational status' })).not.toBeInTheDocument()
+    expect(screen.getByRole('region', { name: 'Securities' })).toBeInTheDocument()
+    expect(screen.getByRole('region', { name: 'FCN' })).toBeInTheDocument()
+    expect(screen.getByRole('region', { name: 'Options' })).toBeInTheDocument()
+    expect(screen.getByRole('region', { name: 'Cash & Settlement' })).toBeInTheDocument()
+    expect(screen.getByRole('region', { name: 'Portfolio Total' })).toBeInTheDocument()
+    expect(screen.queryByRole('region', { name: 'Derivatives' })).not.toBeInTheDocument()
+    expect(screen.getByRole('table', { name: 'FCN holdings' })).toBeInTheDocument()
+    expect(screen.getByRole('table', { name: 'Option holdings' })).toBeInTheDocument()
+    expect(screen.getByRole('table', { name: 'Cash and settlement holdings' })).toBeInTheDocument()
+    expect(screen.getByRole('table', { name: 'Portfolio total holdings' })).toBeInTheDocument()
 
-    expect(screen.getByRole('button', { name: 'Sort Quote: ascending' })).toBeInTheDocument()
-    expect(apiMocks.savePortfolioTableViewStore).not.toHaveBeenCalled()
+    expect(screen.getByRole('button', { name: /Security View\s*: Default/ })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Security Fields' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /Group Securities\s*: None/ })).toBeInTheDocument()
+    expect(await screen.findByRole('button', { name: /FCN View\s*: Position/ })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /Options View\s*: Position/ })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /Cash & Settlement View\s*: Balances/ })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /Portfolio Total View\s*: Summary/ })).toBeInTheDocument()
+    for (const label of ['FCN Fields', 'Options Fields', 'Cash & Settlement Fields', 'Portfolio Total Fields']) {
+      expect(screen.getByRole('button', { name: label })).toBeInTheDocument()
+    }
+    expect(screen.queryByText(/Contract terms and carrying amounts are explicit/)).not.toBeInTheDocument()
+    expect(screen.queryByText(/One full-portfolio row/)).not.toBeInTheDocument()
+    expect(screen.getByText('Securities Subtotal (USD)')).toBeInTheDocument()
+    expect(screen.getByText('Portfolio Total (USD)')).toBeInTheDocument()
   })
 
-  it('exports the unified grouped table using the active view columns', async () => {
-    apiMocks.getHoldingsWorkspace.mockResolvedValueOnce(
+  it('surfaces a failed Security view store without blocking holdings facts', async () => {
+    apiMocks.getPortfolioTableViewStore.mockImplementation(
+      async (_portfolioId: string, viewScope: string) => {
+        if (viewScope === 'holdings') {
+          throw new Error('View store offline.')
+        }
+        return { store: null }
+      },
+    )
+    renderHoldings()
+    await waitForHoldings()
+
+    expect(screen.getByRole('alert')).toHaveTextContent('View store offline.')
+    expect(screen.getByText('Views unavailable')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /Security View\s*:/ })).not.toBeInTheDocument()
+    expect(screen.getByRole('cell', { name: 'Alpha Fund' })).toBeInTheDocument()
+  })
+
+  it('surfaces a failed section view save', async () => {
+    apiMocks.savePortfolioTableViewStore.mockRejectedValue(new Error('View save offline.'))
+    renderHoldings()
+    const user = userEvent.setup()
+    await waitForHoldings()
+
+    await user.click(await screen.findByRole('button', { name: /FCN View\s*: Position/ }))
+    await user.click(screen.getByRole('option', { name: 'Terms & Events' }))
+
+    expect(await screen.findByRole('status')).toHaveTextContent('View save failed')
+    expect(screen.getByRole('status')).toHaveAttribute('title', 'View save offline.')
+  })
+
+  it('keeps each table field selection and persisted view scope independent', async () => {
+    renderHoldings(
       holdingsWorkspaceFixture({
-        rows: [
-          holdingFixture(),
-          holdingFixture({
-            line_id: 'holding:fcn-1',
-            position_reference_id: 'fcn-1',
-            derivative_contract_id: 'fcn-1',
-            holding_category: 'derivatives',
-            instrument_core: null,
-            derivative_contract: fcnContractFixture(),
-            quantity: 1,
-            market_value: 500,
-            market_value_base: 500,
-            carrying_value: 500,
-            carrying_value_base: 500,
-            cost_basis: 500,
-            cost_basis_base: 500,
-            coverage_status: 'event-cost',
-            valuation_basis: 'carried_cost',
-            performance_eligible: false,
-            risk_eligible: false,
-            forward_risk_status: 'excluded',
-            forward_risk_share: null,
-            forward_contribution_to_variance: null,
-            forward_annualized_volatility: null,
-          }),
-          holdingFixture({
-            line_id: 'broker:option-1:obligation',
-            position_reference_id: 'option-1',
-            derivative_contract_id: 'option-1',
-            holding_kind: 'option_obligation',
-            holding_category: 'derivatives',
-            instrument_core: null,
-            derivative_contract: optionContractFixture(),
-            quantity: 100,
-            market_value: -300,
-            market_value_base: -300,
-            cost_basis: null,
-            cost_basis_base: null,
-            open_contract_quantity: 1,
-            required_underlying_quantity: 100,
-            obligation_status: 'open',
-            related_underlying_id: 'equity-1',
-            expiry_date: '2026-12-18',
-            strike: 110,
-            premium_basis_remaining: 300,
-            liability_value: 300,
-            liability_value_base: 300,
-            carrying_value: 300,
-            carrying_value_base: 300,
-            coverage_status: 'event-liability',
-            valuation_basis: 'premium_liability',
-            performance_eligible: false,
-            risk_eligible: false,
-            is_liability: true,
-            forward_risk_status: 'excluded',
-            forward_risk_share: null,
-            forward_contribution_to_variance: null,
-            forward_annualized_volatility: null,
-          }),
-          holdingFixture({
-            line_id: 'pending:settlement_payable',
-            holding_kind: 'settlement_payable',
-            holding_category: 'cash_and_settlement',
-            instrument_core: instrumentFixture({
-              instrument_id: 'pending:settlement_payable',
-              instrument_name: 'Settlement payable · Alpha Fund',
-              instrument_type: 'other',
-              identifiers: [],
-            }),
-            quantity: -250,
-            market_value: -250,
-            market_value_base: -250,
-            cost_basis: null,
-            cost_basis_base: null,
-            settlement_date: '2026-07-17',
-            pending_until_date: '2026-07-17',
-            pending_status: 'awaiting_settlement',
-            settlement_amount: -250,
-            settlement_amount_base: -250,
-            coverage_status: 'pending-settlement',
-            analytics_scope: 'unallocated',
-            performance_scope: 'unallocated',
-            performance_eligible: false,
-            risk_eligible: false,
-            risk_budget_eligible: false,
-            forward_risk_status: 'modeled_zero',
-            forward_risk_share: 0,
-            forward_contribution_to_variance: 0,
-          }),
-        ],
+        rows: [holdingFixture(), fcnHolding(), writtenOptionHolding(), cashHolding()],
       }),
     )
     const user = userEvent.setup()
+    await waitForHoldings()
+    await screen.findByRole('button', { name: /FCN View\s*: Position/ })
 
-    renderPortfolioPage(
-      <PortfolioHomePage />,
-      '/portfolios/3/holdings',
-      '/portfolios/:portfolioId/holdings',
-    )
+    await user.click(screen.getByRole('button', { name: 'FCN Fields' }))
+    const dialog = screen.getByRole('dialog', { name: 'Choose FCN columns' })
+    const couponField = within(dialog).getByText('Annual Coupon').closest('label')!
+    await user.click(within(couponField).getByRole('checkbox'))
+    await user.click(within(dialog).getByRole('button', { name: 'Update' }))
 
-    expect(await screen.findByText('FCN · matures 2026-12-31')).toBeInTheDocument()
+    expect(
+      within(screen.getByRole('table', { name: 'FCN holdings' })).queryByRole(
+        'columnheader',
+        { name: 'Annual Coupon' },
+      ),
+    ).not.toBeInTheDocument()
+    expect(
+      within(screen.getByRole('table', { name: 'Option holdings' })).getByRole(
+        'columnheader',
+        { name: 'Type' },
+      ),
+    ).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /FCN View\s*: Position \(Edited\)/ })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /Options View\s*: Position$/ })).toBeInTheDocument()
+
     await user.click(screen.getByRole('button', { name: 'Download' }))
     await user.click(screen.getByRole('menuitem', { name: 'CSV' }))
-
     const exportedRows = tableExportMocks.downloadTable.mock.calls[0][1] as Array<
       Array<string | number | null>
     >
-    expect(exportedRows[0]).toEqual([
-      'Category',
-      'Instrument',
-      'Instrument Type',
-      'Quote',
-      'Quote Date',
+    const fcnSectionIndex = exportedRows.findIndex((row) => row[0] === 'FCN')
+    expect(exportedRows[fcnSectionIndex + 1]).not.toContain('Annual Coupon')
+
+    for (const scope of [
+      'holdings',
+      'holdings_fcn',
+      'holdings_options',
+      'holdings_cash',
+      'holdings_total',
+    ]) {
+      expect(apiMocks.getPortfolioTableViewStore).toHaveBeenCalledWith('3', scope)
+    }
+  })
+
+  it('keeps the canonical Security Return & Risk system view authoritative', async () => {
+    apiMocks.getPortfolioTableViewStore.mockImplementation(
+      async (_portfolioId: string, viewScope: string) => ({
+        store:
+          viewScope === 'holdings'
+            ? { activeViewId: 'return-risk', views: [] }
+            : null,
+      }),
+    )
+    renderHoldings()
+    await waitForHoldings()
+
+    expect(screen.getByRole('button', { name: /Security View\s*: Return & Risk/ })).toBeInTheDocument()
+    const securityTable = screen.getByRole('table', { name: 'Security holdings' })
+    for (const label of [
       'Chart 6M',
-      'Quantity',
-      'Avg Cost',
-      'Cost Basis',
-      'Position Value',
-      'Weight',
+      '1W Return',
+      '1M Return',
+      '3M Return',
+      'MTD',
+      'YTD',
       'Forward RC',
-      'Unrealized P&L',
       'Unrealized Return',
-    ])
-    expect(exportedRows).toHaveLength(9)
-    const marketRow = exportedRows.find((row) => row[1] === 'Alpha Fund')
-    const fcnRow = exportedRows.find((row) => row[1] === 'Alpha FCN')
-    const obligationRow = exportedRows.find((row) => row[1] === 'Alpha 110 Call')
-    const settlementRow = exportedRows.find(
-      (row) => row[1] === 'Settlement payable · Alpha Fund',
-    )
-    expect(marketRow?.[0]).toBe('Securities')
-    expect(fcnRow?.[0]).toBe('Derivatives')
-    expect(fcnRow?.[9]).toBe(500)
-    expect(fcnRow?.[11]).toBe('N/A')
-    expect(fcnRow?.[12]).toBe('N/A')
-    expect(obligationRow?.[0]).toBe('Derivatives')
-    expect(obligationRow?.[9]).toBe(-300)
-    expect(obligationRow?.[11]).toBe('N/A')
-    expect(settlementRow?.[0]).toBe('Cash & Settlement')
-    expect(settlementRow?.[9]).toBe(-250)
-    expect(exportedRows.find((row) => row[0] === 'Derivatives' && row[1] === 'Subtotal (USD)')?.[11]).toBe('N/A')
-    expect(exportedRows[exportedRows.length - 1]?.slice(0, 2)).toEqual([
-      'Portfolio Total',
-      'Portfolio Total (USD)',
-    ])
+    ]) {
+      expect(within(securityTable).getByRole('columnheader', { name: new RegExp(`^${label}`) })).toBeInTheDocument()
+    }
   })
 
-  it('applies taxonomy only inside Securities and keeps the other fixed categories at N/A', async () => {
-    apiMocks.getHoldingsWorkspace.mockResolvedValueOnce(
-      holdingsWorkspaceFixture({
-        rows: [
-          holdingFixture(),
-          holdingFixture({
-            line_id: 'holding:fcn-taxonomy-boundary',
-            position_reference_id: 'fcn-taxonomy-boundary',
-            derivative_contract_id: 'fcn-taxonomy-boundary',
-            holding_category: 'derivatives',
-            instrument_core: null,
-            derivative_contract: fcnContractFixture({
-              derivative_contract_id: 'fcn-taxonomy-boundary',
-              contract_name: 'Taxonomy Boundary FCN',
-            }),
-            market_value: 100,
-            market_value_base: 100,
-            allocation: 0.1,
-          }),
-          holdingFixture({
-            line_id: 'cash:USD',
-            holding_kind: 'settled_cash',
-            holding_category: 'cash_and_settlement',
-            instrument_core: instrumentFixture({
-              instrument_id: 'cash:USD',
-              instrument_name: 'USD Cash',
-              instrument_type: 'cash',
-              identifiers: [],
-            }),
-            market_value: 100,
-            market_value_base: 100,
-            allocation: 0.1,
-          }),
-        ],
-      }),
-    )
-    apiMocks.getPortfolioTaxonomyCatalog.mockResolvedValueOnce({
-      portfolio_id: '3',
-      default_planning_taxonomy_id: 'taxonomy-1',
-      taxonomies: [
-        {
-          taxonomy_id: 'taxonomy-1',
-          portfolio_id: '3',
-          name: 'Policy Allocation',
-          taxonomy_type: 'allocation',
-          primary_assignment_scope: 'instrument',
-          planning_enabled: true,
-          status: 'active',
-        },
-      ],
-      taxonomy_nodes: [
-        {
-          taxonomy_node_id: 'risk-assets',
-          taxonomy_id: 'taxonomy-1',
-          parent_taxonomy_node_id: null,
-          node_name: 'Risk Assets',
-          node_code: 'RISK',
-          sort_order: 0,
-          is_terminal: true,
-          default_target_dimension: 'weight',
-          status: 'active',
-        },
-      ],
-      taxonomy_assignments: [
-        {
-          assignment_id: 'assignment-1',
-          taxonomy_id: 'taxonomy-1',
-          target_scope: 'instrument',
-          target_entity_id: 'asset-1',
-          taxonomy_node_id: 'risk-assets',
-          status: 'active',
-        },
-      ],
-      instrument_universe: [],
-      target_sets: [],
-      target_set_lines: [],
-      target_set_integrity_issues: [],
-    })
-    const user = userEvent.setup()
-
-    renderPortfolioPage(
-      <PortfolioHomePage />,
-      '/portfolios/3/holdings',
-      '/portfolios/:portfolioId/holdings',
-    )
-
-    await screen.findByRole('cell', { name: /Taxonomy Boundary FCN/ })
-    await user.click(screen.getByRole('button', { name: 'Data & Columns' }))
-    const columnsDialog = screen.getByRole('dialog', { name: 'Choose holdings columns' })
-    await user.type(within(columnsDialog).getByPlaceholderText('Search fields'), 'Taxonomy')
-    const taxonomyField = within(columnsDialog)
-      .getByText('Taxonomy', { selector: '.portfolio-table-config-field-label' })
-      .closest('label')
-    expect(taxonomyField).not.toBeNull()
-    await user.click(taxonomyField!.querySelector('input')!)
-    await user.click(within(columnsDialog).getByRole('button', { name: 'Update' }))
-
-    const taxonomyHeader = screen.getByRole('button', { name: /Sort Taxonomy/ }).closest('th')!
-    const taxonomyIndex = Array.from(taxonomyHeader.parentElement!.children).indexOf(taxonomyHeader)
-    const securityRow = screen.getByRole('cell', { name: /Alpha Fund/ }).closest('tr')
-    const derivativeRow = screen.getByRole('cell', { name: /Taxonomy Boundary FCN/ }).closest('tr')
-    const cashRow = screen.getByRole('cell', { name: /USD Cash/ }).closest('tr')
-    expect(securityRow!.children[taxonomyIndex]).toHaveTextContent('Risk Assets')
-    expect(derivativeRow!.children[taxonomyIndex]).toHaveTextContent('N/A')
-    expect(cashRow!.children[taxonomyIndex]).toHaveTextContent('N/A')
-
-    await user.click(screen.getByRole('button', { name: /Group By\s*: None/ }))
-    await user.click(
-      within(screen.getByRole('dialog', { name: 'Group securities' })).getByRole('button', {
-        name: 'Taxonomy',
-      }),
-    )
-    expect(document.querySelectorAll('.holdings-subgroup-row')).toHaveLength(1)
-    expect(document.querySelector('.holdings-subgroup-row')).toHaveTextContent('Risk Assets')
-    expect(screen.getAllByText('Derivatives', { selector: '.holdings-group-title' })).toHaveLength(1)
-    expect(screen.getAllByText('Cash & Settlement', { selector: '.holdings-group-title' })).toHaveLength(1)
-  })
-
-  it('marks table views unavailable when the backend view store cannot be loaded', async () => {
-    apiMocks.getPortfolioTableViewStore.mockRejectedValueOnce(new Error('View store offline.'))
-
-    renderPortfolioPage(
-      <PortfolioHomePage />,
-      '/portfolios/3/holdings',
-      '/portfolios/:portfolioId/holdings',
-    )
-
-    expect(await screen.findByRole('alert')).toHaveTextContent('View store offline.')
-    expect(screen.getByText('Table views unavailable')).toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: /View\s*:/ })).not.toBeInTheDocument()
-  })
-
-  it('keeps the canonical Return & Risk system view authoritative', async () => {
-    apiMocks.getPortfolioTableViewStore.mockResolvedValueOnce({
-      store: {
-        activeViewId: 'return-risk',
-        views: [],
-      },
-    })
-
-    const user = userEvent.setup()
-    renderPortfolioPage(
-      <PortfolioHomePage />,
-      '/portfolios/3/holdings',
-      '/portfolios/:portfolioId/holdings',
-    )
-
-    await waitForHoldingsTable(user)
-    expect(await screen.findByRole('button', { name: /View\s*: Return & Risk/ })).toBeInTheDocument()
-    expect(screen.getByRole('columnheader', { name: /Chart 6M/ })).toBeInTheDocument()
-    expect(screen.getByRole('columnheader', { name: /1W Return/ })).toBeInTheDocument()
-    expect(screen.getByRole('columnheader', { name: /1M Return/ })).toBeInTheDocument()
-    expect(screen.getByRole('columnheader', { name: /3M Return/ })).toBeInTheDocument()
-    expect(screen.getByRole('columnheader', { name: /^MTD/ })).toBeInTheDocument()
-    expect(screen.getByRole('columnheader', { name: /^YTD/ })).toBeInTheDocument()
-    expect(screen.getByRole('columnheader', { name: /Forward RC/ })).toBeInTheDocument()
-    expect(screen.getByRole('columnheader', { name: /Unrealized Return/ })).toBeInTheDocument()
-  })
-
-  it('does not render the prior portfolio workspace while the next portfolio is loading', async () => {
+  it('does not render a prior portfolio workspace while a new portfolio is loading', async () => {
     const nextWorkspace = deferred<ReturnType<typeof holdingsWorkspaceFixture>>()
     apiMocks.getHoldingsWorkspace
       .mockResolvedValueOnce(holdingsWorkspaceFixture())
       .mockReturnValueOnce(nextWorkspace.promise)
-    apiMocks.getPortfolioTaxonomyCatalog.mockImplementation((portfolioId: string) =>
-      Promise.resolve({
-        portfolio_id: portfolioId,
-        default_planning_taxonomy_id: null,
-        taxonomies: [],
-        taxonomy_nodes: [],
-        taxonomy_assignments: [],
-        instrument_universe: [],
-        target_sets: [],
-        target_set_lines: [],
-        target_set_integrity_issues: [],
-      }),
-    )
 
     const user = userEvent.setup()
     render(
@@ -440,10 +374,9 @@ describe('Holdings rendered page contract', () => {
       </MemoryRouter>,
     )
 
-    expect(await screen.findByRole('cell', { name: /Alpha Fund/ })).toBeInTheDocument()
+    expect(await screen.findByRole('cell', { name: 'Alpha Fund' })).toBeInTheDocument()
     await user.click(screen.getByRole('button', { name: 'Switch portfolio' }))
-
-    expect(screen.queryByRole('cell', { name: /Alpha Fund/ })).not.toBeInTheDocument()
+    expect(screen.queryByRole('cell', { name: 'Alpha Fund' })).not.toBeInTheDocument()
 
     act(() =>
       nextWorkspace.resolve(
@@ -451,592 +384,362 @@ describe('Holdings rendered page contract', () => {
           portfolio_id: '4',
           rows: [
             holdingFixture({
-              instrument_core: {
-                ...instrumentFixture(),
+              instrument_core: instrumentFixture({
                 instrument_id: 'asset-4',
                 instrument_name: 'Beta Fund',
-              },
+              }),
             }),
           ],
         }),
       ),
     )
-    expect(await screen.findByRole('cell', { name: /Beta Fund/ })).toBeInTheDocument()
+    expect(await screen.findByRole('cell', { name: 'Beta Fund' })).toBeInTheDocument()
   })
 
-  it('keeps trend selection detail on hover and preserves total-row semantics', async () => {
-    const user = userEvent.setup()
-    renderPortfolioPage(
-      <PortfolioHomePage />,
-      '/portfolios/3/holdings',
-      '/portfolios/:portfolioId/holdings',
-    )
-
-    await waitForHoldingsTable(user)
-    const alphaCell = await screen.findByRole('cell', { name: /Alpha Fund/ })
-    expect(apiMocks.getHoldingsWorkspace).toHaveBeenCalledWith('3', {
-      as_of_date: undefined,
-    })
-    expect(alphaCell.querySelector('.holding-name-stack')).toHaveAttribute(
-      'title',
-      'Trend: Dividend-Reinvested Total Return NAV · Complete · 250 observations. Policy-preferred trend basis selected.',
-    )
-    expect(screen.queryByText(/Trend: Dividend-Reinvested Total Return NAV/)).not.toBeInTheDocument()
-    expect(screen.queryByText('Policy-preferred trend basis selected.')).not.toBeInTheDocument()
-    expect(screen.getByRole('columnheader', { name: /Chart 6M/ })).toBeInTheDocument()
-    const qualityWarning = screen.getByRole('status', { name: /Data quality warning/ })
-    expect(qualityWarning).toHaveAttribute(
-      'title',
-      'Alpha Fund YTD return is unavailable because the 2025-12-31 start anchor is missing.',
-    )
-    const totalLabel = screen.getByText('Portfolio Total (USD)')
-    const totalRow = totalLabel.closest('tr')
-    expect(totalRow).not.toBeNull()
-    expect(within(totalRow!).getByText('$800.00')).toBeInTheDocument()
-
-    await user.click(screen.getByRole('button', { name: /View\s*: Default/ }))
-    await user.click(screen.getByRole('option', { name: 'Return & Risk' }))
-
-    await waitFor(() => {
-      expect(apiMocks.getHoldingsWorkspace).toHaveBeenCalledWith('3', {
-        as_of_date: undefined,
-        include_details: true,
-      })
-    })
-    expect(screen.getByRole('columnheader', { name: /1W Return/ })).toBeInTheDocument()
-    expect(screen.getByRole('columnheader', { name: /1M Return/ })).toBeInTheDocument()
-    expect(screen.getByRole('columnheader', { name: /3M Return/ })).toBeInTheDocument()
-    expect(screen.getByRole('columnheader', { name: /6M Return/ })).toBeInTheDocument()
-    expect(screen.getByRole('columnheader', { name: /Holding Since/ })).toBeInTheDocument()
-    expect(screen.getByRole('columnheader', { name: /^MTD/ })).toBeInTheDocument()
-    expect(screen.getByRole('columnheader', { name: /^YTD/ })).toBeInTheDocument()
-    expect(screen.getByRole('columnheader', { name: /^1Y Resize/ })).toBeInTheDocument()
-
-    const holdingRow = screen.getByRole('cell', { name: /Alpha Fund/ }).closest('tr')
-    expect(holdingRow).not.toBeNull()
-    expect(within(holdingRow!).getByText('+1.23%')).toBeInTheDocument()
-    expect(within(holdingRow!).getByText('2026-06-23')).toBeInTheDocument()
-    expect(within(holdingRow!).getByText('+3.45%')).toBeInTheDocument()
-    expect(within(holdingRow!).getByText('+4.56%')).toBeInTheDocument()
-    expect(within(holdingRow!).getByText('+6.78%')).toBeInTheDocument()
-    expect(within(holdingRow!).getByText('+2.34%')).toBeInTheDocument()
-    expect(within(holdingRow!).getByText('+10.00%')).toBeInTheDocument()
-
-    const ytdHeader = screen.getByRole('columnheader', { name: /^YTD/ })
-    const ytdColumnIndex = Array.from(ytdHeader.parentElement!.children).indexOf(ytdHeader)
-    expect(holdingRow!.children[ytdColumnIndex]).toHaveTextContent('—')
-
-    const refreshedTotalRow = screen.getByText('Portfolio Total (USD)').closest('tr')
-    expect(refreshedTotalRow).not.toBeNull()
-    expect(refreshedTotalRow).not.toHaveTextContent(/TWR/i)
-    const expectedTotalReturns = {
-      instrument_return_1w: '+1.23%',
-      instrument_return_1m: '+3.45%',
-      instrument_return_3m: '+4.56%',
-      instrument_return_6m: '+6.78%',
-      instrument_return_mtd: '+2.34%',
-      instrument_return_ytd: '—',
-      instrument_return_1y: '+10.00%',
-    }
-    for (const [columnKey, expectedReturn] of Object.entries(expectedTotalReturns)) {
-      const totalCell = refreshedTotalRow!.querySelector(`[data-column-key="${columnKey}"]`)
-      expect(totalCell).not.toBeNull()
-      expect(totalCell).toHaveTextContent(expectedReturn)
-      expect(totalCell).toHaveAttribute(
-        'title',
-        'Current-holdings basket market return using as-of market-value weights; it may include distributions and is neither book unrealized P&L nor historical portfolio TWR.',
-      )
-    }
-  })
-
-  it('shows short-option position facts without coverage pairing and renders event day change as N/A', async () => {
-    apiMocks.getHoldingsWorkspace.mockResolvedValue(
+  it('puts FCN and option facts in explicit derivative columns instead of name annotations', async () => {
+    renderHoldings(
       holdingsWorkspaceFixture({
-        rows: [
-          holdingFixture({
-            line_id: 'broker:option-1:obligation',
-            position_reference_id: 'option-1',
-            derivative_contract_id: 'option-1',
-            holding_kind: 'option_obligation',
-            holding_category: 'derivatives',
-            instrument_core: null,
-            derivative_contract: optionContractFixture({
-              derivative_contract_id: 'option-1',
-              contract_name: 'Alpha 110 Call',
-            }),
-            quantity: -2,
-            open_contract_quantity: 2,
-            required_underlying_quantity: 200,
-            obligation_status: 'open',
-            related_underlying_id: 'equity-1',
-            expiry_date: '2026-12-18',
-            days_to_expiry: 156,
-            strike: 110,
-            option_type: 'call',
-            contract_multiplier: 100,
-            strike_notional: 22_000,
-            strike_notional_base: 22_000,
-            premium_basis_remaining: 300,
-            liability_value: 300,
-            liability_value_base: 300,
-            carrying_value: 300,
-            carrying_value_base: 300,
-            market_value: -300,
-            market_value_base: -300,
-            cost_basis: null,
-            cost_basis_base: null,
-            last_price: null,
-            quote_as_of_date: null,
-            quote_basis: 'premium_liability',
-            quote_provider: null,
-            quote_status: 'event-cost',
-            coverage_status: 'event-liability',
-            valuation_basis: 'premium_liability',
-            fair_value: null,
-            fair_value_coverage_status: 'unavailable',
-            performance_eligible: false,
-            risk_eligible: false,
-            forward_risk_status: 'excluded',
-            forward_risk_share: null,
-            forward_contribution_to_variance: null,
-            forward_annualized_volatility: null,
-            is_liability: true,
-            day_change_value: 0,
-            day_change_value_base: 0,
-            day_change_pct: 0,
-            allocation: -0.03,
-            price_chart_1m: [],
-            price_chart_3m: [],
-            price_chart_6m: [],
-            price_chart_1y: [],
-          }),
-        ],
+        rows: [fcnHolding(), writtenOptionHolding()],
         totals: {
-          market_value: -300,
+          nav: 200,
+          market_value: 200,
           day_change_pct: null,
           day_change_value: null,
-          cost_basis: 0,
-          allocation: -0.03,
-        },
-        operational_summary: {
-          expiry_buckets: [
-            {
-              bucket: 'later',
-              obligation_count: 1,
-              open_contract_quantity: 2,
-              required_underlying_quantity: 200,
-              carrying_liability_base: 300,
-            },
-          ],
-          option_obligation_exposure: {
-            obligation_count: 1,
-            open_contract_quantity: 2,
-            underlying_equivalent_quantity: 200,
-            strike_notional_base: 22_000,
-          },
-          settlement_exposure: {
-            pending_line_count: 0,
-            receivable_base: 0,
-            payable_base: 0,
-            net_base: 0,
-            earliest_settlement_date: null,
-            overdue_line_count: 0,
-            unavailable_base_line_count: 0,
-          },
-        },
-        operational_alerts: [],
-      }),
-    )
-    const user = userEvent.setup()
-
-    renderPortfolioPage(
-      <PortfolioHomePage />,
-      '/portfolios/3/holdings',
-      '/portfolios/:portfolioId/holdings',
-    )
-
-    const obligationCell = await screen.findByRole('cell', {
-      name: /Alpha 110 Call/,
-    })
-    expect(obligationCell).toHaveTextContent('Short Call · expires 2026-12-18 · Open')
-    expect(obligationCell).toHaveTextContent(
-      '2.00 open contracts · 200.00 underlying units · strike $110.0000',
-    )
-    expect(obligationCell).toHaveTextContent(
-      'Remaining premium basis $300.00 · Carrying liability $300.00',
-    )
-    expect(screen.queryByText('Uncovered')).not.toBeInTheDocument()
-    const operationalStatus = screen.getByRole('region', { name: 'Holdings operational status' })
-    expect(within(operationalStatus).getByText('Open short option contracts').nextElementSibling).toHaveTextContent('2.00')
-    expect(within(operationalStatus).getByText('Option strike notional').nextElementSibling).toHaveTextContent('$22,000.00')
-    expect(within(operationalStatus).queryByText('Pending settlement net')).not.toBeInTheDocument()
-    expect(within(operationalStatus).queryByText('Overdue settlements')).not.toBeInTheDocument()
-
-    await waitForHoldingsTable(user)
-    await screen.findByRole('cell', {
-      name: /Alpha 110 Call/,
-    })
-    await user.click(screen.getByRole('button', { name: /View\s*: Default/ }))
-    await user.click(screen.getByRole('option', { name: 'Return & Risk' }))
-    const obligationRow = screen.getByRole('cell', { name: /Alpha 110 Call/ }).closest('tr')
-    const dayChangeHeader = screen.getByRole('columnheader', { name: /Day Change/ })
-    const dayReturnHeader = screen.getByRole('columnheader', { name: /Day Return/ })
-    const volatilityHeader = screen.getByRole('columnheader', { name: /1M Vol/ })
-    const forwardRiskHeader = screen.getByRole('columnheader', { name: /Forward RC/ })
-    const dayChangeIndex = Array.from(dayChangeHeader.parentElement!.children).indexOf(dayChangeHeader)
-    const dayReturnIndex = Array.from(dayReturnHeader.parentElement!.children).indexOf(dayReturnHeader)
-    const volatilityIndex = Array.from(volatilityHeader.parentElement!.children).indexOf(volatilityHeader)
-    const forwardRiskIndex = Array.from(forwardRiskHeader.parentElement!.children).indexOf(forwardRiskHeader)
-    expect(obligationRow!.children[dayChangeIndex]).toHaveTextContent('N/A')
-    expect(obligationRow!.children[dayReturnIndex]).toHaveTextContent('N/A')
-    expect(obligationRow!.children[dayChangeIndex]).not.toHaveTextContent('$0.00')
-    expect(obligationRow!.children[dayReturnIndex]).not.toHaveTextContent('0.00%')
-    expect(obligationRow!.children[volatilityIndex]).toHaveTextContent('N/A')
-    expect(obligationRow!.children[forwardRiskIndex]).toHaveTextContent('N/A')
-  })
-
-  it('keeps event-valued P&L unavailable while preserving a genuine quoted zero', async () => {
-    apiMocks.getHoldingsWorkspace.mockResolvedValue(
-      holdingsWorkspaceFixture({
-        rows: [
-          holdingFixture({
-            line_id: 'holding:event-option',
-            position_reference_id: 'event-option',
-            derivative_contract_id: 'event-option',
-            holding_category: 'derivatives',
-            instrument_core: null,
-            derivative_contract: optionContractFixture({
-              derivative_contract_id: 'event-option',
-              contract_name: 'Carried Option',
-            }),
-            quantity: 1,
-            market_value: 500,
-            market_value_base: 500,
-            cost_basis: 500,
-            cost_basis_base: 500,
-            carrying_value: 500,
-            carrying_value_base: 500,
-            valuation_basis: 'carried_cost',
-            coverage_status: 'event-cost',
-            performance_eligible: false,
-            risk_eligible: false,
-            forward_risk_status: 'excluded',
-            forward_risk_share: null,
-            forward_contribution_to_variance: null,
-            forward_annualized_volatility: null,
-            day_change_value: 0,
-            day_change_value_base: 0,
-            day_change_pct: 0,
-            allocation: 5 / 12,
-          }),
-          holdingFixture({
-            line_id: 'holding:quoted-fund',
-            instrument_core: instrumentFixture({
-              instrument_id: 'quoted-fund',
-              instrument_name: 'Quoted Fund',
-              instrument_type: 'public_fund',
-              currency: 'USD',
-              identifiers: [],
-            }),
-            quantity: 7,
-            last_price: 100,
-            market_value: 700,
-            market_value_base: 700,
-            cost_basis: 700,
-            cost_basis_base: 700,
-            valuation_basis: 'market_quote',
-            fair_value: 700,
-            fair_value_coverage_status: 'complete',
-            day_change_value: 0,
-            day_change_value_base: 0,
-            day_change_pct: 0,
-            allocation: 7 / 12,
-          }),
-        ],
-        totals: {
-          market_value: 1200,
-          day_change_pct: 0,
-          day_change_value: 0,
-          cost_basis: 1200,
-          allocation: 1,
+          cost_basis: 500,
+          allocation: 0.2,
         },
       }),
     )
     const user = userEvent.setup()
+    await waitForHoldings()
 
-    renderPortfolioPage(
-      <PortfolioHomePage />,
-      '/portfolios/3/holdings',
-      '/portfolios/:portfolioId/holdings',
-    )
+    const fcnTable = screen.getByRole('table', { name: 'FCN holdings' })
+    for (const label of [
+      'Notional',
+      'Underlying Terms',
+      'Annual Coupon',
+      'Remaining Basis',
+    ]) {
+      expect(within(fcnTable).getByRole('columnheader', { name: label })).toBeInTheDocument()
+    }
+    const fcnNameCell = within(fcnTable).getByRole('cell', { name: 'Alpha FCN' })
+    expect(fcnNameCell).toHaveTextContent(/^Alpha FCN$/)
+    expect(within(fcnTable).getByText(/Initial 100\.0000/)).toBeInTheDocument()
 
-    await waitForHoldingsTable(user)
-    await user.click(await screen.findByRole('button', { name: /View\s*: Default/ }))
-    await user.click(screen.getByRole('option', { name: 'Return & Risk' }))
+    await user.click(await screen.findByRole('button', { name: /FCN View\s*: Position/ }))
+    await user.click(screen.getByRole('option', { name: 'Terms & Events' }))
+    for (const label of ['Final Observation', 'Issuer', 'Counterparty']) {
+      expect(within(fcnTable).getByRole('columnheader', { name: label })).toBeInTheDocument()
+    }
+    expect(within(fcnTable).getByText('Fixture Issuer')).toBeInTheDocument()
 
-    const unrealizedValueHeader = screen.getByRole('columnheader', { name: /Unrealized P&L/ })
-    const unrealizedPctHeader = screen.getByRole('columnheader', { name: /Unrealized Return/ })
-    const chartHeader = screen.getByRole('columnheader', { name: /Chart 6M/ })
-    const returnHeader = screen.getByRole('columnheader', { name: /1M Return/ })
-    const volatilityHeader = screen.getByRole('columnheader', { name: /1M Vol/ })
-    const forwardRiskHeader = screen.getByRole('columnheader', { name: /Forward RC/ })
-    const drawdownHeader = screen.getByRole('columnheader', { name: /Current DD/ })
-    const headerCells = Array.from(unrealizedValueHeader.parentElement!.children)
-    const unrealizedValueIndex = headerCells.indexOf(unrealizedValueHeader)
-    const unrealizedPctIndex = headerCells.indexOf(unrealizedPctHeader)
-    const chartIndex = headerCells.indexOf(chartHeader)
-    const returnIndex = headerCells.indexOf(returnHeader)
-    const volatilityIndex = headerCells.indexOf(volatilityHeader)
-    const forwardRiskIndex = headerCells.indexOf(forwardRiskHeader)
-    const drawdownIndex = headerCells.indexOf(drawdownHeader)
-    const eventRow = screen.getByRole('cell', { name: /Carried Option/ }).closest('tr')
-    const quotedRow = screen.getByRole('cell', { name: /Quoted Fund/ }).closest('tr')
+    await user.click(screen.getByRole('button', { name: /FCN View\s*: Terms & Events/ }))
+    await user.click(screen.getByRole('option', { name: 'Valuation' }))
+    expect(within(fcnTable).getByRole('columnheader', { name: 'Fair Value Status' })).toBeInTheDocument()
 
-    expect(eventRow!.children[unrealizedValueIndex]).toHaveTextContent('N/A')
-    expect(eventRow!.children[unrealizedPctIndex]).toHaveTextContent('N/A')
-    expect(eventRow!.children[chartIndex]).toHaveTextContent('N/A')
-    expect(eventRow!.children[returnIndex]).toHaveTextContent('N/A')
-    expect(eventRow!.children[volatilityIndex]).toHaveTextContent('N/A')
-    expect(eventRow!.children[forwardRiskIndex]).toHaveTextContent('N/A')
-    expect(eventRow!.children[drawdownIndex]).toHaveTextContent('N/A')
-    expect(quotedRow!.children[unrealizedValueIndex]).toHaveTextContent('$0.00')
-    expect(quotedRow!.children[unrealizedPctIndex]).toHaveTextContent('0.00%')
-    expect(quotedRow!.children[returnIndex]).toHaveTextContent('+3.45%')
+    const optionTable = screen.getByRole('table', { name: 'Option holdings' })
+    for (const label of [
+      'Side',
+      'Type',
+      'Underlying',
+      'Strike',
+      'Open Contracts',
+      'Multiplier',
+      'Remaining Basis',
+      'Strike Notional (USD)',
+      'Status',
+    ]) {
+      expect(within(optionTable).getByRole('columnheader', { name: label })).toBeInTheDocument()
+    }
+    expect(within(optionTable).getByText('Written')).toBeInTheDocument()
+    expect(within(optionTable).getAllByText('$22,000.00')).toHaveLength(2)
 
-    const totalRow = screen.getByText('Portfolio Total (USD)').closest('tr')
-    expect(totalRow!.querySelector('[data-column-key="day_change_value"]')).toHaveTextContent('N/A')
-    expect(totalRow!.querySelector('[data-column-key="day_change_pct"]')).toHaveTextContent('N/A')
-    expect(totalRow!.querySelector('[data-column-key="unrealized_value"]')).toHaveTextContent('N/A')
-    expect(totalRow!.querySelector('[data-column-key="unrealized_pct"]')).toHaveTextContent('N/A')
+    await user.click(screen.getByRole('button', { name: /Options View\s*: Position/ }))
+    await user.click(screen.getByRole('option', { name: 'Contract Terms' }))
+    expect(within(optionTable).getByRole('columnheader', { name: 'Underlying Equivalent' })).toBeInTheDocument()
 
-    await user.click(screen.getByRole('button', { name: /Group By/ }))
-    await user.click(within(screen.getByRole('dialog', { name: 'Group securities' })).getByRole('button', { name: 'Currency' }))
-    const securityGroupRow = document.querySelector('.holdings-subgroup-row')
-    const derivativeCategoryRow = screen
-      .getByText('Derivatives', { selector: '.holdings-group-title' })
-      .closest('tr')
-    expect(securityGroupRow!.querySelector('[data-column-key="day_change_value"]')).toHaveTextContent('$0.00')
-    expect(securityGroupRow!.querySelector('[data-column-key="unrealized_value"]')).toHaveTextContent('$0.00')
-    expect(securityGroupRow!.querySelector('[data-column-key="unrealized_pct"]')).toHaveTextContent('0.00%')
-    expect(securityGroupRow!.querySelector('[data-column-key="forward_risk_share"]')).toHaveTextContent('100.00%')
-    expect(derivativeCategoryRow!.querySelector('[data-column-key="day_change_value"]')).toHaveTextContent('N/A')
-    expect(derivativeCategoryRow!.querySelector('[data-column-key="unrealized_value"]')).toHaveTextContent('N/A')
-
-    await user.click(screen.getByRole('button', { name: 'Download' }))
-    await user.click(screen.getByRole('menuitem', { name: 'CSV' }))
-    expect(tableExportMocks.downloadTable).toHaveBeenCalledTimes(1)
-    const exportedRows = tableExportMocks.downloadTable.mock.calls[0][1] as Array<Array<string | number | null>>
-    const exportHeader = exportedRows[0]
-    const exportUnrealizedValueIndex = exportHeader.indexOf('Unrealized P&L')
-    const exportUnrealizedPctIndex = exportHeader.indexOf('Unrealized Return')
-    const exportReturnIndex = exportHeader.indexOf('1M Return')
-    const exportVolatilityIndex = exportHeader.indexOf('1M Vol')
-    const exportForwardRiskIndex = exportHeader.indexOf('Forward RC')
-    const exportedEventRow = exportedRows.find((row) => row.includes('Carried Option'))
-    const exportedQuotedRow = exportedRows.find((row) => row.includes('Quoted Fund'))
-    const exportedTotalRow = exportedRows.find((row) => row[0] === 'Portfolio Total')
-    expect(exportedEventRow?.[exportUnrealizedValueIndex]).toBe('N/A')
-    expect(exportedEventRow?.[exportUnrealizedPctIndex]).toBe('N/A')
-    expect(exportedEventRow?.[exportReturnIndex]).toBe('N/A')
-    expect(exportedEventRow?.[exportVolatilityIndex]).toBe('N/A')
-    expect(exportedEventRow?.[exportForwardRiskIndex]).toBe('N/A')
-    expect(exportedQuotedRow?.[exportUnrealizedValueIndex]).toBe(0)
-    expect(exportedQuotedRow?.[exportUnrealizedPctIndex]).toBe(0)
-    expect(exportedTotalRow?.[exportUnrealizedValueIndex]).toBe('N/A')
-    expect(exportedTotalRow?.[exportUnrealizedPctIndex]).toBe('N/A')
+    await user.click(screen.getByRole('button', { name: /Options View\s*: Contract Terms/ }))
+    await user.click(screen.getByRole('option', { name: 'Valuation' }))
+    expect(within(optionTable).getByRole('columnheader', { name: 'Basis Type' })).toBeInTheDocument()
+    expect(within(optionTable).getByText('Remaining Premium')).toBeInTheDocument()
   })
 
-  it('excludes cash from the unrealized-return denominator', async () => {
-    apiMocks.getHoldingsWorkspace.mockResolvedValueOnce(
+  it('gives monetary balances settlement fields and no cost or unrealized columns', async () => {
+    const pending = cashHolding({
+      line_id: 'pending:settlement_receivable',
+      holding_kind: 'settlement_receivable',
+      instrument_core: instrumentFixture({
+        instrument_id: 'pending:settlement_receivable',
+        instrument_name: 'Settlement receivable · Alpha Fund',
+        instrument_type: 'other',
+        currency: 'USD',
+        identifiers: [],
+      }),
+      available_for_trading: false,
+      settlement_date: '2026-07-16',
+      pending_until_date: '2026-07-17',
+      pending_status: 'awaiting_settlement',
+      economic_instrument_id: 'asset-1',
+      economic_instrument_ref: instrumentFixture(),
+      coverage_status: 'pending-settlement',
+    })
+    renderHoldings(
       holdingsWorkspaceFixture({
-        rows: [
-          holdingFixture({
-            quantity: 10,
-            last_price: 12,
-            market_value: 120,
-            market_value_base: 120,
-            cost_basis: 100,
-            cost_basis_base: 100,
-            allocation: 0.6,
-          }),
-          holdingFixture({
-            line_id: 'cash:USD',
-            holding_category: 'cash_and_settlement',
-            instrument_core: instrumentFixture({
-              instrument_id: 'cash:USD',
-              instrument_name: 'USD Cash',
-              instrument_type: 'cash',
-              currency: 'USD',
-              identifiers: [],
-            }),
-            quantity: 80,
-            last_price: 1,
-            market_value: 80,
-            market_value_base: 80,
-            cost_basis_method: null,
-            cost_basis: null,
-            cost_basis_base: null,
-            allocation: 0.4,
-            day_change_pct: 0,
-            day_change_value: 0,
-            day_change_value_base: 0,
-            price_chart_1m: [],
-            price_chart_3m: [],
-            price_chart_6m: [],
-            price_chart_1y: [],
-            coverage_status: 'cash',
-            risk_eligible: false,
-            forward_risk_status: 'modeled_zero',
-            forward_risk_share: 0,
-            forward_contribution_to_variance: 0,
-            forward_annualized_volatility: 0,
-            account_ids: ['cash-account'],
-            account_count: 1,
-            open_position_lot_count: 0,
-          }),
-        ],
+        rows: [pending],
         totals: {
+          nav: 200,
           market_value: 200,
           day_change_pct: 0,
           day_change_value: 0,
-          cost_basis: 100,
+          cost_basis: 0,
           allocation: 1,
         },
       }),
     )
+    await waitForHoldings()
 
-    const user = userEvent.setup()
-    renderPortfolioPage(
-      <PortfolioHomePage />,
-      '/portfolios/3/holdings',
-      '/portfolios/:portfolioId/holdings',
-    )
-
-    await waitForHoldingsTable(user)
-    const totalRow = (await screen.findByText('Portfolio Total (USD)')).closest('tr')
-    expect(totalRow).not.toBeNull()
-    expect(totalRow!.querySelector('[data-column-key="unrealized_pct"]')).toHaveTextContent('+20.00%')
+    const table = screen.getByRole('table', { name: 'Cash and settlement holdings' })
+    for (const label of [
+      'Type',
+      'Available',
+      'Local Amount',
+      'Base Value (USD)',
+      'Portfolio Weight',
+      'Settlement Date',
+      'Pending Until',
+      'Related Instrument',
+      'Settlement Status',
+    ]) {
+      expect(within(table).getByRole('columnheader', { name: label })).toBeInTheDocument()
+    }
+    expect(within(table).queryByRole('columnheader', { name: /Cost Basis/ })).not.toBeInTheDocument()
+    expect(within(table).queryByRole('columnheader', { name: /Unrealized/ })).not.toBeInTheDocument()
+    expect(within(table).getByText('2026-07-16')).toBeInTheDocument()
+    expect(within(table).getByText('Alpha Fund')).toBeInTheDocument()
+    const portfolioTotal = screen.getByText('Portfolio Total (USD)').closest('tr')!
+    expect(portfolioTotal.querySelector('[data-column-key="unrealized_value"]')).toHaveTextContent('$0.00')
+    expect(portfolioTotal.querySelector('[data-column-key="unrealized_pct"]')).toHaveTextContent('0.00%')
   })
 
-  it('uses current base-market-value weights for group and total instrument returns', async () => {
-    apiMocks.getHoldingsWorkspace.mockResolvedValue(
+  it('groups only Securities with the current taxonomy, independently of the holdings date', async () => {
+    const security = holdingFixture({
+      taxonomy_id: 'historical-taxonomy',
+      taxonomy_node_id: 'historical-leaf',
+    })
+    renderHoldings(
       holdingsWorkspaceFixture({
-        rows: [
-          holdingFixture({
-            line_id: 'holding:fund-a',
-            instrument_core: instrumentFixture({
-              instrument_id: 'fund-a',
-              instrument_name: 'Fund A',
-              instrument_type: 'public_fund',
-              currency: 'USD',
-              identifiers: [{ identifier_type: 'ticker', identifier_value: 'FUNDA', is_primary: true }],
-            }),
-            market_value: 750,
-            market_value_base: 750,
-            cost_basis: 750,
-            cost_basis_base: 750,
-            allocation: 0.75,
-            instrument_return_1m: 0.10,
-          }),
-          holdingFixture({
-            line_id: 'holding:fund-b',
-            instrument_core: instrumentFixture({
-              instrument_id: 'fund-b',
-              instrument_name: 'Fund B',
-              instrument_type: 'public_fund',
-              currency: 'USD',
-              identifiers: [{ identifier_type: 'ticker', identifier_value: 'FUNDB', is_primary: true }],
-            }),
-            market_value: 250,
-            market_value_base: 250,
-            cost_basis: 250,
-            cost_basis_base: 250,
-            allocation: 0.25,
-            instrument_return_1m: -0.10,
-          }),
+        rows: [security, fcnHolding(), cashHolding()],
+      }),
+      taxonomyCatalogFixture({
+        default_planning_taxonomy_id: 'current-taxonomy',
+        taxonomies: [
+          {
+            taxonomy_id: 'current-taxonomy',
+            portfolio_id: '3',
+            name: 'Current Allocation',
+            taxonomy_type: 'allocation',
+            primary_assignment_scope: 'instrument',
+            planning_enabled: true,
+            root_default_target_dimension: 'weight',
+            status: 'active',
+          },
         ],
+        taxonomy_nodes: [
+          {
+            taxonomy_node_id: 'current-risk-assets',
+            taxonomy_id: 'current-taxonomy',
+            parent_taxonomy_node_id: null,
+            node_name: 'Current Risk Assets',
+            sort_order: 0,
+            is_terminal: false,
+            default_target_dimension: 'weight',
+            status: 'active',
+          },
+          {
+            taxonomy_node_id: 'current-listed-funds',
+            taxonomy_id: 'current-taxonomy',
+            parent_taxonomy_node_id: 'current-risk-assets',
+            node_name: 'Current Listed Funds',
+            sort_order: 0,
+            is_terminal: true,
+            default_target_dimension: 'weight',
+            status: 'active',
+          },
+        ],
+        taxonomy_assignments: [
+          {
+            assignment_id: 'current-assignment',
+            taxonomy_id: 'current-taxonomy',
+            target_scope: 'instrument',
+            target_entity_id: 'asset-1',
+            taxonomy_node_id: 'current-listed-funds',
+            status: 'active',
+          },
+        ],
+      }),
+    )
+    const user = userEvent.setup()
+    await waitForHoldings()
+    await user.click(screen.getByRole('button', { name: /Group Securities\s*: None/ }))
+    await user.click(
+      within(screen.getByRole('dialog', { name: 'Group securities' })).getByRole('button', {
+        name: 'Taxonomy',
+      }),
+    )
+
+    const securityTable = screen.getByRole('table', { name: 'Security holdings' })
+    expect(within(securityTable).getAllByText('Current Risk Assets')).toHaveLength(2)
+    expect(within(securityTable).getByText('Current Listed Funds')).toBeInTheDocument()
+    expect(within(screen.getByRole('table', { name: 'FCN holdings' })).queryByText('Current Risk Assets')).not.toBeInTheDocument()
+    expect(within(screen.getByRole('table', { name: 'Cash and settlement holdings' })).queryByText('Current Risk Assets')).not.toBeInTheDocument()
+  })
+
+  it('shows Unassigned when a Security has no assignment in the current taxonomy', async () => {
+    renderHoldings(
+      holdingsWorkspaceFixture({
+        rows: [holdingFixture()],
+      }),
+      taxonomyCatalogFixture({
+        default_planning_taxonomy_id: 'current-taxonomy',
+        taxonomies: [
+          {
+            taxonomy_id: 'current-taxonomy',
+            portfolio_id: '3',
+            name: 'Current Allocation',
+            taxonomy_type: 'allocation',
+            primary_assignment_scope: 'instrument',
+            planning_enabled: true,
+            root_default_target_dimension: 'weight',
+            status: 'active',
+          },
+        ],
+      }),
+    )
+    const user = userEvent.setup()
+    await waitForHoldings()
+
+    const securityRow = screen.getByRole('cell', { name: 'Alpha Fund' }).closest('tr')!
+    expect(securityRow.querySelector('[data-column-key="taxonomy_top"]')).toHaveTextContent('Unassigned')
+    expect(securityRow.querySelector('[data-column-key="taxonomy_leaf"]')).toHaveTextContent('Unassigned')
+
+    await user.click(screen.getByRole('button', { name: /Group Securities\s*: None/ }))
+    await user.click(
+      within(screen.getByRole('dialog', { name: 'Group securities' })).getByRole('button', {
+        name: 'Taxonomy',
+      }),
+    )
+    expect(document.querySelector('.holdings-subgroup-row')).toHaveTextContent('Unassigned')
+  })
+
+  it('uses full current capital so settled cash dilutes both current-basket and portfolio unrealized returns', async () => {
+    const security = holdingFixture({
+      market_value: 800,
+      market_value_base: 800,
+      cost_basis: 700,
+      cost_basis_base: 700,
+      allocation: 0.8,
+      instrument_return_1m: 0.1,
+    })
+    renderHoldings(
+      holdingsWorkspaceFixture({
+        rows: [security, cashHolding()],
         totals: {
+          nav: 1000,
           market_value: 1000,
-          day_change_pct: 0.01,
-          day_change_value: 10,
-          cost_basis: 1000,
+          day_change_pct: 0.008,
+          day_change_value: 8,
+          cost_basis: 700,
           allocation: 1,
         },
       }),
     )
-    const user = userEvent.setup()
+    await waitForHoldings()
 
-    renderPortfolioPage(
-      <PortfolioHomePage />,
-      '/portfolios/3/holdings',
-      '/portfolios/:portfolioId/holdings',
-    )
-
-    await waitForHoldingsTable(user)
-    await screen.findByRole('cell', { name: /Fund A/ })
-    await user.click(screen.getByRole('button', { name: /View\s*: Default/ }))
-    await user.click(screen.getByRole('option', { name: 'Return & Risk' }))
-    await user.click(screen.getByRole('button', { name: /Group By\s*: None/ }))
-    await user.click(screen.getByRole('button', { name: 'Instrument Type' }))
-
-    const groupRow = document.querySelector('.holdings-subgroup-row')
-    const totalRow = screen.getByText('Portfolio Total (USD)').closest('tr')
-    expect(groupRow).not.toBeNull()
-    expect(totalRow).not.toBeNull()
-    expect(groupRow!.querySelector('[data-column-key="instrument_return_1m"]')).toHaveTextContent('+5.00%')
-    expect(totalRow!.querySelector('[data-column-key="instrument_return_1m"]')).toHaveTextContent('+5.00%')
-    expect(groupRow!.querySelector('[data-column-key="instrument_holding_max_drawdown"]')?.textContent?.trim()).toBe('')
-    expect(totalRow!.querySelector('[data-column-key="instrument_holding_max_drawdown"]')?.textContent?.trim()).toBe('')
-    expect(groupRow!.querySelector('[data-column-key="holding_date"]')?.textContent?.trim()).toBe('')
-    expect(totalRow!.querySelector('[data-column-key="holding_date"]')?.textContent?.trim()).toBe('')
-    expect(groupRow!.querySelector('[data-column-key="instrument_return_1m"]')).toHaveAttribute(
-      'data-aggregation-kind',
-      'current_weight_return',
-    )
-    expect(groupRow!.querySelector('[data-column-key="instrument_holding_max_drawdown"]')).toHaveAttribute(
-      'data-aggregation-kind',
-      'none',
-    )
+    const totalRow = screen.getByText('Portfolio Total (USD)').closest('tr')!
+    expect(totalRow.querySelector('[data-column-key="weight"]')).toHaveTextContent('100.00%')
+    expect(totalRow.querySelector('[data-column-key="instrument_return_1m"]')).toHaveTextContent('+8.00%')
+    expect(totalRow.querySelector('[data-column-key="cost_basis_base"]')).toHaveTextContent('$700.00')
+    expect(totalRow.querySelector('[data-column-key="unrealized_return_basis"]')).toHaveTextContent('$900.00')
+    expect(totalRow.querySelector('[data-column-key="unrealized_pct"]')).toHaveTextContent('+11.11%')
+    expect(totalRow.querySelector('[data-column-key="forward_risk_share"]')).toHaveTextContent('+100.00%')
+    expect(screen.getByText('Securities Subtotal (USD)').closest('tr')).toHaveTextContent('80.00%')
   })
 
-  it('withholds grouped local-currency returns when the current basket spans currencies', async () => {
-    apiMocks.getHoldingsWorkspace.mockResolvedValue(
+  it('withholds a Portfolio Total current-basket return when rows do not reconcile to canonical NAV', async () => {
+    renderHoldings(
       holdingsWorkspaceFixture({
         rows: [
           holdingFixture({
-            line_id: 'holding:usd-fund',
-            instrument_core: instrumentFixture({
-              instrument_id: 'usd-fund',
-              instrument_name: 'USD Fund',
-              instrument_type: 'public_fund',
-              currency: 'USD',
-              identifiers: [],
-            }),
-            market_value: 500,
-            market_value_base: 500,
-            cost_basis: 500,
-            cost_basis_base: 500,
-            allocation: 0.5,
-            instrument_return_1m: 0.1,
-          }),
-          holdingFixture({
-            line_id: 'holding:cny-fund',
-            instrument_core: instrumentFixture({
-              instrument_id: 'cny-fund',
-              instrument_name: 'CNY Fund',
-              instrument_type: 'public_fund',
-              currency: 'CNY',
-              identifiers: [],
-            }),
-            market_value: 3_500,
-            market_value_base: 500,
-            cost_basis: 3_500,
-            cost_basis_base: 500,
-            allocation: 0.5,
+            market_value: 900,
+            market_value_base: 900,
+            allocation: 0.9,
             instrument_return_1m: 0.1,
           }),
         ],
         totals: {
+          nav: 1000,
+          market_value: 900,
+          day_change_pct: null,
+          day_change_value: null,
+          cost_basis: 700,
+          allocation: 0.9,
+        },
+      }),
+    )
+    await waitForHoldings()
+
+    const totalRow = screen.getByText('Portfolio Total (USD)').closest('tr')!
+    expect(totalRow.querySelector('[data-column-key="instrument_return_1m"]')).toHaveTextContent('—')
+  })
+
+  it('also treats base-currency pending settlement as zero-return capital in the total denominator', async () => {
+    const security = holdingFixture({
+      market_value: 800,
+      market_value_base: 800,
+      cost_basis: 800,
+      cost_basis_base: 800,
+      allocation: 0.8,
+      instrument_return_1m: 0.1,
+    })
+    const pending = cashHolding({
+      line_id: 'pending:settlement_receivable',
+      holding_kind: 'settlement_receivable',
+      available_for_trading: false,
+      coverage_status: 'pending-settlement',
+    })
+    renderHoldings(
+      holdingsWorkspaceFixture({
+        rows: [security, pending],
+        totals: {
+          nav: 1000,
+          market_value: 1000,
+          day_change_pct: 0,
+          day_change_value: 0,
+          cost_basis: 800,
+          allocation: 1,
+        },
+      }),
+    )
+    await waitForHoldings()
+    const totalRow = screen.getByText('Portfolio Total (USD)').closest('tr')!
+    expect(totalRow.querySelector('[data-column-key="instrument_return_1m"]')).toHaveTextContent('+8.00%')
+  })
+
+  it('fails closed when only local-currency returns exist for a non-base security', async () => {
+    const foreignSecurity = holdingFixture({
+      instrument_core: instrumentFixture({ currency: 'HKD' }),
+      market_value: 7800,
+      market_value_base: 1000,
+      cost_basis: 7800,
+      cost_basis_base: 1000,
+      allocation: 1,
+      instrument_return_1m: 0.1,
+    })
+    renderHoldings(
+      holdingsWorkspaceFixture({
+        rows: [foreignSecurity],
+        totals: {
+          nav: 1000,
           market_value: 1000,
           day_change_pct: 0,
           day_change_value: 0,
@@ -1045,31 +748,48 @@ describe('Holdings rendered page contract', () => {
         },
       }),
     )
-    const user = userEvent.setup()
+    await waitForHoldings()
 
-    renderPortfolioPage(
-      <PortfolioHomePage />,
-      '/portfolios/3/holdings',
-      '/portfolios/:portfolioId/holdings',
-    )
-
-    await waitForHoldingsTable(user)
-    await screen.findByRole('cell', { name: /CNY Fund/ })
-    await user.click(screen.getByRole('button', { name: /View\s*: Default/ }))
-    await user.click(screen.getByRole('option', { name: 'Return & Risk' }))
-    await user.click(screen.getByRole('button', { name: /Group By\s*: None/ }))
-    await user.click(screen.getByRole('button', { name: 'Instrument Type' }))
-
-    const groupRow = document.querySelector('.holdings-subgroup-row')
-    const totalRow = screen.getByText('Portfolio Total (USD)').closest('tr')
-    expect(groupRow).not.toBeNull()
-    expect(totalRow).not.toBeNull()
-    expect(groupRow!.querySelector('[data-column-key="instrument_return_1m"]')).toHaveTextContent('—')
-    expect(totalRow!.querySelector('[data-column-key="instrument_return_1m"]')).toHaveTextContent('—')
+    const securityRow = within(screen.getByRole('table', { name: 'Security holdings' })).getByRole('cell', { name: 'Alpha Fund' }).closest('tr')!
+    expect(securityRow).toHaveTextContent('+10.00%')
+    const totalRow = screen.getByText('Portfolio Total (USD)').closest('tr')!
+    expect(totalRow.querySelector('[data-column-key="instrument_return_1m"]')).toHaveTextContent('—')
   })
 
-  it('withholds a current-basket return when any material current holding lacks the window', async () => {
-    apiMocks.getHoldingsWorkspace.mockResolvedValue(
+  it('fails full-portfolio fair-value P&L and return closed when a material event-carried derivative is present', async () => {
+    const quotedSecurity = holdingFixture({
+      market_value: 500,
+      market_value_base: 500,
+      cost_basis: 500,
+      cost_basis_base: 500,
+      allocation: 0.5,
+      instrument_return_1m: 0,
+    })
+    renderHoldings(
+      holdingsWorkspaceFixture({
+        rows: [quotedSecurity, fcnHolding()],
+        totals: {
+          nav: 1000,
+          market_value: 1000,
+          day_change_pct: null,
+          day_change_value: null,
+          cost_basis: 1000,
+          allocation: 1,
+        },
+      }),
+    )
+    await waitForHoldings()
+
+    const securitySubtotal = screen.getByText('Securities Subtotal (USD)').closest('tr')!
+    expect(securitySubtotal.querySelector('[data-column-key="unrealized_value"]')).toHaveTextContent('$0.00')
+    const totalRow = screen.getByText('Portfolio Total (USD)').closest('tr')!
+    expect(totalRow.querySelector('[data-column-key="unrealized_value"]')).toHaveTextContent('N/A')
+    expect(totalRow.querySelector('[data-column-key="unrealized_pct"]')).toHaveTextContent('N/A')
+    expect(totalRow.querySelector('[data-column-key="instrument_return_1m"]')).toHaveTextContent('N/A')
+  })
+
+  it('withholds a current-basket return when any material security lacks the window', async () => {
+    renderHoldings(
       holdingsWorkspaceFixture({
         rows: [
           holdingFixture({
@@ -1079,16 +799,14 @@ describe('Holdings rendered page contract', () => {
             cost_basis: 900,
             cost_basis_base: 900,
             allocation: 0.9,
-            instrument_return_1m: 0.10,
+            instrument_return_1m: 0.1,
           }),
           holdingFixture({
             line_id: 'holding:missing',
             instrument_core: instrumentFixture({
               instrument_id: 'fund-missing',
               instrument_name: 'Missing Return Fund',
-              instrument_type: 'public_fund',
               currency: 'USD',
-              identifiers: [],
             }),
             market_value: 100,
             market_value_base: 100,
@@ -1099,64 +817,26 @@ describe('Holdings rendered page contract', () => {
           }),
         ],
         totals: {
+          nav: 1000,
           market_value: 1000,
-          day_change_pct: 0.01,
-          day_change_value: 10,
+          day_change_pct: 0,
+          day_change_value: 0,
           cost_basis: 1000,
           allocation: 1,
         },
       }),
     )
-    const user = userEvent.setup()
+    await waitForHoldings()
 
-    renderPortfolioPage(
-      <PortfolioHomePage />,
-      '/portfolios/3/holdings',
-      '/portfolios/:portfolioId/holdings',
-    )
-
-    await waitForHoldingsTable(user)
-    await screen.findByRole('cell', { name: /Missing Return Fund/ })
-    await user.click(screen.getByRole('button', { name: /View\s*: Default/ }))
-    await user.click(screen.getByRole('option', { name: 'Return & Risk' }))
-
-    const totalRow = screen.getByText('Portfolio Total (USD)').closest('tr')
-    expect(totalRow).not.toBeNull()
-    expect(totalRow!.querySelector('[data-column-key="instrument_return_1m"]')).toHaveTextContent('—')
+    expect(screen.getByRole('cell', { name: 'Missing Return Fund' })).toBeInTheDocument()
+    const securitySubtotal = screen.getByText('Securities Subtotal (USD)').closest('tr')!
+    const portfolioTotal = screen.getByText('Portfolio Total (USD)').closest('tr')!
+    expect(securitySubtotal.querySelector('[data-column-key="instrument_return_1m"]')).toHaveTextContent('—')
+    expect(portfolioTotal.querySelector('[data-column-key="instrument_return_1m"]')).toHaveTextContent('—')
   })
 
-  it('does not substitute a chart date when the valuation quote date is unavailable', async () => {
-    apiMocks.getHoldingsWorkspace.mockResolvedValueOnce(
-      holdingsWorkspaceFixture({
-        rows: [
-          holdingFixture({
-            quote_as_of_date: null,
-            price_chart_6m: [
-              { date: '2026-06-15', value: 75 },
-              { date: '2026-07-15', value: 80 },
-            ],
-          }),
-        ],
-      }),
-    )
-
-    const user = userEvent.setup()
-    renderPortfolioPage(
-      <PortfolioHomePage />,
-      '/portfolios/3/holdings',
-      '/portfolios/:portfolioId/holdings',
-    )
-
-    await waitForHoldingsTable(user)
-    const holdingRow = (await screen.findByRole('cell', { name: /Alpha Fund/ })).closest('tr')
-    const quoteDateHeader = screen.getByRole('columnheader', { name: /Quote Date/ })
-    const quoteDateColumnIndex = Array.from(quoteDateHeader.parentElement!.children).indexOf(quoteDateHeader)
-    expect(holdingRow!.children[quoteDateColumnIndex]).toHaveTextContent('—')
-    expect(holdingRow!.children[quoteDateColumnIndex]).not.toHaveTextContent('2026-07-15')
-  })
-
-  it('discloses alternate-basis selection and partial history instead of hiding the trend semantics', async () => {
-    apiMocks.getHoldingsWorkspace.mockResolvedValue(
+  it('keeps trend-basis diagnostics on Security hover rather than visible derivative-style annotations', async () => {
+    renderHoldings(
       holdingsWorkspaceFixture({
         rows: [
           holdingFixture({
@@ -1173,20 +853,113 @@ describe('Holdings rendered page contract', () => {
         ],
       }),
     )
+    await waitForHoldings()
 
-    const user = userEvent.setup()
-    renderPortfolioPage(
-      <PortfolioHomePage />,
-      '/portfolios/3/holdings',
-      '/portfolios/:portfolioId/holdings',
-    )
-
-    await waitForHoldingsTable(user)
-    const alphaCell = await screen.findByRole('cell', { name: /Alpha Fund/ })
-    expect(alphaCell.querySelector('.holding-name-stack')).toHaveAttribute(
+    const securityName = screen.getByRole('cell', { name: 'Alpha Fund' })
+    expect(securityName.querySelector('.holding-name-stack')).toHaveAttribute(
       'title',
       'Trend: Close · Partial · 40 observations. Using Close because it provides more complete history than the preferred basis.',
     )
     expect(screen.queryByText('Trend: Close · Partial · 40 observations')).not.toBeInTheDocument()
+  })
+
+  it('exports sectioned schemas instead of reconstructing the obsolete unified table', async () => {
+    renderHoldings(
+      holdingsWorkspaceFixture({
+        rows: [holdingFixture(), fcnHolding(), writtenOptionHolding(), cashHolding()],
+      }),
+    )
+    const user = userEvent.setup()
+    await waitForHoldings()
+    await user.click(screen.getByRole('button', { name: 'Download' }))
+    await user.click(screen.getByRole('menuitem', { name: 'CSV' }))
+
+    expect(tableExportMocks.downloadTable).toHaveBeenCalledTimes(1)
+    const rows = tableExportMocks.downloadTable.mock.calls[0][1] as Array<Array<string | number | null>>
+    expect(rows[0][0]).toBe('Holdings as of 2026-07-15')
+    expect(rows.some((row) => row[0] === 'Securities')).toBe(true)
+    expect(rows.some((row) => row[0] === 'FCN')).toBe(true)
+    expect(rows.some((row) => row[0] === 'Options')).toBe(true)
+    expect(rows.some((row) => row[0] === 'Derivatives')).toBe(false)
+    expect(rows.some((row) => row[0] === 'Cash & Settlement')).toBe(true)
+    expect(rows.some((row) => row[0] === 'Portfolio Total')).toBe(true)
+    expect(rows.some((row) => row[0] === 'Category')).toBe(false)
+
+    const exportedHeader = (section: string) => {
+      const sectionIndex = rows.findIndex((row) => row[0] === section)
+      return rows[sectionIndex + 1]
+    }
+    const exportedFirstDataRow = (section: string) => {
+      const sectionIndex = rows.findIndex((row) => row[0] === section)
+      return rows[sectionIndex + 2]
+    }
+    const renderedHeader = (tableName: string) =>
+      within(screen.getByRole('table', { name: tableName }))
+        .getAllByRole('columnheader')
+        .map((header) => header.textContent)
+
+    expect(exportedHeader('FCN')).toEqual(renderedHeader('FCN holdings'))
+    expect(exportedHeader('Options')).toEqual(renderedHeader('Option holdings'))
+    expect(exportedHeader('Cash & Settlement')).toEqual(renderedHeader('Cash and settlement holdings'))
+    expect(exportedHeader('Portfolio Total')).toEqual(renderedHeader('Portfolio total holdings'))
+
+    for (const section of [
+      'FCN',
+      'Options',
+      'Cash & Settlement',
+      'Portfolio Total',
+    ]) {
+      expect(exportedFirstDataRow(section)).toHaveLength(exportedHeader(section).length)
+    }
+    const fcnExport = Object.fromEntries(
+      exportedHeader('FCN').map((header, index) => [
+        header,
+        exportedFirstDataRow('FCN')[index],
+      ]),
+    )
+    expect(fcnExport['Annual Coupon']).toBe('12%')
+    expect(fcnExport.Days).toBe(169)
+  })
+
+  it('does not substitute a chart endpoint for a missing valuation quote date', async () => {
+    renderHoldings(
+      holdingsWorkspaceFixture({
+        rows: [
+          holdingFixture({
+            quote_as_of_date: null,
+            price_chart_6m: [
+              { date: '2026-06-15', value: 75 },
+              { date: '2026-07-15', value: 80 },
+            ],
+          }),
+        ],
+      }),
+    )
+    const user = userEvent.setup()
+    await waitForHoldings()
+    await user.click(screen.getByRole('button', { name: 'Security Fields' }))
+    const dialog = screen.getByRole('dialog', { name: 'Choose security columns' })
+    await user.click(within(dialog).getByRole('button', { name: 'Quote' }))
+    const quoteDateField = within(dialog).getByText('Quote Date').closest('label')!
+    await user.click(within(quoteDateField).getByRole('checkbox'))
+    await user.click(within(dialog).getByRole('button', { name: 'Update' }))
+
+    const table = screen.getByRole('table', { name: 'Security holdings' })
+    const quoteDateHeader = within(table).getByRole('columnheader', { name: /Quote Date/ })
+    const holdingRow = within(table).getByRole('cell', { name: 'Alpha Fund' }).closest('tr')!
+    const index = Array.from(quoteDateHeader.parentElement!.children).indexOf(quoteDateHeader)
+    expect(holdingRow.children[index]).toHaveTextContent('—')
+    expect(holdingRow.children[index]).not.toHaveTextContent('2026-07-15')
+  })
+
+  it('requests full detail when the default Security view includes current-basket risk fields', async () => {
+    renderHoldings()
+    await waitForHoldings()
+    await waitFor(() => {
+      expect(apiMocks.getHoldingsWorkspace).toHaveBeenCalledWith('3', {
+        as_of_date: undefined,
+        include_details: true,
+      })
+    })
   })
 })

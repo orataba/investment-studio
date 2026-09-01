@@ -1553,6 +1553,145 @@ input[type='checkbox'] {
   font-weight: 400;
 }
 
+.overview-asset-mix-grid {
+  display: grid;
+  grid-template-columns: minmax(250px, 0.55fr) minmax(760px, 1.45fr);
+  align-items: stretch;
+  gap: 20px;
+}
+
+.overview-asset-mix-bars {
+  display: grid;
+  align-content: center;
+  gap: 18px;
+  min-width: 0;
+  padding: 18px 4px 20px 0;
+  border-top: 1px solid var(--portfolio-line-strong);
+  border-bottom: 1px solid var(--portfolio-line);
+}
+
+.overview-asset-mix-bar-row {
+  display: grid;
+  gap: 7px;
+}
+
+.overview-asset-mix-bar-label {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  color: var(--portfolio-ink);
+  font-size: 12px;
+}
+
+.overview-asset-mix-bar-label strong {
+  overflow: hidden;
+  font-weight: 400;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.overview-asset-mix-bar-label span {
+  color: var(--portfolio-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.overview-asset-mix-bar-track {
+  position: relative;
+  height: 16px;
+  overflow: hidden;
+  background: var(--portfolio-table-header-background);
+}
+
+.overview-asset-mix-zero-axis {
+  position: absolute;
+  z-index: 2;
+  top: 0;
+  bottom: 0;
+  left: var(--asset-mix-zero-left);
+  width: 1px;
+  background: var(--portfolio-line-strong);
+}
+
+.overview-asset-mix-bar {
+  position: absolute;
+  top: 3px;
+  bottom: 3px;
+  left: var(--asset-mix-bar-left);
+  width: max(2px, var(--asset-mix-bar-width));
+  background: var(--portfolio-accent);
+}
+
+.overview-asset-mix-bar-fcn {
+  background: #667085;
+}
+
+.overview-asset-mix-bar-options {
+  background: #7f56d9;
+}
+
+.overview-asset-mix-bar-cash_and_settlement {
+  background: #2d8578;
+}
+
+.overview-asset-mix-table-shell {
+  min-width: 0;
+}
+
+.overview-asset-mix-table {
+  width: max-content;
+  min-width: 100%;
+}
+
+.overview-asset-mix-table th:first-child,
+.overview-asset-mix-table td:first-child {
+  position: sticky;
+  left: 0;
+}
+
+.overview-asset-mix-table thead th:first-child {
+  z-index: 2;
+  background: var(--portfolio-table-header-background);
+}
+
+.overview-asset-mix-table tbody th:first-child {
+  z-index: 1;
+  background: #ffffff;
+}
+
+.overview-asset-mix-table .numeric-cell {
+  text-align: right;
+}
+
+.overview-asset-mix-total-row th,
+.overview-asset-mix-total-row td {
+  border-top: 1px solid var(--portfolio-line-strong);
+  background: var(--portfolio-band);
+}
+
+.overview-asset-mix-total-row th:first-child {
+  background: var(--portfolio-band);
+}
+
+@media (max-width: 1280px) {
+  .overview-asset-mix-grid {
+    grid-template-columns: 1fr;
+    gap: 14px;
+  }
+
+  .overview-asset-mix-bars {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    align-items: end;
+  }
+}
+
+@media (max-width: 640px) {
+  .overview-asset-mix-bars {
+    grid-template-columns: 1fr;
+    padding-right: 0;
+  }
+}
+
 .overview-columns-button {
   min-height: 30px;
   padding: 6px 10px;
@@ -3293,6 +3432,138 @@ input[type='checkbox'] {
   border-top: 1px solid var(--portfolio-line-strong);
 }
 
+.holdings-section {
+  min-width: 0;
+  margin-top: 24px;
+  border-top: 1px solid var(--portfolio-line-strong);
+}
+
+.holdings-section:first-of-type {
+  margin-top: 18px;
+}
+
+.holdings-section-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+  padding: 14px 0 12px;
+}
+
+.holdings-section-heading h2 {
+  margin: 0;
+  color: var(--portfolio-ink);
+  font-size: 16px;
+  font-weight: 500;
+}
+
+.holdings-section-heading-actions {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.holdings-section-count {
+  min-width: 28px;
+  padding: 2px 7px;
+  border: 1px solid var(--portfolio-line);
+  color: var(--portfolio-muted);
+  font-size: 12px;
+  text-align: center;
+}
+
+.holdings-section-table-shell {
+  border-top-color: var(--portfolio-line-strong);
+}
+
+.holdings-section-table {
+  width: max-content;
+  min-width: 100%;
+  background: #ffffff;
+}
+
+.holdings-section-table th,
+.holdings-section-table td {
+  max-width: 320px;
+}
+
+.holdings-section-table thead th:first-child {
+  position: sticky;
+  left: 0;
+  z-index: 3;
+  background: var(--portfolio-table-header-background);
+}
+
+.holdings-section-data-row td:first-child,
+.holdings-section-subtotal-row td:first-child,
+.holdings-portfolio-total-table tbody td:first-child {
+  position: sticky;
+  left: 0;
+  z-index: 2;
+  background: #ffffff;
+}
+
+.holdings-section-table .numeric-cell {
+  text-align: right;
+}
+
+.holdings-section-table .center-cell {
+  text-align: center;
+}
+
+.holdings-section-data-row {
+  cursor: pointer;
+}
+
+.holdings-section-data-row:focus-visible {
+  outline: 2px solid var(--portfolio-accent);
+  outline-offset: -2px;
+}
+
+.holdings-section-subtotal-row td {
+  border-top: 1px solid var(--portfolio-line-strong);
+  background: var(--portfolio-table-group-background);
+}
+
+.holdings-section-subtotal-row td:first-child {
+  background: var(--portfolio-table-group-background);
+}
+
+.derivative-underlying-list {
+  display: grid;
+  gap: 7px;
+  min-width: 260px;
+  white-space: normal;
+}
+
+.derivative-underlying-item {
+  display: grid;
+  gap: 2px;
+}
+
+.derivative-underlying-item small {
+  color: var(--portfolio-muted);
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.holdings-portfolio-total-table th,
+.holdings-portfolio-total-table td {
+  min-width: 118px;
+}
+
+.holdings-portfolio-total-table th:first-child,
+.holdings-portfolio-total-table td:first-child {
+  min-width: 210px;
+}
+
+.holdings-portfolio-total-section {
+  margin-bottom: 8px;
+}
+
 .holdings-main-table .holdings-row-active td:first-child {
   background: var(--portfolio-accent-soft);
   box-shadow:
@@ -3440,6 +3711,11 @@ input[type='checkbox'] {
   gap: 0;
   overflow: auto;
   padding: 0 10px;
+}
+
+.holdings-section-config-fields {
+  flex: 1 1 auto;
+  margin: 0 16px 12px;
 }
 
 .portfolio-table-config-field-item {
@@ -9226,6 +9502,16 @@ td b {
 }
 
 @media (max-width: 640px) {
+  .holdings-section-heading {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .holdings-section-heading-actions {
+    width: 100%;
+    justify-content: flex-start;
+  }
+
   .entry-summary-grid,
   .three-panel-grid,
   .portfolio-summary-strip,

@@ -23,6 +23,20 @@ Watchlist 主图把所选区间锚点归一为 `100` 的增长指数，不展示
 
 私募基金的窗口前复权因子会在比值中约去。因此，可靠的单位净值、窗口内现金累计披露和已确认行为足以计算窗口内收益；这不代表系统知道窗口前全部分红历史。
 
+### 1.1 用户界面命名与内部 basis
+
+`quote` 只作为跨资产的内部总称，不作为基金页面的具体指标名。Watchlist 按资产类型显示：
+
+| 资产类型 | 最新估值字段 | 收益/图表字段 |
+| --- | --- | --- |
+| 公募、私募基金 | `Unit NAV / 单位净值`（`official_nav`） | `Cumulative NAV / 复权累计净值`（`total_return_nav`，含分红再投资） |
+| 股票、ETF | `Latest Price / 最新价格`（valuation role 的 `close` 或 `last`） | `Adjusted Close / 复权收盘价`；只在来源口径确认时称 Total Return |
+| 指数 | `Index Level / 指数点位`（valuation role 的 `close` 或 `last`） | 按 Registry 声明显示 `Price Index` 或 `Total Return Index` |
+| 混合资产 Watchlist | `Latest Value / 最新值` | 每行继续保留自身明确的 return semantics |
+
+基金 Overview 的主数字固定为单位净值；其下方小字显示同一产品最新复权累计净值。切换图表
+basis 不能改变主数字的估值口径。普通现金累计净值不进入这两个用户字段。
+
 ## 2. 边界定义
 
 | 场景 | 请求起点 | 实际锚点 | 请求终点 | 实际终点 |
@@ -43,6 +57,8 @@ Performance 页的自然期矩阵另有一条闭合规则：月度收益使用�
 矩阵单元格的 tooltip 会显示实际 `anchor_date` 与 `end_date`；因此当最新自然月/自然年尚未完整结束，或基金只提供月中/周频净值时，界面不会把实际采用的观察日伪装成月末/年末。
 
 少于一个完整日历年的区间不得展示年化收益。达到首个日历周年后，年化指数按实际日历周年分数计算，不用 `365.25 / days` 把短历史外推成年化数字。
+
+指数详情页的 Metrics Matrix 只使用本页所选的 canonical index series，各列沿用本节的区间锚点。区间收益取首尾指数点之比；年化收益使用上述实际日历周年分数；年化波动率、Sharpe 和 Sortino 使用区间内相邻观测收益及按实际观测密度推导的年化频率。Sharpe 的无风险利率和 Sortino 的最低可接受收益均为 0，Sortino 的 downside deviation 以全部期间为分母、非负期间记 0。Calmar 为年化收益除以最大回撤绝对值，因此不足一年或没有回撤时不发布。Recovery Days 从最大回撤谷底计至首次恢复该轮前高；尚未恢复时明确显示 `Unrecovered`。
 
 详情页 Overview 主图不提供固定窗口快捷按钮，只保留双端拖动范围条。拖动手柄绑定真实观测点，图例同时展示实际锚点和实际终点。标量 performance 字段覆盖 `1W / 1M / 3M / 6M / MTD / YTD / 1Y`；Sparkline 仍只物化 `1D / 1W / 1M / 1Y` 的有界展示路径。两类输出都使用本节边界规则，但字段集合不要求相同。
 

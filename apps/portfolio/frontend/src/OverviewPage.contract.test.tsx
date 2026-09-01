@@ -204,6 +204,125 @@ describe('Overview rendered page contract', () => {
     expect(screen.queryByText('Unassigned')).not.toBeInTheDocument()
   })
 
+  it('summarizes signed asset mix on the full portfolio denominator', async () => {
+    apiMocks.getHoldingsWorkspace.mockResolvedValue(
+      holdingsWorkspaceFixture({
+        rows: [
+          holdingFixture({
+            line_id: 'holding:security-1',
+            market_value: 800,
+            market_value_base: 800,
+            day_change_value: 8,
+            day_change_value_base: 8,
+            allocation: 0.8,
+            forward_risk_share: 1,
+            forward_risk_status: 'ok',
+          }),
+          holdingFixture({
+            line_id: 'holding:fcn-1',
+            position_reference_id: 'fcn-1',
+            derivative_contract_id: 'fcn-1',
+            holding_category: 'derivatives',
+            instrument_core: null,
+            derivative_contract: fcnContractFixture({
+              derivative_contract_id: 'fcn-1',
+              contract_name: 'Carried FCN',
+            }),
+            market_value: -100,
+            market_value_base: -100,
+            carrying_value: -100,
+            carrying_value_base: -100,
+            allocation: -0.1,
+            valuation_basis: 'carried_cost',
+            coverage_status: 'event-cost',
+            day_change_value: 0,
+            day_change_value_base: 0,
+            forward_risk_share: null,
+            forward_risk_status: 'excluded',
+            performance_eligible: false,
+            risk_eligible: false,
+          }),
+          holdingFixture({
+            line_id: 'cash:usd',
+            holding_category: 'cash_and_settlement',
+            instrument_core: instrumentFixture({
+              instrument_id: 'cash-usd',
+              instrument_name: 'USD Cash',
+              instrument_type: 'cash',
+            }),
+            market_value: 300,
+            market_value_base: 300,
+            day_change_pct: 0,
+            day_change_value: 0,
+            day_change_value_base: 0,
+            cost_basis: null,
+            cost_basis_base: null,
+            allocation: 0.3,
+            coverage_status: 'cash',
+            forward_risk_share: 0,
+            forward_contribution_to_variance: 0,
+            forward_annualized_volatility: 0,
+            forward_risk_status: 'modeled_zero',
+            performance_eligible: false,
+            risk_eligible: false,
+          }),
+        ],
+        totals: {
+          nav: 1_000,
+          market_value: 1_000,
+          day_change_pct: null,
+          day_change_value: null,
+          cost_basis: 700,
+          allocation: 1,
+        },
+      }),
+    )
+
+    renderPortfolioPage(
+      <OverviewPage />,
+      '/portfolios/3/overview',
+      '/portfolios/:portfolioId/overview',
+    )
+
+    const table = await screen.findByRole('table', { name: 'Asset mix summary' })
+    const securitiesRow = within(table).getByRole('row', { name: /Securities/ })
+    expect(within(securitiesRow).getByText('$800.00')).toBeInTheDocument()
+    expect(within(securitiesRow).getByText('80.00%')).toBeInTheDocument()
+    expect(within(securitiesRow).getByText('+$8.00')).toBeInTheDocument()
+    expect(within(securitiesRow).getByText('100.00%')).toBeInTheDocument()
+    expect(within(securitiesRow).getByText('Complete')).toBeInTheDocument()
+
+    const fcnRow = within(table).getByRole('row', { name: /FCN/ })
+    expect(within(fcnRow).getByText('-$100.00')).toBeInTheDocument()
+    expect(within(fcnRow).getByText('-10.00%')).toBeInTheDocument()
+    expect(within(fcnRow).getAllByText('N/A')).toHaveLength(2)
+    expect(within(fcnRow).getByText('Event carrying')).toBeInTheDocument()
+
+    const optionsRow = within(table).getByRole('row', { name: /Options/ })
+    expect(within(optionsRow).getByText('$0.00')).toBeInTheDocument()
+    expect(within(optionsRow).getByText('0.00%')).toBeInTheDocument()
+    expect(within(optionsRow).getByText('No holdings')).toBeInTheDocument()
+    expect(within(table).queryByRole('row', { name: /Derivatives/ })).not.toBeInTheDocument()
+
+    const cashRow = within(table).getByRole('row', { name: /Cash & Settlement/ })
+    expect(within(cashRow).getByText('$300.00')).toBeInTheDocument()
+    expect(within(cashRow).getByText('30.00%')).toBeInTheDocument()
+    expect(within(cashRow).getByText('$0.00')).toBeInTheDocument()
+    expect(within(cashRow).getByText('0.00%')).toBeInTheDocument()
+    expect(within(cashRow).getByText('Complete')).toBeInTheDocument()
+
+    const totalRow = within(table).getByRole('row', { name: /Portfolio Total/ })
+    expect(within(totalRow).getByText('$1,000.00')).toBeInTheDocument()
+    expect(within(totalRow).getAllByText('100.00%')).toHaveLength(2)
+    expect(within(totalRow).getByText('N/A')).toBeInTheDocument()
+    expect(within(totalRow).getByText('NAV reconciled')).toBeInTheDocument()
+    expect(
+      screen.getByRole('img', { name: /Asset mix by signed portfolio weight/ }),
+    ).toHaveAccessibleName(
+      'Asset mix by signed portfolio weight: Securities 80.00%, FCN -10.00%, Options 0.00%, Cash & Settlement 30.00%',
+    )
+  })
+
   it.each([
     {
       scenario: 'a null return inside the seven-day window',
@@ -329,8 +448,12 @@ describe('Overview rendered page contract', () => {
     expect(cnyRow).not.toHaveTextContent('+$50.00')
 
     const portfolioMetrics = screen.getByRole('complementary', { name: 'Portfolio overview key metrics' })
-    expect(within(portfolioMetrics).getByRole('row', { name: 'Cash Weight —' })).toBeInTheDocument()
     expect(within(portfolioMetrics).getByRole('row', { name: 'Top 5 Weight —' })).toBeInTheDocument()
+    const assetMixTable = screen.getByRole('table', { name: 'Asset mix summary' })
+    expect(within(assetMixTable).getByRole('row', { name: /Securities/ })).toHaveTextContent(
+      '—',
+    )
+    expect(screen.getByText('Asset mix unavailable.')).toBeInTheDocument()
     expect(screen.getByText('Sleeve allocation unavailable.')).toBeInTheDocument()
     expect(screen.getByText('Top holdings allocation unavailable.')).toBeInTheDocument()
     expect(screen.queryByRole('img', { name: 'Strategy sleeve allocation' })).not.toBeInTheDocument()

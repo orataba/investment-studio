@@ -46,6 +46,12 @@ import {
   listedDetailTabs,
   type ListedDetailTab,
 } from '../lib/instrumentDetailArchitecture'
+import { buildMonthlyReturnMatrix } from '../lib/calendarReturns'
+import {
+  buildPerformanceMetricPeriodSnapshots,
+  PERFORMANCE_METRIC_PERIODS,
+  type PerformanceMetricSnapshot,
+} from '../lib/performanceMetrics'
 
 type WatchlistBreadcrumbContext = {
   watchlistId: string
@@ -58,6 +64,7 @@ type Props = {
 }
 
 const RANGE_OPTIONS: PriceRange[] = ['1M', '3M', '6M', '1Y', 'ALL']
+const MONTH_SHORT_LABELS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
 
 function instrumentTypeLabel(value: string) {
   if (value === 'etf') return 'ETF'
@@ -76,6 +83,35 @@ function compactValue(value: number | null, maximumFractionDigits = 2) {
 
 function percentValue(value: number | null) {
   return value === null ? '—' : formatPercent(value)
+}
+
+function metricTone(value: number | null) {
+  if (value == null) return 'empty'
+  if (value > 0) return 'positive'
+  if (value < 0) return 'negative'
+  return ''
+}
+
+function formatRecoveryValue(snapshot: PerformanceMetricSnapshot) {
+  if (snapshot.maxDrawdown == null) return '—'
+  if (snapshot.maxDrawdown === 0) return '0 d'
+  if (snapshot.recoveryOpen) return 'Unrecovered'
+  return snapshot.recoveryDays == null ? '—' : `${formatNumber(snapshot.recoveryDays, 0)} d`
+}
+
+function getHeatmapCellStyle(value: number | null, maxAbsValue: number) {
+  if (value == null) return undefined
+  const normalized = Math.min(Math.abs(value) / Math.max(maxAbsValue, 1), 1)
+  if (value >= 0) {
+    return {
+      backgroundColor: `rgba(13, 122, 56, ${0.08 + normalized * 0.26})`,
+      color: '#0d5e31',
+    }
+  }
+  return {
+    backgroundColor: `rgba(175, 0, 0, ${0.08 + normalized * 0.24})`,
+    color: '#8f1d1d',
+  }
 }
 
 type StandardizedMetric = {
@@ -311,6 +347,54 @@ function GrowthChart({ bars }: { bars: DisplayPriceBar[] }) {
       <path className="listed-growth-line" d={path} fill="none" />
       <text className="listed-chart-axis" x={left} y={278}>{formatDate(bars[0].date)}</text>
       <text className="listed-chart-axis" x={width - right} y={278} textAnchor="end">{formatDate(bars[bars.length - 1]?.date)}</text>
+    </svg>
+  )
+}
+
+function IndexLevelChart({ bars }: { bars: DisplayPriceBar[] }) {
+  if (bars.length < 2) {
+    return <div className="listed-empty-chart">Not enough index history for a level chart.</div>
+  }
+  const width = 1000
+  const height = 340
+  const left = 20
+  const right = 74
+  const top = 24
+  const bottom = 296
+  const values = bars.map((bar) => bar.close)
+  const rawMinimum = Math.min(...values)
+  const rawMaximum = Math.max(...values)
+  const padding = Math.max((rawMaximum - rawMinimum) * 0.08, rawMaximum * 0.002)
+  const minimum = rawMinimum - padding
+  const maximum = rawMaximum + padding
+  const span = Math.max(maximum - minimum, 0.000001)
+  const x = (index: number) => left + (index / Math.max(1, bars.length - 1)) * (width - left - right)
+  const y = (value: number) => top + ((maximum - value) / span) * (bottom - top)
+  const linePath = values.map((value, index) => `${index ? 'L' : 'M'} ${x(index)} ${y(value)}`).join(' ')
+  const areaPath = `${linePath} L ${x(bars.length - 1)} ${bottom} L ${x(0)} ${bottom} Z`
+
+  return (
+    <svg className="listed-index-level-chart" viewBox={`0 0 ${width} ${height}`} role="img" aria-label="Index level chart">
+      <defs>
+        <linearGradient id="listed-index-level-gradient" x1="0" x2="0" y1="0" y2="1">
+          <stop offset="0%" stopColor="#425d7a" stopOpacity="0.2" />
+          <stop offset="100%" stopColor="#425d7a" stopOpacity="0.02" />
+        </linearGradient>
+      </defs>
+      {[0, 0.25, 0.5, 0.75, 1].map((ratio) => {
+        const value = maximum - span * ratio
+        const gridY = top + (bottom - top) * ratio
+        return (
+          <g key={ratio}>
+            <line className="listed-chart-grid" x1={left} x2={width - right} y1={gridY} y2={gridY} />
+            <text className="listed-chart-axis" x={width - right + 10} y={gridY + 4}>{compactValue(value, value < 10 ? 3 : 2)}</text>
+          </g>
+        )
+      })}
+      <path className="listed-index-level-area" d={areaPath} />
+      <path className="listed-index-level-line" d={linePath} />
+      <text className="listed-chart-axis" x={left} y={328}>{formatDate(bars[0].date)}</text>
+      <text className="listed-chart-axis" x={width - right} y={328} textAnchor="end">{formatDate(bars[bars.length - 1]?.date)}</text>
     </svg>
   )
 }
@@ -607,6 +691,7 @@ export default function ListedInstrumentDetailPage({ instrument, watchlistContex
   const { language } = useLanguage()
   const instrumentId = instrument.detail_subject_id || instrument.canonical_instrument_id || instrument.requested_instrument_id
   const listedInstrumentType = instrument.instrument_type as 'etf' | 'equity' | 'index'
+  const isIndex = listedInstrumentType === 'index'
   const tabs = listedDetailTabs(listedInstrumentType)
   const [tab, setTab] = useState<ListedDetailTab>('overview')
   const [range, setRange] = useState<PriceRange>('6M')
@@ -651,19 +736,19 @@ export default function ListedInstrumentDetailPage({ instrument, watchlistContex
       setResearchError(null)
       setMonitoringError(null)
       setAttributeError(null)
-      const [barsResult, summaryResult, chartResult, performanceResult, riskResult, referenceResult, researchResult, monitoringResult, attributesResult] = await Promise.allSettled([
+      const [barsResult, summaryResult, chartResult, performanceResult, riskResult, researchResult, monitoringResult, attributesResult] = await Promise.allSettled([
         getInstrumentPriceBars(instrumentId, { limit: 1250 }),
         getInstrumentSummary(instrumentId),
         getInstrumentChart(instrumentId),
         getInstrumentPerformance(instrumentId),
         getInstrumentRisk(instrumentId),
-        getPlatformInstrumentReferenceData(instrumentId),
         getInstrumentResearch(instrumentId),
         getInstrumentMonitoring(instrumentId),
         getInstrumentAttributes(instrumentId),
       ])
       if (cancelled) return
       if (barsResult.status === 'rejected') {
+        setBarsResponse(null)
         setError(barsResult.reason instanceof Error ? barsResult.reason.message : 'Failed to load OHLCV history.')
       } else {
         setBarsResponse(barsResult.value)
@@ -676,7 +761,6 @@ export default function ListedInstrumentDetailPage({ instrument, watchlistContex
       setChart(chartResult.status === 'fulfilled' ? chartResult.value : null)
       setPerformance(performanceResult.status === 'fulfilled' ? performanceResult.value : null)
       setRisk(riskResult.status === 'fulfilled' ? riskResult.value : null)
-      setReference(referenceResult.status === 'fulfilled' ? referenceResult.value : null)
       setResearch(
         researchResult.status === 'fulfilled'
           ? researchResult.value
@@ -693,13 +777,6 @@ export default function ListedInstrumentDetailPage({ instrument, watchlistContex
       setMonitoringError(
         monitoringResult.status === 'rejected'
           ? 'Monitoring is available after the instrument is added to a Watchlist.'
-          : null,
-      )
-      setReferenceError(
-        referenceResult.status === 'rejected'
-          ? referenceResult.reason instanceof Error
-            ? referenceResult.reason.message
-            : 'Reference data is unavailable.'
           : null,
       )
       setAttributeValues(attributesResult.status === 'fulfilled' ? attributesResult.value : null)
@@ -724,6 +801,30 @@ export default function ListedInstrumentDetailPage({ instrument, watchlistContex
     void load()
     return () => { cancelled = true }
   }, [attributeRetryToken, instrument.instrument_type, instrumentId])
+
+  useEffect(() => {
+    let cancelled = false
+    setReference(null)
+    setReferenceError(null)
+
+    async function loadReference() {
+      try {
+        const nextReference = await getPlatformInstrumentReferenceData(instrumentId)
+        if (!cancelled) setReference(nextReference)
+      } catch (loadError) {
+        if (!cancelled) {
+          setReferenceError(
+            loadError instanceof Error ? loadError.message : 'Reference data is unavailable.',
+          )
+        }
+      }
+    }
+
+    void loadReference()
+    return () => {
+      cancelled = true
+    }
+  }, [instrumentId])
 
   useEffect(() => {
     if (!tabs.includes(tab)) setTab('overview')
@@ -802,13 +903,16 @@ export default function ListedInstrumentDetailPage({ instrument, watchlistContex
   const qfqAvailable =
     instrument.instrument_type !== 'index' &&
     hasCompleteAdjustmentFactors(barsResponse?.bars ?? [])
+  const calculationSeries = useMemo(
+    () => chart?.series[0]?.points ?? [],
+    [chart],
+  )
   const allBars = useMemo(
     () => adjustPriceBars(barsResponse?.bars ?? [], mode),
     [barsResponse, mode],
   )
   const canonicalCloseAnalysisBars = useMemo<DisplayPriceBar[]>(() => {
-    const points = chart?.series[0]?.points ?? []
-    return points.flatMap((point) => {
+    return calculationSeries.flatMap((point) => {
       if (!Number.isFinite(point.value) || point.value <= 0) return []
       return [{
         date: point.date,
@@ -827,11 +931,39 @@ export default function ListedInstrumentDetailPage({ instrument, watchlistContex
         status: 'complete' as const,
       }]
     })
-  }, [barsResponse?.currency, chart])
+  }, [barsResponse?.currency, calculationSeries, chart?.currency])
   const analysisBars = canonicalCloseAnalysisBars.length
     ? canonicalCloseAnalysisBars
     : allBars
   const visibleBars = useMemo(() => slicePriceBars(allBars, range), [allBars, range])
+  const visibleAnalysisBars = useMemo(
+    () => slicePriceBars(analysisBars, range),
+    [analysisBars, range],
+  )
+  const performanceMetricPeriodSnapshots = useMemo(
+    () => buildPerformanceMetricPeriodSnapshots(calculationSeries),
+    [calculationSeries],
+  )
+  const performanceMetricSnapshotByKey = useMemo(
+    () => new Map(performanceMetricPeriodSnapshots.map((period) => [period.key, period.snapshot])),
+    [performanceMetricPeriodSnapshots],
+  )
+  const monthlyReturnMatrixRows = useMemo(
+    () => buildMonthlyReturnMatrix(calculationSeries),
+    [calculationSeries],
+  )
+  const monthlyReturnMatrixMaxAbs = useMemo(
+    () => monthlyReturnMatrixRows.reduce((maxAbs, row) => {
+      const rowMax = Math.max(
+        ...[...row.months, row.ytd]
+          .filter((value): value is number => value != null)
+          .map((value) => Math.abs(value)),
+        0,
+      )
+      return Math.max(maxAbs, rowMax)
+    }, 0),
+    [monthlyReturnMatrixRows],
+  )
   const returns = useMemo(() => priceReturnStats(analysisBars), [analysisBars])
   const quoteReturns = useMemo(() => priceReturnStats(allBars), [allBars])
   const standardizedReturns = useMemo(
@@ -846,7 +978,7 @@ export default function ListedInstrumentDetailPage({ instrument, watchlistContex
   )
   const displayReturns = useMemo(() => ({
     ...returns,
-    dailyChange: quoteReturns.dailyChange ?? returns.dailyChange,
+    dailyChange: isIndex ? returns.dailyChange : quoteReturns.dailyChange ?? returns.dailyChange,
     oneMonth: standardizedReturns.oneMonth.present
       ? standardizedReturns.oneMonth.value
       : null,
@@ -862,7 +994,7 @@ export default function ListedInstrumentDetailPage({ instrument, watchlistContex
     oneYear: standardizedReturns.oneYear.present
       ? standardizedReturns.oneYear.value
       : null,
-  }), [quoteReturns.dailyChange, returns, standardizedReturns])
+  }), [isIndex, quoteReturns.dailyChange, returns, standardizedReturns])
   const riskStats = useMemo(() => priceRiskStats(analysisBars), [analysisBars])
   const standardizedRisk = useMemo(
     () => ({
@@ -886,7 +1018,9 @@ export default function ListedInstrumentDetailPage({ instrument, watchlistContex
     observationCount:
       risk?.calculation_frequency_profile?.observation_count ?? riskStats.observationCount,
   }), [risk, riskStats, standardizedRisk])
-  const latest = allBars[allBars.length - 1] || analysisBars[analysisBars.length - 1]
+  const latest = isIndex
+    ? analysisBars[analysisBars.length - 1]
+    : allBars[allBars.length - 1] || analysisBars[analysisBars.length - 1]
   const latestPriceBar = allBars[allBars.length - 1]
   const visibleHigh = visibleBars.length ? Math.max(...visibleBars.map((bar) => bar.high)) : null
   const visibleLow = visibleBars.length ? Math.min(...visibleBars.map((bar) => bar.low)) : null
@@ -894,6 +1028,18 @@ export default function ListedInstrumentDetailPage({ instrument, watchlistContex
   const analysisBasisLabel = canonicalCloseAnalysisBars.length
     ? chart?.selected_series?.label || chart?.base_series_type || 'canonical return series'
     : mode === 'qfq' ? 'QFQ price' : 'raw price'
+  const indexReturnKind = chart?.selected_series?.return_kind || summary?.series_snapshot?.return_kind || null
+  const indexSemanticsLabel = indexReturnKind === 'total_return'
+    ? 'Total Return Index'
+    : indexReturnKind === 'price_return'
+      ? 'Price Index'
+      : 'Index Series'
+  const indexChartDescription = language === 'zh-Hans'
+    ? `图表使用标准${indexReturnKind === 'total_return' ? '全收益' : '价格'}指数序列，不代表存在可交易的开高低收量行情。`
+    : `This chart uses the canonical ${indexSemanticsLabel.toLowerCase()} series. It does not imply tradable OHLCV data.`
+  const indexPerformanceDescription = language === 'zh-Hans'
+    ? `基于标准${indexReturnKind === 'total_return' ? '全收益' : '价格'}指数序列计算；风险调整比率使用零无风险利率。`
+    : `Calculated from the canonical ${indexSemanticsLabel.toLowerCase()} series; ratios use a zero risk-free rate.`
   const performanceAsOfNote = performance?.snapshot_metadata?.as_of_date
     ? `Standardized · as of ${formatDate(performance.snapshot_metadata.as_of_date)}`
     : 'Standardized performance unavailable'
@@ -914,6 +1060,66 @@ export default function ListedInstrumentDetailPage({ instrument, watchlistContex
   const referenceProfile = referenceRecord(referenceSections.profile)
   const referenceFundInfo = referenceRecord(referenceSections.fund_info)
   const referenceIndexInfo = referenceRecord(referenceSections.index_info)
+  const indexMtdSnapshot = performanceMetricSnapshotByKey.get('MTD')
+  const indexYtdSnapshot = performanceMetricSnapshotByKey.get('YTD')
+  const indexOneYearSnapshot = performanceMetricSnapshotByKey.get('1Y')
+  const indexSinceInceptionSnapshot = performanceMetricSnapshotByKey.get('SI')
+  const buildIndexMetricCells = (
+    selectValue: (snapshot: PerformanceMetricSnapshot) => number | null,
+    formatValue: (value: number) => string,
+    signed = false,
+  ) => performanceMetricPeriodSnapshots.map(({ snapshot }) => {
+    const value = selectValue(snapshot)
+    return {
+      primary: value == null ? '—' : formatValue(value),
+      tone: signed ? metricTone(value) : value == null ? 'empty' : '',
+    }
+  })
+  const indexPerformanceMetricRows = [
+    {
+      key: 'period_return',
+      label: 'Period Return',
+      cells: buildIndexMetricCells((snapshot) => snapshot.periodReturn, (value) => formatPercent(value), true),
+    },
+    {
+      key: 'annualized_return',
+      label: 'Ann. Return',
+      cells: buildIndexMetricCells((snapshot) => snapshot.annualizedReturn, (value) => formatPercent(value), true),
+    },
+    {
+      key: 'annualized_volatility',
+      label: 'Ann. Volatility',
+      cells: buildIndexMetricCells((snapshot) => snapshot.annualizedVolatility, (value) => formatPercent(value)),
+    },
+    {
+      key: 'sharpe_ratio',
+      label: 'Sharpe Ratio',
+      cells: buildIndexMetricCells((snapshot) => snapshot.sharpe, (value) => formatNumber(value, 2), true),
+    },
+    {
+      key: 'sortino_ratio',
+      label: 'Sortino Ratio',
+      cells: buildIndexMetricCells((snapshot) => snapshot.sortino, (value) => formatNumber(value, 2), true),
+    },
+    {
+      key: 'calmar_ratio',
+      label: 'Calmar Ratio',
+      cells: buildIndexMetricCells((snapshot) => snapshot.calmar, (value) => formatNumber(value, 2), true),
+    },
+    {
+      key: 'max_drawdown',
+      label: 'Max DD',
+      cells: buildIndexMetricCells((snapshot) => snapshot.maxDrawdown, (value) => formatPercent(value), true),
+    },
+    {
+      key: 'recovery_days',
+      label: 'Recovery Days',
+      cells: performanceMetricPeriodSnapshots.map(({ snapshot }) => ({
+        primary: formatRecoveryValue(snapshot),
+        tone: snapshot.maxDrawdown == null ? 'empty' : '',
+      })),
+    },
+  ]
 
   if (loading) return <LoadingOverlay label="Loading market detail" />
 
@@ -954,6 +1160,32 @@ export default function ListedInstrumentDetailPage({ instrument, watchlistContex
     </section>
   )
 
+  const indexChartPanel = (
+    <section className="panel listed-chart-panel">
+      <div className="listed-chart-toolbar">
+        <div>
+          <div className="panel-title">Index Level</div>
+          <div className="listed-chart-caption">
+            {analysisBasisLabel} · {visibleAnalysisBars.length} observations
+          </div>
+        </div>
+        <div className="listed-chart-controls">
+          <div className="listed-segmented-control" aria-label="Date range">
+            {RANGE_OPTIONS.map((option) => (
+              <button type="button" key={option} className={range === option ? 'active' : ''} onClick={() => setRange(option)}>{option}</button>
+            ))}
+          </div>
+        </div>
+      </div>
+      <div className="listed-chart-shell">
+        <IndexLevelChart bars={visibleAnalysisBars} />
+      </div>
+      <div className="listed-source-note">
+        {indexChartDescription}
+      </div>
+    </section>
+  )
+
   return (
     <div className="instrument-detail-page listed-detail-page">
       <div className="instrument-detail-topbar">
@@ -982,12 +1214,23 @@ export default function ListedInstrumentDetailPage({ instrument, watchlistContex
           <div className="instrument-detail-badges">
             {instrument.primary_identifier ? <span className="context-chip">{instrument.primary_identifier}</span> : null}
             <span className="context-chip">{barsResponse?.currency || latest?.currency || '—'}</span>
-            {barsResponse?.count ? <span className="context-chip">Raw OHLCV retained</span> : null}
-            <span className="context-chip">
-              {qfqAvailable ? 'OHLCV QFQ available' : barsResponse?.count ? 'Raw OHLCV only' : 'OHLCV pending'}
-            </span>
+            {isIndex ? (
+              <>
+                <span className="context-chip">{indexSemanticsLabel}</span>
+                {barsResponse?.source_refresh_status ? (
+                  <span className="context-chip">Source {formatLabel(barsResponse.source_refresh_status)}</span>
+                ) : null}
+              </>
+            ) : (
+              <>
+                {barsResponse?.count ? <span className="context-chip">Raw OHLCV retained</span> : null}
+                <span className="context-chip">
+                  {qfqAvailable ? 'OHLCV QFQ available' : barsResponse?.count ? 'Raw OHLCV only' : 'OHLCV pending'}
+                </span>
+              </>
+            )}
             {sourceRefreshFailed ? <span className="context-chip listed-source-failed-chip">Source update failed</span> : null}
-            {summary?.freshness.data_freshness_status ? <span className="context-chip">{formatLabel(summary.freshness.data_freshness_status)}</span> : null}
+            {!isIndex && summary?.freshness.data_freshness_status ? <span className="context-chip">{formatLabel(summary.freshness.data_freshness_status)}</span> : null}
             {typeof displayedCoverageStatus === 'string' && displayedCoverageStatus ? (
               <span className="context-chip">{formatLabel(displayedCoverageStatus)}</span>
             ) : null}
@@ -1100,12 +1343,6 @@ export default function ListedInstrumentDetailPage({ instrument, watchlistContex
         <div className="listed-source-alert" role="alert">{standardizedError}</div>
       ) : null}
 
-      {referenceError ? (
-        <div className="listed-source-alert" role="alert">
-          Some provider reference sections are unavailable. Canonical market history is unaffected.
-        </div>
-      ) : null}
-
       <div className="instrument-detail-tabs-row">
         <div className="instrument-detail-tabs">
           {tabs.map((item) => (
@@ -1123,27 +1360,37 @@ export default function ListedInstrumentDetailPage({ instrument, watchlistContex
 
       {tab === 'overview' ? (
         <div className="listed-tab-stack">
-          <section className="listed-metric-grid">
-            <MetricCard label="Close" value={latest ? formatNumber(latest.close, latest.close < 10 ? 4 : 2) : '—'} note={analysisBasisLabel} />
-            <MetricCard label="Daily Change" value={percentValue(displayReturns.dailyChange)} tone={signedValueClass(displayReturns.dailyChange)} />
-            <MetricCard label={`${range} High`} value={visibleHigh === null ? '—' : formatNumber(visibleHigh, visibleHigh < 10 ? 4 : 2)} />
-            <MetricCard label={`${range} Low`} value={visibleLow === null ? '—' : formatNumber(visibleLow, visibleLow < 10 ? 4 : 2)} />
-            <MetricCard label="Volume" value={compactValue(latestPriceBar?.volume ?? null, 2)} note={latestPriceBar?.volumeUnit || undefined} />
-            <MetricCard label="Turnover" value={compactValue(latestPriceBar?.turnover ?? null, 2)} note={latestPriceBar?.turnoverUnit || undefined} />
-          </section>
-          {chartPanel}
-          <section className="listed-metric-grid listed-return-strip">
-            <MetricCard label="1 Month" value={percentValue(displayReturns.oneMonth)} tone={signedValueClass(displayReturns.oneMonth)} note={performanceAsOfNote} />
-            <MetricCard label="3 Months" value={percentValue(displayReturns.threeMonth)} tone={signedValueClass(displayReturns.threeMonth)} note={performanceAsOfNote} />
-            <MetricCard label="YTD" value={percentValue(displayReturns.ytd)} tone={signedValueClass(displayReturns.ytd)} note={performanceAsOfNote} />
-            <MetricCard label="1 Year" value={percentValue(displayReturns.oneYear)} tone={signedValueClass(displayReturns.oneYear)} note={performanceAsOfNote} />
-          </section>
-          {listedInstrumentType === 'equity' ? (
-            <ReferenceFacts title="Company Profile" record={referenceProfile} fields={EQUITY_PROFILE_FIELDS} />
-          ) : null}
-          {listedInstrumentType === 'etf' ? (
-            <ReferenceFacts title="Fund Profile" record={referenceFundInfo} fields={FUND_INFO_FIELDS} />
-          ) : null}
+          {isIndex ? (
+            <>
+              <section className="listed-metric-grid">
+                <MetricCard label="Index Level" value={latest ? formatNumber(latest.close, latest.close < 10 ? 4 : 2) : '—'} note={analysisBasisLabel} />
+                <MetricCard label="Daily Change" value={percentValue(displayReturns.dailyChange)} tone={signedValueClass(displayReturns.dailyChange)} />
+                <MetricCard label="MTD" value={percentValue(indexMtdSnapshot?.periodReturn ?? null)} tone={signedValueClass(indexMtdSnapshot?.periodReturn ?? null)} />
+                <MetricCard label="YTD" value={percentValue(indexYtdSnapshot?.periodReturn ?? null)} tone={signedValueClass(indexYtdSnapshot?.periodReturn ?? null)} />
+                <MetricCard label="1 Year" value={percentValue(indexOneYearSnapshot?.periodReturn ?? null)} tone={signedValueClass(indexOneYearSnapshot?.periodReturn ?? null)} />
+                <MetricCard label="Ann. Volatility" value={percentValue(indexSinceInceptionSnapshot?.annualizedVolatility ?? null)} note="Since inception" />
+              </section>
+              {indexChartPanel}
+            </>
+          ) : (
+            <>
+              <section className="listed-metric-grid">
+                <MetricCard label="Close" value={latest ? formatNumber(latest.close, latest.close < 10 ? 4 : 2) : '—'} note={analysisBasisLabel} />
+                <MetricCard label="Daily Change" value={percentValue(displayReturns.dailyChange)} tone={signedValueClass(displayReturns.dailyChange)} />
+                <MetricCard label={`${range} High`} value={visibleHigh === null ? '—' : formatNumber(visibleHigh, visibleHigh < 10 ? 4 : 2)} />
+                <MetricCard label={`${range} Low`} value={visibleLow === null ? '—' : formatNumber(visibleLow, visibleLow < 10 ? 4 : 2)} />
+                <MetricCard label="Volume" value={compactValue(latestPriceBar?.volume ?? null, 2)} note={latestPriceBar?.volumeUnit || undefined} />
+                <MetricCard label="Turnover" value={compactValue(latestPriceBar?.turnover ?? null, 2)} note={latestPriceBar?.turnoverUnit || undefined} />
+              </section>
+              {chartPanel}
+              <section className="listed-metric-grid listed-return-strip">
+                <MetricCard label="1 Month" value={percentValue(displayReturns.oneMonth)} tone={signedValueClass(displayReturns.oneMonth)} note={performanceAsOfNote} />
+                <MetricCard label="3 Months" value={percentValue(displayReturns.threeMonth)} tone={signedValueClass(displayReturns.threeMonth)} note={performanceAsOfNote} />
+                <MetricCard label="YTD" value={percentValue(displayReturns.ytd)} tone={signedValueClass(displayReturns.ytd)} note={performanceAsOfNote} />
+                <MetricCard label="1 Year" value={percentValue(displayReturns.oneYear)} tone={signedValueClass(displayReturns.oneYear)} note={performanceAsOfNote} />
+              </section>
+            </>
+          )}
         </div>
       ) : null}
 
@@ -1175,22 +1422,115 @@ export default function ListedInstrumentDetailPage({ instrument, watchlistContex
       ) : null}
 
       {tab === 'performance' ? (
-        <div className="listed-tab-stack">
-          <section className="listed-metric-grid">
-            <MetricCard label="1 Month" value={percentValue(displayReturns.oneMonth)} tone={signedValueClass(displayReturns.oneMonth)} note={performanceAsOfNote} />
-            <MetricCard label="3 Months" value={percentValue(displayReturns.threeMonth)} tone={signedValueClass(displayReturns.threeMonth)} note={performanceAsOfNote} />
-            <MetricCard label="6 Months" value={percentValue(displayReturns.sixMonth)} tone={signedValueClass(displayReturns.sixMonth)} note={performanceAsOfNote} />
-            <MetricCard label="YTD" value={percentValue(displayReturns.ytd)} tone={signedValueClass(displayReturns.ytd)} note={performanceAsOfNote} />
-            <MetricCard label="1 Year" value={percentValue(displayReturns.oneYear)} tone={signedValueClass(displayReturns.oneYear)} note={performanceAsOfNote} />
-            <MetricCard label="Available History" value={percentValue(displayReturns.sinceStart)} tone={signedValueClass(displayReturns.sinceStart)} />
+        isIndex ? (
+          <section className="panel instrument-performance-shell listed-index-performance-shell">
+            <div className="instrument-price-topline" />
+            <section className="instrument-performance-section instrument-performance-section-metrics">
+              <div className="instrument-performance-section-header">
+                <div className="instrument-performance-title-group">
+                  <div className="panel-title">Performance</div>
+                  <div className="instrument-section-title">Metrics Matrix</div>
+                  <div className="listed-chart-caption">{indexPerformanceDescription}</div>
+                </div>
+              </div>
+              <div className="instrument-performance-section-body">
+                <div className="table-shell instrument-performance-table-shell">
+                  <table className="terminal-table terminal-table-compact instrument-metrics-table">
+                    <thead>
+                      <tr>
+                        <th>Metric</th>
+                        {PERFORMANCE_METRIC_PERIODS.map((period) => <th key={period.key}>{period.label}</th>)}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {indexPerformanceMetricRows.map((row) => (
+                        <tr key={row.key} className="instrument-metrics-row-single">
+                          <td className="instrument-metrics-row-label">{row.label}</td>
+                          {row.cells.map((cell, index) => (
+                            <td key={`${row.key}-${PERFORMANCE_METRIC_PERIODS[index]?.key || index}`}>
+                              <div className={`instrument-metrics-cell${cell.tone ? ` instrument-metrics-cell-${cell.tone}` : ''}`}>
+                                <strong>{cell.primary}</strong>
+                              </div>
+                            </td>
+                          ))}
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </section>
+
+            <section className="instrument-performance-section instrument-performance-section-monthly">
+              <div className="instrument-performance-section-header">
+                <div>
+                  <div className="panel-title">Performance</div>
+                  <div className="instrument-section-title">Monthly Return Matrix</div>
+                </div>
+              </div>
+              <div className="instrument-performance-section-body">
+                {monthlyReturnMatrixRows.length ? (
+                  <div className="table-shell instrument-performance-table-shell">
+                    <table className="terminal-table terminal-table-compact instrument-heatmap-table">
+                      <thead>
+                        <tr>
+                          <th>Year</th>
+                          {MONTH_SHORT_LABELS.map((label) => <th key={label}>{label}</th>)}
+                          <th>Yearly / YTD</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {monthlyReturnMatrixRows.map((row) => (
+                          <tr key={row.year}>
+                            <td className="instrument-heatmap-row-label">{row.year}</td>
+                            {row.months.map((value, index) => (
+                              <td
+                                key={`${row.year}-${MONTH_SHORT_LABELS[index]}`}
+                                className={`instrument-heatmap-cell${value == null ? ' instrument-heatmap-cell-empty' : ''}`}
+                                style={getHeatmapCellStyle(value, monthlyReturnMatrixMaxAbs)}
+                                title={row.monthWindows[index] ? `Anchor: ${row.monthWindows[index]?.anchorDate} · End: ${row.monthWindows[index]?.endDate}` : undefined}
+                              >
+                                {value == null ? '—' : formatPercent(value, 2)}
+                              </td>
+                            ))}
+                            <td
+                              className={`instrument-heatmap-cell${row.ytd == null ? ' instrument-heatmap-cell-empty' : ''}`}
+                              style={getHeatmapCellStyle(row.ytd, monthlyReturnMatrixMaxAbs)}
+                              title={row.ytdWindow ? `Anchor: ${row.ytdWindow.anchorDate} · End: ${row.ytdWindow.endDate}` : undefined}
+                            >
+                              {row.ytd == null ? '—' : formatPercent(row.ytd, 2)}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                ) : (
+                  <div className="instrument-placeholder">
+                    Monthly returns will appear once adjacent month-end index observations are available.
+                  </div>
+                )}
+              </div>
+            </section>
           </section>
-          <section className="panel listed-chart-panel">
-            <div className="listed-chart-toolbar"><div><div className="panel-title">Growth of Price</div><div className="listed-chart-caption">Cumulative return from {analysisBasisLabel}</div></div></div>
-            <GrowthChart bars={analysisBars} />
-          </section>
-          <DataTable title="Trailing Returns · Standardized Engine" rows={performance?.trailing_returns ?? []} columns={TRAILING_RETURN_COLUMNS} />
-          <DataTable title="Annual Returns · Standardized Engine" rows={performance?.annual_returns ?? []} columns={ANNUAL_RETURN_COLUMNS} />
-        </div>
+        ) : (
+          <div className="listed-tab-stack">
+            <section className="listed-metric-grid">
+              <MetricCard label="1 Month" value={percentValue(displayReturns.oneMonth)} tone={signedValueClass(displayReturns.oneMonth)} note={performanceAsOfNote} />
+              <MetricCard label="3 Months" value={percentValue(displayReturns.threeMonth)} tone={signedValueClass(displayReturns.threeMonth)} note={performanceAsOfNote} />
+              <MetricCard label="6 Months" value={percentValue(displayReturns.sixMonth)} tone={signedValueClass(displayReturns.sixMonth)} note={performanceAsOfNote} />
+              <MetricCard label="YTD" value={percentValue(displayReturns.ytd)} tone={signedValueClass(displayReturns.ytd)} note={performanceAsOfNote} />
+              <MetricCard label="1 Year" value={percentValue(displayReturns.oneYear)} tone={signedValueClass(displayReturns.oneYear)} note={performanceAsOfNote} />
+              <MetricCard label="Available History" value={percentValue(displayReturns.sinceStart)} tone={signedValueClass(displayReturns.sinceStart)} />
+            </section>
+            <section className="panel listed-chart-panel">
+              <div className="listed-chart-toolbar"><div><div className="panel-title">Growth of Price</div><div className="listed-chart-caption">Cumulative return from {analysisBasisLabel}</div></div></div>
+              <GrowthChart bars={analysisBars} />
+            </section>
+            <DataTable title="Trailing Returns · Standardized Engine" rows={performance?.trailing_returns ?? []} columns={TRAILING_RETURN_COLUMNS} />
+            <DataTable title="Annual Returns · Standardized Engine" rows={performance?.annual_returns ?? []} columns={ANNUAL_RETURN_COLUMNS} />
+          </div>
+        )
       ) : null}
 
       {tab === 'risk' ? (
@@ -1275,22 +1615,6 @@ export default function ListedInstrumentDetailPage({ instrument, watchlistContex
       {tab === 'methodology' ? (
         <div className="listed-tab-stack">
           <ReferenceFacts title="Index Profile" record={referenceIndexInfo} fields={INDEX_INFO_FIELDS} />
-          <ReferenceFacts
-            title="Index Source Contract"
-            record={{
-              provider: reference?.provider,
-              provider_symbol: reference?.provider_symbol,
-              ...reference?.source,
-            }}
-            fields={[
-              { key: 'provider', label: 'Provider' },
-              { key: 'provider_symbol', label: 'Provider Symbol' },
-              { key: 'source_location', label: 'Source' },
-              { key: 'expected_frequency', label: 'Frequency' },
-              { key: 'market_calendar', label: 'Market Calendar' },
-              { key: 'market_data_updated_at', label: 'Last Data Update' },
-            ]}
-          />
           <DataTable
             title="Latest Constituents · Top 100"
             rows={referenceRows(referenceSections.constituents)}
@@ -1369,7 +1693,7 @@ export default function ListedInstrumentDetailPage({ instrument, watchlistContex
                     <strong>{monitoring.instrument.research.current_view || '—'}</strong>
                   </div>
                   <div>
-                    <span>Manual Rating</span>
+                    <span>Research Rating</span>
                     <strong>
                       {monitoring.instrument.research.manual_rating == null
                         ? '—'
@@ -1410,20 +1734,48 @@ export default function ListedInstrumentDetailPage({ instrument, watchlistContex
               ) : null}
             </>
           )}
-        </div>
-      ) : null}
-
-      {reference && Object.keys(reference.section_errors).length ? (
-        <section className="panel listed-data-panel">
-          <div className="panel-header"><div className="panel-title">Reference Data Coverage</div></div>
-          <div className="listed-source-note">
-            {Object.entries(reference.section_errors).map(([section, message]) => (
-              <div key={section}>
-                <strong>{formatLabel(section)}:</strong> {referenceCoverageMessage(message)}
+          <section className="panel listed-data-panel">
+            <div className="panel-header"><div className="panel-title">Market Data Status</div></div>
+            <div className="listed-key-value-grid">
+              <div><span>Series</span><strong>{analysisBasisLabel}</strong></div>
+              {isIndex ? <div><span>Return Semantics</span><strong>{indexSemanticsLabel}</strong></div> : null}
+              <div><span>History Start</span><strong>{formatDate(calculationSeries[0]?.date)}</strong></div>
+              <div><span>Latest Observation</span><strong>{formatDate(latest?.date)}</strong></div>
+              <div><span>Observations</span><strong>{formatNumber(calculationSeries.length, 0)}</strong></div>
+              <div><span>Source Refresh</span><strong>{formatLabel(barsResponse?.source_refresh_status || 'unknown')}</strong></div>
+              <div><span>Registry Updated</span><strong>{formatDateTime(summary?.freshness.last_fact_update_at)}</strong></div>
+              <div><span>Provider</span><strong>{reference?.provider || '—'}</strong></div>
+              <div><span>Provider Symbol</span><strong>{reference?.provider_symbol || '—'}</strong></div>
+              <div><span>Source</span><strong>{reference?.source.source_location || '—'}</strong></div>
+              <div><span>Frequency</span><strong>{reference?.source.expected_frequency || '—'}</strong></div>
+              <div><span>Market Calendar</span><strong>{reference?.source.market_calendar || '—'}</strong></div>
+              <div><span>Last Data Update</span><strong>{formatDateTime(reference?.source.market_data_updated_at)}</strong></div>
+            </div>
+            {barsResponse?.source_refresh_message ? (
+              <div className="listed-source-note">
+                {language === 'zh-Hans' ? '最近一次来源结果：' : 'Last source result: '}
+                {barsResponse.source_refresh_message}
               </div>
-            ))}
-          </div>
-        </section>
+            ) : null}
+          </section>
+          {referenceError ? (
+            <div className="listed-source-alert" role="alert">
+              Some provider reference sections are unavailable. Canonical market history is unaffected.
+            </div>
+          ) : null}
+          {reference && Object.keys(reference.section_errors).length ? (
+            <section className="panel listed-data-panel">
+              <div className="panel-header"><div className="panel-title">Reference Data Coverage</div></div>
+              <div className="listed-source-note">
+                {Object.entries(reference.section_errors).map(([section, message]) => (
+                  <div key={section}>
+                    <strong>{formatLabel(section)}:</strong> {referenceCoverageMessage(message)}
+                  </div>
+                ))}
+              </div>
+            </section>
+          ) : null}
+        </div>
       ) : null}
     </div>
   )

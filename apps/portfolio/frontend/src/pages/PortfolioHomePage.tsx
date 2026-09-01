@@ -1,5 +1,6 @@
 import {
   Fragment,
+  useCallback,
   useEffect,
   useMemo,
   useRef,
@@ -11,6 +12,13 @@ import {
 import { useNavigate, useParams, useSearchParams } from 'react-router'
 
 import CalculationStatus from '../components/CalculationStatus'
+import HoldingsSectionTables, {
+  DEFAULT_HOLDINGS_SECTION_VISIBLE_COLUMNS,
+  HOLDINGS_SECTION_COLUMN_KEYS,
+  type HoldingsPortfolioTotalColumn,
+  type HoldingsSectionKey,
+  type HoldingsSectionVisibleColumns,
+} from '../components/HoldingsSectionTables'
 import HoldingsTotalRow from '../components/HoldingsTotalRow'
 import PortfolioTableViewControls, { type PortfolioTableViewOption } from '../components/PortfolioTableViewControls'
 import PortfolioWorkspaceLayout from '../components/PortfolioWorkspaceLayout'
@@ -222,6 +230,7 @@ type GroupVolatilitySeries = {
 
 const DAYS_PER_YEAR = 365.25
 const GROUP_METRIC_REQUIRED_VALUE_COVERAGE = 1 - 1e-9
+const HOLDINGS_NAV_RECONCILIATION_RELATIVE_TOLERANCE = 1e-9
 const GROUP_VOL_WINDOW_MONTHS: Record<GroupVolatilityRangeKey, number> = {
   '1m': 1,
   '3m': 3,
@@ -335,18 +344,22 @@ const ALL_HOLDINGS_COLUMN_KEYS = HOLDINGS_COLUMN_GROUPS.flatMap((group) => group
 
 const DEFAULT_HOLDINGS_COLUMNS: HoldingsColumnKey[] = [
   'instrument',
-  'instrument_type',
-  'last_price',
-  'quote_date',
-  'price_chart_6m',
+  'taxonomy_top',
+  'taxonomy_leaf',
+  'currency',
+  'holding_date',
   'quantity',
-  'avg_cost_book',
-  'cost_basis',
-  'market_value',
+  'last_price',
+  'market_value_base',
   'weight',
-  'forward_risk_share',
+  'cost_basis_base',
   'unrealized_value',
   'unrealized_pct',
+  'instrument_return_1w',
+  'instrument_return_1m',
+  'instrument_volatility_3m',
+  'forward_risk_share',
+  'coverage',
 ]
 
 const DEFAULT_HOLDINGS_COLUMN_WIDTHS: Record<HoldingsColumnKey, number> = {
@@ -555,49 +568,6 @@ function instrumentTrendCoverageLabel(row: PortfolioHoldingRow) {
   return `Trend: ${basis} · ${state} · ${observationCount} observation${observationCount === 1 ? '' : 's'}`
 }
 
-function holdingValuationSummary(row: PortfolioHoldingRow) {
-  if (row.derivative_contract?.contract_type === 'fcn') {
-    return `FCN · matures ${row.derivative_contract.terms.maturity_date}`
-  }
-  if (row.derivative_contract?.contract_type === 'option') {
-    const side = isOptionObligationHolding(row) || row.quantity < 0 ? 'Short' : 'Long'
-    const optionType = formatLabel(row.option_type ?? row.derivative_contract.terms.option_type)
-    const expiry = row.expiry_date ?? row.derivative_contract.terms.expiry_date
-    const status = isOptionObligationHolding(row)
-      ? ` · ${formatLabel(row.obligation_status ?? 'open')}`
-      : ''
-    return `${side} ${optionType} · expires ${expiry}${status}`
-  }
-  if (holdingUsesEventValuation(row)) {
-    return row.valuation_basis
-      ? `Event-valued · ${formatLabel(row.valuation_basis)}`
-      : 'Event-valued'
-  }
-  return null
-}
-
-function holdingValuationDetail(row: PortfolioHoldingRow) {
-  if (row.derivative_contract?.contract_type === 'option') {
-    const contractQuantity = finiteNumber(row.open_contract_quantity) ?? Math.abs(row.quantity)
-    const contractMultiplier = finiteNumber(row.contract_multiplier) ?? row.derivative_contract.terms.contract_multiplier
-    const underlyingQuantity =
-      finiteNumber(row.required_underlying_quantity) ?? contractQuantity * contractMultiplier
-    const strike = finiteNumber(row.strike) ?? row.derivative_contract.terms.strike
-    return `${formatQuantity(contractQuantity)} open contracts · ${formatQuantity(underlyingQuantity)} underlying units · strike ${formatUnitPrice(strike, holdingCurrency(row))}`
-  }
-  if (holdingUsesEventValuation(row)) {
-    return 'Fair value and daily market return are unavailable.'
-  }
-  return instrumentTrendReasonLabel(row)
-}
-
-function optionObligationAmountSummary(row: PortfolioHoldingRow) {
-  if (!isOptionObligationHolding(row)) {
-    return null
-  }
-  return `Remaining premium basis ${formatCurrency(row.premium_basis_remaining, holdingCurrency(row))} · Carrying liability ${formatCurrency(row.liability_value, holdingCurrency(row))}`
-}
-
 function instrumentTrendReasonLabel(row: PortfolioHoldingRow) {
   const basis = row.instrument_trend_basis ? formatLabel(row.instrument_trend_basis) : 'trend basis'
   switch (row.instrument_trend_reason) {
@@ -636,18 +606,6 @@ function instrumentTrendReasonLabel(row: PortfolioHoldingRow) {
 function finiteNumber(value: number | null | undefined) {
   return typeof value === 'number' && Number.isFinite(value) ? value : null
 }
-
-const HOLDING_CATEGORY_LABELS: Record<PortfolioHoldingRow['holding_category'], string> = {
-  securities: 'Securities',
-  derivatives: 'Derivatives',
-  cash_and_settlement: 'Cash & Settlement',
-}
-
-const HOLDING_CATEGORY_SEQUENCE: PortfolioHoldingRow['holding_category'][] = [
-  'securities',
-  'derivatives',
-  'cash_and_settlement',
-]
 
 function holdingUsesModeledZeroRisk(row: PortfolioHoldingRow) {
   return row.forward_risk_status === 'modeled_zero'
@@ -774,31 +732,8 @@ function sumCompleteNumbers(rows: PortfolioHoldingRow[], accessor: (row: Portfol
   return total
 }
 
-function isCashHoldingRow(row: PortfolioHoldingRow) {
-  return (
-    row.instrument_core?.instrument_type === 'cash' ||
-    row.instrument_core?.instrument_id.toLowerCase().startsWith('cash:') === true ||
-    row.line_id.toLowerCase().startsWith('cash:')
-  )
-}
-
-function isPendingMonetaryHoldingRow(row: PortfolioHoldingRow) {
-  return (
-    row.holding_kind?.startsWith('pending_') === true ||
-    row.holding_kind === 'settlement_receivable' ||
-    row.holding_kind === 'settlement_payable' ||
-    row.holding_kind === 'position_recognition_adjustment' ||
-    row.instrument_core?.instrument_id.toLowerCase().startsWith('pending:') === true ||
-    row.line_id.toLowerCase().startsWith('pending:')
-  )
-}
-
 function isMonetaryHoldingRow(row: PortfolioHoldingRow) {
-  return isCashHoldingRow(row) || isPendingMonetaryHoldingRow(row)
-}
-
-function isBaseCashHoldingRow(row: PortfolioHoldingRow, workspace: HoldingsWorkspaceResponse) {
-  return isCashHoldingRow(row) && normalizedCurrency(holdingCurrency(row)) === normalizedCurrency(workspace.base_currency)
+  return row.holding_category === 'cash_and_settlement'
 }
 
 function isBaseCurrencyMonetaryHoldingRow(
@@ -844,7 +779,7 @@ function dayChangeBaseForRow(row: PortfolioHoldingRow, workspace: HoldingsWorksp
 }
 
 function dayChangeDisplayValue(row: PortfolioHoldingRow, workspace: HoldingsWorkspaceResponse) {
-  if (isCashHoldingRow(row)) {
+  if (isMonetaryHoldingRow(row)) {
     return {
       value: dayChangeBaseForRow(row, workspace),
       currency: workspace.base_currency,
@@ -967,6 +902,9 @@ function totalUnrealizedBase(rows: PortfolioHoldingRow[], workspace: HoldingsWor
     return null
   }
   const nonCashRows = nonCashHoldingRows(rows)
+  if (!nonCashRows.length) {
+    return 0
+  }
   const marketValue = sumCompleteNumbers(nonCashRows, (row) =>
     baseAmountForRow(row, workspace.base_currency, row.market_value_base, row.market_value),
   )
@@ -1000,6 +938,17 @@ function totalCostBasisBase(rows: PortfolioHoldingRow[], workspace: HoldingsWork
     baseAmountForRow(row, workspace.base_currency, row.cost_basis_base, row.cost_basis),
   )
   return rowsCoverWorkspace(rows, workspace) ? workspace.totals.cost_basis ?? rowTotal : rowTotal
+}
+
+function totalMonetaryCapitalBase(
+  rows: PortfolioHoldingRow[],
+  workspace: HoldingsWorkspaceResponse,
+) {
+  const monetaryRows = rows.filter(isMonetaryHoldingRow)
+  if (!monetaryRows.length) {
+    return 0
+  }
+  return sumCompleteNumbers(monetaryRows, (row) => rowMarketValueBase(row, workspace))
 }
 
 function totalAllocation(rows: PortfolioHoldingRow[], workspace: HoldingsWorkspaceResponse) {
@@ -1063,14 +1012,33 @@ function rowsHaveCompatibleReturnCurrency(
 ) {
   const currencies = new Set(
     rows
-      .filter((row) => !isPendingMonetaryHoldingRow(row))
       .filter((row) => {
         const value = rowMarketValueBase(row, workspace)
         return value != null && Math.abs(value) > 1e-12
       })
       .map((row) => returnCurrencyForRow(row, workspace)),
   )
-  return currencies.size <= 1
+  const baseCurrency = normalizedCurrency(workspace.base_currency)
+  return currencies.size === 0 || (currencies.size === 1 && currencies.has(baseCurrency))
+}
+
+function currentBasketDenominator(
+  rows: PortfolioHoldingRow[],
+  workspace: HoldingsWorkspaceResponse,
+  rowNetValue: number,
+) {
+  if (!rowsCoverWorkspace(rows, workspace)) {
+    return Math.abs(rowNetValue) > 1e-12 ? rowNetValue : null
+  }
+  const nav = finiteNumber(workspace.totals.nav)
+  if (nav == null || Math.abs(nav) <= 1e-12) {
+    return null
+  }
+  const reconciliationScale = Math.max(1, Math.abs(nav), Math.abs(rowNetValue))
+  return Math.abs(rowNetValue - nav) <=
+    reconciliationScale * HOLDINGS_NAV_RECONCILIATION_RELATIVE_TOLERANCE
+    ? nav
+    : null
 }
 
 function weightedHoldingMetric(
@@ -1081,9 +1049,7 @@ function weightedHoldingMetric(
   if (totalsContainMaterialEventValuation(rows)) {
     return null
   }
-  const metricRows = rows.filter(
-    (row) => !isPendingMonetaryHoldingRow(row),
-  )
+  const metricRows = rows
   if (!metricRows.length || !rowsHaveCompatibleReturnCurrency(metricRows, workspace)) {
     return null
   }
@@ -1100,21 +1066,22 @@ function weightedHoldingMetric(
   }
   let eligibleAbsValue = 0
   let weightedTotal = 0
-  let denominator = 0
+  let eligibleNetValue = 0
   for (const row of metricRows) {
     const value = rowMarketValueBase(row, workspace)
     const rawMetric = finiteNumber(accessor(row))
-    const metric = rawMetric ?? (isBaseCashHoldingRow(row, workspace) ? 0 : null)
+    const metric = rawMetric ?? (isBaseCurrencyMonetaryHoldingRow(row, workspace) ? 0 : null)
     if (value == null || metric == null) {
       continue
     }
     eligibleAbsValue += Math.abs(value)
     weightedTotal += value * metric
-    denominator += value
+    eligibleNetValue += value
   }
+  const denominator = currentBasketDenominator(metricRows, workspace, eligibleNetValue)
   if (
     eligibleAbsValue / totalAbsValue < GROUP_METRIC_REQUIRED_VALUE_COVERAGE ||
-    Math.abs(denominator) <= 1e-12
+    denominator == null
   ) {
     return null
   }
@@ -1212,9 +1179,7 @@ export function groupedReturnSeries(
   ) {
     return null
   }
-  const returnEligibleRows = modeledZeroRisk
-    ? rows
-    : rows.filter((row) => !isPendingMonetaryHoldingRow(row))
+  const returnEligibleRows = rows
   const currencyComparableRows = modeledZeroRisk
     ? returnEligibleRows.filter(
         (row) => !holdingUsesZeroReturnRiskCapital(row, workspace),
@@ -1261,10 +1226,15 @@ export function groupedReturnSeries(
   const eligibleRows = [...returnRows, ...zeroReturnRows]
 
   const eligibleAbsValue = eligibleRows.reduce((sum, item) => sum + Math.abs(item.value ?? 0), 0)
-  const denominator = eligibleRows.reduce((sum, item) => sum + (item.value ?? 0), 0)
+  const eligibleNetValue = eligibleRows.reduce((sum, item) => sum + (item.value ?? 0), 0)
+  const denominator = currentBasketDenominator(
+    returnEligibleRows,
+    workspace,
+    eligibleNetValue,
+  )
   if (
     eligibleAbsValue / totalAbsValue < GROUP_METRIC_REQUIRED_VALUE_COVERAGE ||
-    Math.abs(denominator) <= 1e-12
+    denominator == null
   ) {
     return null
   }
@@ -1477,22 +1447,31 @@ function rowsCoverWorkspace(rows: PortfolioHoldingRow[], workspace: HoldingsWork
   return workspace.rows.every((row) => rowIds.has(row.line_id))
 }
 
-function resolveNodePath(taxonomyNodeId: string, nodesById: Map<string, PortfolioTaxonomyNodeRecord>) {
+function resolveNodePath(
+  taxonomyNodeId: string,
+  nodesById: Map<string, PortfolioTaxonomyNodeRecord>,
+) {
   const path: PortfolioTaxonomyNodeRecord[] = []
   let cursor: PortfolioTaxonomyNodeRecord | undefined = nodesById.get(taxonomyNodeId)
   const seen = new Set<string>()
   while (cursor && !seen.has(cursor.taxonomy_node_id)) {
     path.unshift(cursor)
     seen.add(cursor.taxonomy_node_id)
-    cursor = cursor.parent_taxonomy_node_id ? nodesById.get(cursor.parent_taxonomy_node_id) : undefined
+    cursor = cursor.parent_taxonomy_node_id
+      ? nodesById.get(cursor.parent_taxonomy_node_id)
+      : undefined
   }
   return path
 }
 
 function resolveGroupingTaxonomy(catalog: PortfolioTaxonomyCatalogResponse | null) {
-  const taxonomies = (catalog?.taxonomies ?? []).filter((taxonomy) => taxonomy.status === 'active')
+  const taxonomies = (catalog?.taxonomies ?? []).filter(
+    (taxonomy) => taxonomy.status === 'active',
+  )
   return (
-    taxonomies.find((taxonomy) => taxonomy.taxonomy_id === catalog?.default_planning_taxonomy_id) ??
+    taxonomies.find(
+      (taxonomy) => taxonomy.taxonomy_id === catalog?.default_planning_taxonomy_id,
+    ) ??
     taxonomies.find((taxonomy) => taxonomy.planning_enabled) ??
     taxonomies[0] ??
     null
@@ -1517,20 +1496,22 @@ function labelsForTaxonomyAssignment(
 
 function buildTaxonomyLabelsByInstrumentId(
   catalog: PortfolioTaxonomyCatalogResponse | null,
-  referenceDate: string | null | undefined,
 ) {
   const taxonomy = resolveGroupingTaxonomy(catalog)
-  if (!catalog || !taxonomy || !referenceDate) {
+  if (!catalog || !taxonomy) {
     return new Map<string, HoldingTaxonomyLabels>()
   }
 
   const nodesById = new Map<string, PortfolioTaxonomyNodeRecord>(
     catalog.taxonomy_nodes
-      .filter((node) => node.taxonomy_id === taxonomy.taxonomy_id && node.status === 'active')
+      .filter(
+        (node) =>
+          node.taxonomy_id === taxonomy.taxonomy_id && node.status === 'active',
+      )
       .map((node) => [node.taxonomy_node_id, node]),
   )
 
-  const assignmentByInstrumentId = new Map<string, HoldingTaxonomyLabels>()
+  const labelsByInstrumentId = new Map<string, HoldingTaxonomyLabels>()
   ;[...catalog.taxonomy_assignments]
     .filter(
       (assignment) =>
@@ -1538,19 +1519,17 @@ function buildTaxonomyLabelsByInstrumentId(
         assignment.target_scope === 'instrument' &&
         assignment.status === 'active',
     )
-    .sort(
-      (left, right) =>
-        right.assignment_id.localeCompare(left.assignment_id),
-    )
+    .sort((left, right) => right.assignment_id.localeCompare(left.assignment_id))
     .forEach((assignment) => {
-      if (assignmentByInstrumentId.has(assignment.target_entity_id)) {
-        return
+      if (!labelsByInstrumentId.has(assignment.target_entity_id)) {
+        labelsByInstrumentId.set(
+          assignment.target_entity_id,
+          labelsForTaxonomyAssignment(assignment, nodesById, taxonomy.taxonomy_id),
+        )
       }
-      const labels = labelsForTaxonomyAssignment(assignment, nodesById, taxonomy.taxonomy_id)
-      assignmentByInstrumentId.set(assignment.target_entity_id, labels)
     })
 
-  return assignmentByInstrumentId
+  return labelsByInstrumentId
 }
 
 function taxonomyLabelsForHoldingRow(
@@ -1841,7 +1820,7 @@ function holdingColumnExportValue(
     case 'day_change_value':
       return holdingDayChangeExportValue(
         row,
-        isCashHoldingRow(row)
+        isMonetaryHoldingRow(row)
           ? dayChangeBaseForRow(row, context.workspace)
           : row.day_change_value,
       )
@@ -2000,31 +1979,14 @@ const HOLDINGS_COLUMN_DEFINITIONS: Record<HoldingsColumnKey, HoldingsColumnDefin
   instrument: {
     key: 'instrument',
     label: 'Instrument',
-    render: (row) => {
-      const valuationSummary = holdingValuationSummary(row)
-      const valuationDetail = holdingValuationDetail(row)
-      const hoverDetail = valuationSummary
-        ? undefined
-        : `${instrumentTrendCoverageLabel(row)}. ${valuationDetail}`
-      return (
-        <div className="holding-name-stack" title={hoverDetail}>
-          <span>{holdingName(row)}</span>
-          {valuationSummary ? (
-            <span className="holding-secondary">{valuationSummary}</span>
-          ) : null}
-          {valuationSummary ? (
-            <span className="holding-secondary" title={valuationDetail}>
-              {valuationDetail}
-            </span>
-          ) : null}
-          {optionObligationAmountSummary(row) ? (
-            <span className="holding-secondary">
-              {optionObligationAmountSummary(row)}
-            </span>
-          ) : null}
-        </div>
-      )
-    },
+    render: (row) => (
+      <div
+        className="holding-name-stack"
+        title={`${instrumentTrendCoverageLabel(row)}. ${instrumentTrendReasonLabel(row)}`}
+      >
+        <span>{holdingName(row)}</span>
+      </div>
+    ),
     sortValue: (row) => holdingName(row),
   },
   ticker: {
@@ -2493,19 +2455,6 @@ function resolveGroupForRow(
     }
   }
   if (groupBy === 'instrument_type') {
-    if (isPendingMonetaryHoldingRow(row)) {
-      return {
-        key: row.holding_kind ?? 'pending_settlement',
-        label:
-          row.holding_kind === 'pending_subscription'
-            ? 'Pending Subscription'
-            : row.holding_kind === 'settlement_receivable'
-              ? 'Settlement Receivable'
-              : row.holding_kind === 'settlement_payable'
-                ? 'Settlement Payable'
-                : 'Pending Settlement',
-      }
-    }
     return { key: holdingAssetType(row), label: formatLabel(holdingAssetType(row)) }
   }
   if (groupBy === 'currency') {
@@ -2550,41 +2499,18 @@ function buildGroupedRows(
   })
 }
 
-function buildHoldingCategoryGroups(
-  rows: PortfolioHoldingRow[],
-  workspace: HoldingsWorkspaceResponse | null,
-) {
-  return HOLDING_CATEGORY_SEQUENCE.map((category) => {
-    const categoryRows = rows.filter((row) => row.holding_category === category)
-    return {
-      key: category,
-      label: HOLDING_CATEGORY_LABELS[category],
-      rows: categoryRows,
-      marketValueBase: categoryRows.reduce(
-        (total, row) => total + (workspace ? (rowMarketValueBase(row, workspace) ?? 0) : 0),
-        0,
-      ),
-      weight: categoryRows.reduce(
-        (total, row) => total + (finiteNumber(row.allocation) ?? 0),
-        0,
-      ),
-      openLots: categoryRows.reduce(
-        (total, row) => total + (finiteNumber(row.open_position_lot_count) ?? 0),
-        0,
-      ),
-    } satisfies HoldingsGroup
-  })
-}
-
 export default function PortfolioHomePage() {
   const navigate = useNavigate()
   const { portfolioId = '' } = useParams()
   const [searchParams, setSearchParams] = useSearchParams()
   const [workspaceResponse, setWorkspace] = useState<HoldingsWorkspaceResponse | null>(null)
-  const [taxonomyCatalogResponse, setTaxonomyCatalog] = useState<PortfolioTaxonomyCatalogResponse | null>(null)
+  const [taxonomyCatalogResponse, setTaxonomyCatalog] =
+    useState<PortfolioTaxonomyCatalogResponse | null>(null)
   const workspace = workspaceResponse?.portfolio_id === portfolioId ? workspaceResponse : null
   const taxonomyCatalog =
-    taxonomyCatalogResponse?.portfolio_id === portfolioId ? taxonomyCatalogResponse : null
+    taxonomyCatalogResponse?.portfolio_id === portfolioId
+      ? taxonomyCatalogResponse
+      : null
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [taxonomyError, setTaxonomyError] = useState<string | null>(null)
@@ -2611,6 +2537,27 @@ export default function PortfolioHomePage() {
   const [holdingsViewStoreError, setHoldingsViewStoreError] = useState<string | null>(null)
   const [activeHoldingsViewId, setActiveHoldingsViewId] = useState(initialHoldingsViewStore.activeViewId)
   const [holdingsColumns, setHoldingsColumns] = useState<HoldingsColumnKey[]>(() => initialHoldingsViewState.columns)
+  const [holdingsSectionVisibleColumns, setHoldingsSectionVisibleColumns] =
+    useState<HoldingsSectionVisibleColumns>(() => ({
+      fcn: [...DEFAULT_HOLDINGS_SECTION_VISIBLE_COLUMNS.fcn],
+      options: [...DEFAULT_HOLDINGS_SECTION_VISIBLE_COLUMNS.options],
+      cash: [...DEFAULT_HOLDINGS_SECTION_VISIBLE_COLUMNS.cash],
+      total: [...DEFAULT_HOLDINGS_SECTION_VISIBLE_COLUMNS.total],
+    }))
+  const handleHoldingsSectionVisibleColumnsChange = useCallback(
+    (sectionKey: string, columns: string[]) => {
+      if (!Object.prototype.hasOwnProperty.call(DEFAULT_HOLDINGS_SECTION_VISIBLE_COLUMNS, sectionKey)) {
+        return
+      }
+      const key = sectionKey as HoldingsSectionKey
+      setHoldingsSectionVisibleColumns((current) =>
+        JSON.stringify(current[key]) === JSON.stringify(columns)
+          ? current
+          : { ...current, [key]: columns },
+      )
+    },
+    [],
+  )
   const holdingsNeedsDetails = holdingsColumns.some((column) => HOLDINGS_COLUMNS_REQUIRING_DETAILS.has(column))
   const [holdingsColumnWidths, setHoldingsColumnWidths] = useState<Partial<Record<HoldingsColumnKey, number>>>(() =>
     Object.keys(initialHoldingsViewState.columnWidths).length
@@ -2657,6 +2604,16 @@ export default function PortfolioHomePage() {
   const [holdingsTableShellWidth, setHoldingsTableShellWidth] = useState(0)
   const requestedAsOfDate = searchParams.get('as_of_date') ?? ''
   const selectedInstrumentId = searchParams.get('instrument_id')
+
+  useEffect(() => {
+    setHoldingsSectionVisibleColumns({
+      fcn: [...DEFAULT_HOLDINGS_SECTION_VISIBLE_COLUMNS.fcn],
+      options: [...DEFAULT_HOLDINGS_SECTION_VISIBLE_COLUMNS.options],
+      cash: [...DEFAULT_HOLDINGS_SECTION_VISIBLE_COLUMNS.cash],
+      total: [...DEFAULT_HOLDINGS_SECTION_VISIBLE_COLUMNS.total],
+    })
+  }, [portfolioId])
+
   const holdingsViews = useMemo(() => getHoldingsViews(holdingsViewStore), [holdingsViewStore])
   const activeHoldingsView = useMemo(
     () => getHoldingsViewById(holdingsViewStore, activeHoldingsViewId),
@@ -2678,8 +2635,8 @@ export default function PortfolioHomePage() {
   const columnsEdited = JSON.stringify(normalizeHoldingsColumns(holdingsColumns)) !== JSON.stringify(activeHoldingsView.state.columns)
 
   const taxonomyByInstrumentId = useMemo(
-    () => buildTaxonomyLabelsByInstrumentId(taxonomyCatalog, workspace?.as_of_date),
-    [taxonomyCatalog, workspace?.as_of_date],
+    () => buildTaxonomyLabelsByInstrumentId(taxonomyCatalog),
+    [taxonomyCatalog],
   )
   const columnContext = useMemo(
     () =>
@@ -2745,8 +2702,10 @@ export default function PortfolioHomePage() {
     return () => observer.disconnect()
   }, [])
 
-  const sortedHoldingRows = useMemo(() => {
-    const rows = workspace?.rows ?? []
+  const sortedSecurityRows = useMemo(() => {
+    const rows = (workspace?.rows ?? []).filter(
+      (row) => row.holding_category === 'securities',
+    )
     if (!columnContext || !holdingsSortField) {
       return rows.slice()
     }
@@ -2760,22 +2719,224 @@ export default function PortfolioHomePage() {
       return primary || primaryIdentifier(left).localeCompare(primaryIdentifier(right), 'zh-Hans-CN')
     })
   }, [columnContext, holdingsSortDirection, holdingsSortField, workspace?.rows])
-  const holdingCategoryGroups = useMemo(
-    () => buildHoldingCategoryGroups(sortedHoldingRows, workspace),
-    [sortedHoldingRows, workspace],
+  const derivativeRows = useMemo(
+    () => (workspace?.rows ?? []).filter((row) => row.holding_category === 'derivatives'),
+    [workspace?.rows],
+  )
+  const cashRows = useMemo(
+    () =>
+      (workspace?.rows ?? []).filter(
+        (row) => row.holding_category === 'cash_and_settlement',
+      ),
+    [workspace?.rows],
   )
   const groupedSecurityRows = useMemo(() => {
     if (holdingsGroupBy === 'none') {
       return []
     }
-    const securityRows = holdingCategoryGroups.find((group) => group.key === 'securities')?.rows ?? []
     return buildGroupedRows(
-      securityRows,
+      sortedSecurityRows,
       holdingsGroupBy,
       taxonomyByInstrumentId,
       workspace,
     )
-  }, [holdingCategoryGroups, holdingsGroupBy, taxonomyByInstrumentId, workspace])
+  }, [holdingsGroupBy, sortedSecurityRows, taxonomyByInstrumentId, workspace])
+  const portfolioTotalColumns = useMemo<HoldingsPortfolioTotalColumn[]>(() => {
+    if (!workspace) {
+      return []
+    }
+    const rows = workspace.rows
+    const nav = finiteNumber(workspace.totals.nav)
+    const openBasis = totalCostBasisBase(rows, workspace)
+    const monetaryCapital = totalMonetaryCapitalBase(rows, workspace)
+    const unrealizedReturnBasis =
+      openBasis != null && monetaryCapital != null
+        ? openBasis + monetaryCapital
+        : null
+    const unrealized = totalUnrealizedBase(rows, workspace)
+    const unrealizedReturn =
+      unrealized != null && unrealizedReturnBasis != null && unrealizedReturnBasis > 1e-12
+        ? unrealized / unrealizedReturnBasis
+        : null
+    const eventValuationPresent = totalsContainMaterialEventValuation(rows)
+    const currentBasketReturn = (
+      accessor: (row: PortfolioHoldingRow) => number | null | undefined,
+    ) => weightedHoldingMetric(rows, workspace, accessor)
+    const forwardRiskAvailable = workspace.forward_risk?.status === 'ok'
+    const riskCoverage = finiteNumber(workspace.forward_risk?.coverage_ratio)
+
+    return [
+      { key: 'portfolio', label: 'Portfolio' },
+      {
+        key: 'market_value_base',
+        label: `NAV (${workspace.base_currency})`,
+        className: 'numeric-cell',
+        content: formatCurrency(nav, workspace.base_currency),
+        aggregationKind: 'sum',
+      },
+      {
+        key: 'weight',
+        label: 'Portfolio Weight',
+        className: 'numeric-cell',
+        content: formatPercent(totalAllocation(rows, workspace)),
+        aggregationKind: 'sum',
+      },
+      {
+        key: 'cost_basis_base',
+        label: `Open Position Basis @ As-of FX (${workspace.base_currency})`,
+        className: 'numeric-cell',
+        content: formatCurrency(openBasis, workspace.base_currency),
+        aggregationKind: 'sum',
+        title: 'Remaining open-position book cost translated at as-of FX; Cash & Settlement is excluded.',
+      },
+      {
+        key: 'unrealized_return_basis',
+        label: `Unrealized Return Basis (${workspace.base_currency})`,
+        className: 'numeric-cell',
+        content: formatCurrency(unrealizedReturnBasis, workspace.base_currency),
+        aggregationKind: 'recomputed_basis',
+        title: 'Open Position Basis plus signed Cash & Settlement; monetary balances dilute the return but are not Cost Basis.',
+      },
+      {
+        key: 'unrealized_value',
+        label: `Unrealized P&L @ As-of FX (${workspace.base_currency})`,
+        className: `numeric-cell ${eventValuationPresent ? '' : signedValueClass(unrealized)}`.trim(),
+        content: eventValuationPresent
+          ? 'N/A'
+          : signedCurrency(unrealized, workspace.base_currency),
+        aggregationKind: 'sum',
+      },
+      {
+        key: 'unrealized_pct',
+        label: 'Unrealized Return on Current Capital',
+        className: `numeric-cell ${eventValuationPresent ? '' : signedValueClass(unrealizedReturn)}`.trim(),
+        content: eventValuationPresent ? 'N/A' : signedPercent(unrealizedReturn),
+        aggregationKind: 'recomputed_ratio',
+        title: 'Unrealized P&L divided by the current-capital Unrealized Return Basis; this is not portfolio TWR.',
+      },
+      {
+        key: 'day_change_value',
+        label: `Day Change (${workspace.base_currency})`,
+        className: `numeric-cell ${eventValuationPresent ? '' : signedValueClass(totalDayChangeBase(rows, workspace))}`.trim(),
+        content: eventValuationPresent
+          ? 'N/A'
+          : signedCurrency(totalDayChangeBase(rows, workspace), workspace.base_currency),
+        aggregationKind: 'sum',
+      },
+      {
+        key: 'day_change_pct',
+        label: 'Day Return',
+        className: `numeric-cell ${eventValuationPresent ? '' : signedValueClass(totalDayChangePct(rows, workspace))}`.trim(),
+        content: eventValuationPresent ? 'N/A' : signedPercent(totalDayChangePct(rows, workspace)),
+        aggregationKind: 'recomputed_ratio',
+      },
+      {
+        key: 'instrument_return_1w',
+        label: 'Current Basket 1W',
+        className: `numeric-cell ${signedValueClass(currentBasketReturn((row) => row.instrument_return_1w))}`.trim(),
+        content: eventValuationPresent
+          ? 'N/A'
+          : signedPercent(currentBasketReturn((row) => row.instrument_return_1w)),
+        aggregationKind: 'current_weight_return',
+      },
+      {
+        key: 'instrument_return_1m',
+        label: 'Current Basket 1M',
+        className: `numeric-cell ${signedValueClass(currentBasketReturn((row) => row.instrument_return_1m))}`.trim(),
+        content: eventValuationPresent
+          ? 'N/A'
+          : signedPercent(currentBasketReturn((row) => row.instrument_return_1m)),
+        aggregationKind: 'current_weight_return',
+      },
+      {
+        key: 'instrument_return_mtd',
+        label: 'Current Basket MTD',
+        className: `numeric-cell ${signedValueClass(currentBasketReturn((row) => row.instrument_return_mtd))}`.trim(),
+        content: eventValuationPresent
+          ? 'N/A'
+          : signedPercent(currentBasketReturn((row) => row.instrument_return_mtd)),
+        aggregationKind: 'current_weight_return',
+      },
+      {
+        key: 'instrument_return_ytd',
+        label: 'Current Basket YTD',
+        className: `numeric-cell ${signedValueClass(currentBasketReturn((row) => row.instrument_return_ytd))}`.trim(),
+        content: eventValuationPresent
+          ? 'N/A'
+          : signedPercent(currentBasketReturn((row) => row.instrument_return_ytd)),
+        aggregationKind: 'current_weight_return',
+      },
+      {
+        key: 'instrument_volatility_1m',
+        label: 'Current Basket 1M Vol',
+        className: 'numeric-cell',
+        content: formatPercent(groupedAnnualizedVolatility(rows, workspace, '1m')),
+        aggregationKind: 'current_basket_path',
+      },
+      {
+        key: 'instrument_volatility_3m',
+        label: 'Current Basket 3M Vol',
+        className: 'numeric-cell',
+        content: formatPercent(groupedAnnualizedVolatility(rows, workspace, '3m')),
+        aggregationKind: 'current_basket_path',
+      },
+      {
+        key: 'instrument_volatility_1y',
+        label: 'Current Basket 1Y Vol',
+        className: 'numeric-cell',
+        content: formatPercent(groupedAnnualizedVolatility(rows, workspace, '1y')),
+        aggregationKind: 'current_basket_path',
+      },
+      {
+        key: 'instrument_current_drawdown',
+        label: 'Current Basket DD',
+        className: `numeric-cell ${signedValueClass(groupedCurrentDrawdown(rows, workspace))}`.trim(),
+        content: signedPercent(groupedCurrentDrawdown(rows, workspace)),
+        aggregationKind: 'current_basket_path',
+      },
+      {
+        key: 'instrument_max_drawdown',
+        label: 'Current Basket Max DD',
+        className: `numeric-cell ${signedValueClass(groupedMaxDrawdown(rows, workspace))}`.trim(),
+        content: signedPercent(groupedMaxDrawdown(rows, workspace)),
+        aggregationKind: 'current_basket_path',
+      },
+      {
+        key: 'forward_risk_share',
+        label: 'Forward RC',
+        className: `numeric-cell ${signedValueClass(totalForwardRiskShare(rows, workspace))}`.trim(),
+        content: forwardRiskAvailable
+          ? signedPercent(totalForwardRiskShare(rows, workspace))
+          : 'N/A',
+        aggregationKind: 'portfolio_risk_contribution',
+      },
+      {
+        key: 'forward_volatility',
+        label: 'Forward Vol',
+        className: 'numeric-cell',
+        content: forwardRiskAvailable
+          ? formatPercent(workspace.forward_risk?.portfolio_volatility)
+          : 'N/A',
+        aggregationKind: 'portfolio_risk_model',
+      },
+      {
+        key: 'risk_coverage',
+        label: 'Risk Coverage',
+        className: 'center-cell',
+        content: (
+          <span
+            className={`coverage-pill ${forwardRiskAvailable ? 'coverage-pill-live' : 'coverage-pill-warning'}`}
+            title={workspace.forward_risk?.errors.join(' ') || workspace.coverage_note}
+          >
+            {forwardRiskAvailable
+              ? `${formatPercent(riskCoverage)} modeled`
+              : formatLabel(workspace.forward_risk?.status ?? 'unavailable')}
+          </span>
+        ),
+        aggregationKind: 'none',
+      },
+    ]
+  }, [workspace])
 
   function updateSearchParam(key: string, value: string | null) {
     setSearchParams((current) => {
@@ -3013,63 +3174,309 @@ export default function PortfolioHomePage() {
   }
 
   function handleDownload(format: TableExportFormat) {
-    if (!workspace || !columnContext || !sortedHoldingRows.length) {
+    if (!workspace || !columnContext || !workspace.rows.length) {
       return
     }
 
-    const header = [
-      'Category',
-      ...(holdingsGroupBy !== 'none' ? ['Group'] : []),
+    const rows: TableCell[][] = [
+      [`Holdings as of ${workspace.as_of_date}`, workspace.portfolio_name, workspace.base_currency],
+    ]
+    const appendSection = (title: string, header: TableCell[], dataRows: TableCell[][]) => {
+      rows.push([], [title], header, ...dataRows)
+    }
+    const appendConfiguredSection = (
+      title: string,
+      sectionKey: HoldingsSectionKey,
+      completeHeader: TableCell[],
+      completeRows: TableCell[][],
+    ) => {
+      const allColumnKeys = HOLDINGS_SECTION_COLUMN_KEYS[sectionKey]
+      const visibleIndexes = holdingsSectionVisibleColumns[sectionKey]
+        .map((columnKey) => allColumnKeys.indexOf(columnKey))
+        .filter((index) => index >= 0)
+      appendSection(
+        title,
+        visibleIndexes.map((index) => completeHeader[index]),
+        completeRows.map((row) => visibleIndexes.map((index) => row[index])),
+      )
+    }
+    const securityHeader = [
+      ...(holdingsGroupBy !== 'none' ? ['Security Group'] : []),
       ...visibleColumns.map((column) => column.label),
     ]
-    const rows: TableCell[][] = [header]
-
-    const pushHoldingExportRow = (
-      row: PortfolioHoldingRow,
-      categoryLabel: string,
-      groupLabel: string | null,
-    ) => {
-      rows.push([
-        categoryLabel,
-        ...(holdingsGroupBy !== 'none' ? [groupLabel ?? 'N/A'] : []),
-        ...visibleColumns.map((column) => holdingColumnExportValue(column.key, row, columnContext)),
+    const securityDataRows: TableCell[][] = []
+    const appendSecurityRow = (row: PortfolioHoldingRow, groupLabel: string | null) => {
+      securityDataRows.push([
+        ...(holdingsGroupBy !== 'none' ? [groupLabel ?? 'Unassigned'] : []),
+        ...visibleColumns.map((column) =>
+          holdingColumnExportValue(column.key, row, columnContext),
+        ),
       ])
     }
-    const pushSubtotalExportRow = (
-      categoryLabel: string,
-      groupLabel: string | null,
+    const appendSecuritySubtotal = (
+      label: string,
       subtotalRows: PortfolioHoldingRow[],
     ) => {
-      rows.push([
-        categoryLabel,
-        ...(holdingsGroupBy !== 'none' ? [groupLabel ?? 'Category Total'] : []),
+      securityDataRows.push([
+        ...(holdingsGroupBy !== 'none' ? [label] : []),
         ...visibleColumns.map((column, index) =>
           index === 0
-            ? `Subtotal (${workspace.base_currency})`
+            ? `${label} (${workspace.base_currency})`
             : holdingColumnTotalExportValue(column.key, subtotalRows, columnContext),
         ),
       ])
     }
+    if (holdingsGroupBy === 'none') {
+      sortedSecurityRows.forEach((row) => appendSecurityRow(row, null))
+    } else {
+      groupedSecurityRows.forEach((group) => {
+        group.rows.forEach((row) => appendSecurityRow(row, group.label))
+        appendSecuritySubtotal(`${group.label} Subtotal`, group.rows)
+      })
+    }
+    if (sortedSecurityRows.length) {
+      appendSecuritySubtotal('Securities Subtotal', sortedSecurityRows)
+    }
+    appendSection('Securities', securityHeader, securityDataRows)
 
-    holdingCategoryGroups.forEach((categoryGroup) => {
-      if (categoryGroup.key === 'securities' && holdingsGroupBy !== 'none') {
-        groupedSecurityRows.forEach((group) => {
-          group.rows.forEach((row) => pushHoldingExportRow(row, categoryGroup.label, group.label))
-          pushSubtotalExportRow(categoryGroup.label, group.label, group.rows)
-        })
-      } else {
-        categoryGroup.rows.forEach((row) => pushHoldingExportRow(row, categoryGroup.label, null))
-      }
-      pushSubtotalExportRow(categoryGroup.label, null, categoryGroup.rows)
-    })
+    const namesById = new Map(
+      workspace.rows
+        .filter((row) => row.instrument_core)
+        .map((row) => [row.instrument_core!.instrument_id, row.instrument_core!.instrument_name]),
+    )
+    const fcnRows = derivativeRows.filter(
+      (row) => row.derivative_contract?.contract_type === 'fcn',
+    )
+    appendConfiguredSection(
+      'FCN',
+      'fcn',
+      [
+        'Contract',
+        'External Ref',
+        'Account',
+        'Currency',
+        'Notional',
+        'Underlying Terms',
+        'Annual Coupon',
+        'Issue Date',
+        'Final Observation',
+        'Maturity',
+        'Days',
+        'Issuer',
+        'Counterparty',
+        'Remaining Basis',
+        `Signed NAV Amount (${workspace.base_currency})`,
+        'Portfolio Weight',
+        'Valuation Basis',
+        'Fair Value Status',
+        'Coverage',
+      ],
+      fcnRows.map((row) => {
+        const contract = row.derivative_contract?.contract_type === 'fcn'
+          ? row.derivative_contract
+          : null
+        return [
+          contract?.contract_name ?? row.line_id,
+          contract?.external_reference,
+          contract?.account_id,
+          holdingCurrency(row),
+          contract?.terms.notional,
+          contract?.terms.underlyings
+            .map((underlying) => {
+              const name = namesById.get(underlying.instrument_id) ?? underlying.instrument_id
+              return `${name}: initial ${underlying.initial_reference_price ?? 'N/A'}, strike ${underlying.strike_level_pct ?? 'N/A'}%, KI ${underlying.knock_in_level_pct ?? 'N/A'}%, KO ${underlying.knock_out_level_pct ?? 'N/A'}%, ${underlying.deliverable ? 'deliverable' : 'cash settled'}`
+            })
+            .join('; '),
+          contract?.terms.annual_coupon_rate_pct == null
+            ? null
+            : `${contract.terms.annual_coupon_rate_pct}%`,
+          contract?.terms.issue_date,
+          contract?.terms.final_observation_date,
+          contract?.terms.maturity_date,
+          contract?.terms.maturity_date
+            ? Math.ceil(
+                (Date.parse(`${contract.terms.maturity_date}T00:00:00Z`) -
+                  Date.parse(`${workspace.as_of_date}T00:00:00Z`)) /
+                  86_400_000,
+              )
+            : null,
+          contract?.terms.issuer,
+          contract?.terms.counterparty,
+          row.cost_basis,
+          rowMarketValueBase(row, workspace),
+          row.allocation,
+          row.valuation_basis,
+          row.fair_value_coverage_status,
+          row.coverage_status,
+        ]
+      }),
+    )
 
-    rows.push([
+    const optionRows = derivativeRows.filter(
+      (row) => row.derivative_contract?.contract_type === 'option',
+    )
+    appendConfiguredSection(
+      'Options',
+      'options',
+      [
+        'Contract',
+        'External Ref',
+        'Account',
+        'Side',
+        'Type',
+        'Underlying',
+        'Currency',
+        'Expiry',
+        'Days',
+        'Strike',
+        'Open Contracts',
+        'Multiplier',
+        'Underlying Equivalent',
+        'Basis Type',
+        'Remaining Basis',
+        `Signed NAV Amount (${workspace.base_currency})`,
+        `Strike Notional (${workspace.base_currency})`,
+        'Portfolio Weight',
+        'Status',
+        'Valuation Basis',
+        'Fair Value Status',
+        'Coverage',
+      ],
+      optionRows.map((row) => {
+        const contract = row.derivative_contract?.contract_type === 'option'
+          ? row.derivative_contract
+          : null
+        const underlyingId = row.related_underlying_id ?? contract?.terms.underlying_instrument_id
+        const written = isOptionObligationHolding(row) || row.quantity < 0
+        return [
+          contract?.contract_name ?? row.line_id,
+          contract?.external_reference,
+          contract?.account_id,
+          written ? 'Written' : 'Long',
+          row.option_type ?? contract?.terms.option_type,
+          underlyingId ? namesById.get(underlyingId) ?? underlyingId : null,
+          holdingCurrency(row),
+          row.expiry_date ?? contract?.terms.expiry_date,
+          row.days_to_expiry,
+          row.strike ?? contract?.terms.strike,
+          row.open_contract_quantity ?? Math.abs(row.quantity),
+          row.contract_multiplier ?? contract?.terms.contract_multiplier,
+          row.required_underlying_quantity,
+          written ? 'remaining_premium' : 'open_cost',
+          written ? row.premium_basis_remaining : row.cost_basis,
+          rowMarketValueBase(row, workspace),
+          row.strike_notional_base,
+          row.allocation,
+          row.obligation_status ?? 'open',
+          row.valuation_basis,
+          row.fair_value_coverage_status,
+          row.coverage_status,
+        ]
+      }),
+    )
+
+    appendConfiguredSection(
+      'Cash & Settlement',
+      'cash',
+      [
+        'Description',
+        'Type',
+        'Currency',
+        'Account',
+        'Available',
+        'Local Amount',
+        `Base Value (${workspace.base_currency})`,
+        'Portfolio Weight',
+        'FX / Quote Date',
+        `Day Change (${workspace.base_currency})`,
+        'Day FX Return',
+        'Settlement Date',
+        'Pending Until',
+        'Related Instrument',
+        'Settlement Status',
+        'Coverage',
+      ],
+      cashRows.map((row) => [
+        row.instrument_core?.instrument_name ?? row.line_id,
+        row.holding_kind,
+        holdingCurrency(row),
+        (row.account_ids ?? []).join(', '),
+        Boolean(row.available_for_trading),
+        row.market_value,
+        rowMarketValueBase(row, workspace),
+        row.allocation,
+        row.quote_as_of_date,
+        dayChangeBaseForRow(row, workspace),
+        row.day_change_pct,
+        row.settlement_date,
+        row.pending_until_date,
+        row.economic_instrument_ref?.instrument_name ?? row.economic_instrument_id,
+        row.pending_status,
+        row.coverage_status,
+      ]),
+    )
+
+    const allRows = workspace.rows
+    const eventValuationPresent = totalsContainMaterialEventValuation(allRows)
+    const openBasis = totalCostBasisBase(allRows, workspace)
+    const monetaryCapital = totalMonetaryCapitalBase(allRows, workspace)
+    const unrealizedReturnBasis =
+      openBasis != null && monetaryCapital != null
+        ? openBasis + monetaryCapital
+        : null
+    const unrealized = totalUnrealizedBase(allRows, workspace)
+    appendConfiguredSection(
       'Portfolio Total',
-      ...(holdingsGroupBy !== 'none' ? [''] : []),
-      ...visibleColumns.map((column) =>
-        holdingColumnTotalExportValue(column.key, sortedHoldingRows, columnContext),
-      ),
-    ])
+      'total',
+      [
+        'Portfolio',
+        `NAV (${workspace.base_currency})`,
+        'Portfolio Weight',
+        `Open Position Basis @ As-of FX (${workspace.base_currency})`,
+        `Unrealized Return Basis (${workspace.base_currency})`,
+        `Unrealized P&L @ As-of FX (${workspace.base_currency})`,
+        'Unrealized Return on Current Capital',
+        `Day Change (${workspace.base_currency})`,
+        'Day Return',
+        'Current Basket 1W',
+        'Current Basket 1M',
+        'Current Basket MTD',
+        'Current Basket YTD',
+        'Current Basket 1M Vol',
+        'Current Basket 3M Vol',
+        'Current Basket 1Y Vol',
+        'Current Basket DD',
+        'Current Basket Max DD',
+        'Forward RC',
+        'Forward Vol',
+        'Risk Coverage',
+      ],
+      [[
+        workspace.portfolio_name,
+        finiteNumber(workspace.totals.nav),
+        totalAllocation(allRows, workspace),
+        openBasis,
+        unrealizedReturnBasis,
+        eventValuationPresent ? 'N/A' : unrealized,
+        eventValuationPresent || unrealized == null || unrealizedReturnBasis == null || unrealizedReturnBasis <= 1e-12
+          ? 'N/A'
+          : unrealized / unrealizedReturnBasis,
+        eventValuationPresent ? 'N/A' : totalDayChangeBase(allRows, workspace),
+        eventValuationPresent ? 'N/A' : totalDayChangePct(allRows, workspace),
+        eventValuationPresent ? 'N/A' : weightedHoldingMetric(allRows, workspace, (row) => row.instrument_return_1w),
+        eventValuationPresent ? 'N/A' : weightedHoldingMetric(allRows, workspace, (row) => row.instrument_return_1m),
+        eventValuationPresent ? 'N/A' : weightedHoldingMetric(allRows, workspace, (row) => row.instrument_return_mtd),
+        eventValuationPresent ? 'N/A' : weightedHoldingMetric(allRows, workspace, (row) => row.instrument_return_ytd),
+        groupedAnnualizedVolatility(allRows, workspace, '1m'),
+        groupedAnnualizedVolatility(allRows, workspace, '3m'),
+        groupedAnnualizedVolatility(allRows, workspace, '1y'),
+        groupedCurrentDrawdown(allRows, workspace),
+        groupedMaxDrawdown(allRows, workspace),
+        workspace.forward_risk?.status === 'ok' ? totalForwardRiskShare(allRows, workspace) : 'N/A',
+        workspace.forward_risk?.status === 'ok' ? workspace.forward_risk.portfolio_volatility : 'N/A',
+        workspace.forward_risk?.coverage_ratio,
+      ]],
+    )
 
     downloadTable(`holdings-${workspace.portfolio_id}-${workspace.as_of_date}`, rows, format, 'Holdings')
   }
@@ -3123,7 +3530,11 @@ export default function PortfolioHomePage() {
             .filter(Boolean)
             .join(' ')
           return (
-            <td key={column.key} className={className || undefined}>
+            <td
+              key={column.key}
+              data-column-key={column.key}
+              className={className || undefined}
+            >
               {column.render(row, columnContext)}
             </td>
           )
@@ -3478,7 +3889,7 @@ export default function PortfolioHomePage() {
           setTaxonomyError(
             taxonomyResult.reason instanceof Error
               ? taxonomyResult.reason.message
-              : 'Failed to load taxonomy catalog.',
+              : 'Failed to load current taxonomy catalog.',
           )
         }
       })
@@ -3539,47 +3950,12 @@ export default function PortfolioHomePage() {
             </label>
           </div>
           <div className="holdings-filter-actions">
-            {holdingsViewStoreReadyPortfolioId === portfolioId ? (
-              <PortfolioTableViewControls
-                views={holdingsViews}
-                activeViewId={activeHoldingsViewId}
-                edited={holdingsViewEdited}
-                canSave
-                canDelete
-                onSelect={handleSelectHoldingsView}
-                onSave={handleSaveHoldingsView}
-                onSaveAs={handleSaveHoldingsViewAs}
-                onDelete={handleDeleteHoldingsView}
-              />
-            ) : (
-              <span className="portfolio-detail-meta">
-                {holdingsViewStoreError ? 'Table views unavailable' : 'Loading table views'}
-              </span>
-            )}
-            <button
-              type="button"
-              className={`portfolio-table-toolbar-button ${columnsEdited ? 'portfolio-table-toolbar-button-active' : ''}`}
-              onClick={() => {
-                setHoldingsColumnDraft(holdingsColumns)
-                setHoldingsColumnsOpen(true)
-              }}
-            >
-              Data &amp; Columns
-            </button>
-            <button
-              type="button"
-              className="portfolio-table-toolbar-button"
-              onClick={() => setHoldingsGroupByOpen(true)}
-            >
-              Group By{'\u00A0: '}
-              {selectedGroupByOption.label}
-            </button>
             <DownloadFormatMenu
               wrapperClassName="portfolio-download-menu"
               buttonClassName="portfolio-table-toolbar-button"
               menuClassName="portfolio-download-menu-list"
               itemClassName="portfolio-download-menu-item"
-              disabled={!workspace || !sortedHoldingRows.length}
+              disabled={!workspace || !workspace.rows.length}
               onSelect={handleDownload}
             />
           </div>
@@ -3592,109 +3968,162 @@ export default function PortfolioHomePage() {
           </div>
         ) : null}
         <QualityWarningsNotice warnings={workspace?.quality_warnings} />
-        {!loading && !error && workspace ? renderOperationalStatus() : null}
-        {taxonomyError && holdingsGroupBy.startsWith('taxonomy') ? (
+        {taxonomyError ? (
           <div className="inline-notice inline-notice-warning">{taxonomyError}</div>
         ) : null}
+        {!loading && !error && workspace ? renderOperationalStatus() : null}
         {!loading && !error && workspace && columnContext ? (
-          <div className="table-shell holdings-table-shell" ref={holdingsTableShellRef}>
-            <table className="holdings-table holdings-main-table" style={{ minWidth: `${displayHoldingsTableMinWidth}px` }}>
-              <colgroup>
-                {visibleColumns.map((column) => (
-                  <col
-                    key={column.key}
-                    style={{
-                      width: `${displayHoldingsColumnWidths[column.key]}px`,
+          <>
+            <section className="holdings-section" aria-labelledby="holdings-securities-heading">
+              <div className="holdings-section-heading">
+                <h2 id="holdings-securities-heading">Securities</h2>
+                <div className="holdings-section-heading-actions">
+                  <span className="holdings-section-count">
+                    {formatNumber(sortedSecurityRows.length, 0)}
+                  </span>
+                  {holdingsViewStoreReadyPortfolioId === portfolioId ? (
+                    <PortfolioTableViewControls
+                      views={holdingsViews}
+                      activeViewId={activeHoldingsViewId}
+                      edited={holdingsViewEdited}
+                      canSave={!activeHoldingsView.readonly}
+                      canDelete
+                      onSelect={handleSelectHoldingsView}
+                      onSave={handleSaveHoldingsView}
+                      onSaveAs={handleSaveHoldingsViewAs}
+                      onDelete={handleDeleteHoldingsView}
+                      labelPrefix="Security View"
+                    />
+                  ) : (
+                    <span className="portfolio-table-view-status">
+                      {holdingsViewStoreError ? 'Views unavailable' : 'Loading views'}
+                    </span>
+                  )}
+                  <button
+                    type="button"
+                    className={`portfolio-table-toolbar-button ${columnsEdited ? 'portfolio-table-toolbar-button-active' : ''}`}
+                    onClick={() => {
+                      setHoldingsColumnDraft(holdingsColumns)
+                      setHoldingsColumnsOpen(true)
                     }}
-                  />
-                ))}
-              </colgroup>
-              <thead>
-                <tr>
-                  {visibleColumns.map((column) => {
-                    const width = displayHoldingsColumnWidths[column.key]
-                    return (
-                      <th
+                  >
+                    Security Fields
+                  </button>
+                  <button
+                    type="button"
+                    className="portfolio-table-toolbar-button"
+                    onClick={() => setHoldingsGroupByOpen(true)}
+                  >
+                    Group Securities{'\u00A0: '}
+                    {selectedGroupByOption.label}
+                  </button>
+                </div>
+              </div>
+              <div className="table-shell holdings-table-shell" ref={holdingsTableShellRef}>
+                <table
+                  className="holdings-table holdings-main-table"
+                  aria-label="Security holdings"
+                  style={{ minWidth: `${displayHoldingsTableMinWidth}px` }}
+                >
+                  <colgroup>
+                    {visibleColumns.map((column) => (
+                      <col
                         key={column.key}
-                        className={[
-                          holdingsAlignmentClass(column),
-                          isHoldingsChartColumn(column.key) ? 'chart-cell' : '',
-                          column.key !== LOCKED_HOLDINGS_COLUMN ? 'holdings-column-draggable' : '',
-                          holdingsColumnDropTarget === column.key ? 'holdings-column-drop-target' : '',
-                        ]
-                          .filter(Boolean)
-                          .join(' ') || undefined}
-                        scope="col"
-                        aria-sort={
-                          holdingsSortField === column.key
-                            ? holdingsSortDirection === 'asc'
-                              ? 'ascending'
-                              : 'descending'
-                            : 'none'
-                        }
-                        draggable={column.key !== LOCKED_HOLDINGS_COLUMN}
-                        style={{ width: `${width}px` }}
-                        onDragStart={(event) => handleHoldingsColumnDragStart(event, column.key)}
-                        onDragOver={(event) => handleHoldingsColumnDragOver(event, column.key)}
-                        onDragLeave={() => setHoldingsColumnDropTarget(null)}
-                        onDrop={(event) => handleHoldingsColumnDrop(event, column.key)}
-                        onDragEnd={() => setHoldingsColumnDropTarget(null)}
-                      >
-                        {renderHoldingsSortHeader(column)}
-                        <span
-                          className="holdings-th-resizer"
-                          role="separator"
-                          aria-label={`Resize ${column.label} column`}
-                          aria-orientation="vertical"
-                          aria-valuemin={HOLDINGS_COLUMN_MIN_WIDTH}
-                          aria-valuemax={HOLDINGS_COLUMN_MAX_WIDTH}
-                          aria-valuenow={Math.round(width)}
-                          tabIndex={0}
-                          onKeyDown={(event) => {
-                            if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') {
-                              return
+                        style={{ width: `${displayHoldingsColumnWidths[column.key]}px` }}
+                      />
+                    ))}
+                  </colgroup>
+                  <thead>
+                    <tr>
+                      {visibleColumns.map((column) => {
+                        const width = displayHoldingsColumnWidths[column.key]
+                        return (
+                          <th
+                            key={column.key}
+                            className={[
+                              holdingsAlignmentClass(column),
+                              isHoldingsChartColumn(column.key) ? 'chart-cell' : '',
+                              column.key !== LOCKED_HOLDINGS_COLUMN ? 'holdings-column-draggable' : '',
+                              holdingsColumnDropTarget === column.key ? 'holdings-column-drop-target' : '',
+                            ]
+                              .filter(Boolean)
+                              .join(' ') || undefined}
+                            scope="col"
+                            aria-sort={
+                              holdingsSortField === column.key
+                                ? holdingsSortDirection === 'asc'
+                                  ? 'ascending'
+                                  : 'descending'
+                                : 'none'
                             }
-                            event.preventDefault()
-                            const delta = event.key === 'ArrowLeft' ? -10 : 10
-                            setHoldingsColumnWidths((current) => ({
-                              ...current,
-                              [column.key]: clampHoldingsColumnWidth((current[column.key] ?? width) + delta),
-                            }))
-                          }}
-                          onMouseDown={(event) => handleHoldingsColumnResizeStart(event, column.key, width)}
-                        />
-                      </th>
-                    )
-                  })}
-                </tr>
-              </thead>
-              <tbody>
-                {holdingCategoryGroups.map((categoryGroup) => (
-                  <Fragment key={categoryGroup.key}>
-                    {renderHoldingsGroupRow(categoryGroup, 'category')}
-                    {categoryGroup.key === 'securities' && holdingsGroupBy !== 'none'
+                            draggable={column.key !== LOCKED_HOLDINGS_COLUMN}
+                            style={{ width: `${width}px` }}
+                            onDragStart={(event) => handleHoldingsColumnDragStart(event, column.key)}
+                            onDragOver={(event) => handleHoldingsColumnDragOver(event, column.key)}
+                            onDragLeave={() => setHoldingsColumnDropTarget(null)}
+                            onDrop={(event) => handleHoldingsColumnDrop(event, column.key)}
+                            onDragEnd={() => setHoldingsColumnDropTarget(null)}
+                          >
+                            {renderHoldingsSortHeader(column)}
+                            <span
+                              className="holdings-th-resizer"
+                              role="separator"
+                              aria-label={`Resize ${column.label} column`}
+                              aria-orientation="vertical"
+                              aria-valuemin={HOLDINGS_COLUMN_MIN_WIDTH}
+                              aria-valuemax={HOLDINGS_COLUMN_MAX_WIDTH}
+                              aria-valuenow={Math.round(width)}
+                              tabIndex={0}
+                              onKeyDown={(event) => {
+                                if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') {
+                                  return
+                                }
+                                event.preventDefault()
+                                const delta = event.key === 'ArrowLeft' ? -10 : 10
+                                setHoldingsColumnWidths((current) => ({
+                                  ...current,
+                                  [column.key]: clampHoldingsColumnWidth((current[column.key] ?? width) + delta),
+                                }))
+                              }}
+                              onMouseDown={(event) => handleHoldingsColumnResizeStart(event, column.key, width)}
+                            />
+                          </th>
+                        )
+                      })}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {holdingsGroupBy !== 'none'
                       ? groupedSecurityRows.map((group) => (
-                          <Fragment key={`${categoryGroup.key}:${group.key}`}>
+                          <Fragment key={group.key}>
                             {renderHoldingsGroupRow(group, 'subgroup')}
                             {group.rows.map((row) => renderHoldingDataRow(row))}
                           </Fragment>
                         ))
-                      : categoryGroup.rows.map((row) => renderHoldingDataRow(row))}
-                  </Fragment>
-                ))}
-                {!sortedHoldingRows.length ? (
-                  <TableStatusRow colSpan={visibleColumns.length} label="No holdings." />
-                ) : null}
-                {sortedHoldingRows.length
-                  ? renderHoldingsTotalRow(
-                      sortedHoldingRows,
-                      `Portfolio Total (${workspace.base_currency})`,
-                      'total-row holdings-total-row',
-                    )
-                  : null}
-              </tbody>
-            </table>
-          </div>
+                      : sortedSecurityRows.map((row) => renderHoldingDataRow(row))}
+                    {!sortedSecurityRows.length ? (
+                      <TableStatusRow colSpan={visibleColumns.length} label="No security holdings." />
+                    ) : null}
+                    {sortedSecurityRows.length
+                      ? renderHoldingsTotalRow(
+                          sortedSecurityRows,
+                          `Securities Subtotal (${workspace.base_currency})`,
+                          'total-row holdings-section-subtotal-row',
+                        )
+                      : null}
+                  </tbody>
+                </table>
+              </div>
+            </section>
+            <HoldingsSectionTables
+              workspace={workspace}
+              derivativeRows={derivativeRows}
+              cashRows={cashRows}
+              portfolioTotalColumns={portfolioTotalColumns}
+              onSelectHolding={(row) => handleSelectInstrument(holdingReferenceId(row))}
+              onVisibleColumnsChange={handleHoldingsSectionVisibleColumnsChange}
+            />
+          </>
         ) : null}
       </section>
 
@@ -3705,15 +4134,12 @@ export default function PortfolioHomePage() {
             className="portfolio-table-config-modal portfolio-table-config-columns-modal"
             role="dialog"
             aria-modal="true"
-            aria-label="Choose holdings columns"
+            aria-label="Choose security columns"
             tabIndex={-1}
             onClick={(event) => event.stopPropagation()}
           >
             <div className="portfolio-table-config-header">
-              <div>
-                <div className="panel-title">Data &amp; Columns</div>
-                <div className="section-heading">Columns</div>
-              </div>
+              <div className="panel-title">Security Fields</div>
               <button type="button" onClick={() => setHoldingsColumnsOpen(false)}>
                 Close
               </button>
@@ -3813,10 +4239,7 @@ export default function PortfolioHomePage() {
             onClick={(event) => event.stopPropagation()}
           >
             <div className="portfolio-table-config-header">
-              <div>
-                <div className="panel-title">Group By</div>
-                <div className="section-heading">Securities only</div>
-              </div>
+              <div className="panel-title">Group Securities</div>
               <button type="button" onClick={() => setHoldingsGroupByOpen(false)}>
                 Close
               </button>

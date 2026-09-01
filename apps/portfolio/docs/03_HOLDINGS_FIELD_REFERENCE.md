@@ -29,11 +29,11 @@ Portfolio 和 Watchlist 各自实现自己的读路径，不导入对方服务�
 
 ### 2.2 成本、盈亏与收益分类
 
-- `Cost Basis` 是当前开放头寸的 remaining book cost。FIFO 为开放 lots 剩余成本之和；moving average 为滚动平均成本 bucket 的剩余成本。
+- `Cost Basis` 是当前开放头寸的 remaining book cost。FIFO 为开放 lots 剩余成本之和；moving average 为滚动平均成本 bucket 的剩余成本。`Cost Basis Base` 是这一本币 remaining cost 按 `as_of_date` FX 的点位换算，不是按历史 acquisition-date FX 保存的 base-currency acquisition cost；Portfolio Total 因而明确标记为 `Open Position Basis @ As-of FX`。
 - `Avg Cost = remaining cost basis / remaining quantity`。它不是某笔成交价，也不把显示舍入后的价格反写到账本。
 - `Unrealized P&L = current market value - remaining open-position cost basis`；现金不适用。
 - Event-valued position 的 carrying basis 不等于 fair value；option obligation 也没有 long-position Cost Basis / Avg Cost / Unrealized P&L。相关字段留空，liability 使用 obligation operational strip 的 remaining premium basis 与 carrying liability 展示。
-- 任一 group 或 `Portfolio Total` 含非零 event-valued asset / option obligation 时，`Unrealized P&L` 和 `Unrealized Return` 整体显示 `N/A`。不得删除该行后只汇总剩余 market-valued positions，也不得用 carrying amount 减 book basis 制造零未实现盈亏。
+- Securities group/subtotal 的 `Unrealized Return = Unrealized P&L / remaining open-position cost`。Portfolio Total 的分母改为 `Unrealized Return Basis = Open Position Basis + signed Cash & Settlement base value`，因此 settled cash、restricted cash、应收、应付与 pending monetary rows 都按当前资产负债表稀释组合未实现收益率，但它们仍不是 Cost Basis。任一 group 或 `Portfolio Total` 含非零 event-valued asset / option obligation 时，`Unrealized P&L` 和 `Unrealized Return` 整体显示 `N/A`。不得删除该行后只汇总剩余 market-valued positions，也不得用 carrying amount 减 book basis 制造零未实现盈亏。
 - 普通 `dividend / coupon` 在 entitlement date 进入已实现 `Income`，不冲减开放成本，也不进入 `Unrealized P&L`。
 - `dividend_reinvestment` 先确认已实现 `Income`，再以 reinvested gross amount 建立新 lot；不得建立零成本份额或重复记现金。
 - 只有明确的 `return_of_capital` 才冲减开放成本；超过剩余成本时失败关闭，不能假装成负成本。
@@ -59,7 +59,7 @@ Portfolio 和 Watchlist 各自实现自己的读路径，不导入对方服务�
 | `current_basket_path` | 在共同 period 上先生成当前权重篮子 return path，再计算 volatility / drawdown。 |
 | `portfolio_risk_contribution` | 成员都相对于同一个完整全组合 forward-risk variance；分组只加总这些贡献。 |
 
-当前权重 instrument return 要求有当前市值的 market-valued 成员 100% 覆盖，不能把衍生品未知收益伪造成普通持仓收益。Volatility 与 risk drawdown 使用 total-NAV 权重：普通证券提供共同 period return series，衍生品、base-currency cash 和 base-currency pending monetary row 作为 0-return capital；non-base monetary exposure 仍需要兑 base currency 的 FX return。没有任何 modeled market asset 时结果 unavailable。成员 return currency 不一致且没有统一的 base-currency return series 时，结果留空，不能直接拼接各自本币收益。
+Securities group / subtotal 的当前权重 return 与 current-basket path 使用该组当前 base value 作为分母；Portfolio Total 则使用完整 total NAV，不能在拆表后只对证券重新归一。普通证券必须提供共同可解释的 base-currency total-return series；只有本币收益而没有 FX overlay 时，不得与其他币种直接拼接。base-currency settled cash 和 pending monetary rows 在 Portfolio Total 中作为 0-return capital 保留，non-base monetary rows 必须提供兑 base currency 的 FX return。任何 material event-carried derivative 会令当前篮子 return 不可用，因为 0-return 约定只用于风险建模，不能冒充衍生品未知经济收益。Portfolio Total 的 Volatility 与 risk drawdown 使用 total-NAV 权重：普通证券提供共同 period return series，衍生品、base-currency cash 和 base-currency pending monetary row 作为 0-return capital；non-base monetary exposure 仍需要 FX return。没有任何 modeled market asset 时结果 unavailable。
 
 ### 2.5 跨页面事件估值一致性
 
@@ -67,17 +67,23 @@ Portfolio 和 Watchlist 各自实现自己的读路径，不导入对方服务�
 - Security detail 的 event-valued hero 使用 `Carrying value`，Quote、Quote Date 和 Unrealized P&L 为 `N/A`；页面不请求或展示 instrument price chart，account slice 与 open lot 也不得从 carrying basis 生成零 unrealized P&L。
 - Accounts position API 必须显式返回 `carrying_value`、`fair_value`、`fair_value_coverage_status`、`valuation_basis` 和 `coverage_status`。Accounts UI 按这些字段判断事件估值，相关 Unrealized P/L 为 `N/A`，不得按 instrument type 猜测或按 `market_value - cost_basis` 得出零。
 
-### 2.6 单表与持仓类别 contract
+### 2.6 五表展示 contract
 
-Holdings 只有一张可排序、可选列的表。系统视图 `Default` 与 `Return & Risk` 都保留；表内始终按后端 `holding_category` 展示以下三个固定、互斥的一级区段，即使某一区段当前为空也不消失：
+Holdings 使用同一份 `workspace.as_of_date`、canonical NAV 和 read-model rows，按业务语义拆成五个独立表面。拆表只改变展示结构，不创建子组合，也不改变任何权重、风险贡献或 Portfolio Total 的分母：
 
-| `holding_category` | 固定区段 | 内容 |
+四类展示资产的高层 signed NAV 构成统一放在 Overview 的 `Asset Mix`，并在那里附 `Portfolio Total` 汇总行；Holdings 不重复这张分类汇总表，而是保留以下五个可操作表面。
+
+| 表面 | 行范围 | 字段合同 |
 | --- | --- | --- |
-| `securities` | Securities | 股票、基金、ETF 等 Registry instrument |
-| `derivatives` | Derivatives | FCN、long/short Call、long/short Put；方向和生命周期属于行自身，不拆成策略区 |
-| `cash_and_settlement` | Cash & Settlement | settled cash、receivable、payable 与 pending monetary rows |
+| `Securities` | `holding_category=securities` 的股票、基金、ETF 等 Registry instrument | 独立视图与字段；字段覆盖当前开放头寸、行情、成本、未实现盈亏、标的 return/risk 与 Forward RC。唯一可排序并可使用 `Group By` 的表。 |
+| `FCN` | `holding_category=derivatives` 且 `contract_type=fcn` | 独立视图与字段；显式展示账户、币种、名义本金、各 underlying 的 initial/strike/KI/KO/交割条款、coupon、issue/final-observation/maturity、issuer/counterparty、remaining basis、signed NAV amount、组合权重与估值状态。不得把这些正式字段压缩成名称下方的说明文字。 |
+| `Options` | `holding_category=derivatives` 且 `contract_type=option` | 独立视图与字段；显式展示 side/type/underlying、expiry、strike、open contracts、multiplier、underlying equivalent、basis type、remaining basis、signed NAV amount、strike notional、组合权重、lifecycle 与估值状态。 |
+| `Cash & Settlement` | `holding_category=cash_and_settlement` | 独立视图与字段；可展示现金/结算类型、币种、账户、availability、本币金额、base value、组合权重、FX/quote date、day FX change、settlement/pending dates、related instrument 与状态；字段目录不提供 Cost Basis、Avg Cost、Unrealized P&L 或 Unrealized Return。 |
+| `Portfolio Total` | 全部 workspace rows | 独立视图与字段且只有一条全组合 row；展示 canonical NAV、全组合权重、Open Position Basis、包含 signed monetary capital 的 Unrealized Return Basis、unrealized、day/current-basket return、current-basket risk、Forward RC/volatility 与 risk coverage，不再按资产类别细分。 |
 
-`holding_category` 是系统 read-model 字段，不是用户可选的 Group By 维度，也不写入交易事实。`Group By` 由底层限定为只在 Securities 区段内部按 taxonomy、instrument type、currency 等字段建立二级分组；Derivatives 与 Cash & Settlement 不参与该分组。Taxonomy / Taxonomy Leaf 只解析普通证券，衍生品和现金固定显示 `N/A`。covered call 等策略继续由独立股票行和 short Call 行表达；行内 notes/交易 notes 承担人工关联说明。
+每个资产表的 subtotal 只用于阅读该资产表；`Portfolio Weight` 始终是 row signed base value / canonical total NAV，Forward RC 始终相对于同一个全组合 forward-risk variance。不得因视觉拆表把 Securities、FCN、Options 或 Cash 各自归一成 100%。
+
+`holding_category` 是系统 read-model 字段，不是用户可选的 Group By 维度，也不写入交易事实。`Group By` 由底层限定为只在 Securities 表内部按 taxonomy、instrument type、currency 等字段建立二级分组；FCN、Options 与 Cash & Settlement 不参与该分组。Taxonomy / Taxonomy Leaf 读取当前默认 planning taxonomy 与当前 active instrument assignment，不跟随 Holdings `as_of_date` 回放；无 assignment 为 `Unassigned`。covered call 等策略继续由独立股票行和 short Call 行表达，不额外制造策略持仓类型。
 
 Short-option row 不读取或分配股票持仓。`required_underlying_quantity = open_contract_quantity × contract_multiplier`，只表示合约对应的标的数量；`strike_notional = strike × required underlying`，base amount 只有在 as-of FX 可用时才发布。covered call 等策略由用户通过独立股票和期权交易表达，不属于交易或持仓类型。
 
@@ -91,9 +97,9 @@ pending:{kind}:{cash_account}:{economic_instrument}:{currency}:{settlement_date}
 
 Workspace `operational_summary` 展示 open short-option contract count、expiry buckets、option obligation strike notional 和 settlement receivable/payable/net；`operational_alerts` 返回 severity、code、message 和真实 `related_line_ids`。到期已到和逾期结算是 critical，七日内到期与 settlement FX unavailable 是 warning。API 不发布股票覆盖分类或结算方式；动态 workspace、materialized snapshot 和 instrument detail projection 对当前字段必须保持 parity。
 
-CSV/XLSX 只导出当前视图的可见列，并始终以 `Category` 作为第一列。启用 `Group By` 时再增加 `Group` 列；该列只对 Securities 的二级分组有值，Derivatives 与 Cash & Settlement 写 `N/A`。三个固定区段都附带 subtotal，最后附带 `Portfolio Total`。价格路径、收益、未实现盈亏和回撤的不适用值导出为 `N/A`；衍生品的 Vol / Forward RC 同样导出 `N/A`，只有明确 modeled-zero 的 monetary rows 导出风险数值 `0`。
+CSV/XLSX 按 `Securities`、`FCN`、`Options`、`Cash & Settlement`、`Portfolio Total` 输出各自独立的标题与表头，不再把异质字段压进带 `Category` 的统一 schema。五张表都严格跟随自己当前视图的可见字段；Securities 额外跟随当前筛选、排序和可选 Group。价格路径、收益、未实现盈亏和回撤的不适用值导出为 `N/A`；衍生品的 Vol / Forward RC 同样导出 `N/A`，只有明确 modeled-zero 的 monetary risk 输出数值 `0`。
 
-## 3. 完整字段字典
+## 3. Securities 可配置字段与聚合字典
 
 下表必须与前端 `HOLDINGS_GROUP_AGGREGATION_KIND` 一一对应。表内的机器可读标记由测试使用，增删字段时必须同时更新实现、本文和 contract tests。
 
@@ -103,8 +109,8 @@ CSV/XLSX 只导出当前视图的可见列，并始终以 `Category` 作为第�
 | `instrument` | Instrument | canonical instrument name；现金为对应币种现金名称 | 仅作为组名、subtotal 或 total 标签 | `none` |
 | `ticker` | Ticker | Registry primary identifier | 留空 | `none` |
 | `instrument_type` | Instrument Type | canonical instrument type | 留空；可作为 Group By 维度 | `none` |
-| `taxonomy_top` | Taxonomy | Securities 使用当前默认 planning taxonomy 的顶层节点，无 assignment 为 Unassigned；其他固定区段为 N/A | 留空；可作为 Securities 的 Group By 维度 | `none` |
-| `taxonomy_leaf` | Taxonomy Leaf | Securities 使用当前默认 planning taxonomy 的叶节点，无 assignment 为 Unassigned；其他固定区段为 N/A | 留空；可作为 Securities 的 Group By 维度 | `none` |
+| `taxonomy_top` | Taxonomy | Securities 使用当前默认 planning taxonomy 的顶层节点，无当前 assignment 为 Unassigned；不按 Holdings `as_of_date` 回放 | 留空；可作为 Securities 的 Group By 维度 | `none` |
+| `taxonomy_leaf` | Taxonomy Leaf | Securities 使用当前默认 planning taxonomy 的当前叶节点，无当前 assignment 为 Unassigned | 留空；可作为 Securities 的 Group By 维度 | `none` |
 | `currency` | Currency | instrument currency；现金为该现金币种 | 留空；可作为 Group By 维度 | `none` |
 | `holding_date` | Holding Since | 当前开放头寸里最早的 holding start date；不包含已经平掉的旧头寸 | 留空，不拼接不同成员起点 | `none` |
 | `quantity` | Quantity | 当前开放 quantity；short-option obligation 为负的 open contract count；现金行是 settled cash amount | 留空，不跨不同份额单位求和 | `none` |
@@ -118,14 +124,14 @@ CSV/XLSX 只导出当前视图的可见列，并始终以 `Category` 作为第�
 | `market_value` | Position Value | market-valued position 为本币 fair value；event asset 为 carrying amount；option obligation 为负 liability；现金为 settled amount | 按 base currency 加总 | `sum` |
 | `market_value_base` | Position Value Base | 上述 signed NAV amount 按 `as_of_date` FX 转为组合 base currency | 直接加总 | `sum` |
 | `cost_basis` | Cost Basis | position 的本币 remaining book cost；option obligation 和 cash 不适用 | position 成本按 base currency 加总 | `sum` |
-| `cost_basis_base` | Cost Basis Base | position 开放成本按 `as_of_date` FX 转为 base currency | 直接加总 | `sum` |
+| `cost_basis_base` | Cost Basis Base | position 本币 remaining open cost 按 `as_of_date` FX 转为 base currency；不是 acquisition-date FX cost | 直接加总 | `sum` |
 | `weight` | Weight | `market_value_base / portfolio NAV`；written liability 为负权重 | 加总当前 row 权重 | `sum` |
 | `accounts` | Accounts | 当前持有该 instrument 的 distinct account 数 | 留空，账户集合可能重叠 | `none` |
 | `open_lots` | Open Lots | 当前开放 lot 数；moving average synthetic lot 按一个开放 lot 展示 | 加总开放 lot 数 | `sum` |
 | `day_change_value` | Day Change | market-valued position 使用完整 return/valuation pair；non-base cash 使用 FX；`carried_cost` / `premium_liability` 为 N/A | 完整覆盖时加总 base-currency day change；含 event row 时 N/A | `sum` |
 | `day_change_pct` | Day Return | 与 Day Change 使用同一完整点对；base cash 为 0，non-base cash 为 FX return，event row 为 N/A | `sum(day change base) / sum(prior market value base)` 重算；含 event row 时 N/A | `recomputed_ratio` |
 | `unrealized_value` | Unrealized P&L | market-valued position 为 `current market value - remaining open cost`；event asset/obligation 不把 carrying basis 冒充 fair-value unrealized P&L | 无非零 event exposure 时加总 base-currency unrealized P&L；否则 N/A | `sum` |
-| `unrealized_pct` | Unrealized Return | market-valued position 为 `unrealized P&L / remaining open cost`；event asset/obligation 不适用 | 无非零 event exposure 时按 `sum(unrealized P&L base) / sum(non-cash open cost base)` 重算；否则 N/A | `recomputed_ratio` |
+| `unrealized_pct` | Unrealized Return | market-valued position 为 `unrealized P&L / remaining open cost`；event asset/obligation 不适用 | Securities group/subtotal 按 `sum(unrealized P&L base) / sum(open cost base)` 重算；Portfolio Total 使用另行定义的 `Open Position Basis + signed Cash & Settlement` 分母；event exposure 时 N/A | `recomputed_ratio` |
 | `instrument_return_1w` | 1W Return | instrument 自身 confirmed total return，锚点为请求 `as_of_date - 7` 日或此前最近点 | 当前 base-market-value 权重合成，要求完整覆盖 | `current_weight_return` |
 | `instrument_return_1m` | 1M Return | instrument 自身 confirmed total return，按请求 `as_of_date` 回看 1 个自然月 | 当前 base-market-value 权重合成，要求完整覆盖 | `current_weight_return` |
 | `instrument_return_3m` | 3M Return | instrument 自身 confirmed total return，按请求 `as_of_date` 回看 3 个自然月 | 当前 base-market-value 权重合成，要求完整覆盖 | `current_weight_return` |
@@ -148,7 +154,7 @@ CSV/XLSX 只导出当前视图的可见列，并始终以 `Category` 作为第�
 | `coverage` | Coverage | valuation、NAV、FX、trend series 等覆盖诊断 | 留空；可作为 Group By 维度 | `none` |
 <!-- holdings-column-contract:end -->
 
-表内所有“可作为 Group By 维度”的说明都只适用于 Securities 区段；Derivatives 与 Cash & Settlement 始终保留为固定一级区段。
+表内所有“可作为 Group By 维度”的说明都只适用于 Securities 区段；FCN、Options 与 Cash & Settlement 始终保留为独立一级区段。
 
 ## 4. 分组计算细则
 

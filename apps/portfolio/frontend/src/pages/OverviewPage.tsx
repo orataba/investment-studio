@@ -6,6 +6,7 @@ import BenchmarkSearchBox, {
   instrumentPrimaryIdentifier,
 } from '../components/BenchmarkSearchBox'
 import CalculationStatus from '../components/CalculationStatus'
+import OverviewAssetMix from '../components/OverviewAssetMix'
 import PerformanceNavChart from '../components/PerformanceNavChart'
 import PortfolioWorkspaceLayout from '../components/PortfolioWorkspaceLayout'
 import QualityWarningsNotice from '../components/QualityWarningsNotice'
@@ -171,24 +172,6 @@ function holdingAssetType(row: PortfolioHoldingRow) {
 
 function holdingCurrency(row: PortfolioHoldingRow) {
   return row.derivative_contract?.currency ?? row.instrument_core?.currency ?? ''
-}
-
-function isCashHoldingRow(row: PortfolioHoldingRow) {
-  return (
-    row.instrument_core?.instrument_type === 'cash' ||
-    row.instrument_core?.instrument_id.toLowerCase().startsWith('cash:') === true ||
-    row.line_id.toLowerCase().startsWith('cash:')
-  )
-}
-
-function isPendingMonetaryHoldingRow(row: PortfolioHoldingRow) {
-  return (
-    row.holding_kind?.startsWith('pending_') === true ||
-    row.holding_kind === 'settlement_receivable' ||
-    row.holding_kind === 'settlement_payable' ||
-    row.holding_kind === 'position_recognition_adjustment' ||
-    row.line_id.toLowerCase().startsWith('pending:')
-  )
 }
 
 function hasFiniteAllocation(
@@ -972,12 +955,7 @@ export default function OverviewPage() {
 
   const holdingsRows = holdingsWorkspace?.rows ?? []
   const nonCashHoldingsRows = useMemo(
-    () =>
-      holdingsRows.filter(
-        (row) =>
-          !isCashHoldingRow(row) &&
-          !isPendingMonetaryHoldingRow(row),
-      ),
+    () => holdingsRows.filter((row) => row.holding_category !== 'cash_and_settlement'),
     [holdingsRows],
   )
   const resolvedBaseCurrency =
@@ -1039,39 +1017,6 @@ export default function OverviewPage() {
       ),
     [nonCashHoldingsRows, resolvedBaseCurrency],
   )
-  const cashRows = holdingsRows.filter((row) => isCashHoldingRow(row))
-  const cashValue = cashRows.length
-    ? completeAmountSum(
-        cashRows.map((row) =>
-          baseAmountForRow(
-            row,
-            resolvedBaseCurrency,
-            row.market_value_base,
-            row.market_value,
-          ),
-        ),
-      )
-    : holdingsWorkspace?.totals.cash_balance ?? null
-  const pendingSettlementRows = holdingsRows.filter((row) =>
-    isPendingMonetaryHoldingRow(row),
-  )
-  const pendingSettlementValue = pendingSettlementRows.length
-    ? completeAmountSum(
-        pendingSettlementRows.map((row) =>
-        baseAmountForRow(
-          row,
-          resolvedBaseCurrency,
-          row.market_value_base,
-          row.market_value,
-        ),
-      ),
-      )
-    : holdingsWorkspace?.totals.pending_settlement ?? null
-  const cashWeight = summary?.nav && cashValue != null ? cashValue / summary.nav : null
-  const pendingSettlementWeight =
-    summary?.nav && pendingSettlementValue != null
-      ? pendingSettlementValue / summary.nav
-      : null
   const holdingsAllocationsComplete = nonCashHoldingsRows.every(hasFiniteAllocation)
   const top5Holdings = sortedHoldings.slice(0, 5)
   const top5Weight = holdingsAllocationsComplete
@@ -1439,15 +1384,6 @@ export default function OverviewPage() {
           emphasis: true,
           toneClassName: signedValueClass(performanceWorkspace?.summary.total_pnl),
         },
-        { label: 'Cash Weight', value: formatPercent(cashWeight) },
-        ...(Math.abs(pendingSettlementValue ?? 0) > 1e-9
-          ? [
-              {
-                label: 'Pending Settlement Weight',
-                value: formatPercent(pendingSettlementWeight),
-              },
-            ]
-          : []),
         { label: 'Top 5 Weight', value: formatPercent(top5Weight) },
       ],
     },
@@ -1778,6 +1714,8 @@ export default function OverviewPage() {
                   </aside>
                 </div>
               </section>
+
+              <OverviewAssetMix workspace={holdingsWorkspace} />
 
               <section className="portfolio-section-block">
                 <div className="portfolio-detail-toolbar portfolio-section-toolbar overview-section-toolbar">

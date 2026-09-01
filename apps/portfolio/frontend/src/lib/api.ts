@@ -933,7 +933,7 @@ export type HoldingsWorkspaceResponse = {
     market_value: number | null
     cash_balance?: number | null
     pending_settlement?: number | null
-    nav?: number | null
+    nav: number | null
     day_change_pct: number | null
     day_change_value: number | null
     cost_basis: number | null
@@ -2756,7 +2756,13 @@ export type PortfolioTransactionDeleteResponse = {
   transfer_group_id?: string | null
 }
 
-export type PortfolioTableViewScope = 'holdings' | 'performance_calculation'
+export type PortfolioTableViewScope =
+  | 'holdings'
+  | 'holdings_fcn'
+  | 'holdings_options'
+  | 'holdings_cash'
+  | 'holdings_total'
+  | 'performance_calculation'
 
 export type PortfolioTableViewStoreResponse<TStore = unknown> = {
   portfolio_id: string

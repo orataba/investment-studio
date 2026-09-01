@@ -105,7 +105,7 @@ Holdings 只作为当前持仓状态表。资产级 TWR、区间 contribution、
 
 Holdings 中允许出现 `Chart 1M / 3M / 6M / 1Y`、`1W / 1M / 3M / 6M / MTD / YTD / 1Y Return`、Volatility 和 Drawdown。标的 Return / Volatility / Drawdown 只使用 Registry 已确认的 total-return series，不读取组合现金流、数量、成本法或 realized / income events；Chart 可以使用明确标注的 price-return 或 total-return path，但不能反向成为分析字段输入。`Held Max DD` 是从当前最早开放持仓日起截断的 instrument-row 辅助指标，不合成 group。
 
-Holdings group / subtotal / total 的 Return 和 Risk 是当前 market-value 权重篮子在共同历史区间上的假设回看，不是实际组合 TWR、period contribution 或 GIPS-informed performance disclosure。真实历史组合表现仍只来自 Overview / Performance；逐字段边界见 [`03_HOLDINGS_FIELD_REFERENCE.md`](./03_HOLDINGS_FIELD_REFERENCE.md)。
+Holdings group / subtotal / total 的 Return 和 Risk 是当前 market-value 权重篮子在共同历史区间上的 theoretical / hypothetical 回看，不是实际组合 TWR、period contribution 或 GIPS-informed performance disclosure。它们必须以 `Current Basket` 明确标识，不得与实际组合收益链接成一条历史，也不得被描述为客户组合实际绩效。真实历史组合表现仍只来自 Overview / Performance；逐字段边界见 [`03_HOLDINGS_FIELD_REFERENCE.md`](./03_HOLDINGS_FIELD_REFERENCE.md)。
 
 Risk / Research 的风险统计固定使用日频估值路径：1M / 3M 等窗口按请求 as-of 回看自然月形成 EOD boundary，并只链接 `(start EOD, end EOD]` 的 return rows；不能把 start 当天结束的前一区间收益带入。不同发布节奏的来源按最近有效 mark 构造日频组合路径，来源更新日确认变化；所有来源都未更新的日期不生成风险样本。预期应更新却缺失的数据进入 `risk_basis` incomplete 诊断，不得被 carry-forward 掩盖。协方差、相关性、Sharpe 与 target-volatility overlay 使用同一组日频日期和实际观察密度。
 
