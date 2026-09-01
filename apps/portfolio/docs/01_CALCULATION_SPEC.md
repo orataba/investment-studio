@@ -489,7 +489,7 @@ Holdings 的 monetary 部分按结算现金账户子账拆分：
 - non-base cash 的 instrument return / day return 来自该现金币种兑 base currency 的 FX series；
 - pending monetary balance 不属于 settled cash、没有行级 instrument total-return series、不得进入资产协方差矩阵；其 FX 重估仍按 `PendingSettlementCurrencyGain` 单独入账。在 Portfolio Total 的当前篮子 return/risk overlay 中，base-currency pending 作为 0-return capital 保留，non-base pending 必须有兑 base currency 的 FX return，否则相关聚合不可用。
 
-Holdings 使用同一份 as-of workspace 和 canonical NAV，按语义拆成五个直接展示表面：
+Holdings 使用同一份 as-of workspace 和 canonical NAV，按语义定义五个表面。Securities、FCN、Options、Cash & Settlement 只在对应 rows 非空时显示，不渲染空分类表；Portfolio Total 始终显示。全部资产类别为空时使用一个统一 Holdings 空状态：
 
 | 表面 | 行类型 | 主要字段 |
 | --- | --- | --- |
@@ -499,11 +499,11 @@ Holdings 使用同一份 as-of workspace 和 canonical NAV，按语义拆成五�
 | `Cash & Settlement` | settled cash 与 pending monetary rows | 独立视图与字段；可展示 currency/account/availability、local/base amount、portfolio weight、FX day change、settlement/pending dates 与 status；不提供 cost/unrealized 字段 |
 | `Portfolio Total` | 全部 workspace rows | 独立视图与字段且只有一条全组合状态，不按类别细分；NAV、weight、open basis、unrealized、day/current-basket return/risk、Forward RC/volatility/coverage 均使用全组合合同 |
 
-Short-option row 的 `required_underlying_quantity = open_contract_quantity × contract_multiplier`，仅用于显示合约规模；`strike_notional = strike × required_underlying_quantity`，不代表预设交割义务，也不与股票持仓建立 covered / uncovered 关系。Operational summary 聚合 open contract count、`expired_or_due / next_7_days / next_30_days / next_90_days / later / unknown` 到期桶、option-obligation strike notional，以及 pending settlement 的 receivable、payable、net、最早结算日、逾期数和无法换算 base currency 的行数。Alerts 覆盖到期已到/七日内、逾期结算和 settlement FX unavailable，并返回真实 `related_line_ids`。
+Short-option row 的 `required_underlying_quantity = open_contract_quantity × contract_multiplier`，仅用于显示合约规模；`strike_notional = strike × required_underlying_quantity`，不代表预设交割义务，也不与股票持仓建立 covered / uncovered 关系。Operational summary 聚合 open contract count、`expired_or_due / next_7_days / next_30_days / next_90_days / later / unknown` 到期桶、option-obligation strike notional，以及 pending settlement 的 receivable、payable、net、最早结算日、逾期数和无法换算 base currency 的行数。Alerts 覆盖到期已到/七日内、逾期结算和 settlement FX unavailable，并返回真实 `related_line_ids`。这些 API 字段保留给生命周期和结算逻辑，Holdings 不单独渲染 `Operational Status` 面板。
 
 `holding_category` 不是用户可选的 Group By 字段。`Group By` 由底层限定为只在 Securities 内部生成二级分组；FCN、Options 与 Cash & Settlement 不参与 taxonomy 或属性分组。Securities 的 Taxonomy / Taxonomy Leaf 使用当前默认 planning taxonomy 与当前 active assignment；它是管理分类，不随 Holdings `as_of_date` 回放历史版本。风险 eligibility、Research 和 materialized calculation identity 仍按各自的 effective-dated analytics scope 合同处理，不能与这里的展示标签混为一体。
 
-Holdings CSV/XLSX 按 `Securities`、`FCN`、`Options`、`Cash & Settlement`、`Portfolio Total` 输出独立 block 和各自表头，不使用统一 `Category` schema。每个 block 跟随自己当前视图的可见字段；Securities 额外跟随筛选、排序和可选 Group。市场收益、图表、未实现盈亏和回撤的不适用值写 `N/A`；衍生品的 Vol / Forward RC 同样写 `N/A`，只有明确 modeled-zero 的 monetary risk 写数值 0。不得用 carrying/liability amount 填充 fair-value 字段。
+Holdings CSV/XLSX 只为非空的 `Securities`、`FCN`、`Options`、`Cash & Settlement` 输出独立 block，并始终输出 `Portfolio Total`；不使用统一 `Category` schema。每个已输出 block 跟随自己当前视图的可见字段；Securities 额外跟随筛选、排序和可选 Group。市场收益、图表、未实现盈亏和回撤的不适用值写 `N/A`；衍生品的 Vol / Forward RC 同样写 `N/A`，只有明确 modeled-zero 的 monetary risk 写数值 0。不得用 carrying/liability amount 填充 fair-value 字段。
 
 Analytics scope 是独立于 taxonomy node 名称的 effective-dated policy。每条 policy 明确 `risk_eligible`、`risk_budget_eligible`、`performance_scope`、`valuation_basis` 和 exclusion reason；`risk_budget_eligible=true` 必须同时满足 `risk_eligible=true`。`performance_scope` 只允许 `ordinary / derivative_lifecycle / operational_only / unallocated`。Instrument row、transaction cash activity 和 materialized calculation identity 都必须携带 as-of 解析出的 policy/configuration/selection version；衍生品相关 cash leg 继承 originating instrument 的 performance scope，不得自动落入 ordinary sleeve。
 
@@ -561,7 +561,7 @@ Holdings group rows 不是后端 period-performance group：
 - base-currency cash 可作为 0-return 成员参与覆盖；non-base cash 使用其 FX return series；
 - pending monetary row 没有行级 instrument return series；base-currency pending 在 Portfolio Total 的 return/risk overlay 中按 0-return capital 保留，non-base pending 需要 FX return，否则相关聚合 unavailable；
 - group return / volatility / drawdown 只在每个有当前价值的非零收益成员都能解释为 portfolio base-currency return 时计算。本币 instrument return 不能因为成员恰好使用同一种外币就直接拼接；后端未提供逐期 base-currency overlay 时必须留空；
-- Securities、FCN、Options、Cash & Settlement 和 Portfolio Total 是五个直接展示表面，不是可选 Group By 结果。资产表 subtotal 由当前行实时聚合，只用于阅读；它们不是源事实、不参与 sort、detail，也不得作为 Portfolio Total 的二次输入。用户分组只在 Securities 内部生成二级 subtotal。
+- Securities、FCN、Options、Cash & Settlement 和 Portfolio Total 是五个语义表面，不是可选 Group By 结果；前四者无对应 rows 时不渲染，Portfolio Total 始终保留。资产表 subtotal 由当前行实时聚合，只用于阅读；它们不是源事实、不参与 sort、detail，也不得作为 Portfolio Total 的二次输入。用户分组只在 Securities 内部生成二级 subtotal。
 
 每个 Holdings 字段的 group / subtotal / total 处理必须属于以下明确类别；未列为可聚合的字段一律留空：
 

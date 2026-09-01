@@ -68,7 +68,7 @@ function renderHoldings(
 }
 
 async function waitForHoldings() {
-  return screen.findByRole('table', { name: 'Security holdings' })
+  return screen.findByRole('table', { name: 'Portfolio total holdings' })
 }
 
 function deferred<T>() {
@@ -221,8 +221,12 @@ describe('Holdings rendered page contract', () => {
     apiMocks.savePortfolioTableViewStore.mockResolvedValue({})
   })
 
-  it('renders five direct tables with independent views and fields', async () => {
-    renderHoldings()
+  it('renders each populated category with independent views and fields', async () => {
+    renderHoldings(
+      holdingsWorkspaceFixture({
+        rows: [holdingFixture(), fcnHolding(), writtenOptionHolding(), cashHolding()],
+      }),
+    )
     await waitForHoldings()
 
     expect(screen.getByRole('region', { name: 'Securities' })).toBeInTheDocument()
@@ -252,6 +256,81 @@ describe('Holdings rendered page contract', () => {
     expect(screen.getByText('Portfolio Total (USD)')).toBeInTheDocument()
   })
 
+  it('omits Operational Status and categories without holdings', async () => {
+    renderHoldings(
+      holdingsWorkspaceFixture({
+        operational_summary: {
+          expiry_buckets: [
+            {
+              bucket: 'next_7_days',
+              obligation_count: 1,
+              open_contract_quantity: 2,
+              required_underlying_quantity: 200,
+              carrying_liability_base: 300,
+            },
+          ],
+          option_obligation_exposure: {
+            obligation_count: 1,
+            open_contract_quantity: 2,
+            underlying_equivalent_quantity: 200,
+            strike_notional_base: 22_000,
+          },
+          settlement_exposure: {
+            pending_line_count: 1,
+            receivable_base: 100,
+            payable_base: 0,
+            net_base: 100,
+            earliest_settlement_date: '2026-07-14',
+            overdue_line_count: 1,
+            unavailable_base_line_count: 0,
+          },
+        },
+        operational_alerts: [
+          {
+            code: 'overdue_settlement',
+            severity: 'critical',
+            title: 'Overdue settlement',
+            message: 'A settlement is overdue.',
+            related_line_ids: ['holding:asset-1'],
+          },
+        ],
+      }),
+    )
+    await waitForHoldings()
+
+    expect(screen.getByRole('region', { name: 'Securities' })).toBeInTheDocument()
+    expect(screen.getByRole('region', { name: 'Portfolio Total' })).toBeInTheDocument()
+    expect(screen.queryByRole('region', { name: 'FCN' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('region', { name: 'Options' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('region', { name: 'Cash & Settlement' })).not.toBeInTheDocument()
+    expect(screen.queryByText('Operational Status')).not.toBeInTheDocument()
+    expect(screen.queryByText('Overdue settlement')).not.toBeInTheDocument()
+  })
+
+  it('shows one holdings empty state while retaining Portfolio Total', async () => {
+    renderHoldings(
+      holdingsWorkspaceFixture({
+        rows: [],
+        totals: {
+          nav: 0,
+          market_value: 0,
+          day_change_pct: null,
+          day_change_value: null,
+          cost_basis: 0,
+          allocation: 0,
+        },
+      }),
+    )
+    await waitForHoldings()
+
+    expect(screen.getByText('No holdings as of 2026-07-15.')).toHaveAttribute('role', 'status')
+    expect(screen.queryByRole('region', { name: 'Securities' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('region', { name: 'FCN' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('region', { name: 'Options' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('region', { name: 'Cash & Settlement' })).not.toBeInTheDocument()
+    expect(screen.getByRole('region', { name: 'Portfolio Total' })).toBeInTheDocument()
+  })
+
   it('surfaces a failed Security view store without blocking holdings facts', async () => {
     apiMocks.getPortfolioTableViewStore.mockImplementation(
       async (_portfolioId: string, viewScope: string) => {
@@ -272,7 +351,11 @@ describe('Holdings rendered page contract', () => {
 
   it('surfaces a failed section view save', async () => {
     apiMocks.savePortfolioTableViewStore.mockRejectedValue(new Error('View save offline.'))
-    renderHoldings()
+    renderHoldings(
+      holdingsWorkspaceFixture({
+        rows: [fcnHolding()],
+      }),
+    )
     const user = userEvent.setup()
     await waitForHoldings()
 
@@ -919,6 +1002,21 @@ describe('Holdings rendered page contract', () => {
     )
     expect(fcnExport['Annual Coupon']).toBe('12%')
     expect(fcnExport.Days).toBe(169)
+  })
+
+  it('does not export empty holding categories', async () => {
+    renderHoldings()
+    const user = userEvent.setup()
+    await waitForHoldings()
+    await user.click(screen.getByRole('button', { name: 'Download' }))
+    await user.click(screen.getByRole('menuitem', { name: 'CSV' }))
+
+    const rows = tableExportMocks.downloadTable.mock.calls[0][1] as Array<Array<string | number | null>>
+    expect(rows.some((row) => row[0] === 'Securities')).toBe(true)
+    expect(rows.some((row) => row[0] === 'FCN')).toBe(false)
+    expect(rows.some((row) => row[0] === 'Options')).toBe(false)
+    expect(rows.some((row) => row[0] === 'Cash & Settlement')).toBe(false)
+    expect(rows.some((row) => row[0] === 'Portfolio Total')).toBe(true)
   })
 
   it('does not substitute a chart endpoint for a missing valuation quote date', async () => {

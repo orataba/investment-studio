@@ -67,9 +67,9 @@ Securities group / subtotal 的当前权重 return 与 current-basket path 使�
 - Security detail 的 event-valued hero 使用 `Carrying value`，Quote、Quote Date 和 Unrealized P&L 为 `N/A`；页面不请求或展示 instrument price chart，account slice 与 open lot 也不得从 carrying basis 生成零 unrealized P&L。
 - Accounts position API 必须显式返回 `carrying_value`、`fair_value`、`fair_value_coverage_status`、`valuation_basis` 和 `coverage_status`。Accounts UI 按这些字段判断事件估值，相关 Unrealized P/L 为 `N/A`，不得按 instrument type 猜测或按 `market_value - cost_basis` 得出零。
 
-### 2.6 五表展示 contract
+### 2.6 按内容显示的五表 contract
 
-Holdings 使用同一份 `workspace.as_of_date`、canonical NAV 和 read-model rows，按业务语义拆成五个独立表面。拆表只改变展示结构，不创建子组合，也不改变任何权重、风险贡献或 Portfolio Total 的分母：
+Holdings 使用同一份 `workspace.as_of_date`、canonical NAV 和 read-model rows，按业务语义定义五个独立表面。四个资产类别只在对应 read-model rows 非空时显示；空类别不挂载视图控件、不渲染空表。`Portfolio Total` 始终保留。全部资产类别都为空时，页面只显示统一的 Holdings 空状态和 `Portfolio Total`。拆表只改变展示结构，不创建子组合，也不改变任何权重、风险贡献或 Portfolio Total 的分母：
 
 四类展示资产的高层 signed NAV 构成统一放在 Overview 的 `Asset Mix`，并在那里附 `Portfolio Total` 汇总行；Holdings 不重复这张分类汇总表，而是保留以下五个可操作表面。
 
@@ -95,9 +95,9 @@ pending:{kind}:{cash_account}:{economic_instrument}:{currency}:{settlement_date}
 
 它防止相同账户/资产/币种但不同结算边界的余额发生主键冲突。`pending_status` 目前包括 `awaiting_settlement`、`settled_awaiting_position` 和 `overdue`；本币 signed amount 与 base amount 必须同时保留，base FX 不可用时本币金额仍可展示但 base aggregation 为 unavailable。
 
-Workspace `operational_summary` 展示 open short-option contract count、expiry buckets、option obligation strike notional 和 settlement receivable/payable/net；`operational_alerts` 返回 severity、code、message 和真实 `related_line_ids`。到期已到和逾期结算是 critical，七日内到期与 settlement FX unavailable 是 warning。API 不发布股票覆盖分类或结算方式；动态 workspace、materialized snapshot 和 instrument detail projection 对当前字段必须保持 parity。
+Workspace API 的 `operational_summary` 保留 open short-option contract count、expiry buckets、option obligation strike notional 和 settlement receivable/payable/net；`operational_alerts` 返回 severity、code、message 和真实 `related_line_ids`。这些字段继续服务生命周期和结算逻辑，但 Holdings 不再单独渲染 `Operational Status` 面板。到期已到和逾期结算是 critical，七日内到期与 settlement FX unavailable 是 warning。API 不发布股票覆盖分类或结算方式；动态 workspace、materialized snapshot 和 instrument detail projection 对当前字段必须保持 parity。
 
-CSV/XLSX 按 `Securities`、`FCN`、`Options`、`Cash & Settlement`、`Portfolio Total` 输出各自独立的标题与表头，不再把异质字段压进带 `Category` 的统一 schema。五张表都严格跟随自己当前视图的可见字段；Securities 额外跟随当前筛选、排序和可选 Group。价格路径、收益、未实现盈亏和回撤的不适用值导出为 `N/A`；衍生品的 Vol / Forward RC 同样导出 `N/A`，只有明确 modeled-zero 的 monetary risk 输出数值 `0`。
+CSV/XLSX 为非空的 `Securities`、`FCN`、`Options`、`Cash & Settlement` 输出各自独立的标题与表头，并始终输出 `Portfolio Total`，不再把异质字段压进带 `Category` 的统一 schema。每个已输出表面都严格跟随自己当前视图的可见字段；Securities 额外跟随当前筛选、排序和可选 Group。价格路径、收益、未实现盈亏和回撤的不适用值导出为 `N/A`；衍生品的 Vol / Forward RC 同样导出 `N/A`，只有明确 modeled-zero 的 monetary risk 输出数值 `0`。
 
 ## 3. Securities 可配置字段与聚合字典
 

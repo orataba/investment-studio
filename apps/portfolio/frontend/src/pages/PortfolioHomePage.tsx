@@ -1957,24 +1957,6 @@ function holdingColumnTotalExportValue(
   }
 }
 
-function TableStatusRow({
-  colSpan,
-  label,
-  tone = 'neutral',
-}: {
-  colSpan: number
-  label: string
-  tone?: 'neutral' | 'error'
-}) {
-  return (
-    <tr className="table-status-row">
-      <td colSpan={colSpan} className={`empty-state-cell ${tone === 'error' ? 'table-status-cell-error' : ''}`}>
-        {label}
-      </td>
-    </tr>
-  )
-}
-
 const HOLDINGS_COLUMN_DEFINITIONS: Record<HoldingsColumnKey, HoldingsColumnDefinition> = {
   instrument: {
     key: 'instrument',
@@ -3182,6 +3164,9 @@ export default function PortfolioHomePage() {
       [`Holdings as of ${workspace.as_of_date}`, workspace.portfolio_name, workspace.base_currency],
     ]
     const appendSection = (title: string, header: TableCell[], dataRows: TableCell[][]) => {
+      if (!dataRows.length) {
+        return
+      }
       rows.push([], [title], header, ...dataRows)
     }
     const appendConfiguredSection = (
@@ -3618,102 +3603,6 @@ export default function PortfolioHomePage() {
     )
   }
 
-  function renderOperationalStatus() {
-    if (!workspace) {
-      return null
-    }
-    const summary = workspace.operational_summary
-    const dueOrNearExpiryCount = summary.expiry_buckets
-      .filter((bucket) => bucket.bucket === 'expired_or_due' || bucket.bucket === 'next_7_days')
-      .reduce((total, bucket) => total + bucket.obligation_count, 0)
-    const openShortOptionContracts = summary.expiry_buckets.reduce(
-      (total, bucket) => total + bucket.open_contract_quantity,
-      0,
-    )
-    const operationalMetrics = [
-      openShortOptionContracts !== 0
-        ? {
-            label: 'Open short option contracts',
-            value: formatQuantity(openShortOptionContracts),
-          }
-        : null,
-      dueOrNearExpiryCount !== 0
-        ? {
-            label: 'Expiry actions ≤ 7 days',
-            value: formatNumber(dueOrNearExpiryCount, 0),
-          }
-        : null,
-      summary.option_obligation_exposure.strike_notional_base !== 0
-        ? {
-            label: 'Option strike notional',
-            value: formatCurrency(
-              summary.option_obligation_exposure.strike_notional_base,
-              workspace.base_currency,
-            ),
-          }
-        : null,
-      summary.settlement_exposure.pending_line_count !== 0
-        ? {
-            label: 'Pending settlements',
-            value: formatNumber(summary.settlement_exposure.pending_line_count, 0),
-          }
-        : null,
-      summary.settlement_exposure.net_base !== 0
-        ? {
-            label: 'Pending settlement net',
-            value: formatCurrency(summary.settlement_exposure.net_base, workspace.base_currency),
-          }
-        : null,
-      summary.settlement_exposure.overdue_line_count !== 0
-        ? {
-            label: 'Overdue settlements',
-            value: formatNumber(summary.settlement_exposure.overdue_line_count, 0),
-            critical: true,
-          }
-        : null,
-    ].filter((metric): metric is { label: string; value: string; critical?: boolean } => metric !== null)
-
-    if (!operationalMetrics.length && !workspace.operational_alerts.length) {
-      return null
-    }
-
-    return (
-      <section className="holdings-operational-status" aria-label="Holdings operational status">
-        <div className="holdings-operational-heading">
-          <h2>Operational Status</h2>
-          <span>{workspace.as_of_date}</span>
-        </div>
-        {operationalMetrics.length ? (
-          <dl className="holdings-operational-metrics">
-            {operationalMetrics.map((metric) => (
-              <div
-                key={metric.label}
-                className={metric.critical ? 'holdings-operational-metric-critical' : undefined}
-              >
-                <dt>{metric.label}</dt>
-                <dd>{metric.value}</dd>
-              </div>
-            ))}
-          </dl>
-        ) : null}
-        {workspace.operational_alerts.length ? (
-          <div className="holdings-operational-alerts">
-            {workspace.operational_alerts.map((alert) => (
-            <div
-              key={alert.code}
-              className={`holdings-operational-alert holdings-operational-alert-${alert.severity}`}
-              role={alert.severity === 'critical' ? 'alert' : 'status'}
-            >
-              <strong>{alert.title}</strong>
-              <span>{alert.message}</span>
-            </div>
-            ))}
-          </div>
-        ) : null}
-      </section>
-    )
-  }
-
   useEffect(() => {
     if (!portfolioId) {
       persistedHoldingsViewStoreRef.current = null
@@ -3971,150 +3860,151 @@ export default function PortfolioHomePage() {
         {taxonomyError ? (
           <div className="inline-notice inline-notice-warning">{taxonomyError}</div>
         ) : null}
-        {!loading && !error && workspace ? renderOperationalStatus() : null}
         {!loading && !error && workspace && columnContext ? (
           <>
-            <section className="holdings-section" aria-labelledby="holdings-securities-heading">
-              <div className="holdings-section-heading">
-                <h2 id="holdings-securities-heading">Securities</h2>
-                <div className="holdings-section-heading-actions">
-                  <span className="holdings-section-count">
-                    {formatNumber(sortedSecurityRows.length, 0)}
-                  </span>
-                  {holdingsViewStoreReadyPortfolioId === portfolioId ? (
-                    <PortfolioTableViewControls
-                      views={holdingsViews}
-                      activeViewId={activeHoldingsViewId}
-                      edited={holdingsViewEdited}
-                      canSave={!activeHoldingsView.readonly}
-                      canDelete
-                      onSelect={handleSelectHoldingsView}
-                      onSave={handleSaveHoldingsView}
-                      onSaveAs={handleSaveHoldingsViewAs}
-                      onDelete={handleDeleteHoldingsView}
-                      labelPrefix="Security View"
-                    />
-                  ) : (
-                    <span className="portfolio-table-view-status">
-                      {holdingsViewStoreError ? 'Views unavailable' : 'Loading views'}
+            {!workspace.rows.length ? (
+              <div className="empty-state" role="status">
+                No holdings as of {workspace.as_of_date}.
+              </div>
+            ) : null}
+            {sortedSecurityRows.length ? (
+              <section className="holdings-section" aria-labelledby="holdings-securities-heading">
+                <div className="holdings-section-heading">
+                  <h2 id="holdings-securities-heading">Securities</h2>
+                  <div className="holdings-section-heading-actions">
+                    <span className="holdings-section-count">
+                      {formatNumber(sortedSecurityRows.length, 0)}
                     </span>
-                  )}
-                  <button
-                    type="button"
-                    className={`portfolio-table-toolbar-button ${columnsEdited ? 'portfolio-table-toolbar-button-active' : ''}`}
-                    onClick={() => {
-                      setHoldingsColumnDraft(holdingsColumns)
-                      setHoldingsColumnsOpen(true)
-                    }}
-                  >
-                    Security Fields
-                  </button>
-                  <button
-                    type="button"
-                    className="portfolio-table-toolbar-button"
-                    onClick={() => setHoldingsGroupByOpen(true)}
-                  >
-                    Group Securities{'\u00A0: '}
-                    {selectedGroupByOption.label}
-                  </button>
-                </div>
-              </div>
-              <div className="table-shell holdings-table-shell" ref={holdingsTableShellRef}>
-                <table
-                  className="holdings-table holdings-main-table"
-                  aria-label="Security holdings"
-                  style={{ minWidth: `${displayHoldingsTableMinWidth}px` }}
-                >
-                  <colgroup>
-                    {visibleColumns.map((column) => (
-                      <col
-                        key={column.key}
-                        style={{ width: `${displayHoldingsColumnWidths[column.key]}px` }}
+                    {holdingsViewStoreReadyPortfolioId === portfolioId ? (
+                      <PortfolioTableViewControls
+                        views={holdingsViews}
+                        activeViewId={activeHoldingsViewId}
+                        edited={holdingsViewEdited}
+                        canSave={!activeHoldingsView.readonly}
+                        canDelete
+                        onSelect={handleSelectHoldingsView}
+                        onSave={handleSaveHoldingsView}
+                        onSaveAs={handleSaveHoldingsViewAs}
+                        onDelete={handleDeleteHoldingsView}
+                        labelPrefix="Security View"
                       />
-                    ))}
-                  </colgroup>
-                  <thead>
-                    <tr>
-                      {visibleColumns.map((column) => {
-                        const width = displayHoldingsColumnWidths[column.key]
-                        return (
-                          <th
-                            key={column.key}
-                            className={[
-                              holdingsAlignmentClass(column),
-                              isHoldingsChartColumn(column.key) ? 'chart-cell' : '',
-                              column.key !== LOCKED_HOLDINGS_COLUMN ? 'holdings-column-draggable' : '',
-                              holdingsColumnDropTarget === column.key ? 'holdings-column-drop-target' : '',
-                            ]
-                              .filter(Boolean)
-                              .join(' ') || undefined}
-                            scope="col"
-                            aria-sort={
-                              holdingsSortField === column.key
-                                ? holdingsSortDirection === 'asc'
-                                  ? 'ascending'
-                                  : 'descending'
-                                : 'none'
-                            }
-                            draggable={column.key !== LOCKED_HOLDINGS_COLUMN}
-                            style={{ width: `${width}px` }}
-                            onDragStart={(event) => handleHoldingsColumnDragStart(event, column.key)}
-                            onDragOver={(event) => handleHoldingsColumnDragOver(event, column.key)}
-                            onDragLeave={() => setHoldingsColumnDropTarget(null)}
-                            onDrop={(event) => handleHoldingsColumnDrop(event, column.key)}
-                            onDragEnd={() => setHoldingsColumnDropTarget(null)}
-                          >
-                            {renderHoldingsSortHeader(column)}
-                            <span
-                              className="holdings-th-resizer"
-                              role="separator"
-                              aria-label={`Resize ${column.label} column`}
-                              aria-orientation="vertical"
-                              aria-valuemin={HOLDINGS_COLUMN_MIN_WIDTH}
-                              aria-valuemax={HOLDINGS_COLUMN_MAX_WIDTH}
-                              aria-valuenow={Math.round(width)}
-                              tabIndex={0}
-                              onKeyDown={(event) => {
-                                if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') {
-                                  return
-                                }
-                                event.preventDefault()
-                                const delta = event.key === 'ArrowLeft' ? -10 : 10
-                                setHoldingsColumnWidths((current) => ({
-                                  ...current,
-                                  [column.key]: clampHoldingsColumnWidth((current[column.key] ?? width) + delta),
-                                }))
-                              }}
-                              onMouseDown={(event) => handleHoldingsColumnResizeStart(event, column.key, width)}
-                            />
-                          </th>
-                        )
-                      })}
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {holdingsGroupBy !== 'none'
-                      ? groupedSecurityRows.map((group) => (
-                          <Fragment key={group.key}>
-                            {renderHoldingsGroupRow(group, 'subgroup')}
-                            {group.rows.map((row) => renderHoldingDataRow(row))}
-                          </Fragment>
-                        ))
-                      : sortedSecurityRows.map((row) => renderHoldingDataRow(row))}
-                    {!sortedSecurityRows.length ? (
-                      <TableStatusRow colSpan={visibleColumns.length} label="No security holdings." />
-                    ) : null}
-                    {sortedSecurityRows.length
-                      ? renderHoldingsTotalRow(
-                          sortedSecurityRows,
-                          `Securities Subtotal (${workspace.base_currency})`,
-                          'total-row holdings-section-subtotal-row',
-                        )
-                      : null}
-                  </tbody>
-                </table>
-              </div>
-            </section>
+                    ) : (
+                      <span className="portfolio-table-view-status">
+                        {holdingsViewStoreError ? 'Views unavailable' : 'Loading views'}
+                      </span>
+                    )}
+                    <button
+                      type="button"
+                      className={`portfolio-table-toolbar-button ${columnsEdited ? 'portfolio-table-toolbar-button-active' : ''}`}
+                      onClick={() => {
+                        setHoldingsColumnDraft(holdingsColumns)
+                        setHoldingsColumnsOpen(true)
+                      }}
+                    >
+                      Security Fields
+                    </button>
+                    <button
+                      type="button"
+                      className="portfolio-table-toolbar-button"
+                      onClick={() => setHoldingsGroupByOpen(true)}
+                    >
+                      Group Securities{'\u00A0: '}
+                      {selectedGroupByOption.label}
+                    </button>
+                  </div>
+                </div>
+                <div className="table-shell holdings-table-shell" ref={holdingsTableShellRef}>
+                  <table
+                    className="holdings-table holdings-main-table"
+                    aria-label="Security holdings"
+                    style={{ minWidth: `${displayHoldingsTableMinWidth}px` }}
+                  >
+                    <colgroup>
+                      {visibleColumns.map((column) => (
+                        <col
+                          key={column.key}
+                          style={{ width: `${displayHoldingsColumnWidths[column.key]}px` }}
+                        />
+                      ))}
+                    </colgroup>
+                    <thead>
+                      <tr>
+                        {visibleColumns.map((column) => {
+                          const width = displayHoldingsColumnWidths[column.key]
+                          return (
+                            <th
+                              key={column.key}
+                              className={[
+                                holdingsAlignmentClass(column),
+                                isHoldingsChartColumn(column.key) ? 'chart-cell' : '',
+                                column.key !== LOCKED_HOLDINGS_COLUMN ? 'holdings-column-draggable' : '',
+                                holdingsColumnDropTarget === column.key ? 'holdings-column-drop-target' : '',
+                              ]
+                                .filter(Boolean)
+                                .join(' ') || undefined}
+                              scope="col"
+                              aria-sort={
+                                holdingsSortField === column.key
+                                  ? holdingsSortDirection === 'asc'
+                                    ? 'ascending'
+                                    : 'descending'
+                                  : 'none'
+                              }
+                              draggable={column.key !== LOCKED_HOLDINGS_COLUMN}
+                              style={{ width: `${width}px` }}
+                              onDragStart={(event) => handleHoldingsColumnDragStart(event, column.key)}
+                              onDragOver={(event) => handleHoldingsColumnDragOver(event, column.key)}
+                              onDragLeave={() => setHoldingsColumnDropTarget(null)}
+                              onDrop={(event) => handleHoldingsColumnDrop(event, column.key)}
+                              onDragEnd={() => setHoldingsColumnDropTarget(null)}
+                            >
+                              {renderHoldingsSortHeader(column)}
+                              <span
+                                className="holdings-th-resizer"
+                                role="separator"
+                                aria-label={`Resize ${column.label} column`}
+                                aria-orientation="vertical"
+                                aria-valuemin={HOLDINGS_COLUMN_MIN_WIDTH}
+                                aria-valuemax={HOLDINGS_COLUMN_MAX_WIDTH}
+                                aria-valuenow={Math.round(width)}
+                                tabIndex={0}
+                                onKeyDown={(event) => {
+                                  if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') {
+                                    return
+                                  }
+                                  event.preventDefault()
+                                  const delta = event.key === 'ArrowLeft' ? -10 : 10
+                                  setHoldingsColumnWidths((current) => ({
+                                    ...current,
+                                    [column.key]: clampHoldingsColumnWidth((current[column.key] ?? width) + delta),
+                                  }))
+                                }}
+                                onMouseDown={(event) => handleHoldingsColumnResizeStart(event, column.key, width)}
+                              />
+                            </th>
+                          )
+                        })}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {holdingsGroupBy !== 'none'
+                        ? groupedSecurityRows.map((group) => (
+                            <Fragment key={group.key}>
+                              {renderHoldingsGroupRow(group, 'subgroup')}
+                              {group.rows.map((row) => renderHoldingDataRow(row))}
+                            </Fragment>
+                          ))
+                        : sortedSecurityRows.map((row) => renderHoldingDataRow(row))}
+                      {renderHoldingsTotalRow(
+                        sortedSecurityRows,
+                        `Securities Subtotal (${workspace.base_currency})`,
+                        'total-row holdings-section-subtotal-row',
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              </section>
+            ) : null}
             <HoldingsSectionTables
               workspace={workspace}
               derivativeRows={derivativeRows}

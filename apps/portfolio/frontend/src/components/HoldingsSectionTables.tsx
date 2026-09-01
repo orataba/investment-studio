@@ -463,7 +463,6 @@ function FixedHoldingsTable({
   ariaLabel,
   columns,
   rows,
-  emptyLabel,
   subtotalLabel,
   subtotalValues,
   onSelectHolding,
@@ -471,8 +470,7 @@ function FixedHoldingsTable({
   ariaLabel: string
   columns: FixedColumn[]
   rows: PortfolioHoldingRow[]
-  emptyLabel: string
-  subtotalLabel?: string
+  subtotalLabel: string
   subtotalValues?: Record<string, ReactNode>
   onSelectHolding?: (row: PortfolioHoldingRow) => void
 }) {
@@ -535,32 +533,23 @@ function FixedHoldingsTable({
               ))}
             </tr>
           ))}
-          {!rows.length ? (
-            <tr className="table-status-row">
-              <td colSpan={columns.length} className="empty-state-cell">
-                {emptyLabel}
+          <tr className="total-row holdings-section-subtotal-row">
+            {columns.map((column, index) => (
+              <td
+                key={column.key}
+                data-column-key={column.key}
+                className={
+                  column.align === 'right'
+                    ? 'numeric-cell'
+                    : column.align === 'center'
+                      ? 'center-cell'
+                      : undefined
+                }
+              >
+                {index === 0 ? <strong>{subtotalLabel}</strong> : subtotalValues?.[column.key] ?? ''}
               </td>
-            </tr>
-          ) : null}
-          {rows.length && subtotalLabel ? (
-            <tr className="total-row holdings-section-subtotal-row">
-              {columns.map((column, index) => (
-                <td
-                  key={column.key}
-                  data-column-key={column.key}
-                  className={
-                    column.align === 'right'
-                      ? 'numeric-cell'
-                      : column.align === 'center'
-                        ? 'center-cell'
-                        : undefined
-                  }
-                >
-                  {index === 0 ? <strong>{subtotalLabel}</strong> : subtotalValues?.[column.key] ?? ''}
-                </td>
-              ))}
-            </tr>
-          ) : null}
+            ))}
+          </tr>
         </tbody>
       </table>
     </div>
@@ -979,127 +968,130 @@ export default function HoldingsSectionTables({
         </div>
       ) : null}
 
-      <ConfigurableHoldingsSection
-        portfolioId={workspace.portfolio_id}
-        viewScope="holdings_fcn"
-        sectionKey="fcn"
-        id="holdings-fcn-heading"
-        title="FCN"
-        count={fcnRows.length}
-        columns={fcnColumns}
-        requiredColumnKey="contract"
-        systemViews={FCN_SYSTEM_VIEWS}
-        onVisibleColumnsChange={onVisibleColumnsChange}
-      >
-        {(visibleColumnKeys) => {
-          const visibleColumns = fcnColumns.filter((column) =>
-            visibleColumnKeys.includes(column.key),
-          )
-          return (
-            <FixedHoldingsTable
-              ariaLabel="FCN holdings"
-              columns={visibleColumns}
-              rows={fcnRows}
-              emptyLabel="No FCN holdings."
-              subtotalLabel={`FCN Subtotal (${workspace.base_currency})`}
-              subtotalValues={{
-                signed_nav_amount_base: formatCurrency(
-                  sumComplete(fcnRows, derivativeBaseValue),
-                  workspace.base_currency,
-                ),
-                weight: formatPercent(sumComplete(fcnRows, (row) => row.allocation)),
-              }}
-              onSelectHolding={onSelectHolding}
-            />
-          )
-        }}
-      </ConfigurableHoldingsSection>
-
-      <ConfigurableHoldingsSection
-        portfolioId={workspace.portfolio_id}
-        viewScope="holdings_options"
-        sectionKey="options"
-        id="holdings-options-heading"
-        title="Options"
-        count={optionRows.length}
-        columns={optionColumns}
-        requiredColumnKey="contract"
-        systemViews={OPTION_SYSTEM_VIEWS}
-        onVisibleColumnsChange={onVisibleColumnsChange}
-      >
-        {(visibleColumnKeys) => {
-          const visibleColumns = optionColumns.filter((column) =>
-            visibleColumnKeys.includes(column.key),
-          )
-          return (
-            <FixedHoldingsTable
-              ariaLabel="Option holdings"
-              columns={visibleColumns}
-              rows={optionRows}
-              emptyLabel="No option holdings."
-              subtotalLabel={`Options Subtotal (${workspace.base_currency})`}
-              subtotalValues={{
-                signed_nav_amount_base: formatCurrency(
-                  sumComplete(optionRows, derivativeBaseValue),
-                  workspace.base_currency,
-                ),
-                strike_notional_base: formatCurrency(
-                  sumAvailable(optionRows, (row) => row.strike_notional_base),
-                  workspace.base_currency,
-                ),
-                weight: formatPercent(sumComplete(optionRows, (row) => row.allocation)),
-              }}
-              onSelectHolding={onSelectHolding}
-            />
-          )
-        }}
-      </ConfigurableHoldingsSection>
-
-      <ConfigurableHoldingsSection
-        portfolioId={workspace.portfolio_id}
-        viewScope="holdings_cash"
-        sectionKey="cash"
-        id="holdings-cash-heading"
-        title="Cash & Settlement"
-        count={cashRows.length}
-        columns={cashColumns}
-        requiredColumnKey="description"
-        systemViews={CASH_SYSTEM_VIEWS}
-        onVisibleColumnsChange={onVisibleColumnsChange}
-      >
-        {(visibleColumnKeys) => {
-          const visibleColumns = cashColumns.filter((column) =>
-            visibleColumnKeys.includes(column.key),
-          )
-          return (
-            <FixedHoldingsTable
-              ariaLabel="Cash and settlement holdings"
-              columns={visibleColumns}
-              rows={cashRows}
-              emptyLabel="No cash or settlement balances."
-              subtotalLabel={`Cash & Settlement Subtotal (${workspace.base_currency})`}
-              subtotalValues={{
-                base_value: formatCurrency(
-                  sumComplete(cashRows, (row) => signedNavAmountBase(row, workspace)),
-                  workspace.base_currency,
-                ),
-                weight: formatPercent(sumComplete(cashRows, (row) => row.allocation)),
-                day_change_base: formatCurrency(
-                  sumComplete(cashRows, (row) =>
-                    baseAmountForRow(
-                      row,
-                      workspace.base_currency,
-                      row.day_change_value_base,
-                      row.day_change_value,
-                    ),
+      {fcnRows.length ? (
+        <ConfigurableHoldingsSection
+          portfolioId={workspace.portfolio_id}
+          viewScope="holdings_fcn"
+          sectionKey="fcn"
+          id="holdings-fcn-heading"
+          title="FCN"
+          count={fcnRows.length}
+          columns={fcnColumns}
+          requiredColumnKey="contract"
+          systemViews={FCN_SYSTEM_VIEWS}
+          onVisibleColumnsChange={onVisibleColumnsChange}
+        >
+          {(visibleColumnKeys) => {
+            const visibleColumns = fcnColumns.filter((column) =>
+              visibleColumnKeys.includes(column.key),
+            )
+            return (
+              <FixedHoldingsTable
+                ariaLabel="FCN holdings"
+                columns={visibleColumns}
+                rows={fcnRows}
+                subtotalLabel={`FCN Subtotal (${workspace.base_currency})`}
+                subtotalValues={{
+                  signed_nav_amount_base: formatCurrency(
+                    sumComplete(fcnRows, derivativeBaseValue),
+                    workspace.base_currency,
                   ),
-                  workspace.base_currency,
-                ),
-              }}
-            />
-          )
-        }}
-      </ConfigurableHoldingsSection>
+                  weight: formatPercent(sumComplete(fcnRows, (row) => row.allocation)),
+                }}
+                onSelectHolding={onSelectHolding}
+              />
+            )
+          }}
+        </ConfigurableHoldingsSection>
+      ) : null}
+
+      {optionRows.length ? (
+        <ConfigurableHoldingsSection
+          portfolioId={workspace.portfolio_id}
+          viewScope="holdings_options"
+          sectionKey="options"
+          id="holdings-options-heading"
+          title="Options"
+          count={optionRows.length}
+          columns={optionColumns}
+          requiredColumnKey="contract"
+          systemViews={OPTION_SYSTEM_VIEWS}
+          onVisibleColumnsChange={onVisibleColumnsChange}
+        >
+          {(visibleColumnKeys) => {
+            const visibleColumns = optionColumns.filter((column) =>
+              visibleColumnKeys.includes(column.key),
+            )
+            return (
+              <FixedHoldingsTable
+                ariaLabel="Option holdings"
+                columns={visibleColumns}
+                rows={optionRows}
+                subtotalLabel={`Options Subtotal (${workspace.base_currency})`}
+                subtotalValues={{
+                  signed_nav_amount_base: formatCurrency(
+                    sumComplete(optionRows, derivativeBaseValue),
+                    workspace.base_currency,
+                  ),
+                  strike_notional_base: formatCurrency(
+                    sumAvailable(optionRows, (row) => row.strike_notional_base),
+                    workspace.base_currency,
+                  ),
+                  weight: formatPercent(sumComplete(optionRows, (row) => row.allocation)),
+                }}
+                onSelectHolding={onSelectHolding}
+              />
+            )
+          }}
+        </ConfigurableHoldingsSection>
+      ) : null}
+
+      {cashRows.length ? (
+        <ConfigurableHoldingsSection
+          portfolioId={workspace.portfolio_id}
+          viewScope="holdings_cash"
+          sectionKey="cash"
+          id="holdings-cash-heading"
+          title="Cash & Settlement"
+          count={cashRows.length}
+          columns={cashColumns}
+          requiredColumnKey="description"
+          systemViews={CASH_SYSTEM_VIEWS}
+          onVisibleColumnsChange={onVisibleColumnsChange}
+        >
+          {(visibleColumnKeys) => {
+            const visibleColumns = cashColumns.filter((column) =>
+              visibleColumnKeys.includes(column.key),
+            )
+            return (
+              <FixedHoldingsTable
+                ariaLabel="Cash and settlement holdings"
+                columns={visibleColumns}
+                rows={cashRows}
+                subtotalLabel={`Cash & Settlement Subtotal (${workspace.base_currency})`}
+                subtotalValues={{
+                  base_value: formatCurrency(
+                    sumComplete(cashRows, (row) => signedNavAmountBase(row, workspace)),
+                    workspace.base_currency,
+                  ),
+                  weight: formatPercent(sumComplete(cashRows, (row) => row.allocation)),
+                  day_change_base: formatCurrency(
+                    sumComplete(cashRows, (row) =>
+                      baseAmountForRow(
+                        row,
+                        workspace.base_currency,
+                        row.day_change_value_base,
+                        row.day_change_value,
+                      ),
+                    ),
+                    workspace.base_currency,
+                  ),
+                }}
+              />
+            )
+          }}
+        </ConfigurableHoldingsSection>
+      ) : null}
 
       <ConfigurableHoldingsSection
         portfolioId={workspace.portfolio_id}
