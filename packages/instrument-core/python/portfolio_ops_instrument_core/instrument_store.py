@@ -4513,9 +4513,7 @@ def publish_fund_nav_history(
                     )
             else:
                 if (
-                    run_model.projection_kind
-                    not in {"event_derived", "hybrid_reanchored"}
-                    or factor.as_of_date > point_date
+                    factor.as_of_date > point_date
                     or factor.method_version != nav_lineage.method_version
                     or factor.anchor_date != nav_lineage.anchor_date
                 ):

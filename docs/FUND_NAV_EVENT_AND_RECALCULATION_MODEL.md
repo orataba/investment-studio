@@ -48,8 +48,10 @@ pointer selects the published run.
 
 Projection kinds are:
 
-- `provider_explicit`: totals and factor levels are implied directly by
-  provider unit/total pairs.
+- `provider_explicit`: factor levels are implied directly by provider
+  unit/total pairs. A factor may carry forward across later unit-NAV dates
+  only while no current fund action intervenes; those later totals retain
+  derived lineage back to the provider factor.
 - `event_derived`: one verified anchor followed by ordered action factors.
 - `hybrid_reanchored`: an event-derived segment can be restarted by a later
   provider-explicit total, then continue through later verified actions.

@@ -757,6 +757,91 @@ def test_provider_total_return_requires_same_date_factor_and_exact_formula(
         )
 
 
+def test_provider_factor_can_extend_to_later_unit_nav_until_the_next_action(
+    nav_store: sessionmaker[Session],
+) -> None:
+    factor = {
+        "factor_logical_key": "provider:2026-06-30",
+        "as_of_date": "2026-06-30",
+        "factor_level": "1.25",
+        "factor_kind": "provider_implied",
+        "evidence_kind": "provider_total_return",
+        "method_version": METHOD,
+        "anchor_date": "2026-06-30",
+        "source_provider": "fund-manager-sheet",
+        "evidence": {"fields": ["unit_nav", "adjusted_nav"]},
+    }
+    provider_row = {
+        **_official_row(as_of_date="2026-06-30", value="1.20"),
+        "nav_with_dividend": "1.50",
+        "nav_with_dividend_status": "complete",
+        "nav_with_dividend_source_provider": "fund-manager-sheet",
+        "nav_with_dividend_lineage": {
+            "kind": "provider_explicit",
+            "evidence": {"factor_logical_key": "provider:2026-06-30"},
+        },
+    }
+    carried_row = _derived_row(
+        factor_logical_key="provider:2026-06-30",
+        official_nav="1.24",
+        total_return_nav="1.55",
+        as_of_date="2026-07-01",
+        anchor_date="2026-06-30",
+    )
+
+    published = _publish(
+        nav_store,
+        rows=[provider_row, carried_row],
+        run=_projection_run(
+            "8" * 64,
+            status="complete",
+            kind="provider_explicit",
+            anchor_date="2026-06-30",
+        ),
+        event_ids=[],
+        evidence_ids=[],
+        factors=[factor],
+    )
+
+    total_rows = [
+        row
+        for row in published["record"]["market_data"]
+        if row["quote_basis"] == "total_return_nav"
+    ]
+    assert [row["value"] for row in total_rows] == ["1.50", "1.55"]
+    assert total_rows[-1]["nav_lineage"]["kind"] == (
+        "derived_dividend_reinvestment"
+    )
+    assert total_rows[-1]["nav_lineage"]["evidence"]["factor_level"] == (
+        "1.25"
+    )
+
+    uncovered_event = _event_revision(
+        "event-after-provider-anchor",
+        action_id="action-after-provider-anchor",
+        effective_date="2026-07-01",
+    )
+    with pytest.raises(
+        ValueError,
+        match="must cover every current action",
+    ):
+        _publish(
+            nav_store,
+            rows=[provider_row, carried_row],
+            run=_projection_run(
+                "9" * 64,
+                status="complete",
+                kind="provider_explicit",
+                anchor_date="2026-06-30",
+            ),
+            event_ids=["event-after-provider-anchor"],
+            evidence_ids=[],
+            event_revisions=[uncovered_event],
+            factors=[factor],
+            expected_watermark=published["market_data_updated_at"],
+        )
+
+
 def test_partial_projection_preserves_the_provable_segment_before_a_break(
     nav_store: sessionmaker[Session],
 ) -> None:
