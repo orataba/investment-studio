@@ -69,19 +69,19 @@ Securities group / subtotal 的当前权重 return 与 current-basket path 使�
 
 ### 2.6 按内容显示的五表 contract
 
-Holdings 使用同一份 `workspace.as_of_date`、canonical NAV 和 read-model rows，按业务语义定义五个独立表面。四个资产类别只在对应 read-model rows 非空时显示；空类别不挂载视图控件、不渲染空表。`Portfolio Total` 始终保留。全部资产类别都为空时，页面只显示统一的 Holdings 空状态和 `Portfolio Total`。拆表只改变展示结构，不创建子组合，也不改变任何权重、风险贡献或 Portfolio Total 的分母：
+Holdings 使用同一份 `workspace.as_of_date`、canonical NAV 和 read-model rows，按业务语义定义五个独立表面。`Portfolio Total` 固定放在页面最上方，作为全组合阅读锚点；四个资产类别随后按内容显示，只在对应 read-model rows 非空时挂载视图控件和表格。全部资产类别都为空时，页面在 `Portfolio Total` 后只显示一个统一 Holdings 空状态。拆表只改变展示结构，不创建子组合，也不改变任何权重、风险贡献或 Portfolio Total 的分母：
 
 四类展示资产的高层 signed NAV 构成统一放在 Overview 的 `Asset Mix`，并在那里附 `Portfolio Total` 汇总行；Holdings 不重复这张分类汇总表，而是保留以下五个可操作表面。
 
 | 表面 | 行范围 | 字段合同 |
 | --- | --- | --- |
+| `Portfolio Total` | 全部 workspace rows | 只有一条全组合 row。默认 `Summary` 只展示 NAV、未实现盈亏/收益和当日变动/收益；`Valuation` 提供 Open Position Basis 与 Unrealized Return Basis；`Return & Risk` 提供 current-basket return/risk、Forward Vol 与 risk coverage。全组合 `Portfolio Weight` 和 `Forward RC` 是恒等/近恒等值，不进入字段目录或导出。 |
 | `Securities` | `holding_category=securities` 的股票、基金、ETF 等 Registry instrument | 独立视图与字段；字段覆盖当前开放头寸、行情、成本、未实现盈亏、标的 return/risk 与 Forward RC。唯一可排序并可使用 `Group By` 的表。 |
 | `FCN` | `holding_category=derivatives` 且 `contract_type=fcn` | 独立视图与字段；显式展示账户、币种、名义本金、各 underlying 的 initial/strike/KI/KO/交割条款、coupon、issue/final-observation/maturity、issuer/counterparty、remaining basis、signed NAV amount、组合权重与估值状态。不得把这些正式字段压缩成名称下方的说明文字。 |
 | `Options` | `holding_category=derivatives` 且 `contract_type=option` | 独立视图与字段；显式展示 side/type/underlying、expiry、strike、open contracts、multiplier、underlying equivalent、basis type、remaining basis、signed NAV amount、strike notional、组合权重、lifecycle 与估值状态。 |
 | `Cash & Settlement` | `holding_category=cash_and_settlement` | 独立视图与字段；可展示现金/结算类型、币种、账户、availability、本币金额、base value、组合权重、FX/quote date、day FX change、settlement/pending dates、related instrument 与状态；字段目录不提供 Cost Basis、Avg Cost、Unrealized P&L 或 Unrealized Return。 |
-| `Portfolio Total` | 全部 workspace rows | 独立视图与字段且只有一条全组合 row；展示 canonical NAV、全组合权重、Open Position Basis、包含 signed monetary capital 的 Unrealized Return Basis、unrealized、day/current-basket return、current-basket risk、Forward RC/volatility 与 risk coverage，不再按资产类别细分。 |
 
-每个资产表的 subtotal 只用于阅读该资产表；`Portfolio Weight` 始终是 row signed base value / canonical total NAV，Forward RC 始终相对于同一个全组合 forward-risk variance。不得因视觉拆表把 Securities、FCN、Options 或 Cash 各自归一成 100%。
+每个资产表的 subtotal 只用于阅读该资产表；资产 row/subtotal 的 `Portfolio Weight` 始终是 signed base value / canonical total NAV，资产 Forward RC 始终相对于同一个全组合 forward-risk variance。不得因视觉拆表把 Securities、FCN、Options 或 Cash 各自归一成 100%。
 
 `holding_category` 是系统 read-model 字段，不是用户可选的 Group By 维度，也不写入交易事实。`Group By` 由底层限定为只在 Securities 表内部按 taxonomy、instrument type、currency 等字段建立二级分组；FCN、Options 与 Cash & Settlement 不参与该分组。Taxonomy / Taxonomy Leaf 读取当前默认 planning taxonomy 与当前 active instrument assignment，不跟随 Holdings `as_of_date` 回放；无 assignment 为 `Unassigned`。covered call 等策略继续由独立股票行和 short Call 行表达，不额外制造策略持仓类型。
 

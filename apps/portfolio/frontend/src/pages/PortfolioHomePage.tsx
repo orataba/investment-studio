@@ -15,6 +15,7 @@ import CalculationStatus from '../components/CalculationStatus'
 import HoldingsSectionTables, {
   DEFAULT_HOLDINGS_SECTION_VISIBLE_COLUMNS,
   HOLDINGS_SECTION_COLUMN_KEYS,
+  HoldingsPortfolioTotalSection,
   type HoldingsPortfolioTotalColumn,
   type HoldingsSectionKey,
   type HoldingsSectionVisibleColumns,
@@ -2757,13 +2758,6 @@ export default function PortfolioHomePage() {
         aggregationKind: 'sum',
       },
       {
-        key: 'weight',
-        label: 'Portfolio Weight',
-        className: 'numeric-cell',
-        content: formatPercent(totalAllocation(rows, workspace)),
-        aggregationKind: 'sum',
-      },
-      {
         key: 'cost_basis_base',
         label: `Open Position Basis @ As-of FX (${workspace.base_currency})`,
         className: 'numeric-cell',
@@ -2882,15 +2876,6 @@ export default function PortfolioHomePage() {
         className: `numeric-cell ${signedValueClass(groupedMaxDrawdown(rows, workspace))}`.trim(),
         content: signedPercent(groupedMaxDrawdown(rows, workspace)),
         aggregationKind: 'current_basket_path',
-      },
-      {
-        key: 'forward_risk_share',
-        label: 'Forward RC',
-        className: `numeric-cell ${signedValueClass(totalForwardRiskShare(rows, workspace))}`.trim(),
-        content: forwardRiskAvailable
-          ? signedPercent(totalForwardRiskShare(rows, workspace))
-          : 'N/A',
-        aggregationKind: 'portfolio_risk_contribution',
       },
       {
         key: 'forward_volatility',
@@ -3416,7 +3401,6 @@ export default function PortfolioHomePage() {
       [
         'Portfolio',
         `NAV (${workspace.base_currency})`,
-        'Portfolio Weight',
         `Open Position Basis @ As-of FX (${workspace.base_currency})`,
         `Unrealized Return Basis (${workspace.base_currency})`,
         `Unrealized P&L @ As-of FX (${workspace.base_currency})`,
@@ -3432,14 +3416,12 @@ export default function PortfolioHomePage() {
         'Current Basket 1Y Vol',
         'Current Basket DD',
         'Current Basket Max DD',
-        'Forward RC',
         'Forward Vol',
         'Risk Coverage',
       ],
       [[
         workspace.portfolio_name,
         finiteNumber(workspace.totals.nav),
-        totalAllocation(allRows, workspace),
         openBasis,
         unrealizedReturnBasis,
         eventValuationPresent ? 'N/A' : unrealized,
@@ -3457,7 +3439,6 @@ export default function PortfolioHomePage() {
         groupedAnnualizedVolatility(allRows, workspace, '1y'),
         groupedCurrentDrawdown(allRows, workspace),
         groupedMaxDrawdown(allRows, workspace),
-        workspace.forward_risk?.status === 'ok' ? totalForwardRiskShare(allRows, workspace) : 'N/A',
         workspace.forward_risk?.status === 'ok' ? workspace.forward_risk.portfolio_volatility : 'N/A',
         workspace.forward_risk?.coverage_ratio,
       ]],
@@ -3862,6 +3843,11 @@ export default function PortfolioHomePage() {
         ) : null}
         {!loading && !error && workspace && columnContext ? (
           <>
+            <HoldingsPortfolioTotalSection
+              workspace={workspace}
+              columns={portfolioTotalColumns}
+              onVisibleColumnsChange={handleHoldingsSectionVisibleColumnsChange}
+            />
             {!workspace.rows.length ? (
               <div className="empty-state" role="status">
                 No holdings as of {workspace.as_of_date}.
@@ -4009,7 +3995,6 @@ export default function PortfolioHomePage() {
               workspace={workspace}
               derivativeRows={derivativeRows}
               cashRows={cashRows}
-              portfolioTotalColumns={portfolioTotalColumns}
               onSelectHolding={(row) => handleSelectInstrument(holdingReferenceId(row))}
               onVisibleColumnsChange={handleHoldingsSectionVisibleColumnsChange}
             />

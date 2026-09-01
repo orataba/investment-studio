@@ -31,8 +31,13 @@ type HoldingsSectionTablesProps = {
   workspace: HoldingsWorkspaceResponse
   derivativeRows: PortfolioHoldingRow[]
   cashRows: PortfolioHoldingRow[]
-  portfolioTotalColumns: HoldingsPortfolioTotalColumn[]
   onSelectHolding: (row: PortfolioHoldingRow) => void
+  onVisibleColumnsChange?: (sectionKey: string, columns: string[]) => void
+}
+
+type HoldingsPortfolioTotalSectionProps = {
+  workspace: HoldingsWorkspaceResponse
+  columns: HoldingsPortfolioTotalColumn[]
   onVisibleColumnsChange?: (sectionKey: string, columns: string[]) => void
 }
 
@@ -107,7 +112,6 @@ export const HOLDINGS_SECTION_COLUMN_KEYS: HoldingsSectionVisibleColumns = {
   total: [
     'portfolio',
     'market_value_base',
-    'weight',
     'cost_basis_base',
     'unrealized_return_basis',
     'unrealized_value',
@@ -123,7 +127,6 @@ export const HOLDINGS_SECTION_COLUMN_KEYS: HoldingsSectionVisibleColumns = {
     'instrument_volatility_1y',
     'instrument_current_drawdown',
     'instrument_max_drawdown',
-    'forward_risk_share',
     'forward_volatility',
     'risk_coverage',
   ],
@@ -183,20 +186,10 @@ export const DEFAULT_HOLDINGS_SECTION_VISIBLE_COLUMNS: HoldingsSectionVisibleCol
   total: [
     'portfolio',
     'market_value_base',
-    'weight',
-    'cost_basis_base',
-    'unrealized_return_basis',
     'unrealized_value',
     'unrealized_pct',
     'day_change_value',
     'day_change_pct',
-    'instrument_return_1w',
-    'instrument_return_1m',
-    'instrument_return_mtd',
-    'instrument_return_ytd',
-    'forward_risk_share',
-    'forward_volatility',
-    'risk_coverage',
   ],
 }
 
@@ -317,12 +310,23 @@ const CASH_SYSTEM_VIEWS: HoldingsSectionSystemView[] = [
 const TOTAL_SYSTEM_VIEWS: HoldingsSectionSystemView[] = [
   { id: 'summary', name: 'Summary', columns: DEFAULT_HOLDINGS_SECTION_VISIBLE_COLUMNS.total },
   {
+    id: 'valuation',
+    name: 'Valuation',
+    columns: [
+      'portfolio',
+      'market_value_base',
+      'cost_basis_base',
+      'unrealized_return_basis',
+      'unrealized_value',
+      'unrealized_pct',
+    ],
+  },
+  {
     id: 'return-risk',
     name: 'Return & Risk',
     columns: [
       'portfolio',
       'market_value_base',
-      'weight',
       'instrument_return_1w',
       'instrument_return_1m',
       'instrument_return_mtd',
@@ -332,7 +336,6 @@ const TOTAL_SYSTEM_VIEWS: HoldingsSectionSystemView[] = [
       'instrument_volatility_1y',
       'instrument_current_drawdown',
       'instrument_max_drawdown',
-      'forward_risk_share',
       'forward_volatility',
       'risk_coverage',
     ],
@@ -556,11 +559,66 @@ function FixedHoldingsTable({
   )
 }
 
+export function HoldingsPortfolioTotalSection({
+  workspace,
+  columns,
+  onVisibleColumnsChange,
+}: HoldingsPortfolioTotalSectionProps) {
+  return (
+    <ConfigurableHoldingsSection
+      portfolioId={workspace.portfolio_id}
+      viewScope="holdings_total"
+      sectionKey="total"
+      id="holdings-total-heading"
+      title="Portfolio Total"
+      className="holdings-portfolio-total-section"
+      columns={columns}
+      requiredColumnKey="portfolio"
+      systemViews={TOTAL_SYSTEM_VIEWS}
+      onVisibleColumnsChange={onVisibleColumnsChange}
+    >
+      {(visibleColumnKeys) => {
+        const visibleColumns = columns.filter((column) => visibleColumnKeys.includes(column.key))
+        return (
+          <div className="table-shell holdings-section-table-shell">
+            <table
+              className="holdings-table holdings-section-table holdings-portfolio-total-table"
+              aria-label="Portfolio total holdings"
+            >
+              <thead>
+                <tr>
+                  {visibleColumns.map((column) => (
+                    <th
+                      key={column.key}
+                      scope="col"
+                      data-column-key={column.key}
+                      className={column.className}
+                      title={column.title}
+                    >
+                      {column.label}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                <HoldingsTotalRow
+                  className="total-row holdings-total-row"
+                  label={`Portfolio Total (${workspace.base_currency})`}
+                  cells={visibleColumns}
+                />
+              </tbody>
+            </table>
+          </div>
+        )
+      }}
+    </ConfigurableHoldingsSection>
+  )
+}
+
 export default function HoldingsSectionTables({
   workspace,
   derivativeRows,
   cashRows,
-  portfolioTotalColumns,
   onSelectHolding,
   onVisibleColumnsChange,
 }: HoldingsSectionTablesProps) {
@@ -1093,52 +1151,6 @@ export default function HoldingsSectionTables({
         </ConfigurableHoldingsSection>
       ) : null}
 
-      <ConfigurableHoldingsSection
-        portfolioId={workspace.portfolio_id}
-        viewScope="holdings_total"
-        sectionKey="total"
-        id="holdings-total-heading"
-        title="Portfolio Total"
-        className="holdings-portfolio-total-section"
-        columns={portfolioTotalColumns}
-        requiredColumnKey="portfolio"
-        systemViews={TOTAL_SYSTEM_VIEWS}
-        onVisibleColumnsChange={onVisibleColumnsChange}
-      >
-        {(visibleColumnKeys) => {
-          const visibleColumns = portfolioTotalColumns.filter((column) =>
-            visibleColumnKeys.includes(column.key),
-          )
-          return (
-            <div className="table-shell holdings-section-table-shell">
-              <table className="holdings-table holdings-section-table holdings-portfolio-total-table" aria-label="Portfolio total holdings">
-                <thead>
-                  <tr>
-                    {visibleColumns.map((column) => (
-                      <th
-                        key={column.key}
-                        scope="col"
-                        data-column-key={column.key}
-                        className={column.className}
-                        title={column.title}
-                      >
-                        {column.label}
-                      </th>
-                    ))}
-                  </tr>
-                </thead>
-                <tbody>
-                  <HoldingsTotalRow
-                    className="total-row holdings-total-row"
-                    label={`Portfolio Total (${workspace.base_currency})`}
-                    cells={visibleColumns}
-                  />
-                </tbody>
-              </table>
-            </div>
-          )
-        }}
-      </ConfigurableHoldingsSection>
     </>
   )
 }

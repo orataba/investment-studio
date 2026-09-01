@@ -71,6 +71,12 @@ async function waitForHoldings() {
   return screen.findByRole('table', { name: 'Portfolio total holdings' })
 }
 
+async function selectPortfolioTotalView(viewName: 'Summary' | 'Valuation' | 'Return & Risk') {
+  const user = userEvent.setup()
+  await user.click(await screen.findByRole('button', { name: /Portfolio Total View\s*:/ }))
+  await user.click(screen.getByRole('option', { name: viewName }))
+}
+
 function deferred<T>() {
   let resolve!: (value: T) => void
   const promise = new Promise<T>((resolvePromise) => {
@@ -254,6 +260,51 @@ describe('Holdings rendered page contract', () => {
     expect(screen.queryByText(/One full-portfolio row/)).not.toBeInTheDocument()
     expect(screen.getByText('Securities Subtotal (USD)')).toBeInTheDocument()
     expect(screen.getByText('Portfolio Total (USD)')).toBeInTheDocument()
+  })
+
+  it('puts a compact Portfolio Total first and keeps audit and risk fields in focused views', async () => {
+    renderHoldings()
+    await waitForHoldings()
+
+    const portfolioTotalRegion = screen.getByRole('region', { name: 'Portfolio Total' })
+    const securitiesRegion = screen.getByRole('region', { name: 'Securities' })
+    expect(
+      Boolean(
+        portfolioTotalRegion.compareDocumentPosition(securitiesRegion) &
+          Node.DOCUMENT_POSITION_FOLLOWING,
+      ),
+    ).toBe(true)
+
+    const portfolioTotalTable = screen.getByRole('table', { name: 'Portfolio total holdings' })
+    expect(
+      within(portfolioTotalTable)
+        .getAllByRole('columnheader')
+        .map((header) => header.textContent),
+    ).toEqual([
+      'Portfolio',
+      'NAV (USD)',
+      'Unrealized P&L @ As-of FX (USD)',
+      'Unrealized Return on Current Capital',
+      'Day Change (USD)',
+      'Day Return',
+    ])
+
+    const user = userEvent.setup()
+    await user.click(screen.getByRole('button', { name: 'Portfolio Total Fields' }))
+    const fieldsDialog = screen.getByRole('dialog', { name: 'Choose Portfolio Total columns' })
+    expect(within(fieldsDialog).queryByText('Portfolio Weight')).not.toBeInTheDocument()
+    expect(within(fieldsDialog).queryByText('Forward RC')).not.toBeInTheDocument()
+    await user.click(within(fieldsDialog).getByRole('button', { name: 'Close' }))
+
+    await selectPortfolioTotalView('Valuation')
+    expect(within(portfolioTotalTable).getByRole('columnheader', { name: /Open Position Basis/ })).toBeInTheDocument()
+    expect(within(portfolioTotalTable).getByRole('columnheader', { name: /Unrealized Return Basis/ })).toBeInTheDocument()
+
+    await selectPortfolioTotalView('Return & Risk')
+    expect(within(portfolioTotalTable).getByRole('columnheader', { name: 'Current Basket 1M' })).toBeInTheDocument()
+    expect(within(portfolioTotalTable).getByRole('columnheader', { name: 'Forward Vol' })).toBeInTheDocument()
+    expect(within(portfolioTotalTable).getByRole('columnheader', { name: 'Risk Coverage' })).toBeInTheDocument()
+    expect(within(portfolioTotalTable).queryByRole('columnheader', { name: 'Forward RC' })).not.toBeInTheDocument()
   })
 
   it('omits Operational Status and categories without holdings', async () => {
@@ -738,13 +789,13 @@ describe('Holdings rendered page contract', () => {
     )
     await waitForHoldings()
 
+    await selectPortfolioTotalView('Valuation')
     const totalRow = screen.getByText('Portfolio Total (USD)').closest('tr')!
-    expect(totalRow.querySelector('[data-column-key="weight"]')).toHaveTextContent('100.00%')
-    expect(totalRow.querySelector('[data-column-key="instrument_return_1m"]')).toHaveTextContent('+8.00%')
     expect(totalRow.querySelector('[data-column-key="cost_basis_base"]')).toHaveTextContent('$700.00')
     expect(totalRow.querySelector('[data-column-key="unrealized_return_basis"]')).toHaveTextContent('$900.00')
     expect(totalRow.querySelector('[data-column-key="unrealized_pct"]')).toHaveTextContent('+11.11%')
-    expect(totalRow.querySelector('[data-column-key="forward_risk_share"]')).toHaveTextContent('+100.00%')
+    await selectPortfolioTotalView('Return & Risk')
+    expect(totalRow.querySelector('[data-column-key="instrument_return_1m"]')).toHaveTextContent('+8.00%')
     expect(screen.getByText('Securities Subtotal (USD)').closest('tr')).toHaveTextContent('80.00%')
   })
 
@@ -771,6 +822,7 @@ describe('Holdings rendered page contract', () => {
     )
     await waitForHoldings()
 
+    await selectPortfolioTotalView('Return & Risk')
     const totalRow = screen.getByText('Portfolio Total (USD)').closest('tr')!
     expect(totalRow.querySelector('[data-column-key="instrument_return_1m"]')).toHaveTextContent('—')
   })
@@ -804,6 +856,7 @@ describe('Holdings rendered page contract', () => {
       }),
     )
     await waitForHoldings()
+    await selectPortfolioTotalView('Return & Risk')
     const totalRow = screen.getByText('Portfolio Total (USD)').closest('tr')!
     expect(totalRow.querySelector('[data-column-key="instrument_return_1m"]')).toHaveTextContent('+8.00%')
   })
@@ -833,6 +886,7 @@ describe('Holdings rendered page contract', () => {
     )
     await waitForHoldings()
 
+    await selectPortfolioTotalView('Return & Risk')
     const securityRow = within(screen.getByRole('table', { name: 'Security holdings' })).getByRole('cell', { name: 'Alpha Fund' }).closest('tr')!
     expect(securityRow).toHaveTextContent('+10.00%')
     const totalRow = screen.getByText('Portfolio Total (USD)').closest('tr')!
@@ -868,6 +922,7 @@ describe('Holdings rendered page contract', () => {
     const totalRow = screen.getByText('Portfolio Total (USD)').closest('tr')!
     expect(totalRow.querySelector('[data-column-key="unrealized_value"]')).toHaveTextContent('N/A')
     expect(totalRow.querySelector('[data-column-key="unrealized_pct"]')).toHaveTextContent('N/A')
+    await selectPortfolioTotalView('Return & Risk')
     expect(totalRow.querySelector('[data-column-key="instrument_return_1m"]')).toHaveTextContent('N/A')
   })
 
@@ -911,6 +966,7 @@ describe('Holdings rendered page contract', () => {
     )
     await waitForHoldings()
 
+    await selectPortfolioTotalView('Return & Risk')
     expect(screen.getByRole('cell', { name: 'Missing Return Fund' })).toBeInTheDocument()
     const securitySubtotal = screen.getByText('Securities Subtotal (USD)').closest('tr')!
     const portfolioTotal = screen.getByText('Portfolio Total (USD)').closest('tr')!

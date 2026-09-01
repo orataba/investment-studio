@@ -489,15 +489,15 @@ Holdings 的 monetary 部分按结算现金账户子账拆分：
 - non-base cash 的 instrument return / day return 来自该现金币种兑 base currency 的 FX series；
 - pending monetary balance 不属于 settled cash、没有行级 instrument total-return series、不得进入资产协方差矩阵；其 FX 重估仍按 `PendingSettlementCurrencyGain` 单独入账。在 Portfolio Total 的当前篮子 return/risk overlay 中，base-currency pending 作为 0-return capital 保留，non-base pending 必须有兑 base currency 的 FX return，否则相关聚合不可用。
 
-Holdings 使用同一份 as-of workspace 和 canonical NAV，按语义定义五个表面。Securities、FCN、Options、Cash & Settlement 只在对应 rows 非空时显示，不渲染空分类表；Portfolio Total 始终显示。全部资产类别为空时使用一个统一 Holdings 空状态：
+Holdings 使用同一份 as-of workspace 和 canonical NAV，按语义定义五个表面。Portfolio Total 固定放在页面最上方；Securities、FCN、Options、Cash & Settlement 随后只在对应 rows 非空时显示。全部资产类别为空时，在 Portfolio Total 后使用一个统一 Holdings 空状态：
 
 | 表面 | 行类型 | 主要字段 |
 | --- | --- | --- |
+| `Portfolio Total` | 全部 workspace rows | 一条全组合状态；默认 Summary 只含 NAV、unrealized 和 day change/return，Valuation 独立展示 open/unrealized-return basis，Return & Risk 展示 current-basket return/risk、Forward Vol 与 coverage。全组合 Portfolio Weight 和 Forward RC 因无增量信息而不发布为字段。 |
 | `Securities` | 股票、基金、ETF 等 Registry 普通资产 | quantity、quote、position value、remaining cost、unrealized、instrument return/risk、Forward RC；可独立切换视图与字段，也是唯一允许 sort / Group By 的表 |
 | `FCN` | FCN contract rows | 独立视图与字段；显式展示 contract/account/underlying terms、notional、coupon、maturity/events、remaining basis、signed NAV amount、portfolio weight、lifecycle/valuation status |
 | `Options` | long/short Call、long/short Put | 独立视图与字段；显式展示 side/type/underlying、expiry、strike、contracts/multiplier、remaining basis、signed NAV amount、strike notional、portfolio weight、lifecycle/valuation status |
 | `Cash & Settlement` | settled cash 与 pending monetary rows | 独立视图与字段；可展示 currency/account/availability、local/base amount、portfolio weight、FX day change、settlement/pending dates 与 status；不提供 cost/unrealized 字段 |
-| `Portfolio Total` | 全部 workspace rows | 独立视图与字段且只有一条全组合状态，不按类别细分；NAV、weight、open basis、unrealized、day/current-basket return/risk、Forward RC/volatility/coverage 均使用全组合合同 |
 
 Short-option row 的 `required_underlying_quantity = open_contract_quantity × contract_multiplier`，仅用于显示合约规模；`strike_notional = strike × required_underlying_quantity`，不代表预设交割义务，也不与股票持仓建立 covered / uncovered 关系。Operational summary 聚合 open contract count、`expired_or_due / next_7_days / next_30_days / next_90_days / later / unknown` 到期桶、option-obligation strike notional，以及 pending settlement 的 receivable、payable、net、最早结算日、逾期数和无法换算 base currency 的行数。Alerts 覆盖到期已到/七日内、逾期结算和 settlement FX unavailable，并返回真实 `related_line_ids`。这些 API 字段保留给生命周期和结算逻辑，Holdings 不单独渲染 `Operational Status` 面板。
 
