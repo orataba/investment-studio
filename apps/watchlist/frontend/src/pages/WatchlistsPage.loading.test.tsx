@@ -254,7 +254,7 @@ describe('WatchlistsPage loading', () => {
 
     await waitFor(() => expect(screen.getByText('Public Fund')).toBeTruthy())
     expect(screen.getByText('Equity')).toBeTruthy()
-    fireEvent.click(screen.getByRole('button', { name: /Group Within Type/ }))
+    fireEvent.click(screen.getByRole('button', { name: /Group By/ }))
     expect(screen.getByRole('button', { name: 'None' })).toBeTruthy()
     expect(screen.getByRole('button', { name: 'Taxonomy' })).toBeTruthy()
     expect(screen.getByRole('button', { name: 'Currency' })).toBeTruthy()

@@ -487,13 +487,12 @@ Holdings 的 monetary 部分按结算现金账户子账拆分：
 - `cost_basis`、`cost_basis_base`、`Avg Cost` 与 unrealized P&L 对所有 monetary rows 都不适用；
 - base-currency cash 的 instrument return、day return 和 volatility 为 `0`；
 - non-base cash 的 instrument return / day return 来自该现金币种兑 base currency 的 FX series；
-- pending monetary balance 不属于 settled cash、没有行级 instrument total-return series、不得进入资产协方差矩阵；其 FX 重估仍按 `PendingSettlementCurrencyGain` 单独入账。在 Portfolio Total 的当前篮子 return/risk overlay 中，base-currency pending 作为 0-return capital 保留，non-base pending 必须有兑 base currency 的 FX return，否则相关聚合不可用。
+- pending monetary balance 不属于 settled cash、没有行级 instrument total-return series、不得进入资产协方差矩阵；其 FX 重估仍按 `PendingSettlementCurrencyGain` 单独入账。
 
-Holdings 使用同一份 as-of workspace 和 canonical NAV，按语义定义五个表面。Portfolio Total 固定放在页面最上方；Securities、FCN、Options、Cash & Settlement 随后只在对应 rows 非空时显示。全部资产类别为空时，在 Portfolio Total 后使用一个统一 Holdings 空状态：
+Holdings 使用同一份 as-of workspace 和 canonical NAV，按语义定义四个表面。Securities、FCN、Options、Cash & Settlement 只在对应 rows 非空时显示；全部为空时只使用一个统一 Holdings 空状态。组合 headline 已提供 NAV 等总览，分类构成和 `Portfolio Total` 统一由 Overview `Asset Mix` 展示，Holdings 不重复第二套总计。每张表使用一致的 `View`、`Columns` 控件，Securities 另有 `Group By`；instrument 数量紧邻表标题。
 
 | 表面 | 行类型 | 主要字段 |
 | --- | --- | --- |
-| `Portfolio Total` | 全部 workspace rows | 一条全组合状态；默认 Summary 只含 NAV、unrealized 和 day change/return，Valuation 独立展示 open/unrealized-return basis，Return & Risk 展示 current-basket return/risk、Forward Vol 与 coverage。全组合 Portfolio Weight 和 Forward RC 因无增量信息而不发布为字段。 |
 | `Securities` | 股票、基金、ETF 等 Registry 普通资产 | quantity、quote、position value、remaining cost、unrealized、instrument return/risk、Forward RC；可独立切换视图与字段，也是唯一允许 sort / Group By 的表 |
 | `FCN` | FCN contract rows | 独立视图与字段；显式展示 contract/account/underlying terms、notional、coupon、maturity/events、remaining basis、signed NAV amount、portfolio weight、lifecycle/valuation status |
 | `Options` | long/short Call、long/short Put | 独立视图与字段；显式展示 side/type/underlying、expiry、strike、contracts/multiplier、remaining basis、signed NAV amount、strike notional、portfolio weight、lifecycle/valuation status |
@@ -503,13 +502,13 @@ Short-option row 的 `required_underlying_quantity = open_contract_quantity × c
 
 `holding_category` 不是用户可选的 Group By 字段。`Group By` 由底层限定为只在 Securities 内部生成二级分组；FCN、Options 与 Cash & Settlement 不参与 taxonomy 或属性分组。Securities 的 Taxonomy / Taxonomy Leaf 使用当前默认 planning taxonomy 与当前 active assignment；它是管理分类，不随 Holdings `as_of_date` 回放历史版本。风险 eligibility、Research 和 materialized calculation identity 仍按各自的 effective-dated analytics scope 合同处理，不能与这里的展示标签混为一体。
 
-Holdings CSV/XLSX 只为非空的 `Securities`、`FCN`、`Options`、`Cash & Settlement` 输出独立 block，并始终输出 `Portfolio Total`；不使用统一 `Category` schema。每个已输出 block 跟随自己当前视图的可见字段；Securities 额外跟随筛选、排序和可选 Group。市场收益、图表、未实现盈亏和回撤的不适用值写 `N/A`；衍生品的 Vol / Forward RC 同样写 `N/A`，只有明确 modeled-zero 的 monetary risk 写数值 0。不得用 carrying/liability amount 填充 fair-value 字段。
+Holdings CSV/XLSX 只为非空的 `Securities`、`FCN`、`Options`、`Cash & Settlement` 输出独立 block；不使用统一 `Category` schema，也不重复导出组合总计。每个已输出 block 跟随自己当前视图的可见字段；Securities 额外跟随筛选、排序和可选 Group。市场收益、图表、未实现盈亏和回撤的不适用值写 `N/A`；衍生品的 Vol / Forward RC 同样写 `N/A`，只有明确 modeled-zero 的 monetary risk 写数值 0。不得用 carrying/liability amount 填充 fair-value 字段。
 
 Analytics scope 是独立于 taxonomy node 名称的 effective-dated policy。每条 policy 明确 `risk_eligible`、`risk_budget_eligible`、`performance_scope`、`valuation_basis` 和 exclusion reason；`risk_budget_eligible=true` 必须同时满足 `risk_eligible=true`。`performance_scope` 只允许 `ordinary / derivative_lifecycle / operational_only / unallocated`。Instrument row、transaction cash activity 和 materialized calculation identity 都必须携带 as-of 解析出的 policy/configuration/selection version；衍生品相关 cash leg 继承 originating instrument 的 performance scope，不得自动落入 ordinary sleeve。
 
 当前实现只发布 scope disclosure 和 `cash_scope_breakdown`，不发布 ordinary-sleeve TWR。`cash_scope_breakdown` 按 `performance_scope + transaction currency` 分桶，金额是对应交易币种的 local cash activity；不同币种不得直接相加，也不得冒充 base-currency cash flow。`ordinary_sleeve_twr_status` 固定为 `unavailable`，原因是尚未维护可逐日对账的 sleeve cash subledger；不得从 total operational return 中删除 derivative rows 后伪造 ordinary TWR。Total operational/carrying-basis return、完整 fair-value performance 和 scoped risk 是三个不同对象。
 
-`market_value_base`（UI：`Position Value Base`）对 `valuation_basis=market_quote` 的正式资产表示 base-currency fair value，等于 `quantity * selected valuation quote` 再按 as-of date FX 转换；对 settled cash 与 pending monetary balance，它表示对应 monetary balance 的 base-currency value。对 `carried_cost` 和 `premium_liability` 行，该字段只是保持 NAV 加总合同的 signed operational amount，真实 basis 必须分别从 `carrying_value(_base)` 或 `liability_value(_base)` 读取，`fair_value` 必须为空。Holdings `Portfolio Total` 包含普通资产、event-valued carrying assets、written liabilities、settled cash 与 pending monetary balance，必须与同日 canonical NAV 对平。
+`market_value_base`（UI：`Position Value Base`）对 `valuation_basis=market_quote` 的正式资产表示 base-currency fair value，等于 `quantity * selected valuation quote` 再按 as-of date FX 转换；对 settled cash 与 pending monetary balance，它表示对应 monetary balance 的 base-currency value。对 `carried_cost` 和 `premium_liability` 行，该字段只是保持 NAV 加总合同的 signed operational amount，真实 basis 必须分别从 `carrying_value(_base)` 或 `liability_value(_base)` 读取，`fair_value` 必须为空。全部 workspace rows 的 signed amount 必须与同日 canonical NAV 对平；这个领域不变量不依赖 Holdings 是否展示总计行。
 
 Holdings 行级 `Weight = market_value_base / portfolio NAV`，所以 written liability 使用负权重。在估值与 FX 完整时，正式资产、event-valued assets、written liabilities、settled cash 与 pending monetary rows 的 signed weights 合计必须为 100%。pending monetary balance、event-valued asset 和 option obligation 都没有可用 instrument return series：Return、Chart、Unrealized P&L 和 Drawdown 必须为 `N/A`。衍生品的 Vol 与 Forward RC 也必须为 `N/A` 并标记为 excluded；base-currency cash / pending monetary row 才可以按明确 monetary 口径显示风险 0。
 
@@ -553,26 +552,24 @@ Holdings `Forward RC` 是当前正式风险持仓的组合级 forward risk contr
 Holdings group rows 不是后端 period-performance group：
 
 - market value、cost basis、day change、open lots 等绝对量按组内 rows 汇总；
-- 无非零 event exposure 时，unrealized P&L 按组内 market-valued positions 加总。Securities group/subtotal 的 unrealized return 使用组内 `unrealized P&L / remaining open-position cost`，不是成员百分比的加权平均；cash 不产生 unrealized P&L，也不是 Cost Basis。Portfolio Total 使用 `Unrealized Return Basis = Open Position Basis + signed Cash & Settlement base value`，再计算 `Unrealized P&L / Unrealized Return Basis`，使 settled/restricted cash、receivable、payable 与 pending monetary rows 按当前资产负债表稀释组合未实现收益率；
-- group 或 `Portfolio Total` 只要包含非零 event-valued asset / option obligation，Day Change、Day Return、Unrealized P&L、Unrealized Return 与当前权重 instrument return 均为 `N/A`。不得先剔除 event row 再汇总其余资产，也不得用 carrying amount 减 book basis 制造零未实现盈亏；
-- `1W / 1M / 3M / 6M / MTD / YTD / 1Y Return` 使用 as-of date signed base value 权重合成。Securities group/subtotal 使用该组当前 base value 作分母；`Portfolio Total` 使用完整 total NAV，包含 settled cash 和 pending monetary rows，不能只对证券重新归一。base-currency monetary row 在 total overlay 中是 0-return capital；non-base monetary row 使用兑 base currency 的 FX return。普通证券必须有 base-currency total-return overlay；只有本币 return 时跨币种聚合不可用。覆盖不足或存在 material event-carried derivative 时为空。它们是 theoretical current-basket diagnostics，不是历史实际组合 TWR，后者只属于 Overview / Performance；
-- group/subtotal volatility / risk drawdown 用普通证券共同 period return series 与该组当前 base value 权重计算；Portfolio Total 使用 total-NAV 当前权重，衍生品与 base-currency monetary rows 作为 0-return capital 保留在全组合分母。non-base monetary exposure 只有在确认的 FX return series 可用时才进入计算，否则整项 unavailable。衍生品行自身仍为 N/A，没有 modeled market asset 的 Portfolio Total 为 unavailable。两者都不等于成员数值的简单加权平均；
-- `Held Max DD` 不计算 group 或 `Portfolio Total`：成员持有起点不同，截断长度不同的持有期序列没有可稳定解释的共同分组起点；
-- base-currency cash 可作为 0-return 成员参与覆盖；non-base cash 使用其 FX return series；
-- pending monetary row 没有行级 instrument return series；base-currency pending 在 Portfolio Total 的 return/risk overlay 中按 0-return capital 保留，non-base pending 需要 FX return，否则相关聚合 unavailable；
+- 无非零 event exposure 时，unrealized P&L 按组内 market-valued positions 加总。Securities group/subtotal 的 unrealized return 使用组内 `unrealized P&L / remaining open-position cost`，不是成员百分比的加权平均；cash 不产生 unrealized P&L，也不是 Cost Basis；
+- Securities group 只要包含非零 event-valued asset，Day Change、Day Return、Unrealized P&L、Unrealized Return 与当前权重 instrument return 均为 `N/A`。不得先剔除 event row 再汇总其余资产，也不得用 carrying amount 减 book basis 制造零未实现盈亏；
+- `1W / 1M / 3M / 6M / MTD / YTD / 1Y Return` 使用 as-of date signed base value 权重合成，Securities group/subtotal 使用该组当前 base value 作分母。普通证券必须有 base-currency total-return overlay；只有本币 return 时跨币种聚合不可用。覆盖不足时为空。它们是 theoretical current-basket diagnostics，不是历史实际组合 TWR，后者只属于 Overview / Performance；
+- group/subtotal volatility / risk drawdown 用普通证券共同 period return series 与该组当前 base value 权重计算，不等于成员风险数值的简单加权平均；
+- `Held Max DD` 不计算 group 或 subtotal：成员持有起点不同，截断长度不同的持有期序列没有可稳定解释的共同分组起点；
 - group return / volatility / drawdown 只在每个有当前价值的非零收益成员都能解释为 portfolio base-currency return 时计算。本币 instrument return 不能因为成员恰好使用同一种外币就直接拼接；后端未提供逐期 base-currency overlay 时必须留空；
-- Securities、FCN、Options、Cash & Settlement 和 Portfolio Total 是五个语义表面，不是可选 Group By 结果；前四者无对应 rows 时不渲染，Portfolio Total 始终保留。资产表 subtotal 由当前行实时聚合，只用于阅读；它们不是源事实、不参与 sort、detail，也不得作为 Portfolio Total 的二次输入。用户分组只在 Securities 内部生成二级 subtotal。
+- Securities、FCN、Options、Cash & Settlement 是四个语义表面，不是可选 Group By 结果；无对应 rows 时不渲染。资产表 subtotal 由当前行实时聚合，只用于阅读，不是源事实，也不参与 sort 或 detail。用户分组只在 Securities 内部生成二级 subtotal。
 
-每个 Holdings 字段的 group / subtotal / total 处理必须属于以下明确类别；未列为可聚合的字段一律留空：
+每个 Holdings 字段的 group / subtotal 处理必须属于以下明确类别；未列为可聚合的字段一律留空：
 
 | 类别 | 字段 | 分组规则 |
 | --- | --- | --- |
 | 点位绝对量 | `Position Value (Base)`、`Cost Basis (Base)`、`Weight`、`Open Lots`、`Day Change`、`Unrealized P&L` | 对当前 rows 加总；跨币种金额先转 base currency；含非零 event exposure 时 Day Change 与 Unrealized P&L 为 N/A |
-| 重新计算的比例 | `Day Return`、`Unrealized Return` | Day Return 用组级 `Day Change / prior market value`；Securities unrealized 用 `Unrealized P&L / open cost`，Portfolio Total unrealized 用 `Unrealized P&L / (Open Position Basis + signed Cash & Settlement)`；禁止平均成员百分比，含非零 event exposure 时为 N/A |
-| 当前权重历史收益 | `1W / 1M / 3M / 6M / MTD / YTD / 1Y Return` | 用 as-of signed base value 权重合成；Portfolio Total 分母为完整 NAV，base cash/pending 是 0-return capital；普通证券与 non-base monetary row 必须有 base-currency return，覆盖不完整或含 material event derivative 时为空 |
+| 重新计算的比例 | `Day Return`、`Unrealized Return` | Day Return 用组级 `Day Change / prior market value`；Securities unrealized 用 `Unrealized P&L / open cost`；禁止平均成员百分比，含非零 event exposure 时为 N/A |
+| 当前权重历史收益 | `1W / 1M / 3M / 6M / MTD / YTD / 1Y Return` | 用 as-of signed base value 权重合成；普通证券必须有 base-currency return，覆盖不完整时为空 |
 | 当前篮子路径风险 | `1M / 3M / 6M / 1Y Vol`、`Current DD`、`Max DD` | 用共同 period 的成员 total-return series 与当前权重先生成组 return path，再计算风险；return currency 不一致时为空 |
 | 组合风险贡献 | `Forward RC` | workspace forward-risk status 完整时，对 eligible 成员相对于同一全组合 variance 的 risk share 加总；衍生品排除且为 N/A，modeled-zero monetary rows 贡献 0，纯 modeled-zero monetary group 为 0；其他成员缺失则为空 |
-| 仅 instrument row | Instrument / Ticker / Instrument Type / Taxonomy / Taxonomy Leaf / Currency、`Holding Since`、`Quantity`、`Cost Method`、`Avg Cost`、Quote 及其日期/口径/provider/status、`Accounts`、`Chart *`、`Coverage`、`Held Max DD` | 不生成 group、subtotal 或 portfolio total 值 |
+| 仅 instrument row | Instrument / Ticker / Instrument Type / Taxonomy / Taxonomy Leaf / Currency、`Holding Since`、`Quantity`、`Cost Method`、`Avg Cost`、Quote 及其日期/口径/provider/status、`Accounts`、`Chart *`、`Coverage`、`Held Max DD` | 不生成 group 或 subtotal 值 |
 
 `Holding Since` 是当前开放头寸最早的 holding start date，不是 workspace as-of date；不同 instrument 的份额单位、报价单位、平均成本和起始日期不可直接相加或平均。
 

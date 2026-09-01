@@ -131,7 +131,7 @@ describe('Performance rendered page contract', () => {
     expect(within(windowToolbar as HTMLElement).getByLabelText('Start Date')).toBeInTheDocument()
     const calculationToolbar = screen.getByText('Calculation').closest('.performance-calculation-toolbar')
     expect(calculationToolbar).not.toBeNull()
-    expect(within(calculationToolbar as HTMLElement).getByRole('button', { name: /Data & Columns/ })).toHaveClass(
+    expect(within(calculationToolbar as HTMLElement).getByRole('button', { name: /Columns/ })).toHaveClass(
       'portfolio-table-toolbar-button',
     )
     expect(calculationToolbar?.querySelector('.holdings-filter-actions')).toBeNull()

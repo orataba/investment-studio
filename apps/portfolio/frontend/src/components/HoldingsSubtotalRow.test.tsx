@@ -1,18 +1,18 @@
 import { render, screen, within } from '@testing-library/react'
 import { describe, expect, it } from 'vitest'
 
-import HoldingsTotalRow, {
+import HoldingsSubtotalRow, {
   CURRENT_HOLDINGS_RETURN_BASIS,
-} from './HoldingsTotalRow'
+} from './HoldingsSubtotalRow'
 
-describe('HoldingsTotalRow extraction contract', () => {
-  it('renders current-holdings basket returns in Portfolio Total with an explicit basis', () => {
+describe('HoldingsSubtotalRow contract', () => {
+  it('renders current-holdings basket returns with an explicit basis', () => {
     render(
       <table>
         <tbody>
-          <HoldingsTotalRow
-            className="holdings-total-row"
-            label="Portfolio Total (USD)"
+          <HoldingsSubtotalRow
+            className="holdings-subtotal-row"
+            label="Securities Subtotal (USD)"
             cells={[
               { key: 'instrument' },
               { key: 'market_value_base', content: '$1,000.00' },
@@ -27,7 +27,7 @@ describe('HoldingsTotalRow extraction contract', () => {
       </table>,
     )
 
-    const row = screen.getByText('Portfolio Total (USD)').closest('tr')
+    const row = screen.getByText('Securities Subtotal (USD)').closest('tr')
     expect(row).not.toBeNull()
     expect(within(row!).getByText('$1,000.00')).toBeInTheDocument()
     const expectedReturns = {

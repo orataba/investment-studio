@@ -2796,9 +2796,9 @@ input[type='checkbox'] {
   content: '';
   position: absolute;
   top: 50%;
-  right: 58px;
-  width: 8px;
-  height: 8px;
+  right: 46px;
+  width: 7px;
+  height: 7px;
   border-right: 1.5px solid var(--portfolio-ink);
   border-bottom: 1.5px solid var(--portfolio-ink);
   transform: translateY(-65%) rotate(45deg);
@@ -2822,9 +2822,10 @@ input[type='checkbox'] {
 .portfolio-table-view-select {
   display: inline-flex;
   align-items: center;
-  min-width: 210px;
-  max-width: 280px;
-  padding: 0 34px 0 10px;
+  width: 240px;
+  min-width: 240px;
+  max-width: 240px;
+  padding: 0 46px 0 10px;
   appearance: none;
   -webkit-appearance: none;
   -moz-appearance: none;
@@ -3309,10 +3310,6 @@ input[type='checkbox'] {
   color: var(--portfolio-muted);
 }
 
-.holdings-total-row td {
-  border-top: 1px solid var(--portfolio-line-strong);
-}
-
 .holdings-section {
   min-width: 0;
   margin-top: 24px;
@@ -3336,6 +3333,13 @@ input[type='checkbox'] {
   color: var(--portfolio-ink);
   font-size: 16px;
   font-weight: 500;
+}
+
+.holdings-section-title {
+  display: inline-flex;
+  min-width: 0;
+  align-items: center;
+  gap: 8px;
 }
 
 .holdings-section-heading-actions {
@@ -3379,8 +3383,7 @@ input[type='checkbox'] {
 }
 
 .holdings-section-data-row td:first-child,
-.holdings-section-subtotal-row td:first-child,
-.holdings-portfolio-total-table tbody td:first-child {
+.holdings-section-subtotal-row td:first-child {
   position: sticky;
   left: 0;
   z-index: 2;
@@ -3429,20 +3432,6 @@ input[type='checkbox'] {
   color: var(--portfolio-muted);
   font-size: 11px;
   line-height: 1.4;
-}
-
-.holdings-portfolio-total-table th,
-.holdings-portfolio-total-table td {
-  min-width: 118px;
-}
-
-.holdings-portfolio-total-table th:first-child,
-.holdings-portfolio-total-table td:first-child {
-  min-width: 210px;
-}
-
-.holdings-portfolio-total-section {
-  margin-bottom: 8px;
 }
 
 .holdings-main-table .holdings-row-active td:first-child {

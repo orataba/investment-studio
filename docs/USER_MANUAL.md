@@ -147,7 +147,7 @@ Watchlist 管理“哪些资产进入观察范围”和“如何展示这些资�
 - 分批显示：页面先显示前 `80` 行，可继续显示更多或全部；全选只选中当前已经显示的行。
 - 排序：点击列头或使用当前 view 的默认排序。
 - 筛选：按字段值缩小结果范围。
-- Data & Columns：选择展示字段和列顺序，`Name` 固定为第一列。
+- Columns：选择展示字段和列顺序，`Name` 固定为第一列。
 - Group By：只提供对当前名单全部资产都成立、且适合聚合的结构化维度；混合名单可按资产类型和通用工作流字段查看，基金专属或其他定性研究判断不会进入 Group By。
 - Download：导出当前筛选和排序后的全量结果，不只导出当前页。
 
@@ -298,13 +298,13 @@ Holdings 的指标分成两种主要口径：
 
 FCN 和 long option 在已记录事件之间按 transaction cost carrying；short option 以剩余 premium liability 进入 NAV。它们不接收实时行情，不计算日常未实现盈亏、协方差、Risk Budget 或 Research 序列；相关现金、费用、coupon 和已实现盈亏仍完整进入组合 NAV 与经营绩效。市场风险收益链会把衍生品现金结果、FCN coupon 和衍生品费用从风险收益分子中剔除，并把衍生品资本与本币现金一样保留在总 NAV 分母中，作为 0-return capital。
 
-页面使用五个直接表面：`Securities`、`FCN`、`Options`、`Cash & Settlement`，以及只有一条全组合记录的 `Portfolio Total`，不再额外套一层 Derivatives。每张表都可以独立切换视图和可见字段，按钮位于对应表标题右侧；`Group By` 只对 Securities 做当前 taxonomy、instrument type、currency 等二级分组，taxonomy 是当前管理分类，不随 Holdings 日期回放。衍生品条款在自己的字段中展开，现金字段目录不提供成本或未实现收益。五表共用同一 as-of workspace 和组合 NAV，拆开展示不会把各表权重重新归一。
+页面使用四个直接表面：`Securities`、`FCN`、`Options`、`Cash & Settlement`，不再额外套一层 Derivatives，也不重复展示组合总计。每类只有在存在对应持仓时才显示；全部为空时只显示一个空态。每张表都可以独立使用 `View` 和 `Columns`，instrument 数量紧邻标题；`Group By` 只对 Securities 做当前 taxonomy、instrument type、currency 等二级分组，taxonomy 是当前管理分类，不随 Holdings 日期回放。衍生品条款在自己的字段中展开，现金字段目录不提供成本或未实现收益。四表共用同一 as-of workspace 和组合 NAV，拆开展示不会把各表权重重新归一。
 
-CSV/Excel 同样按 `Securities`、`FCN`、`Options`、`Cash & Settlement`、`Portfolio Total` 输出独立表头；五张表都跟随各自当前视图的可见字段，Securities 额外跟随当前筛选、排序和可选 Group。这是当前持仓分析文件，不是交易导入文件。
+CSV/Excel 同样只为非空的 `Securities`、`FCN`、`Options`、`Cash & Settlement` 输出独立表头；各表跟随自己当前视图的可见字段，Securities 额外跟随当前筛选、排序和可选 Group。这是当前持仓分析文件，不是交易导入文件。
 
-Security Group/subtotal 和 `Portfolio Total` 仍然是**当前持仓篮子**：金额加总、比例用组级分子分母重算；Return 用当前 signed base value 合成；Vol / Drawdown 用内部连续、起止完全一致且尾部仍新鲜的共同历史区间先生成当前权重篮子路径再算。Security Group 与 subtotal 使用各自 base value 分母；`Portfolio Total` 使用完整 total NAV，settled cash 和 pending monetary rows 都保留，本币 monetary rows 的篮子收益为 0。非本币资产必须有可共同解释的 base-currency return/FX overlay，否则显示 `—`。衍生品未知经济收益不会被假设为 0；存在 material event-carried derivative 时 Portfolio Total 的 Day/Unrealized/Current Basket Return 为 `N/A`，但 forward risk 可以按披露的 0-return capital 建模约定计算普通证券市场风险。Forward RC 统一使用 total-NAV 权重，并加总相对于同一组合方差的贡献。当前成员覆盖不足、共同路径缺段或尾部陈旧时显示 `—`，不剔除缺失成员后重新归一。
+Security Group/subtotal 是**当前持仓篮子**：金额加总，比例用组级分子分母重算，Return 用当前 signed base value 合成，Vol / Drawdown 用内部连续、起止完全一致且尾部仍新鲜的共同历史区间先生成当前权重篮子路径再算。每个 group/subtotal 使用自身 base value 分母；非本币资产必须有可共同解释的 base-currency return/FX overlay，否则显示 `—`。Forward RC 仍使用全组合风险模型的共同分母。当前成员覆盖不足、共同路径缺段或尾部陈旧时显示 `—`，不剔除缺失成员后重新归一。
 
-`Portfolio Total` 的 `Current Basket` Return/Risk 是按 as-of 当日持仓与权重做的假设回看，不是组合实际 TWR，也不能和实际 TWR 串联。组合真实历史表现仍到 Performance 查看。`Open Position Basis @ As-of FX` 是本币 remaining open cost 按 as-of FX 的换算，不是 acquisition-date FX cost；Cash & Settlement 没有 Cost Basis。组合 `Unrealized Return on Current Capital` 使用 `Open Position Basis + signed Cash & Settlement` 作分母，所以现金和待结算金额会稀释组合未实现收益率，但不会被伪装成证券成本。相同 instrument、相同 as-of 和 total-return basis 下，Holdings 行级窗口收益应与 Watchlist 相同，但两个 app 各自计算、互不调用。完整字段标准见 [Holdings 字段计算与分组标准](../apps/portfolio/docs/03_HOLDINGS_FIELD_REFERENCE.md)。
+组合 NAV 等总览已经在页面顶部；四类 signed NAV 构成和 `Portfolio Total` 对账统一到 Overview 的 `Asset Mix` 查看。组合真实历史表现仍到 Performance 查看。相同 instrument、相同 as-of 和 total-return basis 下，Holdings 行级窗口收益应与 Watchlist 相同，但两个 app 各自计算、互不调用。完整字段标准见 [Holdings 字段计算与分组标准](../apps/portfolio/docs/03_HOLDINGS_FIELD_REFERENCE.md)。
 
 默认列表使用 compact payload；sparkline 是有界采样，打开 Security Detail 后再加载 lots、交易和完整图表。子资源尚未返回时显示 Loading/skeleton，不把 `$0.00` 当成真实数据；真正缺失或不适用的指标显示 `—`。
 

@@ -1139,9 +1139,9 @@ th {
   content: '';
   position: absolute;
   top: 50%;
-  right: 58px;
-  width: 8px;
-  height: 8px;
+  right: 46px;
+  width: 7px;
+  height: 7px;
   border-right: 1.5px solid var(--ink);
   border-bottom: 1.5px solid var(--ink);
   transform: translateY(-65%) rotate(45deg);
@@ -1172,9 +1172,12 @@ th {
 }
 
 .watchlists-inline-select-group {
+  width: 240px;
+  min-width: 240px;
+  max-width: 240px;
   border: none;
   border-radius: 0;
-  padding-right: 34px;
+  padding-right: 46px;
   outline: none;
 }
 

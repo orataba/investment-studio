@@ -2607,7 +2607,7 @@ export default function WatchlistsPage() {
                 setNotice(null)
               }}
             >
-              Data &amp; Columns
+              Columns
             </button>
 
             <div className="watchlists-dropdown" ref={groupMenuRef}>
@@ -2620,7 +2620,7 @@ export default function WatchlistsPage() {
                   setModalKind(null)
                 }}
               >
-                {usesFixedInstrumentTypeSections ? 'Group Within Type' : 'Group By'}{'\u00A0: '}
+                Group By{'\u00A0: '}
                 {workingGroupBy && workingGroupBy !== 'none'
                   ? fieldLabelByKey.get(workingGroupBy) || formatLabel(workingGroupBy)
                   : 'None'}
@@ -3253,8 +3253,8 @@ export default function WatchlistsPage() {
           >
             <div className="watchlists-modal-header">
               <div>
-                <div className="panel-title">Data &amp; Columns</div>
-                <div className="section-heading">Manage Data And Columns</div>
+                <div className="panel-title">Columns</div>
+                <div className="section-heading">Manage Columns</div>
               </div>
               <button type="button" onClick={closeActiveModal}>
                 Close
@@ -3264,7 +3264,7 @@ export default function WatchlistsPage() {
             <div className="watchlists-modal-search">
               <input
                 className="form-input"
-                placeholder="Search by field name or code"
+                placeholder="Search columns"
                 value={fieldSearch}
                 onChange={(event) => setFieldSearch(event.target.value)}
               />

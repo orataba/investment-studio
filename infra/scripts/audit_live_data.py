@@ -32,7 +32,7 @@ from portfolio_ops_instrument_core import (  # noqa: E402
 FINAL_FLAT_TABLE_HEADS = {
     "instrument_registry": "20260823_0028",
     "platform": "20260823_0007",
-    "portfolio": "20260824_0056",
+    "portfolio": "20260902_0057",
     "watchlist": "20260901_0052",
 }
 VERSION_TABLES = {

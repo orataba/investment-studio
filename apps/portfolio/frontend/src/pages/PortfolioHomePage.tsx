@@ -15,12 +15,10 @@ import CalculationStatus from '../components/CalculationStatus'
 import HoldingsSectionTables, {
   DEFAULT_HOLDINGS_SECTION_VISIBLE_COLUMNS,
   HOLDINGS_SECTION_COLUMN_KEYS,
-  HoldingsPortfolioTotalSection,
-  type HoldingsPortfolioTotalColumn,
   type HoldingsSectionKey,
   type HoldingsSectionVisibleColumns,
 } from '../components/HoldingsSectionTables'
-import HoldingsTotalRow from '../components/HoldingsTotalRow'
+import HoldingsSubtotalRow from '../components/HoldingsSubtotalRow'
 import PortfolioTableViewControls, { type PortfolioTableViewOption } from '../components/PortfolioTableViewControls'
 import PortfolioWorkspaceLayout from '../components/PortfolioWorkspaceLayout'
 import QualityWarningsNotice from '../components/QualityWarningsNotice'
@@ -939,17 +937,6 @@ function totalCostBasisBase(rows: PortfolioHoldingRow[], workspace: HoldingsWork
     baseAmountForRow(row, workspace.base_currency, row.cost_basis_base, row.cost_basis),
   )
   return rowsCoverWorkspace(rows, workspace) ? workspace.totals.cost_basis ?? rowTotal : rowTotal
-}
-
-function totalMonetaryCapitalBase(
-  rows: PortfolioHoldingRow[],
-  workspace: HoldingsWorkspaceResponse,
-) {
-  const monetaryRows = rows.filter(isMonetaryHoldingRow)
-  if (!monetaryRows.length) {
-    return 0
-  }
-  return sumCompleteNumbers(monetaryRows, (row) => rowMarketValueBase(row, workspace))
 }
 
 function totalAllocation(rows: PortfolioHoldingRow[], workspace: HoldingsWorkspaceResponse) {
@@ -1875,13 +1862,13 @@ function holdingColumnExportValue(
   }
 }
 
-function holdingColumnTotalExportValue(
+function holdingColumnSubtotalExportValue(
   column: HoldingsColumnKey,
   rows: PortfolioHoldingRow[],
   context: HoldingsColumnContext,
 ): string | number | null {
   if (column === 'instrument') {
-    return `Portfolio Total (${context.workspace.base_currency})`
+    return `Securities Subtotal (${context.workspace.base_currency})`
   }
   if (HOLDINGS_GROUP_AGGREGATION_KIND[column] === 'none') {
     return null
@@ -2525,7 +2512,6 @@ export default function PortfolioHomePage() {
       fcn: [...DEFAULT_HOLDINGS_SECTION_VISIBLE_COLUMNS.fcn],
       options: [...DEFAULT_HOLDINGS_SECTION_VISIBLE_COLUMNS.options],
       cash: [...DEFAULT_HOLDINGS_SECTION_VISIBLE_COLUMNS.cash],
-      total: [...DEFAULT_HOLDINGS_SECTION_VISIBLE_COLUMNS.total],
     }))
   const handleHoldingsSectionVisibleColumnsChange = useCallback(
     (sectionKey: string, columns: string[]) => {
@@ -2593,7 +2579,6 @@ export default function PortfolioHomePage() {
       fcn: [...DEFAULT_HOLDINGS_SECTION_VISIBLE_COLUMNS.fcn],
       options: [...DEFAULT_HOLDINGS_SECTION_VISIBLE_COLUMNS.options],
       cash: [...DEFAULT_HOLDINGS_SECTION_VISIBLE_COLUMNS.cash],
-      total: [...DEFAULT_HOLDINGS_SECTION_VISIBLE_COLUMNS.total],
     })
   }, [portfolioId])
 
@@ -2724,186 +2709,6 @@ export default function PortfolioHomePage() {
       workspace,
     )
   }, [holdingsGroupBy, sortedSecurityRows, taxonomyByInstrumentId, workspace])
-  const portfolioTotalColumns = useMemo<HoldingsPortfolioTotalColumn[]>(() => {
-    if (!workspace) {
-      return []
-    }
-    const rows = workspace.rows
-    const nav = finiteNumber(workspace.totals.nav)
-    const openBasis = totalCostBasisBase(rows, workspace)
-    const monetaryCapital = totalMonetaryCapitalBase(rows, workspace)
-    const unrealizedReturnBasis =
-      openBasis != null && monetaryCapital != null
-        ? openBasis + monetaryCapital
-        : null
-    const unrealized = totalUnrealizedBase(rows, workspace)
-    const unrealizedReturn =
-      unrealized != null && unrealizedReturnBasis != null && unrealizedReturnBasis > 1e-12
-        ? unrealized / unrealizedReturnBasis
-        : null
-    const eventValuationPresent = totalsContainMaterialEventValuation(rows)
-    const currentBasketReturn = (
-      accessor: (row: PortfolioHoldingRow) => number | null | undefined,
-    ) => weightedHoldingMetric(rows, workspace, accessor)
-    const forwardRiskAvailable = workspace.forward_risk?.status === 'ok'
-    const riskCoverage = finiteNumber(workspace.forward_risk?.coverage_ratio)
-
-    return [
-      { key: 'portfolio', label: 'Portfolio' },
-      {
-        key: 'market_value_base',
-        label: `NAV (${workspace.base_currency})`,
-        className: 'numeric-cell',
-        content: formatCurrency(nav, workspace.base_currency),
-        aggregationKind: 'sum',
-      },
-      {
-        key: 'cost_basis_base',
-        label: `Open Position Basis @ As-of FX (${workspace.base_currency})`,
-        className: 'numeric-cell',
-        content: formatCurrency(openBasis, workspace.base_currency),
-        aggregationKind: 'sum',
-        title: 'Remaining open-position book cost translated at as-of FX; Cash & Settlement is excluded.',
-      },
-      {
-        key: 'unrealized_return_basis',
-        label: `Unrealized Return Basis (${workspace.base_currency})`,
-        className: 'numeric-cell',
-        content: formatCurrency(unrealizedReturnBasis, workspace.base_currency),
-        aggregationKind: 'recomputed_basis',
-        title: 'Open Position Basis plus signed Cash & Settlement; monetary balances dilute the return but are not Cost Basis.',
-      },
-      {
-        key: 'unrealized_value',
-        label: `Unrealized P&L @ As-of FX (${workspace.base_currency})`,
-        className: `numeric-cell ${eventValuationPresent ? '' : signedValueClass(unrealized)}`.trim(),
-        content: eventValuationPresent
-          ? 'N/A'
-          : signedCurrency(unrealized, workspace.base_currency),
-        aggregationKind: 'sum',
-      },
-      {
-        key: 'unrealized_pct',
-        label: 'Unrealized Return on Current Capital',
-        className: `numeric-cell ${eventValuationPresent ? '' : signedValueClass(unrealizedReturn)}`.trim(),
-        content: eventValuationPresent ? 'N/A' : signedPercent(unrealizedReturn),
-        aggregationKind: 'recomputed_ratio',
-        title: 'Unrealized P&L divided by the current-capital Unrealized Return Basis; this is not portfolio TWR.',
-      },
-      {
-        key: 'day_change_value',
-        label: `Day Change (${workspace.base_currency})`,
-        className: `numeric-cell ${eventValuationPresent ? '' : signedValueClass(totalDayChangeBase(rows, workspace))}`.trim(),
-        content: eventValuationPresent
-          ? 'N/A'
-          : signedCurrency(totalDayChangeBase(rows, workspace), workspace.base_currency),
-        aggregationKind: 'sum',
-      },
-      {
-        key: 'day_change_pct',
-        label: 'Day Return',
-        className: `numeric-cell ${eventValuationPresent ? '' : signedValueClass(totalDayChangePct(rows, workspace))}`.trim(),
-        content: eventValuationPresent ? 'N/A' : signedPercent(totalDayChangePct(rows, workspace)),
-        aggregationKind: 'recomputed_ratio',
-      },
-      {
-        key: 'instrument_return_1w',
-        label: 'Current Basket 1W',
-        className: `numeric-cell ${signedValueClass(currentBasketReturn((row) => row.instrument_return_1w))}`.trim(),
-        content: eventValuationPresent
-          ? 'N/A'
-          : signedPercent(currentBasketReturn((row) => row.instrument_return_1w)),
-        aggregationKind: 'current_weight_return',
-      },
-      {
-        key: 'instrument_return_1m',
-        label: 'Current Basket 1M',
-        className: `numeric-cell ${signedValueClass(currentBasketReturn((row) => row.instrument_return_1m))}`.trim(),
-        content: eventValuationPresent
-          ? 'N/A'
-          : signedPercent(currentBasketReturn((row) => row.instrument_return_1m)),
-        aggregationKind: 'current_weight_return',
-      },
-      {
-        key: 'instrument_return_mtd',
-        label: 'Current Basket MTD',
-        className: `numeric-cell ${signedValueClass(currentBasketReturn((row) => row.instrument_return_mtd))}`.trim(),
-        content: eventValuationPresent
-          ? 'N/A'
-          : signedPercent(currentBasketReturn((row) => row.instrument_return_mtd)),
-        aggregationKind: 'current_weight_return',
-      },
-      {
-        key: 'instrument_return_ytd',
-        label: 'Current Basket YTD',
-        className: `numeric-cell ${signedValueClass(currentBasketReturn((row) => row.instrument_return_ytd))}`.trim(),
-        content: eventValuationPresent
-          ? 'N/A'
-          : signedPercent(currentBasketReturn((row) => row.instrument_return_ytd)),
-        aggregationKind: 'current_weight_return',
-      },
-      {
-        key: 'instrument_volatility_1m',
-        label: 'Current Basket 1M Vol',
-        className: 'numeric-cell',
-        content: formatPercent(groupedAnnualizedVolatility(rows, workspace, '1m')),
-        aggregationKind: 'current_basket_path',
-      },
-      {
-        key: 'instrument_volatility_3m',
-        label: 'Current Basket 3M Vol',
-        className: 'numeric-cell',
-        content: formatPercent(groupedAnnualizedVolatility(rows, workspace, '3m')),
-        aggregationKind: 'current_basket_path',
-      },
-      {
-        key: 'instrument_volatility_1y',
-        label: 'Current Basket 1Y Vol',
-        className: 'numeric-cell',
-        content: formatPercent(groupedAnnualizedVolatility(rows, workspace, '1y')),
-        aggregationKind: 'current_basket_path',
-      },
-      {
-        key: 'instrument_current_drawdown',
-        label: 'Current Basket DD',
-        className: `numeric-cell ${signedValueClass(groupedCurrentDrawdown(rows, workspace))}`.trim(),
-        content: signedPercent(groupedCurrentDrawdown(rows, workspace)),
-        aggregationKind: 'current_basket_path',
-      },
-      {
-        key: 'instrument_max_drawdown',
-        label: 'Current Basket Max DD',
-        className: `numeric-cell ${signedValueClass(groupedMaxDrawdown(rows, workspace))}`.trim(),
-        content: signedPercent(groupedMaxDrawdown(rows, workspace)),
-        aggregationKind: 'current_basket_path',
-      },
-      {
-        key: 'forward_volatility',
-        label: 'Forward Vol',
-        className: 'numeric-cell',
-        content: forwardRiskAvailable
-          ? formatPercent(workspace.forward_risk?.portfolio_volatility)
-          : 'N/A',
-        aggregationKind: 'portfolio_risk_model',
-      },
-      {
-        key: 'risk_coverage',
-        label: 'Risk Coverage',
-        className: 'center-cell',
-        content: (
-          <span
-            className={`coverage-pill ${forwardRiskAvailable ? 'coverage-pill-live' : 'coverage-pill-warning'}`}
-            title={workspace.forward_risk?.errors.join(' ') || workspace.coverage_note}
-          >
-            {forwardRiskAvailable
-              ? `${formatPercent(riskCoverage)} modeled`
-              : formatLabel(workspace.forward_risk?.status ?? 'unavailable')}
-          </span>
-        ),
-        aggregationKind: 'none',
-      },
-    ]
-  }, [workspace])
 
   function updateSearchParam(key: string, value: string | null) {
     setSearchParams((current) => {
@@ -3192,7 +2997,7 @@ export default function PortfolioHomePage() {
         ...visibleColumns.map((column, index) =>
           index === 0
             ? `${label} (${workspace.base_currency})`
-            : holdingColumnTotalExportValue(column.key, subtotalRows, columnContext),
+            : holdingColumnSubtotalExportValue(column.key, subtotalRows, columnContext),
         ),
       ])
     }
@@ -3386,63 +3191,6 @@ export default function PortfolioHomePage() {
       ]),
     )
 
-    const allRows = workspace.rows
-    const eventValuationPresent = totalsContainMaterialEventValuation(allRows)
-    const openBasis = totalCostBasisBase(allRows, workspace)
-    const monetaryCapital = totalMonetaryCapitalBase(allRows, workspace)
-    const unrealizedReturnBasis =
-      openBasis != null && monetaryCapital != null
-        ? openBasis + monetaryCapital
-        : null
-    const unrealized = totalUnrealizedBase(allRows, workspace)
-    appendConfiguredSection(
-      'Portfolio Total',
-      'total',
-      [
-        'Portfolio',
-        `NAV (${workspace.base_currency})`,
-        `Open Position Basis @ As-of FX (${workspace.base_currency})`,
-        `Unrealized Return Basis (${workspace.base_currency})`,
-        `Unrealized P&L @ As-of FX (${workspace.base_currency})`,
-        'Unrealized Return on Current Capital',
-        `Day Change (${workspace.base_currency})`,
-        'Day Return',
-        'Current Basket 1W',
-        'Current Basket 1M',
-        'Current Basket MTD',
-        'Current Basket YTD',
-        'Current Basket 1M Vol',
-        'Current Basket 3M Vol',
-        'Current Basket 1Y Vol',
-        'Current Basket DD',
-        'Current Basket Max DD',
-        'Forward Vol',
-        'Risk Coverage',
-      ],
-      [[
-        workspace.portfolio_name,
-        finiteNumber(workspace.totals.nav),
-        openBasis,
-        unrealizedReturnBasis,
-        eventValuationPresent ? 'N/A' : unrealized,
-        eventValuationPresent || unrealized == null || unrealizedReturnBasis == null || unrealizedReturnBasis <= 1e-12
-          ? 'N/A'
-          : unrealized / unrealizedReturnBasis,
-        eventValuationPresent ? 'N/A' : totalDayChangeBase(allRows, workspace),
-        eventValuationPresent ? 'N/A' : totalDayChangePct(allRows, workspace),
-        eventValuationPresent ? 'N/A' : weightedHoldingMetric(allRows, workspace, (row) => row.instrument_return_1w),
-        eventValuationPresent ? 'N/A' : weightedHoldingMetric(allRows, workspace, (row) => row.instrument_return_1m),
-        eventValuationPresent ? 'N/A' : weightedHoldingMetric(allRows, workspace, (row) => row.instrument_return_mtd),
-        eventValuationPresent ? 'N/A' : weightedHoldingMetric(allRows, workspace, (row) => row.instrument_return_ytd),
-        groupedAnnualizedVolatility(allRows, workspace, '1m'),
-        groupedAnnualizedVolatility(allRows, workspace, '3m'),
-        groupedAnnualizedVolatility(allRows, workspace, '1y'),
-        groupedCurrentDrawdown(allRows, workspace),
-        groupedMaxDrawdown(allRows, workspace),
-        workspace.forward_risk?.status === 'ok' ? workspace.forward_risk.portfolio_volatility : 'N/A',
-        workspace.forward_risk?.coverage_ratio,
-      ]],
-    )
 
     downloadTable(`holdings-${workspace.portfolio_id}-${workspace.as_of_date}`, rows, format, 'Holdings')
   }
@@ -3509,12 +3257,12 @@ export default function PortfolioHomePage() {
     )
   }
 
-  function renderHoldingsTotalRow(rows: PortfolioHoldingRow[], label: string, className: string, key?: string) {
+  function renderHoldingsSubtotalRow(rows: PortfolioHoldingRow[], label: string, className: string, key?: string) {
     if (!columnContext) {
       return null
     }
     return (
-      <HoldingsTotalRow
+      <HoldingsSubtotalRow
         key={key}
         className={className}
         label={label}
@@ -3843,11 +3591,6 @@ export default function PortfolioHomePage() {
         ) : null}
         {!loading && !error && workspace && columnContext ? (
           <>
-            <HoldingsPortfolioTotalSection
-              workspace={workspace}
-              columns={portfolioTotalColumns}
-              onVisibleColumnsChange={handleHoldingsSectionVisibleColumnsChange}
-            />
             {!workspace.rows.length ? (
               <div className="empty-state" role="status">
                 No holdings as of {workspace.as_of_date}.
@@ -3856,11 +3599,13 @@ export default function PortfolioHomePage() {
             {sortedSecurityRows.length ? (
               <section className="holdings-section" aria-labelledby="holdings-securities-heading">
                 <div className="holdings-section-heading">
-                  <h2 id="holdings-securities-heading">Securities</h2>
-                  <div className="holdings-section-heading-actions">
+                  <div className="holdings-section-title">
+                    <h2 id="holdings-securities-heading">Securities</h2>
                     <span className="holdings-section-count">
                       {formatNumber(sortedSecurityRows.length, 0)}
                     </span>
+                  </div>
+                  <div className="holdings-section-heading-actions">
                     {holdingsViewStoreReadyPortfolioId === portfolioId ? (
                       <PortfolioTableViewControls
                         views={holdingsViews}
@@ -3872,7 +3617,6 @@ export default function PortfolioHomePage() {
                         onSave={handleSaveHoldingsView}
                         onSaveAs={handleSaveHoldingsViewAs}
                         onDelete={handleDeleteHoldingsView}
-                        labelPrefix="Security View"
                       />
                     ) : (
                       <span className="portfolio-table-view-status">
@@ -3886,15 +3630,16 @@ export default function PortfolioHomePage() {
                         setHoldingsColumnDraft(holdingsColumns)
                         setHoldingsColumnsOpen(true)
                       }}
+                      aria-label="Securities Columns"
                     >
-                      Security Fields
+                      Columns
                     </button>
                     <button
                       type="button"
                       className="portfolio-table-toolbar-button"
                       onClick={() => setHoldingsGroupByOpen(true)}
                     >
-                      Group Securities{'\u00A0: '}
+                      Group By{'\u00A0: '}
                       {selectedGroupByOption.label}
                     </button>
                   </div>
@@ -3981,7 +3726,7 @@ export default function PortfolioHomePage() {
                             </Fragment>
                           ))
                         : sortedSecurityRows.map((row) => renderHoldingDataRow(row))}
-                      {renderHoldingsTotalRow(
+                      {renderHoldingsSubtotalRow(
                         sortedSecurityRows,
                         `Securities Subtotal (${workspace.base_currency})`,
                         'total-row holdings-section-subtotal-row',
@@ -4014,7 +3759,7 @@ export default function PortfolioHomePage() {
             onClick={(event) => event.stopPropagation()}
           >
             <div className="portfolio-table-config-header">
-              <div className="panel-title">Security Fields</div>
+              <div className="panel-title">Columns</div>
               <button type="button" onClick={() => setHoldingsColumnsOpen(false)}>
                 Close
               </button>
@@ -4023,7 +3768,7 @@ export default function PortfolioHomePage() {
             <div className="portfolio-table-config-search">
               <input
                 className="portfolio-table-config-search-input"
-                placeholder="Search fields"
+                placeholder="Search columns"
                 value={holdingsColumnSearch}
                 onChange={(event) => setHoldingsColumnSearch(event.target.value)}
               />
@@ -4071,7 +3816,7 @@ export default function PortfolioHomePage() {
                     )
                   })
                 ) : (
-                  <div className="portfolio-table-config-field-empty">No fields.</div>
+                  <div className="portfolio-table-config-field-empty">No columns.</div>
                 )}
               </div>
 
@@ -4109,12 +3854,12 @@ export default function PortfolioHomePage() {
             className="portfolio-table-config-modal portfolio-table-config-compact-modal"
             role="dialog"
             aria-modal="true"
-            aria-label="Group securities"
+            aria-label="Choose grouping"
             tabIndex={-1}
             onClick={(event) => event.stopPropagation()}
           >
             <div className="portfolio-table-config-header">
-              <div className="panel-title">Group Securities</div>
+              <div className="panel-title">Group By</div>
               <button type="button" onClick={() => setHoldingsGroupByOpen(false)}>
                 Close
               </button>

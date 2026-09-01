@@ -11,13 +11,13 @@ const INSTRUMENT_RETURN_COLUMN_KEYS = new Set([
 ])
 
 export const CURRENT_HOLDINGS_RETURN_BASIS =
-  'Current-holdings basket market return using as-of signed base-value weights; Portfolio Total keeps cash and settlement in the full-NAV denominator. It is neither book unrealized P&L nor historical portfolio TWR.'
+  'Current-holdings basket market return using as-of signed base-value weights for the displayed subtotal. It is neither book unrealized P&L nor historical portfolio TWR.'
 
-export function isPortfolioReturnColumn(columnKey: string) {
+function isBasketReturnColumn(columnKey: string) {
   return INSTRUMENT_RETURN_COLUMN_KEYS.has(columnKey)
 }
 
-export type HoldingsTotalCell = {
+export type HoldingsSubtotalCell = {
   key: string
   className?: string
   content?: ReactNode
@@ -25,19 +25,19 @@ export type HoldingsTotalCell = {
   title?: string
 }
 
-export default function HoldingsTotalRow({
+export default function HoldingsSubtotalRow({
   className,
   label,
   cells,
 }: {
   className: string
   label: string
-  cells: HoldingsTotalCell[]
+  cells: HoldingsSubtotalCell[]
 }) {
   return (
     <tr className={className}>
       {cells.map((cell, index) => {
-        const isCurrentHoldingsReturn = isPortfolioReturnColumn(cell.key)
+        const isCurrentHoldingsReturn = isBasketReturnColumn(cell.key)
         return (
           <td
             key={cell.key}
@@ -46,11 +46,7 @@ export default function HoldingsTotalRow({
             className={cell.className}
             title={cell.title ?? (isCurrentHoldingsReturn ? CURRENT_HOLDINGS_RETURN_BASIS : undefined)}
           >
-            {index === 0 ? (
-              <strong>{label}</strong>
-            ) : (
-              cell.content ?? ''
-            )}
+            {index === 0 ? <strong>{label}</strong> : cell.content ?? ''}
           </td>
         )
       })}

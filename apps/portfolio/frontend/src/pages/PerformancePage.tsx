@@ -2781,7 +2781,7 @@ function PerformancePage() {
                         setCalculationColumnsOpen(true)
                       }}
                     >
-                      Data &amp; Columns
+                      Columns
                     </button>
                     <button
                       type="button"
@@ -2886,8 +2886,8 @@ function PerformancePage() {
           >
             <div className="portfolio-table-config-header">
               <div>
-                <div className="panel-title">Data &amp; Columns</div>
-                <div className="section-heading">Manage Calculation Table View</div>
+                <div className="panel-title">Columns</div>
+                <div className="section-heading">Manage Calculation Columns</div>
               </div>
               <button type="button" onClick={() => setCalculationColumnsOpen(false)}>
                 Close
@@ -2918,7 +2918,7 @@ function PerformancePage() {
             <div className="portfolio-table-config-search">
               <input
                 className="portfolio-table-config-search-input"
-                placeholder="Search fields"
+                placeholder="Search columns"
                 value={calculationColumnSearch}
                 onChange={(event) => setCalculationColumnSearch(event.target.value)}
               />
@@ -2966,7 +2966,7 @@ function PerformancePage() {
                     )
                   })
                 ) : (
-                  <div className="portfolio-table-config-field-empty">No fields.</div>
+                  <div className="portfolio-table-config-field-empty">No columns.</div>
                 )}
               </div>
             </div>

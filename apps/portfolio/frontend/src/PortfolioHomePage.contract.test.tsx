@@ -68,13 +68,12 @@ function renderHoldings(
 }
 
 async function waitForHoldings() {
-  return screen.findByRole('table', { name: 'Portfolio total holdings' })
-}
-
-async function selectPortfolioTotalView(viewName: 'Summary' | 'Valuation' | 'Return & Risk') {
-  const user = userEvent.setup()
-  await user.click(await screen.findByRole('button', { name: /Portfolio Total View\s*:/ }))
-  await user.click(screen.getByRole('option', { name: viewName }))
+  await waitFor(() => {
+    const hasSection = ['Securities', 'FCN', 'Options', 'Cash & Settlement'].some(
+      (name) => screen.queryByRole('region', { name }) != null,
+    )
+    expect(hasSection || screen.queryByText(/^No holdings as of /) != null).toBe(true)
+  })
 }
 
 function deferred<T>() {
@@ -227,7 +226,7 @@ describe('Holdings rendered page contract', () => {
     apiMocks.savePortfolioTableViewStore.mockResolvedValue({})
   })
 
-  it('renders each populated category with independent views and fields', async () => {
+  it('renders each populated category with aligned table controls and title counts', async () => {
     renderHoldings(
       holdingsWorkspaceFixture({
         rows: [holdingFixture(), fcnHolding(), writtenOptionHolding(), cashHolding()],
@@ -239,72 +238,31 @@ describe('Holdings rendered page contract', () => {
     expect(screen.getByRole('region', { name: 'FCN' })).toBeInTheDocument()
     expect(screen.getByRole('region', { name: 'Options' })).toBeInTheDocument()
     expect(screen.getByRole('region', { name: 'Cash & Settlement' })).toBeInTheDocument()
-    expect(screen.getByRole('region', { name: 'Portfolio Total' })).toBeInTheDocument()
+    expect(screen.queryByRole('region', { name: 'Portfolio Total' })).not.toBeInTheDocument()
     expect(screen.queryByRole('region', { name: 'Derivatives' })).not.toBeInTheDocument()
     expect(screen.getByRole('table', { name: 'FCN holdings' })).toBeInTheDocument()
     expect(screen.getByRole('table', { name: 'Option holdings' })).toBeInTheDocument()
     expect(screen.getByRole('table', { name: 'Cash and settlement holdings' })).toBeInTheDocument()
-    expect(screen.getByRole('table', { name: 'Portfolio total holdings' })).toBeInTheDocument()
 
-    expect(screen.getByRole('button', { name: /Security View\s*: Default/ })).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Security Fields' })).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: /Group Securities\s*: None/ })).toBeInTheDocument()
-    expect(await screen.findByRole('button', { name: /FCN View\s*: Position/ })).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: /Options View\s*: Position/ })).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: /Cash & Settlement View\s*: Balances/ })).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: /Portfolio Total View\s*: Summary/ })).toBeInTheDocument()
-    for (const label of ['FCN Fields', 'Options Fields', 'Cash & Settlement Fields', 'Portfolio Total Fields']) {
-      expect(screen.getByRole('button', { name: label })).toBeInTheDocument()
+    const sections = [
+      ['Securities', 'Default', 'Securities Columns'],
+      ['FCN', 'Position', 'FCN Columns'],
+      ['Options', 'Position', 'Options Columns'],
+      ['Cash & Settlement', 'Balances', 'Cash & Settlement Columns'],
+    ] as const
+    for (const [name, view, columnsLabel] of sections) {
+      const region = screen.getByRole('region', { name })
+      expect(await within(region).findByRole('button', { name: new RegExp(`View\\s*: ${view}`) })).toBeInTheDocument()
+      expect(within(region).getByRole('button', { name: columnsLabel })).toHaveTextContent('Columns')
+      const title = within(region).getByRole('heading', { name })
+      expect(title.parentElement).toHaveClass('holdings-section-title')
+      expect(title.parentElement?.querySelector('.holdings-section-count')).toHaveTextContent('1')
+      expect(region.querySelector('.holdings-section-heading-actions .holdings-section-count')).toBeNull()
     }
+    expect(within(screen.getByRole('region', { name: 'Securities' })).getByRole('button', { name: /Group By\s*: None/ })).toBeInTheDocument()
     expect(screen.queryByText(/Contract terms and carrying amounts are explicit/)).not.toBeInTheDocument()
-    expect(screen.queryByText(/One full-portfolio row/)).not.toBeInTheDocument()
     expect(screen.getByText('Securities Subtotal (USD)')).toBeInTheDocument()
-    expect(screen.getByText('Portfolio Total (USD)')).toBeInTheDocument()
-  })
-
-  it('puts a compact Portfolio Total first and keeps audit and risk fields in focused views', async () => {
-    renderHoldings()
-    await waitForHoldings()
-
-    const portfolioTotalRegion = screen.getByRole('region', { name: 'Portfolio Total' })
-    const securitiesRegion = screen.getByRole('region', { name: 'Securities' })
-    expect(
-      Boolean(
-        portfolioTotalRegion.compareDocumentPosition(securitiesRegion) &
-          Node.DOCUMENT_POSITION_FOLLOWING,
-      ),
-    ).toBe(true)
-
-    const portfolioTotalTable = screen.getByRole('table', { name: 'Portfolio total holdings' })
-    expect(
-      within(portfolioTotalTable)
-        .getAllByRole('columnheader')
-        .map((header) => header.textContent),
-    ).toEqual([
-      'Portfolio',
-      'NAV (USD)',
-      'Unrealized P&L @ As-of FX (USD)',
-      'Unrealized Return on Current Capital',
-      'Day Change (USD)',
-      'Day Return',
-    ])
-
-    const user = userEvent.setup()
-    await user.click(screen.getByRole('button', { name: 'Portfolio Total Fields' }))
-    const fieldsDialog = screen.getByRole('dialog', { name: 'Choose Portfolio Total columns' })
-    expect(within(fieldsDialog).queryByText('Portfolio Weight')).not.toBeInTheDocument()
-    expect(within(fieldsDialog).queryByText('Forward RC')).not.toBeInTheDocument()
-    await user.click(within(fieldsDialog).getByRole('button', { name: 'Close' }))
-
-    await selectPortfolioTotalView('Valuation')
-    expect(within(portfolioTotalTable).getByRole('columnheader', { name: /Open Position Basis/ })).toBeInTheDocument()
-    expect(within(portfolioTotalTable).getByRole('columnheader', { name: /Unrealized Return Basis/ })).toBeInTheDocument()
-
-    await selectPortfolioTotalView('Return & Risk')
-    expect(within(portfolioTotalTable).getByRole('columnheader', { name: 'Current Basket 1M' })).toBeInTheDocument()
-    expect(within(portfolioTotalTable).getByRole('columnheader', { name: 'Forward Vol' })).toBeInTheDocument()
-    expect(within(portfolioTotalTable).getByRole('columnheader', { name: 'Risk Coverage' })).toBeInTheDocument()
-    expect(within(portfolioTotalTable).queryByRole('columnheader', { name: 'Forward RC' })).not.toBeInTheDocument()
+    expect(screen.queryByText('Portfolio Total (USD)')).not.toBeInTheDocument()
   })
 
   it('omits Operational Status and categories without holdings', async () => {
@@ -350,7 +308,7 @@ describe('Holdings rendered page contract', () => {
     await waitForHoldings()
 
     expect(screen.getByRole('region', { name: 'Securities' })).toBeInTheDocument()
-    expect(screen.getByRole('region', { name: 'Portfolio Total' })).toBeInTheDocument()
+    expect(screen.queryByRole('region', { name: 'Portfolio Total' })).not.toBeInTheDocument()
     expect(screen.queryByRole('region', { name: 'FCN' })).not.toBeInTheDocument()
     expect(screen.queryByRole('region', { name: 'Options' })).not.toBeInTheDocument()
     expect(screen.queryByRole('region', { name: 'Cash & Settlement' })).not.toBeInTheDocument()
@@ -358,7 +316,7 @@ describe('Holdings rendered page contract', () => {
     expect(screen.queryByText('Overdue settlement')).not.toBeInTheDocument()
   })
 
-  it('shows one holdings empty state while retaining Portfolio Total', async () => {
+  it('shows one holdings empty state without empty tables', async () => {
     renderHoldings(
       holdingsWorkspaceFixture({
         rows: [],
@@ -379,7 +337,7 @@ describe('Holdings rendered page contract', () => {
     expect(screen.queryByRole('region', { name: 'FCN' })).not.toBeInTheDocument()
     expect(screen.queryByRole('region', { name: 'Options' })).not.toBeInTheDocument()
     expect(screen.queryByRole('region', { name: 'Cash & Settlement' })).not.toBeInTheDocument()
-    expect(screen.getByRole('region', { name: 'Portfolio Total' })).toBeInTheDocument()
+    expect(screen.queryByRole('region', { name: 'Portfolio Total' })).not.toBeInTheDocument()
   })
 
   it('surfaces a failed Security view store without blocking holdings facts', async () => {
@@ -396,7 +354,7 @@ describe('Holdings rendered page contract', () => {
 
     expect(screen.getByRole('alert')).toHaveTextContent('View store offline.')
     expect(screen.getByText('Views unavailable')).toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: /Security View\s*:/ })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /^View\s*:/ })).not.toBeInTheDocument()
     expect(screen.getByRole('cell', { name: 'Alpha Fund' })).toBeInTheDocument()
   })
 
@@ -410,7 +368,8 @@ describe('Holdings rendered page contract', () => {
     const user = userEvent.setup()
     await waitForHoldings()
 
-    await user.click(await screen.findByRole('button', { name: /FCN View\s*: Position/ }))
+    const fcnRegion = screen.getByRole('region', { name: 'FCN' })
+    await user.click(await within(fcnRegion).findByRole('button', { name: /View\s*: Position/ }))
     await user.click(screen.getByRole('option', { name: 'Terms & Events' }))
 
     expect(await screen.findByRole('status')).toHaveTextContent('View save failed')
@@ -425,9 +384,11 @@ describe('Holdings rendered page contract', () => {
     )
     const user = userEvent.setup()
     await waitForHoldings()
-    await screen.findByRole('button', { name: /FCN View\s*: Position/ })
+    const fcnRegion = screen.getByRole('region', { name: 'FCN' })
+    const optionsRegion = screen.getByRole('region', { name: 'Options' })
+    await within(fcnRegion).findByRole('button', { name: /View\s*: Position/ })
 
-    await user.click(screen.getByRole('button', { name: 'FCN Fields' }))
+    await user.click(within(fcnRegion).getByRole('button', { name: 'FCN Columns' }))
     const dialog = screen.getByRole('dialog', { name: 'Choose FCN columns' })
     const couponField = within(dialog).getByText('Annual Coupon').closest('label')!
     await user.click(within(couponField).getByRole('checkbox'))
@@ -445,8 +406,8 @@ describe('Holdings rendered page contract', () => {
         { name: 'Type' },
       ),
     ).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: /FCN View\s*: Position \(Edited\)/ })).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: /Options View\s*: Position$/ })).toBeInTheDocument()
+    expect(within(fcnRegion).getByRole('button', { name: /View\s*: Position \(Edited\)/ })).toBeInTheDocument()
+    expect(within(optionsRegion).getByRole('button', { name: /View\s*: Position$/ })).toBeInTheDocument()
 
     await user.click(screen.getByRole('button', { name: 'Download' }))
     await user.click(screen.getByRole('menuitem', { name: 'CSV' }))
@@ -461,7 +422,6 @@ describe('Holdings rendered page contract', () => {
       'holdings_fcn',
       'holdings_options',
       'holdings_cash',
-      'holdings_total',
     ]) {
       expect(apiMocks.getPortfolioTableViewStore).toHaveBeenCalledWith('3', scope)
     }
@@ -479,7 +439,7 @@ describe('Holdings rendered page contract', () => {
     renderHoldings()
     await waitForHoldings()
 
-    expect(screen.getByRole('button', { name: /Security View\s*: Return & Risk/ })).toBeInTheDocument()
+    expect(within(screen.getByRole('region', { name: 'Securities' })).getByRole('button', { name: /View\s*: Return & Risk/ })).toBeInTheDocument()
     const securityTable = screen.getByRole('table', { name: 'Security holdings' })
     for (const label of [
       'Chart 6M',
@@ -547,6 +507,7 @@ describe('Holdings rendered page contract', () => {
     const user = userEvent.setup()
     await waitForHoldings()
 
+    const fcnRegion = screen.getByRole('region', { name: 'FCN' })
     const fcnTable = screen.getByRole('table', { name: 'FCN holdings' })
     for (const label of [
       'Notional',
@@ -560,17 +521,18 @@ describe('Holdings rendered page contract', () => {
     expect(fcnNameCell).toHaveTextContent(/^Alpha FCN$/)
     expect(within(fcnTable).getByText(/Initial 100\.0000/)).toBeInTheDocument()
 
-    await user.click(await screen.findByRole('button', { name: /FCN View\s*: Position/ }))
+    await user.click(await within(fcnRegion).findByRole('button', { name: /View\s*: Position/ }))
     await user.click(screen.getByRole('option', { name: 'Terms & Events' }))
     for (const label of ['Final Observation', 'Issuer', 'Counterparty']) {
       expect(within(fcnTable).getByRole('columnheader', { name: label })).toBeInTheDocument()
     }
     expect(within(fcnTable).getByText('Fixture Issuer')).toBeInTheDocument()
 
-    await user.click(screen.getByRole('button', { name: /FCN View\s*: Terms & Events/ }))
+    await user.click(within(fcnRegion).getByRole('button', { name: /View\s*: Terms & Events/ }))
     await user.click(screen.getByRole('option', { name: 'Valuation' }))
     expect(within(fcnTable).getByRole('columnheader', { name: 'Fair Value Status' })).toBeInTheDocument()
 
+    const optionsRegion = screen.getByRole('region', { name: 'Options' })
     const optionTable = screen.getByRole('table', { name: 'Option holdings' })
     for (const label of [
       'Side',
@@ -588,11 +550,11 @@ describe('Holdings rendered page contract', () => {
     expect(within(optionTable).getByText('Written')).toBeInTheDocument()
     expect(within(optionTable).getAllByText('$22,000.00')).toHaveLength(2)
 
-    await user.click(screen.getByRole('button', { name: /Options View\s*: Position/ }))
+    await user.click(within(optionsRegion).getByRole('button', { name: /View\s*: Position/ }))
     await user.click(screen.getByRole('option', { name: 'Contract Terms' }))
     expect(within(optionTable).getByRole('columnheader', { name: 'Underlying Equivalent' })).toBeInTheDocument()
 
-    await user.click(screen.getByRole('button', { name: /Options View\s*: Contract Terms/ }))
+    await user.click(within(optionsRegion).getByRole('button', { name: /View\s*: Contract Terms/ }))
     await user.click(screen.getByRole('option', { name: 'Valuation' }))
     expect(within(optionTable).getByRole('columnheader', { name: 'Basis Type' })).toBeInTheDocument()
     expect(within(optionTable).getByText('Remaining Premium')).toBeInTheDocument()
@@ -650,9 +612,7 @@ describe('Holdings rendered page contract', () => {
     expect(within(table).queryByRole('columnheader', { name: /Unrealized/ })).not.toBeInTheDocument()
     expect(within(table).getByText('2026-07-16')).toBeInTheDocument()
     expect(within(table).getByText('Alpha Fund')).toBeInTheDocument()
-    const portfolioTotal = screen.getByText('Portfolio Total (USD)').closest('tr')!
-    expect(portfolioTotal.querySelector('[data-column-key="unrealized_value"]')).toHaveTextContent('$0.00')
-    expect(portfolioTotal.querySelector('[data-column-key="unrealized_pct"]')).toHaveTextContent('0.00%')
+    expect(screen.queryByText('Portfolio Total (USD)')).not.toBeInTheDocument()
   })
 
   it('groups only Securities with the current taxonomy, independently of the holdings date', async () => {
@@ -714,9 +674,9 @@ describe('Holdings rendered page contract', () => {
     )
     const user = userEvent.setup()
     await waitForHoldings()
-    await user.click(screen.getByRole('button', { name: /Group Securities\s*: None/ }))
+    await user.click(within(screen.getByRole('region', { name: 'Securities' })).getByRole('button', { name: /Group By\s*: None/ }))
     await user.click(
-      within(screen.getByRole('dialog', { name: 'Group securities' })).getByRole('button', {
+      within(screen.getByRole('dialog', { name: 'Choose grouping' })).getByRole('button', {
         name: 'Taxonomy',
       }),
     )
@@ -756,109 +716,13 @@ describe('Holdings rendered page contract', () => {
     expect(securityRow.querySelector('[data-column-key="taxonomy_top"]')).toHaveTextContent('Unassigned')
     expect(securityRow.querySelector('[data-column-key="taxonomy_leaf"]')).toHaveTextContent('Unassigned')
 
-    await user.click(screen.getByRole('button', { name: /Group Securities\s*: None/ }))
+    await user.click(within(screen.getByRole('region', { name: 'Securities' })).getByRole('button', { name: /Group By\s*: None/ }))
     await user.click(
-      within(screen.getByRole('dialog', { name: 'Group securities' })).getByRole('button', {
+      within(screen.getByRole('dialog', { name: 'Choose grouping' })).getByRole('button', {
         name: 'Taxonomy',
       }),
     )
     expect(document.querySelector('.holdings-subgroup-row')).toHaveTextContent('Unassigned')
-  })
-
-  it('uses full current capital so settled cash dilutes both current-basket and portfolio unrealized returns', async () => {
-    const security = holdingFixture({
-      market_value: 800,
-      market_value_base: 800,
-      cost_basis: 700,
-      cost_basis_base: 700,
-      allocation: 0.8,
-      instrument_return_1m: 0.1,
-    })
-    renderHoldings(
-      holdingsWorkspaceFixture({
-        rows: [security, cashHolding()],
-        totals: {
-          nav: 1000,
-          market_value: 1000,
-          day_change_pct: 0.008,
-          day_change_value: 8,
-          cost_basis: 700,
-          allocation: 1,
-        },
-      }),
-    )
-    await waitForHoldings()
-
-    await selectPortfolioTotalView('Valuation')
-    const totalRow = screen.getByText('Portfolio Total (USD)').closest('tr')!
-    expect(totalRow.querySelector('[data-column-key="cost_basis_base"]')).toHaveTextContent('$700.00')
-    expect(totalRow.querySelector('[data-column-key="unrealized_return_basis"]')).toHaveTextContent('$900.00')
-    expect(totalRow.querySelector('[data-column-key="unrealized_pct"]')).toHaveTextContent('+11.11%')
-    await selectPortfolioTotalView('Return & Risk')
-    expect(totalRow.querySelector('[data-column-key="instrument_return_1m"]')).toHaveTextContent('+8.00%')
-    expect(screen.getByText('Securities Subtotal (USD)').closest('tr')).toHaveTextContent('80.00%')
-  })
-
-  it('withholds a Portfolio Total current-basket return when rows do not reconcile to canonical NAV', async () => {
-    renderHoldings(
-      holdingsWorkspaceFixture({
-        rows: [
-          holdingFixture({
-            market_value: 900,
-            market_value_base: 900,
-            allocation: 0.9,
-            instrument_return_1m: 0.1,
-          }),
-        ],
-        totals: {
-          nav: 1000,
-          market_value: 900,
-          day_change_pct: null,
-          day_change_value: null,
-          cost_basis: 700,
-          allocation: 0.9,
-        },
-      }),
-    )
-    await waitForHoldings()
-
-    await selectPortfolioTotalView('Return & Risk')
-    const totalRow = screen.getByText('Portfolio Total (USD)').closest('tr')!
-    expect(totalRow.querySelector('[data-column-key="instrument_return_1m"]')).toHaveTextContent('—')
-  })
-
-  it('also treats base-currency pending settlement as zero-return capital in the total denominator', async () => {
-    const security = holdingFixture({
-      market_value: 800,
-      market_value_base: 800,
-      cost_basis: 800,
-      cost_basis_base: 800,
-      allocation: 0.8,
-      instrument_return_1m: 0.1,
-    })
-    const pending = cashHolding({
-      line_id: 'pending:settlement_receivable',
-      holding_kind: 'settlement_receivable',
-      available_for_trading: false,
-      coverage_status: 'pending-settlement',
-    })
-    renderHoldings(
-      holdingsWorkspaceFixture({
-        rows: [security, pending],
-        totals: {
-          nav: 1000,
-          market_value: 1000,
-          day_change_pct: 0,
-          day_change_value: 0,
-          cost_basis: 800,
-          allocation: 1,
-        },
-      }),
-    )
-    await waitForHoldings()
-    await selectPortfolioTotalView('Return & Risk')
-    const totalRow = screen.getByText('Portfolio Total (USD)').closest('tr')!
-    expect(totalRow.querySelector('[data-column-key="instrument_return_1m"]')).toHaveTextContent('+8.00%')
   })
 
   it('fails closed when only local-currency returns exist for a non-base security', async () => {
@@ -886,14 +750,17 @@ describe('Holdings rendered page contract', () => {
     )
     await waitForHoldings()
 
-    await selectPortfolioTotalView('Return & Risk')
+    const securitiesRegion = screen.getByRole('region', { name: 'Securities' })
+    const user = userEvent.setup()
+    await user.click(within(securitiesRegion).getByRole('button', { name: /View\s*: Default/ }))
+    await user.click(screen.getByRole('option', { name: 'Return & Risk' }))
     const securityRow = within(screen.getByRole('table', { name: 'Security holdings' })).getByRole('cell', { name: 'Alpha Fund' }).closest('tr')!
     expect(securityRow).toHaveTextContent('+10.00%')
-    const totalRow = screen.getByText('Portfolio Total (USD)').closest('tr')!
-    expect(totalRow.querySelector('[data-column-key="instrument_return_1m"]')).toHaveTextContent('—')
+    const subtotalRow = screen.getByText('Securities Subtotal (USD)').closest('tr')!
+    expect(subtotalRow.querySelector('[data-column-key="instrument_return_1m"]')).toHaveTextContent('—')
   })
 
-  it('fails full-portfolio fair-value P&L and return closed when a material event-carried derivative is present', async () => {
+  it('keeps event-carried derivatives outside the Securities subtotal', async () => {
     const quotedSecurity = holdingFixture({
       market_value: 500,
       market_value_base: 500,
@@ -919,11 +786,8 @@ describe('Holdings rendered page contract', () => {
 
     const securitySubtotal = screen.getByText('Securities Subtotal (USD)').closest('tr')!
     expect(securitySubtotal.querySelector('[data-column-key="unrealized_value"]')).toHaveTextContent('$0.00')
-    const totalRow = screen.getByText('Portfolio Total (USD)').closest('tr')!
-    expect(totalRow.querySelector('[data-column-key="unrealized_value"]')).toHaveTextContent('N/A')
-    expect(totalRow.querySelector('[data-column-key="unrealized_pct"]')).toHaveTextContent('N/A')
-    await selectPortfolioTotalView('Return & Risk')
-    expect(totalRow.querySelector('[data-column-key="instrument_return_1m"]')).toHaveTextContent('N/A')
+    expect(screen.getByRole('table', { name: 'FCN holdings' })).toBeInTheDocument()
+    expect(screen.queryByText('Portfolio Total (USD)')).not.toBeInTheDocument()
   })
 
   it('withholds a current-basket return when any material security lacks the window', async () => {
@@ -966,12 +830,13 @@ describe('Holdings rendered page contract', () => {
     )
     await waitForHoldings()
 
-    await selectPortfolioTotalView('Return & Risk')
+    const securitiesRegion = screen.getByRole('region', { name: 'Securities' })
+    const user = userEvent.setup()
+    await user.click(within(securitiesRegion).getByRole('button', { name: /View\s*: Default/ }))
+    await user.click(screen.getByRole('option', { name: 'Return & Risk' }))
     expect(screen.getByRole('cell', { name: 'Missing Return Fund' })).toBeInTheDocument()
     const securitySubtotal = screen.getByText('Securities Subtotal (USD)').closest('tr')!
-    const portfolioTotal = screen.getByText('Portfolio Total (USD)').closest('tr')!
     expect(securitySubtotal.querySelector('[data-column-key="instrument_return_1m"]')).toHaveTextContent('—')
-    expect(portfolioTotal.querySelector('[data-column-key="instrument_return_1m"]')).toHaveTextContent('—')
   })
 
   it('keeps trend-basis diagnostics on Security hover rather than visible derivative-style annotations', async () => {
@@ -1021,7 +886,7 @@ describe('Holdings rendered page contract', () => {
     expect(rows.some((row) => row[0] === 'Options')).toBe(true)
     expect(rows.some((row) => row[0] === 'Derivatives')).toBe(false)
     expect(rows.some((row) => row[0] === 'Cash & Settlement')).toBe(true)
-    expect(rows.some((row) => row[0] === 'Portfolio Total')).toBe(true)
+    expect(rows.some((row) => row[0] === 'Portfolio Total')).toBe(false)
     expect(rows.some((row) => row[0] === 'Category')).toBe(false)
 
     const exportedHeader = (section: string) => {
@@ -1040,13 +905,11 @@ describe('Holdings rendered page contract', () => {
     expect(exportedHeader('FCN')).toEqual(renderedHeader('FCN holdings'))
     expect(exportedHeader('Options')).toEqual(renderedHeader('Option holdings'))
     expect(exportedHeader('Cash & Settlement')).toEqual(renderedHeader('Cash and settlement holdings'))
-    expect(exportedHeader('Portfolio Total')).toEqual(renderedHeader('Portfolio total holdings'))
 
     for (const section of [
       'FCN',
       'Options',
       'Cash & Settlement',
-      'Portfolio Total',
     ]) {
       expect(exportedFirstDataRow(section)).toHaveLength(exportedHeader(section).length)
     }
@@ -1072,7 +935,7 @@ describe('Holdings rendered page contract', () => {
     expect(rows.some((row) => row[0] === 'FCN')).toBe(false)
     expect(rows.some((row) => row[0] === 'Options')).toBe(false)
     expect(rows.some((row) => row[0] === 'Cash & Settlement')).toBe(false)
-    expect(rows.some((row) => row[0] === 'Portfolio Total')).toBe(true)
+    expect(rows.some((row) => row[0] === 'Portfolio Total')).toBe(false)
   })
 
   it('does not substitute a chart endpoint for a missing valuation quote date', async () => {
@@ -1091,7 +954,7 @@ describe('Holdings rendered page contract', () => {
     )
     const user = userEvent.setup()
     await waitForHoldings()
-    await user.click(screen.getByRole('button', { name: 'Security Fields' }))
+    await user.click(screen.getByRole('button', { name: 'Securities Columns' }))
     const dialog = screen.getByRole('dialog', { name: 'Choose security columns' })
     await user.click(within(dialog).getByRole('button', { name: 'Quote' }))
     const quoteDateField = within(dialog).getByText('Quote Date').closest('label')!

@@ -49,7 +49,6 @@ def test_table_view_store_round_trip_persists_by_portfolio_and_scope(client) -> 
         "holdings_fcn",
         "holdings_options",
         "holdings_cash",
-        "holdings_total",
     ):
         section_response = client.get(
             f"/api/portfolios/portfolio-ops/table-views/{section_scope}"
@@ -66,6 +65,11 @@ def test_table_view_store_round_trip_persists_by_portfolio_and_scope(client) -> 
 def test_table_view_store_rejects_unknown_scope_and_missing_portfolio(client) -> None:
     bad_scope = client.get("/api/portfolios/portfolio-ops/table-views/not-a-scope")
     assert bad_scope.status_code == 422
+
+    retired_total_scope = client.get(
+        "/api/portfolios/portfolio-ops/table-views/holdings_total"
+    )
+    assert retired_total_scope.status_code == 422
 
     missing_portfolio_get = client.get("/api/portfolios/missing/table-views/holdings")
     assert missing_portfolio_get.status_code == 404

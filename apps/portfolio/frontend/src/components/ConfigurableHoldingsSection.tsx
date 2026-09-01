@@ -350,11 +350,13 @@ export default function ConfigurableHoldingsSection({
       aria-labelledby={id}
     >
       <div className="holdings-section-heading">
-        <h2 id={id}>{title}</h2>
-        <div className="holdings-section-heading-actions">
+        <div className="holdings-section-title">
+          <h2 id={id}>{title}</h2>
           {count != null ? (
             <span className="holdings-section-count">{count.toLocaleString()}</span>
           ) : null}
+        </div>
+        <div className="holdings-section-heading-actions">
           {ready ? (
             <PortfolioTableViewControls
               views={viewStore.views}
@@ -366,7 +368,6 @@ export default function ConfigurableHoldingsSection({
               onSave={handleSaveView}
               onSaveAs={handleSaveViewAs}
               onDelete={handleDeleteView}
-              labelPrefix={`${title} View`}
             />
           ) : (
             <span className="portfolio-table-view-status" title={viewError ?? undefined}>
@@ -383,8 +384,9 @@ export default function ConfigurableHoldingsSection({
               setColumnSearch('')
               setColumnsOpen(true)
             }}
+            aria-label={`${title} Columns`}
           >
-            {title} Fields
+            Columns
           </button>
           {ready && viewError ? (
             <span className="portfolio-table-view-status" role="status" title={viewError}>
@@ -408,7 +410,7 @@ export default function ConfigurableHoldingsSection({
             onClick={(event) => event.stopPropagation()}
           >
             <div className="portfolio-table-config-header">
-              <div className="panel-title">{title} Fields</div>
+              <div className="panel-title">Columns</div>
               <button type="button" onClick={() => setColumnsOpen(false)}>
                 Close
               </button>
@@ -416,7 +418,7 @@ export default function ConfigurableHoldingsSection({
             <div className="portfolio-table-config-search">
               <input
                 className="portfolio-table-config-search-input"
-                placeholder="Search fields"
+                placeholder="Search columns"
                 value={columnSearch}
                 onChange={(event) => setColumnSearch(event.target.value)}
               />
@@ -443,7 +445,7 @@ export default function ConfigurableHoldingsSection({
                   )
                 })
               ) : (
-                <div className="portfolio-table-config-field-empty">No fields.</div>
+                <div className="portfolio-table-config-field-empty">No columns.</div>
               )}
             </div>
             <div className="portfolio-table-config-actions portfolio-table-config-actions-sticky">
