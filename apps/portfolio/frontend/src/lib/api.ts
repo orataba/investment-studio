@@ -2685,7 +2685,22 @@ export type PortfolioTransactionCaptureAnalysisRevision = {
         observed_account_hint?: string | null
         note?: string | null
       } | null
-      fields: Array<unknown>
+      fields: Array<{
+        name: string
+        value: unknown
+        status: 'observed' | 'inferred' | 'ambiguous' | 'missing'
+        evidence?: Array<{
+          capture_id: string
+          visible_text?: string | null
+          region?: {
+            x: number
+            y: number
+            width: number
+            height: number
+          } | null
+        }>
+        note?: string | null
+      }>
       proposed_transaction_record_index?: number | null
       possible_duplicate_of?: string[]
       possible_existing_transaction_ids?: string[]

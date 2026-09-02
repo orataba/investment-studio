@@ -345,7 +345,7 @@ function screenshotBatchFixture({
     harness: source === 'assistant' ? 'deepseek-harness' : null,
     provider: source === 'assistant' ? 'deepseek' : null,
     model_name: source === 'assistant' ? 'deepseek-v4-flash-vision-exp' : null,
-    finish_reason: source === 'human' ? 'human_review_confirmed' : 'completed',
+    finish_reason: source === 'human' ? 'user_confirmed' : 'completed',
     schema_version: 'portfolio.transaction-capture-analysis.v2',
     analysis: {
       summary: 'Broker activity contains reviewable transaction candidates.',
@@ -529,7 +529,7 @@ describe('Transactions rendered page contract', () => {
 
     const exportButton = await screen.findByRole('button', { name: 'Export' })
     expect(screen.getByRole('button', { name: 'Import' })).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Screenshot Assistant' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'From Screenshot' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Template' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Record Transaction' })).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Transaction CSV' })).not.toBeInTheDocument()
@@ -601,12 +601,9 @@ describe('Transactions rendered page contract', () => {
       '/portfolios/:portfolioId/transactions',
     )
 
-    await user.click(await screen.findByRole('button', { name: 'Screenshot Assistant' }))
+    await user.click(await screen.findByRole('button', { name: 'From Screenshot' }))
     const assistant = screen.getByRole('dialog', { name: 'Screenshot assistant' })
-    expect(within(assistant).getByRole('radio', { name: /Let agent decide/ })).toHaveAttribute(
-      'aria-checked',
-      'true',
-    )
+    expect(within(assistant).getByRole('combobox', { name: 'Use' })).toHaveValue('auto')
 
     const screenshotInput = document.querySelector<HTMLInputElement>(
       'input[type="file"][accept*="image/png"]',
@@ -619,8 +616,11 @@ describe('Transactions rendered page contract', () => {
     expect(within(assistant).getByText('broker-fill-overlap.png')).toBeInTheDocument()
     expect(apiMocks.uploadPortfolioTransactionCapture).not.toHaveBeenCalled()
 
-    await user.click(within(assistant).getByRole('radio', { name: /Record transactions/ }))
-    await user.click(within(assistant).getByRole('button', { name: 'Prepare evidence' }))
+    await user.selectOptions(
+      within(assistant).getByRole('combobox', { name: 'Use' }),
+      'transaction_import',
+    )
+    await user.click(within(assistant).getByRole('button', { name: 'Analyze screenshots' }))
 
     await waitFor(() =>
       expect(apiMocks.createPortfolioTransactionCaptureBatch).toHaveBeenCalledWith(
@@ -629,26 +629,21 @@ describe('Transactions rendered page contract', () => {
         'transaction_import',
       ),
     )
-    expect(within(assistant).getByText('Evidence ready')).toBeInTheDocument()
     const batchDetail = within(assistant).getByRole('region', { name: 'Selected screenshot batch' })
     expect(within(batchDetail).getByText('Record transactions')).toBeInTheDocument()
-    expect(within(batchDetail).getByText('2 KB · cccccccc')).toBeInTheDocument()
-    expect(within(batchDetail).getByText('2 KB · dddddddd')).toBeInTheDocument()
-    expect(within(batchDetail).getByText(/partial overlap and broker-specific layouts/)).toBeInTheDocument()
-    await user.click(within(batchDetail).getByRole('button', { name: 'Analyze with DeepSeek' }))
+    expect(within(batchDetail).getAllByText('2 KB')).toHaveLength(2)
     await waitFor(() => expect(apiMocks.startPortfolioTransactionCaptureAnalysis).toHaveBeenCalledWith(
       '3',
       'capture-batch-1',
     ))
-    expect(within(batchDetail).getByText('Waiting for the restricted DeepSeek runner.')).toBeInTheDocument()
+    expect(within(batchDetail).getByText('Waiting to start.')).toBeInTheDocument()
+    expect(within(batchDetail).getByText(/AI will create an editable draft/)).toBeInTheDocument()
     expect(within(batchDetail).queryByRole('button', { name: /analyze/i })).not.toBeInTheDocument()
-    const status = screen.getByRole('region', { name: 'Screenshot assistant status' })
-    expect(within(status).getByText(/2 screenshots · Record transactions · No ledger changes/)).toBeInTheDocument()
     expect(apiMocks.importPortfolioTransactionFile).not.toHaveBeenCalled()
     expect(apiMocks.createPortfolioTransaction).not.toHaveBeenCalled()
   })
 
-  it('shows agent findings as a review surface without exposing a direct commit action', async () => {
+  it('keeps AI notes secondary when no transaction draft was produced', async () => {
     const user = userEvent.setup()
     apiMocks.getPortfolioAccounts.mockResolvedValue({
       portfolio_id: '3',
@@ -730,25 +725,20 @@ describe('Transactions rendered page contract', () => {
       '/portfolios/:portfolioId/transactions',
     )
 
-    const status = await screen.findByRole('region', { name: 'Screenshot assistant status' })
-    expect(within(status).getByText('Review revision 2')).toBeInTheDocument()
-    await user.click(within(status).getByRole('button', { name: 'Open' }))
-
+    await user.click(await screen.findByRole('button', { name: 'From Screenshot' }))
     const assistant = screen.getByRole('dialog', { name: 'Screenshot assistant' })
+    await user.click(within(assistant).getByRole('tab', { name: /History/ }))
     const detail = within(assistant).getByRole('region', { name: 'Selected screenshot batch' })
+    expect(within(detail).getByText('AI notes')).toBeInTheDocument()
     expect(within(detail).getByText(/One ETF position is visible/)).toBeInTheDocument()
-    expect(within(detail).getByText('1 issue')).toBeInTheDocument()
-    expect(within(detail).getByText('Position Snapshot')).toBeInTheDocument()
-    expect(within(detail).getByText('ETF Brokerage')).toBeInTheDocument()
-    expect(within(detail).getByText('Options Account')).toBeInTheDocument()
-    expect(within(detail).getByText('txn-0278')).toBeInTheDocument()
-    expect(within(detail).getByText('Likely already recorded')).toBeInTheDocument()
     expect(within(detail).getByText('Is this position as of trade date or settlement date?')).toBeInTheDocument()
-    expect(within(detail).getByText('Human confirmation required')).toBeInTheDocument()
-    expect(within(assistant).queryByRole('button', { name: /commit/i })).not.toBeInTheDocument()
+    expect(within(detail).getByText('No transaction draft')).toBeInTheDocument()
+    expect(within(detail).getByRole('button', { name: 'Record manually' })).toBeInTheDocument()
+    expect(within(detail).getByRole('button', { name: 'Analyze again' })).toBeInTheDocument()
+    expect(within(assistant).queryByRole('button', { name: 'Confirm & record' })).not.toBeInTheDocument()
   })
 
-  it('records a screenshot proposal only after human revision, clean Preview, and final confirmation', async () => {
+  it('lets a user edit an AI draft and confirm it in one action', async () => {
     const user = userEvent.setup()
     const usdFcnAccount = {
       ...fcnAccount,
@@ -903,7 +893,7 @@ describe('Transactions rendered page contract', () => {
       harness: null,
       provider: null,
       model_name: null,
-      finish_reason: 'human_review_confirmed',
+      finish_reason: 'user_confirmed',
       analysis: {
         ...assistantAnalysis.analysis,
         questions: [],
@@ -946,16 +936,16 @@ describe('Transactions rendered page contract', () => {
       '/portfolios/:portfolioId/transactions',
     )
 
-    const status = await screen.findByRole('region', { name: 'Screenshot assistant status' })
-    await user.click(within(status).getByRole('button', { name: 'Open' }))
+    await user.click(await screen.findByRole('button', { name: 'From Screenshot' }))
     const assistant = screen.getByRole('dialog', { name: 'Screenshot assistant' })
+    await user.click(within(assistant).getByRole('tab', { name: /History/ }))
     const detail = within(assistant).getByRole('region', { name: 'Selected screenshot batch' })
-    expect(within(detail).queryByRole('button', { name: /Record 1 transaction/i })).not.toBeInTheDocument()
+    expect(within(detail).queryByRole('button', { name: 'Confirm & record' })).not.toBeInTheDocument()
 
-    await user.click(within(detail).getByRole('button', { name: 'Review details' }))
-    const review = within(detail).getByRole('region', { name: 'Human transaction review' })
-    const saveReview = within(review).getByRole('button', { name: 'Save review & run Preview' })
-    expect(saveReview).toBeDisabled()
+    await user.click(within(detail).getByRole('button', { name: 'Review draft' }))
+    const review = within(detail).getByRole('region', { name: 'Transaction draft' })
+    const confirmAndRecord = within(review).getByRole('button', { name: 'Confirm & record' })
+    expect(confirmAndRecord).toBeEnabled()
 
     const notionalInput = within(review).getByLabelText('Record 1 FCN notional')
     const priceInput = within(review).getByLabelText('Record 1 price')
@@ -966,18 +956,16 @@ describe('Transactions rendered page contract', () => {
     await user.type(priceInput, '650000')
     await user.clear(grossInput)
     await user.type(grossInput, '650000')
-    await user.click(within(review).getByRole('checkbox', { name: /Confirm the FCN notional/ }))
-    await user.click(within(review).getByRole('checkbox', { name: /Confirm the strike/ }))
-    expect(saveReview).toBeEnabled()
-
-    await user.click(saveReview)
+    expect(within(review).queryByRole('checkbox', { name: /Confirm the FCN notional/ })).not.toBeInTheDocument()
+    expect(within(review).getByText('Confirm the FCN notional shown as 600.000.')).toBeInTheDocument()
+    await user.click(confirmAndRecord)
     await waitFor(() => expect(
       apiMocks.createPortfolioTransactionCaptureAnalysisRevision,
     ).toHaveBeenCalledTimes(1))
     const reviewPayload = apiMocks.createPortfolioTransactionCaptureAnalysisRevision.mock.calls[0][2]
     expect(reviewPayload).toMatchObject({
       source: 'human',
-      finish_reason: 'human_review_confirmed',
+      finish_reason: 'user_confirmed',
       analysis: {
         questions: [],
         candidates: [{
@@ -990,22 +978,13 @@ describe('Transactions rendered page contract', () => {
       transaction_import: reviewedImport,
     })
 
-    const recordButton = await within(detail).findByRole('button', { name: 'Record 1 transaction' })
-    expect(apiMocks.commitPortfolioTransactionImport).not.toHaveBeenCalled()
-    await user.click(recordButton)
-    const confirmation = screen.getByRole('alertdialog', { name: 'Record Reviewed Transactions' })
-    expect(within(confirmation).getByText(/portfolio/)).toHaveTextContent('3')
-    expect(within(confirmation).getByText(/only step that writes ledger facts/)).toBeInTheDocument()
-    expect(apiMocks.commitPortfolioTransactionImport).not.toHaveBeenCalled()
-
-    await user.click(within(confirmation).getByRole('button', { name: 'Record 1 Transaction' }))
     await waitFor(() => expect(apiMocks.commitPortfolioTransactionImport).toHaveBeenCalledWith(
       '3',
       reviewedImport,
       'c'.repeat(64),
-      expect.stringContaining('transaction-capture-import-'),
+      'transaction-capture-capture-batch-fcn-1-revision-2',
     ))
-    expect(await screen.findByText('Recorded 1 reviewed transaction fact from screenshots.')).toBeInTheDocument()
+    expect(await screen.findByText('Recorded 1 transaction from screenshots.')).toBeInTheDocument()
     expect(apiMocks.createPortfolioTransaction).not.toHaveBeenCalled()
   })
 
@@ -1048,17 +1027,14 @@ describe('Transactions rendered page contract', () => {
       '/portfolios/:portfolioId/transactions',
     )
 
-    const status = await screen.findByRole('region', { name: 'Screenshot assistant status' })
-    expect(within(status).getByText('Recorded')).toBeInTheDocument()
-    expect(within(status).getByText(/Recorded in ledger/)).toBeInTheDocument()
-    await user.click(within(status).getByRole('button', { name: 'Open' }))
-
-    const detail = within(screen.getByRole('dialog', { name: 'Screenshot assistant' }))
-      .getByRole('region', { name: 'Selected screenshot batch' })
-    expect(within(detail).getByText('This reviewed proposal is already in the ledger.')).toBeInTheDocument()
+    await user.click(await screen.findByRole('button', { name: 'From Screenshot' }))
+    const assistant = screen.getByRole('dialog', { name: 'Screenshot assistant' })
+    await user.click(within(assistant).getByRole('tab', { name: /History/ }))
+    const detail = within(assistant).getByRole('region', { name: 'Selected screenshot batch' })
+    expect(within(detail).getByText('These screenshot transactions are in the ledger.')).toBeInTheDocument()
     expect(within(detail).getByText(/txn-from-capture-1/)).toBeInTheDocument()
-    expect(within(detail).queryByRole('button', { name: /record 1 transaction/i })).not.toBeInTheDocument()
-    expect(within(detail).queryByRole('button', { name: /review details/i })).not.toBeInTheDocument()
+    expect(within(detail).queryByRole('button', { name: 'Confirm & record' })).not.toBeInTheDocument()
+    expect(within(detail).queryByRole('button', { name: /draft/i })).not.toBeInTheDocument()
     expect(apiMocks.commitPortfolioTransactionImport).not.toHaveBeenCalled()
   })
 
@@ -1145,7 +1121,7 @@ describe('Transactions rendered page contract', () => {
           harness: null,
           provider: null,
           model_name: null,
-          finish_reason: 'human_review_confirmed',
+          finish_reason: 'user_confirmed',
           analysis: payload.analysis,
           transaction_import: payload.transaction_import,
           preview_digest: '7'.repeat(64),
@@ -1171,18 +1147,24 @@ describe('Transactions rendered page contract', () => {
         }
       },
     )
+    apiMocks.commitPortfolioTransactionImport.mockResolvedValue({
+      portfolio_id: '3',
+      preview_digest: '7'.repeat(64),
+      created_count: 1,
+      transactions: [selectedTransaction],
+    })
     renderPortfolioPage(
       <TransactionsPage />,
       '/portfolios/3/transactions',
       '/portfolios/:portfolioId/transactions',
     )
 
-    const status = await screen.findByRole('region', { name: 'Screenshot assistant status' })
-    await user.click(within(status).getByRole('button', { name: 'Open' }))
-    const detail = within(screen.getByRole('dialog', { name: 'Screenshot assistant' }))
-      .getByRole('region', { name: 'Selected screenshot batch' })
-    await user.click(within(detail).getByRole('button', { name: 'Review details' }))
-    const review = within(detail).getByRole('region', { name: 'Human transaction review' })
+    await user.click(await screen.findByRole('button', { name: 'From Screenshot' }))
+    const assistant = screen.getByRole('dialog', { name: 'Screenshot assistant' })
+    await user.click(within(assistant).getByRole('tab', { name: /History/ }))
+    const detail = within(assistant).getByRole('region', { name: 'Selected screenshot batch' })
+    await user.click(within(detail).getByRole('button', { name: 'Review draft' }))
+    const review = within(detail).getByRole('region', { name: 'Transaction draft' })
 
     const optionAction = within(review).getByLabelText('Record 1 action')
     expect(within(optionAction).getByRole('option', { name: 'Fee' })).toBeInTheDocument()
@@ -1202,7 +1184,7 @@ describe('Transactions rendered page contract', () => {
     await user.type(targetAmount, '781')
     await user.clear(fxRate)
     await user.type(fxRate, '7.81')
-    await user.click(within(review).getByRole('button', { name: 'Save review & run Preview' }))
+    await user.click(within(review).getByRole('button', { name: 'Confirm & record' }))
 
     await waitFor(() => expect(
       apiMocks.createPortfolioTransactionCaptureAnalysisRevision,
@@ -1226,7 +1208,20 @@ describe('Transactions rendered page contract', () => {
         account_id: 'cash-1',
       },
     }])
-    expect(apiMocks.commitPortfolioTransactionImport).not.toHaveBeenCalled()
+    await waitFor(() => expect(apiMocks.commitPortfolioTransactionImport).toHaveBeenCalledWith(
+      '3',
+      {
+        source_system: 'portfolio_screenshot_assistant',
+        records: [{
+          ...records[1],
+          external_reference: `${batchId}#1`,
+          counter_amount: '781',
+          fx_rate: '7.81',
+        }],
+      },
+      '7'.repeat(64),
+      `transaction-capture-${batchId}-revision-2`,
+    ))
   })
 
   it('shows file row and batch errors before allowing any import', async () => {

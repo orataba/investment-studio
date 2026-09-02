@@ -10,6 +10,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import selectinload
 
+from portfolio_app.core.settings import get_settings
 from portfolio_app.db.models import (
     TransactionCaptureAnalysisRevisionModel,
     TransactionCaptureBatchItemModel,
@@ -38,6 +39,55 @@ class TransactionCaptureAnalysisRunConflictError(RuntimeError):
 
 def _utc_timestamp() -> str:
     return datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def _parse_utc_timestamp(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(UTC)
+
+
+def _effective_analysis_run_state(
+    row: TransactionCaptureBatchModel,
+    *,
+    latest_analysis: TransactionCaptureAnalysisRevisionModel | None,
+    now: datetime | None = None,
+) -> tuple[str, str | None]:
+    status = row.analysis_run_status
+    if status not in {"queued", "running"}:
+        return status, row.analysis_run_error
+
+    started_at = _parse_utc_timestamp(row.analysis_run_started_at)
+    latest_created_at = _parse_utc_timestamp(
+        latest_analysis.created_at if latest_analysis is not None else None
+    )
+    if (
+        started_at is not None
+        and latest_created_at is not None
+        and latest_created_at >= started_at
+        and latest_analysis is not None
+        and latest_analysis.source == "assistant"
+        and latest_analysis.harness == "deepseek-harness"
+    ):
+        return "succeeded", None
+
+    activity_at = started_at or _parse_utc_timestamp(row.updated_at)
+    if activity_at is None:
+        return status, row.analysis_run_error
+    timeout_seconds = get_settings().copilot_analysis_timeout_seconds
+    current_time = now or datetime.now(UTC)
+    if (current_time - activity_at).total_seconds() < timeout_seconds:
+        return status, row.analysis_run_error
+    return (
+        "failed",
+        "The previous analysis was interrupted. Retry the screenshot analysis.",
+    )
 
 
 def _detect_image_media_type(content: bytes) -> str | None:
@@ -114,6 +164,10 @@ def _serialize_batch(
     latest_analysis: TransactionCaptureAnalysisRevisionModel | None,
 ) -> dict[str, object]:
     ordered_items = sorted(row.items, key=lambda item: item.ordinal)
+    analysis_run_status, analysis_run_error = _effective_analysis_run_state(
+        row,
+        latest_analysis=latest_analysis,
+    )
     proposed_references: list[str] = []
     transaction_import = (
         latest_analysis.transaction_import_json
@@ -173,11 +227,11 @@ def _serialize_batch(
         "status": row.status,
         "capture_count": row.capture_count,
         "latest_analysis_revision": row.latest_analysis_revision,
-        "analysis_run_status": row.analysis_run_status,
+        "analysis_run_status": analysis_run_status,
         "analysis_run_attempt": row.analysis_run_attempt,
         "analysis_run_started_at": row.analysis_run_started_at,
         "analysis_run_completed_at": row.analysis_run_completed_at,
-        "analysis_run_error": row.analysis_run_error,
+        "analysis_run_error": analysis_run_error,
         "captures": [_serialize_capture(item.capture) for item in ordered_items],
         "latest_analysis": (
             _serialize_analysis(latest_analysis) if latest_analysis is not None else None
@@ -503,7 +557,12 @@ def queue_transaction_capture_analysis_run(
             raise TransactionCaptureBatchNotFoundError(
                 "Screenshot analysis batch not found."
             )
-        if batch.analysis_run_status in {"queued", "running"}:
+        latest_analysis = _latest_analysis(session, batch)
+        analysis_run_status, _analysis_run_error = _effective_analysis_run_state(
+            batch,
+            latest_analysis=latest_analysis,
+        )
+        if analysis_run_status in {"queued", "running"}:
             raise TransactionCaptureAnalysisRunConflictError(
                 "Screenshot analysis is already running for this batch."
             )
@@ -518,7 +577,7 @@ def queue_transaction_capture_analysis_run(
         return _serialize_batch(
             session,
             batch,
-            latest_analysis=_latest_analysis(session, batch),
+            latest_analysis=latest_analysis,
         )
 
 

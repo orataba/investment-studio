@@ -13,7 +13,6 @@ export type TransactionCaptureReviewDraft = {
   batchId: string
   sourceRevision: number
   transactionImport: PortfolioTransactionImportRequest
-  confirmedQuestions: boolean[]
   duplicateAssessments: Record<string, TransactionCaptureDuplicateAssessment>
 }
 

@@ -159,6 +159,10 @@ button:disabled {
   color: #ffffff !important;
 }
 
+.button-primary:disabled {
+  opacity: 0.45;
+}
+
 .context-chip {
   padding: 5px 9px;
   border: 1px solid var(--portfolio-line);
@@ -4752,6 +4756,18 @@ input[type='checkbox'] {
   flex-wrap: wrap;
 }
 
+.transaction-toolbar-file-actions,
+.transaction-toolbar-entry-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.transaction-toolbar-entry-actions {
+  padding-left: 8px;
+  border-left: 1px solid var(--portfolio-line-strong);
+}
+
 .transaction-toolbar-button {
   display: inline-flex;
   align-items: center;
@@ -4763,53 +4779,6 @@ input[type='checkbox'] {
 .transaction-toolbar-button:disabled {
   cursor: not-allowed;
   opacity: 0.48;
-}
-
-.transaction-capture-summary {
-  display: grid;
-  grid-template-columns: 3px minmax(0, 1fr) auto;
-  gap: 12px;
-  align-items: center;
-  margin: 10px 0 0;
-  padding: 9px 10px 9px 0;
-  border-top: 1px solid var(--portfolio-line);
-  border-bottom: 1px solid var(--portfolio-line);
-  background: var(--portfolio-band);
-}
-
-.transaction-capture-summary-mark {
-  align-self: stretch;
-  background: var(--portfolio-accent);
-}
-
-.transaction-capture-summary-copy {
-  display: grid;
-  gap: 3px;
-  min-width: 0;
-}
-
-.transaction-capture-summary-copy > div {
-  display: flex;
-  gap: 9px;
-  align-items: center;
-}
-
-.transaction-capture-summary-copy strong {
-  color: var(--portfolio-ink);
-  font-size: 13px;
-  font-weight: 500;
-}
-
-.transaction-capture-summary-copy > span {
-  overflow: hidden;
-  color: var(--portfolio-muted);
-  font-size: 11px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.transaction-capture-summary-open {
-  min-width: 54px;
 }
 
 .transaction-capture-status {
@@ -4848,7 +4817,7 @@ input[type='checkbox'] {
 }
 
 .transaction-drawer.transaction-capture-assistant-drawer {
-  width: min(760px, 100vw);
+  width: min(840px, 100vw);
   display: grid;
   grid-template-rows: auto auto minmax(0, 1fr);
   overflow: hidden;
@@ -4932,74 +4901,6 @@ input[type='checkbox'] {
   background: #ffffff;
 }
 
-.transaction-capture-step-rail {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  margin: 0;
-  padding: 14px 20px;
-  border-bottom: 1px solid var(--portfolio-line);
-  list-style: none;
-}
-
-.transaction-capture-step-rail li {
-  position: relative;
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  min-width: 0;
-  color: var(--portfolio-muted);
-}
-
-.transaction-capture-step-rail li::after {
-  position: absolute;
-  top: 50%;
-  right: 10px;
-  left: 86px;
-  height: 1px;
-  background: var(--portfolio-line);
-  content: '';
-}
-
-.transaction-capture-step-rail li:last-child::after {
-  display: none;
-}
-
-.transaction-capture-step-rail li > span {
-  display: inline-flex;
-  width: 20px;
-  height: 20px;
-  flex: 0 0 auto;
-  align-items: center;
-  justify-content: center;
-  border: 1px solid var(--portfolio-line-strong);
-  background: #ffffff;
-  font-size: 10px;
-}
-
-.transaction-capture-step-rail li strong {
-  overflow: hidden;
-  font-size: 11px;
-  font-weight: 400;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.transaction-capture-step-rail li.active,
-.transaction-capture-step-rail li.complete {
-  color: var(--portfolio-ink);
-}
-
-.transaction-capture-step-rail li.active > span {
-  border-color: var(--portfolio-accent);
-  background: var(--portfolio-accent);
-  color: #ffffff;
-}
-
-.transaction-capture-step-rail li.complete > span {
-  border-color: var(--portfolio-accent);
-  color: var(--portfolio-accent);
-}
-
 .transaction-capture-new {
   display: grid;
   gap: 0;
@@ -5035,42 +4936,32 @@ input[type='checkbox'] {
   font-size: 11px;
 }
 
-.transaction-capture-purpose-grid {
+.transaction-capture-purpose-field {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  border-top: 1px solid var(--portfolio-line);
-  border-left: 1px solid var(--portfolio-line);
+  grid-template-columns: auto minmax(180px, 240px) minmax(0, 1fr);
+  gap: 8px;
+  align-items: center;
 }
 
-.transaction-capture-purpose-grid button {
-  display: grid;
-  gap: 4px;
-  min-height: 66px;
-  padding: 11px 12px;
-  border: 0;
-  border-right: 1px solid var(--portfolio-line);
-  border-bottom: 1px solid var(--portfolio-line);
-  background: #ffffff;
+.transaction-capture-purpose-field > span {
   color: var(--portfolio-ink);
-  text-align: left;
-  cursor: pointer;
-}
-
-.transaction-capture-purpose-grid button:hover {
-  background: var(--portfolio-band);
-}
-
-.transaction-capture-purpose-grid button.active {
-  box-shadow: 3px 0 0 var(--portfolio-accent) inset;
-  background: var(--portfolio-accent-soft);
-}
-
-.transaction-capture-purpose-grid button strong {
-  font-size: 12px;
+  font-size: 11px;
   font-weight: 500;
 }
 
-.transaction-capture-purpose-grid button span {
+.transaction-capture-purpose-field select {
+  min-height: 32px;
+  width: 100%;
+  padding: 5px 8px;
+  border: 1px solid var(--portfolio-line-strong);
+  border-radius: 0;
+  background: #ffffff;
+  color: var(--portfolio-ink);
+  font: inherit;
+  font-size: 11px;
+}
+
+.transaction-capture-purpose-field small {
   color: var(--portfolio-muted);
   font-size: 10px;
   line-height: 1.4;
@@ -5276,8 +5167,12 @@ input[type='checkbox'] {
 }
 
 .transaction-capture-batch-list small {
+  display: block;
+  overflow: hidden;
   color: var(--portfolio-muted);
   font-size: 9px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .transaction-capture-batch-dot {
@@ -5338,7 +5233,6 @@ input[type='checkbox'] {
 }
 
 .transaction-capture-batch-title > div > span,
-.transaction-capture-analysis-summary > span,
 .transaction-capture-agent-ready > span {
   color: var(--portfolio-muted);
   font-size: 9px;
@@ -5399,145 +5293,51 @@ input[type='checkbox'] {
   gap: 14px;
 }
 
-.transaction-capture-analysis-summary {
-  display: grid;
-  gap: 5px;
-  padding: 12px;
-  border-left: 3px solid var(--portfolio-accent);
-  background: var(--portfolio-accent-soft);
-}
-
-.transaction-capture-analysis-summary p,
-.transaction-capture-agent-ready p {
-  margin: 0;
-  color: var(--portfolio-ink);
-  font-size: 12px;
-  line-height: 1.55;
-}
-
-.transaction-capture-analysis-metrics {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  margin: 0;
+.transaction-capture-ai-notes {
   border-top: 1px solid var(--portfolio-line);
-  border-left: 1px solid var(--portfolio-line);
-}
-
-.transaction-capture-analysis-metrics > div {
-  display: grid;
-  gap: 3px;
-  padding: 9px 10px;
-  border-right: 1px solid var(--portfolio-line);
   border-bottom: 1px solid var(--portfolio-line);
 }
 
-.transaction-capture-analysis-metrics dt {
-  color: var(--portfolio-muted);
-  font-size: 9px;
-}
-
-.transaction-capture-analysis-metrics dd {
-  margin: 0;
-  color: var(--portfolio-ink);
-  font-size: 12px;
-  font-weight: 500;
-}
-
-.transaction-capture-analysis-block {
-  display: grid;
-  gap: 8px;
-}
-
-.transaction-capture-analysis-block > strong {
-  color: var(--portfolio-ink);
-  font-size: 11px;
-  font-weight: 500;
-}
-
-.transaction-capture-analysis-block ul,
-.transaction-capture-analysis-block ol {
-  display: grid;
-  gap: 0;
-  margin: 0;
-  padding: 0;
-  border-top: 1px solid var(--portfolio-line);
-  list-style: none;
-}
-
-.transaction-capture-analysis-block li {
+.transaction-capture-ai-notes summary {
   padding: 8px 0;
-  border-bottom: 1px solid var(--portfolio-line);
-  color: var(--portfolio-ink);
-  font-size: 11px;
-}
-
-.transaction-capture-analysis-block ul li {
-  display: flex;
-  justify-content: space-between;
-  gap: 12px;
-}
-
-.transaction-capture-analysis-block li span {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.transaction-capture-analysis-block li em {
-  flex: 0 0 auto;
   color: var(--portfolio-muted);
-  font-style: normal;
+  font-size: 10px;
+  cursor: pointer;
 }
 
-.transaction-capture-account-allocation li em {
-  max-width: 58%;
-  overflow: hidden;
-  text-align: right;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+.transaction-capture-ai-notes p,
+.transaction-capture-ai-notes ul {
+  margin: 0 0 9px;
+  color: var(--portfolio-muted);
+  font-size: 10px;
+  line-height: 1.5;
 }
 
-.transaction-capture-account-allocation li em.transaction-capture-account-status-resolved {
-  color: var(--portfolio-positive);
-}
-
-.transaction-capture-account-allocation li em.transaction-capture-account-status-ambiguous,
-.transaction-capture-account-allocation li em.transaction-capture-account-status-unavailable {
-  color: #92400e;
-}
-
-.transaction-capture-duplicate-check li em.transaction-capture-duplicate-status-same_record,
-.transaction-capture-duplicate-check li em.transaction-capture-duplicate-status-uncertain {
-  color: #92400e;
-}
-
-.transaction-capture-duplicate-check li em.transaction-capture-duplicate-status-distinct_records {
-  color: var(--portfolio-positive);
-}
-
-.transaction-capture-questions ol {
-  counter-reset: capture-question;
-}
-
-.transaction-capture-questions li {
+.transaction-capture-ai-notes ul {
   display: grid;
-  grid-template-columns: 20px minmax(0, 1fr);
-  gap: 7px;
-  counter-increment: capture-question;
-}
-
-.transaction-capture-questions li::before {
-  color: var(--portfolio-accent);
-  content: counter(capture-question, decimal-leading-zero);
-  font-size: 9px;
+  gap: 4px;
+  padding-left: 18px;
 }
 
 .transaction-capture-review-boundary {
-  display: grid;
-  gap: 3px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
   padding: 10px 12px;
   border: 1px solid var(--portfolio-line-strong);
   background: var(--portfolio-band);
+}
+
+.transaction-capture-review-boundary > div:first-child {
+  display: grid;
+  gap: 3px;
+}
+
+.transaction-capture-review-boundary > div:last-child {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 8px;
 }
 
 .transaction-capture-review-boundary strong {
@@ -5566,8 +5366,10 @@ input[type='checkbox'] {
 }
 
 .transaction-capture-agent-ready p {
+  margin: 0;
   color: var(--portfolio-muted);
   font-size: 11px;
+  line-height: 1.5;
 }
 
 .transaction-capture-agent-ready-footer {
@@ -5809,44 +5611,50 @@ input[type='checkbox'] {
   margin: 0;
 }
 
-.transaction-capture-review-checklist {
-  display: grid;
-  gap: 0;
-  padding: 0 14px;
+.transaction-capture-field-notes {
+  border: 1px solid var(--portfolio-line);
+  background: var(--portfolio-band);
 }
 
-.transaction-capture-review-checklist > strong {
-  padding-bottom: 7px;
-  color: var(--portfolio-ink);
-  font-size: 11px;
+.transaction-capture-field-notes summary {
+  padding: 7px 9px;
+  color: var(--portfolio-muted);
+  font-size: 9px;
+  cursor: pointer;
+}
+
+.transaction-capture-field-notes > div {
+  display: grid;
+  gap: 4px;
+  padding: 8px 9px;
+  border-top: 1px solid #fde68a;
+  background: #fffbeb;
+}
+
+.transaction-capture-field-notes > div span {
+  color: #92400e;
+  font-size: 9px;
+  line-height: 1.4;
+}
+
+.transaction-capture-field-notes > div strong {
   font-weight: 500;
 }
 
-.transaction-capture-review-checklist > label {
+.transaction-capture-review-notes {
   display: grid;
-  grid-template-columns: 16px minmax(0, 1fr);
-  gap: 8px;
-  padding: 9px 0;
-  border-top: 1px solid var(--portfolio-line);
-  color: var(--portfolio-ink);
-  cursor: pointer;
+  gap: 6px;
+  margin: 0 14px;
+  padding: 9px 10px;
+  border: 1px solid #fde68a;
+  background: #fffbeb;
+  color: #92400e;
   font-size: 10px;
   line-height: 1.45;
 }
 
-.transaction-capture-review-checklist input {
-  margin: 2px 0 0;
-}
-
-.transaction-capture-review-checklist label > span {
-  display: grid;
-  gap: 3px;
-}
-
-.transaction-capture-review-checklist em {
-  color: var(--portfolio-muted);
-  font-size: 9px;
-  font-style: normal;
+.transaction-capture-review-notes strong {
+  font-weight: 500;
 }
 
 .transaction-capture-review-footer {
@@ -5932,42 +5740,6 @@ input[type='checkbox'] {
   color: #9a3412;
 }
 
-.transaction-capture-commit-summary {
-  display: grid;
-  gap: 11px;
-}
-
-.transaction-capture-commit-summary p,
-.transaction-capture-commit-summary ul {
-  margin: 0;
-}
-
-.transaction-capture-commit-summary ul {
-  display: grid;
-  gap: 0;
-  padding: 0;
-  border-top: 1px solid var(--portfolio-line);
-  list-style: none;
-}
-
-.transaction-capture-commit-summary li {
-  display: grid;
-  gap: 2px;
-  padding: 8px 0;
-  border-bottom: 1px solid var(--portfolio-line);
-}
-
-.transaction-capture-commit-summary li strong {
-  color: var(--portfolio-ink);
-  font-size: 11px;
-  font-weight: 500;
-}
-
-.transaction-capture-commit-summary li span {
-  color: var(--portfolio-muted);
-  font-size: 10px;
-}
-
 .transaction-capture-empty-history {
   display: grid;
   justify-items: start;
@@ -5997,13 +5769,9 @@ input[type='checkbox'] {
 }
 
 @media (max-width: 720px) {
-  .transaction-capture-summary {
-    grid-template-columns: 3px minmax(0, 1fr);
-  }
-
-  .transaction-capture-summary-open {
-    grid-column: 2;
-    justify-self: start;
+  .transaction-toolbar-entry-actions {
+    padding-left: 0;
+    border-left: 0;
   }
 
   .transaction-capture-assistant-header,
@@ -6013,24 +5781,17 @@ input[type='checkbox'] {
     padding-left: 14px;
   }
 
-  .transaction-capture-assistant-tabs,
-  .transaction-capture-step-rail {
+  .transaction-capture-assistant-tabs {
     padding-right: 14px;
     padding-left: 14px;
   }
 
-  .transaction-capture-step-rail li::after {
-    right: 6px;
-    left: 28px;
-  }
-
-  .transaction-capture-step-rail li strong {
-    display: none;
-  }
-
-  .transaction-capture-purpose-grid,
   .transaction-capture-draft-grid,
   .transaction-capture-evidence-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .transaction-capture-purpose-field {
     grid-template-columns: 1fr;
   }
 
@@ -6055,10 +5816,6 @@ input[type='checkbox'] {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
-  .transaction-capture-analysis-metrics {
-    grid-template-columns: 1fr;
-  }
-
   .transaction-capture-review-grid {
     grid-template-columns: 1fr;
   }
@@ -6073,6 +5830,7 @@ input[type='checkbox'] {
   }
 
   .transaction-capture-review-footer,
+  .transaction-capture-review-boundary,
   .transaction-capture-review-action,
   .transaction-capture-recorded,
   .transaction-capture-partial {
@@ -6081,6 +5839,10 @@ input[type='checkbox'] {
   }
 
   .transaction-capture-review-footer > div {
+    justify-content: flex-end;
+  }
+
+  .transaction-capture-review-boundary > div:last-child {
     justify-content: flex-end;
   }
 }
@@ -12254,7 +12016,7 @@ input[type='date']::-webkit-calendar-picker-indicator {
   font-weight: 500;
 }
 
-@media (max-width: 1080px) {
+@media (max-width: 1280px) {
   .transaction-workbench-grid,
   .portfolio-security-overview-workbench,
   .position-lot-workbench {

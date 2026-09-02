@@ -273,6 +273,139 @@ def test_screenshot_analysis_run_is_queued_once(client, monkeypatch) -> None:
     )
 
 
+@pytest.mark.parametrize("interrupted_status", ["queued", "running"])
+def test_interrupted_screenshot_analysis_can_be_retried(
+    client,
+    monkeypatch,
+    interrupted_status: str,
+) -> None:
+    from portfolio_app.api.routes import transaction_captures as capture_routes
+    from portfolio_app.db.models import TransactionCaptureBatchModel
+    from portfolio_app.db.session import get_session_factory
+    from portfolio_app.services.transaction_captures import (
+        mark_transaction_capture_analysis_run_started,
+        queue_transaction_capture_analysis_run,
+    )
+
+    capture = _upload_capture(client)
+    batch = _create_batch(client, [capture["capture_id"]])
+    queued = queue_transaction_capture_analysis_run(
+        portfolio_id="portfolio-ops",
+        batch_id=batch["batch_id"],
+    )
+    assert queued["analysis_run_attempt"] == 1
+    if interrupted_status == "running":
+        started, _revision = mark_transaction_capture_analysis_run_started(
+            portfolio_id="portfolio-ops",
+            batch_id=batch["batch_id"],
+            attempt=1,
+        )
+        assert started is True
+
+    session_factory = get_session_factory()
+    with session_factory() as session:
+        stored = session.get(TransactionCaptureBatchModel, batch["batch_id"])
+        assert stored is not None
+        assert stored.analysis_run_status == interrupted_status
+        stored.updated_at = "2020-01-01T00:00:00Z"
+        if interrupted_status == "running":
+            stored.analysis_run_started_at = "2020-01-01T00:00:00Z"
+        session.commit()
+
+    detail = client.get(
+        "/api/portfolios/portfolio-ops/transaction-capture-batches/"
+        f"{batch['batch_id']}"
+    )
+    assert detail.status_code == 200, detail.text
+    assert detail.json()["analysis_run_status"] == "failed"
+    assert detail.json()["analysis_run_error"] == (
+        "The previous analysis was interrupted. Retry the screenshot analysis."
+    )
+
+    calls: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        capture_routes,
+        "run_transaction_capture_analysis",
+        lambda **kwargs: calls.append(kwargs),
+    )
+    retried = client.post(
+        "/api/portfolios/portfolio-ops/transaction-capture-batches/"
+        f"{batch['batch_id']}/analysis-runs"
+    )
+    assert retried.status_code == 202, retried.text
+    assert retried.json()["analysis_run_status"] == "queued"
+    assert retried.json()["analysis_run_attempt"] == 2
+    assert calls == [
+        {
+            "portfolio_id": "portfolio-ops",
+            "batch_id": batch["batch_id"],
+            "attempt": 2,
+        }
+    ]
+
+
+def test_completed_revision_recovers_a_run_interrupted_before_status_update(client) -> None:
+    from portfolio_app.db.models import TransactionCaptureBatchModel
+    from portfolio_app.db.session import get_session_factory
+    from portfolio_app.services.transaction_captures import (
+        mark_transaction_capture_analysis_run_started,
+        queue_transaction_capture_analysis_run,
+    )
+
+    capture = _upload_capture(client)
+    batch = _create_batch(client, [capture["capture_id"]])
+    queued = queue_transaction_capture_analysis_run(
+        portfolio_id="portfolio-ops",
+        batch_id=batch["batch_id"],
+    )
+    started, _revision = mark_transaction_capture_analysis_run_started(
+        portfolio_id="portfolio-ops",
+        batch_id=batch["batch_id"],
+        attempt=queued["analysis_run_attempt"],
+    )
+    assert started is True
+
+    revision = client.post(
+        "/api/portfolios/portfolio-ops/transaction-capture-batches/"
+        f"{batch['batch_id']}/analysis-revisions",
+        json={
+            "source": "assistant",
+            "harness": "deepseek-harness",
+            "provider": "deepseek",
+            "model_name": "vision-model",
+            "finish_reason": "completed",
+            "analysis": {
+                "summary": "The screenshot contains no transaction proposal.",
+                "documents": [
+                    {
+                        "capture_id": capture["capture_id"],
+                        "document_kind": "unknown",
+                    }
+                ],
+                "candidates": [],
+                "questions": [],
+            },
+            "transaction_import": None,
+        },
+    )
+    assert revision.status_code == 200, revision.text
+    assert revision.json()["batch"]["analysis_run_status"] == "succeeded"
+
+    session_factory = get_session_factory()
+    with session_factory() as session:
+        stored = session.get(TransactionCaptureBatchModel, batch["batch_id"])
+        assert stored is not None
+        assert stored.analysis_run_status == "running"
+
+    detail = client.get(
+        "/api/portfolios/portfolio-ops/transaction-capture-batches/"
+        f"{batch['batch_id']}"
+    )
+    assert detail.status_code == 200, detail.text
+    assert detail.json()["analysis_run_status"] == "succeeded"
+    assert detail.json()["analysis_run_error"] is None
+
+
 def test_screenshot_analysis_runner_marks_missing_revision_as_failed(
     client,
     monkeypatch,

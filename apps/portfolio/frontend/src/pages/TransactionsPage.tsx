@@ -39,6 +39,7 @@ import {
   type SharedInstrumentRecord,
   type SecuritySearchOption,
   type PortfolioTransactionCreatePayload,
+  type PortfolioTransactionCaptureAnalysisRevision,
   type PortfolioTransactionCaptureBatchRecord,
   type PortfolioTransactionCaptureBatchPurpose,
   type PortfolioTransactionFileFormat,
@@ -46,7 +47,6 @@ import {
   type PortfolioTransactionFilters,
   type PortfolioTransactionImportAction,
   type PortfolioTransactionImportCommand,
-  type PortfolioTransactionImportRequest,
   type PortfolioTransactionRecord,
   type PortfolioTransactionUpdatePayload,
   type PortfolioTransactionWorkspaceResponse,
@@ -218,13 +218,6 @@ type TransactionCaptureDraftFile = {
   previewUrl: string
 }
 
-type PendingTransactionCaptureCommit = {
-  batchId: string
-  revision: number
-  previewDigest: string
-  transactionImport: PortfolioTransactionImportRequest
-}
-
 const TRANSACTION_CAPTURE_PURPOSES: Array<{
   value: PortfolioTransactionCaptureBatchPurpose
   label: string
@@ -232,7 +225,7 @@ const TRANSACTION_CAPTURE_PURPOSES: Array<{
 }> = [
   {
     value: 'auto',
-    label: 'Let agent decide',
+    label: 'Let AI decide',
     description: 'Mixed or uncertain broker screenshots',
   },
   {
@@ -311,13 +304,17 @@ const TRANSACTION_CAPTURE_ACTIONS: Record<
 
 let fallbackIdempotencySequence = 0
 
-function transactionIdempotencyKey(operation: 'create' | 'transfer' | 'file-import' | 'capture-import') {
+function transactionIdempotencyKey(operation: 'create' | 'transfer' | 'file-import') {
   const randomId = globalThis.crypto?.randomUUID?.()
   if (randomId) {
     return `transaction-${operation}-${randomId}`
   }
   fallbackIdempotencySequence += 1
   return `transaction-${operation}-${Date.now()}-${fallbackIdempotencySequence}`
+}
+
+function transactionCaptureIdempotencyKey(batchId: string, revision: number) {
+  return `transaction-capture-${batchId}-revision-${revision}`
 }
 
 function transactionCaptureRecordTitle(
@@ -540,9 +537,9 @@ function transactionCaptureStatusLabel(
   if (batch.analysis_run_status === 'running') return 'Analyzing'
   if (batch.analysis_run_status === 'failed') return 'Analysis failed'
   if (batch.status === 'review_required') {
-    return `Review revision ${batch.latest_analysis_revision}`
+    return hasTransactionCaptureImport(batch.latest_analysis) ? 'Needs review' : 'No draft'
   }
-  return 'Evidence ready'
+  return 'Ready'
 }
 
 function accountAllowsAssetType(
@@ -1164,10 +1161,7 @@ export default function TransactionsPage() {
   const [captureReviewDraft, setCaptureReviewDraft] =
     useState<TransactionCaptureReviewDraft | null>(null)
   const [savingCaptureReview, setSavingCaptureReview] = useState(false)
-  const [pendingCaptureCommit, setPendingCaptureCommit] =
-    useState<PendingTransactionCaptureCommit | null>(null)
   const [committingCapture, setCommittingCapture] = useState(false)
-  const [captureCommitError, setCaptureCommitError] = useState<string | null>(null)
   const [pendingFileImport, setPendingFileImport] = useState<{
     fileName: string
     file: File
@@ -1340,9 +1334,7 @@ export default function TransactionsPage() {
     setCaptureDragActive(false)
     setCaptureReviewDraft(null)
     setSavingCaptureReview(false)
-    setPendingCaptureCommit(null)
     setCommittingCapture(false)
-    setCaptureCommitError(null)
     setCaptureDraftFiles((current) => {
       current.forEach((draft) => revokeTransactionCapturePreview(draft.previewUrl))
       return []
@@ -2718,7 +2710,6 @@ export default function TransactionsPage() {
     setSelectedCaptureBatchId(batchId ?? null)
     setCaptureError(null)
     setCaptureReviewDraft(null)
-    setCaptureCommitError(null)
     setCaptureAssistantOpen(true)
   }
 
@@ -2798,16 +2789,34 @@ export default function TransactionsPage() {
       if (currentPortfolioIdRef.current !== targetPortfolioId) {
         return
       }
+      setSelectedCaptureBatchId(batch.batch_id)
+      setCaptureAssistantView('history')
+      clearTransactionCaptureDraft()
       setTransactionCaptureBatches((current) => [
         batch,
         ...current.filter((item) => item.batch_id !== batch.batch_id),
       ].slice(0, 10))
-      setSelectedCaptureBatchId(batch.batch_id)
-      setCaptureAssistantView('history')
-      clearTransactionCaptureDraft()
-      setNotice(
-        `Saved ${batch.capture_count} screenshot${batch.capture_count === 1 ? '' : 's'} as agent evidence. No transaction facts were recorded.`,
-      )
+      try {
+        const queued = await startPortfolioTransactionCaptureAnalysis(
+          targetPortfolioId,
+          batch.batch_id,
+        )
+        if (currentPortfolioIdRef.current !== targetPortfolioId) {
+          return
+        }
+        setTransactionCaptureBatches((current) => current.map((item) => (
+          item.batch_id === queued.batch_id ? queued : item
+        )))
+        setNotice('AI is analyzing the screenshots. You can close this panel.')
+      } catch (analysisError) {
+        if (currentPortfolioIdRef.current === targetPortfolioId) {
+          setCaptureError(
+            analysisError instanceof Error
+              ? `Screenshots saved, but analysis did not start: ${analysisError.message}`
+              : 'Screenshots saved, but analysis did not start. Try again.',
+          )
+        }
+      }
     } catch (error) {
       if (currentPortfolioIdRef.current === targetPortfolioId) {
         setCaptureError(
@@ -2846,7 +2855,7 @@ export default function TransactionsPage() {
       setTransactionCaptureBatches((current) => current.map((item) => (
         item.batch_id === queued.batch_id ? queued : item
       )))
-      setNotice('DeepSeek is analyzing the screenshot evidence. No ledger facts will be written.')
+      setNotice('AI is analyzing the screenshots. You can close this panel.')
     } catch (error) {
       if (currentPortfolioIdRef.current === targetPortfolioId) {
         setCaptureError(
@@ -2860,7 +2869,7 @@ export default function TransactionsPage() {
 
   function beginTransactionCaptureReview(batch: PortfolioTransactionCaptureBatchRecord) {
     if (batch.ledger_status === 'recorded' || batch.ledger_status === 'partially_recorded') {
-      setCaptureError('This screenshot batch already has ledger facts. Review those records before creating another revision.')
+      setCaptureError('This screenshot batch already has ledger transactions. Review those records before trying again.')
       return
     }
     if (metaLoading) {
@@ -2876,7 +2885,6 @@ export default function TransactionsPage() {
       batchId: batch.batch_id,
       sourceRevision: latestAnalysis.revision,
       transactionImport: cloneTransactionImport(latestAnalysis.transaction_import),
-      confirmedQuestions: latestAnalysis.analysis.questions.map(() => false),
       duplicateAssessments: Object.fromEntries(
         latestAnalysis.analysis.candidates
           .filter((candidate) => (
@@ -2893,7 +2901,6 @@ export default function TransactionsPage() {
       ),
     })
     setCaptureError(null)
-    setCaptureCommitError(null)
   }
 
   function updateTransactionCaptureReviewRecord(
@@ -2917,20 +2924,6 @@ export default function TransactionsPage() {
     setCaptureError(null)
   }
 
-  function confirmTransactionCaptureQuestion(questionIndex: number, confirmed: boolean) {
-    setCaptureReviewDraft((current) => {
-      if (!current) {
-        return current
-      }
-      return {
-        ...current,
-        confirmedQuestions: current.confirmedQuestions.map((value, index) => (
-          index === questionIndex ? confirmed : value
-        )),
-      }
-    })
-  }
-
   function updateTransactionCaptureDuplicateAssessment(
     candidateId: string,
     assessment: TransactionCaptureDuplicateAssessment,
@@ -2947,7 +2940,78 @@ export default function TransactionsPage() {
     setCaptureError(null)
   }
 
-  async function saveTransactionCaptureReview() {
+  async function recordTransactionCaptureProposal(
+    batch: PortfolioTransactionCaptureBatchRecord,
+    analysisOverride?: PortfolioTransactionCaptureAnalysisRevision,
+  ) {
+    const analysis = analysisOverride ?? batch.latest_analysis
+    if (
+      batch.ledger_status !== 'unrecorded'
+      || !hasTransactionCaptureImport(analysis)
+      || !transactionCaptureProposalReady(analysis)
+      || !analysis.preview_digest
+      || committingCapture
+    ) {
+      setCaptureError('Check the transaction draft before recording it.')
+      return false
+    }
+
+    const targetPortfolioId = portfolioId
+    setCommittingCapture(true)
+    setCaptureError(null)
+    setNotice(null)
+    try {
+      const committed = await commitPortfolioTransactionImport(
+        targetPortfolioId,
+        analysis.transaction_import,
+        analysis.preview_digest,
+        transactionCaptureIdempotencyKey(batch.batch_id, analysis.revision),
+      )
+      if (currentPortfolioIdRef.current !== targetPortfolioId) {
+        return false
+      }
+      const recordedReferences = new Set(
+        analysis.transaction_import.records.map((record) => record.external_reference),
+      )
+      setTransactionCaptureBatches((current) => current.map((item) => (
+        item.batch_id === batch.batch_id
+          ? {
+              ...item,
+              ledger_status: 'recorded',
+              recorded_transaction_ids: committed.transactions
+                .filter((transaction) => (
+                  transaction.source_system === analysis.transaction_import.source_system
+                  && recordedReferences.has(transaction.external_reference ?? '')
+                ))
+                .map((transaction) => transaction.transaction_id),
+            }
+          : item
+      )))
+      setCaptureAssistantOpen(false)
+      setCaptureReviewDraft(null)
+      setNotice(
+        `Recorded ${committed.created_count} transaction${committed.created_count === 1 ? '' : 's'} from screenshots.`,
+      )
+      await refreshTransactions(
+        filters,
+        committed.transactions[0]?.transaction_id ?? null,
+      )
+      return true
+    } catch (error) {
+      if (currentPortfolioIdRef.current === targetPortfolioId) {
+        setCaptureError(
+          error instanceof Error ? error.message : 'Failed to record the screenshot transactions.',
+        )
+      }
+      return false
+    } finally {
+      if (currentPortfolioIdRef.current === targetPortfolioId) {
+        setCommittingCapture(false)
+      }
+    }
+  }
+
+  async function confirmAndRecordTransactionCaptureReview() {
     const draft = captureReviewDraft
     const batch = transactionCaptureBatches.find((item) => item.batch_id === draft?.batchId)
     const latestAnalysis = batch?.latest_analysis
@@ -2957,12 +3021,9 @@ export default function TransactionsPage() {
       || !latestAnalysis
       || draft.sourceRevision !== latestAnalysis.revision
       || savingCaptureReview
+      || committingCapture
     ) {
-      setCaptureError('The agent proposal changed. Reopen the latest revision before reviewing it.')
-      return
-    }
-    if (!draft.confirmedQuestions.every(Boolean)) {
-      setCaptureError('Verify every open question before saving the human review.')
+      setCaptureError('The AI draft changed. Reopen the latest draft before reviewing it.')
       return
     }
 
@@ -2982,7 +3043,7 @@ export default function TransactionsPage() {
         batch.batch_id,
         {
           source: 'human',
-          finish_reason: 'human_review_confirmed',
+          finish_reason: 'user_confirmed',
           schema_version: 'portfolio.transaction-capture-analysis.v2',
           analysis: {
             ...reviewed.analysis,
@@ -2996,109 +3057,38 @@ export default function TransactionsPage() {
       setTransactionCaptureBatches((current) => current.map((item) => (
         item.batch_id === response.batch.batch_id ? response.batch : item
       )))
-      setCaptureReviewDraft(null)
       const preview = response.preview
       if (preview?.error_count) {
         const issues = [
           ...preview.batch_errors,
           ...preview.rows.flatMap((row) => row.errors.map((error) => `Record ${row.record_index}: ${error}`)),
         ]
+        if (reviewed.transactionImport) {
+          setCaptureReviewDraft({
+            ...draft,
+            sourceRevision: response.analysis_revision.revision,
+            transactionImport: cloneTransactionImport(reviewed.transactionImport),
+          })
+        }
         setCaptureError(
-          `Preview found ${preview.error_count} issue${preview.error_count === 1 ? '' : 's'}${issues.length ? `: ${issues.slice(0, 4).join(' ')}` : '.'}`,
+          `Check ${preview.error_count} issue${preview.error_count === 1 ? '' : 's'}${issues.length ? `: ${issues.slice(0, 4).join(' ')}` : '.'}`,
         )
       } else if (reviewed.transactionImport) {
-        setNotice('Human review saved and Preview passed. Nothing has been recorded yet.')
+        setCaptureReviewDraft(null)
+        await recordTransactionCaptureProposal(response.batch, response.analysis_revision)
       } else {
-        setNotice('Human duplicate review saved. No transaction proposal remains to record.')
+        setCaptureReviewDraft(null)
+        setNotice('The possible duplicates were excluded. No transaction was recorded.')
       }
     } catch (error) {
       if (currentPortfolioIdRef.current === targetPortfolioId) {
         setCaptureError(
-          error instanceof Error ? error.message : 'Failed to save the human review.',
+          error instanceof Error ? error.message : 'Failed to check the transaction draft.',
         )
       }
     } finally {
       if (currentPortfolioIdRef.current === targetPortfolioId) {
         setSavingCaptureReview(false)
-      }
-    }
-  }
-
-  function requestTransactionCaptureCommit(batch: PortfolioTransactionCaptureBatchRecord) {
-    const latestAnalysis = batch.latest_analysis
-    if (
-      batch.ledger_status !== 'unrecorded'
-      || !hasTransactionCaptureImport(latestAnalysis)
-      || !transactionCaptureProposalReady(latestAnalysis)
-      || !latestAnalysis.preview_digest
-    ) {
-      setCaptureError('Save a clean human-reviewed Preview before recording transactions.')
-      return
-    }
-    setPendingCaptureCommit({
-      batchId: batch.batch_id,
-      revision: latestAnalysis.revision,
-      previewDigest: latestAnalysis.preview_digest,
-      transactionImport: cloneTransactionImport(latestAnalysis.transaction_import),
-    })
-    setCaptureCommitError(null)
-  }
-
-  async function confirmTransactionCaptureCommit() {
-    const pending = pendingCaptureCommit
-    if (!pending || committingCapture) {
-      return
-    }
-    const targetPortfolioId = portfolioId
-    setCommittingCapture(true)
-    setCaptureCommitError(null)
-    setNotice(null)
-    try {
-      const committed = await commitPortfolioTransactionImport(
-        targetPortfolioId,
-        pending.transactionImport,
-        pending.previewDigest,
-        transactionIdempotencyKey('capture-import'),
-      )
-      if (currentPortfolioIdRef.current !== targetPortfolioId) {
-        return
-      }
-      const recordedReferences = new Set(
-        pending.transactionImport.records.map((record) => record.external_reference),
-      )
-      setTransactionCaptureBatches((current) => current.map((batch) => (
-        batch.batch_id === pending.batchId
-          ? {
-              ...batch,
-              ledger_status: 'recorded',
-              recorded_transaction_ids: committed.transactions
-                .filter((transaction) => (
-                  transaction.source_system === pending.transactionImport.source_system
-                  && recordedReferences.has(transaction.external_reference ?? '')
-                ))
-                .map((transaction) => transaction.transaction_id),
-            }
-          : batch
-      )))
-      setPendingCaptureCommit(null)
-      setCaptureAssistantOpen(false)
-      setCaptureReviewDraft(null)
-      setNotice(
-        `Recorded ${committed.created_count} reviewed transaction fact${committed.created_count === 1 ? '' : 's'} from screenshots.`,
-      )
-      await refreshTransactions(
-        filters,
-        committed.transactions[0]?.transaction_id ?? null,
-      )
-    } catch (error) {
-      if (currentPortfolioIdRef.current === targetPortfolioId) {
-        setCaptureCommitError(
-          error instanceof Error ? error.message : 'Failed to record the reviewed transactions.',
-        )
-      }
-    } finally {
-      if (currentPortfolioIdRef.current === targetPortfolioId) {
-        setCommittingCapture(false)
       }
     }
   }
@@ -3175,9 +3165,6 @@ export default function TransactionsPage() {
   const selectedCaptureBatch =
     transactionCaptureBatches.find((batch) => batch.batch_id === selectedCaptureBatchId)
     ?? latestCaptureBatch
-  const captureAssistantStep = captureAssistantView === 'new'
-    ? 1
-    : selectedCaptureBatch?.status === 'review_required' ? 3 : 2
 
   function openCreateDrawer() {
     setEditingTransactionId(null)
@@ -3940,50 +3927,44 @@ export default function TransactionsPage() {
           <div>
             <div className="panel-title">Activity</div>
             <div className="portfolio-detail-meta">
-              {summary ? `${summary.total_transactions} facts` : `${visibleTransactions.length} facts`}
+              {summary
+                ? `${summary.total_transactions} ${activeFilterCount ? 'matching ' : ''}facts`
+                : `${visibleTransactions.length} facts`}
               {summary
                 ? ` · ${summary.security_transactions} security · ${fcnTransactionCount} FCN · ${optionTransactionCount} option · ${summary.cash_transactions} cash`
                 : ''}
               {latestTradeDate ? ` · latest trade ${latestTradeDate}` : ''}
               {summary?.external_cash_flows ? ` · ${summary.external_cash_flows} external flows` : ''}
-              {activeFilterCount ? ` · ${visibleTransactions.length} shown` : ''}
             </div>
           </div>
           <div className="transaction-toolbar-actions">
-            <DownloadFormatMenu
-              buttonLabel="Export"
-              wrapperClassName="portfolio-download-menu"
-              buttonClassName="toolbar-link transaction-toolbar-button"
-              menuClassName="portfolio-download-menu-list"
-              itemClassName="portfolio-download-menu-item"
-              onSelect={(format) => handleTransactionFileDownload('export', format)}
-            />
-            <button
-              type="button"
-              className="toolbar-link transaction-toolbar-button"
-              disabled={importingFile || metaLoading}
-              title="Import and preview a transaction CSV or Excel file"
-              onClick={() => transactionFileInputRef.current?.click()}
-            >
-              {importingFile ? 'Validating…' : 'Import'}
-            </button>
-            <button
-              type="button"
-              className="toolbar-link transaction-toolbar-button"
-              disabled={metaLoading}
-              title="Prepare broker screenshots for agent analysis and review"
-              onClick={() => openCaptureAssistant('new')}
-            >
-              Screenshot Assistant
-            </button>
-            <DownloadFormatMenu
-              buttonLabel="Template"
-              wrapperClassName="portfolio-download-menu"
-              buttonClassName="toolbar-link transaction-toolbar-button"
-              menuClassName="portfolio-download-menu-list"
-              itemClassName="portfolio-download-menu-item"
-              onSelect={(format) => handleTransactionFileDownload('template', format)}
-            />
+            <div className="transaction-toolbar-file-actions" aria-label="Transaction files">
+              <DownloadFormatMenu
+                buttonLabel="Export"
+                wrapperClassName="portfolio-download-menu"
+                buttonClassName="toolbar-link transaction-toolbar-button"
+                menuClassName="portfolio-download-menu-list"
+                itemClassName="portfolio-download-menu-item"
+                onSelect={(format) => handleTransactionFileDownload('export', format)}
+              />
+              <button
+                type="button"
+                className="toolbar-link transaction-toolbar-button"
+                disabled={importingFile || metaLoading}
+                title="Import and check a transaction CSV or Excel file"
+                onClick={() => transactionFileInputRef.current?.click()}
+              >
+                {importingFile ? 'Checking…' : 'Import'}
+              </button>
+              <DownloadFormatMenu
+                buttonLabel="Template"
+                wrapperClassName="portfolio-download-menu"
+                buttonClassName="toolbar-link transaction-toolbar-button"
+                menuClassName="portfolio-download-menu-list"
+                itemClassName="portfolio-download-menu-item"
+                onSelect={(format) => handleTransactionFileDownload('template', format)}
+              />
+            </div>
             <input
               ref={transactionFileInputRef}
               type="file"
@@ -4004,48 +3985,27 @@ export default function TransactionsPage() {
                 event.target.value = ''
               }}
             />
-            <button
-              type="button"
-              className="toolbar-link button-primary"
-              disabled={metaLoading || accounts.length === 0}
-              onClick={openCreateDrawer}
-            >
-              Record Transaction
-            </button>
+            <div className="transaction-toolbar-entry-actions">
+              <button
+                type="button"
+                className="toolbar-link transaction-toolbar-button"
+                disabled={metaLoading}
+                title="Create an editable transaction draft from screenshots"
+                onClick={() => openCaptureAssistant('new')}
+              >
+                From Screenshot
+              </button>
+              <button
+                type="button"
+                className="toolbar-link button-primary"
+                disabled={metaLoading || accounts.length === 0}
+                onClick={openCreateDrawer}
+              >
+                Record Transaction
+              </button>
+            </div>
           </div>
         </div>
-
-        {latestCaptureBatch ? (
-          <section className="transaction-capture-summary" aria-label="Screenshot assistant status">
-            <div className="transaction-capture-summary-mark" aria-hidden="true" />
-            <div className="transaction-capture-summary-copy">
-              <div>
-                <strong>Screenshot assistant</strong>
-                <span
-                  className={`transaction-capture-status transaction-capture-status-${transactionCaptureDisplayStatus(latestCaptureBatch)}`}
-                >
-                  {transactionCaptureStatusLabel(latestCaptureBatch)}
-                </span>
-              </div>
-              <span>
-                {latestCaptureBatch.capture_count} screenshot{latestCaptureBatch.capture_count === 1 ? '' : 's'} ·{' '}
-                {transactionCapturePurposeLabel(latestCaptureBatch.purpose)} ·{' '}
-                {latestCaptureBatch.ledger_status === 'recorded'
-                  ? 'Recorded in ledger'
-                  : latestCaptureBatch.ledger_status === 'partially_recorded'
-                    ? 'Ledger reconciliation needed'
-                    : 'No ledger changes'}
-              </span>
-            </div>
-            <button
-              type="button"
-              className="toolbar-link transaction-capture-summary-open"
-              onClick={() => openCaptureAssistant('history', latestCaptureBatch.batch_id)}
-            >
-              Open
-            </button>
-          </section>
-        ) : null}
 
         <section className="transaction-filter-bar">
           <div className="transaction-filter-group">
@@ -4729,9 +4689,9 @@ export default function TransactionsPage() {
           >
             <header className="transaction-capture-assistant-header">
               <div>
-                <span>Portfolio copilot</span>
-                <div className="panel-title">Screenshot Assistant</div>
-                <p>Turn mixed broker screenshots into reviewable portfolio evidence.</p>
+                <span>AI-assisted entry</span>
+                <div className="panel-title">Transactions from Screenshots</div>
+                <p>AI prepares an editable draft. You decide what is recorded.</p>
               </div>
               <button
                 type="button"
@@ -4759,7 +4719,7 @@ export default function TransactionsPage() {
                   setCaptureReviewDraft(null)
                 }}
               >
-                New evidence
+                New analysis
               </button>
               <button
                 type="button"
@@ -4777,60 +4737,12 @@ export default function TransactionsPage() {
             </div>
 
             <div className="transaction-capture-assistant-body">
-              <ol className="transaction-capture-step-rail" aria-label="Screenshot workflow">
-                {[
-                  { step: 1, label: 'Evidence' },
-                  { step: 2, label: 'Agent analysis' },
-                  { step: 3, label: 'Human review' },
-                ].map((item) => (
-                  <li
-                    key={item.step}
-                    className={
-                      item.step === captureAssistantStep
-                        ? 'active'
-                        : item.step < captureAssistantStep ? 'complete' : ''
-                    }
-                  >
-                    <span>{item.step}</span>
-                    <strong>{item.label}</strong>
-                  </li>
-                ))}
-              </ol>
-
               {captureAssistantView === 'new' ? (
                 <div className="transaction-capture-new" role="tabpanel">
                   <section className="transaction-capture-section">
                     <div className="transaction-capture-section-heading">
                       <div>
-                        <strong>What should the agent help with?</strong>
-                        <span>This guides the analysis; the evidence still decides the facts.</span>
-                      </div>
-                    </div>
-                    <div
-                      className="transaction-capture-purpose-grid"
-                      role="radiogroup"
-                      aria-label="Analysis purpose"
-                    >
-                      {TRANSACTION_CAPTURE_PURPOSES.map((purpose) => (
-                        <button
-                          key={purpose.value}
-                          type="button"
-                          role="radio"
-                          aria-checked={capturePurpose === purpose.value}
-                          className={capturePurpose === purpose.value ? 'active' : ''}
-                          onClick={() => setCapturePurpose(purpose.value)}
-                        >
-                          <strong>{purpose.label}</strong>
-                          <span>{purpose.description}</span>
-                        </button>
-                      ))}
-                    </div>
-                  </section>
-
-                  <section className="transaction-capture-section">
-                    <div className="transaction-capture-section-heading">
-                      <div>
-                        <strong>Add screenshot evidence</strong>
+                        <strong>Add screenshots</strong>
                         <span>PNG, JPEG, or WebP · up to 10 files · 12 MB each</span>
                       </div>
                       {captureDraftFiles.length ? (
@@ -4844,6 +4756,26 @@ export default function TransactionsPage() {
                         </button>
                       ) : null}
                     </div>
+                    <label className="transaction-capture-purpose-field">
+                      <span>Use</span>
+                      <select
+                        className="toolbar-select"
+                        aria-label="Use"
+                        value={capturePurpose}
+                        onChange={(event) => setCapturePurpose(
+                          event.target.value as PortfolioTransactionCaptureBatchPurpose,
+                        )}
+                      >
+                        {TRANSACTION_CAPTURE_PURPOSES.map((purpose) => (
+                          <option key={purpose.value} value={purpose.value}>
+                            {purpose.label}
+                          </option>
+                        ))}
+                      </select>
+                      <small>
+                        {TRANSACTION_CAPTURE_PURPOSES.find((purpose) => purpose.value === capturePurpose)?.description}
+                      </small>
+                    </label>
                     <div
                       className={`transaction-capture-dropzone${captureDragActive ? ' active' : ''}`}
                       onDragEnter={(event) => {
@@ -4866,8 +4798,8 @@ export default function TransactionsPage() {
                       }}
                     >
                       <span aria-hidden="true">+</span>
-                      <strong>Drop broker screenshots here</strong>
-                      <p>Overlapping pages and different broker layouts can stay in one evidence set.</p>
+                      <strong>Drop screenshots here</strong>
+                      <p>Related pages can be analyzed together.</p>
                       <button
                         type="button"
                         className="toolbar-link"
@@ -4909,8 +4841,8 @@ export default function TransactionsPage() {
 
                   <footer className="transaction-capture-prepare-footer">
                     <div>
-                      <strong>Evidence first</strong>
-                      <span>Preparing this batch does not create or change ledger facts.</span>
+                      <strong>AI creates a draft only</strong>
+                      <span>No transaction is recorded until you confirm it.</span>
                     </div>
                     <button
                       type="button"
@@ -4918,7 +4850,7 @@ export default function TransactionsPage() {
                       disabled={!captureDraftFiles.length || uploadingCapture}
                       onClick={() => void handleTransactionCaptures()}
                     >
-                      {uploadingCapture ? 'Preparing…' : 'Prepare evidence'}
+                      {uploadingCapture ? 'Starting analysis…' : 'Analyze screenshots'}
                     </button>
                   </footer>
                 </div>
@@ -4952,7 +4884,8 @@ export default function TransactionsPage() {
                               <span>
                                 <strong>{transactionCapturePurposeLabel(batch.purpose)}</strong>
                                 <small>
-                                  {batch.capture_count} image{batch.capture_count === 1 ? '' : 's'} ·{' '}
+                                  {batch.captures[0]?.original_filename ?? `${batch.capture_count} screenshot${batch.capture_count === 1 ? '' : 's'}`}
+                                  {batch.capture_count > 1 ? ` +${batch.capture_count - 1}` : ''} ·{' '}
                                   {new Date(batch.created_at).toLocaleDateString()}
                                 </small>
                               </span>
@@ -4965,7 +4898,7 @@ export default function TransactionsPage() {
                         <section className="transaction-capture-batch-detail" aria-label="Selected screenshot batch">
                           <div className="transaction-capture-batch-title">
                             <div>
-                              <span>Evidence batch</span>
+                              <span>Screenshot batch</span>
                               <strong>{transactionCapturePurposeLabel(selectedCaptureBatch.purpose)}</strong>
                             </div>
                             <span
@@ -4984,144 +4917,36 @@ export default function TransactionsPage() {
                                 />
                                 <figcaption>
                                   <strong>{capture.original_filename}</strong>
-                                  <span>{formatCaptureByteSize(capture.byte_size)} · {capture.content_sha256.slice(0, 8)}</span>
+                                  <span>{formatCaptureByteSize(capture.byte_size)}</span>
                                 </figcaption>
                               </figure>
                             ))}
                           </div>
 
-                          {selectedCaptureBatch.latest_analysis ? (
+                          {selectedCaptureBatch.latest_analysis
+                          && selectedCaptureBatch.analysis_run_status !== 'queued'
+                          && selectedCaptureBatch.analysis_run_status !== 'running' ? (
                             <div className="transaction-capture-analysis">
-                              <div className="transaction-capture-analysis-summary">
-                                <span>
-                                  {selectedCaptureBatch.latest_analysis.source === 'human'
-                                    ? 'Human-reviewed revision'
-                                    : 'Agent summary'}
-                                </span>
+                              <details className="transaction-capture-ai-notes">
+                                <summary>AI notes</summary>
                                 <p>{selectedCaptureBatch.latest_analysis.analysis.summary}</p>
-                              </div>
-                              <dl className="transaction-capture-analysis-metrics">
-                                <div>
-                                  <dt>Documents</dt>
-                                  <dd>{selectedCaptureBatch.latest_analysis.analysis.documents.length}</dd>
-                                </div>
-                                <div>
-                                  <dt>Candidate facts</dt>
-                                  <dd>{selectedCaptureBatch.latest_analysis.analysis.candidates.length}</dd>
-                                </div>
-                                <div>
-                                  <dt>Preview</dt>
-                                  <dd>
-                                    {selectedCaptureBatch.latest_analysis.preview_digest
-                                      ? selectedCaptureBatch.latest_analysis.preview_error_count
-                                        ? `${selectedCaptureBatch.latest_analysis.preview_error_count} issue${selectedCaptureBatch.latest_analysis.preview_error_count === 1 ? '' : 's'}`
-                                        : 'Ready'
-                                      : 'Not created'}
-                                  </dd>
-                                </div>
-                              </dl>
-
-                              {selectedCaptureBatch.latest_analysis.analysis.documents.length ? (
-                                <div className="transaction-capture-analysis-block">
-                                  <strong>Document classification</strong>
+                                {selectedCaptureBatch.latest_analysis.analysis.questions.length ? (
                                   <ul>
-                                    {selectedCaptureBatch.latest_analysis.analysis.documents.map((document) => (
-                                      <li key={document.capture_id}>
-                                        <span>
-                                          {selectedCaptureBatch.captures.find((capture) => capture.capture_id === document.capture_id)?.original_filename
-                                            ?? document.capture_id}
-                                        </span>
-                                        <em>{formatLabel(document.document_kind)}</em>
-                                      </li>
-                                    ))}
-                                  </ul>
-                                </div>
-                              ) : null}
-
-                              {selectedCaptureBatch.latest_analysis.analysis.candidates.length ? (
-                                <div className="transaction-capture-analysis-block transaction-capture-account-allocation">
-                                  <strong>Account allocation</strong>
-                                  <ul>
-                                    {selectedCaptureBatch.latest_analysis.analysis.candidates.map((candidate) => {
-                                      const resolution = candidate.account_resolution
-                                      const resolvedAccountId = resolution?.account_id ?? ''
-                                      const candidateAccountNames = resolution?.candidate_account_ids
-                                        .map((accountId) => accountNameById[accountId] || accountId)
-                                        .join(' · ')
-                                      const resolutionLabel = !resolution
-                                        ? 'Not assessed'
-                                        : resolution.status === 'resolved'
-                                          ? accountNameById[resolvedAccountId] || resolvedAccountId
-                                          : resolution.status === 'ambiguous'
-                                            ? `Needs selection${candidateAccountNames ? ` · ${candidateAccountNames}` : ''}`
-                                            : resolution.status === 'unavailable'
-                                              ? 'No eligible account'
-                                              : 'Not applicable'
-                                      return (
-                                        <li key={candidate.candidate_id}>
-                                          <span>
-                                            {candidate.candidate_id} · {formatLabel(candidate.candidate_kind)}
-                                          </span>
-                                          <em className={`transaction-capture-account-status-${resolution?.status ?? 'unassessed'}`}>
-                                            {resolutionLabel}
-                                          </em>
-                                        </li>
-                                      )
-                                    })}
-                                  </ul>
-                                </div>
-                              ) : null}
-
-                              {selectedCaptureBatch.latest_analysis.analysis.candidates.some(
-                                (candidate) => candidate.possible_existing_transaction_ids?.length,
-                              ) ? (
-                                <div className="transaction-capture-analysis-block transaction-capture-duplicate-check">
-                                  <strong>Existing transaction check</strong>
-                                  <ul>
-                                    {selectedCaptureBatch.latest_analysis.analysis.candidates
-                                      .filter((candidate) => candidate.possible_existing_transaction_ids?.length)
-                                      .map((candidate) => {
-                                        const assessment = candidate.duplicate_assessment ?? 'not_assessed'
-                                        const assessmentLabel = assessment === 'same_record'
-                                          ? 'Likely already recorded'
-                                          : assessment === 'distinct_records'
-                                            ? 'Confirmed distinct'
-                                            : assessment === 'uncertain'
-                                              ? 'Needs review'
-                                              : 'Not assessed'
-                                        return (
-                                          <li key={candidate.candidate_id}>
-                                            <span>{candidate.possible_existing_transaction_ids?.join(' · ')}</span>
-                                            <em className={`transaction-capture-duplicate-status-${assessment}`}>
-                                              {assessmentLabel}
-                                            </em>
-                                          </li>
-                                        )
-                                      })}
-                                  </ul>
-                                </div>
-                              ) : null}
-
-                              {selectedCaptureBatch.latest_analysis.analysis.questions.length
-                              && captureReviewDraft?.batchId !== selectedCaptureBatch.batch_id ? (
-                                <div className="transaction-capture-analysis-block transaction-capture-questions">
-                                  <strong>Questions before commit</strong>
-                                  <ol>
                                     {selectedCaptureBatch.latest_analysis.analysis.questions.map((question, index) => (
                                       <li key={`${index}-${question}`}>{question}</li>
                                     ))}
-                                  </ol>
-                                </div>
-                              ) : null}
+                                  </ul>
+                                ) : null}
+                              </details>
 
                               {captureReviewDraft?.batchId === selectedCaptureBatch.batch_id ? (
-                                <section className="transaction-capture-review" aria-label="Human transaction review">
+                                <section className="transaction-capture-review" aria-label="Transaction draft">
                                   <div className="transaction-capture-review-heading">
                                     <div>
-                                      <span>Human review</span>
-                                      <strong>Verify the agent proposal</strong>
+                                      <span>Editable draft</span>
+                                      <strong>Check and record</strong>
                                     </div>
-                                    <span>Based on revision {captureReviewDraft.sourceRevision}</span>
+                                    <span>AI suggestions can be changed directly</span>
                                   </div>
 
                                   <div className="transaction-capture-review-records">
@@ -5157,6 +4982,9 @@ export default function TransactionsPage() {
                                       const reviewCandidate = selectedCaptureBatch.latest_analysis?.analysis.candidates.find(
                                         (candidate) => candidate.proposed_transaction_record_index === recordNumber,
                                       )
+                                      const reviewFieldsNeedingAttention = reviewCandidate?.fields.filter(
+                                        (field) => field.status !== 'observed',
+                                      ) ?? []
                                       const hasDuplicateReferences = Boolean(
                                         reviewCandidate?.possible_duplicate_of?.length
                                         || reviewCandidate?.possible_existing_transaction_ids?.length,
@@ -5207,6 +5035,23 @@ export default function TransactionsPage() {
                                             </div>
                                             <em>{formatLabel(record.asset_type)}</em>
                                           </header>
+
+                                          {reviewFieldsNeedingAttention.length ? (
+                                            <details className="transaction-capture-field-notes">
+                                              <summary>
+                                                AI notes for {reviewFieldsNeedingAttention.length} field{reviewFieldsNeedingAttention.length === 1 ? '' : 's'}
+                                              </summary>
+                                              <div>
+                                                {reviewFieldsNeedingAttention.map((field) => (
+                                                  <span key={field.name}>
+                                                    <strong>{formatLabel(field.name)}</strong>
+                                                    {' · '}{formatLabel(field.status)}
+                                                    {field.note ? ` · ${field.note}` : ''}
+                                                  </span>
+                                                ))}
+                                              </div>
+                                            </details>
+                                          ) : null}
 
                                           {reviewCandidate && hasDuplicateReferences ? (
                                             <div className="transaction-capture-review-duplicate">
@@ -6152,26 +5997,16 @@ export default function TransactionsPage() {
                                   </div>
 
                                   {selectedCaptureBatch.latest_analysis.analysis.questions.length ? (
-                                    <div className="transaction-capture-review-checklist">
-                                      <strong>Resolve before saving</strong>
+                                    <div className="transaction-capture-review-notes">
+                                      <strong>AI notes to check</strong>
                                       {selectedCaptureBatch.latest_analysis.analysis.questions.map((question, index) => (
-                                        <label key={`${index}-${question}`}>
-                                          <input
-                                            type="checkbox"
-                                            checked={captureReviewDraft.confirmedQuestions[index] ?? false}
-                                            onChange={(event) => confirmTransactionCaptureQuestion(index, event.target.checked)}
-                                          />
-                                          <span>
-                                            {question}
-                                            <em>I verified this item against the screenshot or source document.</em>
-                                          </span>
-                                        </label>
+                                        <span key={`${index}-${question}`}>{question}</span>
                                       ))}
                                     </div>
                                   ) : null}
 
                                   <footer className="transaction-capture-review-footer">
-                                    <span>Saving creates a human revision and re-runs Preview. The ledger stays unchanged.</span>
+                                    <span>Ledger rules are checked automatically before anything is recorded.</span>
                                     <div>
                                       <button
                                         type="button"
@@ -6182,18 +6017,15 @@ export default function TransactionsPage() {
                                           setCaptureError(null)
                                         }}
                                       >
-                                        Cancel review
+                                        Back
                                       </button>
                                       <button
                                         type="button"
                                         className="button-primary"
-                                        disabled={
-                                          savingCaptureReview
-                                          || !captureReviewDraft.confirmedQuestions.every(Boolean)
-                                        }
-                                        onClick={() => void saveTransactionCaptureReview()}
+                                        disabled={savingCaptureReview || committingCapture}
+                                        onClick={() => void confirmAndRecordTransactionCaptureReview()}
                                       >
-                                        {savingCaptureReview ? 'Checking…' : 'Save review & run Preview'}
+                                        {savingCaptureReview || committingCapture ? 'Checking & recording…' : 'Confirm & record'}
                                       </button>
                                     </div>
                                   </footer>
@@ -6202,7 +6034,7 @@ export default function TransactionsPage() {
                                 <div className="transaction-capture-recorded">
                                   <div>
                                     <span>Recorded</span>
-                                    <strong>This reviewed proposal is already in the ledger.</strong>
+                                    <strong>These screenshot transactions are in the ledger.</strong>
                                   </div>
                                   <span>
                                     {selectedCaptureBatch.recorded_transaction_ids.length
@@ -6214,12 +6046,12 @@ export default function TransactionsPage() {
                                 <div className="transaction-capture-partial">
                                   <div>
                                     <span>Partially recorded</span>
-                                    <strong>Some source references from this batch are already in the ledger.</strong>
+                                    <strong>Some transactions from this batch are already in the ledger.</strong>
                                   </div>
                                   <span>
                                     {selectedCaptureBatch.recorded_transaction_ids.length
                                       ? `Ledger facts: ${selectedCaptureBatch.recorded_transaction_ids.join(' · ')}`
-                                      : 'Review the recorded transaction IDs before creating another human revision.'}
+                                      : 'Open the recorded transactions before trying this batch again.'}
                                   </span>
                                 </div>
                               ) : hasTransactionCaptureImport(selectedCaptureBatch.latest_analysis) ? (
@@ -6227,28 +6059,27 @@ export default function TransactionsPage() {
                                   <div>
                                     <span>
                                       {transactionCaptureProposalReady(selectedCaptureBatch.latest_analysis)
-                                        ? 'Preview passed'
+                                        ? 'Ready'
                                         : selectedCaptureBatch.latest_analysis.source === 'human'
-                                          ? 'Preview needs attention'
-                                          : 'Agent proposal'}
+                                          ? 'Needs changes'
+                                          : 'AI draft'}
                                     </span>
                                     <strong>
                                       {transactionCaptureProposalReady(selectedCaptureBatch.latest_analysis)
-                                        ? `${selectedCaptureBatch.latest_analysis.transaction_import.records.length} human-reviewed transaction${selectedCaptureBatch.latest_analysis.transaction_import.records.length === 1 ? '' : 's'} ready to record.`
+                                        ? `${selectedCaptureBatch.latest_analysis.transaction_import.records.length} transaction${selectedCaptureBatch.latest_analysis.transaction_import.records.length === 1 ? '' : 's'} ready to record.`
                                         : selectedCaptureBatch.latest_analysis.source === 'human'
-                                          ? 'Revise the reviewed values and run Preview again.'
-                                          : 'Check accounts, dates, amounts, and product terms before recording.'}
+                                          ? 'Edit the highlighted values and try again.'
+                                          : 'Check the draft and change anything that is not right.'}
                                     </strong>
-                                    <small>Source identity is locked to this screenshot batch.</small>
                                   </div>
                                   {transactionCaptureProposalReady(selectedCaptureBatch.latest_analysis) ? (
                                     <button
                                       type="button"
                                       className="button-primary"
-                                      onClick={() => requestTransactionCaptureCommit(selectedCaptureBatch)}
+                                      disabled={committingCapture}
+                                      onClick={() => void recordTransactionCaptureProposal(selectedCaptureBatch)}
                                     >
-                                      Record {selectedCaptureBatch.latest_analysis.transaction_import.records.length}{' '}
-                                      transaction{selectedCaptureBatch.latest_analysis.transaction_import.records.length === 1 ? '' : 's'}
+                                      {committingCapture ? 'Recording…' : 'Confirm & record'}
                                     </button>
                                   ) : (
                                     <button
@@ -6258,40 +6089,57 @@ export default function TransactionsPage() {
                                       onClick={() => beginTransactionCaptureReview(selectedCaptureBatch)}
                                     >
                                       {selectedCaptureBatch.latest_analysis.source === 'human'
-                                        ? 'Edit review'
-                                        : 'Review details'}
+                                        ? 'Edit draft'
+                                        : 'Review draft'}
                                     </button>
                                   )}
                                 </div>
                               ) : (
                                 <div className="transaction-capture-review-boundary">
-                                  <strong>No transaction proposal</strong>
-                                  <span>The agent kept this batch as evidence only; no ledger action is available.</span>
+                                  <div>
+                                    <strong>No transaction draft</strong>
+                                    <span>AI could not produce a complete draft from these screenshots.</span>
+                                  </div>
+                                  <div>
+                                    <button
+                                      type="button"
+                                      className="toolbar-link"
+                                      onClick={() => {
+                                        setCaptureAssistantOpen(false)
+                                        openCreateDrawer()
+                                      }}
+                                    >
+                                      Record manually
+                                    </button>
+                                    <button
+                                      type="button"
+                                      className="toolbar-link"
+                                      disabled={startingCaptureBatchId === selectedCaptureBatch.batch_id}
+                                      onClick={() => void handleScreenshotAnalysis(selectedCaptureBatch)}
+                                    >
+                                      Analyze again
+                                    </button>
+                                  </div>
                                 </div>
                               )}
-
-                              <div className="transaction-capture-review-boundary">
-                                <strong>Human confirmation required</strong>
-                                <span>Candidate facts must pass Preview and explicit review before Commit.</span>
-                              </div>
                             </div>
                           ) : (
                             <div className="transaction-capture-agent-ready">
-                              <span>Agent analysis</span>
+                              <span>AI analysis</span>
                               <strong>
                                 {selectedCaptureBatch.analysis_run_status === 'queued'
-                                  ? 'Waiting for the restricted DeepSeek runner.'
+                                  ? 'Waiting to start.'
                                   : selectedCaptureBatch.analysis_run_status === 'running'
-                                    ? 'DeepSeek is reading and reconciling the full evidence batch.'
+                                    ? 'Reading and checking the screenshots.'
                                     : selectedCaptureBatch.analysis_run_status === 'failed'
-                                      ? 'The last analysis did not produce a review revision.'
-                                      : 'Evidence saved and ready for the restricted agent runner.'}
+                                      ? 'The last analysis did not finish.'
+                                      : 'Screenshots are ready to analyze.'}
                               </strong>
                               <p>
                                 {selectedCaptureBatch.analysis_run_status === 'failed'
                                   ? selectedCaptureBatch.analysis_run_error
-                                    ?? 'Retry when the model service and local runner are available.'
-                                  : 'The agent reasons across the whole batch, including partial overlap and broker-specific layouts. It cannot Commit ledger facts.'}
+                                    ?? 'Try the analysis again.'
+                                  : 'AI will create an editable draft. It cannot record transactions by itself.'}
                               </p>
                               <div className="transaction-capture-agent-ready-footer">
                                 {selectedCaptureBatch.analysis_run_status === 'queued'
@@ -6308,7 +6156,7 @@ export default function TransactionsPage() {
                                         ? 'Starting…'
                                         : selectedCaptureBatch.analysis_run_status === 'failed'
                                           ? 'Retry analysis'
-                                          : 'Analyze with DeepSeek'}
+                                          : 'Analyze screenshots'}
                                     </button>
                                   )}
                               </div>
@@ -6320,10 +6168,10 @@ export default function TransactionsPage() {
                   ) : (
                     <div className="transaction-capture-empty-history">
                       <span>0</span>
-                      <strong>No screenshot batches yet</strong>
-                      <p>Prepare evidence first; every analysis revision will remain attached to its source screenshots.</p>
+                      <strong>No screenshot history yet</strong>
+                      <p>Start a new analysis to create an editable transaction draft.</p>
                       <button type="button" className="toolbar-link" onClick={() => setCaptureAssistantView('new')}>
-                        Add evidence
+                        New analysis
                       </button>
                     </div>
                   )}
@@ -7481,43 +7329,6 @@ export default function TransactionsPage() {
           </aside>
         </div>
       ) : null}
-      <ConfirmDialog
-        open={Boolean(pendingCaptureCommit)}
-        title="Record Reviewed Transactions"
-        description={
-          pendingCaptureCommit ? (
-            <div className="transaction-capture-commit-summary">
-              <p>
-                Record {pendingCaptureCommit.transactionImport.records.length} reviewed transaction
-                {pendingCaptureCommit.transactionImport.records.length === 1 ? '' : 's'} in portfolio{' '}
-                <strong>{portfolioId}</strong>?
-              </p>
-              <ul>
-                {pendingCaptureCommit.transactionImport.records.map((record, index) => (
-                  <li key={record.external_reference}>
-                    <strong>{transactionCaptureRecordTitle(record, index)}</strong>
-                    <span>
-                      {record.transaction_action} · {record.trade_date} ·{' '}
-                      {captureInputValue(record.gross_amount) || 'Amount not supplied'} {record.currency}
-                    </span>
-                  </li>
-                ))}
-              </ul>
-              <p>This is the only step that writes ledger facts. The reviewed Preview content will be committed unchanged.</p>
-            </div>
-          ) : null
-        }
-        confirmLabel={`Record ${pendingCaptureCommit?.transactionImport.records.length ?? 0} Transaction${pendingCaptureCommit?.transactionImport.records.length === 1 ? '' : 's'}`}
-        busyLabel="Recording…"
-        error={captureCommitError}
-        busy={committingCapture}
-        confirmTone="primary"
-        onCancel={() => {
-          setPendingCaptureCommit(null)
-          setCaptureCommitError(null)
-        }}
-        onConfirm={confirmTransactionCaptureCommit}
-      />
       <ConfirmDialog
         open={Boolean(pendingFileImport)}
         title="Review Transaction File"

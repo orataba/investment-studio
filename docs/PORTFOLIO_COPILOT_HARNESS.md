@@ -16,13 +16,13 @@ Portfolio 后端不直接依赖 Harness SDK。运行时通过受限子进程和 
 
 ## 已实现的前端入口
 
-Transactions 页工具栏已加入原生 `Screenshot Assistant` 入口，沿用现有 Portfolio 的直角、细分隔线、蓝色强调和右侧抽屉交互：
+Transactions 页工具栏已加入原生 `From Screenshot` 入口，沿用现有 Portfolio 的直角、细分隔线、蓝色强调和右侧抽屉交互：
 
 - 用户先选择任务意图，再拖入或选择 1–10 张截图；选择文件不会立即上传；
 - 支持交易登记、Portfolio 初始化、持仓对账和让 Agent 自行判断四种任务意图；
-- 证据准备成功后保留紧凑状态条，历史批次、原图指纹和分析修订在同一抽屉查看；
-- 分析结果展示摘要、文档分类、候选事实数量、账户分配、既有交易重复检查、Preview 状态和待确认问题；界面不提供绕过复核的直接 Commit；
-- 证据批次提供 `Analyze with DeepSeek`；后端异步启动受限 Harness，页面显示 queued / running / succeeded / failed 并自动刷新，关闭抽屉不会中断运行；
+- 上传后自动开始分析；页面显示 queued / running / succeeded / failed，并允许超时或中断任务重试，关闭抽屉不会中断运行；
+- 默认只展示截图和可编辑交易草稿。AI 说明、不明确字段和历史批次收在折叠说明或 `History` 次要入口中；
+- 用户可直接修改草稿并点击一次 `Confirm & record`。页面在同一动作中运行 Preview，只有 Preview 干净才 Commit；
 - 当前不放置通用聊天悬浮球。第一阶段入口保持在用户已经打开的 Portfolio 的 Transactions 页内，Portfolio 边界由页面上下文固定。
 
 ## DeepSeek Harness 与 Codex Harness 对比
@@ -194,16 +194,16 @@ Codex MCP 配置使用同一个 command、args、cwd 和环境变量即可；无
 
 ## 页面人工复核与登记
 
-Transactions 页的 Screenshot Assistant 已复用现有 JSON Preview/Commit 合同形成完整的人工作业流：
+Transactions 页把截图识别收敛成一个轻量流程：AI 生成可编辑草稿，用户核对或直接修改，再点一次 `Confirm & record`。
 
-1. `assistant` revision 只显示为 Agent 提案，不能直接登记；
-2. 人工在当前 Portfolio 内核对账户、日期、数量、价格、金额及 Security/FCN/Option 条款，批次来源身份保持只读；
-   当前复核面覆盖证券和公私募基金、FCN、期权、存取款、利息、费用、税费、同币种账户转账及换汇；换汇分别保留源账户、目标账户、源金额、目标金额与汇率，既有衍生品合约可直接选择，截图中新合约则复核完整条款；
-3. Agent 留下的每个问题必须逐项确认，保存后创建新的 `human` revision，并由后端重新运行 Preview；
-   若候选命中既有交易或批次内重复，人工可标记为 `same_record`、`distinct_records` 或 `uncertain`；相同或不确定记录从提案中排除，其余多记录自动重排为连续的批次来源引用后再 Preview；
-4. 只有最新 revision 为 `human`、问题为空、Preview digest 存在且 `error_count=0` 时，页面才显示登记入口；
-5. 最终确认框明确显示当前 Portfolio 和将写入的记录，Commit 使用与 Preview 完全相同的 payload 及独立 Idempotency-Key；
-6. Commit 成功后刷新交易工作区；批次的 `recorded / partially_recorded / unrecorded` 状态由后端按持久化账本中的截图 source reference 推导，页面刷新、交易筛选或重新打开后都不会仅依赖前端临时状态，也不会对已登记批次再次开放 Commit。
+1. `assistant` revision 只提供草稿，不直接写入账本；历史批次和 AI 说明收在次要入口中，不成为额外审批步骤；
+2. 编辑面覆盖证券和公私募基金、FCN、期权、存取款、利息、费用、税费、同币种账户转账及换汇。用户可直接修改账户、日期、数量、价格、金额、换汇双方金额及 Security/FCN/Option 条款；
+3. AI 的问题和不明确字段作为提示展示，不要求逐项打勾。用户点击确认后，页面保存一份 `human` revision，并由后端使用同一 payload 运行 Preview；
+4. 若 Preview 有账本规则、账户、持仓、重复或字段错误，页面保留草稿并把问题返回给用户修改；若 Preview 干净，则立即 Commit，不再增加第二个确认框；
+5. 候选命中既有交易或批次内重复时，用户仍可标记 `same_record`、`distinct_records` 或 `uncertain`。相同或不确定记录从提案中排除，其余记录重排为连续的批次来源引用后再 Preview；
+6. Commit 使用由 batch ID 与 human revision 组成的稳定 Idempotency-Key。网络响应丢失后重试不会生成第二份交易；
+7. Commit 成功后刷新交易工作区。批次的 `recorded / partially_recorded / unrecorded` 状态由后端按持久化账本中的截图 source reference 推导，刷新或重新打开后不会仅依赖前端临时状态，也不会对已登记批次再次开放登记；
+8. 被进程重启等情况遗留为 `queued / running` 的分析会在超时后显示为可重试，避免页面永久等待。
 
 ## 验收合同
 

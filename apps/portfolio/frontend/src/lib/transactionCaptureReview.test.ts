@@ -91,7 +91,6 @@ describe('buildHumanReviewedCaptureProposal', () => {
       batchId: 'batch-1',
       sourceRevision: 1,
       transactionImport,
-      confirmedQuestions: [true],
       duplicateAssessments: { 'candidate-1': 'same_record' },
     }
 
@@ -124,7 +123,6 @@ describe('buildHumanReviewedCaptureProposal', () => {
       batchId: 'batch-1',
       sourceRevision: 1,
       transactionImport,
-      confirmedQuestions: [true],
       duplicateAssessments: { 'candidate-1': 'distinct_records' },
     }
 
