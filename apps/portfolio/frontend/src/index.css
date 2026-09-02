@@ -11064,6 +11064,10 @@ input[type='date']::-webkit-calendar-picker-indicator {
   font-weight: 500;
 }
 
+.transaction-accounting-highlight {
+  margin-top: 10px;
+}
+
 .transaction-fact-list {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));

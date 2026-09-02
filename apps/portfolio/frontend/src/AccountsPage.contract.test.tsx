@@ -152,10 +152,16 @@ function accountsWorkspaceFixture(): PortfolioAccountsWorkspaceResponse {
         linked_transaction_count: 1,
         linked_posting_count: 1,
         derived_cash_balance: 0,
+        settled_cash_cost_basis_base: 0,
+        settled_cash_unrealized_fx_pnl_base: 0,
         derivative_liability: 0,
         derivative_liability_base: 0,
         open_option_obligation_count: 0,
         pending_settlement: -250_000,
+        pending_settlement_cost_basis_base: -250_000,
+        pending_settlement_unrealized_fx_pnl_base: 0,
+        monetary_unrealized_fx_pnl_base: 0,
+        monetary_fx_coverage_status: 'complete',
         valuation_coverage_state: 'complete',
         valuation_missing_components: [],
         account_value_base: 300_000,
@@ -242,6 +248,10 @@ describe('Accounts rendered page contract', () => {
     expect(await screen.findByRole('heading', { name: 'Private Fund Account' })).toBeInTheDocument()
     expect(screen.getByRole('heading', { name: 'Account setup' })).toBeInTheDocument()
     expect(screen.getByRole('heading', { name: 'Transaction-derived' })).toBeInTheDocument()
+    expect(screen.getByText('Monetary FX P&L · CNY')).toHaveAttribute(
+      'title',
+      expect.stringContaining('Historical FX basis is preserved'),
+    )
     expect(screen.queryByRole('heading', { name: 'Open positions' })).not.toBeInTheDocument()
     expect(screen.queryByRole('heading', { name: 'Direct transactions' })).not.toBeInTheDocument()
     expect(screen.queryByRole('heading', { name: 'Ledger entries' })).not.toBeInTheDocument()

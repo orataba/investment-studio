@@ -273,6 +273,7 @@ def test_latest_partial_fx_keeps_historical_topology_across_ledger_and_research(
                 "account_id": "cash-cny",
                 "transaction_id": "deposit-cny",
                 "cash_amount_delta": 720.0,
+                "currency": "CNY",
                 "effective_date": "2026-01-02",
             }
         ],

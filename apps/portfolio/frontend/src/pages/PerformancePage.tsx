@@ -286,8 +286,8 @@ const CALCULATION_COLUMN_LABELS: Record<CalculationColumnKey, string> = {
   income: 'Income',
   fees: 'Fees',
   taxes: 'Taxes',
-  fx_pnl: 'FX P&L',
-  pending_settlement_fx: 'Pending Settlement Monetary FX',
+  fx_pnl: 'Position & Cash FX',
+  pending_settlement_fx: 'Pending Settlement FX',
   period_return: 'Period Return',
   return_contribution: 'Return Contribution',
   own_vol: 'Vol',
@@ -299,6 +299,10 @@ const CALCULATION_COLUMN_LABELS: Record<CalculationColumnKey, string> = {
 }
 
 const CALCULATION_COLUMN_DESCRIPTIONS: Partial<Record<CalculationColumnKey, string>> = {
+  fx_pnl:
+    'Daily path attribution from currency translation on positions and settled cash; this is not an accounting realized/unrealized classification.',
+  pending_settlement_fx:
+    'Daily path attribution from currency translation while a receivable, payable, or position-recognition bridge is outstanding.',
   own_corr:
     'Correlation between the group return and portfolio Market Risk Return on aligned risk periods; the portfolio includes the group.',
   risk_contribution:
@@ -1254,7 +1258,7 @@ function buildPerformanceMetricRows(
       valueClassName: signedValueClass(summary.total_pnl),
     },
     {
-      metric: 'Total FX P&L',
+      metric: 'Total FX Attribution',
       value: formatSignedCurrency(totalFxPnl, baseCurrency),
       valueClassName: signedValueClass(totalFxPnl),
     },

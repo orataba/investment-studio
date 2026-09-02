@@ -3827,6 +3827,30 @@ def test_transactions_workspace_returns_selected_fact_ledger_and_related_positio
     assert any(lot["opened_by_transaction_id"] == "txn-0003" for lot in payload["related_position_lots"])
 
 
+def test_transactions_workspace_splits_partial_sale_price_and_fx_realization(client):
+    response = client.get(
+        "/api/portfolios/portfolio-ops/transactions/workspace",
+        params={"transaction_id": "txn-0007"},
+    )
+    assert response.status_code == 200
+
+    payload = response.json()
+    impact = payload["accounting_impact"]
+    assert impact["base_currency"] == "USD"
+    assert impact["local_cost_basis_released"] == pytest.approx(24_778.56)
+    assert impact["historical_cost_basis_base"] == pytest.approx(24_778.56)
+    assert impact["realized_price_pnl_base"] == pytest.approx(74.04)
+    assert impact["realized_position_fx_pnl_base"] == pytest.approx(0.0)
+    assert impact["realized_position_pnl_base"] == pytest.approx(74.04)
+    matching_realizations = [
+        realization
+        for lot in payload["related_position_lots"]
+        for realization in lot["realizations"]
+        if realization["transaction_id"] == "txn-0007"
+    ]
+    assert matching_realizations[0]["cost_basis_origins"]
+
+
 def test_security_trade_cash_posting_uses_settlement_effective_date(client):
     account = client.post(
         "/api/portfolios/portfolio-ops/accounts",

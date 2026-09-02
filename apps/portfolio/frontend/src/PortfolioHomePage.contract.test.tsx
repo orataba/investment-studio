@@ -120,9 +120,9 @@ function cashHolding(overrides: Partial<PortfolioHoldingRow> = {}) {
     market_value_base: 200,
     cost_basis: null,
     cost_basis_base: null,
-    cash_cost_basis_base: 200,
-    cash_cost_basis_fx_rate_to_base: 1,
-    cash_fx_coverage_status: 'complete',
+    cost_basis_historical_base: 200,
+    cost_basis_fx_rate_to_base: 1,
+    cost_basis_fx_coverage_status: 'complete',
     unrealized_fx_pnl_base: 0,
     allocation: 0.2,
     day_change_pct: 0,
@@ -649,10 +649,10 @@ describe('Holdings rendered page contract', () => {
     expect(fcnNameCell).toHaveTextContent(/^Alpha FCN$/)
     expect(within(fcnTable).getByText(/Initial 100\.0000/)).toBeInTheDocument()
 
-    expect(fcnTable).toHaveStyle({ minWidth: '1970px' })
+    expect(fcnTable).toHaveStyle({ minWidth: '2160px' })
     await user.click(await within(fcnRegion).findByRole('button', { name: /View\s*: Default/ }))
     await user.click(screen.getByRole('option', { name: 'Terms & Events' }))
-    expect(fcnTable).toHaveStyle({ minWidth: '1970px' })
+    expect(fcnTable).toHaveStyle({ minWidth: '2160px' })
     for (const label of ['Final Observation', 'Issuer', 'Counterparty']) {
       expect(within(fcnTable).getByRole('columnheader', { name: label })).toBeInTheDocument()
     }
@@ -660,7 +660,7 @@ describe('Holdings rendered page contract', () => {
 
     await user.click(within(fcnRegion).getByRole('button', { name: /View\s*: Terms & Events/ }))
     await user.click(screen.getByRole('option', { name: 'Valuation' }))
-    expect(fcnTable).toHaveStyle({ minWidth: '1970px' })
+    expect(fcnTable).toHaveStyle({ minWidth: '2160px' })
     expect(within(fcnTable).getByRole('columnheader', { name: 'Fair Value Status' })).toBeInTheDocument()
 
     const optionsRegion = screen.getByRole('region', { name: 'Options' })
@@ -680,16 +680,16 @@ describe('Holdings rendered page contract', () => {
     expect(within(optionTable).getByText('Written')).toBeInTheDocument()
     expect(within(optionTable).getAllByText('$22,000.00')).toHaveLength(2)
 
-    expect(optionTable).toHaveStyle({ minWidth: '2380px' })
+    expect(optionTable).toHaveStyle({ minWidth: '2760px' })
     await user.click(within(optionsRegion).getByRole('button', { name: /View\s*: Default/ }))
     await user.click(screen.getByRole('option', { name: 'Contract Terms' }))
-    expect(optionTable).toHaveStyle({ minWidth: '2380px' })
+    expect(optionTable).toHaveStyle({ minWidth: '2760px' })
     expect(within(optionTable).getByRole('columnheader', { name: 'Underlying Equivalent' })).toBeInTheDocument()
     expect(within(optionTable).getByRole('columnheader', { name: 'Multiplier' })).toBeInTheDocument()
 
     await user.click(within(optionsRegion).getByRole('button', { name: /View\s*: Contract Terms/ }))
     await user.click(screen.getByRole('option', { name: 'Valuation' }))
-    expect(optionTable).toHaveStyle({ minWidth: '2380px' })
+    expect(optionTable).toHaveStyle({ minWidth: '2760px' })
     expect(within(optionTable).getByRole('columnheader', { name: 'Basis Type' })).toBeInTheDocument()
     expect(within(optionTable).getByText('Remaining Premium')).toBeInTheDocument()
   })
@@ -742,7 +742,7 @@ describe('Holdings rendered page contract', () => {
     ]) {
       expect(within(table).getByRole('columnheader', { name: label })).toBeInTheDocument()
     }
-    expect(within(table).queryByRole('columnheader', { name: /Cost Basis/ })).not.toBeInTheDocument()
+    expect(within(table).getByRole('columnheader', { name: 'FX Cost Basis (USD)' })).toBeInTheDocument()
     expect(within(table).getByRole('columnheader', { name: 'Unrealized FX P&L (USD)' })).toBeInTheDocument()
     expect(within(table).getByText('2026-07-16')).toBeInTheDocument()
     expect(within(table).getByText('Alpha Fund')).toBeInTheDocument()

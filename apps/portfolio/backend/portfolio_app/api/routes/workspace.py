@@ -1180,11 +1180,6 @@ def holdings_workspace(
             "cost_basis_fx_coverage_status": position.get(
                 "cost_basis_fx_coverage_status"
             ),
-            "cash_cost_basis_base": position.get("cash_cost_basis_base"),
-            "cash_cost_basis_fx_rate_to_base": position.get(
-                "cash_cost_basis_fx_rate_to_base"
-            ),
-            "cash_fx_coverage_status": position.get("cash_fx_coverage_status"),
             "unrealized_price_pnl": position.get("unrealized_price_pnl"),
             "unrealized_price_pnl_base": position.get(
                 "unrealized_price_pnl_base"
@@ -1230,12 +1225,24 @@ def holdings_workspace(
             "liability_value_base": position.get("liability_value_base"),
             "carrying_value": position.get("carrying_value"),
             "carrying_value_base": position.get("carrying_value_base"),
+            "carrying_value_historical_base": position.get(
+                "carrying_value_historical_base"
+            ),
+            "carrying_fx_translation_base": position.get(
+                "carrying_fx_translation_base"
+            ),
+            "carrying_fx_coverage_status": position.get(
+                "carrying_fx_coverage_status"
+            ),
             "fair_value": position.get("fair_value"),
             "fair_value_coverage_status": position.get("fair_value_coverage_status"),
             "valuation_basis": position.get("valuation_basis"),
             "settlement_date": position.get("settlement_date"),
             "pending_until_date": position.get("pending_until_date"),
             "pending_status": position.get("pending_status"),
+            "monetary_recognition_date": position.get(
+                "monetary_recognition_date"
+            ),
             "settlement_amount": position.get("settlement_amount"),
             "settlement_amount_base": position.get("settlement_amount_base"),
         }

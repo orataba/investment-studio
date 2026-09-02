@@ -781,9 +781,6 @@ export type PortfolioHoldingRow = {
   cost_basis_current_fx_rate_to_base?: number | null
   cost_basis_fx_rate_to_base?: number | null
   cost_basis_fx_coverage_status?: string | null
-  cash_cost_basis_base?: number | null
-  cash_cost_basis_fx_rate_to_base?: number | null
-  cash_fx_coverage_status?: string | null
   net_invested?: number | null
   break_even_price?: number | null
   unrealized_price_pnl?: number | null
@@ -792,6 +789,7 @@ export type PortfolioHoldingRow = {
   unrealized_pnl_base?: number | null
   unrealized_return?: number | null
   unrealized_return_base?: number | null
+  monetary_recognition_date?: string | null
   allocation: number | null
   price_chart_1m: SparklinePoint[]
   price_chart_3m: SparklinePoint[]
@@ -876,6 +874,9 @@ export type PortfolioHoldingRow = {
   liability_value_base?: number | null
   carrying_value?: number | null
   carrying_value_base?: number | null
+  carrying_value_historical_base?: number | null
+  carrying_fx_translation_base?: number | null
+  carrying_fx_coverage_status?: string | null
   fair_value?: number | null
   fair_value_coverage_status?: string | null
   valuation_basis?: string | null
@@ -1985,6 +1986,7 @@ export type PortfolioLedgerPostingRecord = {
   trade_date: string
   settlement_date: string
   effective_date: string
+  monetary_recognition_date?: string | null
   recognition_start_date?: string | null
   instrument_id?: string | null
   instrument_ref?: InstrumentCore | null
@@ -2066,8 +2068,14 @@ export type PortfolioAccountWorkspaceAccount = {
   linked_posting_count: number
   derived_cash_balance: number
   derived_cash_balance_base?: number | null
+  settled_cash_cost_basis_base?: number | null
+  settled_cash_unrealized_fx_pnl_base?: number | null
   pending_settlement: number
   pending_settlement_base?: number | null
+  pending_settlement_cost_basis_base?: number | null
+  pending_settlement_unrealized_fx_pnl_base?: number | null
+  monetary_unrealized_fx_pnl_base?: number | null
+  monetary_fx_coverage_status?: 'complete' | 'stale' | 'unavailable'
   derivative_liability: number
   derivative_liability_base?: number | null
   open_option_obligation_count: number
@@ -2234,6 +2242,20 @@ export type PortfolioTransactionWorkspaceResponse = {
   position_reference_ids: string[]
   transactions: PortfolioTransactionRecord[]
   selected_transaction: PortfolioTransactionRecord | null
+  accounting_impact: {
+    base_currency: string
+    recognition_date: string | null
+    recognition_fx_rate_to_base: number | null
+    local_cost_basis_released: number
+    local_net_proceeds: number
+    historical_cost_basis_base: number | null
+    realized_price_pnl_base: number | null
+    realized_position_fx_pnl_base: number | null
+    realized_position_pnl_base: number | null
+    monetary_recognition_date: string | null
+    settlement_monetary_cost_basis_base: number | null
+    fx_coverage_status: 'complete' | 'stale' | 'unavailable'
+  } | null
   delete_scope_row_versions: Record<string, number>
   ledger_summary: PortfolioLedgerPostingListResponse['summary']
   ledger_postings: PortfolioLedgerPostingRecord[]
@@ -2366,6 +2388,12 @@ export type PortfolioPositionLotRealizationRecord = {
   quantity: number
   proceeds?: number | null
   cost_basis_released: number
+  cost_basis_origins: Array<{
+    origin_transaction_id?: string | null
+    acquisition_date: string
+    entry_cost_basis?: number | null
+    cost_basis_released: number
+  }>
   realized_pnl?: number | null
   price?: number | null
   remaining_quantity_after: number
@@ -2388,6 +2416,7 @@ export type PortfolioPositionLotRecord = {
   opened_by_transaction_id: string
   opening_transaction_type: string
   opened_at: string
+  acquisition_date: string
   closed_at?: string | null
   status: 'open' | 'closed'
   close_reason?: 'disposed' | 'transferred' | 'corporate_action' | null
@@ -2416,6 +2445,12 @@ export type PortfolioPositionLotRecord = {
   income_cash_amount: number
   expense_cash_amount: number
   return_of_capital_amount: number
+  cost_basis_origins: Array<{
+    origin_transaction_id?: string | null
+    acquisition_date: string
+    entry_cost_basis?: number | null
+    remaining_cost_basis: number
+  }>
   entry_price?: number | null
   average_exit_price?: number | null
   current_market_value?: number | null

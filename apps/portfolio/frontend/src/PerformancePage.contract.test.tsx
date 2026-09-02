@@ -214,7 +214,7 @@ describe('Performance rendered page contract', () => {
 
     const periodReturnRow = await screen.findByRole('row', { name: /Total Portfolio Return/ })
     expect(within(periodReturnRow).getByText('+3.02%')).toBeInTheDocument()
-    const totalFxPnlRow = screen.getByRole('row', { name: /Total FX P&L/ })
+    const totalFxPnlRow = screen.getByRole('row', { name: /Total FX Attribution/ })
     expect(within(totalFxPnlRow).getByText('+$4.00')).toBeInTheDocument()
     expect(screen.getByText('Calculation')).toBeInTheDocument()
     const performanceDetails = screen.getByRole('note', { name: /Performance details:/ })
@@ -624,7 +624,7 @@ describe('Performance rendered page contract', () => {
 
     const irrRow = await screen.findByRole('row', { name: /IRR \/ MWRR/ })
     expect(within(irrRow).getByText('N/A')).toBeInTheDocument()
-    const totalFxPnlRow = screen.getByRole('row', { name: /Total FX P&L/ })
+    const totalFxPnlRow = screen.getByRole('row', { name: /Total FX Attribution/ })
     expect(within(totalFxPnlRow).getByText('—')).toBeInTheDocument()
     expect(
       within(irrRow).getByRole('note', {
@@ -652,7 +652,7 @@ describe('Performance rendered page contract', () => {
     )
 
     expect(
-      await screen.findByRole('columnheader', { name: /Pending Settlement Monetary FX/ }),
+      await screen.findByRole('columnheader', { name: /Pending Settlement FX/ }),
     ).toBeInTheDocument()
     const portfolioTotal = await screen.findByRole('row', { name: /Portfolio Total/ })
     expect(within(portfolioTotal).getByText('-$0.51')).toBeInTheDocument()

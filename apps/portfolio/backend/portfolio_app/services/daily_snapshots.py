@@ -60,7 +60,7 @@ DAILY_SNAPSHOT_CALCULATION_VERSION = (
     "-market-risk-zero-return-cash-derivatives-v2"
     "-daily-mark-to-last-risk-observations-v1"
     "-base-currency-fx-attribution-v1"
-    "-holding-cost-fx-cash-account-v1"
+    "-holding-cost-fx-monetary-continuity-v2"
 )
 
 
@@ -1645,8 +1645,11 @@ def _aggregate_holding_rows(
         cost_basis_historical_base = _sum_complete(
             [row.get("cost_basis_historical_base") for row in instrument_rows]
         )
-        cash_cost_basis_base = _sum_complete(
-            [row.get("cash_cost_basis_base") for row in instrument_rows]
+        carrying_value_historical_base = _sum_complete(
+            [row.get("carrying_value_historical_base") for row in instrument_rows]
+        )
+        carrying_fx_translation_base = _sum_complete(
+            [row.get("carrying_fx_translation_base") for row in instrument_rows]
         )
         first_row = instrument_rows[0] if instrument_rows else {}
         holding_profile_row = _earliest_holding_profile_row(instrument_rows)
@@ -1834,7 +1837,12 @@ def _aggregate_holding_rows(
                     )
                 ),
                 "cost_basis_fx_rate_to_base": (
-                    cost_basis_historical_base / cost_basis
+                    cost_basis_historical_base / market_value
+                    if (is_cash_row or is_pending_row)
+                    and cost_basis_historical_base is not None
+                    and market_value is not None
+                    and abs(market_value) > 1e-12
+                    else cost_basis_historical_base / cost_basis
                     if cost_basis_historical_base is not None
                     and cost_basis is not None
                     and abs(cost_basis) > 1e-12
@@ -1846,19 +1854,6 @@ def _aggregate_holding_rows(
                     instrument_rows,
                     "cost_basis_fx_coverage_status",
                     aggregate_value=cost_basis_historical_base,
-                ),
-                "cash_cost_basis_base": cash_cost_basis_base,
-                "cash_cost_basis_fx_rate_to_base": (
-                    cash_cost_basis_base / market_value
-                    if cash_cost_basis_base is not None
-                    and market_value is not None
-                    and abs(market_value) > 1e-12
-                    else None
-                ),
-                "cash_fx_coverage_status": _aggregate_fx_coverage_status(
-                    instrument_rows,
-                    "cash_fx_coverage_status",
-                    aggregate_value=cash_cost_basis_base,
                 ),
                 "unrealized_price_pnl": _sum_complete(
                     [row.get("unrealized_price_pnl") for row in instrument_rows]
@@ -1882,7 +1877,9 @@ def _aggregate_holding_rows(
                 "unrealized_return_base": (
                     (market_value_base - cost_basis_historical_base)
                     / abs(cost_basis_historical_base)
-                    if market_value_base is not None
+                    if not is_cash_row
+                    and not is_pending_row
+                    and market_value_base is not None
                     and cost_basis_historical_base is not None
                     and abs(cost_basis_historical_base) > 1e-12
                     else None
@@ -1957,6 +1954,13 @@ def _aggregate_holding_rows(
                 ),
                 "carrying_value_base": _sum_complete(
                     [row.get("carrying_value_base") for row in instrument_rows]
+                ),
+                "carrying_value_historical_base": carrying_value_historical_base,
+                "carrying_fx_translation_base": carrying_fx_translation_base,
+                "carrying_fx_coverage_status": _aggregate_fx_coverage_status(
+                    instrument_rows,
+                    "carrying_fx_coverage_status",
+                    aggregate_value=carrying_value_historical_base,
                 ),
                 "fair_value": _sum_complete([row.get("fair_value") for row in instrument_rows]),
                 "fair_value_coverage_status": _first_present(
@@ -2150,9 +2154,6 @@ _INSTRUMENT_HOLDING_PROJECTION_FIELDS = (
     "cost_basis_current_fx_rate_to_base",
     "cost_basis_fx_rate_to_base",
     "cost_basis_fx_coverage_status",
-    "cash_cost_basis_base",
-    "cash_cost_basis_fx_rate_to_base",
-    "cash_fx_coverage_status",
     "unrealized_price_pnl",
     "unrealized_price_pnl_base",
     "unrealized_fx_pnl_base",
@@ -2183,12 +2184,16 @@ _INSTRUMENT_HOLDING_PROJECTION_FIELDS = (
     "liability_value_base",
     "carrying_value",
     "carrying_value_base",
+    "carrying_value_historical_base",
+    "carrying_fx_translation_base",
+    "carrying_fx_coverage_status",
     "fair_value",
     "fair_value_coverage_status",
     "valuation_basis",
     "settlement_date",
     "pending_until_date",
     "pending_status",
+    "monetary_recognition_date",
     "settlement_amount",
     "settlement_amount_base",
 )

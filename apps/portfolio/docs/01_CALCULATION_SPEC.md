@@ -486,20 +486,21 @@ Holdings 的 monetary 部分按结算现金账户子账拆分：
 - `settlement_payable`：资产已按 position-effective boundary 增加但购买款尚未支付；
 - pending monetary row 使用 `instrument_id = pending:{kind}:{cash_account}:{economic_instrument}:{currency}:{settlement_date}:{pending_until_date}`，归属于结算现金账户，并保留 `economic_instrument_id` 与 `transaction_ids` 以便穿透追踪；结算日或头寸待确认日缺失时对应日期段为 `undated`。日期属于 canonical identity，同账户、同资产、同币种但不同结算边界的余额不得合并或主键冲突；它不是对应资产账户的一笔虚构 position；
 - monetary row 的 `market_value` 等于该币种余额，`market_value_base` 等于按 as-of date FX 转成组合 base currency 后的值；
-- pending monetary row 不具有 `cost_basis`、`Book Avg Cost` 或持仓未实现 P&L；settled cash 另行维护账户级 historical base-currency FX basis，用于展示 cash unrealized FX P&L，不把它冒充证券 book cost；
-- settled cash 的正向流入按生效日 FX 增加 historical base basis，减少敞口时按账户内移动平均 basis 释放；同币种内部账户划转继承来源 basis，不以划转日 FX 重置。真正的 `fx_conversion` 以成交两边的实际 countervalue 建立目标币种 basis：若一边就是 portfolio base currency，直接使用成交隐含汇率；若两边都不是 base currency，则以成交日 source/base FX 换算实际 source consideration。`cash unrealized FX P&L = current base value - historical cash basis`；历史或当前 FX 缺失时失败关闭；
+- settled 与 pending monetary row 都不具有证券 `cost_basis`、`Book Avg Cost` 或证券未实现 P&L；但两者都维护独立的 `FX Cost Basis`，用于解释货币余额的未实现汇兑损益，不能把这项 monetary basis 冒充证券 book cost；
+- monetary basis 从该价值第一次进入账本的 `monetary_recognition_date` 建立：普通买卖取现金/头寸价值首次生效日，dividend / coupon 取 entitlement date，现金先结算而头寸后确认时取 bridge 起始日。应收、应付或 subscription bridge 转成 settled cash 时必须原样继承该 basis，不能在 settlement date 重新按现汇定价；
+- settled cash 增加敞口时以上述 historical base basis 并入账户内移动平均，减少敞口时按该平均 basis 释放；同币种内部账户划转继承来源 basis，不以划转日 FX 重置。真正的 `fx_conversion` 以成交两边的实际 countervalue 建立目标币种 basis：若一边就是 portfolio base currency，直接使用成交隐含汇率；若两边都不是 base currency，则以成交日 source/base FX 换算实际 source consideration。`monetary unrealized FX P&L = current base value - historical monetary basis`；历史或当前 FX 缺失时失败关闭；
 - base-currency cash 的 instrument return、day return 和 volatility 为 `0`；
 - non-base cash 的 instrument return / day return 来自该现金币种兑 base currency 的 FX series；
-- pending monetary balance 不属于 settled cash、没有行级 instrument total-return series、不得进入资产协方差矩阵；其 FX 重估仍按 `PendingSettlementCurrencyGain` 单独入账。
+- pending monetary balance 不属于 settled cash、没有行级 instrument total-return series、不得进入资产协方差矩阵；其 FX 重估仍按 `PendingSettlementCurrencyGain` 单独入账，settlement 只改变余额状态，不产生第二次汇兑损益。
 
 Holdings 使用同一份 as-of workspace 和 canonical NAV，按语义定义四个表面。Securities、FCN、Options、Cash & Settlement 只在对应 rows 非空时显示；全部为空时只使用一个统一 Holdings 空状态。组合 headline 已提供 NAV 等总览，分类构成和 `Portfolio Total` 统一由 Overview `Asset Mix` 展示，Holdings 不重复第二套总计。Securities、FCN 与 Options 使用一致的 `View`、`Columns` 控件，Securities 另有 `Group By`；字段固定的 Cash & Settlement 不提供 View / Columns。instrument 数量紧邻表标题。
 
 | 表面 | 行类型 | 主要字段 |
 | --- | --- | --- |
 | `Securities` | 股票、基金、ETF 等 Registry 普通资产 | quantity、quote、base position value、book/economic cost、price/FX/total unrealized、instrument total return/risk、Forward RC；可独立切换视图与字段，也是唯一允许 Group By 的表 |
-| `FCN` | FCN contract rows | 独立视图与字段；显式展示 contract/account/underlying terms、notional、coupon、maturity/events、remaining basis、signed NAV amount、portfolio weight、lifecycle/valuation status |
-| `Options` | long/short Call、long/short Put | 独立视图与字段；显式展示 side/type/underlying、expiry、strike、contracts/multiplier、remaining basis、signed NAV amount、strike notional、portfolio weight、lifecycle/valuation status |
-| `Cash & Settlement` | settled cash 与 pending monetary rows | 固定字段；展示 currency/account/availability、local/base amount、portfolio weight、settled-cash unrealized FX，以及 settlement/pending dates 与 status |
+| `FCN` | FCN contract rows | 独立视图与字段；显式展示 contract/account/underlying terms、notional、coupon、maturity/events、remaining basis、signed NAV amount、historical carrying basis、carrying FX translation、portfolio weight、lifecycle/valuation status |
+| `Options` | long/short Call、long/short Put | 独立视图与字段；显式展示 side/type/underlying、expiry、strike、contracts/multiplier、remaining basis、signed NAV amount、historical carrying basis、carrying FX translation、strike notional、portfolio weight、lifecycle/valuation status |
+| `Cash & Settlement` | settled cash 与 pending monetary rows | 固定字段；展示 currency/account/availability、local/base amount、FX cost basis、unrealized FX P&L、portfolio weight，以及 settlement/pending dates 与 status |
 
 Short-option row 的 `required_underlying_quantity = open_contract_quantity × contract_multiplier`，仅用于显示合约规模；`strike_notional = strike × required_underlying_quantity`，不代表预设交割义务，也不与股票持仓建立 covered / uncovered 关系。Operational summary 聚合 open contract count、`expired_or_due / next_7_days / next_30_days / next_90_days / later / unknown` 到期桶、option-obligation strike notional，以及 pending settlement 的 receivable、payable、net、最早结算日、逾期数和无法换算 base currency 的行数。Alerts 覆盖到期已到/七日内、逾期结算和 settlement FX unavailable，并返回真实 `related_line_ids`。这些 API 字段保留给生命周期和结算逻辑，Holdings 不单独渲染 `Operational Status` 面板。
 
@@ -614,13 +615,31 @@ $$
 - `FIFO` 按最早未平的 lot 依次匹配；
 - `moving_average` 按卖出时的 rolling average cost per unit 释放成本。
 
+本币账面实现损益为：
+
 $$
-RealizedPnL = NetSaleProceeds - MatchedCostBasis
+RealizedPnL^{local} = NetSaleProceeds^{local} - ReleasedBookCost^{local}
+$$
+
+换成组合基准币后，价格与汇率必须分开：
+
+$$
+RealizedPricePnL^{base} = RealizedPnL^{local} \times FX_{disposal}
+$$
+
+$$
+RealizedPositionFXPnL^{base} = ReleasedBookCost^{local} \times FX_{disposal} - ReleasedHistoricalBookCost^{base}
+$$
+
+$$
+RealizedPositionPnL^{base} = RealizedPricePnL^{base} + RealizedPositionFXPnL^{base}
 $$
 
 说明：
 
 - realized P&L 是成本法相关的 book/tax P&L；
+- `ReleasedHistoricalBookCost` 按被释放 lot 的每个剩余成本来源及其 historical FX 计算；FIFO、moving average、部分卖出和内部转仓都不得抹掉这些来源；
+- 卖出形成的应收或现金按自己的 `monetary_recognition_date` 建立 monetary basis。它与头寸 realized P&L 是两条连续但不同的资产负债表链，后续汇率变化属于 receivable / cash FX，不得再次计入 position realized FX；
 - complete fair-value TWR 不使用 realized P&L 作为收益率输入，因此成本法切换只重算 book capital gain / cost basis，不应改变 fair-value based return。若组合包含按 lot basis carried 的 event-valued position，相关结果属于 operational/carrying-basis accounting，不能借用这条规则声称其为 fair-value TWR。
 
 ### 3.5.2 Internal position transfer
@@ -717,7 +736,8 @@ $$
 
 - 正式结果以 `base` 结果为准；
 - 本地收益与 FX 收益分解是解释层附加输出，但必须与 base-currency 总 P&L 精确对平；
-- `cash_currency_gains`、`instrument_currency_gains` 与 `pending_settlement_currency_gains` 分别解释现金、非现金资产与负债净敞口（含期权负债）和未结算货币余额的汇兑损益；Performance 的 `Total FX P&L` 是三者之和；
+- `cash_currency_gains`、`instrument_currency_gains` 与 `pending_settlement_currency_gains` 分别解释现金、非现金资产与负债净敞口（含期权负债）和未结算货币余额的汇兑损益；Performance 的 `Total FX Attribution` 是三者之和；
+- Performance FX 是沿每日真实持仓路径形成的区间归因，保证与区间总 P&L 对平；Holdings / Transactions 的 realized 与 unrealized FX 是截至某一时点的会计状态分类。两者回答的问题不同，不能把区间 attribution 当成期末 realized/unrealized balance，也不能把期末余额差直接冒充区间收益；
 - 同一币种、同一 instrument 分散在多个账户时，必须先按币种聚合全部 local exposure 再计算汇兑损益，不能用 instrument-keyed map 覆盖其中一个账户；
 - 当前边界缺少 fresh FX 时，该 snapshot 必须标记 `stale_fx_flag` 并排除出 fresh-complete 选择，book P&L / FX attribution 对应 coverage 为 partial/unavailable；上一边界可以使用当时实际采用且保留 source date 的有效 FX 点，休市日 carry-forward 不得让下一个已有 fresh FX 的市场日永久失去完整性。
 

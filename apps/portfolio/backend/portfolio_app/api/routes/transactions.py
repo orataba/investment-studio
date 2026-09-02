@@ -60,6 +60,7 @@ from portfolio_app.api.contracts import (
 )
 from portfolio_app.services.ledger import (
     build_position_lots,
+    build_transaction_accounting_impact,
     estimate_position_cost_basis,
     estimate_position_quantity,
     estimate_position_remaining_cost_basis,
@@ -2273,6 +2274,11 @@ def get_transaction_workspace(
         if selected_transaction_id
         else []
     )
+    accounting_impact = build_transaction_accounting_impact(
+        selected_transaction_record,
+        related_position_lots_raw,
+        base_currency=str(portfolio["base_currency"]),
+    )
 
     return TransactionWorkspaceResponse(
         portfolio_id=portfolio_id,
@@ -2297,6 +2303,7 @@ def get_transaction_workspace(
         ),
         transactions=serialized_transactions,
         selected_transaction=selected_transaction,
+        accounting_impact=accounting_impact,
         delete_scope_row_versions=delete_scope_row_versions,
         ledger_summary=LedgerPostingListSummary.model_validate(summarize_ledger_postings(ledger_postings_raw)),
         ledger_postings=ledger_postings_raw,

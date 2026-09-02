@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from copy import deepcopy
-from datetime import date
+from datetime import date, datetime
 
 from portfolio_ops_instrument_core import InstrumentCore as SharedInstrumentCore
 
@@ -60,7 +60,10 @@ def _parse_iso_date(value: object) -> date | None:
     try:
         return date.fromisoformat(normalized)
     except ValueError:
-        return None
+        try:
+            return datetime.fromisoformat(normalized.replace("Z", "+00:00")).date()
+        except ValueError:
+            return None
 
 
 def summarize_holding_day_change(
@@ -594,17 +597,17 @@ def build_cash_holding_rows(
                 "cost_basis_method": None,
                 "cost_basis": None,
                 "cost_basis_base": None,
-                "cash_cost_basis_base": safe_float(
-                    balance.get("cash_cost_basis_base")
+                "cost_basis_historical_base": safe_float(
+                    balance.get("cost_basis_historical_base")
                 ),
                 "unrealized_fx_pnl_base": safe_float(
                     balance.get("unrealized_fx_pnl_base")
                 ),
-                "cash_cost_basis_fx_rate_to_base": safe_float(
-                    balance.get("cash_cost_basis_fx_rate_to_base")
+                "cost_basis_fx_rate_to_base": safe_float(
+                    balance.get("cost_basis_fx_rate_to_base")
                 ),
-                "cash_fx_coverage_status": str(
-                    balance.get("cash_fx_coverage_status") or "unavailable"
+                "cost_basis_fx_coverage_status": str(
+                    balance.get("cost_basis_fx_coverage_status") or "unavailable"
                 ),
                 "last_price": 1.0,
                 "quote_as_of_date": as_of_date.isoformat(),
@@ -750,6 +753,9 @@ def build_pending_monetary_holding_rows(
                 "settlement_date": balance.get("settlement_date"),
                 "pending_until_date": balance.get("pending_until_date"),
                 "pending_status": balance.get("pending_status") or "pending",
+                "monetary_recognition_date": balance.get(
+                    "monetary_recognition_date"
+                ),
                 "settlement_amount": amount,
                 "settlement_amount_base": amount_base,
                 "instrument_ref": {
@@ -763,6 +769,18 @@ def build_pending_monetary_holding_rows(
                 "cost_basis_method": None,
                 "cost_basis": None,
                 "cost_basis_base": None,
+                "cost_basis_historical_base": safe_float(
+                    balance.get("cost_basis_historical_base")
+                ),
+                "cost_basis_fx_rate_to_base": safe_float(
+                    balance.get("cost_basis_fx_rate_to_base")
+                ),
+                "cost_basis_fx_coverage_status": str(
+                    balance.get("cost_basis_fx_coverage_status") or "unavailable"
+                ),
+                "unrealized_fx_pnl_base": safe_float(
+                    balance.get("unrealized_fx_pnl_base")
+                ),
                 "last_price": 1.0,
                 "quote_as_of_date": as_of_date.isoformat(),
                 "quote_metric_family": "cash",
@@ -1032,6 +1050,9 @@ def build_option_obligation_holding_rows(
                 "premium_received_gross": 0.0,
                 "premium_basis_remaining": 0.0,
                 "liability_value": 0.0,
+                "carrying_value_historical_base": 0.0,
+                "carrying_fx_coverage_complete": True,
+                "carrying_fx_stale": False,
                 "transaction_ids": set(),
                 "first_obligation": obligation,
             },
@@ -1042,8 +1063,31 @@ def build_option_obligation_holding_rows(
             obligation.get("required_underlying_quantity")
         ) or 0.0
         group["premium_received_gross"] += safe_float(obligation.get("premium_received_gross")) or 0.0
-        group["premium_basis_remaining"] += safe_float(obligation.get("premium_basis_remaining")) or 0.0
+        premium_basis_remaining = safe_float(
+            obligation.get("premium_basis_remaining")
+        ) or 0.0
+        group["premium_basis_remaining"] += premium_basis_remaining
         group["liability_value"] += liability
+        opened_at = _parse_iso_date(obligation.get("opened_at"))
+        historical_liability_base, historical_fx_stale = (
+            convert_amount_on(
+                premium_basis_remaining,
+                as_of_date=opened_at,
+                from_currency=currency,
+                to_currency=base_currency,
+                direct_fx_instruments=direct_fx_instruments or {},
+                instrument_detail_cache=instrument_detail_cache or {},
+            )
+            if opened_at is not None
+            else (None, False)
+        )
+        if historical_liability_base is None:
+            group["carrying_fx_coverage_complete"] = False
+        else:
+            group["carrying_value_historical_base"] += historical_liability_base
+        group["carrying_fx_stale"] = bool(
+            group.get("carrying_fx_stale") or historical_fx_stale
+        )
         opened_by = str(obligation.get("_opened_by_transaction_id") or "")
         if opened_by:
             group["transaction_ids"].add(opened_by)
@@ -1071,7 +1115,7 @@ def build_option_obligation_holding_rows(
         related_underlying_id = str(group["related_underlying_id"])
         required_underlying_quantity = float(group["required_underlying_quantity"])
         liability_value = float(group["liability_value"])
-        liability_value_base, _ = convert_amount_on(
+        liability_value_base, liability_fx_stale = convert_amount_on(
             liability_value,
             as_of_date=as_of_date,
             from_currency=currency,
@@ -1106,6 +1150,14 @@ def build_option_obligation_holding_rows(
         expiry_date = _parse_iso_date(first.get("expiry_date"))
         days_to_expiry = (
             (expiry_date - as_of_date).days if expiry_date is not None else None
+        )
+        carrying_value_historical_base = (
+            -float(group["carrying_value_historical_base"])
+            if bool(group.get("carrying_fx_coverage_complete"))
+            else None
+        )
+        signed_liability_value_base = (
+            -liability_value_base if liability_value_base is not None else None
         )
         rows.append(
             {
@@ -1148,12 +1200,33 @@ def build_option_obligation_holding_rows(
                 "quote_provider": None,
                 "quote_status": "event-cost" if liability_value_base is not None else "unavailable",
                 "market_value": -liability_value,
-                "market_value_base": -liability_value_base if liability_value_base is not None else None,
+                "market_value_base": signed_liability_value_base,
                 "fair_value": None,
                 "fair_value_coverage_status": "unavailable",
                 "valuation_basis": "premium_liability",
                 "carrying_value": liability_value,
                 "carrying_value_base": liability_value_base,
+                "carrying_value_historical_base": (
+                    carrying_value_historical_base
+                ),
+                "carrying_fx_translation_base": (
+                    signed_liability_value_base - carrying_value_historical_base
+                    if signed_liability_value_base is not None
+                    and carrying_value_historical_base is not None
+                    else None
+                ),
+                "carrying_fx_coverage_status": (
+                    "stale"
+                    if carrying_value_historical_base is not None
+                    and (
+                        bool(group.get("carrying_fx_stale"))
+                        or liability_fx_stale
+                    )
+                    else "complete"
+                    if carrying_value_historical_base is not None
+                    and signed_liability_value_base is not None
+                    else "unavailable"
+                ),
                 "liability_value": liability_value,
                 "liability_value_base": liability_value_base,
                 "premium_received_gross": float(group["premium_received_gross"]),
@@ -1437,6 +1510,7 @@ def position_unrealized_metrics(
     *,
     cost_basis: float | None,
     cost_basis_base_current_fx: float | None,
+    current_fx_stale: bool,
     cost_basis_origins: object,
     market_value: float | None,
     market_value_base: float | None,
@@ -1563,7 +1637,9 @@ def position_unrealized_metrics(
             else None
         ),
         "cost_basis_fx_coverage_status": (
-            "stale" if historical_cost_base is not None and historical_fx_stale
+            "stale"
+            if historical_cost_base is not None
+            and (historical_fx_stale or current_fx_stale)
             else "complete" if historical_cost_base is not None
             else "unavailable"
         ),
@@ -1642,7 +1718,7 @@ def build_materialized_holding_rows(
         )
         quantity = safe_float(bucket.get("quantity")) or 0.0
         cost_basis = safe_float(bucket.get("cost_basis"))
-        converted_cost_basis, _ = convert_amount_on(
+        converted_cost_basis, current_cost_fx_stale = convert_amount_on(
             cost_basis,
             as_of_date=as_of_date,
             from_currency=currency,
@@ -1758,24 +1834,37 @@ def build_materialized_holding_rows(
                 "fx_rate_stale": False,
             }
         )
-        unrealized_metrics = (
-            position_unrealized_metrics(
-                cost_basis=cost_basis,
-                cost_basis_base_current_fx=converted_cost_basis,
-                cost_basis_origins=bucket.get("cost_basis_origins"),
-                market_value=market_value,
-                market_value_base=converted_market_value,
-                currency=currency,
-                base_currency=base_currency,
-                as_of_date=as_of_date,
-                direct_fx_instruments=direct_fx_instruments,
-                instrument_detail_cache=instrument_detail_cache,
-                resolve_fx_rate_on=resolve_fx_rate_on,
-                normalize_currency=normalize_currency,
-                safe_float=safe_float,
-                parse_iso_date=parse_iso_date,
-            )
-            if not event_valued
+        cost_metrics = position_unrealized_metrics(
+            cost_basis=cost_basis,
+            cost_basis_base_current_fx=converted_cost_basis,
+            current_fx_stale=current_cost_fx_stale,
+            cost_basis_origins=bucket.get("cost_basis_origins"),
+            market_value=market_value,
+            market_value_base=converted_market_value,
+            currency=currency,
+            base_currency=base_currency,
+            as_of_date=as_of_date,
+            direct_fx_instruments=direct_fx_instruments,
+            instrument_detail_cache=instrument_detail_cache,
+            resolve_fx_rate_on=resolve_fx_rate_on,
+            normalize_currency=normalize_currency,
+            safe_float=safe_float,
+            parse_iso_date=parse_iso_date,
+        )
+        unrealized_metrics = cost_metrics if not event_valued else {}
+        carrying_fx_metrics = (
+            {
+                "carrying_value_historical_base": cost_metrics.get(
+                    "cost_basis_historical_base"
+                ),
+                "carrying_fx_translation_base": cost_metrics.get(
+                    "unrealized_fx_pnl_base"
+                ),
+                "carrying_fx_coverage_status": cost_metrics.get(
+                    "cost_basis_fx_coverage_status"
+                ),
+            }
+            if event_valued
             else {}
         )
         instrument_core = (
@@ -1833,6 +1922,7 @@ def build_materialized_holding_rows(
                 "market_value_base": converted_market_value,
                 "carrying_value": market_value if event_valued else None,
                 "carrying_value_base": converted_market_value if event_valued else None,
+                **carrying_fx_metrics,
                 "fair_value": None if event_valued else market_value,
                 "fair_value_coverage_status": (
                     "unavailable" if event_valued else "complete"

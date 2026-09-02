@@ -673,6 +673,7 @@ class LedgerPostingRecord(BaseModel):
     trade_date: date
     settlement_date: date
     effective_date: date
+    monetary_recognition_date: date | None = None
     recognition_start_date: date | None = None
     instrument_id: str | None = None
     instrument_ref: InstrumentCoreContract | None = None
@@ -847,6 +848,20 @@ class TransactionExecutionQuoteResponse(BaseModel):
         return self
 
 
+class PositionLotCostBasisOriginRecord(BaseModel):
+    origin_transaction_id: str | None = None
+    acquisition_date: date
+    entry_cost_basis: float | None = None
+    remaining_cost_basis: float
+
+
+class PositionLotRealizationCostBasisOriginRecord(BaseModel):
+    origin_transaction_id: str | None = None
+    acquisition_date: date
+    entry_cost_basis: float | None = None
+    cost_basis_released: float
+
+
 class PositionLotRealizationRecord(BaseModel):
     realization_id: str
     transaction_id: str
@@ -857,6 +872,9 @@ class PositionLotRealizationRecord(BaseModel):
     gross_proceeds: float | None = None
     proceeds: float | None = None
     cost_basis_released: float
+    cost_basis_origins: list[PositionLotRealizationCostBasisOriginRecord] = Field(
+        default_factory=list
+    )
     realized_pnl: float | None = None
     price: float | None = None
     remaining_quantity_after: float
@@ -909,6 +927,9 @@ class PositionLotRecord(BaseModel):
     income_cash_amount: float = 0.0
     expense_cash_amount: float = 0.0
     return_of_capital_amount: float = 0.0
+    cost_basis_origins: list[PositionLotCostBasisOriginRecord] = Field(
+        default_factory=list
+    )
     entry_price: float | None = None
     average_exit_price: float | None = None
     current_market_value: float | None = None
@@ -954,6 +975,21 @@ class TransactionChangeLogResponse(BaseModel):
     changes: list[TransactionChangeLogRecord] = Field(default_factory=list)
 
 
+class TransactionAccountingImpact(BaseModel):
+    base_currency: SupportedCurrency
+    recognition_date: date | None = None
+    recognition_fx_rate_to_base: float | None = None
+    local_cost_basis_released: float
+    local_net_proceeds: float
+    historical_cost_basis_base: float | None = None
+    realized_price_pnl_base: float | None = None
+    realized_position_fx_pnl_base: float | None = None
+    realized_position_pnl_base: float | None = None
+    monetary_recognition_date: date | None = None
+    settlement_monetary_cost_basis_base: float | None = None
+    fx_coverage_status: Literal["complete", "stale", "unavailable"]
+
+
 class TransactionWorkspaceResponse(BaseModel):
     portfolio_id: str
     portfolio_inception_date: date
@@ -963,6 +999,7 @@ class TransactionWorkspaceResponse(BaseModel):
     position_reference_ids: list[str] = Field(default_factory=list)
     transactions: list[TransactionRecord]
     selected_transaction: TransactionRecord | None = None
+    accounting_impact: TransactionAccountingImpact | None = None
     delete_scope_row_versions: dict[str, int]
     ledger_summary: LedgerPostingListSummary
     ledger_postings: list[LedgerPostingRecord]
@@ -3366,8 +3403,16 @@ class AccountWorkspaceAccount(BaseModel):
     linked_posting_count: int
     derived_cash_balance: float
     derived_cash_balance_base: float | None = None
+    settled_cash_cost_basis_base: float | None = None
+    settled_cash_unrealized_fx_pnl_base: float | None = None
     pending_settlement: float = 0.0
     pending_settlement_base: float | None = None
+    pending_settlement_cost_basis_base: float | None = None
+    pending_settlement_unrealized_fx_pnl_base: float | None = None
+    monetary_unrealized_fx_pnl_base: float | None = None
+    monetary_fx_coverage_status: Literal[
+        "complete", "stale", "unavailable"
+    ] = "complete"
     derivative_liability: float = 0.0
     derivative_liability_base: float | None = None
     open_option_obligation_count: int = 0

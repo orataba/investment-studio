@@ -12,6 +12,8 @@
    交易事实、日期时钟、Preview/Commit、幂等、修改审计和派生账本的操作合同。
 4. [02_GIPS_ALIGNMENT.md](./02_GIPS_ALIGNMENT.md)
    GIPS-informed 方法边界、当前覆盖限制，以及哪些结果不能声称为 GIPS-compliant。
+5. [05_MULTI_CURRENCY_ACCOUNTING_EXAMPLE.md](./05_MULTI_CURRENCY_ACCOUNTING_EXAMPLE.md)
+   用一条外币证券从买入、部分卖出、在途应收至现金结算的数字例子说明 FX basis 连续性。
 
 仓库级架构、数据库、部署和开发入口见
 [../../../docs/DEVELOPER_GUIDE.md](../../../docs/DEVELOPER_GUIDE.md)。

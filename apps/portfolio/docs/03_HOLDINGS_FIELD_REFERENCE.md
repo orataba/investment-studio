@@ -35,7 +35,7 @@ Portfolio 和 Watchlist 各自实现自己的读路径，不导入对方服务�
 - `Net Invested (Local)` 是当前连续持仓周期的净投入：买入成本和费用为正，已卖部分的净回款、已实现分红/票息和资本返还为负。`Break-even Price = Net Invested / current quantity`，因此它可以低于 book average cost，甚至在累计回款超过投入后为负。完全平仓后再次买入会开始新的持仓周期。
 - 普通证券的未实现盈亏拆为：`Price P&L (Local) = market value local - book cost local`；`Price P&L (Base) = Price P&L (Local) × current FX`；`FX P&L (Base) = Book Cost @ Current FX - Book Cost @ Trade FX`；`Total Unrealized P&L (Base) = Price P&L (Base) + FX P&L (Base) = market value base - Book Cost @ Trade FX`。
 - `Price Return (Local) = Price P&L (Local) / Book Cost (Local)`；`Total Unrealized Return (Base) = Total Unrealized P&L (Base) / Book Cost (Base, Trade FX)`。这两个百分比都是当前开放成本口径，不是 TWR。
-- Event-valued position 的 carrying basis 不等于 fair value；option obligation 也没有 long-position Book Cost / Book Avg Cost / Unrealized P&L。相关字段留空，liability 使用 obligation operational strip 的 remaining premium basis 与 carrying liability 展示。
+- Event-valued position 的 carrying basis 不等于 fair value；option obligation 也没有 long-position Book Cost / Book Avg Cost / fair-value Unrealized P&L。相关证券盈亏字段留空，但外币 carrying amount 另行展示 `Historical Carrying Basis (Base)` 与 `Carrying FX Translation (Base)`；这是账面 carrying value 的汇率折算，不得命名为或冒充 fair-value P&L。
 - Securities group/subtotal 的 `Total Unrealized Return (Base)` 使用组内 base-currency 总未实现盈亏除以历史汇率成本重算。它不包含 Cash & Settlement，也不冒充组合级 TWR。
 - 普通 `dividend / coupon` 在 entitlement date 进入已实现 `Income`，不冲减 book cost，也不进入未实现盈亏；但会降低当前持仓周期的 `Net Invested` 与 `Break-even Price`。
 - `dividend_reinvestment` 先确认已实现 `Income`，再以 reinvested gross amount 建立新 lot；不得建立零成本份额或重复记现金。
@@ -79,9 +79,9 @@ Securities、FCN 和 Options 使用同一套 `View`、`Columns` 控件；Securit
 | 表面 | 行范围 | 字段合同 |
 | --- | --- | --- |
 | `Securities` | `holding_category=securities` 的股票、基金、ETF 等 Registry instrument | 独立视图与字段；字段覆盖当前开放头寸、行情、成本、未实现盈亏、标的 return/risk 与 Forward RC。唯一可排序并可使用 `Group By` 的表。 |
-| `FCN` | `holding_category=derivatives` 且 `contract_type=fcn` | 独立视图与字段；显式展示账户、币种、名义本金、各 underlying 的 initial/strike/KI/KO/交割条款、coupon、issue/final-observation/maturity、issuer/counterparty、remaining basis、signed NAV amount、组合权重与估值状态。不得把这些正式字段压缩成名称下方的说明文字。 |
-| `Options` | `holding_category=derivatives` 且 `contract_type=option` | 独立视图与字段；显式展示 side/type/underlying、expiry、strike、open contracts、multiplier、underlying equivalent、basis type、remaining basis、signed NAV amount、strike notional、组合权重、lifecycle 与估值状态。 |
-| `Cash & Settlement` | `holding_category=cash_and_settlement` | 固定字段；settled cash 按账户与币种分别展示本币余额、base value、权重和现金未实现汇兑损益；pending row 展示结算边界与关联资产，不伪造现金汇率成本。 |
+| `FCN` | `holding_category=derivatives` 且 `contract_type=fcn` | 独立视图与字段；显式展示账户、币种、名义本金、各 underlying 的 initial/strike/KI/KO/交割条款、coupon、issue/final-observation/maturity、issuer/counterparty、remaining basis、signed NAV amount、historical carrying basis、carrying FX translation、组合权重与估值状态。不得把这些正式字段压缩成名称下方的说明文字。 |
+| `Options` | `holding_category=derivatives` 且 `contract_type=option` | 独立视图与字段；显式展示 side/type/underlying、expiry、strike、open contracts、multiplier、underlying equivalent、basis type、remaining basis、signed NAV amount、historical carrying basis、carrying FX translation、strike notional、组合权重、lifecycle 与估值状态。 |
+| `Cash & Settlement` | `holding_category=cash_and_settlement` | 固定字段；settled cash 与 pending monetary row 都按账户与币种分别展示本币余额、base value、FX cost basis、未实现汇兑损益和权重；pending row 另外展示结算边界与关联资产。 |
 
 每个资产表的 subtotal 只用于阅读该资产表；资产 row/subtotal 的 `Portfolio Weight` 始终是 signed base value / canonical total NAV，资产 Forward RC 始终相对于同一个全组合 forward-risk variance。不得因视觉拆表把 Securities、FCN、Options 或 Cash 各自归一成 100%。
 
@@ -99,11 +99,13 @@ pending:{kind}:{cash_account}:{economic_instrument}:{currency}:{settlement_date}
 
 它防止相同账户/资产/币种但不同结算边界的余额发生主键冲突。`pending_status` 目前包括 `awaiting_settlement`、`settled_awaiting_position` 和 `overdue`；本币 signed amount 与 base amount 必须同时保留，base FX 不可用时本币金额仍可展示但 base aggregation 为 unavailable。
 
-Settled cash 的 instrument identity 为 `cash:{currency}`，行 identity 为 `cash:{currency}:{account_id}`。每个账户使用移动平均的历史 base-currency 汇率成本：流入按生效日汇率增加成本，流出按当时平均汇率成本释放；组合内部同币种现金划转继承来源账户的成本，不在划转日重置汇率。`cash unrealized FX P&L = current base value - historical cash cost basis`。历史或当前 FX 不完整时该账户的汇兑损益为不可用，不以当前汇率回填历史成本。
+Settled cash 的 instrument identity 为 `cash:{currency}`，行 identity 为 `cash:{currency}:{account_id}`。每个账户使用移动平均的 historical base-currency monetary basis：价值第一次进入账本时按 `monetary_recognition_date` 建立；pending receivable / payable / subscription bridge 转成 settled cash 时原样继承，不在 settlement date 重置。现金减少时按当时平均 basis 释放；组合内部同币种现金划转也继承来源账户 basis。`monetary unrealized FX P&L = current base value - historical monetary basis`。历史或当前 FX 不完整时对应行的汇兑损益为不可用，不以当前汇率回填历史成本。
+
+`FX Cost Basis` 是货币资产或负债的历史基准币成本，不是证券 `Book Cost`。一个 pending row 若合并了同一结算边界下多笔不同 recognition date 的交易，只展示加权 FX basis；单一 recognition date 仅在组成交易一致时返回。
 
 Workspace API 的 `operational_summary` 保留 open short-option contract count、expiry buckets、option obligation strike notional 和 settlement receivable/payable/net；`operational_alerts` 返回 severity、code、message 和真实 `related_line_ids`。这些字段继续服务生命周期和结算逻辑，但 Holdings 不再单独渲染 `Operational Status` 面板。到期已到和逾期结算是 critical，七日内到期与 settlement FX unavailable 是 warning。API 不发布股票覆盖分类或结算方式；动态 workspace、materialized snapshot 和 instrument detail projection 对当前字段必须保持 parity。
 
-CSV/XLSX 只为非空的 `Securities`、`FCN`、`Options`、`Cash & Settlement` 输出各自独立的标题与表头，不再把异质字段压进带 `Category` 的统一 schema，也不重复导出组合总计。Securities、FCN 和 Options 跟随各自当前视图的可见字段；Cash & Settlement 导出固定字段。Securities 额外跟随当前筛选、排序和可选 Group。价格路径、收益、未实现盈亏和回撤的不适用值导出为 `N/A`；衍生品的 Vol / Forward RC 同样导出 `N/A`，只有明确 modeled-zero 的 monetary risk 输出数值 `0`。
+CSV/XLSX 只为非空的 `Securities`、`FCN`、`Options`、`Cash & Settlement` 输出各自独立的标题与表头，不再把异质字段压进带 `Category` 的统一 schema，也不重复导出组合总计。Securities、FCN 和 Options 跟随各自当前视图的可见字段；Cash & Settlement 导出固定字段并包含 FX cost basis 与未实现 FX P&L。Securities 额外跟随当前筛选、排序和可选 Group。价格路径、收益、未实现盈亏和回撤的不适用值导出为 `N/A`；衍生品的 Vol / Forward RC 同样导出 `N/A`，只有明确 modeled-zero 的 monetary risk 输出数值 `0`。
 
 ## 3. Securities 可配置字段与聚合字典
 

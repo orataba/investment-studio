@@ -243,7 +243,7 @@ def test_unsettled_foreign_security_fx_is_not_absorbed_by_asset_capital_gain(
     )
     line_by_key = {str(line["key"]): line for line in calculation["lines"]}
     assert line_by_key["pending_settlement_currency_gains"]["label"] == (
-        "Pending Settlement Monetary FX"
+        "Pending Settlement FX"
     )
     assert line_by_key["pending_settlement_currency_gains"]["amount"] == pytest.approx(
         -expected_fx_change

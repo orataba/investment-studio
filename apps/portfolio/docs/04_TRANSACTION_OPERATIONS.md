@@ -61,6 +61,15 @@ Option 映射到 `asset_domain=derivative` 并分别使用 `contract_type=fcn/op
 提前伪造份额，也不是把在途金额当作 settled cash。确认日到达后 bridge 消失并转为真实
 position；组合 NAV 在等待期间仍必须对平。
 
+外币 monetary value 第一次进入账本时按 `monetary_recognition_date` 建立 historical base
+basis。pending balance 转成 settled cash 只改变状态，不重置 basis；同币种内部现金转账也继承
+来源账户 basis。换汇的目标币种 basis 使用实际 source consideration，不使用行情反推成交金额。
+
+卖出或赎回交易的 Fact 面板同时展示组合基准币口径的 realized position P&L，并拆成 price 与
+position FX。historical cost 来自实际释放的 lot origins；随后形成的 receivable / cash 使用独立
+monetary basis，不能把结算后的 FX 再算进 position realized P&L。完整例子见
+[05_MULTI_CURRENCY_ACCOUNTING_EXAMPLE.md](./05_MULTI_CURRENCY_ACCOUNTING_EXAMPLE.md)。
+
 ## 5. 创建、修改和删除控制
 
 - create 与 internal transfer 请求必须携带 request-scoped `Idempotency-Key`；同 key 只能重放
@@ -78,7 +87,7 @@ position；组合 NAV 在等待期间仍必须对平。
 1. activity type、账户、证券与币种；
 2. trade、position-effective、settlement、entitlement 日期是否各自表达真实事件；
 3. 基金确认金额与份额是否保持原始精度，反算价格是否未被参考 NAV 覆盖；
-4. Net Cash Effect、postings 与 position lot 方向是否一致；
+4. Net Cash Effect、postings、position lot 与 realized price / FX split 是否一致；
 5. History 是否新增正确版本；
 6. 受影响的 Holdings、Performance 与 snapshots 是否已被标记并刷新。
 

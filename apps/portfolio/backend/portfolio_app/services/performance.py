@@ -7,7 +7,7 @@ from functools import partial
 from math import isfinite, sqrt
 from threading import RLock
 from time import monotonic
-from typing import Callable, cast
+from typing import cast
 
 from portfolio_ops_instrument_core import VALUATION_PROHIBITED_TOTAL_RETURN_BASES
 
@@ -33,10 +33,13 @@ from portfolio_app.services.instrument_event_tasks import (
 )
 from portfolio_app.services.ledger import (
     _split_lot_quantity_allocations,
+    build_monetary_subledger,
     build_position_lots,
     derive_ledger_postings,
     ledger_posting_effective_date_iso,
     ledger_posting_pending_amount_as_of,
+    pending_monetary_balances_from_postings,
+    settled_monetary_balances_from_postings,
 )
 from portfolio_app.services.option_obligations import (
     build_option_obligations,
@@ -2936,7 +2939,7 @@ def build_daily_portfolio_snapshots(
             snapshot_payload["_holding_rows"] = (
                 holdings_market_profile.build_materialized_holding_rows(
                     account_instrument_buckets=account_instrument_buckets,
-                    cash_balances=_settled_cash_balances_from_postings(
+                    cash_balances=settled_monetary_balances_from_postings(
                         postings=postings,
                         as_of_date=as_of_date,
                         base_currency=base_currency,
@@ -2944,7 +2947,7 @@ def build_daily_portfolio_snapshots(
                         instrument_detail_cache=instrument_detail_cache,
                         resolve_fx_rate_on=resolve_holding_fx_rate_on,
                     ),
-                    pending_balances=_pending_monetary_balances_from_postings(
+                    pending_balances=pending_monetary_balances_from_postings(
                         postings=postings,
                         as_of_date=as_of_date,
                         base_currency=base_currency,
@@ -4342,7 +4345,7 @@ def build_period_calculation_report(
         },
         {
             "key": "pending_settlement_currency_gains",
-            "label": "Pending Settlement Monetary FX",
+            "label": "Pending Settlement FX",
             "amount": pending_settlement_currency_gains,
             "line_kind": "performance",
             "parent_key": None,
@@ -4454,7 +4457,7 @@ def _build_boundary_holding_records(
         )
         quantity = _safe_float(bucket.get("quantity")) or 0.0
         cost_basis = _safe_float(bucket.get("cost_basis"))
-        converted_cost_basis, _ = valuation_fx.convert_amount_on(
+        converted_cost_basis, current_cost_fx_stale = valuation_fx.convert_amount_on(
             cost_basis,
             as_of_date=as_of_date,
             from_currency=currency,
@@ -4579,24 +4582,37 @@ def _build_boundary_holding_records(
                 ),
             )
         )
-        unrealized_metrics = (
-            holdings_market_profile.position_unrealized_metrics(
-                cost_basis=cost_basis,
-                cost_basis_base_current_fx=converted_cost_basis,
-                cost_basis_origins=bucket.get("cost_basis_origins"),
-                market_value=market_value_local,
-                market_value_base=converted_market_value,
-                currency=currency,
-                base_currency=base_currency,
-                as_of_date=as_of_date,
-                direct_fx_instruments=direct_fx_instruments,
-                instrument_detail_cache=instrument_detail_cache,
-                resolve_fx_rate_on=partial(
-                    valuation_fx.resolve_fx_rate_on,
-                    instrument_detail_loader=get_registry_instrument_detail,
+        cost_metrics = holdings_market_profile.position_unrealized_metrics(
+            cost_basis=cost_basis,
+            cost_basis_base_current_fx=converted_cost_basis,
+            current_fx_stale=current_cost_fx_stale,
+            cost_basis_origins=bucket.get("cost_basis_origins"),
+            market_value=market_value_local,
+            market_value_base=converted_market_value,
+            currency=currency,
+            base_currency=base_currency,
+            as_of_date=as_of_date,
+            direct_fx_instruments=direct_fx_instruments,
+            instrument_detail_cache=instrument_detail_cache,
+            resolve_fx_rate_on=partial(
+                valuation_fx.resolve_fx_rate_on,
+                instrument_detail_loader=get_registry_instrument_detail,
+            ),
+        )
+        unrealized_metrics = cost_metrics if not event_valued else {}
+        carrying_fx_metrics = (
+            {
+                "carrying_value_historical_base": cost_metrics.get(
+                    "cost_basis_historical_base"
                 ),
-            )
-            if not event_valued
+                "carrying_fx_translation_base": cost_metrics.get(
+                    "unrealized_fx_pnl_base"
+                ),
+                "carrying_fx_coverage_status": cost_metrics.get(
+                    "cost_basis_fx_coverage_status"
+                ),
+            }
+            if event_valued
             else {}
         )
         if market_value_local is None or converted_market_value is None:
@@ -4671,6 +4687,7 @@ def _build_boundary_holding_records(
                 "market_value_base": converted_market_value,
                 "carrying_value": market_value_local if event_valued else None,
                 "carrying_value_base": converted_market_value if event_valued else None,
+                **carrying_fx_metrics,
                 "fair_value": None if event_valued else market_value_local,
                 "fair_value_coverage_status": "unavailable" if event_valued else "complete",
                 "valuation_basis": "carried_cost" if event_valued else "market_quote",
@@ -4722,468 +4739,6 @@ def _build_boundary_holding_records(
     return rendered_positions, resolved_total_market_value_base
 
 
-def _pending_monetary_balances_from_postings(
-    *,
-    postings: list[dict[str, object]],
-    as_of_date: date,
-    base_currency: str,
-    direct_fx_instruments: dict[tuple[str, str], str],
-    instrument_detail_cache: dict[str, dict[str, object] | None],
-) -> list[dict[str, object]]:
-    """Build cash-account settlement subledger balances for Holdings."""
-
-    grouped: dict[
-        tuple[str, str, str, str, str, str],
-        dict[str, object],
-    ] = {}
-    as_of_iso = as_of_date.isoformat()
-    for posting in postings:
-        pending_amount = ledger_posting_pending_amount_as_of(posting, as_of_date)
-        if pending_amount is not None:
-            if abs(pending_amount) <= 1e-9:
-                continue
-            source_transaction_type = str(
-                posting.get("source_transaction_type") or ""
-            ).strip()
-            if (
-                str(posting.get("posting_role") or "")
-                == "position_recognition_bridge"
-                and source_transaction_type == "buy"
-                and pending_amount > 0
-            ):
-                holding_kind = "pending_subscription"
-            else:
-                holding_kind = "position_recognition_adjustment"
-            amount = pending_amount
-            account_id = str(
-                posting.get("settlement_cash_account_id")
-                or posting.get("account_id")
-                or ""
-            ).strip()
-        else:
-            cash_delta = _safe_float(posting.get("cash_amount_delta"))
-            if cash_delta is None or abs(cash_delta) <= 1e-9:
-                continue
-            if ledger_posting_effective_date_iso(posting) <= as_of_iso:
-                continue
-            amount = cash_delta
-            holding_kind = (
-                "settlement_receivable"
-                if cash_delta > 0
-                else "settlement_payable"
-            )
-            account_id = str(posting.get("account_id") or "").strip()
-
-        currency = valuation_fx.required_currency(
-            posting.get("currency"),
-            field_name="ledger-posting currency",
-        )
-        economic_instrument_id = str(
-            posting.get("instrument_id") or ""
-        ).strip()
-        settlement_date = str(
-            posting.get("settlement_date")
-            or posting.get("recognition_start_date")
-            or ""
-        )[:10]
-        pending_until_date = str(
-            posting.get("recognition_end_date")
-            or posting.get("effective_date")
-            or settlement_date
-        )[:10]
-        if settlement_date and settlement_date > as_of_iso:
-            pending_status = "awaiting_settlement"
-        elif pending_until_date and pending_until_date > as_of_iso:
-            pending_status = "settled_awaiting_position"
-        elif settlement_date and settlement_date < as_of_iso:
-            pending_status = "overdue"
-        else:
-            pending_status = "due_today"
-        key = (
-            holding_kind,
-            account_id,
-            economic_instrument_id,
-            currency,
-            settlement_date,
-            pending_until_date,
-        )
-        bucket = grouped.setdefault(
-            key,
-            {
-                "holding_kind": holding_kind,
-                "account_id": account_id,
-                "account_ids": [account_id] if account_id else [],
-                "economic_instrument_id": economic_instrument_id or None,
-                "economic_instrument_ref": (
-                    deepcopy(posting.get("instrument_ref"))
-                    if isinstance(posting.get("instrument_ref"), dict)
-                    else None
-                ),
-                "currency": currency,
-                "settlement_date": settlement_date or None,
-                "pending_until_date": pending_until_date or None,
-                "pending_status": pending_status,
-                "amount": 0.0,
-                "amount_base": 0.0,
-                "amount_base_complete": True,
-                "transaction_ids": set(),
-            },
-        )
-        bucket["amount"] = (_safe_float(bucket.get("amount")) or 0.0) + amount
-        converted_amount, _ = valuation_fx.convert_amount_on(
-            amount,
-            as_of_date=as_of_date,
-            from_currency=currency,
-            to_currency=base_currency,
-            direct_fx_instruments=direct_fx_instruments,
-            instrument_detail_cache=instrument_detail_cache,
-            instrument_detail_loader=get_registry_instrument_detail,
-        )
-        if converted_amount is None:
-            bucket["amount_base_complete"] = False
-        else:
-            bucket["amount_base"] = (
-                _safe_float(bucket.get("amount_base")) or 0.0
-            ) + converted_amount
-        transaction_id = str(posting.get("transaction_id") or "").strip()
-        if transaction_id:
-            transaction_ids = bucket.get("transaction_ids")
-            if isinstance(transaction_ids, set):
-                transaction_ids.add(transaction_id)
-
-    rendered: list[dict[str, object]] = []
-    for bucket in grouped.values():
-        amount = _safe_float(bucket.get("amount")) or 0.0
-        if abs(amount) <= 1e-9:
-            continue
-        transaction_ids = bucket.pop("transaction_ids", set())
-        amount_base_complete = bool(
-            bucket.pop("amount_base_complete", False)
-        )
-        rendered.append(
-            {
-                **bucket,
-                "amount_base": (
-                    bucket.get("amount_base")
-                    if amount_base_complete
-                    else None
-                ),
-                "transaction_ids": sorted(
-                    transaction_ids
-                    if isinstance(transaction_ids, set)
-                    else []
-                ),
-            }
-        )
-    rendered.sort(
-        key=lambda item: (
-            str(item.get("holding_kind") or ""),
-            str(item.get("account_id") or ""),
-            str(item.get("economic_instrument_id") or ""),
-            str(item.get("currency") or ""),
-        )
-    )
-    return rendered
-
-
-def _apply_cash_cost_basis_delta(
-    state: dict[str, object],
-    *,
-    amount_delta: float,
-    acquisition_fx_rate: float | None,
-) -> float | None:
-    balance = _safe_float(state.get("amount")) or 0.0
-    historical_basis = _safe_float(state.get("historical_cost_basis_base"))
-    coverage_complete = bool(state.get("cost_basis_complete", True))
-    next_balance = balance + amount_delta
-
-    if abs(next_balance) <= 1e-9:
-        released_basis = historical_basis
-        state.update(
-            {
-                "amount": 0.0,
-                "historical_cost_basis_base": 0.0,
-                "cost_basis_complete": True,
-            }
-        )
-        return released_basis
-
-    increases_exposure = abs(balance) <= 1e-9 or balance * amount_delta > 0
-    crosses_zero = balance * next_balance < 0
-    if increases_exposure or crosses_zero:
-        if acquisition_fx_rate is None:
-            state.update(
-                {
-                    "amount": next_balance,
-                    "historical_cost_basis_base": None,
-                    "cost_basis_complete": False,
-                }
-            )
-            return None
-        if crosses_zero:
-            next_basis = next_balance * acquisition_fx_rate
-            coverage_complete = True
-        else:
-            next_basis = (
-                historical_basis + amount_delta * acquisition_fx_rate
-                if coverage_complete and historical_basis is not None
-                else None
-            )
-        released_basis = (
-            historical_basis - next_basis
-            if historical_basis is not None and next_basis is not None
-            else None
-        )
-    else:
-        next_basis = (
-            historical_basis * (next_balance / balance)
-            if coverage_complete
-            and historical_basis is not None
-            and abs(balance) > 1e-12
-            else None
-        )
-        released_basis = (
-            historical_basis - next_basis
-            if historical_basis is not None and next_basis is not None
-            else None
-        )
-
-    state.update(
-        {
-            "amount": next_balance,
-            "historical_cost_basis_base": next_basis,
-            "cost_basis_complete": coverage_complete and next_basis is not None,
-        }
-    )
-    return released_basis
-
-
-def _settled_cash_balances_from_postings(
-    *,
-    postings: list[dict[str, object]],
-    as_of_date: date,
-    base_currency: str,
-    direct_fx_instruments: dict[tuple[str, str], str],
-    instrument_detail_cache: dict[str, dict[str, object] | None],
-    resolve_fx_rate_on: Callable[..., dict[str, object] | None] | None = None,
-) -> list[dict[str, object]]:
-    resolved_fx_rate_on = resolve_fx_rate_on or partial(
-        valuation_fx.resolve_fx_rate_on,
-        instrument_detail_loader=get_registry_instrument_detail,
-    )
-    states: dict[tuple[str, str], dict[str, object]] = {}
-    transferred_basis_by_group: dict[str, tuple[float | None, bool]] = {}
-    fx_conversion_legs: dict[str, dict[str, dict[str, object]]] = defaultdict(dict)
-    for posting in postings:
-        if str(posting.get("source_transaction_type") or "") != "fx_conversion":
-            continue
-        posting_role = str(posting.get("posting_role") or "")
-        if posting_role not in {
-            "fx_conversion_source_cash",
-            "fx_conversion_target_cash",
-        }:
-            continue
-        transaction_id = str(posting.get("transaction_id") or "").strip()
-        if transaction_id:
-            fx_conversion_legs[transaction_id][posting_role] = posting
-    as_of_iso = as_of_date.isoformat()
-    ordered_postings = sorted(
-        enumerate(postings),
-        key=lambda item: (
-            ledger_posting_effective_date_iso(item[1]),
-            str(item[1].get("trade_at") or ""),
-            str(item[1].get("created_at") or ""),
-            0
-            if str(item[1].get("source_transaction_type") or "")
-            == "transfer_out"
-            else 2
-            if str(item[1].get("source_transaction_type") or "")
-            == "transfer_in"
-            else 1,
-            item[0],
-        ),
-    )
-    for _, posting in ordered_postings:
-        if ledger_posting_pending_amount_as_of(posting, as_of_date) is not None:
-            continue
-        amount_delta = _safe_float(posting.get("cash_amount_delta"))
-        effective_date_iso = ledger_posting_effective_date_iso(posting)
-        if amount_delta is None or effective_date_iso > as_of_iso:
-            continue
-        account_id = str(posting.get("account_id") or "").strip()
-        if not account_id:
-            raise ValueError("Settled cash posting is missing account_id.")
-        currency = valuation_fx.required_currency(
-            posting.get("currency"),
-            field_name="ledger-posting currency",
-        )
-        state = states.setdefault(
-            (account_id, currency),
-            {
-                "account_id": account_id,
-                "currency": currency,
-                "amount": 0.0,
-                "historical_cost_basis_base": 0.0,
-                "cost_basis_complete": True,
-                "historical_fx_stale": False,
-                "transaction_ids": set(),
-            },
-        )
-        balance_before = _safe_float(state.get("amount")) or 0.0
-        historical_fx_stale_before = bool(state.get("historical_fx_stale"))
-        transaction_ids = state.get("transaction_ids")
-        if isinstance(transaction_ids, set):
-            transaction_ids.add(str(posting.get("transaction_id") or ""))
-
-        transfer_group_id = str(posting.get("transfer_group_id") or "").strip()
-        transaction_type = str(posting.get("source_transaction_type") or "")
-        balance_after_candidate = balance_before + amount_delta
-        crosses_zero_candidate = balance_before * balance_after_candidate < 0
-        adds_basis_candidate = (
-            abs(balance_before) <= 1e-9 or balance_before * amount_delta > 0
-        )
-        acquisition_fx_rate: float | None = None
-        acquisition_fx_stale = False
-        if transaction_type == "transfer_in" and transfer_group_id:
-            transferred_basis, acquisition_fx_stale = transferred_basis_by_group.get(
-                transfer_group_id,
-                (None, False),
-            )
-            acquisition_fx_rate = (
-                transferred_basis / amount_delta
-                if transferred_basis is not None and abs(amount_delta) > 1e-12
-                else None
-            )
-        elif crosses_zero_candidate or adds_basis_candidate:
-            basis_date = _parse_iso_date(
-                posting.get("trade_date")
-                if transaction_type == "fx_conversion"
-                else effective_date_iso
-            )
-            basis_currency = currency
-            basis_amount = abs(amount_delta)
-            if transaction_type == "fx_conversion":
-                transaction_id = str(posting.get("transaction_id") or "").strip()
-                posting_role = str(posting.get("posting_role") or "")
-                paired_role = (
-                    "fx_conversion_source_cash"
-                    if posting_role == "fx_conversion_target_cash"
-                    else "fx_conversion_target_cash"
-                )
-                paired_posting = fx_conversion_legs.get(transaction_id, {}).get(
-                    paired_role
-                )
-                basis_currency = valuation_fx.normalized_currency(
-                    (paired_posting or {}).get("currency")
-                )
-                basis_amount = abs(
-                    _safe_float((paired_posting or {}).get("cash_amount_delta"))
-                    or 0.0
-                )
-            resolved_fx = (
-                resolved_fx_rate_on(
-                    as_of_date=basis_date,
-                    base_currency=basis_currency,
-                    quote_currency=base_currency,
-                    direct_instruments=direct_fx_instruments,
-                    instrument_detail_cache=instrument_detail_cache,
-                )
-                if basis_date is not None and basis_currency and basis_amount > 0
-                else None
-            )
-            basis_fx_rate = _safe_float((resolved_fx or {}).get("rate"))
-            acquisition_fx_rate = (
-                basis_amount * basis_fx_rate / abs(amount_delta)
-                if basis_fx_rate is not None
-                and basis_fx_rate > 0
-                and abs(amount_delta) > 1e-12
-                else None
-            )
-            acquisition_fx_stale = bool((resolved_fx or {}).get("stale"))
-
-        released_basis = _apply_cash_cost_basis_delta(
-            state,
-            amount_delta=amount_delta,
-            acquisition_fx_rate=acquisition_fx_rate,
-        )
-        balance_after = _safe_float(state.get("amount")) or 0.0
-        crosses_zero = balance_before * balance_after < 0
-        adds_basis = abs(balance_before) <= 1e-9 or balance_before * amount_delta > 0
-        if transaction_type == "transfer_out" and transfer_group_id:
-            transferred_basis_by_group[transfer_group_id] = (
-                released_basis,
-                historical_fx_stale_before
-                or (acquisition_fx_stale and (crosses_zero or adds_basis)),
-            )
-        if abs(balance_after) <= 1e-9:
-            state["historical_fx_stale"] = False
-        elif crosses_zero:
-            state["historical_fx_stale"] = acquisition_fx_stale
-        elif adds_basis:
-            state["historical_fx_stale"] = (
-                historical_fx_stale_before or acquisition_fx_stale
-            )
-        else:
-            state["historical_fx_stale"] = historical_fx_stale_before
-
-    rendered: list[dict[str, object]] = []
-    for (account_id, currency), state in sorted(states.items()):
-        amount = _safe_float(state.get("amount")) or 0.0
-        if abs(amount) <= 1e-9:
-            continue
-        amount_base, current_fx_stale = valuation_fx.convert_amount_on(
-            amount,
-            as_of_date=as_of_date,
-            from_currency=currency,
-            to_currency=base_currency,
-            direct_fx_instruments=direct_fx_instruments,
-            instrument_detail_cache=instrument_detail_cache,
-            instrument_detail_loader=get_registry_instrument_detail,
-        )
-        historical_basis = (
-            _safe_float(state.get("historical_cost_basis_base"))
-            if bool(state.get("cost_basis_complete"))
-            else None
-        )
-        transaction_ids = state.get("transaction_ids")
-        rendered.append(
-            {
-                "account_id": account_id,
-                "account_ids": [account_id],
-                "currency": currency,
-                "amount": amount,
-                "amount_base": amount_base,
-                "cash_cost_basis_base": historical_basis,
-                "unrealized_fx_pnl_base": (
-                    amount_base - historical_basis
-                    if amount_base is not None and historical_basis is not None
-                    else None
-                ),
-                "cash_cost_basis_fx_rate_to_base": (
-                    historical_basis / amount
-                    if historical_basis is not None and abs(amount) > 1e-12
-                    else None
-                ),
-                "cash_fx_coverage_status": (
-                    "stale"
-                    if historical_basis is not None
-                    and (bool(state.get("historical_fx_stale")) or current_fx_stale)
-                    else "complete"
-                    if historical_basis is not None and amount_base is not None
-                    else "unavailable"
-                ),
-                "transaction_ids": sorted(
-                    transaction_id
-                    for transaction_id in transaction_ids
-                    if transaction_id
-                )
-                if isinstance(transaction_ids, set)
-                else [],
-            }
-        )
-    return rendered
-
-
 def _statement_cash_nav_components(
     *,
     portfolio_id: str,
@@ -5201,14 +4756,15 @@ def _statement_cash_nav_components(
         account_currency_map=_account_currency_map(accounts),
         as_of_date=as_of_date,
     )
-    cash_balances = _settled_cash_balances_from_postings(
+    monetary_subledger = build_monetary_subledger(
         postings=postings,
         as_of_date=as_of_date,
         base_currency=base_currency,
         direct_fx_instruments=direct_fx_instruments,
         instrument_detail_cache=instrument_detail_cache,
     )
-    as_of_iso = as_of_date.isoformat()
+    cash_balances = monetary_subledger["settled_balances"]
+    pending_balances = monetary_subledger["pending_balances"]
     cash_balance_values = [
         _safe_float(balance.get("amount_base")) for balance in cash_balances
     ]
@@ -5217,69 +4773,20 @@ def _statement_cash_nav_components(
         if all(value is not None for value in cash_balance_values)
         else None
     )
-    pending_settlement_base = 0.0
-    pending_settlement_complete = True
-    for posting in postings:
-        pending_amount_delta = ledger_posting_pending_amount_as_of(
-            posting,
-            as_of_date,
-        )
-        if pending_amount_delta is not None:
-            if abs(pending_amount_delta) <= 1e-9:
-                continue
-            posting_currency = valuation_fx.required_currency(
-                posting.get("currency"),
-                field_name="ledger-posting currency",
-            )
-            converted_pending_delta, _ = valuation_fx.convert_amount_on(
-                pending_amount_delta,
-                as_of_date=as_of_date,
-                from_currency=posting_currency,
-                to_currency=base_currency,
-                direct_fx_instruments=direct_fx_instruments,
-                instrument_detail_cache=instrument_detail_cache,
-                instrument_detail_loader=get_registry_instrument_detail,
-            )
-            if converted_pending_delta is None:
-                pending_settlement_complete = False
-            else:
-                pending_settlement_base += converted_pending_delta
-            continue
-
-        cash_delta = _safe_float(posting.get("cash_amount_delta"))
-        if cash_delta is None:
-            continue
-        posting_currency = valuation_fx.required_currency(
-            posting.get("currency"), field_name="ledger-posting currency"
-        )
-        posting_effective_date = ledger_posting_effective_date_iso(posting)
-        if posting_effective_date <= as_of_iso:
-            continue
-        converted_cash_delta, _ = valuation_fx.convert_amount_on(
-            cash_delta,
-            as_of_date=as_of_date,
-            from_currency=posting_currency,
-            to_currency=base_currency,
-            direct_fx_instruments=direct_fx_instruments,
-            instrument_detail_cache=instrument_detail_cache,
-            instrument_detail_loader=get_registry_instrument_detail,
-        )
-        if converted_cash_delta is None:
-            pending_settlement_complete = False
-            continue
-        pending_settlement_base += converted_cash_delta
+    pending_balance_values = [
+        _safe_float(balance.get("amount_base")) for balance in pending_balances
+    ]
+    pending_settlement_base = (
+        sum(value for value in pending_balance_values if value is not None)
+        if all(value is not None for value in pending_balance_values)
+        else None
+    )
 
     return {
         "cash_balance_base": cash_balance_base,
-        "pending_settlement_base": pending_settlement_base if pending_settlement_complete else None,
+        "pending_settlement_base": pending_settlement_base,
         "cash_balances": cash_balances,
-        "pending_balances": _pending_monetary_balances_from_postings(
-            postings=postings,
-            as_of_date=as_of_date,
-            base_currency=base_currency,
-            direct_fx_instruments=direct_fx_instruments,
-            instrument_detail_cache=instrument_detail_cache,
-        ),
+        "pending_balances": pending_balances,
     }
 
 

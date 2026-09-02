@@ -60,6 +60,7 @@ import {
   formatQuantity,
   formatSignedCurrency,
   formatUnitPrice,
+  signedValueClass,
 } from '../lib/format'
 import { useModalDialog } from '../../../../../packages/ui/src/useModalDialog'
 import ConfirmDialog from '../../../../../packages/ui/src/ConfirmDialog'
@@ -4434,6 +4435,34 @@ export default function TransactionsPage() {
                           Net cash {formatSignedCurrency(selectedTransaction.net_cash_effect, selectedTransaction.currency)}
                         </em>
                       </div>
+                      {transactionsWorkspace.accounting_impact ? (
+                        <div
+                          className="transaction-fact-highlight transaction-accounting-highlight"
+                          title={`Released cost ${formatCurrency(transactionsWorkspace.accounting_impact.local_cost_basis_released, selectedTransaction.currency)}; historical base cost ${formatCurrency(transactionsWorkspace.accounting_impact.historical_cost_basis_base, transactionsWorkspace.accounting_impact.base_currency)}; recognition FX ${formatNumber(transactionsWorkspace.accounting_impact.recognition_fx_rate_to_base, 6)}; settlement monetary basis ${formatCurrency(transactionsWorkspace.accounting_impact.settlement_monetary_cost_basis_base, transactionsWorkspace.accounting_impact.base_currency)}.`}
+                        >
+                          <span>
+                            Realized position P&amp;L · {transactionsWorkspace.accounting_impact.base_currency}
+                            {transactionsWorkspace.accounting_impact.fx_coverage_status === 'complete'
+                              ? ''
+                              : ` · ${formatLabel(transactionsWorkspace.accounting_impact.fx_coverage_status)}`}
+                          </span>
+                          <strong className={signedValueClass(transactionsWorkspace.accounting_impact.realized_position_pnl_base)}>
+                            {formatSignedCurrency(
+                              transactionsWorkspace.accounting_impact.realized_position_pnl_base,
+                              transactionsWorkspace.accounting_impact.base_currency,
+                            )}
+                          </strong>
+                          <em>
+                            Price {formatSignedCurrency(
+                              transactionsWorkspace.accounting_impact.realized_price_pnl_base,
+                              transactionsWorkspace.accounting_impact.base_currency,
+                            )}{' · '}FX {formatSignedCurrency(
+                              transactionsWorkspace.accounting_impact.realized_position_fx_pnl_base,
+                              transactionsWorkspace.accounting_impact.base_currency,
+                            )}
+                          </em>
+                        </div>
+                      ) : null}
                       <dl className="transaction-fact-list">
                         <div>
                           <dt>

@@ -5,7 +5,7 @@ from datetime import date
 import pytest
 
 from portfolio_app.api.routes import accounts as accounts_route
-from portfolio_app.services import ledger
+from portfolio_app.services import ledger, valuation_fx
 
 
 def _detail(
@@ -251,6 +251,103 @@ def test_account_workspace_reuses_pricing_and_corporate_actions(monkeypatch) -> 
     assert position["valuation_basis"] == "market_quote"
     assert position["coverage_status"] == "price-nav-fx"
     assert workspace["accounts"][0]["position_market_value"] == pytest.approx(250.0)
+
+
+def test_account_workspace_reports_settled_and_pending_monetary_fx(
+    monkeypatch,
+) -> None:
+    rates = {
+        date(2026, 1, 1): 7.0,
+        date(2026, 1, 2): 7.5,
+        date(2026, 1, 3): 8.0,
+    }
+    monkeypatch.setattr(
+        ledger,
+        "get_platform_fx_rates",
+        lambda: {"supported_currencies": ["CNY", "USD"], "rates": []},
+    )
+    monkeypatch.setattr(
+        valuation_fx,
+        "resolve_fx_rate_on",
+        lambda *, as_of_date, base_currency, quote_currency, **_kwargs: {
+            "rate": 1.0 if base_currency == quote_currency else rates[as_of_date],
+            "stale": False,
+        },
+    )
+    monkeypatch.setattr(
+        valuation_fx,
+        "convert_amount_on",
+        lambda amount, *, as_of_date, from_currency, to_currency, **_kwargs: (
+            None
+            if amount is None
+            else float(amount)
+            * (1.0 if from_currency == to_currency else rates[as_of_date]),
+            False,
+        ),
+    )
+    account = {
+        "account_id": "cash-usd",
+        "account_name": "USD Cash",
+        "account_type": "deposit_account",
+        "currency": "USD",
+    }
+    transactions = [
+        {
+            "transaction_id": "opening-usd",
+            "transaction_sequence": 1,
+            "portfolio_id": "portfolio",
+            "transaction_type": "opening_balance",
+            "trade_date": "2026-01-01",
+            "trade_at": "2026-01-01T09:00:00Z",
+            "settlement_date": "2026-01-01",
+            "account_id": "cash-usd",
+            "settlement_cash_account_id": None,
+            "instrument_id": None,
+            "derivative_contract_id": None,
+            "quantity": None,
+            "gross_amount": 100.0,
+            "fees": 0.0,
+            "taxes": 0.0,
+            "currency": "USD",
+            "created_at": "2026-01-01T09:00:00Z",
+        },
+        {
+            "transaction_id": "interest-usd",
+            "transaction_sequence": 2,
+            "portfolio_id": "portfolio",
+            "transaction_type": "interest",
+            "trade_date": "2026-01-02",
+            "trade_at": "2026-01-02T09:00:00Z",
+            "settlement_date": "2026-01-04",
+            "account_id": "cash-usd",
+            "settlement_cash_account_id": None,
+            "instrument_id": None,
+            "derivative_contract_id": None,
+            "quantity": None,
+            "gross_amount": 10.0,
+            "fees": 0.0,
+            "taxes": 0.0,
+            "currency": "USD",
+            "created_at": "2026-01-02T09:00:00Z",
+        },
+    ]
+
+    workspace = ledger.build_account_workspace(
+        "portfolio",
+        [account],
+        transactions,
+        base_currency="CNY",
+        as_of_date=date(2026, 1, 3),
+    )
+    row = workspace["accounts"][0]
+    assert row["derived_cash_balance_base"] == pytest.approx(800.0)
+    assert row["settled_cash_cost_basis_base"] == pytest.approx(700.0)
+    assert row["settled_cash_unrealized_fx_pnl_base"] == pytest.approx(100.0)
+    assert row["pending_settlement_base"] == pytest.approx(80.0)
+    assert row["pending_settlement_cost_basis_base"] == pytest.approx(75.0)
+    assert row["pending_settlement_unrealized_fx_pnl_base"] == pytest.approx(5.0)
+    assert row["monetary_unrealized_fx_pnl_base"] == pytest.approx(105.0)
+    assert row["monetary_fx_coverage_status"] == "complete"
 
 
 def test_account_workspace_labels_event_position_as_carried_not_market_priced(

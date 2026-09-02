@@ -241,6 +241,7 @@ def test_position_unrealized_pnl_reconciles_price_fx_and_total_components() -> N
     metrics = holdings_market_profile.position_unrealized_metrics(
         cost_basis=100.0,
         cost_basis_base_current_fx=790.0,
+        current_fx_stale=True,
         cost_basis_origins=[
             {
                 "acquisition_date": "2026-01-01",
@@ -267,12 +268,14 @@ def test_position_unrealized_pnl_reconciles_price_fx_and_total_components() -> N
     assert metrics["unrealized_pnl_base"] == pytest.approx(
         metrics["unrealized_price_pnl_base"] + metrics["unrealized_fx_pnl_base"]
     )
+    assert metrics["cost_basis_fx_coverage_status"] == "stale"
 
 
 def test_position_unrealized_pnl_does_not_invent_missing_historical_fx() -> None:
     metrics = holdings_market_profile.position_unrealized_metrics(
         cost_basis=100.0,
         cost_basis_base_current_fx=790.0,
+        current_fx_stale=False,
         cost_basis_origins=[
             {
                 "acquisition_date": "2026-01-01",
@@ -301,6 +304,7 @@ def test_zero_book_cost_position_keeps_complete_base_unrealized_pnl() -> None:
     metrics = holdings_market_profile.position_unrealized_metrics(
         cost_basis=0.0,
         cost_basis_base_current_fx=0.0,
+        current_fx_stale=False,
         cost_basis_origins=[],
         market_value=10.0,
         market_value_base=79.0,
@@ -485,6 +489,9 @@ def test_short_option_rows_do_not_allocate_or_require_underlying_holdings() -> N
     assert rows[1]["required_underlying_quantity"] == pytest.approx(100.0)
     assert rows[1]["strike_notional"] == pytest.approx(2_000.0)
     assert rows[1]["strike_notional_base"] == pytest.approx(4_000.0)
+    assert rows[1]["carrying_value_historical_base"] == pytest.approx(-600.0)
+    assert rows[1]["carrying_fx_translation_base"] == pytest.approx(0.0)
+    assert rows[1]["carrying_fx_coverage_status"] == "complete"
     assert rows[1]["coverage_status"] == "event-liability"
 
 
@@ -676,7 +683,7 @@ def test_position_lot_aggregations_golden_contract() -> None:
     assert new_instrument[0]["cost_basis_method"] == "mixed"
     assert [bucket["holding_start_date"] for bucket in new_account] == [
         date(2026, 1, 3),
-        None,
+        date(2026, 1, 1),
     ]
 
     missing_currency = [{**lots[0], "currency": None}]

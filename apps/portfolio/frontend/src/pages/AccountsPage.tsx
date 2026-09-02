@@ -687,6 +687,22 @@ export default function AccountsPage() {
                       </strong>
                     </div>
                     <div>
+                      <span
+                        title={`Settled cash basis ${formatCurrency(selectedAccount.settled_cash_cost_basis_base, workspace.base_currency)}, FX ${formatSignedCurrency(selectedAccount.settled_cash_unrealized_fx_pnl_base, workspace.base_currency)}; pending basis ${formatCurrency(selectedAccount.pending_settlement_cost_basis_base, workspace.base_currency)}, FX ${formatSignedCurrency(selectedAccount.pending_settlement_unrealized_fx_pnl_base, workspace.base_currency)}. Historical FX basis is preserved when value moves from pending settlement into cash.`}
+                      >
+                        Monetary FX P&amp;L · {workspace.base_currency}
+                        {selectedAccount.monetary_fx_coverage_status === 'complete'
+                          ? ''
+                          : ` · ${formatLabel(selectedAccount.monetary_fx_coverage_status ?? 'unavailable')}`}
+                      </span>
+                      <strong className={signedValueClass(selectedAccount.monetary_unrealized_fx_pnl_base)}>
+                        {formatSignedCurrency(
+                          selectedAccount.monetary_unrealized_fx_pnl_base,
+                          workspace.base_currency,
+                        )}
+                      </strong>
+                    </div>
+                    <div>
                       <span>Derivative liability · {workspace.base_currency}</span>
                       <strong>
                         {selectedAccount.derivative_liability_base != null

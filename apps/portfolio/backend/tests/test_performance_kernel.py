@@ -144,7 +144,7 @@ def test_cash_fx_basis_is_account_scoped_and_survives_internal_transfer(
             "created_at": created_at,
         }
 
-    balances = performance._settled_cash_balances_from_postings(
+    balances = ledger.settled_monetary_balances_from_postings(
         postings=[
             posting(
                 transaction_id="opening-a",
@@ -182,9 +182,9 @@ def test_cash_fx_basis_is_account_scoped_and_survives_internal_transfer(
     by_account = {item["account_id"]: item for item in balances}
     assert set(by_account) == {"cash-a", "cash-b"}
     assert by_account["cash-a"]["amount"] == pytest.approx(60.0)
-    assert by_account["cash-a"]["cash_cost_basis_base"] == pytest.approx(420.0)
+    assert by_account["cash-a"]["cost_basis_historical_base"] == pytest.approx(420.0)
     assert by_account["cash-b"]["amount"] == pytest.approx(40.0)
-    assert by_account["cash-b"]["cash_cost_basis_base"] == pytest.approx(280.0)
+    assert by_account["cash-b"]["cost_basis_historical_base"] == pytest.approx(280.0)
     assert sum(
         item["unrealized_fx_pnl_base"] for item in balances
     ) == pytest.approx(100.0)
@@ -194,7 +194,7 @@ def test_cash_fx_basis_is_account_scoped_and_survives_internal_transfer(
         "historical_cost_basis_base": 700.0,
         "cost_basis_complete": True,
     }
-    released_basis = performance._apply_cash_cost_basis_delta(
+    released_basis = ledger.apply_monetary_cost_basis_delta(
         crossing_state,
         amount_delta=-140.0,
         acquisition_fx_rate=7.5,
@@ -237,7 +237,7 @@ def test_fx_conversion_uses_executed_countervalue_for_new_cash_basis(
         "transaction_id": "fx-1",
         "created_at": "2026-01-02T09:00:00Z",
     }
-    balances = performance._settled_cash_balances_from_postings(
+    balances = ledger.settled_monetary_balances_from_postings(
         postings=[
             {
                 "transaction_id": "opening-cny",
@@ -273,10 +273,352 @@ def test_fx_conversion_uses_executed_countervalue_for_new_cash_basis(
     )
 
     by_account = {item["account_id"]: item for item in balances}
-    assert by_account["cash-cny"]["cash_cost_basis_base"] == pytest.approx(300.0)
-    assert by_account["cash-usd"]["cash_cost_basis_base"] == pytest.approx(700.0)
-    assert by_account["cash-usd"]["cash_cost_basis_fx_rate_to_base"] == pytest.approx(7.0)
+    assert by_account["cash-cny"]["cost_basis_historical_base"] == pytest.approx(300.0)
+    assert by_account["cash-usd"]["cost_basis_historical_base"] == pytest.approx(700.0)
+    assert by_account["cash-usd"]["cost_basis_fx_rate_to_base"] == pytest.approx(7.0)
     assert by_account["cash-usd"]["unrealized_fx_pnl_base"] == pytest.approx(50.0)
+
+
+def test_foreign_security_receivable_and_cash_preserve_one_fx_basis(
+    monkeypatch,
+) -> None:
+    rates = {
+        date(2026, 1, 1): 7.0,
+        date(2026, 1, 2): 7.2,
+        date(2026, 1, 5): 7.7,
+        date(2026, 1, 6): 7.9,
+        date(2026, 1, 8): 8.0,
+        date(2026, 1, 10): 8.1,
+    }
+
+    def resolve_rate(*, as_of_date, base_currency, quote_currency, **_kwargs):
+        return {
+            "rate": 1.0 if base_currency == quote_currency else rates[as_of_date],
+            "stale": False,
+        }
+
+    def convert_on(amount, *, as_of_date, from_currency, to_currency, **_kwargs):
+        if amount is None:
+            return None, False
+        rate = 1.0 if from_currency == to_currency else rates[as_of_date]
+        return float(amount) * rate, False
+
+    monkeypatch.setattr(valuation_fx, "resolve_fx_rate_on", resolve_rate)
+    monkeypatch.setattr(valuation_fx, "convert_amount_on", convert_on)
+
+    instrument_ref = {
+        "instrument_id": "security-usd",
+        "instrument_name": "USD Security",
+        "instrument_type": "equity",
+        "currency": "USD",
+        "identifiers": [],
+    }
+
+    def transaction(
+        transaction_id: str,
+        sequence: int,
+        transaction_type: str,
+        trade_date: str,
+        settlement_date: str,
+        gross_amount: float,
+        *,
+        quantity: float | None = None,
+        instrument: bool = False,
+        entitlement_date: str | None = None,
+        position_effective_date: str | None = None,
+    ) -> dict[str, object]:
+        return {
+            "transaction_id": transaction_id,
+            "transaction_sequence": sequence,
+            "portfolio_id": "portfolio-multicurrency",
+            "transaction_type": transaction_type,
+            "trade_date": trade_date,
+            "trade_at": f"{trade_date}T10:00:00Z",
+            "settlement_date": settlement_date,
+            "position_effective_date": position_effective_date,
+            "entitlement_date": entitlement_date,
+            "account_id": "broker" if instrument else "cash-usd",
+            "settlement_cash_account_id": "cash-usd" if instrument else None,
+            "instrument_id": "security-usd" if instrument else None,
+            "instrument_ref": instrument_ref if instrument else None,
+            "derivative_contract_id": None,
+            "derivative_contract": None,
+            "quantity": quantity,
+            "gross_amount": gross_amount,
+            "fees": 0.0,
+            "taxes": 0.0,
+            "currency": "USD",
+            "created_at": f"{trade_date}T10:00:00Z",
+        }
+
+    transactions = [
+        transaction(
+            "opening-cash",
+            1,
+            "opening_balance",
+            "2026-01-01",
+            "2026-01-01",
+            1_000.0,
+        ),
+        transaction(
+            "buy-security",
+            2,
+            "buy",
+            "2026-01-02",
+            "2026-01-04",
+            500.0,
+            quantity=100.0,
+            instrument=True,
+        ),
+        transaction(
+            "sell-security",
+            3,
+            "sell",
+            "2026-01-05",
+            "2026-01-07",
+            240.0,
+            quantity=40.0,
+            instrument=True,
+        ),
+        transaction(
+            "dividend-security",
+            4,
+            "dividend",
+            "2026-01-06",
+            "2026-01-09",
+            10.0,
+            instrument=True,
+            entitlement_date="2026-01-06",
+        ),
+    ]
+    postings = ledger.derive_ledger_postings(
+        "portfolio-multicurrency",
+        transactions,
+        account_cost_methods={"broker": "fifo"},
+        account_currency_map={"broker": "USD", "cash-usd": "USD"},
+    )
+    cash_postings = {
+        str(posting["transaction_id"]): posting
+        for posting in postings
+        if posting.get("cash_amount_delta") is not None
+    }
+    assert cash_postings["sell-security"]["monetary_recognition_date"] == "2026-01-05"
+    assert cash_postings["dividend-security"]["monetary_recognition_date"] == "2026-01-06"
+
+    pending_on_jan_6 = ledger.pending_monetary_balances_from_postings(
+        postings=postings,
+        as_of_date=date(2026, 1, 6),
+        base_currency="CNY",
+        direct_fx_instruments={},
+        instrument_detail_cache={},
+    )
+    pending_by_transaction = {
+        row["transaction_ids"][0]: row for row in pending_on_jan_6
+    }
+    assert pending_by_transaction["sell-security"]["amount"] == pytest.approx(240.0)
+    assert pending_by_transaction["sell-security"]["cost_basis_historical_base"] == pytest.approx(1_848.0)
+    assert pending_by_transaction["sell-security"]["unrealized_fx_pnl_base"] == pytest.approx(48.0)
+    assert pending_by_transaction["dividend-security"]["cost_basis_historical_base"] == pytest.approx(79.0)
+
+    subledger_on_jan_8 = ledger.build_monetary_subledger(
+        postings=postings,
+        as_of_date=date(2026, 1, 8),
+        base_currency="CNY",
+        direct_fx_instruments={},
+        instrument_detail_cache={},
+    )
+    settled_on_jan_8 = subledger_on_jan_8["settled_balances"][0]
+    assert settled_on_jan_8["amount"] == pytest.approx(740.0)
+    assert settled_on_jan_8["cost_basis_historical_base"] == pytest.approx(5_348.0)
+    assert settled_on_jan_8["unrealized_fx_pnl_base"] == pytest.approx(572.0)
+    assert subledger_on_jan_8["pending_balances"][0][
+        "cost_basis_historical_base"
+    ] == pytest.approx(79.0)
+
+    settled_on_jan_10 = ledger.settled_monetary_balances_from_postings(
+        postings=postings,
+        as_of_date=date(2026, 1, 10),
+        base_currency="CNY",
+        direct_fx_instruments={},
+        instrument_detail_cache={},
+    )[0]
+    assert settled_on_jan_10["amount"] == pytest.approx(750.0)
+    assert settled_on_jan_10["cost_basis_historical_base"] == pytest.approx(5_427.0)
+    assert settled_on_jan_10["unrealized_fx_pnl_base"] == pytest.approx(648.0)
+
+    accounts = [
+        {
+            "account_id": "broker",
+            "account_name": "Broker",
+            "account_type": "securities_account",
+            "currency": "USD",
+            "cost_basis_method": "fifo",
+        },
+        {
+            "account_id": "cash-usd",
+            "account_name": "USD Cash",
+            "account_type": "deposit_account",
+            "currency": "USD",
+        },
+    ]
+    lots = ledger.build_position_lots(
+        "portfolio-multicurrency",
+        accounts,
+        transactions,
+        resolve_pricing=False,
+    )
+    sale_impact = ledger.build_transaction_accounting_impact(
+        transactions[2],
+        lots,
+        base_currency="CNY",
+        direct_fx_instruments={},
+        instrument_detail_cache={},
+    )
+    assert sale_impact is not None
+    assert sale_impact["historical_cost_basis_base"] == pytest.approx(1_440.0)
+    assert sale_impact["realized_price_pnl_base"] == pytest.approx(308.0)
+    assert sale_impact["realized_position_fx_pnl_base"] == pytest.approx(100.0)
+    assert sale_impact["realized_position_pnl_base"] == pytest.approx(408.0)
+
+
+def test_settlement_before_position_confirmation_preserves_basis_origin() -> None:
+    accounts = [
+        {
+            "account_id": "broker",
+            "account_name": "Broker",
+            "account_type": "securities_account",
+            "currency": "USD",
+            "cost_basis_method": "fifo",
+        }
+    ]
+    fund_buy = {
+        "transaction_id": "fund-subscription",
+        "transaction_sequence": 1,
+        "portfolio_id": "portfolio-bridge",
+        "transaction_type": "buy",
+        "trade_date": "2026-01-01",
+        "trade_at": "2026-01-01T10:00:00Z",
+        "settlement_date": "2026-01-02",
+        "position_effective_date": "2026-01-04",
+        "account_id": "broker",
+        "settlement_cash_account_id": "cash-usd",
+        "instrument_id": "fund-usd",
+        "instrument_ref": {
+            "instrument_id": "fund-usd",
+            "instrument_name": "USD Fund",
+            "instrument_type": "public_fund",
+            "currency": "USD",
+            "identifiers": [],
+        },
+        "quantity": 10.0,
+        "gross_amount": 100.0,
+        "fees": 0.0,
+        "taxes": 0.0,
+        "currency": "USD",
+        "created_at": "2026-01-01T10:00:00Z",
+    }
+
+    lots = ledger.build_position_lots(
+        "portfolio-bridge",
+        accounts,
+        [fund_buy],
+        as_of_date=date(2026, 1, 5),
+        resolve_pricing=False,
+    )
+    assert lots[0]["acquisition_date"] == "2026-01-04"
+    assert lots[0]["cost_basis_origins"][0]["acquisition_date"] == "2026-01-02"
+
+
+def test_written_option_cash_and_liability_fx_translation_offset(
+    monkeypatch,
+) -> None:
+    rates = {date(2026, 1, 1): 7.0, date(2026, 1, 3): 8.0}
+    monkeypatch.setattr(
+        valuation_fx,
+        "resolve_fx_rate_on",
+        lambda *, as_of_date, base_currency, quote_currency, **_kwargs: {
+            "rate": 1.0 if base_currency == quote_currency else rates[as_of_date],
+            "stale": False,
+        },
+    )
+    monkeypatch.setattr(
+        valuation_fx,
+        "convert_amount_on",
+        lambda amount, *, as_of_date, from_currency, to_currency, **_kwargs: (
+            None
+            if amount is None
+            else float(amount)
+            * (1.0 if from_currency == to_currency else rates[as_of_date]),
+            False,
+        ),
+    )
+    option_write = {
+        "transaction_id": "write-usd-call",
+        "transaction_sequence": 1,
+        "portfolio_id": "portfolio-option-fx",
+        "transaction_type": "option_write",
+        "trade_date": "2026-01-01",
+        "trade_at": "2026-01-01T10:00:00Z",
+        "settlement_date": "2026-01-02",
+        "account_id": "option-account",
+        "settlement_cash_account_id": "cash-usd",
+        "instrument_id": None,
+        "derivative_contract_id": "usd-call",
+        "derivative_contract": {
+            "derivative_contract_id": "usd-call",
+            "portfolio_id": "portfolio-option-fx",
+            "account_id": "option-account",
+            "contract_name": "USD Call",
+            "contract_type": "option",
+            "currency": "USD",
+            "terms": {
+                "underlying_instrument_id": "security-usd",
+                "option_type": "call",
+                "expiry_date": "2026-06-30",
+                "strike": 10.0,
+                "contract_multiplier": 100.0,
+            },
+        },
+        "quantity": 1.0,
+        "gross_amount": 100.0,
+        "fees": 0.0,
+        "taxes": 0.0,
+        "currency": "USD",
+        "created_at": "2026-01-01T10:00:00Z",
+    }
+    postings = ledger.derive_ledger_postings(
+        "portfolio-option-fx",
+        [option_write],
+        account_currency_map={"option-account": "USD", "cash-usd": "USD"},
+    )
+    cash_row = ledger.settled_monetary_balances_from_postings(
+        postings=postings,
+        as_of_date=date(2026, 1, 3),
+        base_currency="CNY",
+        direct_fx_instruments={},
+        instrument_detail_cache={},
+    )[0]
+    obligation_row = holdings_market_profile.build_option_obligation_holding_rows(
+        performance.build_option_obligations(
+            [option_write],
+            as_of_date=date(2026, 1, 3),
+        ),
+        as_of_date=date(2026, 1, 3),
+        base_currency="CNY",
+        nav=10_000.0,
+        convert_amount_on=valuation_fx.convert_amount_on,
+        direct_fx_instruments={},
+        instrument_detail_cache={},
+    )[0]
+
+    assert cash_row["cost_basis_historical_base"] == pytest.approx(700.0)
+    assert cash_row["unrealized_fx_pnl_base"] == pytest.approx(100.0)
+    assert obligation_row["carrying_value_historical_base"] == pytest.approx(-700.0)
+    assert obligation_row["carrying_fx_translation_base"] == pytest.approx(-100.0)
+    assert (
+        cash_row["unrealized_fx_pnl_base"]
+        + obligation_row["carrying_fx_translation_base"]
+    ) == pytest.approx(0.0)
 
 
 def _test_instrument_detail(
